@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { flushSync, mount, tick, unmount } from "svelte";
+import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import CollectionPropertyCreator from "./CollectionPropertyCreator.svelte";
 import type { CollectionPropertyTypeOption } from "./property-icons";
@@ -44,10 +44,8 @@ function typeButtons(): HTMLButtonElement[] {
   return [...document.querySelectorAll<HTMLButtonElement>("[data-property-type]")];
 }
 
-/** Open the type search and return its field once it has focus. */
-async function openSearch(): Promise<HTMLInputElement> {
-  document.querySelector<HTMLButtonElement>('button[aria-label="Search types"]')!.click();
-  await vi.waitFor(() => expect(document.activeElement).toBe(document.querySelector('input[aria-label="Search types"]')));
+/** The always visible type search field. */
+function searchField(): HTMLInputElement {
   return document.querySelector<HTMLInputElement>('input[aria-label="Search types"]')!;
 }
 
@@ -67,9 +65,9 @@ describe("Collection property creator", () => {
     expect(document.querySelectorAll(".border-t")).toHaveLength(1);
   });
 
-  it("searches types and creates the first match on Enter", async () => {
+  it("searches types and creates the first match on Enter", () => {
     const { onCreate } = render();
-    const search = await openSearch();
+    const search = searchField();
     type(search, "REL");
     expect(typeButtons().map((button) => button.dataset.propertyType)).toEqual(["relation"]);
     expect(press(search, "a").defaultPrevented).toBe(false);
@@ -77,11 +75,9 @@ describe("Collection property creator", () => {
     expect(onCreate).toHaveBeenCalledExactlyOnceWith("relation");
   });
 
-  it("says when no type matches and creates nothing on Enter", async () => {
+  it("says when no type matches and creates nothing on Enter", () => {
     const { onCreate } = render();
-    document.querySelector<HTMLButtonElement>('button[aria-label="Search types"]')!.click();
-    await tick();
-    const search = document.querySelector<HTMLInputElement>('input[aria-label="Search types"]')!;
+    const search = searchField();
     type(search, "missing");
     expect(typeButtons()).toEqual([]);
     expect(document.body.textContent).toContain("No matching types");
@@ -89,15 +85,16 @@ describe("Collection property creator", () => {
     expect(onCreate).not.toHaveBeenCalled();
   });
 
-  it("keeps the search toggle from counting as a menu action", () => {
+  it("shows the search field without taking focus from the draft name", () => {
     render();
-    expect(document.querySelector('button[aria-label="Search types"]')?.hasAttribute("data-collection-menu-keep-open")).toBe(true);
+    expect(searchField()).toBeTruthy();
+    expect(document.activeElement).toBe(document.body);
   });
 
-  it("disables creation while a creation is pending", async () => {
+  it("disables creation while a creation is pending", () => {
     const { onCreate } = render({ pending: true });
     expect(typeButtons().every((button) => button.disabled)).toBe(true);
-    press(await openSearch(), "Enter");
+    press(searchField(), "Enter");
     expect(onCreate).not.toHaveBeenCalled();
   });
 });

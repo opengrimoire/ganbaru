@@ -49,7 +49,7 @@ Always use the workspace flag for root scripts.
 
 `validate` is the normal comprehensive gate. `validate:full` is required for dependency or lockfile changes, security-sensitive dependency work, releases, and explicit full-security requests.
 
-The hosted `linux validation` job in `.github/workflows/check.yml` runs `validate:ci` for pull requests and the merge queue. It covers the same static checks, tests, editor diagnostics, and bundle contracts as local `validate`; only Cargo compilation uses two jobs instead of one. Rust tests still use one test thread, and the frontend shards remain sequential and single-worker. The independent Android job builds an ARM64 debug APK, while the Windows job runs `cargo check -p ganbaru-ai` without producing an installer.
+The hosted `linux validation` job in `.github/workflows/check.yml` runs `validate:ci` for pull requests and the merge queue. It covers the same static checks, tests, editor diagnostics, and bundle contracts as local `validate`; only Cargo compilation uses two jobs instead of one. Rust tests use the same two test threads, and the frontend shards remain sequential and single-worker. The independent Android job builds an ARM64 debug APK, while the Windows job runs `cargo check -p ganbaru-ai` without producing an installer.
 
 ## Choosing a gate
 

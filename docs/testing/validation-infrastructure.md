@@ -17,7 +17,7 @@ The shared Clippy policy allows `collapsible_if`: nested guards and edition-2024
 The complete normal gate runs in this order:
 
 1. Rust formatting and Clippy with one Cargo build job locally, or two in Linux CI.
-2. Rust workspace tests with the same Cargo build limit and one runtime test thread.
+2. Rust workspace tests with the same Cargo build limit and two runtime test threads. Running tests peaks far below compilation (under 500 MB), and a second thread cuts the stage by about a quarter; more Cargo build jobs make local builds slower because large crates compete for memory.
 3. Provider protocol snapshot checks, Svelte Check with a 2,048 MiB Node old-space limit, then TypeScript checking.
 4. Four sequential one-worker Vitest shards, excluding benchmark-harness tests.
 5. Tailwind diagnostics through Turbo.

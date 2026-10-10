@@ -1,7 +1,6 @@
 <script lang="ts">
   import { tick } from "svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { notesFloatingPanelContentHeight } from "$lib/notes/editor/floating-panel";
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
   import { anchoredPanelStyle } from "$lib/utils/anchored-panel";
   import { portal } from "$lib/utils/portal";
@@ -15,15 +14,20 @@
   /** Keep paste choices attached to their row without taking space in the document. */
   function floatPanel(node: HTMLDivElement) {
     const portaled = portal(node, anchor?.closest<HTMLElement>("[data-floating-root]") ?? document.body);
+    let previousStyle = "";
+    // The panel's own height only informs placement; deriving max-height from it would resize the observed node and loop.
     const place = () => {
       if (!anchor?.isConnected) return;
       const paragraph = anchor.closest(".notes-block-list")?.querySelector<HTMLElement>(".notes-editor-body-text");
       const fontSize = paragraph ? Number.parseFloat(getComputedStyle(paragraph).fontSize) : Number.NaN;
-      node.style.cssText = anchoredPanelStyle({
+      const placement = anchoredPanelStyle({
         triggerRect: anchor.getBoundingClientRect(), viewportWidth: window.innerWidth, viewportHeight: window.innerHeight,
-        preferredWidth: FLOATING_WIDTH.sm, preferredMaxHeight: notesFloatingPanelContentHeight(node),
+        preferredWidth: FLOATING_WIDTH.sm, contentHeight: node.getBoundingClientRect().height,
       });
-      if (Number.isFinite(fontSize)) node.style.fontSize = `${fontSize * TEXT_SCALE}px`;
+      const style = Number.isFinite(fontSize) ? `${placement}; font-size:${fontSize * TEXT_SCALE}px` : placement;
+      if (style === previousStyle) return;
+      node.style.cssText = style;
+      previousStyle = style;
     };
     const outside = (event: Event) => {
       if (event.target instanceof Node && !node.contains(event.target) && !anchor?.contains(event.target) && !controller.busy) controller.dismiss();
@@ -64,8 +68,8 @@
       <button type="button" class="menu-item disabled:pointer-events-none" disabled={controller.busy} onclick={() => void controller.linkedView()}>{t("notes.databasePasteLinkedView")}</button>
       <button type="button" class="menu-item disabled:pointer-events-none" disabled={controller.busy} onclick={controller.dismiss}>{t("notes.databasePasteUrl")}</button>
     {:else}
-      <button type="button" class="menu-item disabled:pointer-events-none" disabled={controller.busy} onclick={controller.dismiss}>{t("notes.databasePasteDismiss")}</button>
       <button type="button" class="menu-item disabled:pointer-events-none" disabled={controller.busy} onclick={() => void controller.linkedView()}>{t("notes.databasePasteAndSync")}</button>
+      <button type="button" class="menu-item disabled:pointer-events-none" disabled={controller.busy} onclick={controller.dismiss}>{t("notes.databasePasteDismiss")}</button>
     {/if}
     {#if controller.error}<p role="alert" class="px-2 py-1.5 text-panel-detail text-destructive">{t("notes.databasePasteFailed", controller.error)}</p>{/if}
   </div>

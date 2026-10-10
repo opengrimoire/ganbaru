@@ -223,6 +223,7 @@ interface ProjectCustomFieldRow {
   name: string;
   field_type: ProjectCustomField["fieldType"];
   sort_order: number;
+  icon: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -630,6 +631,7 @@ function mapCustomField(row: ProjectCustomFieldRow): ProjectCustomField {
     name: row.name,
     fieldType: row.field_type,
     sortOrder: row.sort_order,
+    icon: row.icon,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -1259,7 +1261,7 @@ function parseCompoundProjectRows(
     const fieldType = PROJECT_CUSTOM_FIELD_TYPES.find((type) => type === field.field_type);
     if (!fieldType || readText(field, "project_id") !== projectId) throw new Error("Invalid reordered custom field owner or type");
     return { id: readText(field, "id"), revision: readRevision(field), project_id: projectId,
-      name: readText(field, "name"), field_type: fieldType, sort_order: readSortOrder(field),
+      name: readText(field, "name"), field_type: fieldType, sort_order: readSortOrder(field), icon: readOptionalText(field, "icon"),
       created_at: readText(field, "created_at"), updated_at: readText(field, "updated_at") };
   });
   const customFieldOptions = readArray(row.custom_field_options, scope.kind === "custom_field_option" ? taskLimit : 0).map((value): ProjectCustomFieldOptionRow => {

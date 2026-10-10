@@ -1,6 +1,6 @@
 <script lang="ts">
   import ProjectListPropertyMenu from "./ProjectListPropertyMenu.svelte";
-  import ProjectListAddPropertyMenu from "./ProjectListAddPropertyMenu.svelte";
+  import ProjectListPropertyDraft from "./ProjectListPropertyDraft.svelte";
   import { getProjectListTableContext } from "./table-context";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type {
@@ -9,6 +9,7 @@
   import type { ProjectTaskListResizableColumn } from "$lib/projects/list/view";
   import CollectionRow from "$lib/components/collections/CollectionRow.svelte";
   import CollectionColumnHeader from "$lib/components/collections/CollectionColumnHeader.svelte";
+  import CollectionAddPropertyButton from "$lib/components/collections/CollectionAddPropertyButton.svelte";
 
   type HeaderMode = "section" | "group";
 
@@ -34,6 +35,9 @@
 
   const { t } = getLocalization();
   const context = getProjectListTableContext();
+  let addButton: HTMLButtonElement | undefined = $state();
+  let adding = $state(false);
+  const addAnchor = $derived(adding ? addButton?.parentElement ?? null : null);
 </script>
 
 {#snippet columnHeaderCell(label: string, column: ProjectTaskListResizableColumn)}
@@ -55,6 +59,14 @@
     {@render columnHeaderCell(taskListColumnLabel(column), column)}
   {/each}
   <div class="grid min-h-(--collection-table-row-height) min-w-0 place-items-center self-stretch text-muted-foreground">
-    {#if context}<ProjectListAddPropertyMenu query={context.query} anchor={taskListColumns.at(-1) ?? "name"} label={t("collections.property.add")} variant="button" />{/if}
+    {#if context}
+      {@const query = context.query}
+      <CollectionAddPropertyButton bind:element={addButton} open={adding} disabled={query.propertySaving || query.presentationSaving || query.listColumnsSaving}
+        onclick={() => { adding = !adding; }} />
+      {#if addAnchor}
+        <ProjectListPropertyDraft {query} column={taskListColumns.at(-1) ?? "name"} side="right" anchor={addAnchor} placement="start" trigger={addButton}
+          onClose={() => { adding = false; }} />
+      {/if}
+    {/if}
   </div>
 </CollectionRow>

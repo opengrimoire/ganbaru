@@ -14,6 +14,7 @@ import { notesDatabaseParseFilters, notesDatabaseSerializeFilters } from "./filt
 import { NOTES_DATA_SOURCE_NUMBER_FORMATS } from "$lib/notes/types";
 import { notesDatabaseDateValue, type NotesDatabaseDateValue } from "./date";
 import type { NotesDatabasePropertyDisplayFormat } from "./property-display";
+import { notesDataSourcePropertyIcon } from "./data-source-schema";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -29,6 +30,8 @@ export interface NotesDatabaseTableColumn {
   buttonRequiresConfirmation: boolean;
   numberFormat?: NotesDataSourceNumberFormat;
   displayFormat?: NotesDatabasePropertyDisplayFormat;
+  /** A `lucide:` picker value; absent or null shows the type icon. */
+  icon?: string | null;
 }
 
 export interface NotesDatabaseTableOption {
@@ -115,6 +118,7 @@ export function notesDatabaseTableColumns(
       buttonLabel: buttonLabel(rawProperty, type),
       buttonRequiresConfirmation: buttonRequiresConfirmation(rawProperty, type),
       numberFormat: numberFormat(rawProperty, type),
+      icon: notesDataSourcePropertyIcon(rawProperty.icon),
     });
   }
   const columns: NotesDatabaseTableColumn[] = [];

@@ -550,14 +550,15 @@ pub(crate) async fn create_custom_field_in_pool(
         }
     }
     sqlx::query(
-        "INSERT INTO project_custom_fields (id, project_id, name, field_type, sort_order)
-         VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO project_custom_fields (id, project_id, name, field_type, sort_order, icon)
+         VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(field.id.trim())
     .bind(field.project_id.trim())
     .bind(field.name.trim())
     .bind(field.field_type.trim())
     .bind(field.sort_order)
+    .bind(field.icon.as_deref().map(str::trim))
     .execute(&mut *tx)
     .await
     .map_err(|e| format!("create project custom field: {e}"))?;
@@ -590,11 +591,13 @@ pub async fn update_custom_field(
         "UPDATE project_custom_fields
          SET name = ?,
              sort_order = ?,
+             icon = ?,
              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          WHERE id = ?",
     )
     .bind(field.name.trim())
     .bind(field.sort_order)
+    .bind(field.icon.as_deref().map(str::trim))
     .bind(field.id.trim())
     .execute(pool)
     .await

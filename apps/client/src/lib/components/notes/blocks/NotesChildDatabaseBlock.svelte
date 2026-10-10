@@ -441,7 +441,7 @@
   }
 
   /** Add to canonical schema without committing or discarding unsaved property editor drafts. */
-  async function addPropertyFromView(type: NotesDataSourcePropertyType, rawName: string, requestedScope?: NotesDatabaseSourceEditingScope): Promise<void> {
+  async function addPropertyFromView(type: NotesDataSourcePropertyType, rawName: string, icon: string | null, requestedScope?: NotesDatabaseSourceEditingScope): Promise<void> {
     if (schemaLoadPromise) await schemaLoadPromise;
     const sourceId = requestedScope?.dataSourceId ?? schemaDataSourceId;
     if (!sourceId) throw new Error(t("notes.databaseSchemaLoadFailed", ""));
@@ -454,7 +454,7 @@
       if (type === "rollup") availableDataSources = await listNotesDataSources();
       const canonicalProperties = notesDataSourceSchemaDraftFromDto(canonical.data_source, canonical.view);
       const name = rawName.trim() || defaultNotesDataSourcePropertyName(type, canonicalProperties);
-      const property = createNotesDataSourcePropertyDraft(type, name);
+      const property = createNotesDataSourcePropertyDraft(type, name, undefined, icon);
       if (type === "relation") property.relationDataSourceId = sourceId;
       if (type === "rollup") Object.assign(property, notesDataSourceDefaultRollupPatch(canonicalProperties, property.id, sourceId, availableDataSources));
       if (type === "formula") property.formulaExpression = defaultFormulaExpression(property.id, canonicalProperties);
@@ -502,35 +502,54 @@
   }
 
   /**
-   * Rename one canonical property from its header, keeping its ID and any unsaved property editor drafts.
-   * Failures are rethrown without a block error because the header name field shows them beside the draft.
+   * Change one canonical property from its header, keeping its ID and any unsaved property editor drafts.
+   * `edit` returns the change for the canonical drafts, or null when nothing changes.
+   * Failures are rethrown without a block error because the header shows them beside the control.
    */
-  async function renamePropertyFromView(propertyId: string, rawName: string, scope: NotesDatabaseSourceEditingScope): Promise<void> {
+  async function editPropertyFromView(propertyId: string, scope: NotesDatabaseSourceEditingScope,
+    edit: (drafts: NotesDataSourceSchemaPropertyDraft[]) => Partial<Pick<NotesDataSourceSchemaPropertyDraft, "name" | "icon">> | null): Promise<void> {
     if (saving || editingLocked) throw new Error(t("notes.databaseSaving"));
     if (schemaLoadPromise) await schemaLoadPromise;
     saving = true;
     try {
       const canonical = await getNotesDataSourceSchema(scope.dataSourceId, scope);
-      const renamed = notesDataSourceRenameProperty(notesDataSourceSchemaDraftFromDto(canonical.data_source, canonical.view), propertyId, rawName);
-      if (renamed.status !== "renamed") {
-        if (renamed.status === "unchanged") return;
-        throw new Error(renamed.status === "duplicate" ? t("collections.property.nameExists") : t("notes.databaseSchemaSaveFailed", propertyId));
-      }
-      const name = renamed.properties.find((property) => property.id === propertyId)?.name ?? rawName.trim();
+      const drafts = notesDataSourceSchemaDraftFromDto(canonical.data_source, canonical.view);
+      const patch = edit(drafts);
+      if (!patch) return;
+      const apply = (list: NotesDataSourceSchemaPropertyDraft[]) => list.map((property) => property.id === propertyId ? { ...property, ...patch } : property);
       const sources = [canonical.data_source, ...availableDataSources.filter((source) => source.id !== canonical.data_source.id)];
-      const synced = notesDataSourceSyncPropertyReferences(renamed.properties, scope.dataSourceId, sources);
+      const synced = notesDataSourceSyncPropertyReferences(apply(drafts), scope.dataSourceId, sources);
       const updated = await updateNotesDataSourceSchema(scope.dataSourceId, notesDataSourceSchemaUpdateFromDraft(synced), scope);
-      mergeCanonicalSchema(updated, (drafts) => notesDataSourceSyncPropertyReferences(
-        drafts.map((property) => property.id === propertyId ? { ...property, name } : property), scope.dataSourceId, sources));
+      mergeCanonicalSchema(updated, (current) => notesDataSourceSyncPropertyReferences(apply(current), scope.dataSourceId, sources));
       reloadViews();
     } finally {
       saving = false;
     }
   }
 
+  /** Rename one property from its header; duplicate names are rejected ignoring case. */
+  function renamePropertyFromView(propertyId: string, rawName: string, scope: NotesDatabaseSourceEditingScope): Promise<void> {
+    return editPropertyFromView(propertyId, scope, (drafts) => {
+      const renamed = notesDataSourceRenameProperty(drafts, propertyId, rawName);
+      if (renamed.status === "unchanged") return null;
+      if (renamed.status !== "renamed") throw new Error(renamed.status === "duplicate" ? t("collections.property.nameExists") : t("notes.databaseSchemaSaveFailed", propertyId));
+      return { name: renamed.properties.find((property) => property.id === propertyId)?.name ?? rawName.trim() };
+    });
+  }
+
+  /** Change one property's icon from its header; null returns it to the type icon. */
+  function changePropertyIconFromView(propertyId: string, icon: string | null, scope: NotesDatabaseSourceEditingScope): Promise<void> {
+    return editPropertyFromView(propertyId, scope, (drafts) => {
+      const target = drafts.find((property) => property.id === propertyId);
+      if (!target) throw new Error(t("notes.databaseSchemaSaveFailed", propertyId));
+      return target.icon === icon ? null : { icon };
+    });
+  }
+
   /** Apply a header schema change and its requested placement in one native transaction. */
   async function applyPropertyAction(request: NotesDatabasePropertyActionRequest, scope: NotesDatabaseSourceEditingScope): Promise<void> {
     if (request.type === "rename") return renamePropertyFromView(request.propertyId, request.name, scope);
+    if (request.type === "icon") return changePropertyIconFromView(request.propertyId, request.icon, scope);
     if (saving || editingLocked) throw new Error(t("notes.databaseSaving"));
     if (schemaLoadPromise) await schemaLoadPromise;
     saving = true;
@@ -547,7 +566,7 @@
           (propertyName) => t("notes.databaseSchemaDuplicateName", propertyName));
         action = { type: "duplicate", property_id: request.propertyId, name };
       } else {
-        const property = createNotesDataSourcePropertyDraft(request.propertyType, request.name.trim() || defaultNotesDataSourcePropertyName(request.propertyType, drafts));
+        const property = createNotesDataSourcePropertyDraft(request.propertyType, request.name.trim() || defaultNotesDataSourcePropertyName(request.propertyType, drafts), undefined, request.icon);
         if (property.type === "relation") property.relationDataSourceId = scope.dataSourceId;
         if (property.type === "rollup") Object.assign(property, notesDataSourceDefaultRollupPatch(drafts, property.id, scope.dataSourceId, availableDataSources));
         if (property.type === "formula") property.formulaExpression = defaultFormulaExpression(property.id, drafts);

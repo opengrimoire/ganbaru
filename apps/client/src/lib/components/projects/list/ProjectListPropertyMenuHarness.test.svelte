@@ -1,12 +1,12 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import type { ProjectCustomField } from "$lib/projects/types";
+  import type { ProjectCustomField, ProjectTaskListColumn } from "$lib/projects/types";
   import ProjectListPropertyMenu from "./ProjectListPropertyMenu.svelte";
   import { ProjectTaskQueryController } from "$lib/components/projects/task-query-controller.svelte";
   import { setProjectListTableContext } from "./table-context";
 
-  let { initialField }: { initialField: ProjectCustomField } = $props();
+  let { initialField, column }: { initialField: ProjectCustomField; column?: ProjectTaskListColumn } = $props();
   let field = $state(untrack(() => initialField));
   type Input = ConstructorParameters<typeof ProjectTaskQueryController>[0];
   const query = new ProjectTaskQueryController({
@@ -28,5 +28,5 @@
 </script>
 
 <div data-floating-root>
-  <ProjectListPropertyMenu column={`custom:${field.id}`} label={field.name} />
+  <ProjectListPropertyMenu column={column ?? `custom:${field.id}`} label={column ?? field.name} />
 </div>

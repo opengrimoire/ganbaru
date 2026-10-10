@@ -405,6 +405,8 @@ pub struct ProjectCustomFieldRow {
     pub(crate) name: String,
     pub(crate) field_type: String,
     pub(crate) sort_order: i64,
+    /// Chosen `lucide:` icon; `None` shows the field type icon.
+    pub(crate) icon: Option<String>,
     pub(crate) created_at: String,
     pub(crate) updated_at: String,
 }
@@ -415,6 +417,7 @@ impl_sqlite_from_row!(ProjectCustomFieldRow {
     name,
     field_type,
     sort_order,
+    icon,
     created_at,
     updated_at,
 });
@@ -1043,15 +1046,20 @@ pub struct ProjectCustomFieldCreate {
     pub(crate) field_type: String,
     pub(crate) sort_order: i64,
     #[serde(default)]
+    pub(crate) icon: Option<String>,
+    #[serde(default)]
     pub(crate) duplicate_source_id: Option<String>,
 }
 
+/// Full replacement of a field's editable definition; a missing `icon` resets it to the type icon.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectCustomFieldUpdate {
     pub(crate) id: String,
     pub(crate) name: String,
     pub(crate) sort_order: i64,
+    #[serde(default)]
+    pub(crate) icon: Option<String>,
 }
 
 #[derive(Deserialize)]

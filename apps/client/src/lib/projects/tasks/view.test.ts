@@ -101,6 +101,7 @@ function customField(input: Pick<ProjectCustomField, "id" | "name" | "fieldType"
     ...input,
     projectId: "project",
     sortOrder: 1000,
+    icon: null,
     createdAt: "2026-06-01T00:00:00Z",
     updatedAt: "2026-06-01T00:00:00Z",
   };

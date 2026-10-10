@@ -22,7 +22,7 @@ function mutation(changed: Partial<ProjectsSnapshot>, removals: ProjectMutation[
 describe("applyProjectMutation", () => {
   it("preserves renamed schema rows when an older reorder receipt arrives", () => {
     const field: ProjectCustomField = { id: "field-1", projectId: "project-1", name: "Renamed",
-      fieldType: "select", sortOrder: 2000, revision: 2, createdAt: "same", updatedAt: "same" };
+      fieldType: "select", sortOrder: 2000, icon: null, revision: 2, createdAt: "same", updatedAt: "same" };
     const option = { id: "option-1", fieldId: field.id, name: "Renamed option", sortOrder: 2000,
       revision: 2, createdAt: "same", updatedAt: "same" };
     const initial = { ...emptySnapshot(), customFields: [field], customFieldOptions: [option] };

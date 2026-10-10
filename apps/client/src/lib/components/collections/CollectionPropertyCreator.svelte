@@ -5,16 +5,13 @@
   import { COLLECTION_PROPERTY_ICONS, collectionPropertyTypeSections, type CollectionPropertyTypeOption } from "./property-icons";
 
   /**
-   * Names a new property and creates it with the chosen type. A blank name lets the owner pick its default name.
-   * Choosing a type is the menu action; the search toggle keeps its menu open.
+   * Lists the property types a new property can have, with a search toggle. Choosing a type is the menu action; the search toggle keeps its menu open.
+   * The property draft header owns the name and icon.
    */
-  let { types, name = $bindable(""), pending = false, maxLength, onCreate }: {
+  let { types, pending = false, onCreate }: {
     types: readonly CollectionPropertyTypeOption<T>[];
-    /** The name draft; owners bind it to keep a draft across menu closes and clear it after a successful creation. */
-    name?: string;
     pending?: boolean;
-    maxLength?: number;
-    onCreate: (type: T, name: string) => void;
+    onCreate: (type: T) => void;
   } = $props();
 
   const localization = getLocalization();
@@ -31,7 +28,7 @@
     searchInput?.focus();
   }
 
-  /** Choose the first matching type when Enter is pressed in either field, through its button so the menu treats it as an action. */
+  /** Choose the first matching type when Enter is pressed in the search field, through its button so the menu treats it as an action. */
   function createFirstMatch(event: KeyboardEvent & { currentTarget: HTMLInputElement }): void {
     event.stopPropagation();
     if (event.key !== "Enter" || event.isComposing || pending) return;
@@ -41,8 +38,6 @@
 </script>
 
 <div class="grid gap-1" data-collection-property-creator>
-  <input class="h-8 w-full rounded-md border border-border bg-transparent px-2 text-[length:inherit] outline-none" aria-label={t("collections.property.name")}
-    placeholder={t("collections.property.namePlaceholder")} maxlength={maxLength} disabled={pending} bind:value={name} onkeydown={createFirstMatch} />
   <div class="flex min-h-7 items-center gap-1.5 pl-2 text-[0.75rem] text-muted-foreground">
     {#if searching}
       <Search class="size-3.5 shrink-0" aria-hidden="true" />
@@ -62,7 +57,7 @@
       {#each section as option (option.value)}
         {@const Icon = COLLECTION_PROPERTY_ICONS[option.kind]}
         <button type="button" class="flex min-h-8 min-w-0 items-center gap-2 rounded-md px-2 text-left text-foreground hover:bg-accent" data-property-type={option.value}
-          disabled={pending} onclick={() => onCreate(option.value, name)}>
+          disabled={pending} onclick={() => onCreate(option.value)}>
           <Icon class="size-3.5 shrink-0 text-muted-foreground" strokeWidth={1.75} aria-hidden="true" /><span class="truncate">{option.label}</span>
         </button>
       {/each}

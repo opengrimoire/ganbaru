@@ -1,30 +1,36 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { COLLECTION_PROPERTY_ICONS, type CollectionPropertyKind } from "./property-icons";
+  import CollectionPropertyIconButton from "./CollectionPropertyIconButton.svelte";
+  import type { CollectionPropertyKind } from "./property-icons";
 
   /**
-   * Shows a property's type icon and name at the top of its column menu, renaming it on Enter, blur, or when the menu closes.
+   * Shows a property's icon button and name at the top of its column menu, renaming it on Enter, blur, or when the menu closes.
    * A pristine draft follows canonical renames; an active or rejected draft is kept until the property itself changes.
+   * Properties that are not editable keep both their name and icon.
    */
-  let { propertyId, name, kind, editable = true, maxLength, onRename }: {
+  let { propertyId, name, kind, icon = null, editable = true, maxLength, onRename, onIconChange }: {
     propertyId: string;
     name: string;
     kind: CollectionPropertyKind;
+    /** The chosen `lucide:` icon; null shows the type icon. */
+    icon?: string | null;
     editable?: boolean;
     maxLength?: number;
     /** Persist the trimmed, changed name; a rejection keeps the draft and shows its message. */
     onRename: (name: string) => Promise<void>;
+    /** Persist a chosen icon, or null to return to the type icon. */
+    onIconChange?: (icon: string | null) => Promise<void>;
   } = $props();
 
   const { t } = getLocalization();
-  const Icon = $derived(COLLECTION_PROPERTY_ICONS[kind]);
   let draft = $state(untrack(() => name));
   let canonical = $state(untrack(() => name));
   let draftPropertyId = $state(untrack(() => propertyId));
   let editing = $state(false);
   let saving = $state(false);
   let error = $state<string | null>(null);
+  let iconError = $state<string | null>(null);
   let generation = 0;
 
   $effect(() => {
@@ -40,6 +46,7 @@
         editing = false;
         saving = false;
         error = null;
+        iconError = null;
       } else if (!active && draft === canonical) {
         draft = currentName;
         canonical = currentName;
@@ -74,15 +81,24 @@
       if (current === generation) saving = false;
     }
   }
+
+  /** Save a chosen icon, showing a rejection in the field's message area. */
+  async function changeIcon(next: string | null): Promise<void> {
+    if (!onIconChange || next === icon) return;
+    iconError = null;
+    try {
+      await onIconChange(next);
+    } catch (caught: unknown) {
+      iconError = t("collections.property.iconFailed", caught instanceof Error ? caught.message : String(caught));
+    }
+  }
 </script>
 
 <div class="grid gap-1 pb-1.5">
   <div class="flex min-w-0 items-center gap-1.5">
-    <span class="inline-flex size-8 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground">
-      <Icon class="size-4" strokeWidth={1.75} aria-hidden="true" />
-    </span>
-    <input class="h-8 min-w-0 flex-1 rounded-md border border-border bg-transparent px-2 text-[length:inherit] outline-none read-only:text-muted-foreground" aria-label={t("collections.property.name")}
-      readonly={!editable || saving} maxlength={maxLength} bind:value={draft}
+    <CollectionPropertyIconButton class="collection-menu-control" {icon} {kind} editable={editable && onIconChange !== undefined} onChange={(next) => void changeIcon(next)} />
+    <input class={["h-(--panel-row-height) min-w-0 flex-1 rounded-md border border-border bg-transparent px-2 text-[length:inherit] outline-none read-only:text-muted-foreground", !editable && "cursor-not-allowed"]} aria-label={t("collections.property.name")}
+      data-collection-menu-initial-focus readonly={!editable || saving} maxlength={maxLength} bind:value={draft}
       onfocus={() => { editing = true; }}
       onblur={() => { editing = false; void commit(); }}
       onkeydown={(event) => {
@@ -92,5 +108,5 @@
         void commit();
       }} />
   </div>
-  {#if error}<p role="alert" class="px-1 text-destructive">{error}</p>{/if}
+  {#each [error, iconError].filter(Boolean) as message}<p role="alert" class="px-1 text-destructive">{message}</p>{/each}
 </div>

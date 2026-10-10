@@ -12,6 +12,7 @@
   let {
     rootElement = $bindable<HTMLElement | undefined>(),
     style,
+    portalTarget = "body",
     label,
     slug = "",
     iconNode = null,
@@ -26,6 +27,8 @@
   }: {
     rootElement?: HTMLElement;
     style: string;
+    /** Where the panel is portaled; a picker nested in another floating surface keeps its panels inside it. */
+    portalTarget?: HTMLElement | string;
     label: string;
     slug?: string;
     iconNode?: readonly ProjectLucideIconNode[] | null;
@@ -42,7 +45,7 @@
 
 <div
   bind:this={rootElement}
-  use:portal
+  use:portal={portalTarget}
   class="surface-floating fixed z-100 overflow-y-auto p-2.5"
   {style}
   role="dialog"

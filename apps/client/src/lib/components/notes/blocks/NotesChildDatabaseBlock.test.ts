@@ -133,21 +133,25 @@ async function draftPriorityDescription(description: string): Promise<void> {
   await closePropertyEditor();
 }
 
-/** Use the real table header picker to request a new numeric property. */
-async function addHeaderProperty(name: string, typeLabel = "Number"): Promise<void> {
-  document.querySelector<HTMLButtonElement>('[role="columnheader"] button[aria-label="Add property"]')!.click();
-  await tick();
-  await tick();
-  const picker = document.querySelector<HTMLElement>('[role="dialog"][aria-label="Add property"]')!;
-  const nameInput = picker.querySelector<HTMLInputElement>('input[aria-label="Property name"]')!;
+/** Name the open draft property header and choose its type from the panel below it. */
+async function fillPropertyDraft(name: string, typeLabel: string): Promise<void> {
+  await vi.waitFor(() => expect(document.activeElement).toBe(document.querySelector('[data-collection-property-draft] input[aria-label="Property name"]')));
+  const draft = document.querySelector<HTMLElement>("[data-collection-property-draft]")!;
+  const nameInput = draft.querySelector<HTMLInputElement>('input[aria-label="Property name"]')!;
   nameInput.value = name;
   nameInput.dispatchEvent(new Event("input", { bubbles: true }));
   await tick();
-  const number = Array.from(picker.querySelectorAll<HTMLButtonElement>("button"))
+  const type = Array.from(draft.querySelectorAll<HTMLButtonElement>("[data-property-type]"))
     .find((button) => button.textContent?.trim() === typeLabel);
-  expect(number).toBeDefined();
-  number!.click();
+  expect(type).toBeDefined();
+  type!.click();
   await tick();
+}
+
+/** Use the real table header add control to request a new property. */
+async function addHeaderProperty(name: string, typeLabel = "Number"): Promise<void> {
+  document.querySelector<HTMLButtonElement>('[role="columnheader"] button[aria-label="Add property"]')!.click();
+  await fillPropertyDraft(name, typeLabel);
 }
 
 describe("Notes database property editor selection", () => {
@@ -194,15 +198,9 @@ describe("Notes database property editor selection", () => {
       document.querySelector<HTMLButtonElement>('[role="columnheader"] button[aria-label="Priority"]')!.click();
       await tick();
       await tick();
-      document.querySelector<HTMLButtonElement>('button[aria-label="Insert right"]')!.click();
-      await tick();
-      await tick();
-      const panel = document.querySelector<HTMLElement>('[role="dialog"][aria-label="Insert right"]')!;
-      const name = panel.querySelector<HTMLInputElement>('input[aria-label="Property name"]')!;
-      name.value = "Total";
-      name.dispatchEvent(new Event("input", { bubbles: true }));
-      await tick();
-      Array.from(panel.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent?.trim() === "Rollup")!.click();
+      Array.from(document.querySelectorAll<HTMLButtonElement>('[role="dialog"][aria-label="Priority"] button'))
+        .find((button) => button.textContent?.trim() === "Insert right")!.click();
+      await fillPropertyDraft("Total", "Rollup");
     }
     await vi.waitFor(() => expect(listNotesDataSources).toHaveBeenCalledOnce());
     if (operation === "append") await vi.waitFor(() => expect(updateNotesDataSourceSchema).toHaveBeenCalledWith("source", expect.objectContaining({ properties: expect.objectContaining({ Total: expect.objectContaining({ rollup: expect.objectContaining({ relation_property_id: "project", rollup_property_id: "budget" }) }) }) }), { dataSourceId: "source", databaseId: "database", viewId: "view" }));
@@ -383,16 +381,11 @@ describe("Notes database property editor selection", () => {
     await open();
     await draftPriorityDescription("Draft priority");
     await addHeaderProperty("Estimate");
-    await vi.waitFor(() => expect(document.querySelector('[role="alert"]')?.textContent).toContain("Cannot create property"));
+    await vi.waitFor(() => expect(document.querySelector('[data-collection-property-draft] [role="alert"]')?.textContent).toContain("Cannot create property"));
+    expect(document.querySelector<HTMLInputElement>('[data-collection-property-draft] input[aria-label="Property name"]')?.value).toBe("Estimate");
     expect(updateNotesDataSourceSchema).toHaveBeenCalledOnce();
     await editProperty("Priority");
     await vi.waitFor(() => expect(propertyDescriptionInput()?.value).toBe("Draft priority"));
-    await closePropertyEditor();
-    document.querySelector<HTMLButtonElement>('[role="columnheader"] button[aria-label="Add property"]')!.click();
-    await tick();
-    await tick();
-    expect(document.querySelector<HTMLInputElement>('[role="dialog"][aria-label="Add property"] input[aria-label="Property name"]')?.value)
-      .toBe("Estimate");
   });
 
   it("renames a property from its column menu and applies the canonical name to an unsaved editor draft", async () => {

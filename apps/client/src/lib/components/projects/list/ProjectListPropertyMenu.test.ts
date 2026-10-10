@@ -1,21 +1,31 @@
 // @vitest-environment jsdom
 
 import { mount, tick, unmount } from "svelte";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProjectCustomField } from "$lib/projects/types";
 import ProjectListPropertyMenuHarness from "./ProjectListPropertyMenuHarness.test.svelte";
 
-const store = vi.hoisted(() => ({updateCustomField: vi.fn<(field: ProjectCustomField, update: {name: string}) => Promise<void>>() }));
-vi.mock("$lib/stores/projects.svelte", () => ({getProjects: () => ({customFieldOptionsForField: () => [], updateCustomField: store.updateCustomField})}));
+const store = vi.hoisted(() => ({updateCustomField: vi.fn<(field: ProjectCustomField, update: {name?: string; icon?: string | null}) => Promise<void>>() }));
+vi.mock("$lib/stores/projects.svelte", () => ({getProjects: () => ({customFieldOptionsForField: () => [], customEmojis: [], updateCustomField: store.updateCustomField})}));
+vi.mock("$lib/vault/config", () => ({ensureConfigLoaded: async () => undefined, getConfigKey: <T>(_key: string, fallback: T) => fallback, setConfigKey: () => undefined}));
 
 let component: ReturnType<typeof mount> | undefined;
-const initialField: ProjectCustomField = {id: "points", projectId: "project", name: "Points", fieldType: "number", sortOrder: 100, createdAt: "", updatedAt: ""};
+const initialField: ProjectCustomField = {id: "points", projectId: "project", name: "Points", fieldType: "number", sortOrder: 100, icon: null, createdAt: "", updatedAt: ""};
+
+beforeEach(() => {
+  vi.stubGlobal("ResizeObserver", class {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  });
+});
 
 afterEach(async () => {
   if (component) await unmount(component);
   component = undefined;
   document.body.replaceChildren();
   vi.resetAllMocks();
+  vi.unstubAllGlobals();
 });
 
 /** Resolve a labelled control in its actual floating owner. */
@@ -73,5 +83,37 @@ describe("Projects property-name drafts", () => {
     await tick();
     expect(input.value).toBe("Budget");
     expect(document.querySelector('[role="alert"]')).toBeNull();
+  });
+});
+
+describe("Projects property icons", () => {
+  it("removes a custom icon from a nested picker without closing the property menu", async () => {
+    store.updateCustomField.mockResolvedValue(undefined);
+    component = mount(ProjectListPropertyMenuHarness, {target: document.body, props: {initialField: {...initialField, icon: "lucide:star"}}});
+    await tick();
+    await openName("Points");
+    const menu = document.querySelector<HTMLElement>('[data-app-floating-surface][aria-label="Points"]')!;
+    const iconButton = button("Property icon", menu);
+    expect(iconButton.disabled).toBe(false);
+    iconButton.click();
+    // The picker loads on first use and replaces the placeholder trigger with its own.
+    await vi.waitFor(() => expect(button("Property icon", menu).getAttribute("aria-expanded")).toBe("true"));
+    button("Remove").click();
+    await vi.waitFor(() => expect(store.updateCustomField).toHaveBeenCalledWith(expect.objectContaining({id: "points"}), {icon: null}));
+    expect(menu.isConnected).toBe(true);
+  });
+
+  it("keeps built-in column names and icons fixed", async () => {
+    component = mount(ProjectListPropertyMenuHarness, {target: document.body, props: {initialField, column: "due"}});
+    await tick();
+    const input = await openName("due");
+    expect(input.readOnly).toBe(true);
+    const iconButton = button("Property icon", input.closest<HTMLElement>("[data-app-floating-surface]")!);
+    expect(iconButton.disabled).toBe(true);
+    expect(iconButton.hasAttribute("aria-haspopup")).toBe(true);
+    iconButton.click();
+    await tick();
+    expect(iconButton.getAttribute("aria-expanded")).toBe("false");
+    expect(store.updateCustomField).not.toHaveBeenCalled();
   });
 });

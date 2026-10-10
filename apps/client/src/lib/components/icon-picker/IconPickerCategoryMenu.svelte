@@ -12,6 +12,7 @@
   let {
     rootElement = $bindable<HTMLElement | undefined>(),
     style,
+    portalTarget = "body",
     options,
     selectedCategory,
     ariaLabel,
@@ -19,6 +20,8 @@
   }: {
     rootElement?: HTMLElement;
     style: string;
+    /** Where the panel is portaled; a picker nested in another floating surface keeps its panels inside it. */
+    portalTarget?: HTMLElement | string;
     options: readonly { category: ProjectLucideCategory; icon: ProjectLucideIconEntry | undefined }[];
     selectedCategory: ProjectLucideCategory | "all";
     ariaLabel: string;
@@ -28,7 +31,7 @@
 
 <div
   bind:this={rootElement}
-  use:portal
+  use:portal={portalTarget}
   class="surface-floating fixed z-100 flex min-h-0 flex-col overflow-hidden"
   {style}
   role="dialog"

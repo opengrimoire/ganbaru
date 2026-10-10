@@ -18,6 +18,7 @@ fn duplicate_custom_property_copies_option_schema_with_fresh_ids_and_empty_value
                 name: "Phase copy".to_string(),
                 field_type: "select".to_string(),
                 sort_order: 200,
+                icon: None,
                 duplicate_source_id: Some("source".to_string()),
             },
         )
@@ -45,6 +46,7 @@ fn duplicate_custom_property_copies_option_schema_with_fresh_ids_and_empty_value
                 name: "Invalid".to_string(),
                 field_type: "text".to_string(),
                 sort_order: 300,
+                icon: None,
                 duplicate_source_id: Some("source".to_string()),
             },
         )
@@ -59,6 +61,63 @@ fn duplicate_custom_property_copies_option_schema_with_fresh_ids_and_empty_value
             .unwrap(),
             0
         );
+    });
+}
+
+#[test]
+fn custom_field_icons_accept_only_lucide_icons_and_reset_to_the_type_icon() {
+    block_on(async {
+        let pool = migrated_memory_pool().await;
+        insert_project_graph_fixture(&pool).await;
+        let field = |id: &str, icon: Option<&str>| ProjectCustomFieldCreate {
+            id: id.to_string(),
+            project_id: "project-a".to_string(),
+            name: id.to_string(),
+            field_type: "text".to_string(),
+            sort_order: 100,
+            icon: icon.map(str::to_string),
+            duplicate_source_id: None,
+        };
+        let created =
+            create_custom_field_in_pool(&pool, &field("Notes", Some(" lucide:notebook:3 ")))
+                .await
+                .unwrap();
+        assert_eq!(
+            created.custom_fields[0].icon.as_deref(),
+            Some("lucide:notebook:3")
+        );
+        for icon in [
+            "emoji:x",
+            "asset:project-icons/a.png",
+            "lucide:Bad Slug",
+            "none",
+        ] {
+            assert_eq!(
+                create_custom_field_in_pool(&pool, &field("Rejected", Some(icon)))
+                    .await
+                    .err(),
+                Some(if icon.starts_with("lucide:") {
+                    "icon must use a canonical project icon encoding".to_string()
+                } else {
+                    "custom field icon must be a Lucide icon".to_string()
+                })
+            );
+        }
+
+        let update = |icon: Option<&str>| ProjectCustomFieldUpdate {
+            id: "Notes".to_string(),
+            name: "Notes".to_string(),
+            sort_order: 100,
+            icon: icon.map(str::to_string),
+        };
+        let changed = crate::custom_fields::update_custom_field(&pool, update(Some("lucide:pen")))
+            .await
+            .unwrap();
+        assert_eq!(changed.custom_fields[0].icon.as_deref(), Some("lucide:pen"));
+        let reset = crate::custom_fields::update_custom_field(&pool, update(None))
+            .await
+            .unwrap();
+        assert_eq!(reset.custom_fields[0].icon, None);
     });
 }
 

@@ -21,7 +21,7 @@ afterEach(async () => {
 
 /** Mount the real numeric editor with a canonical value that changes only after successful writes. */
 function renderNumber() {
-  const field: CellProps["projectCustomFields"][number] = {id: "points", projectId: "project", name: "Points", fieldType: "number", sortOrder: 100, createdAt: "", updatedAt: ""};
+  const field: CellProps["projectCustomFields"][number] = {id: "points", projectId: "project", name: "Points", fieldType: "number", sortOrder: 100, icon: null, createdAt: "", updatedAt: ""};
   const save = vi.fn<CellProps["onSaveCustomFieldValue"]>().mockResolvedValue(undefined);
   const noop = () => undefined;
   const props: CellProps = {

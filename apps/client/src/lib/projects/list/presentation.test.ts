@@ -3,9 +3,9 @@ import type { ProjectCustomField, ProjectTask } from "$lib/projects/types";
 import { defaultProjectListPresentation, parseProjectListPresentation, projectListDateLabel, projectListFrozenOffsets, projectListNumberLabel, projectListPresentationForProject, projectListRowColor, projectListTimeLabel } from "./presentation";
 
 const fields: ProjectCustomField[] = [
-  { id: "text", projectId: "project", name: "Text", fieldType: "text", sortOrder: 1, createdAt: "", updatedAt: "" },
-  { id: "number", projectId: "project", name: "Number", fieldType: "number", sortOrder: 2, createdAt: "", updatedAt: "" },
-  { id: "date", projectId: "project", name: "Date", fieldType: "date", sortOrder: 3, createdAt: "", updatedAt: "" },
+  { id: "text", projectId: "project", name: "Text", fieldType: "text", sortOrder: 1, icon: null, createdAt: "", updatedAt: "" },
+  { id: "number", projectId: "project", name: "Number", fieldType: "number", sortOrder: 2, icon: null, createdAt: "", updatedAt: "" },
+  { id: "date", projectId: "project", name: "Date", fieldType: "date", sortOrder: 3, icon: null, createdAt: "", updatedAt: "" },
 ];
 
 describe("Projects table presentation", () => {

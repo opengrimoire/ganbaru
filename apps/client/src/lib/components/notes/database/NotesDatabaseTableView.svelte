@@ -10,7 +10,10 @@
   import CollectionMenuItem from "$lib/components/collections/CollectionMenuItem.svelte";
   import CollectionMenuSelect from "$lib/components/collections/CollectionMenuSelect.svelte";
   import CollectionMenuSeparator from "$lib/components/collections/CollectionMenuSeparator.svelte";
-  import CollectionPropertyCreator from "$lib/components/collections/CollectionPropertyCreator.svelte";
+  import CollectionAddPropertyButton from "$lib/components/collections/CollectionAddPropertyButton.svelte";
+  import CollectionPropertyDraft from "$lib/components/collections/CollectionPropertyDraft.svelte";
+  import CollectionPropertyIcon from "$lib/components/collections/CollectionPropertyIcon.svelte";
+  import type { CollectionPropertyDraftPlacement } from "$lib/components/collections/property-draft";
   import CollectionPropertyNameField from "$lib/components/collections/CollectionPropertyNameField.svelte";
   import { COLLECTION_PROPERTY_ICONS } from "$lib/components/collections/property-icons";
   import { notesPropertyKind, notesPropertyTypeOptions } from "./property-kinds";
@@ -145,7 +148,7 @@
     onSelectPage: (pageId: string) => void;
     onSavingChange?: (saving: boolean) => void;
     onReady?: () => void;
-    onAddProperty: (type: NotesDataSourcePropertyType, name: string) => Promise<void>;
+    onAddProperty: (type: NotesDataSourcePropertyType, name: string, icon: string | null) => Promise<void>;
     /** Opens the full source schema editor from view settings. */
     onEditProperties: () => void;
     /** Renders one property's schema fields in its column's Edit property submenu; the submenu is hidden without it. */
@@ -217,7 +220,10 @@
     return () => onSavingChange(false);
   });
   let error = $state<string | null>(null);
-  let newPropertyName = $state("");
+  /** Where the draft property header is shown; a null column is the add control after the last column. */
+  let propertyDraft = $state.raw<{ anchor: HTMLElement; trigger: HTMLElement | null; placement: CollectionPropertyDraftPlacement; columnId: string | null; side: "left" | "right" } | null>(null);
+  let columnMenuTriggers = $state<Record<string, HTMLButtonElement | undefined>>({});
+  let addPropertyButton: HTMLButtonElement | undefined = $state();
   let addRowKey = $state<string | null>(null);
   let columnResize = $state<{ id: string; pointerId: number; startX: number; startWidth: number; width: number } | null>(null);
   let pendingColumnWidth = $state<{ id: string; width: number } | null>(null);
@@ -360,16 +366,42 @@
     }
   });
 
-  /** Add a property after the last column; a blank name lets the schema owner choose a default name. */
-  async function addNewProperty(type: NotesDataSourcePropertyType, name: string): Promise<void> {
-    if (mutating || editingLocked) return;
+  /** Open the draft property header after the last column, or close it when it is already there. */
+  function toggleAddPropertyDraft(): void {
+    const anchor = addPropertyButton?.parentElement;
+    if (propertyDraft?.columnId === null || !anchor) {
+      propertyDraft = null;
+      return;
+    }
+    propertyDraft = { anchor, trigger: addPropertyButton ?? null, placement: "start", columnId: null, side: "right" };
+  }
+
+  /** Open the draft property header beside a column from its menu. */
+  function openInsertPropertyDraft(column: NotesDatabaseTableColumn, side: "left" | "right"): void {
+    const trigger = columnMenuTriggers[column.id] ?? null;
+    const anchor = trigger?.closest<HTMLElement>("[role=\"columnheader\"]");
+    if (!anchor) return;
+    propertyDraft = { anchor, trigger, placement: side === "left" ? "before" : "after", columnId: column.id, side };
+  }
+
+  /**
+   * Create the drafted property where the draft was opened; a blank name lets the schema owner choose a default name.
+   * Rejections reach the draft, which keeps the name and icon and shows the message.
+   */
+  async function createDraftProperty(type: NotesDataSourcePropertyType, name: string, icon: string | null): Promise<boolean> {
+    const target = propertyDraft;
+    if (!target || mutating || editingLocked) throw new Error(t("notes.databaseSaving"));
+    if (target.columnId !== null && !onPropertyAction) throw new Error(t("notes.databaseSaving"));
     mutating = true;
     error = null;
     try {
-      await onAddProperty(type, name);
-      newPropertyName = "";
-    } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      if (target.columnId === null) {
+        await onAddProperty(type, name, icon);
+      } else {
+        await onPropertyAction?.({ type: "insert", propertyId: target.columnId, side: target.side, propertyType: type, name, icon });
+        await loadTable(false);
+      }
+      return true;
     } finally {
       mutating = false;
     }
@@ -395,6 +427,18 @@
     mutating = true;
     try {
       await onPropertyAction({ type: "rename", propertyId, name });
+      await loadTable(false);
+    } finally {
+      mutating = false;
+    }
+  }
+
+  /** Change a property icon from its column menu; rejections reach the name field, which shows them. */
+  async function changePropertyIcon(propertyId: string, icon: string | null): Promise<void> {
+    if (mutating || editingLocked || !onPropertyAction) throw new Error(t("notes.databaseSaving"));
+    mutating = true;
+    try {
+      await onPropertyAction({ type: "icon", propertyId, icon });
       await loadTable(false);
     } finally {
       mutating = false;
@@ -1137,13 +1181,13 @@
                   {@const presentation = notesTableColumnPresentation(tableConfiguration?.presentation, column.id)}
                   {@const frozen = tableConfiguration?.presentation?.frozen_property_id === column.id}
                   {@const kind = notesPropertyKind(column.type)}
-                  {@const KindIcon = COLLECTION_PROPERTY_ICONS[kind]}
-                  <CollectionMenu label={column.name} kind="property" fullWidth showHeader={false} dismissOnAction
+                  <CollectionMenu label={column.name} kind="property" fullWidth showHeader={false} dismissOnAction bind:triggerElement={columnMenuTriggers[column.id]}
                     triggerClass="h-auto justify-start rounded-none px-2 font-normal" triggerAttributes={{ "data-collection-cell-primary": "" }} disabled={mutating || editingLocked}>
-                    {#snippet leading()}{#if preferences.notesShowPropertyIcons}<KindIcon class="size-3.5 shrink-0 text-muted-foreground" strokeWidth={1.75} aria-hidden="true" />{/if}{/snippet}
+                    {#snippet leading()}{#if preferences.notesShowPropertyIcons}<CollectionPropertyIcon icon={column.icon ?? null} {kind} class="size-3.5 shrink-0 text-muted-foreground" />{/if}{/snippet}
                     <div class="grid gap-0 font-normal">
-                      <CollectionPropertyNameField propertyId={column.id} name={column.name} {kind} editable={!editingLocked && Boolean(onPropertyAction)}
-                        maxLength={NOTES_DATA_SOURCE_PROPERTY_NAME_MAX_CHARACTERS} onRename={(name) => renameProperty(column.id, name)} />
+                      <CollectionPropertyNameField propertyId={column.id} name={column.name} icon={column.icon ?? null} {kind} editable={!editingLocked && Boolean(onPropertyAction)}
+                        maxLength={NOTES_DATA_SOURCE_PROPERTY_NAME_MAX_CHARACTERS} onRename={(name) => renameProperty(column.id, name)}
+                        onIconChange={onPropertyAction ? (icon) => changePropertyIcon(column.id, icon) : undefined} />
                       {#if propertyEditor}
                         <CollectionMenu label={t("collections.property.editProperty")} kind="properties" icon={Settings2} fullWidth disabled={mutating}
                           onOpenChange={(open) => { if (open) onLoadPropertyEditor?.(column.id); }}>
@@ -1189,11 +1233,8 @@
                       {/if}
                       {#if onPropertyAction}
                         {#each propertyInsertionSides(column) as side (side)}
-                          <CollectionMenu label={t(side === "left" ? "collections.property.insertLeft" : "collections.property.insertRight")} kind="new" icon={side === "left" ? ArrowLeftToLine : ArrowRightToLine}
-                            fullWidth showHeader={false} dismissOnAction disabled={mutating}>
-                            <CollectionPropertyCreator types={propertyTypeOptions} pending={mutating} maxLength={NOTES_DATA_SOURCE_PROPERTY_NAME_MAX_CHARACTERS}
-                              onCreate={(propertyType, name) => { void performPropertyAction({ type: "insert", propertyId: column.id, side, propertyType, name }); }} />
-                          </CollectionMenu>
+                          <CollectionMenuItem icon={side === "left" ? ArrowLeftToLine : ArrowRightToLine} label={t(side === "left" ? "collections.property.insertLeft" : "collections.property.insertRight")}
+                            disabled={mutating} onclick={() => openInsertPropertyDraft(column, side)} />
                         {/each}
                         {#if column.type !== "title"}<CollectionMenuItem icon={Copy} label={t("collections.property.duplicate")} disabled={mutating} onclick={() => { void performPropertyAction({ type: "duplicate", propertyId: column.id }); }} />{/if}
                       {/if}
@@ -1203,12 +1244,14 @@
               </CollectionColumnHeader>
             {/each}
             <div role="columnheader" class="grid min-h-(--collection-table-row-height) min-w-0 items-center justify-items-start self-stretch font-normal text-muted-foreground">
-              <CollectionMenu label={t("collections.property.add")} kind="new" iconOnly showHeader={false} dismissOnAction disabled={mutating || editingLocked}
-                triggerClass="size-9 justify-center px-0" triggerAttributes={{ "data-collection-hover-target": "" }}>
-                <CollectionPropertyCreator types={propertyTypeOptions} bind:name={newPropertyName} pending={mutating} maxLength={NOTES_DATA_SOURCE_PROPERTY_NAME_MAX_CHARACTERS}
-                  onCreate={(type, name) => { void addNewProperty(type, name); }} />
-              </CollectionMenu>
+              <CollectionAddPropertyButton bind:element={addPropertyButton} open={propertyDraft?.columnId === null} disabled={mutating || editingLocked} onclick={toggleAddPropertyDraft} />
             </div>
+            {#if propertyDraft}
+              {#key propertyDraft}
+                <CollectionPropertyDraft anchor={propertyDraft.anchor} placement={propertyDraft.placement} trigger={propertyDraft.trigger} types={propertyTypeOptions} pending={mutating}
+                  maxLength={NOTES_DATA_SOURCE_PROPERTY_NAME_MAX_CHARACTERS} onCreate={createDraftProperty} onClose={() => { propertyDraft = null; }} />
+              {/key}
+            {/if}
           </CollectionRow>
             {#each tableItems as item (item.id)}
               {#if item.type === "group"}

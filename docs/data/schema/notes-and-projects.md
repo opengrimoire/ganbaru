@@ -74,7 +74,7 @@ A project owns metadata, lifecycle state, optional grouping, views, statuses, ta
 
 Tasks have stable identity independent of status, view, schedule, or parent. Dependencies validate both endpoints, reject self-dependencies and forbidden cycles, and survive reordering. Calendar links distinguish scheduled work from looser references.
 
-Custom-field definitions and values are separate, and changing a definition validates existing values. Templates create ordinary rows with new identities; template IDs never become privileges or shared mutable state. Project history records meaningful user changes, not derived counts, and restore goes through domain commands so task links, Notes placement, and working folders stay consistent.
+Custom-field definitions and values are separate, and changing a definition validates existing values. Custom-field and Notes data source property icons are optional presentation metadata limited to Lucide icons (a `lucide:` value in Projects, the native icon object in Notes); no icon means the type icon, and emoji or uploaded icons are rejected. Templates create ordinary rows with new identities; template IDs never become privileges or shared mutable state. Project history records meaningful user changes, not derived counts, and restore goes through domain commands so task links, Notes placement, and working folders stay consistent.
 
 ### Native project mutations
 

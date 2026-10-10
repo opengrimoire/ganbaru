@@ -105,8 +105,8 @@ function nestedFixture(): ProjectsSnapshot {
     ],
     taskTagLinks: [{ taskId: "task-parent", tagId: "tag-b", createdAt }],
     customFields: [
-      { id: "field-b", projectId: "project-a", name: "Text", fieldType: "text", sortOrder: 2000, createdAt, updatedAt },
-      { id: "field-a", projectId: "project-a", name: "Choice", fieldType: "select", sortOrder: 1000, createdAt, updatedAt },
+      { id: "field-b", projectId: "project-a", name: "Text", fieldType: "text", sortOrder: 2000, icon: null, createdAt, updatedAt },
+      { id: "field-a", projectId: "project-a", name: "Choice", fieldType: "select", sortOrder: 1000, icon: null, createdAt, updatedAt },
     ],
     customFieldOptions: [
       { id: "option-b", fieldId: "field-a", name: "B", sortOrder: 2000, createdAt, updatedAt },

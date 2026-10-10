@@ -28,7 +28,7 @@ afterEach(async () => {
 
 /** Supply a real query controller with only its native persistence boundaries mocked. */
 async function renderTable() {
-  const field: ProjectCustomField = {id: "points", projectId: "project", name: "Points", fieldType: "number", sortOrder: 100, createdAt: "", updatedAt: ""};
+  const field: ProjectCustomField = {id: "points", projectId: "project", name: "Points", fieldType: "number", sortOrder: 100, icon: null, createdAt: "", updatedAt: ""};
   const savePresentation = vi.fn<Input["projects"]["saveTaskListPresentation"]>().mockResolvedValue(undefined);
   const addField = vi.fn<Input["projects"]["addCustomField"]>().mockResolvedValue({...field, id: "created", name: "Budget"});
   const saveColumns = vi.fn<Input["projects"]["saveTaskListColumns"]>().mockResolvedValue(undefined);
@@ -63,14 +63,18 @@ async function openPoints(): Promise<HTMLElement> {
   return document.querySelector<HTMLElement>('[data-app-floating-surface][aria-label="Points"]')!;
 }
 
-/** Open the insert-right creator from the column menu and return its panel. */
-async function openInsertRight(panel: HTMLElement): Promise<HTMLElement> {
-  button("Insert right", panel).click();
-  await vi.waitFor(() => expect(document.querySelector('[data-app-floating-surface][aria-label="Insert right"]')).not.toBeNull());
-  return document.querySelector<HTMLElement>('[data-app-floating-surface][aria-label="Insert right"]')!;
+/** Open a draft property header from the column menu once focus has moved into its name field. */
+async function openInsert(panel: HTMLElement, label: "Insert left" | "Insert right"): Promise<HTMLElement> {
+  button(label, panel).click();
+  await vi.waitFor(() => {
+    const draft = document.querySelector("[data-collection-property-draft]");
+    expect(draft).not.toBeNull();
+    expect(document.activeElement).toBe(draft?.querySelector('[aria-label="Property name"]'));
+  });
+  return document.querySelector<HTMLElement>("[data-collection-property-draft]")!;
 }
 
-/** Type a property name in a creator panel and choose a type from its grid. */
+/** Name a draft property in its header and choose a type from the panel below it. */
 async function createProperty(creator: HTMLElement, name: string, type: string): Promise<void> {
   const input = creator.querySelector<HTMLInputElement>('[aria-label="Property name"]')!;
   input.value = name;
@@ -100,24 +104,37 @@ describe("Projects table property configuration", () => {
   it("creates the chosen type beside the invoking column and reports a failed creation", async () => {
     const {query, addField, saveColumns} = await renderTable();
     addField.mockRejectedValueOnce(new Error("Vault unavailable"));
-    await createProperty(await openInsertRight(await openPoints()), "Budget", "number");
+    const draft = await openInsert(await openPoints(), "Insert right");
+    await createProperty(draft, "Budget", "number");
     await vi.waitFor(() => expect(query.propertySaving).toBe(false));
-    expect(addField).toHaveBeenCalledWith("project", "Budget", "number");
+    expect(addField).toHaveBeenCalledWith("project", "Budget", "number", null);
     expect(target.querySelector('[role="alert"]')?.textContent).toContain("Vault unavailable");
+    expect(draft.isConnected).toBe(true);
     expect(saveColumns).not.toHaveBeenCalled();
-    await createProperty(await openInsertRight(await openPoints()), "Budget", "number");
+    await createProperty(draft, "Budget", "number");
     await vi.waitFor(() => expect(saveColumns).toHaveBeenCalledWith("project", ["custom:points", "custom:created", "due"]));
     expect(query.propertyError).toBeNull();
+    await vi.waitFor(() => expect(draft.isConnected).toBe(false));
   });
 
   it("names a blank property after its type and inserts it to the left", async () => {
     const {addField, saveColumns} = await renderTable();
-    const panel = await openPoints();
-    button("Insert left", panel).click();
-    await vi.waitFor(() => expect(document.querySelector('[data-app-floating-surface][aria-label="Insert left"]')).not.toBeNull());
-    await createProperty(document.querySelector<HTMLElement>('[data-app-floating-surface][aria-label="Insert left"]')!, "  ", "text");
+    await createProperty(await openInsert(await openPoints(), "Insert left"), "  ", "text");
     await vi.waitFor(() => expect(saveColumns).toHaveBeenCalledWith("project", ["custom:created", "custom:points", "due"]));
-    expect(addField).toHaveBeenCalledWith("project", "Text", "text");
+    expect(addField).toHaveBeenCalledWith("project", "Text", "text", null);
+  });
+
+  it("adds a property after the last column from the header add button", async () => {
+    const {addField, saveColumns} = await renderTable();
+    const add = button("Add property");
+    add.click();
+    await vi.waitFor(() => expect(document.activeElement).toBe(document.querySelector('[data-collection-property-draft] [aria-label="Property name"]')));
+    expect(add.getAttribute("aria-expanded")).toBe("true");
+    await createProperty(document.querySelector<HTMLElement>("[data-collection-property-draft]")!, "Budget", "number");
+    await vi.waitFor(() => expect(saveColumns).toHaveBeenCalledWith("project", ["custom:points", "due", "custom:created"]));
+    expect(addField).toHaveBeenCalledWith("project", "Budget", "number", null);
+    await vi.waitFor(() => expect(document.querySelector("[data-collection-property-draft]")).toBeNull());
+    expect(document.activeElement).toBe(add);
   });
 
   it("shows complete native reductions instead of deriving totals from loaded rows", async () => {
@@ -131,23 +148,24 @@ describe("Projects table property configuration", () => {
     expect(target.textContent).toContain("Loading");
   });
 
-  it("closes the column menu after a nested creation and locks the column until the property is saved", async () => {
+  it("replaces the column menu with the draft and locks the column until the property is saved", async () => {
     const {query, addField, saveColumns} = await renderTable();
     let finishCreation!: (field: ProjectCustomField) => void;
     addField.mockImplementationOnce(() => new Promise<ProjectCustomField>((resolve) => { finishCreation = resolve; }));
     const panel = await openPoints();
-    const creator = await openInsertRight(panel);
-    await createProperty(creator, "Budget", "number");
-    await vi.waitFor(() => expect(panel.isConnected).toBe(false));
-    expect(creator.isConnected).toBe(false);
-    expect(document.activeElement).toBe(button("Points"));
-    expect(button("Points").disabled).toBe(true);
+    const draft = await openInsert(panel, "Insert right");
+    expect(panel.isConnected).toBe(false);
+    await createProperty(draft, "Budget", "number");
+    await vi.waitFor(() => expect(button("Points").disabled).toBe(true));
+    expect(draft.querySelector<HTMLInputElement>('[aria-label="Property name"]')!.disabled).toBe(true);
     button("Points").click();
     await tick();
     expect(document.querySelector('[data-app-floating-surface][aria-label="Points"]')).toBeNull();
-    finishCreation({id: "created", projectId: "project", name: "Budget", fieldType: "number", sortOrder: 100, createdAt: "", updatedAt: ""});
+    finishCreation({id: "created", projectId: "project", name: "Budget", fieldType: "number", sortOrder: 100, createdAt: "", updatedAt: "", icon: null});
     await vi.waitFor(() => expect(query.propertySaving).toBe(false));
     expect(saveColumns).toHaveBeenCalledExactlyOnceWith("project", ["custom:points", "custom:created", "due"]);
+    await vi.waitFor(() => expect(draft.isConnected).toBe(false));
+    expect(document.activeElement).toBe(button("Points"));
     expect(button("Points").disabled).toBe(false);
   });
 });

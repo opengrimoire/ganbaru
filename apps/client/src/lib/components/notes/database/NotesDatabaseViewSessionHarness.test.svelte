@@ -13,7 +13,7 @@
     newRowRequest?: number;
     onReady?: () => void;
     onSavingChange?: (saving: boolean) => void;
-    onAddProperty?: (type: NotesDataSourcePropertyType, name: string) => Promise<void>;
+    onAddProperty?: (type: NotesDataSourcePropertyType, name: string, icon: string | null) => Promise<void>;
   } = $props();
 
   let draft = $state(untrack(() => viewId ?? ""));
@@ -28,7 +28,7 @@
     saving = true;
     reportSaving(true);
     try {
-      await onAddProperty("rich_text", origin);
+      await onAddProperty("rich_text", origin, null);
       snapshot = `Saved ${origin}`;
     } finally {
       saving = false;

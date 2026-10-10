@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { createRawSnippet, mount, tick, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { NotesDataSourceTableView } from "$lib/notes/types";
+import type { NotesDataSourcePropertyType, NotesDataSourceTableView } from "$lib/notes/types";
+import type { NotesDatabasePropertyActionRequest } from "$lib/notes/database/data-source-schema";
 import {
   createNotesDataSourceRowPage, getNotesDataSourceTableView, listNotesDataSourceTemplates, loadNotesPage,
   createNotesDataSourceSubitem,
@@ -632,5 +633,68 @@ describe("immediate Notes table creation", () => {
     expect(calls).toHaveLength(2);
     expect(calls[0][1]).toEqual(calls[1][1]);
     expect(document.querySelectorAll('[data-database-row-id]')).toHaveLength(1);
+  });
+});
+
+describe("Notes table property drafts", () => {
+  /** Mount the table with property callbacks the draft header reports to. */
+  async function openWithPropertyCallbacks() {
+    const onAddProperty = vi.fn<(type: NotesDataSourcePropertyType, name: string, icon: string | null) => Promise<void>>().mockResolvedValue(undefined);
+    const onPropertyAction = vi.fn<(request: NotesDatabasePropertyActionRequest) => Promise<void>>().mockResolvedValue(undefined);
+    vi.mocked(getNotesDataSourceTableView).mockResolvedValue(configuredTable());
+    vi.mocked(listNotesDataSourceTemplates).mockResolvedValue([]);
+    component = mount(NotesDatabaseTableView, { target: document.body, props: {
+      dataSourceId: "source", onSelectPage: vi.fn(), onAddProperty, onPropertyAction, onEditProperties: vi.fn(), onCloseSettings: vi.fn(),
+    } });
+    await vi.waitFor(() => expect(document.querySelector('[role="columnheader"] button[aria-label="Name"]')).not.toBeNull());
+    return { onAddProperty, onPropertyAction };
+  }
+
+  /** Wait for the draft header to take focus, then name the property and choose its type. */
+  async function fillDraft(name: string, type: NotesDataSourcePropertyType): Promise<HTMLElement> {
+    await vi.waitFor(() => expect(document.activeElement).toBe(document.querySelector('[data-collection-property-draft] [aria-label="Property name"]')));
+    const draft = document.querySelector<HTMLElement>("[data-collection-property-draft]")!;
+    const input = draft.querySelector<HTMLInputElement>('[aria-label="Property name"]')!;
+    input.value = name;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+    draft.querySelector<HTMLButtonElement>(`[data-property-type="${type}"]`)!.click();
+    return draft;
+  }
+
+  it("adds a named property from the header add button and returns focus to it", async () => {
+    const { onAddProperty, onPropertyAction } = await openWithPropertyCallbacks();
+    const add = document.querySelector<HTMLButtonElement>('button[aria-label="Add property"]')!;
+    add.click();
+    const draft = await fillDraft("Estimate", "number");
+    await vi.waitFor(() => expect(onAddProperty).toHaveBeenCalledExactlyOnceWith("number", "Estimate", null));
+    await vi.waitFor(() => expect(draft.isConnected).toBe(false));
+    expect(document.activeElement).toBe(add);
+    expect(onPropertyAction).not.toHaveBeenCalled();
+  });
+
+  it("keeps an insert draft open with the rejection and inserts beside the column on retry", async () => {
+    const { onAddProperty, onPropertyAction } = await openWithPropertyCallbacks();
+    onPropertyAction.mockRejectedValueOnce(new Error("Disk full"));
+    action(await propertyMenu("Status"), "Insert left").click();
+    const draft = await fillDraft("Owner", "people");
+    await vi.waitFor(() => expect(draft.querySelector('[role="alert"]')?.textContent).toBe("Disk full"));
+    expect(draft.isConnected).toBe(true);
+    expect(document.querySelector('[role="dialog"][aria-label="Status"]')).toBeNull();
+    draft.querySelector<HTMLButtonElement>('[data-property-type="people"]')!.click();
+    await vi.waitFor(() => expect(draft.isConnected).toBe(false));
+    expect(onPropertyAction).toHaveBeenLastCalledWith({ type: "insert", propertyId: "status", side: "left", propertyType: "people", name: "Owner", icon: null });
+    expect(onAddProperty).not.toHaveBeenCalled();
+  });
+
+  it("discards the draft on Escape without creating a property", async () => {
+    const { onAddProperty } = await openWithPropertyCallbacks();
+    const add = document.querySelector<HTMLButtonElement>('button[aria-label="Add property"]')!;
+    add.click();
+    await vi.waitFor(() => expect(document.activeElement).toBe(document.querySelector('[data-collection-property-draft] [aria-label="Property name"]')));
+    document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(document.querySelector("[data-collection-property-draft]")).toBeNull());
+    expect(document.activeElement).toBe(add);
+    expect(onAddProperty).not.toHaveBeenCalled();
   });
 });

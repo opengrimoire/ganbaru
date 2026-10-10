@@ -13,6 +13,8 @@ import {
   type NotesDataSourceStatusGroup,
   type NotesDatabaseView,
 } from "$lib/notes/types";
+import { notesPageIconFromPickerValue, notesPageIconPickerValue } from "$lib/notes/pages/icon-picker";
+import { isNotesIconColor } from "$lib/notes/validation/assets";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -21,9 +23,10 @@ export const NOTES_DATA_SOURCE_PROPERTY_NAME_MAX_CHARACTERS = 120;
 
 /** Contextual schema action requested by a property header in the active table. */
 export type NotesDatabasePropertyActionRequest =
-  | { type: "insert"; propertyId: string; side: "left" | "right"; propertyType: NotesDataSourcePropertyType; name: string }
+  | { type: "insert"; propertyId: string; side: "left" | "right"; propertyType: NotesDataSourcePropertyType; name: string; icon: string | null }
   | { type: "duplicate"; propertyId: string }
-  | { type: "rename"; propertyId: string; name: string };
+  | { type: "rename"; propertyId: string; name: string }
+  | { type: "icon"; propertyId: string; icon: string | null };
 
 /** Outcome of renaming one property draft from a table header. */
 export type NotesDataSourcePropertyRename =
@@ -47,6 +50,8 @@ export interface NotesDataSourceSchemaOptionDraft {
 export interface NotesDataSourceSchemaPropertyDraft {
   id: string;
   name: string;
+  /** A `lucide:` picker value, or null to show the type icon. */
+  icon: string | null;
   description: string;
   type: NotesDataSourcePropertyType;
   numberFormat: NotesDataSourceNumberFormat;
@@ -495,6 +500,22 @@ function buttonActionValueForType(
   }
 }
 
+/** Read a property's native icon as a shared picker value; other icon kinds are not property icons and show the type icon. */
+export function notesDataSourcePropertyIcon(value: unknown): string | null {
+  if (!isRecord(value) || value.type !== "icon" || !isRecord(value.icon)) return null;
+  const name = readString(value.icon.name, "");
+  if (!name) return null;
+  const color = isNotesIconColor(value.icon.color) ? value.icon.color : undefined;
+  return notesPageIconPickerValue({ type: "icon", icon: color === undefined ? { name } : { name, color } });
+}
+
+/** Serialize a picker value as the native property icon, or null when the property shows its type icon. */
+function propertyIconRecord(icon: string | null): UnknownRecord | null {
+  if (!icon) return null;
+  const native = notesPageIconFromPickerValue(icon, []);
+  return native?.type === "icon" ? native : null;
+}
+
 function propertyDraftFromRecord(
     key: string,
     value: unknown,
@@ -530,6 +551,7 @@ function propertyDraftFromRecord(
   return {
     id,
     name: readString(value.name, key),
+    icon: notesDataSourcePropertyIcon(value.icon),
     description: readString(value.description, ""),
     type,
     numberFormat: isNumberFormat(numberFormat) ? numberFormat : "number",
@@ -664,11 +686,13 @@ export function createNotesDataSourcePropertyDraft(
   type: NotesDataSourcePropertyType,
   name: string,
   id: string = crypto.randomUUID(),
+  icon: string | null = null,
 ): NotesDataSourceSchemaPropertyDraft {
   const propertyId = type === "title" ? "title" : id;
   return {
     id: propertyId,
     name,
+    icon,
     description: "",
     type,
     numberFormat: "number",
@@ -806,9 +830,11 @@ export function notesDataSourceSchemaUpdateFromDraft(
     const nameKey = name.toLocaleLowerCase();
     if (names.has(nameKey)) throw new Error("property names must be unique");
     names.add(nameKey);
+    const icon = propertyIconRecord(property.icon);
     record[name] = {
       id: property.type === "title" ? "title" : property.id,
       name,
+      ...(icon ? { icon } : {}),
       description: property.description.trim(),
       type: property.type,
       [property.type]: propertyConfig(property),

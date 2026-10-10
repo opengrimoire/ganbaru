@@ -52,7 +52,7 @@ afterEach(async () => {
 });
 
 function open(onReady = () => {}, options: {
-  onAddProperty?: (type: NotesDataSourcePropertyType, name: string, scope?: NotesDatabaseSourceEditingScope) => Promise<void>;
+  onAddProperty?: (type: NotesDataSourcePropertyType, name: string, icon: string | null, scope?: NotesDatabaseSourceEditingScope) => Promise<void>;
   onSavingChange?: (saving: boolean) => void;
   editingLocked?: boolean;
   onEditingLockChange?: (locked: boolean) => void;
@@ -164,13 +164,13 @@ describe("Notes database view sessions", () => {
     savedViews[1] = { ...savedViews[1], data_source_id: "second-source" };
     vi.mocked(listNotesDatabaseViews).mockResolvedValue(savedViews);
     vi.mocked(listNotesDataSourceTemplates).mockResolvedValue([]);
-    const addProperty = vi.fn(async (_type: NotesDataSourcePropertyType, _name: string, _scope?: NotesDatabaseSourceEditingScope) => {});
+    const addProperty = vi.fn(async (_type: NotesDataSourcePropertyType, _name: string, _icon: string | null, _scope?: NotesDatabaseSourceEditingScope) => {});
     open(() => {}, { onAddProperty: addProperty });
     await vi.waitFor(() => expect(document.querySelector("[data-session-view]")?.getAttribute("data-source-id")).toBe("source"));
     chooseSecond();
     await vi.waitFor(() => expect(document.querySelector("[data-session-view]")?.getAttribute("data-source-id")).toBe("second-source"));
     document.querySelector<HTMLButtonElement>("[data-start-save]")!.click();
-    await vi.waitFor(() => expect(addProperty).toHaveBeenCalledWith("rich_text", "Second", { dataSourceId: "second-source", databaseId: "database", viewId: "Second" }));
+    await vi.waitFor(() => expect(addProperty).toHaveBeenCalledWith("rich_text", "Second", null, { dataSourceId: "second-source", databaseId: "database", viewId: "Second" }));
     const newOptions = document.querySelector<HTMLButtonElement>('button[aria-label="New page options"]')!;
     newOptions.click();
     await vi.waitFor(() => expect(listNotesDataSourceTemplates).toHaveBeenCalledWith("second-source"));

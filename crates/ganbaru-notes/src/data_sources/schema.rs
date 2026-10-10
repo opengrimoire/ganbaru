@@ -11,6 +11,7 @@ const MAX_SCHEMA_BYTES: usize = 50 * 1024;
 const MAX_PROPERTIES: usize = 100;
 const MAX_PROPERTY_NAME_CHARS: usize = 120;
 const MAX_PROPERTY_DESCRIPTION_CHARS: usize = 2000;
+const MAX_PROPERTY_ICON_NAME_CHARS: usize = 80;
 const MAX_OPTIONS: usize = 100;
 const MAX_OPTION_NAME_CHARS: usize = 120;
 const MAX_UNIQUE_ID_PREFIX_CHARS: usize = 32;
@@ -299,11 +300,47 @@ fn canonical_property(key: &str, value: &Value) -> Result<Value, String> {
     canonical.insert("name".to_string(), Value::String(name));
     canonical.insert("description".to_string(), Value::String(description));
     canonical.insert("type".to_string(), Value::String(property_type.to_string()));
+    if let Some(icon) = canonical_property_icon(object.get("icon"))? {
+        canonical.insert("icon".to_string(), icon);
+    }
     canonical.insert(
         property_type.to_string(),
         canonical_type_config(property_type, object.get(property_type))?,
     );
     Ok(Value::Object(canonical))
+}
+
+/// Keep a property's chosen native icon; an absent or null icon means the property shows its type icon.
+fn canonical_property_icon(value: Option<&Value>) -> Result<Option<Value>, String> {
+    let icon = match value {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::Object(icon)) => icon,
+        Some(_) => return Err("property.icon must be an icon object".to_string()),
+    };
+    if icon.get("type").and_then(Value::as_str) != Some("icon") {
+        return Err("property.icon must be a native icon".to_string());
+    }
+    crate::validation::validate_native_icon(icon, "property.icon")?;
+    let native = icon
+        .get("icon")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "property.icon.icon must be an object".to_string())?;
+    let name = read_string_field(native, "name", "property.icon.icon.name")?;
+    let is_slug_character = |character: char| {
+        character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
+    };
+    if name.chars().count() > MAX_PROPERTY_ICON_NAME_CHARS
+        || name.starts_with('-')
+        || !name.chars().all(is_slug_character)
+    {
+        return Err("property.icon.icon.name must be an icon slug".to_string());
+    }
+    let mut canonical_native = Map::new();
+    canonical_native.insert("name".to_string(), Value::String(name.to_string()));
+    if let Some(color) = native.get("color") {
+        canonical_native.insert("color".to_string(), color.clone());
+    }
+    Ok(Some(json!({ "type": "icon", "icon": canonical_native })))
 }
 
 fn canonical_type_config(property_type: &str, value: Option<&Value>) -> Result<Value, String> {

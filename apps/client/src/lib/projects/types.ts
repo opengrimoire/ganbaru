@@ -446,6 +446,8 @@ export interface ProjectCustomField {
   name: string;
   fieldType: ProjectCustomFieldType;
   sortOrder: number;
+  /** Chosen `lucide:` icon value; null shows the field type icon. */
+  icon: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -645,13 +647,16 @@ export interface ProjectCustomFieldCreate {
   name: string;
   fieldType: ProjectCustomFieldType;
   sortOrder: number;
+  icon?: string | null;
   duplicateSourceId?: string;
 }
 
+/** Full replacement of a field's editable definition; a null icon resets it to the type icon. */
 export interface ProjectCustomFieldUpdate {
   id: string;
   name: string;
   sortOrder: number;
+  icon: string | null;
 }
 
 export interface ProjectCustomFieldOptionCreate {

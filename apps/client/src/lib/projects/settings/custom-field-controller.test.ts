@@ -7,7 +7,7 @@ import type { ProjectCustomField, ProjectCustomFieldOption } from "$lib/projects
 
 const field: ProjectCustomField = {
   id: "field-1", projectId: "project-1", name: "Stage", fieldType: "select",
-  sortOrder: 1000, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z",
+  sortOrder: 1000, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z", icon: null,
 };
 const option: ProjectCustomFieldOption = {
   id: "option-1", fieldId: field.id, name: "Ready", sortOrder: 1000,

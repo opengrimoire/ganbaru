@@ -169,7 +169,7 @@ describe("Project collection configuration", () => {
     store.options = [{ id: "risk-high", fieldId: "risk", name: "High risk", sortOrder: 0, createdAt: "", updatedAt: "" }];
     await open(toolbarProps("filters", {
       onClose,
-      projectCustomFields: [{ id: "risk", projectId: "project-one", name: "Risk", fieldType: "select", sortOrder: 0, createdAt: "", updatedAt: "" }],
+      projectCustomFields: [{ id: "risk", projectId: "project-one", name: "Risk", fieldType: "select", sortOrder: 0, icon: null, createdAt: "", updatedAt: "" }],
     }));
     await navigate("Status");
     await choose("Open");

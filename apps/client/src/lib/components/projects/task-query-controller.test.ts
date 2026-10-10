@@ -19,7 +19,7 @@ function createController(activeView: "list" | "kanban" = "list") {
   const applySectionCollapseState = vi.fn<ControllerInput["projects"]["applySectionCollapseState"]>().mockResolvedValue(undefined);
   const saveTaskListPresentation = vi.fn<ControllerInput["projects"]["saveTaskListPresentation"]>().mockResolvedValue(undefined);
   const fields: ProjectCustomField[] = [];
-  const createdField: ProjectCustomField = { id: "created", projectId: "project-1", name: "Points", fieldType: "number", sortOrder: 100, createdAt: "", updatedAt: "" };
+  const createdField: ProjectCustomField = { id: "created", projectId: "project-1", name: "Points", fieldType: "number", sortOrder: 100, icon: null, createdAt: "", updatedAt: "" };
   const addCustomField = vi.fn<ControllerInput["projects"]["addCustomField"]>().mockResolvedValue(createdField);
   const duplicateCustomField = vi.fn<ControllerInput["projects"]["duplicateCustomField"]>().mockResolvedValue(createdField);
   const loadTaskView = vi.fn<ControllerInput["projects"]["loadTaskView"]>().mockImplementation(async (request, append = false) => { selection.loadError = null; requests.push({request, append}); });
@@ -252,7 +252,7 @@ describe("Project task query controller policy", () => {
     controller.listColumns = ["status", "due"];
     saveTaskListColumns.mockRejectedValueOnce(new Error("Preference write failed"));
     await controller.addColumnProperty("Points", "number", "status");
-    expect(addCustomField).toHaveBeenCalledWith("project-1", "Points", "number");
+    expect(addCustomField).toHaveBeenCalledWith("project-1", "Points", "number", null);
     expect(saveTaskListColumns).toHaveBeenCalledWith("project-1", ["status", "custom:created", "due"]);
     expect(controller.listColumns).toEqual(["status", "due"]);
     expect(controller.listColumnsError).toBe("projects.columns.saveFailed: Preference write failed");
@@ -294,7 +294,7 @@ describe("Project task query controller policy", () => {
     const source = { ...createdField, id: "source", name: "Original" };
     fields.push(source);
     controller.listColumns = ["status", "custom:source", "due"];
-    await controller.addColumnProperty("Original copy", "number", "custom:source", "right", source);
+    await controller.addColumnProperty("Original copy", "number", "custom:source", "right", { source });
     expect(duplicateCustomField).toHaveBeenCalledWith(source, "Original copy");
     expect(addCustomField).not.toHaveBeenCalled();
     expect(controller.listColumns).toEqual(["status", "custom:source", "custom:created", "due"]);

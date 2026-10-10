@@ -407,13 +407,24 @@ pub(super) fn validate_custom_field_create(field: &ProjectCustomFieldCreate) -> 
     require_non_empty(&field.project_id, "project_id")?;
     require_non_empty(&field.name, "name")?;
     validate_custom_field_type(&field.field_type)?;
+    validate_custom_field_icon(field.icon.as_deref())?;
     validate_non_negative(field.sort_order, "sort_order")
 }
 
 pub(super) fn validate_custom_field_update(field: &ProjectCustomFieldUpdate) -> Result<(), String> {
     require_non_empty(&field.id, "id")?;
     require_non_empty(&field.name, "name")?;
+    validate_custom_field_icon(field.icon.as_deref())?;
     validate_non_negative(field.sort_order, "sort_order")
+}
+
+/// Custom field icons are Lucide icons only, so they never reference managed assets.
+fn validate_custom_field_icon(icon: Option<&str>) -> Result<(), String> {
+    let Some(icon) = icon else { return Ok(()) };
+    if !icon.trim().starts_with("lucide:") {
+        return Err("custom field icon must be a Lucide icon".to_string());
+    }
+    validate_project_icon(icon)
 }
 
 pub(super) fn validate_custom_field_option_create(

@@ -28,6 +28,7 @@ function field(id: string, fieldType: ProjectCustomFieldType): ProjectCustomFiel
     name: id,
     fieldType,
     sortOrder: 1000,
+    icon: null,
     createdAt: "2026-06-21T00:00:00.000Z",
     updatedAt: "2026-06-21T00:00:00.000Z",
   };

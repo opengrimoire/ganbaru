@@ -93,7 +93,7 @@
     /** Loads the schema that {@link propertyEditor} edits for a property in the active view's source. */
     onLoadPropertyEditor: (propertyId: string, scope: NotesDatabaseSourceEditingScope) => void;
     onCreateLinkedDatabaseView: () => void;
-    onAddProperty: (type: NotesDataSourcePropertyType, name: string, scope?: NotesDatabaseSourceEditingScope) => Promise<void>;
+    onAddProperty: (type: NotesDataSourcePropertyType, name: string, icon: string | null, scope?: NotesDatabaseSourceEditingScope) => Promise<void>;
     onPropertyAction?: (request: NotesDatabasePropertyActionRequest, scope: NotesDatabaseSourceEditingScope) => Promise<void>;
     editingLocked?: boolean;
     onEditingLockChange?: (locked: boolean) => void;
@@ -634,7 +634,7 @@
 {@const reportLayoutSaving = untrack(() => layoutInstance.reportSaving)}
 {#if selectedView && viewLoadState?.status === "ready" && viewLoadState.key === activeViewKind && viewLoadState.component.kind === "table"}
   {@const NotesDatabaseTableView = viewLoadState.component.component}
-  <NotesDatabaseTableView {onReady} onSavingChange={reportLayoutSaving} dataSourceId={activeSourceId} {databaseId} viewId={activeViewId} {onSelectPage} {editingLocked} onAddProperty={(type, name) => onAddProperty(type, name, editingScope())} onPropertyAction={onPropertyAction ? (request) => onPropertyAction?.(request, editingScope()) ?? Promise.resolve() : undefined} {newRowRequest} settingsOpen={viewSettingsOpen} {settingsAnchor} {settingsHeader} onCloseSettings={() => { viewSettingsOpen = false; }} onEditProperties={editProperties} {propertyEditor} onLoadPropertyEditor={(propertyId) => onLoadPropertyEditor(propertyId, editingScope())} reloadKey={reloadKeys.table} />
+  <NotesDatabaseTableView {onReady} onSavingChange={reportLayoutSaving} dataSourceId={activeSourceId} {databaseId} viewId={activeViewId} {onSelectPage} {editingLocked} onAddProperty={(type, name, icon) => onAddProperty(type, name, icon, editingScope())} onPropertyAction={onPropertyAction ? (request) => onPropertyAction?.(request, editingScope()) ?? Promise.resolve() : undefined} {newRowRequest} settingsOpen={viewSettingsOpen} {settingsAnchor} {settingsHeader} onCloseSettings={() => { viewSettingsOpen = false; }} onEditProperties={editProperties} {propertyEditor} onLoadPropertyEditor={(propertyId) => onLoadPropertyEditor(propertyId, editingScope())} reloadKey={reloadKeys.table} />
 {:else if selectedView && viewLoadState?.status === "ready" && viewLoadState.key === activeViewKind && viewLoadState.component.kind === "board"}
   {@const NotesDatabaseBoardView = viewLoadState.component.component}
   <NotesDatabaseBoardView {onReady} onSavingChange={reportLayoutSaving} settingsOpen={viewSettingsOpen} {settingsAnchor} {settingsHeader} onCloseSettings={() => { viewSettingsOpen = false; }} onEditProperties={editProperties} dataSourceId={activeSourceId} {databaseId} {editingLocked} viewId={activeViewId} {onSelectPage} reloadKey={reloadKeys.board} />

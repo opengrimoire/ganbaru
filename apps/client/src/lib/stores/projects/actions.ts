@@ -696,6 +696,7 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     projectId: string,
     name: string,
     fieldType: ProjectCustomFieldType,
+    icon: string | null = null,
   ): Promise<ProjectCustomField | undefined> {
     const displayName = normalizeProjectName(name);
     if (!displayName) return undefined;
@@ -708,13 +709,14 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
       name: displayName,
       fieldType,
       sortOrder: selectors.nextCustomFieldSortOrder(projectId),
+      icon,
     }));
     return changedById(mutation.changed.customFields, fieldId, "created custom field");
   }
 
   async function updateCustomField(
     field: ProjectCustomField,
-    patch: Partial<Pick<ProjectCustomField, "name" | "sortOrder">>,
+    patch: Partial<Pick<ProjectCustomField, "name" | "sortOrder" | "icon">>,
   ): Promise<void> {
     const nextName = normalizeProjectName(patch.name ?? field.name);
     if (!nextName) return;
@@ -732,7 +734,7 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     const fieldId = crypto.randomUUID();
     const mutation = await commitMutation(`field:${fieldId}`, () => createProjectCustomField({
       id: fieldId, projectId: field.projectId, name: displayName, fieldType: field.fieldType,
-      sortOrder: selectors.nextCustomFieldSortOrder(field.projectId), duplicateSourceId: field.id,
+      sortOrder: selectors.nextCustomFieldSortOrder(field.projectId), icon: field.icon, duplicateSourceId: field.id,
     }));
     return changedById(mutation.changed.customFields, fieldId, "duplicated custom field");
   }

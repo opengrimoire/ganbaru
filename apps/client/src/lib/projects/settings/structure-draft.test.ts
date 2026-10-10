@@ -11,7 +11,7 @@ function collections(): ProjectSettingsSessionCollections {
     statuses: ["a", "b"].map((id, index) => ({ ...common, id, name: id, sortOrder: (index + 1) * 1000, category: "active", terminal: false, color: 8 })),
     priorities: ["low", "high"].map((id, index) => ({ ...common, id, name: id, sortOrder: (index + 1) * 1000, color: 8 })),
     tags: ["first", "second"].map((id, index) => ({ ...common, id, name: id, sortOrder: (index + 1) * 1000, color: 8 })),
-    customFields: ["field", "other"].map((id, index) => ({ ...common, id, name: id, sortOrder: (index + 1) * 1000, fieldType: "select" })),
+    customFields: ["field", "other"].map((id, index) => ({ ...common, id, name: id, sortOrder: (index + 1) * 1000, fieldType: "select", icon: null })),
     optionsForField: (fieldId) => ["one", "two"].map((id, index) => ({ ...common, id: `${fieldId}-${id}`, fieldId, name: id, sortOrder: (index + 1) * 1000 })),
   };
 }

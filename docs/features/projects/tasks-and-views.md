@@ -28,7 +28,7 @@ List is the default view. It shows section or computed groups, configurable colu
 
 Columns can include status, dates, priority, assignee, reviewer, estimate, schedule, dependencies, tags, and custom fields. Per project, users can show, hide, reorder, resize, wrap, and freeze columns, and choose display formats (date style, time style, number grouping or percent). Display choices never change stored values, query predicates, or sorting.
 
-Column headers can insert a custom property beside the current column, rename it, and edit its options. Duplicating a property creates a new schema with fresh option identities and no copied values.
+Column headers can insert a custom property beside the current column, rename it, change its icon, and edit its options. Built-in columns keep their fixed names and icons. Duplicating a property creates a new schema with fresh option identities and no copied values.
 
 Column calculations (count, filled, empty, and for numeric columns sum, average, minimum, maximum) run over every task matched by the native query, not just the loaded page. Calculations never show totals from an older filter.
 

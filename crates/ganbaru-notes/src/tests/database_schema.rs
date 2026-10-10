@@ -207,6 +207,85 @@ fn update_local_data_source_schema() {
 }
 
 #[test]
+fn source_schema_keeps_native_property_icons_and_rejects_other_icon_sources() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        databases::create_database(
+            &pool,
+            NoteDatabaseCreate {
+                id: DATABASE_A.to_string(),
+                data_source_id: DATA_SOURCE_A.to_string(),
+                view_id: DATABASE_VIEW_A.to_string(),
+                title: "Tasks".to_string(),
+                parent: Some(page_parent(PAGE_A)),
+                after_block_id: Some(BLOCK_A.to_string()),
+                replace_block_id: None,
+                icon: None,
+                cover: None,
+            },
+        )
+        .await
+        .unwrap();
+        let schema_with_icon = |icon: serde_json::Value| NoteDataSourceSchemaUpdate {
+            properties: json!({
+                "Name": { "id": "title", "name": "Name", "type": "title", "title": {}, "icon": null },
+                "Due": { "id": "due", "name": "Due", "type": "date", "date": {}, "icon": icon }
+            }),
+        };
+
+        let updated = data_sources::schema::update_data_source_schema(
+            &pool,
+            DATA_SOURCE_A,
+            None,
+            None,
+            schema_with_icon(json!({
+                "type": "icon",
+                "icon": { "name": "alarm-clock", "color": "red", "extra": true },
+                "extra": true
+            })),
+        )
+        .await
+        .unwrap();
+        let properties = &serde_json::to_value(updated).unwrap()["data_source"]["properties"];
+        assert_eq!(
+            properties["Due"]["icon"],
+            json!({ "type": "icon", "icon": { "name": "alarm-clock", "color": "red" } })
+        );
+        assert!(properties["Name"].get("icon").is_none());
+
+        for (icon, message) in [
+            (
+                json!({ "type": "emoji", "emoji": "x" }),
+                "property.icon must be a native icon",
+            ),
+            (
+                json!({ "type": "icon", "icon": { "name": "Alarm Clock" } }),
+                "property.icon.icon.name must be an icon slug",
+            ),
+            (
+                json!({ "type": "icon", "icon": { "name": "alarm", "color": "teal" } }),
+                "property.icon.icon.color must be a supported Notion icon color",
+            ),
+            (
+                json!("lucide:alarm"),
+                "property.icon must be an icon object",
+            ),
+        ] {
+            let result = data_sources::schema::update_data_source_schema(
+                &pool,
+                DATA_SOURCE_A,
+                None,
+                None,
+                schema_with_icon(icon),
+            )
+            .await;
+            assert_eq!(result.err().unwrap(), message);
+        }
+    });
+}
+
+#[test]
 fn update_local_data_source_schema_rejects_title_removal() {
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;

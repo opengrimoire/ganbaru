@@ -73,13 +73,14 @@ export function tagUpdatePayload(
 
 export function customFieldUpdatePayload(
   field: ProjectCustomField,
-  patch: Partial<Pick<ProjectCustomField, "name" | "sortOrder">>,
+  patch: Partial<Pick<ProjectCustomField, "name" | "sortOrder" | "icon">>,
 ): ProjectCustomFieldUpdate {
   const merged = { ...field, ...patch };
   return {
     id: merged.id,
     name: merged.name,
     sortOrder: merged.sortOrder,
+    icon: merged.icon,
   };
 }
 

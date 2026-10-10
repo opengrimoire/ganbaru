@@ -605,10 +605,10 @@ export class ProjectTaskQueryController {
 
   /**
    * Create or duplicate schema, then insert its new stable column on the requested side of the invoking property.
-   * The name column stays first, so insertions beside it always land right after it.
+   * The name column stays first, so insertions beside it always land right after it. A duplicate copies its `source` icon; otherwise `icon` is the chosen icon or null for the type icon.
    * @returns Whether the property was created; failures are reported through `propertyError` or `listColumnsError`.
    */
-  async addColumnProperty(name: string, fieldType: ProjectCustomFieldType, anchor: "name" | ProjectTaskListColumn, side: "left" | "right" = "right", source?: ProjectCustomField): Promise<boolean> {
+  async addColumnProperty(name: string, fieldType: ProjectCustomFieldType, anchor: "name" | ProjectTaskListColumn, side: "left" | "right" = "right", { source, icon = null }: { source?: ProjectCustomField; icon?: string | null } = {}): Promise<boolean> {
     const projectId = this.projectId;
     if (!projectId || this.propertySaving || this.listColumnsSaving) return false;
     const generation = ++this.#propertyWriteGeneration;
@@ -617,7 +617,7 @@ export class ProjectTaskQueryController {
     try {
       if (!name.trim()) throw new Error(this.#translate("projects.columns.nameRequired"));
       if (this.customFields.some((field) => field.name.toLocaleLowerCase() === name.trim().toLocaleLowerCase())) throw new Error(this.#translate("projects.columns.nameExists"));
-      const created = source ? await this.#projects.duplicateCustomField(source, name) : await this.#projects.addCustomField(projectId, name, fieldType);
+      const created = source ? await this.#projects.duplicateCustomField(source, name) : await this.#projects.addCustomField(projectId, name, fieldType, icon);
       if (!created || this.projectId !== projectId || generation !== this.#propertyWriteGeneration) return false;
       const column = customTaskListColumn(created.id);
       const next = this.listColumns.filter((entry) => entry !== column);

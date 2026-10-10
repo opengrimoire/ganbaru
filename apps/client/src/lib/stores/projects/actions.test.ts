@@ -172,7 +172,7 @@ describe("createProjectStoreActions", () => {
 
   it("retains reorder identity after failure and does not resurrect a later deleted field", async () => {
     const field = { id: "field-1", projectId: "project-1", name: "Field", fieldType: "text" as const,
-      sortOrder: 1000, revision: 0, createdAt: "created", updatedAt: "updated" };
+      sortOrder: 1000, icon: null, revision: 0, createdAt: "created", updatedAt: "updated" };
     const context = setup();
     vi.mocked(reorderProjectItem).mockRejectedValueOnce(new Error("lost response"));
     await expect(context.actions.moveCustomField(field, 1)).rejects.toThrow("lost response");
@@ -187,7 +187,7 @@ describe("createProjectStoreActions", () => {
 
   it("skips duplicating a property when the new name is blank", async () => {
     const field = { id: "field-1", projectId: "project-1", name: "Field", fieldType: "text" as const,
-      sortOrder: 1000, revision: 0, createdAt: "created", updatedAt: "updated" };
+      sortOrder: 1000, icon: null, revision: 0, createdAt: "created", updatedAt: "updated" };
     const context = setup();
     await expect(context.actions.duplicateCustomField(field, "   ")).resolves.toBeUndefined();
     expect(createProjectCustomField).not.toHaveBeenCalled();

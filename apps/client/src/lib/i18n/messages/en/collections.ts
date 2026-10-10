@@ -8,6 +8,8 @@ export const collections = {
     noTypes: "No matching types",
     nameExists: "A property with that name already exists.",
     renameFailed: (message: string) => `Could not rename property: ${message}`,
+    icon: "Property icon",
+    iconFailed: (message: string) => `Could not change the property icon: ${message}`,
     editProperty: "Edit property",
     filter: "Filter",
     sortAscending: "Sort ascending",

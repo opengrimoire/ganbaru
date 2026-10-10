@@ -2,7 +2,9 @@
   import { untrack } from "svelte";
   import ArrowDown from "@lucide/svelte/icons/arrow-down";
   import ArrowLeft from "@lucide/svelte/icons/arrow-left";
+  import ArrowLeftToLine from "@lucide/svelte/icons/arrow-left-to-line";
   import ArrowRight from "@lucide/svelte/icons/arrow-right";
+  import ArrowRightToLine from "@lucide/svelte/icons/arrow-right-to-line";
   import ArrowUp from "@lucide/svelte/icons/arrow-up";
   import CalendarCog from "@lucide/svelte/icons/calendar-cog";
   import Clock from "@lucide/svelte/icons/clock";
@@ -19,7 +21,7 @@
   import CollectionMenuItem from "$lib/components/collections/CollectionMenuItem.svelte";
   import CollectionMenuSeparator from "$lib/components/collections/CollectionMenuSeparator.svelte";
   import CollectionPropertyNameField from "$lib/components/collections/CollectionPropertyNameField.svelte";
-  import { COLLECTION_PROPERTY_ICONS } from "$lib/components/collections/property-icons";
+  import CollectionPropertyIcon from "$lib/components/collections/CollectionPropertyIcon.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
@@ -28,7 +30,7 @@
   import { projectColumnCalculationOptions, projectListColumnSortMode, PROJECT_COLUMN_DATE_FORMATS, PROJECT_COLUMN_TIME_FORMATS, PROJECT_COLUMN_NUMBER_FORMATS } from "$lib/projects/list/presentation";
   import type { ProjectTaskListResizableColumn } from "$lib/projects/list/view";
   import { getProjectListTableContext } from "./table-context";
-  import ProjectListAddPropertyMenu from "./ProjectListAddPropertyMenu.svelte";
+  import ProjectListPropertyDraft from "./ProjectListPropertyDraft.svelte";
   import ProjectListColumnFilters from "./ProjectListColumnFilters.svelte";
   import { projectListColumnKind } from "./property-kinds";
 
@@ -42,7 +44,6 @@
   const { t } = localization;
   const field = $derived(column === "name" ? undefined : query?.customFields.find((candidate) => candidate.id === customFieldIdFromTaskListColumn(column)));
   const kind = $derived(projectListColumnKind(column, field));
-  const KindIcon = $derived(COLLECTION_PROPERTY_ICONS[kind]);
   const pending = $derived(Boolean(query?.propertySaving || query?.presentationSaving || query?.listColumnsSaving));
   const sortMode = $derived(projectListColumnSortMode(column));
   const wrapped = $derived(query?.listPresentation.wrappedColumns.includes(column) ?? false);
@@ -53,6 +54,9 @@
   let optionSaving = $state(false);
   let optionError = $state<string | null>(null);
   let optionWriteGeneration = 0;
+  let trigger: HTMLButtonElement | undefined = $state();
+  let insertSide = $state<"left" | "right" | null>(null);
+  const insertAnchor = $derived(insertSide ? trigger?.closest<HTMLElement>("[role=\"columnheader\"]") ?? null : null);
 
   $effect(() => {
     const currentId = field?.id ?? null;
@@ -89,6 +93,12 @@
     await projects.updateCustomField(target, { name });
   }
 
+  /** Change the custom field icon; rejections are shown by the name field. */
+  async function changeIcon(icon: string | null): Promise<void> {
+    if (!field) return;
+    await projects.updateCustomField(field, { icon });
+  }
+
   /** Add an option without modifying any existing task value. */
   async function addOption(): Promise<void> {
     if (!field || optionSaving || !optionDraft.trim()) return;
@@ -109,16 +119,16 @@
   /** Use a unique copy name while keeping the source property's values independent. */
   function duplicate(): void {
     if (!query || !field) return;
-    void query.addColumnProperty(uniqueProjectCustomFieldName(t("projects.columns.copyName", field.name), query.customFields, localization.locale), field.fieldType, column, "right", field);
+    void query.addColumnProperty(uniqueProjectCustomFieldName(t("projects.columns.copyName", field.name), query.customFields, localization.locale), field.fieldType, column, "right", { source: field });
   }
 </script>
 
 {#if query}
   <CollectionMenu {label} kind="property" fullWidth showHeader={false} dismissOnAction disabled={pending}
-    triggerClass="h-auto justify-start rounded-none px-2 font-normal" triggerAttributes={{ "data-collection-cell-primary": "" }}>
-    {#snippet leading()}{#if preferences.projectsShowPropertyIcons}<KindIcon class="size-3.5 shrink-0 text-muted-foreground" strokeWidth={1.75} aria-hidden="true" />{/if}{/snippet}
+    triggerClass="h-auto justify-start rounded-none px-2 font-normal" triggerAttributes={{ "data-collection-cell-primary": "" }} bind:triggerElement={trigger}>
+    {#snippet leading()}{#if preferences.projectsShowPropertyIcons}<CollectionPropertyIcon icon={field?.icon ?? null} {kind} class="size-3.5 shrink-0 text-muted-foreground" />{/if}{/snippet}
     <div class="grid gap-0">
-      <CollectionPropertyNameField propertyId={column} name={field?.name ?? label} {kind} editable={Boolean(field)} onRename={rename} />
+      <CollectionPropertyNameField propertyId={column} name={field?.name ?? label} icon={field?.icon ?? null} {kind} editable={Boolean(field)} onRename={rename} onIconChange={field ? changeIcon : undefined} />
       {#if field && projectCustomFieldUsesOptions(field.fieldType)}
         <CollectionMenu label={t("collections.property.editProperty")} kind="properties" icon={Settings2} fullWidth>
           <div class="grid gap-1">
@@ -177,12 +187,16 @@
       {#if column !== "name"}
         <CollectionMenuItem icon={ArrowLeft} label={t("collections.property.moveLeft")} disabled={pending || index <= 0} onclick={() => void query.moveColumn(column, -1)} />
         <CollectionMenuItem icon={ArrowRight} label={t("collections.property.moveRight")} disabled={pending || index < 0 || index >= query.listColumns.length - 1} onclick={() => void query.moveColumn(column, 1)} />
-        <ProjectListAddPropertyMenu {query} anchor={column} side="left" label={t("collections.property.insertLeft")} variant="row" />
+        <CollectionMenuItem icon={ArrowLeftToLine} label={t("collections.property.insertLeft")} disabled={pending} onclick={() => { insertSide = "left"; }} />
       {/if}
-      <ProjectListAddPropertyMenu {query} anchor={column} side="right" label={t("collections.property.insertRight")} variant="row" />
+      <CollectionMenuItem icon={ArrowRightToLine} label={t("collections.property.insertRight")} disabled={pending} onclick={() => { insertSide = "right"; }} />
       {#if field}<CollectionMenuItem icon={Copy} label={t("collections.property.duplicate")} disabled={pending} onclick={duplicate} />{/if}
     </div>
   </CollectionMenu>
+  {#if insertSide && insertAnchor}
+    <ProjectListPropertyDraft {query} {column} side={insertSide} anchor={insertAnchor} placement={insertSide === "left" ? "before" : "after"} {trigger}
+      onClose={() => { insertSide = null; }} />
+  {/if}
 {:else}
   <span class="truncate">{label}</span>
 {/if}

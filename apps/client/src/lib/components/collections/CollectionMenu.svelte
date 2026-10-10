@@ -25,7 +25,7 @@
    * A collection toolbar menu, settings row, or column menu.
    * A full-width row inside another floating menu is a submenu: it opens beside its row on hover or ArrowRight instead of covering it.
    */
-  let { label, ariaLabel, kind = "layout", iconOnly = false, fullWidth = false, primary = false, showHeader, activeCount = 0, dismissOnAction = false, summary, leading, icon, triggerClass, triggerAttributes, disabled = false, onOpenChange, children }: {
+  let { label, ariaLabel, kind = "layout", iconOnly = false, fullWidth = false, primary = false, showHeader, activeCount = 0, dismissOnAction = false, summary, leading, icon, triggerClass, triggerAttributes, triggerElement = $bindable(), disabled = false, onOpenChange, children }: {
     label: string;
     ariaLabel?: string;
     kind?: "layout" | "filter" | "sort" | "properties" | "property" | "group" | "actions" | "new" | "new-options";
@@ -41,6 +41,8 @@
     triggerClass?: string;
     /** Data attributes for the trigger, such as the markers that let collection tables own its highlight. */
     triggerAttributes?: Partial<Record<`data-${string}`, string>>;
+    /** The trigger button, such as to anchor a draft that an action in this menu opens after the menu closes. */
+    triggerElement?: HTMLButtonElement;
     disabled?: boolean;
     /** Called when the panel opens or closes, such as to load content that is shown only while open. */
     onOpenChange?: (open: boolean) => void;
@@ -65,7 +67,9 @@
   const Icon = $derived(icon ?? icons[kind]);
   const dismisses = $derived(kind === "actions" || dismissOnAction);
   let open = $state(false);
+  // A local trigger keeps panel placement independent of the binding a parent may rebuild on reload.
   let trigger: HTMLButtonElement | undefined = $state();
+  $effect(() => { triggerElement = trigger; });
   let panel: HTMLDivElement | null = $state(null);
   const expanded = $derived(settingsRow ? navigation?.isActive(trigger) ?? false : open);
   const submenu = $derived(rowTrigger && !settingsRow && Boolean(trigger?.parentElement?.closest("[data-app-floating-surface]")));
@@ -142,9 +146,10 @@
     closeTimer = undefined;
   }
 
-  /** Focus the first enabled field or action in an open panel. */
+  /** Focus the panel's marked initial control, or else its first enabled field or action. */
   function focusFirst(node: HTMLElement): void {
-    const target = node.querySelector<HTMLElement>("[data-collection-menu-body] input:not(:disabled), [data-collection-menu-body] button:not(:disabled)");
+    const target = node.querySelector<HTMLElement>("[data-collection-menu-body] [data-collection-menu-initial-focus]:not(:disabled)")
+      ?? node.querySelector<HTMLElement>("[data-collection-menu-body] input:not(:disabled), [data-collection-menu-body] button:not(:disabled)");
     (target ?? node).focus({ preventScroll: true });
   }
 

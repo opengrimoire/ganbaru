@@ -5,6 +5,7 @@ import {
   notesDataSourceDuplicatePropertyName,
   notesDataSourceButtonTargetOptions,
   notesDataSourceDefaultButtonPatch,
+  notesDataSourcePropertyIcon,
   notesDataSourceRenameProperty,
   notesDataSourceSchemaDraftFromDto,
   notesDataSourceSchemaUpdateFromDraft,
@@ -264,6 +265,31 @@ describe("data source schema helpers", () => {
         expression: 'prop("Estimate") * 2',
       },
     });
+  });
+
+  it("round-trips Lucide property icons and leaves other icons on the type icon", () => {
+    const nativeIcon = { type: "icon", icon: { name: "star", color: "blue" } };
+    const source: NotesDataSource = {
+      ...dataSource,
+      properties: { ...dataSource.properties, Priority: { ...(dataSource.properties.Priority as Record<string, unknown>), icon: nativeIcon } },
+    };
+    const draft = notesDataSourceSchemaDraftFromDto(source, view);
+    const priority = draft.find((property) => property.id === "priority")!;
+    expect(priority.icon).toBe(notesDataSourcePropertyIcon(nativeIcon));
+    expect(priority.icon).not.toBeNull();
+    expect(draft.find((property) => property.id === "estimate")?.icon).toBeNull();
+
+    const update = notesDataSourceSchemaUpdateFromDraft([
+      ...draft,
+      createNotesDataSourcePropertyDraft("rich_text", "Emoji", "emoji", "emoji:🙂"),
+    ]);
+    expect(update.properties.Priority).toHaveProperty("icon", nativeIcon);
+    expect(update.properties.Estimate).not.toHaveProperty("icon");
+    expect(update.properties.Emoji).not.toHaveProperty("icon");
+    expect(notesDataSourcePropertyIcon({ type: "emoji", emoji: "🙂" })).toBeNull();
+    expect(notesDataSourcePropertyIcon({ type: "icon", icon: { name: "" } })).toBeNull();
+    expect(notesDataSourcePropertyIcon({ type: "icon", icon: { name: "star", color: "neon" } }))
+      .toBe(notesDataSourcePropertyIcon({ type: "icon", icon: { name: "star" } }));
   });
 
   it("rejects duplicate property names before persistence", () => {

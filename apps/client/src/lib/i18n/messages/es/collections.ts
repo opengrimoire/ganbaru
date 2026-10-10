@@ -11,6 +11,8 @@ export const collections = {
     noTypes: "No hay tipos que coincidan",
     nameExists: "Ya existe una propiedad con ese nombre.",
     renameFailed: (message: string) => `No se pudo renombrar la propiedad: ${message}`,
+    icon: "Icono de la propiedad",
+    iconFailed: (message: string) => `No se pudo cambiar el icono de la propiedad: ${message}`,
     editProperty: "Editar propiedad",
     filter: "Filtrar",
     sortAscending: "Orden ascendente",

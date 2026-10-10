@@ -62,6 +62,7 @@ function customField(id: string, name: string): ProjectCustomField {
     name,
     fieldType: "text",
     sortOrder: 1000,
+    icon: null,
     createdAt: "2026-06-21T00:00:00.000Z",
     updatedAt: "2026-06-21T00:00:00.000Z",
   };
@@ -330,6 +331,7 @@ describe("project list view helpers", () => {
         name: "Stage",
         fieldType: "select",
         sortOrder: 1000,
+        icon: null,
         createdAt: "2026-06-21T00:00:00.000Z",
         updatedAt: "2026-06-21T00:00:00.000Z",
       }],

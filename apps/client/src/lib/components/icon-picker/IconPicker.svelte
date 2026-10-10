@@ -112,8 +112,10 @@
     trigger,
     uploadAdapter,
     showIcons = true,
+    showEmoji = true,
     showUpload = true,
     showRemove = true,
+    nested = false,
     initiallyOpen = false,
     panelAlign = "end",
     panelAnchor = null,
@@ -125,8 +127,11 @@
     trigger?: Snippet<[IconPickerTriggerContext]>;
     uploadAdapter?: IconPickerUploadAdapter;
     showIcons?: boolean;
+    showEmoji?: boolean;
     showUpload?: boolean;
     showRemove?: boolean;
+    /** Keep the panels inside the nearest floating root, so the menu or panel that hosts the picker treats them as its own. */
+    nested?: boolean;
     initiallyOpen?: boolean;
     panelAlign?: "start" | "end";
     /** Stable panel anchor when the action that opened the picker is removed. */
@@ -173,6 +178,9 @@
   let activeTab = $state<IconPickerTab>("icons");
   let pickerInteractionSource: PickerInteractionSource = "pointer";
   let triggerElement = $state<HTMLElement | undefined>();
+  const portalTarget = $derived<HTMLElement | string>(
+    nested ? (panelAnchor ?? triggerElement)?.closest<HTMLElement>("[data-floating-root]") ?? "body" : "body",
+  );
   let uploadFileInput = $state<HTMLInputElement | undefined>();
   let customEmojiFileInput = $state<HTMLInputElement | undefined>();
   let panelElement = $state<HTMLElement | undefined>();
@@ -228,12 +236,13 @@
   const visibleTabs = $derived.by((): IconPickerTab[] => {
     const tabs: IconPickerTab[] = [];
     if (showIcons) tabs.push("icons");
-    tabs.push("emoji");
+    if (showEmoji || !tabs.length) tabs.push("emoji");
     if (showUpload) tabs.push("upload");
     return tabs;
   });
   const customEmojiIds = $derived(new Set(projects.customEmojis.map((emoji) => emoji.id)));
   $effect(() => {
+    if (!visibleTabs.includes("emoji")) return;
     void projects.ensureCustomEmojis().catch((error) => {
       console.error("load icon picker custom emoji failed", error);
     });
@@ -1170,7 +1179,7 @@
   <div
     id={panelId}
     bind:this={panelElement}
-    use:portal
+    use:portal={portalTarget}
     class="surface-floating fixed z-90 flex min-h-0 flex-col overflow-hidden"
     style={panelStyle}
     role="dialog"
@@ -1311,6 +1320,7 @@
   {#if iconCategoryMenuOpen}
     <IconPickerCategoryMenu
       bind:rootElement={iconCategoryMenuElement}
+      {portalTarget}
       style={iconCategoryMenuStyle}
       options={lucideCategoryOptions}
       selectedCategory={iconCategory}
@@ -1322,6 +1332,7 @@
   {#if iconColorChoice}
     <IconPickerColorChoicePanel
       bind:rootElement={iconColorChoicePanelElement}
+      {portalTarget}
       style={iconColorChoiceStyle(iconColorChoice)}
       label={iconColorChoice.label}
       slug={iconColorChoice.slug}
@@ -1338,6 +1349,7 @@
   {#if customEmojiPanelOpen}
     <IconPickerCustomEmojiPanel
       bind:rootElement={customPanelElement}
+      {portalTarget}
       style={customPanelStyle}
       {customEmojiDraft}
       bind:customEmojiName

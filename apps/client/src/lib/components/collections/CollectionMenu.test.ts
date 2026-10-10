@@ -264,6 +264,51 @@ describe("Shared collection menus", () => {
     expect(dialog.querySelector('[role="dialog"]')).toBeNull();
   });
 
+  it("lets a press only select through beforeOpen and opens from the context menu instead of the browser menu", async () => {
+    const { dialog, row } = host();
+    const children = createRawSnippet(() => ({ render: () => '<button type="button">Rename</button>' }));
+    let active = false;
+    const beforeOpen = vi.fn((source: "press" | "context") => {
+      const wasActive = active;
+      active = true;
+      return wasActive || source === "context";
+    });
+    component = mount(CollectionMenu, { target: row, props: { label: "Board", kind: "actions", contextMenu: true, pressed: false, beforeOpen, children } });
+    const trigger = row.querySelector<HTMLButtonElement>("button")!;
+    expect(trigger.getAttribute("aria-pressed")).toBe("false");
+
+    trigger.click();
+    await tick();
+    expect(beforeOpen).toHaveBeenLastCalledWith("press");
+    expect(dialog.querySelector('[role="dialog"]')).toBeNull();
+
+    trigger.click();
+    await tick();
+    expect(dialog.querySelector('[role="dialog"]')).not.toBeNull();
+    trigger.click();
+    await tick();
+    expect(dialog.querySelector('[role="dialog"]')).toBeNull();
+
+    active = false;
+    const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    trigger.dispatchEvent(event);
+    await tick();
+    expect(event.defaultPrevented).toBe(true);
+    expect(beforeOpen).toHaveBeenLastCalledWith("context");
+    expect(dialog.querySelector('[role="dialog"]')).not.toBeNull();
+  });
+
+  it("leaves the browser context menu alone unless the menu opts in", async () => {
+    const { dialog, row } = host();
+    const children = createRawSnippet(() => ({ render: () => '<button type="button">Rename</button>' }));
+    component = mount(CollectionMenu, { target: row, props: { label: "Actions", kind: "actions", children } });
+    const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    row.querySelector("button")!.dispatchEvent(event);
+    await tick();
+    expect(event.defaultPrevented).toBe(false);
+    expect(dialog.querySelector('[role="dialog"]')).toBeNull();
+  });
+
   it("keeps the panel open when an action reveals an inline editor", async () => {
     const { dialog, row } = host();
     const children = createRawSnippet(() => ({

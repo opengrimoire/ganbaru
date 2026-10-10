@@ -61,7 +61,7 @@
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import ArrowUpRight from "@lucide/svelte/icons/arrow-up-right";
   import Copy from "@lucide/svelte/icons/copy";
-  import { buildNotesBlockLink } from "$lib/notes/links/block-link";
+  import { buildNotesBlockLink, buildNotesDatabaseViewLink } from "$lib/notes/links/block-link";
   import { notesDatabaseSession } from "$lib/notes/database/session.svelte";
 
   let {
@@ -192,10 +192,18 @@
     catch (caught: unknown) { titleError = caught instanceof Error ? caught.message : String(caught); }
   }
 
-  async function copyDatabaseLink(): Promise<void> {
+  /**
+   * Copy a link to this database, or to one of its saved views when a view is given.
+   *
+   * @param viewId Saved view the link selects when opened.
+   */
+  async function copyDatabaseLink(viewId?: string): Promise<void> {
     try {
       const destination = reference ?? await getNotesDatabaseReference(block.id);
-      await navigator.clipboard.writeText(buildNotesBlockLink(window.location.href, { pageId: destination.page_id, blockId: destination.block_id }));
+      const target = { pageId: destination.page_id, blockId: destination.block_id };
+      await navigator.clipboard.writeText(viewId
+        ? buildNotesDatabaseViewLink(window.location.href, { ...target, viewId })
+        : buildNotesBlockLink(window.location.href, target));
     } catch (caught: unknown) { titleError = caught instanceof Error ? caught.message : String(caught); }
   }
 
@@ -800,6 +808,8 @@
       onCreateLinkedDatabaseView={() => { void createLinkedView(); }}
       onAddProperty={addPropertyFromView}
       onPropertyAction={applyPropertyAction}
+      onCopyViewLink={copyDatabaseLink}
+      onOpenFullPage={onOpenDatabase ? () => void openDatabase(block.id) : undefined}
       {editingLocked}
       onEditingLockChange={(locked) => { lockRevision += 1; editingLocked = locked; if (reference) reference = { ...reference, editing_locked: locked }; }}
       reloadKeys={{

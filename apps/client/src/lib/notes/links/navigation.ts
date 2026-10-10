@@ -19,6 +19,7 @@ export function normalizeNotesTextLinkUrl(value: string, baseHref?: string): str
   if (!target) return normalizeRichTextLinkUrl(value);
   const params = new URLSearchParams({ page: target.pageId });
   if (target.blockId) params.set("block", target.blockId);
+  if (target.viewId) params.set("view", target.viewId);
   return `#notes?${params}`;
 }
 

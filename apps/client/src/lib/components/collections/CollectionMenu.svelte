@@ -25,7 +25,7 @@
    * A collection toolbar menu, settings row, or column menu.
    * A full-width row inside another floating menu is a submenu: it opens beside its row on hover or ArrowRight instead of covering it.
    */
-  let { label, ariaLabel, kind = "layout", iconOnly = false, fullWidth = false, primary = false, showHeader, activeCount = 0, dismissOnAction = false, summary, leading, icon, triggerClass, triggerAttributes, triggerElement = $bindable(), disabled = false, onOpenChange, children }: {
+  let { label, ariaLabel, kind = "layout", iconOnly = false, fullWidth = false, primary = false, showHeader, activeCount = 0, dismissOnAction = false, summary, leading, icon, rootClass, triggerClass, triggerAttributes, triggerElement = $bindable(), pressed, contextMenu = false, beforeOpen, disabled = false, onOpenChange, children }: {
     label: string;
     ariaLabel?: string;
     kind?: "layout" | "filter" | "sort" | "properties" | "property" | "group" | "actions" | "new" | "new-options";
@@ -38,11 +38,22 @@
     summary?: string;
     leading?: Snippet;
     icon?: Component;
+    /** Classes for the element that wraps the trigger, such as to keep a toolbar tab from shrinking. */
+    rootClass?: string;
     triggerClass?: string;
     /** Data attributes for the trigger, such as the markers that let collection tables own its highlight. */
     triggerAttributes?: Partial<Record<`data-${string}`, string>>;
     /** The trigger button, such as to anchor a draft that an action in this menu opens after the menu closes. */
     triggerElement?: HTMLButtonElement;
+    /** Exposes the trigger as a pressed toggle, such as the current tab of a view switcher. */
+    pressed?: boolean;
+    /** Also opens the panel from the trigger's context menu, which a right click or a touch long press raises. */
+    contextMenu?: boolean;
+    /**
+     * Runs before the panel opens from a trigger press or its context menu. Returning false keeps it closed,
+     * such as when a press only selects an inactive view tab.
+     */
+    beforeOpen?: (source: "press" | "context") => boolean;
     disabled?: boolean;
     /** Called when the panel opens or closes, such as to load content that is shown only while open. */
     onOpenChange?: (open: boolean) => void;
@@ -113,7 +124,19 @@
       return;
     }
     hoverOpened = false;
+    if (!open && beforeOpen?.("press") === false) return;
     open = !open;
+  }
+
+  /** Open a toolbar menu from the trigger's context menu instead of the browser menu. */
+  function openFromContextMenu(event: MouseEvent): void {
+    if (!contextMenu) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (disabled || open || settingsRow || submenu || beforeOpen?.("context") === false) return;
+    clearTimeout(openTimer);
+    hoverOpened = false;
+    open = true;
   }
 
   /** Open a submenu, or move focus into it when hover already opened it. */
@@ -322,7 +345,7 @@
   }
 </script>
 
-<div class={cn(fullWidth ? "flex w-full" : "inline-flex", "min-w-0")} class:collection-menu-row={rowTrigger}>
+<div class={cn(fullWidth ? "flex w-full" : "inline-flex", "min-w-0", rootClass)} class:collection-menu-row={rowTrigger}>
   <button
     bind:this={trigger}
     type="button"
@@ -338,7 +361,9 @@
     aria-expanded={expanded}
     aria-controls={open && !settingsRow ? id : undefined}
     aria-haspopup="dialog"
+    aria-pressed={pressed}
     onclick={toggle}
+    oncontextmenu={contextMenu ? openFromContextMenu : undefined}
     onpointerenter={hoverTrigger}
     onpointerleave={() => clearTimeout(openTimer)}
     onkeydown={(event) => {

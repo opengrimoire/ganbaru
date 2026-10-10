@@ -1475,7 +1475,10 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
       })).find((candidate) => candidate.id === target.blockId);
       if (!pageSession.isCurrent(generation) || request !== databaseNavigationRequest) return false;
       if (!block || block.in_trash || block.archived) return false;
-      if (block.type === "child_database") return openDatabase({ pageId: target.pageId, blockId: block.id });
+      // A view link names a view of the linked database itself, so it opens that database instead of its source.
+      if (block.type === "child_database") {
+        return openDatabase({ pageId: target.pageId, blockId: block.id }, target.viewId ? { viewId: target.viewId, followSource: false } : {});
+      }
     }
     if (treeProjection.loadedPage?.id !== target.pageId) {
       await selectPage(target.pageId, { focusBlockId: target.blockId ?? null });

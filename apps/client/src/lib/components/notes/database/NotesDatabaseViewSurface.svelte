@@ -1,7 +1,8 @@
 <script lang="ts">
   import NotesLoadingSkeleton from "$lib/components/notes/NotesLoadingSkeleton.svelte";
-  import CollectionViewButton from "$lib/components/collections/CollectionViewButton.svelte";
   import { tick, untrack, type Snippet } from "svelte";
+  import { cn } from "$lib/utils";
+  import { NOTES_DATABASE_VIEW_TAB_DISPLAYS, notesDatabaseViewTabDisplays, type NotesDatabaseViewTabDisplay } from "$lib/notes/database/view-tab-display.svelte";
   import { databaseResource, notesDatabaseSession } from "$lib/notes/database/session.svelte";
   import Table2 from "@lucide/svelte/icons/table-2";
   import Columns3 from "@lucide/svelte/icons/columns-3";
@@ -18,6 +19,8 @@
   import LockOpen from "@lucide/svelte/icons/lock-open";
   import Link from "@lucide/svelte/icons/link";
   import Plus from "@lucide/svelte/icons/plus";
+  import Paintbrush from "@lucide/svelte/icons/paintbrush";
+  import ArrowUpRight from "@lucide/svelte/icons/arrow-up-right";
   import type { NotesDatabasePropertyActionRequest, NotesDatabaseSourceEditingScope } from "$lib/notes/database/data-source-schema";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
@@ -77,6 +80,8 @@
     onCreateLinkedDatabaseView,
     onAddProperty,
     onPropertyAction,
+    onCopyViewLink,
+    onOpenFullPage,
     editingLocked = false,
     onEditingLockChange = () => {},
     onSavingChange = () => {},
@@ -95,6 +100,10 @@
     onCreateLinkedDatabaseView: () => void;
     onAddProperty: (type: NotesDataSourcePropertyType, name: string, icon: string | null, scope?: NotesDatabaseSourceEditingScope) => Promise<void>;
     onPropertyAction?: (request: NotesDatabasePropertyActionRequest, scope: NotesDatabaseSourceEditingScope) => Promise<void>;
+    /** Copies a link that opens this database with the given saved view selected. */
+    onCopyViewLink?: (viewId: string) => Promise<void>;
+    /** Opens this database alone in the note pane, keeping the selected view. */
+    onOpenFullPage?: () => void;
     editingLocked?: boolean;
     onEditingLockChange?: (locked: boolean) => void;
     onSavingChange?: (saving: boolean) => void;
@@ -129,6 +138,8 @@
   let nameDraft = $state("");
   let viewSearch = $state("");
   let viewSettingsOpen = $state(false);
+  /** Set by Edit view in a tab menu so settings open once that menu has closed. */
+  let editViewPending = false;
   let settingsAnchor: HTMLButtonElement | null = $state(null);
   let newRowRequestState = $state<{ reporter: (saving: boolean) => void; count: number } | null>(null);
   let templates = $state<NotesDataSourceTemplate[]>(untrack(() => notesDatabaseSession.read(databaseResource("templates", dataSourceId)) ?? []));
@@ -411,11 +422,12 @@
   async function deleteView(): Promise<void> {
     const current = pendingDeleteView;
     pendingDeleteView = null;
-    if (!databaseId || !current || selectionDisabled || editingLocked || supportedViews.length < 2) return;
+    if (!databaseId || !current || selectionDisabled || editingLocked || !viewDeletable(current)) return;
     busy = true;
     viewError = null;
     try {
       await deleteNotesDatabaseView(databaseId, current.id);
+      notesDatabaseViewTabDisplays.set(current.id, null);
       await reloadViews(null);
     } catch (caught) {
       viewError = caught instanceof Error ? caught.message : String(caught);
@@ -431,6 +443,55 @@
    */
   function settingsRowSwitch(node: HTMLElement): void {
     node.querySelector<HTMLButtonElement>("button[role=\"switch\"]")?.setAttribute("data-collection-settings-row", "");
+  }
+
+  /**
+   * Decide whether a view tab opens its menu. A press on an inactive tab only selects it, while a press on the active tab
+   * or a context menu on any tab opens the menu for that view.
+   *
+   * @param viewId View whose tab was pressed.
+   * @param source Whether a press or a context menu asked to open.
+   */
+  function openViewMenu(viewId: string, source: "press" | "context"): boolean {
+    if (viewId === activeViewId) return true;
+    if (selectionDisabled) return false;
+    selectView(viewId);
+    return source === "context";
+  }
+
+  /**
+   * Load sources for the Source submenu while a view menu is open, and open view settings only after the menu that
+   * asked for them has closed, so its returning focus does not dismiss them.
+   *
+   * @param open Whether the view menu is now open.
+   */
+  function viewMenuOpenChanged(open: boolean): void {
+    if (open) {
+      void loadSources();
+      return;
+    }
+    editingName = false;
+    if (!editViewPending) return;
+    editViewPending = false;
+    viewSettingsOpen = true;
+  }
+
+  /** Whether deleting a view keeps at least one view and one table for its source. */
+  function viewDeletable(view: NotesDatabaseView): boolean {
+    if (supportedViews.length < 2) return false;
+    return view.type !== "table" || supportedViews.filter((candidate) => candidate.data_source_id === view.data_source_id && candidate.type === "table").length >= 2;
+  }
+
+  async function copyViewLink(viewId: string): Promise<void> {
+    try {
+      await onCopyViewLink?.(viewId);
+    } catch (caught: unknown) { viewError = caught instanceof Error ? caught.message : String(caught); }
+  }
+
+  function tabDisplayLabel(display: NotesDatabaseViewTabDisplay): string {
+    if (display === "text") return t("notes.databaseViewDisplayText");
+    if (display === "icon") return t("notes.databaseViewDisplayIcon");
+    return t("notes.databaseViewDisplayTextAndIcon");
   }
 
   function beginRename(): void {
@@ -504,7 +565,48 @@
         onkeydown={(event) => { if (event.key === "Enter") { event.preventDefault(); event.currentTarget.blur(); } }} />
     </div>
   {/if}
-  <CollectionMenu fullWidth label={t("notes.databaseSources")} summary={activeSource?.title ?? ""} icon={Database} disabled={selectionDisabled}>
+  {@render sourcesMenu(t("notes.databaseSources"))}
+  <label class="flex min-h-(--panel-row-height) w-full min-w-0 cursor-pointer items-center gap-2 px-2" aria-busy={selectionDisabled} use:settingsRowSwitch>
+    {#if editingLocked}<Lock class="size-3.5 shrink-0 text-muted-foreground" strokeWidth={1.75} aria-hidden="true" />{:else}<LockOpen class="size-3.5 shrink-0 text-muted-foreground" strokeWidth={1.75} aria-hidden="true" />{/if}
+    <span class="min-w-0 flex-1 truncate">{t("notes.databaseLockLayout")}</span>
+    <Switch size="compact" checked={editingLocked} ariaLabel={t("notes.databaseEditingLock")} onChange={() => { void toggleEditingLock(); }} />
+  </label>
+  {#if editingLocked}<p class="px-2 py-1 text-muted-foreground">{t("notes.databaseEditingLockDescription")}</p>{/if}
+  <CollectionMenuSeparator />
+{/snippet}
+
+{#snippet viewMenu(view: NotesDatabaseView)}
+  {@const display = notesDatabaseViewTabDisplays.get(view.id)}
+  {#if editingName}
+    <input bind:this={nameInput} class="field w-full" aria-label={t("notes.databaseViewName")} bind:value={nameDraft} onkeydown={(event) => { event.stopPropagation(); if (event.key === "Enter") void saveName(); if (event.key === "Escape") { nameDraft = view.name; editingName = false; } }} onblur={() => { if (editingName) void saveName(); }} />
+  {:else}
+    <div class="grid gap-0">
+      <button data-collection-menu-keep-open type="button" class="menu-item min-w-0" disabled={editingLocked} onclick={beginRename}>
+        <Pencil class="size-3.5 shrink-0 text-muted-foreground" strokeWidth={1.75} aria-hidden="true" /><span class="min-w-0 flex-1 truncate">{t("notes.databaseViewRename")}</span>
+      </button>
+      <CollectionMenu fullWidth dismissOnAction label={t("notes.databaseViewDisplayAs")} icon={Paintbrush}>
+        {#each NOTES_DATABASE_VIEW_TAB_DISPLAYS as option (option)}
+          <CollectionMenuItem label={tabDisplayLabel(option)} checked={display === option} onclick={() => notesDatabaseViewTabDisplays.set(view.id, option)} />
+        {/each}
+        <CollectionMenuSeparator />
+        <p class="px-2 py-1 text-muted-foreground">{t("notes.databaseViewDisplayPersonal")}</p>
+      </CollectionMenu>
+      <CollectionMenuItem icon={SlidersHorizontal} label={t("notes.databaseViewEdit")} onclick={() => { editViewPending = true; }} />
+      {@render sourcesMenu(t("notes.databaseViewSource"))}
+      {#if onCopyViewLink || onOpenFullPage}
+        <CollectionMenuSeparator />
+        {#if onCopyViewLink}<CollectionMenuItem icon={Link} label={t("notes.databaseViewCopyLink")} onclick={() => { void copyViewLink(view.id); }} />{/if}
+        {#if onOpenFullPage}<CollectionMenuItem icon={ArrowUpRight} label={t("notes.databaseViewOpenFullPage")} onclick={onOpenFullPage} />{/if}
+      {/if}
+      <CollectionMenuSeparator />
+      <CollectionMenuItem icon={Copy} label={t("notes.databaseViewDuplicate")} disabled={editingLocked} onclick={() => { void duplicateView(); }} />
+      <CollectionMenuItem icon={Trash2} label={t("notes.databaseViewDelete")} destructive disabled={editingLocked || !viewDeletable(view)} onclick={() => { pendingDeleteView = view; }} />
+    </div>
+  {/if}
+{/snippet}
+
+{#snippet sourcesMenu(label: string)}
+  <CollectionMenu fullWidth {label} summary={activeSource?.title ?? ""} icon={Database} disabled={selectionDisabled}>
     {#if sourceError}<p class="px-2 py-1 text-destructive" role="alert">{sourceError}</p>{/if}
     {#if sourcesLoading}<p class="px-2 py-1 text-muted-foreground" role="status">{t("notes.databaseSourcesLoading")}</p>{/if}
     <p class="px-2 py-1 text-muted-foreground">{t("notes.databaseSourcesAttached")}</p>
@@ -528,22 +630,22 @@
     {#if otherSources.length === 0 && !sourcesLoading}<p class="px-2 py-1 text-muted-foreground">{t("notes.databaseSourceNoOtherSources")}</p>{/if}
     <p class="px-2 py-1 text-muted-foreground">{t("notes.databaseSourceSharedDescription")}</p>
   </CollectionMenu>
-  <label class="flex min-h-(--panel-row-height) w-full min-w-0 cursor-pointer items-center gap-2 px-2" aria-busy={selectionDisabled} use:settingsRowSwitch>
-    {#if editingLocked}<Lock class="size-3.5 shrink-0 text-muted-foreground" strokeWidth={1.75} aria-hidden="true" />{:else}<LockOpen class="size-3.5 shrink-0 text-muted-foreground" strokeWidth={1.75} aria-hidden="true" />{/if}
-    <span class="min-w-0 flex-1 truncate">{t("notes.databaseLockLayout")}</span>
-    <Switch size="compact" checked={editingLocked} ariaLabel={t("notes.databaseEditingLock")} onChange={() => { void toggleEditingLock(); }} />
-  </label>
-  {#if editingLocked}<p class="px-2 py-1 text-muted-foreground">{t("notes.databaseEditingLockDescription")}</p>{/if}
-  <CollectionMenuSeparator />
 {/snippet}
 
 <div class="flex min-w-0 flex-wrap items-center gap-1 py-1">
   <div class="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
     {#each shownViews as view (view.id)}
       {@const Icon = viewIcons[view.type as NotesDatabaseViewKind]}
-      <CollectionViewButton label={view.name} active={activeViewId === view.id} disabled={selectionDisabled} onclick={() => selectViewFromToolbar(view.id)}>
-        <Icon class="size-4 shrink-0" strokeWidth={1.75} aria-hidden="true" />
-      </CollectionViewButton>
+      {@const active = activeViewId === view.id}
+      {@const display = notesDatabaseViewTabDisplays.get(view.id)}
+      <CollectionMenu label={view.name} kind="actions" showHeader={false} contextMenu pressed={active} iconOnly={display === "icon"} rootClass="shrink-0"
+        triggerClass={cn("max-w-44 rounded-md text-[0.866667rem] font-medium", active && "bg-accent text-foreground")} disabled={selectionDisabled}
+        beforeOpen={(source) => openViewMenu(view.id, source)} onOpenChange={viewMenuOpenChanged}>
+        {#snippet leading()}
+          {#if display !== "text"}<Icon class="size-4 shrink-0" strokeWidth={1.75} aria-hidden="true" />{/if}
+        {/snippet}
+        {@render viewMenu(view)}
+      </CollectionMenu>
     {/each}
     {#if overflowCount > 0}
       <CollectionMenu label={t("notes.databaseMoreViews", overflowCount)} kind="actions" showHeader={false} dismissOnAction disabled={selectionDisabled}>
@@ -573,19 +675,6 @@
         <button type="button" class="menu-item" onclick={onCreateLinkedDatabaseView}>{t("notes.databaseLinkedViewCreate")}</button>
       </div>
     </CollectionMenu>
-    {#if selectedView}
-      <CollectionMenu label={t("notes.databaseViewActions")} kind="actions" iconOnly showHeader={false} disabled={selectionDisabled}>
-        {#if editingName}
-          <input bind:this={nameInput} class="field w-full" aria-label={t("notes.databaseViewName")} bind:value={nameDraft} onkeydown={(event) => { event.stopPropagation(); if (event.key === "Enter") void saveName(); if (event.key === "Escape") { nameDraft = selectedView?.name ?? ""; editingName = false; } }} onblur={() => { if (editingName) void saveName(); }} />
-        {:else}
-          <div class="grid gap-0">
-            <button data-collection-menu-keep-open type="button" class="menu-item" disabled={editingLocked} onclick={beginRename}><Pencil class="size-4" />{t("notes.databaseViewRename")}</button>
-            <button type="button" class="menu-item" disabled={editingLocked} onclick={() => { void duplicateView(); }}><Copy class="size-4" />{t("notes.databaseViewDuplicate")}</button>
-            <button type="button" class="menu-item menu-item-destructive" disabled={editingLocked || supportedViews.length < 2 || (selectedView.type === "table" && supportedViews.filter((view) => view.data_source_id === activeSourceId && view.type === "table").length < 2)} onclick={() => { pendingDeleteView = selectedView; }}><Trash2 class="size-4" />{t("notes.databaseViewDelete")}</button>
-          </div>
-        {/if}
-      </CollectionMenu>
-    {/if}
   </div>
   <button bind:this={settingsAnchor} type="button" class="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground" class:bg-accent={viewSettingsOpen} aria-label={t("notes.databaseViewSettings")} aria-haspopup="dialog" aria-expanded={viewSettingsOpen} title={t("notes.databaseViewSettings")} onclick={() => { viewSettingsOpen = !viewSettingsOpen; }}><SlidersHorizontal class="size-4" aria-hidden="true" /></button>
   <div class="inline-flex shrink-0 items-center rounded-md bg-primary">

@@ -8,7 +8,7 @@ Linked text uses semantic anchors. Hovering a link in the editor opens a small f
 
 Pasting a single valid URL onto selected text links the existing words, including across a document selection as one undo step; code blocks and database blocks are unchanged.
 
-Local links persist as `#notes?page=UUID` with an optional `block=UUID`, and links copied from the current app origin normalize to this form. Rust validates the identities before saving, and navigation checks whether the target is still available. This is not an operating-system URL scheme or a public sharing URL.
+Local links persist as `#notes?page=UUID` with an optional `block=UUID`; a link to a database view adds `view=UUID` beside its block and opens that database with the view selected. Links copied from the current app origin normalize to this form. Rust validates the identities before saving, and navigation checks whether the target is still available. This is not an operating-system URL scheme or a public sharing URL.
 
 Page and database mentions render as compact inline references. Hovering shows the current title and path (and, for databases, a schematic preview that fetches no rows); metadata loads only on hover intent or activation. Clicking a database mention opens its database surface. Within the vault, rich clipboard paste keeps mention identities without duplicating their destinations; missing or invalid metadata degrades to readable text or an ordinary hyperlink.
 

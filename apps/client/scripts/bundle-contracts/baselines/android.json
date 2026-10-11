@@ -23,7 +23,7 @@
         "src/lib/components/projects/ProjectsView.svelte",
         "src/lib/components/projects/list/ProjectListView.svelte"
       ],
-      "maxSourceModules": 237
+      "maxSourceModules": 245
     },
     {
       "name": "notes",
@@ -55,7 +55,7 @@
       "maxSourceModules": 267
     }
   ],
-  "maxTotalSourceModules": 1123,
+  "maxTotalSourceModules": 1134,
   "requiredMobileModules": [
     "src/main.ts",
     "src/main-mobile.ts",

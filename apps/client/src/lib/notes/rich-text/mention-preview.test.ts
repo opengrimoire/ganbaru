@@ -1,30 +1,26 @@
 import { describe, expect, it } from "vitest";
-import type { CalendarEvent, RecurrenceConfig } from "$lib/calendar/types";
 import {
   notesCalendarEventPreviewWhen,
   notesDateMentionPreviewWhen,
   notesLabeledRoute,
-  notesMentionedCalendarEvent,
+  notesMentionScopeEventTimes,
   notesPageLocationHeading,
   type NotesCalendarEventPreviewLabels,
+  type NotesCalendarEventPreviewTimes,
 } from "./mention-preview";
 
 const UNTITLED = "Untitled";
-const WEEKLY: RecurrenceConfig = { frequency: "weekly", interval: 1, end: { type: "never" } };
 const LABELS: NotesCalendarEventPreviewLabels = {
   allDay: "All day",
   allDayOn: (date) => `All day on ${date}`,
   datedTimeRange: (date, range) => `${date} ${range}`,
 };
 
-function event(overrides: Partial<CalendarEvent> = {}): CalendarEvent {
+function event(overrides: Partial<NotesCalendarEventPreviewTimes> = {}): NotesCalendarEventPreviewTimes {
   return {
-    id: "event",
-    title: "Review",
     start: "2026-10-12 09:00",
     end: "2026-10-12 10:30",
-    timezone: "UTC",
-    calendarId: "calendar",
+    recurring: false,
     ...overrides,
   };
 }
@@ -50,23 +46,6 @@ describe("notesPageLocationHeading", () => {
   });
 });
 
-describe("notesMentionedCalendarEvent", () => {
-  it("prefers the series template over its virtual occurrences", () => {
-    const occurrence = event({ id: "series", recurringParentId: "series", start: "2026-10-19 09:00" });
-    const template = event({ id: "series", recurrence: WEEKLY });
-    expect(notesMentionedCalendarEvent([occurrence, template], "series")).toBe(template);
-  });
-
-  it("falls back to a loaded occurrence when only occurrences of the series are loaded", () => {
-    const occurrence = event({ id: "series:2026-10-19", recurringParentId: "series" });
-    expect(notesMentionedCalendarEvent([occurrence], "series")).toBe(occurrence);
-  });
-
-  it("returns undefined for an event outside the loaded window", () => {
-    expect(notesMentionedCalendarEvent([event()], "other")).toBeUndefined();
-  });
-});
-
 describe("notesCalendarEventPreviewWhen", () => {
   it("shows the date and time range of a single timed event in the chosen time format", () => {
     expect(notesCalendarEventPreviewWhen(event(), { locale: "en-US", timeFormat: "24h", labels: LABELS }))
@@ -81,9 +60,9 @@ describe("notesCalendarEventPreviewWhen", () => {
   });
 
   it("shows only the time range or all-day label of a recurring series", () => {
-    expect(notesCalendarEventPreviewWhen(event({ recurrence: WEEKLY }), { locale: "en-US", timeFormat: "24h", labels: LABELS }))
+    expect(notesCalendarEventPreviewWhen(event({ recurring: true }), { locale: "en-US", timeFormat: "24h", labels: LABELS }))
       .toBe("09:00 - 10:30");
-    expect(notesCalendarEventPreviewWhen(event({ recurrence: WEEKLY, allDay: true }), { locale: "en-US", timeFormat: "24h", labels: LABELS }))
+    expect(notesCalendarEventPreviewWhen(event({ recurring: true, allDay: true }), { locale: "en-US", timeFormat: "24h", labels: LABELS }))
       .toBe("All day");
   });
 
@@ -106,5 +85,29 @@ describe("notesDateMentionPreviewWhen", () => {
 
   it("returns null when the stored date cannot be read", () => {
     expect(notesDateMentionPreviewWhen({ start: "someday" }, "en-US")).toBeNull();
+  });
+});
+
+describe("notesMentionScopeEventTimes", () => {
+  const stored = {
+    start_time: "2026-10-12T22:30:00Z",
+    end_time: "2026-10-12T23:30:00Z",
+    all_day: false,
+    recurring: true,
+  };
+
+  it("renders stored UTC instants as wall-clock times in the given zone", () => {
+    expect(notesMentionScopeEventTimes(stored, "America/Mexico_City")).toEqual({
+      start: "2026-10-12 16:30",
+      end: "2026-10-12 17:30",
+      allDay: false,
+      recurring: true,
+    });
+  });
+
+  it("keeps all-day dates in every zone", () => {
+    const allDay = { ...stored, start_time: "2026-10-12T00:00:00Z", end_time: "2026-10-13T00:00:00Z", all_day: true };
+    expect(notesMentionScopeEventTimes(allDay, "Pacific/Auckland").start).toBe("2026-10-12 00:00");
+    expect(notesMentionScopeEventTimes(allDay, "America/Los_Angeles").start).toBe("2026-10-12 00:00");
   });
 });

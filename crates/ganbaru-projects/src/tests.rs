@@ -103,4 +103,5 @@ mod routine;
 mod structure;
 mod task_bulk;
 mod task_lifecycle;
+mod task_summaries;
 mod task_views;

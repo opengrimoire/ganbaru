@@ -261,6 +261,40 @@ struct LocationPage {
 /// then the pages and row databases above it. Names follow the Notes sidebar, so empty page titles stay empty for the
 /// caller to label.
 pub async fn page_location(pool: &SqlitePool, page_id: &str) -> Result<Vec<String>, String> {
+    let page_id = require_active_page(pool, page_id).await?;
+    page_ancestry_location(pool, page_id).await
+}
+
+/// Read the projects that share a project group with the project an active page belongs to: the page's own project
+/// and the active projects beside it. A page outside every project has none.
+pub async fn page_project_group_project_ids(
+    pool: &SqlitePool,
+    page_id: &str,
+) -> Result<Vec<String>, String> {
+    let page_id = require_active_page(pool, page_id).await?;
+    let pages = ancestry_pages(pool, page_id).await?;
+    let folders = match pages.iter().find_map(|page| page.folder_id.as_deref()) {
+        Some(folder_id) => folder_location(pool, folder_id).await?,
+        None => Vec::new(),
+    };
+    let Some(project_id) = ancestry_project_id(&pages, &folders) else {
+        return Ok(Vec::new());
+    };
+    sqlx::query_scalar::<_, String>(
+        "SELECT peer.id
+         FROM projects AS owner
+         JOIN projects AS peer ON peer.group_id = owner.group_id
+         WHERE owner.id = ? AND (peer.status = 'active' OR peer.id = owner.id)
+         ORDER BY peer.sort_order, peer.name, peer.id",
+    )
+    .bind(project_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("load notes page project group: {e}"))
+}
+
+/// Trim and validate a page id, requiring the page to be neither trashed nor archived.
+async fn require_active_page<'a>(pool: &SqlitePool, page_id: &'a str) -> Result<&'a str, String> {
     let page_id = page_id.trim();
     require_uuid(page_id, "page_id")?;
     let active = sqlx::query_scalar::<_, i64>(
@@ -269,11 +303,11 @@ pub async fn page_location(pool: &SqlitePool, page_id: &str) -> Result<Vec<Strin
     .bind(page_id)
     .fetch_optional(pool)
     .await
-    .map_err(|e| format!("load notes page location: {e}"))?;
+    .map_err(|e| format!("load notes page: {e}"))?;
     if active.is_none() {
         return Err("notes page not found".to_string());
     }
-    page_ancestry_location(pool, page_id).await
+    Ok(page_id)
 }
 
 /// Read where a database lives: the location of the page that holds it, ending with that page's title.
@@ -293,7 +327,36 @@ pub(crate) async fn database_location(
 }
 
 async fn page_ancestry_location(pool: &SqlitePool, page_id: &str) -> Result<Vec<String>, String> {
-    let pages = sqlx::query_as::<_, LocationPage>(
+    let pages = ancestry_pages(pool, page_id).await?;
+    let folder_id = pages.iter().find_map(|page| page.folder_id.as_deref());
+    let folders = match folder_id {
+        Some(folder_id) => folder_location(pool, folder_id).await?,
+        None => Vec::new(),
+    };
+    let mut location = match ancestry_project_id(&pages, &folders) {
+        Some(project_id) => project_location(pool, &project_id).await?,
+        None => Vec::new(),
+    };
+    location.extend(folders.into_iter().map(|(name, _)| name));
+    for page in pages {
+        location.extend(page.row_database_title);
+        location.push(page.title);
+    }
+    Ok(location)
+}
+
+/// The project a page belongs to: the project marked on the outermost page of its ancestry that has one, else the
+/// project owning its outermost folder.
+fn ancestry_project_id(pages: &[LocationPage], folders: &[(String, String)]) -> Option<String> {
+    pages
+        .iter()
+        .find_map(|page| page.project_id.clone())
+        .or_else(|| folders.first().map(|(_, project_id)| project_id.clone()))
+}
+
+/// Read a page and the pages above it, outermost first, following page, block, and row data source parents.
+async fn ancestry_pages(pool: &SqlitePool, page_id: &str) -> Result<Vec<LocationPage>, String> {
+    sqlx::query_as::<_, LocationPage>(
         "WITH RECURSIVE path(page_id, depth) AS (
            SELECT ?, 0
            UNION ALL
@@ -327,27 +390,7 @@ async fn page_ancestry_location(pool: &SqlitePool, page_id: &str) -> Result<Vec<
     .bind(format!("$.{}", crate::PAGE_PROJECT_ID_PROPERTY))
     .fetch_all(pool)
     .await
-    .map_err(|e| format!("load notes page location: {e}"))?;
-
-    let folder_id = pages.iter().find_map(|page| page.folder_id.as_deref());
-    let folders = match folder_id {
-        Some(folder_id) => folder_location(pool, folder_id).await?,
-        None => Vec::new(),
-    };
-    let project_id = pages
-        .iter()
-        .find_map(|page| page.project_id.clone())
-        .or_else(|| folders.first().map(|(_, project_id)| project_id.clone()));
-    let mut location = match project_id {
-        Some(project_id) => project_location(pool, &project_id).await?,
-        None => Vec::new(),
-    };
-    location.extend(folders.into_iter().map(|(name, _)| name));
-    for page in pages {
-        location.extend(page.row_database_title);
-        location.push(page.title);
-    }
-    Ok(location)
+    .map_err(|e| format!("load notes page location: {e}"))
 }
 
 /// Read a folder and its ancestors, outermost first, each with the project that owns it.

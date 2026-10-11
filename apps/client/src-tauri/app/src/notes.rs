@@ -157,6 +157,44 @@ pub async fn notes_page_location<R: Runtime>(
     reads::page_location(&pool, &page_id).await
 }
 
+/// Most tasks a page's mention menu offers from its project group.
+const MENTION_SCOPE_TASK_LIMIT: u32 = 500;
+/// Most Calendar events a page's mention menu offers from its project group.
+const MENTION_SCOPE_EVENT_LIMIT: u32 = 500;
+
+/// The tasks and Calendar events a page may mention: those of the projects in its project group.
+#[derive(serde::Serialize)]
+pub struct NotesMentionScopeDto {
+    pub tasks: Vec<ganbaru_projects::task_summaries::ProjectTaskSummary>,
+    pub events: Vec<ganbaru_calendar::reads::project_events::CalendarProjectEventSummary>,
+}
+
+/// List the tasks and Calendar events a page may mention. A page outside every project gets neither.
+#[tauri::command]
+pub async fn notes_list_mention_scope<R: Runtime>(
+    app: AppHandle<R>,
+    db_url: String,
+    page_id: String,
+) -> Result<NotesMentionScopeDto, String> {
+    let pool = connect_sqlite(app, db_url).await?;
+    let project_ids = reads::page_project_group_project_ids(&pool, &page_id).await?;
+    let tasks = ganbaru_projects::task_summaries::list_task_summaries(
+        &pool,
+        &project_ids,
+        MENTION_SCOPE_TASK_LIMIT,
+    )
+    .await?;
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let events = ganbaru_calendar::reads::project_events::list_project_event_summaries(
+        &pool,
+        &project_ids,
+        &now,
+        MENTION_SCOPE_EVENT_LIMIT,
+    )
+    .await?;
+    Ok(NotesMentionScopeDto { tasks, events })
+}
+
 #[tauri::command]
 pub async fn notes_search<R: Runtime>(
     app: AppHandle<R>,

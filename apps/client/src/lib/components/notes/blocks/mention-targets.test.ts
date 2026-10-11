@@ -117,6 +117,34 @@ describe("Notes block mention targets", () => {
       ["Personal", "Plans"],
     ]);
   });
+
+  it("offers the scoped tasks and events with their project and when they happen", () => {
+    const event = {
+      id: "event-1", title: "", start_time: "2026-10-12T09:00:00Z", end_time: "2026-10-12T10:00:00Z",
+      all_day: false, recurring: false, calendar_id: "calendar", project_id: "project-1",
+    };
+    const targets = buildNotesMentionTargets({
+      pages: [],
+      localUser: null,
+      dataSources: [],
+      dataSourceRowPages: [],
+      projects,
+      tasks: [
+        { id: "task-1", project_id: "project-1", title: "Draft", completed: false },
+        { id: "task-2", project_id: "project-unloaded", title: "", completed: true },
+      ],
+      calendarEvents: [event, { ...event, id: "event-2", title: "Sync" }],
+      calendarEventWhen: (candidate) => (candidate.id === "event-1" ? "Mon 09:00" : null),
+      translate,
+    });
+
+    expect(targets.filter((target) => target.kind !== "project")).toEqual([
+      { kind: "project_task", id: "task-1", title: "Draft", subtitle: "notes.mentionTargetProjectTaskIn:Productivity" },
+      { kind: "project_task", id: "task-2", title: "notes.untitled", subtitle: "notes.mentionTargetProjectTask" },
+      { kind: "calendar_event", id: "event-1", title: "notes.untitled", subtitle: "Mon 09:00" },
+      { kind: "calendar_event", id: "event-2", title: "Sync", subtitle: "notes.mentionTargetCalendarEvent" },
+    ]);
+  });
 });
 
 describe("Notes page mention routes", () => {

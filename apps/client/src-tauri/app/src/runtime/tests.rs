@@ -17,6 +17,7 @@ fn mobile_runtime_registers_portable_core_commands() {
         "notes::notes_get_page_notification_settings",
         "notes::notes_set_page_notification_level",
         "notes::notes_get_data_source_row_page_context",
+        "notes::notes_list_mention_scope",
         "pomodoro::native_runtime::focus_snapshot",
         "pomodoro::native_runtime::focus_command",
         "pomodoro::native_runtime::focus_notification_copy",

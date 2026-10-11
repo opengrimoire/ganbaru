@@ -1,7 +1,8 @@
 <script lang="ts">
   import { tick, untrack } from "svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { getCalendar } from "$lib/stores/calendar.svelte";
+  import { getLocalTimezone } from "$lib/calendar/timezone-utils";
+  import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getNotesEditor } from "$lib/components/notes/editor-context";
   import { getProjects } from "$lib/stores/projects.svelte";
   import { buildNotesBlockLink, buildNotesPageLink } from "$lib/notes/links/block-link";
@@ -65,6 +66,8 @@
   } from "./render-contracts";
   import { createNotesStructuralBlockLoader } from "./structural-block-loader.svelte";
   import { buildNotesMentionTargets } from "./mention-targets";
+  import { notesMentionScope } from "./mention-scope-controller.svelte";
+  import { notesCalendarEventPreviewWhen, notesMentionScopeEventTimes } from "$lib/notes/rich-text/mention-preview";
   import { notesMentionData, type NotesMentionCatalog } from "./mention-data-controller.svelte";
 
   let {
@@ -86,9 +89,10 @@
   } = $props();
 
   const notes = getNotesEditor();
-  const calendar = getCalendar();
+  const preferences = getPreferences();
   const projects = getProjects();
-  const { t } = getLocalization();
+  const localization = getLocalization();
+  const { t } = localization;
   let blockListElement: HTMLDivElement | null = $state(null);
   let DatabasePastePrompt = $state<typeof NotesDatabasePastePrompt | null>(null);
   let pastePromptLoading = $state(false);
@@ -196,7 +200,10 @@
   const canMoveSelectionDown = $derived(blockSelectionController.canMoveDown);
   const mentionTargets: NotesMentionCatalog = {
     read: buildMentionTargets,
-    acquire: notesMentionData.acquire,
+    acquire: () => {
+      notesMentionScope.request(pageId);
+      return notesMentionData.acquire();
+    },
   };
   const listOrdinals = $derived(notesNumberedListOrdinals(notes.flatBlockOutlines.map(({ outline }) => ({
     indent: outline.ganbaru_indent ?? 0,
@@ -283,24 +290,22 @@
   $effect(() => {
     if (!projects.loaded && !projects.loading) {
       void projects.ensureLoaded()
-        .then(() => {
-          if (projects.selectedProjectId) {
-            return projects.ensureProjectData(projects.selectedProjectId);
-          }
-          return undefined;
-        })
         .catch((error) => console.warn("notes mention project targets failed", error));
     }
   });
 
-  $effect(() => {
-    if (!calendar.loaded && !calendar.windowLoadBusy) {
-      void calendar.load()
-        .catch((error) => console.warn("notes mention calendar targets failed", error));
-    }
-  });
-
   function buildMentionTargets(): NotesNamedMentionTarget[] {
+    const scope = notesMentionScope.read(pageId);
+    const renderZone = getLocalTimezone();
+    const whenOptions = {
+      locale: localization.locale,
+      timeFormat: preferences.calendarTimeFormat,
+      labels: {
+        allDay: t("calendar.notification.allDay"),
+        allDayOn: (date: string) => t("calendar.notification.allDayOn", date),
+        datedTimeRange: (date: string, range: string) => t("calendar.notification.datedTimeRange", date, range),
+      },
+    };
     return buildNotesMentionTargets({
       pages: notes.allPages,
       localUser: notes.localUser,
@@ -309,8 +314,9 @@
       folders: notes.folders,
       projectGroups: projects.groups,
       projects: projects.projects,
-      tasks: projects.tasks,
-      calendarEvents: calendar.sourceEvents,
+      tasks: scope.tasks,
+      calendarEvents: scope.events,
+      calendarEventWhen: (event) => notesCalendarEventPreviewWhen(notesMentionScopeEventTimes(event, renderZone), whenOptions),
       translate: t,
     });
   }

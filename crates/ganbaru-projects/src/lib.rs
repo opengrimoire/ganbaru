@@ -22,6 +22,7 @@ pub mod scheduling;
 pub mod structure_commands;
 pub mod task_bulk;
 pub mod task_commands;
+pub mod task_summaries;
 mod task_views;
 mod templates;
 pub mod validation;

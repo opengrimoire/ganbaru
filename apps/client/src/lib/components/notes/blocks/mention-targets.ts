@@ -2,7 +2,6 @@ import {
   listNotesDataSources,
   listNotesDataSourceRowPages,
 } from "$lib/api/notes";
-import type { CalendarEvent } from "$lib/calendar/types";
 import type { Translate } from "$lib/i18n/translator.svelte";
 import { notesLocalUserDisplayName } from "$lib/notes/collaboration/local-user";
 import { notesPageIconText } from "$lib/notes/pages/icon";
@@ -17,6 +16,8 @@ import type {
   NotesDataSourceListItem,
   NotesFolder,
   NotesLocalUser,
+  NotesMentionScopeEvent,
+  NotesMentionScopeTask,
   NotesPage,
 } from "$lib/notes/types";
 
@@ -40,13 +41,6 @@ export interface NotesMentionProjectGroup {
   name: string;
 }
 
-export interface NotesMentionTask {
-  id: string;
-  projectId: string;
-  title: string;
-  archivedAt?: string | null;
-}
-
 export interface NotesMentionTargetInput {
   pages: readonly NotesPage[];
   localUser: NotesLocalUser | null;
@@ -56,8 +50,11 @@ export interface NotesMentionTargetInput {
   folders?: readonly NotesFolder[];
   projectGroups?: readonly NotesMentionProjectGroup[];
   projects: readonly NotesMentionProject[];
-  tasks: readonly NotesMentionTask[];
-  calendarEvents: readonly CalendarEvent[];
+  /** Tasks and events from the editing page's project group; other projects' tasks and events are not offered. */
+  tasks: readonly NotesMentionScopeTask[];
+  calendarEvents: readonly NotesMentionScopeEvent[];
+  /** Say when an event happens for its subtitle; without it, or when it returns null, the subtitle names the kind. */
+  calendarEventWhen?: (event: NotesMentionScopeEvent) => string | null;
   translate: Translate;
 }
 
@@ -196,27 +193,23 @@ export function buildNotesMentionTargets(input: NotesMentionTargetInput): NotesN
       title: project.name,
       subtitle: t("notes.mentionTargetProject"),
     }));
-  const taskTargets: NotesObjectMentionTarget[] = input.tasks
-    .filter((task) => !task.archivedAt)
-    .map((task) => {
-      const project = projectById.get(task.projectId);
-      return {
-        kind: "project_task",
-        id: task.id,
-        title: task.title || t("notes.untitled"),
-        subtitle: project
-          ? t("notes.mentionTargetProjectTaskIn", project.name)
-          : t("notes.mentionTargetProjectTask"),
-      };
-    });
-  const calendarTargets: NotesObjectMentionTarget[] = input.calendarEvents
-    .filter((event) => event.status !== "cancelled")
-    .map((event) => ({
-      kind: "calendar_event",
-      id: event.recurringParentId ?? event.id,
-      title: event.title || t("notes.untitled"),
-      subtitle: t("notes.mentionTargetCalendarEvent"),
-    }));
+  const taskTargets: NotesObjectMentionTarget[] = input.tasks.map((task) => {
+    const project = projectById.get(task.project_id);
+    return {
+      kind: "project_task",
+      id: task.id,
+      title: task.title || t("notes.untitled"),
+      subtitle: project
+        ? t("notes.mentionTargetProjectTaskIn", project.name)
+        : t("notes.mentionTargetProjectTask"),
+    };
+  });
+  const calendarTargets: NotesObjectMentionTarget[] = input.calendarEvents.map((event) => ({
+    kind: "calendar_event",
+    id: event.id,
+    title: event.title || t("notes.untitled"),
+    subtitle: input.calendarEventWhen?.(event) ?? t("notes.mentionTargetCalendarEvent"),
+  }));
 
   return [
     ...userTargets,

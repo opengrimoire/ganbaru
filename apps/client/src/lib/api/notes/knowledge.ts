@@ -7,8 +7,10 @@ import {
   mapNotesSearchResultDto,
   mapNotesUnresolvedLinkDto,
 } from "$lib/notes/validation/response-mappers";
+import { parseNotesMentionScope } from "$lib/notes/validation/knowledge";
 import type {
   NotesBacklink,
+  NotesMentionScope,
   NotesPageAlias,
   NotesPageAliasCreate,
   NotesPageBreadcrumbItem,
@@ -138,4 +140,10 @@ export async function searchNotes(
     }),
     next_cursor: shellNullableString(record.next_cursor, "notes_search.next_cursor"),
   };
+}
+
+/** Read the tasks and Calendar events a page may mention: those of the projects in its project group. */
+export async function listNotesMentionScope(pageId: string): Promise<NotesMentionScope> {
+  const dbUrl = await ensureDbUrl();
+  return parseNotesMentionScope(await invoke<unknown>("notes_list_mention_scope", { dbUrl, pageId }));
 }

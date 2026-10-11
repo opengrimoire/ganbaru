@@ -347,3 +347,79 @@ fn page_location_follows_project_folder_and_page_ancestry_through_the_page_itsel
         assert!(reads::page_location(&pool, "not-a-page").await.is_err());
     });
 }
+
+#[test]
+fn page_project_group_lists_the_page_project_and_its_active_peers() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        for (id, name) in [("group", "Group"), ("other-group", "Other")] {
+            sqlx::query("INSERT INTO project_groups (id, name) VALUES (?, ?)")
+                .bind(id)
+                .bind(name)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        for (id, group, status, sort_order) in [
+            ("own", "group", "hidden", 2),
+            ("peer", "group", "active", 1),
+            ("archived-peer", "group", "archived", 0),
+            ("elsewhere", "other-group", "active", 0),
+        ] {
+            sqlx::query(
+                "INSERT INTO projects (id, group_id, name, status, sort_order) VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(id)
+            .bind(group)
+            .bind(id)
+            .bind(status)
+            .bind(sort_order)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        for (id, parent, first_block) in [
+            (PAGE_A, workspace_parent(), BLOCK_A),
+            (PAGE_B, page_parent(PAGE_A), BLOCK_B),
+            (PAGE_C, workspace_parent(), BLOCK_C),
+        ] {
+            writes::create_page(
+                &pool,
+                NotePageCreate {
+                    id: id.to_string(),
+                    title: "Page".to_string(),
+                    parent,
+                    folder_id: None,
+                    first_block_id: first_block.to_string(),
+                    after_block_id: None,
+                    properties: None,
+                },
+            )
+            .await
+            .unwrap();
+        }
+        sqlx::query("UPDATE notes_pages SET properties = json_set(properties, '$.__ganbaru_project_id', 'own') WHERE id = ?")
+            .bind(PAGE_A)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            reads::page_project_group_project_ids(&pool, PAGE_B)
+                .await
+                .unwrap(),
+            ["peer", "own"]
+        );
+        assert!(
+            reads::page_project_group_project_ids(&pool, PAGE_C)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            reads::page_project_group_project_ids(&pool, "not-a-page")
+                .await
+                .is_err()
+        );
+    });
+}

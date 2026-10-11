@@ -11,6 +11,7 @@ pub mod focus_context;
 mod hydration;
 mod icalendar;
 pub mod native_window;
+pub mod project_events;
 
 pub use export::CalendarExportSnapshot;
 

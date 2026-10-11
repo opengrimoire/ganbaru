@@ -739,6 +739,16 @@ pub enum NoteDataSourcePropertyAction {
         property_id: String,
         name: String,
     },
+    /// Convert a non-title property to another type, carrying row values over where they have a meaning.
+    ChangeType {
+        property_id: String,
+        property_type: String,
+        /// Type configuration the new type cannot derive, such as a relation target.
+        config: Option<Value>,
+    },
+    Delete {
+        property_id: String,
+    },
 }
 
 #[derive(Clone, Copy, Deserialize)]

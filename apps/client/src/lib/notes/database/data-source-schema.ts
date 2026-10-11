@@ -26,7 +26,9 @@ export type NotesDatabasePropertyActionRequest =
   | { type: "insert"; propertyId: string; side: "left" | "right"; propertyType: NotesDataSourcePropertyType; name: string; icon: string | null }
   | { type: "duplicate"; propertyId: string }
   | { type: "rename"; propertyId: string; name: string }
-  | { type: "icon"; propertyId: string; icon: string | null };
+  | { type: "icon"; propertyId: string; icon: string | null }
+  | { type: "changeType"; propertyId: string; propertyType: NotesDataSourcePropertyType }
+  | { type: "delete"; propertyId: string };
 
 /** Outcome of renaming one property draft from a table header. */
 export type NotesDataSourcePropertyRename =
@@ -39,6 +41,16 @@ export interface NotesDatabaseSourceEditingScope {
   databaseId: string | null;
   viewId: string | null;
 }
+
+/**
+ * One property edit, applied to the newest saved schema rather than to what an editor last showed, so edits made in
+ * quick succession build on each other. It returns the changed fields, or null when nothing changes, and throws a
+ * localized error when the edit cannot apply.
+ */
+export type NotesDataSourcePropertyUpdate = (
+  property: NotesDataSourceSchemaPropertyDraft,
+  drafts: readonly NotesDataSourceSchemaPropertyDraft[],
+) => Partial<NotesDataSourceSchemaPropertyDraft> | null;
 
 export interface NotesDataSourceSchemaOptionDraft {
   id: string;
@@ -72,6 +84,8 @@ export interface NotesDataSourceSchemaPropertyDraft {
   buttonActionPropertyType: NotesDataSourcePropertyType;
   buttonActionValue: unknown;
   options: NotesDataSourceSchemaOptionDraft[];
+  /** Status option that new rows receive; empty lets the native schema choose the first To-do option. */
+  statusDefaultOptionId: string;
 }
 
 export interface NotesDataSourceRollupTargetOption {
@@ -572,6 +586,7 @@ function propertyDraftFromRecord(
     buttonActionPropertyType: buttonActionType,
     buttonActionValue: buttonActionValueForType(buttonActionType, buttonAction?.value),
     options,
+    statusDefaultOptionId: type === "status" && isRecord(config) ? readString(config.default_option_id, "") : "",
   };
 }
 
@@ -713,6 +728,7 @@ export function createNotesDataSourcePropertyDraft(
     buttonActionPropertyType: "checkbox",
     buttonActionValue: true,
     options: type === "status" ? defaultStatusOptions() : [],
+    statusDefaultOptionId: "",
   };
 }
 
@@ -741,6 +757,9 @@ function propertyConfig(property: NotesDataSourceSchemaPropertyDraft): UnknownRe
             .filter((option) => option.group === group)
             .map((option) => option.id),
         })),
+        default_option_id: property.options.some((option) => option.id === property.statusDefaultOptionId)
+          ? property.statusDefaultOptionId
+          : null,
       };
     case "unique_id":
       return { prefix: property.uniquePrefix.trim() || null };
@@ -806,6 +825,11 @@ function propertyConfig(property: NotesDataSourceSchemaPropertyDraft): UnknownRe
     default:
       return emptyPropertyConfig(property.type);
   }
+}
+
+/** Serialize one draft's type configuration as the native property config, throwing when a required reference is missing. */
+export function notesDataSourcePropertyConfig(property: NotesDataSourceSchemaPropertyDraft): UnknownRecord {
+  return propertyConfig(property);
 }
 
 function statusGroupColor(group: NotesDataSourceStatusGroup): NotesDataSourceSelectColor {

@@ -186,6 +186,24 @@ describe("Collection settings navigation", () => {
     expect(document.activeElement).toBe(anchor);
   });
 
+  it("returns to the remaining page when the row that opened a page leaves the panel", async () => {
+    const { panel } = await openSettings();
+    panel.querySelector<HTMLButtonElement>('[aria-label="Layout"]')!.click();
+    await tick();
+    await tick();
+    panel.querySelector<HTMLButtonElement>('[aria-label="Advanced layout"]')!.click();
+    await tick();
+    await tick();
+    expect(panel.getAttribute("aria-label")).toBe("Advanced layout");
+    (component as { removeLayout: () => void }).removeLayout();
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve));
+    await tick();
+    expect(panel.getAttribute("aria-label")).toBe("View settings");
+    expect(panel.querySelectorAll("[data-collection-settings-page]")).toHaveLength(1);
+    expect(panel.querySelector('[aria-label="Advanced value"]')).toBeNull();
+  });
+
   it("lets nested selects own the first Escape and selection before returning from the detail page", async () => {
     const { panel } = await openSettings();
     const filter = panel.querySelector<HTMLButtonElement>('[aria-label="Filter"]')!;

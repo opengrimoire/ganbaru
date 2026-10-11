@@ -14,6 +14,15 @@ pub struct RelationConfig {
     dual_property: Option<RelationDualProperty>,
 }
 
+impl RelationConfig {
+    /// The reciprocal property on the target source, when the relation is two-way.
+    pub(crate) fn synced_property_id(&self) -> Option<&str> {
+        self.dual_property
+            .as_ref()
+            .map(|dual| dual.synced_property_id.as_str())
+    }
+}
+
 #[derive(Clone)]
 struct RelationDualProperty {
     synced_property_id: String,

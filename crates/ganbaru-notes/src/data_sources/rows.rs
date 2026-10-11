@@ -302,10 +302,9 @@ fn default_row_property_value(
     let value = match property_type {
         "title" => Value::Array(vec![writes::rich_text(title)]),
         "rich_text" | "multi_select" | "files" | "people" | "relation" => Value::Array(Vec::new()),
-        "number" | "select" | "status" | "date" | "url" | "email" | "phone_number"
-        | "created_time" | "created_by" | "last_edited_time" | "last_edited_by" | "place" => {
-            Value::Null
-        }
+        "status" => default_status_option(schema_object),
+        "number" | "select" | "date" | "url" | "email" | "phone_number" | "created_time"
+        | "created_by" | "last_edited_time" | "last_edited_by" | "place" => Value::Null,
         "checkbox" => Value::Bool(false),
         "unique_id" => json!({
             "number": null,
@@ -328,6 +327,32 @@ fn default_row_property_value(
         "type": property_type,
         property_type: value
     }))
+}
+
+/// The status option a new row starts with, matching the stored option shape.
+fn default_status_option(schema_object: &Map<String, Value>) -> Value {
+    let config = schema_object.get("status");
+    let Some(default_id) = config
+        .and_then(|config| config.get("default_option_id"))
+        .and_then(Value::as_str)
+    else {
+        return Value::Null;
+    };
+    config
+        .and_then(|config| config.get("options"))
+        .and_then(Value::as_array)
+        .and_then(|options| {
+            options
+                .iter()
+                .find(|option| option.get("id").and_then(Value::as_str) == Some(default_id))
+        })
+        .map_or(Value::Null, |option| {
+            json!({
+                "id": default_id,
+                "name": option.get("name").cloned().unwrap_or(Value::Null),
+                "color": option.get("color").cloned().unwrap_or(json!("default"))
+            })
+        })
 }
 
 fn canonical_property_payload(property_type: &str, value: &Value) -> Result<Value, String> {

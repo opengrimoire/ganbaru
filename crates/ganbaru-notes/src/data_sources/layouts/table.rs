@@ -698,7 +698,7 @@ fn canonical_stored_property_value(
     }))
 }
 
-fn default_property_value(property: &TableProperty, title: &str) -> Value {
+pub(crate) fn default_property_value(property: &TableProperty, title: &str) -> Value {
     let payload = match property.property_type.as_str() {
         "title" => Value::Array(vec![writes::rich_text(title)]),
         "rich_text" | "multi_select" | "files" | "people" | "relation" => Value::Array(Vec::new()),
@@ -728,7 +728,7 @@ fn default_property_value(property: &TableProperty, title: &str) -> Value {
     })
 }
 
-fn property_value_from_edit(
+pub(crate) fn property_value_from_edit(
     property: &TableProperty,
     value: &Value,
     previous_date: Option<&Value>,

@@ -58,6 +58,17 @@
     });
   }
 
+  /**
+   * Drop pages whose row left the panel, such as the page of a property that was just deleted, together with every
+   * page opened from them, so the panel never shows a detail page for something that no longer exists.
+   */
+  function pruneDetachedPages(): void {
+    const firstDetached = pages.findIndex((page) => !page.trigger.isConnected);
+    if (firstDetached < 0) return;
+    pages = pages.slice(0, firstDetached);
+    void focusBody();
+  }
+
   /** Close explicitly and return focus to the settings control. */
   function close(): void {
     onClose();
@@ -98,8 +109,10 @@
         previousStyle = style;
       }
     };
+    /** A modal dialog opened from the panel, such as a delete confirmation, sits above it rather than outside it. */
+    const inModal = (target: Node) => target instanceof Element && target.closest("[aria-modal='true']") !== null;
     const outside = (event: Event) => {
-      if (!dismissed && event.target instanceof Node && !node.contains(event.target) && !owner?.contains(event.target)) {
+      if (!dismissed && event.target instanceof Node && !node.contains(event.target) && !owner?.contains(event.target) && !inModal(event.target)) {
         dismissed = true;
         restoreFocus = false;
         const focused = document.activeElement;
@@ -149,6 +162,7 @@
     };
     observeHeader();
     const changes = new MutationObserver(() => {
+      pruneDetachedPages();
       if (content) for (const page of content.children) observer?.observe(page);
       observeHeader();
       place();

@@ -176,7 +176,7 @@ fn board_database_view_groups_filters_sorts_and_moves_rows() {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|group| group["id"] == "todo" && group["rows"].as_array().unwrap().is_empty())
+                .any(|group| group["id"] == "todo" && group["rows"][0]["id"] == PAGE_C)
         );
         assert!(
             default_json["groups"]
@@ -190,7 +190,8 @@ fn board_database_view_groups_filters_sorts_and_moves_rows() {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|group| group["id"] == "__empty__" && group["rows"][0]["id"] == PAGE_C)
+                .any(|group| group["id"] == "__empty__"
+                    && group["rows"].as_array().unwrap().is_empty())
         );
 
         let priority_board = data_sources::layouts::board::update_data_source_board_view(

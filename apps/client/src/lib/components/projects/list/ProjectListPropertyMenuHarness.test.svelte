@@ -1,6 +1,7 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { getProjects } from "$lib/stores/projects.svelte";
   import type { ProjectCustomField, ProjectTaskListColumn } from "$lib/projects/types";
   import ProjectListPropertyMenu from "./ProjectListPropertyMenu.svelte";
   import { ProjectTaskQueryController } from "$lib/components/projects/task-query-controller.svelte";
@@ -15,11 +16,19 @@
       activeView: "list",
       customFieldsForProject: () => [field],
       prioritiesForProject: () => [],
+      customFieldOptionsForField: (fieldId: string) => getProjects().customFieldOptionsForField(fieldId),
+      removeCustomField: (fieldId: string) => getProjects().removeCustomField(fieldId),
+      saveTaskListPresentation: async () => undefined,
     } as unknown as Input["projects"],
     calendar: {sourceEvents: []} as unknown as Input["calendar"],
     translate: getLocalization().t,
   });
   setProjectListTableContext({query, cellClass: () => "", cellStyle: () => "", rowStyle: () => ""});
+
+  /** Expose the shared query so tests can observe sorting and grouping. */
+  export function taskQuery(): ProjectTaskQueryController {
+    return query;
+  }
 
   /** Apply a canonical schema update while keeping the existing header menu mounted. */
   export function setField(next: ProjectCustomField): void {

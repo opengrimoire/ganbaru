@@ -62,6 +62,7 @@
   import ProjectSettingsIdentitySection from "./ProjectSettingsIdentitySection.svelte";
   import ProjectSettingsMembersSection from "./ProjectSettingsMembersSection.svelte";
   import ProjectSettingsWorkingFoldersSection from "$lib/components/projects/settings/ProjectSettingsWorkingFoldersSection.svelte";
+  import { PROJECT_CUSTOM_FIELD_OPTION_DRAG_DATA_TYPE } from "$lib/projects/custom-fields";
   import { projectHasLockedSystemIdentity } from "$lib/projects/system-defaults";
   import ProjectSettingsPanelShell from "./ProjectSettingsPanelShell.svelte";
   import ProjectSettingsPrioritiesSection from "./ProjectSettingsPrioritiesSection.svelte";
@@ -106,7 +107,6 @@
   const PROJECT_PRIORITY_DRAG_DATA_TYPE = "application/x-ganbaru-project-priority";
   const PROJECT_TAG_DRAG_DATA_TYPE = "application/x-ganbaru-project-tag";
   const PROJECT_CUSTOM_FIELD_DRAG_DATA_TYPE = "application/x-ganbaru-project-custom-field";
-  const PROJECT_CUSTOM_FIELD_OPTION_DRAG_DATA_TYPE = "application/x-ganbaru-project-custom-field-option";
   type SelectOption = { value: string; label: string };
 
   const session = createProjectSettingsSession({

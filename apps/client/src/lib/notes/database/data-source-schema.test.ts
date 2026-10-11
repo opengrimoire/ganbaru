@@ -231,6 +231,7 @@ describe("data source schema helpers", () => {
           },
           { id: "Complete", name: "Complete", color: "green", option_ids: [] },
         ],
+        default_option_id: null,
       },
     });
     expect(update.properties["Task ID"]).toMatchObject({
@@ -265,6 +266,30 @@ describe("data source schema helpers", () => {
         expression: 'prop("Estimate") * 2',
       },
     });
+  });
+
+  it("round-trips the status default option and drops a default that no longer exists", () => {
+    const status: NotesDataSourceSchemaPropertyDraft = {
+      ...createNotesDataSourcePropertyDraft("status", "Status", "status"),
+      options: [
+        { id: "todo", name: "Todo", color: "default", group: "To-do" },
+        { id: "doing", name: "Doing", color: "blue", group: "In progress" },
+      ],
+      statusDefaultOptionId: "doing",
+    };
+    const update = notesDataSourceSchemaUpdateFromDraft([status]);
+    expect(update.properties.Status).toMatchObject({ status: { default_option_id: "doing" } });
+
+    const reloaded = notesDataSourceSchemaDraftFromDto({ ...dataSource, properties: update.properties }, view);
+    const reloadedStatus = reloaded.find((property) => property.id === "status");
+    expect(reloadedStatus?.statusDefaultOptionId).toBe("doing");
+    expect(reloadedStatus?.options.map((option) => [option.id, option.group])).toEqual([
+      ["todo", "To-do"],
+      ["doing", "In progress"],
+    ]);
+
+    const removed = notesDataSourceSchemaUpdateFromDraft([{ ...status, options: status.options.slice(0, 1) }]);
+    expect(removed.properties.Status).toMatchObject({ status: { default_option_id: null } });
   });
 
   it("round-trips Lucide property icons and leaves other icons on the type icon", () => {

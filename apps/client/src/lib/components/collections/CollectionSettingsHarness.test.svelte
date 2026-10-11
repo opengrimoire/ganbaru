@@ -12,6 +12,12 @@
   let saving = $state(false);
   let filterLocked = $state(untrack(() => filterDisabled));
   let filterRow: ReturnType<typeof CollectionMenu> | undefined = $state();
+  let layoutShown = $state(true);
+
+  /** Remove the Layout row, as deleting the item a row edits would. */
+  export function removeLayout(): void {
+    layoutShown = false;
+  }
 
   /** Ask the Filter row to open its page, as a caller outside the panel would. */
   export function showFilter(): void {
@@ -31,12 +37,14 @@
       <input aria-label="View name" bind:value={draft} onblur={() => onCommit(draft)} />
       <button type="button" onclick={() => { saving = true; }}>Save</button>
     </fieldset>
-    <CollectionMenu label="Layout" summary="Table" fullWidth>
-      <input aria-label="Layout value" />
-      <CollectionMenu label="Advanced layout" fullWidth>
-        <input aria-label="Advanced value" />
+    {#if layoutShown}
+      <CollectionMenu label="Layout" summary="Table" fullWidth>
+        <input aria-label="Layout value" />
+        <CollectionMenu label="Advanced layout" fullWidth>
+          <input aria-label="Advanced value" />
+        </CollectionMenu>
       </CollectionMenu>
-    </CollectionMenu>
+    {/if}
     <CollectionMenu bind:this={filterRow} label="Filter" summary="1 rule" kind="filter" fullWidth disabled={filterLocked}>
       <Select inline ariaLabel="Status" value={status} options={[{ value: "todo", label: "To do" }, { value: "done", label: "Done" }]} onChange={(value) => { status = value; }} />
     </CollectionMenu>

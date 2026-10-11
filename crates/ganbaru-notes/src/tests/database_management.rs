@@ -680,3 +680,255 @@ fn contextual_property_insert_and_empty_duplicate_preserve_view_state_and_roll_b
         );
     });
 }
+
+async fn run_property_action(
+    pool: &sqlx::SqlitePool,
+    action: NoteDataSourcePropertyAction,
+) -> Result<Value, String> {
+    data_sources::property_actions::apply_property_action(
+        pool,
+        DATA_SOURCE_A,
+        DATABASE_A,
+        DATABASE_VIEW_A,
+        action,
+    )
+    .await
+    .map(|result| serde_json::to_value(result).unwrap())
+}
+
+fn change_type(
+    property_id: &str,
+    property_type: &str,
+    config: Option<Value>,
+) -> NoteDataSourcePropertyAction {
+    NoteDataSourcePropertyAction::ChangeType {
+        property_id: property_id.to_string(),
+        property_type: property_type.to_string(),
+        config,
+    }
+}
+
+async fn row_properties(pool: &sqlx::SqlitePool, page_id: &str) -> Value {
+    let raw: String = sqlx::query_scalar("SELECT properties FROM notes_pages WHERE id = ?")
+        .bind(page_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    serde_json::from_str(&raw).unwrap()
+}
+
+#[test]
+fn property_type_changes_convert_row_values_and_deletion_strips_them() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        create_database(
+            &pool,
+            DATABASE_A,
+            DATA_SOURCE_A,
+            DATABASE_VIEW_A,
+            "Tasks",
+            BLOCK_A,
+        )
+        .await;
+        let properties = json!({
+            "Name":{"id":"title","name":"Name","type":"title","title":{}},
+            "Notes":{"id":"notes","name":"Notes","type":"rich_text","rich_text":{}},
+            "Tags":{"id":"tags","name":"Tags","type":"multi_select","multi_select":{"options":[{"id":"alpha","name":"Alpha","color":"red"},{"id":"beta","name":"Beta","color":"blue"}]}},
+            "Count":{"id":"count","name":"Count","type":"number","number":{"format":"number"}},
+            "Due":{"id":"due","name":"Due","type":"date","date":{}},
+        });
+        data_sources::schema::update_data_source_schema(
+            &pool,
+            DATA_SOURCE_A,
+            None,
+            None,
+            NoteDataSourceSchemaUpdate { properties },
+        )
+        .await
+        .unwrap();
+        data_sources::rows::create_data_source_row_page(
+            &pool,
+            DATA_SOURCE_A,
+            NoteDataSourceRowPageCreate {
+                id: PAGE_B.to_string(),
+                first_block_id: BLOCK_B.to_string(),
+                title: "Task".to_string(),
+                properties: Some(json!({
+                    "Notes":{"type":"rich_text","rich_text":[{"type":"text","text":{"content":"Red, Blue"},"plain_text":"Red, Blue"}]},
+                    "Tags":{"type":"multi_select","multi_select":[{"id":"beta","name":"Beta","color":"blue"},{"id":"alpha","name":"Alpha","color":"red"}]},
+                    "Count":{"type":"number","number":3},
+                    "Due":{"type":"date","date":{"start":"2026-03-04","end":null,"time_zone":null}},
+                })),
+            },
+        )
+        .await
+        .unwrap();
+
+        let converted = run_property_action(&pool, change_type("notes", "multi_select", None))
+            .await
+            .unwrap();
+        let notes = &converted["schema"]["data_source"]["properties"]["Notes"];
+        assert_eq!(notes["type"], "multi_select");
+        let option_names: Vec<&str> = notes["multi_select"]["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|option| option["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(option_names, vec!["Red", "Blue"]);
+        let row = row_properties(&pool, PAGE_B).await;
+        let values: Vec<&str> = row["Notes"]["multi_select"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|option| option["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(values, vec!["Red", "Blue"]);
+        assert_eq!(row["Notes"]["type"], "multi_select");
+
+        let converted = run_property_action(&pool, change_type("tags", "select", None))
+            .await
+            .unwrap();
+        assert_eq!(
+            converted["schema"]["data_source"]["properties"]["Tags"]["select"]["options"][0]["id"],
+            "alpha"
+        );
+        let row = row_properties(&pool, PAGE_B).await;
+        assert_eq!(
+            row["Tags"]["select"],
+            json!({"id":"beta","name":"Beta","color":"blue"})
+        );
+
+        run_property_action(&pool, change_type("count", "rich_text", None))
+            .await
+            .unwrap();
+        let row = row_properties(&pool, PAGE_B).await;
+        assert_eq!(row["Count"]["rich_text"][0]["plain_text"], "3");
+
+        let converted = run_property_action(&pool, change_type("count", "relation", Some(json!({"data_source_id": DATA_SOURCE_A, "dual_property": {"synced_property_id": "x", "synced_property_name": "X"}})))).await.unwrap();
+        assert_eq!(
+            converted["schema"]["data_source"]["properties"]["Count"]["relation"],
+            json!({"data_source_id": DATA_SOURCE_A})
+        );
+        let row = row_properties(&pool, PAGE_B).await;
+        assert_eq!(row["Count"]["relation"], json!([]));
+
+        let converted = run_property_action(&pool, change_type("tags", "status", None))
+            .await
+            .unwrap();
+        let status = &converted["schema"]["data_source"]["properties"]["Tags"]["status"];
+        assert_eq!(status["default_option_id"], "alpha");
+        assert_eq!(status["groups"][0]["option_ids"], json!(["alpha", "beta"]));
+        let row = row_properties(&pool, PAGE_B).await;
+        assert_eq!(row["Tags"]["status"]["id"], "beta");
+        data_sources::rows::create_data_source_row_page(
+            &pool,
+            DATA_SOURCE_A,
+            NoteDataSourceRowPageCreate {
+                id: PAGE_C.to_string(),
+                first_block_id: BLOCK_C.to_string(),
+                title: "Next".to_string(),
+                properties: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            row_properties(&pool, PAGE_C).await["Tags"]["status"]["id"],
+            "alpha"
+        );
+
+        let deleted = run_property_action(
+            &pool,
+            NoteDataSourcePropertyAction::Delete {
+                property_id: "due".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            deleted["schema"]["data_source"]["properties"]
+                .get("Due")
+                .is_none()
+        );
+        assert!(
+            !deleted["schema"]["view"]["configuration"]["table"]["property_order"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("due"))
+        );
+        assert!(row_properties(&pool, PAGE_B).await.get("Due").is_none());
+
+        let before: String =
+            sqlx::query_scalar("SELECT properties FROM notes_data_sources WHERE id = ?")
+                .bind(DATA_SOURCE_A)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        for action in [
+            change_type("title", "rich_text", None),
+            change_type("notes", "multi_select", None),
+            change_type("notes", "title", None),
+            change_type("notes", "relation", None),
+            NoteDataSourcePropertyAction::Delete {
+                property_id: "title".to_string(),
+            },
+        ] {
+            assert!(run_property_action(&pool, action).await.is_err());
+        }
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT properties FROM notes_data_sources WHERE id = ?"
+            )
+            .bind(DATA_SOURCE_A)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            before
+        );
+    });
+}
+
+#[test]
+fn removing_a_reciprocal_relation_turns_its_counterpart_one_way() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        create_database(
+            &pool,
+            DATABASE_A,
+            DATA_SOURCE_A,
+            DATABASE_VIEW_A,
+            "Tasks",
+            BLOCK_A,
+        )
+        .await;
+        let properties = json!({
+            "Name":{"id":"title","name":"Name","type":"title","title":{}},
+            "Parent":{"id":"parent","name":"Parent","type":"relation","relation":{"data_source_id":DATA_SOURCE_A,"dual_property":{"synced_property_id":"children","synced_property_name":"Children"}}},
+            "Children":{"id":"children","name":"Children","type":"relation","relation":{"data_source_id":DATA_SOURCE_A,"dual_property":{"synced_property_id":"parent","synced_property_name":"Parent"}}},
+        });
+        data_sources::schema::update_data_source_schema(
+            &pool,
+            DATA_SOURCE_A,
+            None,
+            None,
+            NoteDataSourceSchemaUpdate { properties },
+        )
+        .await
+        .unwrap();
+        let deleted = run_property_action(
+            &pool,
+            NoteDataSourcePropertyAction::Delete {
+                property_id: "parent".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            deleted["schema"]["data_source"]["properties"]["Children"]["relation"],
+            json!({"data_source_id": DATA_SOURCE_A})
+        );
+    });
+}

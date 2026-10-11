@@ -58,6 +58,21 @@ function fixture(): { block: NotesChildDatabaseBlockDto; table: NotesDataSourceT
   };
 }
 
+/** The fixture table with a select property, for options edited under Edit property. */
+function withStage(table: NotesDataSourceTableView): NotesDataSourceTableView {
+  return { ...table, data_source: { ...table.data_source, properties: { ...table.data_source.properties,
+    Stage: { id: "stage", name: "Stage", type: "select", select: { options: [{ id: "idea", name: "Idea", color: "gray" }] } },
+  } } };
+}
+
+/** A second table view over its own data source, attached to the same database. */
+function secondSource(table: NotesDataSourceTableView): NotesDataSourceTableView {
+  return { ...table,
+    data_source: { ...table.data_source, id: "second-source" },
+    view: { ...table.view, id: "second-view", name: "Second table", data_source_id: "second-source" },
+  };
+}
+
 let component: ReturnType<typeof mount> | undefined;
 afterEach(async () => {
   if (component) await unmount(component);
@@ -68,8 +83,8 @@ afterEach(async () => {
 });
 
 /** Mount the real database shell and table with read-only native boundaries mocked. */
-async function open(referenceRead?: Promise<NotesDatabaseReference>): Promise<NotesDataSourceTableView> {
-  const { block, table } = fixture();
+async function open(referenceRead?: Promise<NotesDatabaseReference>, table = fixture().table): Promise<NotesDataSourceTableView> {
+  const { block } = fixture();
   const reference: NotesDatabaseReference = {
     block_id: "block", page_id: "page", source_block_id: "block", source_page_id: "page", title: "Tasks",
     owned_data_source_count: 1, is_linked: false, editing_locked: false,
@@ -108,29 +123,33 @@ function propertyEditor(): HTMLElement | null {
   return document.querySelector<HTMLElement>('[role="dialog"][aria-label="Edit property"]');
 }
 
-/** Inspect the property description field, a schema draft that the column menu does not save on its own. */
-function propertyDescriptionInput(): HTMLInputElement | null {
-  const label = Array.from(propertyEditor()?.querySelectorAll<HTMLLabelElement>("label") ?? [])
-    .find((candidate) => candidate.querySelector("span")?.textContent?.trim() === "Description");
-  return label?.querySelector("input") ?? null;
+/** The loaded type settings of one property inside the Edit property submenu. */
+function schemaEditor(propertyId: string): HTMLElement | null {
+  return propertyEditor()?.querySelector<HTMLElement>(`[data-notes-property-schema-editor="${propertyId}"]`) ?? null;
 }
 
-/** Dismiss the column menu and its submenu while retaining the unsaved local draft. */
+/** A setting's trigger inside the Edit property submenu, which shows the current choice. */
+function editorSetting(label: string): HTMLButtonElement | null {
+  return propertyEditor()?.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`) ?? null;
+}
+
+/** Pick a choice from one of the Edit property selects, which saves it right away. */
+async function chooseSetting(label: string, choice: string): Promise<void> {
+  editorSetting(label)!.click();
+  await tick();
+  await tick();
+  const option = Array.from(document.querySelectorAll<HTMLButtonElement>(`[role="dialog"][aria-label="${label}"] button`))
+    .find((button) => button.textContent?.trim() === choice);
+  expect(option).toBeDefined();
+  option!.click();
+  await tick();
+}
+
+/** Dismiss the column menu and its submenus. */
 async function closePropertyEditor(): Promise<void> {
   document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
   await tick();
   expect(propertyEditor()).toBeNull();
-}
-
-/** Edit the existing property's local description without saving its schema. */
-async function draftPriorityDescription(description: string): Promise<void> {
-  await editProperty("Priority");
-  await vi.waitFor(() => expect(propertyDescriptionInput()?.disabled).toBe(false));
-  const input = propertyDescriptionInput()!;
-  input.value = description;
-  input.dispatchEvent(new Event("input", { bubbles: true }));
-  await tick();
-  await closePropertyEditor();
 }
 
 /** Name the open draft property header and choose its type from the panel below it. */
@@ -154,6 +173,15 @@ async function addHeaderProperty(name: string, typeLabel = "Number"): Promise<vo
   await fillPropertyDraft(name, typeLabel);
 }
 
+/** Answer schema saves with the saved properties, also serving them to later table reads. */
+function saveSchemaAs(initial: NotesDataSourceTableView): void {
+  vi.mocked(updateNotesDataSourceSchema).mockImplementation(async (_sourceId, update) => {
+    const table: NotesDataSourceTableView = { ...initial, data_source: { ...initial.data_source, properties: update.properties } };
+    vi.mocked(getNotesDataSourceTableView).mockResolvedValue(table);
+    return { data_source: table.data_source, view: table.view };
+  });
+}
+
 describe("Notes database property editor selection", () => {
   it("loads relation source choices when a quick addition cached schema before its first editor open", async () => {
     const initial = fixture().table;
@@ -162,11 +190,7 @@ describe("Notes database property editor selection", () => {
     } };
     const foreign = { ...initial.data_source, id: "foreign", title: "Foreign projects" };
     vi.mocked(getNotesDataSourceSchema).mockResolvedValue({ data_source: canonical, view: initial.view });
-    vi.mocked(updateNotesDataSourceSchema).mockImplementation(async (_source, update) => {
-      const updated = { ...initial, data_source: { ...canonical, properties: update.properties } };
-      vi.mocked(getNotesDataSourceTableView).mockResolvedValue(updated);
-      return { data_source: updated.data_source, view: updated.view };
-    });
+    saveSchemaAs({ ...initial, data_source: canonical });
     await open();
     vi.mocked(listNotesDataSources).mockResolvedValue([canonical, foreign].map((source) => ({ ...source, location: [] })));
     await addHeaderProperty("Estimate");
@@ -175,9 +199,8 @@ describe("Notes database property editor selection", () => {
     await editProperty("Project");
     await vi.waitFor(() => expect(listNotesDataSources).toHaveBeenCalledOnce());
     expect(getNotesDataSourceSchema).toHaveBeenCalledOnce();
-    await vi.waitFor(() => expect(propertyDescriptionInput()?.disabled).toBe(false));
-    const choices = Array.from(propertyEditor()!.querySelectorAll<HTMLButtonElement>("button"));
-    expect(choices.some((button) => button.textContent?.includes("Foreign projects"))).toBe(true);
+    await vi.waitFor(() => expect(editorSetting("Related to")?.textContent).toContain("Foreign projects"));
+    expect(editorSetting("Related to")?.disabled).toBe(false);
   });
   it.each(["append", "insert"] as const)("loads foreign source metadata for a first %s rollup without opening the schema editor", async (operation) => {
     const initial = fixture().table;
@@ -226,7 +249,7 @@ describe("Notes database property editor selection", () => {
     notesDatabaseSession.invalidate();
     await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[role="columnheader"] button[aria-label="Priority"]')?.disabled).toBe(false));
   });
-  it("routes contextual empty duplication to the requesting table and preserves an unsaved schema draft", async () => {
+  it("routes contextual empty duplication to the requesting table without a full schema save", async () => {
     const initial = fixture().table;
     vi.mocked(getNotesDataSourceSchema).mockResolvedValue({ data_source: initial.data_source, view: initial.view });
     vi.mocked(applyNotesDataSourcePropertyAction).mockImplementation(async (_source, _database, _view, action) => {
@@ -240,7 +263,6 @@ describe("Notes database property editor selection", () => {
       return { property_id: "priority-copy", schema: { data_source: updated.data_source, view: updated.view } };
     });
     await open();
-    await draftPriorityDescription("Draft priority");
     document.querySelector<HTMLButtonElement>('[role="columnheader"] button[aria-label="Priority"]')!.click();
     await tick();
     await tick();
@@ -250,48 +272,40 @@ describe("Notes database property editor selection", () => {
     await vi.waitFor(() => expect(applyNotesDataSourcePropertyAction).toHaveBeenCalledWith("source", "database", "view", { type: "duplicate", property_id: "priority", name: "Priority (copy)" }));
     await vi.waitFor(() => expect(document.querySelector('[role="columnheader"] button[aria-label="Priority (copy)"]')).not.toBeNull());
     expect(updateNotesDataSourceSchema).not.toHaveBeenCalled();
-    await editProperty("Priority");
-    await vi.waitFor(() => expect(propertyDescriptionInput()?.value).toBe("Draft priority"));
   });
 
-  it("retains independent unsaved drafts when editing properties from two attached sources", async () => {
+  it("saves an Edit property change to the source of the table it was opened from", async () => {
     const initial = fixture().table;
-    const second: NotesDataSourceTableView = {
-      ...initial, data_source: { ...initial.data_source, id: "second-source" },
-      view: { ...initial.view, id: "second-view", name: "Second table", data_source_id: "second-source" },
-    };
+    const second = secondSource(initial);
     vi.mocked(getNotesDataSourceSchema).mockImplementation(async (sourceId) => {
       const selected = sourceId === "second-source" ? second : initial;
       return { data_source: selected.data_source, view: selected.view };
+    });
+    vi.mocked(updateNotesDataSourceSchema).mockImplementation(async (sourceId, update) => {
+      const selected = sourceId === "second-source" ? second : initial;
+      return { data_source: { ...selected.data_source, properties: update.properties }, view: selected.view };
     });
     await open();
     vi.mocked(listNotesDatabaseViews).mockResolvedValue([initial.view, second.view]);
     vi.mocked(getNotesDataSourceTableView).mockImplementation(async (sourceId) => sourceId === "second-source" ? second : initial);
     notesDatabaseSession.invalidate();
-    await draftPriorityDescription("First draft");
     await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('button[aria-label="Second table"]')).not.toBeNull());
     document.querySelector<HTMLButtonElement>('button[aria-label="Second table"]')!.click();
     await vi.waitFor(() => expect(getNotesDataSourceTableView).toHaveBeenCalledWith("second-source", { databaseId: "database", viewId: "second-view" }));
-    await draftPriorityDescription("Second draft");
+    await editProperty("Priority");
+    await vi.waitFor(() => expect(schemaEditor("priority")).not.toBeNull());
     expect(getNotesDataSourceSchema).toHaveBeenCalledWith("second-source", { databaseId: "database", viewId: "second-view" });
-    document.querySelector<HTMLButtonElement>('button[aria-label="Table"]')!.click();
-    await vi.waitFor(() => expect(document.querySelector('[role="columnheader"] button[aria-label="Priority"]')).not.toBeNull());
-    await editProperty("Priority");
-    await vi.waitFor(() => expect(propertyDescriptionInput()?.value).toBe("First draft"));
-    await closePropertyEditor();
-    document.querySelector<HTMLButtonElement>('button[aria-label="Second table"]')!.click();
-    await tick();
-    await editProperty("Priority");
-    await vi.waitFor(() => expect(propertyDescriptionInput()?.value).toBe("Second draft"));
-    expect(updateNotesDataSourceSchema).not.toHaveBeenCalled();
+    await chooseSetting("Number format", "Percent");
+    await vi.waitFor(() => expect(updateNotesDataSourceSchema).toHaveBeenCalledOnce());
+    const [sourceId, update, scope] = vi.mocked(updateNotesDataSourceSchema).mock.calls[0];
+    expect(sourceId).toBe("second-source");
+    expect(scope).toEqual({ dataSourceId: "second-source", databaseId: "database", viewId: "second-view" });
+    expect(update.properties.Priority).toMatchObject({ id: "priority", number: { format: "percent" } });
   });
 
   it("ignores a delayed different-source schema result after reopening the cached source", async () => {
     const initial = fixture().table;
-    const second: NotesDataSourceTableView = { ...initial,
-      data_source: { ...initial.data_source, id: "second-source" },
-      view: { ...initial.view, id: "second-view", name: "Second table", data_source_id: "second-source" },
-    };
+    const second = secondSource(initial);
     let finishSecond: (schema: NotesDataSourceSchema) => void = () => {};
     vi.mocked(getNotesDataSourceSchema).mockImplementation((sourceId) => sourceId === "second-source"
       ? new Promise((resolve) => { finishSecond = resolve; })
@@ -300,23 +314,30 @@ describe("Notes database property editor selection", () => {
     vi.mocked(listNotesDatabaseViews).mockResolvedValue([initial.view, second.view]);
     vi.mocked(getNotesDataSourceTableView).mockImplementation(async (sourceId) => sourceId === "second-source" ? second : initial);
     notesDatabaseSession.invalidate();
-    await draftPriorityDescription("First draft");
+    await editProperty("Priority");
+    await vi.waitFor(() => expect(schemaEditor("priority")).not.toBeNull());
+    await closePropertyEditor();
     await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('button[aria-label="Second table"]')).not.toBeNull());
     document.querySelector<HTMLButtonElement>('button[aria-label="Second table"]')!.click();
     await vi.waitFor(() => expect(getNotesDataSourceTableView).toHaveBeenCalledWith("second-source", { databaseId: "database", viewId: "second-view" }));
     await editProperty("Priority");
     await vi.waitFor(() => expect(getNotesDataSourceSchema).toHaveBeenCalledWith("second-source", { databaseId: "database", viewId: "second-view" }));
-    expect(propertyDescriptionInput()).toBeNull();
+    expect(schemaEditor("priority")).toBeNull();
     await closePropertyEditor();
     document.querySelector<HTMLButtonElement>('button[aria-label="Table"]')!.click();
     await tick();
     await editProperty("Priority");
-    expect(propertyDescriptionInput()?.value).toBe("First draft");
-    finishSecond({ data_source: second.data_source, view: second.view });
+    expect(schemaEditor("priority")).not.toBeNull();
+    finishSecond({
+      data_source: { ...second.data_source, properties: { ...second.data_source.properties,
+        Priority: { id: "priority", name: "Priority", type: "number", number: { format: "percent" } } } },
+      view: second.view,
+    });
     await tick();
     await tick();
-    expect(propertyDescriptionInput()?.value).toBe("First draft");
-    expect(propertyDescriptionInput()?.disabled).toBe(false);
+    expect(editorSetting("Number format")?.textContent).toContain("Number");
+    expect(editorSetting("Number format")?.textContent).not.toContain("Percent");
+    expect(editorSetting("Number format")?.disabled).toBe(false);
   });
   it("selects the requested header property after its initial schema read finishes", async () => {
     let finishSchema: (schema: NotesDataSourceSchema) => void = () => {};
@@ -324,80 +345,82 @@ describe("Notes database property editor selection", () => {
     const table = await open();
     await editProperty("Priority");
     await vi.waitFor(() => expect(getNotesDataSourceSchema).toHaveBeenCalledOnce());
-    expect(propertyDescriptionInput()).toBeNull();
+    expect(schemaEditor("priority")).toBeNull();
+    expect(propertyEditor()?.querySelector('[role="status"]')?.textContent).toBe("Loading properties...");
     finishSchema({ data_source: table.data_source, view: table.view });
-    await vi.waitFor(() => expect(propertyDescriptionInput()).not.toBeNull());
-    expect(propertyEditor()!.querySelector('[data-schema-property-id="priority"]')?.contains(propertyDescriptionInput())).toBe(true);
+    await vi.waitFor(() => expect(schemaEditor("priority")).not.toBeNull());
+    expect(propertyEditor()!.querySelector('[data-schema-property-id="priority"]')?.contains(schemaEditor("priority"))).toBe(true);
     expect(document.querySelector('[role="dialog"][aria-label="Edit properties"]')).toBeNull();
   });
 
   it("changes the selected property on cached reopens without another schema read", async () => {
-    const table = fixture().table;
+    const table = withStage(fixture().table);
     vi.mocked(getNotesDataSourceSchema).mockResolvedValue({ data_source: table.data_source, view: table.view });
-    await open();
-    await editProperty("Name");
-    await vi.waitFor(() => expect(propertyEditor()?.querySelector('[data-schema-property-id="title"]')?.contains(propertyDescriptionInput())).toBe(true));
-    await closePropertyEditor();
+    await open(undefined, table);
     await editProperty("Priority");
-    await vi.waitFor(() => expect(propertyEditor()?.querySelector('[data-schema-property-id="priority"]')?.contains(propertyDescriptionInput())).toBe(true));
+    await vi.waitFor(() => expect(schemaEditor("priority")).not.toBeNull());
+    await closePropertyEditor();
+    await editProperty("Stage");
+    await vi.waitFor(() => expect(schemaEditor("stage")).not.toBeNull());
+    expect(schemaEditor("priority")).toBeNull();
     expect(getNotesDataSourceSchema).toHaveBeenCalledOnce();
   });
 
-  it("adds a canonical property without saving or discarding an unrelated editor draft", async () => {
+  it("saves an option added under Edit property without a separate save step", async () => {
+    const table = withStage(fixture().table);
+    vi.mocked(getNotesDataSourceSchema).mockResolvedValue({ data_source: table.data_source, view: table.view });
+    saveSchemaAs(table);
+    await open(undefined, table);
+    await editProperty("Stage");
+    await vi.waitFor(() => expect(schemaEditor("stage")).not.toBeNull());
+    propertyEditor()!.querySelector<HTMLButtonElement>('button[aria-label="Add an option"]')!.click();
+    await vi.waitFor(() => expect(document.activeElement).toBe(propertyEditor()?.querySelector('input[aria-label="Option name"]')));
+    const input = document.activeElement as HTMLInputElement;
+    input.value = "Done";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(updateNotesDataSourceSchema).toHaveBeenCalledOnce());
+    const update = vi.mocked(updateNotesDataSourceSchema).mock.calls[0][1];
+    expect(update.properties.Stage).toMatchObject({ id: "stage", select: { options: [
+      expect.objectContaining({ id: "idea", name: "Idea" }), expect.objectContaining({ name: "Done" }),
+    ] } });
+    expect(update.properties.Priority).toMatchObject({ id: "priority", number: { format: "number" } });
+    await vi.waitFor(() => expect(propertyEditor()?.querySelector('button[aria-label="Edit Done"]')).not.toBeNull());
+  });
+
+  it("adds a canonical property and shows its settings from the saved schema without another read", async () => {
     const initial = fixture().table;
     vi.mocked(getNotesDataSourceSchema).mockResolvedValue({ data_source: initial.data_source, view: initial.view });
-    vi.mocked(updateNotesDataSourceSchema).mockImplementation(async (_sourceId, update) => {
-      const table: NotesDataSourceTableView = {
-        ...initial,
-        data_source: { ...initial.data_source, properties: update.properties },
-      };
-      vi.mocked(getNotesDataSourceTableView).mockResolvedValue(table);
-      return { data_source: table.data_source, view: table.view };
-    });
+    saveSchemaAs(initial);
     await open();
-    await draftPriorityDescription("Draft priority");
-    expect(updateNotesDataSourceSchema).not.toHaveBeenCalled();
     await addHeaderProperty("Estimate");
     await vi.waitFor(() => expect(updateNotesDataSourceSchema).toHaveBeenCalledOnce());
     const update = vi.mocked(updateNotesDataSourceSchema).mock.calls[0][1];
     expect(update.properties.Priority).toMatchObject({ id: "priority", name: "Priority", type: "number" });
-    expect(update.properties.Priority).not.toMatchObject({ description: "Draft priority" });
     expect(update.properties.Estimate).toMatchObject({ name: "Estimate", type: "number" });
     await vi.waitFor(() => expect(document.querySelector('[role="columnheader"] button[aria-label="Estimate"]')).not.toBeNull());
-    await editProperty("Priority");
-    await vi.waitFor(() => expect(propertyDescriptionInput()?.value).toBe("Draft priority"));
-    const save = Array.from(propertyEditor()!.querySelectorAll<HTMLButtonElement>("button"))
-      .find((button) => button.textContent?.trim() === "Save properties");
-    expect(save?.disabled).toBe(false);
-    await closePropertyEditor();
     await editProperty("Estimate");
-    await vi.waitFor(() => expect(propertyEditor()?.querySelector<HTMLButtonElement>('button[aria-label="Type"]')?.textContent).toContain("Number"));
+    await vi.waitFor(() => expect(editorSetting("Number format")?.textContent).toContain("Number"));
+    expect(getNotesDataSourceSchema).toHaveBeenCalledOnce();
   });
 
-  it("retains the unsaved editor draft when quick property creation fails", async () => {
+  it("keeps the header draft and its error when quick property creation fails", async () => {
     const initial = fixture().table;
     vi.mocked(getNotesDataSourceSchema).mockResolvedValue({ data_source: initial.data_source, view: initial.view });
     vi.mocked(updateNotesDataSourceSchema).mockRejectedValue(new Error("Cannot create property"));
     await open();
-    await draftPriorityDescription("Draft priority");
     await addHeaderProperty("Estimate");
     await vi.waitFor(() => expect(document.querySelector('[data-collection-property-draft] [role="alert"]')?.textContent).toContain("Cannot create property"));
     expect(document.querySelector<HTMLInputElement>('[data-collection-property-draft] input[aria-label="Property name"]')?.value).toBe("Estimate");
     expect(updateNotesDataSourceSchema).toHaveBeenCalledOnce();
-    await editProperty("Priority");
-    await vi.waitFor(() => expect(propertyDescriptionInput()?.value).toBe("Draft priority"));
+    expect(document.querySelector('[role="columnheader"] button[aria-label="Estimate"]')).toBeNull();
   });
 
-  it("renames a property from its column menu and applies the canonical name to an unsaved editor draft", async () => {
+  it("renames the title property from its column menu", async () => {
     const initial = fixture().table;
     vi.mocked(getNotesDataSourceSchema).mockResolvedValue({ data_source: initial.data_source, view: initial.view });
-    vi.mocked(updateNotesDataSourceSchema).mockImplementation(async (_sourceId, update) => {
-      const table: NotesDataSourceTableView = { ...initial, data_source: { ...initial.data_source, properties: update.properties } };
-      vi.mocked(getNotesDataSourceTableView).mockResolvedValue(table);
-      return { data_source: table.data_source, view: table.view };
-    });
+    saveSchemaAs(initial);
     await open();
-    await draftPriorityDescription("Draft priority");
     const name = await openColumnNameField("Name");
     name.value = "  Task  ";
     name.dispatchEvent(new Event("input", { bubbles: true }));
@@ -408,8 +431,6 @@ describe("Notes database property editor selection", () => {
     expect(update.properties).not.toHaveProperty("Name");
     expect(update.properties.Priority).toMatchObject({ id: "priority", name: "Priority" });
     await vi.waitFor(() => expect(document.querySelector('[role="columnheader"] button[aria-label="Task"]')).not.toBeNull());
-    await editProperty("Priority");
-    await vi.waitFor(() => expect(propertyDescriptionInput()?.value).toBe("Draft priority"));
   });
 
   it("keeps a duplicate column rename in its field with an explicit error and leaves the schema unchanged", async () => {

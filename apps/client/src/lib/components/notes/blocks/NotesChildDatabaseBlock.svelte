@@ -3,9 +3,12 @@
   import CollectionMenu from "$lib/components/collections/CollectionMenu.svelte";
   import CollectionMenuItem from "$lib/components/collections/CollectionMenuItem.svelte";
   import CollectionMenuSeparator from "$lib/components/collections/CollectionMenuSeparator.svelte";
-  import Checkbox from "$lib/components/ui/Checkbox.svelte";
+  import CollectionPropertyCreator from "$lib/components/collections/CollectionPropertyCreator.svelte";
+  import CollectionPropertyIcon from "$lib/components/collections/CollectionPropertyIcon.svelte";
+  import CollectionPropertyNameField from "$lib/components/collections/CollectionPropertyNameField.svelte";
+  import CollectionPropertyTypeMenu from "$lib/components/collections/CollectionPropertyTypeMenu.svelte";
   import CollectionSettings from "$lib/components/collections/CollectionSettings.svelte";
-  import Select from "$lib/components/ui/Select.svelte";
+  import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import { tick, untrack } from "svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
@@ -17,47 +20,42 @@
     renameNotesDatabase,
     updateNotesDataSourceSchema,
   } from "$lib/api/notes";
-  import NotesDatabaseRollupSchemaControls from "$lib/components/notes/database/NotesDatabaseRollupSchemaControls.svelte";
+  import NotesDatabasePropertySchemaEditor from "$lib/components/notes/database/NotesDatabasePropertySchemaEditor.svelte";
   import NotesDatabaseViewSurface from "$lib/components/notes/database/NotesDatabaseViewSurface.svelte";
-  import { notesPropertyTypeLabel } from "$lib/components/notes/database/property-kinds";
   import {
+    notesPropertyHasSchemaOptions,
+    notesPropertyKind,
+    notesPropertyTypeLabel,
+    notesPropertyTypeOptions,
+  } from "$lib/components/notes/database/property-kinds";
+  import {
+    NOTES_DATA_SOURCE_PROPERTY_NAME_MAX_CHARACTERS,
     createNotesDataSourcePropertyDraft,
     defaultNotesDataSourcePropertyName,
-    notesDataSourceButtonTargetOptions,
     notesDataSourceDefaultButtonPatch,
     notesDataSourceDefaultRollupPatch,
-    notesDataSourceRollupRelationOptions,
-    notesDataSourceRollupTargetOptions,
-    notesDataSourceRollupTargetOptionsForRelation,
+    notesDataSourceDuplicatePropertyName,
+    notesDataSourcePropertyConfig,
+    notesDataSourceRenameProperty,
     notesDataSourceSchemaDraftFromDto,
     notesDataSourceSchemaUpdateFromDraft,
-    notesDataSourceDuplicatePropertyName,
-    notesDataSourceRenameProperty,
     notesDataSourceSyncPropertyReferences,
-    type NotesDataSourceSchemaOptionDraft,
+    type NotesDataSourcePropertyUpdate,
     type NotesDataSourceSchemaPropertyDraft,
     type NotesDatabasePropertyActionRequest,
     type NotesDatabaseSourceEditingScope,
   } from "$lib/notes/database/data-source-schema";
-  import {
-    NOTES_DATA_SOURCE_NUMBER_FORMATS,
-    NOTES_DATA_SOURCE_PROPERTY_TYPES,
-    NOTES_DATA_SOURCE_SELECT_COLORS,
-    NOTES_DATA_SOURCE_STATUS_GROUPS,
-    type NotesChildDatabaseBlock,
-    type NotesDataSource,
-    type NotesDataSourceNumberFormat,
-    type NotesDataSourcePropertyType,
-    type NotesDataSourcePropertyAction,
-    type NotesDataSourceSchema,
-    type NotesDataSourceSelectColor,
-    type NotesDataSourceStatusGroup,
-    type NotesDatabaseReference,
+  import type { NotesDataSourceOptionEdit, NotesDataSourceOptionEditor } from "$lib/notes/database/property-options";
+  import type {
+    NotesChildDatabaseBlock,
+    NotesDataSource,
+    NotesDataSourcePropertyAction,
+    NotesDataSourcePropertyType,
+    NotesDataSourceSchema,
+    NotesDatabaseReference,
   } from "$lib/notes/types";
   import Database from "@lucide/svelte/icons/database";
-  import Plus from "@lucide/svelte/icons/plus";
-  import RefreshCw from "@lucide/svelte/icons/refresh-cw";
-  import Save from "@lucide/svelte/icons/save";
+  import Settings2 from "@lucide/svelte/icons/settings-2";
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import ArrowUpRight from "@lucide/svelte/icons/arrow-up-right";
   import Copy from "@lucide/svelte/icons/copy";
@@ -103,28 +101,28 @@
   let contentReady = $state(false);
   let titleError = $state<string | null>(null);
   let reference = $state<NotesDatabaseReference | null>(null);
-  let selectedPropertyId = $state<string | null>(null);
   let loading = $state(false);
-  let saving = $state(false);
   let linking = $state(false);
   let error = $state<string | null>(null);
   let linkedViewError = $state<string | null>(null);
-  let saved = $state(false);
-  let dirty = $state(false);
   let schema = $state<NotesDataSourceSchema | null>(null);
   let schemaViewId = $state<string | null>(null);
   let editorSourceId = $state<string | null>(null);
   /** The data source whose property a column's Edit property submenu shows. */
   let propertyEditorSourceId = $state<string | null>(null);
   let editingLocked = $state(untrack(() => block.child_database.editing_locked ?? false));
-  const retainedSchemaDrafts = new Map<string, { properties: NotesDataSourceSchemaPropertyDraft[]; dirty: boolean; selectedPropertyId: string | null }>();
+  /** A property deletion waiting for confirmation, with the callback that answers it. */
+  let pendingDelete = $state<{ name: string; resolve: (confirmed: boolean) => void } | null>(null);
+  let pendingSaves = $state(0);
+  let saveQueue: Promise<void> = Promise.resolve();
   let schemaLoadPromise: Promise<void> | null = null;
   let schemaRequestId = 0;
+  /** Counts adopted saves, so a schema load that started before a save cannot replace what the save returned. */
+  let adoptRevision = 0;
   let lockRevision = 0;
   let incomingLock = untrack(() => block.child_database.editing_locked ?? false);
   let availableDataSources = $state<NotesDataSource[]>([]);
   let properties = $state<NotesDataSourceSchemaPropertyDraft[]>([]);
-  let newPropertyType = $state<NotesDataSourcePropertyType>("rich_text");
   let tableReloadKey = $state(0);
   let boardReloadKey = $state(0);
   let galleryReloadKey = $state(0);
@@ -141,8 +139,9 @@
       && block.child_database.data_source_id !== undefined
       && block.child_database.view_id !== undefined,
   );
-  const propertyCount = $derived(properties.length);
   const schemaDataSourceId = $derived(editorSourceId ?? dataSourceId);
+  const saving = $derived(pendingSaves > 0);
+  const propertyTypeOptions = $derived(notesPropertyTypeOptions(t));
 
   /** Reveal this database and defer requested title focus until its surface can receive input. */
   function reportReady(): void {
@@ -182,14 +181,18 @@
     editingLocked = locked;
   });
 
+  function messageOf(caught: unknown): string {
+    return caught instanceof Error ? caught.message : String(caught);
+  }
+
   async function openDatabase(id: string): Promise<void> {
     try { await onOpenDatabase?.(id); }
-    catch (caught: unknown) { titleError = caught instanceof Error ? caught.message : String(caught); }
+    catch (caught: unknown) { titleError = messageOf(caught); }
   }
 
   async function deleteDatabase(): Promise<void> {
     try { await onDeleteDatabase?.(block.id); }
-    catch (caught: unknown) { titleError = caught instanceof Error ? caught.message : String(caught); }
+    catch (caught: unknown) { titleError = messageOf(caught); }
   }
 
   /**
@@ -204,7 +207,7 @@
       await navigator.clipboard.writeText(viewId
         ? buildNotesDatabaseViewLink(window.location.href, { ...target, viewId })
         : buildNotesBlockLink(window.location.href, target));
-    } catch (caught: unknown) { titleError = caught instanceof Error ? caught.message : String(caught); }
+    } catch (caught: unknown) { titleError = messageOf(caught); }
   }
 
   $effect(() => {
@@ -216,6 +219,18 @@
     });
   });
 
+  /**
+   * Run schema saves one at a time in request order, so each one reads the schema the previous one saved.
+   * A locked layout rejects the save without queueing it.
+   */
+  function enqueue<T>(task: () => Promise<T>): Promise<T> {
+    if (editingLocked) return Promise.reject(new Error(t("notes.databaseEditingLockDescription")));
+    pendingSaves += 1;
+    const result = saveQueue.then(task);
+    saveQueue = result.then(() => undefined, () => undefined);
+    return result.finally(() => { pendingSaves -= 1; });
+  }
+
   function loadSchema(scope?: NotesDatabaseSourceEditingScope, request = ++schemaRequestId): Promise<void> {
     if (request !== schemaRequestId) return Promise.resolve();
     if (schemaLoadPromise) return schemaLoadPromise.then(() => request === schemaRequestId ? loadSchema(scope, request) : undefined);
@@ -225,49 +240,42 @@
     return schemaLoadPromise;
   }
 
-  /** Reveal the full schema editor from view settings. */
+  /** Open the property list from view settings, reading the newest saved schema. */
   function openProperties(anchor?: HTMLElement | null, scope?: NotesDatabaseSourceEditingScope): void {
-    if (editingLocked || saving) return;
+    if (editingLocked) return;
     schemaAnchor = anchor ?? titleInput;
     expanded = true;
-    selectSchemaProperty(undefined, scope);
+    void loadSchema(scope);
   }
 
-  /** Load the schema a column's Edit property submenu edits and select that column's property. */
-  function preparePropertyEditor(propertyId: string, scope?: NotesDatabaseSourceEditingScope): void {
+  /** Load the schema a column's Edit property submenu edits. */
+  function preparePropertyEditor(_propertyId: string, scope?: NotesDatabaseSourceEditingScope): void {
     propertyEditorSourceId = scope?.dataSourceId ?? schemaDataSourceId;
-    if (!editingLocked && !saving) selectSchemaProperty(propertyId, scope);
-  }
-
-  /** Load the scope's schema when it is not the one being edited, then select the requested property. */
-  function selectSchemaProperty(propertyId: string | undefined, scope?: NotesDatabaseSourceEditingScope): void {
+    if (editingLocked) return;
     const request = ++schemaRequestId;
     if (schema && (!scope || scope.dataSourceId === editorSourceId)) {
       loading = false;
-      if (propertyId && properties.some((property) => property.id === propertyId)) selectedPropertyId = propertyId;
       if (availableDataSources.length === 0) void loadSourceMetadata(request);
       return;
     }
-    void loadSchema(scope, request).then(() => {
-      if (request !== schemaRequestId || (scope && scope.dataSourceId !== editorSourceId)) return;
-      if (propertyId && properties.some((property) => property.id === propertyId)) selectedPropertyId = propertyId;
-    });
+    void loadSchema(scope, request);
   }
 
-  /** Load relation target sources when the schema was cached by a header addition before the editor first opened. */
+  /** Load relation target sources when the schema was cached by a header change before an editor first opened. */
   async function loadSourceMetadata(request: number): Promise<void> {
     loading = true;
     try {
       const sources = await listNotesDataSources();
       if (request === schemaRequestId) availableDataSources = sources;
     } catch (caught: unknown) {
-      if (request === schemaRequestId) error = caught instanceof Error ? caught.message : String(caught);
+      if (request === schemaRequestId) error = t("notes.databaseSchemaLoadFailed", messageOf(caught));
     } finally {
       if (request === schemaRequestId) loading = false;
     }
   }
 
   async function performLoadSchema(sourceId: string, requestedViewId: string | null, request: number): Promise<void> {
+    const revision = adoptRevision;
     loading = true;
     error = null;
     try {
@@ -279,43 +287,51 @@
         ?? views.find((view) => view.type === "table" && view.data_source_id === sourceId)?.id ?? null;
       const loaded = await getNotesDataSourceSchema(sourceId, { databaseId, viewId: tableViewId });
       if (request !== schemaRequestId) return;
-      if (editorSourceId && editorSourceId !== sourceId) retainedSchemaDrafts.set(editorSourceId, { properties, dirty, selectedPropertyId });
-      const retained = sourceId !== editorSourceId ? retainedSchemaDrafts.get(sourceId) : undefined;
+      availableDataSources = dataSources;
+      if (revision !== adoptRevision && editorSourceId === sourceId) return;
       schema = loaded;
       editorSourceId = sourceId;
       schemaViewId = loaded.view.id;
-      availableDataSources = dataSources;
-      properties = retained?.dirty ? retained.properties : notesDataSourceSchemaDraftFromDto(loaded.data_source, loaded.view);
-      selectedPropertyId = retained?.selectedPropertyId ?? properties[0]?.id ?? null;
-      dirty = retained?.dirty ?? false;
-      saved = false;
+      properties = notesDataSourceSchemaDraftFromDto(loaded.data_source, loaded.view);
       reloadViews();
     } catch (caught) {
-      if (request === schemaRequestId) error = caught instanceof Error ? caught.message : String(caught);
+      if (request === schemaRequestId) error = t("notes.databaseSchemaLoadFailed", messageOf(caught));
     } finally {
       if (request === schemaRequestId) loading = false;
     }
   }
 
-  async function saveSchema(nextProperties: NotesDataSourceSchemaPropertyDraft[] = properties): Promise<boolean> {
-    if (!schemaDataSourceId || editingLocked || saving) return false;
-    saving = true;
+  /** Show a saved schema when it belongs to the source being edited, or when no source is being edited yet. */
+  function adopt(updated: NotesDataSourceSchema): void {
+    const sourceId = updated.data_source.id;
+    if (editorSourceId && editorSourceId !== sourceId) return;
+    adoptRevision += 1;
+    schema = updated;
+    editorSourceId = sourceId;
+    schemaViewId = updated.view.id;
+    properties = notesDataSourceSchemaDraftFromDto(updated.data_source, updated.view);
+  }
+
+  /** The source the settings panel and Edit property submenus edit, or null before a schema has loaded. */
+  function editorScope(): NotesDatabaseSourceEditingScope | null {
+    return editorSourceId ? { dataSourceId: editorSourceId, databaseId, viewId: schemaViewId } : null;
+  }
+
+  function withEditorScope(task: (scope: NotesDatabaseSourceEditingScope) => Promise<void>): Promise<void> {
+    const scope = editorScope();
+    return scope ? task(scope) : Promise.reject(new Error(t("notes.databaseSchemaLoadFailed", "")));
+  }
+
+  /** Run a settings panel action, showing a failure in the panel. */
+  function runPanelAction(task: (scope: NotesDatabaseSourceEditingScope) => Promise<void>): void {
     error = null;
-    try {
-      const update = notesDataSourceSchemaUpdateFromDraft(nextProperties);
-      const updated = await updateNotesDataSourceSchema(schemaDataSourceId, update, { databaseId, viewId: schemaViewId });
-      schema = updated;
-      properties = notesDataSourceSchemaDraftFromDto(updated.data_source, updated.view);
-      dirty = false;
-      saved = true;
-      reloadViews();
-      return true;
-    } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
-      return false;
-    } finally {
-      saving = false;
-    }
+    void withEditorScope(task).catch((caught: unknown) => { error = messageOf(caught); });
+  }
+
+  /** The database and view a native property action places its change in. */
+  function actionTarget(scope: NotesDatabaseSourceEditingScope): { databaseId: string; viewId: string } {
+    if (!scope.databaseId || !scope.viewId) throw new Error(t("notes.databaseSchemaLoadFailed", ""));
+    return { databaseId: scope.databaseId, viewId: scope.viewId };
   }
 
   async function saveTitle(): Promise<void> {
@@ -332,7 +348,7 @@
       acknowledgeTitle(renamedDatabaseId, savedTitle);
     } catch (caught) {
       titleDraft = savedTitle;
-      titleError = caught instanceof Error ? caught.message : String(caught);
+      titleError = messageOf(caught);
     } finally {
       titleSaving = false;
     }
@@ -345,157 +361,9 @@
     try {
       await onCreateLinkedDatabaseView(block.id);
     } catch (caught) {
-      const message = caught instanceof Error ? caught.message : String(caught);
-      linkedViewError = t("notes.databaseLinkedViewCreateFailed", message);
+      linkedViewError = t("notes.databaseLinkedViewCreateFailed", messageOf(caught));
     } finally {
       linking = false;
-    }
-  }
-
-  function markDirty(next: NotesDataSourceSchemaPropertyDraft[]): void {
-    properties = next;
-    dirty = true;
-    saved = false;
-  }
-
-  function updateProperty(
-    propertyId: string,
-    patch: Partial<NotesDataSourceSchemaPropertyDraft>,
-  ): void {
-    const nextProperties = properties.map((property) => {
-      if (property.id !== propertyId) return property;
-      const nextType = patch.type ?? property.type;
-      const next: NotesDataSourceSchemaPropertyDraft = {
-        ...property,
-        ...patch,
-        type: nextType,
-      };
-      if (nextType === "status" && next.options.length === 0) {
-        next.options = createNotesDataSourcePropertyDraft("status", "Status").options;
-      }
-      if (nextType !== "select" && nextType !== "multi_select" && nextType !== "status") {
-        next.options = [];
-      }
-      if (nextType === "relation" && !next.relationDataSourceId) {
-        next.relationDataSourceId = schemaDataSourceId ?? "";
-      }
-      if (nextType !== "relation") {
-        next.relationDataSourceId = "";
-        next.relationSyncedPropertyId = "";
-        next.relationSyncedPropertyName = "";
-      }
-      if (nextType === "rollup" && !next.rollupRelationPropertyId) {
-        Object.assign(next, notesDataSourceDefaultRollupPatch(
-          properties,
-          property.id,
-          schemaDataSourceId,
-          rollupDataSources(),
-        ));
-      }
-      if (nextType === "formula" && !next.formulaExpression.trim()) {
-        next.formulaExpression = defaultFormulaExpression(property.id);
-      }
-      if (nextType === "button") {
-        if (!next.buttonLabel.trim()) next.buttonLabel = next.name || t("notes.databaseSchemaButtonDefaultLabel");
-        if (!next.buttonActionPropertyId) {
-          Object.assign(next, notesDataSourceDefaultButtonPatch(properties, property.id));
-        }
-      }
-      if (nextType !== "rollup") {
-        next.rollupRelationPropertyId = "";
-        next.rollupRelationPropertyName = "";
-        next.rollupPropertyId = "";
-        next.rollupPropertyName = "";
-        next.rollupFunction = "count";
-      }
-      if (nextType !== "formula") {
-        next.formulaExpression = "";
-      }
-      if (nextType !== "button") {
-        next.buttonLabel = "";
-        next.buttonRequiresConfirmation = false;
-        next.buttonActionPropertyId = "";
-        next.buttonActionPropertyName = "";
-        next.buttonActionPropertyType = "checkbox";
-        next.buttonActionValue = true;
-      }
-      return next;
-    });
-    markDirty(notesDataSourceSyncPropertyReferences(nextProperties, schemaDataSourceId, rollupDataSources()));
-  }
-
-  function addProperty(): void {
-    const name = defaultNotesDataSourcePropertyName(newPropertyType, properties);
-    const property = createNotesDataSourcePropertyDraft(newPropertyType, name);
-    if (newPropertyType === "relation") {
-      property.relationDataSourceId = schemaDataSourceId ?? "";
-    }
-    if (newPropertyType === "rollup") {
-      Object.assign(property, notesDataSourceDefaultRollupPatch(
-        properties,
-        property.id,
-        schemaDataSourceId,
-        rollupDataSources(),
-      ));
-    }
-    if (newPropertyType === "formula") {
-      property.formulaExpression = defaultFormulaExpression(property.id);
-    }
-    if (newPropertyType === "button") {
-      Object.assign(property, notesDataSourceDefaultButtonPatch(properties, property.id));
-    }
-    markDirty([...properties, property]);
-    selectedPropertyId = property.id;
-  }
-
-  /** Add to canonical schema without committing or discarding unsaved property editor drafts. */
-  async function addPropertyFromView(type: NotesDataSourcePropertyType, rawName: string, icon: string | null, requestedScope?: NotesDatabaseSourceEditingScope): Promise<void> {
-    if (schemaLoadPromise) await schemaLoadPromise;
-    const sourceId = requestedScope?.dataSourceId ?? schemaDataSourceId;
-    if (!sourceId) throw new Error(t("notes.databaseSchemaLoadFailed", ""));
-    if (saving || editingLocked) throw new Error(t("notes.databaseSaving"));
-    saving = true;
-    error = null;
-    try {
-      const scope = requestedScope ?? { databaseId, viewId: schemaViewId };
-      const canonical = await getNotesDataSourceSchema(sourceId, scope);
-      if (type === "rollup") availableDataSources = await listNotesDataSources();
-      const canonicalProperties = notesDataSourceSchemaDraftFromDto(canonical.data_source, canonical.view);
-      const name = rawName.trim() || defaultNotesDataSourcePropertyName(type, canonicalProperties);
-      const property = createNotesDataSourcePropertyDraft(type, name, undefined, icon);
-      if (type === "relation") property.relationDataSourceId = sourceId;
-      if (type === "rollup") Object.assign(property, notesDataSourceDefaultRollupPatch(canonicalProperties, property.id, sourceId, availableDataSources));
-      if (type === "formula") property.formulaExpression = defaultFormulaExpression(property.id, canonicalProperties);
-      if (type === "button") Object.assign(property, notesDataSourceDefaultButtonPatch(canonicalProperties, property.id));
-      const update = notesDataSourceSchemaUpdateFromDraft([...canonicalProperties, property]);
-      const updated = await updateNotesDataSourceSchema(sourceId, update, scope);
-      const canonicalDrafts = notesDataSourceSchemaDraftFromDto(updated.data_source, updated.view);
-      const created = canonicalDrafts.find((candidate) => candidate.id === property.id);
-      if (!created) throw new Error(t("notes.databaseSchemaSaveFailed", property.name));
-      mergeCanonicalSchema(updated, (drafts) => [...drafts, created]);
-      reloadViews();
-    } catch (caught: unknown) {
-      error = caught instanceof Error ? caught.message : String(caught);
-      throw new Error(error);
-    } finally {
-      saving = false;
-    }
-  }
-
-  /** Adopt a canonical schema change in the matching source draft, applying it to unsaved local drafts instead of discarding them. */
-  function mergeCanonicalSchema(updated: NotesDataSourceSchema, applyToDrafts: (drafts: NotesDataSourceSchemaPropertyDraft[]) => NotesDataSourceSchemaPropertyDraft[]): void {
-    const sourceId = updated.data_source.id;
-    if (!editorSourceId || editorSourceId === sourceId) {
-      const shouldRetainDrafts = editorSourceId === sourceId && dirty;
-      schema = updated;
-      editorSourceId = sourceId;
-      schemaViewId = updated.view.id;
-      properties = shouldRetainDrafts ? applyToDrafts(properties) : notesDataSourceSchemaDraftFromDto(updated.data_source, updated.view);
-      dirty = shouldRetainDrafts;
-      saved = !shouldRetainDrafts;
-    } else {
-      const retained = retainedSchemaDrafts.get(sourceId);
-      if (retained?.dirty) retainedSchemaDrafts.set(sourceId, { ...retained, properties: applyToDrafts(retained.properties) });
     }
   }
 
@@ -510,59 +378,136 @@
   }
 
   /**
-   * Change one canonical property from its header, keeping its ID and any unsaved property editor drafts.
-   * `edit` returns the change for the canonical drafts, or null when nothing changes.
-   * Failures are rethrown without a block error because the header shows them beside the control.
+   * Fill the references a property of the given type needs to be valid: a relation points to its own source, a
+   * rollup to the first relation, a formula to the first plain property, and a button to the first settable property.
+   *
+   * @throws When a rollup has no relation to read through.
    */
-  async function editPropertyFromView(propertyId: string, scope: NotesDatabaseSourceEditingScope,
-    edit: (drafts: NotesDataSourceSchemaPropertyDraft[]) => Partial<Pick<NotesDataSourceSchemaPropertyDraft, "name" | "icon">> | null): Promise<void> {
-    if (saving || editingLocked) throw new Error(t("notes.databaseSaving"));
-    if (schemaLoadPromise) await schemaLoadPromise;
-    saving = true;
-    try {
+  function withTypeDefaults(property: NotesDataSourceSchemaPropertyDraft, sourceId: string,
+    drafts: readonly NotesDataSourceSchemaPropertyDraft[]): NotesDataSourceSchemaPropertyDraft {
+    if (property.type === "relation") property.relationDataSourceId = sourceId;
+    if (property.type === "rollup") {
+      Object.assign(property, notesDataSourceDefaultRollupPatch(drafts, property.id, sourceId, availableDataSources));
+      if (!property.rollupRelationPropertyId) throw new Error(t("notes.databaseSchemaRollupNoRelations"));
+    }
+    if (property.type === "formula") property.formulaExpression = defaultFormulaExpression(property.id, drafts);
+    if (property.type === "button") Object.assign(property, notesDataSourceDefaultButtonPatch(drafts, property.id));
+    return property;
+  }
+
+  /**
+   * Apply one property edit to the newest saved schema and show the result. The update reads that saved property,
+   * so edits made in quick succession build on each other; returning null saves nothing.
+   */
+  function updateSchemaProperty(propertyId: string, update: NotesDataSourcePropertyUpdate, scope: NotesDatabaseSourceEditingScope): Promise<void> {
+    return enqueue(async () => {
       const canonical = await getNotesDataSourceSchema(scope.dataSourceId, scope);
       const drafts = notesDataSourceSchemaDraftFromDto(canonical.data_source, canonical.view);
-      const patch = edit(drafts);
-      if (!patch) return;
-      const apply = (list: NotesDataSourceSchemaPropertyDraft[]) => list.map((property) => property.id === propertyId ? { ...property, ...patch } : property);
+      const target = drafts.find((property) => property.id === propertyId);
+      if (!target) throw new Error(t("notes.databaseSchemaSaveFailed", propertyId));
+      const patch = update(target, drafts);
+      if (!patch) {
+        adopt(canonical);
+        return;
+      }
       const sources = [canonical.data_source, ...availableDataSources.filter((source) => source.id !== canonical.data_source.id)];
-      const synced = notesDataSourceSyncPropertyReferences(apply(drafts), scope.dataSourceId, sources);
-      const updated = await updateNotesDataSourceSchema(scope.dataSourceId, notesDataSourceSchemaUpdateFromDraft(synced), scope);
-      mergeCanonicalSchema(updated, (current) => notesDataSourceSyncPropertyReferences(apply(current), scope.dataSourceId, sources));
+      const next = notesDataSourceSyncPropertyReferences(drafts.map((property) => property.id === propertyId ? { ...property, ...patch } : property),
+        scope.dataSourceId, sources);
+      const updated = await updateNotesDataSourceSchema(scope.dataSourceId, notesDataSourceSchemaUpdateFromDraft(next), scope);
+      adopt(updated);
       reloadViews();
-    } finally {
-      saving = false;
+    });
+  }
+
+  /** Save a change from an Edit property menu, showing a failure beside it. */
+  function editProperty(propertyId: string, update: NotesDataSourcePropertyUpdate): void {
+    error = null;
+    void withEditorScope((scope) => updateSchemaProperty(propertyId, update, scope))
+      .catch((caught: unknown) => { error = t("collections.property.saveFailed", messageOf(caught)); });
+  }
+
+  /** Save an option edit and report its outcome, so the options editor can explain a rejected name. */
+  async function editOptions(propertyId: string, edit: NotesDataSourceOptionEditor): Promise<NotesDataSourceOptionEdit["status"]> {
+    let status: NotesDataSourceOptionEdit["status"] = "unchanged";
+    error = null;
+    try {
+      await withEditorScope((scope) => updateSchemaProperty(propertyId, (target) => {
+        const result = edit(target);
+        status = result.status;
+        return result.status === "changed" ? result.patch : null;
+      }, scope));
+      return status;
+    } catch (caught: unknown) {
+      error = t("collections.property.saveFailed", messageOf(caught));
+      return "unchanged";
     }
   }
 
-  /** Rename one property from its header; duplicate names are rejected ignoring case. */
-  function renamePropertyFromView(propertyId: string, rawName: string, scope: NotesDatabaseSourceEditingScope): Promise<void> {
-    return editPropertyFromView(propertyId, scope, (drafts) => {
+  /** Rename one property; duplicate names are rejected ignoring case. */
+  function renameProperty(propertyId: string, rawName: string, scope: NotesDatabaseSourceEditingScope): Promise<void> {
+    return updateSchemaProperty(propertyId, (_target, drafts) => {
       const renamed = notesDataSourceRenameProperty(drafts, propertyId, rawName);
       if (renamed.status === "unchanged") return null;
       if (renamed.status !== "renamed") throw new Error(renamed.status === "duplicate" ? t("collections.property.nameExists") : t("notes.databaseSchemaSaveFailed", propertyId));
       return { name: renamed.properties.find((property) => property.id === propertyId)?.name ?? rawName.trim() };
+    }, scope);
+  }
+
+  /** Change one property's icon; null returns it to the type icon. */
+  function changePropertyIcon(propertyId: string, icon: string | null, scope: NotesDatabaseSourceEditingScope): Promise<void> {
+    return updateSchemaProperty(propertyId, (target) => target.icon === icon ? null : { icon }, scope);
+  }
+
+  /**
+   * Convert one property to another type in a native transaction that also converts its row values. Select-like
+   * types collect their options from the existing values, so they send no configuration.
+   */
+  function changePropertyType(propertyId: string, propertyType: NotesDataSourcePropertyType, scope: NotesDatabaseSourceEditingScope): Promise<void> {
+    return enqueue(async () => {
+      const target = actionTarget(scope);
+      const canonical = await getNotesDataSourceSchema(scope.dataSourceId, scope);
+      const drafts = notesDataSourceSchemaDraftFromDto(canonical.data_source, canonical.view);
+      const current = drafts.find((property) => property.id === propertyId);
+      if (!current) throw new Error(t("notes.databaseSchemaSaveFailed", propertyId));
+      let config: Record<string, unknown> | null = null;
+      if (propertyType !== "select" && propertyType !== "multi_select" && propertyType !== "status") {
+        if (propertyType === "rollup") availableDataSources = await listNotesDataSources();
+        const draft = withTypeDefaults(createNotesDataSourcePropertyDraft(propertyType, current.name, current.id, current.icon), scope.dataSourceId, drafts);
+        config = notesDataSourcePropertyConfig(draft);
+      }
+      const result = await applyNotesDataSourcePropertyAction(scope.dataSourceId, target.databaseId, target.viewId,
+        { type: "change_type", property_id: propertyId, property_type: propertyType, config });
+      adopt(result.schema);
+      reloadViews();
     });
   }
 
-  /** Change one property's icon from its header; null returns it to the type icon. */
-  function changePropertyIconFromView(propertyId: string, icon: string | null, scope: NotesDatabaseSourceEditingScope): Promise<void> {
-    return editPropertyFromView(propertyId, scope, (drafts) => {
-      const target = drafts.find((property) => property.id === propertyId);
-      if (!target) throw new Error(t("notes.databaseSchemaSaveFailed", propertyId));
-      return target.icon === icon ? null : { icon };
+  /** Ask before deleting a property, answering any earlier unanswered request with no. */
+  function confirmDelete(name: string): Promise<boolean> {
+    pendingDelete?.resolve(false);
+    return new Promise((resolve) => {
+      pendingDelete = { name, resolve: (confirmed) => { pendingDelete = null; resolve(confirmed); } };
     });
   }
 
-  /** Apply a header schema change and its requested placement in one native transaction. */
-  async function applyPropertyAction(request: NotesDatabasePropertyActionRequest, scope: NotesDatabaseSourceEditingScope): Promise<void> {
-    if (request.type === "rename") return renamePropertyFromView(request.propertyId, request.name, scope);
-    if (request.type === "icon") return changePropertyIconFromView(request.propertyId, request.icon, scope);
-    if (saving || editingLocked) throw new Error(t("notes.databaseSaving"));
-    if (schemaLoadPromise) await schemaLoadPromise;
-    saving = true;
-    error = null;
-    try {
+  /** Delete one property and its values from every row after confirmation. */
+  async function deleteProperty(propertyId: string, scope: NotesDatabaseSourceEditingScope): Promise<void> {
+    const target = actionTarget(scope);
+    const canonical = await getNotesDataSourceSchema(scope.dataSourceId, scope);
+    const property = notesDataSourceSchemaDraftFromDto(canonical.data_source, canonical.view).find((candidate) => candidate.id === propertyId);
+    if (!property) throw new Error(t("notes.databaseSchemaSaveFailed", propertyId));
+    if (!await confirmDelete(property.name)) return;
+    await enqueue(async () => {
+      const result = await applyNotesDataSourcePropertyAction(scope.dataSourceId, target.databaseId, target.viewId, { type: "delete", property_id: propertyId });
+      adopt(result.schema);
+      reloadViews();
+    });
+  }
+
+  /** Insert a new property beside another, or duplicate one with its configuration, in one native transaction. */
+  function placeProperty(request: Extract<NotesDatabasePropertyActionRequest, { type: "insert" | "duplicate" }>, scope: NotesDatabaseSourceEditingScope): Promise<void> {
+    return enqueue(async () => {
+      const target = actionTarget(scope);
       const canonical = await getNotesDataSourceSchema(scope.dataSourceId, scope);
       if (request.type === "insert" && request.propertyType === "rollup") availableDataSources = await listNotesDataSources();
       const drafts = notesDataSourceSchemaDraftFromDto(canonical.data_source, canonical.view);
@@ -574,104 +519,49 @@
           (propertyName) => t("notes.databaseSchemaDuplicateName", propertyName));
         action = { type: "duplicate", property_id: request.propertyId, name };
       } else {
-        const property = createNotesDataSourcePropertyDraft(request.propertyType, request.name.trim() || defaultNotesDataSourcePropertyName(request.propertyType, drafts), undefined, request.icon);
-        if (property.type === "relation") property.relationDataSourceId = scope.dataSourceId;
-        if (property.type === "rollup") Object.assign(property, notesDataSourceDefaultRollupPatch(drafts, property.id, scope.dataSourceId, availableDataSources));
-        if (property.type === "formula") property.formulaExpression = defaultFormulaExpression(property.id, drafts);
-        if (property.type === "button") Object.assign(property, notesDataSourceDefaultButtonPatch(drafts, property.id));
-        const serialized = notesDataSourceSchemaUpdateFromDraft([property]);
-        const definition = serialized.properties[property.name];
+        const name = request.name.trim() || defaultNotesDataSourcePropertyName(request.propertyType, drafts);
+        const property = withTypeDefaults(createNotesDataSourcePropertyDraft(request.propertyType, name, undefined, request.icon), scope.dataSourceId, drafts);
+        const definition = notesDataSourceSchemaUpdateFromDraft([property]).properties[property.name];
         if (typeof definition !== "object" || definition === null || Array.isArray(definition)) throw new Error(t("notes.databaseSchemaSaveFailed", property.name));
         action = { type: "insert", property_id: request.propertyId, side: request.side, property: definition as Record<string, unknown> };
       }
-      if (!scope.databaseId || !scope.viewId) throw new Error(t("notes.databaseSchemaLoadFailed", ""));
-      const result = await applyNotesDataSourcePropertyAction(scope.dataSourceId, scope.databaseId, scope.viewId, action);
-      const created = notesDataSourceSchemaDraftFromDto(result.schema.data_source, result.schema.view).find((property) => property.id === result.property_id);
-      if (!created) throw new Error(t("notes.databaseSchemaSaveFailed", result.property_id));
-      mergeCanonicalSchema(result.schema, (drafts) => [...drafts, created]);
+      const result = await applyNotesDataSourcePropertyAction(scope.dataSourceId, target.databaseId, target.viewId, action);
+      adopt(result.schema);
       reloadViews();
-    } catch (caught: unknown) {
-      error = caught instanceof Error ? caught.message : String(caught);
-      throw new Error(error);
-    } finally {
-      saving = false;
+    });
+  }
+
+  /** Apply a property change requested from a view header. Failures are rethrown for the header to show. */
+  function applyPropertyAction(request: NotesDatabasePropertyActionRequest, scope: NotesDatabaseSourceEditingScope): Promise<void> {
+    switch (request.type) {
+      case "rename": return renameProperty(request.propertyId, request.name, scope);
+      case "icon": return changePropertyIcon(request.propertyId, request.icon, scope);
+      case "changeType": return changePropertyType(request.propertyId, request.propertyType, scope);
+      case "delete": return deleteProperty(request.propertyId, scope);
+      case "insert":
+      case "duplicate": return placeProperty(request, scope);
     }
   }
 
-  function deleteProperty(propertyId: string): void {
-    const next = properties.filter((property) => property.id !== propertyId || property.type === "title");
-    markDirty(next);
-    if (selectedPropertyId === propertyId) selectedPropertyId = next[0]?.id ?? null;
-  }
-
-  function addOption(propertyId: string): void {
-    const property = properties.find((item) => item.id === propertyId);
-    if (!property) return;
-    const option: NotesDataSourceSchemaOptionDraft = {
-      id: crypto.randomUUID(),
-      name: `Option ${property.options.length + 1}`,
-      color: "default",
-      group: "To-do",
-    };
-    updateProperty(propertyId, { options: [...property.options, option] });
-  }
-
-  function updateOption(
-    propertyId: string,
-    optionId: string,
-    patch: Partial<NotesDataSourceSchemaOptionDraft>,
-  ): void {
-    const property = properties.find((item) => item.id === propertyId);
-    if (!property) return;
-    updateProperty(propertyId, {
-      options: property.options.map((option) =>
-        option.id === optionId ? { ...option, ...patch } : option,
-      ),
+  /** Add a property at the end of the source. Failures are rethrown for the caller to show. */
+  async function addPropertyFromView(type: NotesDataSourcePropertyType, rawName: string, icon: string | null, requestedScope?: NotesDatabaseSourceEditingScope): Promise<void> {
+    if (schemaLoadPromise) await schemaLoadPromise;
+    const sourceId = requestedScope?.dataSourceId ?? schemaDataSourceId;
+    if (!sourceId) throw new Error(t("notes.databaseSchemaLoadFailed", ""));
+    const scope = requestedScope ?? { dataSourceId: sourceId, databaseId, viewId: schemaViewId };
+    return enqueue(async () => {
+      const canonical = await getNotesDataSourceSchema(sourceId, scope);
+      if (type === "rollup") availableDataSources = await listNotesDataSources();
+      const drafts = notesDataSourceSchemaDraftFromDto(canonical.data_source, canonical.view);
+      const name = rawName.trim() || defaultNotesDataSourcePropertyName(type, drafts);
+      const property = withTypeDefaults(createNotesDataSourcePropertyDraft(type, name, undefined, icon), sourceId, drafts);
+      const updated = await updateNotesDataSourceSchema(sourceId, notesDataSourceSchemaUpdateFromDraft([...drafts, property]), scope);
+      adopt(updated);
+      reloadViews();
     });
   }
 
-  function deleteOption(propertyId: string, optionId: string): void {
-    const property = properties.find((item) => item.id === propertyId);
-    if (!property) return;
-    updateProperty(propertyId, {
-      options: property.options.filter((option) => option.id !== optionId),
-    });
-  }
-
-  function propertyTypeLabel(type: NotesDataSourcePropertyType): string {
-    return notesPropertyTypeLabel(type, t);
-  }
-
-  function updateButtonTarget(
-    property: NotesDataSourceSchemaPropertyDraft,
-    targetId: string,
-  ): void {
-    const target = notesDataSourceButtonTargetOptions(properties, property.id)
-      .find((candidate) => candidate.id === targetId) ?? null;
-    updateProperty(property.id, {
-      buttonActionPropertyId: target?.id ?? "",
-      buttonActionPropertyName: target?.name ?? "",
-      buttonActionPropertyType: target?.type ?? "checkbox",
-      buttonActionValue: target ? defaultButtonValue(target.type) : true,
-    });
-  }
-
-  function updateButtonValue(
-    property: NotesDataSourceSchemaPropertyDraft,
-    value: string | boolean,
-  ): void {
-    updateProperty(property.id, { buttonActionValue: value });
-  }
-
-  function defaultButtonValue(type: NotesDataSourcePropertyType): string | boolean {
-    return type === "checkbox" ? true : "";
-  }
-
-  function buttonActionValueText(value: unknown): string {
-    return typeof value === "string" || typeof value === "number" ? String(value) : "";
-  }
-
-  function defaultFormulaExpression(excludePropertyId: string, sourceProperties: readonly NotesDataSourceSchemaPropertyDraft[] = properties): string {
+  function defaultFormulaExpression(excludePropertyId: string, sourceProperties: readonly NotesDataSourceSchemaPropertyDraft[]): string {
     const target = sourceProperties.find((property) =>
       property.id !== excludePropertyId
       && property.type !== "formula"
@@ -684,58 +574,14 @@
     return name.replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
   }
 
-  function dataSourceTitle(source: NotesDataSource): string {
-    return source.title.trim() || t("notes.untitled");
-  }
-
-  function rollupDataSources(): NotesDataSource[] {
+  /** Sources a relation can point to, with the edited source first. */
+  function relationDataSources(): NotesDataSource[] {
     const currentSchema = schema;
     if (!currentSchema) return availableDataSources;
     return [
       currentSchema.data_source,
       ...availableDataSources.filter((source) => source.id !== currentSchema.data_source.id),
     ];
-  }
-
-  function updateRollupRelation(property: NotesDataSourceSchemaPropertyDraft, relationId: string): void {
-    const relation = properties.find((candidate) =>
-      candidate.id === relationId && candidate.type === "relation"
-    ) ?? null;
-    const target = relation
-      ? notesDataSourceRollupTargetOptionsForRelation(
-          relation,
-          properties,
-          schemaDataSourceId,
-          rollupDataSources(),
-        )[0] ?? null
-      : null;
-    updateProperty(property.id, {
-      rollupRelationPropertyId: relation?.id ?? "",
-      rollupRelationPropertyName: relation?.name ?? "",
-      rollupPropertyId: target?.id ?? "",
-      rollupPropertyName: target?.name ?? "",
-    });
-  }
-
-  function updateRollupTarget(property: NotesDataSourceSchemaPropertyDraft, targetId: string): void {
-    const target = notesDataSourceRollupTargetOptions(
-      property,
-      properties,
-      schemaDataSourceId,
-      rollupDataSources(),
-    ).find((option) => option.id === targetId) ?? null;
-    updateProperty(property.id, {
-      rollupPropertyId: target?.id ?? "",
-      rollupPropertyName: target?.name ?? "",
-    });
-  }
-
-  function statusMessage(): string {
-    if (loading) return t("notes.databaseSchemaLoading");
-    if (saving) return t("notes.databaseSchemaSave");
-    if (dirty) return t("notes.databaseSchemaUnsaved");
-    if (saved) return t("notes.databaseSchemaSaved");
-    return t("notes.databaseSchemaPropertyCount", propertyCount);
   }
 </script>
 
@@ -824,424 +670,80 @@
   {/if}
 </section>
 
-{#snippet schemaStatus()}
-  <div class="flex min-w-0 flex-wrap items-center gap-2 text-panel-detail text-muted-foreground">
-    <span class="min-w-0 flex-1 truncate" role="status">
-      {#if error}
-        {schema
-          ? t("notes.databaseSchemaSaveFailed", error)
-          : t("notes.databaseSchemaLoadFailed", error)}
-      {:else}
-        {statusMessage()}
-      {/if}
-    </span>
-    <button
-      type="button"
-      class="inline-flex h-8 items-center gap-1 rounded-md px-2 hover:bg-accent disabled:pointer-events-none"
-      disabled={loading || saving}
-      aria-label={t("notes.databaseSchemaReload")}
-      title={t("notes.databaseSchemaReload")}
-      onclick={() => {
-        void loadSchema();
-      }}
-    >
-      <RefreshCw class="size-3.5" aria-hidden="true" />
-    </button>
-    <button
-      type="button"
-      class="inline-flex h-8 items-center gap-1 rounded-md bg-primary px-2 text-primary-foreground disabled:pointer-events-none"
-      disabled={loading || saving || !dirty}
-      onclick={() => {
-        void saveSchema();
-      }}
-    >
-      <Save class="size-3.5" aria-hidden="true" />
-      <span>{t("notes.databaseSchemaSave")}</span>
-    </button>
-  </div>
+{#snippet schemaEditor(property: NotesDataSourceSchemaPropertyDraft)}
+  <NotesDatabasePropertySchemaEditor {property} {properties} dataSources={relationDataSources()} dataSourceId={schemaDataSourceId}
+    disabled={loading || editingLocked}
+    onUpdate={(update) => editProperty(property.id, update)}
+    onOptionEdit={(edit) => editOptions(property.id, edit)} />
 {/snippet}
 
-{#snippet propertyFields(property: NotesDataSourceSchemaPropertyDraft, standalone: boolean)}
-  <div class="grid min-w-0 gap-3 @container">
-    <div class={["grid min-w-0 gap-2", standalone ? "@lg:grid-cols-[minmax(7rem,1fr)_minmax(7rem,12rem)_auto]" : "grid-cols-[minmax(0,1fr)_auto]"]}>
-      {#if standalone}
-        <label class="min-w-0 text-panel-detail text-muted-foreground">
-          <span class="mb-1 block">{t("notes.databaseSchemaName")}</span>
-          <input
-            class="field w-full min-w-0 text-foreground"
-            value={property.name}
-            aria-label={t("notes.databaseSchemaName")}
-            disabled={loading || saving || editingLocked}
-            oninput={(event) => {
-              updateProperty(property.id, {
-                name: event.currentTarget.value,
-              });
-            }}
-          />
-        </label>
-      {/if}
-      <div class="min-w-0 text-panel-detail text-muted-foreground">
-        <span class="mb-1 block">{t("notes.databaseSchemaType")}</span>
-        <Select textSize="collection"
-          inline
-          appearance="quiet"
-          contentAlign="start"
-          class="w-full min-w-0"
-          ariaLabel={t("notes.databaseSchemaType")}
-          value={String(property.type ?? "")}
-          disabled={loading || saving || editingLocked || property.type === "title"}
-          options={NOTES_DATA_SOURCE_PROPERTY_TYPES.filter((type) => property.type === "title" ? type === "title" : type !== "title").map((type) => ({ value: type, label: propertyTypeLabel(type) }))}
-          onChange={(nextValue) => {
-            updateProperty(property.id, {
-                type: nextValue as NotesDataSourcePropertyType,
-            });
-          }}
-        />
-      </div>
-      <div class="flex min-w-0 items-end justify-end gap-1">
-        <button
-          type="button"
-          class="inline-flex size-8 items-center justify-center rounded-md text-destructive hover:bg-destructive/10 disabled:pointer-events-none"
-          disabled={loading || saving || editingLocked || property.type === "title"}
-          aria-label={t("notes.databaseSchemaDelete")}
-          title={t("notes.databaseSchemaDelete")}
-          onclick={() => deleteProperty(property.id)}
-        >
-          <Trash2 class="size-3.5" aria-hidden="true" />
-        </button>
-      </div>
-    </div>
-
-    <label class="min-w-0 text-panel-detail text-muted-foreground">
-      <span class="mb-1 block">{t("notes.databaseSchemaDescription")}</span>
-      <input
-        class="field w-full min-w-0 text-foreground"
-        value={property.description}
-        placeholder={t("notes.databaseSchemaDescriptionPlaceholder")}
-        disabled={loading || saving || editingLocked}
-        oninput={(event) => {
-          updateProperty(property.id, {
-            description: event.currentTarget.value,
-          });
-        }}
-      />
-    </label>
-
-    {#if property.type === "number"}
-      <div class="min-w-0 text-panel-detail text-muted-foreground">
-        <span class="mb-1 block">{t("notes.databaseSchemaNumberFormat")}</span>
-        <Select textSize="collection"
-          inline
-          appearance="quiet"
-          contentAlign="start"
-          class="w-full min-w-0"
-          ariaLabel={t("notes.databaseSchemaNumberFormat")}
-          value={String(property.numberFormat ?? "")}
-          options={[...(NOTES_DATA_SOURCE_NUMBER_FORMATS).map((format) => ({ value: String(format), label: String(format) }))]}
-          onChange={(nextValue) => {
-            updateProperty(property.id, {
-                numberFormat: nextValue as NotesDataSourceNumberFormat,
-            });
-          }}
-        />
-      </div>
-    {:else if property.type === "unique_id"}
-      <label class="min-w-0 text-panel-detail text-muted-foreground">
-        <span class="mb-1 block">{t("notes.databaseSchemaUniquePrefix")}</span>
-        <input
-          class="field w-full min-w-0 text-foreground"
-          value={property.uniquePrefix}
-          placeholder={t("notes.databaseSchemaUniquePrefixPlaceholder")}
-          oninput={(event) => {
-            updateProperty(property.id, {
-              uniquePrefix: event.currentTarget.value,
-            });
-          }}
-        />
-      </label>
-    {:else if property.type === "relation"}
-      <div class="grid min-w-0 gap-2 @lg:grid-cols-3">
-        <div class="min-w-0 text-panel-detail text-muted-foreground">
-          <span class="mb-1 block">{t("notes.databaseSchemaRelationTarget")}</span>
-          <Select textSize="collection"
-            inline
-            appearance="quiet"
-            contentAlign="start"
-            class="w-full min-w-0"
-            ariaLabel={t("notes.databaseSchemaRelationTarget")}
-            value={String(property.relationDataSourceId ?? "")}
-            options={[...(property.relationDataSourceId && !availableDataSources.some((source) => source.id === property.relationDataSourceId) ? [{ value: String(property.relationDataSourceId), label: String(property.relationDataSourceId) }] : []),
-              ...(availableDataSources).map((source) => ({ value: String(source.id), label: String(dataSourceTitle(source)) }))]}
-            onChange={(nextValue) => {
-              updateProperty(property.id, {
-                  relationDataSourceId: nextValue,
-              });
-            }}
-          />
-        </div>
-        <label class="min-w-0 text-panel-detail text-muted-foreground">
-          <span class="mb-1 block">{t("notes.databaseSchemaRelationSyncedPropertyId")}</span>
-          <input
-            class="field w-full min-w-0 text-foreground"
-            value={property.relationSyncedPropertyId}
-            placeholder={t("notes.databaseSchemaRelationSyncedPropertyIdPlaceholder")}
-            oninput={(event) => {
-              updateProperty(property.id, {
-                relationSyncedPropertyId: event.currentTarget.value,
-              });
-            }}
-          />
-        </label>
-        <label class="min-w-0 text-panel-detail text-muted-foreground">
-          <span class="mb-1 block">{t("notes.databaseSchemaRelationSyncedPropertyName")}</span>
-          <input
-            class="field w-full min-w-0 text-foreground"
-            value={property.relationSyncedPropertyName}
-            placeholder={t("notes.databaseSchemaRelationSyncedPropertyNamePlaceholder")}
-            oninput={(event) => {
-              updateProperty(property.id, {
-                relationSyncedPropertyName: event.currentTarget.value,
-              });
-            }}
-          />
-        </label>
-      </div>
-    {:else if property.type === "rollup"}
-      <NotesDatabaseRollupSchemaControls
-        {property}
-        relations={notesDataSourceRollupRelationOptions(properties, property.id)}
-        targets={notesDataSourceRollupTargetOptions(
-          property,
-          properties,
-          schemaDataSourceId,
-          rollupDataSources(),
-        )}
-        {saving}
-        onRelationChange={(relationId) => updateRollupRelation(property, relationId)}
-        onTargetChange={(targetId) => updateRollupTarget(property, targetId)}
-        onFunctionChange={(rollupFunction) => updateProperty(property.id, { rollupFunction })}
-      />
-    {:else if property.type === "formula"}
-      <label class="min-w-0 text-panel-detail text-muted-foreground">
-        <span class="mb-1 block">{t("notes.databaseSchemaFormulaExpression")}</span>
-        <textarea
-          class="field min-h-20 w-full min-w-0 resize-y font-mono text-foreground"
-          value={property.formulaExpression}
-          placeholder={t("notes.databaseSchemaFormulaExpressionPlaceholder")}
-          disabled={loading || saving || editingLocked}
-          oninput={(event) => {
-            updateProperty(property.id, {
-              formulaExpression: event.currentTarget.value,
-            });
-          }}
-        ></textarea>
-      </label>
-    {:else if property.type === "button"}
-      <div class="grid min-w-0 gap-2 @lg:grid-cols-3">
-        <label class="min-w-0 text-panel-detail text-muted-foreground">
-          <span class="mb-1 block">{t("notes.databaseSchemaButtonLabel")}</span>
-          <input
-            class="field w-full min-w-0 text-foreground"
-            value={property.buttonLabel}
-            placeholder={t("notes.databaseSchemaButtonDefaultLabel")}
-            oninput={(event) => {
-              updateProperty(property.id, {
-                buttonLabel: event.currentTarget.value,
-              });
-            }}
-          />
-        </label>
-        <div class="min-w-0 text-panel-detail text-muted-foreground">
-          <span class="mb-1 block">{t("notes.databaseSchemaButtonTarget")}</span>
-          <Select textSize="collection"
-            inline
-            appearance="quiet"
-            contentAlign="start"
-            class="w-full min-w-0"
-            ariaLabel={t("notes.databaseSchemaButtonTarget")}
-            value={String(property.buttonActionPropertyId ?? "")}
-            options={[{ value: "", label: t("notes.databaseSchemaButtonNoAction") },
-              ...(notesDataSourceButtonTargetOptions(properties, property.id)).map((target) => ({ value: String(target.id), label: String(target.name) }))]}
-            onChange={(nextValue) => updateButtonTarget(property, nextValue)}
-          />
-        </div>
-        <label class="flex min-w-0 items-end gap-2 text-panel-detail text-muted-foreground">
-          <Checkbox
-            class="mb-2"
-            checked={property.buttonRequiresConfirmation}
-            onChange={(checked) => {
-              updateProperty(property.id, {
-                buttonRequiresConfirmation: checked,
-              });
-            }}
-          />
-          <span class="pb-1">{t("notes.databaseSchemaButtonConfirm")}</span>
-        </label>
-        {#if property.buttonActionPropertyId}
-          {#if property.buttonActionPropertyType === "checkbox"}
-            <div class="min-w-0 text-panel-detail text-muted-foreground">
-              <span class="mb-1 block">{t("notes.databaseSchemaButtonValue")}</span>
-              <Select textSize="collection"
-                inline
-                appearance="quiet"
-                contentAlign="start"
-                class="w-full min-w-0"
-                ariaLabel={t("notes.databaseSchemaButtonValue")}
-                value={String(property.buttonActionValue === false ? "false" : "true")}
-                options={[{ value: "true", label: t("notes.databaseSchemaButtonValueChecked") },
-                  { value: "false", label: t("notes.databaseSchemaButtonValueUnchecked") }]}
-                onChange={(nextValue) => updateButtonValue(property, nextValue === "true")}
-              />
-            </div>
-          {:else}
-            <label class="min-w-0 text-panel-detail text-muted-foreground @lg:col-span-2">
-              <span class="mb-1 block">{t("notes.databaseSchemaButtonValue")}</span>
-              <input
-                class="field w-full min-w-0 text-foreground"
-                value={buttonActionValueText(property.buttonActionValue)}
-                placeholder={t("notes.databaseSchemaButtonValuePlaceholder")}
-                oninput={(event) => updateButtonValue(property, event.currentTarget.value)}
-              />
-            </label>
-          {/if}
-        {/if}
-      </div>
-    {:else if property.type === "select" || property.type === "multi_select" || property.type === "status"}
-      <div class="space-y-2">
-        {#each property.options as option (option.id)}
-          <div class="grid min-w-0 gap-2 @lg:grid-cols-[minmax(7rem,1fr)_minmax(7rem,10rem)_minmax(7rem,10rem)_auto]">
-            <label class="min-w-0 text-panel-detail text-muted-foreground">
-              <span class="mb-1 block">{t("notes.databaseSchemaOptionName")}</span>
-              <input
-                class="field w-full min-w-0 text-foreground"
-                value={option.name}
-                oninput={(event) => {
-                  updateOption(property.id, option.id, {
-                    name: event.currentTarget.value,
-                  });
-                }}
-              />
-            </label>
-            <div class="min-w-0 text-panel-detail text-muted-foreground">
-              <span class="mb-1 block">{t("notes.databaseSchemaOptionColor")}</span>
-              <Select textSize="collection"
-                inline
-                appearance="quiet"
-                contentAlign="start"
-                class="w-full min-w-0"
-                ariaLabel={t("notes.databaseSchemaOptionColor")}
-                value={String(option.color ?? "")}
-                options={[...(NOTES_DATA_SOURCE_SELECT_COLORS).map((color) => ({ value: String(color), label: String(color) }))]}
-                onChange={(nextValue) => {
-                  updateOption(property.id, option.id, {
-                      color: nextValue as NotesDataSourceSelectColor,
-                  });
-                }}
-              />
-            </div>
-            {#if property.type === "status"}
-              <div class="min-w-0 text-panel-detail text-muted-foreground">
-                <span class="mb-1 block">{t("notes.databaseSchemaOptionGroup")}</span>
-                <Select textSize="collection"
-                  inline
-                  appearance="quiet"
-                  contentAlign="start"
-                  class="w-full min-w-0"
-                  ariaLabel={t("notes.databaseSchemaOptionGroup")}
-                  value={String(option.group ?? "")}
-                  options={[...(NOTES_DATA_SOURCE_STATUS_GROUPS).map((group) => ({ value: String(group), label: String(group) }))]}
-                  onChange={(nextValue) => {
-                    updateOption(property.id, option.id, {
-                        group: nextValue as NotesDataSourceStatusGroup,
-                    });
-                  }}
-                />
-              </div>
-            {/if}
-            <div class="flex items-end justify-end">
-              <button
-                type="button"
-                class="inline-flex size-8 items-center justify-center rounded-md text-destructive hover:bg-destructive/10"
-                aria-label={t("notes.databaseSchemaDeleteOption")}
-                title={t("notes.databaseSchemaDeleteOption")}
-                onclick={() => deleteOption(property.id, option.id)}
-              >
-                <Trash2 class="size-3.5" aria-hidden="true" />
-              </button>
-            </div>
-          </div>
-        {/each}
-        <button
-          type="button"
-          class="inline-flex h-8 items-center gap-1 rounded-md px-2 hover:bg-accent"
-          onclick={() => addOption(property.id)}
-        >
-          <Plus class="size-3.5" aria-hidden="true" />
-          <span>{t("notes.databaseSchemaAddOption")}</span>
-        </button>
-      </div>
-    {:else if property.type === "title"}
-      <p class="text-panel-detail text-muted-foreground">{t("notes.databaseSchemaReadOnlyTitle")}</p>
-    {:else}
-      <p class="text-panel-detail text-muted-foreground">
-        {t("notes.databaseSchemaReadonlyPlaceholder")}
-      </p>
-    {/if}
-  </div>
+{#snippet panelMessages()}
+  {#if editingLocked}<p class="px-2 py-1 text-panel-detail text-muted-foreground">{t("notes.databaseEditingLockDescription")}</p>{/if}
+  {#if error}<p class="px-2 py-1 text-panel-detail text-destructive" role="alert">{error}</p>{/if}
 {/snippet}
 
 {#snippet propertyEditor(propertyId: string)}
-  <fieldset disabled={loading || saving || editingLocked} class="m-0 min-w-0 space-y-2 border-0 p-0" data-schema-property-id={propertyId}>
-    <legend class="sr-only">{t("collections.property.editProperty")}</legend>
-    {#if editingLocked}<p class="text-muted-foreground">{t("notes.databaseEditingLockDescription")}</p>{/if}
+  <div class="grid min-w-0 gap-0" data-schema-property-id={propertyId}>
     {#if schema && editorSourceId === propertyEditorSourceId}
       {#each properties.filter((property) => property.id === propertyId) as property (property.id)}
-        {@render propertyFields(property, false)}
+        {@render schemaEditor(property)}
       {/each}
+    {:else if loading}
+      <p class="px-2 py-1 text-panel-detail text-muted-foreground" role="status">{t("notes.databaseSchemaLoading")}</p>
     {/if}
-    {@render schemaStatus()}
-  </fieldset>
+    {@render panelMessages()}
+  </div>
+{/snippet}
+
+{#snippet propertyPage(property: NotesDataSourceSchemaPropertyDraft)}
+  {@const unavailable = loading || editingLocked}
+  <div class="grid min-w-0 gap-0" data-schema-property-id={property.id}>
+    <CollectionPropertyNameField propertyId={property.id} name={property.name} kind={notesPropertyKind(property.type)} icon={property.icon}
+      editable={!editingLocked} maxLength={NOTES_DATA_SOURCE_PROPERTY_NAME_MAX_CHARACTERS}
+      onRename={(name) => withEditorScope((scope) => renameProperty(property.id, name, scope))}
+      onIconChange={(icon) => withEditorScope((scope) => changePropertyIcon(property.id, icon, scope))} />
+    {#if notesPropertyHasSchemaOptions(property.type)}
+      <CollectionMenu label={t("collections.property.editProperty")} kind="properties" icon={Settings2} fullWidth disabled={unavailable}>
+        {@render schemaEditor(property)}
+        {@render panelMessages()}
+      </CollectionMenu>
+    {/if}
+    {#if property.type !== "title"}
+      <CollectionPropertyTypeMenu types={propertyTypeOptions} current={property.type} disabled={unavailable}
+        onChange={(type) => runPanelAction((scope) => changePropertyType(property.id, type, scope))} />
+      <CollectionMenuSeparator />
+      <CollectionMenuItem icon={Copy} label={t("collections.property.duplicate")} disabled={unavailable}
+        onclick={() => runPanelAction((scope) => placeProperty({ type: "duplicate", propertyId: property.id }, scope))} />
+      <CollectionMenuItem icon={Trash2} label={t("collections.property.delete")} destructive disabled={unavailable}
+        onclick={() => runPanelAction((scope) => deleteProperty(property.id, scope))} />
+    {/if}
+    {@render panelMessages()}
+  </div>
 {/snippet}
 
 {#if isLocalDatabase && expanded}
-  <CollectionSettings label={t("notes.databaseViewEditProperties")} anchor={schemaAnchor} preferredWidth={384} onClose={() => { expanded = false; }}>
-      {#if editingLocked}<p class="text-muted-foreground">{t("notes.databaseEditingLockDescription")}</p>{/if}
-      <fieldset disabled={loading || saving || editingLocked} class="m-0 min-w-0 space-y-2 border-0 p-0">
-      <legend class="sr-only">{t("notes.databaseViewEditProperties")}</legend>
-      {@render schemaStatus()}
-
-      <Select textSize="collection" inline appearance="quiet" class="w-full min-w-0" ariaLabel={t("notes.databaseSchemaToggle")}
-        value={selectedPropertyId ?? ""} options={properties.map((property) => ({ value: property.id, label: property.name || t("notes.databaseSchemaName") }))}
-        onChange={(propertyId) => { selectedPropertyId = propertyId; }} />
-      <div class="space-y-2">
-        {#each properties.filter((property) => property.id === selectedPropertyId) as property (property.id)}
-          {@render propertyFields(property, true)}
-        {/each}
-      </div>
-
-      <div class="flex min-w-0 flex-wrap items-center gap-2 border-t border-border pt-3">
-        <Select textSize="collection"
-          inline
-          appearance="quiet"
-          contentAlign="start"
-          class="w-full min-w-0"
-          ariaLabel={t("notes.databaseSchemaType")}
-          value={String(newPropertyType ?? "")}
-          options={[...(NOTES_DATA_SOURCE_PROPERTY_TYPES.filter((type) => type !== "title")).map((type) => ({ value: String(type), label: String(propertyTypeLabel(type)) }))]}
-          onChange={(nextValue) => {
-            newPropertyType = nextValue as NotesDataSourcePropertyType;
-          }}
-        />
-        <button
-          type="button"
-          class="inline-flex h-8 items-center gap-1 rounded-md px-2 hover:bg-accent"
-          onclick={addProperty}
-        >
-          <Plus class="size-3.5" aria-hidden="true" />
-          <span>{t("collections.property.add")}</span>
-        </button>
-      </div>
-
-      </fieldset>
+  <CollectionSettings label={t("notes.databaseViewEditProperties")} anchor={schemaAnchor} onClose={() => { expanded = false; }}>
+    {#if !schema && loading}
+      <p class="px-2 py-1 text-panel-detail text-muted-foreground" role="status">{t("notes.databaseSchemaLoading")}</p>
+    {/if}
+    {#each properties as property (property.id)}
+      <CollectionMenu label={property.name} kind="property" fullWidth row summary={notesPropertyTypeLabel(property.type, t)}>
+        {#snippet leading()}<CollectionPropertyIcon icon={property.icon} kind={notesPropertyKind(property.type)} class="size-3.5 shrink-0 text-muted-foreground" />{/snippet}
+        {@render propertyPage(property)}
+      </CollectionMenu>
+    {/each}
+    {#if schema && !editingLocked}
+      <CollectionMenuSeparator />
+      <CollectionPropertyCreator types={propertyTypeOptions} pending={saving}
+        onCreate={(type) => runPanelAction((scope) => addPropertyFromView(type, "", null, scope))} />
+    {/if}
+    {@render panelMessages()}
   </CollectionSettings>
+{/if}
+
+{#if pendingDelete}
+  {@const request = pendingDelete}
+  <ConfirmDialog title={t("collections.property.deleteTitle")} message={t("collections.property.deleteMessage", request.name)}
+    confirmLabel={t("collections.property.delete")} cancelLabel={t("common.cancel")}
+    onConfirm={() => request.resolve(true)} onCancel={() => request.resolve(false)} />
 {/if}

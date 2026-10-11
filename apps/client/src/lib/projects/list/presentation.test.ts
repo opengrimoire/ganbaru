@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ProjectCustomField, ProjectTask } from "$lib/projects/types";
-import { defaultProjectListPresentation, parseProjectListPresentation, projectListDateLabel, projectListFrozenOffsets, projectListNumberLabel, projectListPresentationForProject, projectListRowColor, projectListTimeLabel } from "./presentation";
+import { defaultProjectListPresentation, parseProjectListPresentation, projectListColumnGroupMode, projectListDateLabel, projectListFrozenOffsets, projectListNumberLabel, projectListPresentationForProject, projectListRowColor, projectListTimeLabel } from "./presentation";
 
 const fields: ProjectCustomField[] = [
   { id: "text", projectId: "project", name: "Text", fieldType: "text", sortOrder: 1, icon: null, createdAt: "", updatedAt: "" },
@@ -61,5 +61,15 @@ describe("Projects table presentation", () => {
     expect(projectListNumberLabel(1234.5, "commas", "en")).toBe("1,234.5");
     expect(projectListNumberLabel(0.25, "percent", "es")).toContain("25");
     expect(projectListNumberLabel(1234.5, "number", "en")).toBe("1234.5");
+  });
+
+  it("groups only by columns that have a task grouping", () => {
+    expect(projectListColumnGroupMode("status")).toBe("status");
+    expect(projectListColumnGroupMode("priority")).toBe("priority");
+    expect(projectListColumnGroupMode("due")).toBe("due");
+    expect(projectListColumnGroupMode("scheduled")).toBe("scheduled");
+    expect(projectListColumnGroupMode("name")).toBeNull();
+    expect(projectListColumnGroupMode("start")).toBeNull();
+    expect(projectListColumnGroupMode("custom:points")).toBeNull();
   });
 });

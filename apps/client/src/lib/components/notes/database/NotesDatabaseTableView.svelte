@@ -16,7 +16,8 @@
   import type { CollectionPropertyDraftPlacement } from "$lib/components/collections/property-draft";
   import CollectionPropertyNameField from "$lib/components/collections/CollectionPropertyNameField.svelte";
   import { COLLECTION_PROPERTY_ICONS } from "$lib/components/collections/property-icons";
-  import { notesPropertyKind, notesPropertyTypeOptions } from "./property-kinds";
+  import CollectionPropertyTypeMenu from "$lib/components/collections/CollectionPropertyTypeMenu.svelte";
+  import { notesPropertyHasSchemaOptions, notesPropertyKind, notesPropertyTypeOptions } from "./property-kinds";
   import NotesDatabaseFilterControls from "./NotesDatabaseFilterControls.svelte";
   import NotesDatabaseSortControls from "./NotesDatabaseSortControls.svelte";
   import NotesDatabaseSettingsFooter from "./NotesDatabaseSettingsFooter.svelte";
@@ -105,6 +106,8 @@
   import FileText from "@lucide/svelte/icons/file-text";
   import FileDown from "@lucide/svelte/icons/file-down";
   import FileUp from "@lucide/svelte/icons/file-up";
+  import Group from "@lucide/svelte/icons/group";
+  import PanelRight from "@lucide/svelte/icons/panel-right";
   import PanelsTopLeft from "@lucide/svelte/icons/panels-top-left";
   import LayoutTemplate from "@lucide/svelte/icons/layout-template";
   import Palette from "@lucide/svelte/icons/palette";
@@ -331,7 +334,7 @@
   }
   /** Minimum width of the trailing track, which only holds the add property button (`size-9`). */
   const ADD_PROPERTY_TRACK_MIN = "2.25rem";
-  const gridTemplate = $derived(`1.5rem 1.75rem ${renderedColumns.map((column) => `${column.width}px`).join(" ")} minmax(${ADD_PROPERTY_TRACK_MIN}, 1fr)`);
+  const gridTemplate = $derived(`1.5rem ${renderedColumns.map((column) => `${column.width}px`).join(" ")} minmax(${ADD_PROPERTY_TRACK_MIN}, 1fr)`);
   const filters = $derived(table ? notesDatabaseTableFiltersFromView(table.view) : []);
   const sorts = $derived(table ? notesDatabaseTableSortsFromView(table.view) : []);
   const rowOpenMode = $derived(
@@ -1020,7 +1023,7 @@
 {#snippet calculationRow(groupId: string | null)}
   {#if visibleColumns.some((column) => notesTableColumnPresentation(tableConfiguration?.presentation, column.id).calculation)}
     <CollectionRow template={gridTemplate} role="row" data-table-calculation-group={groupId ?? "__all__"} class="border-t border-(--cal-gridline) bg-muted/20 text-muted-foreground">
-      <div role="cell"></div><div role="cell"></div>
+      <div role="cell"></div>
       {#each visibleColumns as column (column.id)}
         {@const calculation = notesTableColumnPresentation(tableConfiguration?.presentation, column.id).calculation}
         <CollectionCell role="cell" class={frozenOffset(column.id) !== null ? "sticky z-20 bg-background" : ""} style={frozenOffset(column.id) !== null ? `left: ${frozenOffset(column.id)}px` : undefined}>
@@ -1169,7 +1172,6 @@
         <div role="table" aria-label={t("notes.databaseViewTable")} class="min-w-max">
           <CollectionRow template={gridTemplate} header role="row" class="border-t border-(--cal-gridline)">
             <div role="columnheader"><span class="sr-only">{t("notes.databaseTableRowActions")}</span></div>
-            <div role="columnheader"></div>
             {#each visibleColumns as column (column.id)}
               {@const columnIndex = visibleColumns.findIndex((candidate) => candidate.id === column.id)}
               {@const sortUnavailable = mutating || editingLocked || (sorts.length >= NOTES_DATABASE_QUERY_MAX_SORTS && !sorts.some((sort) => sort.property_id === column.id))}
@@ -1181,6 +1183,11 @@
                   {@const presentation = notesTableColumnPresentation(tableConfiguration?.presentation, column.id)}
                   {@const frozen = tableConfiguration?.presentation?.frozen_property_id === column.id}
                   {@const kind = notesPropertyKind(column.type)}
+                  {@const schemaOptions = Boolean(propertyEditor) && notesPropertyHasSchemaOptions(column.type)}
+                  {@const dateColumn = column.type === "date" || column.type === "created_time" || column.type === "last_edited_time"}
+                  {@const columnSort = sorts.find((sort) => sort.property_id === column.id)}
+                  {@const groupable = notesTableGroupableColumns(columns).some((candidate) => candidate.id === column.id)}
+                  {@const grouped = tableConfiguration?.group_property_id === column.id}
                   <CollectionMenu label={column.name} kind="property" fullWidth showHeader={false} dismissOnAction bind:triggerElement={columnMenuTriggers[column.id]}
                     triggerClass="h-auto justify-start rounded-none px-2 font-normal" triggerAttributes={{ "data-collection-cell-primary": "" }} disabled={mutating || editingLocked}>
                     {#snippet leading()}{#if preferences.notesShowPropertyIcons}<CollectionPropertyIcon icon={column.icon ?? null} {kind} class="size-3.5 shrink-0 text-muted-foreground" />{/if}{/snippet}
@@ -1188,45 +1195,49 @@
                       <CollectionPropertyNameField propertyId={column.id} name={column.name} icon={column.icon ?? null} {kind} editable={!editingLocked && Boolean(onPropertyAction)}
                         maxLength={NOTES_DATA_SOURCE_PROPERTY_NAME_MAX_CHARACTERS} onRename={(name) => renameProperty(column.id, name)}
                         onIconChange={onPropertyAction ? (icon) => changePropertyIcon(column.id, icon) : undefined} />
-                      {#if propertyEditor}
+                      {#if schemaOptions || dateColumn}
                         <CollectionMenu label={t("collections.property.editProperty")} kind="properties" icon={Settings2} fullWidth disabled={mutating}
-                          onOpenChange={(open) => { if (open) onLoadPropertyEditor?.(column.id); }}>
-                          {@render propertyEditor(column.id)}
+                          onOpenChange={(open) => { if (open && schemaOptions) onLoadPropertyEditor?.(column.id); }}>
+                          {#if schemaOptions && propertyEditor}{@render propertyEditor(column.id)}{/if}
+                          {#if dateColumn}
+                            <CollectionMenuSelect label={t("notes.databaseTablePresentation.dateFormat")} icon={CalendarCog} value={presentation.date_format} disabled={mutating}
+                              options={DATE_FORMATS.map((format) => ({ value: format.value, label: t(format.label) }))} onChange={(date_format) => updateColumnPresentation(column.id, { date_format })} />
+                            <CollectionMenuSelect label={t("notes.databaseTablePresentation.timeFormat")} icon={Clock} value={presentation.time_format} disabled={mutating}
+                              options={TIME_FORMATS.map((format) => ({ value: format.value, label: t(format.label) }))} onChange={(time_format) => updateColumnPresentation(column.id, { time_format })} />
+                          {/if}
                         </CollectionMenu>
                       {/if}
-                      <div class="mx-1 my-1 border-t border-border"></div>
+                      {#if column.type !== "title" && onPropertyAction}
+                        <CollectionPropertyTypeMenu types={propertyTypeOptions} current={column.type} disabled={mutating}
+                          onChange={(propertyType) => { void performPropertyAction({ type: "changeType", propertyId: column.id, propertyType }); }} />
+                      {/if}
+                      <CollectionMenuSeparator />
                       {#if notesDatabaseFilterConditions(column).length > 0}
                         <CollectionMenu label={t("collections.property.filter")} kind="filter" fullWidth activeCount={notesDatabaseFilterCount(filters, column.id)}>
                           <NotesDatabaseFilterControls properties={columns} {filters} propertyId={column.id} pending={mutating} onChange={saveFilters} />
                         </CollectionMenu>
                       {/if}
-                      <CollectionMenuItem icon={ArrowUp} label={t("collections.property.sortAscending")} disabled={sortUnavailable}
-                        checked={sorts.some((sort) => sort.property_id === column.id && sort.direction === "ascending")} onclick={() => sortColumn(column.id, "ascending")} />
-                      <CollectionMenuItem icon={ArrowDown} label={t("collections.property.sortDescending")} disabled={sortUnavailable}
-                        checked={sorts.some((sort) => sort.property_id === column.id && sort.direction === "descending")} onclick={() => sortColumn(column.id, "descending")} />
+                      <CollectionMenu label={t("collections.property.sort")} kind="sort" fullWidth dismissOnAction disabled={sortUnavailable}
+                        summary={columnSort ? t(columnSort.direction === "ascending" ? "collections.property.sortAscending" : "collections.property.sortDescending") : undefined}>
+                        <CollectionMenuItem icon={ArrowUp} label={t("collections.property.sortAscending")} disabled={sortUnavailable}
+                          checked={columnSort?.direction === "ascending"} onclick={() => sortColumn(column.id, "ascending")} />
+                        <CollectionMenuItem icon={ArrowDown} label={t("collections.property.sortDescending")} disabled={sortUnavailable}
+                          checked={columnSort?.direction === "descending"} onclick={() => sortColumn(column.id, "descending")} />
+                      </CollectionMenu>
+                      {#if groupable}
+                        <CollectionMenuItem icon={Group} label={t(grouped ? "collections.property.ungroup" : "collections.property.group")} disabled={mutating}
+                          onclick={() => updateGrouping(grouped ? null : column.id)} />
+                      {/if}
                       <CollectionMenu label={t("collections.property.calculate")} kind="properties" icon={Sigma} fullWidth summary={presentation.calculation ? calculationLabel(presentation.calculation) : undefined}>
                         <CollectionMenuItem label={t("notes.databaseTablePresentation.none")} checked={presentation.calculation === null} disabled={mutating} onclick={() => updateColumnPresentation(column.id, { calculation: null })} />
                         {#each notesTableCompatibleCalculations(column) as calculation}
                           <CollectionMenuItem label={calculationLabel(calculation)} checked={presentation.calculation === calculation} disabled={mutating} onclick={() => updateColumnPresentation(column.id, { calculation })} />
                         {/each}
                       </CollectionMenu>
-                      {#if column.type === "date" || column.type === "created_time" || column.type === "last_edited_time"}
-                        <CollectionMenu label={t("notes.databaseTablePresentation.dateFormat")} kind="properties" icon={CalendarCog} fullWidth>
-                          {#each DATE_FORMATS as format (format.value)}
-                            <CollectionMenuItem label={t(format.label)} checked={presentation.date_format === format.value} disabled={mutating} onclick={() => updateColumnPresentation(column.id, { date_format: format.value })} />
-                          {/each}
-                        </CollectionMenu>
-                        <CollectionMenu label={t("notes.databaseTablePresentation.timeFormat")} kind="properties" icon={Clock} fullWidth>
-                          {#each TIME_FORMATS as format (format.value)}
-                            <CollectionMenuItem label={t(format.label)} checked={presentation.time_format === format.value} disabled={mutating} onclick={() => updateColumnPresentation(column.id, { time_format: format.value })} />
-                          {/each}
-                        </CollectionMenu>
-                      {/if}
-                      <div class="mx-1 my-1 border-t border-border"></div>
                       <CollectionMenuItem icon={frozen ? PinOff : Pin} label={t(frozen ? "collections.property.unfreeze" : "collections.property.freeze")} disabled={mutating} onclick={() => freezeThrough(frozen ? null : column.id)} />
                       {#if column.type !== "title"}<CollectionMenuItem icon={EyeOff} label={t("collections.property.hide")} disabled={mutating} onclick={() => updateColumnVisibility(column.id, true)} />{/if}
                       <CollectionMenuItem icon={TextWrap} label={t("collections.property.wrap")} checked={presentation.wrap} disabled={mutating} onclick={() => updateColumnPresentation(column.id, { wrap: !presentation.wrap })} />
-                      <div class="mx-1 my-1 border-t border-border"></div>
+                      <CollectionMenuSeparator />
                       {#if column.type !== "title"}
                         <CollectionMenuItem icon={ArrowLeft} label={t("collections.property.moveLeft")} disabled={mutating || columnIndex < 2} onclick={() => moveColumn(column, -1)} />
                         <CollectionMenuItem icon={ArrowRight} label={t("collections.property.moveRight")} disabled={mutating || columnIndex === visibleColumns.length - 1} onclick={() => moveColumn(column, 1)} />
@@ -1236,7 +1247,10 @@
                           <CollectionMenuItem icon={side === "left" ? ArrowLeftToLine : ArrowRightToLine} label={t(side === "left" ? "collections.property.insertLeft" : "collections.property.insertRight")}
                             disabled={mutating} onclick={() => openInsertPropertyDraft(column, side)} />
                         {/each}
-                        {#if column.type !== "title"}<CollectionMenuItem icon={Copy} label={t("collections.property.duplicate")} disabled={mutating} onclick={() => { void performPropertyAction({ type: "duplicate", propertyId: column.id }); }} />{/if}
+                        {#if column.type !== "title"}
+                          <CollectionMenuItem icon={Copy} label={t("collections.property.duplicate")} disabled={mutating} onclick={() => { void performPropertyAction({ type: "duplicate", propertyId: column.id }); }} />
+                          <CollectionMenuItem icon={Trash2} label={t("collections.property.delete")} destructive disabled={mutating} onclick={() => { void performPropertyAction({ type: "delete", propertyId: column.id }); }} />
+                        {/if}
                       {/if}
                     </div>
                   </CollectionMenu>
@@ -1321,7 +1335,6 @@
                     </div>
                   </CollectionMenu>
                 </div>
-                <div role="cell" class="flex justify-center"><button type="button" class="flex size-7 items-center justify-center rounded-md text-muted-foreground opacity-100 hover:bg-accent hover:text-foreground [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/row:opacity-100 [@media(hover:hover)]:group-focus-within/row:opacity-100" aria-label={t("notes.databaseRowsOpen", title)} disabled={mutating || rowCreation.blocked(row.id)} onclick={() => openRow(row)}><ChevronRight class="size-3.5" /></button></div>
                 {#each visibleColumns as column, columnIndex (column.id)}
                   {@const editValue = rowCreation.valueFor(row, column)}
                   <CollectionCell role="cell" class={`${frozenOffset(column.id) !== null ? "sticky z-20 bg-background" : ""} ${notesTableColumnPresentation(tableConfiguration?.presentation, column.id).wrap ? "notes-table-wrap" : ""}`}
@@ -1456,6 +1469,12 @@
                       </button>
                     {/if}
                     </div>
+                    {#if column.type === "title"}
+                      <button type="button" class="absolute top-1/2 right-1 z-10 flex h-6 -translate-y-1/2 items-center gap-1 rounded-md border border-border bg-background px-1.5 text-[0.75rem] text-muted-foreground opacity-100 hover:bg-accent hover:text-foreground [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/row:opacity-100 [@media(hover:hover)]:group-focus-within/row:opacity-100"
+                        aria-label={t("notes.databaseRowsOpen", title)} disabled={mutating || rowCreation.blocked(row.id)} onclick={() => openRow(row)}>
+                        <PanelRight class="size-3.5" aria-hidden="true" /><span>{t("collections.property.open")}</span>
+                      </button>
+                    {/if}
                   </CollectionCell>
                 {/each}
                 <div role="cell"></div>
@@ -1472,7 +1491,7 @@
 
           {#key addRowKey}
             <CollectionRow template={gridTemplate} data-database-new-row>
-              <CollectionQuickAdd label={t("notes.databaseNewPage")} contentColumn={3} disabled={mutating || loading} onCreate={() => { void createRow(); }} />
+              <CollectionQuickAdd label={t("notes.databaseNewPage")} contentColumn={2} disabled={mutating || loading} onCreate={() => { void createRow(); }} />
             </CollectionRow>
           {/key}
         </div>

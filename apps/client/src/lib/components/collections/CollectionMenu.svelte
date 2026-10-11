@@ -25,12 +25,14 @@
    * A collection toolbar menu, settings row, or column menu.
    * A full-width row inside another floating menu is a submenu: it opens beside its row on hover or ArrowRight instead of covering it.
    */
-  let { label, ariaLabel, kind = "layout", iconOnly = false, fullWidth = false, primary = false, showHeader, activeCount = 0, dismissOnAction = false, summary, leading, icon, rootClass, triggerClass, triggerAttributes, triggerElement = $bindable(), pressed, contextMenu = false, beforeOpen, disabled = false, onOpenChange, children }: {
+  let { label, ariaLabel, kind = "layout", iconOnly = false, fullWidth = false, row = false, primary = false, showHeader, activeCount = 0, dismissOnAction = false, summary, leading, icon, rootClass, triggerClass, triggerAttributes, triggerElement = $bindable(), pressed, contextMenu = false, beforeOpen, disabled = false, onOpenChange, children }: {
     label: string;
     ariaLabel?: string;
     kind?: "layout" | "filter" | "sort" | "properties" | "property" | "group" | "actions" | "new" | "new-options";
     iconOnly?: boolean;
     fullWidth?: boolean;
+    /** Keeps a full-width trigger with a custom leading snippet a row, such as an option badge that opens a submenu. */
+    row?: boolean;
     primary?: boolean;
     showHeader?: boolean;
     activeCount?: number;
@@ -64,7 +66,7 @@
   const { t } = localization;
   const navigation = getCollectionSettingsNavigation();
   const settingsRow = $derived(fullWidth && navigation !== undefined);
-  const rowTrigger = $derived(settingsRow || (fullWidth && !leading));
+  const rowTrigger = $derived(settingsRow || (fullWidth && (!leading || row)));
   const countLabel = $derived(activeCount > 0 ? formatNumber(localization.locale, activeCount) : "");
   const id = $props.id();
   const VIEWPORT_HEIGHT_FRACTION = 0.7;

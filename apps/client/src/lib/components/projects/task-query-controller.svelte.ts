@@ -630,6 +630,25 @@ export class ProjectTaskQueryController {
     } finally { if (generation === this.#propertyWriteGeneration) this.#propertyWriteProjectId = null; }
   }
 
+  /**
+   * Delete a custom field together with its values on every task in the project.
+   * @returns Whether the field was deleted; failures are reported through `propertyError`.
+   */
+  async deleteColumnProperty(field: ProjectCustomField): Promise<boolean> {
+    const projectId = this.projectId;
+    if (!projectId || this.propertySaving || this.listColumnsSaving) return false;
+    const generation = ++this.#propertyWriteGeneration;
+    this.#propertyWriteProjectId = projectId;
+    this.#propertyWriteError = null;
+    try {
+      await this.#projects.removeCustomField(field.id);
+      return true;
+    } catch (error: unknown) {
+      if (this.projectId === projectId && generation === this.#propertyWriteGeneration) this.#propertyWriteError = {projectId, message: this.#translate("projects.customFields.deleteFailed", error instanceof Error ? error.message : String(error))};
+      return false;
+    } finally { if (generation === this.#propertyWriteGeneration) this.#propertyWriteProjectId = null; }
+  }
+
   async updateColumnWidths(
     widths: ProjectTaskListColumnWidths,
     options: { persist?: boolean } = {},

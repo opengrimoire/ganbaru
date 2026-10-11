@@ -130,6 +130,18 @@ function action(panel: ParentNode, label: string): HTMLButtonElement {
   return button!;
 }
 
+/** Open a submenu of a floating panel by its accessible name and return the submenu panel. */
+async function submenu(panel: ParentNode, label: string): Promise<HTMLElement> {
+  const trigger = panel.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
+  expect(trigger).not.toBeNull();
+  trigger!.click();
+  await tick();
+  await tick();
+  const opened = document.querySelector<HTMLElement>(`[role="dialog"][aria-label="${label}"]`);
+  expect(opened).not.toBeNull();
+  return opened!;
+}
+
 describe("Notes table sub-items", () => {
   it("uses distinct keyboard indexes for the same row rendered in multiple groups", async () => {
     const initial = table(240);
@@ -205,6 +217,25 @@ describe("Notes table sub-items", () => {
     expect(document.activeElement).toBe(inputs()[1]);
   });
 
+  it("opens a row from the Open button inside its title cell", async () => {
+    const initial = table(240);
+    initial.rows = [createProvisionalNotesPage({ id: "row", first_block_id: "block", title: "Plan", parent: { type: "data_source_id", data_source_id: "source" }, folder_id: null }).page];
+    const onSelectPage = vi.fn<(pageId: string) => void>();
+    vi.mocked(getNotesDataSourceTableView).mockResolvedValue(initial);
+    vi.mocked(listNotesDataSourceTemplates).mockResolvedValue([]);
+    component = mount(NotesDatabaseTableView, { target: document.body, props: {
+      dataSourceId: "source", onSelectPage, onAddProperty: vi.fn(), onEditProperties: vi.fn(), onCloseSettings: vi.fn(),
+    } });
+    await vi.waitFor(() => expect(document.querySelector('[data-database-row-id="row"]')).not.toBeNull());
+    const row = document.querySelector<HTMLElement>('[data-database-row-id="row"]')!;
+    expect(row.querySelectorAll('[role="cell"]')).toHaveLength(3);
+    const openButton = row.querySelector<HTMLButtonElement>('button[aria-label="Open Plan"]')!;
+    expect(openButton.closest('[role="cell"]')?.querySelector('input[aria-label="Name"]')).not.toBeNull();
+    expect(openButton.textContent?.trim()).toBe("Open");
+    openButton.click();
+    expect(onSelectPage).toHaveBeenCalledExactlyOnceWith("row");
+  });
+
   it("adds a real sub-item through the row menu and focuses its optimistic title without creating a root row", async () => {
     const initial = table(240);
     const parent = createProvisionalNotesPage({ id: "parent", first_block_id: "block", title: "Parent", parent: { type: "data_source_id", data_source_id: "source" }, folder_id: null }).page;
@@ -229,7 +260,7 @@ describe("Notes table property actions", () => {
     const initial = configuredTable();
     vi.mocked(updateNotesDataSourceTableView).mockResolvedValue(initial);
     await open(vi.fn(), initial);
-    action(await propertyMenu("Status"), "Sort descending").click();
+    action(await submenu(await propertyMenu("Status"), "Sort"), "Sort descending").click();
     await vi.waitFor(() => expect(updateNotesDataSourceTableView).toHaveBeenCalledOnce());
     const update = vi.mocked(updateNotesDataSourceTableView).mock.calls[0][1];
     expect(update.sorts).toEqual([
@@ -253,18 +284,59 @@ describe("Notes table property actions", () => {
     });
   });
 
-  it("keeps the required title visible and edits its property in a submenu beside the column menu", async () => {
+  it("edits a property's options in a submenu beside the column menu without saving the view", async () => {
     const { onEditProperties, onLoadPropertyEditor } = await open(vi.fn(), configuredTable());
-    const panel = await propertyMenu("Name");
-    expect(panel.textContent).not.toContain("Move left");
-    expect(panel.textContent).not.toContain("Move right");
-    expect(panel.textContent).not.toContain("Hide");
+    const panel = await propertyMenu("Status");
     action(panel, "Edit property").click();
-    await vi.waitFor(() => expect(document.querySelector('[role="dialog"][aria-label="Edit property"] [data-property-editor]')?.textContent).toBe("Editing title"));
-    expect(onLoadPropertyEditor).toHaveBeenCalledExactlyOnceWith("title");
+    await vi.waitFor(() => expect(document.querySelector('[role="dialog"][aria-label="Edit property"] [data-property-editor]')?.textContent).toBe("Editing status"));
+    expect(onLoadPropertyEditor).toHaveBeenCalledExactlyOnceWith("status");
     expect(panel.isConnected).toBe(true);
     expect(onEditProperties).not.toHaveBeenCalled();
     expect(updateNotesDataSourceTableView).not.toHaveBeenCalled();
+  });
+
+  it("offers no Edit property for a type without settings", async () => {
+    const { onLoadPropertyEditor } = await open(vi.fn(), configuredTable());
+    const panel = await propertyMenu("Done");
+    expect(panel.querySelector('button[aria-label="Edit property"]')).toBeNull();
+    expect(onLoadPropertyEditor).not.toHaveBeenCalled();
+  });
+
+  it("keeps the date and time formats of a date column under Edit property", async () => {
+    const initial = configuredTable();
+    initial.data_source.properties.Due = { id: "due", name: "Due", type: "date", date: {} };
+    const tableConfiguration = initial.view.configuration!.table as Record<string, unknown>;
+    initial.view.configuration = { type: "table", table: { ...tableConfiguration, property_order: ["title", "status", "internal", "done", "due"], column_widths: { title: 240, status: 160, internal: 180, done: 120, due: 160 } } };
+    vi.mocked(updateNotesDataSourceTableView).mockResolvedValue(initial);
+    const { onLoadPropertyEditor } = await open(vi.fn(), initial);
+    const panel = await propertyMenu("Due");
+    expect(panel.querySelector('button[aria-label="Date format"]')).toBeNull();
+    const editor = await submenu(panel, "Edit property");
+    expect(editor.querySelector("[data-property-editor]")).toBeNull();
+    expect(onLoadPropertyEditor).not.toHaveBeenCalled();
+    action(await submenu(editor, "Date format"), "ISO date").click();
+    await vi.waitFor(() => expect(updateNotesDataSourceTableView).toHaveBeenCalledOnce());
+    expect(vi.mocked(updateNotesDataSourceTableView).mock.calls[0][1].configuration).toMatchObject({
+      presentation: { columns: { due: { date_format: "iso" } } },
+    });
+    expect(editor.querySelector('button[aria-label="Time format"]')).not.toBeNull();
+  });
+
+  it("groups the view by a property from its column menu and removes the grouping again", async () => {
+    const initial = configuredTable();
+    vi.mocked(updateNotesDataSourceTableView).mockImplementation(async (_source, update) => ({ ...initial,
+      view: { ...initial.view, configuration: { type: "table", table: { ...update.configuration } } },
+    }));
+    await open(vi.fn(), initial);
+    expect((await propertyMenu("Done")).querySelector('button[aria-label="Group"]')).toBeNull();
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    action(await propertyMenu("Status"), "Group").click();
+    await vi.waitFor(() => expect(updateNotesDataSourceTableView).toHaveBeenCalledOnce());
+    expect(vi.mocked(updateNotesDataSourceTableView).mock.calls[0][1].configuration).toMatchObject({ group_property_id: "status" });
+    await vi.waitFor(() => expect(document.querySelector('[role="dialog"][aria-label="Status"]')).toBeNull());
+    action(await propertyMenu("Status"), "Remove grouping").click();
+    await vi.waitFor(() => expect(updateNotesDataSourceTableView).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(updateNotesDataSourceTableView).mock.calls[1][1].configuration).toMatchObject({ group_property_id: null });
   });
 
   it("loads the chosen property for its editor and hides only that view column", async () => {
@@ -685,6 +757,35 @@ describe("Notes table property drafts", () => {
     await vi.waitFor(() => expect(draft.isConnected).toBe(false));
     expect(onPropertyAction).toHaveBeenLastCalledWith({ type: "insert", propertyId: "status", side: "left", propertyType: "people", name: "Owner", icon: null });
     expect(onAddProperty).not.toHaveBeenCalled();
+  });
+
+  it("keeps the title renameable without type, hide, move, duplicate, or delete actions", async () => {
+    await openWithPropertyCallbacks();
+    const panel = await propertyMenu("Name");
+    expect(panel.querySelector('input[aria-label="Property name"]')).not.toBeNull();
+    for (const label of ["Edit property", "Change type", "Hide", "Move left", "Move right", "Insert left", "Duplicate property (empty)", "Delete property"]) {
+      expect(panel.querySelector(`button[aria-label="${label}"]`), label).toBeNull();
+      expect(Array.from(panel.querySelectorAll("button")).some((button) => button.textContent?.trim() === label), label).toBe(false);
+    }
+    expect(action(panel, "Insert right")).toBeDefined();
+  });
+
+  it("changes a property type from the type list without offering the title type", async () => {
+    const { onPropertyAction } = await openWithPropertyCallbacks();
+    const types = await submenu(await propertyMenu("Status"), "Change type");
+    expect(types.querySelector('[aria-pressed="true"]')?.textContent?.trim()).toBe("Status");
+    expect(Array.from(types.querySelectorAll("button")).some((button) => button.textContent?.trim() === "Title")).toBe(false);
+    action(types, "Number").click();
+    await vi.waitFor(() => expect(onPropertyAction).toHaveBeenCalledExactlyOnceWith({ type: "changeType", propertyId: "status", propertyType: "number" }));
+    await vi.waitFor(() => expect(document.querySelector('[role="dialog"][aria-label="Status"]')).toBeNull());
+  });
+
+  it("deletes a property from its column menu and shows a rejection", async () => {
+    const { onPropertyAction } = await openWithPropertyCallbacks();
+    onPropertyAction.mockRejectedValueOnce(new Error("Disk full"));
+    action(await propertyMenu("Status"), "Delete property").click();
+    await vi.waitFor(() => expect(onPropertyAction).toHaveBeenCalledExactlyOnceWith({ type: "delete", propertyId: "status" }));
+    await vi.waitFor(() => expect(document.body.textContent).toContain("Disk full"));
   });
 
   it("discards the draft on Escape without creating a property", async () => {

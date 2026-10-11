@@ -214,7 +214,9 @@ export interface NotesDataSourceAttachRequest {
 
 export type NotesDataSourcePropertyAction =
   | { type: "insert"; property_id: string; side: "left" | "right"; property: Record<string, unknown> }
-  | { type: "duplicate"; property_id: string; name: string };
+  | { type: "duplicate"; property_id: string; name: string }
+  | { type: "change_type"; property_id: string; property_type: NotesDataSourcePropertyType; config?: Record<string, unknown> | null }
+  | { type: "delete"; property_id: string };
 
 export interface NotesDataSourcePropertyActionResult {
   property_id: string;

@@ -13,7 +13,7 @@ const MAX_PROPERTIES: usize = 100;
 const MAX_PROPERTY_NAME_CHARS: usize = 120;
 const MAX_PROPERTY_DESCRIPTION_CHARS: usize = 2000;
 const MAX_PROPERTY_ICON_NAME_CHARS: usize = 80;
-const MAX_OPTIONS: usize = 100;
+pub(crate) const MAX_OPTIONS: usize = 100;
 const MAX_OPTION_NAME_CHARS: usize = 120;
 const MAX_UNIQUE_ID_PREFIX_CHARS: usize = 32;
 
@@ -523,6 +523,11 @@ fn canonical_status_config(value: Option<&Value>) -> Result<Value, String> {
         .transpose()?
         .unwrap_or_else(default_status_options);
     let groups = canonical_status_groups(object.and_then(|config| config.get("groups")), &options)?;
+    let default_option_id = status_default_option_id(
+        object.and_then(|config| config.get("default_option_id")),
+        &options,
+        &groups,
+    );
     let options: Vec<Value> = options
         .into_iter()
         .map(|mut option| {
@@ -534,8 +539,35 @@ fn canonical_status_config(value: Option<&Value>) -> Result<Value, String> {
         .collect();
     Ok(json!({
         "options": options,
-        "groups": groups
+        "groups": groups,
+        "default_option_id": default_option_id
     }))
+}
+
+/// Keep a chosen default that still exists, otherwise use the first to-do option, then the first option.
+fn status_default_option_id(
+    requested: Option<&Value>,
+    options: &[Value],
+    groups: &[Value],
+) -> Value {
+    let option_id = |option: &Value| option.get("id").and_then(Value::as_str).map(str::to_string);
+    let requested = requested.and_then(Value::as_str);
+    if let Some(id) = requested.filter(|id| {
+        options
+            .iter()
+            .any(|option| option_id(option).as_deref() == Some(*id))
+    }) {
+        return Value::String(id.to_string());
+    }
+    groups
+        .first()
+        .and_then(|group| group.get("option_ids"))
+        .and_then(Value::as_array)
+        .and_then(|ids| ids.first())
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| options.first().and_then(option_id))
+        .map_or(Value::Null, Value::String)
 }
 
 fn canonical_unique_id_config(value: Option<&Value>) -> Result<Value, String> {
@@ -722,6 +754,11 @@ fn default_option_color(index: usize) -> &'static str {
         .get(index % SELECT_COLORS.len())
         .copied()
         .unwrap_or("default")
+}
+
+/// Whether a name can label a select-like option.
+pub(crate) fn is_valid_option_name(name: &str) -> bool {
+    validate_non_empty_text(name, "option.name", MAX_OPTION_NAME_CHARS, true).is_ok()
 }
 
 fn ensure_title_property_preserved(current: &Value, next: &Value) -> Result<(), String> {

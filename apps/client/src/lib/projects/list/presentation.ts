@@ -1,6 +1,6 @@
 import { PALETTE_SIZE, type EventColor } from "$lib/calendar/types";
 import { projectTaskListGridColumnWidths, type ProjectTaskListGridInput, type ProjectTaskListResizableColumn } from "./view";
-import { PROJECT_TASK_LIST_COLUMNS, type ProjectCustomField, type ProjectTask, type ProjectTaskSortMode, type ProjectViewPreference } from "$lib/projects/types";
+import { PROJECT_TASK_GROUP_MODES, PROJECT_TASK_LIST_COLUMNS, type ProjectCustomField, type ProjectTask, type ProjectTaskGroupMode, type ProjectTaskSortMode, type ProjectViewPreference } from "$lib/projects/types";
 import { customFieldIdFromTaskListColumn } from "$lib/projects/tasks/list-columns";
 import type { AppLocale } from "$lib/i18n/locales";
 
@@ -99,6 +99,12 @@ export function projectListColumnSortMode(column: ProjectTaskListResizableColumn
   if (column === "name") return "title";
   if (column === "status" || column === "start" || column === "priority" || column === "due" || column === "estimate" || column === "scheduled") return column;
   return column.startsWith("custom:") ? column as ProjectTaskSortMode : null;
+}
+
+/** Resolve the task grouping a column can drive; custom fields and other columns have none. */
+export function projectListColumnGroupMode(column: ProjectTaskListResizableColumn): ProjectTaskGroupMode | null {
+  const mode = PROJECT_TASK_GROUP_MODES.find((candidate) => candidate !== "section" && candidate === column);
+  return mode ?? null;
 }
 
 /** Calculate frozen offsets from the same responsive tracks used to render the table. */

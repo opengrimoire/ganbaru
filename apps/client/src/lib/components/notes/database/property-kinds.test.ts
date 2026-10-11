@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { getLocalization } from "$lib/i18n/translator.svelte";
 import { NOTES_DATA_SOURCE_PROPERTY_TYPES } from "$lib/notes/types";
-import { notesPropertyKind, notesPropertyTypeLabel, notesPropertyTypeOptions } from "./property-kinds";
+import { notesPropertyHasSchemaOptions, notesPropertyKind, notesPropertyTypeLabel, notesPropertyTypeOptions } from "./property-kinds";
 
 const { t } = getLocalization();
 
@@ -26,6 +26,13 @@ describe("Notes property kinds", () => {
     expect(notesPropertyKind("phone_number")).toBe("phone");
     expect(notesPropertyKind("people")).toBe("person");
     expect(notesPropertyKind("title")).toBe("title");
+  });
+
+  it("offers schema editing only for types with configuration", () => {
+    const configurable = NOTES_DATA_SOURCE_PROPERTY_TYPES.filter((type) => notesPropertyHasSchemaOptions(type));
+    expect(configurable).toEqual(["number", "select", "multi_select", "status", "unique_id", "relation", "rollup", "formula", "button"]);
+    expect(notesPropertyHasSchemaOptions("title")).toBe(false);
+    expect(notesPropertyHasSchemaOptions("date")).toBe(false);
   });
 
   it("labels each option with its localized type name", () => {

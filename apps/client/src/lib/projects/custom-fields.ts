@@ -6,6 +6,9 @@ import type {
   ProjectCustomFieldValue,
 } from "$lib/projects/types";
 
+/** Drag data type that keeps a dragged custom field option from landing in unrelated drop targets. */
+export const PROJECT_CUSTOM_FIELD_OPTION_DRAG_DATA_TYPE = "application/x-ganbaru-project-custom-field-option";
+
 const TEXT_BACKED_CUSTOM_FIELD_TYPES = new Set<ProjectCustomFieldType>([
   "text",
   "url",

@@ -80,3 +80,11 @@ export function notesPropertyTypeOptions(t: Translate): CollectionPropertyTypeOp
     section,
   })));
 }
+
+/** Property types whose schema carries configuration that people edit after creation, such as options, formats, or references. */
+const SCHEMA_OPTION_TYPES = new Set<NotesDataSourcePropertyType>(["number", "select", "multi_select", "status", "unique_id", "relation", "rollup", "formula", "button"]);
+
+/** Return whether a Notes property type has schema configuration to show under Edit property. */
+export function notesPropertyHasSchemaOptions(type: NotesDataSourcePropertyType): boolean {
+  return SCHEMA_OPTION_TYPES.has(type);
+}

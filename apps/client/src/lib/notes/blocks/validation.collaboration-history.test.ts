@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseNotesBlock, parseNotesMentionNotification, parseNotesPageHistorySettings, parseNotesPageHistorySnapshot, parseNotesPageTemplate } from "./validation";
+import { parseNotesBlock, parseNotesComment, parseNotesMentionNotification, parseNotesPageNotificationSettings, parseNotesPageHistorySettings, parseNotesPageHistorySnapshot, parseNotesPageTemplate } from "./validation";
 import { baseBlock, basePage, baseRichText } from "./validation.fixtures";
 
 describe("notes collaboration-history boundary validation", () => {
@@ -21,6 +21,7 @@ describe("notes collaboration-history boundary validation", () => {
         source_plain_text: "Hi Alice",
         status: "pending",
         delivered_at: null,
+        suppressed: false,
         created_time: "2026-07-01T12:00:00.000Z",
         last_edited_time: "2026-07-01T12:00:00.000Z",
       })).toMatchObject({
@@ -30,6 +31,54 @@ describe("notes collaboration-history boundary validation", () => {
         status: "pending",
       });
     });
+
+  const commentDto = (reactions: unknown) => ({
+    object: "comment",
+    id: "10101010-1010-4010-8010-101010101010",
+    parent: { type: "page_id", page_id: basePage.id },
+    discussion_id: "13131313-1313-4313-8313-131313131313",
+    created_time: "2026-07-01T12:00:00.000Z",
+    last_edited_time: "2026-07-01T12:00:00.000Z",
+    created_by: { object: "user", id: "12121212-1212-4212-8212-121212121212" },
+    rich_text: [baseRichText],
+    attachments: [],
+    display_name: { type: "user", resolved_name: "Alice" },
+    deleted_at: null,
+    reactions,
+  });
+
+  it("parses comment reactions with their reactors", () => {
+    const comment = parseNotesComment(commentDto([
+      { emoji: "👍", count: 2, reacted_by_me: true, names: ["Alice", "Bob"] },
+    ]));
+
+    expect(comment.reactions).toEqual([
+      { emoji: "👍", count: 2, reacted_by_me: true, names: ["Alice", "Bob"] },
+    ]);
+  });
+
+  it("rejects reactions whose count disagrees with their reactors", () => {
+    expect(() => parseNotesComment(commentDto([
+      { emoji: "👍", count: 3, reacted_by_me: false, names: ["Alice"] },
+    ]))).toThrow("comment.reactions[0].count must match its names");
+    expect(() => parseNotesComment(commentDto([
+      { emoji: "👍", count: 0, reacted_by_me: false, names: [] },
+    ]))).toThrow("comment.reactions[0].count must match its names");
+    expect(() => parseNotesComment(commentDto(undefined))).toThrow("comment.reactions must be an array");
+  });
+
+  it("parses page notification settings and rejects unknown levels", () => {
+    expect(parseNotesPageNotificationSettings({
+      object: "page_notification_settings",
+      page_id: basePage.id,
+      level: "mentions",
+    })).toEqual({ object: "page_notification_settings", page_id: basePage.id, level: "mentions" });
+    expect(() => parseNotesPageNotificationSettings({
+      object: "page_notification_settings",
+      page_id: basePage.id,
+      level: "loud",
+    })).toThrow("page notification settings.level is unsupported");
+  });
 
   it("parses page template DTOs", () => {
       const template = parseNotesPageTemplate({

@@ -1,10 +1,15 @@
 use crate::models::{
     NoteMentionNotificationDeliveryUpdate, NoteMentionNotificationDto, NoteMentionNotificationRow,
+    NotePageNotificationSettingsDto,
 };
+use crate::validation::require_uuid;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::{QueryBuilder, Sqlite, SqlitePool, Transaction};
 
+const PAGE_NOTIFICATION_LEVEL_ALL: &str = "all";
+/// `all` delivers reminders and mentions, `mentions` delivers only person mentions, and `none` stays silent.
+const PAGE_NOTIFICATION_LEVELS: [&str; 3] = [PAGE_NOTIFICATION_LEVEL_ALL, "mentions", "none"];
 const MAX_NOTIFICATION_BATCH: usize = 200;
 const MAX_PLAIN_TEXT_LENGTH: usize = 500;
 const MAX_SOURCE_TEXT_LENGTH: usize = 2000;
@@ -69,6 +74,85 @@ pub async fn mark_delivered(
         .map_err(|e| format!("mark notes mention notifications delivered: {e}"))?;
 
     list_pending(pool).await
+}
+
+/// Reads which notifications from a page reach the current local user. A page without a stored choice
+/// notifies about everything.
+pub async fn page_notification_settings(
+    pool: &SqlitePool,
+    page_id: &str,
+) -> Result<NotePageNotificationSettingsDto, String> {
+    let page_id = page_id.trim();
+    require_uuid(page_id, "page_id")?;
+    let local_user_id = crate::comments::current_local_user_id(pool).await?;
+    ensure_live_page(pool, page_id).await?;
+    let level: Option<String> = sqlx::query_scalar(
+        "SELECT level FROM notes_page_notification_settings WHERE page_id = ? AND user_id = ?",
+    )
+    .bind(page_id)
+    .bind(&local_user_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| format!("load notes page notification level: {e}"))?;
+    Ok(NotePageNotificationSettingsDto::new(
+        page_id.to_string(),
+        level.unwrap_or_else(|| PAGE_NOTIFICATION_LEVEL_ALL.to_string()),
+    ))
+}
+
+/// Stores the current local user's notification level for a page. The level is a device-local
+/// preference, so it does not mark project history dirty.
+pub async fn set_page_notification_level(
+    pool: &SqlitePool,
+    page_id: &str,
+    level: &str,
+) -> Result<NotePageNotificationSettingsDto, String> {
+    let page_id = page_id.trim();
+    require_uuid(page_id, "page_id")?;
+    let level = level.trim();
+    if !PAGE_NOTIFICATION_LEVELS.contains(&level) {
+        return Err("page notification level must be all, mentions, or none".to_string());
+    }
+    let local_user_id = crate::comments::current_local_user_id(pool).await?;
+    ensure_live_page(pool, page_id).await?;
+    if level == PAGE_NOTIFICATION_LEVEL_ALL {
+        sqlx::query(
+            "DELETE FROM notes_page_notification_settings WHERE page_id = ? AND user_id = ?",
+        )
+        .bind(page_id)
+        .bind(&local_user_id)
+        .execute(pool)
+        .await
+        .map_err(|e| format!("reset notes page notification level: {e}"))?;
+    } else {
+        sqlx::query(
+            "INSERT INTO notes_page_notification_settings (page_id, user_id, level)
+             VALUES (?, ?, ?)
+             ON CONFLICT(page_id, user_id) DO UPDATE
+             SET level = excluded.level,
+                 updated_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+        )
+        .bind(page_id)
+        .bind(&local_user_id)
+        .bind(level)
+        .execute(pool)
+        .await
+        .map_err(|e| format!("store notes page notification level: {e}"))?;
+    }
+    page_notification_settings(pool, page_id).await
+}
+
+async fn ensure_live_page(pool: &SqlitePool, page_id: &str) -> Result<(), String> {
+    let exists: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM notes_pages WHERE id = ? AND in_trash = 0 AND archived = 0",
+    )
+    .bind(page_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| format!("check notes page for notification settings: {e}"))?;
+    exists
+        .map(|_| ())
+        .ok_or_else(|| "notes page not found".to_string())
 }
 
 pub async fn refresh_all(pool: &SqlitePool) -> Result<i64, String> {
@@ -296,11 +380,29 @@ async fn replace_source_candidates(
 async fn active_pending_notification_rows(
     pool: &SqlitePool,
 ) -> Result<Vec<NoteMentionNotificationRow>, String> {
+    let local_user_id = crate::comments::current_local_user_id(pool).await?;
     sqlx::query_as::<_, NoteMentionNotificationRow>(
         "SELECT notification.*,
-                page.title AS page_title
+                page.title AS page_title,
+                CASE
+                    WHEN COALESCE(settings.level, 'all') = 'none' THEN 1
+                    WHEN COALESCE(settings.level, 'all') = 'mentions'
+                     AND notification.kind <> 'user_mention' THEN 1
+                    WHEN notification.source_type = 'comment' AND EXISTS (
+                        SELECT 1
+                        FROM notes_comments AS muted_comment
+                        JOIN notes_comment_thread_mutes AS mute
+                          ON mute.thread_id = muted_comment.thread_id
+                         AND mute.user_id = ?1
+                        WHERE muted_comment.id = notification.comment_id
+                    ) THEN 1
+                    ELSE 0
+                END AS suppressed
          FROM notes_mention_notifications AS notification
          JOIN notes_pages AS page ON page.id = notification.page_id
+         LEFT JOIN notes_page_notification_settings AS settings
+           ON settings.page_id = notification.page_id
+          AND settings.user_id = ?1
          WHERE notification.status = 'pending'
            AND notification.suppressed_by_history_restore = 0
            AND page.in_trash = 0
@@ -342,6 +444,7 @@ async fn active_pending_notification_rows(
                   notification.created_time ASC,
                   notification.id ASC",
     )
+    .bind(&local_user_id)
     .fetch_all(pool)
     .await
     .map_err(|e| format!("list pending notes mention notifications: {e}"))

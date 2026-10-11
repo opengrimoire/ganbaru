@@ -1,11 +1,13 @@
 import {
   NOTES_DATA_SOURCE_NUMBER_FORMATS,
+  NOTES_DATA_SOURCE_PAGE_VISIBILITIES,
   NOTES_DATA_SOURCE_PROPERTY_TYPES,
   NOTES_DATA_SOURCE_ROLLUP_FUNCTIONS,
   NOTES_DATA_SOURCE_SELECT_COLORS,
   NOTES_DATA_SOURCE_STATUS_GROUPS,
   type NotesDataSource,
   type NotesDataSourceNumberFormat,
+  type NotesDataSourcePageVisibility,
   type NotesDataSourcePropertyType,
   type NotesDataSourceRollupFunction,
   type NotesDataSourceSchemaUpdate,
@@ -86,6 +88,10 @@ export interface NotesDataSourceSchemaPropertyDraft {
   options: NotesDataSourceSchemaOptionDraft[];
   /** Status option that new rows receive; empty lets the native schema choose the first To-do option. */
   statusDefaultOptionId: string;
+  /** How the property appears on row pages. */
+  pageVisibility: NotesDataSourcePageVisibility;
+  /** Explicit row page position, or null to follow the fallback order. */
+  pagePosition: number | null;
 }
 
 export interface NotesDataSourceRollupTargetOption {
@@ -158,6 +164,16 @@ function isSelectColor(value: string): value is NotesDataSourceSelectColor {
 
 function isNumberFormat(value: string): value is NotesDataSourceNumberFormat {
   return NOTES_DATA_SOURCE_NUMBER_FORMATS.includes(value as NotesDataSourceNumberFormat);
+}
+
+/** Read a stored row page visibility; absent or unknown values show the property. */
+export function notesDataSourcePageVisibility(value: unknown): NotesDataSourcePageVisibility {
+  return NOTES_DATA_SOURCE_PAGE_VISIBILITIES.find((visibility) => visibility === value) ?? "always_show";
+}
+
+/** Read a stored row page position, or null when the property follows the fallback order. */
+export function notesDataSourcePagePosition(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
 }
 
 function isRollupFunction(value: string): value is NotesDataSourceRollupFunction {
@@ -587,6 +603,8 @@ function propertyDraftFromRecord(
     buttonActionValue: buttonActionValueForType(buttonActionType, buttonAction?.value),
     options,
     statusDefaultOptionId: type === "status" && isRecord(config) ? readString(config.default_option_id, "") : "",
+    pageVisibility: notesDataSourcePageVisibility(value.page_visibility),
+    pagePosition: notesDataSourcePagePosition(value.page_position),
   };
 }
 
@@ -729,6 +747,8 @@ export function createNotesDataSourcePropertyDraft(
     buttonActionValue: true,
     options: type === "status" ? defaultStatusOptions() : [],
     statusDefaultOptionId: "",
+    pageVisibility: "always_show",
+    pagePosition: null,
   };
 }
 
@@ -855,12 +875,15 @@ export function notesDataSourceSchemaUpdateFromDraft(
     if (names.has(nameKey)) throw new Error("property names must be unique");
     names.add(nameKey);
     const icon = propertyIconRecord(property.icon);
+    const isTitle = property.type === "title";
     record[name] = {
-      id: property.type === "title" ? "title" : property.id,
+      id: isTitle ? "title" : property.id,
       name,
       ...(icon ? { icon } : {}),
       description: property.description.trim(),
       type: property.type,
+      ...(!isTitle && property.pageVisibility !== "always_show" ? { page_visibility: property.pageVisibility } : {}),
+      ...(!isTitle && property.pagePosition !== null ? { page_position: property.pagePosition } : {}),
       [property.type]: propertyConfig(property),
     };
   }

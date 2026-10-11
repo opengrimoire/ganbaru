@@ -46,10 +46,46 @@ pub struct NoteCommentDto {
     attachments: Value,
     display_name: Value,
     deleted_at: Option<String>,
+    reactions: Vec<NoteCommentReactionDto>,
+}
+
+/// One emoji on a comment with everyone who chose it, in reaction order.
+#[derive(Serialize)]
+pub struct NoteCommentReactionDto {
+    emoji: String,
+    count: usize,
+    reacted_by_me: bool,
+    names: Vec<String>,
+}
+
+impl NoteCommentReactionDto {
+    pub fn new(emoji: String) -> Self {
+        Self {
+            emoji,
+            count: 0,
+            reacted_by_me: false,
+            names: Vec::new(),
+        }
+    }
+
+    pub fn emoji(&self) -> &str {
+        &self.emoji
+    }
+
+    /// Adds one person's reaction, remembering whether it belongs to the current local user.
+    pub fn add(&mut self, name: String, is_current_user: bool) {
+        self.count += 1;
+        self.reacted_by_me |= is_current_user;
+        self.names.push(name);
+    }
 }
 
 impl NoteCommentDto {
-    pub fn new(thread: &NoteCommentThreadRow, row: NoteCommentRow) -> Result<Self, String> {
+    pub fn new(
+        thread: &NoteCommentThreadRow,
+        row: NoteCommentRow,
+        reactions: Vec<NoteCommentReactionDto>,
+    ) -> Result<Self, String> {
         Ok(Self {
             object: "comment",
             id: row.id,
@@ -67,6 +103,7 @@ impl NoteCommentDto {
             attachments: parse_json(row.attachments, "comment attachments")?,
             display_name: parse_json(row.display_name, "comment display name")?,
             deleted_at: row.deleted_at,
+            reactions,
         })
     }
 }
@@ -117,7 +154,14 @@ pub struct NoteCommentThreadDto {
     created_time: String,
     last_edited_time: String,
     unread: bool,
+    muted: bool,
     comments: Vec<NoteCommentDto>,
+}
+
+/// Per-person state of one discussion for the current local user.
+pub struct NoteCommentThreadViewerState {
+    pub unread: bool,
+    pub muted: bool,
 }
 
 impl NoteCommentThreadDto {
@@ -125,7 +169,7 @@ impl NoteCommentThreadDto {
         row: NoteCommentThreadRow,
         comments: Vec<NoteCommentDto>,
         anchor: Option<NoteCommentAnchorDto>,
-        unread: bool,
+        viewer: NoteCommentThreadViewerState,
     ) -> Result<Self, String> {
         let resolved_by = row.resolved_by.clone().map(NotePartialUserDto::new);
         Ok(Self {
@@ -145,9 +189,28 @@ impl NoteCommentThreadDto {
             anchor,
             created_time: row.created_time,
             last_edited_time: row.last_edited_time,
-            unread,
+            unread: viewer.unread,
+            muted: viewer.muted,
             comments,
         })
+    }
+}
+
+/// Which notifications from one page reach the current local user: `all`, `mentions`, or `none`.
+#[derive(Serialize)]
+pub struct NotePageNotificationSettingsDto {
+    object: &'static str,
+    page_id: String,
+    level: String,
+}
+
+impl NotePageNotificationSettingsDto {
+    pub fn new(page_id: String, level: String) -> Self {
+        Self {
+            object: "page_notification_settings",
+            page_id,
+            level,
+        }
     }
 }
 

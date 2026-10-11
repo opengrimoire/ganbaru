@@ -202,3 +202,139 @@ fn mention_notifications_sync_blocks_comments_and_delivery_state() {
         assert_eq!(after_block_clear[0]["source_type"], "comment");
     });
 }
+
+#[test]
+fn page_levels_and_discussion_mutes_suppress_pending_notifications() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        let local_user_json =
+            serde_json::to_value(local_user::load_local_user(&pool).await.unwrap()).unwrap();
+        let local_user_id = local_user_json["id"].as_str().unwrap().to_string();
+        writes::update_block(
+            &pool,
+            BLOCK_A,
+            block_update(
+                "paragraph",
+                json!({
+                    "rich_text": [
+                        date_mention("2026-07-05", "Sunday", true),
+                        user_mention(&local_user_id, "Alice")
+                    ],
+                    "color": "default"
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+        let thread = comments::create_comment(
+            &pool,
+            NoteCommentCreate {
+                id: COMMENT_A.to_string(),
+                parent: Some(page_parent(PAGE_A)),
+                discussion_id: None,
+                anchor: None,
+                rich_text: vec![rich_text("Ping "), user_mention(&local_user_id, "Alice")],
+                attachments: None,
+            },
+        )
+        .await
+        .unwrap();
+        let thread_id = serde_json::to_value(thread).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let suppressed_by_source = |pending: serde_json::Value| {
+            let mut entries = pending
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|notification| {
+                    (
+                        format!(
+                            "{}:{}",
+                            notification["source_type"].as_str().unwrap(),
+                            notification["kind"].as_str().unwrap()
+                        ),
+                        notification["suppressed"].as_bool().unwrap(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            entries.sort();
+            entries
+        };
+        let pending = || async {
+            serde_json::to_value(mention_notifications::list_pending(&pool).await.unwrap()).unwrap()
+        };
+
+        let settings = mention_notifications::page_notification_settings(&pool, PAGE_A)
+            .await
+            .unwrap();
+        assert_eq!(serde_json::to_value(settings).unwrap()["level"], "all");
+        assert_eq!(
+            suppressed_by_source(pending().await),
+            vec![
+                ("block:reminder".to_string(), false),
+                ("block:user_mention".to_string(), false),
+                ("comment:user_mention".to_string(), false),
+            ]
+        );
+
+        mention_notifications::set_page_notification_level(&pool, PAGE_A, "mentions")
+            .await
+            .unwrap();
+        assert_eq!(
+            suppressed_by_source(pending().await),
+            vec![
+                ("block:reminder".to_string(), true),
+                ("block:user_mention".to_string(), false),
+                ("comment:user_mention".to_string(), false),
+            ]
+        );
+
+        comments::set_comment_thread_muted(&pool, &thread_id, true)
+            .await
+            .unwrap();
+        assert_eq!(
+            suppressed_by_source(pending().await),
+            vec![
+                ("block:reminder".to_string(), true),
+                ("block:user_mention".to_string(), false),
+                ("comment:user_mention".to_string(), true),
+            ]
+        );
+
+        let silenced = mention_notifications::set_page_notification_level(&pool, PAGE_A, " none ")
+            .await
+            .unwrap();
+        assert_eq!(serde_json::to_value(silenced).unwrap()["level"], "none");
+        assert!(
+            suppressed_by_source(pending().await)
+                .iter()
+                .all(|(_, suppressed)| *suppressed)
+        );
+
+        let reset = mention_notifications::set_page_notification_level(&pool, PAGE_A, "all")
+            .await
+            .unwrap();
+        assert_eq!(serde_json::to_value(reset).unwrap()["level"], "all");
+        let stored: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM notes_page_notification_settings")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(stored, 0, "the default level is not stored");
+
+        assert!(
+            mention_notifications::set_page_notification_level(&pool, PAGE_A, "invite")
+                .await
+                .is_err()
+        );
+        assert!(
+            mention_notifications::page_notification_settings(&pool, PAGE_B)
+                .await
+                .is_err()
+        );
+    });
+}

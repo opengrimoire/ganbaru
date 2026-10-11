@@ -91,6 +91,21 @@ pub fn comment_display_name_json(display_name: &str) -> String {
     .to_string()
 }
 
+/// Reads the name captured by [`comment_display_name_json`], falling back to the default for malformed values.
+pub fn comment_display_name_text(display_name_json: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(display_name_json)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("resolved_name")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| DEFAULT_LOCAL_USER_DISPLAY_NAME.to_string())
+}
+
 async fn ensure_local_user_tx(
     tx: &mut Transaction<'_, Sqlite>,
 ) -> Result<NoteLocalUserRow, String> {

@@ -9,7 +9,7 @@ export type NotesOptionalSubsystem =
   | "page-history"
   | "destinations";
 
-export type NotesPagePanelSubsystem = "links" | "comments" | "suggestions" | "page-history";
+export type NotesPagePanelSubsystem = "links" | "suggestions" | "page-history";
 
 const PAGE_SCOPED_SUBSYSTEMS = new Set<NotesOptionalSubsystem>([
   "links",

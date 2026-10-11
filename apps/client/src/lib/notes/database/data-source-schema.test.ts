@@ -317,6 +317,34 @@ describe("data source schema helpers", () => {
       .toBe(notesDataSourcePropertyIcon({ type: "icon", icon: { name: "star" } }));
   });
 
+  it("round-trips row page layout through renames and omits defaults and title layout", () => {
+    const source: NotesDataSource = {
+      ...dataSource,
+      properties: {
+        ...dataSource.properties,
+        Priority: { ...(dataSource.properties.Priority as Record<string, unknown>), page_visibility: "hide_when_empty", page_position: 3 },
+        Estimate: { ...(dataSource.properties.Estimate as Record<string, unknown>), page_visibility: "sometimes", page_position: -1 },
+      },
+    };
+    const draft = notesDataSourceSchemaDraftFromDto(source, view);
+    const priority = draft.find((property) => property.id === "priority")!;
+    expect([priority.pageVisibility, priority.pagePosition]).toEqual(["hide_when_empty", 3]);
+    const estimate = draft.find((property) => property.id === "estimate")!;
+    expect([estimate.pageVisibility, estimate.pagePosition]).toEqual(["always_show", null]);
+
+    const renamed = notesDataSourceRenameProperty(draft, "priority", "Urgency");
+    expect(renamed.status).toBe("renamed");
+    if (renamed.status !== "renamed") return;
+    const title = renamed.properties.find((property) => property.type === "title")!;
+    const update = notesDataSourceSchemaUpdateFromDraft(renamed.properties.map((property) =>
+      property === title ? { ...title, pageVisibility: "always_hide", pagePosition: 0 } : property));
+    expect(update.properties.Urgency).toMatchObject({ page_visibility: "hide_when_empty", page_position: 3 });
+    expect(update.properties.Estimate).not.toHaveProperty("page_visibility");
+    expect(update.properties.Estimate).not.toHaveProperty("page_position");
+    expect(update.properties[title.name]).not.toHaveProperty("page_visibility");
+    expect(update.properties[title.name]).not.toHaveProperty("page_position");
+  });
+
   it("rejects duplicate property names before persistence", () => {
     const draft = notesDataSourceSchemaDraftFromDto(dataSource, view);
     draft[1] = { ...draft[1]!, name: "Name" };

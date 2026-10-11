@@ -172,6 +172,7 @@ fn collect_project_scope(rows: &BTreeMap<String, Vec<Value>>, project_id: &str) 
 fn row_is_selected(table: &str, row: &Value, scope: &ProjectScope) -> bool {
     match table {
         "notes_folders" => value_in(row, "id", &scope.folder_ids),
+        "notes_page_notification_settings" => value_in(row, "page_id", &scope.page_ids),
         "notes_pages" | "notes_page_aliases" => value_in(
             row,
             if table == "notes_pages" {
@@ -197,9 +198,10 @@ fn row_is_selected(table: &str, row: &Value, scope: &ProjectScope) -> bool {
         }
         "notes_comment_threads" => value_in(row, "id", &scope.thread_ids),
         "notes_comments" => value_in(row, "id", &scope.comment_ids),
-        "notes_comment_thread_anchors" | "notes_comment_thread_reads" => {
-            value_in(row, "thread_id", &scope.thread_ids)
-        }
+        "notes_comment_reactions" => value_in(row, "comment_id", &scope.comment_ids),
+        "notes_comment_thread_anchors"
+        | "notes_comment_thread_reads"
+        | "notes_comment_thread_mutes" => value_in(row, "thread_id", &scope.thread_ids),
         "notes_suggestions" | "notes_mention_notifications" => {
             value_in(row, "page_id", &scope.page_ids)
         }

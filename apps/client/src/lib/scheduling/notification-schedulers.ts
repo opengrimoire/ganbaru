@@ -99,6 +99,8 @@ interface NotesNotificationSchedulerOptions {
   readonly listPending: () => Promise<readonly NotesMentionNotification[]>;
   readonly getPreferences: () => NotesMentionNotificationPreferenceSnapshot;
   readonly deliver: (notification: NotesMentionNotification) => Promise<void>;
+  /** Retires a muted notification without showing it. */
+  readonly dismiss: (notification: NotesMentionNotification) => Promise<void>;
   readonly onError?: (error: unknown) => void;
   readonly onDeliveryError?: (error: unknown) => void;
 }
@@ -131,22 +133,22 @@ export function createNotesNotificationScheduler(
         if (delivered.has(notification.id)) continue;
         const dueAtMs = notesMentionNotificationDueAtMs(notification);
         if (dueAtMs === null) continue;
-        if (notesMentionNotificationIsDue(notification, preferences, { nowMs })) {
+        // Muted pages and discussions retire their notifications when due, so unmuting later cannot replay them.
+        const isDueAt = (atMs: number) => notification.suppressed
+          ? dueAtMs <= atMs
+          : notesMentionNotificationIsDue(notification, preferences, { nowMs: atMs });
+        if (isDueAt(nowMs)) {
           if (!context.isCurrent()) return null;
           delivered.add(notification.id);
           try {
-            await options.deliver(notification);
+            await (notification.suppressed ? options.dismiss : options.deliver)(notification);
           } catch (error) {
             delivered.delete(notification.id);
             retryRequired = true;
             options.onDeliveryError?.(error);
           }
         } else if (dueAtMs > nowMs) {
-          const enabledAtDeadline = notesMentionNotificationIsDue(
-            notification,
-            preferences,
-            { nowMs: dueAtMs },
-          );
+          const enabledAtDeadline = isDueAt(dueAtMs);
           if (enabledAtDeadline) {
             nextDeadlineMs = nextDeadlineMs === null
               ? dueAtMs

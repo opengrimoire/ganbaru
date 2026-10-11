@@ -310,6 +310,8 @@ fn table_family(name: &str) -> TableFamily {
         "notes_undo_state"
             | "notes_local_users"
             | "notes_comment_thread_reads"
+            | "notes_comment_thread_mutes"
+            | "notes_page_notification_settings"
             | "notes_mention_notifications"
             | "notes_collaboration_operations"
     ) {
@@ -391,6 +393,7 @@ fn json_column(table: &str, column: &str) -> bool {
             | ("notes_comments", "rich_text")
             | ("notes_comments", "display_name")
             | ("notes_comments", "attachments")
+            | ("notes_comment_reactions", "display_name")
             | ("notes_suggestions", "display_name")
             | ("notes_collaboration_operations", "actor_display_name")
             | ("notes_collaboration_operations", "payload")

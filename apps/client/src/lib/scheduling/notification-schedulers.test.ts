@@ -89,6 +89,7 @@ function notesNotification(createdTime: string): NotesMentionNotification {
     source_plain_text: "Mention",
     status: "pending",
     delivered_at: null,
+    suppressed: false,
     created_time: createdTime,
     last_edited_time: createdTime,
   };
@@ -174,6 +175,7 @@ describe("notification deadline schedulers", () => {
       listPending: async () => [notification],
       getPreferences: () => notesPreferences,
       deliver,
+      dismiss: vi.fn(async () => undefined),
     });
 
     scheduler.setEnabled(true);
@@ -196,6 +198,7 @@ describe("notification deadline schedulers", () => {
       listPending: async () => [notesNotification("2026-07-11T12:00:05.000Z")],
       getPreferences: () => notesPreferences,
       deliver,
+      dismiss: vi.fn(async () => undefined),
     });
 
     scheduler.setEnabled(true);
@@ -203,6 +206,29 @@ describe("notification deadline schedulers", () => {
     scheduler.setEnabled(false);
     await clock.advanceTo(nowMs + 10_000);
 
+    expect(deliver).not.toHaveBeenCalled();
+  });
+
+  it("retires muted Notes rows at their deadline without showing them", async () => {
+    const nowMs = Date.parse("2026-07-11T12:00:00.000Z");
+    const clock = new FakeSchedulerClock(nowMs);
+    const muted = { ...notesNotification("2026-07-11T12:00:05.000Z"), suppressed: true };
+    const deliver = vi.fn(async () => undefined);
+    const dismiss = vi.fn(async () => undefined);
+    const scheduler = createNotesNotificationScheduler({
+      clock,
+      listPending: async () => [muted],
+      getPreferences: () => ({ ...notesPreferences, mentionNotificationsEnabled: false }),
+      deliver,
+      dismiss,
+    });
+
+    scheduler.setEnabled(true);
+    await settleScheduler();
+    expect(dismiss).not.toHaveBeenCalled();
+    await clock.advanceTo(nowMs + 5_000);
+
+    expect(dismiss).toHaveBeenCalledExactlyOnceWith(muted);
     expect(deliver).not.toHaveBeenCalled();
   });
 });

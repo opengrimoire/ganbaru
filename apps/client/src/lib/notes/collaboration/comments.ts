@@ -4,10 +4,53 @@ import type {
   NotesCommentParent,
   NotesCommentThread,
   NotesCommentThreadStatus,
+  NotesRichText,
 } from "$lib/notes/types";
-import { richTextPlainText } from "$lib/notes/rich-text/core";
+import { richTextPlainText, richTextRangeSlice } from "$lib/notes/rich-text/core";
 
 const COMMENT_ANCHOR_CONTEXT_LENGTH = 48;
+
+/**
+ * Trim whitespace at the edges of a comment body while keeping mentions and formatting.
+ * A body with no visible text becomes empty, which the backend accepts only alongside attachments.
+ */
+export function notesCommentBodyRichText(richText: readonly NotesRichText[]): NotesRichText[] {
+  const plainText = richTextPlainText(richText);
+  const start = plainText.length - plainText.trimStart().length;
+  const end = plainText.trimEnd().length;
+  if (end <= start) return [];
+  return richTextRangeSlice(richText, start, end);
+}
+
+/** Whether a comment carries nothing to post: no visible text and no attachments. */
+export function notesCommentIsEmpty(
+  richText: readonly NotesRichText[],
+  attachments: readonly Record<string, unknown>[],
+): boolean {
+  return richTextPlainText(richText).trim().length === 0 && attachments.length === 0;
+}
+
+/** The open discussions attached to the page itself rather than to one of its blocks. */
+export function openNotesPageCommentThreads(
+  threads: readonly NotesCommentThread[],
+): NotesCommentThread[] {
+  return threads.filter((thread) => thread.parent.type === "page_id" && thread.status === "open");
+}
+
+/** The comment most recently posted to any of the given discussions, with its thread. */
+export function latestNotesComment(
+  threads: readonly NotesCommentThread[],
+): { thread: NotesCommentThread; comment: NotesComment } | null {
+  let latest: { thread: NotesCommentThread; comment: NotesComment } | null = null;
+  for (const thread of threads) {
+    for (const comment of thread.comments) {
+      if (!latest || Date.parse(comment.created_time) > Date.parse(latest.comment.created_time)) {
+        latest = { thread, comment };
+      }
+    }
+  }
+  return latest;
+}
 
 export interface NotesResolvedCommentAnchor {
   threadId: string;

@@ -20,6 +20,7 @@ export function normalizeNotesTextLinkUrl(value: string, baseHref?: string): str
   const params = new URLSearchParams({ page: target.pageId });
   if (target.blockId) params.set("block", target.blockId);
   if (target.viewId) params.set("view", target.viewId);
+  if (target.discussionId) params.set("discussion", target.discussionId);
   return `#notes?${params}`;
 }
 

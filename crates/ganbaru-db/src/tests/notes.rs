@@ -340,6 +340,118 @@ fn schema_creates_notes_comment_thread_read_state() {
 }
 
 #[test]
+fn schema_creates_notes_comment_reactions_and_notification_preferences() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        let user_id: String =
+            sqlx::query_scalar("SELECT id FROM notes_local_users ORDER BY id LIMIT 1")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        for statement in [
+            "INSERT INTO notes_pages (id, parent_type, title, properties)
+             VALUES ('page-a', 'workspace', 'Inbox', '{}')",
+            "INSERT INTO notes_comment_threads (id, page_id, parent_type, parent_page_id)
+             VALUES ('thread-a', 'page-a', 'page_id', 'page-a')",
+            "INSERT INTO notes_comments (id, thread_id, rich_text) VALUES ('comment-a', 'thread-a', '[]')",
+        ] {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
+
+        let insert_reaction = |emoji: &'static str, created_by: &'static str| {
+            sqlx::query(
+                "INSERT INTO notes_comment_reactions (comment_id, created_by, display_name, emoji)
+                 VALUES ('comment-a', ?, '{\"type\":\"user\",\"resolved_name\":\"You\"}', ?)",
+            )
+            .bind(created_by)
+            .bind(emoji)
+        };
+        insert_reaction("👍", "person-a")
+            .execute(&pool)
+            .await
+            .unwrap();
+        insert_reaction("🎉", "person-a")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(
+            insert_reaction("👍", "person-a")
+                .execute(&pool)
+                .await
+                .is_err(),
+            "one person reacts once per emoji"
+        );
+        assert!(
+            insert_reaction(" ", "person-a")
+                .execute(&pool)
+                .await
+                .is_err()
+        );
+        assert!(
+            insert_reaction("12345678901234567", "person-a")
+                .execute(&pool)
+                .await
+                .is_err()
+        );
+
+        sqlx::query(
+            "INSERT INTO notes_comment_thread_mutes (thread_id, user_id) VALUES ('thread-a', ?)",
+        )
+        .bind(&user_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(
+            sqlx::query(
+                "INSERT INTO notes_comment_thread_mutes (thread_id, user_id)
+                 VALUES ('thread-a', 'missing-user')",
+            )
+            .execute(&pool)
+            .await
+            .is_err()
+        );
+
+        let insert_level = |level: &'static str| {
+            sqlx::query(
+                "INSERT OR REPLACE INTO notes_page_notification_settings (page_id, user_id, level)
+                 VALUES ('page-a', ?, ?)",
+            )
+            .bind(user_id.clone())
+            .bind(level)
+        };
+        for level in ["all", "mentions", "none"] {
+            insert_level(level).execute(&pool).await.unwrap();
+        }
+        assert!(insert_level("invite").execute(&pool).await.is_err());
+
+        sqlx::query("DELETE FROM notes_comments WHERE id = 'comment-a'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let reactions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notes_comment_reactions")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(reactions, 0, "reactions follow their comment");
+
+        sqlx::query("DELETE FROM notes_pages WHERE id = 'page-a'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        for table in [
+            "notes_comment_thread_mutes",
+            "notes_page_notification_settings",
+        ] {
+            let remaining: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(remaining, 0, "{table} follows its page");
+        }
+    });
+}
+
+#[test]
 fn schema_creates_notes_mention_notifications() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;

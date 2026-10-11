@@ -717,6 +717,9 @@
       taskMentionNotificationsEnabled: preferences.notesTaskMentionNotificationsEnabled,
     }),
     deliver: deliverNotesMentionNotification,
+    dismiss: async (notification) => {
+      await markNotesMentionNotificationsDelivered({ ids: [notification.id] });
+    },
     onError: (error) => {
       console.error("[notes notifications] check failed:", error);
     },

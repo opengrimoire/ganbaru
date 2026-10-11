@@ -352,3 +352,87 @@ fn database_subitems_copy_and_export_canonical_relationships_with_independent_ro
         assert_eq!(no_partial_copy, 0);
     });
 }
+
+#[test]
+fn row_page_context_hydrates_computed_values_with_parent_children_and_lock_state() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        seed_source(&pool).await;
+        data_sources::schema::update_data_source_schema(
+            &pool,
+            DATA_SOURCE_A,
+            None,
+            None,
+            NoteDataSourceSchemaUpdate {
+                properties: json!({
+                    "Name": { "id": "title", "name": "Name", "type": "title", "title": {} },
+                    "Estimate": { "id": "estimate", "name": "Estimate", "type": "number", "number": { "format": "number" } },
+                    "Score": { "id": "score", "name": "Score", "type": "formula", "formula": { "expression": "prop(\"Estimate\") * 2" }, "page_visibility": "hide_when_empty" }
+                }),
+            },
+        )
+        .await
+        .unwrap();
+        create_child_row(&pool).await;
+        data_sources::layouts::table::update_data_source_row_property(
+            &pool,
+            DATA_SOURCE_A,
+            PAGE_C,
+            NoteDataSourceRowPropertyUpdate {
+                property_id: "estimate".to_string(),
+                value: json!(3),
+            },
+        )
+        .await
+        .unwrap();
+
+        let child = serde_json::to_value(
+            data_sources::row_page::row_page_context(&pool, DATA_SOURCE_A, PAGE_C)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(child["row"]["id"], PAGE_C);
+        assert_eq!(
+            child["row"]["properties"]["Score"]["formula"]["number"].as_f64(),
+            Some(6.0)
+        );
+        assert_eq!(child["parent"]["id"], PAGE_B);
+        assert_eq!(child["hierarchy"]["depth"], 1);
+        assert_eq!(child["children"], json!([]));
+        assert_eq!(
+            child["schema"]["data_source"]["properties"]["Score"]["page_visibility"],
+            "hide_when_empty"
+        );
+        assert_eq!(child["schema"]["view"]["id"], DATABASE_VIEW_A);
+        assert_eq!(child["editing_locked"], false);
+
+        databases::editing_lock::set_database_editing_lock(&pool, DATABASE_A, true)
+            .await
+            .unwrap();
+        let parent = serde_json::to_value(
+            data_sources::row_page::row_page_context(&pool, DATA_SOURCE_A, PAGE_B)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(parent["parent"].is_null());
+        assert_eq!(parent["hierarchy"]["child_count"], 1);
+        assert_eq!(
+            parent["children"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|child| child["id"].clone())
+                .collect::<Vec<_>>(),
+            vec![json!(PAGE_C)]
+        );
+        assert_eq!(parent["editing_locked"], true);
+
+        assert!(
+            data_sources::row_page::row_page_context(&pool, DATA_SOURCE_A, PAGE_A)
+                .await
+                .is_err()
+        );
+    });
+}

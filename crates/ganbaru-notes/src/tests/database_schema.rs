@@ -286,6 +286,106 @@ fn source_schema_keeps_native_property_icons_and_rejects_other_icon_sources() {
 }
 
 #[test]
+fn source_schema_keeps_row_page_layout_and_omits_defaults() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        databases::create_database(
+            &pool,
+            NoteDatabaseCreate {
+                id: DATABASE_A.to_string(),
+                data_source_id: DATA_SOURCE_A.to_string(),
+                view_id: DATABASE_VIEW_A.to_string(),
+                title: "Tasks".to_string(),
+                parent: Some(page_parent(PAGE_A)),
+                after_block_id: Some(BLOCK_A.to_string()),
+                replace_block_id: None,
+                icon: None,
+                cover: None,
+            },
+        )
+        .await
+        .unwrap();
+        let schema_with_layout = |visibility: serde_json::Value, position: serde_json::Value| {
+            NoteDataSourceSchemaUpdate {
+                properties: json!({
+                    "Name": {
+                        "id": "title", "name": "Name", "type": "title", "title": {},
+                        "page_visibility": "always_hide", "page_position": 0
+                    },
+                    "Due": {
+                        "id": "due", "name": "Due", "type": "date", "date": {},
+                        "page_visibility": visibility, "page_position": position
+                    },
+                    "Notes": {
+                        "id": "notes", "name": "Notes", "type": "rich_text", "rich_text": {},
+                        "page_visibility": "always_show"
+                    }
+                }),
+            }
+        };
+
+        let updated = data_sources::schema::update_data_source_schema(
+            &pool,
+            DATA_SOURCE_A,
+            None,
+            None,
+            schema_with_layout(json!("hide_when_empty"), json!(2)),
+        )
+        .await
+        .unwrap();
+        let properties = &serde_json::to_value(updated).unwrap()["data_source"]["properties"];
+        assert_eq!(
+            properties["Due"]["page_visibility"],
+            json!("hide_when_empty")
+        );
+        assert_eq!(properties["Due"]["page_position"], json!(2));
+        assert!(properties["Notes"].get("page_visibility").is_none());
+        assert!(properties["Notes"].get("page_position").is_none());
+        assert!(properties["Name"].get("page_visibility").is_none());
+        assert!(properties["Name"].get("page_position").is_none());
+
+        for (visibility, position, message) in [
+            (
+                json!("sometimes"),
+                json!(1),
+                "property.page_visibility is not supported",
+            ),
+            (
+                json!(true),
+                json!(1),
+                "property.page_visibility must be a string",
+            ),
+            (
+                json!("always_hide"),
+                json!(-1),
+                "property.page_position must be a property index",
+            ),
+            (
+                json!("always_hide"),
+                json!(1.5),
+                "property.page_position must be a property index",
+            ),
+            (
+                json!("always_hide"),
+                json!(100),
+                "property.page_position must be a property index",
+            ),
+        ] {
+            let result = data_sources::schema::update_data_source_schema(
+                &pool,
+                DATA_SOURCE_A,
+                None,
+                None,
+                schema_with_layout(visibility, position),
+            )
+            .await;
+            assert_eq!(result.err().unwrap(), message);
+        }
+    });
+}
+
+#[test]
 fn update_local_data_source_schema_rejects_title_removal() {
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;

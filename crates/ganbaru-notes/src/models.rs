@@ -32,7 +32,8 @@ pub use history_knowledge::{
 };
 mod collaboration;
 pub use collaboration::{
-    NoteCommentAnchorDto, NoteCommentDto, NoteCommentThreadDto, NoteLocalUserDto,
+    NoteCommentAnchorDto, NoteCommentDto, NoteCommentReactionDto, NoteCommentThreadDto,
+    NoteCommentThreadViewerState, NoteLocalUserDto, NotePageNotificationSettingsDto,
     NotePartialUserDto, NoteSuggestionCreate, NoteSuggestionDto,
 };
 mod write_requests;

@@ -28,7 +28,6 @@ interface NotesHydrationControllerContext {
     childIdsByParentId: Record<string, string[]>,
   ) => void;
   setLoadError: (message: string) => void;
-  reloadOpenComments: (pageId: string) => void;
 }
 
 function errorMessage(error: unknown): string {
@@ -107,7 +106,6 @@ export function createNotesHydrationController(context: NotesHydrationController
     const orderedIds = new Set(ordered.map((block) => block.id));
     ordered.push(...Object.values(nextBlocks).filter((block) => !orderedIds.has(block.id)));
     context.replaceHydratedBlocks(nextBlocks, buildNotesChildIdsByParent(ordered));
-    context.reloadOpenComments(pageId);
   }
 
   async function loadOutlineDescendantFrontiers(

@@ -11,6 +11,7 @@ pub(crate) mod property_conversion;
 pub mod relations;
 pub mod rollups;
 pub mod row_hierarchy;
+pub mod row_page;
 pub mod rows;
 pub mod schema;
 pub mod templates;

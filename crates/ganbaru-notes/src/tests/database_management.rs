@@ -681,6 +681,113 @@ fn contextual_property_insert_and_empty_duplicate_preserve_view_state_and_roll_b
     });
 }
 
+#[test]
+fn contextual_property_actions_keep_row_page_layout() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        create_database(
+            &pool,
+            DATABASE_A,
+            DATA_SOURCE_A,
+            DATABASE_VIEW_A,
+            "Tasks",
+            BLOCK_A,
+        )
+        .await;
+        let properties = json!({
+            "Name":{"id":"title","name":"Name","type":"title","title":{}},
+            "Priority":{"id":"priority","name":"Priority","type":"select","select":{"options":[]},"page_position":1,"page_visibility":"hide_when_empty"},
+            "Due":{"id":"due","name":"Due","type":"date","date":{},"page_position":0},
+            "Notes":{"id":"notes","name":"Notes","type":"rich_text","rich_text":{}},
+        });
+        data_sources::schema::update_data_source_schema(
+            &pool,
+            DATA_SOURCE_A,
+            None,
+            None,
+            NoteDataSourceSchemaUpdate { properties },
+        )
+        .await
+        .unwrap();
+        let positions = |schema: &Value| {
+            let properties = schema["schema"]["data_source"]["properties"]
+                .as_object()
+                .unwrap();
+            let mut positioned: Vec<(u64, String)> = properties
+                .values()
+                .filter_map(|property| {
+                    Some((
+                        property.get("page_position")?.as_u64()?,
+                        property["id"].as_str()?.to_string(),
+                    ))
+                })
+                .collect();
+            positioned.sort();
+            positioned.into_iter().map(|(_, id)| id).collect::<Vec<_>>()
+        };
+
+        let inserted = run_property_action(
+            &pool,
+            NoteDataSourcePropertyAction::Insert {
+                property_id: "due".to_string(),
+                side: NoteDataSourcePropertyInsertionSide::Right,
+                property: json!({"id":"estimate","name":"Estimate","type":"number","number":{"format":"number"}}),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(positions(&inserted), vec!["due", "estimate", "priority"]);
+
+        let duplicated = run_property_action(
+            &pool,
+            NoteDataSourcePropertyAction::Duplicate {
+                property_id: "priority".to_string(),
+                name: "Priority copy".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        let duplicate_id = duplicated["property_id"].as_str().unwrap().to_string();
+        assert_eq!(
+            positions(&duplicated),
+            vec![
+                "due".to_string(),
+                "estimate".to_string(),
+                "priority".to_string(),
+                duplicate_id
+            ]
+        );
+        assert_eq!(
+            duplicated["schema"]["data_source"]["properties"]["Priority copy"]["page_visibility"],
+            "hide_when_empty"
+        );
+
+        let beside_unpositioned = run_property_action(
+            &pool,
+            NoteDataSourcePropertyAction::Insert {
+                property_id: "notes".to_string(),
+                side: NoteDataSourcePropertyInsertionSide::Left,
+                property: json!({"id":"owner","name":"Owner","type":"rich_text","rich_text":{}}),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            beside_unpositioned["schema"]["data_source"]["properties"]["Owner"]
+                .get("page_position")
+                .is_none()
+        );
+
+        let changed = run_property_action(&pool, change_type("priority", "rich_text", None))
+            .await
+            .unwrap();
+        let priority = &changed["schema"]["data_source"]["properties"]["Priority"];
+        assert_eq!(priority["page_position"], 2);
+        assert_eq!(priority["page_visibility"], "hide_when_empty");
+    });
+}
+
 async fn run_property_action(
     pool: &sqlx::SqlitePool,
     action: NoteDataSourcePropertyAction,

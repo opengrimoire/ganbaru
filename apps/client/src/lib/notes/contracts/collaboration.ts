@@ -50,6 +50,8 @@ export interface NotesMentionNotification {
   source_plain_text: string;
   status: NotesMentionNotificationStatus;
   delivered_at: string | null;
+  /** Silenced by the page notification level or a muted discussion, so it is never shown. */
+  suppressed: boolean;
   created_time: string;
   last_edited_time: string;
 }
@@ -82,6 +84,14 @@ export type NotesCommentDisplayName =
   | { type: "integration"; resolved_name: string }
   | { type: "custom"; resolved_name: string };
 
+/** One emoji on a comment with everyone who chose it, in reaction order. */
+export interface NotesCommentReaction {
+  emoji: string;
+  count: number;
+  reacted_by_me: boolean;
+  names: string[];
+}
+
 export interface NotesComment {
   object: "comment";
   id: string;
@@ -94,6 +104,7 @@ export interface NotesComment {
   attachments: Record<string, unknown>[];
   display_name: NotesCommentDisplayName;
   deleted_at: string | null;
+  reactions: NotesCommentReaction[];
 }
 
 export interface NotesCommentAnchor {
@@ -122,6 +133,7 @@ export interface NotesCommentThread {
   created_time: string;
   last_edited_time: string;
   unread: boolean;
+  muted: boolean;
   comments: NotesComment[];
 }
 
@@ -186,4 +198,15 @@ export interface NotesSuggestionCreate {
   proposed_text: string;
   prefix: string;
   suffix: string;
+}
+
+/** Which comment activity on one page notifies the local user. */
+export const NOTES_PAGE_NOTIFICATION_LEVELS = ["all", "mentions", "none"] as const;
+
+export type NotesPageNotificationLevel = (typeof NOTES_PAGE_NOTIFICATION_LEVELS)[number];
+
+export interface NotesPageNotificationSettings {
+  object: "page_notification_settings";
+  page_id: string;
+  level: NotesPageNotificationLevel;
 }

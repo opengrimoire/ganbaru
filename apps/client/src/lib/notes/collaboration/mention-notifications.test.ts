@@ -22,6 +22,7 @@ const baseNotification: NotesMentionNotification = {
   source_plain_text: "Reminder",
   status: "pending",
   delivered_at: null,
+  suppressed: false,
   created_time: "2026-07-01T12:00:00.000Z",
   last_edited_time: "2026-07-01T12:00:00.000Z",
 };

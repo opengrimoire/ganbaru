@@ -92,8 +92,8 @@ export type NotesEditorPanelKind =
   | "icon-picker"
   | "backlinks"
   | "page-links"
-  | "comments"
   | "suggestions"
+  | "page-comments"
   | "destination-picker"
   | "page-cover"
   | "cover-menu"
@@ -103,14 +103,17 @@ export type NotesEditorPanelKind =
   | "database-csv-export"
   | "page-history"
   | "share"
+  | "discussions-popover"
+  | "discussions-panel"
+  | "row-properties"
   | "confirm-dialog";
 
 export type LoadedNotesEditorPanel =
   | { kind: "icon-picker"; component: typeof import("$lib/components/icon-picker/IconPicker.svelte").default }
   | { kind: "backlinks"; component: typeof import("$lib/components/notes/pages/NotesBacklinks.svelte").default }
   | { kind: "page-links"; component: typeof import("$lib/components/notes/pages/NotesPageLinks.svelte").default }
-  | { kind: "comments"; component: typeof import("$lib/components/notes/pages/NotesComments.svelte").default }
   | { kind: "suggestions"; component: typeof import("$lib/components/notes/pages/NotesSuggestions.svelte").default }
+  | { kind: "page-comments"; component: typeof import("$lib/components/notes/pages/comments/NotesPageComments.svelte").default }
   | { kind: "destination-picker"; component: typeof import("$lib/components/notes/navigation/NotesDestinationPickerList.svelte").default }
   | { kind: "page-cover"; component: typeof import("$lib/components/notes/pages/NotesPageCover.svelte").default }
   | { kind: "cover-menu"; component: typeof import("$lib/components/notes/pages/NotesPageCoverMenu.svelte").default }
@@ -120,6 +123,9 @@ export type LoadedNotesEditorPanel =
   | { kind: "database-csv-export"; component: typeof import("$lib/components/notes/database/NotesDatabaseCsvExportPanel.svelte").default }
   | { kind: "page-history"; component: typeof import("$lib/components/notes/history/NotesPageVersionHistoryModal.svelte").default }
   | { kind: "share"; component: typeof import("$lib/components/notes/NotesSharePopover.svelte").default }
+  | { kind: "discussions-popover"; component: typeof import("$lib/components/notes/pages/comments/NotesDiscussionsPopover.svelte").default }
+  | { kind: "discussions-panel"; component: typeof import("$lib/components/notes/pages/comments/NotesDiscussionsPanel.svelte").default }
+  | { kind: "row-properties"; component: typeof import("$lib/components/notes/database/row-page/NotesDatabaseRowPageProperties.svelte").default }
   | { kind: "confirm-dialog"; component: typeof import("$lib/components/ui/ConfirmDialog.svelte").default };
 
 export type NotesTextControlKind =
@@ -185,10 +191,10 @@ const EDITOR_PANEL_IMPORTERS = {
     .then((module) => ({ default: { kind: "backlinks" as const, component: module.default } })),
   "page-links": () => import("$lib/components/notes/pages/NotesPageLinks.svelte")
     .then((module) => ({ default: { kind: "page-links" as const, component: module.default } })),
-  comments: () => import("$lib/components/notes/pages/NotesComments.svelte")
-    .then((module) => ({ default: { kind: "comments" as const, component: module.default } })),
   suggestions: () => import("$lib/components/notes/pages/NotesSuggestions.svelte")
     .then((module) => ({ default: { kind: "suggestions" as const, component: module.default } })),
+  "page-comments": () => import("$lib/components/notes/pages/comments/NotesPageComments.svelte")
+    .then((module) => ({ default: { kind: "page-comments" as const, component: module.default } })),
   "destination-picker": () => import("$lib/components/notes/navigation/NotesDestinationPickerList.svelte")
     .then((module) => ({ default: { kind: "destination-picker" as const, component: module.default } })),
   "page-cover": () => import("$lib/components/notes/pages/NotesPageCover.svelte")
@@ -207,6 +213,12 @@ const EDITOR_PANEL_IMPORTERS = {
     .then((module) => ({ default: { kind: "page-history" as const, component: module.default } })),
   share: () => import("$lib/components/notes/NotesSharePopover.svelte")
     .then((module) => ({ default: { kind: "share" as const, component: module.default } })),
+  "discussions-popover": () => import("$lib/components/notes/pages/comments/NotesDiscussionsPopover.svelte")
+    .then((module) => ({ default: { kind: "discussions-popover" as const, component: module.default } })),
+  "discussions-panel": () => import("$lib/components/notes/pages/comments/NotesDiscussionsPanel.svelte")
+    .then((module) => ({ default: { kind: "discussions-panel" as const, component: module.default } })),
+  "row-properties": () => import("$lib/components/notes/database/row-page/NotesDatabaseRowPageProperties.svelte")
+    .then((module) => ({ default: { kind: "row-properties" as const, component: module.default } })),
   "confirm-dialog": () => import("$lib/components/ui/ConfirmDialog.svelte")
     .then((module) => ({ default: { kind: "confirm-dialog" as const, component: module.default } })),
 } satisfies Readonly<Record<NotesEditorPanelKind, LazyComponentImporter<LoadedNotesEditorPanel>>>;

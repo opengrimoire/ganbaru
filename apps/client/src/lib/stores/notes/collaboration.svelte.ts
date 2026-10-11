@@ -4,17 +4,23 @@ import {
   createNotesSuggestion,
   deleteNotesComment,
   getNotesLocalUser,
+  getNotesPageNotificationSettings,
   listNotesComments,
   listNotesSuggestions,
   markNotesCommentThreadsRead,
   rejectNotesSuggestion,
   resolveNotesCommentThread,
+  setNotesCommentThreadMuted,
+  setNotesPageNotificationLevel,
+  toggleNotesCommentReaction,
   updateNotesComment,
   updateNotesLocalUser,
 } from "$lib/api/notes";
-import { blockPlainText, createRichText } from "$lib/notes/blocks/factory";
+import { blockPlainText } from "$lib/notes/blocks/factory";
 import {
   notesCommentAnchorDraft,
+  notesCommentBodyRichText,
+  notesCommentIsEmpty,
   notesCommentParentKey,
   notesCommentParentMatches,
 } from "$lib/notes/collaboration/comments";
@@ -30,9 +36,13 @@ import type {
   NotesCommentParent,
   NotesCommentThread,
   NotesLocalUser,
+  NotesPageNotificationLevel,
   NotesRichText,
   NotesSuggestion,
 } from "$lib/notes/types";
+
+/** Stored attachment payloads, as the backend accepts and returns them. */
+type NotesCommentAttachments = readonly Record<string, unknown>[];
 
 interface NotesCollaborationControllerContext {
   readSelectedPageId: () => string | null;
@@ -40,7 +50,7 @@ interface NotesCollaborationControllerContext {
   flushBlockSave: (blockId: string) => Promise<void>;
   requestBlockFocus: (blockId: string) => void;
   updateBlockRichText: (blockId: string, richText: readonly NotesRichText[]) => Promise<void>;
-  isPanelOpen: (panel: "comments" | "suggestions") => boolean;
+  isPanelOpen: (panel: "suggestions") => boolean;
 }
 
 function errorMessage(error: unknown): string {
@@ -71,10 +81,13 @@ export function createNotesCollaborationController(
   let localUser = $state<NotesLocalUser | null>(null);
   let localUserLoading = $state(false);
   let localUserError = $state<string | null>(null);
+  let pageNotificationLevel = $state<NotesPageNotificationLevel | null>(null);
   let commentsRequestId = 0;
   let suggestionsRequestId = 0;
   let localUserRequestId = 0;
+  let pageNotificationRequestId = 0;
 
+  /** Load every live discussion on the page, including ones on blocks that are not hydrated yet. */
   async function reloadComments(pageId = context.readSelectedPageId()): Promise<void> {
     const requestId = ++commentsRequestId;
     if (!pageId) {
@@ -94,11 +107,7 @@ export function createNotesCollaborationController(
     commentsLoading = true;
     commentsError = null;
     try {
-      const next = await listNotesComments(
-        pageId,
-        true,
-        Object.keys(context.readBlocksById()),
-      );
+      const next = await listNotesComments(pageId, true);
       if (requestId !== commentsRequestId || pageId !== context.readSelectedPageId()) return;
       commentThreads = [...next];
     } catch (error) {
@@ -161,7 +170,7 @@ export function createNotesCollaborationController(
       if (requestId !== localUserRequestId) return localUser;
       localUser = next;
       await Promise.all([
-        context.isPanelOpen("comments") ? reloadComments() : Promise.resolve(),
+        commentsPageId !== null ? reloadComments() : Promise.resolve(),
         context.isPanelOpen("suggestions") ? reloadSuggestions() : Promise.resolve(),
       ]);
       return next;
@@ -171,6 +180,36 @@ export function createNotesCollaborationController(
       return null;
     } finally {
       if (requestId === localUserRequestId) localUserLoading = false;
+    }
+  }
+
+  async function loadPageNotificationSettings(pageId = context.readSelectedPageId()): Promise<void> {
+    const requestId = ++pageNotificationRequestId;
+    if (!pageId) {
+      pageNotificationLevel = null;
+      return;
+    }
+    const settings = await getNotesPageNotificationSettings(pageId);
+    if (requestId !== pageNotificationRequestId || pageId !== context.readSelectedPageId()) return;
+    pageNotificationLevel = settings.level;
+  }
+
+  /** Choose which comment activity on the selected page notifies the local user, reverting on failure. */
+  async function setPageNotificationLevel(level: NotesPageNotificationLevel): Promise<void> {
+    const pageId = context.readSelectedPageId();
+    if (!pageId) return;
+    const requestId = ++pageNotificationRequestId;
+    const previous = pageNotificationLevel;
+    pageNotificationLevel = level;
+    try {
+      const settings = await setNotesPageNotificationLevel(pageId, level);
+      if (requestId !== pageNotificationRequestId || pageId !== context.readSelectedPageId()) return;
+      pageNotificationLevel = settings.level;
+    } catch (error) {
+      if (requestId === pageNotificationRequestId && pageId === context.readSelectedPageId()) {
+        pageNotificationLevel = previous;
+      }
+      throw error;
     }
   }
 
@@ -266,44 +305,79 @@ export function createNotesCollaborationController(
     context.requestBlockFocus(suggestion.block_id);
   }
 
+  /**
+   * Start a discussion. Without an explicit parent it targets the pending block comment, or the page.
+   * Returns false when the comment has neither visible text nor attachments.
+   */
   async function createComment(
-    text: string,
+    richText: readonly NotesRichText[],
+    attachments: NotesCommentAttachments = [],
     parent: NotesCommentParent | null = activeCommentParent
       ?? (context.readSelectedPageId()
         ? { type: "page_id", page_id: context.readSelectedPageId() as string }
         : null),
-  ): Promise<void> {
-    const content = text.trim();
-    if (!content || !parent) return;
+  ): Promise<boolean> {
+    const body = notesCommentBodyRichText(richText);
+    if (notesCommentIsEmpty(body, attachments) || !parent) return false;
     if (parent.type === "block_id") await context.flushBlockSave(parent.block_id);
-    const anchor = activeCommentParent
-      && notesCommentParentKey(activeCommentParent) === notesCommentParentKey(parent)
-      ? activeCommentAnchor
-      : null;
+    const pendingParent = activeCommentParent
+      && notesCommentParentKey(activeCommentParent) === notesCommentParentKey(parent);
+    const anchor = pendingParent ? activeCommentAnchor : null;
     updateCommentThread(await createNotesComment({
       id: crypto.randomUUID(),
       parent,
       anchor: anchor ?? undefined,
-      rich_text: [createRichText(content)],
+      rich_text: body,
+      attachments: [...attachments],
     }));
-    activeCommentParent = null;
-    activeCommentAnchor = null;
+    if (pendingParent) {
+      activeCommentParent = null;
+      activeCommentAnchor = null;
+    }
+    return true;
   }
 
-  async function replyToCommentThread(discussionId: string, text: string): Promise<void> {
-    const content = text.trim();
-    if (!content) return;
+  /** Reply to a discussion. Returns false when the reply has neither visible text nor attachments. */
+  async function replyToCommentThread(
+    discussionId: string,
+    richText: readonly NotesRichText[],
+    attachments: NotesCommentAttachments = [],
+  ): Promise<boolean> {
+    const body = notesCommentBodyRichText(richText);
+    if (notesCommentIsEmpty(body, attachments)) return false;
     updateCommentThread(await createNotesComment({
       id: crypto.randomUUID(),
       discussion_id: discussionId,
-      rich_text: [createRichText(content)],
+      rich_text: body,
+      attachments: [...attachments],
     }));
+    return true;
   }
 
-  async function updateComment(commentId: string, text: string): Promise<void> {
-    const content = text.trim();
-    if (!content) return;
-    updateCommentThread(await updateNotesComment(commentId, { rich_text: [createRichText(content)] }));
+  /**
+   * Replace a comment body. Attachments are always sent so an edit keeps the ones the comment still has.
+   * Returns false when the edit would leave neither visible text nor attachments.
+   */
+  async function updateComment(
+    commentId: string,
+    richText: readonly NotesRichText[],
+    attachments: NotesCommentAttachments,
+  ): Promise<boolean> {
+    const body = notesCommentBodyRichText(richText);
+    if (notesCommentIsEmpty(body, attachments)) return false;
+    updateCommentThread(await updateNotesComment(commentId, {
+      rich_text: body,
+      attachments: [...attachments],
+    }));
+    return true;
+  }
+
+  async function toggleCommentReaction(commentId: string, emoji: string): Promise<void> {
+    updateCommentThread(await toggleNotesCommentReaction(commentId, emoji));
+  }
+
+  async function setCommentThreadMuted(discussionId: string, muted: boolean): Promise<void> {
+    updateCommentThread(await setNotesCommentThreadMuted(discussionId, muted));
   }
 
   async function deleteComment(commentId: string): Promise<void> {
@@ -340,8 +414,10 @@ export function createNotesCollaborationController(
   function resetPageState(): void {
     commentsRequestId += 1;
     suggestionsRequestId += 1;
+    pageNotificationRequestId += 1;
     commentThreads = [];
     commentsPageId = null;
+    pageNotificationLevel = null;
     suggestions = [];
     activeCommentParent = null;
     activeCommentAnchor = null;
@@ -354,6 +430,9 @@ export function createNotesCollaborationController(
 
   return {
     get commentThreads(): NotesCommentThread[] { return visibleCommentThreads; },
+    /** Every loaded discussion, independent of the panel's resolved filter. */
+    get allCommentThreads(): NotesCommentThread[] { return commentThreads; },
+    get pageNotificationLevel(): NotesPageNotificationLevel | null { return pageNotificationLevel; },
     get commentsLoading(): boolean { return commentsLoading; },
     get commentsError(): string | null { return commentsError; },
     get commentsIncludeResolved(): boolean { return commentsIncludeResolved; },
@@ -387,6 +466,10 @@ export function createNotesCollaborationController(
     replyToCommentThread,
     updateComment,
     deleteComment,
+    toggleCommentReaction,
+    setCommentThreadMuted,
+    loadPageNotificationSettings,
+    setPageNotificationLevel,
     setCommentThreadResolved,
     markCommentThreadsRead,
     markVisibleCommentThreadsRead,

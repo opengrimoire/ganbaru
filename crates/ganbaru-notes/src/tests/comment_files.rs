@@ -120,3 +120,81 @@ fn comment_attachment_asset_references_follow_local_file_payloads() {
         assert_eq!(retained_assets, 2);
     });
 }
+
+#[test]
+fn attachment_comments_may_omit_text_but_plain_comments_may_not() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        let asset =
+            "notes/files/f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3.png";
+        let attachment = local_comment_attachment(
+            asset,
+            "image/png",
+            12,
+            "f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3",
+            "sketch.png",
+        );
+
+        let empty_without_attachment = comments::create_comment(
+            &pool,
+            NoteCommentCreate {
+                id: COMMENT_A.to_string(),
+                parent: Some(page_parent(PAGE_A)),
+                discussion_id: None,
+                anchor: None,
+                rich_text: Vec::new(),
+                attachments: None,
+            },
+        )
+        .await;
+        assert!(empty_without_attachment.is_err());
+
+        let thread = comments::create_comment(
+            &pool,
+            NoteCommentCreate {
+                id: COMMENT_A.to_string(),
+                parent: Some(page_parent(PAGE_A)),
+                discussion_id: None,
+                anchor: None,
+                rich_text: Vec::new(),
+                attachments: Some(vec![attachment.clone()]),
+            },
+        )
+        .await
+        .unwrap();
+        let thread = serde_json::to_value(thread).unwrap();
+        assert_eq!(thread["comments"][0]["rich_text"], serde_json::json!([]));
+        assert_eq!(
+            thread["comments"][0]["attachments"][0]["name"],
+            "sketch.png"
+        );
+
+        let removed_attachment = comments::update_comment(
+            &pool,
+            COMMENT_A,
+            NoteCommentUpdate {
+                rich_text: Vec::new(),
+                attachments: Some(Vec::new()),
+            },
+        )
+        .await;
+        assert!(removed_attachment.is_err());
+
+        let captioned = comments::update_comment(
+            &pool,
+            COMMENT_A,
+            NoteCommentUpdate {
+                rich_text: vec![rich_text("Caption")],
+                attachments: Some(vec![attachment]),
+            },
+        )
+        .await
+        .unwrap();
+        let captioned = serde_json::to_value(captioned).unwrap();
+        assert_eq!(
+            captioned["comments"][0]["rich_text"][0]["plain_text"],
+            "Caption"
+        );
+    });
+}

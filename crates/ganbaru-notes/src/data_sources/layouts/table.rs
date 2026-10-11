@@ -256,21 +256,14 @@ async fn load_table_view_tx(
         },
     )
     .await?;
-    window.rows = window
-        .rows
-        .into_iter()
-        .map(|row| normalized_row_for_schema(row, &schema))
-        .collect::<Result<Vec<_>, _>>()?;
-    data_sources::relations::hydrate_relation_titles_tx(tx, &mut window.rows).await?;
-    data_sources::rollups::hydrate_rollups_tx(
+    window.rows = hydrate_rows_tx(
         tx,
         data_source_id,
         &schema_properties,
-        &mut window.rows,
+        &schema,
+        std::mem::take(&mut window.rows),
     )
     .await?;
-    data_sources::formulas::hydrate_formulas(&schema_properties, &mut window.rows)?;
-    data_sources::buttons::hydrate_buttons(&schema_properties, &mut window.rows)?;
     let calculations = data_sources::layouts::table::presentation::calculations_tx(
         tx,
         data_source_id,
@@ -296,6 +289,27 @@ async fn load_table_view_tx(
         calculations,
         row_hierarchy,
     )
+}
+
+/// Normalize rows to the schema and fill the values a cell shows but does not store: relation titles, rollups,
+/// formulas, and buttons.
+pub(crate) async fn hydrate_rows_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    data_source_id: &str,
+    schema_properties: &Value,
+    schema: &[TableProperty],
+    rows: Vec<NotePageRow>,
+) -> Result<Vec<NotePageRow>, String> {
+    let mut rows = rows
+        .into_iter()
+        .map(|row| normalized_row_for_schema(row, schema))
+        .collect::<Result<Vec<_>, _>>()?;
+    data_sources::relations::hydrate_relation_titles_tx(tx, &mut rows).await?;
+    data_sources::rollups::hydrate_rollups_tx(tx, data_source_id, schema_properties, &mut rows)
+        .await?;
+    data_sources::formulas::hydrate_formulas(schema_properties, &mut rows)?;
+    data_sources::buttons::hydrate_buttons(schema_properties, &mut rows)?;
+    Ok(rows)
 }
 
 pub(crate) async fn ensure_table_view_row_tx(
@@ -378,7 +392,7 @@ pub(crate) async fn load_active_row_pages_tx(
     .map_err(|e| format!("load notes data source table rows: {e}"))
 }
 
-async fn load_active_row_page_tx(
+pub(crate) async fn load_active_row_page_tx(
     tx: &mut Transaction<'_, Sqlite>,
     data_source_id: &str,
     page_id: &str,

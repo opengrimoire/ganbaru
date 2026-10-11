@@ -5,6 +5,7 @@ import {
   mapNotesCommentThreadDto,
   mapNotesLocalUserDto,
   mapNotesMentionNotificationDto,
+  mapNotesPageNotificationSettingsDto,
   mapNotesSuggestionDto,
 } from "$lib/notes/validation/response-mappers";
 import type {
@@ -16,6 +17,8 @@ import type {
   NotesLocalUserUpdate,
   NotesMentionNotification,
   NotesMentionNotificationDeliveryUpdate,
+  NotesPageNotificationLevel,
+  NotesPageNotificationSettings,
   NotesSuggestion,
   NotesSuggestionCreate,
 } from "$lib/notes/types";
@@ -161,4 +164,50 @@ export async function rejectNotesSuggestion(suggestionId: string): Promise<Notes
   return mapNotesSuggestionDto(
     await invokeNotesMutation("notes_reject_suggestion", { dbUrl, suggestionId }),
   );
+}
+
+/** Add the local user's emoji reaction to a comment, or remove it when it is already there. */
+export async function toggleNotesCommentReaction(
+  commentId: string,
+  emoji: string,
+): Promise<NotesCommentThread> {
+  const dbUrl = await ensureDbUrl();
+  return mapNotesCommentThreadDto(
+    await invokeNotesMutation("notes_toggle_comment_reaction", { dbUrl, commentId, emoji }),
+  );
+}
+
+/** Silence or restore notifications from replies in one discussion for this device's user. */
+export async function setNotesCommentThreadMuted(
+  discussionId: string,
+  muted: boolean,
+): Promise<NotesCommentThread> {
+  const dbUrl = await ensureDbUrl();
+  const thread = mapNotesCommentThreadDto(
+    await invoke<unknown>("notes_set_comment_thread_muted", { dbUrl, discussionId, muted }),
+  );
+  invalidateNotesNotificationSchedule();
+  return thread;
+}
+
+export async function getNotesPageNotificationSettings(
+  pageId: string,
+): Promise<NotesPageNotificationSettings> {
+  const dbUrl = await ensureDbUrl();
+  return mapNotesPageNotificationSettingsDto(
+    await invoke<unknown>("notes_get_page_notification_settings", { dbUrl, pageId }),
+  );
+}
+
+/** Choose which comment and mention notifications from one page reach this device's user. */
+export async function setNotesPageNotificationLevel(
+  pageId: string,
+  level: NotesPageNotificationLevel,
+): Promise<NotesPageNotificationSettings> {
+  const dbUrl = await ensureDbUrl();
+  const settings = mapNotesPageNotificationSettingsDto(
+    await invoke<unknown>("notes_set_page_notification_level", { dbUrl, pageId, level }),
+  );
+  invalidateNotesNotificationSchedule();
+  return settings;
 }

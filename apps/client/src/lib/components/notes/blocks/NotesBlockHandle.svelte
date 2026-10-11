@@ -53,6 +53,7 @@
     onCopyLink,
     onDuplicate,
     onComment,
+    onOpenComments,
     commentCount = 0,
     unreadCommentCount = 0,
     onMoveUp,
@@ -73,6 +74,8 @@
     onCopyLink: () => Promise<void> | void;
     onDuplicate: () => void;
     onComment: () => void;
+    /** Opens the block's existing discussions from the comment count, starting a comment when omitted. */
+    onOpenComments?: () => void;
     commentCount?: number;
     unreadCommentCount?: number;
     onMoveUp: () => void;
@@ -273,7 +276,7 @@
       type="button"
       aria-label={visibleCommentLabel}
       data-app-tooltip={visibleCommentLabel}
-      onclick={() => runAction("comment", onComment)}
+      onclick={() => runAction("comment", onOpenComments ?? onComment)}
     >
       <MessageSquare class="size-3.5 shrink-0" />
       <span class="min-w-0 text-[0.65rem] font-medium leading-none">{visibleCommentCount}</span>

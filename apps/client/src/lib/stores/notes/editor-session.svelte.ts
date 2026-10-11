@@ -116,6 +116,15 @@ export interface NotesOpenDatabaseOptions {
   viewId?: string;
 }
 
+/** A discussion the editor should open its discussions panel on, with a counter that changes per request. */
+export interface NotesDiscussionRequest {
+  /** Page selected when the request was made, so a request never carries over to the next page. */
+  pageId: string | null;
+  /** Null once an editor has handled the request. */
+  discussionId: string | null;
+  requestId: number;
+}
+
 interface NotesLoadPageTreeOptions {
   focusOnLoad?: boolean;
   focusBlockId?: string | null;
@@ -179,6 +188,11 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     blockId: null,
     requestId: 0,
     selection: null,
+  });
+  let discussionRequest = $state<NotesDiscussionRequest>({
+    pageId: null,
+    discussionId: null,
+    requestId: 0,
   });
   const pageSession = new NotesPageSessionController({
     initialSelectedPageId: restoreSelection ? initialNotesSelectedPageId() : null,
@@ -605,6 +619,7 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
         await Promise.all([
           collaborationController.loadLocalUser(),
           collaborationController.reloadComments(pageId),
+          collaborationController.loadPageNotificationSettings(pageId),
         ]);
         break;
       case "suggestions":
@@ -1279,11 +1294,6 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     setLoadError: (message) => {
       workspaceController.setError(message);
     },
-    reloadOpenComments: (pageId) => {
-      if (optionalSubsystemController.isPanelOpen("comments")) {
-        void collaborationController.reloadComments(pageId);
-      }
-    },
   });
 
   const {
@@ -1457,6 +1467,28 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     return opened;
   }
 
+  /** Ask one editor showing the linked page, preferring this one, to reveal the linked thread. */
+  function revealLinkedDiscussion(target: NotesPageLinkTarget): void {
+    if (!target.discussionId) return;
+    const showing = [...sessions].filter((session) => session.selectedPageId === target.pageId);
+    (showing.find((session) => session === facade) ?? showing[0])?.requestDiscussion(target.discussionId);
+  }
+
+  /** Ask the editor showing the selected page to open its discussions on one thread. */
+  function requestDiscussion(discussionId: string): void {
+    discussionRequest = {
+      pageId: pageSession.selectedPageId,
+      discussionId,
+      requestId: discussionRequest.requestId + 1,
+    };
+  }
+
+  /** Mark a discussion request handled, so an editor mounted later for the same page does not reveal it again. */
+  function completeDiscussionRequest(requestId: number): void {
+    if (discussionRequest.requestId !== requestId || discussionRequest.discussionId === null) return;
+    discussionRequest = { ...discussionRequest, discussionId: null };
+  }
+
   async function openNotesLink(target: NotesPageLinkTarget): Promise<boolean> {
     viewMode = "pages";
     if (!workspaceLoaded) await workspaceController.ensureLoaded();
@@ -1482,13 +1514,16 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     }
     if (treeProjection.loadedPage?.id !== target.pageId) {
       await selectPage(target.pageId, { focusBlockId: target.blockId ?? null });
-      return [...sessions].some((session) => session.selectedPageId === target.pageId
+      const opened = [...sessions].some((session) => session.selectedPageId === target.pageId
         && (!target.blockId || session.blockById(target.blockId)));
+      if (opened) revealLinkedDiscussion(target);
+      return opened;
     }
     if (!target.blockId) {
       const wasDatabase = selectedDatabaseBlockId !== null;
       closeDatabase();
-      if (!wasDatabase) requestPageLoadFocus();
+      if (!wasDatabase && !target.discussionId) requestPageLoadFocus();
+      revealLinkedDiscussion(target);
       return true;
     }
     if (!treeProjection.blocksById[target.blockId] || !visibleBlockIds().includes(target.blockId)) return false;
@@ -1685,6 +1720,12 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     get destinationHasMore(): boolean {
       return linksController.destinationHasMore;
     },
+    get allCommentThreads() {
+      return collaborationController.allCommentThreads;
+    },
+    get pageNotificationLevel() {
+      return collaborationController.pageNotificationLevel;
+    },
     get commentThreads() {
       return collaborationController.commentThreads;
     },
@@ -1836,6 +1877,12 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     get focusSelection(): NotesTextSelection | null {
       return focusRequest.selection;
     },
+    /** Thread a followed discussion link or a block comment count asked this editor to reveal. */
+    get discussionRequest(): NotesDiscussionRequest {
+      return discussionRequest;
+    },
+    requestDiscussion,
+    completeDiscussionRequest,
     get titleFocusPageId(): string | null {
       return pageSession.titleFocus.pageId;
     },
@@ -1932,6 +1979,9 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     replyToCommentThread: collaborationController.replyToCommentThread,
     updateComment: collaborationController.updateComment,
     deleteComment: collaborationController.deleteComment,
+    toggleCommentReaction: collaborationController.toggleCommentReaction,
+    setCommentThreadMuted: collaborationController.setCommentThreadMuted,
+    setPageNotificationLevel: collaborationController.setPageNotificationLevel,
     setCommentThreadResolved: collaborationController.setCommentThreadResolved,
     markCommentThreadsRead: collaborationController.markCommentThreadsRead,
     markVisibleCommentThreadsRead: collaborationController.markVisibleCommentThreadsRead,

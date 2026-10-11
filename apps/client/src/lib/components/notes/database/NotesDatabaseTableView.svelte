@@ -24,14 +24,10 @@
   import NotesDatabaseSortControls from "./NotesDatabaseSortControls.svelte";
   import NotesDatabaseSettingsFooter from "./NotesDatabaseSettingsFooter.svelte";
   import NotesDatabaseQueryBar from "./NotesDatabaseQueryBar.svelte";
-  import NotesDatabaseDateCell from "./NotesDatabaseDateCell.svelte";
-  import NotesDatabaseNumberCell from "./NotesDatabaseNumberCell.svelte";
-  import NotesDatabasePropertyValue from "./NotesDatabasePropertyValue.svelte";
+  import NotesDatabasePropertyEditor from "./NotesDatabasePropertyEditor.svelte";
   import NotesDatabaseRowParentControls from "./NotesDatabaseRowParentControls.svelte";
   import { NOTES_DATABASE_MAX_COLLAPSED_ROWS, NOTES_DATABASE_ROW_MAX_DEPTH, notesDatabaseCollapsedRows, notesDatabaseHierarchyRows } from "$lib/notes/database/row-hierarchy";
   import { NOTES_DATABASE_QUERY_MAX_SORTS, notesDatabaseFilterCount, notesDatabaseFilterConditions, notesDatabaseNewFilter, notesDatabaseRowMatchesFilters, notesDatabaseSortsWithColumn } from "$lib/notes/database/query-controls";
-  import Select from "$lib/components/ui/Select.svelte";
-  import Checkbox from "$lib/components/ui/Checkbox.svelte";
   import { onDestroy, tick, untrack, type Snippet } from "svelte";
   import { databaseResource, notesDatabaseSession, rememberDatabaseScroll } from "$lib/notes/database/session.svelte";
   import { createNotesDatabaseRowCreation } from "$lib/notes/database/row-creation.svelte";
@@ -76,7 +72,7 @@
     type NotesDatabaseTableEditValue,
     type NotesDatabaseTableColumn,
   } from "$lib/notes/database/table";
-  import NotesDatabaseRelationCell from "./NotesDatabaseRelationCell.svelte";
+  import { notesDatabaseCellCaret, notesDatabaseCellKeepsKey } from "$lib/notes/database/cell-keyboard";
   import {
     loadNotesEditorPanel,
     retryNotesEditorPanel,
@@ -97,7 +93,6 @@
     NotesPage,
     NotesColor,
   } from "$lib/notes/types";
-  import Check from "@lucide/svelte/icons/check";
   import ArrowDown from "@lucide/svelte/icons/arrow-down";
   import ArrowLeft from "@lucide/svelte/icons/arrow-left";
   import ArrowRight from "@lucide/svelte/icons/arrow-right";
@@ -806,28 +801,6 @@
     }
   }
 
-  /** Keep wrapped text editable at its measured content height across column resizing. */
-  function fitWrappedCell(node: HTMLTextAreaElement, _value: string) {
-    let disposed = false;
-    let width = node.clientWidth;
-    const resize = () => {
-      if (disposed) return;
-      node.style.height = "auto";
-      node.style.height = `${node.scrollHeight}px`;
-    };
-    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => {
-      if (node.clientWidth === width) return;
-      width = node.clientWidth;
-      resize();
-    });
-    observer?.observe(node);
-    node.addEventListener("input", resize);
-    void tick().then(resize);
-    return {
-      update(_nextValue: string) { void tick().then(resize); },
-      destroy() { disposed = true; observer?.disconnect(); node.removeEventListener("input", resize); },
-    };
-  }
 
   function updateColumnVisibility(columnId: string, hidden: boolean): void {
     const nextColumns = columns.map((column) =>
@@ -998,7 +971,7 @@
     columnIndex: number,
   ): void {
     event.stopPropagation();
-    if (shouldKeepInputArrow(event)) return;
+    if (notesDatabaseCellKeepsKey(event.key, event.shiftKey, notesDatabaseCellCaret(event.currentTarget))) return;
     if (event.defaultPrevented || (event.currentTarget instanceof HTMLElement && event.currentTarget.hasAttribute("aria-haspopup"))) return;
     const maxRowIndex = Math.max(0, renderedRows.length - 1);
     const maxColumnIndex = Math.max(0, visibleColumns.length - 1);
@@ -1015,21 +988,6 @@
       if (event.currentTarget instanceof HTMLElement) event.currentTarget.blur();
       tableRoot?.querySelector<HTMLButtonElement>("[data-database-new-row] button")?.focus();
     } else focusCell(nextRowIndex, nextColumnIndex);
-  }
-
-  function shouldKeepInputArrow(event: KeyboardEvent): boolean {
-    const target = event.currentTarget;
-    if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) || target.type === "checkbox") return false;
-    const start = target.selectionStart ?? 0;
-    const end = target.selectionEnd ?? start;
-    if (event.key === "ArrowLeft") return start > 0 || end > 0;
-    if (event.key === "ArrowRight") return start < target.value.length || end < target.value.length;
-    if (target instanceof HTMLTextAreaElement) {
-      if (event.key === "Enter" && event.shiftKey) return true;
-      if (event.key === "ArrowUp") return start > 0 || end > 0;
-      if (event.key === "ArrowDown") return start < target.value.length || end < target.value.length;
-    }
-    return false;
   }
 
   function focusCell(rowIndex: number, columnIndex: number): void {
@@ -1370,124 +1328,13 @@
                         <ChevronRight class={`size-3.5 ${collapsedRowIds.includes(row.id) ? "" : "rotate-90"}`} />
                       </button>
                     {/if}
-                    {#if column.type === "checkbox"}
-                      <label class="flex h-8 items-center justify-center" data-collection-cell-primary>
-                        <Checkbox
-                          data-table-cell="true"
-                          data-row-index={rowIndex}
-                          data-column-index={columnIndex}
-                          checked={editValue === true}
-                          disabled={mutating || rowCreation.blocked(row.id) || !notesDatabaseTableColumnCanEdit(column)}
-                          label={column.name}
-                          onChange={(checked) => {
-                            void saveCell(row, column, checked);
-                          }}
-                          onkeydown={(event) => handleCellKeydown(event, rowIndex, columnIndex)}
-                        />
-                      </label>
-                    {:else if column.type === "select" || column.type === "status"}
-                      <Select textSize="collection"
-                        inline
-                        appearance="quiet"
-                        contentAlign="start"
-                        class="w-full min-w-0"
-                        ariaLabel={column.name}
-                        value={String(editValue)}
-                        disabled={mutating || rowCreation.blocked(row.id) || !notesDatabaseTableColumnCanEdit(column)}
-                        options={[{ value: "", label: t("notes.databaseTableEmptyCell") },
-                          ...(column.options).map((option) => ({ value: String(option.name), label: String(option.name) }))]}
-                        onChange={(nextValue) => {
-                          void saveCell(row, column, nextValue || null);
-                        }}
-                        triggerProps={{ "data-table-cell": "true", "data-collection-cell-primary": "", "data-row-index": rowIndex, "data-column-index": columnIndex, "onkeydown": (event) => handleCellKeydown(event, rowIndex, columnIndex) }}
-                      >
-                        {#snippet leading(value)}
-                          {@const color = column.options.find((option) => option.name === value)?.color}
-                          {#if value}<span class="size-2 shrink-0 rounded-full" style={`${notesBlockColorStyle(NOTES_TEXT_COLORS.find((entry) => entry === color) ?? "default")}; background-color: var(--notes-block-color);`}></span>{/if}
-                        {/snippet}
-                      </Select>
-                    {:else if column.type === "relation"}
-                      <NotesDatabaseRelationCell
-                        {row}
-                        {column}
-                        {rowIndex}
-                        {columnIndex}
-                        mutating={mutating || rowCreation.blocked(row.id)}
-                        onSave={async (value) => { await saveCell(row, column, value); }}
-                        onNavigate={handleCellKeydown}
-                      />
-                    {:else if column.type === "date"}
-                      <NotesDatabaseDateCell {row} {column} {rowIndex} {columnIndex}
-                        mutating={mutating || rowCreation.blocked(row.id)} onSave={(value) => saveCell(row, column, value)}
-                        onNavigate={handleCellKeydown} onEditingChange={(editing) => { isEditingCell = editing; }} />
-                    {:else if column.type === "number"}
-                      <NotesDatabaseNumberCell {row} {column} {rowIndex} {columnIndex}
-                        mutating={mutating || rowCreation.blocked(row.id)} onSave={(value) => saveCell(row, column, value)}
-                        onNavigate={handleCellKeydown} onEditingChange={(editing) => { isEditingCell = editing; }} />
-                    {:else if column.type === "button"}
-                      <button
-                        data-table-cell="true"
-                        data-row-index={rowIndex}
-                        data-column-index={columnIndex}
-                        type="button"
-                        class="inline-flex h-8 w-full min-w-0 items-center justify-center gap-1 rounded-sm border border-input bg-background px-2 text-[0.8rem] text-foreground outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none"
-                        disabled={mutating || rowCreation.blocked(row.id)}
-                        title={notesDatabaseTableCellText(row, column)}
-                        onclick={() => {
-                          void runButton(row, column);
-                        }}
-                        onkeydown={(event) => {
-                          if (event.key === "Enter" || event.key === " ") return;
-                          handleCellKeydown(event, rowIndex, columnIndex);
-                        }}
-                      >
-                        <Check class="size-3.5 shrink-0" aria-hidden="true" />
-                        <span class="min-w-0 truncate">
-                          {notesDatabaseTableCellText(row, column) || column.buttonLabel || column.name}
-                        </span>
-                      </button>
-                    {:else if notesDatabaseTableColumnCanEdit(column) && column.displayFormat?.wrap}
-                      <textarea use:fitWrappedCell={String(editValue)} data-table-cell="true" data-collection-cell-primary data-row-index={rowIndex} data-column-index={columnIndex} rows={1}
-                        class="min-h-8 w-full min-w-0 resize-none rounded-sm border border-transparent bg-transparent px-1 py-1.5 text-foreground outline-none"
-                        style="field-sizing: content;" value={String(editValue)} aria-label={column.name}
-                        disabled={mutating || (column.type !== "title" && rowCreation.blocked(row.id))}
-                        onfocus={() => { isEditingCell = true; }}
-                        oninput={(event) => { if (column.type === "title") rowCreation.draft(row.id, column.id, event.currentTarget.value); }}
-                        onblur={(event) => { isEditingCell = false; void saveCell(row, column, event.currentTarget.value); }}
-                        onkeydown={(event) => handleCellKeydown(event, rowIndex, columnIndex)}></textarea>
-                    {:else if notesDatabaseTableColumnCanEdit(column)}
-                      <input
-                        data-table-cell="true" data-collection-cell-primary
-                        data-row-index={rowIndex}
-                        data-column-index={columnIndex}
-                        class="h-8 w-full min-w-0 rounded-sm border border-transparent bg-transparent px-1 text-foreground outline-none"
-                        value={String(editValue)}
-                        inputmode="text"
-                        aria-label={column.name}
-                        disabled={mutating || (column.type !== "title" && rowCreation.blocked(row.id))}
-                        onfocus={() => { isEditingCell = true; }}
-                        oninput={(event) => { if (column.type === "title") rowCreation.draft(row.id, column.id, event.currentTarget.value); }}
-                        onblur={(event) => {
-                          isEditingCell = false;
-                          void saveCell(row, column, event.currentTarget.value);
-                        }}
-                        onkeydown={(event) => handleCellKeydown(event, rowIndex, columnIndex)}
-                      />
-                    {:else}
-                      <button
-                        data-table-cell="true"
-                        data-row-index={rowIndex}
-                        data-column-index={columnIndex}
-                        type="button"
-                        class={`flex ${column.displayFormat?.wrap ? "min-h-8 py-1.5" : "h-8"} w-full min-w-0 items-center rounded-sm px-1 text-left text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring`}
-                        title={t("notes.databaseTableReadonly")}
-                        onkeydown={(event) => handleCellKeydown(event, rowIndex, columnIndex)}
-                      >
-                        <span class={`min-w-0 ${column.displayFormat?.wrap ? "whitespace-pre-wrap wrap-break-word" : "truncate"}`}>
-                          <NotesDatabasePropertyValue {row} {column} />
-                        </span>
-                      </button>
-                    {/if}
+                    <NotesDatabasePropertyEditor {row} {column} {rowIndex} {columnIndex} value={editValue}
+                      disabled={mutating || (column.type !== "title" && rowCreation.blocked(row.id))}
+                      onSave={(value) => saveCell(row, column, value)}
+                      onNavigate={handleCellKeydown}
+                      onEditingChange={(editing) => { isEditingCell = editing; }}
+                      onDraft={(value) => rowCreation.draft(row.id, column.id, value)}
+                      onRunButton={() => { void runButton(row, column); }} />
                     </div>
                     {#if column.type === "title"}
                       <button type="button" data-collection-hover-reveal="" class="absolute top-1/2 right-1 z-10 flex h-6 -translate-y-1/2 items-center gap-1 rounded-md border border-border bg-background px-1.5 text-[0.75rem] text-muted-foreground opacity-100 hover:bg-accent hover:text-foreground [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/row:opacity-100 [@media(hover:hover)]:group-focus-within/row:opacity-100"

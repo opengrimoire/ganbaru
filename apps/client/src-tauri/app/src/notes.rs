@@ -547,6 +547,31 @@ pub async fn notes_resolve_comment_thread<R: Runtime>(
     project_history::mutation_result(&pool, value).await
 }
 
+/// Add or remove the local user's emoji reaction on one comment.
+#[tauri::command]
+pub async fn notes_toggle_comment_reaction<R: Runtime>(
+    app: AppHandle<R>,
+    db_url: String,
+    comment_id: String,
+    emoji: String,
+) -> Result<project_history::NotesMutationResultDto<NoteCommentThreadDto>, String> {
+    let pool = connect_sqlite(app, db_url).await?;
+    let value = comments::toggle_comment_reaction(&pool, &comment_id, &emoji).await?;
+    project_history::mutation_result(&pool, value).await
+}
+
+/// Mute or unmute reply notifications for the local user on one discussion.
+#[tauri::command]
+pub async fn notes_set_comment_thread_muted<R: Runtime>(
+    app: AppHandle<R>,
+    db_url: String,
+    discussion_id: String,
+    muted: bool,
+) -> Result<NoteCommentThreadDto, String> {
+    let pool = connect_sqlite(app, db_url).await?;
+    comments::set_comment_thread_muted(&pool, &discussion_id, muted).await
+}
+
 #[tauri::command]
 pub async fn notes_list_suggestions<R: Runtime>(
     app: AppHandle<R>,
@@ -608,6 +633,29 @@ pub async fn notes_mark_mention_notifications_delivered<R: Runtime>(
 ) -> Result<Vec<NoteMentionNotificationDto>, String> {
     let pool = connect_sqlite(app, db_url).await?;
     mention_notifications::mark_delivered(&pool, request).await
+}
+
+/// Read which comment activity on one page notifies the local user.
+#[tauri::command]
+pub async fn notes_get_page_notification_settings<R: Runtime>(
+    app: AppHandle<R>,
+    db_url: String,
+    page_id: String,
+) -> Result<NotePageNotificationSettingsDto, String> {
+    let pool = connect_sqlite(app, db_url).await?;
+    mention_notifications::page_notification_settings(&pool, &page_id).await
+}
+
+/// Choose which comment activity on one page notifies the local user.
+#[tauri::command]
+pub async fn notes_set_page_notification_level<R: Runtime>(
+    app: AppHandle<R>,
+    db_url: String,
+    page_id: String,
+    level: String,
+) -> Result<NotePageNotificationSettingsDto, String> {
+    let pool = connect_sqlite(app, db_url).await?;
+    mention_notifications::set_page_notification_level(&pool, &page_id, &level).await
 }
 
 #[tauri::command]

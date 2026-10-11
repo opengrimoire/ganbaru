@@ -7,4 +7,4 @@ export { parseNotesHtmlExportResult, parseNotesHtmlArchiveSaveResult, parseNotes
 export { parseNotesDataSourceCsvImportResult, parseNotesDataSourceCsvExportResult, parseNotesDataSourceCsvExportSaveResult } from "$lib/notes/validation/csv";
 export { parseNotesPageHistorySnapshot, parseNotesPageHistorySettings } from "$lib/notes/validation/history";
 export { parseNotesPageBreadcrumbItem, parseNotesBacklink, parseNotesPageAlias, parseNotesUnresolvedLink, parseNotesSearchResult } from "$lib/notes/validation/knowledge";
-export { parseNotesLocalUser, parseNotesMentionNotification, parseNotesComment, parseNotesCommentThread, parseNotesSuggestion } from "$lib/notes/validation/collaboration";
+export { parseNotesLocalUser, parseNotesMentionNotification, parseNotesComment, parseNotesCommentThread, parseNotesPageNotificationSettings, parseNotesSuggestion } from "$lib/notes/validation/collaboration";

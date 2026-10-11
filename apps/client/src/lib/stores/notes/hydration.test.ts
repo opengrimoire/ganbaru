@@ -42,7 +42,6 @@ describe("Notes hydration controller", () => {
       paragraph: write.paragraph,
     };
     const replaceHydratedBlocks = vi.fn();
-    const reloadOpenComments = vi.fn();
     const controller = createNotesHydrationController({
       hasLocalChanges: () => false,
       readPageGeneration: () => 1,
@@ -62,14 +61,12 @@ describe("Notes hydration controller", () => {
       mergeBlockOutlines: vi.fn(),
       replaceHydratedBlocks,
       setLoadError: vi.fn(),
-      reloadOpenComments,
     });
 
     await controller.hydrateBlockRange([block.id], 1);
 
     expect(backend.hydrateNotesBlocks).not.toHaveBeenCalled();
     expect(replaceHydratedBlocks).not.toHaveBeenCalled();
-    expect(reloadOpenComments).not.toHaveBeenCalled();
   });
 
   it("does not apply hydration from a stale page generation", async () => {
@@ -96,7 +93,6 @@ describe("Notes hydration controller", () => {
       mergeBlockOutlines: vi.fn(),
       replaceHydratedBlocks,
       setLoadError: vi.fn(),
-      reloadOpenComments: vi.fn(),
     });
 
     const hydration = controller.hydrateBlockRange(["block-a"], generation);
@@ -121,7 +117,7 @@ describe("Notes hydration controller", () => {
       readPageGeneration: () => 1, readSelectedPageId: () => "page-a", readBlockOutlines: () => outlines,
       readFlatBlockOutlines: () => outlines.map((outline) => ({ outline, depth: 0 })), readBlocksById: () => ({}),
       hasLocalChanges: () => false, readFocusRequest: () => ({ blockId: null, requestId: 0, selection: null }),
-      mergeBlockOutlines: vi.fn(), replaceHydratedBlocks, setLoadError: vi.fn(), reloadOpenComments: vi.fn(),
+      mergeBlockOutlines: vi.fn(), replaceHydratedBlocks, setLoadError: vi.fn(),
     });
     await controller.hydrateBlockRange(blocks.map((block) => block.id));
     expect(replaceHydratedBlocks.mock.calls[0][1]["page-a"]).toEqual(blocks.map((block) => block.id));
@@ -144,7 +140,7 @@ describe("Notes hydration controller", () => {
       readBlocksById: () => ({ [blocks[124].id]: blocks[124], [blocks[0].id]: blocks[0], [blocks[1].id]: blocks[1] }),
       hasLocalChanges: (id) => id === blocks[0].id,
       readFocusRequest: () => ({ blockId: null, requestId: 0, selection: null }),
-      mergeBlockOutlines: vi.fn(), replaceHydratedBlocks, setLoadError: vi.fn(), reloadOpenComments: vi.fn(),
+      mergeBlockOutlines: vi.fn(), replaceHydratedBlocks, setLoadError: vi.fn(),
     });
     await controller.hydrateBlockRange([blocks[124].id]);
     expect(replaceHydratedBlocks).toHaveBeenCalledWith(

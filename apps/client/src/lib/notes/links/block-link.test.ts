@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildNotesBlockLink,
   buildNotesDatabaseViewLink,
+  buildNotesDiscussionLink,
   buildNotesPageLink,
   isNotesUuid,
   notesBlockAnchorId,
@@ -68,6 +69,20 @@ describe("notes block links", () => {
     expect(() => buildNotesDatabaseViewLink("http://localhost:1420/", { pageId, blockId, viewId: "view-a" })).toThrow();
     expect(parseNotesLinkHash(`#notes?page=${pageId}&view=${viewId}`)).toBeNull();
     expect(parseNotesLinkHash(`#notes?page=${pageId}&block=${blockId}&view=view-a`)).toBeNull();
+  });
+
+  it("builds and parses discussion links with backend thread ids", () => {
+    const discussionId = "0123abcd-4567-0123-c0de-0123456789ab";
+    const link = buildNotesDiscussionLink("http://localhost:1420/?view=calendar", { pageId, discussionId });
+    expect(link).toBe(`http://localhost:1420/?view=notes#notes?page=${pageId}&discussion=${discussionId}`);
+    expect(parseNotesLinkHash(new URL(link).hash)).toEqual({ pageId, discussionId });
+    expect(parseNotesBlockLinkHash(new URL(link).hash)).toBeNull();
+  });
+
+  it("rejects malformed discussion links and discussions combined with a block", () => {
+    expect(() => buildNotesDiscussionLink("http://localhost:1420/", { pageId, discussionId: "thread-a" })).toThrow();
+    expect(parseNotesLinkHash(`#notes?page=${pageId}&discussion=thread-a`)).toBeNull();
+    expect(parseNotesLinkHash(`#notes?page=${pageId}&block=${blockId}&discussion=${viewId}`)).toBeNull();
   });
 
   it("validates UUID shaped ids", () => {

@@ -12,6 +12,11 @@ export interface FloatPanelParams {
   /** Pointer and Escape dismissal; keep it off while a nested dialog owns the keyboard layer. */
   dismissEnabled?: boolean;
   onDismiss: () => void;
+  /**
+   * Receives the panel's other keys, such as list navigation from a search field. The keyboard layer stops events
+   * before they reach elements, so element key handlers inside the panel never run.
+   */
+  onKeydown?: (event: KeyboardEvent) => void;
 }
 
 /**
@@ -52,7 +57,12 @@ export const floatPanel: Action<HTMLElement, FloatPanelParams> = (node, params) 
       trapModalTabKey(node, event);
       return;
     }
-    if (event.key !== "Escape" || current.dismissEnabled === false) return;
+    if (event.key !== "Escape") {
+      const target = event.target;
+      if (target instanceof Node && node.contains(target)) current.onKeydown?.(event);
+      return;
+    }
+    if (current.dismissEnabled === false) return;
     const target = event.target;
     if (target instanceof Node && !node.contains(target)) return;
     if (node.querySelector("[data-app-floating-surface]")) return;

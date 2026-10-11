@@ -44,7 +44,7 @@ Text predicates are one contract shared by SQLite queries, Rust export evaluatio
 
 Internal links store stable target identity when resolved, plus source block identity. Titles are presentation snapshots, not identity. Aliases and unresolved-link state let renamed or not-yet-existing targets reconcile without rewriting text. Backlink and unresolved-link indexes are rebuildable.
 
-Mentions, comments, suggestions, and mention notifications keep author, target, thread, resolution, and delivery state as separate concepts. Notification delivery is a projection. Deleting or restoring content never fabricates a new comment or collaboration identity.
+Mentions, comments, suggestions, and mention notifications keep author, target, thread, resolution, and delivery state as separate concepts. Comment reactions capture the reacting person's display name like comment authors do. Discussion mutes and page notification levels are per-person preferences; a page without a stored level notifies at the broadest level. Notification delivery is a projection. Deleting or restoring content never fabricates a new comment or collaboration identity.
 
 ## Assets
 

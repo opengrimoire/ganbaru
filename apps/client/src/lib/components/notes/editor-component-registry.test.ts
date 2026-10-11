@@ -44,8 +44,8 @@ const EDITOR_PANELS = [
   "icon-picker",
   "backlinks",
   "page-links",
-  "comments",
   "suggestions",
+  "page-comments",
   "destination-picker",
   "page-cover",
   "cover-menu",
@@ -54,6 +54,10 @@ const EDITOR_PANELS = [
   "database-csv-import",
   "database-csv-export",
   "page-history",
+  "share",
+  "discussions-popover",
+  "discussions-panel",
+  "row-properties",
   "confirm-dialog",
 ] as const satisfies readonly NotesEditorPanelKind[];
 

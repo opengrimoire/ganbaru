@@ -183,6 +183,15 @@ export const NOTES_DATA_SOURCE_STATUS_GROUPS = [
 
 export type NotesDataSourceStatusGroup = (typeof NOTES_DATA_SOURCE_STATUS_GROUPS)[number];
 
+/** How a property appears on row pages; the schema omits the first, default value. */
+export const NOTES_DATA_SOURCE_PAGE_VISIBILITIES = [
+  "always_show",
+  "hide_when_empty",
+  "always_hide",
+] as const;
+
+export type NotesDataSourcePageVisibility = (typeof NOTES_DATA_SOURCE_PAGE_VISIBILITIES)[number];
+
 export interface NotesDataSourceSchema {
   data_source: NotesDataSource;
   view: NotesDatabaseView;

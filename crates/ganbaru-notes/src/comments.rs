@@ -1,19 +1,27 @@
 use crate::models::{
     NoteCommentAnchorCreate, NoteCommentAnchorDto, NoteCommentAnchorRow, NoteCommentCreate,
-    NoteCommentDto, NoteCommentRow, NoteCommentThreadDto, NoteCommentThreadReadUpdate,
-    NoteCommentThreadRow, NoteCommentUpdate, NoteLocalUserRow, NoteParent,
+    NoteCommentDto, NoteCommentReactionDto, NoteCommentRow, NoteCommentThreadDto,
+    NoteCommentThreadReadUpdate, NoteCommentThreadRow, NoteCommentThreadViewerState,
+    NoteCommentUpdate, NoteLocalUserRow, NoteParent,
 };
-use crate::validation::{require_uuid, rich_text_items_plain_text, validate_comment_rich_text};
+use crate::validation::{
+    require_uuid, rich_text_items_plain_text, validate_comment_body_rich_text,
+    validate_comment_rich_text,
+};
 use crate::{assets, collaboration_operations, local_user, mention_notifications};
 use serde_json::{Value, json};
 use sqlx::{QueryBuilder, Sqlite, SqlitePool, Transaction};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 const COMMENT_ANCHOR_MAX_TEXT_LENGTH: usize = 2000;
 const COMMENT_ANCHOR_MAX_CONTEXT_LENGTH: usize = 120;
 const COMMENT_ATTACHMENTS_MAX_COUNT: usize = 100;
 const COMMENT_ATTACHMENTS_MAX_BYTES: usize = 50 * 1024;
 const COMMENT_THREAD_READ_MAX_BATCH: usize = 200;
+/// Matches the reaction column limit so validation fails before SQLite does.
+const COMMENT_REACTION_MAX_CHARS: usize = 16;
+const COMMENT_REACTION_MAX_BYTES: usize = 64;
+const COMMENT_REACTION_MAX_KINDS: i64 = 20;
 
 struct CommentParentTarget {
     page_id: String,
@@ -136,8 +144,8 @@ pub async fn create_comment(
     request: NoteCommentCreate,
 ) -> Result<NoteCommentThreadDto, String> {
     require_uuid(request.id.trim(), "id")?;
-    validate_comment_rich_text(&request.rich_text)?;
     let attachments = request.attachments.clone().unwrap_or_default();
+    validate_comment_body_rich_text(&request.rich_text, !attachments.is_empty())?;
     validate_comment_attachments(&attachments)?;
     match (&request.parent, &request.discussion_id) {
         (Some(_), Some(_)) => {
@@ -271,7 +279,12 @@ pub async fn update_comment(
 ) -> Result<NoteCommentThreadDto, String> {
     let comment_id = comment_id.trim();
     require_uuid(comment_id, "comment_id")?;
-    validate_comment_rich_text(&update.rich_text)?;
+    match update.attachments.as_deref() {
+        Some(attachments) => {
+            validate_comment_body_rich_text(&update.rich_text, !attachments.is_empty())?;
+        }
+        None => validate_comment_rich_text(&update.rich_text)?,
+    }
     ensure_comment_baseline(pool, comment_id).await?;
     if let Some(attachments) = update.attachments.as_ref() {
         validate_comment_attachments(attachments)?;
@@ -487,6 +500,132 @@ pub async fn resolve_comment_thread(
     load_thread(pool, discussion_id).await
 }
 
+/// Adds the current person's emoji reaction to a comment, or removes it when they already chose it.
+pub async fn toggle_comment_reaction(
+    pool: &SqlitePool,
+    comment_id: &str,
+    emoji: &str,
+) -> Result<NoteCommentThreadDto, String> {
+    let comment_id = comment_id.trim();
+    require_uuid(comment_id, "comment_id")?;
+    let emoji = validate_comment_reaction_emoji(emoji)?;
+    ensure_comment_baseline(pool, comment_id).await?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| format!("begin notes comment reaction: {e}"))?;
+    let local_user = local_user::current_local_user_tx(&mut tx).await?;
+    let comment = load_comment_row(&mut tx, comment_id).await?;
+    let thread = load_thread_row(&mut tx, &comment.thread_id).await?;
+    ensure_thread_target_active(&mut tx, &thread).await?;
+    if thread.status != "open" {
+        return Err("resolved comment threads cannot receive reactions".to_string());
+    }
+    let removed = sqlx::query(
+        "DELETE FROM notes_comment_reactions
+         WHERE comment_id = ? AND created_by = ? AND emoji = ?",
+    )
+    .bind(comment_id)
+    .bind(&local_user.id)
+    .bind(emoji)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("remove notes comment reaction: {e}"))?
+    .rows_affected();
+    if removed == 0 {
+        let (distinct, has_emoji): (i64, i64) = sqlx::query_as(
+            "SELECT COUNT(DISTINCT emoji), COALESCE(MAX(emoji = ?), 0)
+             FROM notes_comment_reactions
+             WHERE comment_id = ?",
+        )
+        .bind(emoji)
+        .bind(comment_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| format!("count notes comment reactions: {e}"))?;
+        if has_emoji == 0 && distinct >= COMMENT_REACTION_MAX_KINDS {
+            return Err(format!(
+                "comments are limited to {COMMENT_REACTION_MAX_KINDS} different reactions"
+            ));
+        }
+        sqlx::query(
+            "INSERT INTO notes_comment_reactions (comment_id, created_by, display_name, emoji)
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(comment_id)
+        .bind(&local_user.id)
+        .bind(local_user::comment_display_name_json(
+            &local_user.display_name,
+        ))
+        .bind(emoji)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("add notes comment reaction: {e}"))?;
+    }
+    crate::project_history::mark_page_dirty_tx(&mut tx, &thread.page_id, "comment_reaction", false)
+        .await?;
+    tx.commit()
+        .await
+        .map_err(|e| format!("commit notes comment reaction: {e}"))?;
+    load_thread(pool, &thread.id).await
+}
+
+/// Mutes or unmutes notifications from one discussion for the current local user.
+///
+/// Muting is a device-local preference, so it neither changes the discussion nor marks project history dirty.
+pub async fn set_comment_thread_muted(
+    pool: &SqlitePool,
+    discussion_id: &str,
+    muted: bool,
+) -> Result<NoteCommentThreadDto, String> {
+    let discussion_id = discussion_id.trim();
+    require_uuid(discussion_id, "discussion_id")?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| format!("begin notes comment thread mute: {e}"))?;
+    let local_user = local_user::current_local_user_tx(&mut tx).await?;
+    let thread = load_thread_row(&mut tx, discussion_id).await?;
+    ensure_thread_target_active(&mut tx, &thread).await?;
+    let statement = if muted {
+        "INSERT INTO notes_comment_thread_mutes (thread_id, user_id)
+         VALUES (?, ?)
+         ON CONFLICT(thread_id, user_id) DO NOTHING"
+    } else {
+        "DELETE FROM notes_comment_thread_mutes WHERE thread_id = ? AND user_id = ?"
+    };
+    sqlx::query(statement)
+        .bind(discussion_id)
+        .bind(&local_user.id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("update notes comment thread mute: {e}"))?;
+    tx.commit()
+        .await
+        .map_err(|e| format!("commit notes comment thread mute: {e}"))?;
+    load_thread(pool, discussion_id).await
+}
+
+/// Accepts one emoji glyph or sequence, such as a flag, keycap, or skin tone variant.
+fn validate_comment_reaction_emoji(emoji: &str) -> Result<&str, String> {
+    let emoji = emoji.trim();
+    let valid = !emoji.is_empty()
+        && emoji.len() <= COMMENT_REACTION_MAX_BYTES
+        && emoji.chars().count() <= COMMENT_REACTION_MAX_CHARS
+        && !emoji
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+        && !emoji
+            .chars()
+            .any(|character| character.is_ascii_alphabetic())
+        && !emoji.is_ascii();
+    if valid {
+        Ok(emoji)
+    } else {
+        Err("comment reaction must be one emoji".to_string())
+    }
+}
+
 async fn ensure_comment_baseline(pool: &SqlitePool, comment_id: &str) -> Result<(), String> {
     let page_id: Option<String> = sqlx::query_scalar(
         "SELECT thread.page_id
@@ -530,10 +669,21 @@ async fn load_thread(pool: &SqlitePool, thread_id: &str) -> Result<NoteCommentTh
     .map_err(|e| format!("load notes comment thread: {e}"))?
     .ok_or_else(|| "notes comment thread not found".to_string())?;
     let local_user_id = current_local_user_id(pool).await?;
-    let comments = load_comment_dtos(pool, &thread).await?;
-    let anchor = load_comment_anchor_dto(pool, thread_id).await?;
-    let unread = thread_is_unread(pool, thread_id, &local_user_id).await?;
-    NoteCommentThreadDto::new(thread, comments, anchor, unread)
+    thread_dto(pool, thread, &local_user_id).await
+}
+
+async fn thread_dto(
+    pool: &SqlitePool,
+    thread: NoteCommentThreadRow,
+    local_user_id: &str,
+) -> Result<NoteCommentThreadDto, String> {
+    let comments = load_comment_dtos(pool, &thread, local_user_id).await?;
+    let anchor = load_comment_anchor_dto(pool, &thread.id).await?;
+    let viewer = NoteCommentThreadViewerState {
+        unread: thread_is_unread(pool, &thread.id, local_user_id).await?,
+        muted: thread_is_muted(pool, &thread.id, local_user_id).await?,
+    };
+    NoteCommentThreadDto::new(thread, comments, anchor, viewer)
 }
 
 async fn thread_dtos(
@@ -546,15 +696,12 @@ async fn thread_dtos(
     let local_user_id = current_local_user_id(pool).await?;
     let mut dtos = Vec::with_capacity(threads.len());
     for thread in threads {
-        let comments = load_comment_dtos(pool, &thread).await?;
-        let anchor = load_comment_anchor_dto(pool, &thread.id).await?;
-        let unread = thread_is_unread(pool, &thread.id, &local_user_id).await?;
-        dtos.push(NoteCommentThreadDto::new(thread, comments, anchor, unread)?);
+        dtos.push(thread_dto(pool, thread, &local_user_id).await?);
     }
     Ok(dtos)
 }
 
-async fn current_local_user_id(pool: &SqlitePool) -> Result<String, String> {
+pub(crate) async fn current_local_user_id(pool: &SqlitePool) -> Result<String, String> {
     let mut tx = pool
         .begin()
         .await
@@ -592,6 +739,22 @@ async fn thread_is_unread(
     Ok(unread.is_some())
 }
 
+async fn thread_is_muted(
+    pool: &SqlitePool,
+    thread_id: &str,
+    local_user_id: &str,
+) -> Result<bool, String> {
+    let muted: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM notes_comment_thread_mutes WHERE thread_id = ? AND user_id = ?",
+    )
+    .bind(thread_id)
+    .bind(local_user_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| format!("load notes comment mute state: {e}"))?;
+    Ok(muted.is_some())
+}
+
 async fn load_comment_anchor_dto(
     pool: &SqlitePool,
     thread_id: &str,
@@ -611,6 +774,7 @@ async fn load_comment_anchor_dto(
 async fn load_comment_dtos(
     pool: &SqlitePool,
     thread: &NoteCommentThreadRow,
+    local_user_id: &str,
 ) -> Result<Vec<NoteCommentDto>, String> {
     let rows = sqlx::query_as::<_, NoteCommentRow>(
         "SELECT *
@@ -622,9 +786,51 @@ async fn load_comment_dtos(
     .fetch_all(pool)
     .await
     .map_err(|e| format!("list notes comments: {e}"))?;
+    let mut reactions = load_thread_reactions(pool, &thread.id, local_user_id).await?;
     rows.into_iter()
-        .map(|row| NoteCommentDto::new(thread, row))
+        .map(|row| {
+            let comment_reactions = reactions.remove(&row.id).unwrap_or_default();
+            NoteCommentDto::new(thread, row, comment_reactions)
+        })
         .collect()
+}
+
+/// Groups a discussion's reactions by comment and emoji, keeping the order each emoji was first used.
+async fn load_thread_reactions(
+    pool: &SqlitePool,
+    thread_id: &str,
+    local_user_id: &str,
+) -> Result<HashMap<String, Vec<NoteCommentReactionDto>>, String> {
+    let rows = sqlx::query_as::<_, (String, String, String, String)>(
+        "SELECT reaction.comment_id, reaction.created_by, reaction.display_name, reaction.emoji
+         FROM notes_comment_reactions AS reaction
+         JOIN notes_comments AS comment ON comment.id = reaction.comment_id
+         WHERE comment.thread_id = ? AND comment.deleted_at IS NULL
+         ORDER BY reaction.created_time ASC, reaction.rowid ASC",
+    )
+    .bind(thread_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("list notes comment reactions: {e}"))?;
+    let mut grouped: HashMap<String, Vec<NoteCommentReactionDto>> = HashMap::new();
+    for (comment_id, created_by, display_name, emoji) in rows {
+        let reactions = grouped.entry(comment_id).or_default();
+        let index = match reactions
+            .iter()
+            .position(|reaction| reaction.emoji() == emoji)
+        {
+            Some(index) => index,
+            None => {
+                reactions.push(NoteCommentReactionDto::new(emoji));
+                reactions.len() - 1
+            }
+        };
+        reactions[index].add(
+            local_user::comment_display_name_text(&display_name),
+            created_by == local_user_id,
+        );
+    }
+    Ok(grouped)
 }
 
 async fn resolve_comment_parent(

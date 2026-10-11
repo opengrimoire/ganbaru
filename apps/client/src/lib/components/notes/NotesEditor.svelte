@@ -53,11 +53,6 @@
   } from "$lib/notes/pages/activity";
   import { notesLocalUserDisplayName } from "$lib/notes/collaboration/local-user";
   import type { NotesPageOpenMode } from "$lib/notes/pages/open-mode";
-  import {
-    notesCommentParentKey,
-    openNotesCommentThreadCount,
-    unreadNotesCommentThreadCount,
-  } from "$lib/notes/collaboration/comments";
   import { notesPageMoveTargets } from "$lib/notes/pages/move";
   import {
     notesPageIconFromPickerValue,
@@ -74,12 +69,17 @@
   } from "$lib/notes/navigation/tree";
   import { addNotesWorkspaceBreadcrumb, buildNotesPageBreadcrumb } from "$lib/notes/pages/breadcrumb";
   import { notesPageTitle } from "$lib/notes/pages/title";
-  import { notesFloatingPanelPlacement } from "$lib/notes/editor/floating-panel";
   import {
     notesPageProjectId,
     notesPagesForProject,
   } from "$lib/notes/project-membership";
   import { openNotesSuggestionCount } from "$lib/notes/collaboration/suggestions";
+  import {
+    filterNotesDiscussions,
+    notesPageDiscussionsInReadingOrder,
+  } from "$lib/notes/collaboration/discussions";
+  import { unreadNotesCommentThreadCount } from "$lib/notes/collaboration/comments";
+  import type { NotesDiscussionsPanelFocus } from "./pages/comments/NotesDiscussionsPanel.svelte";
   import { buildNotesTableOfContents } from "$lib/notes/block-types/table-of-contents";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
@@ -114,7 +114,7 @@
     type NotesMusicMentionContext,
   } from "$lib/components/notes/blocks/mention-targets";
 
-  type NotesEditorPanel = "links" | "comments" | "suggestions";
+  type NotesEditorPanel = "links" | "suggestions";
 
   const FOCUSED_BLOCK_SCROLL_PADDING_PX = 16;
   const PAGE_PANEL_VIEWPORT_MARGIN_PX = 8;
@@ -124,8 +124,6 @@
   const ACTIVITY_PANEL_WIDTH_PX = FLOATING_WIDTH.lg;
   const PAGE_DETAILS_PANEL_WIDTH_PX = 704;
   const PAGE_DETAILS_PANEL_MAX_HEIGHT_PX = 512;
-  const COMMENTS_PANEL_WIDTH_PX = 400;
-  const COMMENTS_PANEL_MAX_HEIGHT_PX = 520;
 
   let {
     projectId = null,
@@ -172,8 +170,15 @@
   let repositionButton: HTMLButtonElement | null = $state(null);
   let coverBanner: HTMLDivElement | null = $state(null);
   let coverMenuButton: HTMLButtonElement | null = $state(null);
-  let commentButton: HTMLButtonElement | null = $state(null);
-  let commentsPanelFromTitle = $state(false);
+  let inlineCommentsRequested = $state(false);
+  /** Page-scoped so a request from one page never focuses the composer of the next. */
+  let inlineCommentFocus = $state<{ pageId: string; request: number } | null>(null);
+  let editorRoot: HTMLElement | null = $state(null);
+  let discussionsButton: HTMLButtonElement | null = $state(null);
+  let discussionsPopoverOpen = $state(false);
+  let discussionsPanelOpen = $state(false);
+  /** Page-scoped like the inline comment focus, so a reveal never lands on the next page. */
+  let discussionsFocus = $state<(NotesDiscussionsPanelFocus & { pageId: string }) | null>(null);
   let shareButton: HTMLButtonElement | null = $state(null);
   let shareOpen = $state(false);
   let pageMenuOpen = $state(false);
@@ -270,15 +275,30 @@
   const activityPanelLabel = $derived(
     page ? `${activityEditedByLabel}, ${editedDateLabel}` : t("notes.activity"),
   );
-  const openCommentCount = $derived(openNotesCommentThreadCount(notes.commentThreads));
-  const unreadCommentCount = $derived(unreadNotesCommentThreadCount(notes.commentThreads));
   const openSuggestionCount = $derived(openNotesSuggestionCount(notes.suggestions));
   const linksBadgeCount = $derived(notes.backlinks.length + notes.pageAliases.length + notes.unresolvedLinks.length);
-  const commentsBadgeCount = $derived(unreadCommentCount > 0 ? unreadCommentCount : openCommentCount);
-  const hasPanelMenuItems = $derived(
-    linksBadgeCount > 0 || openCommentCount > 0 || openSuggestionCount > 0,
-  );
+  const hasPanelMenuItems = $derived(linksBadgeCount > 0 || openSuggestionCount > 0);
+  const inlineCommentsId = $derived(page ? `notes-page-comments-${page.id}` : undefined);
+  const pageDiscussionCount = $derived(notesPageDiscussionsInReadingOrder(notes.allCommentThreads).length);
+  const inlineCommentsVisible = $derived(inlineCommentsRequested || pageDiscussionCount > 0);
   const isPeekMode = $derived(openMode !== "full");
+  const pageCommentThreads = $derived(page
+    ? notes.allCommentThreads.filter((thread) => thread.page_id === page.id)
+    : []);
+  const openPageDiscussions = $derived(filterNotesDiscussions(pageCommentThreads, "open"));
+  const unreadPageDiscussionCount = $derived(unreadNotesCommentThreadCount(openPageDiscussions));
+  /** Resolved discussions keep the button so the All discussions panel stays reachable. */
+  const discussionsButtonVisible = $derived(
+    discussionsPanelOpen || pageCommentThreads.some((thread) => thread.comments.length > 0),
+  );
+  const discussionsButtonLabel = $derived(
+    t("notes.discussionsButton", openPageDiscussions.length, unreadPageDiscussionCount),
+  );
+  const discussionsPanelFocus = $derived<NotesDiscussionsPanelFocus | null>(
+    page && discussionsFocus?.pageId === page.id
+      ? { discussionId: discussionsFocus.discussionId, reply: discussionsFocus.reply, request: discussionsFocus.request }
+      : null,
+  );
   const activityPanelStyle = $derived.by(() => {
     void floatingLayoutVersion;
     return floatingPagePanelStyle(activityButton, ACTIVITY_PANEL_WIDTH_PX);
@@ -289,37 +309,12 @@
   });
   const pageDetailsPanelStyle = $derived.by(() => {
     void floatingLayoutVersion;
-    if (activePanel === "comments") {
-      return floatingTitlePanelStyle(
-        commentsPanelFromTitle ? commentButton : pageMenuButton,
-        COMMENTS_PANEL_WIDTH_PX,
-        COMMENTS_PANEL_MAX_HEIGHT_PX,
-        commentsPanelFromTitle ? "start" : "end",
-      );
-    }
     return floatingPagePanelStyle(
       pageMenuButton,
       PAGE_DETAILS_PANEL_WIDTH_PX,
       PAGE_DETAILS_PANEL_MAX_HEIGHT_PX,
     );
   });
-
-
-  /** Keep a title action panel beside its trigger, including in page previews. */
-  function floatingTitlePanelStyle(
-    anchor: HTMLElement | null,
-    width: number,
-    height: number,
-    align: "start" | "end",
-  ): string {
-    if (!anchor || typeof window === "undefined") return "visibility:hidden";
-    const placement = notesFloatingPanelPlacement(
-      anchor.getBoundingClientRect(),
-      { width: window.innerWidth, height: window.innerHeight },
-      { width, height, align },
-    );
-    return `left:${Math.round(placement.left)}px;top:${Math.round(placement.top)}px;width:${Math.round(placement.width)}px;max-height:${Math.round(placement.maxHeight)}px`;
-  }
 
   /** Place a page popover below its toolbar trigger without clipping at viewport edges. */
   function floatingPagePanelStyle(
@@ -407,14 +402,16 @@
     if (activePanel === "links") {
       requestEditorPanel("backlinks");
       requestEditorPanel("page-links");
-    } else if (activePanel === "comments") {
-      requestEditorPanel("comments");
     } else if (activePanel === "suggestions") {
       requestEditorPanel("suggestions");
     }
     if (moveMenuOpen || folderMoveMenuOpen) requestEditorPanel("destination-picker");
     if (coverMenuOpen) requestEditorPanel("cover-menu");
     if (page?.cover) requestEditorPanel("page-cover");
+    if (page?.parent.type === "data_source_id") requestEditorPanel("row-properties");
+    if (inlineCommentsVisible) requestEditorPanel("page-comments");
+    if (discussionsPopoverOpen) requestEditorPanel("discussions-popover");
+    if (discussionsPanelOpen) requestEditorPanel("discussions-panel");
     if (htmlExportOpen) requestEditorPanel("html-export");
     if (agentBridgeExportOpen) requestEditorPanel("agent-export");
     if (pageHistoryModalOpen) requestEditorPanel("page-history");
@@ -440,6 +437,13 @@
     notes.clearPageTitleDraft(page.id);
     titleDraft = editablePageTitle;
     activePanel = null;
+    inlineCommentsRequested = false;
+    inlineCommentFocus = null;
+    discussionsPopoverOpen = false;
+    discussionsPanelOpen = false;
+    discussionsFocus = null;
+    const discussionRequest = untrack(() => notes.discussionRequest);
+    if (discussionRequest.pageId !== page.id) notes.completeDiscussionRequest(discussionRequest.requestId);
     pageMenuOpen = false;
     moveMenuOpen = false;
     folderMoveMenuOpen = false;
@@ -449,6 +453,24 @@
     coverPosition = null;
     coverPositionError = null;
     coverPositionSaving = false;
+  });
+
+  $effect(() => {
+    const request = notes.discussionRequest;
+    const discussionId = request.discussionId;
+    if (!page || !discussionId || request.pageId !== page.id) return;
+    untrack(() => {
+      openDiscussionsPanel(discussionId, false);
+      notes.completeDiscussionRequest(request.requestId);
+    });
+  });
+
+  $effect(() => {
+    if (notes.activeCommentParent?.type !== "block_id") return;
+    untrack(() => {
+      discussionsPopoverOpen = false;
+      discussionsPanelOpen = true;
+    });
   });
 
   $effect(() => {
@@ -675,6 +697,11 @@
   });
 
   $effect(() => {
+    if (!mobileLayout || !discussionsPanelOpen) return;
+    return mobileBackStack.activate({ handle: closeDiscussionsPanel });
+  });
+
+  $effect(() => {
     if (!mobileLayout || !activityPanelOpen) return;
     return mobileBackStack.activate({
       handle: () => {
@@ -687,7 +714,6 @@
     if (activePanel) notes.setPagePanelSubsystemOpen(activePanel, false);
     const nextPanel = activePanel === panel ? null : panel;
     activePanel = nextPanel;
-    if (nextPanel === "comments") commentsPanelFromTitle = false;
     if (nextPanel) {
       notes.setPagePanelSubsystemOpen(nextPanel, true);
       void notes.ensureOptionalSubsystem(nextPanel).catch((error) => {
@@ -996,28 +1022,67 @@
     return notes.exportAgentBridge(request);
   }
 
-  function openPageDiscussion(source: "title" | "menu" = "title"): void {
+  /** Reveal the page's inline discussion and move focus into its composer. */
+  function revealInlineComments(): void {
     if (!page) return;
-    if (activePanel === "comments" && commentsPanelFromTitle === (source === "title")) {
-      closeActionPanel();
+    inlineCommentsRequested = true;
+    inlineCommentFocus = {
+      pageId: page.id,
+      request: inlineCommentFocus?.pageId === page.id ? inlineCommentFocus.request + 1 : 1,
+    };
+    coverMenuOpen = false;
+    closePageMenu();
+  }
+
+  function preloadDiscussions(): void {
+    requestEditorPanel("discussions-popover");
+    requestEditorPanel("discussions-panel");
+  }
+
+  /** Close the All discussions panel from the header button, otherwise open the summary or, on mobile, the panel. */
+  function toggleDiscussions(): void {
+    if (discussionsPanelOpen) {
+      closeDiscussionsPanel();
+    } else if (mobileLayout) {
+      openDiscussionsPanel(null, false);
+    } else {
+      discussionsPopoverOpen = !discussionsPopoverOpen;
+    }
+  }
+
+  /** Open the All discussions panel on one discussion, or move focus into the panel when none is given. */
+  function openDiscussionsPanel(discussionId: string | null, reply: boolean): void {
+    if (!page) return;
+    discussionsPopoverOpen = false;
+    discussionsPanelOpen = true;
+    discussionsFocus = {
+      pageId: page.id,
+      discussionId,
+      reply,
+      request: discussionsFocus?.pageId === page.id ? discussionsFocus.request + 1 : 1,
+    };
+  }
+
+  /**
+   * Close the All discussions panel and drop a block comment that was being started. Focus that was inside the
+   * panel returns to the commented block, the header button, or the title, in that order.
+   */
+  function closeDiscussionsPanel(): void {
+    const panel = editorRoot?.querySelector("[data-notes-discussions-panel]");
+    const focusWasInside = typeof document !== "undefined" && !!panel?.contains(document.activeElement);
+    const pendingParent = notes.activeCommentParent;
+    discussionsPanelOpen = false;
+    discussionsFocus = null;
+    if (pendingParent?.type === "block_id") notes.setActiveCommentParent(null);
+    if (!focusWasInside) return;
+    if (pendingParent?.type === "block_id" && notes.blockById(pendingParent.block_id)) {
+      notes.focusBlock(pendingParent.block_id);
       return;
     }
-    if (activePanel && activePanel !== "comments") {
-      notes.setPagePanelSubsystemOpen(activePanel, false);
-    }
-    const pageParent = { type: "page_id", page_id: page.id } satisfies NotesParent;
-    if (!notes.activeCommentParent || notesCommentParentKey(notes.activeCommentParent) !== notesCommentParentKey(pageParent)) {
-      notes.setActiveCommentParent(pageParent);
-    }
-    activePanel = "comments";
-    commentsPanelFromTitle = source === "title";
-    coverMenuOpen = false;
-    notes.setPagePanelSubsystemOpen("comments", true);
-    void notes.ensureOptionalSubsystem("comments").catch((error) => {
-      console.error("load notes comments failed", error);
+    void tick().then(() => {
+      if (discussionsButton?.isConnected) discussionsButton.focus({ preventScroll: true });
+      else if (!mobileLayout) titleInput?.focus({ preventScroll: true });
     });
-    pageMenuOpen = false;
-    moveMenuOpen = false;
   }
 
   function pageIconScreenReaderText(icon: NotesPageIconValue | null): string {
@@ -1031,6 +1096,7 @@
 
 {#if page}
   <section
+    bind:this={editorRoot}
     class="notes-editor-root relative flex h-full w-full min-w-0 flex-1 flex-col overflow-hidden"
     data-mobile={mobileLayout || undefined}
   >
@@ -1040,8 +1106,47 @@
         <button type="button" class="shrink-0 rounded-md border px-2 py-1" onclick={() => void notes.retryEditorMutations().catch(() => undefined)}>{t("common.retry")}</button>
       </div>
     {/if}
+    {#snippet discussionsTrigger()}
+      <button
+        bind:this={discussionsButton}
+        type="button"
+        class={actionButtonClass(discussionsPopoverOpen || discussionsPanelOpen)}
+        aria-label={discussionsButtonLabel}
+        data-app-tooltip={t("notes.discussions")}
+        aria-haspopup="dialog"
+        aria-expanded={discussionsPopoverOpen || discussionsPanelOpen}
+        data-notes-discussions-button
+        onpointerenter={preloadDiscussions}
+        onfocus={preloadDiscussions}
+        onclick={toggleDiscussions}
+      >
+        <MessageSquare class="size-4" strokeWidth={noteActionIconStrokeWidth} />
+        {#if unreadPageDiscussionCount > 0}
+          <span class="absolute top-1 right-1 size-1.5 rounded-full bg-primary" aria-hidden="true"></span>
+        {/if}
+      </button>
+      {#if discussionsPopoverOpen && discussionsButton}
+        {#if panelLoadStates["discussions-popover"]?.status === "ready" && panelLoadStates["discussions-popover"].component.kind === "discussions-popover"}
+          {@const NotesDiscussionsPopover = panelLoadStates["discussions-popover"].component.component}
+          <NotesDiscussionsPopover
+            anchor={discussionsButton}
+            pageId={page.id}
+            now={activityNow}
+            timeLabels={activityTimeLabels}
+            onClose={() => { discussionsPopoverOpen = false; }}
+            onSeeAll={() => openDiscussionsPanel(null, false)}
+            onOpenDiscussion={openDiscussionsPanel}
+          />
+        {:else if panelLoadStates["discussions-popover"]?.status === "failed"}
+          <button class="surface-floating fixed inset-0 z-50 m-auto h-10 px-3" type="button" onclick={() => requestEditorPanel("discussions-popover", true)}>{t("common.retry")}</button>
+        {/if}
+      {/if}
+    {/snippet}
     {#if isPeekMode}
       <div class="absolute right-3 top-2 z-40 flex items-center gap-0.5 rounded-md border border-border bg-popover/95 p-0.5 shadow-sm" data-notes-peek-controls>
+        {#if discussionsButtonVisible}
+          {@render discussionsTrigger()}
+        {/if}
         <button
           type="button"
           class={actionButtonClass()}
@@ -1080,17 +1185,9 @@
         class="relative z-30 flex shrink-0 items-center gap-1"
         data-notes-page-actions
         use:portal={pageActionsTarget}
-        use:dismissOnOutside={{ enabled: !!activePanel, onDismiss: (reason, event) => {
-          if (reason === "outside-pointer"
-            && activePanel === "comments"
-            && commentsPanelFromTitle
-            && event.target instanceof Node
-            && commentButton?.contains(event.target)) return;
-          const restoreTitleFocus = activePanel === "comments" && commentsPanelFromTitle;
+        use:dismissOnOutside={{ enabled: !!activePanel, onDismiss: (reason) => {
           closeActionPanel();
-          if (reason === "escape") {
-            (restoreTitleFocus ? commentButton : pageMenuButton)?.focus({ preventScroll: true });
-          }
+          if (reason === "escape") pageMenuButton?.focus({ preventScroll: true });
         } }}
       >
         {#if mobileLayout && openMode === "full"}
@@ -1147,6 +1244,9 @@
             </div>
           {/if}
         </div>
+        {#if discussionsButtonVisible && !isPeekMode}
+          {@render discussionsTrigger()}
+        {/if}
         <button
           bind:this={shareButton}
           type="button"
@@ -1226,7 +1326,7 @@
                     <ImagePlus class="size-4" strokeWidth={noteActionIconStrokeWidth} />
                     <span>{page.cover ? t("notes.changePageCover") : t("notes.addPageCover")}</span>
                   </button>
-                  <button class={menuItemClass()} type="button" role="menuitem" aria-haspopup="dialog" onclick={() => openPageDiscussion("menu")}>
+                  <button class={menuItemClass()} type="button" role="menuitem" onclick={revealInlineComments}>
                     <MessageSquare class="size-4" strokeWidth={noteActionIconStrokeWidth} />
                     <span>{t("notes.addComment")}</span>
                   </button>
@@ -1247,15 +1347,6 @@
                       <Link2 class="size-4" strokeWidth={noteActionIconStrokeWidth} />
                       <span>{t("notes.noteLinks")}</span>
                       <span class="ml-auto text-panel-detail text-muted-foreground">{linksBadgeCount}</span>
-                    </button>
-                  {/if}
-                  {#if openCommentCount > 0}
-                    <button class={menuItemClass()} type="button" role="menuitem" onclick={() => togglePanel("comments")}>
-                      <MessageSquare class="size-4" strokeWidth={noteActionIconStrokeWidth} />
-                      <span>{t("notes.commentsCount", openCommentCount)}</span>
-                      {#if unreadCommentCount > 0}
-                        <span class="ml-auto text-panel-detail font-semibold text-primary">{commentsBadgeCount}</span>
-                      {/if}
                     </button>
                   {/if}
                   {#if openSuggestionCount > 0}
@@ -1400,7 +1491,7 @@
             class="surface-floating fixed z-80 flex min-h-0 flex-col overflow-hidden"
             style={pageDetailsPanelStyle}
             role="dialog"
-            aria-label={activePanel === "comments" ? t("notes.pageDiscussion") : activePanel === "links" ? t("notes.noteLinks") : t("notes.suggestedEdits")}
+            aria-label={activePanel === "links" ? t("notes.noteLinks") : t("notes.suggestedEdits")}
             data-app-floating-surface
           >
             {#if activePanel === "links"}
@@ -1419,13 +1510,6 @@
                   {/if}
                 </div>
               </div>
-            {:else if activePanel === "comments"}
-              {#if panelLoadStates.comments?.status === "ready" && panelLoadStates.comments.component.kind === "comments"}
-                {@const NotesComments = panelLoadStates.comments.component.component}
-                <NotesComments embedded />
-              {:else if panelLoadStates.comments?.status === "failed"}
-                <button class="min-h-8 rounded-floating-item border border-border px-2 hover:bg-accent" type="button" onclick={() => requestEditorPanel("comments", true)}>{t("common.retry")}</button>
-              {/if}
             {:else if activePanel === "suggestions"}
               <div class="min-h-0 flex-1 overflow-auto p-2" use:scrollEdgeFadeAction>
                 {#if panelLoadStates.suggestions?.status === "ready" && panelLoadStates.suggestions.component.kind === "suggestions"}
@@ -1450,13 +1534,14 @@
       </div>
     {/if}
 
+    <div class="notes-editor-body relative flex min-h-0 flex-1">
     <div
       bind:this={blockScrollViewport}
       data-notes-editor-scroll
       use:editorViewport
       onscroll={(event) => { if (page) notes.rememberEditorScroll(page.id, event.currentTarget.scrollTop); }}
       style="container-type: inline-size;"
-      class="min-h-0 flex-1 overflow-x-auto overflow-y-scroll"
+      class="min-h-0 min-w-0 flex-1 overflow-x-auto overflow-y-scroll"
       use:documentEndPointer
     >
       {#if page.cover}
@@ -1535,7 +1620,7 @@
         <div class="notes-page-title-surface min-w-0 pb-5">
           <div class={cn(
             "notes-page-title-actions -ml-1.5 flex min-h-8 flex-wrap items-center gap-1.5",
-            isPeekMode && !page.cover && "pr-28",
+            isPeekMode && !page.cover && (discussionsButtonVisible ? "pr-36" : "pr-28"),
           )}>
             {#if panelLoadStates["icon-picker"]?.status === "ready" && panelLoadStates["icon-picker"].component.kind === "icon-picker"}
               {@const IconPicker = panelLoadStates["icon-picker"].component.component}
@@ -1593,14 +1678,11 @@
               </button>
             {/if}
             <button
-              bind:this={commentButton}
               class="inline-flex max-w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-[0.8rem] text-muted-foreground hover:bg-accent hover:text-foreground"
               type="button"
               aria-label={t("notes.addComment")}
-              aria-haspopup="dialog"
-              aria-expanded={activePanel === "comments" && commentsPanelFromTitle}
-              data-notes-comment-open={activePanel === "comments" && commentsPanelFromTitle ? "true" : undefined}
-              onclick={() => openPageDiscussion()}
+              aria-controls={inlineCommentsId}
+              onclick={revealInlineComments}
             >
               <MessageSquare class="size-3.5" />
               <span class="truncate">{t("notes.addComment")}</span>
@@ -1664,6 +1746,48 @@
           />
         </div>
 
+        {#if page.parent.type === "data_source_id"}
+          {@const rowDataSourceId = page.parent.data_source_id}
+          <div class={cn("notes-page-header-extras", inlineCommentsVisible ? "mb-2" : "mb-4 border-b border-border pb-3")}>
+            {#if panelLoadStates["row-properties"]?.status === "ready" && panelLoadStates["row-properties"].component.kind === "row-properties"}
+              {@const NotesDatabaseRowPageProperties = panelLoadStates["row-properties"].component.component}
+              {#key page.id}
+                <NotesDatabaseRowPageProperties
+                  dataSourceId={rowDataSourceId}
+                  pageId={page.id}
+                  onOpenPage={(pageId) => {
+                    void notes.openPageContextually(pageId).catch((error: unknown) => {
+                      console.warn("Open Notes preview failed", error);
+                    });
+                  }}
+                />
+              {/key}
+            {:else if panelLoadStates["row-properties"]?.status === "failed"}
+              <button class="min-h-8 rounded-floating-item border border-border px-2 hover:bg-accent" type="button" onclick={() => requestEditorPanel("row-properties", true)}>{t("common.retry")}</button>
+            {/if}
+          </div>
+        {/if}
+
+        {#if inlineCommentsVisible && inlineCommentsId}
+          <div class="notes-page-header-extras mb-4 border-b border-border pb-4">
+            {#if panelLoadStates["page-comments"]?.status === "ready" && panelLoadStates["page-comments"].component.kind === "page-comments"}
+              {@const NotesPageComments = panelLoadStates["page-comments"].component.component}
+              {#key page.id}
+                <NotesPageComments
+                  id={inlineCommentsId}
+                  pageId={page.id}
+                  now={activityNow}
+                  timeLabels={activityTimeLabels}
+                  focusRequest={inlineCommentFocus?.pageId === page.id ? inlineCommentFocus.request : 0}
+                  onLeaveEmpty={() => { inlineCommentsRequested = false; }}
+                />
+              {/key}
+            {:else if panelLoadStates["page-comments"]?.status === "failed"}
+              <button class="min-h-8 rounded-floating-item border border-border px-2 hover:bg-accent" type="button" onclick={() => requestEditorPanel("page-comments", true)}>{t("common.retry")}</button>
+            {/if}
+          </div>
+        {/if}
+
         <NotesBlockList
           items={notes.flatBlocks}
           pageId={page.id}
@@ -1681,6 +1805,27 @@
           {musicMentionContext}
         />
       </div>
+    </div>
+    {#if discussionsPanelOpen}
+      {#if panelLoadStates["discussions-panel"]?.status === "ready" && panelLoadStates["discussions-panel"].component.kind === "discussions-panel"}
+        {@const NotesDiscussionsPanel = panelLoadStates["discussions-panel"].component.component}
+        <NotesDiscussionsPanel
+          pageId={page.id}
+          pageTitle={currentPageTitle}
+          pageIcon={page.icon}
+          now={activityNow}
+          timeLabels={activityTimeLabels}
+          focus={discussionsPanelFocus}
+          mobile={mobileLayout}
+          topInset={isPeekMode}
+          onClose={closeDiscussionsPanel}
+        />
+      {:else if panelLoadStates["discussions-panel"]?.status === "failed"}
+        <div class="flex w-56 shrink-0 items-start justify-center border-l border-border p-4">
+          <button class="min-h-8 rounded-floating-item border border-border px-2 hover:bg-accent" type="button" onclick={() => requestEditorPanel("discussions-panel", true)}>{t("common.retry")}</button>
+        </div>
+      {/if}
+    {/if}
     </div>
   </section>
 
@@ -1771,6 +1916,10 @@
 {/if}
 
 <style>
+  .notes-editor-body {
+    container: notes-editor-body / inline-size;
+  }
+
   .notes-cover-actions,
   .notes-page-title-actions {
     opacity: 0;
@@ -1792,7 +1941,7 @@
   .notes-cover-actions[data-open="true"],
   .notes-editor-root[data-mobile="true"] .notes-cover-actions,
   :where(.notes-page-title-surface:focus-within) .notes-page-title-actions,
-  .notes-page-title-actions:has([data-notes-icon-picker-open="true"], [data-notes-cover-open="true"], [data-notes-comment-open="true"]),
+  .notes-page-title-actions:has([data-notes-icon-picker-open="true"], [data-notes-cover-open="true"]),
   .notes-editor-root[data-mobile="true"] .notes-page-title-actions {
     opacity: 1;
     pointer-events: auto;

@@ -3,6 +3,7 @@
   import { listNotesDataSourceRowPages } from "$lib/api/notes";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
+    notesDatabaseRowTitle,
     notesDatabaseTableRelationItems,
     type NotesDatabaseTableColumn,
     type NotesDatabaseTableEditValue,
@@ -10,8 +11,6 @@
   import type { NotesPage } from "$lib/notes/types";
   import Plus from "@lucide/svelte/icons/plus";
   import X from "@lucide/svelte/icons/x";
-
-  type UnknownRecord = Record<string, unknown>;
 
   let {
     row,
@@ -46,25 +45,8 @@
     targetRows.filter((target) => !relationIds.includes(target.id)),
   );
 
-  function isRecord(value: unknown): value is UnknownRecord {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
-  }
-
-  function richTextPlainText(items: unknown[]): string {
-    return items.filter(isRecord).map((item) => {
-      if (typeof item.plain_text === "string") return item.plain_text;
-      const text = item.text;
-      return isRecord(text) && typeof text.content === "string" ? text.content : "";
-    }).join("");
-  }
-
   function rowTitle(target: NotesPage): string {
-    for (const value of Object.values(target.properties)) {
-      if (!isRecord(value) || value.type !== "title" || !Array.isArray(value.title)) continue;
-      const title = richTextPlainText(value.title).trim();
-      if (title) return title;
-    }
-    return t("notes.untitled");
+    return notesDatabaseRowTitle(target, t("notes.untitled"));
   }
 
   async function loadTargets(): Promise<void> {

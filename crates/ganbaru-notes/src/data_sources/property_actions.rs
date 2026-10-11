@@ -101,7 +101,7 @@ pub async fn apply_property_action(
             if target_is_title {
                 return Err("the required title cannot be duplicated".to_string());
             }
-            let property = duplicate_property_tx(&mut tx, target, &name).await?;
+            let property = duplicate_property_tx(&mut tx, target.clone(), &name).await?;
             let new_id = insert_property(object, property)?;
             placement = Some(NoteDataSourcePropertyInsertionSide::Right);
             new_id
@@ -141,6 +141,9 @@ pub async fn apply_property_action(
             target_id.clone()
         }
     };
+    if let Some(side) = placement {
+        place_page_position(object, &target, &result_id, side);
+    }
     let prepared =
         data_sources::schema::prepare_schema_update(&NoteDataSourceSchemaUpdate { properties })?;
     let page_id: String =
@@ -176,6 +179,60 @@ pub async fn apply_property_action(
         property_id: result_id,
         schema,
     })
+}
+
+/// Place a new property beside its target on row pages when the page has an explicit order.
+///
+/// Positioned properties are renumbered from zero with the new one beside its target. An unpositioned target leaves
+/// the new property unpositioned, so it follows the fallback order like its target.
+fn place_page_position(
+    object: &mut Map<String, Value>,
+    target: &Value,
+    new_id: &str,
+    side: NoteDataSourcePropertyInsertionSide,
+) {
+    let property_id = |property: &Value| {
+        property
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    let target_id = property_id(target);
+    let targeted = target
+        .get("page_position")
+        .and_then(Value::as_u64)
+        .is_some();
+    let mut positioned: Vec<(u64, String)> = object
+        .values()
+        .filter_map(|property| {
+            let id = property_id(property)?;
+            let position = property.get("page_position").and_then(Value::as_u64)?;
+            (id != new_id).then_some((position, id))
+        })
+        .collect();
+    positioned.sort();
+    let mut order: Vec<String> = positioned.into_iter().map(|(_, id)| id).collect();
+    if targeted {
+        let index = order
+            .iter()
+            .position(|id| Some(id) == target_id.as_ref())
+            .map_or(order.len(), |index| {
+                index + usize::from(matches!(side, NoteDataSourcePropertyInsertionSide::Right))
+            });
+        order.insert(index, new_id.to_string());
+    }
+    for property in object.values_mut() {
+        let Some(id) = property_id(property) else {
+            continue;
+        };
+        let Some(property) = property.as_object_mut() else {
+            continue;
+        };
+        match order.iter().position(|candidate| *candidate == id) {
+            Some(index) => property.insert("page_position".to_string(), json!(index)),
+            None => property.remove("page_position"),
+        };
+    }
 }
 
 /// Add a new non-title property with a unique id and name, returning its id.
@@ -250,7 +307,14 @@ async fn changed_type_property_tx(
         _ => config.unwrap_or_else(|| json!({})),
     };
     let mut property = Map::new();
-    for field in ["id", "name", "description", "icon"] {
+    for field in [
+        "id",
+        "name",
+        "description",
+        "icon",
+        "page_visibility",
+        "page_position",
+    ] {
         if let Some(value) = current.get(field) {
             property.insert(field.to_string(), value.clone());
         }

@@ -62,7 +62,7 @@ Compound actions (split, merge, range replacement and formatting, mixed paste, c
 
 ## Comments and suggestions
 
-Page discussions, block comments, inline anchored comments, and text suggestions are collaboration metadata, not block content, and are written in the same transaction as the related canonical change. The page title area offers Add icon, Add cover, and Add comment actions, revealed on hover or focus on desktop, always visible on touch, and also available from Note actions on mobile. Accepting or rejecting a suggestion validates its stored base context, so a stale anchor produces a conflict instead of editing the wrong text. See [Links and collaboration](links-and-collaboration.md).
+Page discussions, block comments, inline anchored comments, and text suggestions are collaboration metadata, not block content, and are written in the same transaction as the related canonical change. The page title area offers Add icon, Add cover, and Add comment actions, revealed on hover or focus on desktop, always visible on touch, and also available from Note actions on mobile. Add comment opens a composer below the title and any row page properties, in full pages and previews alike. Accepting or rejecting a suggestion validates its stored base context, so a stale anchor produces a conflict instead of editing the wrong text. See [Links and collaboration](links-and-collaboration.md).
 
 ## Media and assets
 

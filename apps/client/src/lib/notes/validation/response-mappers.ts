@@ -34,6 +34,7 @@ import {
   parseNotesPageBreadcrumbItem,
   parseNotesPageHistorySettings,
   parseNotesPageHistorySnapshot,
+  parseNotesPageNotificationSettings,
   parseNotesPageTemplate,
   parseNotesPaginatedBlockList,
   parseNotesSearchResult,
@@ -76,6 +77,7 @@ import type {
   NotesPageBreadcrumbItem,
   NotesPageHistorySettings,
   NotesPageHistorySnapshot,
+  NotesPageNotificationSettings,
   NotesPageTemplate,
   NotesPaginatedBlockList,
   NotesSearchResult,
@@ -285,4 +287,9 @@ export function mapNotesDataSourceCalendarViewDto(value: unknown): NotesDataSour
 /** Validate and map an unknown local data source timeline view DTO from the Tauri boundary. */
 export function mapNotesDataSourceTimelineViewDto(value: unknown): NotesDataSourceTimelineView {
   return parseNotesDataSourceTimelineView(value);
+}
+
+/** Validate and map an unknown page notification settings DTO from the Tauri boundary. */
+export function mapNotesPageNotificationSettingsDto(value: unknown): NotesPageNotificationSettings {
+  return parseNotesPageNotificationSettings(value);
 }

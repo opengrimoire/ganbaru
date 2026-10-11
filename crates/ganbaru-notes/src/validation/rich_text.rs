@@ -22,13 +22,22 @@ const NOTE_COLORS: &[&str] = &[
     "red_background",
 ];
 pub fn validate_comment_rich_text(rich_text: &[Value]) -> Result<(), String> {
-    if !(1..=100).contains(&rich_text.len()) {
+    validate_comment_body_rich_text(rich_text, false)
+}
+
+/// Validate comment text, allowing it to be empty only when the comment carries attachments.
+pub fn validate_comment_body_rich_text(
+    rich_text: &[Value],
+    has_attachments: bool,
+) -> Result<(), String> {
+    let min_items = usize::from(!has_attachments);
+    if !(min_items..=100).contains(&rich_text.len()) {
         return Err("comment rich_text must include between 1 and 100 items".to_string());
     }
     for item in rich_text {
         validate_rich_text_item(item)?;
     }
-    if rich_text_items_plain_text(rich_text).trim().is_empty() {
+    if !has_attachments && rich_text_items_plain_text(rich_text).trim().is_empty() {
         return Err("comment rich_text must not be empty".to_string());
     }
     Ok(())

@@ -1151,7 +1151,8 @@ function dateFromIsoQuery(query: string): Temporal.PlainDate | null {
   }
 }
 
-function formatPlainDate(date: Temporal.PlainDate, locale: string): string {
+/** A calendar date as mention menus spell it, for example "Oct 11, 2026". */
+export function formatPlainDate(date: Temporal.PlainDate, locale: string): string {
   return new Intl.DateTimeFormat(locale, {
     month: "short",
     day: "numeric",

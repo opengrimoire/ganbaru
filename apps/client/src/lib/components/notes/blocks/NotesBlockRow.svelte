@@ -16,6 +16,7 @@
     notesCommentAnchorsForBlock,
     unreadNotesCommentThreadCount,
   } from "$lib/notes/collaboration/comments";
+  import { filterNotesDiscussions } from "$lib/notes/collaboration/discussions";
   import {
     notesSuggestionAnchorsForBlock,
   } from "$lib/notes/collaboration/suggestions";
@@ -361,6 +362,13 @@
   );
   const blockCommentCount = $derived(blockCommentThreads.length);
   const blockUnreadCommentCount = $derived(unreadNotesCommentThreadCount(blockCommentThreads));
+
+  /** Open the page's discussions on the block's most recently active discussion, or start one when none is left. */
+  function openBlockDiscussion(): void {
+    const latest = filterNotesDiscussions(blockCommentThreads, "all")[0];
+    if (latest) notes.requestDiscussion(latest.id);
+    else onComment(block.id);
+  }
   const commentAnchors = $derived(notesCommentAnchorsForBlock(notes.commentThreads, block.id, text));
   const suggestionAnchors = $derived(notesSuggestionAnchorsForBlock(notes.suggestions, block.id, text));
   const calloutContainerOnly = $derived(notesCalloutIsOwnTextHidden(
@@ -672,6 +680,7 @@
       onCopyLink={() => onCopyLink(block.id)}
       onDuplicate={() => onDuplicate(block.id)}
       onComment={() => onComment(block.id)}
+      onOpenComments={openBlockDiscussion}
       commentCount={blockCommentCount}
       unreadCommentCount={blockUnreadCommentCount}
       onMoveUp={() => onMoveUp(block.id)}

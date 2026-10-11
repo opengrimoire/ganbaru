@@ -245,6 +245,21 @@ export function notesDatabaseTableCellText(
   }
 }
 
+/**
+ * Read a row's title from its title property, whatever that property is named, without needing the source schema.
+ *
+ * @param page Row page with hydrated property values.
+ * @param fallback Text shown when the title is blank, such as a localized "Untitled".
+ */
+export function notesDatabaseRowTitle(page: NotesPage, fallback: string): string {
+  for (const value of Object.values(page.properties)) {
+    if (!isRecord(value) || value.type !== "title" || !Array.isArray(value.title)) continue;
+    const title = richTextPlainText(value.title).trim();
+    if (title) return title;
+  }
+  return fallback;
+}
+
 /** Read exact option labels without splitting names that contain punctuation. */
 export function notesDatabaseTableOptionNames(page: NotesPage, column: NotesDatabaseTableColumn): string[] {
   const property = Object.values(page.properties).find((value) => propertyMatchesColumn(value, column));

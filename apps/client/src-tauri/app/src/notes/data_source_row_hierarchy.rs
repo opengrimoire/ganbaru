@@ -1,5 +1,6 @@
 use crate::db::connect_sqlite;
 use ganbaru_notes::data_sources::row_hierarchy::{self, NoteDataSourceRowParentUpdate};
+use ganbaru_notes::data_sources::row_page;
 use ganbaru_notes::models::{NoteDataSourceRowPageCreate, NoteLoadedPage};
 use tauri::{AppHandle, Runtime};
 
@@ -30,4 +31,16 @@ pub async fn notes_update_data_source_row_parent<R: Runtime>(
     let pool = connect_sqlite(app, db_url).await?;
     row_hierarchy::set_row_parent(&pool, &data_source_id, &row_page_id, update).await?;
     super::project_history::mutation_result(&pool, ()).await
+}
+
+/// Load one row page with computed property values, its source schema, parent, and sub-items.
+#[tauri::command]
+pub async fn notes_get_data_source_row_page_context<R: Runtime>(
+    app: AppHandle<R>,
+    db_url: String,
+    data_source_id: String,
+    page_id: String,
+) -> Result<row_page::NoteDataSourceRowPageContextDto, String> {
+    let pool = connect_sqlite(app, db_url).await?;
+    row_page::row_page_context(&pool, &data_source_id, &page_id).await
 }

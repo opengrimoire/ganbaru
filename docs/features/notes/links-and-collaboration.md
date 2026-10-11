@@ -38,9 +38,9 @@ Link facts derive a graph across pages, row pages, blocks, properties, comments,
 
 ## Comments
 
-Notes supports page discussions, block comment threads, and inline text-range anchors. Comments retain author snapshots, status, timestamps, attachments, and soft-delete state. Per-user read state is local metadata rather than content.
+Notes supports page discussions, block comment threads, and inline text-range anchors. Comments retain author snapshots, status, timestamps, attachments, emoji reactions, and soft-delete state. Comment text can mention dates, people, and pages, and can attach files. Per-user read state, muted discussions, and per-page notification levels (mentions and reminders, mentions only, or off) are local preferences rather than content.
 
-Resolving a thread does not delete it. Inline anchors retain surrounding context so a moved or edited range can be identified or reported stale.
+Page discussions appear under the title and, on row pages, under the properties. Once a page has discussions, a header button summarizes the latest comment of the most recently active open discussion with the page's notification settings and a way into the All discussions panel, which filters open, resolved, or all discussions. Resolving a thread does not delete it. Inline anchors retain surrounding context so a moved or edited range can be identified or reported stale.
 
 ## Suggestions
 

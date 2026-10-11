@@ -324,3 +324,182 @@ fn inline_comment_anchors_persist_on_block_threads() {
         );
     });
 }
+
+#[test]
+fn comment_reactions_toggle_per_person_and_group_by_emoji() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        let thread = comments::create_comment(
+            &pool,
+            NoteCommentCreate {
+                id: COMMENT_A.to_string(),
+                parent: Some(page_parent(PAGE_A)),
+                discussion_id: None,
+                anchor: None,
+                rich_text: vec![rich_text("Looks good")],
+                attachments: None,
+            },
+        )
+        .await
+        .unwrap();
+        let thread_id = serde_json::to_value(thread).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        comments::toggle_comment_reaction(&pool, COMMENT_A, "👍")
+            .await
+            .unwrap();
+        let reacted = comments::toggle_comment_reaction(&pool, COMMENT_A, " 🎉 ")
+            .await
+            .unwrap();
+        let reactions = serde_json::to_value(reacted).unwrap()["comments"][0]["reactions"].clone();
+        assert_eq!(reactions[0]["emoji"], "👍");
+        assert_eq!(reactions[0]["count"], 1);
+        assert_eq!(reactions[0]["reacted_by_me"], true);
+        assert_eq!(reactions[0]["names"], json!(["You"]));
+        assert_eq!(reactions[1]["emoji"], "🎉");
+
+        sqlx::query(
+            "INSERT INTO notes_comment_reactions (comment_id, created_by, display_name, emoji)
+             VALUES (?, 'person-b', '{\"type\":\"user\",\"resolved_name\":\"Bea\"}', '👍')",
+        )
+        .bind(COMMENT_A)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let removed = comments::toggle_comment_reaction(&pool, COMMENT_A, "👍")
+            .await
+            .unwrap();
+        let reactions = serde_json::to_value(removed).unwrap()["comments"][0]["reactions"].clone();
+        assert_eq!(reactions[0]["emoji"], "🎉");
+        assert_eq!(reactions[1]["emoji"], "👍");
+        assert_eq!(reactions[1]["count"], 1);
+        assert_eq!(reactions[1]["reacted_by_me"], false);
+        assert_eq!(reactions[1]["names"], json!(["Bea"]));
+
+        for invalid in ["", "  ", "ok", "👍 👍", "\u{7}", "12"] {
+            assert_eq!(
+                comments::toggle_comment_reaction(&pool, COMMENT_A, invalid)
+                    .await
+                    .err()
+                    .as_deref(),
+                Some("comment reaction must be one emoji"),
+                "{invalid:?} should be rejected"
+            );
+        }
+        comments::toggle_comment_reaction(&pool, COMMENT_A, "1️⃣")
+            .await
+            .unwrap();
+
+        comments::resolve_comment_thread(&pool, &thread_id, true)
+            .await
+            .unwrap();
+        assert_eq!(
+            comments::toggle_comment_reaction(&pool, COMMENT_A, "🎉")
+                .await
+                .err()
+                .as_deref(),
+            Some("resolved comment threads cannot receive reactions")
+        );
+        comments::resolve_comment_thread(&pool, &thread_id, false)
+            .await
+            .unwrap();
+
+        comments::delete_comment(&pool, COMMENT_A).await.unwrap();
+        assert_eq!(
+            comments::toggle_comment_reaction(&pool, COMMENT_A, "🎉")
+                .await
+                .err()
+                .as_deref(),
+            Some("notes comment not found")
+        );
+    });
+}
+
+#[test]
+fn comment_reactions_limit_distinct_emoji_per_comment() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        comments::create_comment(
+            &pool,
+            NoteCommentCreate {
+                id: COMMENT_A.to_string(),
+                parent: Some(page_parent(PAGE_A)),
+                discussion_id: None,
+                anchor: None,
+                rich_text: vec![rich_text("Many reactions")],
+                attachments: None,
+            },
+        )
+        .await
+        .unwrap();
+        let emoji = [
+            "😀", "😁", "😂", "🤣", "😃", "😄", "😅", "😆", "😉", "😊", "😋", "😎", "😍", "😘",
+            "🥰", "😗", "😙", "😚", "🙂", "🤗",
+        ];
+        for value in emoji {
+            comments::toggle_comment_reaction(&pool, COMMENT_A, value)
+                .await
+                .unwrap();
+        }
+        assert!(
+            comments::toggle_comment_reaction(&pool, COMMENT_A, "🤩")
+                .await
+                .err()
+                .is_some_and(|error| error.contains("limited to 20 different reactions"))
+        );
+        comments::toggle_comment_reaction(&pool, COMMENT_A, "😀")
+            .await
+            .unwrap();
+        comments::toggle_comment_reaction(&pool, COMMENT_A, "🤩")
+            .await
+            .unwrap();
+    });
+}
+
+#[test]
+fn comment_thread_mute_is_per_person_state() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        let thread = comments::create_comment(
+            &pool,
+            NoteCommentCreate {
+                id: COMMENT_A.to_string(),
+                parent: Some(page_parent(PAGE_A)),
+                discussion_id: None,
+                anchor: None,
+                rich_text: vec![rich_text("Quiet please")],
+                attachments: None,
+            },
+        )
+        .await
+        .unwrap();
+        let thread_value = serde_json::to_value(thread).unwrap();
+        assert_eq!(thread_value["muted"], false);
+        let thread_id = thread_value["id"].as_str().unwrap().to_string();
+
+        let muted = comments::set_comment_thread_muted(&pool, &thread_id, true)
+            .await
+            .unwrap();
+        assert_eq!(serde_json::to_value(muted).unwrap()["muted"], true);
+        comments::set_comment_thread_muted(&pool, &thread_id, true)
+            .await
+            .unwrap();
+        let listed = comments::list_comments(&pool, PAGE_A, false).await.unwrap();
+        assert_eq!(serde_json::to_value(listed).unwrap()[0]["muted"], true);
+
+        let unmuted = comments::set_comment_thread_muted(&pool, &thread_id, false)
+            .await
+            .unwrap();
+        assert_eq!(serde_json::to_value(unmuted).unwrap()["muted"], false);
+        assert!(
+            comments::set_comment_thread_muted(&pool, PAGE_B, true)
+                .await
+                .is_err()
+        );
+    });
+}

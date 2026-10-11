@@ -1,5 +1,7 @@
 const NOTES_LINK_HASH_PREFIX = "notes";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+/** Discussion ids are random UUID-shaped hex without version bits, matching the backend's thread id check. */
+const DISCUSSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 
 export interface NotesBlockLinkTarget {
   pageId: string;
@@ -16,10 +18,22 @@ export interface NotesPageLinkTarget {
   blockId?: string;
   /** Saved view to show when the linked block is a database. */
   viewId?: string;
+  /** Comment thread to reveal once the page is open. */
+  discussionId?: string;
+}
+
+/** A comment thread on a page. */
+export interface NotesDiscussionLinkTarget {
+  pageId: string;
+  discussionId: string;
 }
 
 export function isNotesUuid(value: unknown): value is string {
   return typeof value === "string" && UUID_PATTERN.test(value);
+}
+
+function isNotesDiscussionId(value: unknown): value is string {
+  return typeof value === "string" && DISCUSSION_ID_PATTERN.test(value);
 }
 
 function assertNotesLinkTarget(target: NotesBlockLinkTarget): void {
@@ -61,6 +75,17 @@ export function buildNotesPageLink(
   return buildNotesLink(baseHref, { page: target.pageId });
 }
 
+/** Build a link that opens a page with one of its comment threads revealed. */
+export function buildNotesDiscussionLink(
+  baseHref: string,
+  target: NotesDiscussionLinkTarget,
+): string {
+  if (!isNotesUuid(target.pageId)) throw new Error("notes discussion link page id must be a UUID");
+  if (!isNotesDiscussionId(target.discussionId)) throw new Error("notes discussion link discussion id must be a UUID");
+  return buildNotesLink(baseHref, { page: target.pageId, discussion: target.discussionId });
+}
+
+/** Read a notes link hash. A discussion names a page thread, so it never combines with a block or view. */
 export function parseNotesLinkHash(hash: string): NotesPageLinkTarget | null {
   const rawHash = hash.startsWith("#") ? hash.slice(1) : hash;
   if (!rawHash.startsWith(`${NOTES_LINK_HASH_PREFIX}?`)) return null;
@@ -68,9 +93,13 @@ export function parseNotesLinkHash(hash: string): NotesPageLinkTarget | null {
   const pageId = params.get("page");
   const blockId = params.get("block");
   const viewId = params.get("view");
+  const discussionId = params.get("discussion");
   if (!isNotesUuid(pageId)) return null;
   if (blockId !== null && !isNotesUuid(blockId)) return null;
   if (viewId !== null && (!blockId || !isNotesUuid(viewId))) return null;
+  if (discussionId !== null) {
+    return blockId === null && isNotesDiscussionId(discussionId) ? { pageId, discussionId } : null;
+  }
   if (!blockId) return { pageId };
   return viewId ? { pageId, blockId, viewId } : { pageId, blockId };
 }

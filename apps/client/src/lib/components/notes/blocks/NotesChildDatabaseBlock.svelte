@@ -12,13 +12,11 @@
   import { tick, untrack } from "svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
-    applyNotesDataSourcePropertyAction,
     getNotesDataSourceSchema,
     getNotesDatabaseReference,
     listNotesDatabaseViews,
     listNotesDataSources,
     renameNotesDatabase,
-    updateNotesDataSourceSchema,
   } from "$lib/api/notes";
   import NotesDatabasePropertySchemaEditor from "$lib/components/notes/database/NotesDatabasePropertySchemaEditor.svelte";
   import NotesDatabaseViewSurface from "$lib/components/notes/database/NotesDatabaseViewSurface.svelte";
@@ -30,26 +28,29 @@
   } from "$lib/components/notes/database/property-kinds";
   import {
     NOTES_DATA_SOURCE_PROPERTY_NAME_MAX_CHARACTERS,
-    createNotesDataSourcePropertyDraft,
-    defaultNotesDataSourcePropertyName,
-    notesDataSourceDefaultButtonPatch,
-    notesDataSourceDefaultRollupPatch,
-    notesDataSourceDuplicatePropertyName,
-    notesDataSourcePropertyConfig,
-    notesDataSourceRenameProperty,
     notesDataSourceSchemaDraftFromDto,
-    notesDataSourceSchemaUpdateFromDraft,
-    notesDataSourceSyncPropertyReferences,
     type NotesDataSourcePropertyUpdate,
     type NotesDataSourceSchemaPropertyDraft,
     type NotesDatabasePropertyActionRequest,
     type NotesDatabaseSourceEditingScope,
   } from "$lib/notes/database/data-source-schema";
+  import {
+    appendNotesDataSourceSchemaProperty,
+    changeNotesDataSourceSchemaPropertyIcon,
+    changeNotesDataSourceSchemaPropertyType,
+    deleteNotesDataSourceSchemaProperty,
+    duplicateNotesDataSourceSchemaProperty,
+    insertNotesDataSourceSchemaProperty,
+    loadNotesDataSourceSchemaDrafts,
+    renameNotesDataSourceSchemaProperty,
+    updateNotesDataSourceSchemaProperty,
+    type NotesDataSourceSchemaActionContext,
+    type NotesDataSourceSchemaActionResult,
+  } from "$lib/notes/database/property-schema-actions";
   import type { NotesDataSourceOptionEdit, NotesDataSourceOptionEditor } from "$lib/notes/database/property-options";
   import type {
     NotesChildDatabaseBlock,
     NotesDataSource,
-    NotesDataSourcePropertyAction,
     NotesDataSourcePropertyType,
     NotesDataSourceSchema,
     NotesDatabaseReference,
@@ -328,12 +329,6 @@
     void withEditorScope(task).catch((caught: unknown) => { error = messageOf(caught); });
   }
 
-  /** The database and view a native property action places its change in. */
-  function actionTarget(scope: NotesDatabaseSourceEditingScope): { databaseId: string; viewId: string } {
-    if (!scope.databaseId || !scope.viewId) throw new Error(t("notes.databaseSchemaLoadFailed", ""));
-    return { databaseId: scope.databaseId, viewId: scope.viewId };
-  }
-
   async function saveTitle(): Promise<void> {
     const renamedDatabaseId = databaseId;
     const acknowledgeTitle = onTitleSaved;
@@ -377,22 +372,16 @@
     timelineReloadKey += 1;
   }
 
-  /**
-   * Fill the references a property of the given type needs to be valid: a relation points to its own source, a
-   * rollup to the first relation, a formula to the first plain property, and a button to the first settable property.
-   *
-   * @throws When a rollup has no relation to read through.
-   */
-  function withTypeDefaults(property: NotesDataSourceSchemaPropertyDraft, sourceId: string,
-    drafts: readonly NotesDataSourceSchemaPropertyDraft[]): NotesDataSourceSchemaPropertyDraft {
-    if (property.type === "relation") property.relationDataSourceId = sourceId;
-    if (property.type === "rollup") {
-      Object.assign(property, notesDataSourceDefaultRollupPatch(drafts, property.id, sourceId, availableDataSources));
-      if (!property.rollupRelationPropertyId) throw new Error(t("notes.databaseSchemaRollupNoRelations"));
-    }
-    if (property.type === "formula") property.formulaExpression = defaultFormulaExpression(property.id, drafts);
-    if (property.type === "button") Object.assign(property, notesDataSourceDefaultButtonPatch(drafts, property.id));
-    return property;
+  /** Action inputs for one source, read when the queued action runs so it sees the newest loaded sources. */
+  function actionContext(scope: NotesDatabaseSourceEditingScope): NotesDataSourceSchemaActionContext {
+    return { scope, dataSources: availableDataSources, t };
+  }
+
+  /** Show a saved action result, making the views read it again when something changed. */
+  function adoptResult(result: NotesDataSourceSchemaActionResult): void {
+    if (result.dataSources) availableDataSources = result.dataSources;
+    adopt(result.schema);
+    if (result.changed) reloadViews();
   }
 
   /**
@@ -400,23 +389,7 @@
    * so edits made in quick succession build on each other; returning null saves nothing.
    */
   function updateSchemaProperty(propertyId: string, update: NotesDataSourcePropertyUpdate, scope: NotesDatabaseSourceEditingScope): Promise<void> {
-    return enqueue(async () => {
-      const canonical = await getNotesDataSourceSchema(scope.dataSourceId, scope);
-      const drafts = notesDataSourceSchemaDraftFromDto(canonical.data_source, canonical.view);
-      const target = drafts.find((property) => property.id === propertyId);
-      if (!target) throw new Error(t("notes.databaseSchemaSaveFailed", propertyId));
-      const patch = update(target, drafts);
-      if (!patch) {
-        adopt(canonical);
-        return;
-      }
-      const sources = [canonical.data_source, ...availableDataSources.filter((source) => source.id !== canonical.data_source.id)];
-      const next = notesDataSourceSyncPropertyReferences(drafts.map((property) => property.id === propertyId ? { ...property, ...patch } : property),
-        scope.dataSourceId, sources);
-      const updated = await updateNotesDataSourceSchema(scope.dataSourceId, notesDataSourceSchemaUpdateFromDraft(next), scope);
-      adopt(updated);
-      reloadViews();
-    });
+    return enqueue(async () => adoptResult(await updateNotesDataSourceSchemaProperty(actionContext(scope), propertyId, update)));
   }
 
   /** Save a change from an Edit property menu, showing a failure beside it. */
@@ -445,41 +418,17 @@
 
   /** Rename one property; duplicate names are rejected ignoring case. */
   function renameProperty(propertyId: string, rawName: string, scope: NotesDatabaseSourceEditingScope): Promise<void> {
-    return updateSchemaProperty(propertyId, (_target, drafts) => {
-      const renamed = notesDataSourceRenameProperty(drafts, propertyId, rawName);
-      if (renamed.status === "unchanged") return null;
-      if (renamed.status !== "renamed") throw new Error(renamed.status === "duplicate" ? t("collections.property.nameExists") : t("notes.databaseSchemaSaveFailed", propertyId));
-      return { name: renamed.properties.find((property) => property.id === propertyId)?.name ?? rawName.trim() };
-    }, scope);
+    return enqueue(async () => adoptResult(await renameNotesDataSourceSchemaProperty(actionContext(scope), propertyId, rawName)));
   }
 
   /** Change one property's icon; null returns it to the type icon. */
   function changePropertyIcon(propertyId: string, icon: string | null, scope: NotesDatabaseSourceEditingScope): Promise<void> {
-    return updateSchemaProperty(propertyId, (target) => target.icon === icon ? null : { icon }, scope);
+    return enqueue(async () => adoptResult(await changeNotesDataSourceSchemaPropertyIcon(actionContext(scope), propertyId, icon)));
   }
 
-  /**
-   * Convert one property to another type in a native transaction that also converts its row values. Select-like
-   * types collect their options from the existing values, so they send no configuration.
-   */
+  /** Convert one property to another type, converting its row values in the same native transaction. */
   function changePropertyType(propertyId: string, propertyType: NotesDataSourcePropertyType, scope: NotesDatabaseSourceEditingScope): Promise<void> {
-    return enqueue(async () => {
-      const target = actionTarget(scope);
-      const canonical = await getNotesDataSourceSchema(scope.dataSourceId, scope);
-      const drafts = notesDataSourceSchemaDraftFromDto(canonical.data_source, canonical.view);
-      const current = drafts.find((property) => property.id === propertyId);
-      if (!current) throw new Error(t("notes.databaseSchemaSaveFailed", propertyId));
-      let config: Record<string, unknown> | null = null;
-      if (propertyType !== "select" && propertyType !== "multi_select" && propertyType !== "status") {
-        if (propertyType === "rollup") availableDataSources = await listNotesDataSources();
-        const draft = withTypeDefaults(createNotesDataSourcePropertyDraft(propertyType, current.name, current.id, current.icon), scope.dataSourceId, drafts);
-        config = notesDataSourcePropertyConfig(draft);
-      }
-      const result = await applyNotesDataSourcePropertyAction(scope.dataSourceId, target.databaseId, target.viewId,
-        { type: "change_type", property_id: propertyId, property_type: propertyType, config });
-      adopt(result.schema);
-      reloadViews();
-    });
+    return enqueue(async () => adoptResult(await changeNotesDataSourceSchemaPropertyType(actionContext(scope), propertyId, propertyType)));
   }
 
   /** Ask before deleting a property, answering any earlier unanswered request with no. */
@@ -492,43 +441,24 @@
 
   /** Delete one property and its values from every row after confirmation. */
   async function deleteProperty(propertyId: string, scope: NotesDatabaseSourceEditingScope): Promise<void> {
-    const target = actionTarget(scope);
-    const canonical = await getNotesDataSourceSchema(scope.dataSourceId, scope);
-    const property = notesDataSourceSchemaDraftFromDto(canonical.data_source, canonical.view).find((candidate) => candidate.id === propertyId);
+    const { drafts } = await loadNotesDataSourceSchemaDrafts(scope);
+    const property = drafts.find((candidate) => candidate.id === propertyId);
     if (!property) throw new Error(t("notes.databaseSchemaSaveFailed", propertyId));
     if (!await confirmDelete(property.name)) return;
-    await enqueue(async () => {
-      const result = await applyNotesDataSourcePropertyAction(scope.dataSourceId, target.databaseId, target.viewId, { type: "delete", property_id: propertyId });
-      adopt(result.schema);
-      reloadViews();
-    });
+    await enqueue(async () => adoptResult(await deleteNotesDataSourceSchemaProperty(actionContext(scope), propertyId)));
   }
 
   /** Insert a new property beside another, or duplicate one with its configuration, in one native transaction. */
   function placeProperty(request: Extract<NotesDatabasePropertyActionRequest, { type: "insert" | "duplicate" }>, scope: NotesDatabaseSourceEditingScope): Promise<void> {
-    return enqueue(async () => {
-      const target = actionTarget(scope);
-      const canonical = await getNotesDataSourceSchema(scope.dataSourceId, scope);
-      if (request.type === "insert" && request.propertyType === "rollup") availableDataSources = await listNotesDataSources();
-      const drafts = notesDataSourceSchemaDraftFromDto(canonical.data_source, canonical.view);
-      let action: NotesDataSourcePropertyAction;
-      if (request.type === "duplicate") {
-        const original = drafts.find((property) => property.id === request.propertyId);
-        if (!original) throw new Error(t("notes.databaseSchemaSaveFailed", request.propertyId));
-        const name = notesDataSourceDuplicatePropertyName(original.name, drafts,
-          (propertyName) => t("notes.databaseSchemaDuplicateName", propertyName));
-        action = { type: "duplicate", property_id: request.propertyId, name };
-      } else {
-        const name = request.name.trim() || defaultNotesDataSourcePropertyName(request.propertyType, drafts);
-        const property = withTypeDefaults(createNotesDataSourcePropertyDraft(request.propertyType, name, undefined, request.icon), scope.dataSourceId, drafts);
-        const definition = notesDataSourceSchemaUpdateFromDraft([property]).properties[property.name];
-        if (typeof definition !== "object" || definition === null || Array.isArray(definition)) throw new Error(t("notes.databaseSchemaSaveFailed", property.name));
-        action = { type: "insert", property_id: request.propertyId, side: request.side, property: definition as Record<string, unknown> };
-      }
-      const result = await applyNotesDataSourcePropertyAction(scope.dataSourceId, target.databaseId, target.viewId, action);
-      adopt(result.schema);
-      reloadViews();
-    });
+    return enqueue(async () => adoptResult(request.type === "duplicate"
+      ? await duplicateNotesDataSourceSchemaProperty(actionContext(scope), request.propertyId)
+      : await insertNotesDataSourceSchemaProperty(actionContext(scope), {
+        besidePropertyId: request.propertyId,
+        side: request.side,
+        propertyType: request.propertyType,
+        name: request.name,
+        icon: request.icon,
+      })));
   }
 
   /** Apply a property change requested from a view header. Failures are rethrown for the header to show. */
@@ -549,29 +479,7 @@
     const sourceId = requestedScope?.dataSourceId ?? schemaDataSourceId;
     if (!sourceId) throw new Error(t("notes.databaseSchemaLoadFailed", ""));
     const scope = requestedScope ?? { dataSourceId: sourceId, databaseId, viewId: schemaViewId };
-    return enqueue(async () => {
-      const canonical = await getNotesDataSourceSchema(sourceId, scope);
-      if (type === "rollup") availableDataSources = await listNotesDataSources();
-      const drafts = notesDataSourceSchemaDraftFromDto(canonical.data_source, canonical.view);
-      const name = rawName.trim() || defaultNotesDataSourcePropertyName(type, drafts);
-      const property = withTypeDefaults(createNotesDataSourcePropertyDraft(type, name, undefined, icon), sourceId, drafts);
-      const updated = await updateNotesDataSourceSchema(sourceId, notesDataSourceSchemaUpdateFromDraft([...drafts, property]), scope);
-      adopt(updated);
-      reloadViews();
-    });
-  }
-
-  function defaultFormulaExpression(excludePropertyId: string, sourceProperties: readonly NotesDataSourceSchemaPropertyDraft[]): string {
-    const target = sourceProperties.find((property) =>
-      property.id !== excludePropertyId
-      && property.type !== "formula"
-      && property.type !== "rollup"
-    );
-    return target ? `prop("${escapeFormulaPropertyName(target.name)}")` : "\"\"";
-  }
-
-  function escapeFormulaPropertyName(name: string): string {
-    return name.replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
+    return enqueue(async () => adoptResult(await appendNotesDataSourceSchemaProperty(actionContext(scope), type, rawName, icon)));
   }
 
   /** Sources a relation can point to, with the edited source first. */

@@ -16,6 +16,9 @@ const MAX_PROPERTY_ICON_NAME_CHARS: usize = 80;
 pub(crate) const MAX_OPTIONS: usize = 100;
 const MAX_OPTION_NAME_CHARS: usize = 120;
 const MAX_UNIQUE_ID_PREFIX_CHARS: usize = 32;
+/// Default row page visibility; canonical schemas omit it so untouched properties keep their stored shape.
+const DEFAULT_PAGE_VISIBILITY: &str = "always_show";
+const PAGE_VISIBILITIES: &[&str] = &[DEFAULT_PAGE_VISIBILITY, "hide_when_empty", "always_hide"];
 
 const SUPPORTED_PROPERTY_TYPES: &[&str] = &[
     "title",
@@ -432,11 +435,48 @@ fn canonical_property(key: &str, value: &Value) -> Result<Value, String> {
     if let Some(icon) = canonical_property_icon(object.get("icon"))? {
         canonical.insert("icon".to_string(), icon);
     }
+    if property_type != "title" {
+        if let Some(visibility) = canonical_page_visibility(object.get("page_visibility"))? {
+            canonical.insert("page_visibility".to_string(), visibility);
+        }
+        if let Some(position) = canonical_page_position(object.get("page_position"))? {
+            canonical.insert("page_position".to_string(), position);
+        }
+    }
     canonical.insert(
         property_type.to_string(),
         canonical_type_config(property_type, object.get(property_type))?,
     );
     Ok(Value::Object(canonical))
+}
+
+/// Keep how a property appears on row pages; the default (always shown) is omitted.
+fn canonical_page_visibility(value: Option<&Value>) -> Result<Option<Value>, String> {
+    let visibility = match value {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::String(visibility)) => visibility.as_str(),
+        Some(_) => return Err("property.page_visibility must be a string".to_string()),
+    };
+    if !PAGE_VISIBILITIES.contains(&visibility) {
+        return Err("property.page_visibility is not supported".to_string());
+    }
+    if visibility == DEFAULT_PAGE_VISIBILITY {
+        return Ok(None);
+    }
+    Ok(Some(Value::String(visibility.to_string())))
+}
+
+/// Keep a property's position on row pages, which is independent of any view's column order.
+fn canonical_page_position(value: Option<&Value>) -> Result<Option<Value>, String> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(number)) => number
+            .as_u64()
+            .filter(|position| *position < MAX_PROPERTIES as u64)
+            .map(|position| Some(Value::from(position)))
+            .ok_or_else(|| "property.page_position must be a property index".to_string()),
+        Some(_) => Err("property.page_position must be a property index".to_string()),
+    }
 }
 
 /// Keep a property's chosen native icon; an absent or null icon means the property shows its type icon.

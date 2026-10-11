@@ -70,6 +70,7 @@ pub struct NoteMentionNotificationDto {
     delivered_at: Option<String>,
     created_time: String,
     last_edited_time: String,
+    suppressed: bool,
 }
 
 impl NoteMentionNotificationDto {
@@ -93,6 +94,7 @@ impl NoteMentionNotificationDto {
             delivered_at: row.delivered_at,
             created_time: row.created_time,
             last_edited_time: row.last_edited_time,
+            suppressed: row.suppressed,
         }
     }
 }

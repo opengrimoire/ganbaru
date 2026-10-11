@@ -12,6 +12,7 @@ import { diagnostics } from "./diagnostics";
 import { workingMarkdown } from "./working-markdown";
 import { propertyDisplay } from "./property-display";
 import { rowHierarchy } from "./row-hierarchy";
+import { rowPage } from "./row-page";
 
 export const notes = {
   ...navigationAndSearch,
@@ -26,4 +27,5 @@ export const notes = {
   ...workingMarkdown,
   ...propertyDisplay,
   ...rowHierarchy,
+  ...rowPage,
 } as const satisfies MessageShape<typeof enNotes>;

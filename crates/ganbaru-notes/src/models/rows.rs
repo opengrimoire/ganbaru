@@ -184,6 +184,8 @@ pub struct NoteMentionNotificationRow {
     pub delivered_at: Option<String>,
     pub created_time: String,
     pub last_edited_time: String,
+    /// The current local user muted this page or discussion, so delivery stays silent.
+    pub suppressed: bool,
 }
 
 #[derive(Clone, Serialize, sqlx::FromRow)]

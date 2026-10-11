@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-const RESTORE_TABLE_ORDER: [&str; 17] = [
+const RESTORE_TABLE_ORDER: [&str; 20] = [
     "notes_assets",
     "notes_folders",
     "notes_pages",
@@ -19,10 +19,13 @@ const RESTORE_TABLE_ORDER: [&str; 17] = [
     "notes_data_source_templates",
     "notes_data_source_template_blocks",
     "notes_page_aliases",
+    "notes_page_notification_settings",
     "notes_comment_threads",
     "notes_comments",
+    "notes_comment_reactions",
     "notes_comment_thread_anchors",
     "notes_comment_thread_reads",
+    "notes_comment_thread_mutes",
     "notes_suggestions",
     "notes_mention_notifications",
 ];
@@ -566,12 +569,15 @@ fn row_is_in_copy_scope(table: &str, row: &Value, scope: &CopyScope) -> bool {
         }
         "notes_data_source_templates" => value_in(row, "id", &scope.template_ids),
         "notes_data_source_template_blocks" => value_in(row, "template_id", &scope.template_ids),
-        "notes_page_aliases" => value_in(row, "page_id", &scope.page_ids),
+        "notes_page_aliases" | "notes_page_notification_settings" => {
+            value_in(row, "page_id", &scope.page_ids)
+        }
         "notes_comment_threads" => value_in(row, "id", &scope.thread_ids),
         "notes_comments" => value_in(row, "id", &scope.comment_ids),
-        "notes_comment_thread_anchors" | "notes_comment_thread_reads" => {
-            value_in(row, "thread_id", &scope.thread_ids)
-        }
+        "notes_comment_reactions" => value_in(row, "comment_id", &scope.comment_ids),
+        "notes_comment_thread_anchors"
+        | "notes_comment_thread_reads"
+        | "notes_comment_thread_mutes" => value_in(row, "thread_id", &scope.thread_ids),
         "notes_suggestions" | "notes_mention_notifications" => {
             value_in(row, "page_id", &scope.page_ids)
         }

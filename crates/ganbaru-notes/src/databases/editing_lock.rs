@@ -29,6 +29,17 @@ pub(crate) async fn ensure_unlocked_tx(
     Ok(())
 }
 
+/// Read whether a database shell's structure is locked.
+pub(crate) async fn shell_locked_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    database_id: &str,
+) -> Result<bool, String> {
+    let block = load_shell_tx(tx, database_id).await?;
+    let payload: Value = serde_json::from_str(&block.payload)
+        .map_err(|error| format!("read database editing lock: {error}"))?;
+    is_editing_locked(&payload)
+}
+
 async fn load_shell_tx(
     tx: &mut Transaction<'_, Sqlite>,
     database_id: &str,

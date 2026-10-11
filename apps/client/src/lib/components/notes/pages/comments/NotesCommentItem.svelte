@@ -29,11 +29,9 @@
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import { onDestroy } from "svelte";
   import NotesCommentAttachment from "./NotesCommentAttachment.svelte";
-  import NotesCommentAvatar from "./NotesCommentAvatar.svelte";
+  import NotesCommentAvatar, { NOTES_COMMENT_AVATAR_SIZE } from "./NotesCommentAvatar.svelte";
   import NotesCommentComposer from "./NotesCommentComposer.svelte";
 
-  /** Avatar size shared with the thread line, which starts below it. */
-  const AVATAR_SIZE = 22;
   /** Saves within this window of creation do not mark the comment as edited. */
   const EDIT_MARK_THRESHOLD_MS = 1_000;
   const COPIED_RESET_MS = 2_000;
@@ -186,8 +184,8 @@
   aria-label={authorName}
   data-notes-comment-id={comment.id}
 >
-  <div class="relative flex shrink-0 flex-col items-center">
-    <NotesCommentAvatar own={ownComment} name={authorName} size={AVATAR_SIZE} />
+  <div class="relative flex shrink-0 flex-col items-center pt-0.5" style={`--comment-avatar-size:${NOTES_COMMENT_AVATAR_SIZE}px`}>
+    <NotesCommentAvatar own={ownComment} name={authorName} />
     {#if connectNext}
       <span class="comment-thread-line" aria-hidden="true"></span>
     {/if}
@@ -364,7 +362,7 @@
   }
   .comment-thread-line {
     position: absolute;
-    top: calc(22px + 0.25rem);
+    top: calc(var(--comment-avatar-size) + 0.25rem);
     bottom: -0.5rem;
     left: 50%;
     width: 1px;

@@ -21,7 +21,7 @@
 </script>
 
 <span class="group/link inline-flex max-w-full min-w-0 items-center rounded-sm hover:bg-accent/60">
-  <button type="button" class="inline-flex h-7 min-w-0 items-center gap-1.5 rounded-sm px-1 text-left outline-none focus-visible:bg-accent"
+  <button type="button" class="inline-flex h-7 min-w-0 cursor-pointer items-center gap-1.5 rounded-sm px-1.5 text-left outline-none focus-visible:bg-accent"
     aria-label={t("notes.databaseRowsOpen", title || t("notes.untitled"))} onclick={onOpen}>
     <NotesPageIcon {icon} size={16} class="shrink-0 text-muted-foreground" />
     <span class={cn("min-w-0 truncate underline decoration-border underline-offset-2", !title && "text-muted-foreground")}>{title || t("notes.untitled")}</span>

@@ -33,4 +33,8 @@ export const rowPage = {
   databaseRowPickerCreateUntitled: (source: string) => `New page in ${source}`,
   databaseRowPickerEmpty: "No matching pages",
   databaseRowPickerLoadFailed: (message: string) => `Could not load pages: ${message}`,
+  databaseRowPageOptionSearch: "Search for an option...",
+  databaseRowPageOptionCreate: "Create",
+  databaseRowPageOptionEmpty: "No matching options",
+  databaseRowPageOptionSaveFailed: "The option could not be saved.",
 } as const;

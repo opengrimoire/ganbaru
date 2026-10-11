@@ -65,7 +65,7 @@
     {/each}
     {#if column.relationDataSourceId}
       <button bind:this={addButton} type="button"
-        class="inline-flex h-7 min-w-0 items-center gap-1 rounded-sm px-1.5 text-muted-foreground outline-none hover:bg-accent/60 hover:text-foreground focus-visible:bg-accent/60 focus-visible:text-foreground disabled:pointer-events-none disabled:opacity-50"
+        class="inline-flex h-7 min-w-0 cursor-pointer items-center gap-1 rounded-sm px-1.5 text-muted-foreground outline-none hover:bg-accent/60 hover:text-foreground focus-visible:bg-accent/60 focus-visible:text-foreground disabled:pointer-events-none disabled:opacity-50"
         {disabled} aria-expanded={pickerOpen} aria-label={t("notes.databaseRelationAdd")}
         data-table-cell="true" data-row-index={rowIndex} data-column-index={columnIndex}
         onkeydown={keydown} onclick={() => { error = null; pickerOpen = !pickerOpen; }}>

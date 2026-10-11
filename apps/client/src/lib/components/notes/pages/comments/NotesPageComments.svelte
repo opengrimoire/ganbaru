@@ -63,7 +63,7 @@
   }
 </script>
 
-<section bind:this={root} {id} class="notes-page-comments min-w-0" aria-labelledby={headingId}>
+<section bind:this={root} {id} class="notes-page-comments min-w-0 text-collection" aria-labelledby={headingId}>
   <h2 id={headingId} class="mb-1.5 text-panel-detail font-medium text-muted-foreground">{t("notes.commentsHeading")}</h2>
   {#if notes.commentsError}
     <p class="mb-2 flex flex-wrap items-center gap-2 text-panel-detail text-destructive" role="alert">

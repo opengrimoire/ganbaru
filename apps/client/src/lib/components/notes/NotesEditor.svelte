@@ -1748,7 +1748,7 @@
 
         {#if page.parent.type === "data_source_id"}
           {@const rowDataSourceId = page.parent.data_source_id}
-          <div class={cn("notes-page-header-extras", inlineCommentsVisible ? "mb-2" : "mb-4 border-b border-border pb-3")}>
+          <div class={cn("notes-page-header-extras", inlineCommentsVisible ? "mb-2" : "mb-4 border-b border-border/50 pb-3")}>
             {#if panelLoadStates["row-properties"]?.status === "ready" && panelLoadStates["row-properties"].component.kind === "row-properties"}
               {@const NotesDatabaseRowPageProperties = panelLoadStates["row-properties"].component.component}
               {#key page.id}
@@ -1769,7 +1769,7 @@
         {/if}
 
         {#if inlineCommentsVisible && inlineCommentsId}
-          <div class="notes-page-header-extras mb-4 border-b border-border pb-4">
+          <div class="notes-page-header-extras mb-4 border-b border-border/50 pb-4">
             {#if panelLoadStates["page-comments"]?.status === "ready" && panelLoadStates["page-comments"].component.kind === "page-comments"}
               {@const NotesPageComments = panelLoadStates["page-comments"].component.component}
               {#key page.id}

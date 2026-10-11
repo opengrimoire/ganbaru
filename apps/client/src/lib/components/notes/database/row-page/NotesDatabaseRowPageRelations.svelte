@@ -1,7 +1,6 @@
 <script lang="ts">
   import CornerLeftUp from "@lucide/svelte/icons/corner-left-up";
   import ListTree from "@lucide/svelte/icons/list-tree";
-  import Plus from "@lucide/svelte/icons/plus";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { NotesDatabaseRowHierarchyMetadata } from "$lib/notes/database/row-hierarchy";
   import { notesDatabaseParentExclusions, notesDatabaseRowCanAddSubitems, notesDatabaseSubitemExclusions } from "$lib/notes/database/row-page-properties";
@@ -11,9 +10,10 @@
   import NotesDatabaseRowPicker from "./NotesDatabaseRowPicker.svelte";
 
   /**
-   * The Relations section of a row page: its parent item and its sub-items, each opening on click. Sub-items are
-   * linked or created through the "Link or create a page" picker, and the parent item is chosen the same way.
-   * Every save rejects with a message ready to show.
+   * The Relations section of a row page. Without relations it shows only an "Add sub-items" button; the parent item
+   * and sub-items rows appear once they have pages, each opening on click. Sub-items are linked or created through
+   * the "Link or create a page" picker, and a quiet "Set parent item" button beside the heading chooses the parent
+   * item the same way. Every save rejects with a message ready to show.
    */
   let {
     dataSourceId,
@@ -82,61 +82,57 @@
   }
 </script>
 
-<div class="mt-1 grid min-w-0 gap-0.5 border-t border-border pt-2" role="group" aria-label={t("notes.databaseRowPageRelations")}>
-  <div class="flex min-w-0 items-center justify-between gap-2">
+<div class="row-page-relations mt-2 grid min-w-0 gap-0.5" role="group" aria-label={t("notes.databaseRowPageRelations")}>
+  <div class="flex h-8 min-w-0 items-center justify-between gap-2">
     <h3 class="truncate px-1.5 text-panel-detail font-medium text-muted-foreground">{t("notes.databaseRowPageRelations")}</h3>
-    <!-- The wrapper carries the limit tooltip, since a disabled button receives no pointer events. -->
-    <span class="inline-flex min-w-0" data-app-tooltip={canAddSubitems ? undefined : t("notes.databaseRowPageSubitemLimit")}>
-      <button type="button" class="row-page-relations-button"
-        disabled={!canAddSubitems} aria-expanded={picker?.mode === "subitems"}
-        onclick={(event) => togglePicker("subitems", event.currentTarget)}>
-        <Plus class="size-3.5 shrink-0" strokeWidth={1.75} aria-hidden="true" />
-        <span class="truncate">{t("notes.databaseRowPageAddSubitems")}</span>
+    {#if !parent}
+      <button type="button" class="row-page-relations-button row-page-relations-reveal" aria-expanded={picker?.mode === "parent"}
+        onclick={(event) => togglePicker("parent", event.currentTarget)}>
+        <CornerLeftUp class="size-3.5 shrink-0" strokeWidth={1.75} aria-hidden="true" />
+        <span class="truncate">{t("notes.databaseRowPageSetParent")}</span>
       </button>
-    </span>
+    {/if}
   </div>
 
-  <div class="grid min-w-0 grid-cols-1 items-start @sm:grid-cols-[minmax(6rem,10rem)_minmax(0,1fr)] @sm:gap-2">
-    <div class="flex h-8 min-w-0 items-center gap-1.5 px-1.5 text-muted-foreground">
-      <CornerLeftUp class="size-3.5 shrink-0" strokeWidth={1.75} aria-hidden="true" />
-      <span class="truncate">{t("notes.databaseRowPageParentItem")}</span>
-    </div>
-    <div class="flex min-h-8 min-w-0 flex-wrap items-center gap-1">
-      {#if parent}
-        {@const parentPage = parent}
+  {#if parent}
+    {@const parentPage = parent}
+    <div class="grid min-w-0 grid-cols-1 items-start @sm:grid-cols-[minmax(6rem,10rem)_minmax(0,1fr)] @sm:gap-2">
+      <div class="flex h-8 min-w-0 items-center gap-1.5 px-1.5 text-muted-foreground">
+        <CornerLeftUp class="size-3.5 shrink-0" strokeWidth={1.75} aria-hidden="true" />
+        <span class="truncate">{t("notes.databaseRowPageParentItem")}</span>
+      </div>
+      <div class="flex min-h-8 min-w-0 flex-wrap items-center">
         <NotesDatabaseRowPageLink title={titleOf(parentPage)} icon={parentPage.icon} disabled={pending}
           removeLabel={t("notes.databaseRowPageRemoveParent", titleOf(parentPage) || t("notes.untitled"))}
           onOpen={() => onOpenPage(parentPage.id)} onRemove={() => { void run(() => onSetParent(null)); }} />
-      {/if}
-      <button type="button" class="row-page-relations-button" aria-expanded={picker?.mode === "parent"}
-        aria-label={t("notes.databaseRowPageSetParent")} onclick={(event) => togglePicker("parent", event.currentTarget)}>
-        {#if parent}
-          <Plus class="size-3.5 shrink-0" strokeWidth={1.75} aria-hidden="true" />
-        {:else}
-          <span class="truncate">{t("notes.databaseTableEmptyCell")}</span>
-        {/if}
-      </button>
+      </div>
     </div>
-  </div>
+  {/if}
 
-  <div class="grid min-w-0 grid-cols-1 items-start @sm:grid-cols-[minmax(6rem,10rem)_minmax(0,1fr)] @sm:gap-2">
-    <div class="flex h-8 min-w-0 items-center gap-1.5 px-1.5 text-muted-foreground">
+  {#if subitems.length > 0}
+    <div class="grid min-w-0 grid-cols-1 items-start @sm:grid-cols-[minmax(6rem,10rem)_minmax(0,1fr)] @sm:gap-2">
+      <div class="flex h-8 min-w-0 items-center gap-1.5 px-1.5 text-muted-foreground">
+        <ListTree class="size-3.5 shrink-0" strokeWidth={1.75} aria-hidden="true" />
+        <span class="truncate">{t("notes.databaseRowPageSubitems")}</span>
+      </div>
+      <div class="flex min-h-8 min-w-0 flex-col items-start">
+        {#each subitems as subitem (subitem.id)}
+          <NotesDatabaseRowPageLink title={titleOf(subitem)} icon={subitem.icon} disabled={pending}
+            removeLabel={t("notes.databaseRowPageUnlinkSubitem", titleOf(subitem) || t("notes.untitled"))}
+            onOpen={() => onOpenPage(subitem.id)} onRemove={() => { void run(() => onUnlinkSubitem(subitem)); }} />
+        {/each}
+      </div>
+    </div>
+  {/if}
+
+  <!-- The wrapper carries the limit tooltip, since a disabled button receives no pointer events. -->
+  <span class="inline-flex min-w-0 justify-self-start" data-app-tooltip={canAddSubitems ? undefined : t("notes.databaseRowPageSubitemLimit")}>
+    <button type="button" class="row-page-relations-button" disabled={!canAddSubitems} aria-expanded={picker?.mode === "subitems"}
+      onclick={(event) => togglePicker("subitems", event.currentTarget)}>
       <ListTree class="size-3.5 shrink-0" strokeWidth={1.75} aria-hidden="true" />
-      <span class="truncate">{t("notes.databaseRowPageSubitems")}</span>
-    </div>
-    <div class="flex min-h-8 min-w-0 flex-col items-start">
-      {#each subitems as subitem (subitem.id)}
-        <NotesDatabaseRowPageLink title={titleOf(subitem)} icon={subitem.icon} disabled={pending}
-          removeLabel={t("notes.databaseRowPageUnlinkSubitem", titleOf(subitem) || t("notes.untitled"))}
-          onOpen={() => onOpenPage(subitem.id)} onRemove={() => { void run(() => onUnlinkSubitem(subitem)); }} />
-      {:else}
-        <button type="button" class="row-page-relations-button" disabled={!canAddSubitems}
-          aria-label={t("notes.databaseRowPageAddSubitems")} onclick={(event) => togglePicker("subitems", event.currentTarget)}>
-          <span class="truncate">{t("notes.databaseTableEmptyCell")}</span>
-        </button>
-      {/each}
-    </div>
-  </div>
+      <span class="truncate">{t("notes.databaseRowPageAddSubitems")}</span>
+    </button>
+  </span>
 
   {#if error}<p class="px-1.5 py-1 text-panel-detail text-destructive" role="alert">{error}</p>{/if}
 </div>
@@ -153,7 +149,8 @@
   .row-page-relations-button {
     display: inline-flex;
     min-width: 0;
-    height: 1.75rem;
+    height: 2rem;
+    cursor: pointer;
     align-items: center;
     gap: 0.375rem;
     border-radius: 0.25rem;
@@ -171,6 +168,18 @@
   .row-page-relations-button:disabled {
     cursor: not-allowed;
     opacity: 0.5;
+  }
+
+  /* Setting a parent is rare, so on pointer devices its button waits for the section to be hovered or focused. */
+  @media (hover: hover) {
+    .row-page-relations-reveal:not(:focus-visible, [aria-expanded="true"]) {
+      opacity: 0;
+    }
+
+    .row-page-relations:hover .row-page-relations-reveal,
+    .row-page-relations:focus-within .row-page-relations-reveal {
+      opacity: 1;
+    }
   }
 
   @media (any-pointer: coarse) and (any-hover: none) {

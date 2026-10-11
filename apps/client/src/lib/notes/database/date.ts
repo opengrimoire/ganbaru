@@ -45,3 +45,92 @@ export function notesDatabaseDateValue(value: unknown): NotesDatabaseDateValue |
 export function notesDatabaseDateBoundaryOrder(value: string): number {
   return Date.parse(/T/.test(value) ? /(?:Z|[+-]\d{2}:\d{2})$/.test(value) ? value : `${value}Z` : `${value}T00:00:00Z`);
 }
+
+/** The boundary of a date range that an editor changes. */
+export type NotesDatabaseDateBoundaryKey = "start" | "end";
+
+const BOUNDARY_PARTS = /^(\d{4}-\d{2}-\d{2})(?:T(\d{2}:\d{2})(?::\d{2}(?:\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2})?)?$/;
+
+/** A date boundary split into what a date picker and a time picker edit. */
+export interface NotesDatabaseDateBoundaryParts {
+  /** The calendar date as `YYYY-MM-DD`. */
+  date: string;
+  /** The wall time as `HH:MM`, or null for a whole day. */
+  time: string | null;
+  /** The UTC designator or offset after the time, kept when the date or time changes. */
+  offset: string;
+}
+
+/** Split a canonical boundary, or return null for text that is not one. */
+export function notesDatabaseDateBoundaryParts(boundary: string): NotesDatabaseDateBoundaryParts | null {
+  const match = BOUNDARY_PARTS.exec(boundary);
+  if (!match) return null;
+  return { date: match[1], time: match[2] ?? null, offset: match[3] ?? "" };
+}
+
+/** Whether either boundary carries a time of day. */
+export function notesDatabaseDateHasTime(value: NotesDatabaseDateValue | null): boolean {
+  if (!value) return false;
+  return [value.start, value.end].some((boundary) => boundary !== null && notesDatabaseDateBoundaryParts(boundary)?.time != null);
+}
+
+/** Put the earlier boundary first, so a range picked backwards still saves. */
+export function notesDatabaseDateOrdered(value: NotesDatabaseDateValue): NotesDatabaseDateValue {
+  if (!value.end || notesDatabaseDateBoundaryOrder(value.end) >= notesDatabaseDateBoundaryOrder(value.start)) return value;
+  return { ...value, start: value.end, end: value.start };
+}
+
+/** Replace the calendar date of a boundary, keeping its time and offset. */
+function boundaryWithDate(boundary: string, date: string): string {
+  return notesDatabaseDateBoundaryParts(boundary) ? `${date}${boundary.slice(10)}` : date;
+}
+
+/** Set or remove the time of a boundary; a whole day drops its offset, which only qualifies a time. */
+function boundaryWithTime(boundary: string, time: string | null): string {
+  const parts = notesDatabaseDateBoundaryParts(boundary);
+  const date = parts?.date ?? boundary.slice(0, 10);
+  return time === null ? date : `${date}T${time}${parts?.offset ?? ""}`;
+}
+
+/**
+ * Set the calendar date of one boundary. Without a value this starts a single date, and the end of a single date
+ * starts from the start.
+ */
+export function notesDatabaseDateWithDay(value: NotesDatabaseDateValue | null, key: NotesDatabaseDateBoundaryKey, date: string): NotesDatabaseDateValue {
+  if (!value) return { start: date, end: null, time_zone: null };
+  const next: NotesDatabaseDateValue = { ...value };
+  next[key] = boundaryWithDate(value[key] ?? value.start, date);
+  return notesDatabaseDateOrdered(next);
+}
+
+/**
+ * Set the time of one boundary. The other boundary of a range takes the same time when it has none, so a range
+ * never mixes a whole day with a time.
+ */
+export function notesDatabaseDateWithTime(value: NotesDatabaseDateValue, key: NotesDatabaseDateBoundaryKey, time: string): NotesDatabaseDateValue {
+  const otherKey: NotesDatabaseDateBoundaryKey = key === "start" ? "end" : "start";
+  const other = value[otherKey];
+  const next: NotesDatabaseDateValue = { ...value };
+  next[key] = boundaryWithTime(value[key] ?? value.start, time);
+  if (other !== null && notesDatabaseDateBoundaryParts(other)?.time == null) next[otherKey] = boundaryWithTime(other, time);
+  return notesDatabaseDateOrdered(next);
+}
+
+/** Remove the time from both boundaries, together with the time zone that only applies to times. */
+export function notesDatabaseDateWithoutTime(value: NotesDatabaseDateValue): NotesDatabaseDateValue {
+  return notesDatabaseDateOrdered({
+    start: boundaryWithTime(value.start, null),
+    end: value.end === null ? null : boundaryWithTime(value.end, null),
+    time_zone: null,
+  });
+}
+
+/** Turn a single date into a range ending on the same boundary, or a range back into its start. */
+export function notesDatabaseDateWithEnd(value: NotesDatabaseDateValue, enabled: boolean): NotesDatabaseDateValue {
+  return { ...value, end: enabled ? value.end ?? value.start : null };
+}
+
+/** Set the named time zone of a value, clearing it for blank text. */
+export function notesDatabaseDateWithTimeZone(value: NotesDatabaseDateValue, timeZone: string): NotesDatabaseDateValue {
+  return { ...value, time_zone: timeZone.trim() || null };
+}

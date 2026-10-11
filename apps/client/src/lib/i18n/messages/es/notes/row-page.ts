@@ -33,4 +33,8 @@ export const rowPage = {
   databaseRowPickerCreateUntitled: (source: string) => `Nueva página en ${source}`,
   databaseRowPickerEmpty: "No hay páginas que coincidan",
   databaseRowPickerLoadFailed: (message: string) => `No se pudieron cargar las páginas: ${message}`,
+  databaseRowPageOptionSearch: "Busca una opción...",
+  databaseRowPageOptionCreate: "Crear",
+  databaseRowPageOptionEmpty: "No hay opciones que coincidan",
+  databaseRowPageOptionSaveFailed: "No se pudo guardar la opción.",
 } as const;

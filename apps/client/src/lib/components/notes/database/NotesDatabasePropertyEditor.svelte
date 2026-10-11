@@ -11,6 +11,7 @@
     type NotesDatabaseTableEditValue,
   } from "$lib/notes/database/table";
   import type { NotesPage } from "$lib/notes/types";
+  import { cn } from "$lib/utils";
   import { tick } from "svelte";
   import NotesDatabaseDateCell from "./NotesDatabaseDateCell.svelte";
   import NotesDatabaseNumberCell from "./NotesDatabaseNumberCell.svelte";
@@ -57,6 +58,10 @@
 
   const { t } = getLocalization();
   const editable = $derived(notesDatabaseTableColumnCanEdit(column));
+  const page = $derived(variant === "page");
+  /** Page text values align with the page text, point like links, and switch to a text caret while typing. */
+  const pageTextClass = "cursor-pointer px-1.5 placeholder:text-muted-foreground focus:cursor-text";
+  const placeholder = $derived(page ? t("notes.databaseTableEmptyCell") : undefined);
 
   /** Keep wrapped text editable at its measured content height across column resizing. */
   function fitWrappedText(node: HTMLTextAreaElement, _value: string) {
@@ -65,7 +70,8 @@
     const resize = () => {
       if (disposed) return;
       node.style.height = "auto";
-      node.style.height = `${node.scrollHeight}px`;
+      // The border box must also hold the borders, which scrollHeight leaves out, or the text scrolls.
+      node.style.height = `${node.scrollHeight + node.offsetHeight - node.clientHeight}px`;
     };
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => {
       if (node.clientWidth === width) return;
@@ -83,7 +89,7 @@
 </script>
 
 {#if column.type === "checkbox"}
-  <label class={`flex h-8 items-center ${variant === "page" ? "justify-start px-1" : "justify-center"}`} data-collection-cell-primary>
+  <label class={cn("flex h-8 items-center", page ? "cursor-pointer justify-start px-1.5" : "justify-center")} data-collection-cell-primary>
     <Checkbox
       data-table-cell="true"
       data-row-index={rowIndex}
@@ -129,10 +135,10 @@
     {onNavigate}
   />
 {:else if column.type === "date"}
-  <NotesDatabaseDateCell {row} {column} {rowIndex} {columnIndex}
+  <NotesDatabaseDateCell {row} {column} {rowIndex} {columnIndex} {variant}
     mutating={disabled} onSave={(next) => onSave(next)} {onNavigate} {onEditingChange} />
 {:else if column.type === "number"}
-  <NotesDatabaseNumberCell {row} {column} {rowIndex} {columnIndex}
+  <NotesDatabaseNumberCell {row} {column} {rowIndex} {columnIndex} {variant}
     mutating={disabled} onSave={(next) => onSave(next)} {onNavigate} {onEditingChange} />
 {:else if column.type === "button"}
   <button
@@ -156,8 +162,8 @@
   </button>
 {:else if editable && column.displayFormat?.wrap}
   <textarea use:fitWrappedText={String(value)} data-table-cell="true" data-collection-cell-primary data-row-index={rowIndex} data-column-index={columnIndex} rows={1}
-    class="min-h-8 w-full min-w-0 resize-none rounded-sm border border-transparent bg-transparent px-1 py-1.5 text-foreground outline-none"
-    style="field-sizing: content;" value={String(value)} aria-label={column.name}
+    class={cn("block min-h-8 w-full min-w-0 resize-none overflow-hidden rounded-sm border border-transparent bg-transparent px-1 py-1.5 text-foreground outline-none", page && pageTextClass)}
+    style="field-sizing: content;" value={String(value)} aria-label={column.name} {placeholder}
     {disabled}
     onfocus={() => onEditingChange(true)}
     oninput={(event) => { if (column.type === "title") onDraft(event.currentTarget.value); }}
@@ -168,10 +174,11 @@
     data-table-cell="true" data-collection-cell-primary
     data-row-index={rowIndex}
     data-column-index={columnIndex}
-    class="h-8 w-full min-w-0 rounded-sm border border-transparent bg-transparent px-1 text-foreground outline-none"
+    class={cn("h-8 w-full min-w-0 rounded-sm border border-transparent bg-transparent px-1 text-foreground outline-none", page && pageTextClass)}
     value={String(value)}
     inputmode="text"
     aria-label={column.name}
+    {placeholder}
     {disabled}
     onfocus={() => onEditingChange(true)}
     oninput={(event) => { if (column.type === "title") onDraft(event.currentTarget.value); }}
@@ -187,7 +194,8 @@
     data-row-index={rowIndex}
     data-column-index={columnIndex}
     type="button"
-    class={`flex ${column.displayFormat?.wrap ? "min-h-8 py-1.5" : "h-8"} w-full min-w-0 items-center rounded-sm px-1 text-left text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring`}
+    class={cn("flex w-full min-w-0 items-center rounded-sm px-1 text-left text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring",
+      column.displayFormat?.wrap ? "min-h-8 py-1.5" : "h-8", page && "cursor-pointer px-1.5")}
     title={t("notes.databaseTableReadonly")}
     onkeydown={(event) => onNavigate(event, rowIndex, columnIndex)}
   >

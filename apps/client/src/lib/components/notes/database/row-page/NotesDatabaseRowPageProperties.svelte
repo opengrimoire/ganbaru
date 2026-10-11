@@ -41,7 +41,12 @@
     type NotesDataSourceSchemaPropertyDraft,
     type NotesDatabaseSourceEditingScope,
   } from "$lib/notes/database/data-source-schema";
-  import type { NotesDataSourceOptionEdit, NotesDataSourceOptionEditor } from "$lib/notes/database/property-options";
+  import {
+    notesDataSourceAddOption,
+    notesDataSourceVisibleOptions,
+    type NotesDataSourceOptionEdit,
+    type NotesDataSourceOptionEditor,
+  } from "$lib/notes/database/property-options";
   import {
     appendNotesDataSourceSchemaProperty,
     changeNotesDataSourceSchemaPropertyIcon,
@@ -76,6 +81,7 @@
   import type { NotesDataSource, NotesDataSourcePageVisibility, NotesDataSourcePropertyType, NotesPage } from "$lib/notes/types";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { cn } from "$lib/utils";
+  import NotesDatabaseRowPageOptionValue from "./NotesDatabaseRowPageOptionValue.svelte";
   import NotesDatabaseRowPageRelations from "./NotesDatabaseRowPageRelations.svelte";
   import NotesDatabaseRowPageRelationValue from "./NotesDatabaseRowPageRelationValue.svelte";
 
@@ -605,7 +611,7 @@
 {#snippet propertyMenu(property: NotesDataSourceSchemaPropertyDraft, index: number)}
   {@const kind = notesPropertyKind(property.type)}
   <CollectionMenu label={property.name} kind="property" fullWidth showHeader={false} dismissOnAction contextMenu
-    rootClass="min-w-0" triggerClass="justify-start px-1.5" onOpenChange={(open) => { if (open) loadDataSources(); }}>
+    rootClass="min-w-0" triggerClass="cursor-pointer justify-start px-1.5" onOpenChange={(open) => { if (open) loadDataSources(); }}>
     {#snippet leading()}{#if preferences.notesShowPropertyIcons}<CollectionPropertyIcon icon={property.icon} {kind} class="size-3.5 shrink-0" />{/if}{/snippet}
     <div class="grid min-w-0 gap-0 font-normal">
       <CollectionPropertyNameField propertyId={property.id} name={property.name} {kind} icon={property.icon} editable={!locked}
@@ -642,7 +648,8 @@
 
 {#if context}
   {@const row = context.row}
-  <section bind:this={root} class="@container min-w-0 text-collection" aria-label={t("notes.databaseRowPageProperties")}>
+  <!-- Names, values, and buttons keep 0.375rem of inner padding, which the negative margin moves out so their text starts at the page text. -->
+  <section bind:this={root} class="@container -ml-1.5 min-w-0 text-collection" aria-label={t("notes.databaseRowPageProperties")}>
     {#each shownEntries as entry, index (entry.property.id)}
       {@const property = entry.property}
       {@const column = columns.get(property.id)}
@@ -671,6 +678,11 @@
                 onSave={(relationIds) => { error = null; return writeValue(column, relationIds); }}
                 onCreate={(title) => createRelationTarget(column, title)}
                 onNavigate={(event, rowIndex) => navigate(event, rowIndex)} {onOpenPage} />
+            {:else if column.type === "select" || column.type === "status" || column.type === "multi_select"}
+              <NotesDatabaseRowPageOptionValue {row} {column} rowIndex={index} columnIndex={0} options={notesDataSourceVisibleOptions(property)}
+                onSave={(value) => saveValue(column, value)}
+                onCreate={locked || column.type === "status" ? undefined : (name) => editOptions(property.id, (target) => notesDataSourceAddOption(target, name))}
+                onNavigate={(event, rowIndex) => navigate(event, rowIndex)} onEditingChange={(editing) => trackEditing(column.id, editing)} />
             {:else}
               <NotesDatabasePropertyEditor {row} {column} rowIndex={index} columnIndex={0} variant="page"
                 value={notesDatabaseTableCellEditValue(row, column)} disabled={savingIds.has(column.id)}
@@ -730,6 +742,7 @@
     display: inline-flex;
     min-width: 0;
     height: 2rem;
+    cursor: pointer;
     align-items: center;
     gap: 0.375rem;
     border-radius: 0.25rem;

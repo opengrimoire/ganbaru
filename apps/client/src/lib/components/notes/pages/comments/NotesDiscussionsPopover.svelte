@@ -13,10 +13,8 @@
   import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import Paperclip from "@lucide/svelte/icons/paperclip";
   import { tick } from "svelte";
-  import NotesCommentAvatar from "./NotesCommentAvatar.svelte";
+  import NotesCommentAvatar, { NOTES_COMMENT_AVATAR_SIZE as AVATAR_SIZE } from "./NotesCommentAvatar.svelte";
   import NotesPageNotificationLevels from "./NotesPageNotificationLevels.svelte";
-
-  const AVATAR_SIZE = 20;
 
   /**
    * The page's discussion summary under the header button: the latest comment of the most recently active open

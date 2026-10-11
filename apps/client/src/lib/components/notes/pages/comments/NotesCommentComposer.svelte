@@ -1,6 +1,5 @@
 <script lang="ts">
   import { pickNotesFileAsset } from "$lib/api/notes/file-assets";
-  import LocalPersonAvatar from "$lib/components/contacts/LocalPersonAvatar.svelte";
   import { notesMentionData } from "$lib/components/notes/blocks/mention-data-controller.svelte";
   import { buildNotesMentionTargets } from "$lib/components/notes/blocks/mention-targets";
   import { getNotesEditor } from "$lib/components/notes/editor-context";
@@ -41,13 +40,15 @@
   import Paperclip from "@lucide/svelte/icons/paperclip";
   import { tick, untrack } from "svelte";
   import NotesCommentAttachment from "./NotesCommentAttachment.svelte";
+  import NotesCommentAvatar from "./NotesCommentAvatar.svelte";
   import NotesCommentMentionMenu from "./NotesCommentMentionMenu.svelte";
 
   type CommentAttachment = Record<string, unknown>;
 
   /**
    * Rich comment input shared by new comments, replies, and edits: mentions grouped by Date, People, and Link to page,
-   * file attachments, Enter to send, and Shift+Enter for a new line.
+   * file attachments, Enter to send, and Shift+Enter for a new line. The attach, mention, and send tools appear while
+   * the composer has focus, a draft, or an edit in progress.
    */
   let {
     label,
@@ -106,6 +107,8 @@
   const mentionTargets = $derived(flattenNotesCommentMentionGroups(mentionGroups));
   const activeMentionIndex = $derived(mentionActiveIndex < mentionTargets.length ? mentionActiveIndex : 0);
   const mentionOpen = $derived(mentionQuery !== null);
+  /** Keeps the tools visible without focus, for example while the file picker is open or a draft waits. */
+  const active = $derived(mode === "edit" || !empty || attaching || submitting || mentionOpen || errorMessage !== null);
 
   $effect(() => {
     if (!mentionOpen) return;
@@ -375,9 +378,9 @@
   }
 </script>
 
-<div bind:this={root} class="comment-composer flex min-w-0 items-start gap-2" onfocusout={handleFocusOut}>
+<div bind:this={root} class="comment-composer flex min-w-0 items-start gap-2" data-active={active || undefined} onfocusout={handleFocusOut}>
   {#if showAvatar}
-    <span class="mt-1 flex shrink-0"><LocalPersonAvatar size={22} /></span>
+    <span class="mt-1.5 flex shrink-0"><NotesCommentAvatar own /></span>
   {/if}
   <div class="relative min-w-0 flex-1">
     <div class="flex min-w-0 flex-wrap items-end gap-x-1 gap-y-1.5">
@@ -410,7 +413,7 @@
           onblur={handleEditorBlur}
         ><NotesRichTextInline {richText} /></div>
       </div>
-      <div class="ml-auto flex shrink-0 items-center gap-0.5">
+      <div class="composer-tools ml-auto flex shrink-0 items-center gap-0.5">
         {#if mode === "edit" && onCancel}
           <button type="button" class="composer-text-button" onclick={onCancel}>{t("common.cancel")}</button>
         {/if}
@@ -474,6 +477,9 @@
 </div>
 
 <style>
+  .comment-composer:not(:focus-within, [data-active]) .composer-tools {
+    display: none;
+  }
   .composer-tool,
   .composer-send {
     display: grid;

@@ -237,6 +237,46 @@ fn saved_database_views_keep_their_settings_and_default_reference() {
             .is_err()
         );
 
+        let reordered = databases::view_management::reorder_database_views(
+            &pool,
+            DATABASE_A,
+            &[DATABASE_VIEW_B.to_string(), DATABASE_VIEW_A.to_string()],
+        )
+        .await
+        .unwrap();
+        let reordered_ids: Vec<String> = reordered
+            .into_iter()
+            .map(|view| {
+                serde_json::to_value(view).unwrap()["id"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(reordered_ids, [DATABASE_VIEW_B, DATABASE_VIEW_A]);
+        let listed = databases::view_management::list_database_views(&pool, DATABASE_A)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&listed[0]).unwrap()["id"],
+            DATABASE_VIEW_B
+        );
+        for invalid in [
+            vec![DATABASE_VIEW_B.to_string()],
+            vec![DATABASE_VIEW_B.to_string(), DATABASE_VIEW_B.to_string()],
+            vec![
+                DATABASE_VIEW_B.to_string(),
+                DATABASE_VIEW_A.to_string(),
+                LINKED_DATABASE_VIEW_A.to_string(),
+            ],
+        ] {
+            assert!(
+                databases::view_management::reorder_database_views(&pool, DATABASE_A, &invalid)
+                    .await
+                    .is_err()
+            );
+        }
+
         databases::view_management::delete_database_view(&pool, DATABASE_A, DATABASE_VIEW_A)
             .await
             .unwrap();

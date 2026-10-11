@@ -402,6 +402,17 @@ fn database_layout_lock_uses_requesting_shell_and_allows_row_edits() {
             .expect("mutation must be rejected")
             .contains("locked")
         );
+        assert!(
+            databases::view_management::reorder_database_views(
+                &pool,
+                DATABASE_A,
+                &[DATABASE_VIEW_A.to_string()]
+            )
+            .await
+            .err()
+            .expect("mutation must be rejected")
+            .contains("locked")
+        );
         assert!(data_sources::schema::update_data_source_schema(&pool, DATA_SOURCE_A, Some(DATABASE_A), Some(DATABASE_VIEW_A), NoteDataSourceSchemaUpdate {
             properties: json!({"Name":{"id":"title","name":"Name","type":"title","title":{}}}),
         }).await.err().expect("mutation must be rejected").contains("locked"));

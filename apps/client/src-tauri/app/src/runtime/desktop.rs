@@ -756,6 +756,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             notes::notes_list_database_views,
             notes::notes_duplicate_database_view,
             notes::notes_rename_database_view,
+            notes::notes_reorder_database_views,
             notes::notes_delete_database_view,
             notes::notes_list_data_sources,
             notes::notes_data_source_schema,

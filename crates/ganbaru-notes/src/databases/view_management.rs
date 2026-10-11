@@ -56,6 +56,20 @@ async fn load_view_tx(
         .ok_or_else(|| "view not found in database".to_string())
 }
 
+async fn list_views_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    database_id: &str,
+) -> Result<Vec<NoteDatabaseViewRow>, String> {
+    let query = format!(
+        "SELECT {VIEW_COLUMNS} FROM notes_database_views WHERE database_id = ? ORDER BY sort_order ASC, created_time ASC, id ASC",
+    );
+    sqlx::query_as::<_, NoteDatabaseViewRow>(&query)
+        .bind(database_id)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(|error| format!("list Notes database views: {error}"))
+}
+
 pub async fn list_database_views(
     pool: &SqlitePool,
     database_id: &str,
@@ -66,14 +80,7 @@ pub async fn list_database_views(
         .await
         .map_err(|error| format!("begin Notes view list: {error}"))?;
     load_parent_page_id_tx(&mut tx, database_id).await?;
-    let query = format!(
-        "SELECT {VIEW_COLUMNS} FROM notes_database_views WHERE database_id = ? ORDER BY sort_order ASC, created_time ASC, id ASC",
-    );
-    let rows = sqlx::query_as::<_, NoteDatabaseViewRow>(&query)
-        .bind(database_id)
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(|error| format!("list Notes database views: {error}"))?;
+    let rows = list_views_tx(&mut tx, database_id).await?;
     tx.commit()
         .await
         .map_err(|error| format!("commit Notes view list: {error}"))?;
@@ -126,6 +133,57 @@ pub async fn duplicate_database_view(
         .await
         .map_err(|error| format!("commit Notes view duplicate: {error}"))?;
     NoteDatabaseViewDto::new(created)
+}
+
+/// Saves the toolbar order of a database's views. The request must name every view exactly once.
+pub async fn reorder_database_views(
+    pool: &SqlitePool,
+    database_id: &str,
+    view_ids: &[String],
+) -> Result<Vec<NoteDatabaseViewDto>, String> {
+    require_uuid(database_id, "database_id")?;
+    for view_id in view_ids {
+        require_uuid(view_id, "view_id")?;
+    }
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|error| format!("begin Notes view reorder: {error}"))?;
+    let page_id = load_parent_page_id_tx(&mut tx, database_id).await?;
+    crate::databases::editing_lock::ensure_unlocked_tx(&mut tx, database_id).await?;
+    let current = list_views_tx(&mut tx, database_id).await?;
+    let mut requested: Vec<&str> = view_ids.iter().map(String::as_str).collect();
+    let mut existing: Vec<&str> = current.iter().map(|view| view.id.as_str()).collect();
+    requested.sort_unstable();
+    existing.sort_unstable();
+    if requested != existing {
+        return Err("view order must list each database view exactly once".to_string());
+    }
+    let unchanged = current
+        .iter()
+        .zip(view_ids)
+        .all(|(view, view_id)| &view.id == view_id);
+    if !unchanged {
+        page_history::record_page_snapshot_tx(&mut tx, &page_id, "reorder_database_views").await?;
+        project_history::mark_page_dirty_tx(&mut tx, &page_id, "Reorder database views", false)
+            .await?;
+        for (index, view_id) in view_ids.iter().enumerate() {
+            sqlx::query(
+                "UPDATE notes_database_views SET sort_order = ? WHERE database_id = ? AND id = ?",
+            )
+            .bind((index + 1) as f64)
+            .bind(database_id)
+            .bind(view_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| format!("reorder Notes database views: {error}"))?;
+        }
+    }
+    let rows = list_views_tx(&mut tx, database_id).await?;
+    tx.commit()
+        .await
+        .map_err(|error| format!("commit Notes view reorder: {error}"))?;
+    rows.into_iter().map(NoteDatabaseViewDto::new).collect()
 }
 
 pub async fn rename_database_view(

@@ -5,6 +5,7 @@
   import { NOTES_DATABASE_VIEW_TAB_DISPLAYS, notesDatabaseViewTabDisplays, type NotesDatabaseViewTabDisplay } from "$lib/notes/database/view-tab-display.svelte";
   import { databaseResource, notesDatabaseSession } from "$lib/notes/database/session.svelte";
   import { compactSourceLocation } from "$lib/notes/database/source-location";
+  import { moveNotesDatabaseView, notesDatabaseViewDropPlacement, orderNotesDatabaseViews, stepNotesDatabaseView, type NotesDatabaseViewDropPlacement } from "$lib/notes/database/view-order";
   import Table2 from "@lucide/svelte/icons/table-2";
   import Columns3 from "@lucide/svelte/icons/columns-3";
   import LayoutGrid from "@lucide/svelte/icons/layout-grid";
@@ -24,6 +25,7 @@
   import ArrowUpRight from "@lucide/svelte/icons/arrow-up-right";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import Ellipsis from "@lucide/svelte/icons/ellipsis";
+  import GripVertical from "@lucide/svelte/icons/grip-vertical";
   import type { NotesDatabasePropertyActionRequest, NotesDatabaseSourceEditingScope } from "$lib/notes/database/data-source-schema";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
@@ -41,6 +43,7 @@
     listNotesDatabaseViews,
     listNotesDataSourceTemplates,
     renameNotesDatabaseView,
+    reorderNotesDatabaseViews,
     listNotesDataSources,
     createNotesDataSource,
     attachNotesDataSource,
@@ -145,6 +148,13 @@
   let viewSettingsOpen = $state(false);
   /** Set by Edit view or Source in a tab menu so settings open on that page once the menu has closed. */
   let pendingSettings: "view" | "source" | null = null;
+  /** Latest view order shown before its save finished; reloads keep it so earlier saves cannot move views back. */
+  let pendingViewOrder: string[] | null = null;
+  let viewOrderSave: Promise<void> = Promise.resolve();
+  /** Whether the overflow views panel is open; a view menu nested in it leaves pending settings to the panel's close. */
+  let overflowMenuOpen = false;
+  let draggedViewId = $state<string | null>(null);
+  let viewDropTarget = $state<{ id: string; placement: NotesDatabaseViewDropPlacement } | null>(null);
   /** Asks the Source row to open its page once settings have rendered it. */
   let sourcePageRequested = $state(false);
   let sourceSettingsRow: ReturnType<typeof CollectionMenu> | undefined = $state();
@@ -203,6 +213,7 @@
   });
   const overflowCount = $derived(Math.max(0, supportedViews.length - shownViews.length));
   const searchableViews = $derived(supportedViews.filter((view) => view.name.toLocaleLowerCase().includes(viewSearch.toLocaleLowerCase())));
+  const viewsReorderable = $derived(Boolean(databaseId) && !selectionDisabled && !editingLocked && supportedViews.length > 1);
 
   $effect(() => {
     const revision = notesDatabaseSession.revision;
@@ -354,7 +365,7 @@
     try {
       const loaded = await notesDatabaseSession.load(databaseResource("views", sourceId, { databaseId: shellId }), () => listNotesDatabaseViews(shellId), force);
       if (request !== metadataRequest) return;
-      views = loaded;
+      views = pendingViewOrder ? orderNotesDatabaseViews(loaded, pendingViewOrder) : loaded;
       const preferred = selectedViewId !== previousSelection ? selectedViewId : preferredId;
       const nextViewId = loaded.some((view) => view.id === preferred)
         ? preferred
@@ -427,8 +438,8 @@
     }
   }
 
-  async function duplicateView(): Promise<void> {
-    const current = selectedView;
+  /** Copy a saved view and select the copy. */
+  async function duplicateView(current: NotesDatabaseView | null): Promise<void> {
     if (!databaseId || !current || selectionDisabled || editingLocked) return;
     busy = true;
     viewError = null;
@@ -445,8 +456,8 @@
     }
   }
 
-  async function saveName(): Promise<void> {
-    const current = selectedView;
+  /** Save the name draft for a saved view, ignoring an empty or unchanged name. */
+  async function saveName(current: NotesDatabaseView | null): Promise<void> {
     const name = nameDraft.trim();
     editingName = false;
     if (!databaseId || !current || busy || editingLocked) return;
@@ -518,10 +529,117 @@
       return;
     }
     editingName = false;
+    if (!overflowMenuOpen) openPendingSettings();
+  }
+
+  /**
+   * Track the overflow views panel, and open settings that a view menu inside it asked for only once the panel itself
+   * has closed and returned focus to its trigger.
+   *
+   * @param open Whether the overflow panel is now open.
+   */
+  function overflowMenuOpenChanged(open: boolean): void {
+    overflowMenuOpen = open;
+    if (open) return;
+    viewSearch = "";
+    openPendingSettings();
+  }
+
+  function openPendingSettings(): void {
     if (!pendingSettings) return;
     sourcePageRequested = pendingSettings === "source";
     pendingSettings = null;
     viewSettingsOpen = true;
+  }
+
+  /**
+   * Select a view so settings can show it, then open them on a page once its menu closes.
+   *
+   * @param view View whose menu asked for settings.
+   * @param page Settings page to open.
+   */
+  function requestViewSettings(view: NotesDatabaseView, page: "view" | "source"): void {
+    if (selectionDisabled) return;
+    if (view.id !== activeViewId) selectView(view.id);
+    pendingSettings = page;
+  }
+
+  /**
+   * Save a new order for every saved view and show it right away. Saves run one after another without disabling the
+   * toolbar, so quick successive moves stay responsive; once the latest one settles, the stored order is reloaded.
+   *
+   * @param viewIds Every saved view id in its new order.
+   */
+  async function saveViewOrder(viewIds: string[]): Promise<void> {
+    const shellId = databaseId;
+    if (!shellId || !viewsReorderable) return;
+    pendingViewOrder = viewIds;
+    views = orderNotesDatabaseViews(views, viewIds);
+    viewError = null;
+    const save = viewOrderSave.then(() => reorderNotesDatabaseViews(shellId, viewIds));
+    viewOrderSave = save.then(() => undefined, () => undefined);
+    let failure: string | null = null;
+    try {
+      await save;
+    } catch (caught) {
+      failure = caught instanceof Error ? caught.message : String(caught);
+    }
+    if (pendingViewOrder !== viewIds) return;
+    pendingViewOrder = null;
+    await reloadViews(selectedViewId);
+    if (failure) viewError = failure;
+  }
+
+  function startViewDrag(event: DragEvent, viewId: string): void {
+    if (!viewsReorderable) {
+      event.preventDefault();
+      return;
+    }
+    draggedViewId = viewId;
+    event.dataTransfer?.setData("text/plain", viewId);
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+  }
+
+  /**
+   * Mark where a dragged view would land relative to the tab or row under the pointer.
+   *
+   * @param axis "x" for toolbar tabs, "y" for rows in the overflow panel.
+   */
+  function viewDragOver(event: DragEvent & { currentTarget: HTMLElement }, viewId: string, axis: "x" | "y"): void {
+    if (!draggedViewId) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    viewDropTarget = draggedViewId === viewId ? null : {
+      id: viewId,
+      placement: notesDatabaseViewDropPlacement(event.currentTarget.getBoundingClientRect(), { x: event.clientX, y: event.clientY }, axis),
+    };
+  }
+
+  function dropView(event: DragEvent): void {
+    if (!draggedViewId) return;
+    event.preventDefault();
+    const moved = draggedViewId;
+    const target = viewDropTarget;
+    clearViewDrag();
+    if (!target) return;
+    const next = moveNotesDatabaseView(views.map((view) => view.id), moved, target.id, target.placement);
+    if (next) void saveViewOrder(next);
+  }
+
+  function clearViewDrag(): void {
+    draggedViewId = null;
+    viewDropTarget = null;
+  }
+
+  /** Move a view one step among the listed views with the arrow keys on its reorder handle, keeping focus on the handle. */
+  function moveViewWithKeyboard(event: KeyboardEvent & { currentTarget: HTMLElement }, viewId: string): void {
+    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+    event.preventDefault();
+    const next = stepNotesDatabaseView(views.map((view) => view.id), searchableViews.map((view) => view.id), viewId, event.key === "ArrowUp" ? -1 : 1);
+    if (!next || !viewsReorderable) return;
+    const handle = event.currentTarget;
+    void saveViewOrder(next);
+    void tick().then(() => handle.focus({ preventScroll: true }));
   }
 
   /** Whether deleting a view keeps at least one view and one table for its source. */
@@ -542,9 +660,10 @@
     return t("notes.databaseViewDisplayTextAndIcon");
   }
 
-  function beginRename(): void {
+  /** Show the name field in the open menu of a saved view. */
+  function beginRename(view: NotesDatabaseView): void {
     if (selectionDisabled || editingLocked) return;
-    nameDraft = selectedView?.name ?? "";
+    nameDraft = view.name;
     editingName = true;
     void tick().then(() => nameInput?.focus());
   }
@@ -609,7 +728,7 @@
         <Icon class="size-4" strokeWidth={1.75} aria-hidden="true" />
       </span>
       <input class="field min-w-0 flex-1" aria-label={t("notes.databaseViewName")} value={selectedView.name} disabled={selectionDisabled || editingLocked}
-        onblur={(event) => { nameDraft = event.currentTarget.value; void saveName(); }}
+        onblur={(event) => { nameDraft = event.currentTarget.value; void saveName(selectedView); }}
         onkeydown={(event) => { if (event.key === "Enter") { event.preventDefault(); event.currentTarget.blur(); } }} />
     </div>
   {/if}
@@ -625,11 +744,12 @@
 
 {#snippet viewMenu(view: NotesDatabaseView)}
   {@const display = notesDatabaseViewTabDisplays.get(view.id)}
+  {@const viewSource = dataSources.find((source) => source.id === view.data_source_id)}
   {#if editingName}
-    <input bind:this={nameInput} class="field w-full" aria-label={t("notes.databaseViewName")} bind:value={nameDraft} onkeydown={(event) => { event.stopPropagation(); if (event.key === "Enter") void saveName(); if (event.key === "Escape") { nameDraft = view.name; editingName = false; } }} onblur={() => { if (editingName) void saveName(); }} />
+    <input bind:this={nameInput} class="field w-full" aria-label={t("notes.databaseViewName")} bind:value={nameDraft} onkeydown={(event) => { event.stopPropagation(); if (event.key === "Enter") void saveName(view); if (event.key === "Escape") { nameDraft = view.name; editingName = false; } }} onblur={() => { if (editingName) void saveName(view); }} />
   {:else}
     <div class="grid gap-0">
-      <button data-collection-menu-keep-open type="button" class="menu-item min-w-0" disabled={editingLocked} onclick={beginRename}>
+      <button data-collection-menu-keep-open type="button" class="menu-item min-w-0" disabled={editingLocked} onclick={() => beginRename(view)}>
         <Pencil class="size-3.5 shrink-0 text-muted-foreground" strokeWidth={1.75} aria-hidden="true" /><span class="min-w-0 flex-1 truncate">{t("notes.databaseViewRename")}</span>
       </button>
       <CollectionMenu fullWidth dismissOnAction label={t("notes.databaseViewDisplayAs")} icon={Paintbrush}>
@@ -639,10 +759,10 @@
         <CollectionMenuSeparator />
         <p class="px-2 py-1 text-muted-foreground">{t("notes.databaseViewDisplayPersonal")}</p>
       </CollectionMenu>
-      <CollectionMenuItem icon={SlidersHorizontal} label={t("notes.databaseViewEdit")} onclick={() => { pendingSettings = "view"; }} />
-      <button type="button" class="menu-item min-w-0" disabled={selectionDisabled} onclick={() => { pendingSettings = "source"; }}>
+      <CollectionMenuItem icon={SlidersHorizontal} label={t("notes.databaseViewEdit")} onclick={() => requestViewSettings(view, "view")} />
+      <button type="button" class="menu-item min-w-0" disabled={selectionDisabled} onclick={() => requestViewSettings(view, "source")}>
         <Database class="size-3.5 shrink-0 text-muted-foreground" strokeWidth={1.75} aria-hidden="true" /><span class="min-w-0 flex-1 truncate">{t("notes.databaseViewSource")}</span>
-        {#if activeSource}<span class="max-w-32 truncate text-muted-foreground">{sourceTitle(activeSource)}</span>{/if}
+        {#if viewSource}<span class="max-w-32 truncate text-muted-foreground">{sourceTitle(viewSource)}</span>{/if}
         <ChevronRight class="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
       </button>
       {#if onCopyViewLink || onOpenFullPage}
@@ -651,7 +771,7 @@
         {#if onOpenFullPage}<CollectionMenuItem icon={ArrowUpRight} label={t("notes.databaseViewOpenFullPage")} onclick={onOpenFullPage} />{/if}
       {/if}
       <CollectionMenuSeparator />
-      <CollectionMenuItem icon={Copy} label={t("notes.databaseViewDuplicate")} disabled={editingLocked} onclick={() => { void duplicateView(); }} />
+      <CollectionMenuItem icon={Copy} label={t("notes.databaseViewDuplicate")} disabled={editingLocked} onclick={() => { void duplicateView(view); }} />
       <CollectionMenuItem icon={Trash2} label={t("notes.databaseViewDelete")} destructive disabled={editingLocked || !viewDeletable(view)} onclick={() => { pendingDeleteView = view; }} />
     </div>
   {/if}
@@ -721,26 +841,63 @@
       {@const Icon = viewIcons[view.type as NotesDatabaseViewKind]}
       {@const active = activeViewId === view.id}
       {@const display = notesDatabaseViewTabDisplays.get(view.id)}
-      <CollectionMenu label={view.name} kind="actions" showHeader={false} contextMenu pressed={active} iconOnly={display === "icon"} rootClass="shrink-0"
-        triggerClass={cn("max-w-44 rounded-md text-[0.866667rem] font-medium", active && "bg-accent text-foreground")} disabled={selectionDisabled}
-        beforeOpen={(source) => openViewMenu(view.id, source)} onOpenChange={viewMenuOpenChanged}>
-        {#snippet leading()}
-          {#if display !== "text"}<Icon class="size-4 shrink-0" strokeWidth={1.75} aria-hidden="true" />{/if}
-        {/snippet}
-        {@render viewMenu(view)}
-      </CollectionMenu>
+      <div class={cn("relative flex shrink-0", draggedViewId === view.id && "opacity-50")} role="presentation" draggable={viewsReorderable}
+        ondragstart={(event) => startViewDrag(event, view.id)} ondragover={(event) => viewDragOver(event, view.id, "x")} ondrop={dropView} ondragend={clearViewDrag}>
+        {#if viewDropTarget?.id === view.id}
+          <span class={cn("pointer-events-none absolute inset-y-1 w-0.5 rounded-full bg-primary", viewDropTarget.placement === "before" ? "left-0" : "right-0")} aria-hidden="true"></span>
+        {/if}
+        <CollectionMenu label={view.name} kind="actions" showHeader={false} contextMenu pressed={active} iconOnly={display === "icon"} rootClass="shrink-0"
+          triggerClass="max-w-44 rounded-md text-[0.866667rem] font-medium" disabled={selectionDisabled}
+          beforeOpen={(source) => openViewMenu(view.id, source)} onOpenChange={viewMenuOpenChanged}>
+          {#snippet leading()}
+            {#if display !== "text"}<Icon class="size-4 shrink-0" strokeWidth={1.75} aria-hidden="true" />{/if}
+          {/snippet}
+          {@render viewMenu(view)}
+        </CollectionMenu>
+      </div>
     {/each}
     {#if overflowCount > 0}
-      <CollectionMenu label={t("notes.databaseMoreViews", overflowCount)} kind="actions" showHeader={false} dismissOnAction disabled={selectionDisabled}>
+      <CollectionMenu label={t("notes.databaseMoreViews", overflowCount)} kind="actions" showHeader={false} dismissOnAction rootClass="shrink-0"
+        triggerClass="rounded-md text-[0.866667rem] font-medium" disabled={selectionDisabled} onOpenChange={overflowMenuOpenChanged}>
+        <!-- An empty leading snippet keeps the trigger text only. -->
+        {#snippet leading()}{/snippet}
         <input class="field mb-1.5 w-full" aria-label={t("notes.databaseSearchViews")} placeholder={t("notes.databaseSearchViews")} bind:value={viewSearch} />
         <div class="grid gap-0">
           {#each searchableViews as view (view.id)}
             {@const Icon = viewIcons[view.type as NotesDatabaseViewKind]}
-            <button type="button" class="menu-item" disabled={selectionDisabled} onclick={() => selectViewFromToolbar(view.id)}>
-              <Icon class="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" /><span class="min-w-0 flex-1 truncate">{view.name}</span>
-            </button>
+            <div class={cn("group/view relative flex min-w-0 items-center rounded-floating-item hover:bg-accent", draggedViewId === view.id && "opacity-50")} role="presentation"
+              draggable={viewsReorderable} ondragstart={(event) => startViewDrag(event, view.id)} ondragover={(event) => viewDragOver(event, view.id, "y")} ondrop={dropView} ondragend={clearViewDrag}>
+              {#if viewDropTarget?.id === view.id}
+                <span class={cn("pointer-events-none absolute inset-x-1 h-0.5 rounded-full bg-primary", viewDropTarget.placement === "before" ? "top-0" : "bottom-0")} aria-hidden="true"></span>
+              {/if}
+              <button type="button" class="collection-menu-control flex w-6 shrink-0 cursor-grab items-center justify-center rounded-floating-item text-muted-foreground active:cursor-grabbing aria-disabled:cursor-not-allowed pointer-coarse:hidden"
+                data-collection-menu-keep-open data-collection-menu-row-control aria-label={t("notes.databaseViewDrag", view.name)} aria-disabled={!viewsReorderable}
+                onkeydown={(event) => moveViewWithKeyboard(event, view.id)}>
+                <GripVertical class="size-3.5" strokeWidth={1.75} aria-hidden="true" />
+              </button>
+              <button type="button" class="menu-item min-w-0 flex-1 pl-1" aria-current={view.id === activeViewId ? "true" : undefined} disabled={selectionDisabled} onclick={() => selectViewFromToolbar(view.id)}>
+                <Icon class="size-3.5 shrink-0 text-muted-foreground" strokeWidth={1.75} aria-hidden="true" /><span class="min-w-0 flex-1 truncate">{view.name}</span>
+              </button>
+              <CollectionMenu label={t("notes.databaseViewActions", view.name)} kind="actions" iconOnly showHeader={false} rootClass="shrink-0"
+                triggerClass="collection-menu-control w-7 justify-center opacity-0 group-hover/view:opacity-100 group-has-focus-visible/view:opacity-100 aria-expanded:opacity-100 pointer-coarse:opacity-100"
+                triggerAttributes={{ "data-collection-menu-row-control": "" }} onOpenChange={viewMenuOpenChanged}>
+                {@render viewMenu(view)}
+              </CollectionMenu>
+            </div>
+          {:else}
+            <p class="px-2 py-1 text-muted-foreground">{t("notes.databaseNoViewMatches")}</p>
           {/each}
         </div>
+        <CollectionMenuSeparator />
+        <CollectionMenu fullWidth dismissOnAction label={t("notes.databaseNewView")} icon={Plus} disabled={selectionDisabled || editingLocked}>
+          {#each NOTES_DATABASE_VIEW_KINDS as kind (kind)}
+            {@const Icon = viewIcons[kind]}
+            <CollectionMenuItem icon={Icon} label={viewLabel(kind)} disabled={selectionDisabled || editingLocked} onclick={() => { void addView(kind); }} />
+          {/each}
+          <CollectionMenuSeparator />
+          <CollectionMenuItem icon={Link} label={t("notes.databaseLinkedViewCreate")} onclick={onCreateLinkedDatabaseView} />
+        </CollectionMenu>
+        <CollectionMenuItem icon={Database} label={t("notes.databaseNewDataSource")} disabled={selectionDisabled || editingLocked} onclick={() => { pendingSettings = "source"; }} />
       </CollectionMenu>
     {/if}
     <CollectionMenu label={t("notes.databaseAddView")} kind="new" iconOnly showHeader={false} dismissOnAction disabled={selectionDisabled || editingLocked}>

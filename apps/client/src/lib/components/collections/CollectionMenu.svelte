@@ -303,7 +303,9 @@
       }
       if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key) || !(event.target instanceof HTMLButtonElement)) return;
       if (event.target.hasAttribute("aria-haspopup") && !event.target.hasAttribute("data-collection-submenu-trigger")) return;
-      const buttons = [...node.querySelectorAll<HTMLButtonElement>("[data-collection-menu-body] button:not(:disabled)")]
+      // Secondary controls in a row, such as reorder handles and row action menus, handle the arrow keys themselves.
+      if (event.target.hasAttribute("data-collection-menu-row-control")) return;
+      const buttons = [...node.querySelectorAll<HTMLButtonElement>("[data-collection-menu-body] button:not(:disabled):not([data-collection-menu-row-control])")]
         .filter((button) => button.closest("[data-app-floating-surface]") === node);
       const index = buttons.indexOf(event.target);
       if (index < 0 || !buttons.length) return;
@@ -371,10 +373,10 @@
     type="button"
     {...triggerAttributes}
     {disabled}
-    class={cn("collection-menu-trigger inline-flex h-8 min-w-0 items-center gap-1.5 rounded px-2 text-collection font-normal transition-colors focus-visible:outline-none focus-visible:bg-accent disabled:cursor-not-allowed disabled:text-muted-foreground", primary ? "bg-primary text-primary-foreground hover:bg-primary/90" : "text-muted-foreground hover:bg-accent/60 hover:text-foreground", rowTrigger && "justify-start rounded-md text-foreground transition-none hover:bg-accent", triggerClass)}
+    class={cn("collection-menu-trigger inline-flex h-8 min-w-0 items-center gap-1.5 rounded px-2 text-collection font-normal transition-colors focus-visible:outline-none focus-visible:bg-accent disabled:cursor-not-allowed disabled:text-muted-foreground", primary ? "bg-primary text-primary-foreground hover:bg-primary/90" : "text-muted-foreground hover:bg-accent/60 hover:text-foreground", rowTrigger && "justify-start rounded-md text-foreground transition-none hover:bg-accent", pressed === true && !primary && "bg-accent text-foreground", triggerClass)}
     class:w-full={fullWidth}
-    class:bg-accent={expanded && !primary && !(submenu && pointerElsewhere)}
-    class:text-foreground={!primary && (expanded || activeCount > 0)}
+    class:bg-accent={!primary && ((expanded && !(submenu && pointerElsewhere)) || pressed === true)}
+    class:text-foreground={!primary && (expanded || pressed === true || activeCount > 0)}
     data-collection-settings-row={settingsRow ? "" : undefined}
     data-collection-submenu-trigger={submenu ? "" : undefined}
     aria-label={ariaLabel ?? (countLabel ? `${label} (${countLabel})` : label)}

@@ -312,6 +312,17 @@ describe("Shared collection menus", () => {
     expect(dialog.querySelector('[role="dialog"]')).not.toBeNull();
   });
 
+  it("fills a pressed trigger's area and strengthens its text like a hovered one while it is closed", async () => {
+    const { row } = host();
+    const children = createRawSnippet(() => ({ render: () => '<button type="button">Rename</button>' }));
+    component = mount(CollectionMenu, { target: row, props: { label: "Board", kind: "actions", pressed: true, children } });
+    const trigger = row.querySelector<HTMLButtonElement>("button")!;
+    expect(trigger.getAttribute("aria-pressed")).toBe("true");
+    expect(trigger.classList.contains("bg-accent")).toBe(true);
+    expect(trigger.classList.contains("text-foreground")).toBe(true);
+    expect(trigger.classList.contains("text-muted-foreground")).toBe(false);
+  });
+
   it("leaves the browser context menu alone unless the menu opts in", async () => {
     const { dialog, row } = host();
     const children = createRawSnippet(() => ({ render: () => '<button type="button">Rename</button>' }));

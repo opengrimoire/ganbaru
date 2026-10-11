@@ -725,6 +725,19 @@ pub async fn notes_rename_database_view<R: Runtime>(
 }
 
 #[tauri::command]
+pub async fn notes_reorder_database_views<R: Runtime>(
+    app: AppHandle<R>,
+    db_url: String,
+    database_id: String,
+    view_ids: Vec<String>,
+) -> Result<project_history::NotesMutationResultDto<Vec<NoteDatabaseViewDto>>, String> {
+    let pool = connect_sqlite(app, db_url).await?;
+    let value =
+        databases::view_management::reorder_database_views(&pool, &database_id, &view_ids).await?;
+    project_history::mutation_result(&pool, value).await
+}
+
+#[tauri::command]
 pub async fn notes_delete_database_view<R: Runtime>(
     app: AppHandle<R>,
     db_url: String,

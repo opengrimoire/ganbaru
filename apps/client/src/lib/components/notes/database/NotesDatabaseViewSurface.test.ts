@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { createRawSnippet, mount, tick, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { duplicateNotesDatabaseView, listNotesDatabaseViews, listNotesDataSourceTemplates, listNotesDataSources, setNotesDatabaseEditingLock, createNotesDataSource, attachNotesDataSource } from "$lib/api/notes";
+import { duplicateNotesDatabaseView, reorderNotesDatabaseViews, listNotesDatabaseViews, listNotesDataSourceTemplates, listNotesDataSources, setNotesDatabaseEditingLock, createNotesDataSource, attachNotesDataSource } from "$lib/api/notes";
 import { databaseResource, MAX_DATABASE_SESSION_RESOURCES, notesDatabaseSession } from "$lib/notes/database/session.svelte";
 import type { NotesDatabaseView, NotesDataSourcePropertyType, NotesDataSourceListItem } from "$lib/notes/types";
 import type { NotesDatabaseSourceEditingScope } from "$lib/notes/database/data-source-schema";
@@ -9,7 +9,7 @@ import NotesDatabaseViewSurface from "./NotesDatabaseViewSurface.svelte";
 
 vi.mock("$lib/api/notes", () => ({
   listNotesDatabaseViews: vi.fn(), listNotesDataSourceTemplates: vi.fn(async () => []),
-  duplicateNotesDatabaseView: vi.fn(),
+  duplicateNotesDatabaseView: vi.fn(), reorderNotesDatabaseViews: vi.fn(),
   listNotesDataSources: vi.fn(async () => []), setNotesDatabaseEditingLock: vi.fn(), createNotesDataSource: vi.fn(), attachNotesDataSource: vi.fn(),
 }));
 vi.mock("$lib/components/notes/editor-component-registry", async () => {
@@ -21,8 +21,8 @@ vi.mock("$lib/components/notes/editor-component-registry", async () => {
   };
 });
 
-function views(): NotesDatabaseView[] {
-  return ["First", "Second"].map((name) => ({
+function views(names = ["First", "Second"]): NotesDatabaseView[] {
+  return names.map((name) => ({
     object: "view", id: name, parent: { type: "database_id", database_id: "database" },
     data_source_id: "source", name, type: "table", filter: null, sorts: [], url: null,
     configuration: { type: "table", table: {
@@ -40,6 +40,16 @@ function source(id: string, title: string, databaseId: string, location: string[
     properties: { Name: { id: "title", name: "Name", type: "title", title: {} } },
     created_time: "2026-10-01T00:00:00Z", last_edited_time: "2026-10-01T00:00:00Z",
     source_provider: null, source_object_id: null, source_workspace_id: null, source_last_edited_time: null, location };
+}
+
+/** Serve saved views from a store that reorder requests rewrite, so reloads see the saved order. */
+function persistViewOrder(saved: NotesDatabaseView[]): void {
+  let current = saved;
+  vi.mocked(listNotesDatabaseViews).mockImplementation(async () => current);
+  vi.mocked(reorderNotesDatabaseViews).mockImplementation(async (_databaseId, ids) => {
+    current = ids.map((id) => saved.find((view) => view.id === id)!);
+    return current;
+  });
 }
 
 let component: ReturnType<typeof mount> | undefined;
@@ -381,5 +391,125 @@ describe("Notes database view sessions", () => {
     await tick();
     await tick();
     expect(document.querySelector("[data-session-view]")?.getAttribute("data-session-view")).toBe("Second");
+  });
+
+  it("lists overflow views in a text-only panel whose handles reorder them with the arrow keys", async () => {
+    persistViewOrder(views(["First", "Second", "Third", "Fourth"]));
+    open();
+    await vi.waitFor(() => expect(document.querySelector("[data-session-view]")?.getAttribute("data-session-view")).toBe("First"));
+    const trigger = document.querySelector<HTMLButtonElement>('button[aria-label="1 more..."]')!;
+    expect(trigger.querySelector("svg")).toBeNull();
+    trigger.click();
+    await vi.waitFor(() => expect(document.activeElement?.getAttribute("aria-label")).toBe("Search for a view..."));
+    for (const name of ["First", "Second", "Third", "Fourth"]) {
+      expect(document.querySelector(`button[aria-label="Drag view: ${name}"]`)).not.toBeNull();
+      expect(document.querySelector(`button[aria-label="${name} actions"]`)).not.toBeNull();
+    }
+    const handle = document.querySelector<HTMLButtonElement>('button[aria-label="Drag view: First"]')!;
+    handle.focus();
+    handle.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    await vi.waitFor(() => expect(reorderNotesDatabaseViews).toHaveBeenCalledWith("database", ["Second", "First", "Third", "Fourth"]));
+    await vi.waitFor(() => expect(document.activeElement).toBe(handle));
+    expect(handle.closest("[draggable]")?.previousElementSibling?.querySelector('[aria-label="Drag view: Second"]')).not.toBeNull();
+  });
+
+  it("filters overflow views by name and offers new views and data sources", async () => {
+    vi.mocked(listNotesDatabaseViews).mockResolvedValue(views(["First", "Second", "Third", "Fourth"]));
+    open();
+    await vi.waitFor(() => expect(document.querySelector("[data-session-view]")).not.toBeNull());
+    document.querySelector<HTMLButtonElement>('button[aria-label="1 more..."]')!.click();
+    await tick();
+    const search = document.querySelector<HTMLInputElement>('input[aria-label="Search for a view..."]')!;
+    search.value = "four";
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+    expect(document.querySelector('button[aria-label="Drag view: Fourth"]')).not.toBeNull();
+    expect(document.querySelector('button[aria-label="Drag view: First"]')).toBeNull();
+    search.value = "missing";
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+    expect(document.body.textContent).toContain("No matching views");
+    const labels = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).map((button) => button.textContent?.trim());
+    expect(labels).toContain("New view");
+    expect(labels).toContain("New data source");
+  });
+
+  it("reorders toolbar tabs by dragging one onto another", async () => {
+    persistViewOrder(views());
+    open();
+    await vi.waitFor(() => expect(document.querySelector("[data-session-view]")?.getAttribute("data-session-view")).toBe("First"));
+    const tab = (name: string) => document.querySelector<HTMLButtonElement>(`button[aria-label="${name}"]`)!.closest<HTMLElement>("[draggable]")!;
+    expect(tab("First").getAttribute("draggable")).toBe("true");
+    tab("First").dispatchEvent(new MouseEvent("dragstart", { bubbles: true }));
+    tab("Second").dispatchEvent(new MouseEvent("dragover", { bubbles: true, cancelable: true }));
+    await tick();
+    tab("Second").dispatchEvent(new MouseEvent("drop", { bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(reorderNotesDatabaseViews).toHaveBeenCalledWith("database", ["Second", "First"]));
+    await vi.waitFor(() => expect(document.querySelector('button[aria-label="Second"]')?.compareDocumentPosition(document.querySelector('button[aria-label="First"]')!))
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING));
+  });
+
+  it("keeps tabs in place while the database layout is locked", async () => {
+    vi.mocked(listNotesDatabaseViews).mockResolvedValue(views());
+    open(() => {}, { editingLocked: true });
+    await vi.waitFor(() => expect(document.querySelector("[data-session-view]")).not.toBeNull());
+    const first = document.querySelector<HTMLButtonElement>('button[aria-label="First"]')!.closest<HTMLElement>("[draggable]")!;
+    expect(first.getAttribute("draggable")).toBe("false");
+    const start = new MouseEvent("dragstart", { bubbles: true, cancelable: true });
+    first.dispatchEvent(start);
+    expect(start.defaultPrevented).toBe(true);
+  });
+
+  it("opens a panel row's actions for that view without selecting it", async () => {
+    const saved = views(["First", "Second", "Third", "Fourth"]);
+    const copied = { ...saved[3], id: "Copied", name: "Copied" };
+    vi.mocked(listNotesDatabaseViews).mockResolvedValueOnce(saved).mockResolvedValue([...saved, copied]);
+    vi.mocked(duplicateNotesDatabaseView).mockResolvedValue(copied);
+    open();
+    await vi.waitFor(() => expect(document.querySelector("[data-session-view]")?.getAttribute("data-session-view")).toBe("First"));
+    document.querySelector<HTMLButtonElement>('button[aria-label="1 more..."]')!.click();
+    await tick();
+    document.querySelector<HTMLButtonElement>('button[aria-label="Fourth actions"]')!.click();
+    await tick();
+    expect(document.querySelector("[data-session-view]")?.getAttribute("data-session-view")).toBe("First");
+    const duplicate = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent?.trim() === "Duplicate view")!;
+    duplicate.click();
+    await vi.waitFor(() => expect(duplicateNotesDatabaseView).toHaveBeenCalledWith(expect.objectContaining({ source_view_id: "Fourth", name: "Fourth copy" })));
+  });
+
+  it("keeps the panel's rows enabled while successive reorders save, then shows the latest stored order", async () => {
+    let current = views(["First", "Second", "Third", "Fourth"]);
+    const byId = new Map(current.map((view) => [view.id, view]));
+    const finishes: Array<() => void> = [];
+    vi.mocked(listNotesDatabaseViews).mockImplementation(async () => current);
+    vi.mocked(reorderNotesDatabaseViews).mockImplementation((_databaseId, ids) => new Promise((resolve) => {
+      finishes.push(() => {
+        current = ids.map((id) => byId.get(id)!);
+        resolve(current);
+      });
+    }));
+    open();
+    await vi.waitFor(() => expect(document.querySelector("[data-session-view]")).not.toBeNull());
+    document.querySelector<HTMLButtonElement>('button[aria-label="1 more..."]')!.click();
+    await vi.waitFor(() => expect(document.activeElement?.getAttribute("aria-label")).toBe("Search for a view..."));
+    const handle = document.querySelector<HTMLButtonElement>('button[aria-label="Drag view: First"]')!;
+    const rowOrder = () => Array.from(document.querySelectorAll<HTMLButtonElement>('button[aria-label^="Drag view: "]')).map((button) => button.getAttribute("aria-label")!.slice("Drag view: ".length));
+    handle.focus();
+    handle.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    await vi.waitFor(() => expect(document.activeElement).toBe(handle));
+    handle.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    await vi.waitFor(() => expect(rowOrder()).toEqual(["Second", "Third", "First", "Fourth"]));
+    const rowButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('button[aria-label^="Drag view: "]')).flatMap((grip) => Array.from(grip.parentElement!.querySelectorAll("button")));
+    expect(rowButtons.length).toBeGreaterThan(8);
+    expect(rowButtons.filter((button) => button.disabled)).toEqual([]);
+    finishes.shift()!();
+    await tick();
+    await tick();
+    expect(rowOrder()).toEqual(["Second", "Third", "First", "Fourth"]);
+    await vi.waitFor(() => expect(finishes).toHaveLength(1));
+    finishes.shift()!();
+    await vi.waitFor(() => expect(current.map((view) => view.id)).toEqual(["Second", "Third", "First", "Fourth"]));
+    expect(reorderNotesDatabaseViews).toHaveBeenLastCalledWith("database", ["Second", "Third", "First", "Fourth"]);
+    expect(rowOrder()).toEqual(["Second", "Third", "First", "Fourth"]);
   });
 });

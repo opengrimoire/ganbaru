@@ -168,6 +168,14 @@ export async function duplicateNotesDatabaseView(
   return mapNotesDatabaseViewDto(await invokeNotesMutation("notes_duplicate_database_view", { dbUrl, request }));
 }
 
+/** Save the toolbar order of a database's views; the list must name every view exactly once. */
+export async function reorderNotesDatabaseViews(databaseId: string, viewIds: string[]): Promise<NotesDatabaseView[]> {
+  const dbUrl = await ensureDbUrl();
+  const rows = await invokeNotesMutation("notes_reorder_database_views", { dbUrl, databaseId, viewIds });
+  if (!Array.isArray(rows)) throw new Error("notes_reorder_database_views returned a non-array payload");
+  return rows.map(mapNotesDatabaseViewDto);
+}
+
 /** Rename one saved view without changing its row data. */
 export async function renameNotesDatabaseView(
   databaseId: string,

@@ -2,6 +2,7 @@ export const editor = {
   editorSaveFailed: (message: string) => `Could not save edits. Your draft is still open. Keep this window open and retry: ${message}`,
   blockList: "Note blocks",
   richTextEditorLabel: "Rich text block editor",
+  emptyPagePlaceholder: "Write, or press '/' for commands and '@' to mention",
   richTextMentionMenuStatus: (count: number) =>
     `Mention menu open, ${count} ${count === 1 ? "result" : "results"}.`,
   richTextSlashMenuStatus: "Slash command menu open.",

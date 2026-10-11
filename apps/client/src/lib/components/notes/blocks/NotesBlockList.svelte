@@ -41,7 +41,7 @@
     NotesRichText,
     NotesTableOfContentsItem,
   } from "$lib/notes/types";
-  import { notesNumberedListOrdinals } from "$lib/notes/blocks/editor-ui";
+  import { isNotesPageBodyEmpty, notesNumberedListOrdinals } from "$lib/notes/blocks/editor-ui";
   import { notesCalloutLayers, notesCalloutIsOwnTextHidden } from "$lib/notes/block-types/callout-layout";
   import NotesBlockRow from "./NotesBlockRow.svelte";
   import type NotesSelectionContextMenu from "./NotesSelectionContextMenu.svelte";
@@ -254,6 +254,7 @@
   const visibleOutlines = $derived(virtualizer.visibleOutlines);
   const calloutLayersById = $derived(notesCalloutLayers(notes.flatBlockOutlines, notes.blockById));
   const hydratedItemsById = $derived(virtualizer.hydratedItemsById);
+  const emptyPageBody = $derived(isNotesPageBodyEmpty(items));
   const measureVirtualBlock = virtualizer.measureBlock;
   $effect(() => {
     const blockId = databasePastePrompt?.blockId;
@@ -714,6 +715,7 @@
   onpointerdowncapture={navigation.resetVerticalGoal}
   onkeyupcapture={(event) => { if (event.key === "Shift") navigation.resetVerticalGoal(); }}
   class="notes-block-list relative flex min-w-0 flex-col pb-8"
+  data-notes-empty-page={emptyPageBody || undefined}
   role="group"
   aria-label={t("notes.blockList")}
 >

@@ -374,6 +374,8 @@
   tabindex="0"
   data-notes-block-id={block.id}
   data-notes-link-actions
+  data-empty={text === "" && !runtime.compositionActive ? "true" : undefined}
+  data-placeholder={text === "" ? t("notes.emptyPagePlaceholder") : undefined}
   oninput={handleInput}
   onkeydowncapture={handleKeydown}
   onbeforeinput={handleBeforeInput}
@@ -512,6 +514,15 @@
 <style>
   .notes-rich-text-editor {
     caret-color: var(--foreground);
+  }
+
+  /* The block list marks a page whose body is a lone empty paragraph; floating the hint keeps the caret at the start. */
+  :global(.notes-block-list[data-notes-empty-page]) .notes-rich-text-editor[data-empty="true"]::before {
+    float: left;
+    height: 0;
+    color: var(--muted-foreground);
+    content: attr(data-placeholder);
+    pointer-events: none;
   }
 
 </style>

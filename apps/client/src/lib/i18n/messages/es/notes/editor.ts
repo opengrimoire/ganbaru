@@ -5,6 +5,7 @@ export const editor = {
   editorSaveFailed: (message: string) => `No se pudieron guardar los cambios. El borrador sigue abierto. Mantén esta ventana abierta e inténtalo de nuevo: ${message}`,
   blockList: "Bloques de la nota",
   richTextEditorLabel: "Editor de bloque con texto enriquecido",
+  emptyPagePlaceholder: "Escribe, o presiona '/' para comandos y '@' para mencionar",
   richTextMentionMenuStatus: (count: number) =>
     `Menú de menciones abierto, ${count} ${count === 1 ? "resultado" : "resultados"}.`,
   richTextSlashMenuStatus: "Menú de comandos de barra abierto.",

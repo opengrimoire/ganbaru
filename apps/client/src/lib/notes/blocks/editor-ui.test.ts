@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
+import type { NotesBlock, NotesBlockWrite } from "$lib/notes/types";
+import { createBlockWrite } from "./factory";
 import {
+  isNotesPageBodyEmpty,
   notesBlockMarker,
   notesNumberedListOrdinals,
   notesRichTextEditorClass,
@@ -47,6 +50,32 @@ describe("notes block editor UI helpers", () => {
     expect(notesBlockMarker("numbered_list_item")).toBe("1.");
     expect(notesBlockMarker("paragraph")).toBe("");
     expect(notesBlockMarker("numbered_list_item", 12)).toBe("12.");
+  });
+});
+
+describe("empty page body", () => {
+  function item(write: NotesBlockWrite, hasChildren = false): { block: NotesBlock } {
+    const base = {
+      object: "block" as const, id: write.id, parent: { type: "page_id" as const, page_id: "page" },
+      created_time: "2026-10-11T09:00:00.000Z", last_edited_time: "2026-10-11T09:00:00.000Z",
+      has_children: hasChildren, in_trash: false, archived: false,
+      source_provider: null, source_object_id: null, source_last_edited_time: null,
+    };
+    if (write.type === "paragraph") return { block: { ...base, type: write.type, paragraph: write.paragraph } };
+    if (write.type === "heading_1") return { block: { ...base, type: write.type, heading_1: write.heading_1 } };
+    throw new Error(`unsupported test block type: ${write.type}`);
+  }
+
+  it("treats a lone empty paragraph as an empty page", () => {
+    expect(isNotesPageBodyEmpty([item(createBlockWrite("a"))])).toBe(true);
+  });
+
+  it("keeps the hint away once the page has text, structure, or more blocks", () => {
+    expect(isNotesPageBodyEmpty([])).toBe(false);
+    expect(isNotesPageBodyEmpty([item(createBlockWrite("a", "paragraph", " "))])).toBe(false);
+    expect(isNotesPageBodyEmpty([item(createBlockWrite("a", "heading_1"))])).toBe(false);
+    expect(isNotesPageBodyEmpty([item(createBlockWrite("a"), true)])).toBe(false);
+    expect(isNotesPageBodyEmpty([item(createBlockWrite("a")), item(createBlockWrite("b"))])).toBe(false);
   });
 });
 

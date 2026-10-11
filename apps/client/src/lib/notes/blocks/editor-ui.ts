@@ -1,5 +1,6 @@
 import type { AppLocale } from "$lib/i18n/locales";
-import type { NotesBlockType } from "$lib/notes/types";
+import type { NotesBlock, NotesBlockType } from "$lib/notes/types";
+import { blockPlainText } from "./queries";
 
 const NOTES_HEADING_CLASSES: Readonly<Record<string, string>> = {
   heading_1: "notes-heading-1",
@@ -75,6 +76,18 @@ export function notesNumberedListOrdinals(
     ordinals.set(block.id, ordinal);
   }
   return ordinals;
+}
+
+/**
+ * Report whether a page body holds nothing but the single empty paragraph every page keeps for typing.
+ *
+ * @param items The page's flattened body blocks in document order.
+ * @returns True when the body should show the empty page hint.
+ */
+export function isNotesPageBodyEmpty(items: readonly { block: NotesBlock }[]): boolean {
+  if (items.length !== 1) return false;
+  const { block } = items[0];
+  return block.type === "paragraph" && !block.has_children && blockPlainText(block) === "";
 }
 
 /** Share heading typography across editing and historical reading surfaces. */

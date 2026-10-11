@@ -474,6 +474,21 @@ describe("notes asset-rich-text boundary validation", () => {
       });
     });
 
+  it("reads app object mentions with readable ids and rejects empty ones", () => {
+    const objectMention = (id: string) => ({
+      type: "mention",
+      mention: { type: "ganbaru_object", ganbaru_object: { type: "project", id } },
+      annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" },
+      plain_text: "Chores",
+      href: null,
+    });
+
+    expect(parseNotesRichTextArray([objectMention("project-routine-chores")], "rich_text")[0]).toMatchObject({
+      mention: { type: "ganbaru_object", ganbaru_object: { type: "project", id: "project-routine-chores" } },
+    });
+    expect(() => parseNotesRichTextArray([objectMention(" ")], "rich_text")).toThrow("must not be empty");
+  });
+
   it("parses linked text rich text", () => {
       const richText = parseNotesRichTextArray(
         [

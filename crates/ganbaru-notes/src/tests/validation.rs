@@ -724,3 +724,44 @@ fn notes_validation_boundary_matrix_keeps_acceptance_and_errors_stable() {
         assert_eq!(actual, expected, "{label}");
     }
 }
+
+#[test]
+fn notes_validation_accepts_readable_app_object_mention_ids() {
+    let object_mention = |object_type: &str, id: &str| {
+        json!({
+            "rich_text": [{
+                "type": "mention",
+                "mention": {
+                    "type": "ganbaru_object",
+                    "ganbaru_object": { "type": object_type, "id": id }
+                },
+                "annotations": {
+                    "bold": false,
+                    "italic": false,
+                    "strikethrough": false,
+                    "underline": false,
+                    "code": false,
+                    "color": "default"
+                },
+                "plain_text": "Chores",
+                "href": null
+            }],
+            "color": "default"
+        })
+    };
+
+    assert_eq!(
+        validation::validate_block_payload(
+            "paragraph",
+            &object_mention("project", "project-routine-chores")
+        ),
+        Ok(())
+    );
+    assert_eq!(
+        validation::validate_block_payload("paragraph", &object_mention("project_task", " ")),
+        Err(
+            "rich text mention.ganbaru_object.id must not be empty or contain control characters"
+                .to_string()
+        )
+    );
+}

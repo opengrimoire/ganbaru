@@ -81,9 +81,7 @@ function parseNotesRichText(value: unknown, label: string): NotesRichText {
         object.type,
         `${label}.mention.ganbaru_object.type`,
       );
-      const objectId = objectType === "music_item"
-        ? readMentionObjectId(object.id, `${label}.mention.ganbaru_object.id`)
-        : readUuidString(object.id, `${label}.mention.ganbaru_object.id`);
+      const objectId = readMentionObjectId(object.id, `${label}.mention.ganbaru_object.id`);
       return {
         type: "mention",
         mention: {

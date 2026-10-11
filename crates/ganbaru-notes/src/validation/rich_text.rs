@@ -163,13 +163,11 @@ pub fn validate_ganbaru_object_mention(
         .get("id")
         .and_then(Value::as_str)
         .ok_or_else(|| "rich text mention.ganbaru_object.id must be a string".to_string())?;
-    if object_type == "music_item" {
-        validate_ganbaru_object_id(object_id, "rich text mention.ganbaru_object.id")
-    } else {
-        require_uuid(object_id, "rich text mention.ganbaru_object.id")
-    }
+    validate_ganbaru_object_id(object_id, "rich text mention.ganbaru_object.id")
 }
 
+/// Validates an app object identifier as an opaque bounded string. The owning domain defines the format; seeded
+/// projects, for example, use readable ids rather than UUIDs.
 pub fn validate_ganbaru_object_id(value: &str, field: &str) -> Result<(), String> {
     if value.trim().is_empty() || value.chars().any(char::is_control) {
         return Err(format!(

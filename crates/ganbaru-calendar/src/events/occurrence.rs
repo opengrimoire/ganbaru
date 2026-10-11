@@ -1,12 +1,12 @@
 //! Canonical mutation geometry read from the caller's transaction.
 
 use ganbaru_db::impl_sqlite_from_row;
-use std::sync::{Arc, LazyLock};
 
 use sqlx::{FromRow, SqliteConnection, sqlite::SqliteRow};
 
 use crate::reads::native_window::utc;
 use crate::recurrence::canonical::{StoredOverride, StoredTemplate, Template, parse_date};
+use crate::work_gate::WorkGate;
 
 use super::ids::split_synthetic_id;
 use super::types::CalendarEventMutationContext;
@@ -14,8 +14,7 @@ use super::types::CalendarEventMutationContext;
 const MAX_SOURCE_RECORDS: usize = 10_000;
 const MAX_SOURCE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_ID_BYTES: usize = 1_024;
-static LOOKUP_GATE: LazyLock<Arc<tokio::sync::Semaphore>> =
-    LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(1)));
+static LOOKUP_GATE: WorkGate = WorkGate::new();
 
 pub(super) fn validate_source_id(source_id: &str) -> Result<(), String> {
     if source_id.trim().is_empty()
@@ -216,8 +215,7 @@ pub(super) async fn load_context(
     id: &str,
 ) -> Result<CalendarEventMutationContext, String> {
     let permit = LOOKUP_GATE
-        .clone()
-        .try_acquire_owned()
+        .try_acquire()
         .map_err(|_| "A Calendar occurrence is being resolved; retry after it finishes")?;
     let (source_id, date) = split_synthetic_id(id);
     if source_id.trim().is_empty() || source_id.len() > MAX_ID_BYTES {

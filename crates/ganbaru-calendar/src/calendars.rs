@@ -154,8 +154,7 @@ pub async fn remove_calendar(
     }
     let epoch_ms = jiff::Timestamp::now().as_millisecond();
     let permit = crate::events::scope::SCOPE_GATE
-        .clone()
-        .try_acquire_owned()
+        .try_acquire()
         .map_err(|_| "A Calendar operation is being reviewed; retry after it finishes")?;
     let worker = tokio::task::spawn_blocking(move || {
         let _permit = permit;

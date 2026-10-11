@@ -15,20 +15,19 @@ pub(super) use plan::PreparedMutation;
 
 use std::collections::BTreeSet;
 use std::io::{self, Write};
-#[cfg(test)]
-use std::sync::{Arc, LazyLock};
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use sqlx::SqliteConnection;
 
 use super::occurrence::ReadBudget;
+#[cfg(test)]
+use crate::work_gate::WorkGate;
 use preservation::Preservation;
 use rows::*;
 
 #[cfg(test)]
-static COPY_GATE: LazyLock<Arc<tokio::sync::Semaphore>> =
-    LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(1)));
+static COPY_GATE: WorkGate = WorkGate::new();
 
 #[derive(Clone, Default, Serialize)]
 pub(super) struct Metadata {
@@ -215,7 +214,7 @@ pub(super) async fn copy_event_metadata(
     source: &str,
     target: &str,
 ) -> Result<(), String> {
-    let permit = COPY_GATE.clone().try_acquire_owned().map_err(
+    let permit = COPY_GATE.try_acquire().map_err(
         |_| "A Calendar metadata copy is already being prepared; retry when it finishes",
     )?;
     let metadata = Metadata::read(connection, source, &mut ReadBudget::default()).await?;

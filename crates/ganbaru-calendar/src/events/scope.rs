@@ -1,7 +1,7 @@
 //! Native recurrence scope analysis over one bounded Calendar/Focus snapshot.
 
 use ganbaru_db::impl_sqlite_from_row;
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::NaiveDate;
@@ -11,11 +11,11 @@ use sqlx::{SqliteConnection, SqlitePool};
 #[cfg(test)]
 use crate::recurrence::canonical::ScopePlan;
 use crate::recurrence::canonical::{EditScope, ScopeClock, ScopeEvidence, parse_date};
+use crate::work_gate::WorkGate;
 
 use super::occurrence::{Geometry, ReadBudget, read_geometry};
 
-pub static SCOPE_GATE: LazyLock<Arc<tokio::sync::Semaphore>> =
-    LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(1)));
+pub static SCOPE_GATE: WorkGate = WorkGate::new();
 pub const SCOPE_WORKER_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The device-local date at an instant, which decides floating all-day protection.
@@ -378,8 +378,7 @@ where
     }
     let selected = parse_date(&request.recurrence_date)?;
     let permit = SCOPE_GATE
-        .clone()
-        .try_acquire_owned()
+        .try_acquire()
         .map_err(|_| "A Calendar scope is being prepared; retry after it finishes")?;
     let mut tx = pool
         .begin()

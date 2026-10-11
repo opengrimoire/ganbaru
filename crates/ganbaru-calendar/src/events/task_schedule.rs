@@ -211,8 +211,7 @@ impl ScheduleRequest {
         now_ms: i64,
     ) -> Result<super::commit::PreparedCommit, String> {
         let permit = super::scope::SCOPE_GATE
-            .clone()
-            .try_acquire_owned()
+            .try_acquire()
             .map_err(|_| "A Calendar operation is being prepared; retry after it finishes")?;
         let snapshot = self.read(tx).await?;
         let request = self.clone();

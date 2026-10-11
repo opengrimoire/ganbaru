@@ -309,8 +309,7 @@ pub(super) async fn archive_event_snapshot(
     use super::scope::{SCOPE_GATE, SCOPE_WORKER_TIMEOUT};
 
     let permit = SCOPE_GATE
-        .clone()
-        .try_acquire_owned()
+        .try_acquire()
         .map_err(|_| "A Calendar archive is being prepared; retry after it finishes")?;
     let metadata = Metadata::read(tx, &context.source_event_id, &mut ReadBudget::default()).await?;
     let context = CalendarEventMutationContext {

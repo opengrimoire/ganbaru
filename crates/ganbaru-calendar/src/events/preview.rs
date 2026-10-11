@@ -308,8 +308,7 @@ pub async fn preview_edit<H: PreviewHost>(
         }
         CalendarIntent::ScheduleTasks(schedule) => {
             let permit = super::scope::SCOPE_GATE
-                .clone()
-                .try_acquire_owned()
+                .try_acquire()
                 .map_err(|_| "A Calendar preview is being prepared; retry after it finishes")?;
             let pool = host.connect().await?;
             let mut tx = pool
@@ -353,8 +352,7 @@ pub async fn preview_edit<H: PreviewHost>(
         }
         CalendarIntent::Create(create) => {
             let permit = super::scope::SCOPE_GATE
-                .clone()
-                .try_acquire_owned()
+                .try_acquire()
                 .map_err(|_| "A Calendar preview is being prepared; retry after it finishes")?;
             // Authorize the supplied URL before doing CPU work. Creation has no
             // source snapshot, but its visible timestamps still use native time.

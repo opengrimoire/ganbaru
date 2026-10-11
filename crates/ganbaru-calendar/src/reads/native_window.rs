@@ -2,7 +2,6 @@
 
 use ganbaru_db::impl_sqlite_from_row;
 use std::collections::BTreeMap;
-use std::sync::{Arc, LazyLock};
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
@@ -13,13 +12,13 @@ use super::{DbCalendarEventRow, DbOverrideRow, DbWindowAttendeeRow};
 use crate::recurrence::canonical::{
     StoredOverride, StoredTemplate, Template, Window, expand_templates,
 };
+use crate::work_gate::WorkGate;
 use ganbaru_civil_time as civil_time;
 
 const MAX_TEMPLATES: usize = 10_000;
 const MAX_ID_BYTES: usize = 1_024;
 const SECONDS_PER_DAY: f64 = 86_400.0;
-static WINDOW_GATE: LazyLock<Arc<tokio::sync::Semaphore>> =
-    LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(1)));
+static WINDOW_GATE: WorkGate = WorkGate::new();
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -174,8 +173,7 @@ pub(super) async fn load(
     purpose: WindowPurpose,
 ) -> Result<NativeCalendarWindow, String> {
     let permit = WINDOW_GATE
-        .clone()
-        .acquire_owned()
+        .acquire()
         .await
         .map_err(|_| "The Calendar window gate is closed")?;
     let window = Window::new(

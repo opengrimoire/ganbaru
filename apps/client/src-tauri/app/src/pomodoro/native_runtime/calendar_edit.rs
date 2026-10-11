@@ -316,8 +316,7 @@ async fn receipt_read_authority(
 
 fn receipt_worker_permit() -> Result<tokio::sync::OwnedSemaphorePermit, CommitFailure> {
     ganbaru_calendar::events::scope::SCOPE_GATE
-        .clone()
-        .try_acquire_owned()
+        .try_acquire()
         .map_err(|_| {
             CommitFailure::unknown("Calendar receipt verification is busy; retry this Save")
         })

@@ -9,6 +9,7 @@ pub mod events;
 pub mod import;
 pub mod reads;
 pub mod recurrence;
+pub mod work_gate;
 
 #[cfg(test)]
 mod test_support {

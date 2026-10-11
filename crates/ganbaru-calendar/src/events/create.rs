@@ -78,8 +78,7 @@ impl CreateRequest {
     ) -> Result<super::commit::PreparedCommit, String> {
         self.draft.check_limits()?;
         let permit = SCOPE_GATE
-            .clone()
-            .try_acquire_owned()
+            .try_acquire()
             .map_err(|_| "A Calendar operation is being prepared; retry after it finishes")?;
         let request = self.clone();
         let worker = tokio::task::spawn_blocking(move || {

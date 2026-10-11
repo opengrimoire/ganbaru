@@ -3,7 +3,6 @@
 use ganbaru_db::impl_sqlite_from_row;
 use std::collections::BTreeMap;
 use std::io::{self, Write};
-use std::sync::{Arc, LazyLock};
 
 use serde::Serialize;
 use serde_json::Value;
@@ -16,11 +15,11 @@ use super::{
     DbFullEventRow, DbFullOverrideRow, FULL_EVENT_SELECT_SQL, sanitize_full_override_rows,
 };
 use crate::description::sanitize_calendar_description_html;
+use crate::work_gate::WorkGate;
 
 pub(super) const MAX_EXPORT_RECORDS: usize = 500_000;
 pub(super) const MAX_EXPORT_BYTES: usize = 64 * 1024 * 1024;
-static EXPORT_GATE: LazyLock<Arc<tokio::sync::Semaphore>> =
-    LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(1)));
+static EXPORT_GATE: WorkGate = WorkGate::new();
 
 #[derive(Serialize)]
 pub struct CalendarExportHeader {
@@ -52,7 +51,7 @@ pub(super) async fn load_export_snapshot(
     pool: &SqlitePool,
     calendar_id: &str,
 ) -> Result<CalendarExportSnapshot, String> {
-    let permit = EXPORT_GATE.clone().try_acquire_owned().map_err(|_| {
+    let permit = EXPORT_GATE.try_acquire().map_err(|_| {
         "A Calendar export is already being prepared. Try again when it finishes.".to_string()
     })?;
     let rows = read_export_rows(pool, calendar_id).await?;

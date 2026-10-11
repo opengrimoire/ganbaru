@@ -58,8 +58,7 @@ impl DeleteRequest {
     ) -> Result<super::commit::PreparedCommit, String> {
         self.check_limits()?;
         let permit = super::scope::SCOPE_GATE
-            .clone()
-            .try_acquire_owned()
+            .try_acquire()
             .map_err(|_| "A Calendar operation is being prepared; retry after it finishes")?;
         let snapshot = super::scope::read_snapshot(tx, &self.selection.template_id).await?;
         let selected = crate::recurrence::canonical::parse_date(&self.selection.recurrence_date)?;

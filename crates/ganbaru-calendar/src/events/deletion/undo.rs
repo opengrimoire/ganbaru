@@ -105,8 +105,7 @@ impl UndoPreimage {
             return Err("Calendar deletion has an unexpected source postimage".into());
         }
         let permit = SCOPE_GATE
-            .clone()
-            .try_acquire_owned()
+            .try_acquire()
             .map_err(|_| "Calendar Undo sealing is busy")?;
         let worker = tokio::task::spawn_blocking(move || {
             let _permit = permit;
@@ -204,8 +203,7 @@ impl UndoPreimage {
             }
         }
         let permit = SCOPE_GATE
-            .clone()
-            .try_acquire_owned()
+            .try_acquire()
             .map_err(|_| "Calendar Undo preparation is busy")?;
         let command_id = command_id.to_owned();
         let worker = tokio::task::spawn_blocking(move || {

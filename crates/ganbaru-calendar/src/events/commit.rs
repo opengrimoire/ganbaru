@@ -129,8 +129,7 @@ impl CommitClockFence {
         }
         if let Some(expected) = self.floating_today {
             let permit = SCOPE_GATE
-                .clone()
-                .try_acquire_owned()
+                .try_acquire()
                 .map_err(|_| "Calendar device-date verification is busy; retry Save")?;
             let worker = tokio::task::spawn_blocking(move || -> Result<(), String> {
                 let _permit = permit;
@@ -339,8 +338,7 @@ impl CommitRequest {
             CalendarIntent::Edit(edit) => edit,
         };
         let permit = SCOPE_GATE
-            .clone()
-            .try_acquire_owned()
+            .try_acquire()
             .map_err(|_| "A Calendar edit is being prepared; retry when it finishes")?;
         let snapshot = read_snapshot(tx, &edit.selection.template_id).await?;
         // Copy a bounded owned draft for the worker. It never accepts prepared

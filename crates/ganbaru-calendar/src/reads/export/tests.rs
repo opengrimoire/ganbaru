@@ -362,7 +362,7 @@ fn export_bounds_repeated_preserved_components_during_assembly() {
 fn export_rejects_concurrent_preparation_without_queuing_another_snapshot() {
     crate::test_support::block_on(async {
         let pool = pool().await;
-        let permit = EXPORT_GATE.clone().try_acquire_owned().unwrap();
+        let permit = EXPORT_GATE.try_acquire().unwrap();
         assert!(
             load_export_snapshot(&pool, "export")
                 .await

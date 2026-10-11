@@ -1,5 +1,5 @@
 <script lang="ts">
-  import LocalPersonAvatar from "$lib/components/contacts/LocalPersonAvatar.svelte";
+  import NotesCommentAvatar from "$lib/components/notes/pages/comments/NotesCommentAvatar.svelte";
   import { NOTES_SHARE_ROLES, type NotesShareRole } from "$lib/components/contacts/model";
   import NotesLocationPath from "$lib/components/notes/NotesLocationPath.svelte";
   import { notesCaretMenuPosition } from "$lib/components/notes/blocks/caret-menu-position";
@@ -168,7 +168,7 @@
     {@const location = targetLocation(target)}
     {@const detail = targetDetail(target)}
     {#if target.kind === "user" && target.id === localUserId}
-      <LocalPersonAvatar size={20} />
+      <span class="flex size-5 shrink-0 items-center justify-center"><NotesCommentAvatar own size={16} /></span>
     {:else}
       <NotesMentionTargetIcon {target} />
     {/if}
@@ -184,10 +184,10 @@
       <span class="max-w-[45%] shrink-0 truncate text-panel-detail text-muted-foreground">{detail}</span>
     {/if}
   {:else if row.kind === "invite"}
-    <UserRoundPlus class="size-4 shrink-0" aria-hidden="true" />
+    <span class="flex size-5 shrink-0 items-center justify-center"><UserRoundPlus class="size-4" aria-hidden="true" /></span>
     <span class="min-w-0 flex-1 truncate">{t("notes.mentionInvite")}</span>
   {:else}
-    <Ellipsis class="size-4 shrink-0" aria-hidden="true" />
+    <span class="flex size-5 shrink-0 items-center justify-center"><Ellipsis class="size-4" aria-hidden="true" /></span>
     <span class="min-w-0 flex-1 truncate">{t("notes.databaseSourceShowMore", row.hiddenCount)}</span>
   {/if}
 {/snippet}

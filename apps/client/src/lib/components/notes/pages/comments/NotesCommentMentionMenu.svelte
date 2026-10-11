@@ -1,5 +1,5 @@
 <script lang="ts">
-  import LocalPersonAvatar from "$lib/components/contacts/LocalPersonAvatar.svelte";
+  import NotesCommentAvatar from "./NotesCommentAvatar.svelte";
   import NotesMentionTargetIcon from "$lib/components/notes/rich-text/NotesMentionTargetIcon.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type {
@@ -91,7 +91,7 @@
               onclick={() => onSelect(target)}
             >
               {#if target.kind === "user" && target.id === localUserId}
-                <LocalPersonAvatar size={20} />
+                <span class="flex size-5 shrink-0 items-center justify-center"><NotesCommentAvatar own size={16} /></span>
               {:else}
                 <NotesMentionTargetIcon {target} />
               {/if}

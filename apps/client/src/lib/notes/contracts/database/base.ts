@@ -78,6 +78,12 @@ export interface NotesDataSource {
   last_edited_time: string;
 }
 
+/** A data source in the vault-wide list, with where its database lives. */
+export interface NotesDataSourceListItem extends NotesDataSource {
+  /** Outermost first: project group and project names, folder names, then the titles of the pages (and row databases) leading to the page that holds the database. Page titles may be empty. */
+  location: string[];
+}
+
 export const NOTES_DATA_SOURCE_PROPERTY_TYPES = [
   "title",
   "rich_text",

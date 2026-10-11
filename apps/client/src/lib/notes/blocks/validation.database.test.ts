@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseNotesBlock, parseNotesCreatedDatabase, parseNotesDataSourceCsvExportSaveResult, parseNotesDataSourceCsvImportResult, parseNotesPage } from "./validation";
+import { parseNotesBlock, parseNotesCreatedDatabase, parseNotesDataSourceCsvExportSaveResult, parseNotesDataSourceCsvImportResult, parseNotesDataSourceListItem, parseNotesPage } from "./validation";
 import { baseBlock, basePage, baseRichText } from "./validation.fixtures";
 
 describe("notes database boundary validation", () => {
@@ -127,6 +127,31 @@ describe("notes database boundary validation", () => {
       expect(created.database.data_sources[0]?.id).toBe("cccccccc-cccc-4ccc-8ccc-cccccccccccc");
       expect(created.view.type).toBe("table");
       expect(created.block.child_database.database_id).toBe("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+    });
+
+  it("parses data source list items with the pages that hold their database", () => {
+      const dataSource = {
+        object: "data_source",
+        id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        parent: { type: "database_id", database_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" },
+        database_parent: baseBlock.parent,
+        title: "Tasks",
+        title_rich_text: [baseRichText],
+        description: [],
+        icon: null,
+        properties: {},
+        in_trash: false,
+        source_provider: null,
+        source_object_id: null,
+        source_workspace_id: null,
+        source_last_edited_time: null,
+        created_time: baseBlock.created_time,
+        last_edited_time: baseBlock.last_edited_time,
+      };
+
+      expect(parseNotesDataSourceListItem({ ...dataSource, location: ["Productivity", ""] }).location).toEqual(["Productivity", ""]);
+      expect(() => parseNotesDataSourceListItem(dataSource)).toThrow("data source.location must be an array");
+      expect(() => parseNotesDataSourceListItem({ ...dataSource, location: ["Productivity", 3] })).toThrow("data source.location[1]");
     });
 
   it("rejects child database titles with control characters", () => {

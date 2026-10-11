@@ -2,17 +2,17 @@ import type { database as enDatabase } from "../../en/notes/database";
 import type { MessageShape } from "../../types";
 
 export const database = {
-  databaseSources: "Fuentes de datos",
   databaseSourcesLoading: "Cargando fuentes de datos…",
-  databaseSourcesAttached: "Fuentes adjuntas",
+  databaseSourcesAttached: "En esta base de datos",
   databaseSourcesUnnamed: "Fuente sin título",
   databaseSourceOwned: "Propia de esta base",
   databaseSourceLinked: "Fuente vinculada",
-  databaseSourceName: "Nombre de la fuente",
-  databaseSourceCreate: "Crear fuente",
-  databaseSourceAttach: "Adjuntar fuente existente",
+  databaseSourceSearch: "Busca o nombra una fuente nueva…",
+  databaseSourceCreateNamed: (name: string) => `Crear “${name}”`,
+  databaseSourceShowMore: (count: number) => `Mostrar ${count} más`,
+  databaseSourceNoMatches: "No hay fuentes que coincidan",
+  databaseSourceAttach: "Vincular otra fuente",
   databaseSourceNoOtherSources: "No hay otras fuentes disponibles",
-  databaseSourceSharedDescription: "Las fuentes vinculadas comparten sus propiedades y páginas. Las vistas conservan sus propios ajustes de diseño.",
   databaseEditingLock: "Bloqueo del diseño de la base de datos",
   databaseLockLayout: "Bloquear el diseño de la base de datos",
   databaseEditingLockDescription: "El diseño está bloqueado para evitar cambios accidentales. Puedes editar y añadir páginas. Las bases de datos vinculadas tienen su propio bloqueo de diseño.",

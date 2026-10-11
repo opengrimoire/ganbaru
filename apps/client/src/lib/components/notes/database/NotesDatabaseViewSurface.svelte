@@ -4,6 +4,7 @@
   import { cn } from "$lib/utils";
   import { NOTES_DATABASE_VIEW_TAB_DISPLAYS, notesDatabaseViewTabDisplays, type NotesDatabaseViewTabDisplay } from "$lib/notes/database/view-tab-display.svelte";
   import { databaseResource, notesDatabaseSession } from "$lib/notes/database/session.svelte";
+  import { compactSourceLocation } from "$lib/notes/database/source-location";
   import Table2 from "@lucide/svelte/icons/table-2";
   import Columns3 from "@lucide/svelte/icons/columns-3";
   import LayoutGrid from "@lucide/svelte/icons/layout-grid";
@@ -21,6 +22,8 @@
   import Plus from "@lucide/svelte/icons/plus";
   import Paintbrush from "@lucide/svelte/icons/paintbrush";
   import ArrowUpRight from "@lucide/svelte/icons/arrow-up-right";
+  import ChevronRight from "@lucide/svelte/icons/chevron-right";
+  import Ellipsis from "@lucide/svelte/icons/ellipsis";
   import type { NotesDatabasePropertyActionRequest, NotesDatabaseSourceEditingScope } from "$lib/notes/database/data-source-schema";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
@@ -49,7 +52,7 @@
     type NotesDatabaseViewKind,
     type NotesDataSourceTemplate,
     type NotesDataSourcePropertyType,
-    type NotesDataSource,
+    type NotesDataSourceListItem,
   } from "$lib/notes/types";
   import {
     beginLazyComponentLoad,
@@ -112,6 +115,8 @@
 
   const { t } = getLocalization();
   const MAX_VISIBLE_VIEWS = 3;
+  /** Sources from other databases listed before Show more. */
+  const SOURCE_PREVIEW_COUNT = 5;
   const viewIcons = {
     table: Table2,
     board: Columns3,
@@ -138,8 +143,12 @@
   let nameDraft = $state("");
   let viewSearch = $state("");
   let viewSettingsOpen = $state(false);
-  /** Set by Edit view in a tab menu so settings open once that menu has closed. */
-  let editViewPending = false;
+  /** Set by Edit view or Source in a tab menu so settings open on that page once the menu has closed. */
+  let pendingSettings: "view" | "source" | null = null;
+  /** Asks the Source row to open its page once settings have rendered it. */
+  let sourcePageRequested = $state(false);
+  let sourceSettingsRow: ReturnType<typeof CollectionMenu> | undefined = $state();
+  let sourceListExpanded = $state(false);
   let settingsAnchor: HTMLButtonElement | null = $state(null);
   let newRowRequestState = $state<{ reporter: (saving: boolean) => void; count: number } | null>(null);
   let templates = $state<NotesDataSourceTemplate[]>(untrack(() => notesDatabaseSession.read(databaseResource("templates", dataSourceId)) ?? []));
@@ -148,7 +157,7 @@
   let pendingDeleteView = $state<NotesDatabaseView | null>(null);
   let lastViewsLoadSignature = $state<string | null>(null);
   let metadataRequest = 0;
-  let dataSources = $state<NotesDataSource[]>([]);
+  let dataSources = $state<NotesDataSourceListItem[]>([]);
   let sourcesLoading = $state(false);
   let sourceName = $state("");
   let sourceError = $state<string | null>(null);
@@ -169,6 +178,11 @@
   const attachedSourceIds = $derived(new Set(views.map((view) => view.data_source_id)));
   const attachedSources = $derived(dataSources.filter((source) => attachedSourceIds.has(source.id)));
   const otherSources = $derived(dataSources.filter((source) => !attachedSourceIds.has(source.id)));
+  const sourceQuery = $derived(sourceName.trim().toLocaleLowerCase());
+  const matchingAttachedSources = $derived(attachedSources.filter(sourceMatches));
+  const matchingOtherSources = $derived(otherSources.filter(sourceMatches));
+  const shownOtherSources = $derived(sourceListExpanded ? matchingOtherSources : matchingOtherSources.slice(0, SOURCE_PREVIEW_COUNT));
+  const hiddenSourceCount = $derived(matchingOtherSources.length - shownOtherSources.length);
   const layoutInstance = $derived.by(() => {
     const identity = JSON.stringify([activeSourceId, databaseId, activeViewId, activeViewKind]);
     const reportSaving = (saving: boolean): void => {
@@ -234,7 +248,19 @@
     void loadTemplates(false);
   });
 
-  $effect(() => { if (viewSettingsOpen) void loadSources(); });
+  $effect(() => {
+    if (viewSettingsOpen) void loadSources();
+    else sourceListExpanded = false;
+  });
+  // The request lasts until settings close, so a Source row that remounts while settings first load still opens.
+  $effect(() => {
+    const row = sourceSettingsRow;
+    if (!sourcePageRequested || !row) return;
+    untrack(() => row.show());
+  });
+  $effect(() => {
+    if (!viewSettingsOpen) sourcePageRequested = false;
+  });
   $effect(() => {
     if (templateSourceId === activeSourceId) return;
     templateSourceId = activeSourceId;
@@ -253,6 +279,27 @@
     } catch (caught: unknown) {
       if (request === sourceRequest) sourceError = caught instanceof Error ? caught.message : String(caught);
     } finally { if (request === sourceRequest) sourcesLoading = false; }
+  }
+
+  /** A source's title, or the untitled label. */
+  function sourceTitle(source: NotesDataSourceListItem): string {
+    return source.title || t("notes.databaseSourcesUnnamed");
+  }
+
+  /** Where a source's database lives, from its project group down to the page that holds it, with untitled pages labeled. */
+  function sourceLocationTitles(source: NotesDataSourceListItem): string[] {
+    return source.location.map((title) => title || t("notes.untitled"));
+  }
+
+  /** A source's full location as one line, such as "Personal / Productivity / Tasks". */
+  function sourceLocation(source: NotesDataSourceListItem): string {
+    return sourceLocationTitles(source).join(" / ");
+  }
+
+  /** Whether a source's title or location contains the Source page query. */
+  function sourceMatches(source: NotesDataSourceListItem): boolean {
+    if (!sourceQuery) return true;
+    return sourceTitle(source).toLocaleLowerCase().includes(sourceQuery) || sourceLocation(source).toLocaleLowerCase().includes(sourceQuery);
   }
 
   async function manageSource(sourceId?: string): Promise<void> {
@@ -460,7 +507,7 @@
   }
 
   /**
-   * Load sources for the Source submenu while a view menu is open, and open view settings only after the menu that
+   * Load sources for the Source summary while a view menu is open, and open view settings only after the menu that
    * asked for them has closed, so its returning focus does not dismiss them.
    *
    * @param open Whether the view menu is now open.
@@ -471,8 +518,9 @@
       return;
     }
     editingName = false;
-    if (!editViewPending) return;
-    editViewPending = false;
+    if (!pendingSettings) return;
+    sourcePageRequested = pendingSettings === "source";
+    pendingSettings = null;
     viewSettingsOpen = true;
   }
 
@@ -565,7 +613,7 @@
         onkeydown={(event) => { if (event.key === "Enter") { event.preventDefault(); event.currentTarget.blur(); } }} />
     </div>
   {/if}
-  {@render sourcesMenu(t("notes.databaseSources"))}
+  {@render sourcePage()}
   <label class="flex min-h-(--panel-row-height) w-full min-w-0 cursor-pointer items-center gap-2 px-2" aria-busy={selectionDisabled} use:settingsRowSwitch>
     {#if editingLocked}<Lock class="size-3.5 shrink-0 text-muted-foreground" strokeWidth={1.75} aria-hidden="true" />{:else}<LockOpen class="size-3.5 shrink-0 text-muted-foreground" strokeWidth={1.75} aria-hidden="true" />{/if}
     <span class="min-w-0 flex-1 truncate">{t("notes.databaseLockLayout")}</span>
@@ -591,8 +639,12 @@
         <CollectionMenuSeparator />
         <p class="px-2 py-1 text-muted-foreground">{t("notes.databaseViewDisplayPersonal")}</p>
       </CollectionMenu>
-      <CollectionMenuItem icon={SlidersHorizontal} label={t("notes.databaseViewEdit")} onclick={() => { editViewPending = true; }} />
-      {@render sourcesMenu(t("notes.databaseViewSource"))}
+      <CollectionMenuItem icon={SlidersHorizontal} label={t("notes.databaseViewEdit")} onclick={() => { pendingSettings = "view"; }} />
+      <button type="button" class="menu-item min-w-0" disabled={selectionDisabled} onclick={() => { pendingSettings = "source"; }}>
+        <Database class="size-3.5 shrink-0 text-muted-foreground" strokeWidth={1.75} aria-hidden="true" /><span class="min-w-0 flex-1 truncate">{t("notes.databaseViewSource")}</span>
+        {#if activeSource}<span class="max-w-32 truncate text-muted-foreground">{sourceTitle(activeSource)}</span>{/if}
+        <ChevronRight class="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+      </button>
       {#if onCopyViewLink || onOpenFullPage}
         <CollectionMenuSeparator />
         {#if onCopyViewLink}<CollectionMenuItem icon={Link} label={t("notes.databaseViewCopyLink")} onclick={() => { void copyViewLink(view.id); }} />{/if}
@@ -605,30 +657,61 @@
   {/if}
 {/snippet}
 
-{#snippet sourcesMenu(label: string)}
-  <CollectionMenu fullWidth {label} summary={activeSource?.title ?? ""} icon={Database} disabled={selectionDisabled}>
+{#snippet sourcePage()}
+  <CollectionMenu bind:this={sourceSettingsRow} fullWidth label={t("notes.databaseViewSource")} summary={activeSource ? sourceTitle(activeSource) : ""} icon={Database} disabled={selectionDisabled}>
+    <input class="field mb-1 w-full min-w-0" aria-label={t("notes.databaseSourceSearch")} placeholder={t("notes.databaseSourceSearch")}
+      bind:value={sourceName} disabled={selectionDisabled} onkeydown={(event) => event.stopPropagation()} />
     {#if sourceError}<p class="px-2 py-1 text-destructive" role="alert">{sourceError}</p>{/if}
-    {#if sourcesLoading}<p class="px-2 py-1 text-muted-foreground" role="status">{t("notes.databaseSourcesLoading")}</p>{/if}
-    <p class="px-2 py-1 text-muted-foreground">{t("notes.databaseSourcesAttached")}</p>
-    {#each attachedSources as source (source.id)}
-      <CollectionMenuItem icon={Database} label={source.title || t("notes.databaseSourcesUnnamed")} detail={t(source.parent.database_id === databaseId ? "notes.databaseSourceOwned" : "notes.databaseSourceLinked")}
-        checked={source.id === activeSourceId} disabled={selectionDisabled} onclick={() => {
-          const view = supportedViews.find((candidate) => candidate.data_source_id === source.id && candidate.type === activeViewKind)
-            ?? supportedViews.find((candidate) => candidate.data_source_id === source.id);
-          if (view) selectViewFromToolbar(view.id);
-        }} />
-    {/each}
-    <CollectionMenuSeparator />
-    <input class="field mb-1 w-full min-w-0" aria-label={t("notes.databaseSourceName")} placeholder={t("notes.databaseSourceName")}
-      bind:value={sourceName} disabled={selectionDisabled || editingLocked} onkeydown={(event) => event.stopPropagation()} />
-    <CollectionMenuItem icon={Plus} label={t("notes.databaseSourceCreate")} disabled={selectionDisabled || editingLocked || !sourceName.trim()} onclick={() => { void manageSource(); }} />
-    <CollectionMenuSeparator />
-    <p class="px-2 py-1 text-muted-foreground">{t("notes.databaseSourceAttach")}</p>
-    {#each otherSources as source (source.id)}
-      <CollectionMenuItem icon={Link} label={source.title || t("notes.databaseSourcesUnnamed")} disabled={selectionDisabled || editingLocked} onclick={() => { void manageSource(source.id); }} />
-    {/each}
-    {#if otherSources.length === 0 && !sourcesLoading}<p class="px-2 py-1 text-muted-foreground">{t("notes.databaseSourceNoOtherSources")}</p>{/if}
-    <p class="px-2 py-1 text-muted-foreground">{t("notes.databaseSourceSharedDescription")}</p>
+    {#if sourcesLoading && dataSources.length === 0}<p class="px-2 py-1 text-muted-foreground" role="status">{t("notes.databaseSourcesLoading")}</p>{/if}
+    {#if matchingAttachedSources.length > 0}
+      <p class="menu-label">{t("notes.databaseSourcesAttached")}</p>
+      {#each matchingAttachedSources as source (source.id)}
+        <CollectionMenuItem icon={Database} label={sourceTitle(source)} detail={t(source.parent.database_id === databaseId ? "notes.databaseSourceOwned" : "notes.databaseSourceLinked")}
+          checked={source.id === activeSourceId} disabled={selectionDisabled} onclick={() => {
+            const view = supportedViews.find((candidate) => candidate.data_source_id === source.id && candidate.type === activeViewKind)
+              ?? supportedViews.find((candidate) => candidate.data_source_id === source.id);
+            if (view) selectViewFromToolbar(view.id);
+          }} />
+      {/each}
+    {/if}
+    {#if !sourcesLoading || dataSources.length > 0}
+      <p class="menu-label">{t("notes.databaseSourceAttach")}</p>
+      {#each shownOtherSources as source (source.id)}
+        {@const location = sourceLocation(source)}
+        <button type="button" class="menu-item min-w-0" data-collection-settings-row data-collection-row-two-line title={location || undefined}
+          disabled={selectionDisabled || editingLocked} onclick={() => { void manageSource(source.id); }}>
+          <Database class="size-3.5 shrink-0 text-muted-foreground" strokeWidth={1.75} aria-hidden="true" />
+          <span class="relative grid min-w-0 flex-1">
+            <span class="truncate">{sourceTitle(source)}</span>
+            {#if location}
+              <span class="sr-only">{location}</span>
+              <span class="flex min-w-0 text-panel-detail text-muted-foreground" aria-hidden="true">
+                {#each compactSourceLocation(sourceLocationTitles(source)) as segment, index (index)}
+                  {#if index > 0}<span class="shrink-0 px-1">/</span>{/if}
+                  {#if segment.kind === "gap"}
+                    <span class="shrink-0">…</span>
+                  {:else}
+                    <span class={["min-w-8 truncate", segment.last ? "shrink" : "shrink-4"]}>{segment.text}</span>
+                  {/if}
+                {/each}
+              </span>
+            {/if}
+          </span>
+        </button>
+      {/each}
+      {#if hiddenSourceCount > 0}
+        <button type="button" class="menu-item min-w-0 text-muted-foreground" data-collection-settings-row onclick={() => { sourceListExpanded = true; }}>
+          <Ellipsis class="size-3.5 shrink-0" strokeWidth={1.75} aria-hidden="true" /><span class="min-w-0 flex-1 truncate">{t("notes.databaseSourceShowMore", hiddenSourceCount)}</span>
+        </button>
+      {/if}
+      {#if matchingOtherSources.length === 0}
+        <p class="px-2 py-1 text-muted-foreground">{t(sourceQuery ? "notes.databaseSourceNoMatches" : "notes.databaseSourceNoOtherSources")}</p>
+      {/if}
+    {/if}
+    {#if sourceName.trim()}
+      <CollectionMenuSeparator />
+      <CollectionMenuItem icon={Plus} label={t("notes.databaseSourceCreateNamed", sourceName.trim())} disabled={selectionDisabled || editingLocked} onclick={() => { void manageSource(); }} />
+    {/if}
   </CollectionMenu>
 {/snippet}
 

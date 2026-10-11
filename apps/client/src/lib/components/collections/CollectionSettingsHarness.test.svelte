@@ -1,14 +1,27 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import CollectionSettings from "./CollectionSettings.svelte";
   import CollectionMenu from "./CollectionMenu.svelte";
   import Select from "$lib/components/ui/Select.svelte";
 
-  let { showHeader = true, onClose = () => {}, onCommit = () => {} }: { showHeader?: boolean; onClose?: () => void; onCommit?: (value: string) => void } = $props();
+  let { showHeader = true, filterDisabled = false, onClose = () => {}, onCommit = () => {} }: { showHeader?: boolean; filterDisabled?: boolean; onClose?: () => void; onCommit?: (value: string) => void } = $props();
   let open = $state(false);
   let anchor: HTMLButtonElement | null = $state(null);
   let draft = $state("");
   let status = $state("todo");
   let saving = $state(false);
+  let filterLocked = $state(untrack(() => filterDisabled));
+  let filterRow: ReturnType<typeof CollectionMenu> | undefined = $state();
+
+  /** Ask the Filter row to open its page, as a caller outside the panel would. */
+  export function showFilter(): void {
+    filterRow?.show();
+  }
+
+  /** Enable the Filter row after a pending write settles. */
+  export function enableFilter(): void {
+    filterLocked = false;
+  }
 </script>
 
 <button bind:this={anchor} type="button" aria-label="View settings" onclick={() => { open = true; }}>Settings</button>
@@ -24,7 +37,7 @@
         <input aria-label="Advanced value" />
       </CollectionMenu>
     </CollectionMenu>
-    <CollectionMenu label="Filter" summary="1 rule" kind="filter" fullWidth>
+    <CollectionMenu bind:this={filterRow} label="Filter" summary="1 rule" kind="filter" fullWidth disabled={filterLocked}>
       <Select inline ariaLabel="Status" value={status} options={[{ value: "todo", label: "To do" }, { value: "done", label: "Done" }]} onChange={(value) => { status = value; }} />
     </CollectionMenu>
   </CollectionSettings>

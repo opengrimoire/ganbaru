@@ -3,8 +3,6 @@ use serde_json::Value;
 use sqlx::SqlitePool;
 use std::collections::{BTreeMap, HashSet};
 
-const PROJECT_ID_PROPERTY: &str = "__ganbaru_project_id";
-
 #[derive(Debug)]
 pub(super) struct ProjectHistoryGraph {
     pub(super) rows_by_table: BTreeMap<String, Vec<Value>>,
@@ -39,7 +37,7 @@ fn value_in(row: &Value, key: &str, values: &HashSet<String>) -> bool {
 fn page_project_id(row: &Value) -> Option<&str> {
     row.get("properties")
         .and_then(Value::as_object)
-        .and_then(|properties| properties.get(PROJECT_ID_PROPERTY))
+        .and_then(|properties| properties.get(crate::PAGE_PROJECT_ID_PROPERTY))
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())

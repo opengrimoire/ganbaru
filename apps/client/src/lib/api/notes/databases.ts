@@ -3,6 +3,7 @@ import { ensureDbUrl } from "$lib/api/db";
 import {
   mapNotesCreatedDatabaseDto,
   mapNotesDataSourceDto,
+  mapNotesDataSourceListItemDto,
   mapNotesDatabaseViewDto,
   mapNotesDataSourceBoardViewDto,
   mapNotesDataSourceCalendarViewDto,
@@ -38,6 +39,7 @@ import type {
   NotesDatabaseView,
   NotesDatabaseViewDuplicateRequest,
   NotesDataSource,
+  NotesDataSourceListItem,
   NotesDataSourceRowPageCreateRequest,
   NotesDataSourceRowPropertyUpdate,
   NotesDataSourceSchema,
@@ -218,13 +220,13 @@ export async function updateNotesDataSourceSchema(
   );
 }
 
-export async function listNotesDataSources(): Promise<NotesDataSource[]> {
+export async function listNotesDataSources(): Promise<NotesDataSourceListItem[]> {
   const dbUrl = await ensureDbUrl();
   const rows = await invoke<unknown>("notes_list_data_sources", { dbUrl });
   if (!Array.isArray(rows)) {
     throw new Error("notes_list_data_sources returned a non-array payload");
   }
-  return rows.map(mapNotesDataSourceDto);
+  return rows.map(mapNotesDataSourceListItemDto);
 }
 
 export async function listNotesDataSourceRowPages(

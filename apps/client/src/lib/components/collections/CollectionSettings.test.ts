@@ -14,14 +14,14 @@ afterEach(async () => {
 });
 
 /** Mount settings inside a clipped page preview and wait for initial focus. */
-async function openSettings(onClose = vi.fn(), onCommit = vi.fn(), showHeader = true) {
+async function openSettings(onClose = vi.fn(), onCommit = vi.fn(), showHeader = true, filterDisabled = false) {
   const preview = document.createElement("div");
   preview.dataset.floatingRoot = "";
   const clipped = document.createElement("div");
   clipped.style.overflow = "hidden";
   preview.append(clipped);
   document.body.append(preview);
-  component = mount(SettingsFixture, { target: clipped, props: { onClose, onCommit, showHeader } });
+  component = mount(SettingsFixture, { target: clipped, props: { onClose, onCommit, showHeader, filterDisabled } });
   const anchor = clipped.querySelector<HTMLButtonElement>("button")!;
   vi.spyOn(anchor, "getBoundingClientRect").mockReturnValue(new DOMRect(800, 32, 32, 32));
   anchor.focus();
@@ -132,6 +132,23 @@ describe("Collection settings navigation", () => {
     await tick();
     await tick();
     expect(panel.querySelector("[data-collection-settings-header]")).toBeNull();
+  });
+
+  it("opens a page requested while its row is disabled once the row is enabled", async () => {
+    const { panel } = await openSettings(vi.fn(), vi.fn(), true, true);
+    const fixture = component as { showFilter: () => void; enableFilter: () => void };
+    fixture.showFilter();
+    await tick();
+    await tick();
+    expect(panel.getAttribute("aria-label")).toBe("View settings");
+    fixture.enableFilter();
+    await tick();
+    await tick();
+    expect(panel.getAttribute("aria-label")).toBe("Filter");
+    fixture.showFilter();
+    await tick();
+    await tick();
+    expect(panel.querySelectorAll("[data-collection-settings-page]")).toHaveLength(2);
   });
 
   it("shows details in the same panel, keeps root drafts mounted, and returns one level on Back or Escape", async () => {

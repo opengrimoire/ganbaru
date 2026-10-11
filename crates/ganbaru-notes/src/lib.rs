@@ -26,6 +26,9 @@ pub mod writes;
 pub use models::*;
 pub use project_history::*;
 
+/// Page property that assigns a top-level page to a project.
+pub(crate) const PAGE_PROJECT_ID_PROPERTY: &str = "__ganbaru_project_id";
+
 #[cfg(test)]
 mod tests;
 

@@ -30,6 +30,9 @@
     line-height: 1.5;
     white-space: nowrap;
   }
+  .collection-panel :global(:is([data-collection-menu-body], [data-collection-settings-page]) button[data-collection-row-two-line]) {
+    height: auto;
+  }
   .collection-panel :global(:is([data-collection-menu-body], [data-collection-settings-page]) button:is(.collection-menu-control, .collection-settings-control)) {
     justify-content: center;
     padding: 0;

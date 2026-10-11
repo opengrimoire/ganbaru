@@ -295,6 +295,54 @@ fn database_sources_create_attach_and_keep_shared_rows_with_independent_views() 
                 .unwrap(),
             3
         );
+        let folder_id = "00000000-0000-4000-8000-000000000301";
+        sqlx::query("INSERT INTO project_groups (id, name) VALUES ('group', 'Group')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO projects (id, group_id, name) VALUES ('project', 'group', 'Project')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO notes_folders (id, project_id, name) VALUES (?, 'project', 'Folder')",
+        )
+        .bind(folder_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        create_page(&pool, PAGE_C, "99999999-9999-4999-8999-999999999999").await;
+        sqlx::query("UPDATE notes_pages SET title = 'Projects', folder_id = ?, properties = json_set(properties, '$.__ganbaru_project_id', 'project') WHERE id = ?")
+            .bind(folder_id)
+            .bind(PAGE_C)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE notes_pages SET parent_type = 'page_id', parent_page_id = ? WHERE id = ?",
+        )
+        .bind(PAGE_C)
+        .bind(PAGE_A)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let listed = serde_json::to_value(
+            data_sources::schema::list_data_sources(&pool)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let listed = listed.as_array().unwrap();
+        assert_eq!(listed.len(), 3);
+        for source in listed {
+            assert_eq!(source["object"], "data_source");
+            assert_eq!(
+                source["location"],
+                serde_json::json!(["Group", "Project", "Folder", "Projects", "First page"])
+            );
+        }
     });
 }
 

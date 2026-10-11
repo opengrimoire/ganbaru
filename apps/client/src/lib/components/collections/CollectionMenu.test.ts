@@ -252,16 +252,30 @@ describe("Shared collection menus", () => {
     component = mount(CollectionMenu, { target: row, props: { label: "Actions", kind: "actions", children } });
     const trigger = await open(row);
     dialog.querySelector<HTMLButtonElement>("[data-collection-menu-body] button")?.click();
-    await tick();
-    await tick();
+    await vi.waitFor(() => expect(dialog.querySelector('[role="dialog"]')).toBeNull());
     expect(action).toHaveBeenCalledOnce();
-    expect(dialog.querySelector('[role="dialog"]')).toBeNull();
     expect(document.activeElement).toBe(trigger);
 
     await open(row);
     await unmount(component!);
     component = undefined;
     expect(dialog.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it("stays open through the microtasks a browser runs between click listeners so root-delegated actions see it open", async () => {
+    const { dialog, row } = host();
+    const onOpenChange = vi.fn();
+    const children = createRawSnippet(() => ({ render: () => '<div><button type="button"><span>Source</span></button></div>' }));
+    component = mount(CollectionMenu, { target: row, props: { label: "Table", kind: "actions", onOpenChange, children } });
+    await open(row);
+    onOpenChange.mockClear();
+    dialog.querySelector<HTMLElement>("[data-collection-menu-body] button span")!.click();
+    // A browser runs a microtask checkpoint after the panel's own listener, before Svelte's delegated root handler.
+    await Promise.resolve();
+    await tick();
+    expect(dialog.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(onOpenChange).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
   });
 
   it("lets a press only select through beforeOpen and opens from the context menu instead of the browser menu", async () => {
@@ -356,10 +370,8 @@ describe("Shared collection menus", () => {
     await tick();
     expect(filter.isConnected).toBe(false);
     property.querySelector<HTMLButtonElement>("[data-collection-menu-body] button")!.click();
-    await tick();
-    await tick();
+    await vi.waitFor(() => expect(property.isConnected).toBe(false));
     expect(move).toHaveBeenCalledOnce();
-    expect(property.isConnected).toBe(false);
     expect(document.activeElement).toBe(trigger);
   });
 
@@ -386,10 +398,8 @@ describe("Shared collection menus", () => {
     property.querySelector<HTMLButtonElement>('[aria-label="Insert right"]')!.click();
     await vi.waitFor(() => expect(property.querySelector('[role="dialog"][aria-label="Insert right"]')).not.toBeNull());
     property.querySelector<HTMLElement>('[role="dialog"][aria-label="Insert right"]')!.querySelector<HTMLButtonElement>("[data-collection-menu-body] button")!.click();
-    await tick();
-    await tick();
+    await vi.waitFor(() => expect(property.isConnected).toBe(false));
     expect(create).toHaveBeenCalledOnce();
-    expect(property.isConnected).toBe(false);
     expect(document.activeElement).toBe(trigger);
   });
 
@@ -406,9 +416,8 @@ describe("Shared collection menus", () => {
     } });
     const trigger = await open(row);
     dialog.querySelector<HTMLButtonElement>("[data-collection-menu-body] button")?.click();
-    await tick();
+    await vi.waitFor(() => expect(dialog.querySelector('[role="dialog"]')).toBeNull());
     expect(applyTemplate).toHaveBeenCalledOnce();
-    expect(dialog.querySelector('[role="dialog"]')).toBeNull();
     expect(document.activeElement).toBe(trigger);
   });
 });

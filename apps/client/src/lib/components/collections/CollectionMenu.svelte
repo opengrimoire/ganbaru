@@ -92,6 +92,8 @@
   let openTimer: ReturnType<typeof setTimeout> | undefined;
   let closeTimer: ReturnType<typeof setTimeout> | undefined;
   let reportedOpen = false;
+  /** Set by `show()` until the menu or page can open. */
+  let showRequested = $state(false);
 
   $effect(() => {
     if (!panel) return;
@@ -104,6 +106,14 @@
     if (value === reportedOpen) return;
     reportedOpen = value;
     untrack(() => onOpenChange?.(value));
+  });
+
+  $effect(() => {
+    if (!showRequested || disabled || !trigger) return;
+    showRequested = false;
+    untrack(() => {
+      if (!expanded) toggle();
+    });
   });
 
   $effect(() => () => {
@@ -126,6 +136,15 @@
     hoverOpened = false;
     if (!open && beforeOpen?.("press") === false) return;
     open = !open;
+  }
+
+  /**
+   * Open this menu, or its settings page, unless it is already shown. A request made while the row is disabled or
+   * its trigger is still mounting waits until it can open, so a caller that opens settings and this page together
+   * does not depend on render order.
+   */
+  export function show(): void {
+    showRequested = true;
   }
 
   /** Open a toolbar menu from the trigger's context menu instead of the browser menu. */
@@ -297,8 +316,9 @@
       if (!dismisses || !(event.target instanceof Element) || !actionReachesPanel(event.target, node)) return;
       const button = event.target.closest("button");
       if (!button || button.disabled || button.hasAttribute("aria-haspopup") || button.hasAttribute("data-collection-menu-keep-open")) return;
-      // Let delegated action handlers run before their panel is removed.
-      queueMicrotask(() => {
+      // Close after the click finishes dispatching: browsers run microtasks between listeners, so a microtask here
+      // would close the panel before Svelte's delegated action handlers at the app root run.
+      setTimeout(() => {
         if (disposed) return;
         if (node.contains(document.activeElement)) close();
         else open = false;

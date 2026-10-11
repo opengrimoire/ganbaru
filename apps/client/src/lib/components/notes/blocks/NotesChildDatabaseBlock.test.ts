@@ -78,7 +78,7 @@ async function open(referenceRead?: Promise<NotesDatabaseReference>): Promise<No
   else vi.mocked(getNotesDatabaseReference).mockResolvedValue(reference);
   vi.mocked(getNotesDataSourceTableView).mockResolvedValue(table);
   vi.mocked(listNotesDatabaseViews).mockResolvedValue([table.view]);
-  vi.mocked(listNotesDataSources).mockResolvedValue([table.data_source]);
+  vi.mocked(listNotesDataSources).mockResolvedValue([{ ...table.data_source, location: [] }]);
   vi.mocked(listNotesDataSourceTemplates).mockResolvedValue([]);
   component = mount(NotesChildDatabaseBlock, { target: document.body, props: {
     block, focusBlockId: null, focusRequestId: 0, onFocusBlock: vi.fn(), onKeydown: vi.fn(),
@@ -168,7 +168,7 @@ describe("Notes database property editor selection", () => {
       return { data_source: updated.data_source, view: updated.view };
     });
     await open();
-    vi.mocked(listNotesDataSources).mockResolvedValue([canonical, foreign]);
+    vi.mocked(listNotesDataSources).mockResolvedValue([canonical, foreign].map((source) => ({ ...source, location: [] })));
     await addHeaderProperty("Estimate");
     await vi.waitFor(() => expect(document.querySelector('[role="columnheader"] button[aria-label="Project"]')).not.toBeNull());
     expect(listNotesDataSources).not.toHaveBeenCalled();
@@ -192,7 +192,7 @@ describe("Notes database property editor selection", () => {
       return { property_id: String(action.property.id), schema: { data_source: { ...canonical, properties: { ...canonical.properties, Total: action.property } }, view: initial.view } };
     });
     await open();
-    vi.mocked(listNotesDataSources).mockResolvedValue([canonical, foreign]);
+    vi.mocked(listNotesDataSources).mockResolvedValue([canonical, foreign].map((source) => ({ ...source, location: [] })));
     if (operation === "append") await addHeaderProperty("Total", "Rollup");
     else {
       document.querySelector<HTMLButtonElement>('[role="columnheader"] button[aria-label="Priority"]')!.click();

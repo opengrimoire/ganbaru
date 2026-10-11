@@ -741,7 +741,7 @@ pub async fn notes_delete_database_view<R: Runtime>(
 pub async fn notes_list_data_sources<R: Runtime>(
     app: AppHandle<R>,
     db_url: String,
-) -> Result<Vec<NoteDataSourceDto>, String> {
+) -> Result<Vec<NoteDataSourceListItemDto>, String> {
     let pool = connect_sqlite(app, db_url).await?;
     data_sources::schema::list_data_sources(&pool).await
 }

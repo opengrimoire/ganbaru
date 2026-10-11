@@ -33,6 +33,7 @@ Panels were restyled one at a time, so radii, shadows, text sizes, input styles,
 - `menu-separator` divides groups, and `menu-label` titles a group.
 - Background highlight marks only the pointer, keyboard focus, and the row whose submenu is open (`aria-expanded="true"`). The current choice shows a trailing check, never a persistent background. Menus that keep DOM focus elsewhere, such as an editor, mark the keyboard-active row with `data-highlighted`.
 - Panel text uses `text-panel`, set by the surface, and secondary text (descriptions, shortcuts, counts, group labels) uses `text-panel-detail`. Avoid ad hoc rem sizes inside panels.
+- A row with a secondary line (such as a title above its location) grows past the row height; mark it with `data-collection-row-two-line` inside collection panels, which otherwise pin rows to one line.
 - Touch layouts raise the row height to a 44px target through `--panel-row-height`; do not add separate mobile row heights.
 
 ## Fields and controls

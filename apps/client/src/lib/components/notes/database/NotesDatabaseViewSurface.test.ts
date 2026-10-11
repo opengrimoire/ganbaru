@@ -3,7 +3,7 @@ import { createRawSnippet, mount, tick, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { duplicateNotesDatabaseView, listNotesDatabaseViews, listNotesDataSourceTemplates, listNotesDataSources, setNotesDatabaseEditingLock, createNotesDataSource, attachNotesDataSource } from "$lib/api/notes";
 import { databaseResource, MAX_DATABASE_SESSION_RESOURCES, notesDatabaseSession } from "$lib/notes/database/session.svelte";
-import type { NotesDatabaseView, NotesDataSourcePropertyType, NotesDataSource } from "$lib/notes/types";
+import type { NotesDatabaseView, NotesDataSourcePropertyType, NotesDataSourceListItem } from "$lib/notes/types";
 import type { NotesDatabaseSourceEditingScope } from "$lib/notes/database/data-source-schema";
 import NotesDatabaseViewSurface from "./NotesDatabaseViewSurface.svelte";
 
@@ -34,12 +34,12 @@ function views(): NotesDatabaseView[] {
 }
 
 /** Describe a local source independently of the shell that presents it. */
-function source(id: string, title: string, databaseId: string): NotesDataSource {
+function source(id: string, title: string, databaseId: string, location: string[] = []): NotesDataSourceListItem {
   return { object: "data_source", id, title, title_rich_text: [], description: [], icon: null, in_trash: false,
     parent: { type: "database_id", database_id: databaseId }, database_parent: { type: "page_id", page_id: "page" },
     properties: { Name: { id: "title", name: "Name", type: "title", title: {} } },
     created_time: "2026-10-01T00:00:00Z", last_edited_time: "2026-10-01T00:00:00Z",
-    source_provider: null, source_object_id: null, source_workspace_id: null, source_last_edited_time: null };
+    source_provider: null, source_object_id: null, source_workspace_id: null, source_last_edited_time: null, location };
 }
 
 let component: ReturnType<typeof mount> | undefined;
@@ -78,9 +78,9 @@ function chooseSecond(): void {
 }
 
 describe("Notes database view sessions", () => {
-  it.each(["create", "attach"] as const)("selects the new table and its source after %s from Data sources", async (operation) => {
+  it.each(["create", "attach"] as const)("selects the new table and its source after %s from the Source page", async (operation) => {
     let savedViews = views();
-    let available = [source("source", "Tasks", "database"), source("foreign-source", "Workout", "other-database")];
+    let available = [source("source", "Tasks", "database"), source("foreign-source", "Workout", "other-database", ["Health", ""])];
     let resultView: NotesDatabaseView | null = null;
     vi.mocked(listNotesDatabaseViews).mockImplementation(async () => savedViews);
     vi.mocked(listNotesDataSources).mockImplementation(async () => available);
@@ -101,18 +101,19 @@ describe("Notes database view sessions", () => {
     await vi.waitFor(() => expect(document.querySelector("[data-session-view]")).not.toBeNull());
     document.querySelector<HTMLButtonElement>('button[aria-label="View settings"]')!.click();
     await tick();
-    document.querySelector<HTMLButtonElement>('button[aria-label="Data sources"]')!.click();
-    await vi.waitFor(() => expect(document.querySelector<HTMLInputElement>('input[aria-label="Source name"]')).not.toBeNull());
+    document.querySelector<HTMLButtonElement>('button[aria-label="Source"]')!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLInputElement>('input[aria-label="Search or name a new source…"]')).not.toBeNull());
     if (operation === "create") {
-      const name = document.querySelector<HTMLInputElement>('input[aria-label="Source name"]')!;
+      const name = document.querySelector<HTMLInputElement>('input[aria-label="Search or name a new source…"]')!;
       name.value = "Study";
       name.dispatchEvent(new Event("input", { bubbles: true }));
       await tick();
-      Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent?.trim() === "Create source")!.click();
+      Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent?.trim() === "Create “Study”")!.click();
       await vi.waitFor(() => expect(createNotesDataSource).toHaveBeenCalledWith(expect.objectContaining({ database_id: "database", title: "Study", view_name: "Table" })));
     } else {
-      await vi.waitFor(() => expect(Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent?.trim() === "Workout")).toBeDefined());
-      Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent?.trim() === "Workout")!.click();
+      const workout = () => Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent?.includes("Workout"));
+      await vi.waitFor(() => expect(workout()?.textContent).toContain("Health / Untitled"));
+      workout()!.click();
       await vi.waitFor(() => expect(attachNotesDataSource).toHaveBeenCalledWith(expect.objectContaining({ data_source_id: "foreign-source", database_id: "database", view_name: "Table" })));
     }
     await vi.waitFor(() => {
@@ -121,6 +122,49 @@ describe("Notes database view sessions", () => {
       expect(document.querySelector("[data-session-view]")?.getAttribute("data-source-id")).toBe(resultView?.data_source_id);
     });
   });
+  it("lists a few other sources with their locations, filters by location, and reveals the rest on Show more", async () => {
+    vi.mocked(listNotesDatabaseViews).mockResolvedValue(views());
+    vi.mocked(listNotesDataSources).mockResolvedValue([
+      source("source", "Tasks", "database"),
+      ...["One", "Two", "Three", "Four", "Five", "Six"].map((title) => source(title, title, `database-${title}`, ["Work", title === "Six" ? "Archive" : "Board"])),
+    ]);
+    open();
+    await vi.waitFor(() => expect(document.querySelector("[data-session-view]")).not.toBeNull());
+    document.querySelector<HTMLButtonElement>('button[aria-label="View settings"]')!.click();
+    await tick();
+    document.querySelector<HTMLButtonElement>('button[aria-label="Source"]')!.click();
+    const buttonWith = (text: string) => Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent?.includes(text));
+    await vi.waitFor(() => expect(buttonWith("Work / Board")).toBeDefined());
+    expect(buttonWith("Six")).toBeUndefined();
+    const query = document.querySelector<HTMLInputElement>('input[aria-label="Search or name a new source…"]')!;
+    query.value = "archive";
+    query.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+    expect(buttonWith("Work / Archive")?.textContent).toContain("Six");
+    expect(buttonWith("Work / Board")).toBeUndefined();
+    query.value = "";
+    query.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+    buttonWith("Show 1 more")!.click();
+    await tick();
+    expect(buttonWith("Six")).toBeDefined();
+    expect(buttonWith("Show 1 more")).toBeUndefined();
+  });
+
+  it("opens view settings on the Source page from a view tab menu", async () => {
+    vi.mocked(listNotesDatabaseViews).mockResolvedValue(views());
+    vi.mocked(listNotesDataSources).mockResolvedValue([source("source", "Tasks", "database")]);
+    open();
+    await vi.waitFor(() => expect(document.querySelector("[data-session-view]")?.getAttribute("data-session-view")).toBe("First"));
+    document.querySelector<HTMLButtonElement>('button[aria-label="First"]')!.click();
+    await tick();
+    const sourceItem = () => Array.from(document.querySelectorAll<HTMLButtonElement>("button.menu-item")).find((button) => button.textContent?.trim().startsWith("Source"));
+    await vi.waitFor(() => expect(sourceItem()?.textContent).toContain("Tasks"));
+    sourceItem()!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLInputElement>('input[aria-label="Search or name a new source…"]')).not.toBeNull());
+    expect(document.querySelector('button[aria-label="View settings"]')?.getAttribute("aria-expanded")).toBe("true");
+  });
+
   it("blocks toolbar switching during a layout write and resets local state only after a saved-view switch", async () => {
     vi.mocked(listNotesDatabaseViews).mockResolvedValue(views());
     vi.mocked(listNotesDataSourceTemplates).mockResolvedValue([]);
@@ -243,7 +287,7 @@ describe("Notes database view sessions", () => {
     vi.mocked(duplicateNotesDatabaseView).mockImplementation(() => new Promise((resolve) => { finishCopy = resolve; }));
     open();
     await vi.waitFor(() => expect(document.querySelector("[data-session-view]")?.getAttribute("data-session-view")).toBe("First"));
-    document.querySelector<HTMLButtonElement>('button[aria-label="View options"]')!.click();
+    document.querySelector<HTMLButtonElement>('button[aria-label="First"]')!.click();
     await tick();
     await tick();
     const duplicate = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button'))

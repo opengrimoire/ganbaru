@@ -70,9 +70,10 @@ mod database;
 pub use database::{
     NoteCreatedDatabaseDto, NoteDataSourceBoardGroupDto, NoteDataSourceBoardViewDto,
     NoteDataSourceCalendarViewDto, NoteDataSourceDto, NoteDataSourceGalleryViewDto,
-    NoteDataSourceListViewDto, NoteDataSourceParentDto, NoteDataSourceSchemaDto,
-    NoteDataSourceTableViewDto, NoteDataSourceTimelineViewDto, NoteDatabaseDataSourceSummaryDto,
-    NoteDatabaseDto, NoteDatabaseReferenceDto, NoteDatabaseViewDto, NoteDatabaseViewParentDto,
+    NoteDataSourceListItemDto, NoteDataSourceListViewDto, NoteDataSourceParentDto,
+    NoteDataSourceSchemaDto, NoteDataSourceTableViewDto, NoteDataSourceTimelineViewDto,
+    NoteDatabaseDataSourceSummaryDto, NoteDatabaseDto, NoteDatabaseReferenceDto,
+    NoteDatabaseViewDto, NoteDatabaseViewParentDto,
 };
 mod rows;
 pub use history_knowledge::NoteBacklinkIndexedInput;

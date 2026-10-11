@@ -7,8 +7,6 @@ use serde_json::{Value, json};
 use sqlx::{Sqlite, SqlitePool, Transaction};
 use std::collections::HashSet;
 
-const NOTES_PAGE_PROJECT_ID_PROPERTY: &str = "__ganbaru_project_id";
-
 pub(crate) struct ImportBlock {
     pub(crate) id: String,
     pub(crate) block_type: &'static str,
@@ -348,7 +346,7 @@ fn import_page_properties(title: &str, project_id: Option<&str>) -> Result<Value
         .as_object_mut()
         .ok_or_else(|| "page properties must be an object".to_string())?;
     object.insert(
-        NOTES_PAGE_PROJECT_ID_PROPERTY.to_string(),
+        crate::PAGE_PROJECT_ID_PROPERTY.to_string(),
         Value::String(project_id.to_string()),
     );
     Ok(properties)

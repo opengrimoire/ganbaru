@@ -1,9 +1,9 @@
 import type { NotesChildDatabaseBlockPayload, NotesCreatedDatabase } from "../../contracts/core";
 import { NOTES_DATABASE_VIEW_TYPES } from "$lib/notes/contracts/database";
-import type { NotesDataSource, NotesDataSourceSchema, NotesDataSourceTemplate, NotesDatabase, NotesDatabaseDataSourceSummary, NotesDatabaseView, NotesDatabaseViewType } from "$lib/notes/contracts/database";
+import type { NotesDataSource, NotesDataSourceListItem, NotesDataSourceSchema, NotesDataSourceTemplate, NotesDatabase, NotesDatabaseDataSourceSummary, NotesDatabaseView, NotesDatabaseViewType } from "$lib/notes/contracts/database";
 import { parseNullableNotesIcon, parseNullablePageCover } from ".././assets";
 import { parseNotesBlock, parseNotesParent } from ".././blocks";
-import { containsControlCharacters, readBoolean, readDisplayString, readInteger, readNotesDatabaseViewType, readNullableRecord, readNullableString, readOptionalUuidString, readRecord, readRecordArray, readString } from ".././readers";
+import { containsControlCharacters, readBoolean, readDisplayString, readInteger, readNotesDatabaseViewType, readNullableRecord, readNullableString, readOptionalUuidString, readRecord, readRecordArray, readString, readStringArray } from ".././readers";
 import type { UnknownRecord } from ".././readers";
 import { parseNotesRichTextArray } from ".././rich-text";
 
@@ -118,6 +118,12 @@ export function parseNotesDataSource(value: unknown): NotesDataSource {
     created_time: readString(record.created_time, "data source.created_time"),
     last_edited_time: readString(record.last_edited_time, "data source.last_edited_time"),
   };
+}
+
+/** Validate a data source from the vault-wide list, including its page location. */
+export function parseNotesDataSourceListItem(value: unknown): NotesDataSourceListItem {
+  const record = readRecord(value, "data source");
+  return { ...parseNotesDataSource(record), location: readStringArray(record.location, "data source.location") };
 }
 
 export function isNotesDatabaseViewType(value: unknown): value is NotesDatabaseViewType {

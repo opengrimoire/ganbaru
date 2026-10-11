@@ -435,6 +435,24 @@ impl NoteDataSourceDto {
     }
 }
 
+/// A data source in the vault-wide list, with the titles of the pages that contain its database.
+#[derive(Serialize)]
+pub struct NoteDataSourceListItemDto {
+    #[serde(flatten)]
+    data_source: NoteDataSourceDto,
+    /// Outermost first: project group and project names, folder names, then the titles of the pages (and row databases) leading to the page that holds the database block.
+    location: Vec<String>,
+}
+
+impl NoteDataSourceListItemDto {
+    pub fn new(data_source: NoteDataSourceDto, location: Vec<String>) -> Self {
+        Self {
+            data_source,
+            location,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct NoteDatabaseViewParentDto {
     #[serde(rename = "type")]

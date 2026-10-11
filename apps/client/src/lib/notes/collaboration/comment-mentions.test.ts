@@ -17,6 +17,7 @@ const labels = {
   date: "Date",
   reminder: "Reminder",
   remindTitle: (date: string) => `Remind ${date}`,
+  atTime: (date: string, time: string) => `${date}, ${time}`,
 };
 
 function dates(query: string) {

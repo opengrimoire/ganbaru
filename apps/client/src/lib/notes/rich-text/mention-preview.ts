@@ -73,20 +73,52 @@ export function notesMentionScopeEventTimes(
   };
 }
 
-/** The spelled-out date or date range a date mention refers to, or null when its stored date cannot be read. */
-export function notesDateMentionPreviewWhen(value: NotesDateMentionValue, locale: string): string | null {
+/**
+ * The spelled-out date or date range a date mention refers to, with its time when it has one, or null when its stored
+ * date cannot be read. Floating wall times show as typed; times with an offset show in the device's zone.
+ */
+export function notesDateMentionPreviewWhen(
+  value: NotesDateMentionValue,
+  locale: string,
+  timeFormat?: CalendarTimeFormat,
+): string | null {
   try {
-    const format = previewDateFormat(locale);
-    const start = localDate(Temporal.PlainDate.from(value.start));
-    if (!value.end) return format.format(start);
-    return format.formatRange(start, localDate(Temporal.PlainDate.from(value.end)));
+    const start = mentionBoundaryDate(value.start);
+    const end = value.end ? mentionBoundaryDate(value.end) : null;
+    const timed = value.start.includes("T") || Boolean(value.end?.includes("T"));
+    const format = timed
+      ? new Intl.DateTimeFormat(locale, {
+          ...PREVIEW_DATE_OPTIONS,
+          hour: "numeric",
+          minute: "2-digit",
+          ...(timeFormat === undefined ? {} : { hour12: timeFormat === "12h" }),
+        })
+      : previewDateFormat(locale);
+    return end ? format.formatRange(start, end) : format.format(start);
   } catch {
     return null;
   }
 }
 
+const OFFSET_SUFFIX = /(?:Z|[+-]\d{2}:\d{2})$/u;
+
+/** A stored mention boundary as a local Date: a day, a floating wall time, or an instant with an offset. */
+function mentionBoundaryDate(value: string): Date {
+  if (!value.includes("T")) return localDate(Temporal.PlainDate.from(value));
+  if (OFFSET_SUFFIX.test(value)) return new Date(Temporal.Instant.from(value).epochMilliseconds);
+  const wall = Temporal.PlainDateTime.from(value);
+  return new Date(wall.year, wall.month - 1, wall.day, wall.hour, wall.minute);
+}
+
+const PREVIEW_DATE_OPTIONS: Intl.DateTimeFormatOptions = {
+  weekday: "short",
+  month: "short",
+  day: "numeric",
+  year: "numeric",
+};
+
 function previewDateFormat(locale: string): Intl.DateTimeFormat {
-  return new Intl.DateTimeFormat(locale, { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+  return new Intl.DateTimeFormat(locale, PREVIEW_DATE_OPTIONS);
 }
 
 function localDate(date: Temporal.PlainDate): Date {

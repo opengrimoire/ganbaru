@@ -5,6 +5,7 @@
   import { getNotesEditor } from "$lib/components/notes/editor-context";
   import NotesRichTextInline from "$lib/components/notes/rich-text/NotesRichTextInline.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { getPreferences } from "$lib/stores/preferences.svelte";
   import { notesCommentAttachmentFromAsset } from "$lib/notes/collaboration/comment-attachments";
   import {
     buildNotesCommentMentionGroups,
@@ -82,6 +83,7 @@
 
   const notes = getNotesEditor();
   const localization = getLocalization();
+  const preferences = getPreferences();
   const { t } = localization;
   const uid = $props.id();
   const menuId = `${uid}-mentions`;
@@ -136,8 +138,10 @@
         date: t("notes.dateMention"),
         reminder: t("notes.reminderMention"),
         remindTitle: (dateLabel: string) => t("notes.remindOnDate", dateLabel),
+        atTime: (dateLabel: string, time: string) => t("notes.dateMentionAtTime", dateLabel, time),
       },
       limit: NOTES_COMMENT_MENTION_LIMITS.queryDates,
+      timeFormat: preferences.calendarTimeFormat,
     }).filter((target) => !target.reminder);
     const namedTargets = buildNotesMentionTargets({
       pages: notes.allPages,

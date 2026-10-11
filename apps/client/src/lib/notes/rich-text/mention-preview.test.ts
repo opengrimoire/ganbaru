@@ -83,6 +83,11 @@ describe("notesDateMentionPreviewWhen", () => {
     expect(range).toContain("14");
   });
 
+  it("adds the time of a timed date in the user's clock format", () => {
+    expect(notesDateMentionPreviewWhen({ start: "2026-10-30T12:01" }, "en-US", "12h")).toBe("Fri, Oct 30, 2026, 12:01 PM");
+    expect(notesDateMentionPreviewWhen({ start: "2026-10-30T12:01" }, "en-US", "24h")).toBe("Fri, Oct 30, 2026, 12:01");
+  });
+
   it("returns null when the stored date cannot be read", () => {
     expect(notesDateMentionPreviewWhen({ start: "someday" }, "en-US")).toBeNull();
   });

@@ -4,6 +4,7 @@
   import type { NotesExternalMentionRichText } from "$lib/notes/rich-text/core";
   import { notesCalendarEventPreviewWhen, notesDateMentionPreviewWhen } from "$lib/notes/rich-text/mention-preview";
   import { getNavigation } from "$lib/stores/navigation.svelte";
+  import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
   import ProjectIcon from "$lib/components/projects/ProjectIcon.svelte";
   import Bell from "@lucide/svelte/icons/bell";
@@ -50,6 +51,7 @@
   const componentId = $props.id();
   const previewId = `${componentId}-mention-preview`;
   const navigation = getNavigation();
+  const preferences = getPreferences();
   const projects = getProjects();
   const objectMention = $derived(mention.mention.type === "ganbaru_object" ? mention.mention.ganbaru_object : null);
   const objectKey = $derived(objectMention ? `${objectMention.type}:${objectMention.id}` : mention.mention.type);
@@ -95,7 +97,7 @@
         };
     }
     if (mention.mention.type !== "date") return { route: [], title: text, details: [] };
-    const spelled = notesDateMentionPreviewWhen(mention.mention.date, localization.locale);
+    const spelled = notesDateMentionPreviewWhen(mention.mention.date, localization.locale, preferences.calendarTimeFormat);
     return {
       route: [],
       title: text,
@@ -146,10 +148,9 @@
 
   /** Read a mentioned event or series by id, independent of the range the Calendar has loaded. */
   async function readCalendarEvent(eventId: string): Promise<MentionedEvent | null> {
-    const [{ loadPanelEvent }, { getCalendars }, { getPreferences }] = await Promise.all([
+    const [{ loadPanelEvent }, { getCalendars }] = await Promise.all([
       import("$lib/stores/calendar/event-loaders"),
       import("$lib/stores/calendars.svelte"),
-      import("$lib/stores/preferences.svelte"),
     ]);
     const event = await loadPanelEvent(eventId);
     if (!event) return null;
@@ -158,7 +159,7 @@
       title: event.title.trim(),
       when: notesCalendarEventPreviewWhen({ ...event, recurring: Boolean(event.recurrence || event.rdate?.length) }, {
         locale: localization.locale,
-        timeFormat: getPreferences().calendarTimeFormat,
+        timeFormat: preferences.calendarTimeFormat,
         labels: {
           allDay: t("calendar.notification.allDay"),
           allDayOn: (date) => t("calendar.notification.allDayOn", date),

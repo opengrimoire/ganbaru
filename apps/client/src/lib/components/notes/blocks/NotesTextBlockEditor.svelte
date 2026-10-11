@@ -1,5 +1,6 @@
 <script lang="ts">
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { getPreferences } from "$lib/stores/preferences.svelte";
   import type { NotesHeadingBlockType } from "$lib/notes/blocks/factory";
   import type { NotesBlockInsertRequest } from "$lib/notes/blocks/insertion";
   import {
@@ -198,6 +199,7 @@
 
   const localization = getLocalization();
   const { t } = localization;
+  const preferences = getPreferences();
   const notesEditor = getNotesEditor();
   const controller = createNotesTextEditorController({
     block: () => block,
@@ -209,6 +211,7 @@
     focusSelection: () => focusSelection,
     mentionTargets: () => mentionTargets.read(),
     locale: () => localization.locale,
+    timeFormat: () => preferences.calendarTimeFormat,
     translate: t,
     onTextInput: (blockId, value, selection) => onTextInput(blockId, value, selection),
     onReplaceRichText: (blockId, richText) => onReplaceRichText(blockId, richText),

@@ -41,6 +41,7 @@ export const editor = {
   dateMentionYesterday: "Yesterday",
   dateMentionNextWeek: "Next week",
   remindOnDate: (date: string) => `Remind ${date}`,
+  dateMentionAtTime: (date: string, time: string) => `${date}, ${time}`,
   textContextMenu: "Text actions",
   contextMenuFormat: "Format",
   contextMenuParagraph: "Paragraph",

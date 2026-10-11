@@ -42,6 +42,7 @@ const dateLabels = {
   date: "Date",
   reminder: "Reminder",
   remindTitle: (label: string) => `Remind ${label}`,
+  atTime: (label: string, time: string) => `${label}, ${time}`,
 };
 
 describe("notes rich text helpers", () => {
@@ -404,6 +405,7 @@ describe("notes rich text helpers", () => {
         date: "Date",
         reminder: "Reminder",
         remindTitle: (label) => `Remind ${label}`,
+        atTime: (label, time) => `${label}, ${time}`,
       },
     });
 
@@ -416,6 +418,39 @@ describe("notes rich text helpers", () => {
         ganbaru_reminder: { enabled: true },
       },
       reminder: true,
+    });
+  });
+
+  it("leads with a typed calendar date and stores a typed time as a floating wall time", () => {
+    const today = Temporal.PlainDate.from("2026-10-11");
+    const [typed] = buildDateMentionTargets("oct 30 12:1", { today, locale: "en-US", labels: dateLabels, timeFormat: "12h" });
+    expect(typed).toMatchObject({
+      id: "date:2026-10-30T12:01",
+      title: "Oct 30, 2026, 12:01 PM",
+      date: { start: "2026-10-30T12:01", end: null, time_zone: null },
+    });
+    if (!typed) throw new Error("expected a typed date suggestion");
+    expect(notesDateMentionDetail(typed, "en-US")).toBeNull();
+
+    const [past] = buildDateMentionTargets("2025-12-2", { today, locale: "en-US", labels: dateLabels });
+    expect(past).toMatchObject({ title: "Dec 2, 2025", date: { start: "2025-12-02" } });
+  });
+
+  it("applies a time typed alone to every suggested day and keeps a reminder word", () => {
+    const today = Temporal.PlainDate.from("2026-10-11");
+    const timed = buildDateMentionTargets("3pm", { today, locale: "en-US", labels: dateLabels, timeFormat: "24h" });
+    expect(timed.map((target) => [target.title, target.date.start])).toEqual([
+      ["Today, 15:00", "2026-10-11T15:00"],
+      ["Tomorrow, 15:00", "2026-10-12T15:00"],
+      ["Yesterday, 15:00", "2026-10-10T15:00"],
+      ["Next week, 15:00", "2026-10-18T15:00"],
+    ]);
+
+    const [reminder] = buildDateMentionTargets("remind me tomorrow 9am", { today, locale: "en-US", labels: dateLabels, timeFormat: "12h" });
+    expect(reminder).toMatchObject({
+      title: "Remind Tomorrow, 9:00 AM",
+      reminder: true,
+      date: { start: "2026-10-12T09:00", ganbaru_reminder: { enabled: true } },
     });
   });
 

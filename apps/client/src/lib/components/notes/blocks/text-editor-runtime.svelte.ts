@@ -3,6 +3,7 @@ import { notesClipboardContent, setNotesClipboardData, writeNotesClipboard } fro
 import { Temporal } from "@js-temporal/polyfill";
 import { tick } from "svelte";
 import type { Translate } from "$lib/i18n/translator.svelte";
+import type { CalendarTimeFormat } from "$lib/stores/preference-options";
 import { blockColor, canBlockHaveColor } from "$lib/notes/blocks/color";
 import {
   blockEditableRichText,
@@ -129,6 +130,8 @@ export interface NotesTextEditorControllerSource {
   focusSelection: () => NotesTextSelection | null;
   mentionTargets: () => NotesNamedMentionTarget[];
   locale: () => string;
+  /** The user's clock format, used for times typed into date mentions. */
+  timeFormat: () => CalendarTimeFormat;
   translate: Translate;
   onTextInput: (blockId: string, text: string, selection: NotesTextSelection | null) => void;
   onReplaceRichText: (blockId: string, richText: readonly NotesRichText[]) => Promise<void> | void;
@@ -458,9 +461,16 @@ export class NotesTextEditorController {
       date: t("notes.dateMention"),
       reminder: t("notes.reminderMention"),
       remindTitle: (dateLabel: string) => t("notes.remindOnDate", dateLabel),
+      atTime: (dateLabel: string, time: string) => t("notes.dateMentionAtTime", dateLabel, time),
     };
     const dateTargets = mention.query.trim()
-      ? buildDateMentionTargets(mention.query, { today, locale: this.source.locale(), labels, limit: 4 })
+      ? buildDateMentionTargets(mention.query, {
+          today,
+          locale: this.source.locale(),
+          labels,
+          limit: 4,
+          timeFormat: this.source.timeFormat(),
+        })
       : buildIdleDateMentionTargets({ today, labels });
     return buildNotesMentionGroups({
       query: mention.query,

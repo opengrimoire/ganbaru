@@ -16,6 +16,8 @@ import type {
 } from "$lib/notes/types";
 import { cloneNotesJson } from "$lib/notes/json-clone";
 import { parseNotesLinkHash } from "$lib/notes/links/block-link";
+import type { CalendarTimeFormat } from "$lib/stores/preference-options";
+import { normalizeNotesDateQuery, parseNotesTypedCalendarDate, splitNotesTypedTime } from "./date-query";
 
 const DEFAULT_RICH_TEXT_ANNOTATIONS: NotesRichTextAnnotations = {
   bold: false,
@@ -98,6 +100,8 @@ export interface NotesDateMentionLabels {
   date: string;
   reminder: string;
   remindTitle: (dateLabel: string) => string;
+  /** A day label followed by a typed wall time, for example "Tomorrow, 3:00 PM". */
+  atTime: (dateLabel: string, time: string) => string;
 }
 
 export interface NotesMentionQuery {
@@ -166,8 +170,6 @@ const WEEKDAY_ALIASES: readonly {
   { dayOfWeek: 6, aliases: ["saturday", "sat", "sabado", "sábado", "sab", "sáb"] },
   { dayOfWeek: 7, aliases: ["sunday", "sun", "domingo", "dom"] },
 ];
-
-const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/u;
 
 export function createTextRichText(content: string): NotesTextRichText {
   return {
@@ -1135,17 +1137,8 @@ export function filterNotesMentionTargets(
     .slice(0, limit);
 }
 
-function normalizeDateMentionQuery(query: string): string {
-  return query
-    .normalize("NFD")
-    .replace(/\p{Diacritic}/gu, "")
-    .trim()
-    .replace(/\s+/gu, " ")
-    .toLocaleLowerCase();
-}
-
 function splitReminderQuery(query: string): { reminder: boolean; dateQuery: string } {
-  const normalized = normalizeDateMentionQuery(query);
+  const normalized = normalizeNotesDateQuery(query);
   for (const prefix of ["remind me", "remind", "reminder", "recordar", "recuerdame", "recuérdame"]) {
     if (normalized === prefix) return { reminder: true, dateQuery: "" };
     if (normalized.startsWith(`${prefix} `)) {
@@ -1153,15 +1146,6 @@ function splitReminderQuery(query: string): { reminder: boolean; dateQuery: stri
     }
   }
   return { reminder: false, dateQuery: normalized };
-}
-
-function dateFromIsoQuery(query: string): Temporal.PlainDate | null {
-  if (!ISO_DATE_PATTERN.test(query)) return null;
-  try {
-    return Temporal.PlainDate.from(query);
-  } catch {
-    return null;
-  }
 }
 
 /** A calendar date as mention menus spell it, for example "Oct 11, 2026". */
@@ -1174,13 +1158,13 @@ export function formatPlainDate(date: Temporal.PlainDate, locale: string): strin
 }
 
 /**
- * The spelled-out date shown beside a date suggestion, or null when its title already reads as that date or the
+ * The spelled-out date shown beside a date suggestion, or null when its title already spells that date or the
  * stored date cannot be parsed.
  */
 export function notesDateMentionDetail(target: NotesDateMentionTarget, locale: string): string | null {
   try {
     const spelled = formatPlainDate(Temporal.PlainDate.from(target.date.start), locale);
-    return spelled === target.title ? null : spelled;
+    return target.title.includes(spelled) ? null : spelled;
   } catch {
     return null;
   }
@@ -1255,7 +1239,7 @@ function weekdayDateMentionCandidates(
 
 function dateMentionCandidateMatches(candidate: DateMentionCandidate, query: string): boolean {
   if (!query) return true;
-  const title = normalizeDateMentionQuery(candidate.title);
+  const title = normalizeNotesDateQuery(candidate.title);
   return title.includes(query)
     || candidate.date.toString().includes(query)
     || candidate.aliases.some((alias) => alias.includes(query) || query.includes(alias));
@@ -1275,6 +1259,30 @@ function deduplicateDateCandidates(
   return output;
 }
 
+/** A wall time typed after a date, with its label in the user's time format. */
+interface DateMentionTime {
+  time: Temporal.PlainTime;
+  label: string;
+}
+
+function formatMentionTime(time: Temporal.PlainTime, locale: string, timeFormat: CalendarTimeFormat | undefined): string {
+  return new Intl.DateTimeFormat(locale, {
+    hour: "numeric",
+    minute: "2-digit",
+    ...(timeFormat === undefined ? {} : { hour12: timeFormat === "12h" }),
+  }).format(new Date(2000, 0, 1, time.hour, time.minute));
+}
+
+/**
+ * Suggest dates for the text typed after the at sign. The text may start with a reminder word, name a relative day,
+ * a weekday, or a calendar date ("2025-12-2", "oct 30", "30 de octubre"), and end with a wall time ("12:1", "3pm").
+ * A typed time applies to every suggested day and is stored as a floating wall time.
+ *
+ * @param query The text typed after the at sign.
+ * @param options The current day, the active locale, the localized labels, how many suggestions to keep, and the
+ * user's time format for typed times.
+ * @returns Date mention suggestions, the typed calendar date first.
+ */
 export function buildDateMentionTargets(
   query: string,
   options: {
@@ -1282,16 +1290,18 @@ export function buildDateMentionTargets(
     locale: string;
     labels: NotesDateMentionLabels;
     limit?: number;
+    timeFormat?: CalendarTimeFormat;
   },
 ): NotesDateMentionTarget[] {
-  const { reminder, dateQuery } = splitReminderQuery(query);
-  const isoDate = dateFromIsoQuery(dateQuery);
-  const isoCandidate: DateMentionCandidate[] = isoDate
+  const { reminder, dateQuery: reminderlessQuery } = splitReminderQuery(query);
+  const { dateQuery, time } = splitNotesTypedTime(reminderlessQuery);
+  const typedDate = parseNotesTypedCalendarDate(dateQuery, { today: options.today, locale: options.locale });
+  const typedCandidate: DateMentionCandidate[] = typedDate
     ? [{
-        id: "iso-date",
-        aliases: [isoDate.toString()],
-        date: isoDate,
-        title: formatPlainDate(isoDate, options.locale),
+        id: "typed-date",
+        aliases: [typedDate.toString()],
+        date: typedDate,
+        title: formatPlainDate(typedDate, options.locale),
       }]
     : [];
   const baseCandidates = baseDateMentionCandidates(options.today, options.labels);
@@ -1299,13 +1309,14 @@ export function buildDateMentionTargets(
     ? weekdayDateMentionCandidates(dateQuery, options.today, options.locale)
     : [];
   const candidates = deduplicateDateCandidates([
-    ...isoCandidate,
+    ...typedCandidate,
     ...weekdayCandidates,
     ...baseCandidates.filter((candidate) => dateMentionCandidateMatches(candidate, dateQuery)),
   ]);
+  const typedTime = time ? { time, label: formatMentionTime(time, options.locale, options.timeFormat) } : null;
   return candidates
     .slice(0, options.limit ?? 6)
-    .map((candidate) => dateMentionTarget(candidate, reminder, options.labels));
+    .map((candidate) => dateMentionTarget(candidate, reminder, options.labels, typedTime));
 }
 
 /**
@@ -1329,14 +1340,19 @@ function dateMentionTarget(
   candidate: DateMentionCandidate,
   reminder: boolean,
   labels: NotesDateMentionLabels,
+  time: DateMentionTime | null = null,
 ): NotesDateMentionTarget {
+  const start = time
+    ? `${candidate.date.toString()}T${time.time.toString({ smallestUnit: "minute" })}`
+    : candidate.date.toString();
+  const dateTitle = time ? labels.atTime(candidate.title, time.label) : candidate.title;
   return {
     kind: "date",
-    id: `${reminder ? "reminder" : "date"}:${candidate.date.toString()}`,
-    title: reminder ? labels.remindTitle(candidate.title) : candidate.title,
+    id: `${reminder ? "reminder" : "date"}:${start}`,
+    title: reminder ? labels.remindTitle(dateTitle) : dateTitle,
     subtitle: reminder ? labels.reminder : labels.date,
     iconText: null,
-    date: createDateMentionValue(candidate.date.toString(), reminder),
+    date: createDateMentionValue(start, reminder),
     reminder,
   };
 }

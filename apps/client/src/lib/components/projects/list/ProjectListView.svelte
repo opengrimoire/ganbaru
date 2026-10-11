@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { untrack } from "svelte";
+  import { onDestroy, untrack } from "svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getCalendar } from "$lib/stores/calendar.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
@@ -59,6 +59,7 @@
   import { ProjectListInteractionController } from "./interaction-controller.svelte";
   import { ProjectListQuickAddController } from "./quick-add-controller.svelte";
   import { ProjectListViewportController } from "./viewport-controller.svelte";
+  import { createProjectListColumnReorder } from "./column-reorder";
 
   let {
     mobileLayout = false,
@@ -151,6 +152,11 @@
     getGridInput: taskListGridInputFor,
     persistColumnWidths: (widths) => onTaskListColumnWidthsChange(widths, { persist: true }),
   });
+  const columnReorder = tableQuery ? createProjectListColumnReorder(tableQuery, {
+    resizing: () => viewport.resizeGesture !== null,
+    scroller: () => viewport.container ? { element: viewport.container, scrollTo: viewport.setHorizontalScroll } : null,
+  }) : undefined;
+  onDestroy(() => columnReorder?.destroy());
 
   function taskListGridInputFor(columnWidths: ProjectTaskListColumnWidths): ProjectTaskListGridInput {
     return {
@@ -203,6 +209,7 @@
         : color === undefined ? "var(--cal-bg)" : `color-mix(in srgb, ${getEventColor(color, theme.current).bg} 15%, var(--cal-bg))`;
       return `--project-list-row-bg: ${background}; background-color: ${background};`;
     },
+    columnReorder,
   });
 
   function handleHorizontalKeydown(event: KeyboardEvent): void {
@@ -687,6 +694,7 @@
           />
           <ProjectListColumnHeaders
             mode="group"
+            rowKey={`group:${groupKey}`}
             gridTemplate={taskListGridTemplate}
             gridMinWidth={taskListGridMinWidth}
             {taskListColumns}
@@ -855,6 +863,7 @@
 
   .project-list-scroll {
     --project-list-content-inset: 1rem;
+    --collection-surface: var(--cal-bg);
     overflow-x: hidden;
     overflow-y: auto;
     padding-right: 0.5rem;

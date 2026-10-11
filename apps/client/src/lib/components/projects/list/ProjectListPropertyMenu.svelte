@@ -122,7 +122,7 @@
 </script>
 
 {#if query}
-  <CollectionMenu {label} kind="property" fullWidth showHeader={false} dismissOnAction disabled={pending}
+  <CollectionMenu {label} kind="property" fullWidth showHeader={false} dismissOnAction contextMenu disabled={query.propertySaving}
     triggerClass="h-auto justify-start rounded-none px-2 font-normal" triggerAttributes={{ "data-collection-cell-primary": "" }} bind:triggerElement={trigger}>
     {#snippet leading()}{#if preferences.projectsShowPropertyIcons}<CollectionPropertyIcon icon={field?.icon ?? null} {kind} class="size-3.5 shrink-0 text-muted-foreground" />{/if}{/snippet}
     <div class="grid gap-0">

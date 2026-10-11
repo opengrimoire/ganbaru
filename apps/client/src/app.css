@@ -697,7 +697,8 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
 
 /*
  * Collection tables highlight one surface at a time. Cells, column names, and standalone header controls share one
- * square highlight, and an open cell or column menu, or a focused text field, suppresses hover feedback everywhere else.
+ * square highlight. An open cell or column menu, a focused text field, a column resize, or a column drag suppresses
+ * hover feedback everywhere else, and a column name stays unhighlighted while its resize handle is under the pointer.
  */
 :root {
   --collection-highlight: color-mix(in srgb, var(--accent) 40%, transparent);
@@ -709,8 +710,8 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
   background-color: transparent;
 }
 
-:root:not(:has(:is([data-collection-cell-primary], [data-collection-hover-target])[aria-expanded="true"], [data-collection-cell-primary]:is(textarea, input:not([type="checkbox"], [type="radio"])):focus)) :is(
-  .collection-cell:has([data-collection-cell-primary]:not(:disabled)),
+:root:not([data-collection-column-dragging]):not(:has(:is([data-collection-cell-primary], [data-collection-hover-target])[aria-expanded="true"], [data-collection-cell-primary]:is(textarea, input:not([type="checkbox"], [type="radio"])):focus, [data-collection-resize]:active)) :is(
+  .collection-cell:has([data-collection-cell-primary]:not(:disabled)):not(:has([data-collection-resize]:hover)),
   [data-collection-hover-target]:not(:disabled)
 ):hover,
 .collection-cell:has([data-collection-cell-primary][aria-expanded="true"], [data-collection-cell-primary]:is(textarea, input:not([type="checkbox"], [type="radio"])):focus, :focus-visible),
@@ -718,12 +719,21 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
   background-image: linear-gradient(var(--collection-highlight), var(--collection-highlight));
 }
 
-:root:not(:has(:is([data-collection-cell-primary], [data-collection-hover-target])[aria-expanded="true"], [data-collection-cell-primary]:is(textarea, input:not([type="checkbox"], [type="radio"])):focus)) .collection-row[data-collection-hoverable]:hover {
+:root:not([data-collection-column-dragging]):not(:has(:is([data-collection-cell-primary], [data-collection-hover-target])[aria-expanded="true"], [data-collection-cell-primary]:is(textarea, input:not([type="checkbox"], [type="radio"])):focus, [data-collection-resize]:active)) .collection-row[data-collection-hoverable]:hover {
   background-image: linear-gradient(var(--collection-row-highlight), var(--collection-row-highlight));
 }
 
-:root:has(:is([data-collection-cell-primary], [data-collection-hover-target])[aria-expanded="true"], [data-collection-cell-primary]:is(textarea, input:not([type="checkbox"], [type="radio"])):focus) .collection-row :is(a, button, label):not([aria-expanded="true"]):not(:is([role="menu"], [role="dialog"], [role="listbox"]) *):hover {
+:root[data-collection-column-dragging] .collection-row :is(a, button, label):hover,
+:root:has(:is([data-collection-cell-primary], [data-collection-hover-target])[aria-expanded="true"], [data-collection-cell-primary]:is(textarea, input:not([type="checkbox"], [type="radio"])):focus, [data-collection-resize]:active) .collection-row :is(a, button, label):not([aria-expanded="true"], [data-collection-resize]):not(:is([role="menu"], [role="dialog"], [role="listbox"]) *):hover {
   background-color: transparent;
+}
+
+/* A column drag owns the pointer: the grabbing cursor holds everywhere and pointer travel selects no text. */
+:root[data-collection-column-dragging],
+:root[data-collection-column-dragging] * {
+  cursor: grabbing !important;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 /* Cover geometry follows the page container, including narrow page previews. */

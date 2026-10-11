@@ -4,6 +4,8 @@
   import CollectionRow from "$lib/components/collections/CollectionRow.svelte";
   import CollectionCell from "$lib/components/collections/CollectionCell.svelte";
   import CollectionColumnHeader from "$lib/components/collections/CollectionColumnHeader.svelte";
+  import { CollectionColumnReorder } from "$lib/components/collections/column-reorder.svelte";
+  import { collectionOrderById, collectionPlaceVisibleItem } from "$lib/components/collections/column-reorder";
   import CollectionQuickAdd from "$lib/components/collections/CollectionQuickAdd.svelte";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import CollectionMenu from "$lib/components/collections/CollectionMenu.svelte";
@@ -230,6 +232,13 @@
   let addRowKey = $state<string | null>(null);
   let columnResize = $state<{ id: string; pointerId: number; startX: number; startWidth: number; width: number } | null>(null);
   let pendingColumnWidth = $state<{ id: string; width: number } | null>(null);
+  /** Property order shown while a moved column saves, so headers and rows stay in their new place. */
+  let pendingColumnOrder = $state.raw<string[] | null>(null);
+  const columnReorder = new CollectionColumnReorder({
+    canStart: () => !mutating && !editingLocked && columnResize === null,
+    onReorder: (columnId, targetIndex) => { void placeColumn(columnId, targetIndex); },
+  });
+  onDestroy(() => columnReorder.destroy());
 
   function startColumnResize(event: PointerEvent, column: NotesDatabaseTableColumn): void {
     if (event.button !== 0 || mutating || editingLocked) return;
@@ -322,9 +331,10 @@
   const visibleRows = $derived(rowCreation.rowsFor(dataSourceId, table?.rows ?? []));
   const templateSourceRows = $derived(visibleRows.filter((row) => !rowCreation.blocked(row.id)));
   const tableConfiguration = $derived(table ? { ...notesDatabaseTableConfigurationFromView(table.view), ...notesTableViewSettings(table.view) } : null);
-  const columns = $derived(table ? notesDatabaseTableColumns(table.data_source, table.view).map((column) => ({ ...column,
+  const savedColumns = $derived(table ? notesDatabaseTableColumns(table.data_source, table.view).map((column) => ({ ...column,
     displayFormat: notesTableColumnPresentation(tableConfiguration?.presentation, column.id),
   })) : []);
+  const columns = $derived(pendingColumnOrder ? collectionOrderById(savedColumns, pendingColumnOrder) : savedColumns);
   const visibleColumns = $derived(notesDatabaseTableVisibleColumns(columns));
   const renderedColumns = $derived(visibleColumns.map((column) => ({ ...column,
     width: columnResize?.id === column.id ? columnResize.width : pendingColumnWidth?.id === column.id ? pendingColumnWidth.width : column.width,
@@ -913,19 +923,28 @@
     return rule ? `${notesBlockColorStyle(`${rule.color}_background` as NotesColor)}; background-color: var(--notes-block-bg);` : "";
   }
 
-  /** Reorder visible properties while keeping the required title first. */
+  /** Move a visible property one place left or right, keeping the required title first. */
   function moveColumn(column: NotesDatabaseTableColumn, direction: -1 | 1): void {
-    const neighbor = visibleColumns[visibleColumns.findIndex((candidate) => candidate.id === column.id) + direction];
-    if (column.type === "title" || !neighbor || neighbor.type === "title") return;
-    const nextColumns = columns.map((candidate) => ({ ...candidate }));
-    const index = nextColumns.findIndex((candidate) => candidate.id === column.id);
-    const neighborIndex = nextColumns.findIndex((candidate) => candidate.id === neighbor.id);
-    const moved = nextColumns[index];
-    const displaced = nextColumns[neighborIndex];
-    if (!moved || !displaced) return;
-    nextColumns[index] = displaced;
-    nextColumns[neighborIndex] = moved;
-    void persistTable(nextColumns, rowOpenMode, filters, sorts);
+    void placeColumn(column.id, visibleColumns.findIndex((candidate) => candidate.id === column.id) + direction);
+  }
+
+  /**
+   * Place a property at `visibleIndex` among the visible columns. The title stays first, hidden properties keep their
+   * place in the saved order, and the new order shows until the save settles or rolls back.
+   */
+  async function placeColumn(columnId: string, visibleIndex: number): Promise<void> {
+    const column = columns.find((candidate) => candidate.id === columnId);
+    if (!column || column.type === "title" || mutating || editingLocked) return;
+    const ids = columns.map((candidate) => candidate.id);
+    const firstMovable = visibleColumns.findIndex((candidate) => candidate.type !== "title");
+    const order = collectionPlaceVisibleItem(ids, visibleColumns.map((candidate) => candidate.id), columnId, Math.max(firstMovable, visibleIndex));
+    if (order.every((id, index) => id === ids[index])) return;
+    pendingColumnOrder = order;
+    try {
+      await persistTable(collectionOrderById(columns, order).map((candidate) => ({ ...candidate })), rowOpenMode, filters, sorts);
+    } finally {
+      pendingColumnOrder = null;
+    }
   }
 
   /** Change the chosen property sort while retaining its existing priority. */
@@ -1176,6 +1195,7 @@
               {@const columnIndex = visibleColumns.findIndex((candidate) => candidate.id === column.id)}
               {@const sortUnavailable = mutating || editingLocked || (sorts.length >= NOTES_DATABASE_QUERY_MAX_SORTS && !sorts.some((sort) => sort.property_id === column.id))}
               <CollectionColumnHeader label={column.name} resizeLabel={t("notes.databaseTableResizeColumn", column.name)} disabled={mutating || editingLocked}
+                columnId={column.id} movable={column.type !== "title"} reorder={columnReorder}
                 class={frozenOffset(column.id) !== null ? "sticky z-30 bg-background" : ""}
                 style={frozenOffset(column.id) !== null ? `left: ${frozenOffset(column.id)}px` : undefined}
                 onpointerdown={(event) => startColumnResize(event, column)} onkeydown={(event) => resizeColumnKey(event, column)}>
@@ -1189,7 +1209,7 @@
                   {@const groupable = notesTableGroupableColumns(columns).some((candidate) => candidate.id === column.id)}
                   {@const grouped = tableConfiguration?.group_property_id === column.id}
                   <CollectionMenu label={column.name} kind="property" fullWidth showHeader={false} dismissOnAction bind:triggerElement={columnMenuTriggers[column.id]}
-                    triggerClass="h-auto justify-start rounded-none px-2 font-normal" triggerAttributes={{ "data-collection-cell-primary": "" }} disabled={mutating || editingLocked}>
+                    triggerClass="h-auto justify-start rounded-none px-2 font-normal" triggerAttributes={{ "data-collection-cell-primary": "" }} contextMenu disabled={editingLocked}>
                     {#snippet leading()}{#if preferences.notesShowPropertyIcons}<CollectionPropertyIcon icon={column.icon ?? null} {kind} class="size-3.5 shrink-0 text-muted-foreground" />{/if}{/snippet}
                     <div class="grid gap-0 font-normal">
                       <CollectionPropertyNameField propertyId={column.id} name={column.name} icon={column.icon ?? null} {kind} editable={!editingLocked && Boolean(onPropertyAction)}
@@ -1470,7 +1490,7 @@
                     {/if}
                     </div>
                     {#if column.type === "title"}
-                      <button type="button" class="absolute top-1/2 right-1 z-10 flex h-6 -translate-y-1/2 items-center gap-1 rounded-md border border-border bg-background px-1.5 text-[0.75rem] text-muted-foreground opacity-100 hover:bg-accent hover:text-foreground [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/row:opacity-100 [@media(hover:hover)]:group-focus-within/row:opacity-100"
+                      <button type="button" data-collection-hover-reveal="" class="absolute top-1/2 right-1 z-10 flex h-6 -translate-y-1/2 items-center gap-1 rounded-md border border-border bg-background px-1.5 text-[0.75rem] text-muted-foreground opacity-100 hover:bg-accent hover:text-foreground [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/row:opacity-100 [@media(hover:hover)]:group-focus-within/row:opacity-100"
                         aria-label={t("notes.databaseRowsOpen", title)} disabled={mutating || rowCreation.blocked(row.id)} onclick={() => openRow(row)}>
                         <PanelRight class="size-3.5" aria-hidden="true" /><span>{t("collections.property.open")}</span>
                       </button>

@@ -112,6 +112,36 @@ function configuredTable(): NotesDataSourceTableView {
   };
 }
 
+/** The header control that opens a column's menu. */
+function headerTrigger(name: string): HTMLButtonElement {
+  const trigger = document.querySelector<HTMLButtonElement>(`[role="columnheader"] button[aria-label="${name}"]`);
+  expect(trigger).not.toBeNull();
+  return trigger!;
+}
+
+function headerCell(propertyId: string): HTMLElement {
+  const cell = document.querySelector<HTMLElement>(`[role="columnheader"][data-collection-column-id="${propertyId}"]`);
+  expect(cell).not.toBeNull();
+  return cell!;
+}
+
+function headerOrder(): string[] {
+  return Array.from(document.querySelectorAll("[role='columnheader'][data-collection-column-id]"), (cell) => cell.getAttribute("data-collection-column-id") ?? "");
+}
+
+/** Place the header cells side by side from x = 0 at the given widths, since jsdom has no layout. */
+function layOutHeader(widths: Record<string, number>): void {
+  const row = headerCell("title").closest<HTMLElement>('[role="row"]')!;
+  let left = 0;
+  for (const cell of row.querySelectorAll<HTMLElement>("[data-collection-column-id]")) {
+    const rect = new DOMRect(left, 0, widths[cell.getAttribute("data-collection-column-id") ?? ""] ?? 0, 32);
+    cell.getBoundingClientRect = () => rect;
+    left += rect.width;
+  }
+  const rowRect = new DOMRect(0, 0, left, 32);
+  row.getBoundingClientRect = () => rowRect;
+}
+
 /** Open a property menu through its real table header control. */
 async function propertyMenu(name: string): Promise<HTMLElement> {
   document.querySelector<HTMLButtonElement>(`[role="columnheader"] button[aria-label="${name}"]`)!.click();
@@ -280,8 +310,88 @@ describe("Notes table property actions", () => {
     action(await propertyMenu("Done"), "Move left").click();
     await vi.waitFor(() => expect(updateNotesDataSourceTableView).toHaveBeenCalledOnce());
     expect(vi.mocked(updateNotesDataSourceTableView).mock.calls[0][1].configuration).toMatchObject({
-      property_order: ["title", "done", "internal", "status"], hidden_property_ids: ["internal"],
+      property_order: ["title", "done", "status", "internal"], hidden_property_ids: ["internal"],
     });
+  });
+
+  it("slides a dragged header over its neighbors and moves the columns only on release", async () => {
+    const initial = configuredTable();
+    const saved = configuredTable();
+    saved.view.configuration = { type: "table", table: { ...(initial.view.configuration!.table as Record<string, unknown>), property_order: ["title", "done", "status", "internal"] } };
+    let finishSave!: (table: NotesDataSourceTableView) => void;
+    vi.mocked(updateNotesDataSourceTableView).mockImplementation(() => new Promise((resolve) => { finishSave = resolve; }));
+    await open(vi.fn(), initial);
+    layOutHeader({ title: 240, status: 160, done: 120 });
+    pointer(headerTrigger("Done"), "pointerdown", 450);
+    pointer(window, "pointermove", 440);
+    await tick();
+    expect(headerCell("done").hasAttribute("data-collection-column-dragged")).toBe(true);
+    expect(headerCell("done").getAttribute("style")).toContain("translateX(-10px)");
+    expect(headerCell("status").getAttribute("style") ?? "").not.toContain("translateX");
+    pointer(window, "pointermove", 360);
+    await tick();
+    expect(headerCell("done").getAttribute("style")).toContain("translateX(-90px)");
+    expect(headerCell("status").getAttribute("style")).toContain("translateX(120px)");
+    expect(headerOrder()).toEqual(["title", "status", "done"]);
+    expect(updateNotesDataSourceTableView).not.toHaveBeenCalled();
+    pointer(window, "pointerup", 360);
+    await tick();
+    expect(headerOrder()).toEqual(["title", "done", "status"]);
+    expect(headerCell("done").getAttribute("style") ?? "").not.toContain("translateX");
+    expect(updateNotesDataSourceTableView).toHaveBeenCalledOnce();
+    expect(vi.mocked(updateNotesDataSourceTableView).mock.calls[0][1].configuration).toMatchObject({
+      property_order: ["title", "done", "status", "internal"], hidden_property_ids: ["internal"],
+    });
+    headerTrigger("Done").click();
+    await tick();
+    expect(document.querySelector('[role="dialog"][aria-label="Done"]')).toBeNull();
+    finishSave(saved);
+    await vi.waitFor(() => expect(headerOrder()).toEqual(["title", "done", "status"]));
+  });
+
+  it("restores the saved column order when a dragged order fails to save", async () => {
+    const initial = configuredTable();
+    vi.mocked(updateNotesDataSourceTableView).mockRejectedValue(new Error("Disk is full"));
+    await open(vi.fn(), initial);
+    layOutHeader({ title: 240, status: 160, done: 120 });
+    pointer(headerTrigger("Done"), "pointerdown", 450);
+    pointer(window, "pointermove", 360);
+    pointer(window, "pointerup", 360);
+    await vi.waitFor(() => expect(updateNotesDataSourceTableView).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(headerOrder()).toEqual(["title", "status", "done"]));
+    expect(document.body.textContent).toContain("Disk is full");
+  });
+
+  it("drags no column while editing is locked", async () => {
+    await open(vi.fn(), configuredTable(), vi.fn(), true);
+    layOutHeader({ title: 240, status: 160, done: 120 });
+    pointer(headerTrigger("Done"), "pointerdown", 450);
+    pointer(window, "pointermove", 300);
+    await tick();
+    expect(headerCell("done").hasAttribute("data-collection-column-dragged")).toBe(false);
+    pointer(window, "pointerup", 300);
+    expect(updateNotesDataSourceTableView).not.toHaveBeenCalled();
+  });
+
+  it("keeps the title column in place", async () => {
+    await open(vi.fn(), configuredTable());
+    layOutHeader({ title: 240, status: 160, done: 120 });
+    pointer(headerTrigger("Name"), "pointerdown", 100);
+    pointer(window, "pointermove", 450);
+    await tick();
+    expect(headerCell("title").hasAttribute("data-collection-column-dragged")).toBe(false);
+    pointer(window, "pointerup", 450);
+    expect(updateNotesDataSourceTableView).not.toHaveBeenCalled();
+  });
+
+  it("opens a column menu with a right click", async () => {
+    await open(vi.fn(), configuredTable());
+    const menu = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 });
+    headerTrigger("Status").dispatchEvent(menu);
+    await tick();
+    await tick();
+    expect(menu.defaultPrevented).toBe(true);
+    expect(document.querySelector('[role="dialog"][aria-label="Status"]')).not.toBeNull();
   });
 
   it("edits a property's options in a submenu beside the column menu without saving the view", async () => {

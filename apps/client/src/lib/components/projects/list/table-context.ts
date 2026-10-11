@@ -2,12 +2,15 @@ import { getContext, setContext } from "svelte";
 import type { ProjectTask } from "$lib/projects/types";
 import type { ProjectTaskListResizableColumn } from "$lib/projects/list/view";
 import type { ProjectTaskQueryController } from "$lib/components/projects/task-query-controller.svelte";
+import type { CollectionColumnReorder } from "$lib/components/collections/column-reorder.svelte";
 
 export interface ProjectListTableContext {
   query: ProjectTaskQueryController;
   cellClass: (column: ProjectTaskListResizableColumn | "selection" | "open") => string;
   cellStyle: (column: ProjectTaskListResizableColumn | "selection" | "open") => string;
   rowStyle: (task: ProjectTask, selected: boolean) => string;
+  /** Drags column headers to reorder the list columns; every header row of the table shares it. */
+  columnReorder?: CollectionColumnReorder;
 }
 const PROJECT_LIST_TABLE_CONTEXT = Symbol("project-list-table");
 

@@ -276,6 +276,7 @@
   {#if !section.collapsed && !section.archivedAt && !section.hiddenAt}
     <ProjectListColumnHeaders
       mode="section"
+      rowKey={`section:${section.id}`}
       {gridTemplate}
       {gridMinWidth}
       {taskListColumns}

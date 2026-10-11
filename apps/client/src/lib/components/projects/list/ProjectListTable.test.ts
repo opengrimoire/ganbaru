@@ -93,12 +93,13 @@ describe("Projects table property configuration", () => {
     button("Wrap content").click();
     await tick();
     expect(query.listPresentation.wrappedColumns).toEqual(["custom:points"]);
-    expect(button("Points").disabled).toBe(true);
+    expect(button("Points").disabled).toBe(false);
+    expect(button("Wrap content", panel).disabled).toBe(true);
     rejectWrite(new Error("Disk full"));
     await vi.waitFor(() => expect(query.presentationSaving).toBe(false));
     expect(query.listPresentation.wrappedColumns).toEqual([]);
     expect(target.querySelector('[role="alert"]')?.textContent).toContain("Disk full");
-    expect(button("Points").disabled).toBe(false);
+    expect(button("Wrap content", panel).disabled).toBe(false);
   });
 
   it("creates the chosen type beside the invoking column and reports a failed creation", async () => {
@@ -167,5 +168,70 @@ describe("Projects table property configuration", () => {
     await vi.waitFor(() => expect(draft.isConnected).toBe(false));
     expect(document.activeElement).toBe(button("Points"));
     expect(button("Points").disabled).toBe(false);
+  });
+});
+
+describe("Projects table column dragging", () => {
+  /** Dispatch pointer coordinates using jsdom's mouse event implementation. */
+  function pointer(eventTarget: EventTarget, type: string, x: number): void {
+    const event = new MouseEvent(type, {clientX: x, button: 0, bubbles: true, cancelable: true});
+    Object.defineProperty(event, "pointerId", {value: 1});
+    eventTarget.dispatchEvent(event);
+  }
+
+  function headerCell(column: string): HTMLElement {
+    const cell = document.querySelector<HTMLElement>(`[role="columnheader"][data-collection-column-id="${column}"]`);
+    expect(cell).not.toBeNull();
+    return cell!;
+  }
+
+  /** Place the column header cells side by side from x = 0 at their template widths, since jsdom has no layout. */
+  function layOutHeader(): void {
+    const widths: Record<string, number> = {name: 384, "custom:points": 128, due: 128};
+    const row = headerCell("name").closest<HTMLElement>('[role="row"]')!;
+    let left = 0;
+    for (const cell of row.querySelectorAll<HTMLElement>("[data-collection-column-id]")) {
+      const rect = new DOMRect(left, 0, widths[cell.getAttribute("data-collection-column-id") ?? ""] ?? 0, 32);
+      cell.getBoundingClientRect = () => rect;
+      left += rect.width;
+    }
+    const rowRect = new DOMRect(0, 0, left, 32);
+    row.getBoundingClientRect = () => rowRect;
+  }
+
+  it("saves the dropped column order and keeps the release from opening the column menu", async () => {
+    const {query, saveColumns} = await renderTable();
+    layOutHeader();
+    pointer(button("Due date"), "pointerdown", 600);
+    pointer(window, "pointermove", 500);
+    await tick();
+    expect(headerCell("due").getAttribute("style")).toContain("translateX(-100px)");
+    expect(headerCell("custom:points").getAttribute("style")).toContain("translateX(128px)");
+    expect(saveColumns).not.toHaveBeenCalled();
+    pointer(window, "pointerup", 500);
+    button("Due date").click();
+    await vi.waitFor(() => expect(query.listColumnsSaving).toBe(false));
+    expect(saveColumns).toHaveBeenCalledExactlyOnceWith("project", ["due", "custom:points"]);
+    expect(query.listColumns).toEqual(["due", "custom:points"]);
+    expect(document.querySelector('[data-app-floating-surface][aria-label="Due date"]')).toBeNull();
+  });
+
+  it("keeps the name column in place", async () => {
+    const {saveColumns} = await renderTable();
+    layOutHeader();
+    pointer(button("Name"), "pointerdown", 100);
+    pointer(window, "pointermove", 600);
+    await tick();
+    expect(headerCell("name").hasAttribute("data-collection-column-dragged")).toBe(false);
+    pointer(window, "pointerup", 600);
+    expect(saveColumns).not.toHaveBeenCalled();
+  });
+
+  it("opens a column menu with a right click", async () => {
+    await renderTable();
+    const menu = new MouseEvent("contextmenu", {bubbles: true, cancelable: true, button: 2});
+    button("Points").dispatchEvent(menu);
+    await vi.waitFor(() => expect(document.querySelector('[data-app-floating-surface][aria-label="Points"]')).not.toBeNull());
+    expect(menu.defaultPrevented).toBe(true);
   });
 });

@@ -30,6 +30,7 @@ import {
   projectTaskCustomFieldKey,
 } from "$lib/projects/tasks/view";
 import { deriveProjectListColumnControls, toggleProjectListColumn } from "$lib/projects/toolbar";
+import { collectionMoveItem } from "$lib/components/collections/column-reorder";
 import {
   PROJECT_TASK_LIST_COLUMNS,
   type ProjectCustomFieldFilter,
@@ -573,14 +574,20 @@ export class ProjectTaskQueryController {
     await this.#persistListColumns(projectId, toggleProjectListColumn(this.listColumns, column));
   }
 
-  /** Reorder only presentation columns, preserving task order. */
+  /** Move one presentation column a step left or right, preserving task order. */
   async moveColumn(column: ProjectTaskListColumn, direction: -1 | 1): Promise<void> {
-    const projectId = this.projectId;
     const index = this.listColumns.indexOf(column);
     const target = index + direction;
-    if (!projectId || this.listColumnsSaving || this.propertySaving || index < 0 || target < 0 || target >= this.listColumns.length) return;
-    const next = [...this.listColumns];
-    [next[index], next[target]] = [next[target], next[index]];
+    if (index < 0 || target < 0 || target >= this.listColumns.length) return;
+    await this.placeColumn(column, target);
+  }
+
+  /** Move one presentation column to `targetIndex` among the list columns, preserving task order. */
+  async placeColumn(column: ProjectTaskListColumn, targetIndex: number): Promise<void> {
+    const projectId = this.projectId;
+    if (!projectId || this.listColumnsSaving || this.propertySaving || !this.listColumns.includes(column)) return;
+    const next = collectionMoveItem(this.listColumns, column, targetIndex);
+    if (taskListColumnsMatch(next, this.listColumns)) return;
     await this.#persistListColumns(projectId, next);
   }
 

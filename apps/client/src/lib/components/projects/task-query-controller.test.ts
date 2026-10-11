@@ -289,6 +289,23 @@ describe("Project task query controller policy", () => {
     expect(saveTaskListColumns).toHaveBeenLastCalledWith("project-1", ["status", "due", "custom:created"]);
   });
 
+  it("places a column at any list index and skips writes that keep the order or name hidden columns", async () => {
+    const { controller, saveTaskListColumns } = createController();
+    controller.listColumns = ["status", "due", "priority", "custom:created"];
+    await controller.placeColumn("custom:created", 0);
+    expect(saveTaskListColumns).toHaveBeenLastCalledWith("project-1", ["custom:created", "status", "due", "priority"]);
+    expect(controller.listColumns).toEqual(["custom:created", "status", "due", "priority"]);
+    await controller.placeColumn("custom:created", 99);
+    expect(controller.listColumns).toEqual(["status", "due", "priority", "custom:created"]);
+    saveTaskListColumns.mockClear();
+    await controller.placeColumn("due", 1);
+    await controller.placeColumn("assignee", 0);
+    await controller.moveColumn("status", -1);
+    await controller.moveColumn("custom:created", 1);
+    expect(saveTaskListColumns).not.toHaveBeenCalled();
+    expect(controller.listColumns).toEqual(["status", "due", "priority", "custom:created"]);
+  });
+
   it("duplicates through the schema boundary and inserts the fresh property next to its source", async () => {
     const { controller, duplicateCustomField, createdField, fields, addCustomField } = createController();
     const source = { ...createdField, id: "source", name: "Original" };

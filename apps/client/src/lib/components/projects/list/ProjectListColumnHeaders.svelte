@@ -15,6 +15,7 @@
 
   let {
     mode,
+    rowKey,
     gridTemplate,
     gridMinWidth,
     taskListColumns,
@@ -24,6 +25,8 @@
     onResizeKeydown,
   }: {
     mode: HeaderMode;
+    /** Unique among the table's header rows, so a column drag previews only in the row that started it. */
+    rowKey: string;
     gridTemplate: string;
     gridMinWidth: string;
     taskListColumns: ProjectTaskListColumn[];
@@ -43,6 +46,7 @@
 {#snippet columnHeaderCell(label: string, column: ProjectTaskListResizableColumn)}
   <CollectionColumnHeader {label} resizeLabel={t("projects.columns.resizeColumn", label)}
     class={context?.cellClass(column)} style={context?.cellStyle(column)}
+    columnId={column} movable={column !== "name"} reorder={context?.columnReorder} reorderRow={rowKey}
     onpointerdown={(event) => onResizePointerDown(event, column)}
     ondblclick={(event) => onResizeDoubleClick(event, column)}
     onkeydown={(event) => onResizeKeydown(event, column)}>

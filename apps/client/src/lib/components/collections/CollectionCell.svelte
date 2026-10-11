@@ -29,7 +29,8 @@
 </div>
 
 <style>
-  .collection-cell :global(:disabled) { opacity: 1; }
+  /* Controls disabled during a save keep full opacity; controls revealed on row hover keep their own visibility. */
+  .collection-cell :global(:disabled:not([data-collection-hover-reveal])) { opacity: 1; }
   .collection-cell :global(input:disabled) { -webkit-text-fill-color: currentColor; }
   /* The cell is the only highlighted surface (see the collection rules in app.css); the primary control and its wrappers stay unpositioned so its hit area resolves against the cell. */
   .collection-cell :global(:has([data-collection-cell-primary])),

@@ -413,10 +413,11 @@ describe("Notes typed slash commands", () => {
 
   it.each([false, true])("opens and filters through input, then applies a heading (software Enter: %s)", async (softwareEnter) => {
     const h = await editor();
-    expect(h.host.hasAttribute("data-placeholder")).toBe(false);
+    expect(h.host.hasAttribute("data-placeholder")).toBe(true);
     expect(h.host.hasAttribute("aria-placeholder")).toBe(false);
     await h.input("/");
     await vi.waitFor(() => expect(document.querySelector('[role="menu"]')).not.toBeNull());
+    expect(h.host.hasAttribute("data-placeholder")).toBe(false);
     await h.input("h2");
     await vi.waitFor(() => expect(document.querySelectorAll('[role="menuitem"]')).toHaveLength(2));
     if (softwareEnter) expect((await h.input("", "insertParagraph")).defaultPrevented).toBe(true);

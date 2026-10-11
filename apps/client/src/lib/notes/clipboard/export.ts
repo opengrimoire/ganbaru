@@ -2,6 +2,7 @@ import { blockEditableRichText, blockIndent, blockPlainText, isHeadingBlockType 
 import { blockColor, notesClipboardColorStyle } from "$lib/notes/blocks/color";
 import { blockChildrenAreVisible, parentIdForBlock } from "$lib/notes/blocks/tree";
 import { richTextPlainText, richTextRangeSlice } from "$lib/notes/rich-text/core";
+import { NOTES_CLIPBOARD_MENTION_ATTRIBUTE } from "./blocks";
 import { escapeNotesMarkdown, notesMarkdownFence, notesRichTextMarkdown } from "./markdown";
 import { notesClipboardLinkUrl } from "./links";
 import { isNotesUuid } from "$lib/notes/links/block-link";
@@ -104,7 +105,7 @@ function escapeHtml(value: string): string {
     .replace(/"/gu, "&quot;").replace(/'/gu, "&#39;");
 }
 
-/** Emit readable inline content and validated local reference identities without loading targets. */
+/** Emit readable inline content and mention identities without loading their targets. */
 function richTextHtml(items: readonly NotesRichText[]): string {
   return items.map((item) => {
     let html = escapeHtml(item.plain_text).replace(/\n/gu, "<br>");
@@ -126,6 +127,9 @@ function richTextHtml(items: readonly NotesRichText[]): string {
       const metadata = ` data-notes-reference-type="${item.mention.type}" data-notes-reference-id="${escapeHtml(id)}"`;
       const destination = item.mention.type === "page" ? `#notes?page=${id}` : url;
       return destination ? `<a href="${escapeHtml(destination)}"${metadata}>${html}</a>` : `<span${metadata}>${html}</span>`;
+    }
+    if (item.type === "mention") {
+      return `<span ${NOTES_CLIPBOARD_MENTION_ATTRIBUTE}="${escapeHtml(JSON.stringify(item.mention))}">${html}</span>`;
     }
     return url ? `<a href="${escapeHtml(url)}">${html}</a>` : html;
   }).join("");

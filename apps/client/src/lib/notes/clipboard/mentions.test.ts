@@ -2,13 +2,23 @@
 import { describe, expect, it } from "vitest";
 import { notesClipboardContent } from "./export";
 import { notesInlineClipboardRichText, planNotesRichHtmlPaste } from "$lib/notes/rich-text/paste";
-import { createDatabaseMentionRichText, createPageMentionRichText, createTextRichText, richTextPlainText } from "$lib/notes/rich-text/core";
+import {
+  createDatabaseMentionRichText,
+  createDateMentionRichText,
+  createDateMentionValue,
+  createLocalObjectMentionRichText,
+  createPageMentionRichText,
+  createTextRichText,
+  createUserMentionRichText,
+  richTextPlainText,
+} from "$lib/notes/rich-text/core";
 import type { NotesParagraphBlock, NotesRichText } from "$lib/notes/types";
 
 const PAGE_ID = "11111111-1111-4111-8111-111111111111";
 const DATABASE_ID = "22222222-2222-4222-8222-222222222222";
 const OTHER_DATABASE_ID = "33333333-3333-4333-8333-333333333333";
 const BLOCK_ID = "44444444-4444-4444-8444-444444444444";
+const USER_ID = "55555555-5555-4555-8555-555555555555";
 const FIXTURE_TIME = "2026-09-30T09:00:00.000Z";
 const PAGE_URL = `#notes?page=${PAGE_ID}`;
 const DATABASE_URL = `${PAGE_URL}&block=${DATABASE_ID}`;
@@ -147,5 +157,34 @@ describe("inline Notes reference clipboard round trips", () => {
     const clipboard = notesClipboardContent([{ block: paragraph([mention]) }]);
     expect(clipboard.html).not.toContain("data-notes-reference-id");
     expect(pastedInline(clipboard.html)[0]).toMatchObject({ type: "text", plain_text: "Readable label" });
+  });
+
+  it.each([
+    ["project", createLocalObjectMentionRichText("project", "eating", "Eating")],
+    ["task", createLocalObjectMentionRichText("project_task", "task-1", "Shop")],
+    ["user", createUserMentionRichText(USER_ID, "Ana")],
+    ["date", createDateMentionRichText(createDateMentionValue("2026-10-11", true), "October 11")],
+  ] as const)("retains a %s mention identity between ordinary text", (_kind, mention) => {
+    const clipboard = notesClipboardContent([{ block: paragraph([createTextRichText("See "), mention, createTextRichText(" soon")]) }]);
+    expect(clipboard.plainText).toBe(`See ${mention.plain_text} soon`);
+    expect(pastedInline(clipboard.html)[1]).toEqual(mention);
+  });
+
+  it.each([
+    ["invalid JSON", "{"],
+    ["an unknown object type", JSON.stringify({ type: "ganbaru_object", ganbaru_object: { type: "account", id: "x" } })],
+    ["an empty object id", JSON.stringify({ type: "ganbaru_object", ganbaru_object: { type: "project", id: "" } })],
+    ["a non-UUID user", JSON.stringify({ type: "user", user: { object: "user", id: "someone" } })],
+    ["a page smuggled past reference markers", JSON.stringify({ type: "page", page: { id: PAGE_ID } })],
+    ["an oversized payload", JSON.stringify({ type: "ganbaru_object", ganbaru_object: { type: "project", id: "x".repeat(4096) } })],
+  ])("pastes a mention with %s as readable text", (_case, payload) => {
+    const template = document.createElement("template");
+    const span = document.createElement("span");
+    span.setAttribute("data-notes-mention", payload);
+    span.textContent = "Readable label";
+    template.content.append(span);
+    const result = pastedInline(template.innerHTML);
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ type: "text", plain_text: "Readable label" });
   });
 });

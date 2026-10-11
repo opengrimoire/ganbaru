@@ -18,6 +18,14 @@ import { normalizeNotesClipboardPlainText, shouldHandleNotesPlainTextPaste } fro
 import { isNotesTabKey, planNotesKeyboardAction, type NotesKeyboardAction } from "$lib/notes/blocks/keyboard";
 import { shouldDeferNotesCompositionInput, shouldLetNativeCompositionHandleKeydown } from "$lib/notes/rich-text/composition";
 import { planNotesControlledTextEdit } from "$lib/notes/rich-text/controlled-text-input";
+import {
+  normalizeNotesSelectionForAtomicRanges,
+  notesAtomicRangeEndingAt,
+  notesAtomicRangeStartingAt,
+  notesAtomicTextRanges,
+  snapNotesDirectionalSelection,
+  type NotesAtomicTextRange,
+} from "$lib/notes/rich-text/atomic-ranges";
 import { notesSlashMenuItemDomId } from "$lib/notes/editor/accessibility";
 import {
   beginLazyComponentLoad,
@@ -30,9 +38,11 @@ import {
   notesEditableSelectionViewportRect,
   notesEditableOffsetFromDomPoint,
   notesPlainTextFromEditableRoot,
+  notesDirectionalSelectionFromEditableRoot,
   notesTextSelectionFromEditableRoot,
   planNotesSelectionReconciliation,
   restoreNotesEditableSelection,
+  setNotesEditableDirectionalSelection,
   type NotesTextSelection,
 } from "$lib/notes/editor/selection";
 import { normalizeNotesTextLinkUrl, notesPastedTextLinkUrl, notesLinkTarget, openNotesTextLink } from "$lib/notes/links/navigation";
@@ -46,6 +56,7 @@ import {
   editRichTextLink,
   planRichTextEquationConversion,
   replacePlainTextPreservingRichText,
+  richTextPlainText,
   richTextAnnotationTogglePatch,
   richTextColorPatch,
   type NotesDateMentionTarget,
@@ -527,11 +538,16 @@ export class NotesTextEditorController {
     this.slashItemCount = itemCount;
   };
 
+  /** Apply a formatting patch, widening the range so it never splits a mention. */
   async applyTextAnnotationsToRange(
-    start: number,
-    end: number,
+    rangeStart: number,
+    rangeEnd: number,
     patch: NotesRichTextAnnotationPatch,
   ): Promise<void> {
+    const { start, end } = normalizeNotesSelectionForAtomicRanges(
+      this.atomicRangesFor(this.text),
+      { start: rangeStart, end: rangeEnd },
+    );
     if (start === end) return;
     this.inlineEquationErrorReason = null;
     await Promise.resolve(this.source.onApplyTextAnnotations(this.block.id, start, end, patch));
@@ -573,9 +589,9 @@ export class NotesTextEditorController {
 
   insertInlineEquationFromEditor(target: EventTarget | null): boolean {
     if (!this.canUseInlineFormatting || !(target instanceof HTMLElement)) return false;
+    this.syncTextSelection(target);
     const selection = notesTextSelectionFromEditableRoot(target);
     if (!selection) return false;
-    this.syncTextSelection(target);
     void this.applyInlineEquationConversion(
       planRichTextEquationConversion(this.text, selection.start, selection.end),
     );
@@ -665,6 +681,7 @@ export class NotesTextEditorController {
     }
     if (this.applyAnnotationShortcut(event)) return;
     if (this.routeMentionKey(event) || this.routeSlashKey(event)) return;
+    if (this.moveAcrossAtomicRange(event)) return;
     const target = event.currentTarget;
     const selection = target instanceof HTMLElement ? notesTextSelectionFromEditableRoot(target) : null;
     const currentText = target instanceof HTMLElement ? notesPlainTextFromEditableRoot(target) : this.text;
@@ -699,6 +716,7 @@ export class NotesTextEditorController {
         text: currentText,
         selectionStart,
         selectionEnd,
+        atomicRanges: this.atomicRangesFor(currentText),
       });
       if (edit) this.commitPlainTextValue(edit.text, edit.selection);
       return;
@@ -811,6 +829,7 @@ export class NotesTextEditorController {
         text: currentText,
         selectionStart,
         selectionEnd,
+        atomicRanges: this.atomicRangesFor(currentText),
       });
       if (!edit) return;
       event.preventDefault();
@@ -831,6 +850,7 @@ export class NotesTextEditorController {
         text: currentText,
         selectionStart,
         selectionEnd,
+        atomicRanges: this.atomicRangesFor(currentText),
       });
       if (!edit) return;
       event.preventDefault();
@@ -854,12 +874,49 @@ export class NotesTextEditorController {
     this.mentionActiveIndex = 0;
   }
 
+  /** Track the native selection after snapping any end that falls inside a mention to its edge. */
   syncTextSelection = (target: EventTarget | null): void => {
     if (!(target instanceof HTMLElement)) return;
+    this.snapEditableSelectionToAtomicRanges(target);
     const selection = notesTextSelectionFromEditableRoot(target);
     if (!selection) return;
     this.runtime.setTrackedSelection(selection);
   };
+
+  /** Mention spans in plain-text offsets, empty when the editable text has drifted from the model. */
+  private atomicRangesFor(text: string): NotesAtomicTextRange[] {
+    const richText = this.editableRichText;
+    return richTextPlainText(richText) === text ? notesAtomicTextRanges(richText) : [];
+  }
+
+  private snapEditableSelectionToAtomicRanges(root: HTMLElement): void {
+    if (this.runtime.compositionActive) return;
+    const selection = notesDirectionalSelectionFromEditableRoot(root);
+    if (!selection) return;
+    const ranges = this.atomicRangesFor(notesPlainTextFromEditableRoot(root));
+    const snapped = snapNotesDirectionalSelection(ranges, selection);
+    if (snapped.anchor === selection.anchor && snapped.focus === selection.focus) return;
+    setNotesEditableDirectionalSelection(root, snapped);
+  }
+
+  /** Step the caret, or the selection focus with Shift, over a whole mention next to it. */
+  private moveAcrossAtomicRange(event: KeyboardEvent): boolean {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return false;
+    if (event.ctrlKey || event.altKey || event.metaKey || !(event.currentTarget instanceof HTMLElement)) return false;
+    const root = event.currentTarget;
+    const selection = notesDirectionalSelectionFromEditableRoot(root);
+    if (!selection || (!event.shiftKey && selection.anchor !== selection.focus)) return false;
+    const ranges = this.atomicRangesFor(notesPlainTextFromEditableRoot(root));
+    const range = event.key === "ArrowLeft"
+      ? notesAtomicRangeEndingAt(ranges, selection.focus)
+      : notesAtomicRangeStartingAt(ranges, selection.focus);
+    if (!range) return false;
+    const focus = event.key === "ArrowLeft" ? range.start : range.end;
+    event.preventDefault();
+    setNotesEditableDirectionalSelection(root, { anchor: event.shiftKey ? selection.anchor : focus, focus });
+    this.syncTextSelection(root);
+    return true;
+  }
 
   captureContextMenuSelection = (event: PointerEvent): void => {
     if (event.button !== 2 || !(event.currentTarget instanceof HTMLElement)) return;
@@ -937,7 +994,10 @@ export class NotesTextEditorController {
   /** Override native DOM copying, whose classes do not carry external semantics. */
   handleCopy = (event: ClipboardEvent): void => {
     const editor = this.runtime.editor;
-    const selection = editor ? notesTextSelectionFromEditableRoot(editor) : null;
+    const domSelection = editor ? notesTextSelectionFromEditableRoot(editor) : null;
+    const selection = domSelection
+      ? normalizeNotesSelectionForAtomicRanges(this.atomicRangesFor(this.text), domSelection)
+      : null;
     if (!selection || selection.start === selection.end || event.defaultPrevented) return;
     event.preventDefault();
     try {
@@ -957,7 +1017,7 @@ export class NotesTextEditorController {
   async #deleteCopiedText(start: number, end: number): Promise<void> {
     const edit = planNotesControlledTextEdit({
       inputType: "deleteByCut", data: null, text: this.text,
-      selectionStart: start, selectionEnd: end,
+      selectionStart: start, selectionEnd: end, atomicRanges: this.atomicRangesFor(this.text),
     });
     if (!edit) return;
     this.source.onTextInput(this.block.id, edit.text, edit.selection);
@@ -998,6 +1058,7 @@ export class NotesTextEditorController {
       text: this.text,
       selectionStart: start,
       selectionEnd: end,
+      atomicRanges: this.atomicRangesFor(this.text),
     });
     if (!edit) return;
     this.source.onTextInput(this.block.id, edit.text, edit.selection);
@@ -1346,7 +1407,6 @@ export class NotesTextEditorController {
 
   selectMention = async (target: NotesMentionTarget): Promise<void> => {
     if (!this.mentionQuery) return;
-    const cursor = this.mentionQuery.start + target.title.length;
     const range = this.mentionQuery;
     this.mentionQuery = null;
     this.mentionActiveIndex = 0;
@@ -1357,6 +1417,8 @@ export class NotesTextEditorController {
     } else {
       await Promise.resolve(this.source.onInsertObjectMention(this.block.id, range.start, range.end, target));
     }
+    const inserted = notesAtomicRangeStartingAt(notesAtomicTextRanges(this.editableRichText), range.start);
+    const cursor = inserted?.end ?? range.start + target.title.length;
     await this.runtime.focusEditorWithSelection(cursor, cursor);
   };
 

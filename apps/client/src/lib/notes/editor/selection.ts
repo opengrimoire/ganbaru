@@ -216,6 +216,19 @@ function appendEditablePlainText(node: Node, output: string[], root: Node): void
   });
 }
 
+/** Marks the root element of an inline mention, which carets treat as one token. */
+export const NOTES_MENTION_CHIP_ATTRIBUTE = "data-notes-mention-chip";
+
+function isNotesMentionChipElement(node: Node): node is Element {
+  return isElementNode(node) && node.hasAttribute(NOTES_MENTION_CHIP_ATTRIBUTE);
+}
+
+function editablePlainTextLength(node: Node): number {
+  const output: string[] = [];
+  appendEditablePlainText(node, output, node);
+  return output.join("").length;
+}
+
 /**
  * Read only the plain text represented by the rich editable Notes surface.
  */
@@ -258,6 +271,78 @@ export function notesTextSelectionFromEditableRoot(root: HTMLElement): NotesText
   return {
     start: Math.min(anchor, focus),
     end: Math.max(anchor, focus),
+  };
+}
+
+/** A text selection that keeps which end the user is moving. */
+export interface NotesDirectionalTextSelection {
+  anchor: number;
+  focus: number;
+}
+
+/** Read the selection's anchor and focus offsets from a rich editable Notes surface. */
+export function notesDirectionalSelectionFromEditableRoot(root: HTMLElement): NotesDirectionalTextSelection | null {
+  const selection = root.ownerDocument.getSelection();
+  const anchorNode = selection?.anchorNode ?? null;
+  const focusNode = selection?.focusNode ?? null;
+  if (!selection || selection.rangeCount === 0 || !anchorNode || !focusNode) return null;
+  if (!root.contains(anchorNode) || !root.contains(focusNode)) return null;
+  const anchor = notesEditableOffsetFromDomPoint(root, anchorNode, selection.anchorOffset);
+  const focus = notesEditableOffsetFromDomPoint(root, focusNode, selection.focusOffset);
+  return anchor === null || focus === null ? null : { anchor, focus };
+}
+
+/** Place a directional selection in a rich editable Notes surface, keeping the anchor fixed. */
+export function setNotesEditableDirectionalSelection(
+  root: HTMLElement,
+  selection: NotesDirectionalTextSelection,
+): boolean {
+  const windowSelection = root.ownerDocument.getSelection();
+  if (!windowSelection) return false;
+  const textLength = notesPlainTextFromEditableRoot(root).length;
+  const anchor = findEditableDomPoint(root, Math.min(Math.max(0, selection.anchor), textLength));
+  const focus = findEditableDomPoint(root, Math.min(Math.max(0, selection.focus), textLength));
+  windowSelection.setBaseAndExtent(anchor.node, anchor.offset, focus.node, focus.offset);
+  return true;
+}
+
+/** Set on a mention chip that the native selection covers, so the chip can paint its icon as selected. */
+export const NOTES_SELECTED_MENTION_CHIP_ATTRIBUTE = "data-notes-selected";
+
+/** Mark exactly the mention chips that intersect a non-collapsed selection inside the editable root. */
+export function markNotesSelectedMentionChips(root: HTMLElement): void {
+  const selection = notesTextSelectionFromEditableRoot(root);
+  const ranged = selection !== null && selection.start !== selection.end;
+  for (const chip of root.querySelectorAll(`[${NOTES_MENTION_CHIP_ATTRIBUTE}]`)) {
+    const parent = chip.parentNode;
+    const start = ranged && parent
+      ? notesEditableOffsetFromDomPoint(root, parent, Array.prototype.indexOf.call(parent.childNodes, chip))
+      : null;
+    const selected = start !== null && selection !== null
+      && start < selection.end && start + editablePlainTextLength(chip) > selection.start;
+    if (selected) chip.setAttribute(NOTES_SELECTED_MENTION_CHIP_ATTRIBUTE, "true");
+    else chip.removeAttribute(NOTES_SELECTED_MENTION_CHIP_ATTRIBUTE);
+  }
+}
+
+/**
+ * Keep mention chip selection marks in step with the document selection. Pass the rendered rich
+ * text as the parameter so chips recreated by a content update are marked again.
+ */
+export function notesMentionChipSelectionAction(root: HTMLElement, _content?: unknown) {
+  const owner = root.ownerDocument;
+  let marked = false;
+  const refresh = (): void => {
+    const anchorNode = owner.getSelection()?.anchorNode ?? null;
+    const inside = anchorNode !== null && root.contains(anchorNode);
+    if (!inside && !marked) return;
+    markNotesSelectedMentionChips(root);
+    marked = inside;
+  };
+  owner.addEventListener("selectionchange", refresh);
+  return {
+    update(): void { refresh(); },
+    destroy(): void { owner.removeEventListener("selectionchange", refresh); },
   };
 }
 
@@ -323,6 +408,18 @@ export function findEditableDomPoint(root: HTMLElement, textOffset: number): Edi
 
       if (isNotesEditorSentinelElement(child)) {
         continue;
+      }
+
+      if (isNotesMentionChipElement(child)) {
+        // Mention edges resolve outside the chip so the caret never sits between its icon and label.
+        const length = editablePlainTextLength(child);
+        if (remaining === 0) return { node: parent, offset: index };
+        if (remaining >= length) {
+          remaining -= length;
+          fallback = { node: parent, offset: index + 1 };
+          if (remaining === 0) return fallback;
+          continue;
+        }
       }
 
       if (isNotesEditorLineElement(child) && previousSiblingIsEditorLine(children, index)) {

@@ -296,7 +296,8 @@
   bind:this={anchor}
   use:referenceEvents
   {href}
-  class={`notes-local-reference ${attributes.class ?? ""}`}
+  class={`notes-local-reference notes-mention-chip notes-mention-chip-link ${attributes.class ?? ""}`}
+  data-notes-mention-chip="true"
   data-notes-reference-id={referenceId}
   data-notes-reference-type={referenceType}
   aria-disabled={!isValidReference ? "true" : undefined}
@@ -307,7 +308,7 @@
   onpointerdown={handlePointerDown}
   onpointercancel={() => { pointerStart = null; closePreview(); }}
   onpointermove={(event) => { if (event.buttons) closePreview(); }}
-><span class="notes-local-reference-icon" class:notes-local-reference-icon-hidden={!showIcon} aria-hidden="true">{#if referenceType === "database"}<Database size="1em" strokeWidth={1.75} />{:else}<FileText size="1em" strokeWidth={1.75} />{/if}</span>{text}</a>{#if previewOpen}
+>{#if showIcon}<span class="notes-mention-chip-icon" data-notes-editor-sentinel="decoration" aria-hidden="true">{#if referenceType === "database"}<Database size="1em" strokeWidth={1.75} />{:else}<FileText size="1em" strokeWidth={1.75} />{/if}</span>{/if}{text}</a>{#if previewOpen}
   <div
     bind:this={card}
     use:floatingCard
@@ -354,26 +355,6 @@
     </div>
   </div>
 {/if}<style>
-  .notes-local-reference {
-    border-radius: 0.2em;
-    padding: 0.02em 0.16em;
-    color: var(--notes-rich-text-color, inherit);
-    background: var(--notes-rich-text-bg, color-mix(in srgb, var(--muted-foreground) 7%, transparent));
-    box-shadow: inset 0 0 0 1px var(--notes-rich-text-border, transparent);
-    text-decoration-line: underline;
-    text-decoration-color: color-mix(in srgb, var(--muted-foreground) 40%, transparent);
-    text-underline-offset: 0.2em;
-    text-decoration-thickness: 0.06em;
-    box-decoration-break: clone;
-    cursor: pointer;
-  }
-
-  .notes-local-reference:hover { background: var(--notes-rich-text-bg, color-mix(in srgb, var(--muted-foreground) 13%, transparent)); }
-  .notes-local-reference:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
-  .notes-local-reference[data-notes-strikethrough="true"] { text-decoration-line: underline line-through; }
-  .notes-local-reference[aria-disabled="true"] { cursor: default; }
-  .notes-local-reference-icon { display: inline-flex; margin-inline-end: 0.22em; vertical-align: -0.12em; color: var(--muted-foreground); }
-  .notes-local-reference-icon-hidden { display: none; }
   .notes-reference-preview { font-size: calc(0.8rem * var(--font-scale, 1)); line-height: 1.5; }
   .notes-reference-thumbnail-row { display: grid; grid-template-columns: 1.6fr 1fr 1fr; }
   .notes-reference-thumbnail-row + .notes-reference-thumbnail-row { border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
@@ -382,10 +363,4 @@
   .notes-reference-thumbnail-cell + .notes-reference-thumbnail-cell { border-inline-start: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
   .notes-reference-thumbnail-cell i { width: 75%; height: 0.22em; border-radius: 1em; background: color-mix(in srgb, var(--muted-foreground) 16%, transparent); }
   .notes-reference-thumbnail-cell i.notes-reference-thumbnail-short { width: 45%; }
-
-  .notes-local-reference.notes-rich-text-comment-anchor { background: color-mix(in srgb, var(--primary) 16%, transparent); box-shadow: inset 0 -0.12rem 0 color-mix(in srgb, var(--primary) 45%, transparent); }
-  .notes-local-reference.notes-rich-text-comment-anchor-resolved { background: color-mix(in srgb, var(--muted-foreground) 12%, transparent); box-shadow: inset 0 -0.12rem 0 color-mix(in srgb, var(--muted-foreground) 35%, transparent); }
-  .notes-local-reference.notes-rich-text-suggestion-anchor { background: color-mix(in srgb, var(--secondary) 38%, transparent); box-shadow: inset 0 -0.12rem 0 color-mix(in srgb, var(--primary) 70%, transparent); }
-  .notes-local-reference.notes-rich-text-suggestion-anchor-accepted { background: color-mix(in srgb, var(--primary) 12%, transparent); box-shadow: inset 0 -0.12rem 0 color-mix(in srgb, var(--primary) 45%, transparent); }
-  .notes-local-reference.notes-rich-text-suggestion-anchor-rejected { background: color-mix(in srgb, var(--destructive) 10%, transparent); box-shadow: inset 0 -0.12rem 0 color-mix(in srgb, var(--destructive) 35%, transparent); }
 </style>

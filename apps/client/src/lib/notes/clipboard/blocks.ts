@@ -9,6 +9,10 @@ import type { NotesBlockType, NotesBlockUpdate, NotesBlockWrite, NotesParent, No
 export const NOTES_CLIPBOARD_MAX_TEXT_LENGTH = 64 * 1024;
 export const NOTES_CLIPBOARD_MAX_BLOCKS = 101;
 export const NOTES_MARKDOWN_LIST_PARAGRAPHS_ATTRIBUTE = "data-notes-markdown-list-paragraphs";
+/** Carries the identity of user, date, and app object mentions in copied HTML. */
+export const NOTES_CLIPBOARD_MENTION_ATTRIBUTE = "data-notes-mention";
+/** Upper bound for one serialized mention identity read back from the clipboard. */
+export const NOTES_CLIPBOARD_MENTION_MAX_LENGTH = 2 * 1024;
 const MARKDOWN_TAB_WIDTH = 4;
 
 type NotesPastedTextBlockType =

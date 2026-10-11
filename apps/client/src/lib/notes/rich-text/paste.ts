@@ -15,14 +15,19 @@ import {
   createPageMentionRichText,
   createTextRichText,
   defaultRichTextAnnotations,
+  isNotesExternalMentionRichText,
   replaceRichTextRange,
   richTextPlainText,
   richTextRangeSlice,
+  type NotesExternalMentionRichText,
 } from "./core";
 import { parseNullableNotesIcon } from "$lib/notes/validation/assets";
+import { parseNotesRichTextArray } from "$lib/notes/validation/rich-text";
 import {
   NOTES_CLIPBOARD_MAX_BLOCKS,
   NOTES_CLIPBOARD_MAX_TEXT_LENGTH,
+  NOTES_CLIPBOARD_MENTION_ATTRIBUTE,
+  NOTES_CLIPBOARD_MENTION_MAX_LENGTH,
   NOTES_MARKDOWN_LIST_PARAGRAPHS_ATTRIBUTE,
 } from "$lib/notes/clipboard/blocks";
 import {
@@ -73,11 +78,9 @@ interface NotesRichHtmlPasteSegment {
   sourceDatabaseId?: string;
 }
 
-interface NotesRichHtmlInlineReference {
-  type: "page" | "database";
-  id: string;
-  href: string | null;
-}
+type NotesRichHtmlInlineReference =
+  | { type: "page" | "database"; id: string; href: string | null }
+  | { type: "mention"; item: NotesExternalMentionRichText };
 
 interface NotesRichHtmlInlineContext {
   annotations: NotesRichTextAnnotations;
@@ -262,11 +265,12 @@ function appendText(
 ): void {
   if (!content) return;
   const reference = context.reference;
-  const item = reference
-    ? reference.type === "page" ? createPageMentionRichText(reference.id, content, reference.href)
-      : createDatabaseMentionRichText(reference.id, content)
-    : context.linkUrl ? createLinkedTextRichText(content, context.linkUrl) : createTextRichText(content);
-  if (reference) {
+  const item: NotesRichText = !reference
+    ? context.linkUrl ? createLinkedTextRichText(content, context.linkUrl) : createTextRichText(content)
+    : reference.type === "mention" ? { ...structuredClone(reference.item), plain_text: content, href: null }
+      : reference.type === "page" ? createPageMentionRichText(reference.id, content, reference.href)
+        : createDatabaseMentionRichText(reference.id, content);
+  if (reference && reference.type !== "mention") {
     item.plain_text = content;
     item.href = reference.href;
   }
@@ -280,8 +284,7 @@ function appendInlineReferenceRuns(output: NotesRichText[], items: readonly Note
   for (const item of items) {
     if (item.type === "mention" && previous?.type === "mention"
       && item.href === previous.href && annotationsEqual(item.annotations, previous.annotations)
-      && ((item.mention.type === "page" && previous.mention.type === "page" && item.mention.page.id === previous.mention.page.id)
-        || (item.mention.type === "database" && previous.mention.type === "database" && item.mention.database.id === previous.mention.database.id))) {
+      && JSON.stringify(item.mention) === JSON.stringify(previous.mention)) {
       previous.plain_text += item.plain_text;
       continue;
     }
@@ -333,12 +336,35 @@ function applyStyleAnnotations(
   if (decoration.includes("line-through")) annotations.strikethrough = true;
 }
 
+/** Validate a pasted mention identity with the same reader used for stored rich text; invalid data pastes as text. */
+function pastedObjectMention(value: string): NotesExternalMentionRichText | null {
+  if (value.length > NOTES_CLIPBOARD_MENTION_MAX_LENGTH) return null;
+  let item: NotesRichText | undefined;
+  try {
+    [item] = parseNotesRichTextArray([{
+      type: "mention",
+      mention: JSON.parse(value),
+      annotations: defaultRichTextAnnotations(),
+      plain_text: "",
+      href: null,
+    }], "pasted mention");
+  } catch {
+    return null;
+  }
+  return isNotesExternalMentionRichText(item) ? item : null;
+}
+
 /** Treat reference metadata as untrusted input; retain ordinary page hyperlinks when no markers exist. */
 function inlineReferenceForElement(
   element: Element,
   linkUrl: string | null,
   inherited: NotesRichHtmlInlineReference | null | undefined,
 ): NotesRichHtmlInlineReference | null {
+  const mention = element.getAttribute(NOTES_CLIPBOARD_MENTION_ATTRIBUTE);
+  if (mention !== null) {
+    const item = pastedObjectMention(mention);
+    return item ? { type: "mention", item } : null;
+  }
   const type = element.getAttribute("data-notes-reference-type");
   const id = element.getAttribute("data-notes-reference-id");
   const target = linkUrl?.startsWith("#notes?") ? parseNotesLinkHash(linkUrl) : null;

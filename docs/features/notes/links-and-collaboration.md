@@ -52,6 +52,8 @@ Rich text can mention users, projects, tasks, pages, dates, and supported local 
 
 The mention catalog loads only while a mention menu is open, so opening a note never reads database rows for mentions.
 
+Every mention is one atomic token in the editor: the caret cannot enter it, one arrow key or Shift+arrow press crosses it, one Backspace or Delete removes it whole, and formatting or partial selections widen to cover it. Its icon is decoration that follows the selection highlight but is never copied as text, while rich copy and paste keep the identity of every mention kind. Project mentions show the project's icon, project and task mentions open Projects (a task opens its project), Calendar event mentions open Calendar, and people, date, Focus, and Music mentions are not navigable.
+
 The editor mention menu groups suggestions by kind (dates, people, pages, projects, Calendar, Focus, Music), shows each page or database with its route, and collapses long groups behind a "more results" row. People always offer an invite panel with the final layout; sending invitations stays unavailable until shared access exists.
 
 Notification previews and deep links obey the same effective page access as direct reads.

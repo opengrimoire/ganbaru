@@ -12,7 +12,7 @@
   } from "$lib/notes/editor/accessibility";
   import { notesRichTextEditorClass } from "$lib/notes/blocks/editor-ui";
   import type { NotesKeyboardAction } from "$lib/notes/blocks/keyboard";
-  import type { NotesTextSelection } from "$lib/notes/editor/selection";
+  import { notesMentionChipSelectionAction, type NotesTextSelection } from "$lib/notes/editor/selection";
   import {
     type NotesDateMentionTarget,
     type NotesObjectMentionTarget,
@@ -372,6 +372,7 @@
       mentionMatches.length,
     )
     : slashActiveDescendant}
+  use:notesMentionChipSelectionAction={editableRichText}
   contenteditable="true"
   spellcheck={block.type !== "code"}
   tabindex="0"

@@ -741,6 +741,38 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
   height: min(clamp(8rem, 20cqw, 15rem), 25svh);
 }
 
+/* Mentions read as one inline object; the chip paints the selection itself so its icon is covered too. */
+.notes-mention-chip {
+  border-radius: 0.2em;
+  padding: 0.02em 0.16em;
+  color: var(--notes-rich-text-color, inherit);
+  background: var(--notes-rich-text-bg, color-mix(in srgb, var(--muted-foreground) 7%, transparent));
+  box-shadow: inset 0 0 0 1px var(--notes-rich-text-border, transparent);
+  box-decoration-break: clone;
+  cursor: default;
+}
+.notes-mention-chip-link {
+  text-decoration-line: underline;
+  text-decoration-color: color-mix(in srgb, var(--muted-foreground) 40%, transparent);
+  text-underline-offset: 0.2em;
+  text-decoration-thickness: 0.06em;
+  cursor: pointer;
+}
+.notes-mention-chip-link:hover { background: var(--notes-rich-text-bg, color-mix(in srgb, var(--muted-foreground) 13%, transparent)); }
+.notes-mention-chip-link:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.notes-mention-chip[data-notes-strikethrough="true"] { text-decoration-line: line-through; }
+.notes-mention-chip-link[data-notes-strikethrough="true"] { text-decoration-line: underline line-through; }
+.notes-mention-chip-link[aria-disabled="true"] { cursor: default; }
+.notes-mention-chip-icon { display: inline-flex; margin-inline-end: 0.22em; vertical-align: -0.12em; color: var(--muted-foreground); }
+.notes-mention-chip.notes-rich-text-comment-anchor { background: color-mix(in srgb, var(--primary) 16%, transparent); box-shadow: inset 0 -0.12rem 0 color-mix(in srgb, var(--primary) 45%, transparent); }
+.notes-mention-chip.notes-rich-text-comment-anchor-resolved { background: color-mix(in srgb, var(--muted-foreground) 12%, transparent); box-shadow: inset 0 -0.12rem 0 color-mix(in srgb, var(--muted-foreground) 35%, transparent); }
+.notes-mention-chip.notes-rich-text-suggestion-anchor { background: color-mix(in srgb, var(--secondary) 38%, transparent); box-shadow: inset 0 -0.12rem 0 color-mix(in srgb, var(--primary) 70%, transparent); }
+.notes-mention-chip.notes-rich-text-suggestion-anchor-accepted { background: color-mix(in srgb, var(--primary) 12%, transparent); box-shadow: inset 0 -0.12rem 0 color-mix(in srgb, var(--primary) 45%, transparent); }
+.notes-mention-chip.notes-rich-text-suggestion-anchor-rejected { background: color-mix(in srgb, var(--destructive) 10%, transparent); box-shadow: inset 0 -0.12rem 0 color-mix(in srgb, var(--destructive) 35%, transparent); }
+.notes-mention-chip[data-notes-selected="true"] { background: var(--selection-background); }
+.notes-mention-chip[data-notes-selected="true"]::selection,
+.notes-mention-chip[data-notes-selected="true"] *::selection { background-color: transparent; }
+
 /* Notes and Chat share explorer surfaces, controls, and navigation states. */
 .explorer-sidebar {
   --explorer-toolbar-height: var(--cal-header-row-h);

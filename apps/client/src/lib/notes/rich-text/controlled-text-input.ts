@@ -1,4 +1,10 @@
 import type { NotesTextSelection } from "$lib/notes/editor/selection";
+import {
+  normalizeNotesSelectionForAtomicRanges,
+  notesAtomicRangeEndingAt,
+  notesAtomicRangeStartingAt,
+  type NotesAtomicTextRange,
+} from "./atomic-ranges";
 
 export interface NotesControlledTextEditInput {
   inputType: string;
@@ -6,6 +12,8 @@ export interface NotesControlledTextEditInput {
   text: string;
   selectionStart: number;
   selectionEnd: number;
+  /** Mention spans that are inserted around and deleted whole, never split. */
+  atomicRanges?: readonly NotesAtomicTextRange[];
 }
 
 export interface NotesControlledTextEdit {
@@ -77,11 +85,24 @@ function deleteRange(
   return replaceRange(text, selection, "");
 }
 
+function expandToAtomicRanges(
+  ranges: readonly NotesAtomicTextRange[],
+  start: number,
+  end: number,
+): NotesTextSelection {
+  return normalizeNotesSelectionForAtomicRanges(ranges, { start, end });
+}
+
 /** Plan a browser beforeinput text edit without letting contenteditable mutate unmanaged DOM. */
 export function planNotesControlledTextEdit(
   input: NotesControlledTextEditInput,
 ): NotesControlledTextEdit | null {
-  const selection = clampSelection(input.text, input.selectionStart, input.selectionEnd);
+  const ranges = input.atomicRanges ?? [];
+  const selection = normalizeNotesSelectionForAtomicRanges(
+    ranges,
+    clampSelection(input.text, input.selectionStart, input.selectionEnd),
+  );
+  const collapsed = selection.start === selection.end;
 
   if (input.inputType === "insertText") {
     if (input.data === null) return null;
@@ -92,28 +113,30 @@ export function planNotesControlledTextEdit(
     return replaceRange(input.text, selection, "\n");
   }
 
-  if (input.inputType === "deleteContentBackward") {
-    if (selection.start !== selection.end) return deleteRange(input.text, selection.start, selection.end);
-    return deleteRange(input.text, previousTextOffset(input.text, selection.start), selection.start);
+  if (input.inputType === "deleteContentBackward" || input.inputType === "deleteWordBackward") {
+    if (!collapsed) return deleteRange(input.text, selection.start, selection.end);
+    const token = notesAtomicRangeEndingAt(ranges, selection.start);
+    if (token) return deleteRange(input.text, token.start, token.end);
+    const from = input.inputType === "deleteWordBackward"
+      ? previousWordOffset(input.text, selection.start)
+      : previousTextOffset(input.text, selection.start);
+    const range = expandToAtomicRanges(ranges, from, selection.start);
+    return deleteRange(input.text, range.start, range.end);
   }
 
-  if (input.inputType === "deleteContentForward") {
-    if (selection.start !== selection.end) return deleteRange(input.text, selection.start, selection.end);
-    return deleteRange(input.text, selection.start, nextTextOffset(input.text, selection.start));
-  }
-
-  if (input.inputType === "deleteWordBackward") {
-    if (selection.start !== selection.end) return deleteRange(input.text, selection.start, selection.end);
-    return deleteRange(input.text, previousWordOffset(input.text, selection.start), selection.start);
-  }
-
-  if (input.inputType === "deleteWordForward") {
-    if (selection.start !== selection.end) return deleteRange(input.text, selection.start, selection.end);
-    return deleteRange(input.text, selection.start, nextWordOffset(input.text, selection.start));
+  if (input.inputType === "deleteContentForward" || input.inputType === "deleteWordForward") {
+    if (!collapsed) return deleteRange(input.text, selection.start, selection.end);
+    const token = notesAtomicRangeStartingAt(ranges, selection.start);
+    if (token) return deleteRange(input.text, token.start, token.end);
+    const to = input.inputType === "deleteWordForward"
+      ? nextWordOffset(input.text, selection.start)
+      : nextTextOffset(input.text, selection.start);
+    const range = expandToAtomicRanges(ranges, selection.start, to);
+    return deleteRange(input.text, range.start, range.end);
   }
 
   if (input.inputType === "deleteByCut" || input.inputType === "deleteContent") {
-    if (selection.start === selection.end) return null;
+    if (collapsed) return null;
     return deleteRange(input.text, selection.start, selection.end);
   }
 

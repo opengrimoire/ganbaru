@@ -3,9 +3,12 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   clampNotesTextSelection,
+  markNotesSelectedMentionChips,
+  notesMentionChipSelectionAction,
   createNotesDocumentSelectionPainter,
   notesEditableOffsetFromDomPoint,
   notesEditableSelectionViewportRect,
+  notesDirectionalSelectionFromEditableRoot,
   notesDocumentRange,
   notesPlainTextFromEditableRoot,
   notesSelectionForFocus,
@@ -13,6 +16,7 @@ import {
   notesTextSelectionFromControl,
   planNotesSelectionReconciliation,
   restoreNotesEditableSelection,
+  setNotesEditableDirectionalSelection,
 } from "./selection";
 
 // Load test-only Node APIs without introducing Node timer globals into the browser type environment.
@@ -526,5 +530,82 @@ describe("Notes highlight theme colors", () => {
       list.remove();
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("notes mention chip selection", () => {
+  function chipRoot(): HTMLElement {
+    const root = document.createElement("div");
+    root.innerHTML = [
+      "<div data-notes-editor-line=\"true\">",
+      "<a data-notes-mention-chip=\"true\"><span data-notes-editor-sentinel=\"decoration\">📁</span>Eating</a>",
+      "<span> plan</span>",
+      "</div>",
+    ].join("");
+    document.body.append(root);
+    return root;
+  }
+
+  it("reads mention text without its icon decoration", () => {
+    const root = chipRoot();
+    expect(notesPlainTextFromEditableRoot(root)).toBe("Eating plan");
+    root.remove();
+  });
+
+  it("places carets at mention edges outside the chip element", () => {
+    const root = chipRoot();
+    const chip = root.querySelector("a");
+    const line = chip?.parentNode;
+    expect(restoreNotesEditableSelection(root, { start: 0, end: 0 })).toBe(true);
+    expect(document.getSelection()?.anchorNode).toBe(line);
+    expect(document.getSelection()?.anchorOffset).toBe(0);
+    expect(restoreNotesEditableSelection(root, { start: 6, end: 6 })).toBe(true);
+    expect(document.getSelection()?.anchorNode).toBe(line);
+    expect(document.getSelection()?.anchorOffset).toBe(1);
+    expect(notesTextSelectionFromEditableRoot(root)).toEqual({ start: 6, end: 6 });
+    root.remove();
+  });
+
+  it("keeps a backward selection's anchor and focus when placing it", () => {
+    const root = chipRoot();
+    expect(setNotesEditableDirectionalSelection(root, { anchor: 11, focus: 0 })).toBe(true);
+    expect(notesDirectionalSelectionFromEditableRoot(root)).toEqual({ anchor: 11, focus: 0 });
+    expect(notesTextSelectionFromEditableRoot(root)).toEqual({ start: 0, end: 11 });
+    root.remove();
+  });
+
+  it("marks a chip only while a ranged selection covers part of it", () => {
+    const root = chipRoot();
+    const chip = root.querySelector("a");
+    restoreNotesEditableSelection(root, { start: 4, end: 9 });
+    markNotesSelectedMentionChips(root);
+    expect(chip?.getAttribute("data-notes-selected")).toBe("true");
+    restoreNotesEditableSelection(root, { start: 6, end: 11 });
+    markNotesSelectedMentionChips(root);
+    expect(chip?.hasAttribute("data-notes-selected")).toBe(false);
+    restoreNotesEditableSelection(root, { start: 0, end: 6 });
+    markNotesSelectedMentionChips(root);
+    expect(chip?.getAttribute("data-notes-selected")).toBe("true");
+    restoreNotesEditableSelection(root, { start: 3, end: 3 });
+    markNotesSelectedMentionChips(root);
+    expect(chip?.hasAttribute("data-notes-selected")).toBe(false);
+    root.remove();
+  });
+
+  it("clears chip marks once the selection leaves the editor", () => {
+    const root = chipRoot();
+    const outside = document.createElement("p");
+    outside.textContent = "Elsewhere";
+    document.body.append(outside);
+    const action = notesMentionChipSelectionAction(root);
+    restoreNotesEditableSelection(root, { start: 0, end: 11 });
+    action.update();
+    expect(root.querySelector("a")?.getAttribute("data-notes-selected")).toBe("true");
+    document.getSelection()?.selectAllChildren(outside);
+    action.update();
+    expect(root.querySelector("a")?.hasAttribute("data-notes-selected")).toBe(false);
+    action.destroy();
+    outside.remove();
+    root.remove();
   });
 });

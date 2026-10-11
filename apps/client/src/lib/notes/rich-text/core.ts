@@ -363,6 +363,14 @@ export function richTextPlainText(richText: readonly NotesRichText[]): string {
   return richText.map((item) => item.plain_text).join("");
 }
 
+/** Mentions of people, dates, and app objects, which point outside the Notes page graph. */
+export type NotesExternalMentionRichText = NotesUserMentionRichText | NotesLocalObjectMentionRichText | NotesDateMentionRichText;
+
+export function isNotesExternalMentionRichText(item: NotesRichText | undefined): item is NotesExternalMentionRichText {
+  return item?.type === "mention"
+    && (item.mention.type === "user" || item.mention.type === "ganbaru_object" || item.mention.type === "date");
+}
+
 function cloneRichText(item: NotesRichText): NotesRichText {
   return cloneNotesJson(item);
 }

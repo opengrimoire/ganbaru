@@ -16,11 +16,8 @@
   } from "$lib/notes/editor/slash-commands";
   import type { NotesColor } from "$lib/notes/types";
   import { tick, type Component } from "svelte";
-  import { portal } from "$lib/utils/portal";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
-  import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
-  import { findEditableDomPoint } from "$lib/notes/editor/selection";
-  import { notesBlockInsertMenuStyle } from "$lib/notes/blocks/insertion";
+  import { notesCaretMenuPosition } from "./caret-menu-position";
   import Search from "@lucide/svelte/icons/search";
   import ArrowDown from "@lucide/svelte/icons/arrow-down";
   import ArrowUp from "@lucide/svelte/icons/arrow-up";
@@ -159,59 +156,6 @@
       case "toggle": return ">";
       default: return "";
     }
-  }
-
-  /** Keep editing focus while the floating menu tracks the slash trigger and available viewport. */
-  function positionMenu(node: HTMLDivElement, editor: HTMLElement | null) {
-    if (!editor) return {};
-    const portaled = portal(node, editor.closest<HTMLElement>("[data-floating-root]") ?? document.body);
-    const viewport = window.visualViewport;
-    let disposed = false;
-    const update = () => {
-      if (disposed) return;
-      const start = findEditableDomPoint(editor, 0);
-      const range = editor.ownerDocument.createRange();
-      range.setStart(start.node, start.offset);
-      range.collapse(true);
-      const caret = range.getBoundingClientRect?.();
-      const rect = caret?.height ? caret : editor.getBoundingClientRect();
-      const offsetLeft = viewport?.offsetLeft ?? 0;
-      const offsetTop = viewport?.offsetTop ?? 0;
-      const rem = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
-      const chromeHeight = node.offsetHeight - (scrollArea?.clientHeight ?? 0);
-      node.style.cssText = notesBlockInsertMenuStyle({
-        triggerRect: { left: rect.left - offsetLeft, right: rect.right - offsetLeft, top: rect.top - offsetTop, bottom: rect.bottom - offsetTop },
-        viewportWidth: viewport?.width ?? window.innerWidth,
-        viewportHeight: viewport?.height ?? window.innerHeight,
-        preferredWidth: FLOATING_WIDTH.lg,
-        preferredMaxHeight: Math.min(22 * rem, (scrollArea?.scrollHeight ?? 22 * rem) + chromeHeight),
-      });
-      node.style.left = `${Number.parseFloat(node.style.left) + offsetLeft}px`;
-      node.style.top = `${Number.parseFloat(node.style.top) + offsetTop}px`;
-    };
-    const outside = (event: PointerEvent) => {
-      if (event.target instanceof Node && !node.contains(event.target) && !editor.contains(event.target)) onClose?.();
-    };
-    const scroll = (event: Event) => { if (!(event.target instanceof Node) || !node.contains(event.target)) update(); };
-    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(update);
-    observer?.observe(node);
-    observer?.observe(editor);
-    document.addEventListener("pointerdown", outside, true);
-    document.addEventListener("scroll", scroll, true);
-    window.addEventListener("resize", update);
-    viewport?.addEventListener("resize", update);
-    viewport?.addEventListener("scroll", update);
-    void tick().then(update);
-    return { destroy() {
-      disposed = true;
-      observer?.disconnect();
-      document.removeEventListener("pointerdown", outside, true);
-      document.removeEventListener("scroll", scroll, true);
-      window.removeEventListener("resize", update);
-      viewport?.removeEventListener("resize", update);
-      viewport?.removeEventListener("scroll", update);
-      portaled.destroy();
-    } };
   }
 
   /** Support keyboard search for insertion menus opened without an editing host. */
@@ -522,7 +466,7 @@
 </script>
 
 <div
-  use:positionMenu={anchor}
+  use:notesCaretMenuPosition={{ editor: anchor, offset: 0, scrollArea: () => scrollArea, onOutside: onClose }}
   id={menuId}
   class={`${anchor ? "" : menuClass} surface-floating z-50 flex max-h-[min(22rem,70vh)] w-floating-lg flex-col overflow-hidden`}
   role="menu"

@@ -34,6 +34,7 @@
   import NotesRichTextInline from "$lib/components/notes/rich-text/NotesRichTextInline.svelte";
   import { createNotesTextEditorController } from "./text-editor-runtime.svelte";
   import type { NotesMentionCatalog } from "./mention-data-controller.svelte";
+  import { getNotesEditor } from "$lib/components/notes/editor-context";
 
   let {
     block,
@@ -197,6 +198,7 @@
 
   const localization = getLocalization();
   const { t } = localization;
+  const notesEditor = getNotesEditor();
   const controller = createNotesTextEditorController({
     block: () => block,
     previousBlockType: () => previousBlockType,
@@ -252,6 +254,7 @@
     if (mentionOpen) return mentionTargets.acquire();
   });
   const mentionMatches = $derived(controller.mentionMatches);
+  const mentionInvite = $derived(controller.mentionInvite);
   const slashOpen = $derived(controller.slashOpen);
   const slashQuery = $derived(controller.slashQuery);
   const slashActiveDescendant = $derived(controller.slashActiveDescendant);
@@ -283,7 +286,7 @@
   const syncTextSelection = controller.syncTextSelection;
   const handleEditorFocus = controller.handleEditorFocus;
   const handleEditorBlur = controller.handleEditorBlur;
-  const selectMention = controller.selectMention;
+
   $effect(() => {
     if (block.type === "code") runtime.requestControl("code-language");
   });
@@ -473,17 +476,25 @@
   {/if}
 {/if}
 
-{#if mentionOpen}
+{#if mentionOpen || mentionInvite}
   {#if controlLoadStates["mention-menu"]?.status === "ready" && controlLoadStates["mention-menu"].component.kind === "mention-menu"}
     {@const NotesMentionMenu = controlLoadStates["mention-menu"].component.component}
+    {@const mention = mentionInvite ?? controller.mentionQuery}
     <NotesMentionMenu
     menuId={notesMentionMenuDomId(block.id)}
     blockId={block.id}
-    targets={mentionMatches}
+    anchor={runtime.editor}
+    anchorOffset={mention?.start ?? 0}
+    query={mention?.query ?? ""}
+    groups={controller.mentionGroups}
     activeIndex={controller.mentionActiveIndex}
-    onSelect={(target) => {
-      void selectMention(target);
-    }}
+    localUserId={notesEditor.localUser?.id ?? null}
+    inviting={mentionInvite !== null}
+    onSelect={controller.selectMentionRow}
+    onHighlight={(index) => { controller.mentionActiveIndex = index; }}
+    onClose={controller.closeMentionMenu}
+    onInviteBack={() => { void controller.closeMentionInvite(true); }}
+    onInviteDismiss={() => { void controller.closeMentionInvite(false); }}
     />
   {:else if controlLoadStates["mention-menu"]?.status === "failed"}
     <button class="min-h-8 rounded-md border border-border px-2 text-[0.8rem]" type="button" onclick={() => runtime.requestControl("mention-menu", true)}>{t("common.retry")}</button>

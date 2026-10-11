@@ -52,6 +52,8 @@ Rich text can mention users, projects, tasks, pages, dates, and supported local 
 
 The mention catalog loads only while a mention menu is open, so opening a note never reads database rows for mentions.
 
+The editor mention menu groups suggestions by kind (dates, people, pages, projects, Calendar, Focus, Music), shows each page or database with its route, and collapses long groups behind a "more results" row. People always offer an invite panel with the final layout; sending invitations stays unavailable until shared access exists.
+
 Notification previews and deep links obey the same effective page access as direct reads.
 
 ## Collaboration operations

@@ -41,8 +41,8 @@ import type { NotesFloatingPanelRect } from "$lib/notes/editor/floating-panel";
 import { notesTextContextMenuSelectionAtPoint } from "$lib/notes/editor/text-context-menu";
 import {
   buildDateMentionTargets,
+  buildIdleDateMentionTargets,
   detectPageMentionQuery,
-  filterNotesMentionTargets,
   editRichTextLink,
   planRichTextEquationConversion,
   replacePlainTextPreservingRichText,
@@ -60,6 +60,13 @@ import {
   type NotesRichTextAnnotationPatch,
 } from "$lib/notes/rich-text/core";
 import { planNotesMarkdownInlineShortcutConversion } from "$lib/notes/rich-text/markdown";
+import {
+  buildNotesMentionGroups,
+  flattenNotesMentionGroups,
+  type NotesMentionGroup,
+  type NotesMentionGroupKind,
+  type NotesMentionRow,
+} from "$lib/notes/rich-text/mention-groups";
 import {
   notesRichTextEquationShortcutRequested,
   notesRichTextFormattingShortcutAnnotationName,
@@ -322,6 +329,10 @@ export class NotesTextEditorController {
   slashItemCount = $state(0);
   mentionQuery = $state<NotesMentionQuery | null>(null);
   mentionActiveIndex = $state(0);
+  /** Sections revealed through their "more" row, tied to the at sign that opened them. */
+  mentionExpanded = $state<{ start: number; groups: ReadonlySet<NotesMentionGroupKind> } | null>(null);
+  /** The typed mention range an open invitation panel would replace; it outlives editor blur. */
+  mentionInvite = $state<NotesMentionQuery | null>(null);
   linkEditorOpen = $state(false);
   linkRange = $state({ start: 0, end: 0, url: null as string | null });
   linkUrlInput = $state("");
@@ -349,7 +360,7 @@ export class NotesTextEditorController {
       focusSelection: source.focusSelection,
       contextMenuOpen: () => this.contextMenuOpen,
       linkEditorOpen: () => this.linkEditorOpen,
-      mentionOpen: () => this.mentionOpen,
+      mentionOpen: () => this.mentionOpen || this.mentionInvite !== null,
       slashOpen: () => this.slashOpen,
       templateControlsOpen: () => this.templateControlsOpen,
       buttonControlsOpen: () => this.buttonControlsOpen,
@@ -423,28 +434,33 @@ export class NotesTextEditorController {
       : undefined;
   }
   get mentionOpen(): boolean { return this.mentionQuery !== null && this.canUseMentions; }
-  get mentionMatches(): NotesMentionTarget[] {
-    if (!this.mentionQuery || !this.canUseMentions) return [];
+  get mentionGroups(): NotesMentionGroup[] {
+    const mention = this.mentionQuery;
+    if (!mention || !this.canUseMentions) return [];
     const t = this.source.translate;
-    const dateTargets = buildDateMentionTargets(this.mentionQuery.query, {
-      today: Temporal.Now.plainDateISO(),
-      locale: this.source.locale(),
-      labels: {
-        today: t("notes.dateMentionToday"),
-        tomorrow: t("notes.dateMentionTomorrow"),
-        yesterday: t("notes.dateMentionYesterday"),
-        nextWeek: t("notes.dateMentionNextWeek"),
-        date: t("notes.dateMention"),
-        reminder: t("notes.reminderMention"),
-        remindTitle: (dateLabel: string) => t("notes.remindOnDate", dateLabel),
-      },
-      limit: 4,
+    const today = Temporal.Now.plainDateISO();
+    const labels = {
+      today: t("notes.dateMentionToday"),
+      tomorrow: t("notes.dateMentionTomorrow"),
+      yesterday: t("notes.dateMentionYesterday"),
+      nextWeek: t("notes.dateMentionNextWeek"),
+      date: t("notes.dateMention"),
+      reminder: t("notes.reminderMention"),
+      remindTitle: (dateLabel: string) => t("notes.remindOnDate", dateLabel),
+    };
+    const dateTargets = mention.query.trim()
+      ? buildDateMentionTargets(mention.query, { today, locale: this.source.locale(), labels, limit: 4 })
+      : buildIdleDateMentionTargets({ today, labels });
+    return buildNotesMentionGroups({
+      query: mention.query,
+      dateTargets,
+      namedTargets: this.source.mentionTargets(),
+      expanded: this.mentionExpanded?.start === mention.start ? this.mentionExpanded.groups : undefined,
+      canInvite: true,
     });
-    return [
-      ...dateTargets,
-      ...filterNotesMentionTargets(this.source.mentionTargets(), this.mentionQuery.query),
-    ].slice(0, 8);
   }
+  /** Menu rows in keyboard order, including the invitation and "more" rows. */
+  get mentionMatches(): NotesMentionRow[] { return flattenNotesMentionGroups(this.mentionGroups); }
 
   closeCompositionSensitiveMenus(): void {
     this.slashOpen = false;
@@ -712,10 +728,10 @@ export class NotesTextEditorController {
       return true;
     }
     if (event.key === "Enter" || isNotesTabKey(event)) {
-      const target = this.mentionMatches[this.mentionActiveIndex];
-      if (target) {
+      const row = this.mentionMatches[this.mentionActiveIndex];
+      if (row) {
         event.preventDefault();
-        void this.selectMention(target);
+        this.selectMentionRow(row);
       }
       return true;
     }
@@ -1287,9 +1303,45 @@ export class NotesTextEditorController {
   };
 
   handleEditorFocus = (): void => {
+    this.mentionInvite = null;
     if (this.source.focusBlockId() !== this.block.id) this.source.onFocusBlock(this.block.id, true);
     this.runtime.requestControl("text-context-menu");
     if (this.canUseMentions) this.runtime.requestControl("slash-menu");
+  };
+
+  /** Insert a target, reveal a truncated section in place, or open the invitation panel. */
+  selectMentionRow = (row: NotesMentionRow): void => {
+    if (row.kind === "target") {
+      void this.selectMention(row.target);
+      return;
+    }
+    const mention = this.mentionQuery;
+    if (!mention) return;
+    if (row.kind === "more") {
+      const groups = this.mentionExpanded?.start === mention.start ? this.mentionExpanded.groups : new Set<NotesMentionGroupKind>();
+      this.mentionExpanded = { start: mention.start, groups: new Set([...groups, row.group]) };
+      return;
+    }
+    this.mentionInvite = mention;
+    this.mentionQuery = null;
+    this.mentionActiveIndex = 0;
+  };
+
+  closeMentionMenu = (): void => {
+    this.mentionQuery = null;
+    this.mentionActiveIndex = 0;
+  };
+
+  /** Close the invitation panel, optionally returning to the mention menu at the typed at sign. */
+  closeMentionInvite = async (returnToMenu: boolean): Promise<void> => {
+    const mention = this.mentionInvite;
+    this.mentionInvite = null;
+    if (!returnToMenu || !mention) return;
+    await this.runtime.focusEditorWithSelection(mention.end, mention.end);
+    if (this.text.slice(mention.start, mention.end) === `@${mention.query}`) {
+      this.mentionQuery = mention;
+      this.mentionActiveIndex = 0;
+    }
   };
 
   selectMention = async (target: NotesMentionTarget): Promise<void> => {

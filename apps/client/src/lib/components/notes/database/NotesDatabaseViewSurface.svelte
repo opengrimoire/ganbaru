@@ -4,7 +4,7 @@
   import { cn } from "$lib/utils";
   import { NOTES_DATABASE_VIEW_TAB_DISPLAYS, notesDatabaseViewTabDisplays, type NotesDatabaseViewTabDisplay } from "$lib/notes/database/view-tab-display.svelte";
   import { databaseResource, notesDatabaseSession } from "$lib/notes/database/session.svelte";
-  import { compactSourceLocation } from "$lib/notes/database/source-location";
+  import NotesLocationPath from "$lib/components/notes/NotesLocationPath.svelte";
   import { moveNotesDatabaseView, notesDatabaseViewDropPlacement, orderNotesDatabaseViews, stepNotesDatabaseView, type NotesDatabaseViewDropPlacement } from "$lib/notes/database/view-order";
   import Table2 from "@lucide/svelte/icons/table-2";
   import Columns3 from "@lucide/svelte/icons/columns-3";
@@ -803,19 +803,7 @@
           <Database class="size-3.5 shrink-0 text-muted-foreground" strokeWidth={1.75} aria-hidden="true" />
           <span class="relative grid min-w-0 flex-1">
             <span class="truncate">{sourceTitle(source)}</span>
-            {#if location}
-              <span class="sr-only">{location}</span>
-              <span class="flex min-w-0 text-panel-detail text-muted-foreground" aria-hidden="true">
-                {#each compactSourceLocation(sourceLocationTitles(source)) as segment, index (index)}
-                  {#if index > 0}<span class="shrink-0 px-1">/</span>{/if}
-                  {#if segment.kind === "gap"}
-                    <span class="shrink-0">…</span>
-                  {:else}
-                    <span class={["min-w-8 truncate", segment.last ? "shrink" : "shrink-4"]}>{segment.text}</span>
-                  {/if}
-                {/each}
-              </span>
-            {/if}
+            <NotesLocationPath segments={sourceLocationTitles(source)} />
           </span>
         </button>
       {/each}

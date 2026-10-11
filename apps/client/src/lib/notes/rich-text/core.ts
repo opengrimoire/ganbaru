@@ -36,6 +36,8 @@ export interface NotesPageMentionTarget {
   title: string;
   subtitle?: string;
   iconText?: string | null;
+  /** Where the page lives, outermost first, as raw titles that may be empty. */
+  location?: readonly string[];
 }
 
 export interface NotesUserMentionTarget {
@@ -52,6 +54,8 @@ export interface NotesDatabaseMentionTarget {
   title: string;
   subtitle?: string;
   iconText?: string | null;
+  /** Where the database lives, outermost first, as raw titles that may be empty. */
+  location?: readonly string[];
 }
 
 export interface NotesLocalObjectMentionTarget {
@@ -1105,9 +1109,10 @@ export function filterNotesMentionTargets(
 ): NotesNamedMentionTarget[] {
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const matches = normalizedQuery
-    ? targets.filter((target) =>
-      `${target.title} ${target.subtitle ?? ""}`.toLocaleLowerCase().includes(normalizedQuery)
-    )
+    ? targets.filter((target) => {
+      const location = "location" in target ? (target.location ?? []).join(" ") : "";
+      return `${target.title} ${target.subtitle ?? ""} ${location}`.toLocaleLowerCase().includes(normalizedQuery);
+    })
     : [...targets];
   return matches
     .sort((left, right) => {
@@ -1158,6 +1163,19 @@ export function formatPlainDate(date: Temporal.PlainDate, locale: string): strin
     day: "numeric",
     year: "numeric",
   }).format(new Date(date.year, date.month - 1, date.day));
+}
+
+/**
+ * The spelled-out date shown beside a date suggestion, or null when its title already reads as that date or the
+ * stored date cannot be parsed.
+ */
+export function notesDateMentionDetail(target: NotesDateMentionTarget, locale: string): string | null {
+  try {
+    const spelled = formatPlainDate(Temporal.PlainDate.from(target.date.start), locale);
+    return spelled === target.title ? null : spelled;
+  } catch {
+    return null;
+  }
 }
 
 function formatWeekday(date: Temporal.PlainDate, locale: string): string {
@@ -1277,16 +1295,40 @@ export function buildDateMentionTargets(
     ...weekdayCandidates,
     ...baseCandidates.filter((candidate) => dateMentionCandidateMatches(candidate, dateQuery)),
   ]);
-  return candidates.slice(0, options.limit ?? 6).map((candidate) => {
-    const title = reminder ? options.labels.remindTitle(candidate.title) : candidate.title;
-    return {
-      kind: "date",
-      id: `${reminder ? "reminder" : "date"}:${candidate.date.toString()}`,
-      title,
-      subtitle: reminder ? options.labels.reminder : options.labels.date,
-      iconText: null,
-      date: createDateMentionValue(candidate.date.toString(), reminder),
-      reminder,
-    };
-  });
+  return candidates
+    .slice(0, options.limit ?? 6)
+    .map((candidate) => dateMentionTarget(candidate, reminder, options.labels));
+}
+
+/**
+ * Suggest the dates offered before anything is typed after the at sign: today, and a reminder for tomorrow.
+ *
+ * @param options The current day and the localized date labels.
+ * @returns Today as a date mention followed by tomorrow as a reminder.
+ */
+export function buildIdleDateMentionTargets(options: {
+  today: Temporal.PlainDate;
+  labels: NotesDateMentionLabels;
+}): NotesDateMentionTarget[] {
+  const [today, tomorrow] = baseDateMentionCandidates(options.today, options.labels);
+  return [
+    dateMentionTarget(today, false, options.labels),
+    dateMentionTarget(tomorrow, true, options.labels),
+  ];
+}
+
+function dateMentionTarget(
+  candidate: DateMentionCandidate,
+  reminder: boolean,
+  labels: NotesDateMentionLabels,
+): NotesDateMentionTarget {
+  return {
+    kind: "date",
+    id: `${reminder ? "reminder" : "date"}:${candidate.date.toString()}`,
+    title: reminder ? labels.remindTitle(candidate.title) : candidate.title,
+    subtitle: reminder ? labels.reminder : labels.date,
+    iconText: null,
+    date: createDateMentionValue(candidate.date.toString(), reminder),
+    reminder,
+  };
 }

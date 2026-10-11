@@ -4,6 +4,7 @@ import {
   applyRichTextAnnotations,
   applyRichTextLink,
   buildDateMentionTargets,
+  buildIdleDateMentionTargets,
   createEquationRichText,
   createLinkedTextRichText,
   createDateMentionValue,
@@ -12,6 +13,7 @@ import {
   createTextRichText,
   detectPageMentionQuery,
   filterNotesMentionTargets,
+  notesDateMentionDetail,
   filterPageMentionTargets,
   insertDateMentionRichText,
   insertEquationRichText,
@@ -32,6 +34,15 @@ import {
 } from "./core";
 
 const pageId = "11111111-1111-4111-8111-111111111111";
+const dateLabels = {
+  today: "Today",
+  tomorrow: "Tomorrow",
+  yesterday: "Yesterday",
+  nextWeek: "Next week",
+  date: "Date",
+  reminder: "Reminder",
+  remindTitle: (label: string) => `Remind ${label}`,
+};
 
 describe("notes rich text helpers", () => {
   it("inserts page mentions into a plain text range", () => {
@@ -590,5 +601,37 @@ describe("notes rich text helpers", () => {
         "road",
       ).map((target) => target.id),
     ).toEqual(["project", "task"]);
+  });
+
+  it("matches pages and databases by the titles on their route", () => {
+    expect(
+      filterNotesMentionTargets(
+        [
+          { id: "nested", kind: "page", title: "Sleep", location: ["Personal", "Health"] },
+          { id: "tasks", kind: "database", title: "Tasks", location: ["Work"] },
+          { id: "top", kind: "page", title: "Inbox" },
+        ],
+        "health",
+      ).map((target) => target.id),
+    ).toEqual(["nested"]);
+  });
+
+  it("suggests today and a reminder for tomorrow before anything is typed", () => {
+    const targets = buildIdleDateMentionTargets({ today: Temporal.PlainDate.from("2026-12-31"), labels: dateLabels });
+
+    expect(targets.map(({ title, reminder, date }) => ({ title, reminder, start: date.start }))).toEqual([
+      { title: "Today", reminder: false, start: "2026-12-31" },
+      { title: "Remind Tomorrow", reminder: true, start: "2027-01-01" },
+    ]);
+    expect(targets[1]?.date.ganbaru_reminder).toMatchObject({ enabled: true });
+  });
+
+  it("spells out named dates beside their suggestion and skips titles that already read as the date", () => {
+    const [todayTarget] = buildIdleDateMentionTargets({ today: Temporal.PlainDate.from("2026-10-11"), labels: dateLabels });
+    if (!todayTarget) throw new Error("expected a today suggestion");
+
+    expect(notesDateMentionDetail(todayTarget, "en")).toBe("Oct 11, 2026");
+    expect(notesDateMentionDetail({ ...todayTarget, title: "Oct 11, 2026" }, "en")).toBeNull();
+    expect(notesDateMentionDetail({ ...todayTarget, date: { start: "not a date" } }, "en")).toBeNull();
   });
 });

@@ -314,6 +314,8 @@
       localUser: notes.localUser,
       dataSources: notesMentionData.dataSources,
       dataSourceRowPages: notesMentionData.rowPages,
+      folders: notes.folders,
+      projectGroups: projects.groups,
       projects: projects.projects,
       tasks: projects.tasks,
       calendarEvents: calendar.sourceEvents,

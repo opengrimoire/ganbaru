@@ -7,11 +7,10 @@
     NotesCommentMentionGroupKind,
   } from "$lib/notes/collaboration/comment-mentions";
   import {
-    formatPlainDate,
+    notesDateMentionDetail,
     notesMentionTargetKey,
     type NotesMentionTarget,
   } from "$lib/notes/rich-text/core";
-  import { Temporal } from "@js-temporal/polyfill";
 
   /** Mention suggestions for a comment, grouped under Date, People, and Link to page headings. */
   let {
@@ -55,13 +54,7 @@
 
   /** The secondary text after a suggestion: the spelled-out date for named days, otherwise the target's context. */
   function targetDetail(target: NotesMentionTarget): string | null {
-    if (target.kind !== "date") return target.subtitle ?? null;
-    try {
-      const spelled = formatPlainDate(Temporal.PlainDate.from(target.date.start), localization.locale);
-      return spelled === target.title ? null : spelled;
-    } catch {
-      return null;
-    }
+    return target.kind === "date" ? notesDateMentionDetail(target, localization.locale) : target.subtitle ?? null;
   }
 </script>
 

@@ -1,4 +1,4 @@
-import type { NotesDataSource, NotesPage } from "$lib/notes/types";
+import type { NotesDataSourceListItem, NotesPage } from "$lib/notes/types";
 import type { NotesNamedMentionTarget } from "$lib/notes/rich-text/core";
 import { onActiveVaultIdentityChange } from "$lib/vault/active-vault";
 import {
@@ -17,7 +17,7 @@ export interface NotesMentionCatalog {
 export function createNotesMentionDataController(
   load: NotesMentionDataLoader = loadNotesDatabaseMentionData,
 ) {
-  let dataSources = $state.raw<NotesDataSource[]>([]);
+  let dataSources = $state.raw<NotesDataSourceListItem[]>([]);
   let rowPages = $state.raw<NotesPage[]>([]);
   let requestId = 0;
   let consumerCount = 0;

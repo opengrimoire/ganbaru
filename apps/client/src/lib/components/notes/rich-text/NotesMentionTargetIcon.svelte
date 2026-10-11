@@ -14,28 +14,28 @@
   let { target }: { target: NotesMentionTarget } = $props();
 </script>
 
-<span class="flex size-5 shrink-0 items-center justify-center rounded-floating-item bg-muted text-panel-detail text-muted-foreground">
+<span class="flex size-5 shrink-0 items-center justify-center text-muted-foreground">
   {#if target.kind === "date" && target.reminder}
-    <Bell class="size-3.5" aria-hidden="true" />
+    <Bell class="size-4" aria-hidden="true" />
   {:else if target.kind === "date"}
-    <CalendarDays class="size-3.5" aria-hidden="true" />
+    <CalendarDays class="size-4" aria-hidden="true" />
   {:else if target.kind === "user"}
-    <UserRound class="size-3.5" aria-hidden="true" />
+    <UserRound class="size-4" aria-hidden="true" />
   {:else if target.kind === "database"}
-    <Database class="size-3.5" aria-hidden="true" />
+    <Database class="size-4" aria-hidden="true" />
   {:else if target.kind === "project"}
-    <Folder class="size-3.5" aria-hidden="true" />
+    <Folder class="size-4" aria-hidden="true" />
   {:else if target.kind === "project_task"}
-    <ListChecks class="size-3.5" aria-hidden="true" />
+    <ListChecks class="size-4" aria-hidden="true" />
   {:else if target.kind === "calendar_event"}
-    <CalendarDays class="size-3.5" aria-hidden="true" />
+    <CalendarDays class="size-4" aria-hidden="true" />
   {:else if target.kind === "pomodoro_run"}
-    <Timer class="size-3.5" aria-hidden="true" />
+    <Timer class="size-4" aria-hidden="true" />
   {:else if target.kind === "music_item"}
-    <Music class="size-3.5" aria-hidden="true" />
+    <Music class="size-4" aria-hidden="true" />
   {:else if target.iconText}
     <span aria-hidden="true">{target.iconText}</span>
   {:else}
-    <FileText class="size-3.5" aria-hidden="true" />
+    <FileText class="size-4" aria-hidden="true" />
   {/if}
 </span>

@@ -4,7 +4,6 @@ import {
 } from "$lib/api/notes";
 import type { CalendarEvent } from "$lib/calendar/types";
 import type { Translate } from "$lib/i18n/translator.svelte";
-import { sourceDisplayLabel, type MusicSource } from "$lib/music/sources";
 import { notesLocalUserDisplayName } from "$lib/notes/collaboration/local-user";
 import { notesPageIconText } from "$lib/notes/pages/icon";
 import { notesPageTitle } from "$lib/notes/pages/title";
@@ -48,17 +47,7 @@ export interface NotesMentionTask {
   archivedAt?: string | null;
 }
 
-export interface NotesMusicMentionContext {
-  currentMusicSource: MusicSource | null;
-  musicQueue: readonly MusicSource[];
-}
-
-export const EMPTY_NOTES_MUSIC_MENTION_CONTEXT: NotesMusicMentionContext = {
-  currentMusicSource: null,
-  musicQueue: [],
-};
-
-export interface NotesMentionTargetInput extends NotesMusicMentionContext {
+export interface NotesMentionTargetInput {
   pages: readonly NotesPage[];
   localUser: NotesLocalUser | null;
   dataSources: readonly NotesDataSourceListItem[];
@@ -69,8 +58,6 @@ export interface NotesMentionTargetInput extends NotesMusicMentionContext {
   projects: readonly NotesMentionProject[];
   tasks: readonly NotesMentionTask[];
   calendarEvents: readonly CalendarEvent[];
-  activePomodoroRunId: string | null;
-  pomodoroTime: string;
   translate: Translate;
 }
 
@@ -230,29 +217,6 @@ export function buildNotesMentionTargets(input: NotesMentionTargetInput): NotesN
       title: event.title || t("notes.untitled"),
       subtitle: t("notes.mentionTargetCalendarEvent"),
     }));
-  const pomodoroTargets: NotesObjectMentionTarget[] = input.activePomodoroRunId
-    ? [{
-        kind: "pomodoro_run",
-        id: input.activePomodoroRunId,
-        title: t("notes.mentionTargetPomodoroRun"),
-        subtitle: input.pomodoroTime,
-      }]
-    : [];
-  const musicTargets: NotesObjectMentionTarget[] = [];
-  const seenMusic = new Set<string>();
-  const musicSources = input.currentMusicSource
-    ? [input.currentMusicSource, ...input.musicQueue]
-    : [...input.musicQueue];
-  for (const source of musicSources) {
-    if (seenMusic.has(source.identity)) continue;
-    seenMusic.add(source.identity);
-    musicTargets.push({
-      kind: "music_item",
-      id: source.identity,
-      title: sourceDisplayLabel(source),
-      subtitle: t("notes.mentionTargetMusicItem"),
-    });
-  }
 
   return [
     ...userTargets,
@@ -261,7 +225,5 @@ export function buildNotesMentionTargets(input: NotesMentionTargetInput): NotesN
     ...projectTargets,
     ...taskTargets,
     ...calendarTargets,
-    ...pomodoroTargets,
-    ...musicTargets,
   ];
 }

@@ -34,17 +34,11 @@
   import NotesProjectSettingsPanel from "$lib/components/notes/NotesProjectSettingsPanel.svelte";
   import NotesWorkspaceHeader from "./NotesWorkspaceHeader.svelte";
   import NotesWorkingMarkdownEditor from "$lib/components/notes/working-markdown/NotesWorkingMarkdownEditor.svelte";
-  import {
-    EMPTY_NOTES_MUSIC_MENTION_CONTEXT,
-    type NotesMusicMentionContext,
-  } from "$lib/components/notes/blocks/mention-targets";
 
   let {
     mobileLayout = false,
-    musicMentionContext = EMPTY_NOTES_MUSIC_MENTION_CONTEXT,
   }: {
     mobileLayout?: boolean;
-    musicMentionContext?: NotesMusicMentionContext;
   } = $props();
 
   const notes = getNotes();
@@ -761,7 +755,6 @@
                             pageActionsTarget={!store.selectedDatabaseBlockId && notes.activePaneId === pane.id ? pageActionsTarget : null}
                             onClose={() => { void notes.closePane(pane.id).catch((error: unknown) => console.warn("Close Notes pane failed", error)); }}
                             onOpenModeChange={(mode) => { void notes.showPaneAs(pane.id, mode).catch((error: unknown) => console.warn("Change Notes pane mode failed", error)); }}
-                            {musicMentionContext}
                           />
                         {:else if store.loadError}
                           <div class="flex min-w-0 flex-1 flex-col gap-3 p-4">

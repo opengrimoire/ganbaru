@@ -109,10 +109,6 @@
     type LoadedNotesEditorPanel,
     type NotesEditorPanelKind,
   } from "./editor-component-registry";
-  import {
-    EMPTY_NOTES_MUSIC_MENTION_CONTEXT,
-    type NotesMusicMentionContext,
-  } from "$lib/components/notes/blocks/mention-targets";
 
   type NotesEditorPanel = "links" | "suggestions";
 
@@ -131,7 +127,6 @@
     onClose,
     onOpenModeChange,
     pageActionsTarget = null,
-    musicMentionContext = EMPTY_NOTES_MUSIC_MENTION_CONTEXT,
     editorStore = null,
     active = true,
   }: {
@@ -140,7 +135,6 @@
     onClose?: () => void;
     onOpenModeChange?: (mode: NotesPageOpenMode) => void;
     pageActionsTarget?: HTMLElement | null;
-    musicMentionContext?: NotesMusicMentionContext;
     editorStore?: NotesEditorStore | null;
     active?: boolean;
   } = $props();
@@ -1802,7 +1796,6 @@
             notes.focusBlock(blockId, null, preventScroll);
           }}
           scrollViewport={blockScrollViewport}
-          {musicMentionContext}
         />
       </div>
     </div>

@@ -86,10 +86,6 @@ describe("Notes block mention targets", () => {
       projects: [{ id: "project-1", name: "Project", status: "active" }],
       tasks: [],
       calendarEvents: [],
-      activePomodoroRunId: "run-1",
-      pomodoroTime: "12:34",
-      currentMusicSource: null,
-      musicQueue: [],
       translate,
     });
 
@@ -98,7 +94,6 @@ describe("Notes block mention targets", () => {
       "page:page-1",
       "page:page-2",
       "project:project-1",
-      "pomodoro_run:run-1",
     ]);
   });
 
@@ -113,10 +108,6 @@ describe("Notes block mention targets", () => {
       projects: [],
       tasks: [],
       calendarEvents: [],
-      activePomodoroRunId: null,
-      pomodoroTime: "",
-      currentMusicSource: null,
-      musicQueue: [],
       translate,
     });
 

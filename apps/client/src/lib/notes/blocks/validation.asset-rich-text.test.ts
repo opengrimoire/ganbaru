@@ -817,8 +817,8 @@ describe("notes asset-rich-text boundary validation", () => {
               mention: {
                 type: "ganbaru_object",
                 ganbaru_object: {
-                  type: "music_item",
-                  id: "local:/home/alice/Music/focus.mp3",
+                  type: "calendar_event",
+                  id: "event-1",
                 },
               },
               annotations: {
@@ -829,7 +829,7 @@ describe("notes asset-rich-text boundary validation", () => {
                 code: false,
                 color: "default",
               },
-              plain_text: "Focus",
+              plain_text: "Review",
               href: null,
             },
           ],

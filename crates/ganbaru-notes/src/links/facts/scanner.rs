@@ -170,8 +170,6 @@ fn local_object_target_type(object_type: &str) -> Option<&'static str> {
         "project" => Some("project"),
         "project_task" => Some("project_task"),
         "calendar_event" => Some("calendar_event"),
-        "pomodoro_run" => Some("pomodoro_run"),
-        "music_item" => Some("music_item"),
         _ => None,
     }
 }

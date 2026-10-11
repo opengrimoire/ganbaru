@@ -147,10 +147,6 @@
       projects: [],
       tasks: [],
       calendarEvents: [],
-      activePomodoroRunId: null,
-      pomodoroTime: "",
-      currentMusicSource: null,
-      musicQueue: [],
       translate: t,
     });
     return buildNotesCommentMentionGroups({ query, dateTargets, namedTargets });

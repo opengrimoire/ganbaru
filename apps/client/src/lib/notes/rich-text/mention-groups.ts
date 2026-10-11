@@ -13,8 +13,6 @@ export const NOTES_MENTION_GROUP_KINDS = [
   "pages",
   "projects",
   "calendar",
-  "focus",
-  "music",
 ] as const;
 
 export type NotesMentionGroupKind = (typeof NOTES_MENTION_GROUP_KINDS)[number];
@@ -44,8 +42,6 @@ export const NOTES_MENTION_GROUP_LIMITS: NotesMentionGroupLimits = {
   pages: 5,
   projects: 3,
   calendar: 3,
-  focus: 1,
-  music: 3,
 };
 
 /** The section a named mention target belongs to. */
@@ -61,10 +57,6 @@ export function notesMentionGroupKind(target: NotesNamedMentionTarget): NotesNam
       return "projects";
     case "calendar_event":
       return "calendar";
-    case "pomodoro_run":
-      return "focus";
-    case "music_item":
-      return "music";
   }
 }
 

@@ -153,10 +153,7 @@ pub fn validate_ganbaru_object_mention(
         .get("type")
         .and_then(Value::as_str)
         .ok_or_else(|| "rich text mention.ganbaru_object.type must be a string".to_string())?;
-    if !matches!(
-        object_type,
-        "project" | "project_task" | "calendar_event" | "pomodoro_run" | "music_item"
-    ) {
+    if !matches!(object_type, "project" | "project_task" | "calendar_event") {
         return Err("rich text mention.ganbaru_object.type is unsupported".to_string());
     }
     let object_id = object

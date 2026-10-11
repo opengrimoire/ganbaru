@@ -128,8 +128,6 @@ export const NOTES_LOCAL_OBJECT_MENTION_TYPES = [
   "project",
   "project_task",
   "calendar_event",
-  "pomodoro_run",
-  "music_item",
 ] as const;
 
 export type NotesLocalObjectMentionType =

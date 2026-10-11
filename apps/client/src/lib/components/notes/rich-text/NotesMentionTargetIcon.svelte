@@ -6,8 +6,6 @@
   import FileText from "@lucide/svelte/icons/file-text";
   import Folder from "@lucide/svelte/icons/folder";
   import ListChecks from "@lucide/svelte/icons/list-checks";
-  import Music from "@lucide/svelte/icons/music";
-  import Timer from "@lucide/svelte/icons/timer";
   import UserRound from "@lucide/svelte/icons/user-round";
 
   /** The small glyph that identifies a mention suggestion's kind in mention menus. */
@@ -29,10 +27,6 @@
     <ListChecks class="size-4" aria-hidden="true" />
   {:else if target.kind === "calendar_event"}
     <CalendarDays class="size-4" aria-hidden="true" />
-  {:else if target.kind === "pomodoro_run"}
-    <Timer class="size-4" aria-hidden="true" />
-  {:else if target.kind === "music_item"}
-    <Music class="size-4" aria-hidden="true" />
   {:else if target.iconText}
     <span aria-hidden="true">{target.iconText}</span>
   {:else}

@@ -136,10 +136,6 @@
       nav.navigate("chat");
     },
   };
-  const notesMusicMentionContext = $derived({
-    currentMusicSource: music.currentSource,
-    musicQueue: music.queue,
-  });
   let unlistenCalendarNotificationOpen: UnlistenFn | null = null;
   let unlistenNotesNotificationOpen: UnlistenFn | null = null;
   let unlistenDistractionsDesktopSettingsOpen: UnlistenFn | null = null;
@@ -853,7 +849,7 @@
           projectChat={projectChatIntegration}
         />
       {:else if nav.current === "notes"}
-        <NotesView musicMentionContext={notesMusicMentionContext} />
+        <NotesView />
       {:else}
         <ChatWorkspace />
       {/if}

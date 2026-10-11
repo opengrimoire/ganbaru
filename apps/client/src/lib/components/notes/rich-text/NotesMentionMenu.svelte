@@ -106,8 +106,6 @@
       case "pages": return t("notes.commentMentionGroupPages");
       case "projects": return t("notes.mentionGroupProjects");
       case "calendar": return t("notes.mentionGroupCalendar");
-      case "focus": return t("notes.mentionGroupFocus");
-      case "music": return t("notes.mentionGroupMusic");
     }
   }
 
@@ -144,8 +142,7 @@
     switch (target.kind) {
       case "date": return notesDateMentionDetail(target, localization.locale);
       case "user": return target.id === localUserId ? t("contacts.you") : null;
-      case "project_task":
-      case "pomodoro_run": return target.subtitle ?? null;
+      case "project_task": return target.subtitle ?? null;
       default: return null;
     }
   }

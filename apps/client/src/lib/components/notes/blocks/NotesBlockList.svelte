@@ -3,7 +3,6 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getCalendar } from "$lib/stores/calendar.svelte";
   import { getNotesEditor } from "$lib/components/notes/editor-context";
-  import { getPomodoro } from "$lib/stores/pomodoro.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
   import { buildNotesBlockLink, buildNotesPageLink } from "$lib/notes/links/block-link";
   import { normalizeNotesSelectableBlockIds } from "$lib/notes/blocks/selection";
@@ -65,11 +64,7 @@
     NotesTabRenderActions,
   } from "./render-contracts";
   import { createNotesStructuralBlockLoader } from "./structural-block-loader.svelte";
-  import {
-    buildNotesMentionTargets,
-    EMPTY_NOTES_MUSIC_MENTION_CONTEXT,
-    type NotesMusicMentionContext,
-  } from "./mention-targets";
+  import { buildNotesMentionTargets } from "./mention-targets";
   import { notesMentionData, type NotesMentionCatalog } from "./mention-data-controller.svelte";
 
   let {
@@ -80,7 +75,6 @@
     onSelectPage,
     onFocusBlock,
     scrollViewport,
-    musicMentionContext = EMPTY_NOTES_MUSIC_MENTION_CONTEXT,
   }: {
     items: NotesBlockTreeItem[];
     pageId: string;
@@ -89,12 +83,10 @@
     onSelectPage: (pageId: string) => void;
     onFocusBlock: (blockId: string, preventScroll?: boolean) => void;
     scrollViewport: HTMLDivElement | null;
-    musicMentionContext?: NotesMusicMentionContext;
   } = $props();
 
   const notes = getNotesEditor();
   const calendar = getCalendar();
-  const pomodoro = getPomodoro();
   const projects = getProjects();
   const { t } = getLocalization();
   let blockListElement: HTMLDivElement | null = $state(null);
@@ -319,10 +311,6 @@
       projects: projects.projects,
       tasks: projects.tasks,
       calendarEvents: calendar.sourceEvents,
-      activePomodoroRunId: pomodoro.activeRunId,
-      pomodoroTime: pomodoro.formattedTime,
-      currentMusicSource: musicMentionContext.currentMusicSource,
-      musicQueue: musicMentionContext.musicQueue,
       translate: t,
     });
   }

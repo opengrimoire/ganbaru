@@ -764,4 +764,11 @@ fn notes_validation_accepts_readable_app_object_mention_ids() {
                 .to_string()
         )
     );
+    for live_state in ["pomodoro_run", "music_item"] {
+        assert_eq!(
+            validation::validate_block_payload("paragraph", &object_mention(live_state, "item-1")),
+            Err("rich text mention.ganbaru_object.type is unsupported".to_string()),
+            "{live_state}"
+        );
+    }
 }

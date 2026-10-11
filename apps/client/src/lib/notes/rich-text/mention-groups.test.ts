@@ -27,7 +27,6 @@ function pages(count: number): NotesNamedMentionTarget[] {
 
 const user: NotesNamedMentionTarget = { kind: "user", id: "user-1", title: "Alice", subtitle: "Local user" };
 const project: NotesNamedMentionTarget = { kind: "project", id: "project-1", title: "Roadmap", subtitle: "Project" };
-const run: NotesNamedMentionTarget = { kind: "pomodoro_run", id: "run-1", title: "Pomodoro run", subtitle: "12:34" };
 
 function summary(groups: readonly NotesMentionGroup[]): string[][] {
   return groups.map((group) => [group.kind, ...group.rows.map(notesMentionRowKey)]);
@@ -38,7 +37,7 @@ describe("Notes mention groups", () => {
     const groups = buildNotesMentionGroups({
       query: "",
       dateTargets: [today],
-      namedTargets: [run, project, ...pages(1), user],
+      namedTargets: [project, ...pages(1), user],
       canInvite: true,
     });
 
@@ -47,7 +46,6 @@ describe("Notes mention groups", () => {
       ["people", "user:user-1", "invite"],
       ["pages", "page:page-0"],
       ["projects", "project:project-1"],
-      ["focus", "pomodoro_run:run-1"],
     ]);
   });
 

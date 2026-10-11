@@ -240,6 +240,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             notes::notes_list_backlinks,
             notes::external_links::notes_open_external_url,
             notes::notes_page_breadcrumb,
+            notes::notes_page_location,
             notes::notes_search,
             notes::notes_list_page_aliases,
             notes::notes_add_page_alias,

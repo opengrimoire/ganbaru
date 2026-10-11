@@ -102,6 +102,19 @@ export async function getNotesPageBreadcrumb(pageId: string): Promise<NotesPageB
   return rows.map(mapNotesPageBreadcrumbItemDto);
 }
 
+/**
+ * Read where a page lives, outermost first and ending with its own title: project group, project, folders, then the
+ * pages and row databases above it. Untitled pages appear as empty strings for the caller to label.
+ */
+export async function getNotesPageLocation(pageId: string): Promise<string[]> {
+  const dbUrl = await ensureDbUrl();
+  const segments = await invoke<unknown>("notes_page_location", { dbUrl, pageId });
+  if (!Array.isArray(segments) || !segments.every((segment): segment is string => typeof segment === "string")) {
+    throw new Error("notes_page_location returned an invalid payload");
+  }
+  return segments;
+}
+
 export async function searchNotes(
   query: string,
   pageSize = 20,

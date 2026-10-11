@@ -13,6 +13,8 @@ const DEFAULT_PAGE_SIZE: i64 = 50;
 const BLOCK_FRONTIER_PARENT_BATCH_SIZE: usize = 400;
 const SUMMARY_WINDOW_SIZE: i64 = 50;
 const MAX_SUMMARY_WINDOW_SIZE: i64 = 100;
+/// Deepest page or folder ancestry read for a location, which also ends a malformed parent cycle.
+const PAGE_LOCATION_MAX_DEPTH: i64 = 64;
 
 #[derive(Deserialize, Serialize)]
 struct PageSummaryCursor {
@@ -243,6 +245,150 @@ pub async fn page_breadcrumb(
     }
     crumbs.reverse();
     Ok(crumbs)
+}
+
+/// One page in a location's ancestry, read from the outermost page inward.
+#[derive(sqlx::FromRow)]
+struct LocationPage {
+    title: String,
+    /// Title of the database whose source holds this page as a row.
+    row_database_title: Option<String>,
+    folder_id: Option<String>,
+    project_id: Option<String>,
+}
+
+/// Read where an active page lives, outermost first and ending with its own title: project group, project, folders,
+/// then the pages and row databases above it. Names follow the Notes sidebar, so empty page titles stay empty for the
+/// caller to label.
+pub async fn page_location(pool: &SqlitePool, page_id: &str) -> Result<Vec<String>, String> {
+    let page_id = page_id.trim();
+    require_uuid(page_id, "page_id")?;
+    let active = sqlx::query_scalar::<_, i64>(
+        "SELECT 1 FROM notes_pages WHERE id = ? AND in_trash = 0 AND archived = 0",
+    )
+    .bind(page_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| format!("load notes page location: {e}"))?;
+    if active.is_none() {
+        return Err("notes page not found".to_string());
+    }
+    page_ancestry_location(pool, page_id).await
+}
+
+/// Read where a database lives: the location of the page that holds it, ending with that page's title.
+pub(crate) async fn database_location(
+    pool: &SqlitePool,
+    database_id: &str,
+) -> Result<Vec<String>, String> {
+    let page_id = sqlx::query_scalar::<_, String>("SELECT page_id FROM notes_blocks WHERE id = ?")
+        .bind(database_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| format!("load notes database location page: {e}"))?;
+    match page_id {
+        Some(page_id) => page_ancestry_location(pool, &page_id).await,
+        None => Ok(Vec::new()),
+    }
+}
+
+async fn page_ancestry_location(pool: &SqlitePool, page_id: &str) -> Result<Vec<String>, String> {
+    let pages = sqlx::query_as::<_, LocationPage>(
+        "WITH RECURSIVE path(page_id, depth) AS (
+           SELECT ?, 0
+           UNION ALL
+           SELECT COALESCE(
+                    page.parent_page_id,
+                    (SELECT parent_block.page_id FROM notes_blocks AS parent_block
+                     WHERE parent_block.id = page.parent_block_id),
+                    (SELECT database_block.page_id
+                     FROM notes_data_sources AS data_source
+                     JOIN notes_blocks AS database_block ON database_block.id = data_source.database_id
+                     WHERE data_source.id = page.parent_data_source_id)
+                  ),
+                  path.depth + 1
+           FROM path
+           JOIN notes_pages AS page ON page.id = path.page_id
+           WHERE path.depth < ?
+         )
+         SELECT page.title,
+                (SELECT database.title
+                 FROM notes_data_sources AS data_source
+                 JOIN notes_databases AS database ON database.id = data_source.database_id
+                 WHERE data_source.id = page.parent_data_source_id) AS row_database_title,
+                page.folder_id,
+                NULLIF(trim(CAST(json_extract(page.properties, ?) AS TEXT)), '') AS project_id
+         FROM path
+         JOIN notes_pages AS page ON page.id = path.page_id
+         ORDER BY path.depth DESC",
+    )
+    .bind(page_id)
+    .bind(PAGE_LOCATION_MAX_DEPTH)
+    .bind(format!("$.{}", crate::PAGE_PROJECT_ID_PROPERTY))
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("load notes page location: {e}"))?;
+
+    let folder_id = pages.iter().find_map(|page| page.folder_id.as_deref());
+    let folders = match folder_id {
+        Some(folder_id) => folder_location(pool, folder_id).await?,
+        None => Vec::new(),
+    };
+    let project_id = pages
+        .iter()
+        .find_map(|page| page.project_id.clone())
+        .or_else(|| folders.first().map(|(_, project_id)| project_id.clone()));
+    let mut location = match project_id {
+        Some(project_id) => project_location(pool, &project_id).await?,
+        None => Vec::new(),
+    };
+    location.extend(folders.into_iter().map(|(name, _)| name));
+    for page in pages {
+        location.extend(page.row_database_title);
+        location.push(page.title);
+    }
+    Ok(location)
+}
+
+/// Read a folder and its ancestors, outermost first, each with the project that owns it.
+async fn folder_location(
+    pool: &SqlitePool,
+    folder_id: &str,
+) -> Result<Vec<(String, String)>, String> {
+    sqlx::query_as::<_, (String, String)>(
+        "WITH RECURSIVE chain(folder_id, depth) AS (
+           SELECT ?, 0
+           UNION ALL
+           SELECT folder.parent_folder_id, chain.depth + 1
+           FROM chain
+           JOIN notes_folders AS folder ON folder.id = chain.folder_id
+           WHERE folder.parent_folder_id IS NOT NULL AND chain.depth < ?
+         )
+         SELECT folder.name, folder.project_id
+         FROM chain
+         JOIN notes_folders AS folder ON folder.id = chain.folder_id
+         ORDER BY chain.depth DESC",
+    )
+    .bind(folder_id)
+    .bind(PAGE_LOCATION_MAX_DEPTH)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("load notes folder location: {e}"))
+}
+
+/// Read a project's group and name, or nothing when the project no longer exists.
+async fn project_location(pool: &SqlitePool, project_id: &str) -> Result<Vec<String>, String> {
+    let names = sqlx::query_as::<_, (String, String)>(
+        "SELECT project_group.name, project.name
+         FROM projects AS project
+         JOIN project_groups AS project_group ON project_group.id = project.group_id
+         WHERE project.id = ?",
+    )
+    .bind(project_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| format!("load notes project location: {e}"))?;
+    Ok(names.map_or_else(Vec::new, |(group, project)| vec![group, project]))
 }
 
 #[cfg(test)]

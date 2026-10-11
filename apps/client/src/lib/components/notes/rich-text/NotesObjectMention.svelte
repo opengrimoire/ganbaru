@@ -1,5 +1,8 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
+  import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { NotesExternalMentionRichText } from "$lib/notes/rich-text/core";
+  import { notesCalendarEventPreviewWhen, notesDateMentionPreviewWhen, notesMentionedCalendarEvent } from "$lib/notes/rich-text/mention-preview";
   import { getNavigation } from "$lib/stores/navigation.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
   import ProjectIcon from "$lib/components/projects/ProjectIcon.svelte";
@@ -10,6 +13,8 @@
   import Music from "@lucide/svelte/icons/music";
   import Timer from "@lucide/svelte/icons/timer";
   import UserRound from "@lucide/svelte/icons/user-round";
+  import { NotesMentionPreviewHover } from "./mention-preview-hover.svelte";
+  import NotesMentionPreviewCard from "./NotesMentionPreviewCard.svelte";
 
   interface MentionAttributes {
     class?: string;
@@ -17,8 +22,23 @@
     [name: `data-${string}`]: string | undefined;
   }
 
+  /** The parts of a mentioned task the preview and navigation need. */
+  interface MentionedTask {
+    projectId: string;
+    title: string;
+  }
+
+  /** A mentioned Calendar event as read from the loaded Calendar window. */
+  interface MentionedEvent {
+    calendarName: string | null;
+    title: string;
+    when: string | null;
+    location: string | null;
+  }
+
   const POINTER_DRAG_DISTANCE_PX = 5;
   const PROJECT_ICON_SIZE_PX = 14;
+  const PREVIEW_ICON_SIZE_PX = 20;
 
   let { mention, text, showIcon = true, attributes = {} }: {
     mention: NotesExternalMentionRichText;
@@ -27,9 +47,14 @@
     attributes?: MentionAttributes;
   } = $props();
 
+  const localization = getLocalization();
+  const { t } = localization;
+  const componentId = $props.id();
+  const previewId = `${componentId}-mention-preview`;
   const navigation = getNavigation();
   const projects = getProjects();
   const objectMention = $derived(mention.mention.type === "ganbaru_object" ? mention.mention.ganbaru_object : null);
+  const objectKey = $derived(objectMention ? `${objectMention.type}:${objectMention.id}` : mention.mention.type);
   const project = $derived(objectMention?.type === "project" ? projects.projectById(objectMention.id) : undefined);
   const navigable = $derived(objectMention?.type === "project"
     || objectMention?.type === "project_task"
@@ -37,26 +62,148 @@
   const mentionType = $derived(objectMention?.type ?? mention.mention.type);
   const reminder = $derived(mention.mention.type === "date" && mention.mention.date.ganbaru_reminder?.enabled === true);
   let element = $state<HTMLSpanElement | null>(null);
+  let task = $state<MentionedTask | null>(null);
+  let calendarEvent = $state<MentionedEvent | null>(null);
+  let previewStatus = $state<"idle" | "loading" | "ready" | "failed">("idle");
+  let taskRequest: Promise<MentionedTask> | null = null;
   let pointerStart: { x: number; y: number } | null = null;
   let opening = false;
+  let revision = 0;
+  let disposed = false;
+  const preview = new NotesMentionPreviewHover({
+    anchor: () => element,
+    canOpen: () => true,
+    onOpen: () => void loadPreview(),
+  });
 
-  /** Resolve a task's owner from loaded summaries before asking the backend. */
-  async function taskProjectId(taskId: string): Promise<string> {
-    const loaded = projects.taskById(taskId)?.projectId;
-    if (loaded) return loaded;
-    const api = await import("$lib/api/projects");
-    return (await api.loadProjectTaskDetail(taskId)).task.projectId;
+  const loadedTask = $derived(objectMention?.type === "project_task" ? projects.taskById(objectMention.id) : undefined);
+  const taskProject = $derived(projects.projectById(loadedTask?.projectId ?? task?.projectId));
+  const previewHeading = $derived.by((): { route: string[]; title: string; details: string[] } => {
+    const groupName = (owner: typeof project): string | undefined => projects.groupById(owner?.groupId)?.name;
+    switch (objectMention?.type) {
+      case "project":
+        return { route: presentLines([groupName(project)]), title: project?.name.trim() || text, details: [] };
+      case "project_task":
+        return {
+          route: presentLines([groupName(taskProject), taskProject?.name]),
+          title: loadedTask?.title.trim() || task?.title.trim() || text,
+          details: [],
+        };
+      case "calendar_event":
+        return {
+          route: calendarEvent?.calendarName ? [calendarEvent.calendarName] : [],
+          title: calendarEvent?.title || text,
+          details: presentLines([calendarEvent?.when, calendarEvent?.location]),
+        };
+    }
+    if (mention.mention.type !== "date") return { route: [], title: text, details: [] };
+    const spelled = notesDateMentionPreviewWhen(mention.mention.date, localization.locale);
+    return {
+      route: [],
+      title: text,
+      details: presentLines([spelled === text ? null : spelled, reminder ? t("notes.reminderMention") : null]),
+    };
+  });
+  const previewStatusText = $derived(previewStatus === "failed" ? t("notes.databaseGalleryPreviewUnavailable")
+    : previewStatus === "loading" ? t("common.loading") : null);
+
+  /** Drop missing and blank preview lines. */
+  function presentLines(values: readonly (string | null | undefined)[]): string[] {
+    return values.map((value) => value?.trim() ?? "").filter((value) => value.length > 0);
+  }
+
+  $effect(() => {
+    void objectKey;
+    revision += 1;
+    preview.close();
+    task = null;
+    calendarEvent = null;
+    taskRequest = null;
+    previewStatus = "idle";
+    pointerStart = null;
+    return () => { revision += 1; preview.close(); };
+  });
+
+  onDestroy(() => { disposed = true; revision += 1; preview.dispose(); });
+
+  /** Resolve a task's owner and title from loaded summaries before asking the backend, sharing one request. */
+  async function resolveTask(taskId: string): Promise<MentionedTask> {
+    const loaded = projects.taskById(taskId);
+    if (loaded) return { projectId: loaded.projectId, title: loaded.title };
+    if (task) return task;
+    if (taskRequest) return taskRequest;
+    const requestRevision = revision;
+    const request = import("$lib/api/projects")
+      .then((api) => api.loadProjectTaskDetail(taskId))
+      .then(({ task: detail }) => ({ projectId: detail.projectId, title: detail.title }));
+    taskRequest = request;
+    try {
+      const result = await request;
+      if (!disposed && requestRevision === revision) task = result;
+      return result;
+    } finally {
+      if (taskRequest === request) taskRequest = null;
+    }
+  }
+
+  /** Read a mentioned event from the loaded Calendar window without loading other ranges. */
+  async function readCalendarEvent(eventId: string): Promise<MentionedEvent | null> {
+    const [{ getCalendar }, { getCalendars }, { getPreferences }] = await Promise.all([
+      import("$lib/stores/calendar.svelte"),
+      import("$lib/stores/calendars.svelte"),
+      import("$lib/stores/preferences.svelte"),
+    ]);
+    const event = notesMentionedCalendarEvent(getCalendar().sourceEvents, eventId);
+    if (!event) return null;
+    return {
+      calendarName: getCalendars().list.find((calendar) => calendar.id === event.calendarId)?.name.trim() || null,
+      title: event.title.trim(),
+      when: notesCalendarEventPreviewWhen(event, {
+        locale: localization.locale,
+        timeFormat: getPreferences().calendarTimeFormat,
+        labels: {
+          allDay: t("calendar.notification.allDay"),
+          allDayOn: (date) => t("calendar.notification.allDayOn", date),
+          datedTimeRange: (date, range) => t("calendar.notification.datedTimeRange", date, range),
+        },
+      }),
+      location: event.location?.trim() || null,
+    };
+  }
+
+  /** Load what the preview shows beyond the chip text, only for kinds that need a lookup. */
+  async function loadPreview(): Promise<void> {
+    if (!objectMention || previewStatus === "loading" || previewStatus === "ready") return;
+    if (objectMention.type !== "project_task" && objectMention.type !== "calendar_event") return;
+    const requestRevision = revision;
+    const target = objectMention;
+    previewStatus = "loading";
+    try {
+      if (target.type === "project_task") await resolveTask(target.id);
+      else {
+        const event = await readCalendarEvent(target.id);
+        if (disposed || requestRevision !== revision) return;
+        calendarEvent = event;
+      }
+      if (disposed || requestRevision !== revision) return;
+      previewStatus = "ready";
+    } catch (error: unknown) {
+      if (disposed || requestRevision !== revision) return;
+      previewStatus = "failed";
+      console.warn("Notes mention preview failed", { type: target.type, id: target.id, error });
+    }
   }
 
   async function open(): Promise<void> {
     if (!objectMention || !navigable || opening) return;
     opening = true;
+    preview.close();
     try {
       if (objectMention.type === "calendar_event") {
         navigation.navigate("calendar");
         return;
       }
-      const projectId = objectMention.type === "project" ? objectMention.id : await taskProjectId(objectMention.id);
+      const projectId = objectMention.type === "project" ? objectMention.id : (await resolveTask(objectMention.id)).projectId;
       await projects.selectProject(projectId);
       navigation.navigate("projects");
     } catch (error: unknown) {
@@ -81,10 +228,18 @@
   /** Track mouse and pen drags while allowing touch taps recognized by the browser. */
   function handlePointerDown(event: PointerEvent): void {
     pointerStart = event.pointerType === "touch" ? null : { x: event.clientX, y: event.clientY };
+    preview.close();
   }
 
   function handleKeydown(event: KeyboardEvent): void {
-    if (event.isComposing || event.key !== "Enter" || !navigable) return;
+    if (event.isComposing) return;
+    if (event.key === "Escape" && preview.pending) {
+      event.preventDefault();
+      event.stopPropagation();
+      preview.close();
+      return;
+    }
+    if (event.key !== "Enter" || !navigable) return;
     event.preventDefault();
     event.stopPropagation();
     void open();
@@ -103,11 +258,7 @@
   }
 
   const focusable = $derived(navigable && element !== null && !element.closest("[contenteditable='true']"));
-</script>
-
-{#snippet icon()}<span class="notes-mention-chip-icon" data-notes-editor-sentinel="decoration" aria-hidden="true">{#if mention.mention.type === "user"}<UserRound size="1em" strokeWidth={1.75} />{:else if mention.mention.type === "date"}{#if reminder}<Bell size="1em" strokeWidth={1.75} />{:else}<CalendarDays size="1em" strokeWidth={1.75} />{/if}{:else if objectMention?.type === "project"}{#if project?.icon}<ProjectIcon name={project.icon} size={PROJECT_ICON_SIZE_PX} />{:else}<Folder size="1em" strokeWidth={1.75} />{/if}{:else if objectMention?.type === "project_task"}<ListChecks size="1em" strokeWidth={1.75} />{:else if objectMention?.type === "calendar_event"}<CalendarDays size="1em" strokeWidth={1.75} />{:else if objectMention?.type === "pomodoro_run"}<Timer size="1em" strokeWidth={1.75} />{:else}<Music size="1em" strokeWidth={1.75} />{/if}</span>{/snippet}
-
-{#if navigable}<span
+</script>{#snippet mentionIcon(size: number | string, strokeWidth: number, projectIconSize: number)}{#if mention.mention.type === "user"}<UserRound {size} {strokeWidth} />{:else if mention.mention.type === "date"}{#if reminder}<Bell {size} {strokeWidth} />{:else}<CalendarDays {size} {strokeWidth} />{/if}{:else if objectMention?.type === "project"}{#if project?.icon}<ProjectIcon name={project.icon} size={projectIconSize} />{:else}<Folder {size} {strokeWidth} />{/if}{:else if objectMention?.type === "project_task"}<ListChecks {size} {strokeWidth} />{:else if objectMention?.type === "calendar_event"}<CalendarDays {size} {strokeWidth} />{:else if objectMention?.type === "pomodoro_run"}<Timer {size} {strokeWidth} />{:else}<Music {size} {strokeWidth} />{/if}{/snippet}{#snippet icon()}<span class="notes-mention-chip-icon" data-notes-editor-sentinel="decoration" aria-hidden="true">{@render mentionIcon("1em", 1.75, PROJECT_ICON_SIZE_PX)}</span>{/snippet}{#snippet previewIcon()}{@render mentionIcon(PREVIEW_ICON_SIZE_PX, 1.5, PREVIEW_ICON_SIZE_PX)}{/snippet}{#if navigable}<span
   {...attributes}
   bind:this={element}
   use:mentionEvents
@@ -116,9 +267,32 @@
   tabindex={focusable ? 0 : undefined}
   data-notes-mention-chip="true"
   data-notes-mention-type={mentionType}
+  aria-describedby={preview.open ? previewId : undefined}
+  onpointerenter={(event) => preview.schedule(event)}
+  onpointerleave={() => preview.scheduleClose()}
+  onpointercancel={() => { pointerStart = null; preview.close(); }}
+  onpointermove={(event) => { if (event.buttons) preview.close(); }}
 >{#if showIcon}{@render icon()}{/if}{text}</span>{:else}<span
   {...attributes}
+  bind:this={element}
+  use:mentionEvents
   class={`notes-mention-chip ${attributes.class ?? ""}`}
   data-notes-mention-chip="true"
   data-notes-mention-type={mentionType}
->{#if showIcon}{@render icon()}{/if}{text}</span>{/if}
+  aria-describedby={preview.open ? previewId : undefined}
+  onpointerenter={(event) => preview.schedule(event)}
+  onpointerleave={() => preview.scheduleClose()}
+  onpointercancel={() => { pointerStart = null; preview.close(); }}
+  onpointermove={(event) => { if (event.buttons) preview.close(); }}
+>{#if showIcon}{@render icon()}{/if}{text}</span>{/if}{#if preview.open && element}<NotesMentionPreviewCard
+  anchor={element}
+  id={previewId}
+  route={previewHeading.route}
+  title={previewHeading.title}
+  details={previewHeading.details}
+  status={previewStatusText}
+  icon={previewIcon}
+  onKeepOpen={() => preview.keepOpen()}
+  onLeave={() => preview.scheduleClose()}
+  onDismiss={() => preview.close()}
+/>{/if}

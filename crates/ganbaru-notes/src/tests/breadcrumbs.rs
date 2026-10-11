@@ -280,3 +280,70 @@ fn page_breadcrumb_marks_missing_ancestor_rows() {
         assert_eq!(breadcrumb_json[1]["current"], true);
     });
 }
+
+#[test]
+fn page_location_follows_project_folder_and_page_ancestry_through_the_page_itself() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        let folder_id = "00000000-0000-4000-8000-000000000301";
+        sqlx::query("INSERT INTO project_groups (id, name) VALUES ('group', 'Group')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO projects (id, group_id, name) VALUES ('project', 'group', 'Project')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO notes_folders (id, project_id, name) VALUES (?, 'project', 'Folder')",
+        )
+        .bind(folder_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        for (id, title, parent, first_block) in [
+            (PAGE_A, "Root", workspace_parent(), BLOCK_A),
+            (PAGE_B, "", page_parent(PAGE_A), BLOCK_B),
+            (PAGE_C, "Leaf", page_parent(PAGE_B), BLOCK_C),
+        ] {
+            writes::create_page(
+                &pool,
+                NotePageCreate {
+                    id: id.to_string(),
+                    title: title.to_string(),
+                    parent,
+                    folder_id: None,
+                    first_block_id: first_block.to_string(),
+                    after_block_id: None,
+                    properties: None,
+                },
+            )
+            .await
+            .unwrap();
+        }
+        sqlx::query("UPDATE notes_pages SET folder_id = ?, properties = json_set(properties, '$.__ganbaru_project_id', 'project') WHERE id = ?")
+            .bind(folder_id)
+            .bind(PAGE_A)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            reads::page_location(&pool, PAGE_C).await.unwrap(),
+            ["Group", "Project", "Folder", "Root", "", "Leaf"]
+        );
+        assert_eq!(
+            reads::page_location(&pool, PAGE_A).await.unwrap(),
+            ["Group", "Project", "Folder", "Root"]
+        );
+        sqlx::query("UPDATE notes_pages SET in_trash = 1 WHERE id = ?")
+            .bind(PAGE_C)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(reads::page_location(&pool, PAGE_C).await.is_err());
+        assert!(reads::page_location(&pool, "not-a-page").await.is_err());
+    });
+}

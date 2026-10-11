@@ -148,6 +148,16 @@ pub async fn notes_page_breadcrumb<R: Runtime>(
 }
 
 #[tauri::command]
+pub async fn notes_page_location<R: Runtime>(
+    app: AppHandle<R>,
+    db_url: String,
+    page_id: String,
+) -> Result<Vec<String>, String> {
+    let pool = connect_sqlite(app, db_url).await?;
+    reads::page_location(&pool, &page_id).await
+}
+
+#[tauri::command]
 pub async fn notes_search<R: Runtime>(
     app: AppHandle<R>,
     db_url: String,

@@ -2,11 +2,10 @@
 import { mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDatabaseMentionRichText, createPageMentionRichText } from "$lib/notes/rich-text/core";
-import type { NotesDatabaseMentionRichText, NotesDatabaseReference, NotesPageBreadcrumbItem, NotesPageMentionRichText } from "$lib/notes/types";
+import type { NotesDatabaseMentionRichText, NotesDatabaseReference, NotesPageMentionRichText } from "$lib/notes/types";
 import NotesLocalReference from "./NotesLocalReference.svelte";
 
 const PAGE_ID = "11111111-1111-4111-8111-111111111111";
-const PARENT_ID = "22222222-2222-4222-8222-222222222222";
 const DATABASE_ID = "33333333-3333-4333-8333-333333333333";
 const SOURCE_BLOCK_ID = "44444444-4444-4444-8444-444444444444";
 const SOURCE_PAGE_ID = "55555555-5555-4555-8555-555555555555";
@@ -22,18 +21,14 @@ const DATABASE_METADATA: NotesDatabaseReference = {
   owned_data_source_count: 0,
   editing_locked: false,
 };
-const PAGE_PATH: NotesPageBreadcrumbItem[] = [
-  { id: null, title: "Notes", status: "workspace", current: false },
-  { id: PARENT_ID, title: "Projects", status: "active", current: false },
-  { id: PAGE_ID, title: "Current project", status: "active", current: true },
-];
+const PAGE_LOCATION = ["Personal", "Website", "Plans", "", "Current project"];
 
-const { getDatabase, getBreadcrumbs, openLink } = vi.hoisted(() => ({
+const { getDatabase, getLocation, openLink } = vi.hoisted(() => ({
   getDatabase: vi.fn<(blockId: string) => Promise<NotesDatabaseReference>>(),
-  getBreadcrumbs: vi.fn<(pageId: string) => Promise<NotesPageBreadcrumbItem[]>>(),
+  getLocation: vi.fn<(pageId: string) => Promise<string[]>>(),
   openLink: vi.fn<(url: string) => Promise<void>>(),
 }));
-vi.mock("$lib/api/notes", () => ({ getNotesDatabaseReference: getDatabase, getNotesPageBreadcrumb: getBreadcrumbs }));
+vi.mock("$lib/api/notes", () => ({ getNotesDatabaseReference: getDatabase, getNotesPageLocation: getLocation }));
 vi.mock("$lib/notes/links/navigation", async (importOriginal) => ({
   ...await importOriginal<typeof import("$lib/notes/links/navigation")>(), openNotesTextLink: openLink,
 }));
@@ -43,7 +38,7 @@ let component: ReturnType<typeof mount> | undefined;
 beforeEach(() => {
   vi.useFakeTimers();
   getDatabase.mockReset().mockResolvedValue(DATABASE_METADATA);
-  getBreadcrumbs.mockReset().mockResolvedValue(PAGE_PATH);
+  getLocation.mockReset().mockResolvedValue(PAGE_LOCATION);
   openLink.mockReset().mockResolvedValue(undefined);
 });
 
@@ -93,9 +88,18 @@ async function hoverReference(anchor: HTMLAnchorElement): Promise<void> {
 }
 
 function previewCard(): HTMLDivElement {
-  const card = document.querySelector("[data-notes-reference-preview]");
+  const card = document.querySelector("[data-notes-mention-preview]");
   if (!(card instanceof HTMLDivElement)) throw new Error("Expected a reference preview");
   return card;
+}
+
+/** The muted route above a preview's title, read from its full screen reader copy. */
+function previewRoute(card: HTMLElement): string | undefined {
+  return card.querySelector(".sr-only")?.textContent ?? undefined;
+}
+
+function previewTitle(card: HTMLElement): string | undefined {
+  return card.querySelector("[data-notes-mention-preview-title]")?.textContent ?? undefined;
 }
 
 describe("inline local reference navigation", () => {
@@ -108,13 +112,13 @@ describe("inline local reference navigation", () => {
     expect(anchor.hasAttribute("data-notes-link-url")).toBe(false);
     expect(document.querySelector("[role='tooltip']")).toBeNull();
     expect(getDatabase).not.toHaveBeenCalled();
-    expect(getBreadcrumbs).not.toHaveBeenCalled();
+    expect(getLocation).not.toHaveBeenCalled();
     anchor.click();
     await settleMetadata();
     expect(openLink).toHaveBeenCalledExactlyOnceWith(PAGE_URL);
     expect(parentClick).not.toHaveBeenCalled();
     expect(getDatabase).not.toHaveBeenCalled();
-    expect(getBreadcrumbs).not.toHaveBeenCalled();
+    expect(getLocation).not.toHaveBeenCalled();
   });
 
   it("opens a database's provided owner link without loading preview metadata", async () => {
@@ -126,7 +130,7 @@ describe("inline local reference navigation", () => {
     await settleMetadata();
     expect(openLink).toHaveBeenCalledExactlyOnceWith(DATABASE_URL);
     expect(getDatabase).not.toHaveBeenCalled();
-    expect(getBreadcrumbs).not.toHaveBeenCalled();
+    expect(getLocation).not.toHaveBeenCalled();
   });
 
   it("follows touch taps with finger movement and resolves the referenced database view without a hover card", async () => {
@@ -141,7 +145,7 @@ describe("inline local reference navigation", () => {
     await settleMetadata();
     expect(getDatabase).toHaveBeenCalledExactlyOnceWith(DATABASE_ID);
     expect(openLink).toHaveBeenCalledExactlyOnceWith(DATABASE_URL);
-    expect(getBreadcrumbs).not.toHaveBeenCalled();
+    expect(getLocation).not.toHaveBeenCalled();
     expect(document.querySelector("[role='tooltip']")).toBeNull();
   });
 
@@ -176,7 +180,7 @@ describe("inline local reference navigation", () => {
     expect(click.defaultPrevented).toBe(true);
     expect(selection?.toString()).toBe("Project");
     expect(openLink).not.toHaveBeenCalled();
-    expect(getBreadcrumbs).not.toHaveBeenCalled();
+    expect(getLocation).not.toHaveBeenCalled();
     expect(document.querySelector("[role='tooltip']")).toBeNull();
   });
 
@@ -205,7 +209,7 @@ describe("inline local reference navigation", () => {
 });
 
 describe("local reference previews", () => {
-  it("loads database title and owner breadcrumbs after hover intent, outside the editor", async () => {
+  it("loads database title and owner location after hover intent, outside the editor", async () => {
     const { host, anchor } = await mountReference(createDatabaseMentionRichText(DATABASE_ID, "Tasks"), true);
     anchor.dispatchEvent(pointerEvent("pointerenter"));
     await vi.advanceTimersByTimeAsync(250);
@@ -215,9 +219,10 @@ describe("local reference previews", () => {
     await settleMetadata();
     const card = previewCard();
     expect(getDatabase).toHaveBeenCalledExactlyOnceWith(DATABASE_ID);
-    expect(getBreadcrumbs).toHaveBeenCalledExactlyOnceWith(PAGE_ID);
-    expect(card.textContent).toContain("Project tasks");
-    expect(card.textContent).toContain("Notes / Projects / Current project");
+    expect(getLocation).toHaveBeenCalledExactlyOnceWith(PAGE_ID);
+    expect(previewTitle(card)).toBe("Project tasks");
+    expect(previewRoute(card)).toBe("Personal / Website / Plans / Untitled / Current project");
+    expect(card.textContent).not.toContain("Database");
     expect(card.querySelector(".notes-reference-database-thumbnail")?.getAttribute("aria-hidden")).toBe("true");
     expect(card.querySelector("table")).toBeNull();
     expect(host.contains(card)).toBe(false);
@@ -226,15 +231,17 @@ describe("local reference previews", () => {
     expect(anchor.textContent).toBe("Tasks");
   });
 
-  it("uses a page's current breadcrumb title and ancestry without fetching database data", async () => {
+  it("splits a page title from its location without fetching database data", async () => {
     const { anchor } = await mountReference();
     await hoverReference(anchor);
     const card = previewCard();
-    expect(getBreadcrumbs).toHaveBeenCalledExactlyOnceWith(PAGE_ID);
+    expect(getLocation).toHaveBeenCalledExactlyOnceWith(PAGE_ID);
     expect(getDatabase).not.toHaveBeenCalled();
-    expect(card.textContent).toContain("Current project");
-    expect(card.textContent).toContain("Notes / Projects");
-    expect(card.textContent).not.toContain("Notes / Projects / Current project");
+    expect(previewTitle(card)).toBe("Current project");
+    expect(previewRoute(card)).toBe("Personal / Website / Plans / Untitled");
+    expect(card.textContent).not.toContain("Note");
+    const title = card.querySelector("[data-notes-mention-preview-title]");
+    expect(title && card.querySelector(".sr-only")?.compareDocumentPosition(title)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
     expect(card.querySelector(".notes-reference-database-thumbnail")).toBeNull();
     expect(anchor.textContent).toBe("Project");
   });
@@ -252,7 +259,7 @@ describe("local reference previews", () => {
     await hoverReference(anchor);
     expect(previewCard().textContent).toContain("Project tasks");
     expect(getDatabase).toHaveBeenCalledTimes(1);
-    expect(getBreadcrumbs).toHaveBeenCalledTimes(1);
+    expect(getLocation).toHaveBeenCalledTimes(1);
   });
 
   it("shares a pending hover lookup with click navigation", async () => {
@@ -274,12 +281,12 @@ describe("local reference previews", () => {
     anchor.dispatchEvent(pointerEvent("pointerenter"));
     anchor.dispatchEvent(pointerEvent("pointerleave"));
     await vi.advanceTimersByTimeAsync(400);
-    expect(getBreadcrumbs).not.toHaveBeenCalled();
+    expect(getLocation).not.toHaveBeenCalled();
     anchor.dispatchEvent(pointerEvent("pointerenter"));
     if (component) await unmount(component);
     component = undefined;
     await vi.advanceTimersByTimeAsync(400);
-    expect(getBreadcrumbs).not.toHaveBeenCalled();
+    expect(getLocation).not.toHaveBeenCalled();
     expect(document.querySelector("[role='tooltip']")).toBeNull();
   });
 
@@ -292,7 +299,7 @@ describe("local reference previews", () => {
     component = undefined;
     resolveMetadata?.(DATABASE_METADATA);
     await settleMetadata();
-    expect(getBreadcrumbs).not.toHaveBeenCalled();
+    expect(getLocation).not.toHaveBeenCalled();
     expect(openLink).not.toHaveBeenCalled();
     expect(document.querySelector("[role='tooltip']")).toBeNull();
   });
@@ -333,7 +340,7 @@ describe("local reference previews", () => {
 
   it("shows an unavailable preview without blocking a valid page link", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    getBreadcrumbs.mockRejectedValueOnce(new Error("Ancestry unavailable"));
+    getLocation.mockRejectedValueOnce(new Error("Ancestry unavailable"));
     const { anchor } = await mountReference();
     await hoverReference(anchor);
     expect(previewCard().querySelector("[role='status']")?.textContent).toBe("No preview");

@@ -330,7 +330,8 @@
     class="sticky top-0 z-10 shrink-0"
     style="
       height: var(--toolbar-h);
-      background-color: var(--cal-bg);
+      background-color: var(--background);
+      border-bottom: 1px solid var(--sidebar);
     "
   >
     <div class="grid h-full grid-cols-7">

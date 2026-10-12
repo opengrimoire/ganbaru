@@ -81,7 +81,7 @@ Panels were restyled one at a time, so radii, shadows, text sizes, input styles,
 
 ## Deliberate exceptions
 
-- Calendar paints its toolbar and the day-name and timezone row with the app `background` color, ending in a rule above the grid, so the dense time grid keeps a visible header band.
+- Calendar paints its toolbar and the day-name and timezone row with the app `background` color, with a rule below each row, so the dense time grid keeps a visible header band.
 - The Calendar event panel family (event panel, recurrence, notifications, and description editor surfaces) keeps its own shape, color, and shadow.
 - Tooltips use an inverted palette so they read as transient hints rather than panels.
 - Calendar-colored pickers (icon picker, event and quick note color pickers) keep the Calendar background so they match the surface that opens them, while sharing the radius and shadow.

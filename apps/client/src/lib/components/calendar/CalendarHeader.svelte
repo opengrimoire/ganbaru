@@ -261,7 +261,7 @@
   bind:this={toolbarElement}
   data-calendar-edit-close-zone
   class="flex shrink-0 items-center {mobileLayout ? 'gap-0 px-1' : 'gap-1 px-3'}"
-  style="height: var(--toolbar-h); background-color: var(--background);"
+  style="height: var(--toolbar-h); background-color: var(--background); border-bottom: 1px solid var(--sidebar);"
   onwheel={handleToolbarWheel}
 >
   <div class="flex min-w-0 items-center">

@@ -1,7 +1,9 @@
 import { getConfigKey, setConfigKey } from "$lib/vault/config";
 import {
   DEFAULT_PROJECT_TASK_LAYOUT_ID,
+  isProjectHostedPlace,
   isProjectTaskLayoutId,
+  type ProjectHostedPlace,
   type ProjectTaskLayoutId,
 } from "./places";
 import { PROJECT_VIEW_IDS, type ProjectViewId } from "./types";
@@ -12,6 +14,7 @@ const ACTIVE_PROJECT_ID_CONFIG_KEY = "projects.activeProjectId";
 const ACTIVE_VIEW_CONFIG_KEY = "projects.activeView";
 const TASK_LAYOUT_CONFIG_KEY = "projects.taskLayout";
 const SIDEBAR_COLLAPSED_CONFIG_KEY = "projects.sidebarCollapsed";
+const HOSTED_PLACE_CONFIG_KEY = "projects.hostedPlace";
 
 export function isProjectViewId(value: unknown): value is ProjectViewId {
   return typeof value === "string" && PROJECT_VIEW_IDS.includes(value as ProjectViewId);
@@ -62,4 +65,17 @@ export function loadSavedProjectSidebarCollapsed(): boolean {
 
 export function saveProjectSidebarCollapsed(collapsed: boolean): void {
   setConfigKey(SIDEBAR_COLLAPSED_CONFIG_KEY, collapsed || undefined);
+}
+
+export function parseStoredProjectHostedPlace(value: unknown): ProjectHostedPlace | null {
+  return isProjectHostedPlace(value) ? value : null;
+}
+
+/** Loads the hosted workspace the Projects tab reopens, or null for the project view. */
+export function loadSavedProjectHostedPlace(): ProjectHostedPlace | null {
+  return parseStoredProjectHostedPlace(getConfigKey<unknown>(HOSTED_PLACE_CONFIG_KEY, undefined));
+}
+
+export function saveProjectHostedPlace(place: ProjectHostedPlace | null): void {
+  setConfigKey(HOSTED_PLACE_CONFIG_KEY, place ?? undefined);
 }

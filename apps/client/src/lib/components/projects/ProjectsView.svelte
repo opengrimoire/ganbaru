@@ -23,7 +23,12 @@
     projectToolbarPanelsForView,
     type ProjectToolbarPanel,
   } from "$lib/projects/toolbar";
-  import { projectPlaceForView, projectViewForPlace, type ProjectPlace } from "$lib/projects/places";
+  import {
+    projectSidebarPlaces,
+    resolveProjectPlace,
+    type ProjectHostedPlace,
+    type ProjectPlace,
+  } from "$lib/projects/places";
   import CollectionSettings from "$lib/components/collections/CollectionSettings.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
@@ -40,10 +45,13 @@
     mobileLayout = false,
     viewComponents = null,
     projectChat = null,
+    hostablePlaces = [],
   }: {
     mobileLayout?: boolean;
     viewComponents?: ProjectViewComponents | null;
     projectChat?: ProjectChatIntegration | null;
+    /** Places of other features this window can host inside the Projects tab. */
+    hostablePlaces?: readonly ProjectHostedPlace[];
   } = $props();
 
   const projects = getProjects();
@@ -75,7 +83,8 @@
   const selectedGroup = $derived(projects.selectedGroup);
   const selectedProjectId = $derived(selectedProject?.id ?? null);
   const sidebarDocked = $derived(!mobileLayout && Boolean(selectedProject && selectedGroup));
-  const activePlace = $derived(projectPlaceForView(projects.activeView));
+  const sidebarPlaces = $derived(projectSidebarPlaces(hostablePlaces));
+  const activePlace = $derived(resolveProjectPlace(projects.hostedPlace, projects.activeView));
   const toolbarDataReady = $derived.by(() => {
     const projectId = selectedProjectId;
     return Boolean(
@@ -271,7 +280,7 @@
 
   function selectPlace(place: ProjectPlace): void {
     routeUi.runAfterSettingsClose(() => {
-      projects.activeView = projectViewForPlace(place, projects.lastTaskLayout);
+      projects.selectPlace(place);
     });
   }
 
@@ -343,6 +352,7 @@
   {#if sidebarDocked}
     <ProjectsSidebar
       {taskQuery}
+      places={sidebarPlaces}
       {activePlace}
       onSelectPlace={selectPlace}
       onCreateTask={() => { if (selectedProjectId) routeUi.openTaskDraft(selectedProjectId); }}

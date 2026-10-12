@@ -21,6 +21,7 @@
    */
   let {
     taskQuery,
+    places,
     activePlace,
     onSelectPlace,
     onCreateTask,
@@ -29,6 +30,7 @@
     onSavedViewApplied,
   }: {
     taskQuery: ProjectTaskQueryController;
+    places: readonly ProjectPlace[];
     activePlace: ProjectPlace;
     onSelectPlace: (place: ProjectPlace) => void;
     onCreateTask: () => void;
@@ -108,7 +110,7 @@
       </button>
     </div>
     {#if collapsed}
-      <ProjectPlacesNav variant="rail" {activePlace} {onSelectPlace} {onProjectSelected} />
+      <ProjectPlacesNav variant="rail" {places} {activePlace} {onSelectPlace} {onProjectSelected} />
     {/if}
   </div>
 
@@ -149,7 +151,7 @@
     </div>
 
     {#if !collapsed}
-      <ProjectPlacesNav variant="list" {activePlace} {onSelectPlace} {onProjectSelected} />
+      <ProjectPlacesNav variant="list" {places} {activePlace} {onSelectPlace} {onProjectSelected} />
     {/if}
 
     {#if projectId}

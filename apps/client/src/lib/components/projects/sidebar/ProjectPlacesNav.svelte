@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Book from "@lucide/svelte/icons/book";
   import ChevronsUpDown from "@lucide/svelte/icons/chevrons-up-down";
   import LayoutDashboard from "@lucide/svelte/icons/layout-dashboard";
   import ListChecks from "@lucide/svelte/icons/list-checks";
@@ -8,7 +9,7 @@
     COMPACT_IDENTITY_ICON_SIZE,
     COMPACT_IDENTITY_ICON_STROKE_WIDTH,
   } from "$lib/icon-sizing";
-  import { PROJECT_PLACES, type ProjectPlace } from "$lib/projects/places";
+  import { PROJECT_VIEW_PLACES, type ProjectPlace } from "$lib/projects/places";
   import { projectNavigatorPanelGeometry } from "$lib/projects/toolbar";
   import { getProjects } from "$lib/stores/projects.svelte";
   import { getViewport } from "$lib/stores/viewport.svelte";
@@ -21,12 +22,15 @@
    */
   let {
     variant,
+    places = PROJECT_VIEW_PLACES,
     activePlace,
     onSelectPlace,
     onProjectSelected = undefined,
   }: {
     /** `list` inside an expanded sidebar, `rail` inside a collapsed one. */
     variant: "list" | "rail";
+    /** Places to list, in sidebar order. */
+    places?: readonly ProjectPlace[];
     activePlace: ProjectPlace;
     onSelectPlace: (place: ProjectPlace) => void;
     onProjectSelected?: () => void;
@@ -46,11 +50,19 @@
   let navigatorPanelMaxHeight = $state(0);
 
   function placeLabel(place: ProjectPlace): string {
-    return place === "overview" ? t("projects.sidebar.overview") : t("projects.sidebar.tasks");
+    switch (place) {
+      case "overview": return t("projects.sidebar.overview");
+      case "tasks": return t("projects.sidebar.tasks");
+      case "notes": return t("projects.sidebar.notes");
+    }
   }
 
   function placeIcon(place: ProjectPlace) {
-    return place === "overview" ? LayoutDashboard : ListChecks;
+    switch (place) {
+      case "overview": return LayoutDashboard;
+      case "tasks": return ListChecks;
+      case "notes": return Book;
+    }
   }
 
   function refreshNavigatorGeometry(): void {
@@ -131,7 +143,7 @@
         <ChevronsUpDown class="explorer-row-icon text-muted-foreground" aria-hidden="true" />
       {/if}
     </button>
-    {#each PROJECT_PLACES as place (place)}
+    {#each places as place (place)}
       {@const Icon = placeIcon(place)}
       {@const label = placeLabel(place)}
       {@const active = activePlace === place}

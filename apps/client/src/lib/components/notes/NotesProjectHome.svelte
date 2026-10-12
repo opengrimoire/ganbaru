@@ -1,6 +1,6 @@
 <script lang="ts">
   import SearchField from "$lib/components/ui/SearchField.svelte";
-  import { onMount, tick } from "svelte";
+  import { onMount, tick, type Snippet } from "svelte";
   import ArrowUpNarrowWide from "@lucide/svelte/icons/arrow-up-narrow-wide";
   import Check from "@lucide/svelte/icons/check";
   import ChevronsLeft from "@lucide/svelte/icons/chevrons-left";
@@ -68,6 +68,7 @@
     selectedWorkingMarkdownFile = null,
     onSelectWorkingMarkdownFile,
     onBeforeDocumentNavigation,
+    projectPlaces = undefined,
   }: {
     mobileLayout?: boolean;
     projectId?: string | null;
@@ -77,6 +78,8 @@
     selectedWorkingMarkdownFile?: NotesWorkingMarkdownFileRef | null;
     onSelectWorkingMarkdownFile: (file: NotesWorkingMarkdownFileRef) => void;
     onBeforeDocumentNavigation: () => boolean;
+    /** Project places rendered by a host that owns this explorer as its sidebar, below the toolbar and in the rail. */
+    projectPlaces?: Snippet<["list" | "rail"]>;
   } = $props();
 
   const notes = getNotes();
@@ -907,6 +910,7 @@
           <ChevronsRight class="size-4" strokeWidth={explorerIconStrokeWidth} />
         </button>
       </div>
+      {@render projectPlaces?.("rail")}
     </div>
   {/if}
 
@@ -1111,6 +1115,8 @@
       </button>
     {/if}
   </div>
+
+  {#if projectPlaces && !mobileLayout}{@render projectPlaces("list")}{/if}
 
   {#if searchOpen}
     <SearchField bind:value={search} label={t("notes.searchLabel")} placeholder={t("notes.searchPlaceholder")} clearLabel={t("notes.clearSearch")} onClose={toggleSearch} />

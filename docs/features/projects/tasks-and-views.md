@@ -24,7 +24,9 @@ List and Kanban support multi-select with bulk status, priority, scheduling, arc
 
 ## Sidebar and toolbar
 
-On desktop, Projects has one docked sidebar: task actions, a project switcher, the project's places (Overview for the Dashboard and Tasks for the task layouts), and the saved views of the project. Notes and Chat places are planned in the same sidebar, so a project never shows two sidebars. Collapsing it keeps a narrow rail with the same places and moves the group and project breadcrumb into the header; the collapsed state persists per device. Tasks remembers its last layout (List, Kanban, Calendar, or Gantt), and the layout tabs appear only there. Mobile keeps the header view menu.
+On desktop, Projects has one docked sidebar: task actions, a project switcher, the project's places (Overview for the Dashboard, Tasks for the task layouts, and Notes), and the saved views of the project. Collapsing it keeps a narrow rail with the same places and moves the group and project breadcrumb into the header; the collapsed state and the open place persist per device. Tasks remembers its last layout (List, Kanban, Calendar, or Gantt), and the layout tabs appear only there. Mobile keeps the header view menu.
+
+The Notes place opens the project's Notes workspace inside the Projects tab. Its explorer becomes the Projects sidebar, with the switcher and places below its toolbar, so a project never shows two sidebars. A feature is hosted only in a window that also shows its own tab, so a detached Notes window is never duplicated, and routes that open a project or one of its tasks return to the project view. A Chat place is planned the same way.
 
 Toolbar actions follow what the view honors: every view offers filters and project settings, List and Kanban offer sorting, and only List offers grouping and columns. Gantt always orders by date. A configuration panel the new view does not offer closes when the view changes.
 

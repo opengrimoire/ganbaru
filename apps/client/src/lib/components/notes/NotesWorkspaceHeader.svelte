@@ -67,6 +67,7 @@
     onShowHome,
     projectSettingsOpen,
     onToggleProjectSettings,
+    placeTitle = undefined,
     pageActionsTarget = $bindable<HTMLElement | null>(null),
   }: {
     mobileLayout?: boolean;
@@ -82,6 +83,8 @@
     onShowHome: () => void;
     projectSettingsOpen: boolean;
     onToggleProjectSettings: () => void;
+    /** Replaces the group and project breadcrumb while a host sidebar already shows the project. */
+    placeTitle?: string;
     pageActionsTarget?: HTMLElement | null;
   } = $props();
 
@@ -161,6 +164,10 @@
   const showSelectedPagePath = $derived(
     (databaseSelected || mobileLayout || explorerCollapsed) && selectedPagePath.length > 0,
   );
+
+  $effect(() => {
+    if (placeTitle && navigatorMode !== "notes") navigatorOpen = false;
+  });
 
   function toolbarIconButtonClass(active = false, open = false, primary = false): string {
     return cn(
@@ -445,6 +452,71 @@
   </button>
 {/snippet}
 
+{#snippet selectedPagePathBreadcrumb()}
+  {#each visibleSelectedPagePath as node, nodeIndex (node.key)}
+    {@const pathTitle = node.kind === "folder"
+      ? node.folder.name
+      : node.page.id === selectedPageId && selectedPageTitle
+        ? selectedPageTitle
+        : notesPageTitle(node.page, t("notes.untitled"))}
+    <span class="shrink-0 px-0.5 font-semibold text-muted-foreground">/</span>
+    <button
+      type="button"
+      class={cn(
+        "flex min-w-0 items-center gap-1.5 rounded-md px-1.5 text-left hover:bg-accent",
+        databaseSelected && "shrink-0",
+        mobileLayout ? "h-12" : "h-7",
+        navigatorOpen
+          && navigatorMode === "notes"
+          && notesNavigatorSourceKey === node.key
+          && "bg-accent",
+      )}
+      aria-label={pathTitle}
+      aria-expanded={navigatorOpen && navigatorMode === "notes" && notesNavigatorSourceKey === node.key}
+      onpointerenter={(event) => {
+        if (!mobileLayout) openHierarchyNavigator(node, event.currentTarget);
+      }}
+      onclick={(event) => openNoteAncestor(node, event.currentTarget)}
+    >
+      {#if !mobileLayout}
+        {#if node.kind === "folder"}
+          <Folder
+            size={identityIconSize}
+            strokeWidth={identityIconStrokeWidth}
+            class="shrink-0"
+          />
+        {:else}
+          <NotesPageIcon
+            icon={node.page.icon}
+            size={identityIconSize}
+            strokeWidth={identityIconStrokeWidth}
+            emojiScale={NOTES_PAGE_CHROME_EMOJI_SCALE}
+            class="shrink-0"
+          />
+        {/if}
+      {/if}
+      <span class="min-w-0 truncate text-foreground">{pathTitle}</span>
+      {#if !databaseSelected && nodeIndex === visibleSelectedPagePath.length - 1}
+        <WorkspaceBreadcrumbTerminalIcon kind="chevron" context="notes" class="shrink-0 text-muted-foreground" />
+      {/if}
+    </button>
+  {/each}
+  {#if databaseSelected}
+    {@render databaseBreadcrumb()}
+  {:else}
+  <button
+    type="button"
+    class={inlineNewPageButtonClass()}
+    aria-label={t("notes.newPage")}
+    aria-keyshortcuts="Control+N Meta+N"
+    title={newPageTitle}
+    onclick={createPage}
+  >
+    <WorkspaceBreadcrumbTerminalIcon kind="plus" />
+  </button>
+  {/if}
+{/snippet}
+
 <svelte:window onpointerdown={handleWindowPointerDown} />
 
 <div
@@ -471,7 +543,36 @@
       databaseSelected ? "overflow-x-auto" : "overflow-hidden",
       mobileLayout ? "h-12" : "h-7",
     )}>
-      {#if selectedProject && selectedGroup}
+      {#if selectedProject && selectedGroup && placeTitle}
+        {#if selectedPageTitle}
+          <button
+            type="button"
+            class="flex h-7 min-w-0 items-center rounded-md px-1.5 text-left hover:bg-accent"
+            aria-label={t("notes.showProjectHome")}
+            data-project-place-title
+            onclick={onShowHome}
+          >
+            <span class="min-w-0 truncate text-foreground">{placeTitle}</span>
+          </button>
+        {:else}
+          <h2 class="min-w-0 truncate px-1.5 text-identity font-medium text-foreground" data-project-place-title>{placeTitle}</h2>
+        {/if}
+        {#if !showSelectedPagePath}
+          <button
+            type="button"
+            class={inlineNewPageButtonClass()}
+            aria-label={t("notes.newPage")}
+            aria-keyshortcuts="Control+N Meta+N"
+            title={newPageTitle}
+            onclick={createPage}
+          >
+            <WorkspaceBreadcrumbTerminalIcon kind="plus" />
+          </button>
+        {/if}
+        {#if showSelectedPagePath}
+          {@render selectedPagePathBreadcrumb()}
+        {/if}
+      {:else if selectedProject && selectedGroup}
         <button
           bind:this={groupTriggerElement}
           type="button"
@@ -548,68 +649,7 @@
           </button>
         {/if}
         {#if showSelectedPagePath}
-          {#each visibleSelectedPagePath as node, nodeIndex (node.key)}
-            {@const pathTitle = node.kind === "folder"
-              ? node.folder.name
-              : node.page.id === selectedPageId && selectedPageTitle
-                ? selectedPageTitle
-                : notesPageTitle(node.page, t("notes.untitled"))}
-            <span class="shrink-0 px-0.5 font-semibold text-muted-foreground">/</span>
-            <button
-              type="button"
-              class={cn(
-                "flex min-w-0 items-center gap-1.5 rounded-md px-1.5 text-left hover:bg-accent",
-                databaseSelected && "shrink-0",
-                mobileLayout ? "h-12" : "h-7",
-                navigatorOpen
-                  && navigatorMode === "notes"
-                  && notesNavigatorSourceKey === node.key
-                  && "bg-accent",
-              )}
-              aria-label={pathTitle}
-              aria-expanded={navigatorOpen && navigatorMode === "notes" && notesNavigatorSourceKey === node.key}
-              onpointerenter={(event) => {
-                if (!mobileLayout) openHierarchyNavigator(node, event.currentTarget);
-              }}
-              onclick={(event) => openNoteAncestor(node, event.currentTarget)}
-            >
-              {#if !mobileLayout}
-                {#if node.kind === "folder"}
-                  <Folder
-                    size={identityIconSize}
-                    strokeWidth={identityIconStrokeWidth}
-                    class="shrink-0"
-                  />
-                {:else}
-                  <NotesPageIcon
-                    icon={node.page.icon}
-                    size={identityIconSize}
-                    strokeWidth={identityIconStrokeWidth}
-                    emojiScale={NOTES_PAGE_CHROME_EMOJI_SCALE}
-                    class="shrink-0"
-                  />
-                {/if}
-              {/if}
-              <span class="min-w-0 truncate text-foreground">{pathTitle}</span>
-              {#if !databaseSelected && nodeIndex === visibleSelectedPagePath.length - 1}
-                <WorkspaceBreadcrumbTerminalIcon kind="chevron" context="notes" class="shrink-0 text-muted-foreground" />
-              {/if}
-            </button>
-          {/each}
-          {#if databaseSelected}
-            {@render databaseBreadcrumb()}
-          {:else}
-          <button
-            type="button"
-            class={inlineNewPageButtonClass()}
-            aria-label={t("notes.newPage")}
-            aria-keyshortcuts="Control+N Meta+N"
-            title={newPageTitle}
-            onclick={createPage}
-          >
-            <WorkspaceBreadcrumbTerminalIcon kind="plus" />
-          </button>
-          {/if}
+          {@render selectedPagePathBreadcrumb()}
         {/if}
       {:else}
         <button

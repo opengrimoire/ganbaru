@@ -36,6 +36,7 @@ export const shell = {
     switchProject: "Switch project",
     overview: "Overview",
     tasks: "Tasks",
+    notes: "Notes",
     saveView: "Save current view",
     savedViewsEmpty: "Save filters and a layout to come back to them here.",
   },

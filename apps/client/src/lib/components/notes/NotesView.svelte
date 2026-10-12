@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, untrack } from "svelte";
+  import { onMount, untrack, type Snippet } from "svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { hasOnlyShortcutModifier } from "$lib/keyboard-shortcuts";
   import {
@@ -39,8 +39,15 @@
 
   let {
     mobileLayout = false,
+    projectPlaces = undefined,
   }: {
     mobileLayout?: boolean;
+    /**
+     * Project places from a host that opens Notes as one place of a project. The explorer then doubles as the host's
+     * sidebar and the header leaves the project to it. The snippet receives the explorer variant and the handler for a
+     * project switch.
+     */
+    projectPlaces?: Snippet<["list" | "rail", () => void]>;
   } = $props();
 
   const notes = getNotes();
@@ -533,6 +540,9 @@
   class:notes-view-mobile={mobileLayout}
   data-first-use-shell="notes"
 >
+  {#snippet hostedProjectPlaces(variant: "list" | "rail")}
+    {@render projectPlaces?.(variant, handleProjectSelected)}
+  {/snippet}
   {#snippet workspaceHeader()}
     <NotesWorkspaceHeader
       {mobileLayout}
@@ -541,6 +551,7 @@
       {selectedProjectId}
       selectedPage={topBarSelectedPage}
       explorerCollapsed={notes.explorerCollapsed}
+      placeTitle={projectPlaces && !notes.explorerCollapsed ? t("projects.sidebar.notes") : undefined}
       {creationFolderId}
       {showInactiveProjects}
       onShowInactiveProjectsChange={(value) => {
@@ -649,6 +660,7 @@
         {selectedWorkingMarkdownFile}
         onSelectWorkingMarkdownFile={selectWorkingMarkdownFile}
         onBeforeDocumentNavigation={beforeDocumentNavigation}
+        projectPlaces={projectPlaces ? hostedProjectPlaces : undefined}
         onCreationFolderChange={(folderId) => {
           creationFolderOverride = folderId;
         }}

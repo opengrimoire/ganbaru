@@ -39,6 +39,7 @@ export const shell = {
     switchProject: "Cambiar de proyecto",
     overview: "Resumen",
     tasks: "Tareas",
+    notes: "Notas",
     saveView: "Guardar vista actual",
     savedViewsEmpty: "Guarda filtros y un diseño para volver a ellos aquí.",
   },

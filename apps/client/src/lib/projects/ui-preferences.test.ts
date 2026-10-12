@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_PROJECT_VIEW_ID,
   isProjectViewId,
+  parseStoredProjectHostedPlace,
   parseStoredProjectId,
   parseStoredProjectTaskLayoutId,
   parseStoredProjectViewId,
@@ -37,5 +38,12 @@ describe("project ui preferences", () => {
     expect(parseStoredProjectTaskLayoutId("gantt")).toBe("gantt");
     expect(parseStoredProjectTaskLayoutId("dashboard")).toBe("list");
     expect(parseStoredProjectTaskLayoutId(42)).toBe("list");
+  });
+
+  it("restores only known hosted places", () => {
+    expect(parseStoredProjectHostedPlace("notes")).toBe("notes");
+    expect(parseStoredProjectHostedPlace("tasks")).toBeNull();
+    expect(parseStoredProjectHostedPlace("")).toBeNull();
+    expect(parseStoredProjectHostedPlace(true)).toBeNull();
   });
 });

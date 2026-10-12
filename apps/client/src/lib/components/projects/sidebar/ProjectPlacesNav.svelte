@@ -3,6 +3,7 @@
   import ChevronsUpDown from "@lucide/svelte/icons/chevrons-up-down";
   import LayoutDashboard from "@lucide/svelte/icons/layout-dashboard";
   import ListChecks from "@lucide/svelte/icons/list-checks";
+  import MessageSquare from "@lucide/svelte/icons/message-square";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
     COMPACT_IDENTITY_EMOJI_SCALE,
@@ -54,6 +55,7 @@
       case "overview": return t("projects.sidebar.overview");
       case "tasks": return t("projects.sidebar.tasks");
       case "notes": return t("projects.sidebar.notes");
+      case "chat": return t("projects.sidebar.chat");
     }
   }
 
@@ -62,6 +64,7 @@
       case "overview": return LayoutDashboard;
       case "tasks": return ListChecks;
       case "notes": return Book;
+      case "chat": return MessageSquare;
     }
   }
 

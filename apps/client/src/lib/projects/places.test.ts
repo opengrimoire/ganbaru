@@ -38,18 +38,21 @@ describe("project places", () => {
   });
 
   it("hosts a feature only in a window that shows its tab", () => {
-    expect(projectHostablePlaces(["calendar", "projects", "notes", "chat"])).toEqual(["notes"]);
-    expect(projectHostablePlaces(["calendar", "projects", "chat"])).toEqual([]);
+    expect(projectHostablePlaces(["calendar", "projects", "notes", "chat"])).toEqual(["notes", "chat"]);
+    expect(projectHostablePlaces(["calendar", "projects", "chat"])).toEqual(["chat"]);
+    expect(projectHostablePlaces(["chat", "notes"])).toEqual(["notes", "chat"]);
     expect(projectHostablePlaces(["projects"])).toEqual([]);
   });
 
   it("lists view places first and keeps only the hosted places the window can open", () => {
-    expect(projectSidebarPlaces(["notes"])).toEqual(["overview", "tasks", "notes"]);
+    expect(projectSidebarPlaces(["notes", "chat"])).toEqual(["overview", "tasks", "notes", "chat"]);
+    expect(projectSidebarPlaces(["chat"])).toEqual(["overview", "tasks", "chat"]);
     expect(projectSidebarPlaces([])).toEqual(["overview", "tasks"]);
   });
 
   it("recognizes only hosted places", () => {
     expect(isProjectHostedPlace("notes")).toBe(true);
+    expect(isProjectHostedPlace("chat")).toBe(true);
     expect(isProjectHostedPlace("tasks")).toBe(false);
     expect(isProjectHostedPlace("Notes")).toBe(false);
     expect(isProjectHostedPlace(undefined)).toBe(false);

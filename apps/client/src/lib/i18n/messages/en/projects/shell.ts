@@ -37,6 +37,7 @@ export const shell = {
     overview: "Overview",
     tasks: "Tasks",
     notes: "Notes",
+    chat: "Chat",
     saveView: "Save current view",
     savedViewsEmpty: "Save filters and a layout to come back to them here.",
   },

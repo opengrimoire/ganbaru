@@ -84,6 +84,8 @@
   const selectedProjectId = $derived(selectedProject?.id ?? null);
   const sidebarDocked = $derived(!mobileLayout && Boolean(selectedProject && selectedGroup));
   const sidebarPlaces = $derived(projectSidebarPlaces(hostablePlaces));
+  /** Chat opens from the sidebar when it is a place, so the header keeps its shortcut only otherwise. */
+  const chatIsPlace = $derived(sidebarDocked && sidebarPlaces.includes("chat"));
   const activePlace = $derived(resolveProjectPlace(projects.hostedPlace, projects.activeView));
   const toolbarDataReady = $derived.by(() => {
     const projectId = selectedProjectId;
@@ -378,7 +380,7 @@
           taskFiltersActive={taskFilterControlsActive}
           {taskCustomizeActive}
           {mobileLayout}
-          {projectChat}
+          projectChat={chatIsPlace ? null : projectChat}
           sidebarCollapsed={!sidebarDocked || projects.sidebarCollapsed}
           onShowInactiveProjectsChange={(value) => {
             projects.showInactiveProjects = value;

@@ -37,6 +37,7 @@
     onOpenRail,
     reserveGlobalActions,
     mobilePresentation = false,
+    placeTitle = undefined,
     editingTitle = $bindable(false),
   }: {
     explorerExpanded: boolean;
@@ -45,6 +46,8 @@
     reserveGlobalActions: boolean;
     mobilePresentation?: boolean;
     editingTitle?: boolean;
+    /** Replaces the group and project breadcrumb while a host sidebar already shows the project. */
+    placeTitle?: string;
   } = $props();
 
   const chat = getChat();
@@ -215,6 +218,10 @@
     if (explorerExpanded && navigatorOpen && navigatorMode === "channels") navigatorOpen = false;
   });
 
+  $effect(() => {
+    if (placeTitle && navigatorMode !== "channels") navigatorOpen = false;
+  });
+
 </script>
 
 <svelte:window onpointerdown={handleWindowPointerDown} />
@@ -224,9 +231,13 @@
   <div bind:this={identityElement} class={cn("relative", mobilePresentation ? "min-w-0 flex-1 overflow-hidden" : "min-w-36 shrink-0 min-[760px]:max-w-3xl")}>
     <div class={cn("flex min-w-0 max-w-full items-center gap-0.5 overflow-hidden text-identity font-medium", mobilePresentation ? "h-12" : "h-7")}>
       {#if selectedProject && selectedGroup}
-        <button bind:this={groupTriggerElement} type="button" class={cn("chat-context-segment", navigatorOpen && navigatorMode === "groups" && "bg-accent")} aria-label={t("projects.navigator.open")} aria-expanded={navigatorOpen && navigatorMode === "groups"} data-chat-group-trigger onpointerenter={() => { if (!mobilePresentation) openNavigator("groups"); }} onclick={() => toggleNavigator("groups")}>{#if !mobilePresentation}<ProjectIcon name={selectedGroup.icon} size={identityIconSize} strokeWidth={identityIconStrokeWidth} emojiScale={identityEmojiScale} />{/if}<span class="truncate">{selectedGroup.name}</span></button>
-        <span class="chat-context-divider">/</span>
-        <button bind:this={projectTriggerElement} type="button" class={cn("chat-context-segment", navigatorOpen && navigatorMode === "projects" && "bg-accent")} aria-label={t("projects.navigator.open")} aria-expanded={navigatorOpen && navigatorMode === "projects"} data-chat-project-trigger onpointerenter={() => { if (!mobilePresentation) openNavigator("projects"); }} onclick={() => toggleNavigator("projects")}>{#if !mobilePresentation}<ProjectIcon name={selectedProject.icon} size={identityIconSize} strokeWidth={identityIconStrokeWidth} emojiScale={identityEmojiScale} />{/if}<span class="truncate">{selectedProject.name}</span>{#if selectedProject.status !== "active"}<span class={cn("rounded border px-1.5 py-0.5 text-[0.666667rem]", projectLifecycleBadgeClass(selectedProject.status))}>{projectLifecycleLabel(selectedProject.status, t)}</span>{/if}{#if !selectedChannel || !showChannelBreadcrumb}<WorkspaceBreadcrumbTerminalIcon kind="chevron" context="chat" class="shrink-0 text-muted-foreground" />{/if}</button>
+        {#if placeTitle}
+          <h2 class="chat-context-segment" data-project-place-title><span class="truncate">{placeTitle}</span></h2>
+        {:else}
+          <button bind:this={groupTriggerElement} type="button" class={cn("chat-context-segment", navigatorOpen && navigatorMode === "groups" && "bg-accent")} aria-label={t("projects.navigator.open")} aria-expanded={navigatorOpen && navigatorMode === "groups"} data-chat-group-trigger onpointerenter={() => { if (!mobilePresentation) openNavigator("groups"); }} onclick={() => toggleNavigator("groups")}>{#if !mobilePresentation}<ProjectIcon name={selectedGroup.icon} size={identityIconSize} strokeWidth={identityIconStrokeWidth} emojiScale={identityEmojiScale} />{/if}<span class="truncate">{selectedGroup.name}</span></button>
+          <span class="chat-context-divider">/</span>
+          <button bind:this={projectTriggerElement} type="button" class={cn("chat-context-segment", navigatorOpen && navigatorMode === "projects" && "bg-accent")} aria-label={t("projects.navigator.open")} aria-expanded={navigatorOpen && navigatorMode === "projects"} data-chat-project-trigger onpointerenter={() => { if (!mobilePresentation) openNavigator("projects"); }} onclick={() => toggleNavigator("projects")}>{#if !mobilePresentation}<ProjectIcon name={selectedProject.icon} size={identityIconSize} strokeWidth={identityIconStrokeWidth} emojiScale={identityEmojiScale} />{/if}<span class="truncate">{selectedProject.name}</span>{#if selectedProject.status !== "active"}<span class={cn("rounded border px-1.5 py-0.5 text-[0.666667rem]", projectLifecycleBadgeClass(selectedProject.status))}>{projectLifecycleLabel(selectedProject.status, t)}</span>{/if}{#if !selectedChannel || !showChannelBreadcrumb}<WorkspaceBreadcrumbTerminalIcon kind="chevron" context="chat" class="shrink-0 text-muted-foreground" />{/if}</button>
+        {/if}
         {#if selectedChannel && showChannelBreadcrumb}
           <span class="chat-context-divider">/</span>
           {#if editingTitle && !selectedChannel.isDefault}

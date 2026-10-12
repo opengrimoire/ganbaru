@@ -12,7 +12,7 @@ export const PROJECT_VIEW_PLACES = ["overview", "tasks"] as const;
 export type ProjectViewPlace = (typeof PROJECT_VIEW_PLACES)[number];
 
 /** Places that host another feature's workspace scoped to the selected project. */
-export const PROJECT_HOSTED_PLACES = ["notes"] as const;
+export const PROJECT_HOSTED_PLACES = ["notes", "chat"] as const;
 export type ProjectHostedPlace = (typeof PROJECT_HOSTED_PLACES)[number];
 
 /** Places in the Projects sidebar, in sidebar order. */

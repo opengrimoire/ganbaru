@@ -42,6 +42,7 @@ describe("project ui preferences", () => {
 
   it("restores only known hosted places", () => {
     expect(parseStoredProjectHostedPlace("notes")).toBe("notes");
+    expect(parseStoredProjectHostedPlace("chat")).toBe("chat");
     expect(parseStoredProjectHostedPlace("tasks")).toBeNull();
     expect(parseStoredProjectHostedPlace("")).toBeNull();
     expect(parseStoredProjectHostedPlace(true)).toBeNull();

@@ -40,6 +40,7 @@ export const shell = {
     overview: "Resumen",
     tasks: "Tareas",
     notes: "Notas",
+    chat: "Chat",
     saveView: "Guardar vista actual",
     savedViewsEmpty: "Guarda filtros y un diseño para volver a ellos aquí.",
   },

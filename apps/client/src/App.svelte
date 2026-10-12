@@ -606,18 +606,29 @@
     return projects.selectedProject && projects.selectedGroup ? place : null;
   });
 
+  function hostedExplorerCollapsed(place: ProjectHostedPlace): boolean {
+    return place === "notes" ? notes.explorerCollapsed : !chat.railOpen;
+  }
+
+  function setHostedExplorerCollapsed(place: ProjectHostedPlace, collapsed: boolean): void {
+    if (place === "notes") notes.explorerCollapsed = collapsed;
+    else chat.railOpen = !collapsed;
+  }
+
   // A hosted explorer is the Projects sidebar, so it opens and closes with it.
   $effect.pre(() => {
-    if (projectHostedPlace !== "notes") return;
+    const place = projectHostedPlace;
+    if (!place) return;
     const collapsed = projects.sidebarCollapsed;
     untrack(() => {
-      notes.explorerCollapsed = collapsed;
+      setHostedExplorerCollapsed(place, collapsed);
     });
   });
 
   $effect(() => {
-    if (projectHostedPlace !== "notes") return;
-    const collapsed = notes.explorerCollapsed;
+    const place = projectHostedPlace;
+    if (!place) return;
+    const collapsed = hostedExplorerCollapsed(place);
     untrack(() => {
       projects.sidebarCollapsed = collapsed;
     });
@@ -940,7 +951,7 @@
   }
 </script>
 
-{#snippet hostedProjectPlaces(variant: "list" | "rail", onProjectSelected: () => void)}
+{#snippet hostedProjectPlaces(variant: "list" | "rail", onProjectSelected: (() => void) | undefined)}
   <ProjectPlacesNav
     {variant}
     places={projectSidebarPlaceList}
@@ -948,6 +959,10 @@
     onSelectPlace={(place) => projects.selectPlace(place)}
     {onProjectSelected}
   />
+{/snippet}
+
+{#snippet hostedChatProjectPlaces(variant: "list" | "rail")}
+  {@render hostedProjectPlaces(variant, undefined)}
 {/snippet}
 
 <svelte:window onkeydowncapture={handleKeydown} />
@@ -970,7 +985,7 @@
       {:else if nav.current === "notes" || projectHostedPlace === "notes"}
         <NotesView projectPlaces={projectHostedPlace === "notes" ? hostedProjectPlaces : undefined} />
       {:else}
-        <ChatWorkspace />
+        <ChatWorkspace projectPlaces={projectHostedPlace === "chat" ? hostedChatProjectPlaces : undefined} />
       {/if}
     </main>
   </div>

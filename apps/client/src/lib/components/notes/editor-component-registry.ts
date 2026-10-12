@@ -135,7 +135,8 @@ export type NotesTextControlKind =
   | "mention-menu"
   | "slash-menu"
   | "template-controls"
-  | "button-controls";
+  | "button-controls"
+  | "date-mention-editor";
 
 export type LoadedNotesTextControl =
   | { kind: "code-language"; component: typeof import("$lib/components/ui/Select.svelte").default }
@@ -144,7 +145,8 @@ export type LoadedNotesTextControl =
   | { kind: "mention-menu"; component: typeof import("$lib/components/notes/rich-text/NotesMentionMenu.svelte").default }
   | { kind: "slash-menu"; component: typeof import("$lib/components/notes/blocks/NotesSlashMenu.svelte").default }
   | { kind: "template-controls"; component: typeof import("$lib/components/notes/blocks/NotesTemplateBlockControls.svelte").default }
-  | { kind: "button-controls"; component: typeof import("$lib/components/notes/blocks/NotesButtonBlockControls.svelte").default };
+  | { kind: "button-controls"; component: typeof import("$lib/components/notes/blocks/NotesButtonBlockControls.svelte").default }
+  | { kind: "date-mention-editor"; component: typeof import("$lib/components/notes/rich-text/NotesDateMentionEditor.svelte").default };
 
 const DATABASE_VIEW_IMPORTERS = {
   table: () => import("$lib/components/notes/database/NotesDatabaseTableView.svelte")
@@ -238,6 +240,8 @@ const TEXT_CONTROL_IMPORTERS = {
     .then((module) => ({ default: { kind: "template-controls" as const, component: module.default } })),
   "button-controls": () => import("$lib/components/notes/blocks/NotesButtonBlockControls.svelte")
     .then((module) => ({ default: { kind: "button-controls" as const, component: module.default } })),
+  "date-mention-editor": () => import("$lib/components/notes/rich-text/NotesDateMentionEditor.svelte")
+    .then((module) => ({ default: { kind: "date-mention-editor" as const, component: module.default } })),
 } satisfies Readonly<Record<NotesTextControlKind, LazyComponentImporter<LoadedNotesTextControl>>>;
 
 const databaseViewLoader = createLazyComponentLoader<

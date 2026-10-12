@@ -151,11 +151,18 @@ export interface NotesDateMentionReminder {
   enabled: boolean;
 }
 
+/** How a date mention spells its date once edited. */
+export const NOTES_DATE_MENTION_FORMATS = ["full", "short", "numeric", "iso"] as const;
+
+export type NotesDateMentionFormat = (typeof NOTES_DATE_MENTION_FORMATS)[number];
+
 export interface NotesDateMentionValue {
   start: string;
   end?: string | null;
   time_zone?: string | null;
   ganbaru_reminder?: NotesDateMentionReminder | null;
+  /** The spelling chosen in the date editor; mentions without one keep the text they were inserted with. */
+  ganbaru_format?: NotesDateMentionFormat | null;
 }
 
 export interface NotesDateMentionRichText {

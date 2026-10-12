@@ -39,11 +39,13 @@
   const PROJECT_ICON_SIZE_PX = 14;
   const PREVIEW_ICON_SIZE_PX = 20;
 
-  let { mention, text, showIcon = true, attributes = {} }: {
+  let { mention, text, showIcon = true, attributes = {}, onEdit }: {
     mention: NotesExternalMentionRichText;
     text: string;
     showIcon?: boolean;
     attributes?: MentionAttributes;
+    /** Opens an editor for the mention from its chip; only date mentions take one. */
+    onEdit?: (anchor: HTMLElement) => void;
   } = $props();
 
   const localization = getLocalization();
@@ -60,6 +62,7 @@
     || objectMention?.type === "project_task"
     || objectMention?.type === "calendar_event");
   const mentionType = $derived(objectMention?.type ?? mention.mention.type);
+  const editable = $derived(mention.mention.type === "date" && onEdit !== undefined);
   const reminder = $derived(mention.mention.type === "date" && mention.mention.date.ganbaru_reminder?.enabled === true);
   let element = $state<HTMLSpanElement | null>(null);
   let task = $state<MentionedTask | null>(null);
@@ -213,7 +216,7 @@
   }
 
   function handleClick(event: MouseEvent): void {
-    if (!navigable) return;
+    if (!navigable && !editable) return;
     event.preventDefault();
     event.stopPropagation();
     const moved = pointerStart !== null
@@ -221,7 +224,12 @@
     pointerStart = null;
     const selection = element?.ownerDocument.getSelection();
     if (moved || (selection && !selection.isCollapsed && !event.ctrlKey && !event.metaKey)) return;
-    void open();
+    if (editable && element) {
+      preview.close();
+      onEdit?.(element);
+    } else {
+      void open();
+    }
   }
 
   /** Track mouse and pen drags while allowing touch taps recognized by the browser. */
@@ -275,7 +283,8 @@
   {...attributes}
   bind:this={element}
   use:mentionEvents
-  class={`notes-mention-chip ${attributes.class ?? ""}`}
+  class={`notes-mention-chip${editable ? " cursor-pointer" : ""} ${attributes.class ?? ""}`}
+  aria-haspopup={editable ? "dialog" : undefined}
   data-notes-mention-chip="true"
   data-notes-mention-type={mentionType}
   aria-describedby={preview.open ? previewId : undefined}

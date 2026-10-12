@@ -13,6 +13,7 @@ describe("Notes text editor runtime", () => {
       slashMenu: false,
       templateControls: false,
       buttonControls: true,
+      dateMentionEditor: false,
     })).toEqual(["text-context-menu", "mention-menu", "button-controls"]);
   });
 
@@ -24,6 +25,7 @@ describe("Notes text editor runtime", () => {
       slashMenu: true,
       templateControls: true,
       buttonControls: true,
+      dateMentionEditor: true,
     })).toEqual([
       "text-context-menu",
       "link-editor",
@@ -31,6 +33,7 @@ describe("Notes text editor runtime", () => {
       "slash-menu",
       "template-controls",
       "button-controls",
+      "date-mention-editor",
     ]);
   });
 

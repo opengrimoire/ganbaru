@@ -212,7 +212,25 @@ pub fn validate_date_mention(mention: &serde_json::Map<String, Value>) -> Result
     if let Some(reminder) = date.get("ganbaru_reminder") {
         validate_date_mention_reminder(reminder)?;
     }
+    if let Some(format) = date.get("ganbaru_format") {
+        validate_date_mention_format(format)?;
+    }
     Ok(())
+}
+
+/// Spellings the date editor can store for a date mention.
+pub const DATE_MENTION_FORMATS: [&str; 4] = ["full", "short", "numeric", "iso"];
+
+/// Accept a missing spelling or one of [`DATE_MENTION_FORMATS`].
+pub fn validate_date_mention_format(value: &Value) -> Result<(), String> {
+    match value {
+        Value::Null => Ok(()),
+        Value::String(format) if DATE_MENTION_FORMATS.contains(&format.as_str()) => Ok(()),
+        _ => Err(format!(
+            "rich text mention.date.ganbaru_format must be null or one of {}",
+            DATE_MENTION_FORMATS.join(", ")
+        )),
+    }
 }
 
 pub fn validate_date_mention_reminder(value: &Value) -> Result<(), String> {

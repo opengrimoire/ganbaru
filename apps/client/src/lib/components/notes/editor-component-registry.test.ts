@@ -69,6 +69,7 @@ const TEXT_CONTROLS = [
   "slash-menu",
   "template-controls",
   "button-controls",
+  "date-mention-editor",
 ] as const satisfies readonly NotesTextControlKind[];
 
 describe("Notes editor component registry", () => {

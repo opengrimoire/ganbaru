@@ -13,7 +13,7 @@ import {
   createLocalObjectMentionRichText,
   createUserMentionRichText,
 } from "$lib/notes/rich-text/core";
-import type { NotesRichText } from "$lib/notes/types";
+import type { NotesDateMentionRichText, NotesRichText } from "$lib/notes/types";
 import NotesRichTextInline from "./NotesRichTextInline.svelte";
 
 const PROJECT_ID = "33333333-3333-4333-8333-333333333333";
@@ -40,13 +40,16 @@ vi.mock("$lib/api/projects", () => ({ loadProjectTaskDetail: loadTask }));
 const mounted: Array<{ component: ReturnType<typeof mount>; root: HTMLElement }> = [];
 
 /** Mount mentions into an editable root the way the block editor hosts them. */
-function editableRoot(richText: readonly NotesRichText[]): HTMLElement {
+function editableRoot(
+  richText: readonly NotesRichText[],
+  onEditDateMention?: (item: NotesDateMentionRichText, anchor: HTMLElement) => void,
+): HTMLElement {
   const root = document.createElement("div");
   root.setAttribute("contenteditable", "true");
   document.body.append(root);
   const component = mount(NotesRichTextInline, {
     target: root,
-    props: { richText, commentAnchors: [], suggestionAnchors: [] },
+    props: { richText, commentAnchors: [], suggestionAnchors: [], onEditDateMention },
   });
   flushSync();
   mounted.push({ component, root });
@@ -115,6 +118,34 @@ describe("rich-text object mention rendering", () => {
     expect(chip?.getAttribute("data-notes-mention-type")).toBe("user");
     expect(chip?.hasAttribute("role")).toBe(false);
     expect(notesPlainTextFromEditableRoot(root)).toBe("Teammate");
+  });
+
+  it("opens the date editor from a date chip with the stored item, but not while text is selected", () => {
+    const onEdit = vi.fn<(item: NotesDateMentionRichText, anchor: HTMLElement) => void>();
+    const date = createDateMentionRichText(createDateMentionValue("2026-10-12", false), "Tomorrow");
+    const root = editableRoot([date, createUserMentionRichText(PROJECT_ID, "Teammate")], onEdit);
+    const [dateChip, userChip] = root.querySelectorAll<HTMLElement>("[data-notes-mention-chip]");
+    expect(dateChip.getAttribute("aria-haspopup")).toBe("dialog");
+    expect(userChip.hasAttribute("aria-haspopup")).toBe(false);
+    userChip.click();
+    expect(onEdit).not.toHaveBeenCalled();
+    dateChip.click();
+    expect(onEdit).toHaveBeenCalledExactlyOnceWith(date, dateChip);
+    const range = document.createRange();
+    range.selectNodeContents(root);
+    document.getSelection()?.removeAllRanges();
+    document.getSelection()?.addRange(range);
+    dateChip.click();
+    expect(onEdit).toHaveBeenCalledOnce();
+  });
+
+  it("leaves date chips inert in hosts that do not edit dates", () => {
+    const root = editableRoot([createDateMentionRichText(createDateMentionValue("2026-10-12", false), "Tomorrow")]);
+    const chip = root.querySelector<HTMLElement>("[data-notes-mention-chip]");
+    expect(chip?.hasAttribute("aria-haspopup")).toBe(false);
+    const click = new MouseEvent("click", { bubbles: true, cancelable: true });
+    chip?.dispatchEvent(click);
+    expect(click.defaultPrevented).toBe(false);
   });
 });
 

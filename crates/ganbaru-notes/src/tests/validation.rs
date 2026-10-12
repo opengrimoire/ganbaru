@@ -158,6 +158,22 @@ fn notes_validation_rejects_bad_ids_and_payloads() {
         ),
         Err("rich text mention.date.start must be an ISO date or date-time".to_string())
     );
+    let formatted = |format: serde_json::Value| {
+        let mut mention = date_mention("2026-10-30T12:01", "October 30, 2026, 12:01 PM", true);
+        mention["mention"]["date"]["ganbaru_format"] = format;
+        json!({ "rich_text": [mention], "color": "default" })
+    };
+    for format in ["full", "short", "numeric", "iso"] {
+        assert!(
+            validation::validate_block_payload("paragraph", &formatted(json!(format))).is_ok(),
+            "{format}"
+        );
+    }
+    assert!(validation::validate_block_payload("paragraph", &formatted(json!(null))).is_ok());
+    assert_eq!(
+        validation::validate_block_payload("paragraph", &formatted(json!("relative"))),
+        Err("rich text mention.date.ganbaru_format must be null or one of full, short, numeric, iso".to_string())
+    );
     assert_eq!(
         validation::validate_block_payload(
             "paragraph",

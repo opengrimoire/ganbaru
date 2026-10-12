@@ -3,20 +3,23 @@
   import type { NotesResolvedCommentAnchor } from "$lib/notes/collaboration/comments";
   import { equationPreviewText } from "$lib/notes/block-types/equation";
   import type { NotesResolvedSuggestionAnchor } from "$lib/notes/collaboration/suggestions";
-  import type { NotesRichText } from "$lib/notes/types";
+  import type { NotesDateMentionRichText, NotesRichText } from "$lib/notes/types";
   import { normalizeNotesTextLinkUrl, openNotesTextLink } from "$lib/notes/links/navigation";
   import NotesLocalReference, { isNotesLocalReference } from "./NotesLocalReference.svelte";
   import NotesObjectMention from "./NotesObjectMention.svelte";
-  import { isNotesExternalMentionRichText } from "$lib/notes/rich-text/core";
+  import { isNotesDateMentionRichText, isNotesExternalMentionRichText } from "$lib/notes/rich-text/core";
 
   let {
     richText,
     commentAnchors = [],
     suggestionAnchors = [],
+    onEditDateMention,
   }: {
     richText: readonly NotesRichText[];
     commentAnchors?: readonly NotesResolvedCommentAnchor[];
     suggestionAnchors?: readonly NotesResolvedSuggestionAnchor[];
+    /** Editing hosts open a date editor from a date mention chip. */
+    onEditDateMention?: (item: NotesDateMentionRichText, anchor: HTMLElement) => void;
   } = $props();
 
   const visibleRichText = $derived(richText.filter(richTextItemIsVisible));
@@ -192,6 +195,13 @@
     };
   }
 
+  /** The edit action of a date mention chip, when the host edits dates. */
+  function dateMentionEdit(item: NotesRichText): ((anchor: HTMLElement) => void) | undefined {
+    if (!onEditDateMention || !isNotesDateMentionRichText(item)) return undefined;
+    const edit = onEditDateMention;
+    return (anchor) => edit(item, anchor);
+  }
+
   function handleLinkKeydown(event: KeyboardEvent): void {
     if (event.key === "Enter") activateReadOnlyLink(event);
   }
@@ -244,7 +254,8 @@
           {#if isNotesLocalReference(part.item)}
             <NotesLocalReference reference={part.item} text={part.text} showIcon={partStartsItem(part)} attributes={mentionAttributes(part)} />
           {:else if isNotesExternalMentionRichText(part.item)}
-            <NotesObjectMention mention={part.item} text={part.text} showIcon={partStartsItem(part)} attributes={mentionAttributes(part)} />
+            <NotesObjectMention mention={part.item} text={part.text} showIcon={partStartsItem(part)} attributes={mentionAttributes(part)}
+              onEdit={dateMentionEdit(part.item)} />
           {/if}
         {:else if part.item.type === "equation"}
           <svelte:element this={url ? "a" : "span"}

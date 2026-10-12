@@ -1,6 +1,6 @@
 import type { NotesIconColor } from "../contracts/assets";
-import { NOTES_LOCAL_OBJECT_MENTION_TYPES } from "../contracts/core";
-import type { NotesColor, NotesLocalObjectMentionType } from "../contracts/core";
+import { NOTES_DATE_MENTION_FORMATS, NOTES_LOCAL_OBJECT_MENTION_TYPES } from "../contracts/core";
+import type { NotesColor, NotesDateMentionFormat, NotesLocalObjectMentionType } from "../contracts/core";
 import type { NotesDatabaseViewType } from "$lib/notes/contracts/database";
 import { isNotesIconColor } from "./assets";
 import { isNotesColor } from "./blocks";
@@ -166,4 +166,13 @@ export function readNonNegativeInteger(value: unknown, label: string): number {
   const integer = readInteger(value, label);
   if (integer < 0) throw new Error(`${label} must not be negative`);
   return integer;
+}
+
+export function readNullableDateMentionFormat(value: unknown, label: string): NotesDateMentionFormat | null {
+  if (value === null) return null;
+  const format = readString(value, label);
+  if (!(NOTES_DATE_MENTION_FORMATS as readonly string[]).includes(format)) {
+    throw new Error(`${label} must be one of ${NOTES_DATE_MENTION_FORMATS.join(", ")}`);
+  }
+  return format as NotesDateMentionFormat;
 }

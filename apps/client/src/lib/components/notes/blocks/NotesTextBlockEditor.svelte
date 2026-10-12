@@ -401,7 +401,7 @@
   onmouseup={(event) => syncTextSelection(event.currentTarget)}
   onfocus={handleEditorFocus}
   onblur={handleEditorBlur}
-><NotesRichTextInline richText={editableRichText} {commentAnchors} {suggestionAnchors} /></div>
+><NotesRichTextInline richText={editableRichText} {commentAnchors} {suggestionAnchors} onEditDateMention={controller.openDateMentionEditor} /></div>
 {#if contextMenuOpen && contextMenuPoint}
   {#if controlLoadStates["text-context-menu"]?.status === "ready" && controlLoadStates["text-context-menu"].component.kind === "text-context-menu"}
     {@const NotesTextContextMenu = controlLoadStates["text-context-menu"].component.component}
@@ -477,6 +477,16 @@
     />
   {:else if controlLoadStates["link-editor"]?.status === "failed"}
     <button class="surface-floating fixed z-60 min-h-8 px-2" type="button" onclick={() => runtime.requestControl("link-editor", true)}>{t("common.retry")}</button>
+  {/if}
+{/if}
+
+{#if controller.editedDateMention}
+  {#if controlLoadStates["date-mention-editor"]?.status === "ready" && controlLoadStates["date-mention-editor"].component.kind === "date-mention-editor"}
+    {@const NotesDateMentionEditor = controlLoadStates["date-mention-editor"].component.component}
+    <NotesDateMentionEditor anchor={controller.dateMentionAnchor} mention={controller.editedDateMention}
+      onChange={controller.changeDateMention} onClose={controller.closeDateMentionEditor} />
+  {:else if controlLoadStates["date-mention-editor"]?.status === "failed"}
+    <button class="surface-floating fixed z-60 min-h-8 px-2" type="button" onclick={() => runtime.requestControl("date-mention-editor", true)}>{t("common.retry")}</button>
   {/if}
 {/if}
 

@@ -83,8 +83,8 @@ export function notesDateMentionPreviewWhen(
   timeFormat?: CalendarTimeFormat,
 ): string | null {
   try {
-    const start = mentionBoundaryDate(value.start);
-    const end = value.end ? mentionBoundaryDate(value.end) : null;
+    const start = notesDateMentionBoundaryDate(value.start);
+    const end = value.end ? notesDateMentionBoundaryDate(value.end) : null;
     const timed = value.start.includes("T") || Boolean(value.end?.includes("T"));
     const format = timed
       ? new Intl.DateTimeFormat(locale, {
@@ -103,7 +103,7 @@ export function notesDateMentionPreviewWhen(
 const OFFSET_SUFFIX = /(?:Z|[+-]\d{2}:\d{2})$/u;
 
 /** A stored mention boundary as a local Date: a day, a floating wall time, or an instant with an offset. */
-function mentionBoundaryDate(value: string): Date {
+export function notesDateMentionBoundaryDate(value: string): Date {
   if (!value.includes("T")) return localDate(Temporal.PlainDate.from(value));
   if (OFFSET_SUFFIX.test(value)) return new Date(Temporal.Instant.from(value).epochMilliseconds);
   const wall = Temporal.PlainDateTime.from(value);

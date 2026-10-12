@@ -55,6 +55,7 @@ import {
   buildIdleDateMentionTargets,
   detectPageMentionQuery,
   editRichTextLink,
+  isNotesDateMentionRichText,
   planRichTextEquationConversion,
   replacePlainTextPreservingRichText,
   richTextPlainText,
@@ -96,6 +97,7 @@ import type {
   NotesBlock,
   NotesBlockType,
   NotesColor,
+  NotesDateMentionRichText,
   NotesRichText,
 } from "$lib/notes/types";
 import { notesUndoShortcutAction } from "$lib/notes/history/undo-history";
@@ -118,6 +120,7 @@ export interface NotesTextEditorRuntimeSource {
   slashOpen: () => boolean;
   templateControlsOpen: () => boolean;
   buttonControlsOpen: () => boolean;
+  dateMentionEditorOpen: () => boolean;
 }
 
 export interface NotesTextEditorControllerSource {
@@ -167,6 +170,7 @@ export interface NotesTextEditorVisibleControls {
   slashMenu: boolean;
   templateControls: boolean;
   buttonControls: boolean;
+  dateMentionEditor: boolean;
 }
 
 export interface NotesTextInputMenuState {
@@ -202,6 +206,7 @@ export function requestedNotesTextControls(
   if (visible.slashMenu) controls.push("slash-menu");
   if (visible.templateControls) controls.push("template-controls");
   if (visible.buttonControls) controls.push("button-controls");
+  if (visible.dateMentionEditor) controls.push("date-mention-editor");
   return controls;
 }
 
@@ -234,6 +239,7 @@ export class NotesTextEditorRuntime {
         slashMenu: source.slashOpen(),
         templateControls: source.templateControlsOpen(),
         buttonControls: source.buttonControlsOpen(),
+        dateMentionEditor: source.dateMentionEditorOpen(),
       });
       for (const kind of requested) this.requestControl(kind);
     });
@@ -364,6 +370,8 @@ export class NotesTextEditorController {
   inlineEquationErrorReason = $state<NotesInlineEquationConversionError | null>(null);
   templateControlsOpen = $state(false);
   buttonControlsOpen = $state(false);
+  /** The date mention whose editor is open, by its index in the block's rich text, and the chip it opened from. */
+  dateMentionEdit = $state<{ index: number; anchor: HTMLElement } | null>(null);
 
   constructor(private readonly source: NotesTextEditorControllerSource) {
     this.runtime = createNotesTextEditorRuntime({
@@ -378,6 +386,7 @@ export class NotesTextEditorController {
       slashOpen: () => this.slashOpen,
       templateControlsOpen: () => this.templateControlsOpen,
       buttonControlsOpen: () => this.buttonControlsOpen,
+      dateMentionEditorOpen: () => this.dateMentionEdit !== null,
     });
 
     $effect(() => {
@@ -512,6 +521,57 @@ export class NotesTextEditorController {
     if (this.runtime.controlLoadStates["button-controls"]?.status === "failed") {
       this.runtime.requestControl("button-controls", true);
     }
+  };
+
+  /** The date mention being edited, while the rich text still has a date mention at the edited index. */
+  get editedDateMention(): NotesDateMentionRichText | null {
+    const edit = this.dateMentionEdit;
+    const item = edit ? this.editableRichText[edit.index] : undefined;
+    return isNotesDateMentionRichText(item) ? item : null;
+  }
+
+  /** The chip the date editor follows, or the editing surface once a re-render has replaced the chip. */
+  get dateMentionAnchor(): HTMLElement | undefined {
+    const anchor = this.dateMentionEdit?.anchor;
+    return anchor?.isConnected ? anchor : this.runtime.editor ?? anchor;
+  }
+
+  openDateMentionEditor = (item: NotesDateMentionRichText, anchor: HTMLElement): void => {
+    const index = this.editableRichText.indexOf(item);
+    if (index < 0 || !this.canUseMentions) return;
+    this.cancelLinkEditor();
+    this.closeCompositionSensitiveMenus();
+    this.mentionInvite = null;
+    this.contextMenuOpen = false;
+    this.dateMentionEdit = { index, anchor };
+    if (this.runtime.controlLoadStates["date-mention-editor"]?.status === "failed") {
+      this.runtime.requestControl("date-mention-editor", true);
+    }
+  };
+
+  /** Replace the edited date mention with its next value, or remove it when the next value is null. */
+  changeDateMention = (next: NotesDateMentionRichText | null): void => {
+    const edit = this.dateMentionEdit;
+    if (!edit || !this.editedDateMention) return;
+    const richText = [...this.editableRichText];
+    if (next) richText[edit.index] = next;
+    else richText.splice(edit.index, 1);
+    const saved = Promise.resolve(this.source.onReplaceRichText(this.block.id, richText))
+      .catch((error: unknown) => console.warn("Notes date mention edit failed", error));
+    if (next) return;
+    this.dateMentionEdit = null;
+    const cursor = richTextPlainText(richText.slice(0, edit.index)).length;
+    void saved.then(() => this.runtime.focusEditorWithSelection(cursor, cursor));
+  };
+
+  /** Close the date editor; a keyboard close returns the caret to just after the chip. */
+  closeDateMentionEditor = (refocus: boolean): void => {
+    const edit = this.dateMentionEdit;
+    if (!edit) return;
+    this.dateMentionEdit = null;
+    if (!refocus) return;
+    const cursor = richTextPlainText(this.editableRichText.slice(0, edit.index + 1)).length;
+    void this.runtime.focusEditorWithSelection(cursor, cursor);
   };
 
   handleCompositionStart = (): void => {

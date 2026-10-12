@@ -373,6 +373,10 @@ export function isNotesExternalMentionRichText(item: NotesRichText | undefined):
     && (item.mention.type === "user" || item.mention.type === "ganbaru_object" || item.mention.type === "date");
 }
 
+export function isNotesDateMentionRichText(item: NotesRichText | undefined): item is NotesDateMentionRichText {
+  return item?.type === "mention" && item.mention.type === "date";
+}
+
 function cloneRichText(item: NotesRichText): NotesRichText {
   return cloneNotesJson(item);
 }

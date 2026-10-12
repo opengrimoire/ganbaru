@@ -1101,6 +1101,8 @@
   .chat-workspace[data-inspector-presentation="column"] { --chat-inspector-column-width: var(--chat-inspector-width); }
   .chat-canvas, .chat-canvas-edge { grid-column: 1 / 7; grid-row: 1 / 5; pointer-events: none; }
   .chat-canvas { background: var(--cal-bg); }
+  /* Above the toolbar actions and composer dock that paint the canvas color at its edges, below sheet backdrops. */
+  .chat-canvas-edge { z-index: 20; }
   .chat-workspace[data-rail-docked="true"] :is(.chat-canvas, .chat-canvas-edge) { grid-column: 2 / 7; border-radius: var(--content-radius); }
   .chat-primary-header { grid-column: 1 / 3; grid-row: 1; min-width: 0; }
   .chat-workspace[data-rail-docked="true"] .chat-primary-header { grid-column: 2; }

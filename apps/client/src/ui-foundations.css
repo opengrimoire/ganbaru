@@ -22,8 +22,8 @@
   --panel-detail-font-size: calc(var(--panel-font-size) * 0.875);
   /* Row and field height inside panels; touch layouts raise it to a 44px target. */
   --panel-row-height: calc(var(--panel-font-size) * 1.5 + 0.5rem);
-  /* Hairline that separates a tab's content surface from the window frame. */
-  --content-edge: rgb(0 0 20 / 0.07);
+  /* Hairline that separates a tab's content surface from the window frame. It is opaque, the frame darkened slightly, so an edge painted inside a clipped surface matches one painted outside on the frame. */
+  --content-edge: color-mix(in srgb, var(--sidebar) 93%, rgb(0 0 20));
   /* Edge and barely visible lift of a content surface that is not clipped by an ancestor. */
   --content-shadow: 0 0 0 1px var(--content-edge), 0 1px 2px rgb(0 0 20 / 0.04);
   /* The active title bar tab reads as a raised chip on the frame. */
@@ -31,7 +31,7 @@
 }
 
 .dark {
-  --content-edge: rgb(255 255 255 / 0.06);
+  --content-edge: color-mix(in srgb, var(--sidebar) 94%, white);
   --content-shadow: 0 0 0 1px var(--content-edge);
   --tab-active-shadow: 0 0 0 1px rgb(255 255 255 / 0.06);
 }

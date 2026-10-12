@@ -2,7 +2,7 @@
 
 import { mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { MusicItemListEntry } from "$lib/music/library-contracts";
+import type { MusicItemListEntry } from "$lib/music/library/contracts";
 import MusicVirtualItemList from "./MusicVirtualItemList.svelte";
 
 const item: MusicItemListEntry = {
@@ -21,12 +21,12 @@ const item: MusicItemListEntry = {
   durationMs: 120_000,
   availability: "available",
   reviewState: "reviewed",
-  discoveredAt: 1,
-  updatedAt: 1,
+  discoveredAtMs: 1,
+  updatedAtMs: 1,
   version: 1,
   playlistCount: 1,
   activeSnoozeCount: 0,
-  lastPlayedAt: null,
+  lastPlayedAtMs: null,
   playCount: 0,
   membershipId: "membership-1",
   membershipPosition: 0,

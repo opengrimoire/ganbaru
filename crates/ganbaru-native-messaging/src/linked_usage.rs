@@ -7,7 +7,7 @@ use std::path::Path;
 
 const APP_STATE_FILE: &str = "app-state.json";
 const OWNERSHIP_STATE_FILE: &str = "vault-ownership.json";
-const SPOOL_FILE: &str = "doomscrolling-device-spool.sqlite";
+const SPOOL_FILE: &str = "distractions-device-spool.sqlite";
 const MAX_PENDING_SAMPLES: i64 = 4_000;
 
 #[derive(Debug)]
@@ -16,10 +16,10 @@ pub(super) struct UsageSample {
     pub source_type: String,
     pub source_key: String,
     pub display_name: Option<String>,
-    pub started_at: i64,
+    pub started_at_ms: i64,
     pub elapsed_seconds: i64,
     pub local_date: String,
-    pub created_at: i64,
+    pub created_at_ms: i64,
 }
 
 #[derive(Deserialize)]
@@ -62,7 +62,7 @@ pub(super) fn record_usage_sample(
             .max_connections(1)
             .connect_with(options)
             .await
-            .map_err(|e| format!("connect Doomscrolling spool: {e}"))?;
+            .map_err(|e| format!("connect Distractions spool: {e}"))?;
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS pending_usage_samples (
                 sample_id TEXT PRIMARY KEY,
@@ -71,15 +71,15 @@ pub(super) fn record_usage_sample(
                 source_type TEXT NOT NULL,
                 source_key TEXT NOT NULL,
                 display_name TEXT,
-                started_at INTEGER NOT NULL,
+                started_at_ms INTEGER NOT NULL,
                 elapsed_seconds INTEGER NOT NULL,
                 local_date TEXT NOT NULL,
-                created_at INTEGER NOT NULL
+                created_at_ms INTEGER NOT NULL
             )",
         )
         .execute(&pool)
         .await
-        .map_err(|e| format!("initialize Doomscrolling spool: {e}"))?;
+        .map_err(|e| format!("initialize Distractions spool: {e}"))?;
         let mut pending_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM pending_usage_samples WHERE vault_id = ? AND device_id = ?",
         )
@@ -87,17 +87,17 @@ pub(super) fn record_usage_sample(
         .bind(&device_id)
         .fetch_one(&pool)
         .await
-        .map_err(|e| format!("count Doomscrolling spool: {e}"))?;
+        .map_err(|e| format!("count Distractions spool: {e}"))?;
         if pending_count >= MAX_PENDING_SAMPLES {
             pending_count = compact(&pool, &manifest.vault_id, &device_id).await?;
         }
         if pending_count >= MAX_PENDING_SAMPLES {
-            return Err("the linked-device Doomscrolling spool is full".to_string());
+            return Err("the linked-device Distractions spool is full".to_string());
         }
         sqlx::query(
             "INSERT OR IGNORE INTO pending_usage_samples
                 (sample_id, vault_id, device_id, source_type, source_key, display_name,
-                 started_at, elapsed_seconds, local_date, created_at)
+                 started_at_ms, elapsed_seconds, local_date, created_at_ms)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(sample.id)
@@ -106,10 +106,10 @@ pub(super) fn record_usage_sample(
         .bind(sample.source_type)
         .bind(sample.source_key)
         .bind(sample.display_name)
-        .bind(sample.started_at)
+        .bind(sample.started_at_ms)
         .bind(sample.elapsed_seconds)
         .bind(sample.local_date)
-        .bind(sample.created_at)
+        .bind(sample.created_at_ms)
         .execute(&pool)
         .await
         .map_err(|e| format!("spool usage sample: {e}"))?;
@@ -130,8 +130,8 @@ async fn compact(pool: &sqlx::SqlitePool, vault_id: &str, device_id: &str) -> Re
     .bind(device_id)
     .fetch_one(pool)
     .await
-    .map_err(|e| format!("plan Doomscrolling spool compaction: {e}"))?;
-    let unsafe_total: i64 = sqlx::query_scalar(
+    .map_err(|e| format!("plan Distractions spool compaction: {e}"))?;
+    let overlong_group_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM (
             SELECT 1 FROM pending_usage_samples
             WHERE vault_id = ? AND device_id = ?
@@ -143,20 +143,20 @@ async fn compact(pool: &sqlx::SqlitePool, vault_id: &str, device_id: &str) -> Re
     .bind(device_id)
     .fetch_one(pool)
     .await
-    .map_err(|e| format!("validate Doomscrolling spool compaction: {e}"))?;
-    if compacted_count >= MAX_PENDING_SAMPLES || unsafe_total > 0 {
-        return Err("the linked-device Doomscrolling spool cannot be compacted safely".to_string());
+    .map_err(|e| format!("validate Distractions spool compaction: {e}"))?;
+    if compacted_count >= MAX_PENDING_SAMPLES || overlong_group_count > 0 {
+        return Err("the linked-device Distractions spool cannot be compacted safely".to_string());
     }
     let mut transaction = pool
         .begin()
         .await
-        .map_err(|e| format!("begin Doomscrolling spool compaction: {e}"))?;
+        .map_err(|e| format!("begin Distractions spool compaction: {e}"))?;
     sqlx::query(
         "CREATE TEMP TABLE compacted_usage_samples AS
          SELECT MIN(sample_id) AS sample_id, vault_id, device_id, source_type,
                 source_key, MAX(display_name) AS display_name,
-                MIN(started_at) AS started_at, SUM(elapsed_seconds) AS elapsed_seconds,
-                local_date, MAX(created_at) AS created_at
+                MIN(started_at_ms) AS started_at_ms, SUM(elapsed_seconds) AS elapsed_seconds,
+                local_date, MAX(created_at_ms) AS created_at_ms
          FROM pending_usage_samples
          WHERE vault_id = ? AND device_id = ?
          GROUP BY vault_id, device_id, source_type, source_key, local_date",
@@ -165,25 +165,25 @@ async fn compact(pool: &sqlx::SqlitePool, vault_id: &str, device_id: &str) -> Re
     .bind(device_id)
     .execute(&mut *transaction)
     .await
-    .map_err(|e| format!("aggregate Doomscrolling spool: {e}"))?;
+    .map_err(|e| format!("aggregate Distractions spool: {e}"))?;
     sqlx::query("DELETE FROM pending_usage_samples WHERE vault_id = ? AND device_id = ?")
         .bind(vault_id)
         .bind(device_id)
         .execute(&mut *transaction)
         .await
-        .map_err(|e| format!("replace Doomscrolling spool: {e}"))?;
+        .map_err(|e| format!("replace Distractions spool: {e}"))?;
     sqlx::query("INSERT INTO pending_usage_samples SELECT * FROM compacted_usage_samples")
         .execute(&mut *transaction)
         .await
-        .map_err(|e| format!("store compacted Doomscrolling spool: {e}"))?;
+        .map_err(|e| format!("store compacted Distractions spool: {e}"))?;
     sqlx::query("DROP TABLE compacted_usage_samples")
         .execute(&mut *transaction)
         .await
-        .map_err(|e| format!("finish Doomscrolling spool compaction: {e}"))?;
+        .map_err(|e| format!("finish Distractions spool compaction: {e}"))?;
     transaction
         .commit()
         .await
-        .map_err(|e| format!("commit Doomscrolling spool compaction: {e}"))?;
+        .map_err(|e| format!("commit Distractions spool compaction: {e}"))?;
     Ok(compacted_count)
 }
 
@@ -202,13 +202,13 @@ pub(super) fn native_vault_is_writable(config_dir: &Path, vault_path: Option<&Pa
     else {
         return false;
     };
-    let Some(state) = std::fs::read(config_dir.join(OWNERSHIP_STATE_FILE))
+    let Some(ownership) = std::fs::read(config_dir.join(OWNERSHIP_STATE_FILE))
         .ok()
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
     else {
         return false;
     };
-    let Some(record) = state
+    let Some(record) = ownership
         .get("vaults")
         .and_then(|vaults| vaults.get(&manifest.vault_id))
     else {

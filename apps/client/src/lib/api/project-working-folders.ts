@@ -4,11 +4,41 @@ import type {
   CreateProjectWorkingFolderRequest,
   ProjectWorkingFolderId,
   ProjectWorkingFolderRead,
+  ProjectWorkingFolderSelectionRead,
 } from "$lib/chat/contracts";
 import {
   parseProjectWorkingFolderRead,
   parseProjectWorkingFolderReads,
 } from "$lib/chat/validation";
+
+/** Preview a native selection without persisting an association or device binding. */
+export async function pickProjectWorkingFolder(projectId: string, title: string, workingFolderId?: string): Promise<ProjectWorkingFolderSelectionRead | null> {
+  const value = await invoke<unknown>("projects_pick_working_folder", {
+    dbUrl: await ensureDbUrl(), projectId, title, workingFolderId: workingFolderId ?? null,
+  });
+  if (value === null) return null;
+  if (typeof value !== "object" || !value || !("selectionId" in value) || typeof value.selectionId !== "string"
+    || !("canonicalPath" in value) || typeof value.canonicalPath !== "string"
+    || !("displayName" in value) || typeof value.displayName !== "string"
+    || !value.selectionId || !value.canonicalPath || !value.displayName) {
+    throw new Error("Invalid working-folder selection response");
+  }
+  return { selectionId: value.selectionId, canonicalPath: value.canonicalPath, displayName: value.displayName };
+}
+
+/** Persist only a selection authorized by the native picker for this project. */
+export async function addSelectedProjectWorkingFolder(request: CreateProjectWorkingFolderRequest, selection: ProjectWorkingFolderSelectionRead): Promise<ProjectWorkingFolderRead> {
+  return parseProjectWorkingFolderRead(await invoke<unknown>("projects_add_selected_working_folder", {
+    dbUrl: await ensureDbUrl(), request, selectionId: selection.selectionId,
+  }));
+}
+
+/** Apply a previously authorized selection to its existing external folder. */
+export async function bindSelectedProjectWorkingFolder(workingFolderId: string, selection: ProjectWorkingFolderSelectionRead): Promise<ProjectWorkingFolderRead> {
+  return parseProjectWorkingFolderRead(await invoke<unknown>("projects_bind_selected_working_folder", {
+    dbUrl: await ensureDbUrl(), workingFolderId, selectionId: selection.selectionId,
+  }));
+}
 
 export async function listProjectWorkingFolders(): Promise<ProjectWorkingFolderRead[]> {
   return parseProjectWorkingFolderReads(await invoke<unknown>(

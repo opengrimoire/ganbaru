@@ -1,0 +1,26 @@
+[package]
+name = "ganbaru-projects"
+version = "0.1.0"
+description = "Ganbaru AI Projects persistence, structure, tasks, history, dependency cascades, scheduling, and validation"
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+chrono = { workspace = true }
+ganbaru-db = { workspace = true }
+ganbaru-music = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+sqlx = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

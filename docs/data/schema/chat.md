@@ -32,10 +32,10 @@ Provider-reported changed paths are converted to canonical relative paths only a
 
 ## Assignments and execution targets
 
-An organizational thread or run may remain targetless for discussion and planning. Current schema explicitly permits targetless Chat assignments. Before native work begins, the application locks the run to exactly one authorized target:
+An organizational thread or run may remain targetless for discussion and planning. Current schema explicitly permits targetless Chat assignments. Before native work begins, the application locks the run to exactly one authorized target, either:
 
-- a managed or externally bound project working folder; or
-- a private scratch generation.
+- A managed or externally bound project working folder.
+- A private scratch generation.
 
 A run cannot mix both. Target consistency constraints and service validation ensure that a selected folder or scratch environment belongs to the expected project and logical scope.
 

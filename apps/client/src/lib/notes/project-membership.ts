@@ -1,5 +1,5 @@
 import type { NotesPage } from "./types";
-import type { NotesPageOpenMode } from "./page-open-mode";
+import type { NotesPageOpenMode } from "$lib/notes/pages/open-mode";
 
 export const NOTES_PAGE_PROJECT_ID_PROPERTY = "__ganbaru_project_id";
 
@@ -34,6 +34,16 @@ export function notesPagesForProject(
   const normalizedProjectId = normalizeNotesProjectId(projectId);
   if (!normalizedProjectId) return [...pages];
   return pages.filter((page) => notesPageProjectId(page) === normalizedProjectId);
+}
+
+/** Add destination-only pages without replacing newer workspace page records. */
+export function mergeNotesNavigationPages(
+  workspacePages: readonly NotesPage[],
+  destinationPages: readonly NotesPage[],
+): NotesPage[] {
+  return [...new Map(
+    [...destinationPages, ...workspacePages].map((page) => [page.id, page]),
+  ).values()];
 }
 
 export function notesPageProjectProperties(

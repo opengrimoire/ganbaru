@@ -27,5 +27,5 @@ sqlx = { workspace = true }
 zip = { workspace = true }
 
 [dev-dependencies]
-ganbaru-db = { path = "../ganbaru-db" }
+ganbaru-db = { workspace = true }
 tokio = { workspace = true }

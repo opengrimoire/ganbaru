@@ -2,84 +2,71 @@
 
 ## Application-private vault
 
-Android creates the active Ganbaru AI vault under application-private storage. The user does not choose another live-vault path because Android document providers do not provide a safe desktop-style writable folder with equivalent semantics.
+Android creates the active vault in application-private storage. The user cannot choose another live-vault path because Android document providers do not offer a safe writable folder with desktop semantics. The displayed data location is informational; reveal-in-file-manager and live-folder switching are absent.
 
-First use states clearly that uninstall can remove this data and offers `Start from zero`, import of a complete Ganbaru AI folder, and restore of a portable Android backup.
-
-The displayed data location is informational. Reveal-in-file-manager and arbitrary live-folder switching are absent.
+First use states clearly that uninstall can remove this data and offers `Start from zero`, import of a complete Ganbaru AI folder, or restore of a portable Android backup.
 
 ## Folder import
 
-Import uses the system directory-tree picker and streams a bounded selected folder into private staging. It validates the vault marker, paths, depth, entry count, expanded size, and database before atomic activation.
-
-The selected external folder never becomes the live vault and is not edited in place.
+Import uses the system directory-tree picker and streams the selected folder into private staging. It validates the vault marker, paths, depth, entry count, expanded size, and database before atomic activation. The external folder never becomes the live vault and is never edited in place.
 
 ## Portable backup and restore
 
-Backup creates a consistent SQLite snapshot and bounded archive in user-accessible Downloads without passing full file bytes through JavaScript. Live SQLite WAL and SHM files are excluded.
+Backup writes a consistent SQLite snapshot and bounded archive to Downloads without passing file bytes through JavaScript. Live WAL and SHM files are excluded.
 
-Restore uses the system document picker, extracts into private staging with path and size limits, validates the vault and SQLite integrity, blocks new database connections, closes active pools, and atomically activates the restored folder with rollback on failure.
+Restore uses the system document picker, extracts into private staging with path and size limits, validates the vault and SQLite integrity, closes active database access, and atomically activates the restored folder with rollback on failure.
 
 The portable format is the recovery path after reinstall. Android system backup and device transfer exclude the unencrypted live vault until a deliberate encrypted design exists.
 
 ## Linked desktop handoff
 
-Android can enroll with one desktop coordinator on the same private LAN by scanning a short-lived QR invitation. Device identity, the pinned coordinator fingerprint, ownership generation, transfer state, and staging stay in application-private platform state and are excluded from the transferred vault.
+The handoff protocol is owned by [device linking and synchronization](../../data/sync.md). On Android, device identity, the pinned coordinator fingerprint, ownership generation, transfer state, and staging live in application-private platform state and are never part of the transferred vault. Incoming vaults use the same archive validator and atomic activation path as portable restore. Before the first ownership activation replaces an independent vault, Android exports it to Downloads and also keeps a private rollback copy; backup failure aborts the transfer.
 
-Ownership receive and read-only refresh use the portable archive validator and atomic activation path. The current owner must freeze and snapshot the vault before transfer. Android validates the archive and SQLite integrity in staging, accepts a new generation only for ownership, activates the complete vault, and reloads the application. A lost acknowledgement resumes the same committed transfer. During uninterrupted first-use onboarding, the untouched starter vault may be replaced by an initial read-only snapshot without a redundant replacement warning. Entering the app through **Not now** permanently disables that shortcut for the installation. Linking does not merge an independently edited phone vault with the linked vault. Before the first ownership activation of an independent vault, Android asks for explicit replacement confirmation, exports the previous local vault to Downloads, and also preserves the prior private copy during activation. Backup failure aborts the transfer before ownership commits.
-
-Pairing and every later transfer negotiate the exact handoff protocol and embedded database migration fingerprint before replacement. Incompatible installations cannot exchange a vault and direct the user to update Ganbaru AI on both devices. Archive staging independently verifies the recorded migration history and checksums before activation.
-
-Startup after activation runs the normal Calendar notification and Doomscrolling projection reconciliation. Device-local alarms, native enforcement, Media3 state, permissions, external document-tree grants, and other runtime state are not replaced by the incoming vault.
+After activation, startup reconciles Calendar notifications and anti-distraction projections. Device-local alarms, native enforcement, Media3 state, permissions, and document-tree grants are not replaced by the incoming vault.
 
 ## Lifecycle and process death
 
-Visibility and page lifecycle hooks perform best-effort configuration, Notes, and Quick notes flushes. Canonical writes remain responsible for correctness because Android can remove a process without a final callback.
+Visibility and page lifecycle hooks flush configuration, Notes, and Quick notes as a best effort. Canonical writes remain responsible for correctness because Android can kill the process without a final callback.
 
-Startup validates the active vault and reconciles domain state. Malformed, duplicated, expired, or unsupported persisted state closes with a typed reason rather than becoming active silently.
+Startup validates the active vault and reconciles domain state. Malformed, duplicated, expired, or unsupported persisted state closes with a typed reason instead of becoming active silently.
 
-Activity removal is not equivalent to ending Pomodoro, stopping Media3 playback, or disabling selected-app enforcement. Their native services own those lifecycles explicitly.
+Activity removal does not end Pomodoro, stop Media3 playback, or disable selected-app enforcement. Their native services own those lifecycles explicitly.
 
 ## Calendar notifications
 
-Calendar maintains a bounded rolling native projection derived from authoritative SQLite events, reminders, recurrence, exclusions, and overrides. Startup, event mutation, Activity resume, reboot, package replacement, time change, and timezone change reconcile it.
+Calendar keeps a bounded rolling native projection derived from SQLite events, reminders, recurrence, exclusions, and overrides. Startup, event mutation, Activity resume, reboot, package replacement, and clock or timezone changes reconcile it. The projection is rebuildable device state, not a second event database. Each delivery uses a stable domain identifier and the Calendar notification channel, and taps are validated before opening Calendar.
 
-Each delivery uses a stable domain identifier and native Calendar notification channel. Tapping is validated before opening Calendar. The projection is rebuildable device state, not a second event database.
-
-The event panel can post a real test reminder. If the result is silent, the app opens its native notification settings rather than bypassing silent mode, Do Not Disturb, or user channel controls with media playback.
+When permission, channel settings, or exact-alarm access block delivery, the event panel explains the problem and opens the matching system setting. The app never bypasses silent mode, Do Not Disturb, or channel controls with media playback.
 
 ## Pomodoro service and alarms
 
-An explicitly started run owns a special-use foreground service and silent ongoing progress notification. Native state describes only the currently accepted phase. Its alarm delivers a boundary reminder and ends the projection; it cannot advance to later focus or break phases while the WebView is absent.
+The execution model is owned by [Pomodoro](../../features/pomodoro/README.md) and [Focus authority](../../algorithms/pomodoro/focus-authority.md). Android-specific rules:
 
-Opening the app invokes `ganbaru-focus` recovery against committed SQLite state. Notification projections cannot materialize a run or additional phases. Recovery resumes a valid accepted phase and its pauses, or closes it at its bounded deadline.
-
-Calendar maintains separate durable commitment reminders. A due event while the Activity is absent creates no run, focus minutes, or phase-dependent blocking. The phone starts a due session from the explicit “Start scheduled session” action. Reconciliation preserves reminder receipts to avoid repeated alerts. Missing notification permission leaves local explicit starts available.
+- An explicitly started run owns a special-use foreground service with a silent ongoing progress notification.
+- Native state describes only the currently accepted phase. Its alarm delivers a boundary reminder and ends the projection; it never advances to later phases while the WebView is absent.
+- The Rust Focus owner publishes and revokes phase projections. The WebView cannot publish or cancel them and supplies only localized copy, which is never recovery evidence.
+- Opening the app runs `ganbaru-pomodoro` recovery against committed SQLite state. Notification projections cannot create a run or phases.
+- A device-local delivery receipt suppresses repeated alerts. It is presentation state, never execution evidence.
+- Calendar commitment reminders are separate. A due event while the Activity is absent creates no run, focus minutes, or phase-dependent blocking; the user starts it from the explicit **Start scheduled session** action.
 
 Manufacturer task cleaners can still override standard behavior. The app offers truthful autostart and battery-setting guidance without claiming it can grant those controls.
 
 ## Music service
 
-Android local audio uses a Media3 session service and ExoPlayer. The service owns background playback, audio focus, media notification, lock-screen and headset controls, and trusted system controller state.
+Local audio uses a Media3 session service and ExoPlayer, which own background playback, audio focus, the media notification, and lock-screen, headset, and system controls. Sources use a retained document-tree permission and stable tree-relative identities. Scanning and metadata work stay off the main thread and within explicit bounds. Library, playlist, assignment, and playback state remain canonical in SQLite.
 
-Local sources use retained document-tree permission and stable tree-relative identities. Scanning and metadata work stay outside the Android main thread and within explicit bounds.
+## Anti-distraction guardian
 
-The shared library, playlist, review, assignment, and playback state remain SQLite-canonical. Desktop audio and media-control backends are absent.
+Selected-app rules run in a private `:guardian` process that holds alarm handling, ongoing notification coordination, Usage Access reads, the opt-in Accessibility Service, validated rule projections, and a bounded native journal. Only the guardian opens its private preferences and journal database, and non-exported providers validate rule projections and journal imports.
 
-## Doomscrolling guardian
+The current owner writes normalized usage and block history to canonical SQLite. A non-owner keeps usage in the private journal and exchanges stable sample IDs through the authenticated coordinator, as described in [device linking](../../data/sync.md). User configuration remains in the active vault `config.json`.
 
-Android selected-app rules use a private guardian process containing phase alarm handling, ongoing notification coordination, Usage Access reads, the opt-in Accessibility Service, validated rule projections, and a bounded native journal.
-
-Non-exported provider boundaries publish signed projections and import journal rows. The guardian is the only process opening its private runtime preferences and journal database.
-
-Journal import accepts the current vault identity. The current owner writes normalized usage and block history to canonical SQLite. A non-owner keeps usage in the bounded private journal and exchanges stable sample IDs through the authenticated coordinator. The accepted combined total plus newer local usage drives disconnected enforcement, and acknowledgements remove only samples committed by the owner. Runtime rows are compacted and bounded. User configuration remains active-vault `config.json`.
+One serialized Rust publisher synchronizes the journal and derives budgets from persisted configuration. The guardian captures its counter baseline and pending journal under one lock so usage is never counted twice. The frontend supplies only localized copy and reads cached budgets; it has no accounting or enforcement authority. Configuration, vault, handoff, and failed-publication boundaries revoke obsolete rules. If the application process exits, the guardian keeps enforcing its last accepted local policy.
 
 ## Managed files
 
-Profile images, project icons, custom emoji, Notes icons, covers, attachments, and supported CSV input use system document selection and bounded managed-asset writes. Declared and sniffed MIME, size, dimensions where relevant, digest, and destination are validated before canonical references are stored.
-
-Broad shared-storage permission is unnecessary. Remote Notes images are not rendered directly under the current content policy; a future ingestion flow can download and validate them into managed storage.
+Profile images, project icons, custom emoji, Notes icons, covers, attachments, and CSV input use system document selection and bounded managed-asset writes. Declared and sniffed MIME type, size, dimensions where relevant, digest, and destination are validated before canonical references are stored. Remote Notes images are not rendered directly under the current content policy; a future ingestion flow can download and validate them into managed storage.
 
 ## Deferrable work
 
-WorkManager is appropriate for deferrable maintenance and future sync. It does not own Pomodoro countdowns, Calendar reminder deadlines, active Music playback, or real-time selected-app enforcement.
+WorkManager is appropriate for deferrable maintenance and future sync. It must not own Pomodoro deadlines, Calendar reminders, active Music playback, or real-time selected-app enforcement.

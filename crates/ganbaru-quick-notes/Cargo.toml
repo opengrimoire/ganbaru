@@ -1,0 +1,26 @@
+[package]
+name = "ganbaru-quick-notes"
+version = "0.1.0"
+description = "Ganbaru AI Quick notes persistence, ordering, tags, and sync conflicts"
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+ganbaru-sync = { workspace = true }
+ganbaru-sync-contracts = { workspace = true }
+ring = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+
+[dev-dependencies]
+ganbaru-db = { workspace = true }
+tokio = { workspace = true }

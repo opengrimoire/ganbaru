@@ -1,8 +1,6 @@
 # Performance records
 
-These are historical measurements, not claims about the current repository head. The latest recorded benchmark baseline is dated 2026-06-02. Preserve recorded rows and benchmark identifiers so later measurements remain comparable.
-
-This file is the canonical performance record for Ganbaru AI. It exists so future agents can reason about RAM, startup time, interaction speed, and package size without reconstructing old debugging sessions.
+This is the canonical performance record for Ganbaru AI. Rows are historical measurements, not claims about the current repository head. Preserve recorded rows and benchmark identifiers so later measurements remain comparable.
 
 Recording procedure, identifiers, dataset definitions, output shape, and versioning rules live in the [performance entry point](README.md) and [benchmark harness](harness.md).
 

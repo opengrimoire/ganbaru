@@ -1,5 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <string name="ganbaru_doomscrolling_accessibility_label">Ganbaru AI app blocking</string>
-    <string name="ganbaru_doomscrolling_accessibility_description">Blocks only the apps you select when a Focus rule or usage limit applies.</string>
-</resources>

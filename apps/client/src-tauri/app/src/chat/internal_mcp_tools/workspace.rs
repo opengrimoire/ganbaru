@@ -3,14 +3,14 @@
 use super::authorization::verify_folder_source;
 use super::{
     DEFAULT_PAGE_SIZE, HostToolContext, MAX_QUERY_BYTES, MAX_WORKSPACE_CONTENT_BYTES,
-    MAX_WORKSPACE_PATCH_EDITS, OpaqueCursor, generic_denial, internal_error, optional_limit,
+    MAX_WORKSPACE_PATCH_EDITS, OpaqueCursor, generic_denial_error, internal_error, optional_limit,
     optional_string, required_string, sha256_hex, truncate_utf8, wire_folder_capability,
 };
 use crate::chat::internal_mcp::{InternalMcpFolderSource, InternalMcpRunScope};
-use crate::chat::models::{
+use crate::chat::workspace::WorkingFolderAuthorizationOperation;
+use ganbaru_chat_contracts::models::{
     ChatError, ChatErrorCode, ChatFolderCapability, ChatResult, ChatRuntimeApprovalPolicy,
 };
-use crate::chat::workspace::WorkingFolderAuthorizationOperation;
 use serde_json::{Map, Value, json};
 use tauri::Manager;
 
@@ -50,7 +50,7 @@ pub(super) async fn search_workspace_paths(
     let root = authorized.canonical_path;
     let query_owned = query.to_string();
     let page = tauri::async_runtime::spawn_blocking(move || {
-        crate::chat::composer::workspace_mentions::search_workspace_paths(
+        ganbaru_chat::composer::workspace_mentions::search_workspace_paths(
             &root,
             &query_owned,
             false,
@@ -92,14 +92,14 @@ pub(super) async fn read_workspace_file(
     let authorized = authorize_folder(context, source, false).await?;
     let relative_path = required_string(arguments, "relativePath", 4096)?.to_string();
     let preview = tauri::async_runtime::spawn_blocking(move || {
-        crate::chat::workspace_files::preview_workspace_file(&authorized, &relative_path)
+        crate::chat::workspace::files::preview_workspace_file(&authorized, &relative_path)
     })
     .await
     .map_err(|_| internal_error("read authorized workspace file"))??;
     if preview.binary || preview.oversized || preview.text.is_none() {
-        return Err(generic_denial());
+        return Err(generic_denial_error());
     }
-    let text = preview.text.as_deref().ok_or_else(generic_denial)?;
+    let text = preview.text.as_deref().ok_or_else(generic_denial_error)?;
     let text = truncate_utf8(text, 48 * 1024);
     Ok(json!({
         "rootHandle": root_handle,
@@ -132,13 +132,13 @@ pub(super) async fn write_workspace_file(
         Some(required_string(arguments, "expectedRevision", 128)?.to_string())
     };
     let preview = tauri::async_runtime::spawn_blocking(move || match expected_revision {
-        Some(expected_revision) => crate::chat::workspace_files::save_workspace_file(
+        Some(expected_revision) => crate::chat::workspace::files::save_workspace_file(
             &authorized,
             &relative_path,
             &contents,
             &expected_revision,
         ),
-        None => crate::chat::workspace_files::recreate_workspace_file(
+        None => crate::chat::workspace::files::recreate_workspace_file(
             &authorized,
             &relative_path,
             &contents,
@@ -173,14 +173,14 @@ pub(super) async fn patch_workspace_file(
     let preview_authorization = authorized.clone();
     let preview_path = relative_path.clone();
     let preview = tauri::async_runtime::spawn_blocking(move || {
-        crate::chat::workspace_files::preview_workspace_file(&preview_authorization, &preview_path)
+        crate::chat::workspace::files::preview_workspace_file(&preview_authorization, &preview_path)
     })
     .await
     .map_err(|_| internal_error("read authorized workspace file for patching"))??;
     let current_revision = preview
         .content_revision
         .as_deref()
-        .ok_or_else(generic_denial)?;
+        .ok_or_else(generic_denial_error)?;
     if current_revision != expected_revision {
         return Err(ChatError::new(
             ChatErrorCode::Conflict,
@@ -188,7 +188,7 @@ pub(super) async fn patch_workspace_file(
             true,
         ));
     }
-    let current = preview.text.ok_or_else(generic_denial)?;
+    let current = preview.text.ok_or_else(generic_denial_error)?;
     let edits = workspace_patch_edits(arguments, &current)?;
     let mut patched = current;
     for edit in edits.iter().rev() {
@@ -196,7 +196,7 @@ pub(super) async fn patch_workspace_file(
     }
     let invalidation_path = relative_path.clone();
     let saved = tauri::async_runtime::spawn_blocking(move || {
-        crate::chat::workspace_files::save_workspace_file(
+        crate::chat::workspace::files::save_workspace_file(
             &authorized,
             &relative_path,
             &patched,
@@ -230,7 +230,7 @@ pub(super) async fn delete_workspace_file(
     let expected_revision = required_string(arguments, "expectedRevision", 128)?.to_string();
     let invalidation_path = relative_path.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        crate::chat::workspace_files::delete_workspace_file(
+        crate::chat::workspace::files::delete_workspace_file(
             &authorized,
             &relative_path,
             &expected_revision,
@@ -255,15 +255,15 @@ fn workspace_patch_edits(
         .get("edits")
         .and_then(Value::as_array)
         .filter(|values| !values.is_empty() && values.len() <= MAX_WORKSPACE_PATCH_EDITS)
-        .ok_or_else(generic_denial)?;
+        .ok_or_else(generic_denial_error)?;
     let mut edits = Vec::with_capacity(values.len());
     let mut next_minimum = 0_usize;
     let mut previous_start = None;
     let mut resulting_bytes = current.len();
     for value in values {
-        let edit = value.as_object().ok_or_else(generic_denial)?;
+        let edit = value.as_object().ok_or_else(generic_denial_error)?;
         if edit.len() != 3 {
-            return Err(generic_denial());
+            return Err(generic_denial_error());
         }
         let start_byte = bounded_usize(edit, "startByte")?;
         let end_byte = bounded_usize(edit, "endByte")?;
@@ -275,13 +275,13 @@ fn workspace_patch_edits(
             || !current.is_char_boundary(start_byte)
             || !current.is_char_boundary(end_byte)
         {
-            return Err(generic_denial());
+            return Err(generic_denial_error());
         }
         resulting_bytes = resulting_bytes
             .checked_sub(end_byte - start_byte)
             .and_then(|value| value.checked_add(replacement.len()))
             .filter(|value| *value <= MAX_WORKSPACE_CONTENT_BYTES)
-            .ok_or_else(generic_denial)?;
+            .ok_or_else(generic_denial_error)?;
         edits.push(WorkspacePatchEdit {
             start_byte,
             end_byte,
@@ -298,7 +298,7 @@ fn bounded_usize(arguments: &Map<String, Value>, name: &str) -> ChatResult<usize
         .get(name)
         .and_then(Value::as_u64)
         .and_then(|value| usize::try_from(value).ok())
-        .ok_or_else(generic_denial)
+        .ok_or_else(generic_denial_error)
 }
 
 fn require_resolved_mutation_approval(policy: ChatRuntimeApprovalPolicy) -> ChatResult<()> {
@@ -323,7 +323,7 @@ fn invalidate_workspace_path(
 ) {
     context
         .app
-        .state::<crate::chat::workspace_observer::ChatWorkspaceObserverRegistry>()
+        .state::<crate::chat::workspace::observer::ChatWorkspaceObserverRegistry>()
         .invalidate_paths(
             &source.working_folder_id,
             source
@@ -346,7 +346,7 @@ fn folder_source<'a>(
         .find(|source| {
             source.root_handle == root_handle && source.capability.rank() >= minimum.rank()
         })
-        .ok_or_else(generic_denial)
+        .ok_or_else(generic_denial_error)
 }
 
 async fn authorize_folder(
@@ -359,7 +359,7 @@ async fn authorize_folder(
     } else {
         WorkingFolderAuthorizationOperation::FileRead
     };
-    let authorized = crate::chat::workspace_commands::authorize_working_folder(
+    let authorized = crate::chat::workspace::commands::authorize_working_folder(
         context.app,
         context.pool,
         &source.working_folder_id,
@@ -388,7 +388,7 @@ fn bounded_text_argument<'a>(
         .get(name)
         .and_then(Value::as_str)
         .filter(|value| value.len() <= maximum_bytes && !value.contains('\0'))
-        .ok_or_else(generic_denial)
+        .ok_or_else(generic_denial_error)
 }
 
 struct WorkspacePatchEdit {

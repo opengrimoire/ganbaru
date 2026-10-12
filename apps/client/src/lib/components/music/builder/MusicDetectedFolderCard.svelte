@@ -1,8 +1,9 @@
 <script lang="ts">
   import FolderOpen from "@lucide/svelte/icons/folder-open";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import type { MusicSourcesController } from "$lib/music/music-sources-controller.svelte";
+  import type { MusicSourcesController } from "$lib/music/sources/controller.svelte";
 
   let { controller, onAdded = () => undefined }: {
     controller: MusicSourcesController;
@@ -35,7 +36,7 @@
         {#if selection.truncated}<p class="mt-1.5 text-[0.63rem] leading-relaxed text-muted-foreground">{t("music.builder.previewTruncated")}</p>{/if}
       </div>
     </div>
-    {#if error}<p class="mt-2 rounded-lg bg-destructive/10 px-2.5 py-2 text-[0.68rem] text-destructive" role="alert">{error}</p>{/if}
+    {#if error}<Notice class="mt-2 text-[0.68rem]" message={error} />{/if}
     <div class="mt-3 flex flex-wrap justify-end gap-2">
       <button type="button" onclick={() => controller.dismissDefaultMusicFolder()} disabled={controller.addingDefaultFolder} class="h-8 rounded-lg bg-secondary px-3 text-xs font-medium text-secondary-foreground hover:bg-accent hover:text-accent-foreground disabled:opacity-45">{t("music.builder.notNow")}</button>
       <button type="button" onclick={() => { void addFolder(); }} disabled={controller.addingDefaultFolder} class="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-45">

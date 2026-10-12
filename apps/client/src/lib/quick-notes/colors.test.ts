@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { contrastRatio } from "$lib/components/ui/colorMath";
+import { contrastRatio } from "$lib/color/math";
 import { mostContrastingQuickNoteText } from "./colors";
 
 describe("mostContrastingQuickNoteText", () => {

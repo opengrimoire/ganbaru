@@ -1,9 +1,9 @@
 //! Bounded access to documented coding-agent configuration and instruction files.
 
-use super::models::{
+use super::settings_commands::read_provider;
+use ganbaru_chat_contracts::models::{
     ChatError, ChatErrorCode, ChatResult, ProviderInstanceConfig, ProviderInstanceId,
 };
-use super::settings_commands::read_provider;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
@@ -478,7 +478,7 @@ fn provider_file_error() -> ChatError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chat::models::{ProviderFamilyId, VersionedJson};
+    use ganbaru_chat_contracts::models::{ProviderFamilyId, VersionedJson};
     use std::collections::BTreeMap;
 
     struct TestDirectory(PathBuf);

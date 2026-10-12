@@ -11,10 +11,9 @@ Exact dependency versions are authoritative in `package.json`, `apps/client/pack
 | Product UI | `apps/client/src/` | Svelte components, typed client models, local presentation state, and platform-adaptive shells |
 | Tauri composition | `apps/client/src-tauri/app/` | Commands, managed state, lifecycle, platform services, and adapter composition |
 | Domain services | `crates/ganbaru-*` | Tauri-free persistence, contracts, provider transports, filesystem boundaries, and reusable logic |
-| Durable storage | `apps/client/src-tauri/migrations/` and the active vault | SQLite schema, managed assets, and file-authoritative documents |
-| Android adapters | `crates/ganbaru-mobile-*` and `apps/client/src-tauri/gen/android/` | Notifications, document transfer, media, Doomscrolling access, and Android application integration |
-| Browser integration | `extensions/chrome/` and `crates/ganbaru-native-messaging/` | Chromium blocking, status, and local native messaging |
-| Shared package contracts | `packages/shared-types/` | TypeScript types shared across workspaces |
+| Durable storage | `crates/ganbaru-db/migrations/` and the active vault | SQLite schema, managed assets, and file-authoritative documents |
+| Android adapters | `crates/ganbaru-mobile-*` and `apps/client/src-tauri/gen/android/` | Notifications, document transfer, media, anti-distraction access, and Android application integration |
+| Browser integration | `extensions/chromium/` and `crates/ganbaru-native-messaging/` | Chromium blocking, status, and local native messaging |
 
 The desktop binary and mobile library entry points are intentionally thin. `ganbaru-tauri-app` owns application composition. Core crates do not depend on Tauri when the domain can be tested and reused independently.
 
@@ -24,7 +23,7 @@ The desktop binary and mobile library entry points are intentionally thin. `ganb
 
 The frontend calls typed wrappers under `apps/client/src/lib/api/`. Tauri commands validate input and delegate to application or domain services. The frontend does not open the SQLite database directly and does not treat an IPC response as trusted merely because it came from the local process.
 
-Long-running or user-sized filesystem and platform work stays bounded and off asynchronous command executors. Database transactions remain on SQLx's asynchronous path. See [Native work](native-work.md).
+Long-running or user-sized filesystem and platform work stays bounded and off asynchronous command executors. Database transactions remain on SQLx's asynchronous path. See [Native backend](native-backend.md#asynchronous-and-blocking-work).
 
 ### Desktop and mobile
 
@@ -48,7 +47,7 @@ See [Integration boundaries](integrations.md).
 
 - **Svelte 5 with runes** provides local reactive state without an external state manager.
 - **Vite** builds separate desktop and mobile entry graphs from the same frontend workspace.
-- **Tailwind CSS and generated shadcn-svelte primitives** provide reusable UI foundations while Ganbaru owns product-specific components.
+- **Tailwind CSS and shared primitives in `components/ui/`** provide reusable UI foundations while Ganbaru owns product-specific components.
 - **Tauri v2** supplies the native shell, command boundary, platform configuration, and desktop or mobile composition.
 - **Rust** owns SQLite, filesystem safety, provider processes, media playback, native messaging, platform services, and bounded background work.
 - **SQLx with SQLite** provides the canonical structured store and embedded timestamped migrations.
@@ -59,6 +58,7 @@ Dependencies are added for an implemented boundary, not speculative future use. 
 ## Detailed documents
 
 - [Frontend](frontend.md): Svelte structure, state, localization, and loading boundaries.
+- [UI foundations](ui-foundations.md): shared surfaces, rows, fields, controls, scroll fades, and hover submenus.
 - [Native backend](native-backend.md): Rust workspace, Tauri composition, persistence, and native services.
 - [Integration boundaries](integrations.md): Chat providers, browser integration, media, platform adapters, and future networked systems.
 - [Architecture decisions](decisions/README.md): focused decisions whose rationale should outlive a particular implementation.

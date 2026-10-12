@@ -1,7 +1,7 @@
 //! Pure browser decisions and stable rule fingerprints.
 
 use crate::config::{
-    BUILT_IN_CATEGORIES_JSON, BuiltInCategory, DoomscrollingConfig, DoomscrollingMode,
+    BUILT_IN_CATEGORIES_JSON, BuiltInCategory, DistractionsConfig, DistractionsMode,
     UsageLimitEntry, built_in_category, normalize_host_rule, usage_limit_entry_source_keys,
 };
 use crate::snapshot::LimitState;
@@ -22,7 +22,7 @@ pub(super) enum HostDecision {
 }
 
 impl HostDecision {
-    pub(super) fn blocked(&self) -> bool {
+    pub(super) fn is_blocked(&self) -> bool {
         match self {
             Self::Allowed
             | Self::SafetyAllowlist
@@ -37,7 +37,7 @@ impl HostDecision {
         }
     }
 
-    /// Preserves the labels consumed by the extension and historical rule snapshots.
+    /// Returns the stable labels consumed by the extension and stored rule snapshots.
     pub(super) fn matched_rule_name(&self) -> Option<String> {
         match self {
             Self::Allowed => None,
@@ -73,7 +73,7 @@ impl HostDecision {
         }
     }
 
-    pub(super) fn blocker_mode(&self, mode: &DoomscrollingMode) -> &'static str {
+    pub(super) fn blocker_mode(&self, mode: &DistractionsMode) -> &'static str {
         match self {
             Self::DailyLimit(_) | Self::WeeklyLimit(_) => "limit",
             _ => mode.as_str(),
@@ -84,13 +84,13 @@ impl HostDecision {
 pub(super) fn decide_url_with_limits(
     host: &str,
     url: Option<&str>,
-    config: &DoomscrollingConfig,
+    config: &DistractionsConfig,
     limit_state: Option<&LimitState>,
     regular_rules_active: bool,
 ) -> HostDecision {
     let regular_decision = if regular_rules_active {
         let decision = decide_url(host, url, config);
-        if decision.blocked() {
+        if decision.is_blocked() {
             return decision;
         }
         Some(decision)
@@ -98,7 +98,7 @@ pub(super) fn decide_url_with_limits(
         None
     };
     let limit_decision = decide_url_limit(host, config, limit_state);
-    if limit_decision.blocked() {
+    if limit_decision.is_blocked() {
         return limit_decision;
     }
     regular_decision.unwrap_or(HostDecision::Allowed)
@@ -107,14 +107,14 @@ pub(super) fn decide_url_with_limits(
 pub(super) fn decide_url(
     host: &str,
     url: Option<&str>,
-    config: &DoomscrollingConfig,
+    config: &DistractionsConfig,
 ) -> HostDecision {
     if is_safety_allowed_host(host) {
         return HostDecision::SafetyAllowlist;
     }
 
     match config.mode {
-        DoomscrollingMode::Whitelist => {
+        DistractionsMode::Whitelist => {
             for allowed_host in &config.allowed_hosts {
                 if host_matches_rule(host, allowed_host) {
                     return HostDecision::WhitelistedHost(allowed_host.clone());
@@ -122,7 +122,7 @@ pub(super) fn decide_url(
             }
             HostDecision::OutsideWhitelist
         }
-        DoomscrollingMode::Blacklist => {
+        DistractionsMode::Blacklist => {
             for exception_host in &config.exception_hosts {
                 if host_matches_rule(host, exception_host) {
                     return HostDecision::ExceptionHost(exception_host.clone());
@@ -155,7 +155,7 @@ pub(super) fn decide_url(
 
 fn decide_url_limit(
     host: &str,
-    config: &DoomscrollingConfig,
+    config: &DistractionsConfig,
     limit_state: Option<&LimitState>,
 ) -> HostDecision {
     if is_safety_allowed_host(host) || !config.limits.enabled {
@@ -164,6 +164,11 @@ fn decide_url_limit(
     let Some(limit_state) = limit_state else {
         return HostDecision::Allowed;
     };
+    if limit_state.configuration_digest.is_none()
+        || limit_state.configuration_digest != config.limit_configuration_digest
+    {
+        return HostDecision::Allowed;
+    }
     for limit in &config.limits.items {
         if !limit.enabled {
             continue;
@@ -175,7 +180,17 @@ fn decide_url_limit(
         else {
             continue;
         };
-        if total.used_seconds < total.limit_seconds {
+        let minutes = if total.period == "day" {
+            limit.minutes_per_day
+        } else if total.period == "week" {
+            limit.minutes_per_week
+        } else {
+            None
+        };
+        if total.used_seconds < total.limit_seconds
+            || total.remaining_seconds != 0
+            || !minutes.is_some_and(|minutes| minutes.checked_mul(60) == Some(total.limit_seconds))
+        {
             continue;
         }
         if limit
@@ -240,15 +255,15 @@ fn feed_fingerprint_bool(hash: &mut u64, value: bool) {
     feed_fingerprint(hash, if value { "1" } else { "0" });
 }
 
-fn feed_fingerprint_hosts(hash: &mut u64, label: &str, hosts: &[String]) {
+fn feed_fingerprint_list(hash: &mut u64, label: &str, values: &[String]) {
     feed_fingerprint(hash, label);
-    for host in hosts {
-        feed_fingerprint(hash, host);
+    for value in values {
+        feed_fingerprint(hash, value);
     }
 }
 
 pub(super) fn rules_fingerprint(
-    config: &DoomscrollingConfig,
+    config: &DistractionsConfig,
     limit_state: Option<&LimitState>,
 ) -> String {
     let mut hash = 14_695_981_039_346_656_037_u64;
@@ -260,7 +275,7 @@ pub(super) fn rules_fingerprint(
     feed_fingerprint_bool(&mut hash, config.block_during_short_breaks);
     feed_fingerprint_bool(&mut hash, config.block_during_long_breaks);
     feed_fingerprint_bool(&mut hash, config.pause_during_focus_pause);
-    feed_fingerprint_hosts(&mut hash, "category", &config.blocked_category_ids);
+    feed_fingerprint_list(&mut hash, "category", &config.blocked_category_ids);
     feed_fingerprint(&mut hash, "custom_stack");
     for stack in &config.custom_category_stacks {
         feed_fingerprint(&mut hash, &stack.id);
@@ -269,9 +284,9 @@ pub(super) fn rules_fingerprint(
             feed_fingerprint(&mut hash, host);
         }
     }
-    feed_fingerprint_hosts(&mut hash, "blocked", &config.blocked_hosts);
-    feed_fingerprint_hosts(&mut hash, "exception", &config.exception_hosts);
-    feed_fingerprint_hosts(&mut hash, "allowed", &config.allowed_hosts);
+    feed_fingerprint_list(&mut hash, "blocked", &config.blocked_hosts);
+    feed_fingerprint_list(&mut hash, "exception", &config.exception_hosts);
+    feed_fingerprint_list(&mut hash, "allowed", &config.allowed_hosts);
     feed_fingerprint_bool(&mut hash, config.limits.enabled);
     feed_fingerprint(&mut hash, "limits");
     for limit in &config.limits.items {

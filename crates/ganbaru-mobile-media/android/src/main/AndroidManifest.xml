@@ -5,7 +5,7 @@
 
     <application>
         <service
-            android:name="app.ganbaru.mobile_media.GanbaruPlaybackService"
+            android:name="org.opengrimoire.ganbaruai.mobile.media.MusicPlaybackService"
             android:exported="true"
             android:foregroundServiceType="mediaPlayback">
             <intent-filter>

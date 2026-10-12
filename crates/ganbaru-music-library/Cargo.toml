@@ -1,0 +1,31 @@
+[package]
+name = "ganbaru-music-library"
+version = "0.1.0"
+description = "Ganbaru AI Music library persistence, queries, playlists, review, transfer, soundscapes, local media inspection, and session policy"
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+ganbaru-db = { workspace = true }
+ganbaru-music = { workspace = true }
+ganbaru-projects = { workspace = true }
+jiff = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+sqlx = { workspace = true }
+url = { workspace = true }
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+rodio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

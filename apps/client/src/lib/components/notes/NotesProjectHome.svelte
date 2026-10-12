@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SearchField from "$lib/components/ui/SearchField.svelte";
   import { onMount, tick } from "svelte";
   import ArrowUpNarrowWide from "@lucide/svelte/icons/arrow-up-narrow-wide";
   import Check from "@lucide/svelte/icons/check";
@@ -8,7 +9,6 @@
   import ChevronsUpDown from "@lucide/svelte/icons/chevrons-up-down";
   import FileQuestionMark from "@lucide/svelte/icons/file-question-mark";
   import FolderPlus from "@lucide/svelte/icons/folder-plus";
-  import FolderRoot from "@lucide/svelte/icons/folder-root";
   import Search from "@lucide/svelte/icons/search";
   import SquarePen from "@lucide/svelte/icons/square-pen";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -16,7 +16,7 @@
     buildWorkingMarkdownTreeItems,
     listNotesWorkingMarkdown,
     NotesWorkingMarkdownTree,
-  } from "$lib/components/notes/notes-working-markdown-platform";
+  } from "$lib/components/notes/working-markdown/platform";
   import {
     beginLazyComponentLoad,
     rejectLazyComponentLoad,
@@ -30,15 +30,15 @@
     notesPageFolderMoveTargets,
     type NotesNavigationSortOrder,
     type NotesNavigationTreeItem,
-  } from "$lib/notes/navigation-tree";
+  } from "$lib/notes/navigation/tree";
   import {
     canDropNotesNavigationItem,
     type NotesNavigationDragItem,
     type NotesNavigationDropTarget,
-  } from "$lib/notes/navigation-drag";
-  import { notesPageMoveTargets } from "$lib/notes/page-move";
-  import { notesPageContainingFolderId } from "$lib/notes/hierarchy-navigation";
-  import { notesPageTitle } from "$lib/notes/page-title";
+  } from "$lib/notes/navigation/drag";
+  import { notesPageMoveTargets } from "$lib/notes/pages/move";
+  import { notesPageContainingFolderId } from "$lib/notes/navigation/hierarchy-menu";
+  import { notesPageTitle } from "$lib/notes/pages/title";
   import { notesPagesForProject } from "$lib/notes/project-membership";
   import type {
     NotesFolder,
@@ -47,13 +47,17 @@
     NotesWorkingMarkdownTreeRead,
   } from "$lib/notes/types";
   import { getNotes } from "$lib/stores/notes.svelte";
-  import NotesFolderRow from "./NotesFolderRow.svelte";
-  import NotesPageRow from "./NotesPageRow.svelte";
+  import { cn } from "$lib/utils";
+  import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
+  import NotesFolderRow from "$lib/components/notes/navigation/NotesFolderRow.svelte";
+  import NotesPageRow from "$lib/components/notes/navigation/NotesPageRow.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import {
     loadNotesOptionalComponent,
     retryNotesOptionalComponent,
     type LoadedNotesOptionalComponent,
-  } from "./notes-component-registry";
+  } from "./component-registry";
 
   let {
     mobileLayout = false,
@@ -78,8 +82,8 @@
   const notes = getNotes();
   const { t } = getLocalization();
   const explorerIconStrokeWidth = 1.5;
-  const sortMenuViewportGap = 8;
-  const sortMenuTriggerGap = 4;
+  const sortMenuViewportGapPx = 8;
+  const sortMenuTriggerGapPx = 4;
   const navigationFolderOpenDelayMs = 520;
   const navigationAutoScrollEdgePx = 36;
   const navigationAutoScrollStepPx = 12;
@@ -121,15 +125,6 @@
 
   function navigationTargetKey(target: NotesNavigationDropTarget): string {
     return target.kind === "root" ? "root" : `${target.kind}:${target.id}`;
-  }
-
-  function navigationDropState(target: NotesNavigationDropTarget): "none" | "valid" | "invalid" {
-    return navigationDropStateForKey(navigationTargetKey(target));
-  }
-
-  function navigationDropStateForKey(targetKey: string): "none" | "valid" | "invalid" {
-    if (navigationDropTargetKey !== targetKey) return "none";
-    return navigationDropAllowed ? "valid" : "invalid";
   }
 
   function pageNavigationDropTarget(pageId: string): NotesNavigationDropTarget {
@@ -319,7 +314,7 @@
     if (mobileLayout || event.button !== 0 || event.pointerType === "touch") return;
     const target = event.target;
     if (!(target instanceof Element)) return;
-    if (target.closest("input, textarea, [contenteditable='true']")) return;
+    if (target.closest("input, textarea, [contenteditable='true'], .explorer-row-action")) return;
     const sourceElement = target.closest<HTMLElement>("[data-notes-navigation-drag-kind]");
     if (!sourceElement || !explorerScrollElement?.contains(sourceElement)) return;
     const kind = sourceElement.dataset.notesNavigationDragKind;
@@ -399,7 +394,6 @@
         { type: "page_id", page_id: target.id },
         { preserveSelection: true },
       );
-      notes.setSidebarPageCollapsed(target.id, false);
       return;
     }
     await notes.movePageToFolder(
@@ -412,6 +406,7 @@
 
   let search = $state("");
   let searchOpen = $state(false);
+  let searchButton: HTMLButtonElement;
   let sortMenuOpen = $state(false);
   let sortOrder = $state<NotesNavigationSortOrder>("name-asc");
   let currentFileHighlightRequestId = $state(0);
@@ -450,16 +445,20 @@
   let workingMarkdownLoading = $state(false);
   let workingMarkdownError = $state<string | null>(null);
   let workingMarkdownGeneration = 0;
+  let workingMarkdownTreeProjectId: string | null = null;
 
   const projectPages = $derived.by(() => notesPagesForProject(
-    [...new Map([...notes.allPages, ...notes.linkResolutionPages].map((item) => [item.id, item])).values()],
+    notes.navigationPages,
     projectId,
   ));
   const projectFolders = $derived.by(() => notesFoldersForProject(notes.folders, projectId));
+  const selectedRootPageId = $derived(projectPages.find((page) =>
+    page.parent.type === "workspace" && (page.id === notes.selectedPageId
+      || notes.pageBreadcrumbItems.some((crumb) => crumb.id === page.id)))?.id ?? null);
   const treeItems = $derived.by(() =>
     buildNotesNavigationTree(projectPages, projectFolders, {
-      activePageId: notes.selectedPageId,
-      expandedPageIds: notes.sidebarExpandedPageIds,
+      rootPagesOnly: true,
+      activePageId: selectedRootPageId,
       collapsedFolderIds: notes.collapsedFolderIds,
       pageIdsWithChildren: notes.sidebarPageIdsWithChildren,
       missingParentPageIds: notes.sidebarMissingParentPageIds,
@@ -517,21 +516,8 @@
       root.classList.remove("notes-navigation-pointer-dragging");
     };
   });
-  const expandablePageIds = $derived.by(() => {
-    const projectPageIds = new Set(projectPages.map((page) => page.id));
-    const result = new Set(
-      notes.sidebarPageIdsWithChildren.filter((pageId) => projectPageIds.has(pageId)),
-    );
-    for (const page of projectPages) {
-      if (page.parent.type === "page_id" && projectPageIds.has(page.parent.page_id)) {
-        result.add(page.parent.page_id);
-      }
-    }
-    return [...result];
-  });
   const shouldExpandExplorer = $derived(
     projectFolders.some((folder) => notes.collapsedFolderIds.includes(folder.id))
-    || expandablePageIds.some((pageId) => !notes.sidebarExpandedPageIds.includes(pageId))
   );
 
   async function setExplorerCollapsed(collapsed: boolean): Promise<void> {
@@ -609,12 +595,15 @@
     if (!onBeforeDocumentNavigation()) return;
     if (notes.viewMode === "archive") notes.closeArchive();
     if (notes.viewMode === "trash") notes.closeTrash();
-    void notes.selectPage(pageId, { openMode: "full" });
+    void notes.selectPage(pageId, { openMode: "full" }).catch((error) => {
+      console.error("open Notes page failed", error);
+    });
   }
 
   async function refreshWorkingMarkdown(): Promise<void> {
     if (mobileLayout) {
       workingMarkdownGeneration += 1;
+      workingMarkdownTreeProjectId = null;
       workingMarkdownTree = { roots: [], unavailableWorkingFolderIds: [] };
       workingMarkdownLoading = false;
       workingMarkdownError = null;
@@ -622,8 +611,12 @@
     }
     const requestedProjectId = projectId;
     const generation = ++workingMarkdownGeneration;
-    if (!requestedProjectId) {
+    if (requestedProjectId !== workingMarkdownTreeProjectId) {
+      workingMarkdownTreeProjectId = requestedProjectId;
       workingMarkdownTree = { roots: [], unavailableWorkingFolderIds: [] };
+    }
+    if (!requestedProjectId) {
+      workingMarkdownLoading = false;
       workingMarkdownError = null;
       return;
     }
@@ -660,7 +653,10 @@
 
   function toggleSearch(): void {
     searchOpen = !searchOpen;
-    if (!searchOpen) search = "";
+    if (!searchOpen) {
+      search = "";
+      searchButton?.focus();
+    }
   }
 
   function selectSortOrder(nextOrder: NotesNavigationSortOrder): void {
@@ -669,8 +665,7 @@
   }
 
   function sortOptionClass(order: NotesNavigationSortOrder): string {
-    const minimumHeightClass = mobileLayout ? "min-h-12" : "min-h-7";
-    return `grid ${minimumHeightClass} w-full grid-cols-[max-content_1rem] items-center gap-2 px-3 text-left hover:bg-accent ${hoveredSortOrder === order ? "bg-accent" : ""}`;
+    return cn("menu-item grid grid-cols-[max-content_1rem]", hoveredSortOrder === order && "bg-accent");
   }
 
   function highlightNearestSortOption(
@@ -687,13 +682,13 @@
   function positionSortMenu(): void {
     if (!sortButtonElement) return;
     const triggerRect = sortButtonElement.getBoundingClientRect();
-    const availableWidth = Math.max(0, window.innerWidth - sortMenuViewportGap * 2);
+    const availableWidth = Math.max(0, window.innerWidth - sortMenuViewportGapPx * 2);
     const measuredWidth = sortMenuElement?.getBoundingClientRect().width ?? 0;
     const width = Math.min(measuredWidth, availableWidth);
-    const maxLeft = Math.max(sortMenuViewportGap, window.innerWidth - width - sortMenuViewportGap);
-    const left = Math.min(Math.max(sortMenuViewportGap, triggerRect.left), maxLeft);
-    const top = triggerRect.bottom + sortMenuTriggerGap;
-    const maxHeight = Math.max(0, window.innerHeight - top - sortMenuViewportGap);
+    const maxLeft = Math.max(sortMenuViewportGapPx, window.innerWidth - width - sortMenuViewportGapPx);
+    const left = Math.min(Math.max(sortMenuViewportGapPx, triggerRect.left), maxLeft);
+    const top = triggerRect.bottom + sortMenuTriggerGapPx;
+    const maxHeight = Math.max(0, window.innerHeight - top - sortMenuViewportGapPx);
     sortMenuStyle = `left: ${left}px; top: ${top}px; width: max-content; max-width: ${availableWidth}px; max-height: ${maxHeight}px;`;
   }
 
@@ -709,7 +704,7 @@
   }
 
   async function highlightCurrentFile(): Promise<void> {
-    const selectedPageId = notes.selectedPageId;
+    const selectedPageId = selectedRootPageId;
     if (!selectedPageId) return;
     const pageById = new Map(projectPages.map((page) => [page.id, page]));
     const folderById = new Map(projectFolders.map((folder) => [folder.id, folder]));
@@ -723,7 +718,6 @@
         folderId = currentPage.folder_id;
         break;
       }
-      notes.setSidebarPageCollapsed(currentPage.parent.page_id, false);
       currentPage = pageById.get(currentPage.parent.page_id);
     }
 
@@ -757,9 +751,6 @@
     const collapsed = !shouldExpandExplorer;
     for (const folder of projectFolders) {
       notes.setFolderCollapsed(folder.id, collapsed);
-    }
-    for (const pageId of expandablePageIds) {
-      notes.setSidebarPageCollapsed(pageId, collapsed);
     }
   }
 
@@ -856,7 +847,9 @@
   function confirmTrashPage(): void {
     const page = pendingTrashPage;
     pendingTrashPage = null;
-    if (page) void notes.trashPage(page.id);
+    if (page) void notes.trashPage(page.id).catch((error) => {
+      console.error("trash Notes page failed", error);
+    });
   }
 
   async function confirmDeleteFolder(): Promise<void> {
@@ -884,11 +877,11 @@
 />
 
 <aside
-  class="notes-project-explorer relative h-full min-h-0 shrink-0 overflow-hidden"
+  class="explorer-sidebar notes-project-explorer relative h-full min-h-0 shrink-0 overflow-hidden"
+  class:explorer-touch={mobileLayout}
   class:notes-project-explorer-mobile={mobileLayout}
   class:notes-project-explorer-collapsed={!mobileLayout && explorerCollapsed}
   class:notes-project-explorer-dragging={draggingNavigationItem !== null}
-  style="background-color: var(--cal-bg);"
   aria-label={t("notes.explorerLabel")}
   data-notes-explorer
   data-notes-first-use-state
@@ -899,11 +892,11 @@
       aria-hidden={!explorerCollapsed}
       inert={!explorerCollapsed}
     >
-      <div class="flex h-(--cal-header-row-h) items-center justify-center">
+      <div class="explorer-toolbar justify-center">
         <button
           bind:this={expandExplorerButtonElement}
           type="button"
-          class="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+          class="explorer-icon"
           aria-label={t("notes.expandExplorerSidebar")}
           aria-expanded="false"
           data-app-tooltip={t("notes.expandExplorerSidebar")}
@@ -918,13 +911,13 @@
   {/if}
 
   <div
-    class="notes-project-explorer-content flex h-full min-h-0 w-64 min-w-64 flex-col"
+    class="notes-project-explorer-content flex h-full min-h-0 flex-col"
     inert={!mobileLayout && explorerCollapsed}
   >
-    <div class="flex h-(--cal-header-row-h) shrink-0 items-center justify-start gap-0.5 px-2">
+    <div class="explorer-toolbar">
       <button
         type="button"
-        class="flex {mobileLayout ? 'size-12' : 'size-7'} shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-45"
+        class="explorer-icon"
         aria-label={t("notes.newPage")}
         data-app-tooltip={t("notes.newPage")}
         disabled={!projectId}
@@ -934,7 +927,7 @@
       </button>
     <button
       type="button"
-      class="flex {mobileLayout ? 'size-12' : 'size-7'} shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-45"
+      class="explorer-icon"
       aria-label={t("notes.newFolder")}
       data-app-tooltip={t("notes.newFolder")}
       disabled={!projectId}
@@ -948,7 +941,8 @@
       <button
         bind:this={sortButtonElement}
         type="button"
-        class={`flex ${mobileLayout ? "size-12" : "size-7"} shrink-0 items-center justify-center rounded-md hover:bg-accent hover:text-foreground ${sortMenuOpen ? "bg-accent text-foreground" : "text-muted-foreground"}`}
+        class="explorer-icon"
+        class:explorer-icon-active={sortMenuOpen}
         aria-label={t("notes.sortExplorer")}
         aria-expanded={sortMenuOpen}
         aria-haspopup="menu"
@@ -960,7 +954,7 @@
       {#if sortMenuOpen}
         <div
           bind:this={sortMenuElement}
-          class="fixed z-60 overflow-y-auto rounded-lg border border-border bg-popover py-1 text-[0.8rem] text-popover-foreground shadow-lg"
+          class="surface-floating fixed z-60 flex flex-col overflow-hidden"
           style={sortMenuStyle}
           role="menu"
           tabindex="-1"
@@ -969,101 +963,103 @@
             hoveredSortOrder = null;
           }}
         >
-          <button
-            type="button"
-            class={sortOptionClass("name-asc")}
-            role="menuitemradio"
-            aria-checked={sortOrder === "name-asc"}
-            onmouseenter={() => {
-              hoveredSortOrder = "name-asc";
-            }}
-            onclick={() => selectSortOrder("name-asc")}
-          >
-            <span>{t("notes.sortNameAscending")}</span>
-            {#if sortOrder === "name-asc"}<Check class="size-4" />{/if}
-          </button>
-          <button
-            type="button"
-            class={sortOptionClass("name-desc")}
-            role="menuitemradio"
-            aria-checked={sortOrder === "name-desc"}
-            onmouseenter={() => {
-              hoveredSortOrder = "name-desc";
-            }}
-            onclick={() => selectSortOrder("name-desc")}
-          >
-            <span>{t("notes.sortNameDescending")}</span>
-            {#if sortOrder === "name-desc"}<Check class="size-4" />{/if}
-          </button>
-          <div
-            class="my-1 border-t border-border"
-            role="separator"
-            onmousemove={(event) => highlightNearestSortOption(event, "name-desc", "modified-desc")}
-          ></div>
-          <button
-            type="button"
-            class={sortOptionClass("modified-desc")}
-            role="menuitemradio"
-            aria-checked={sortOrder === "modified-desc"}
-            onmouseenter={() => {
-              hoveredSortOrder = "modified-desc";
-            }}
-            onclick={() => selectSortOrder("modified-desc")}
-          >
-            <span>{t("notes.sortModifiedDescending")}</span>
-            {#if sortOrder === "modified-desc"}<Check class="size-4" />{/if}
-          </button>
-          <button
-            type="button"
-            class={sortOptionClass("modified-asc")}
-            role="menuitemradio"
-            aria-checked={sortOrder === "modified-asc"}
-            onmouseenter={() => {
-              hoveredSortOrder = "modified-asc";
-            }}
-            onclick={() => selectSortOrder("modified-asc")}
-          >
-            <span>{t("notes.sortModifiedAscending")}</span>
-            {#if sortOrder === "modified-asc"}<Check class="size-4" />{/if}
-          </button>
-          <div
-            class="my-1 border-t border-border"
-            role="separator"
-            onmousemove={(event) => highlightNearestSortOption(event, "modified-asc", "created-desc")}
-          ></div>
-          <button
-            type="button"
-            class={sortOptionClass("created-desc")}
-            role="menuitemradio"
-            aria-checked={sortOrder === "created-desc"}
-            onmouseenter={() => {
-              hoveredSortOrder = "created-desc";
-            }}
-            onclick={() => selectSortOrder("created-desc")}
-          >
-            <span>{t("notes.sortCreatedDescending")}</span>
-            {#if sortOrder === "created-desc"}<Check class="size-4" />{/if}
-          </button>
-          <button
-            type="button"
-            class={sortOptionClass("created-asc")}
-            role="menuitemradio"
-            aria-checked={sortOrder === "created-asc"}
-            onmouseenter={() => {
-              hoveredSortOrder = "created-asc";
-            }}
-            onclick={() => selectSortOrder("created-asc")}
-          >
-            <span>{t("notes.sortCreatedAscending")}</span>
-            {#if sortOrder === "created-asc"}<Check class="size-4" />{/if}
-          </button>
+          <div class="surface-floating-body flex min-h-0 flex-1 flex-col overflow-y-auto" use:scrollEdgeFadeAction>
+            <button
+              type="button"
+              class={sortOptionClass("name-asc")}
+              role="menuitemradio"
+              aria-checked={sortOrder === "name-asc"}
+              onmouseenter={() => {
+                hoveredSortOrder = "name-asc";
+              }}
+              onclick={() => selectSortOrder("name-asc")}
+            >
+              <span>{t("notes.sortNameAscending")}</span>
+              {#if sortOrder === "name-asc"}<Check class="size-4" />{/if}
+            </button>
+            <button
+              type="button"
+              class={sortOptionClass("name-desc")}
+              role="menuitemradio"
+              aria-checked={sortOrder === "name-desc"}
+              onmouseenter={() => {
+                hoveredSortOrder = "name-desc";
+              }}
+              onclick={() => selectSortOrder("name-desc")}
+            >
+              <span>{t("notes.sortNameDescending")}</span>
+              {#if sortOrder === "name-desc"}<Check class="size-4" />{/if}
+            </button>
+            <div
+              class="menu-separator"
+              role="separator"
+              onmousemove={(event) => highlightNearestSortOption(event, "name-desc", "modified-desc")}
+            ></div>
+            <button
+              type="button"
+              class={sortOptionClass("modified-desc")}
+              role="menuitemradio"
+              aria-checked={sortOrder === "modified-desc"}
+              onmouseenter={() => {
+                hoveredSortOrder = "modified-desc";
+              }}
+              onclick={() => selectSortOrder("modified-desc")}
+            >
+              <span>{t("notes.sortModifiedDescending")}</span>
+              {#if sortOrder === "modified-desc"}<Check class="size-4" />{/if}
+            </button>
+            <button
+              type="button"
+              class={sortOptionClass("modified-asc")}
+              role="menuitemradio"
+              aria-checked={sortOrder === "modified-asc"}
+              onmouseenter={() => {
+                hoveredSortOrder = "modified-asc";
+              }}
+              onclick={() => selectSortOrder("modified-asc")}
+            >
+              <span>{t("notes.sortModifiedAscending")}</span>
+              {#if sortOrder === "modified-asc"}<Check class="size-4" />{/if}
+            </button>
+            <div
+              class="menu-separator"
+              role="separator"
+              onmousemove={(event) => highlightNearestSortOption(event, "modified-asc", "created-desc")}
+            ></div>
+            <button
+              type="button"
+              class={sortOptionClass("created-desc")}
+              role="menuitemradio"
+              aria-checked={sortOrder === "created-desc"}
+              onmouseenter={() => {
+                hoveredSortOrder = "created-desc";
+              }}
+              onclick={() => selectSortOrder("created-desc")}
+            >
+              <span>{t("notes.sortCreatedDescending")}</span>
+              {#if sortOrder === "created-desc"}<Check class="size-4" />{/if}
+            </button>
+            <button
+              type="button"
+              class={sortOptionClass("created-asc")}
+              role="menuitemradio"
+              aria-checked={sortOrder === "created-asc"}
+              onmouseenter={() => {
+                hoveredSortOrder = "created-asc";
+              }}
+              onclick={() => selectSortOrder("created-asc")}
+            >
+              <span>{t("notes.sortCreatedAscending")}</span>
+              {#if sortOrder === "created-asc"}<Check class="size-4" />{/if}
+            </button>
+          </div>
         </div>
       {/if}
     </div>
     {#if !mobileLayout}
       <button
         type="button"
-        class="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-45"
+        class="explorer-icon"
         aria-label={t("notes.highlightCurrentFile")}
         data-app-tooltip={t("notes.highlightCurrentFile")}
         disabled={!notes.selectedPageId}
@@ -1076,7 +1072,7 @@
     {/if}
     <button
       type="button"
-      class="flex {mobileLayout ? 'size-12' : 'size-7'} shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-45"
+      class="explorer-icon"
       aria-label={shouldExpandExplorer ? t("notes.expandExplorer") : t("notes.collapseExplorer")}
       data-app-tooltip={shouldExpandExplorer ? t("notes.expandExplorer") : t("notes.collapseExplorer")}
       onclick={toggleExplorerExpansion}
@@ -1089,7 +1085,9 @@
     </button>
     <button
       type="button"
-      class={`flex ${mobileLayout ? "size-12" : "size-7"} shrink-0 items-center justify-center rounded-md hover:bg-accent hover:text-foreground ${searchOpen ? "bg-accent text-foreground" : "text-muted-foreground"}`}
+      class="explorer-icon"
+      class:explorer-icon-active={searchOpen}
+      bind:this={searchButton}
       aria-label={t("notes.searchLabel")}
       aria-pressed={searchOpen}
       data-app-tooltip={t("notes.searchLabel")}
@@ -1101,7 +1099,7 @@
       <button
         bind:this={collapseExplorerButtonElement}
         type="button"
-        class="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+        class="explorer-icon ml-auto"
         aria-label={t("notes.collapseExplorerSidebar")}
         aria-expanded="true"
         data-app-tooltip={t("notes.collapseExplorerSidebar")}
@@ -1115,33 +1113,24 @@
   </div>
 
   {#if searchOpen}
-    <div class="shrink-0 px-2 pb-2">
-      <label class="flex {mobileLayout ? 'min-h-12' : ''} items-center gap-1.5 rounded-md bg-accent/50 px-2 py-1.5">
-        <Search class="size-3.5 shrink-0 text-muted-foreground" />
-        <input
-          class="min-w-0 flex-1 bg-transparent text-[0.8rem] text-foreground outline-none placeholder:text-muted-foreground"
-          bind:value={search}
-          placeholder={t("notes.searchPlaceholder")}
-          aria-label={t("notes.searchLabel")}
-        />
-      </label>
-    </div>
+    <SearchField bind:value={search} label={t("notes.searchLabel")} placeholder={t("notes.searchPlaceholder")} clearLabel={t("notes.clearSearch")} onClose={toggleSearch} />
   {/if}
 
   {#if folderActionError}
-    <div class="shrink-0 px-3 py-2 text-[0.8rem] text-destructive" role="alert">
-      {t("notes.folderActionFailed", folderActionError)}
-    </div>
+    <Notice class="shrink-0 px-3 py-2 text-[0.8rem]" message={t("notes.folderActionFailed", folderActionError)} />
+  {/if}
+  {#if notes.trashActionError}
+    <Notice class="shrink-0 px-3 py-2 text-[0.8rem]" message={t("notes.trashFailed", notes.trashActionError)} />
   {/if}
   {#if navigationDragError}
-    <div class="shrink-0 px-3 py-2 text-[0.8rem] text-destructive" role="alert">
-      {t("notes.navigationMoveFailed", navigationDragError)}
-    </div>
+    <Notice class="shrink-0 px-3 py-2 text-[0.8rem]" message={t("notes.navigationMoveFailed", navigationDragError)} />
   {/if}
 
   <div
     bind:this={explorerScrollElement}
-    class="min-h-0 flex-1 overflow-auto px-2 pb-2"
+    class="min-h-0 flex-1 overflow-x-auto overflow-y-scroll px-2 pb-2"
+    class:notes-navigation-root-drop-valid={navigationDropTargetKey === "root" && navigationDropAllowed}
+    class:notes-navigation-root-drop-invalid={navigationDropTargetKey === "root" && !navigationDropAllowed}
     role="region"
     aria-label={t("notes.explorerLabel")}
     data-notes-explorer-scroll
@@ -1151,14 +1140,13 @@
     use:resetCreationLocationOnBlankPointer
   >
     {#if notes.loadError}
-      <div class="px-1 py-2 text-[0.8rem] text-destructive">
-        {t("notes.loadFailed", notes.loadError)}
-      </div>
-    {:else if treeItems.length === 0 && (mobileLayout || !workingMarkdownHasMatches) && search.trim()}
+      <Notice class="px-1 py-2 text-[0.8rem]" message={t("notes.loadFailed", notes.loadError)} />
+    {/if}
+    {#if notes.loaded && treeItems.length === 0 && (mobileLayout || !workingMarkdownHasMatches) && search.trim()}
       <div class="px-1 py-2 text-[0.8rem] text-muted-foreground">
         {t("notes.noSearchResults")}
       </div>
-    {:else if mobileLayout && treeItems.length === 0}
+    {:else if mobileLayout && notes.loaded && treeItems.length === 0}
       <div class="flex min-h-48 flex-col items-center justify-center gap-3 px-4 py-8 text-center">
         <p class="text-sm text-muted-foreground">{t("notes.noPages")}</p>
         <button
@@ -1218,14 +1206,15 @@
         {:else}
           <NotesPageRow
             page={item.page}
+            displayTitle={notes.pageTitleDraftForPage(item.page.id) ?? undefined}
             depth={item.depth}
             hasChildren={item.hasChildren}
             collapsed={item.collapsed}
             parentStatus={item.parentStatus}
             favorited={notes.favoritePageIds.includes(item.page.id)}
-            selected={item.page.id === notes.selectedPageId}
+            selected={item.page.id === selectedRootPageId}
             showDisclosure={false}
-            highlightRequestId={item.page.id === notes.selectedPageId ? currentFileHighlightRequestId : 0}
+            highlightRequestId={item.page.id === selectedRootPageId ? currentFileHighlightRequestId : 0}
             navigationDragging={draggingNavigationItem?.kind === "page" && draggingNavigationItem.id === item.page.id}
             onSelect={() => {
               onCreationFolderChange(notesPageContainingFolderId(item.page.id, projectPages));
@@ -1233,9 +1222,6 @@
             }}
             onRename={(title) => {
               return renamePage(item.page.id, title);
-            }}
-            onToggleCollapsed={(collapsed) => {
-              notes.setSidebarPageCollapsed(item.page.id, collapsed);
             }}
             onToggleFavorite={(favorited) => {
               notes.setPageFavorited(item.page.id, favorited);
@@ -1276,20 +1262,6 @@
         onSelect={onSelectWorkingMarkdownFile}
         onRefresh={() => { void refreshWorkingMarkdown(); }}
       />
-    {/if}
-    {#if draggingNavigationItem}
-      <div
-        class={`sticky bottom-1 z-10 mt-2 flex min-h-9 items-center justify-center gap-1.5 rounded-md border px-2 text-[0.8rem] shadow-sm backdrop-blur-sm ${navigationDropState({ kind: "root" }) === "valid"
-          ? "notes-navigation-root-drop-valid text-foreground"
-          : navigationDropState({ kind: "root" }) === "invalid"
-            ? "border-border bg-accent/60 text-muted-foreground"
-            : "border-border bg-background/95 text-muted-foreground"}`}
-        role="status"
-        data-notes-navigation-drop-kind="root"
-      >
-        <FolderRoot class="size-3.5" strokeWidth={explorerIconStrokeWidth} />
-        <span>{t("notes.moveToProjectRoot")}</span>
-      </div>
     {/if}
   </div>
   </div>
@@ -1336,26 +1308,29 @@
       />
     {/if}
   {:else if confirmDialogLoadState?.status === "failed"}
-    <div class="fixed inset-0 z-100 flex items-center justify-center bg-black/45 p-4" role="alert">
-      <div class="rounded-md border border-border bg-popover p-4 text-sm text-popover-foreground shadow-lg">
-        <p>{t("common.viewLoadFailed", t("common.confirm"))}</p>
-        <div class="mt-3 flex gap-2">
-          <button class="min-h-8 rounded-md border border-border px-2 hover:bg-accent" type="button" onclick={() => requestConfirmDialog(true)}>{t("common.retry")}</button>
-          <button class="min-h-8 rounded-md border border-border px-2 hover:bg-accent" type="button" onclick={clearPendingConfirmation}>{t("common.cancel")}</button>
-        </div>
+    <div class="fixed inset-0 z-100 flex items-center justify-center surface-backdrop p-4" role="dialog" aria-modal="true">
+      <div class="surface-dialog p-4 text-sm">
+        <Notice message={t("common.viewLoadFailed", t("common.confirm"))} copy={false} onRetry={() => requestConfirmDialog(true)}>
+          {#snippet actions()}<button type="button" class="notice-action-text" onclick={clearPendingConfirmation}>{t("common.cancel")}</button>{/snippet}
+        </Notice>
       </div>
     </div>
   {:else}
-    <div class="fixed inset-0 z-100 flex items-center justify-center bg-black/45 p-4" role="dialog" aria-modal="true" aria-busy="true">
-      <div class="rounded-md border border-border bg-popover px-4 py-3 text-sm text-muted-foreground shadow-lg">{t("common.loading")}</div>
+    <div class="fixed inset-0 z-100 flex items-center justify-center surface-backdrop p-4" role="dialog" aria-modal="true" aria-busy="true">
+      <Loading layout="fill" />
     </div>
   {/if}
 {/if}
 
 <style>
   .notes-project-explorer {
-    width: 16rem;
+    width: var(--explorer-width);
     transition: width 180ms cubic-bezier(0.2, 0, 0, 1);
+  }
+
+  .notes-project-explorer-content {
+    width: var(--explorer-width);
+    min-width: var(--explorer-width);
   }
 
   .notes-project-explorer-mobile {
@@ -1383,7 +1358,7 @@
   }
 
   .notes-project-explorer-collapsed-rail {
-    background-color: var(--cal-bg);
+    background-color: var(--explorer-background);
     opacity: 0;
     pointer-events: none;
     transition: opacity 60ms linear;
@@ -1408,8 +1383,11 @@
   }
 
   .notes-navigation-root-drop-valid {
-    border-color: color-mix(in oklab, var(--selection-background) 72%, var(--border));
-    background: var(--selection-background);
+    background: color-mix(in oklab, var(--selection-background) 55%, transparent);
+  }
+
+  .notes-navigation-root-drop-invalid {
+    background: color-mix(in oklab, var(--accent) 36%, transparent);
   }
 
   .notes-navigation-folder-drop-area-single {

@@ -1,7 +1,9 @@
 //! Runtime-only pseudoterminal sessions with bounded replay.
 
-use super::models::{ChatError, ChatErrorCode, ChatResult, ChatThreadId, ProjectWorkingFolderId};
 use base64::{Engine as _, engine::general_purpose};
+use ganbaru_chat_contracts::models::{
+    ChatError, ChatErrorCode, ChatResult, ChatThreadId, ProjectWorkingFolderId,
+};
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
@@ -17,7 +19,7 @@ use tauri::Emitter;
 pub const CHAT_TERMINAL_OUTPUT_EVENT: &str = "chat://terminal-output";
 pub const CHAT_TERMINAL_STATE_EVENT: &str = "chat://terminal-state";
 const MAX_TERMINALS_PER_THREAD: usize = 8;
-const MAX_TERMINALS_APP: usize = 32;
+const MAX_TERMINALS_PER_APP: usize = 32;
 const MAX_REPLAY_BYTES: usize = 2 * 1024 * 1024;
 const MAX_OUTPUT_CHUNK_BYTES: usize = 16 * 1024;
 const MAX_INPUT_BYTES: usize = 1024 * 1024;
@@ -90,7 +92,7 @@ struct ReplayChunk {
 }
 
 #[derive(Debug)]
-struct TerminalMutable {
+struct TerminalState {
     name: String,
     shell: String,
     columns: u16,
@@ -107,7 +109,7 @@ struct TerminalSession {
     id: String,
     thread_id: ChatThreadId,
     working_folder_id: ProjectWorkingFolderId,
-    mutable: Mutex<TerminalMutable>,
+    state: Mutex<TerminalState>,
     master: Mutex<Option<Box<dyn MasterPty + Send>>>,
     writer: Mutex<Option<Box<dyn Write + Send>>>,
     killer: Mutex<Option<Box<dyn ChildKiller + Send + Sync>>>,
@@ -115,7 +117,7 @@ struct TerminalSession {
 
 impl TerminalSession {
     fn read(&self) -> ChatResult<ChatTerminalRead> {
-        let state = self.mutable.lock().map_err(|_| terminal_state_error())?;
+        let state = self.state.lock().map_err(|_| terminal_state_error())?;
         Ok(ChatTerminalRead {
             id: self.id.clone(),
             thread_id: self.thread_id.clone(),
@@ -132,7 +134,7 @@ impl TerminalSession {
     }
 
     fn snapshot(&self) -> ChatResult<ChatTerminalSnapshotRead> {
-        let state = self.mutable.lock().map_err(|_| terminal_state_error())?;
+        let state = self.state.lock().map_err(|_| terminal_state_error())?;
         let terminal = ChatTerminalRead {
             id: self.id.clone(),
             thread_id: self.thread_id.clone(),
@@ -168,7 +170,7 @@ impl TerminalSession {
         generation: u64,
         bytes: Vec<u8>,
     ) -> ChatResult<Option<ChatTerminalOutputChunk>> {
-        let mut state = self.mutable.lock().map_err(|_| terminal_state_error())?;
+        let mut state = self.state.lock().map_err(|_| terminal_state_error())?;
         if generation != state.generation || bytes.is_empty() {
             return Ok(None);
         }
@@ -196,7 +198,7 @@ impl TerminalSession {
     }
 
     fn mark_exited(&self, generation: u64, exit_code: i32) -> ChatResult<bool> {
-        let mut state = self.mutable.lock().map_err(|_| terminal_state_error())?;
+        let mut state = self.state.lock().map_err(|_| terminal_state_error())?;
         if state.generation != generation {
             return Ok(false);
         }
@@ -222,7 +224,7 @@ impl TerminalSession {
             .lock()
             .map_err(|_| terminal_state_error())?
             .take();
-        if let Ok(mut state) = self.mutable.lock() {
+        if let Ok(mut state) = self.state.lock() {
             state.running = false;
         }
         Ok(())
@@ -296,7 +298,7 @@ impl ChatTerminalRegistry {
                 true,
             ));
         }
-        if sessions.len() >= MAX_TERMINALS_APP
+        if sessions.len() >= MAX_TERMINALS_PER_APP
             || sessions
                 .values()
                 .filter(|session| session.thread_id == input.thread_id)
@@ -366,7 +368,7 @@ impl ChatTerminalRegistry {
             ));
         }
         let mut writer = session.writer.lock().map_err(|_| terminal_state_error())?;
-        let writer = writer.as_mut().ok_or_else(terminal_not_running)?;
+        let writer = writer.as_mut().ok_or_else(terminal_not_running_error)?;
         writer
             .write_all(text.as_bytes())
             .map_err(terminal_io_error)?;
@@ -381,7 +383,7 @@ impl ChatTerminalRegistry {
             .lock()
             .map_err(|_| terminal_state_error())?
             .as_ref()
-            .ok_or_else(terminal_not_running)?
+            .ok_or_else(terminal_not_running_error)?
             .resize(PtySize {
                 rows,
                 cols: columns,
@@ -389,7 +391,7 @@ impl ChatTerminalRegistry {
                 pixel_height: 0,
             })
             .map_err(terminal_io_error)?;
-        let mut state = session.mutable.lock().map_err(|_| terminal_state_error())?;
+        let mut state = session.state.lock().map_err(|_| terminal_state_error())?;
         state.columns = columns;
         state.rows = rows;
         Ok(())
@@ -512,7 +514,7 @@ fn spawn_session(
         id: spec.terminal_id,
         thread_id: spec.thread_id,
         working_folder_id: spec.working_folder_id,
-        mutable: Mutex::new(TerminalMutable {
+        state: Mutex::new(TerminalState {
             name: spec.name,
             shell: default_shell_label(),
             columns: spec.columns,
@@ -687,7 +689,7 @@ fn format_terminal_name(
     format!("{user}@{host}: {path}")
 }
 
-fn terminal_not_running() -> ChatError {
+fn terminal_not_running_error() -> ChatError {
     ChatError::new(
         ChatErrorCode::InvalidStateTransition,
         "Chat terminal is not running",
@@ -721,7 +723,7 @@ mod tests {
             thread_id: ChatThreadId::new("thread:test").expect("thread ID should be valid"),
             working_folder_id: ProjectWorkingFolderId::new("workspace:test")
                 .expect("workspace ID should be valid"),
-            mutable: Mutex::new(TerminalMutable {
+            state: Mutex::new(TerminalState {
                 name: "Terminal 1".to_string(),
                 shell: "test-shell".to_string(),
                 columns: 80,
@@ -760,7 +762,7 @@ mod tests {
         assert_eq!(snapshot.scrollback[0].sequence, 2);
         assert!(
             session
-                .mutable
+                .state
                 .lock()
                 .expect("terminal state should lock")
                 .replay_bytes
@@ -804,12 +806,12 @@ mod tests {
 
     #[test]
     fn terminal_name_uses_the_local_identity_and_home_relative_workspace_path() {
-        let home = PathBuf::from("home").join("victor");
+        let home = PathBuf::from("home").join("alice");
         let workspace = home.join("Documents").join("ganbaru-ai");
         let separator = std::path::MAIN_SEPARATOR;
         assert_eq!(
-            format_terminal_name("victor", "workstation", &workspace, Some(&home)),
-            format!("victor@workstation: ~{separator}Documents{separator}ganbaru-ai")
+            format_terminal_name("alice", "workstation", &workspace, Some(&home)),
+            format!("alice@workstation: ~{separator}Documents{separator}ganbaru-ai")
         );
     }
 
@@ -817,10 +819,7 @@ mod tests {
     fn terminal_identity_rejects_empty_and_control_character_values() {
         assert_eq!(normalized_identity("vic\ntor"), None);
         assert_eq!(normalized_identity("   "), None);
-        assert_eq!(
-            normalized_identity(" victor \n"),
-            Some("victor".to_string())
-        );
+        assert_eq!(normalized_identity(" alice \n"), Some("alice".to_string()));
     }
 
     #[cfg(unix)]

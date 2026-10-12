@@ -1,0 +1,32 @@
+[package]
+name = "ganbaru-calendar"
+version = "0.1.0"
+description = "Ganbaru AI Calendar persistence, iCalendar import and export, native reads, scoped edits, deletion and Undo, and recurrence expansion"
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+ammonia = { workspace = true }
+chrono = { workspace = true }
+ganbaru-civil-time = { workspace = true }
+ganbaru-db = { workspace = true }
+ganbaru-music = { workspace = true }
+ganbaru-pomodoro = { workspace = true }
+ganbaru-projects = { workspace = true }
+jiff = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+chrono = { workspace = true, features = ["clock"] }

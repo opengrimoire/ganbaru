@@ -2,19 +2,18 @@
  * Pass orchestration for the benchmark harness.
  *
  * Public surface:
- * - `runPhaseA(scenario)` / `runPhaseB(scenario)`: drive the workload for one pass.
+ * - `createRunner(...)`: returns `runPhaseA` and `runPhaseB`, which drive the workload for one pass.
  * - `persistPhaseAPending(...)`: write state file before the first restart.
  * - `persistPhaseBPending(...)`: write state file between the two passes.
  * - `persistBenchmarkState(...)`: update the state file without changing the payload.
  * - `loadPersistedState()` / `clearPersistedState()`: state file plumbing.
  *
  * The scenario module owns `setup()`, `runWorkload()`, `seed()`, and
- * `cleanup()`; the runner does not know the difference between a calendar
- * scenario and a future project task / pomodoro scenario.
+ * `cleanup()`, so the runner stays independent of what each scenario
+ * measures.
  */
 import { invoke } from "@tauri-apps/api/core";
 import {
-  HELD_NAVIGATION_DURATION_MS,
   HARNESS_VERSION,
   DENSE_DATASET_VERSION,
   resolveBenchmarkAnchorDate,
@@ -140,9 +139,9 @@ export function createRunner(getEventCount: () => number) {
 /**
  * Persist `phase-a-pending` state, written right after the user confirms.
  * The next cold boot opens the isolated benchmark DB (because
- * `vaultMode === "benchmark"`) and the runner picks up the baseline pass from
- * `checkAndResume`. State file lives in `app_config_dir/benchmark-state.json`,
- * not the Ganbaru AI folder.
+ * `vaultMode === "benchmark"`) and the benchmark runner store resumes the
+ * baseline pass from `checkAndResume`. The state file lives in
+ * `app_config_dir/benchmark-state.json`, not the vault.
  */
 export async function persistPhaseAPending(opts: {
   scenarioId: string;
@@ -225,9 +224,8 @@ export async function persistBenchmarkState(state: BenchmarkState): Promise<void
 /** Trigger the relaunch. The Rust command never returns; do not await. */
 export function restartApp(): void {
   void invoke("restart_app").catch(() => {
-    // The IPC may resolve normally on platforms where the restart returns
-    // before the new process kills the old one. Either way, nothing useful
-    // can be done here.
+    // The IPC can fail when the process exits before replying. Nothing
+    // useful can be done here.
   });
 }
 
@@ -243,9 +241,8 @@ export function restartAppAfterDelay(delayMs: number): void {
  * Read the persisted state file from `app_config_dir/benchmark-state.json`.
  * Validates harness version, dataset version, and TTL; if any check fails,
  * deletes the benchmark DB and clears the file silently before returning
- * `null`. The DB teardown matters because a stale state file usually
- * implies a stale benchmark DB sitting next to the user's real DB; we
- * want both gone before the next normal boot.
+ * `null`. A stale state file usually implies a stale benchmark DB beside the
+ * vault database, and both must be gone before the next normal boot.
  */
 export async function loadPersistedState(): Promise<BenchmarkState | null> {
   const json = await invoke<string | null>("read_benchmark_state");
@@ -291,10 +288,4 @@ async function discardStaleArtifacts(): Promise<void> {
 
 export async function clearPersistedState(): Promise<void> {
   await invoke("clear_benchmark_state");
-}
-
-/** Confirm that a stress duration was within the expected window. */
-export function withinStressBudget(actual: number): boolean {
-  // Allow 10% slack either way for jitter.
-  return Math.abs(actual - HELD_NAVIGATION_DURATION_MS) <= HELD_NAVIGATION_DURATION_MS * 0.1;
 }

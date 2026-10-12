@@ -3,14 +3,16 @@
   import Music from "@lucide/svelte/icons/music";
   import StickyNote from "@lucide/svelte/icons/sticky-note";
   import type { View } from "$lib/navigation";
-  import { mobileCenteredPanelGeometry } from "$lib/mobile-layout";
-  import MobileNavigation from "$lib/components/mobile/MobileNavigation.svelte";
+  import { mobileCenteredPanelGeometry } from "$lib/mobile/layout";
+  import MobileNavigation from "./MobileNavigation.svelte";
   import PomodoroProgressRing from "$lib/components/pomodoro/PomodoroProgressRing.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { cn } from "$lib/utils";
+  import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
+  import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
 
   type PomodoroMenuComponent = typeof import("$lib/components/pomodoro/PomodoroMenuContent.svelte").default;
-  type LinkedDeviceControlComponent = typeof import("$lib/components/vault/LinkedDeviceControl.svelte").default;
+  type LinkedDeviceControlComponent = typeof import("$lib/components/vault/handoff/LinkedDeviceControl.svelte").default;
 
   let {
     current,
@@ -66,7 +68,7 @@
   let pomodoroAnchorElement = $state<HTMLDivElement | null>(null);
   let pomodoroTriggerElement = $state<HTMLButtonElement | null>(null);
   let pomodoroMenuStyle = $state("left:50%;width:min(16rem,calc(100vw - 1rem));transform:translateX(-50%)");
-  const pomodoroMenuDesiredWidth = 256;
+  const pomodoroMenuDesiredWidth = FLOATING_WIDTH.sm;
   const pomodoroMenuViewportInset = 8;
 
   function rootPixelValue(property: string): number {
@@ -169,15 +171,17 @@
       ></button>
       <div
         role="menu"
-        class="absolute top-[calc(100%+0.25rem)] z-50 max-h-[calc(var(--visual-viewport-height)-var(--safe-area-top)-var(--mobile-topbar-h)-0.75rem)] overflow-y-auto rounded-xl border border-border bg-popover py-1 text-popover-foreground shadow-xl"
+        class="surface-floating absolute top-[calc(100%+0.25rem)] z-50 flex max-h-[calc(var(--visual-viewport-height)-var(--safe-area-top)-var(--mobile-topbar-h)-0.75rem)] flex-col overflow-hidden"
         style={pomodoroMenuStyle}
       >
-        <PomodoroMenuSurface
-          includeMusic={musicVisible}
-          touch
-          onDismiss={onClosePomodoro}
-          onOpenMusic={onOpenMusic}
-        />
+        <div use:scrollEdgeFadeAction class="surface-floating-body min-h-0 overflow-y-auto">
+          <PomodoroMenuSurface
+            includeMusic={musicVisible}
+            touch
+            onDismiss={onClosePomodoro}
+            onOpenMusic={onOpenMusic}
+          />
+        </div>
       </div>
     {/if}
   </div>

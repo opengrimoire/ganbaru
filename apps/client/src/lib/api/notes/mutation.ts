@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import { applyNotesProjectHistoryMutationDeadline } from "$lib/notes/project-history-scheduler";
+import { publishNotesDatabaseChange } from "$lib/notes/database/window-sync";
+import { applyNotesProjectHistoryMutationDeadline } from "$lib/notes/history/project-history-scheduler";
 
 /** Invoke a Notes mutation and apply its project-history checkpoint envelope. */
 export async function invokeNotesMutation(
@@ -7,6 +8,7 @@ export async function invokeNotesMutation(
   args: Record<string, unknown>,
 ): Promise<unknown> {
   const result = await invoke<unknown>(command, args);
+  publishNotesDatabaseChange();
   if (typeof result !== "object" || result === null || Array.isArray(result)) {
     throw new Error(`${command} returned an invalid Notes mutation envelope`);
   }

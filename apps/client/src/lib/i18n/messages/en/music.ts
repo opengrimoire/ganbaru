@@ -5,6 +5,10 @@ export const music = {
   backToPlayer: "Return to music player",
   returnToPlayerShort: "Return",
   mediaPlayer: "Media player",
+  nativeSession: {
+    browserUnavailable: "Playback is paused because this source needs the visible player. Open the app and press Play to continue.",
+    interrupted: "Playback was interrupted. Press Play to continue from the saved position.",
+  },
   launcher: {
     playlists: "Playlists",
     choosePlaylist: "Choose a saved playlist",

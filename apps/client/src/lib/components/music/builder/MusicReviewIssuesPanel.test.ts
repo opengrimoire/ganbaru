@@ -2,7 +2,7 @@
 
 import { mount, tick, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { MusicIssue, MusicItemListEntry } from "$lib/music/library-contracts";
+import type { MusicIssue, MusicItemListEntry } from "$lib/music/library/contracts";
 import MusicReviewIssuesPanel from "./MusicReviewIssuesPanel.svelte";
 
 function item(): MusicItemListEntry {
@@ -10,8 +10,8 @@ function item(): MusicItemListEntry {
     id: "track-1", identityKey: "track-1", sourceKind: "local-file", mediaKind: "audio",
     title: "Missing song", artist: "", album: "", localRootId: "root-1", relativePath: "Album/song.flac", sourceCollectionIds: ["source-1"],
     originalArtworkIdentity: null, artworkOverride: null, durationMs: null, availability: "missing",
-    reviewState: "unreviewed", discoveredAt: 1, updatedAt: 1, version: 1, playlistCount: 0,
-    activeSnoozeCount: 0, lastPlayedAt: null, playCount: 0, membershipId: null,
+    reviewState: "unreviewed", discoveredAtMs: 1, updatedAtMs: 1, version: 1, playlistCount: 0,
+    activeSnoozeCount: 0, lastPlayedAtMs: null, playCount: 0, membershipId: null,
     membershipPosition: null, membershipWeight: null, membershipEnabled: null, membershipVersion: null,
   };
 }
@@ -20,7 +20,7 @@ function issue(): MusicIssue {
   return {
     id: "issue-1", issueKind: "missing-local-file", itemId: "track-1", playlistId: null,
     collectionId: "source-1", rootId: "root-1", relativePath: "Album/song.flac",
-    actionRequired: true, message: "The local media location is missing.", createdAt: 1,
+    actionRequired: true, message: "The local media location is missing.", createdAtMs: 1,
   };
 }
 

@@ -1,48 +1,22 @@
 # Fastmail
 
-Fastmail is a practical compatibility target and a useful provider because it supports standard calendar import/export and CalDAV.
+Fastmail is a practical compatibility target and a useful provider because it supports standard calendar import and export and CalDAV. Shared procedure, import expectations, and questions are in the [client index](./README.md).
 
 ## Source notes
 
-- Fastmail documents importing events from `.ics` files by drag and drop or import tool.
-- Fastmail documents exporting calendars in industry-standard iCalendar `.ics` format.
-- Fastmail notes that notification preferences or alarms are not imported to or exported from Fastmail.
+- Fastmail documents importing events from `.ics` files and exporting calendars as `.ics`.
+- Fastmail states that alarms and notification preferences are not imported or exported. Missing alarms in Fastmail exports are a client observation, not a Ganbaru AI rule.
 - Fastmail replaces existing event details when an uploaded file contains an event that already exists.
 
-Source:
+Source: <https://www.fastmail.help/hc/en-us/articles/360060590773-Import-export-your-calendars>
 
-- <https://www.fastmail.help/hc/en-us/articles/360060590773-Import-export-your-calendars>
+## Client-specific priorities
 
-## Known fixture priorities
-
-- event import and export
-- duplicate `UID` replacement behavior
-- all-day single and multi-day events
-- recurring event with exceptions
-- recurring override
-- attendee and organizer fields
-- alarm fixture to verify documented alarm loss
-- non-ASCII text
-- custom `X-*` fields
-
-## Import into Ganbaru AI
-
-Expected handling:
-
-- Preserve Fastmail-exported events.
-- Preserve missing alarm behavior as a client observation, not a Ganbaru AI rule.
-- Project supported `VEVENT` rows.
-- Preserve attendees, organizer, and recurrence data.
-
-## Manual test
-
-Use the [shared client procedure](./README.md#shared-procedure). Include the alarm and duplicate-UID priorities below.
+- An alarm fixture to confirm the documented alarm loss.
+- A duplicate `UID` upload to confirm replacement behavior.
 
 ## Behavior to verify
 
-- Whether Fastmail preserves unknown `X-*` fields.
-- Whether Fastmail rewrites timezones.
-- Whether Fastmail imports mixed-component calendars.
 - Whether duplicate `UID` import replaces details as documented.
 - Whether attendee participation fields round-trip.
 

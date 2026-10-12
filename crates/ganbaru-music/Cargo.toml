@@ -1,0 +1,22 @@
+[package]
+name = "ganbaru-music"
+version = "0.1.0"
+description = "Ganbaru AI Music context assignments and library errors"
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+sqlx = { workspace = true }
+
+[dev-dependencies]
+ganbaru-db = { workspace = true }
+tokio = { workspace = true }

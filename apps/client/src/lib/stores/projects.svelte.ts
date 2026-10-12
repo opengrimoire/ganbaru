@@ -5,23 +5,23 @@ import {
   loadProjectsWorkspace,
   refreshProjectsWorkspace,
 } from "$lib/api/projects";
-import { ProjectTaskDetailCache } from "$lib/projects/task-detail-cache";
-import { ProjectTaskViewRequestGate } from "$lib/projects/task-view-request-gate";
+import { ProjectTaskDetailCache } from "$lib/projects/tasks/detail-cache";
+import { ProjectTaskViewRequestGate } from "$lib/projects/tasks/view-request-gate";
 import {
   mergeProjectOptionalData,
   PROJECT_SCOPED_OPTIONAL_DATA_KINDS,
   projectOptionalDataKey,
   projectViewOptionalDataKinds,
-} from "$lib/projects/project-optional-data";
-import { mergeProjectSnapshot } from "$lib/projects/project-snapshot";
+} from "$lib/projects/snapshot/optional-data";
+import { mergeProjectSnapshot } from "$lib/projects/snapshot/queries";
 import {
   loadSavedActiveProjectId,
   loadSavedProjectViewId,
   saveActiveProjectId,
   saveProjectViewId,
-} from "$lib/projects/project-ui-preferences";
-import { createProjectStoreActions } from "$lib/stores/project-store-actions";
-import { createProjectStoreSelectors } from "$lib/stores/project-store-selectors";
+} from "$lib/projects/ui-preferences";
+import { createProjectStoreActions } from "$lib/stores/projects/actions";
+import { createProjectStoreSelectors } from "$lib/stores/projects/selectors";
 import type {
   Project,
   ProjectChecklistItem,
@@ -84,6 +84,7 @@ let optionalDataVersion = $state(0);
 let taskViewPage = $state<ProjectTaskViewPage | null>(null);
 let taskViewLoading = $state(false);
 let taskViewError = $state<string | null>(null);
+let taskMutationRevision = $state(0);
 const taskViewRequestGate = new ProjectTaskViewRequestGate();
 const taskDetailCache = new ProjectTaskDetailCache(4 * 1024 * 1024);
 const taskDetailRequests = new Map<string, Promise<ProjectTaskDetailData>>();
@@ -105,7 +106,7 @@ function setSelectedProjectId(projectId: string | null): void {
   saveActiveProjectId(projectId);
 }
 
-function projectDataLoaded(projectId: string | null | undefined): boolean {
+function isProjectDataLoaded(projectId: string | null | undefined): boolean {
   return Boolean(projectId && loadedProjectIds.includes(projectId));
 }
 
@@ -149,14 +150,14 @@ async function reload(projectId: string | null = selectedProjectId): Promise<voi
   taskViewRequestGate.cancel();
   taskViewLoading = false;
   const requestId = ++loadRequestId;
-  const initialLoad = !loaded;
+  const isInitialLoad = !loaded;
   const customEmojiKey = projectOptionalDataKey("custom_emojis", null);
   const refreshCustomEmojis = optionalDataLoadedKeys.has(customEmojiKey)
     || optionalDataRequests.has(customEmojiKey);
   loading = true;
   loadError = null;
   try {
-    let response = initialLoad
+    let response = isInitialLoad
       ? await loadProjectsWorkspace(projectId, activeView)
       : await refreshProjectsWorkspace(projectId, activeView);
     if (requestId !== loadRequestId) return;
@@ -225,19 +226,19 @@ async function ensureLoaded(): Promise<void> {
 async function ensureProjectData(projectId: string | null | undefined): Promise<void> {
   if (!projectId) return;
   if (!loaded) await ensureLoaded();
-  if (projectDataLoaded(projectId)) return;
+  if (isProjectDataLoaded(projectId)) return;
   await reload(projectId);
 }
 
 async function selectProject(projectId: string | null): Promise<void> {
   const requestId = ++selectProjectRequestId;
-  if (!projectId || projectDataLoaded(projectId)) {
+  if (!projectId || isProjectDataLoaded(projectId)) {
     setSelectedProjectId(projectId);
     return;
   }
   await ensureProjectData(projectId);
   if (requestId !== selectProjectRequestId) return;
-  if (!projectDataLoaded(projectId)) return;
+  if (!isProjectDataLoaded(projectId)) return;
   setSelectedProjectId(projectId);
 }
 
@@ -276,6 +277,12 @@ async function ensureProjectViewData(
   ));
 }
 
+/** Reports whether every optional collection a project view needs has loaded. */
+function isProjectViewDataLoaded(projectId: string | null | undefined, view: ProjectViewId): boolean {
+  if (!projectId) return false;
+  return projectViewOptionalDataKinds(view).every((kind) => isProjectOptionalDataLoaded(kind, projectId));
+}
+
 async function ensureProjectToolbarData(projectId: string | null | undefined): Promise<void> {
   if (!projectId) return;
   await Promise.all([
@@ -298,7 +305,7 @@ function mergeTaskViewPage(
   append: boolean,
   retainedTaskIds: readonly string[],
 ): void {
-  const oldProjectTaskIds = new Set(
+  const loadedProjectTaskIds = new Set(
     snapshot.tasks.filter((task) => task.projectId === page.projectId).map((task) => task.id),
   );
   const retainedIdSet = new Set(retainedTaskIds);
@@ -318,8 +325,8 @@ function mergeTaskViewPage(
   const deduplicated = [...new Map(projectTasks.map((task) => [task.id, task])).values()];
   const affectedTaskIds = append
     ? new Set(page.tasks.map((task) => task.id))
-    : oldProjectTaskIds;
-  const oldProjectFieldIds = new Set(
+    : loadedProjectTaskIds;
+  const loadedProjectFieldIds = new Set(
     snapshot.customFields
       .filter((field) => field.projectId === page.projectId)
       .map((field) => field.id),
@@ -345,7 +352,7 @@ function mergeTaskViewPage(
       ...page.customFields,
     ],
     customFieldOptions: [
-      ...snapshot.customFieldOptions.filter((option) => !oldProjectFieldIds.has(option.fieldId)),
+      ...snapshot.customFieldOptions.filter((option) => !loadedProjectFieldIds.has(option.fieldId)),
       ...page.customFieldOptions,
     ],
   };
@@ -382,7 +389,7 @@ function mergeTaskDetail(detail: ProjectTaskDetailData): void {
   const taskId = detail.task.id;
   const relatedIds = new Set(detail.relatedTasks.map((task) => task.id));
   relatedIds.add(taskId);
-  const oldProjectFieldIds = new Set(
+  const loadedProjectFieldIds = new Set(
     snapshot.customFields
       .filter((field) => field.projectId === detail.task.projectId)
       .map((field) => field.id),
@@ -416,7 +423,7 @@ function mergeTaskDetail(detail: ProjectTaskDetailData): void {
       ...detail.customFields,
     ],
     customFieldOptions: [
-      ...snapshot.customFieldOptions.filter((option) => !oldProjectFieldIds.has(option.fieldId)),
+      ...snapshot.customFieldOptions.filter((option) => !loadedProjectFieldIds.has(option.fieldId)),
       ...detail.customFieldOptions,
     ],
   };
@@ -455,7 +462,7 @@ async function ensureCustomEmojis(): Promise<void> {
   await ensureOptionalData("custom_emojis", null);
 }
 
-function projectOptionalDataLoaded(
+function isProjectOptionalDataLoaded(
   kind: ProjectOptionalDataKind,
   projectId: string | null,
 ): boolean {
@@ -465,6 +472,7 @@ function projectOptionalDataLoaded(
 
 function updateSnapshot(updater: (current: ProjectsSnapshot) => ProjectsSnapshot): void {
   snapshot = updater(snapshot);
+  taskMutationRevision += 1;
 }
 
 const actions = createProjectStoreActions({
@@ -476,7 +484,7 @@ const actions = createProjectStoreActions({
     if (assignments.length === 0) return;
     try {
       const { getCalendar } = await import("$lib/stores/calendar.svelte");
-      getCalendar().applyProjectAssignments(assignments);
+      await getCalendar().applyProjectAssignments(assignments);
     } catch (error) {
       console.error("Failed to apply committed calendar event project assignments", error);
     }
@@ -507,6 +515,8 @@ export function getProjects() {
     subtasksForTaskIncludingArchived,
     defaultSection,
     defaultStatus,
+    doneStatus,
+    reopenStatus,
     statusById,
     taskById,
     eventLinksForTask,
@@ -626,6 +636,9 @@ export function getProjects() {
     get taskViewError(): string | null {
       return taskViewError;
     },
+    get taskMutationRevision(): number {
+      return taskMutationRevision;
+    },
     load: reload,
     ensureLoaded,
     ensureProjectData,
@@ -634,8 +647,9 @@ export function getProjects() {
     loadTaskView,
     ensureTaskDetailData,
     ensureCustomEmojis,
-    projectOptionalDataLoaded,
-    projectDataLoaded,
+    isProjectOptionalDataLoaded,
+    isProjectViewDataLoaded,
+    isProjectDataLoaded,
     selectProject,
     projectById,
     groupById,
@@ -654,6 +668,8 @@ export function getProjects() {
     subtasksForTaskIncludingArchived,
     defaultSection,
     defaultStatus,
+    doneStatus,
+    reopenStatus,
     statusById,
     taskById,
     eventLinksForTask,

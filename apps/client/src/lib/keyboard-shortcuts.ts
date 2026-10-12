@@ -58,3 +58,28 @@ export function hasOnlyShortcutModifier(
     && !event.altKey
     && event.shiftKey === (options.shift ?? false);
 }
+
+export type AppNavigationShortcut =
+  | { type: "settings" }
+  | { type: "relative-view"; direction: -1 | 1 }
+  | { type: "view"; index: number };
+
+/** Resolve app navigation independently of focus inside a document or input. */
+export function appNavigationShortcut(
+  event: KeyboardModifierState & Pick<KeyboardEvent, "key" | "code" | "isComposing">,
+  viewCount: number,
+): AppNavigationShortcut | null {
+  if (event.isComposing) return null;
+  if (hasOnlyShortcutModifier(event) && event.key === ",") return { type: "settings" };
+  if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && /^[1-9]$/.test(event.key)) {
+    const index = Number(event.key) - 1;
+    return index < viewCount ? { type: "view", index } : null;
+  }
+  if (hasShortcutModifier(event) && !event.altKey && (event.key === "Tab" || event.code === "Tab")) {
+    return { type: "relative-view", direction: event.shiftKey ? -1 : 1 };
+  }
+  if (hasOnlyShortcutModifier(event) && (event.key === "PageUp" || event.key === "PageDown")) {
+    return { type: "relative-view", direction: event.key === "PageUp" ? -1 : 1 };
+  }
+  return null;
+}

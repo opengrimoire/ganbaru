@@ -16,28 +16,29 @@
   import X from "@lucide/svelte/icons/x";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import IconPicker from "$lib/components/icon-picker/IconPicker.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { formatList } from "$lib/i18n/formatters";
-  import type { MusicBuilderInspectorController } from "$lib/music/music-builder-inspector.svelte";
-  import type { MusicBulkEditController } from "$lib/music/music-bulk-edit-controller.svelte";
-  import type { MusicLibraryController } from "$lib/music/music-library-controller.svelte";
-  import type { MusicReviewAuditionController } from "$lib/music/music-review-audition.svelte";
-  import type { MusicReviewController } from "$lib/music/music-review-controller.svelte";
-  import type { MusicReviewWorkspaceViewState } from "$lib/music/music-builder-view-state";
-  import type { MusicSourcesController } from "$lib/music/music-sources-controller.svelte";
-  import type { MusicIssue, MusicItemListEntry } from "$lib/music/library-contracts";
+  import type { MusicBuilderInspectorController } from "$lib/music/builder/inspector.svelte";
+  import type { MusicBulkEditController } from "$lib/music/builder/bulk-edit-controller.svelte";
+  import type { MusicLibraryController } from "$lib/music/library/controller.svelte";
+  import type { MusicReviewAuditionController } from "$lib/music/review/audition.svelte";
+  import type { MusicReviewController } from "$lib/music/review/controller.svelte";
+  import type { MusicReviewWorkspaceViewState } from "$lib/music/builder/view-state";
+  import type { MusicSourcesController } from "$lib/music/sources/controller.svelte";
+  import type { MusicIssue, MusicItemListEntry } from "$lib/music/library/contracts";
   import {
     isMusicReviewEditableTarget,
     musicReviewArtworkDataUrl,
     musicReviewDurationMs,
-  } from "$lib/music/music-review";
+  } from "$lib/music/review";
   import {
     buildMusicReviewTree,
     firstMusicReviewTreeItemId,
     nextPendingMusicReviewSelectionItemId,
     nextPendingMusicReviewTreeItemId,
     summarizeMusicReviewTreeSelection,
-  } from "$lib/music/music-review-tree";
+  } from "$lib/music/review/tree";
   import { clampRate, formatPlaybackTime } from "$lib/music/playback";
   import { formatShortcut } from "$lib/keyboard-shortcuts";
   import MusicPlaylistIcon from "./MusicPlaylistIcon.svelte";
@@ -301,9 +302,9 @@
     checklistRoot?.querySelector<HTMLElement>(`[data-review-playlist-id="${playlistId}"]`)?.focus();
   }
 
-  function reloadSelection(): void {
-    if (!selectionMode || bulk.loading) return;
-    void bulk.open(selectedItemIds, library.playlistSummaries, true);
+  function reloadSelection(): Promise<boolean> | undefined {
+    if (!selectionMode || bulk.loading) return undefined;
+    return bulk.open(selectedItemIds, library.playlistSummaries, true);
   }
 
   async function loadDecodedReviewArtwork(
@@ -463,7 +464,7 @@
     lastSelectedId = null;
   }
 
-  /** Gives YouTube previews immediate feedback while the review queue is prepared. */
+  /** Toggle review playback, marking YouTube items as starting so the preview gives feedback while the review queue is prepared. */
   async function toggleReviewPlayback(): Promise<void> {
     if (!detail || reviewStartItemId === detail.item.id || (reviewPlayerReady && player.youtubePlaybackStarting)) return;
     if (reviewPlayerReady) {
@@ -480,7 +481,7 @@
   }
 
   function handleKeydown(event: KeyboardEvent): void {
-    if (viewState.managingPlaylists) return;
+    if (!active || viewState.managingPlaylists) return;
     if (event.isComposing || event.altKey || isMusicReviewEditableTarget(event.target)) return;
     const modified = event.ctrlKey || event.metaKey;
     if (selectionMode) {
@@ -662,9 +663,9 @@
                 </button>
               {/snippet}
             </IconPicker>
-            <input bind:this={newPlaylistNameInput} bind:value={viewState.newPlaylistName} aria-label={t("music.builder.inlinePlaylistName")} class="h-8 min-w-0 flex-1 rounded-md border border-border/70 bg-background px-2.5 text-xs outline-none focus:border-primary" placeholder={t("music.builder.inlinePlaylistName")} />
+            <input bind:this={newPlaylistNameInput} bind:value={viewState.newPlaylistName} aria-label={t("music.builder.inlinePlaylistName")} class="field h-8 min-w-0 flex-1 px-2.5 text-xs" placeholder={t("music.builder.inlinePlaylistName")} />
           </div>
-          {#if selectionMode ? bulk.createError : review.createError}<p class="mt-1.5 text-[0.65rem] text-destructive" role="alert">{selectionMode ? bulk.createError : review.createError}</p>{/if}
+          {#if selectionMode ? bulk.createError : review.createError}<Notice class="mt-1.5 text-[0.65rem]" message={(selectionMode ? bulk.createError : review.createError) ?? ""} />{/if}
           <div class="mt-2 flex justify-end gap-2">
             <button type="button" onclick={() => { viewState.inlineCreateOpen = false; review.createError = null; bulk.createError = null; }} class="h-8 rounded-md bg-secondary px-2.5 text-xs font-medium">{t("music.builder.cancel")}</button>
             <button type="submit" disabled={!viewState.newPlaylistName.trim() || (selectionMode ? bulk.creatingPlaylist : review.creatingPlaylist)} class="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground disabled:opacity-40"><ListPlus size={14} />{t("music.builder.createAndAdd")}</button>
@@ -710,10 +711,13 @@
           errors={selectionMode ? {} : review.membershipErrors}
         />
         {#if selectionMode && (bulk.error || bulk.selectionStale)}
-          <div class="mx-3 mb-2 flex shrink-0 items-center gap-2 rounded-lg bg-destructive/8 px-2.5 py-2 text-[0.68rem] text-destructive" role="alert">
-            <span class="min-w-0 flex-1">{bulk.selectionStale ? t("music.builder.selectionChanged") : bulk.error}</span>
-            <button type="button" onclick={reloadSelection} disabled={bulk.loading} class="shrink-0 font-semibold hover:underline">{t("common.retry")}</button>
-          </div>
+          <Notice
+            class="mx-3 mb-2 shrink-0 px-1 py-1 text-[0.68rem]"
+            message={bulk.selectionStale ? t("music.builder.selectionChanged") : (bulk.error ?? "")}
+            tone={bulk.selectionStale ? "warning" : "neutral"}
+            copy={bulk.selectionStale ? false : undefined}
+            onRetry={reloadSelection}
+          />
         {/if}
       </div>
     {/if}

@@ -1,19 +1,23 @@
 <script lang="ts">
-  import { EVENT_COLOR_OPTIONS } from "$lib/components/calendar/utils";
-  import type { EventColor } from "$lib/components/calendar/types";
-  import type { ProjectIconPickerColor } from "$lib/projects/project-icon-picker";
-  import type { ProjectLucideIconNode } from "$lib/projects/project-lucide-catalog.generated";
-  import { serializeProjectIcon } from "$lib/projects/project-icons";
+  import type { Snippet } from "svelte";
+  import { EVENT_COLOR_OPTIONS } from "$lib/calendar/utils";
+  import type { EventColor } from "$lib/calendar/types";
+  import type { IconPickerColor } from "$lib/projects/icons/picker";
+  import type { ProjectLucideIconNode } from "$lib/projects/icons/lucide-catalog.generated";
+  import { serializeProjectIcon } from "$lib/projects/icons/values";
   import { portal } from "$lib/utils/portal";
-  import LucideNodeIcon from "$lib/components/projects/LucideNodeIcon.svelte";
+  import LucideNodeIcon from "./LucideNodeIcon.svelte";
   import ProjectIcon from "$lib/components/projects/ProjectIcon.svelte";
 
   let {
     rootElement = $bindable<HTMLElement | undefined>(),
     style,
+    portalTarget = "body",
     label,
-    slug,
-    iconNode,
+    slug = "",
+    iconNode = null,
+    preview,
+    disabled = false,
     iconColorLabel,
     iconColorStyle,
     automaticIconColor,
@@ -23,22 +27,26 @@
   }: {
     rootElement?: HTMLElement;
     style: string;
+    /** Where the panel is portaled; a picker nested in another floating surface keeps its panels inside it. */
+    portalTarget?: HTMLElement | string;
     label: string;
-    slug: string;
-    iconNode: readonly ProjectLucideIconNode[] | null;
-    iconColorLabel: (color: ProjectIconPickerColor) => string;
+    slug?: string;
+    iconNode?: readonly ProjectLucideIconNode[] | null;
+    preview?: Snippet<[IconPickerColor]>;
+    disabled?: boolean;
+    iconColorLabel: (color: IconPickerColor) => string;
     iconColorStyle: (color: EventColor) => string;
     automaticIconColor: string;
     automaticLabel: string;
     columns: number;
-    onSelect: (color: ProjectIconPickerColor) => void;
+    onSelect: (color: IconPickerColor) => void;
   } = $props();
 </script>
 
 <div
   bind:this={rootElement}
-  use:portal
-  class="fixed z-100 overflow-y-auto rounded-xl border border-border p-2.5 shadow-xl"
+  use:portal={portalTarget}
+  class="surface-floating fixed z-100 overflow-y-auto p-2.5"
   {style}
   role="dialog"
   data-app-floating-surface
@@ -46,7 +54,8 @@
 >
   <button
     type="button"
-    class="flex h-5.5 w-full items-center justify-center gap-2 rounded-md text-[0.8rem] text-foreground hover:bg-accent"
+    {disabled}
+    class="flex h-5.5 w-full items-center justify-center gap-2 rounded-floating-item text-foreground hover:bg-accent"
     aria-label={automaticLabel}
     data-app-tooltip-disabled="true"
     onclick={(event) => {
@@ -58,7 +67,9 @@
       class="flex size-5.5 shrink-0 items-center justify-center"
       style={`color: ${automaticIconColor};`}
     >
-      {#if iconNode}
+      {#if preview}
+        {@render preview("default")}
+      {:else if iconNode}
         <LucideNodeIcon {iconNode} size={16} strokeWidth={1.75} />
       {:else}
         <ProjectIcon
@@ -75,7 +86,8 @@
     {#each EVENT_COLOR_OPTIONS as color}
       <button
         type="button"
-        class="flex size-5.5 items-center justify-center rounded-md hover:bg-accent"
+        {disabled}
+        class="flex size-5.5 items-center justify-center rounded-floating-item hover:bg-accent"
         aria-label={iconColorLabel(color)}
         data-app-tooltip-disabled="true"
         onclick={(event) => {
@@ -83,7 +95,9 @@
           onSelect(color);
         }}
       >
-        {#if iconNode}
+        {#if preview}
+          {@render preview(color)}
+        {:else if iconNode}
           <LucideNodeIcon
             {iconNode}
             size={16}

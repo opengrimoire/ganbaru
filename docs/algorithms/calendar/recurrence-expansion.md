@@ -1,135 +1,103 @@
 # Recurrence expansion
 
-Recurrence expansion converts one normalized calendar template into bounded concrete occurrences for an inclusive civil-date window. TypeScript uses the result for calendar projection. Rust uses the same domain contract for backend reads and commands. Both consumers must produce equivalent identities and dates for the supported rule subset.
+**Status: Implemented.** One native Rust engine (`crates/ganbaru-calendar/src/recurrence/`) is the only expansion authority. Calendar windows, Focus scheduling, Music activation, Android reminder preparation, previews, and scoped mutations all consume it; the frontend caches and filters native occurrences but never generates them.
+
+Recurrence expansion converts one normalized template into bounded concrete occurrences for a requested window.
 
 ## Inputs and output
 
 Inputs are:
 
-- a template event with stable identity, start, end, and optional home zone;
-- an optional normalized recurrence rule;
-- exception dates, additional dates, and occurrence overrides;
-- an inclusive window start and end as civil dates.
+- A template event with stable identity, start, end, and home zone (or floating dates).
+- An optional normalized recurrence rule.
+- Exception dates, additional dates, and occurrence overrides.
+- A requested window.
 
-The output contains concrete events whose date span overlaps the requested window. An event may begin before the window and still be returned when its end reaches the window.
+The output contains concrete events that overlap the window. An event may begin before the window and still be returned when its end reaches into it. Non-recurring events pass through when they overlap. A template with additional dates but no rule produces its original occurrence plus eligible additional occurrences.
 
-Non-recurring events pass through unchanged when they overlap. A template with additional dates but no recurrence rule produces its original occurrence plus eligible additional occurrences.
+## Supported rules
 
-## Supported normalized rules
-
-Current expansion applies:
-
-- daily, weekly, monthly, and yearly frequency;
-- positive interval;
-- weekday selection for weekly rules;
-- ordinal weekday selection for supported monthly and yearly rules;
-- month-day and month selection for supported monthly and yearly rules;
-- count or until termination;
-- exception dates;
-- additional dates;
-- occurrence overrides and cancellation from a recurrence date.
-
-Import may preserve more iCalendar properties than the expander applies. Preservation is not support. Current conformance gaps are listed below and should remain visible until interoperability fixtures and both expanders agree.
+The engine applies daily, weekly, monthly, and yearly frequency with positive interval, BYDAY (including ordinal weekdays), BYMONTHDAY, BYMONTH, BYYEARDAY, BYWEEKNO, BYSETPOS, WKST, intersections of those selectors, and COUNT or UNTIL termination. Rule parts outside that set, or contradictory combinations, are rejected with a diagnostic rather than approximated. Import may preserve more iCalendar data than the engine applies; preservation is not support. See [iCalendar interoperability](../../interop/icalendar/README.md).
 
 ## Civil dates and instants
 
-Recurrence walks local civil dates, not fixed UTC durations. TypeScript uses Temporal.PlainDate. Rust uses chrono's date-only representation. This keeps a weekly 09:00 event at 09:00 in its home zone across offset changes.
+Recurrence walks civil dates in the event's home zone, not fixed UTC durations, so a weekly 09:00 event stays at 09:00 across offset changes. After selecting a civil date, the engine combines it with the local time and home zone to get instants. Duration across a DST transition follows those instants. The recurrence date remains the identity. UNTIL in UTC is compared against instants.
 
-After selecting a civil occurrence date, the application combines it with the stored local time and home-zone policy to obtain instants where an instant is needed. Duration across a DST transition follows those instants. The recurrence date itself remains the local identity.
-
-All-day occurrences use date spans directly. Timed multi-day occurrences preserve the template's civil day span and local time components.
+Generated wall times that do not exist (DST gap) are skipped; repeated wall times use the first occurrence. All-day occurrences use date spans directly. Timed multi-day occurrences keep the template's civil day span and local times. A positive interval that crosses a repeated hour, so that its end wall clock is earlier than its start, keeps its positive elapsed duration on later occurrences.
 
 ## Window semantics
 
-Both window bounds are inclusive civil dates. An occurrence overlaps when:
-
-- its end date is on or after the window start; and
-- its start date is on or before the window end.
-
-Generation may fast-forward to the first date that could overlap, but it must preserve the same logical occurrence count as walking from the template. Fast-forward is an optimization, not a different recurrence rule.
+An occurrence is returned when its interval overlaps the requested window, compared by exact instants. A home-zone date can differ from the displayed date without losing the occurrence. Generation may fast-forward to the first candidate that could overlap, but must yield the same logical occurrence count as walking from the template; fast-forward is an optimization, not a different rule.
 
 ## Expansion order
 
 For one template:
 
-1. Validate the date range, recurrence shape, positive interval, and bounds.
-2. Preserve the original template ID for its first occurrence. Emit it when it overlaps and is not excluded or cancelled.
-3. Walk or fast-forward the recurrence cursor according to the supported normalized rule.
-4. Stop at the count limit, until date, cancellation-from boundary, window end, or hard iteration guard.
-5. For each eligible recurrence date, apply exclusion and cancellation, preserve the template day span, then apply an exact-date override.
-6. Add distinct additional dates that are not already generated, excluded, or cancelled.
-7. Return deterministic concrete events. Callers apply their required display ordering.
+1. Validate the date range, rule shape, positive interval, and bounds.
+2. Keep the template ID for its first occurrence and emit it when it overlaps and is not excluded or cancelled.
+3. Walk or fast-forward the recurrence period by period.
+4. Stop at COUNT, UNTIL, a cancellation-from boundary, the window end, or the work budget.
+5. For each eligible date, apply exclusion and cancellation, preserve the day span, then apply an exact-date override.
+6. Add distinct additional dates not already generated, excluded, or cancelled.
+7. Return deterministic concrete events. Callers apply display ordering.
 
-An override changes the concrete occurrence fields while retaining original-series and recurrence-date provenance. A moved override remains associated with the recurrence instant it replaced.
+An override changes occurrence fields while keeping the original series and recurrence-date provenance. A moved override stays associated with the recurrence date it replaced and is filtered against the window after it is applied.
 
 ## Concrete identity
 
-The original occurrence keeps the template ID. A generated occurrence uses a deterministic identity derived from template ID and recurrence civil date. It also records the template as its recurring parent.
-
-Identity does not depend on title, display time, current device zone, or expansion window. Expanding the same occurrence through a different window yields the same ID.
-
-Persisted override rows have their own durable storage identity, but projections retain the generated occurrence and original-series relationships required by edits, project links, and Pomodoro history.
+The first occurrence keeps the template ID. A generated occurrence uses `<template-id>::YYYY-MM-DD` from the original home-zone recurrence date and records the template as its parent. Identity never depends on title, display time, device zone, or the expansion window. Persisted override rows have their own storage identity, but projections keep the generated occurrence and series relationships needed by edits, project links, and Pomodoro history.
 
 ## Invalid dates
 
-Rules such as day 31 do not silently clamp to day 30 in a month that has no 31st. The supported normalized rule either skips that candidate or advances according to its explicit ordinal logic. Leap-day behavior follows the same principle.
-
-An ordinal weekday is calculated within its requested month. If the requested ordinal does not exist, that month contributes no occurrence.
-
-Parser normalization and expander behavior must agree. A parser must not normalize an unsupported form into a superficially similar rule with different meaning.
+Rules such as day 31 do not clamp to day 30 in a shorter month; that period contributes no occurrence, and the original anchor does not drift. Leap days follow the same principle. A nonexistent ordinal weekday contributes no occurrence for that month. Parsing must never normalize an unsupported form into a superficially similar rule with different meaning.
 
 ## Exceptions, additional dates, and overrides
 
-Exception dates remove an occurrence by recurrence civil date. Additional dates add an occurrence with the template's time and day span unless an override replaces its fields.
+Exception dates remove an occurrence by recurrence date. Additional dates add an occurrence with the template's time and span unless an override replaces it. The same date appears at most once; exclusion and cancellation win over emission.
 
-The same civil date appears at most once. A normal recurrence date and an additional date deduplicate. Exclusion or cancellation wins over ordinary emission.
-
-An exact override is applied after base occurrence construction. A series cancellation-from boundary stops later generation. These precedence rules must be identical in TypeScript and Rust.
+COUNT limits the rule set before exceptions are subtracted, including when the original occurrence is excluded, and nonexistent wall times are omitted before COUNT. Additional dates are independent of the rule's COUNT or UNTIL: they can extend past termination, deduplicate against generated dates, and can themselves be excluded.
 
 ## Bounds and failure behavior
 
-Expansion is bounded by the requested window and a hard 10,000-iteration guard per template. Imports and reads also bound the number of input events and recurrence data before expansion.
+One request shares a work budget across every template and override lookup: at most 10,000 emitted occurrences and a fixed candidate-date allowance. Exhausting it is an explicit error that asks for a narrower window, never a silently truncated result. Imports and reads also bound input events and recurrence data before expansion. Invalid data returns a controlled error; it must not hang, allocate without bound, or generate occurrences outside the window to satisfy a malformed count.
 
-Invalid normalized data returns a controlled error in Rust or is rejected before frontend use. It must not hang, allocate without bound, or generate occurrences outside the requested window merely to satisfy a malformed count.
+## Scoped edit partitions
 
-Do not document sub-millisecond performance without a benchmark. The durable requirement is bounded work proportional to the relevant window, with fast-forward for common long-running rules.
+Scoped edits (`Following`, `All` with protected history) split one series into a historical side and an edited side. Partition membership uses original recurrence dates, even when an override moves the displayed occurrence. Both sides must reload through canonical expansion to reproduce exactly the original occurrences, with no overlap.
+
+- The historical side ends with a COUNT equal to the generated prefix (counted before exclusions), rather than an UNTIL that could round wrongly for fractional timestamps.
+- The edited side keeps the original termination. When the boundary occurrence can become the new anchor without changing period selection or duration, its COUNT subtracts the consumed prefix. Future exceptions and additional dates transfer to it.
+- When the boundary cannot be a clean anchor (an off-pattern additional date, a week-number rule near a year boundary, or a DST-sensitive interval), the edited side keeps the earlier anchor and uses prefix exceptions, including for cancelled and excluded members, so that the boundary is its first visible occurrence and nothing reappears.
+- Prefix enumeration shares the request's work budget and fails explicitly when exceeded.
+
+## Draft geometry on scoped edits
+
+Applying a draft to the edited side follows these rules:
+
+- Metadata-only drafts keep the source geometry.
+- A time edit applies the selected occurrence's resolved interval at the edited anchor; the anchor shifts by the selected start's civil-date difference. Rule selectors such as BYDAY are kept as requested, never silently rewritten to match a new start.
+- An unchanged rule keeps the partition's cadence and finite termination when possible. A date, zone, or rule change can require a new anchor, which then consumes the original prefix exactly once. Promoting an off-pattern additional date to the anchor removes its old additional-date entry. Prefix exclusions that only kept the old cadence are dropped; user-authored exclusions remain.
+- Exception and override identities stay civil-date identities. Additional dates keep their dates and adopt a changed shared time. Date-kind and zone conversions keep the authored meaning of other override endpoints. Converting a timed rule to all-day turns a timed UNTIL into the last admitted home date.
+- The resulting series is decoded again through the canonical engine, so a changed rule cannot activate malformed override geometry.
 
 ## Examples
 
 ### Daily count
 
-A template beginning June 1 with a daily interval and count 3 has recurrence dates June 1, June 2, and June 3 before exclusions. A June 2 exception affects which concrete events are returned. The precise interaction between COUNT and EXDATE is an unresolved conformance issue described below.
+A template starting June 1, daily, COUNT 3 has dates June 1, 2, and 3. A June 2 exception leaves June 1 and June 3; it does not create a June 4 replacement.
 
 ### Multi-day overlap
 
-An occurrence spanning June 1 through June 3 overlaps a June 3 through June 7 window even though its start is before the window. It is returned.
+An occurrence spanning June 1 through June 3 overlaps a June 3 through June 7 window and is returned.
 
 ### Weekly DST change
 
-A 09:00 event in America/New_York remains at 09:00 on each selected weekday. Its UTC instant changes when the home-zone offset changes.
+A 09:00 event in America/New_York stays at 09:00 on each selected weekday; its UTC instant changes with the offset.
 
 ### Generated identity
 
-If template event-1 produces June 8, the concrete projection uses the deterministic event-1 plus June 8 identity regardless of whether the caller expanded June alone or the entire quarter.
+Template `event-1` produces `event-1::2026-06-08` for June 8 whether the caller expands June alone or the whole quarter.
 
-## Current implementation gaps
+## Conformance
 
-### Preserved but unsupported rule parts
-
-BYSETPOS, BYWEEKNO, BYYEARDAY, and WKST are not applied by either current expander. A TypeScript source comment previously claimed BYSETPOS support, but the algorithm does not implement it. Import and export may preserve these values; feature and interoperability documentation must not call them supported until both implementations and conformance fixtures agree.
-
-The current weekly walk effectively uses its built-in week convention rather than an imported WKST value.
-
-### COUNT and EXDATE
-
-Generated excluded dates after the original currently advance the cursor without advancing the generated count. The original date is initialized as the first count position even when it is excluded. This is internally inconsistent and may differ from RFC recurrence-set semantics, where the rule produces its limited set before EXDATE subtraction.
-
-Choose the interoperability contract, update TypeScript and Rust together, and add fixtures covering an excluded original, an excluded later occurrence, and multiple exclusions near COUNT.
-
-### RDATE and RRULE termination
-
-Current code applies the RRULE until date to additional RDATE values. In iCalendar recurrence-set semantics, RDATE is generally an independent inclusion. Confirm the intended interoperability behavior and update both expanders and fixtures together.
-
-### Dual implementation equivalence
-
-The two implementations use different date libraries and duplicated control flow. Equivalence is a required contract, not an assumption. Shared fixtures must cover fast-forward, multi-day overlap, exceptions, additional dates, overrides, cancellation, invalid month days, DST boundaries, and the hard guard.
+Native tests cover fast-forward, multi-day overlap, exceptions, additional dates, moved overrides, cancellation, invalid month days, DST boundaries, partitions, and budget exhaustion. The shared recurrence-set fixture (`apps/client/src/lib/calendar/recurrence-set-fixtures.json`) is consumed by the canonical engine. Frontend tests cover native identity and projection contracts and import parsing only.

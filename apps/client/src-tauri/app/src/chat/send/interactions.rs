@@ -3,18 +3,18 @@
 use super::persistence::persist_steer_message;
 use super::support::{
     TURN_OPERATION_TIMEOUT, chat_pool, json_error, now_timestamp, operation_context,
-    persistence_error, runtime_not_running,
+    persistence_error, runtime_not_running_error,
 };
 use super::validation::{
     validate_answers, validate_approval_decision, validate_pending_request, validate_prompt,
 };
-use crate::chat::driver_operations::{complete_driver_operation, replay_driver_receipt};
-use crate::chat::models::*;
-use crate::chat::repository::receipts::{CommandReceiptClaim, claim_command_receipt};
-use crate::chat::runtime::ChatRuntimeRegistry;
 use crate::chat::send_commands::{
     ResolveChatApprovalCommand, ResolveChatUserInputCommand, SteerChatTurnCommand,
 };
+use ganbaru_chat::driver_operations::{complete_driver_operation, replay_driver_receipt};
+use ganbaru_chat::repository::receipts::{CommandReceiptClaim, claim_command_receipt};
+use ganbaru_chat::runtime::ChatRuntimeRegistry;
+use ganbaru_chat_contracts::models::*;
 use tauri::Manager;
 
 pub(crate) async fn steer_turn(
@@ -35,8 +35,10 @@ pub(crate) async fn steer_turn(
             true,
         ));
     }
-    let session_id = snapshot.session_id.ok_or_else(runtime_not_running)?;
-    let turn_id = snapshot.active_turn_id.ok_or_else(runtime_not_running)?;
+    let session_id = snapshot.session_id.ok_or_else(runtime_not_running_error)?;
+    let turn_id = snapshot
+        .active_turn_id
+        .ok_or_else(runtime_not_running_error)?;
     let command_id = request.command.client_command_id.clone();
     match claim_command_receipt(
         &pool,
@@ -100,7 +102,7 @@ pub(crate) async fn resolve_approval(
     let session_id = owner
         .snapshot()?
         .session_id
-        .ok_or_else(runtime_not_running)?;
+        .ok_or_else(runtime_not_running_error)?;
     match claim_command_receipt(
         &pool,
         &request.command.client_command_id,
@@ -171,7 +173,7 @@ pub(crate) async fn resolve_user_input(
     let session_id = owner
         .snapshot()?
         .session_id
-        .ok_or_else(runtime_not_running)?;
+        .ok_or_else(runtime_not_running_error)?;
     match claim_command_receipt(
         &pool,
         &request.command.client_command_id,

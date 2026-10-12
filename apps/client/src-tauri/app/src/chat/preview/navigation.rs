@@ -5,7 +5,7 @@ pub(super) fn validate_navigation(
     external_confirmed: bool,
 ) -> ChatResult<reqwest::Url> {
     if value.is_empty()
-        || value.len() > MAX_PREVIEW_URL_BYTES
+        || value.len() > MAX_BROWSER_URL_BYTES
         || value.chars().any(char::is_control)
     {
         return Err(ChatError::validation(
@@ -92,7 +92,7 @@ pub(super) fn loopback_urls(bytes: &[u8]) -> Vec<String> {
     urls
 }
 
-pub(super) fn validate_bounds(bounds: &PreviewBounds) -> ChatResult<PreviewBounds> {
+pub(super) fn validate_bounds(bounds: &BrowserTabBounds) -> ChatResult<BrowserTabBounds> {
     if !bounds.x.is_finite()
         || !bounds.y.is_finite()
         || !bounds.width.is_finite()

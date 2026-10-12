@@ -4,7 +4,7 @@
   import ListMusic from "@lucide/svelte/icons/list-music";
   import Sparkles from "@lucide/svelte/icons/sparkles";
   import VolumeX from "@lucide/svelte/icons/volume-x";
-  import CustomSelect from "$lib/components/settings/CustomSelect.svelte";
+  import Select from "$lib/components/ui/Select.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
     MUSIC_ACTIVITY_PHASES,
@@ -12,16 +12,16 @@
     completeMusicAssignmentDrafts,
     nextMusicAssignmentPhase,
     updateMusicAssignmentDraft,
-  } from "$lib/music/music-assignment-draft";
-  import type { MusicPlaylistSummary } from "$lib/music/library-contracts";
-  import { systemMusicPlaylistName } from "$lib/music/music-system-playlists";
-  import type { MusicSoundscapeDefinition } from "$lib/music/soundscape-contracts";
+  } from "$lib/music/assignment-draft";
+  import type { MusicPlaylistSummary } from "$lib/music/library/contracts";
+  import { systemMusicPlaylistName } from "$lib/music/playlists/system";
+  import type { MusicSoundscapeDefinition } from "$lib/music/soundscape/contracts";
   import type {
     MusicActivityPhase,
     MusicAssignmentBehavior,
     MusicContextAssignmentDraft,
     MusicSoundscapeBehavior,
-  } from "$lib/music/music-context-assignment";
+  } from "$lib/music/context-assignment";
   import { getSoundscapeStore } from "$lib/stores/soundscape.svelte";
   import { cn } from "$lib/utils";
   import MusicPlaylistSelect from "./MusicPlaylistSelect.svelte";
@@ -131,7 +131,7 @@
     const key = event.key;
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(key)) return;
     event.preventDefault();
-    activePhase = nextMusicAssignmentPhase(phase, key as import("$lib/music/music-assignment-draft").MusicPhaseNavigationKey);
+    activePhase = nextMusicAssignmentPhase(phase, key as import("$lib/music/assignment-draft").MusicPhaseNavigationKey);
     queueMicrotask(() => document.querySelector<HTMLButtonElement>(`[data-music-phase-tab="${activePhase}"]`)?.focus());
   }
 </script>
@@ -162,7 +162,7 @@
         </div>
 
         <div class="space-y-2">
-          <CustomSelect
+          <Select
             label={t("music.assignment.behaviorLabel")}
             value={assignment.behavior}
             options={behaviorOptions}
@@ -192,9 +192,9 @@
             </div>
           {/if}
 
-          <CustomSelect label={t("music.assignment.soundscapeBehaviorLabel")} value={assignment.soundscapeBehavior} options={soundscapeBehaviorOptions} onChange={(value) => setSoundscapeBehavior(assignment.phase, value)} {disabled} class="w-full" />
+          <Select label={t("music.assignment.soundscapeBehaviorLabel")} value={assignment.soundscapeBehavior} options={soundscapeBehaviorOptions} onChange={(value) => setSoundscapeBehavior(assignment.phase, value)} {disabled} class="w-full" />
           {#if assignment.soundscapeBehavior === "play-selected"}
-            <CustomSelect label={t("music.assignment.soundscapeLabel")} value={assignment.soundscapeId ?? "none"} options={soundscapeOptions} onChange={(value) => setSoundscape(assignment.phase, value)} {disabled} class="w-full" />
+            <Select label={t("music.assignment.soundscapeLabel")} value={assignment.soundscapeId ?? "none"} options={soundscapeOptions} onChange={(value) => setSoundscape(assignment.phase, value)} {disabled} class="w-full" />
           {/if}
         </div>
       </div>

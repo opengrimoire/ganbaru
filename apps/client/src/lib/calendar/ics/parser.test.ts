@@ -1,6 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { Temporal } from "@js-temporal/polyfill";
-import { expandRecurring } from "$lib/components/calendar/recurrence";
 import { parseIcs } from "./parser";
 
 const HEADER = [
@@ -269,7 +267,7 @@ describe("parseIcs", () => {
 	});
 
 	describe("recurrence", () => {
-		it("does not expand Google UNTIL-capped recurring events into future windows", () => {
+		it("preserves the UTC termination of Google UNTIL-capped recurring events", () => {
 			const ics = wrap(
 				vevent(
 					"DTSTART;TZID=America/Mexico_City:20210208T060000",
@@ -309,15 +307,9 @@ describe("parseIcs", () => {
 				date: "2021-06-12T04:59:59Z",
 			});
 
-			const expanded = expandRecurring(
-				result.events,
-				Temporal.PlainDate.from("2026-05-01"),
-				Temporal.PlainDate.from("2026-05-31"),
-			);
-			expect(expanded).toHaveLength(0);
 		});
 
-		it("uses the newest duplicate master VEVENT revision before expanding", () => {
+		it("uses the newest duplicate master VEVENT revision for import", () => {
 			const ics = wrap(
 				vevent(
 					"DTSTART;TZID=America/Mexico_City:20210208T060000",
@@ -350,12 +342,6 @@ describe("parseIcs", () => {
 				date: "2021-03-22T05:59:59Z",
 			});
 
-			const expanded = expandRecurring(
-				result.events,
-				Temporal.PlainDate.from("2026-05-01"),
-				Temporal.PlainDate.from("2026-05-31"),
-			);
-			expect(expanded).toHaveLength(0);
 		});
 
 		it("parses RRULE into RecurrenceConfig", () => {

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { dbUrl, ensureDbUrl } from "$lib/api/db";
-import type { Calendar } from "$lib/components/calendar/types";
+import type { Calendar } from "$lib/calendar/types";
 
 interface DbCalendar {
   id: string;
@@ -15,18 +15,18 @@ interface DbCalendar {
   updated_at: string;
 }
 
-function mapRow(r: DbCalendar): Calendar {
+function mapRow(row: DbCalendar): Calendar {
   return {
-    id: r.id,
-    name: r.name,
-    color: r.color,
-    source: r.source,
-    visible: r.visible === 1,
-    readOnly: r.read_only === 1,
-    sourceUrl: r.source_url ?? undefined,
-    lastSynced: r.last_synced ?? undefined,
-    createdAt: r.created_at,
-    updatedAt: r.updated_at,
+    id: row.id,
+    name: row.name,
+    color: row.color,
+    source: row.source,
+    visible: row.visible === 1,
+    readOnly: row.read_only === 1,
+    sourceUrl: row.source_url ?? undefined,
+    lastSynced: row.last_synced ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }
 
@@ -52,12 +52,12 @@ export function getCalendars() {
     },
 
     async toggleVisibility(id: string) {
-      const cal = calendars.find((c) => c.id === id);
-      if (!cal) return;
+      const calendar = calendars.find((c) => c.id === id);
+      if (!calendar) return;
       await invoke("calendar_set_visibility", {
         dbUrl: dbUrl(),
         id,
-        visible: !cal.visible,
+        visible: !calendar.visible,
         updatedAt: nowIso(),
       });
       calendars = calendars.map((c) =>
@@ -65,32 +65,32 @@ export function getCalendars() {
       );
     },
 
-    async add(cal: Omit<Calendar, "id" | "visible" | "readOnly"> & { id?: string; visible?: boolean; readOnly?: boolean }): Promise<Calendar> {
-      const id = cal.id ?? crypto.randomUUID();
+    async add(calendar: Omit<Calendar, "id" | "visible" | "readOnly"> & { id?: string; visible?: boolean; readOnly?: boolean }): Promise<Calendar> {
+      const id = calendar.id ?? crypto.randomUUID();
       const now = nowIso();
       await invoke("calendar_add_calendar", {
         dbUrl: dbUrl(),
         calendar: {
           id,
-          name: cal.name,
-          color: cal.color,
-          source: cal.source,
-          visible: cal.visible ?? true,
-          readOnly: cal.readOnly ?? false,
-          sourceUrl: cal.sourceUrl ?? null,
+          name: calendar.name,
+          color: calendar.color,
+          source: calendar.source,
+          visible: calendar.visible ?? true,
+          readOnly: calendar.readOnly ?? false,
+          sourceUrl: calendar.sourceUrl ?? null,
           createdAt: now,
           updatedAt: now,
         },
       });
       const entry: Calendar = {
         id,
-        name: cal.name,
-        color: cal.color,
-        source: cal.source,
-        visible: cal.visible ?? true,
-        readOnly: cal.readOnly ?? false,
-        sourceUrl: cal.sourceUrl,
-        lastSynced: cal.lastSynced,
+        name: calendar.name,
+        color: calendar.color,
+        source: calendar.source,
+        visible: calendar.visible ?? true,
+        readOnly: calendar.readOnly ?? false,
+        sourceUrl: calendar.sourceUrl,
+        lastSynced: calendar.lastSynced,
         createdAt: now,
         updatedAt: now,
       };
@@ -115,11 +115,11 @@ export function getCalendars() {
         filename,
       });
       if (row) {
-        const cal = mapRow(row);
-        if (!calendars.some((c) => c.id === cal.id)) {
-          calendars = [...calendars, cal];
+        const calendar = mapRow(row);
+        if (!calendars.some((c) => c.id === calendar.id)) {
+          calendars = [...calendars, calendar];
         }
-        return cal;
+        return calendar;
       }
       const baseName = filename.replace(/\.ics$/i, "");
       return this.add({

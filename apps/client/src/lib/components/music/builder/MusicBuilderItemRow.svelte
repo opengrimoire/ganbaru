@@ -4,15 +4,15 @@
   import Pause from "@lucide/svelte/icons/pause";
   import Play from "@lucide/svelte/icons/play";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import type { LocalRootBinding, MusicItemListEntry, MusicWeight } from "$lib/music/library-contracts";
+  import type { LocalRootBinding, MusicItemListEntry, MusicWeight } from "$lib/music/library/contracts";
   import {
     formatMusicDuration,
     musicAvailabilityTone,
     musicItemSecondaryText,
-  } from "$lib/music/music-builder-presentation";
-  import type { MusicSnoozePreset } from "$lib/music/music-snooze";
+  } from "$lib/music/builder/presentation";
+  import type { MusicSnoozePreset } from "$lib/music/session/snooze";
   import { cn } from "$lib/utils";
-  import MusicSnoozeButton from "../MusicSnoozeButton.svelte";
+  import MusicSnoozeButton from "$lib/components/music/MusicSnoozeButton.svelte";
   import MusicArtworkThumbnail from "./MusicArtworkThumbnail.svelte";
   import MusicPlaylistItemMenu from "./MusicPlaylistItemMenu.svelte";
 

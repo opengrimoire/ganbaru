@@ -6,9 +6,11 @@ import {
   mapNotesPageAliasDto,
   mapNotesSearchResultDto,
   mapNotesUnresolvedLinkDto,
-} from "$lib/notes/notion-mappers";
+} from "$lib/notes/validation/response-mappers";
+import { parseNotesMentionScope } from "$lib/notes/validation/knowledge";
 import type {
   NotesBacklink,
+  NotesMentionScope,
   NotesPageAlias,
   NotesPageAliasCreate,
   NotesPageBreadcrumbItem,
@@ -30,22 +32,9 @@ export async function listNotesBacklinks(pageId: string): Promise<NotesBacklink[
   return rows.map(mapNotesBacklinkDto);
 }
 
-export async function rebuildNotesBacklinkIndex(): Promise<number> {
-  const dbUrl = await ensureDbUrl();
-  const count = await invoke<unknown>("notes_rebuild_backlink_index", { dbUrl });
-  if (typeof count !== "number") {
-    throw new Error("notes_rebuild_backlink_index returned a non-number payload");
-  }
-  return count;
-}
-
-export async function rebuildNotesLinkFacts(): Promise<number> {
-  const dbUrl = await ensureDbUrl();
-  const count = await invoke<unknown>("notes_rebuild_link_facts", { dbUrl });
-  if (typeof count !== "number") {
-    throw new Error("notes_rebuild_link_facts returned a non-number payload");
-  }
-  return count;
+/** Open a user-activated web or email link through the validating native Notes adapter. */
+export async function openNotesExternalUrl(url: string): Promise<void> {
+  await invoke<void>("notes_open_external_url", { url });
 }
 
 export async function listNotesPageAliases(pageId: string): Promise<NotesPageAlias[]> {
@@ -108,11 +97,24 @@ export async function resolveNotesUnresolvedLink(
 
 export async function getNotesPageBreadcrumb(pageId: string): Promise<NotesPageBreadcrumbItem[]> {
   const dbUrl = await ensureDbUrl();
-  const rows = await invoke<unknown>("notes_get_page_breadcrumb", { dbUrl, pageId });
+  const rows = await invoke<unknown>("notes_page_breadcrumb", { dbUrl, pageId });
   if (!Array.isArray(rows)) {
-    throw new Error("notes_get_page_breadcrumb returned a non-array payload");
+    throw new Error("notes_page_breadcrumb returned a non-array payload");
   }
   return rows.map(mapNotesPageBreadcrumbItemDto);
+}
+
+/**
+ * Read where a page lives, outermost first and ending with its own title: project group, project, folders, then the
+ * pages and row databases above it. Untitled pages appear as empty strings for the caller to label.
+ */
+export async function getNotesPageLocation(pageId: string): Promise<string[]> {
+  const dbUrl = await ensureDbUrl();
+  const segments = await invoke<unknown>("notes_page_location", { dbUrl, pageId });
+  if (!Array.isArray(segments) || !segments.every((segment): segment is string => typeof segment === "string")) {
+    throw new Error("notes_page_location returned an invalid payload");
+  }
+  return segments;
 }
 
 export async function searchNotes(
@@ -129,22 +131,19 @@ export async function searchNotes(
     includeResolvedComments,
     cursor,
   });
-  const record = notesWorkspaceShellRecord(rows);
+  const record = notesWorkspaceShellRecord(rows, "notes_search response");
   if (!Array.isArray(record.results)) throw new Error("notes_search returned invalid results");
   return {
     results: record.results.map((value) => {
-    const record = notesWorkspaceShellRecord(value);
+    const record = notesWorkspaceShellRecord(value, "notes_search result");
     return mapNotesSearchResultDto({ ...record, page: mapPageSummary(record.page) });
     }),
     next_cursor: shellNullableString(record.next_cursor, "notes_search.next_cursor"),
   };
 }
 
-export async function rebuildNotesSearchIndex(): Promise<number> {
+/** Read the tasks and Calendar events a page may mention: those of the projects in its project group. */
+export async function listNotesMentionScope(pageId: string): Promise<NotesMentionScope> {
   const dbUrl = await ensureDbUrl();
-  const count = await invoke<unknown>("notes_rebuild_search_index", { dbUrl });
-  if (typeof count !== "number") {
-    throw new Error("notes_rebuild_search_index returned a non-number payload");
-  }
-  return count;
+  return parseNotesMentionScope(await invoke<unknown>("notes_list_mention_scope", { dbUrl, pageId }));
 }

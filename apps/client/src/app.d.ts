@@ -1,11 +1,10 @@
 /// <reference types="svelte" />
 /// <reference types="vite/client" />
 
-// `main.ts` binds @js-temporal/polyfill to globalThis at boot so the rest
-// of the app can use `Temporal.*` without importing per-module. This
-// declaration tells TypeScript the global exists. When browsers ship the
-// native API, the polyfill assignment in main.ts becomes a no-op and this
-// declaration can be replaced by the standard ES type once it is published.
+// `main-desktop.ts` and `main-mobile.ts` bind @js-temporal/polyfill to
+// globalThis at boot so the rest of the app can use `Temporal.*` without
+// importing it per module. This declaration tells TypeScript the global
+// exists. Replace it with the standard ES type once browsers ship Temporal.
 import type { Temporal as TemporalPolyfill } from "@js-temporal/polyfill";
 
 declare global {

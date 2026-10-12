@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { ensureDbUrl } from "$lib/api/db";
-import { mapNotesFolderDto } from "$lib/notes/notion-mappers";
+import { mapNotesFolderDto } from "$lib/notes/validation/response-mappers";
 import type {
   NotesFolder,
   NotesFolderCreate,
@@ -15,6 +15,7 @@ import type {
 import { invokeNotesMutation } from "./mutation";
 import {
   mapPageSummary,
+  mapNavigationDatabase,
   notesWorkspaceShellRecord,
   shellNullableString,
   shellNumber,
@@ -33,8 +34,8 @@ export async function loadNotesWorkspaceShell(
 ): Promise<NotesWorkspaceShell> {
   const dbUrl = await ensureDbUrl();
   const value = await invoke<unknown>("notes_load_workspace_shell", { dbUrl, request });
-  const record = notesWorkspaceShellRecord(value);
-  if (!Array.isArray(record.pages) || !Array.isArray(record.folders)) {
+  const record = notesWorkspaceShellRecord(value, "notes_load_workspace_shell response");
+  if (!Array.isArray(record.pages) || !Array.isArray(record.folders) || !Array.isArray(record.navigation_databases)) {
     throw new Error("notes_load_workspace_shell returned invalid collections");
   }
   return {
@@ -50,6 +51,7 @@ export async function loadNotesWorkspaceShell(
       record.navigation_page_ids_with_children ?? [],
       "navigation_page_ids_with_children",
     ),
+    navigation_databases: record.navigation_databases.map(mapNavigationDatabase),
     page_ids_with_children: shellStringArray(record.page_ids_with_children, "page_ids_with_children"),
     missing_parent_page_ids: shellStringArray(record.missing_parent_page_ids, "missing_parent_page_ids"),
     trashed_parent_page_ids: shellStringArray(record.trashed_parent_page_ids, "trashed_parent_page_ids"),
@@ -62,6 +64,19 @@ export async function loadNotesWorkspaceShell(
     next_page_cursor: shellNullableString(record.next_page_cursor, "next_page_cursor"),
     next_folder_cursor: shellNullableString(record.next_folder_cursor, "next_folder_cursor"),
   };
+}
+
+/** Check whether a page is still active after an uncertain lifecycle mutation. */
+export async function isNotesPageActive(pageId: string): Promise<boolean> {
+  const shell = await loadNotesWorkspaceShell({
+    project_id: null,
+    selected_page_id: pageId,
+    expanded_page_ids: [],
+    seed_page_ids: [],
+    page_cursor: "end",
+    folder_cursor: "end",
+  });
+  return shell.pages.some((page) => page.id === pageId);
 }
 
 export async function listNotesDestinationCandidates(
@@ -126,7 +141,7 @@ export async function listArchivedNotesPages(
 }
 
 function mapPageSummaryWindow(value: unknown, command: string): NotesPageSummaryWindow {
-  const record = notesWorkspaceShellRecord(value);
+  const record = notesWorkspaceShellRecord(value, `${command} response`);
   if (!Array.isArray(record.pages)) throw new Error(`${command} returned invalid pages`);
   return {
     pages: record.pages.map(mapPageSummary),
@@ -141,6 +156,7 @@ export async function listNotesSidebarPages(
   const dbUrl = await ensureDbUrl();
   const record = notesWorkspaceShellRecord(
     await invoke<unknown>("notes_list_sidebar_pages", { dbUrl, request }),
+    "notes_list_sidebar_pages response",
   );
   if (!Array.isArray(record.pages)) {
     throw new Error("notes_list_sidebar_pages returned invalid pages");

@@ -8,8 +8,8 @@ import {
   type Mock,
 } from "vitest";
 
-// Each test pulls in a fresh copy of the module so the cache + loadPromise
-// reset between cases.
+// Each test imports a fresh module so the cache and load promise reset
+// between cases.
 async function loadModule() {
   return await import("./config");
 }

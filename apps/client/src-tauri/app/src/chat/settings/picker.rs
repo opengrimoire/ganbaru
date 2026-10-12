@@ -1,4 +1,4 @@
-use crate::chat::models::{ChatError, ChatErrorCode, ChatResult};
+use ganbaru_chat_contracts::models::{ChatError, ChatErrorCode, ChatResult};
 use std::path::PathBuf;
 use tauri_plugin_dialog::{DialogExt, FilePath};
 
@@ -10,7 +10,7 @@ pub(crate) async fn pick_local_path(
     let (sender, mut receiver) = tauri::async_runtime::channel(1);
     let picker = app.dialog().file().set_title(title);
     let callback = move |selection: Option<FilePath>| {
-        let result = selection.map(file_path_to_local_path).transpose();
+        let result = selection.map(dialog_path).transpose();
         let _ = sender.try_send(result);
     };
     if directory {
@@ -65,7 +65,7 @@ pub(crate) fn validate_picker_title(title: &str) -> ChatResult<&str> {
     Ok(title)
 }
 
-pub(crate) fn file_path_to_local_path(path: FilePath) -> ChatResult<PathBuf> {
+pub(crate) fn dialog_path(path: FilePath) -> ChatResult<PathBuf> {
     path.into_path()
         .map_err(|_| ChatError::validation("providerPath", "Selected path is not local"))
 }

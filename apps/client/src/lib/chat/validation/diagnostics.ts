@@ -29,18 +29,18 @@ function parseCounts(value: unknown, label: string): ChatDiagnosticCounts {
 
 export function parseChatDiagnosticsRead(value: unknown): ChatDiagnosticsRead {
   const record = readRecord(value, "Chat diagnostics");
-  const number = (field: keyof ChatDiagnosticsRead): number => readNonNegativeSafeInteger(record[field], `Chat diagnostics.${field}`);
+  const count = (field: keyof ChatDiagnosticsRead): number => readNonNegativeSafeInteger(record[field], `Chat diagnostics.${field}`);
   return {
     preferences: parseChatDiagnosticPreferences(record.preferences),
     capturedFields: readArray(record.capturedFields, "Chat diagnostics.capturedFields", readString),
     excludedFields: readArray(record.excludedFields, "Chat diagnostics.excludedFields", readString),
     storageLocation: readString(record.storageLocation, "Chat diagnostics.storageLocation"),
     projectionHealthy: readBoolean(record.projectionHealthy, "Chat diagnostics.projectionHealthy"),
-    inconsistentProjectionCount: number("inconsistentProjectionCount"),
+    inconsistentProjectionCount: count("inconsistentProjectionCount"),
     credentialStoreAvailable: readBoolean(record.credentialStoreAvailable, "Chat diagnostics.credentialStoreAvailable"),
-    providerProbeHealthy: number("providerProbeHealthy"), providerProbeUnhealthy: number("providerProbeUnhealthy"),
-    providerProbeUnknown: number("providerProbeUnknown"), liveProviderProcesses: number("liveProviderProcesses"),
-    activeTurns: number("activeTurns"), liveTerminals: number("liveTerminals"),
+    healthyProviderProbes: count("healthyProviderProbes"), unhealthyProviderProbes: count("unhealthyProviderProbes"),
+    unknownProviderProbes: count("unknownProviderProbes"), liveProviderProcesses: count("liveProviderProcesses"),
+    activeTurns: count("activeTurns"), liveTerminals: count("liveTerminals"),
     counts: parseCounts(record.counts, "Chat diagnostics.counts"),
   };
 }

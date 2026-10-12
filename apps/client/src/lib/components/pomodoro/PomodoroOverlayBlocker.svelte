@@ -8,7 +8,7 @@
     pomodoroBlockedScreenPalette,
     type PomodoroOverlayBlockerAction,
     type PomodoroBlockedScreenState,
-  } from "./blocked-screen";
+  } from "$lib/pomodoro/blocked-screen";
 
   interface PomodoroOverlayStateChangedPayload {
     state?: unknown;

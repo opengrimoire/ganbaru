@@ -2,14 +2,14 @@ use super::*;
 
 pub(super) async fn capture_recording_frames(
     app: tauri::AppHandle,
-    tab: RuntimePreviewTab,
+    tab: RuntimeBrowserTab,
     mut stop: tokio::sync::oneshot::Receiver<()>,
 ) -> ChatResult<Vec<Vec<u8>>> {
     let started = Instant::now();
     let mut frames = Vec::new();
     let mut total_bytes = 0_usize;
     loop {
-        let frame = capture_preview_png(&app, &tab).await?;
+        let frame = capture_browser_png(&app, &tab).await?;
         total_bytes = total_bytes.saturating_add(frame.len());
         if total_bytes > MAX_RECORDING_BYTES {
             return Err(ChatError::new(
@@ -45,36 +45,36 @@ pub(super) fn recording_archive(frames: &[Vec<u8>], duration: Duration) -> ChatR
         "durationMilliseconds": duration.as_millis(),
         "frameCount": frames.len()
     }))
-    .map_err(|_| preview_unavailable())?;
+    .map_err(|_| browser_unavailable_error())?;
     writer
         .start_file("manifest.json", options)
         .and_then(|_| writer.write_all(&manifest).map_err(Into::into))
-        .map_err(|_| preview_unavailable())?;
+        .map_err(|_| browser_unavailable_error())?;
     for (index, frame) in frames.iter().enumerate() {
         writer
             .start_file(format!("frames/{index:04}.png"), options)
             .and_then(|_| writer.write_all(frame).map_err(Into::into))
-            .map_err(|_| preview_unavailable())?;
+            .map_err(|_| browser_unavailable_error())?;
     }
     writer
         .finish()
         .map(|cursor| cursor.into_inner())
-        .map_err(|_| preview_unavailable())
+        .map_err(|_| browser_unavailable_error())
 }
 
-pub(super) async fn capture_preview_png(
+pub(super) async fn capture_browser_png(
     app: &tauri::AppHandle,
-    tab: &RuntimePreviewTab,
+    tab: &RuntimeBrowserTab,
 ) -> ChatResult<Vec<u8>> {
     let webview = app
         .get_webview(&tab.webview_label)
-        .ok_or_else(preview_unavailable)?;
+        .ok_or_else(browser_unavailable_error)?;
     let (sender, receiver) = tokio::sync::oneshot::channel();
     capture_platform_png(&webview, sender)?;
-    let bytes = tokio::time::timeout(PREVIEW_CAPTURE_TIMEOUT, receiver)
+    let bytes = tokio::time::timeout(BROWSER_CAPTURE_TIMEOUT, receiver)
         .await
         .map_err(|_| ChatError::new(ChatErrorCode::Timeout, "Browser capture timed out", true))?
-        .map_err(|_| preview_unavailable())??;
+        .map_err(|_| browser_unavailable_error())??;
     if bytes.is_empty() || bytes.len() > MAX_CAPTURE_BYTES {
         return Err(ChatError::new(
             ChatErrorCode::Protocol,
@@ -117,12 +117,12 @@ pub(super) fn capture_platform_png(
                     let completed = run_native_capture_callback(|| {
                         let encoded =
                             result
-                                .map_err(|_| preview_unavailable())
+                                .map_err(|_| browser_unavailable_error())
                                 .and_then(|surface| {
                                     let mut bytes = Vec::new();
                                     surface
                                         .write_to_png(&mut bytes)
-                                        .map_err(|_| preview_unavailable())?;
+                                        .map_err(|_| browser_unavailable_error())?;
                                     Ok(bytes)
                                 });
                         if let Ok(mut sender) = sender.lock() {
@@ -135,7 +135,7 @@ pub(super) fn capture_platform_png(
                         let _ = run_native_capture_callback(|| {
                             if let Ok(mut sender) = sender.lock() {
                                 if let Some(sender) = sender.take() {
-                                    let _ = sender.send(Err(preview_unavailable()));
+                                    let _ = sender.send(Err(browser_unavailable_error()));
                                 }
                             }
                         });
@@ -143,7 +143,7 @@ pub(super) fn capture_platform_png(
                 },
             );
         })
-        .map_err(|_| preview_unavailable())
+        .map_err(|_| browser_unavailable_error())
 }
 
 #[cfg(windows)]
@@ -167,7 +167,7 @@ pub(super) fn capture_platform_png(
                 Err(_) => {
                     if let Ok(mut sender) = sender.lock() {
                         if let Some(sender) = sender.take() {
-                            let _ = sender.send(Err(preview_unavailable()));
+                            let _ = sender.send(Err(browser_unavailable_error()));
                         }
                     }
                     return;
@@ -178,7 +178,7 @@ pub(super) fn capture_platform_png(
             let handler = CapturePreviewCompletedHandler::create(Box::new(move |result| {
                 let completed = run_native_capture_callback(|| {
                     let captured = result
-                        .map_err(|_| preview_unavailable())
+                        .map_err(|_| browser_unavailable_error())
                         .and_then(|_| read_windows_stream(&callback_stream));
                     if let Ok(mut sender) = callback_sender.lock() {
                         if let Some(sender) = sender.take() {
@@ -190,7 +190,7 @@ pub(super) fn capture_platform_png(
                     let _ = run_native_capture_callback(|| {
                         if let Ok(mut sender) = callback_sender.lock() {
                             if let Some(sender) = sender.take() {
-                                let _ = sender.send(Err(preview_unavailable()));
+                                let _ = sender.send(Err(browser_unavailable_error()));
                             }
                         }
                     });
@@ -205,7 +205,7 @@ pub(super) fn capture_platform_png(
                 Err(_) => {
                     if let Ok(mut sender) = sender.lock() {
                         if let Some(sender) = sender.take() {
-                            let _ = sender.send(Err(preview_unavailable()));
+                            let _ = sender.send(Err(browser_unavailable_error()));
                         }
                     }
                     return;
@@ -225,21 +225,21 @@ pub(super) fn capture_platform_png(
             {
                 if let Ok(mut sender) = sender.lock() {
                     if let Some(sender) = sender.take() {
-                        let _ = sender.send(Err(preview_unavailable()));
+                        let _ = sender.send(Err(browser_unavailable_error()));
                     }
                 }
             }
         })
-        .map_err(|_| preview_unavailable())
+        .map_err(|_| browser_unavailable_error())
 }
 
 #[cfg(any(windows, test))]
 fn capture_stream_capacity(reported_length: u64) -> ChatResult<usize> {
-    let length = usize::try_from(reported_length).map_err(|_| preview_unavailable())?;
+    let length = usize::try_from(reported_length).map_err(|_| browser_unavailable_error())?;
     if length == 0 || length > MAX_CAPTURE_BYTES {
-        return Err(preview_unavailable());
+        return Err(browser_unavailable_error());
     }
-    let _ = u32::try_from(length).map_err(|_| preview_unavailable())?;
+    let _ = u32::try_from(length).map_err(|_| browser_unavailable_error())?;
     Ok(length)
 }
 
@@ -249,12 +249,16 @@ fn capture_stream_read_progress(
     offset: usize,
     length: usize,
 ) -> ChatResult<usize> {
-    let remaining = length.checked_sub(offset).ok_or_else(preview_unavailable)?;
-    let read = usize::try_from(reported_read).map_err(|_| preview_unavailable())?;
+    let remaining = length
+        .checked_sub(offset)
+        .ok_or_else(browser_unavailable_error)?;
+    let read = usize::try_from(reported_read).map_err(|_| browser_unavailable_error())?;
     if read == 0 || read > remaining {
-        return Err(preview_unavailable());
+        return Err(browser_unavailable_error());
     }
-    offset.checked_add(read).ok_or_else(preview_unavailable)
+    offset
+        .checked_add(read)
+        .ok_or_else(browser_unavailable_error)
 }
 
 #[cfg(windows)]
@@ -266,16 +270,17 @@ pub(super) fn read_windows_stream(
     // SAFETY: `stream` is a live typed COM interface, and `stat` is initialized
     // writable storage of the exact type required. STATFLAG_NONAME prevents COM
     // from allocating a name that the caller would need to free.
-    unsafe { stream.Stat(&mut stat, STATFLAG_NONAME) }.map_err(|_| preview_unavailable())?;
+    unsafe { stream.Stat(&mut stat, STATFLAG_NONAME) }.map_err(|_| browser_unavailable_error())?;
     let length = capture_stream_capacity(stat.cbSize)?;
     // SAFETY: `stream` remains live, the seek origin and zero offset are valid,
     // and no output-position pointer is supplied.
-    unsafe { stream.Seek(0, STREAM_SEEK_SET, None) }.map_err(|_| preview_unavailable())?;
+    unsafe { stream.Seek(0, STREAM_SEEK_SET, None) }.map_err(|_| browser_unavailable_error())?;
     let mut bytes = vec![0_u8; length];
     let mut offset = 0;
     while offset < length {
         let remaining = &mut bytes[offset..];
-        let read_capacity = u32::try_from(remaining.len()).map_err(|_| preview_unavailable())?;
+        let read_capacity =
+            u32::try_from(remaining.len()).map_err(|_| browser_unavailable_error())?;
         let mut reported_read = 0_u32;
         // SAFETY: `remaining` is writable for exactly `read_capacity` bytes,
         // which was checked to fit COM's u32 count. `reported_read` is valid
@@ -288,7 +293,7 @@ pub(super) fn read_windows_stream(
             )
         }
         .ok()
-        .map_err(|_| preview_unavailable())?;
+        .map_err(|_| browser_unavailable_error())?;
         offset = capture_stream_read_progress(reported_read, offset, length)?;
     }
     Ok(bytes)
@@ -311,7 +316,7 @@ pub(super) fn capture_platform_png(
             let Some(view) = NonNull::new(platform.inner().cast::<WKWebView>()) else {
                 if let Ok(mut sender) = sender.lock() {
                     if let Some(sender) = sender.take() {
-                        let _ = sender.send(Err(preview_unavailable()));
+                        let _ = sender.send(Err(browser_unavailable_error()));
                     }
                 }
                 return;
@@ -324,7 +329,7 @@ pub(super) fn capture_platform_png(
             let block = RcBlock::new(move |image: *mut NSImage, error: *mut NSError| {
                 let completed = run_native_capture_callback(|| {
                     let result = if !error.is_null() {
-                        Err(preview_unavailable())
+                        Err(browser_unavailable_error())
                     } else if let Some(image) = NonNull::new(image) {
                         // SAFETY: WebKit supplied a non-null NSImage pointer with no
                         // NSError. The callback contract keeps it alive for this
@@ -339,9 +344,9 @@ pub(super) fn capture_platform_png(
                                     .representationUsingType_properties(NSPNGFileType, &properties)
                             })
                             .map(|data| data.to_vec())
-                            .ok_or_else(preview_unavailable)
+                            .ok_or_else(browser_unavailable_error)
                     } else {
-                        Err(preview_unavailable())
+                        Err(browser_unavailable_error())
                     };
                     if let Ok(mut sender) = callback_sender.lock() {
                         if let Some(sender) = sender.take() {
@@ -353,7 +358,7 @@ pub(super) fn capture_platform_png(
                     let _ = run_native_capture_callback(|| {
                         if let Ok(mut sender) = callback_sender.lock() {
                             if let Some(sender) = sender.take() {
-                                let _ = sender.send(Err(preview_unavailable()));
+                                let _ = sender.send(Err(browser_unavailable_error()));
                             }
                         }
                     });
@@ -364,7 +369,7 @@ pub(super) fn capture_platform_png(
             // the asynchronous completion callback.
             unsafe { view.takeSnapshotWithConfiguration_completionHandler(None, &block) };
         })
-        .map_err(|_| preview_unavailable())
+        .map_err(|_| browser_unavailable_error())
 }
 
 #[cfg(test)]

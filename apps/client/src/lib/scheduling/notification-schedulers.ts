@@ -1,11 +1,14 @@
-import type { CalendarEvent } from "$lib/components/calendar/types";
-import { parseCalendarDate } from "$lib/components/calendar/utils";
+import { Temporal } from "@js-temporal/polyfill";
+import type { ProjectTaskReminder } from "$lib/api/project-task-reminders";
+import type { CalendarEvent } from "$lib/calendar/types";
+import { parseCalendarDate } from "$lib/calendar/utils";
 import {
   notesMentionNotificationDueAtMs,
   notesMentionNotificationIsDue,
   type NotesMentionNotificationPreferenceSnapshot,
-} from "$lib/notes/mention-notifications";
+} from "$lib/notes/collaboration/mention-notifications";
 import type { NotesMentionNotification } from "$lib/notes/types";
+import { dateReminderDueAtMs } from "$lib/utils/date-reminders";
 import {
   createLifecycleScheduler,
   systemSchedulerClock,
@@ -99,6 +102,8 @@ interface NotesNotificationSchedulerOptions {
   readonly listPending: () => Promise<readonly NotesMentionNotification[]>;
   readonly getPreferences: () => NotesMentionNotificationPreferenceSnapshot;
   readonly deliver: (notification: NotesMentionNotification) => Promise<void>;
+  /** Retires a muted notification without showing it. */
+  readonly dismiss: (notification: NotesMentionNotification) => Promise<void>;
   readonly onError?: (error: unknown) => void;
   readonly onDeliveryError?: (error: unknown) => void;
 }
@@ -131,22 +136,22 @@ export function createNotesNotificationScheduler(
         if (delivered.has(notification.id)) continue;
         const dueAtMs = notesMentionNotificationDueAtMs(notification);
         if (dueAtMs === null) continue;
-        if (notesMentionNotificationIsDue(notification, preferences, { nowMs })) {
+        // Muted pages and discussions retire their notifications when due, so unmuting later cannot replay them.
+        const isDueAt = (atMs: number) => notification.suppressed
+          ? dueAtMs <= atMs
+          : notesMentionNotificationIsDue(notification, preferences, { nowMs: atMs });
+        if (isDueAt(nowMs)) {
           if (!context.isCurrent()) return null;
           delivered.add(notification.id);
           try {
-            await options.deliver(notification);
+            await (notification.suppressed ? options.dismiss : options.deliver)(notification);
           } catch (error) {
             delivered.delete(notification.id);
             retryRequired = true;
             options.onDeliveryError?.(error);
           }
         } else if (dueAtMs > nowMs) {
-          const enabledAtDeadline = notesMentionNotificationIsDue(
-            notification,
-            preferences,
-            { nowMs: dueAtMs },
-          );
+          const enabledAtDeadline = isDueAt(dueAtMs);
           if (enabledAtDeadline) {
             nextDeadlineMs = nextDeadlineMs === null
               ? dueAtMs
@@ -161,6 +166,96 @@ export function createNotesNotificationScheduler(
           ? retryAtMs
           : Math.min(nextDeadlineMs, retryAtMs);
       }
+      return nextDeadlineMs;
+    },
+  });
+}
+
+export interface ProjectTaskReminderDelivery {
+  readonly reminder: ProjectTaskReminder;
+  readonly deadlineMs: number;
+}
+
+interface ProjectTaskReminderSchedulerOptions {
+  readonly clock?: SchedulerClock;
+  /** Lists the reminders of task dates on or after a `YYYY-MM-DD` day. */
+  readonly listUpcoming: (fromDate: string) => Promise<readonly ProjectTaskReminder[]>;
+  readonly deliver: (delivery: ProjectTaskReminderDelivery) => Promise<void>;
+  readonly getTimeZone?: () => string;
+  readonly onError?: (error: unknown) => void;
+}
+
+function systemTimeZone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+}
+
+function projectTaskReminderKey(reminder: ProjectTaskReminder): string {
+  return [reminder.taskId, reminder.anchor, reminder.date, reminder.time ?? "", reminder.minutesBefore].join("::");
+}
+
+/**
+ * Schedules task date reminders at their exact next deadline. Like Calendar notifications, a reminder whose deadline
+ * passed while the app was closed is not replayed.
+ */
+export function createProjectTaskReminderScheduler(
+  options: ProjectTaskReminderSchedulerOptions,
+): NotificationSchedulerController {
+  const clock = options.clock ?? systemSchedulerClock;
+  const getTimeZone = options.getTimeZone ?? systemTimeZone;
+  const delivered = new Set<string>();
+  const retry = new Set<string>();
+  let lastCheckMs: number | null = null;
+
+  return createLifecycleScheduler({
+    clock,
+    onError: options.onError,
+    errorRetryMs: NOTES_DELIVERY_RETRY_MS,
+    run: async (context) => {
+      const timeZone = getTimeZone();
+      const today = Temporal.Instant.fromEpochMilliseconds(clock.now()).toZonedDateTimeISO(timeZone).toPlainDate();
+      const reminders = await options.listUpcoming(today.toString());
+      if (!context.isCurrent()) return null;
+
+      const nowMs = clock.now();
+      const previousCheckMs = lastCheckMs === null
+        ? nowMs - EVENT_STARTUP_CATCH_UP_MS
+        : Math.min(lastCheckMs, nowMs);
+      lastCheckMs = nowMs;
+      const listedKeys = new Set(reminders.map(projectTaskReminderKey));
+      for (const key of delivered) {
+        if (!listedKeys.has(key)) delivered.delete(key);
+      }
+      for (const key of retry) {
+        if (!listedKeys.has(key)) retry.delete(key);
+      }
+
+      let nextDeadlineMs: number | null = null;
+      const due: ProjectTaskReminderDelivery[] = [];
+      for (const reminder of reminders) {
+        const key = projectTaskReminderKey(reminder);
+        if (delivered.has(key)) continue;
+        const deadlineMs = dateReminderDueAtMs(reminder.date, reminder.time, reminder.minutesBefore, timeZone);
+        if (deadlineMs === null) continue;
+        if (deadlineMs <= nowMs && (deadlineMs > previousCheckMs || retry.has(key))) {
+          due.push({ reminder, deadlineMs });
+        } else if (deadlineMs > nowMs) {
+          nextDeadlineMs = nextDeadlineMs === null ? deadlineMs : Math.min(nextDeadlineMs, deadlineMs);
+        }
+      }
+
+      for (const delivery of due) {
+        if (!context.isCurrent()) return null;
+        const key = projectTaskReminderKey(delivery.reminder);
+        try {
+          await options.deliver(delivery);
+          delivered.add(key);
+          retry.delete(key);
+        } catch (error) {
+          retry.add(key);
+          throw error;
+        }
+      }
+
       return nextDeadlineMs;
     },
   });

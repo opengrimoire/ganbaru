@@ -22,8 +22,10 @@
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getChat } from "$lib/stores/chat.svelte";
-  import type { ChatProviderSetupTarget } from "../types";
-  import ToggleSetting from "../ToggleSetting.svelte";
+  import type { ChatProviderSetupTarget } from "$lib/settings/types";
+  import Loading from "$lib/components/ui/Loading.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
+  import SwitchField from "$lib/components/ui/SwitchField.svelte";
 
   let {
     target,
@@ -153,6 +155,13 @@
       await tick();
       scrollElement?.focus();
     }
+  }
+
+  /** Retries preparing the setup form and rejects when it still cannot be prepared. */
+  async function retryInitialize(): Promise<void> {
+    operationError = null;
+    await initialize();
+    if (operationError) throw new Error(operationError);
   }
 
   function initializeFamily(familyId: string, displayName: string, executable: string): void {
@@ -494,7 +503,7 @@
       style="padding-left: {contentPaddingX}; padding-right: {contentPaddingX};"
     >
       {#if !initialized}
-        <p class="py-10 text-center text-sm text-muted-foreground">{t("common.loading")}</p>
+        <Loading layout="fill" class="min-h-28" />
       {:else}
         {#if family}
           <section class="setup-section">
@@ -548,7 +557,7 @@
                   />
                 </div>
               </div>
-              <ToggleSetting
+              <SwitchField
                 label={t("settings.chat.setup.allowCustomModels")}
                 checked={providerConfigBoolean("allowCustomModels")}
                 onChange={(checked) => setProviderConfigBoolean("allowCustomModels", checked)}
@@ -597,7 +606,7 @@
                     {#if fieldError("providerConfig.serverUrl")}<small>{fieldError("providerConfig.serverUrl")}</small>{/if}
                   </div>
                 </div>
-                <ToggleSetting
+                <SwitchField
                   label={t("settings.chat.setup.confirmExternalWorkspaceAccess")}
                   checked={providerConfigBoolean("confirmExternalWorkspaceAccess")}
                   onChange={(checked) => setProviderConfigBoolean("confirmExternalWorkspaceAccess", checked)}
@@ -608,7 +617,7 @@
                 {#if openCodeUsesInsecureExternalHttp()}
                   <div class="security-warning">
                     <p>{t("settings.chat.setup.insecureExternalHttpWarning")}</p>
-                    <ToggleSetting
+                    <SwitchField
                       label={t("settings.chat.setup.allowInsecureExternalHttp")}
                       checked={providerConfigBoolean("allowInsecureExternalHttp")}
                       onChange={(checked) => setProviderConfigBoolean("allowInsecureExternalHttp", checked)}
@@ -791,7 +800,7 @@
             </div>
           {/if}
         {:else if operationError}
-          <p class="py-10 text-center text-sm text-destructive">{operationError}</p>
+          <div class="min-h-40 text-sm"><Notice layout="fill" message={operationError} onRetry={retryInitialize} /></div>
         {/if}
       {/if}
     </div>
@@ -802,7 +811,7 @@
     style="padding-left: {contentPaddingX}; padding-right: {contentPaddingX}; padding-bottom: {contentPaddingBottom};"
   >
     <div class="footer-content">
-      <div class="footer-message" role={operationError ? "alert" : undefined}>{operationError ?? ""}</div>
+      <div class="footer-message">{#if operationError && family}<Notice message={operationError} />{/if}</div>
       <div class="footer-actions">
         <button type="button" class="secondary-button" onclick={onCancel}>{t("common.cancel")}</button>
         <button
@@ -834,8 +843,7 @@
   .form-row { display:flex; min-width:0; align-items:center; justify-content:space-between; gap:1rem; padding:0.15rem 0.25rem; }
   .form-row > label,.form-row > span { min-width:0; flex:1; color:var(--foreground); font-size:calc(0.82rem * var(--type-scale)); }
   .field-control { display:flex; width:min(22rem,55%); min-width:0; flex-direction:column; gap:0.25rem; }
-  input { height:1.75rem; min-width:0; border:1px solid var(--border); border-radius:0.375rem; background:var(--background); padding:0.25rem 0.5rem; color:var(--foreground); font-size:calc(0.78rem * var(--type-scale)); outline:none; }
-  input:focus { border-color:var(--ring); }
+  input { height:1.75rem; min-width:0; border:1px solid var(--border); border-radius:var(--floating-item-radius); background:transparent; padding:0.25rem 0.5rem; color:var(--foreground); font-size:calc(0.78rem * var(--type-scale)); outline:none; }
   input:disabled { cursor:not-allowed; opacity:0.55; }
   .field-control small,.argument-row small,.environment-error,.field-error { color:var(--destructive); font-size:calc(0.68rem * var(--type-scale)); }
   .field-error { padding-inline:0.25rem; }
@@ -868,7 +876,7 @@
   .test-result > i { display:grid; width:1rem; height:1rem; place-items:center; border:1px solid currentColor; border-radius:999px; }
   .test-result small { color:var(--muted-foreground); }
   .footer-content { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:0.6rem; border-top:1px solid var(--border); padding-top:0.75rem; }
-  .footer-message { min-width:0; flex:1; color:var(--destructive); font-size:calc(0.75rem * var(--type-scale)); }
+  .footer-message { min-width:0; flex:1; font-size:calc(0.75rem * var(--type-scale)); }
   .footer-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:0.45rem; }
   .secondary-button,.primary-button { display:inline-flex; height:2rem; align-items:center; justify-content:center; gap:0.4rem; border-radius:0.375rem; padding-inline:0.75rem; font-size:calc(0.78rem * var(--type-scale)); font-weight:500; }
   .secondary-button { border:1px solid var(--border); background:var(--background); color:var(--foreground); }

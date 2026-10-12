@@ -1,4 +1,4 @@
-import type { MobileBackStack } from "./mobile-back-stack-contract";
+import type { MobileBackStack } from "./mobile-back-stack-contracts";
 
 const noop = (): void => undefined;
 

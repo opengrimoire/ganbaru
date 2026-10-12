@@ -14,16 +14,16 @@
   import ShoppingCart from "@lucide/svelte/icons/shopping-cart";
   import Smile from "@lucide/svelte/icons/smile";
   import { projectIconAssetUrl } from "$lib/api/project-icons";
-  import { getEventColor } from "$lib/components/calendar/utils";
+  import { getEventColor } from "$lib/calendar/utils";
   import {
     parseProjectIcon,
     projectIconColorToEventColor,
-  } from "$lib/projects/project-icons";
-  import type { ProjectLucideIconNode } from "$lib/projects/project-lucide-catalog.generated";
-  import { projectAppIconNode } from "$lib/projects/project-app-icons";
+  } from "$lib/projects/icons/values";
+  import type { ProjectLucideIconNode } from "$lib/projects/icons/lucide-catalog.generated";
+  import { projectAppIconNode } from "$lib/projects/icons/app-icons";
   import { getProjects } from "$lib/stores/projects.svelte";
   import { getTheme } from "$lib/stores/theme.svelte";
-  import LucideNodeIcon from "./LucideNodeIcon.svelte";
+  import LucideNodeIcon from "$lib/components/icon-picker/LucideNodeIcon.svelte";
 
   let {
     name,
@@ -118,7 +118,7 @@
     const requestId = ++lucideRequestId;
     lucideNode = null;
     if (currentIcon.kind !== "lucide" || icons[currentIcon.slug] || projectAppIconNode(currentIcon.slug)) return;
-    void import("$lib/projects/project-lucide-catalog.generated")
+    void import("$lib/projects/icons/lucide-catalog.generated")
       .then((catalog) => {
         if (requestId !== lucideRequestId) return;
         lucideNode = catalog.PROJECT_LUCIDE_ICONS.find((icon) => icon.slug === currentIcon.slug)?.iconNode ?? null;

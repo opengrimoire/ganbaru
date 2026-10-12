@@ -9,7 +9,7 @@ rust-version.workspace = true
 default-run = "ganbaru-ai"
 
 [lib]
-name = "desktop_lib"
+name = "ganbaru_ai_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 doctest = false
 
@@ -38,7 +38,7 @@ tauri-plugin-updater = { workspace = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 ganbaru-mobile-documents = { workspace = true }
-ganbaru-mobile-doomscrolling = { workspace = true }
+ganbaru-mobile-distractions = { workspace = true }
 ganbaru-mobile-media = { workspace = true }
 ganbaru-mobile-notifications = { workspace = true }
 tauri-plugin-notification = { workspace = true }

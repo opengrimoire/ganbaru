@@ -57,7 +57,7 @@ import {
   type PostChatMessageResult,
 } from "../contracts";
 import { parseModelOptionSelection } from "./provider";
-import { normalizeChatMessageReferences } from "../message-references";
+import { normalizeChatMessageReferences } from "$lib/chat/composer/message-references";
 import {
   readArray,
   readBoolean,
@@ -169,13 +169,6 @@ export function parseChatConversationMembership(
     revision: readNonNegativeSafeInteger(record.revision, `${label}.revision`),
     removedAt: readNullable(record.removedAt, `${label}.removedAt`, readUtcTimestamp),
   };
-}
-
-export function parseChatConversationMemberships(
-  value: unknown,
-  label = "Chat conversation memberships",
-): ChatConversationMembershipRead[] {
-  return readArray(value, label, parseChatConversationMembership);
 }
 
 function parseChatHistoryBoundary(value: unknown, label: string): ChatHistoryBoundary {

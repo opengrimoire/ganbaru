@@ -1,25 +1,24 @@
 # Pomodoro algorithms
 
-Pomodoro behavior is divided into five related specifications so each decision remains reviewable without one monolithic document.
+Pomodoro behavior is split into related specifications so each decision stays reviewable on its own.
 
-- [Idle detection](idle-detection.md) covers platform activity sources, threshold scheduling, webcam suppression, idle backdating, and resume behavior.
-- [State machine](state-machine.md) covers pure transition decisions, side-effect ordering, lifecycle recovery, and calendar boundaries.
-- [Plan and history](plan-and-history.md) covers lazy segment persistence, future projection, inheritance, pauses, reconfiguration, and worked examples.
-- [Adaptive policy](adaptive-policy.md) covers stable objectives, evidence, boundaries, guardrails, and privacy rules.
-- [Adaptive experiments](adaptive-experiments.md) records the seven current bounded experiment lanes and analysis contract.
+- [Focus authority and evidence](focus-authority.md): what may start or advance execution, the native owner, recovery, effect fencing, and planned device ownership.
+- [State machine](state-machine.md): observation priority, phase advancement, Calendar block activation, reconfiguration, and side-effect ordering.
+- [Plan and history](plan-and-history.md): lazy segment persistence, future projection, inheritance, pauses, and worked examples.
+- [Idle detection](idle-detection.md): platform activity sources, sampling, webcam suppression, idle backdating, and focus failure.
+- [Adaptive policy](adaptive-policy.md): objectives, evidence, decision boundaries, guardrails, and privacy rules.
+- [Adaptive experiments](adaptive-experiments.md): the seven bounded experiment lanes and their analysis rules.
 
-Durable rows and relationships are summarized in [Pomodoro schema](../../data/schema/pomodoro.md). User-visible behavior remains in the Pomodoro feature documents.
+Durable rows are summarized in [Pomodoro schema](../../data/schema/pomodoro.md). User-visible behavior lives in the [Pomodoro feature documents](../../features/pomodoro/README.md).
 
 ## Shared requirements
 
 - Persist facts about phases that started. Derive future phases.
-- Never rewrite completed or interrupted progress after a config change.
+- Never rewrite completed or interrupted progress after a configuration change.
 - Make transition decisions deterministic from explicit inputs.
-- Commit canonical state before native notifications, overlays, media, or window events.
+- Commit canonical state before notifications, overlays, media, or window events.
 - Treat desktop and mobile recovery evidence separately.
-- Record adaptive decisions before the affected phase or run begins.
-- Keep one globally active segment at most.
+- Record adaptive decisions in the same transaction as the run or phase they select.
+- Keep at most one globally active segment.
 
-Algorithm names describe responsibilities, not current file or helper names. Source may be reorganized without changing these contracts.
-
-- [Focus authority and evidence](focus-authority.md): local admission, truthful Android reminders, and planned device ownership.
+Algorithm names describe responsibilities, not file or helper names. Source may be reorganized without changing these contracts.

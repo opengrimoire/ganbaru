@@ -1,8 +1,7 @@
-//! Ganbaru AI folder filesystem layer.
+//! Vault filesystem layer.
 //!
-//! The Ganbaru AI folder holds portable user data. The Tauri app config
-//! directory stores only the active folder pointer and device-local runtime
-//! files.
+//! The vault holds portable user data. The Tauri app config directory stores
+//! only the active vault pointer and device-local runtime files.
 //!
 //! Writes are atomic: serialize to `.tmp`, fsync, rename. A crash mid-write
 //! leaves either the previous good file or the temp file, which is ignored
@@ -11,21 +10,24 @@
 use chrono::{DateTime, SecondsFormat, Utc};
 #[cfg(target_os = "android")]
 use ganbaru_mobile_documents::MobileDocumentsExt;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tauri::{Manager, Runtime};
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 use tauri_plugin_dialog::{DialogExt, FilePath};
 
-static APP_STATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static APP_STATE: std::sync::Mutex<Option<CachedAppState>> = std::sync::Mutex::new(None);
 static CONFIG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 mod config;
+#[cfg(desktop)]
+pub(crate) use config::read_active_config_bounded;
 mod documents;
 
-// Keep Tauri commands and their generated wrappers at the existing vault facade.
+// Keep Tauri commands and their generated wrappers at the vault facade.
 pub use config::*;
 pub use documents::*;
 
@@ -33,10 +35,11 @@ pub(crate) mod backup;
 pub(crate) mod handoff;
 pub(crate) mod ownership;
 pub(crate) mod quiescence;
+pub(crate) mod runtime_lifecycle;
 
 pub const APP_SQLITE_FILE: &str = "ganbaru-ai.sqlite";
-const PRODUCTION_DATA_FOLDER_NAME: &str = "Ganbaru AI";
-const DEVELOPMENT_DATA_FOLDER_NAME: &str = "Ganbaru AI Dev";
+const PRODUCTION_VAULT_NAME: &str = "Ganbaru AI";
+const DEVELOPMENT_VAULT_NAME: &str = "Ganbaru AI Dev";
 const APP_STATE_FILE: &str = "app-state.json";
 const VAULT_MANIFEST_FILE: &str = "vault.json";
 const CONFIG_FILE: &str = "config.json";
@@ -50,7 +53,7 @@ const MOBILE_VAULT_IMPORT_MAX_BYTES: u64 = 100 * 1024 * 1024 * 1024;
 #[cfg(target_os = "android")]
 const MOBILE_VAULT_IMPORT_MAX_DEPTH: u32 = 64;
 
-#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VaultAppState {
     #[serde(deserialize_with = "required_nullable")]
@@ -77,6 +80,14 @@ pub(crate) fn vault_device_id<R: Runtime>(app: tauri::AppHandle<R>) -> Result<St
 }
 
 pub(crate) fn ensure_device_id<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<String, String> {
+    // Most calls find the identity already stored; avoid cloning device state for an update.
+    if let Some(device_id) = read_app_state(app)?
+        .device_id
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        return Ok(device_id.clone());
+    }
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|error| format!("create device id timestamp: {error}"))?
@@ -138,34 +149,109 @@ fn read_app_state_from_path(path: &Path) -> Result<VaultAppState, String> {
     serde_json::from_str(&contents).map_err(|e| format!("parse app state: {e}"))
 }
 
+/// File identity used to detect app state changes made outside this process.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct AppStateStamp {
+    len: u64,
+    modified: std::time::SystemTime,
+}
+
+/// Parsed app state shared by readers until its file changes.
+struct CachedAppState {
+    path: PathBuf,
+    stamp: Option<AppStateStamp>,
+    state: Arc<VaultAppState>,
+}
+
+fn app_state_stamp(path: &Path) -> Result<Option<AppStateStamp>, String> {
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("inspect app state: {error}")),
+    };
+    let modified = metadata
+        .modified()
+        .map_err(|error| format!("inspect app state modification time: {error}"))?;
+    Ok(Some(AppStateStamp {
+        len: metadata.len(),
+        modified,
+    }))
+}
+
+/// Return the cached state, parsing the file only when it is new or changed.
+///
+/// Background owners resolve the active folder several times per second, so
+/// reparsing the whole device state on each lookup is not acceptable.
+fn cached_app_state(
+    cache: &mut Option<CachedAppState>,
+    path: &Path,
+) -> Result<Arc<VaultAppState>, String> {
+    // Stamp before reading so a concurrent external write is detected on the next lookup.
+    let stamp = app_state_stamp(path)?;
+    if let Some(cached) = cache
+        .as_ref()
+        .filter(|cached| cached.path == path && cached.stamp == stamp)
+    {
+        return Ok(Arc::clone(&cached.state));
+    }
+    let state = Arc::new(read_app_state_from_path(path)?);
+    *cache = Some(CachedAppState {
+        path: path.to_path_buf(),
+        stamp,
+        state: Arc::clone(&state),
+    });
+    Ok(state)
+}
+
+#[cfg(test)]
 fn write_app_state_to_path(path: &Path, state: &VaultAppState) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(state).map_err(|e| e.to_string())?;
+    write_app_state_json(path, &json)
+}
+
+fn write_app_state_json(path: &Path, json: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("create app config dir: {e}"))?;
     }
-    let json = serde_json::to_string_pretty(state).map_err(|e| e.to_string())?;
-    write_text_file_atomically(path, &json)
+    write_text_file_atomically(path, json)
 }
 
 pub(crate) fn read_app_state<R: Runtime>(
     app: &tauri::AppHandle<R>,
-) -> Result<VaultAppState, String> {
-    let _guard = APP_STATE_LOCK
+) -> Result<Arc<VaultAppState>, String> {
+    let mut cache = APP_STATE
         .lock()
         .map_err(|_| "app state lock is unavailable".to_string())?;
-    read_app_state_from_path(&app_state_path(app)?)
+    cached_app_state(&mut cache, &app_state_path(app)?)
 }
 
 pub(crate) fn update_app_state<R: Runtime, T>(
     app: &tauri::AppHandle<R>,
     update: impl FnOnce(&mut VaultAppState) -> Result<T, String>,
 ) -> Result<T, String> {
-    let _guard = APP_STATE_LOCK
+    let mut cache = APP_STATE
         .lock()
         .map_err(|_| "app state lock is unavailable".to_string())?;
     let path = app_state_path(app)?;
-    let mut state = read_app_state_from_path(&path)?;
+    let current = cached_app_state(&mut cache, &path)?;
+    let mut state = VaultAppState::clone(&current);
     let result = update(&mut state)?;
-    write_app_state_to_path(&path, &state)?;
+    // Idempotent updates must not rewrite and fsync the file.
+    let stored = cache.as_ref().is_some_and(|cached| cached.stamp.is_some());
+    if stored && state == *current {
+        return Ok(result);
+    }
+    let json = serde_json::to_string_pretty(&state).map_err(|e| e.to_string())?;
+    write_app_state_json(&path, &json)?;
+    *cache = match app_state_stamp(&path) {
+        Ok(stamp) => Some(CachedAppState {
+            path,
+            stamp,
+            state: Arc::new(state),
+        }),
+        // The write succeeded; the next lookup reparses the file instead of trusting a stale stamp.
+        Err(_) => None,
+    };
     Ok(result)
 }
 
@@ -179,7 +265,7 @@ fn display_name_from_path(path: &Path) -> String {
     path.file_name()
         .and_then(|name| name.to_str())
         .filter(|name| !name.trim().is_empty())
-        .unwrap_or(default_data_folder_name())
+        .unwrap_or(default_vault_name())
         .to_string()
 }
 
@@ -187,11 +273,11 @@ fn is_development_build() -> bool {
     cfg!(debug_assertions)
 }
 
-fn default_data_folder_name() -> &'static str {
+fn default_vault_name() -> &'static str {
     if is_development_build() {
-        DEVELOPMENT_DATA_FOLDER_NAME
+        DEVELOPMENT_VAULT_NAME
     } else {
-        PRODUCTION_DATA_FOLDER_NAME
+        PRODUCTION_VAULT_NAME
     }
 }
 
@@ -234,7 +320,8 @@ fn manifest_path(path: &Path) -> PathBuf {
     path.join(VAULT_MANIFEST_FILE)
 }
 
-fn config_path(path: &Path) -> PathBuf {
+/// Resolve the portable configuration path beneath an already authorized vault root.
+pub(crate) fn config_path(path: &Path) -> PathBuf {
     path.join(CONFIG_FILE)
 }
 
@@ -329,7 +416,38 @@ fn initialize_vault(path: &Path) -> Result<VaultInfo, String> {
     vault_info_from_manifest(&path, manifest)
 }
 
-fn select_vault<R: Runtime>(app: &tauri::AppHandle<R>, info: &VaultInfo) -> Result<(), String> {
+/// Changes the active folder only after every native owner has drained.
+#[cfg(desktop)]
+async fn select_vault<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    info: &VaultInfo,
+) -> Result<(), String> {
+    select_reserved_vault(app, info, quiescence::reserve_vault_transition()?).await
+}
+
+async fn select_reserved_vault<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    info: &VaultInfo,
+    transition: quiescence::VaultTransition,
+) -> Result<(), String> {
+    let quiescence = quiescence::begin_reserved_quiescence(app, transition).await?;
+    let selection_app = app.clone();
+    let info = info.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let selected = select_quiesced_vault(&selection_app, &info, &quiescence);
+        let resumed = quiescence.finish();
+        selected.and(resumed)
+    })
+    .await
+    .map_err(|error| format!("vault selection worker failed: {error}"))?
+}
+
+/// Persists selection while the caller retains the native and write barriers.
+fn select_quiesced_vault<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    info: &VaultInfo,
+    _quiescence: &quiescence::SnapshotQuiescence,
+) -> Result<(), String> {
     update_app_state(app, |state| {
         state.active_vault_path = Some(info.path.clone());
         state
@@ -337,11 +455,65 @@ fn select_vault<R: Runtime>(app: &tauri::AppHandle<R>, info: &VaultInfo) -> Resu
             .retain(|path| path != &info.path && !path.trim().is_empty());
         state.recent_vault_paths.insert(0, info.path.clone());
         state.recent_vault_paths.truncate(MAX_RECENT_VAULTS);
+        if let Some(mut known) = recent_vault_ids(&state.recent_vault_paths) {
+            known.insert(info.vault_id.clone());
+            retain_vault_scopes(state, &known);
+        }
         Ok(())
     })
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+/// Collect the vault IDs found at recent folders, or `None` when any folder is unreachable.
+///
+/// A missing folder may be a vault on a disconnected drive, so its ID is unknown and
+/// no scope can safely be called stale. A reachable folder without a valid marker is
+/// no longer a vault and contributes no ID.
+fn recent_vault_ids(paths: &[String]) -> Option<BTreeSet<String>> {
+    let mut known = BTreeSet::new();
+    for path in paths.iter().map(Path::new) {
+        if !path.try_exists().unwrap_or(false) {
+            return None;
+        }
+        if let Ok(manifest) = read_vault_manifest(path) {
+            known.insert(manifest.vault_id);
+        }
+    }
+    Some(known)
+}
+
+/// Forget device-local settings for vaults that are known to be gone.
+///
+/// Scopes are keyed by vault ID, so a deleted or replaced vault would otherwise
+/// keep its folder bindings and Chat provider settings forever.
+fn retain_vault_scopes(state: &mut VaultAppState, known_vault_ids: &BTreeSet<String>) {
+    state
+        .music_root_bindings
+        .retain(|vault_id, _| known_vault_ids.contains(vault_id));
+    state
+        .project_working_folders
+        .vaults
+        .retain(|vault_id, _| known_vault_ids.contains(vault_id));
+    state
+        .chat
+        .vaults
+        .retain(|vault_id, _| known_vault_ids.contains(vault_id));
+}
+
+/// Reconciles native execution owners with the newly active, authorized vault.
+pub(crate) fn resume_native_runtimes<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
+    let focus = crate::pomodoro::resume_after_vault_handoff(app);
+    let music = crate::music::session::resume_after_vault_handoff(app);
+    #[cfg(desktop)]
+    let distractions = crate::distractions::runtime::resume_after_vault_handoff(app);
+    #[cfg(target_os = "android")]
+    let distractions = crate::distractions::android::runtime::resume_after_vault_handoff(app);
+    #[cfg(target_os = "ios")]
+    let distractions = Ok(());
+    let sync = crate::sync::resume_after_vault_handoff(app);
+    focus.and(music).and(distractions).and(sync)
+}
+
+#[cfg(desktop)]
 async fn pick_folder(
     app: &tauri::AppHandle,
     title: &str,
@@ -361,27 +533,27 @@ async fn pick_folder(
         .ok_or_else(|| "folder picker closed without returning a result".to_string())?
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 fn existing_documents_directory(app: &tauri::AppHandle) -> Option<PathBuf> {
     app.path().document_dir().ok().filter(|path| path.is_dir())
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 fn default_data_parent(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     app.path()
         .document_dir()
         .map_err(|e| format!("find Documents folder: {e}"))
 }
 
-#[cfg(any(target_os = "android", target_os = "ios"))]
+#[cfg(mobile)]
 fn default_data_parent(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_data_dir()
         .map_err(|e| format!("find private application data folder: {e}"))
 }
 
-fn default_data_folder_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    Ok(default_data_parent(app)?.join(default_data_folder_name()))
+fn default_vault_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(default_data_parent(app)?.join(default_vault_name()))
 }
 
 fn default_location_from_path(path: PathBuf) -> Result<VaultDefaultLocation, String> {
@@ -391,43 +563,66 @@ fn default_location_from_path(path: PathBuf) -> Result<VaultDefaultLocation, Str
     Ok(VaultDefaultLocation {
         path: path_to_string(&path, "Ganbaru AI folder")?,
         parent_path: path_to_string(parent, "Ganbaru AI folder parent")?,
-        folder_name: default_data_folder_name().to_string(),
+        folder_name: default_vault_name().to_string(),
         development_build: is_development_build(),
     })
 }
 
-fn create_and_select_vault(app: &tauri::AppHandle, path: &Path) -> Result<VaultInfo, String> {
-    fs::create_dir_all(path).map_err(|e| format!("create Ganbaru AI folder: {e}"))?;
-    let info = initialize_vault(path)?;
-    select_vault(app, &info)?;
+async fn create_and_select_vault(
+    app: &tauri::AppHandle,
+    path: PathBuf,
+) -> Result<VaultInfo, String> {
+    let transition = quiescence::reserve_vault_transition()?;
+    let creation_transition = transition.clone();
+    let info = tauri::async_runtime::spawn_blocking(move || {
+        let _transition = creation_transition;
+        fs::create_dir_all(&path).map_err(|e| format!("create Ganbaru AI folder: {e}"))?;
+        initialize_vault(&path)
+    })
+    .await
+    .map_err(|error| format!("vault creation worker failed: {error}"))??;
+    select_reserved_vault(app, &info, transition).await?;
     Ok(info)
 }
 
+/// Folder selection fields exposed to the WebView. Device-local Chat, music, and
+/// working-folder state stays native.
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultAppStateSummary {
+    pub active_vault_path: Option<String>,
+    pub recent_vault_paths: Vec<String>,
+}
+
 #[tauri::command]
-pub fn vault_read_app_state(app: tauri::AppHandle) -> Result<VaultAppState, String> {
-    read_app_state(&app)
+pub fn vault_read_app_state(app: tauri::AppHandle) -> Result<VaultAppStateSummary, String> {
+    let state = read_app_state(&app)?;
+    Ok(VaultAppStateSummary {
+        active_vault_path: state.active_vault_path.clone(),
+        recent_vault_paths: state.recent_vault_paths.clone(),
+    })
 }
 
 #[tauri::command]
 pub fn vault_default_location(app: tauri::AppHandle) -> Result<VaultDefaultLocation, String> {
-    default_location_from_path(default_data_folder_path(&app)?)
+    default_location_from_path(default_vault_path(&app)?)
 }
 
 #[tauri::command]
-pub fn vault_use_default_folder(app: tauri::AppHandle) -> Result<VaultInfo, String> {
-    let path = default_data_folder_path(&app)?;
-    create_and_select_vault(&app, &path)
+pub async fn vault_use_default(app: tauri::AppHandle) -> Result<VaultInfo, String> {
+    let path = default_vault_path(&app)?;
+    create_and_select_vault(&app, path).await
 }
 
 #[tauri::command]
 pub fn vault_active_info(app: tauri::AppHandle) -> Result<Option<VaultInfo>, String> {
-    let Some(path) = read_app_state(&app)?.active_vault_path else {
+    let Some(path) = read_app_state(&app)?.active_vault_path.clone() else {
         return Ok(None);
     };
     vault_info_from_path(&PathBuf::from(path)).map(Some)
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn vault_pick_create(app: tauri::AppHandle) -> Result<Option<VaultInfo>, String> {
     let Some(path) =
@@ -435,11 +630,11 @@ pub async fn vault_pick_create(app: tauri::AppHandle) -> Result<Option<VaultInfo
     else {
         return Ok(None);
     };
-    let info = create_and_select_vault(&app, &path)?;
+    let info = create_and_select_vault(&app, path).await?;
     Ok(Some(info))
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn vault_pick_open(app: tauri::AppHandle) -> Result<Option<VaultInfo>, String> {
     let Some(path) = pick_folder(
@@ -453,19 +648,36 @@ pub async fn vault_pick_open(app: tauri::AppHandle) -> Result<Option<VaultInfo>,
     };
     let info = vault_info_from_path(&path)?;
     ensure_vault_skeleton(&PathBuf::from(&info.path))?;
-    select_vault(&app, &info)?;
+    select_vault(&app, &info).await?;
     Ok(Some(info))
 }
 
 #[cfg(target_os = "android")]
 #[tauri::command]
-pub fn vault_pick_open(app: tauri::AppHandle) -> Result<Option<VaultInfo>, String> {
-    let target = default_data_folder_path(&app)?;
+pub async fn vault_pick_open(app: tauri::AppHandle) -> Result<Option<VaultInfo>, String> {
+    let transition = quiescence::reserve_vault_transition()?;
+    let import_transition = transition.clone();
+    let import_app = app.clone();
+    let info = tauri::async_runtime::spawn_blocking(move || {
+        let _transition = import_transition;
+        pick_mobile_vault(&import_app)
+    })
+    .await
+    .map_err(|error| format!("Android vault import worker failed: {error}"))??;
+    if let Some(info) = &info {
+        select_reserved_vault(&app, info, transition).await?;
+    }
+    Ok(info)
+}
+
+#[cfg(target_os = "android")]
+fn pick_mobile_vault(app: &tauri::AppHandle) -> Result<Option<VaultInfo>, String> {
+    let target = default_vault_path(app)?;
     let parent = target
         .parent()
         .ok_or_else(|| "Ganbaru AI folder has no parent directory".to_string())?;
     fs::create_dir_all(parent).map_err(|error| format!("create app data directory: {error}"))?;
-    let staging = parent.join(format!(".{}.import", default_data_folder_name()));
+    let staging = parent.join(format!(".{}.import", default_vault_name()));
     if staging.exists() {
         fs::remove_dir_all(&staging)
             .map_err(|error| format!("remove stale folder import: {error}"))?;
@@ -498,7 +710,6 @@ pub fn vault_pick_open(app: tauri::AppHandle) -> Result<Option<VaultInfo>, Strin
         fs::rename(&staging, &target)
             .map_err(|error| format!("activate imported Ganbaru AI folder: {error}"))?;
         let info = vault_info_from_path(&target)?;
-        select_vault(&app, &info)?;
         Ok(Some(info))
     })();
     if result.is_err() && staging.exists() {
@@ -507,24 +718,7 @@ pub fn vault_pick_open(app: tauri::AppHandle) -> Result<Option<VaultInfo>, Strin
     result
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-#[tauri::command]
-pub fn vault_select_recent(app: tauri::AppHandle, path: String) -> Result<VaultInfo, String> {
-    let state = read_app_state(&app)?;
-    if !state
-        .recent_vault_paths
-        .iter()
-        .any(|recent| recent == &path)
-    {
-        return Err("folder is not in the recent Ganbaru AI folder list".to_string());
-    }
-    let info = vault_info_from_path(&PathBuf::from(path))?;
-    ensure_vault_skeleton(&PathBuf::from(&info.path))?;
-    select_vault(&app, &info)?;
-    Ok(info)
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 #[tauri::command]
 pub fn vault_reveal_active(app: tauri::AppHandle) -> Result<(), String> {
     let path = active_vault_path(&app)?;
@@ -532,12 +726,45 @@ pub fn vault_reveal_active(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 pub fn active_vault_path<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
-    let Some(path) = read_app_state(app)?.active_vault_path else {
+    active_vault(app).map(|(path, _)| path)
+}
+
+/// Resolve the active folder and its validated marker with one marker read.
+fn active_vault<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(PathBuf, VaultManifest), String> {
+    let Some(path) = read_app_state(app)?.active_vault_path.clone() else {
         return Err("no active Ganbaru AI folder selected".to_string());
     };
     let path = canonical_vault_path(PathBuf::from(path))?;
+    let manifest = read_vault_manifest(&path)?;
+    Ok((path, manifest))
+}
+
+/// Background observation waits during onboarding or after a selected folder was deleted.
+/// Invalid manifests and filesystem access errors remain explicit failures.
+#[cfg(desktop)]
+pub(crate) fn available_active_vault_path<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<Option<PathBuf>, String> {
+    available_vault_path(
+        read_app_state(app)?
+            .active_vault_path
+            .as_ref()
+            .map(PathBuf::from),
+    )
+}
+
+#[cfg(desktop)]
+fn available_vault_path(path: Option<PathBuf>) -> Result<Option<PathBuf>, String> {
+    let Some(path) = path else { return Ok(None) };
+    if !path
+        .try_exists()
+        .map_err(|error| format!("inspect selected Ganbaru AI folder: {error}"))?
+    {
+        return Ok(None);
+    }
+    let path = canonical_vault_path(path)?;
     read_vault_manifest(&path)?;
-    Ok(path)
+    Ok(Some(path))
 }
 
 pub(crate) struct WritableVaultPath {
@@ -569,8 +796,8 @@ impl AsRef<Path> for WritableVaultPath {
 pub(crate) fn active_writable_vault_path<R: Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<WritableVaultPath, String> {
-    let path = active_vault_path(app)?;
-    let vault_id = read_vault_manifest(&path)?.vault_id;
+    let (path, manifest) = active_vault(app)?;
+    let vault_id = manifest.vault_id;
     let permit = app
         .state::<ownership::VaultOwnershipManager>()
         .acquire_managed_write(&vault_id)?;
@@ -581,11 +808,9 @@ pub(crate) fn active_writable_vault_path<R: Runtime>(
 }
 
 pub(crate) fn active_vault_id<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<String, String> {
-    let path = active_vault_path(app)?;
-    Ok(read_vault_manifest(&path)?.vault_id)
+    active_vault(app).map(|(_, manifest)| manifest.vault_id)
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn active_database_path<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
     Ok(database_path(&active_vault_path(app)?))
 }
@@ -598,7 +823,7 @@ fn require_absolute_path(path: &Path) -> Result<(), String> {
     }
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 fn dialog_path(path: FilePath) -> Result<PathBuf, String> {
     path.into_path()
         .map_err(|e| format!("selected path is not a local file: {e}"))
@@ -618,42 +843,42 @@ fn write_text_file_atomically(path: &Path, contents: &str) -> Result<(), String>
         .ok_or_else(|| "target has no file name".to_string())?
         .to_string_lossy()
         .into_owned();
-    let tmp_path = parent.join(format!("{file_name}.tmp"));
+    let temporary_path = parent.join(format!("{file_name}.tmp"));
     {
-        let mut file = fs::File::create(&tmp_path).map_err(|e| e.to_string())?;
+        let mut file = fs::File::create(&temporary_path).map_err(|e| e.to_string())?;
         file.write_all(contents.as_bytes())
             .map_err(|e| e.to_string())?;
         file.sync_all().map_err(|e| e.to_string())?;
     }
-    fs::rename(&tmp_path, target).map_err(|e| e.to_string())?;
+    fs::rename(&temporary_path, target).map_err(|e| e.to_string())?;
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 fn reveal_vault_folder(path: &Path) -> Result<(), String> {
     spawn_file_manager_command("xdg-open", [path.as_os_str()])
 }
 
 #[cfg(target_os = "macos")]
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 fn reveal_vault_folder(path: &Path) -> Result<(), String> {
     spawn_file_manager_command("open", [path.as_os_str()])
 }
 
 #[cfg(windows)]
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 fn reveal_vault_folder(path: &Path) -> Result<(), String> {
     spawn_file_manager_command("explorer.exe", [path.as_os_str()])
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 fn reveal_vault_folder(_path: &Path) -> Result<(), String> {
     Err("opening Ganbaru AI folders is not implemented for this platform".to_string())
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 fn spawn_file_manager_command<I, S>(program: &str, args: I) -> Result<(), String>
 where
     I: IntoIterator<Item = S>,
@@ -704,7 +929,7 @@ mod tests {
         let path = unique_path("write.txt");
         let parent = path.parent().unwrap().to_path_buf();
         let file_name = path.file_name().unwrap().to_string_lossy().into_owned();
-        let tmp_sibling = parent.join(format!("{file_name}.tmp"));
+        let temporary_sibling = parent.join(format!("{file_name}.tmp"));
 
         write_text_file_atomically(&path, "payload").expect("write should succeed");
 
@@ -712,7 +937,7 @@ mod tests {
         assert_eq!(on_disk, "payload");
         // The .tmp sibling must not survive a successful write.
         assert!(
-            !tmp_sibling.exists(),
+            !temporary_sibling.exists(),
             "tmp file should have been renamed away"
         );
 
@@ -741,6 +966,24 @@ mod tests {
     }
 
     #[test]
+    #[cfg(desktop)]
+    fn background_vault_resolution_waits_for_selection_but_rejects_invalid_manifests() {
+        let path = unique_path("background-vault");
+        assert_eq!(available_vault_path(None).unwrap(), None);
+        assert_eq!(available_vault_path(Some(path.clone())).unwrap(), None);
+        fs::create_dir_all(&path).unwrap();
+        assert!(available_vault_path(Some(path.clone())).is_err());
+        initialize_vault(&path).unwrap();
+        assert_eq!(
+            available_vault_path(Some(path.clone())).unwrap(),
+            Some(path.clone())
+        );
+        fs::write(path.join(VAULT_MANIFEST_FILE), "invalid json").unwrap();
+        assert!(available_vault_path(Some(path.clone())).is_err());
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn initialize_vault_rejects_non_empty_non_vault_folders() {
         let path = unique_path("non-empty");
         fs::create_dir_all(&path).expect("create vault folder");
@@ -756,12 +999,73 @@ mod tests {
     }
 
     #[test]
-    fn default_data_folder_name_tracks_build_mode() {
+    fn default_vault_name_tracks_build_mode() {
         if cfg!(debug_assertions) {
-            assert_eq!(default_data_folder_name(), DEVELOPMENT_DATA_FOLDER_NAME);
+            assert_eq!(default_vault_name(), DEVELOPMENT_VAULT_NAME);
         } else {
-            assert_eq!(default_data_folder_name(), PRODUCTION_DATA_FOLDER_NAME);
+            assert_eq!(default_vault_name(), PRODUCTION_VAULT_NAME);
         }
+    }
+
+    #[test]
+    fn recent_vault_ids_refuse_to_guess_while_a_folder_is_unreachable() {
+        let vault = unique_path("recent-vault");
+        fs::create_dir_all(&vault).expect("create vault folder");
+        let info = initialize_vault(&vault).expect("initialize vault");
+        let plain = unique_path("recent-plain");
+        fs::create_dir_all(&plain).expect("create plain folder");
+        let reachable = vec![
+            vault.to_string_lossy().into_owned(),
+            plain.to_string_lossy().into_owned(),
+        ];
+
+        assert_eq!(
+            recent_vault_ids(&reachable),
+            Some(BTreeSet::from([info.vault_id]))
+        );
+        let mut with_missing = reachable.clone();
+        with_missing.push(unique_path("recent-missing").to_string_lossy().into_owned());
+        assert_eq!(recent_vault_ids(&with_missing), None);
+        let _ = fs::remove_dir_all(&vault);
+        let _ = fs::remove_dir_all(&plain);
+    }
+
+    #[test]
+    fn vault_scopes_keep_only_known_vaults() {
+        let mut state = VaultAppState::default();
+        for vault_id in ["vault-live", "vault-deleted"] {
+            state
+                .music_root_bindings
+                .insert(vault_id.to_string(), BTreeMap::new());
+            state
+                .project_working_folders
+                .vaults
+                .insert(vault_id.to_string(), BTreeMap::new());
+            state
+                .chat
+                .vaults
+                .insert(vault_id.to_string(), BTreeMap::new());
+        }
+
+        retain_vault_scopes(&mut state, &BTreeSet::from(["vault-live".to_string()]));
+
+        let live = ["vault-live"];
+        assert_eq!(
+            state.music_root_bindings.keys().collect::<Vec<_>>(),
+            live.iter().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            state
+                .project_working_folders
+                .vaults
+                .keys()
+                .collect::<Vec<_>>(),
+            live.iter().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            state.chat.vaults.keys().collect::<Vec<_>>(),
+            live.iter().collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -792,6 +1096,36 @@ mod tests {
         assert_eq!(saved.recent_vault_paths, state.recent_vault_paths);
         assert_eq!(saved.music_root_bindings, state.music_root_bindings);
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn app_state_cache_reuses_parse_until_the_file_changes() {
+        let path = unique_path("cached-app-state.json");
+        let mut cache = None;
+
+        let missing = cached_app_state(&mut cache, &path).expect("read missing app state");
+        assert_eq!(*missing, VaultAppState::default());
+
+        let mut state = VaultAppState {
+            device_id: Some("device-test".to_string()),
+            ..VaultAppState::default()
+        };
+        write_app_state_to_path(&path, &state).expect("write app state");
+        let first = cached_app_state(&mut cache, &path).expect("read written app state");
+        let second = cached_app_state(&mut cache, &path).expect("read cached app state");
+        assert_eq!(first.device_id.as_deref(), Some("device-test"));
+        assert!(Arc::ptr_eq(&first, &second));
+
+        // A different length changes the stamp even on coarse-timestamp filesystems.
+        state.active_vault_path = Some("/tmp/ganbaru-ai-external-vault".to_string());
+        write_app_state_to_path(&path, &state).expect("write external change");
+        let changed = cached_app_state(&mut cache, &path).expect("read changed app state");
+        assert_eq!(changed.active_vault_path, state.active_vault_path);
+        assert!(!Arc::ptr_eq(&first, &changed));
+
+        fs::remove_file(&path).expect("remove app state");
+        let removed = cached_app_state(&mut cache, &path).expect("read removed app state");
+        assert_eq!(*removed, VaultAppState::default());
     }
 
     #[test]
@@ -870,7 +1204,6 @@ mod tests {
           },
           "fullAccessTrust": {},
           "preferences": {
-            "restoreLastSelectedThread": false,
             "lastSelectedThreadId": null
           },
           "diagnostics": { "captureEnabled": false, "retentionDays": 7 },

@@ -1,43 +1,43 @@
-use crate::chat::events::{
+use crate::chat::ingestion::{ChatChangeEmitter, ChatEventIngestor};
+use crate::chat::workspace::CreateProjectWorkingFolderRequest;
+use ganbaru_chat::repository::attachments::{
+    ChatAttachmentKind, import_attachment, run_due_attachment_cleanup,
+};
+use ganbaru_chat::repository::drafts::{ChatDraftWrite, delete_draft, read_draft, save_draft};
+use ganbaru_chat::repository::events::{
+    AppendCanonicalEventRequest, append_canonical_event, read_canonical_events,
+};
+use ganbaru_chat::repository::lifecycle::{
+    permanently_delete_thread, resolve_project_deletion, set_thread_archived, set_thread_read,
+};
+use ganbaru_chat::repository::reads::{
+    parse_timeline_cursor, read_project_shells, read_thread_shell, read_thread_shell_window,
+    read_thread_shells, read_timeline_page, read_timeline_turn, search_thread_titles,
+};
+use ganbaru_chat::repository::rebuild::rebuild_thread_projections;
+use ganbaru_chat::repository::receipts::{
+    CommandReceiptClaim, CommandReceiptState, claim_command_receipt, complete_command_receipt,
+};
+use ganbaru_chat::repository::recovery::recover_orphaned_turns;
+use ganbaru_chat::repository::resources::{
+    ChatResourceKind, StoreBrowserArtifact, list_thread_resources, read_thread_resource_bytes,
+    store_browser_artifact,
+};
+use ganbaru_chat::repository::workspaces::{create_workspace, list_workspaces, rename_workspace};
+use ganbaru_chat_contracts::events::{
     CanonicalEvent, CanonicalRuntimeEvent, ChangedFileSummary, ContentDeltaEvent, DiffUpdatedEvent,
     ItemLifecycleEvent, RequestOpenedEvent, SessionExitedEvent, ThreadRevertedEvent,
     TurnAbortedEvent, TurnCompletedEvent, TurnStartedEvent, UserInputQuestion,
     UserInputRequestedEvent,
 };
-use crate::chat::ingestion::{ChatChangeEmitter, ChatEventIngestor};
-use crate::chat::models::{
+use ganbaru_chat_contracts::models::{
     ActivityStatus, CanonicalItemKind, CanonicalRequestKind, ChatAttachmentId, ChatCheckpointId,
     ChatCommandId, ChatEventId, ChatThreadId, ChatTurnId, ChatTurnState, ContentStreamKind,
     InteractionMode, ProjectWorkingFolderId, ProviderFamilyId, ProviderInstanceId,
     ProviderRequestId, ProviderSessionId, SafetyMode, TurnModeSnapshot, UtcTimestamp,
     VersionedJson,
 };
-use crate::chat::models::{ChatChangeNotification, ChatError, ChatResult};
-use crate::chat::repository::attachments::{
-    ChatAttachmentKind, import_attachment, run_due_attachment_cleanup,
-};
-use crate::chat::repository::drafts::{ChatDraftWrite, delete_draft, read_draft, save_draft};
-use crate::chat::repository::events::{
-    AppendCanonicalEventRequest, append_canonical_event, read_canonical_events,
-};
-use crate::chat::repository::lifecycle::{
-    permanently_delete_thread, resolve_project_deletion, set_thread_archived, set_thread_read,
-};
-use crate::chat::repository::reads::{
-    parse_timeline_cursor, read_project_shells, read_thread_shell, read_thread_shell_window,
-    read_thread_shells, read_timeline_page, read_timeline_turn, search_thread_titles,
-};
-use crate::chat::repository::rebuild::rebuild_thread_projections;
-use crate::chat::repository::receipts::{
-    CommandReceiptClaim, CommandReceiptState, claim_command_receipt, complete_command_receipt,
-};
-use crate::chat::repository::recovery::recover_orphaned_turns;
-use crate::chat::repository::resources::{
-    ChatResourceKind, StoreBrowserArtifact, list_thread_resources, read_thread_resource_bytes,
-    store_browser_artifact,
-};
-use crate::chat::repository::workspaces::{create_workspace, list_workspaces, rename_workspace};
-use crate::chat::workspace::CreateProjectWorkingFolderRequest;
+use ganbaru_chat_contracts::models::{ChatChangeNotification, ChatError, ChatResult};
 use sqlx::Row;
 use std::collections::HashSet;
 use std::fs;
@@ -78,7 +78,7 @@ pub(crate) async fn pool_with_thread() -> sqlx::SqlitePool {
         .execute(&pool)
         .await
         .unwrap();
-    crate::db::run_migrations(&pool).await.unwrap();
+    ganbaru_db::run_migrations(&pool).await.unwrap();
     sqlx::query("INSERT INTO project_groups (id, name) VALUES ('group-chat', 'Chat')")
         .execute(&pool)
         .await

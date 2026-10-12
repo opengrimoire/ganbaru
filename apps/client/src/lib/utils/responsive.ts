@@ -39,10 +39,7 @@ export interface PanelRect {
 }
 
 export interface EventPanelAnchor {
-  /**
-   * Right edge of the trigger rect. This matches the existing calendar panel
-   * anchor shape.
-   */
+  /** Right edge of the trigger rect; the left edge is `x - width`. */
   x: number;
   y: number;
   width: number;

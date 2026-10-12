@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { getEventColor } from "$lib/components/calendar/utils";
-  import type { EventColor } from "$lib/components/calendar/types";
-  import type { Theme } from "$lib/stores/themes";
+  import { getEventColor } from "$lib/calendar/utils";
+  import type { EventColor } from "$lib/calendar/types";
+  import type { Theme } from "$lib/themes";
 
   let {
     color,

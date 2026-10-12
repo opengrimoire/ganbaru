@@ -8,12 +8,12 @@
     CHAT_LOCAL_EXECUTION_COMPONENTS,
     listenForChatChanges,
     preloadChatLocalExecutionUi,
-  } from "$lib/chat/local-execution-ui";
-  import { inspectorFocusAction } from "$lib/chat/inspector-model";
+  } from "$lib/chat/workspace/local-execution-ui";
+  import { inspectorFocusAction } from "$lib/chat/workspace/inspector-model";
   import {
     CHAT_OPEN_WORKSPACE_PANEL_EVENT,
     chatWorkspaceRequest,
-  } from "$lib/chat/workspace-events";
+  } from "$lib/chat/workspace/events";
   import {
     alignPanelSizeToDevicePixel,
     CHAT_AUXILIARY_CONVERSATION_MIN_PX,
@@ -35,20 +35,23 @@
   import {
     isChatCheckpointRestoreRequest,
     restoreChatCheckpoint,
-  } from "$lib/chat/checkpoint-restoration";
+  } from "$lib/chat/review/checkpoint-restoration";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getChat } from "$lib/stores/chat.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
-  import { getSettingsLauncher } from "$lib/stores/settingsLauncher.svelte";
+  import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
+  import Loading from "$lib/components/ui/Loading.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import ChatWorkspaceHeader from "./ChatWorkspaceHeader.svelte";
   import ChatFirstUse from "./ChatFirstUse.svelte";
   import ChatHeaderActions from "./ChatHeaderActions.svelte";
-  import ChatChannelRail from "./ChatChannelRail.svelte";
-  import ChatChannelArchive from "./ChatChannelArchive.svelte";
-  import ChatChannelFeed from "./ChatChannelFeed.svelte";
-  import ChatReplyThreadPanel from "./ChatReplyThreadPanel.svelte";
+  import ChatProjectSettingsPanel from "./ChatProjectSettingsPanel.svelte";
+  import ChatChannelRail from "$lib/components/chat/channels/ChatChannelRail.svelte";
+  import ChatChannelArchive from "$lib/components/chat/channels/ChatChannelArchive.svelte";
+  import ChatChannelFeed from "$lib/components/chat/channels/ChatChannelFeed.svelte";
+  import ChatReplyThreadPanel from "$lib/components/chat/timeline/ChatReplyThreadPanel.svelte";
 
   const localization = getLocalization();
   const { t } = localization;
@@ -94,6 +97,9 @@
   let bottomPanelSkipCloseTransition = $state(false);
   let reducedMotion = $state(false);
   let headerEditingTitle = $state(false);
+  let projectSettingsOpen = $state(false);
+  let projectSettingsTrigger = $state<HTMLButtonElement | null>(null);
+  let projectSettingsProjectId = $state<string | null>(null);
   let inspectorWasOpen = false;
   let inspectorReturnFocus: HTMLElement | null = null;
   let replyThreadWasOpen = false;
@@ -229,15 +235,24 @@
         chatSubsection: "teammates",
         chatTeammateId: participantId,
         chatChannelId: channelId,
-        chatCreateTeammate: event.type === "ganbaru-ai:chat-new-teammate",
       });
     };
     window.addEventListener("ganbaru-ai:chat-revert-message", revertMessage);
     window.addEventListener("ganbaru-ai:chat-open-review", openWorkspaceTool);
     window.addEventListener("ganbaru-ai:chat-open-file", openWorkspaceTool);
+    const manageMembers = (event: Event) => {
+      const channelId = event instanceof CustomEvent
+        && typeof event.detail === "object"
+        && event.detail !== null
+        && "channelId" in event.detail
+        && typeof event.detail.channelId === "string"
+        ? event.detail.channelId
+        : chat.selectedChannelId;
+      if (!channelId) return;
+      window.dispatchEvent(new CustomEvent("ganbaru-ai:chat-edit-channel", { detail: { channelId } }));
+    };
     window.addEventListener("ganbaru-ai:chat-configure-teammate", openTeammates);
-    window.addEventListener("ganbaru-ai:chat-manage-members", openTeammates);
-    window.addEventListener("ganbaru-ai:chat-new-teammate", openTeammates);
+    window.addEventListener("ganbaru-ai:chat-manage-members", manageMembers);
     return () => {
       observer.disconnect();
       headerGeometryObserver.disconnect();
@@ -255,8 +270,7 @@
       window.removeEventListener("ganbaru-ai:chat-open-review", openWorkspaceTool);
       window.removeEventListener("ganbaru-ai:chat-open-file", openWorkspaceTool);
       window.removeEventListener("ganbaru-ai:chat-configure-teammate", openTeammates);
-      window.removeEventListener("ganbaru-ai:chat-manage-members", openTeammates);
-      window.removeEventListener("ganbaru-ai:chat-new-teammate", openTeammates);
+      window.removeEventListener("ganbaru-ai:chat-manage-members", manageMembers);
       void unlisten.then((dispose) => dispose());
     };
   });
@@ -306,6 +320,34 @@
     if (visibleRailOpen) closeRail();
     else openRail();
   }
+
+  function toggleProjectSettings(trigger: HTMLButtonElement): void {
+    if (projectSettingsOpen) {
+      closeProjectSettings();
+      return;
+    }
+    projectSettingsTrigger = trigger;
+    projectSettingsProjectId = projects.selectedProjectId;
+    projectSettingsOpen = true;
+  }
+
+  function closeProjectSettings(): void {
+    projectSettingsOpen = false;
+    projectSettingsTrigger = null;
+    projectSettingsProjectId = null;
+  }
+
+  function openArchiveFromProjectSettings(): void {
+    closeProjectSettings();
+    chat.openChannelArchive();
+    if (mobileShell) closeRail();
+  }
+
+  $effect(() => {
+    if (projectSettingsOpen && projectSettingsProjectId !== projects.selectedProjectId) {
+      closeProjectSettings();
+    }
+  });
 
   $effect(() => {
     if (!chat.loading) {
@@ -886,6 +928,16 @@
     }
   }
 
+  async function retryWorkspaceLoad(): Promise<void> {
+    try {
+      await chat.reload();
+      loadError = null;
+    } catch (error: unknown) {
+      loadError = error instanceof Error ? error.message : String(error);
+      throw error;
+    }
+  }
+
   async function restoreMessageCheckpoint(threadId: string, checkpointId: string): Promise<void> {
     const thread = chat.selectedThread;
     if (!thread || thread.id !== threadId) return;
@@ -913,7 +965,7 @@
   {#if WorkspaceObserver}<WorkspaceObserver />{/if}
   <div class="sr-only" aria-live="polite" aria-atomic="true">{politeAnnouncement}</div>
   <div class="sr-only" aria-live="assertive" aria-atomic="true">{assertiveAnnouncement}</div>
-  {#if layoutError}<div role="alert" class="absolute inset-x-2 top-2 z-50 rounded border border-destructive/40 bg-background p-2 text-xs text-destructive">{layoutError}</div>{/if}
+  {#if layoutError}<Notice class="surface-floating absolute inset-x-0 top-2 z-50 mx-auto w-fit max-w-md px-2.5 py-2 text-xs" message={layoutError} />{/if}
   {#if layout.inspectorPresentation === "sheet" && chat.inspectorOpen}
     <button type="button" class="chat-sheet-backdrop chat-inspector-backdrop" aria-label={t("chat.closeInspector")} onclick={() => { chat.inspectorOpen = false; }}></button>
   {:else if railIsModal}
@@ -941,7 +993,7 @@
   </div>
   <main class="main-shell relative flex min-w-0 flex-col">
         {#if loadError}
-          <div role="alert" class="m-auto max-w-md p-4 text-center text-sm text-destructive">{loadError}<div><button type="button" class="chat-secondary-button mt-3" onclick={() => { loadError = null; void chat.reload().catch((error) => { loadError = error instanceof Error ? error.message : String(error); }); }}>{t("common.retry")}</button></div></div>
+          <div class="min-h-0 flex-1 text-sm"><Notice layout="fill" message={loadError} onRetry={retryWorkspaceLoad} /></div>
         {:else if chat.channelArchiveOpen}
           <ChatChannelArchive />
         {:else if chat.selectedChannel}
@@ -953,7 +1005,7 @@
         {:else if !chat.loading && !chat.channelsLoading}
           <ChatFirstUse />
         {:else if initialLoadingVisible || chat.channelsLoading}
-          <div class="m-auto text-sm text-muted-foreground" role="status">{t("common.loading")}</div>
+          <Loading layout="fill" class="min-h-0 flex-1" />
         {/if}
   </main>
 
@@ -972,8 +1024,22 @@
   </aside>
 
   <div bind:this={globalActionsElement} class="chat-global-actions">
-    <ChatHeaderActions {bottomPanelOpen} onToggleBottomPanel={toggleBottomPanel} onRename={() => { headerEditingTitle = true; }} />
+    <ChatHeaderActions
+      {bottomPanelOpen}
+      projectName={projects.selectedProject?.name ?? null}
+      {projectSettingsOpen}
+      onToggleBottomPanel={toggleBottomPanel}
+      onToggleProjectSettings={toggleProjectSettings}
+    />
   </div>
+  {#if projectSettingsOpen && projectSettingsTrigger && projects.selectedProject}
+    <ChatProjectSettingsPanel
+      projectName={projects.selectedProject.name}
+      triggerElement={projectSettingsTrigger}
+      onClose={closeProjectSettings}
+      onOpenArchive={openArchiveFromProjectSettings}
+    />
+  {/if}
 
   {#if bottomPanelMounted}
     <div class="chat-panel-separator chat-bottom-separator" class:hidden={!bottomPanelVisible} class:active={resizingBottomPanel}><input type="range" min={MIN_BOTTOM_PANEL_HEIGHT} max={bottomPanelResizeMaximum()} step="any" value={bottomPanelHeight} aria-label={t("chat.resizeBottomPanel")} onpointerdown={beginBottomPanelResize} onkeydown={resizeBottomPanelFromKey} ondblclick={(event) => { event.preventDefault(); fitBottomPanelToAvailableSpace(); }} /><span class="chat-panel-separator-line" aria-hidden="true"></span></div>
@@ -1021,10 +1087,10 @@
     grid-template-columns: var(--chat-rail-column-width) minmax(0, 1fr) 0 var(--chat-reply-thread-column-width) 0 var(--chat-inspector-column-width);
     grid-template-rows: var(--cal-header-row-h) minmax(0, 1fr) auto auto;
   }
-  .chat-workspace :global(svg.lucide) { stroke-width: var(--chat-icon-stroke-width); }
-  .chat-workspace :global(svg.lucide[stroke-width="1"]) { stroke-width: 1; }
-  .chat-workspace :global(svg.lucide[stroke-width="1.5"]) { stroke-width: var(--chat-compact-icon-stroke-width); }
-  .chat-workspace[data-rail-presentation="column"][data-rail-open="true"] { --chat-rail-column-width: 16rem; }
+  .chat-workspace :global(svg.lucide:not(.explorer-sidebar *)) { stroke-width: var(--chat-icon-stroke-width); }
+  .chat-workspace :global(svg.lucide[stroke-width="1"]:not(.explorer-sidebar *)) { stroke-width: 1; }
+  .chat-workspace :global(svg.lucide[stroke-width="1.5"]:not(.explorer-sidebar *)) { stroke-width: var(--chat-compact-icon-stroke-width); }
+  .chat-workspace[data-rail-presentation="column"][data-rail-open="true"] { --chat-rail-column-width: var(--explorer-width); }
   .chat-workspace[data-rail-presentation="sheet"] { --chat-rail-column-width: 0px; }
   .chat-workspace[data-reply-thread-presentation="column"] { --chat-reply-thread-column-width: var(--chat-reply-thread-width); }
   .chat-workspace[data-inspector-presentation="column"] { --chat-inspector-column-width: var(--chat-inspector-width); }
@@ -1070,13 +1136,13 @@
   .chat-bottom-transition-shell.snap-transition { transition: height var(--chat-panel-transition-duration) cubic-bezier(0.22, 1, 0.36, 1); }
   .chat-sheet-backdrop { position: absolute; inset: 0; z-index: 30; background: rgb(0 0 0 / 0.28); }
   .chat-rail-backdrop { top: var(--cal-header-row-h); }
-  .chat-workspace[data-rail-presentation="sheet"] .chat-rail-shell { position: absolute; top: var(--cal-header-row-h); bottom: 0; left: 0; z-index: 40; width: min(16rem, 88cqw); min-width: min(16rem, 88cqw); box-shadow: 8px 0 28px rgb(0 0 0 / 0.22); }
+  .chat-workspace[data-rail-presentation="sheet"] .chat-rail-shell { position: absolute; top: var(--cal-header-row-h); bottom: 0; left: 0; z-index: 40; width: min(var(--explorer-width), 88cqw); min-width: min(var(--explorer-width), 88cqw); box-shadow: var(--floating-shadow); }
   .chat-workspace[data-rail-presentation="sheet"] .chat-rail-shell.closed { transform: translateX(-105%); }
   .chat-workspace.mobile-rail-surface .chat-rail-shell { position: relative; inset: auto; z-index: auto; grid-column: 1 / 7; grid-row: 2 / 5; width: 100%; min-width: 0; background: var(--cal-bg); box-shadow: none; transform: none; }
   .chat-workspace.mobile-rail-surface .chat-rail-shell.closed { display: none; transform: none; }
   .chat-workspace.mobile-rail-surface .main-shell { padding-top: var(--chat-mobile-rail-bar-height); }
   .chat-workspace.mobile-rail-surface[data-rail-open="true"] .main-shell { display: none; }
-  .chat-workspace[data-inspector-presentation="sheet"] .chat-inspector-shell { position: absolute; inset-block: 0; right: 0; z-index: 45; width: 0; box-shadow: -8px 0 28px rgb(0 0 0 / 0.22); }
+  .chat-workspace[data-inspector-presentation="sheet"] .chat-inspector-shell { position: absolute; inset-block: 0; right: 0; z-index: 45; width: 0; box-shadow: var(--floating-shadow); }
   .chat-workspace[data-inspector-presentation="sheet"] .chat-inspector-shell.open { width: min(620px, 94cqw); min-width: min(320px, 94cqw); }
   .chat-workspace[data-inspector-presentation="sheet"] .chat-inspector-content-shell { width: min(620px, 94cqw); }
   .chat-workspace[data-layout="minimum_recovery"] .chat-rail-shell, .chat-workspace[data-layout="minimum_recovery"] .chat-rail-shell.closed, .chat-workspace[data-layout="minimum_recovery"] .chat-inspector-shell.open { width: 100cqw; min-width: 0; box-shadow: none; }

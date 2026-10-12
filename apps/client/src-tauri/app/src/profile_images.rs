@@ -1,5 +1,5 @@
 use base64::{Engine as _, engine::general_purpose};
-use ganbaru_notes::image_metadata::{
+use ganbaru_notes::assets::image_metadata::{
     ManagedImageDimensionError, ManagedImageMetadata, ManagedImageMetadataError,
     parse_managed_image_metadata, validate_managed_image_dimensions,
 };
@@ -10,10 +10,10 @@ use std::{
     fs,
     path::{Component, Path, PathBuf},
 };
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 use tauri::Manager;
 use tauri::{AppHandle, Runtime};
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 use tauri_plugin_dialog::{DialogExt, FilePath};
 
 use crate::vault;
@@ -29,13 +29,13 @@ pub struct ProfileImageAsset {
     pub relative_path: String,
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 fn dialog_path(path: FilePath) -> Result<PathBuf, String> {
     path.into_path()
         .map_err(|error| format!("selected path is not a local file: {error}"))
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 fn profile_image_start_directory<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
     app.path().picture_dir().ok().filter(|path| path.is_dir())
 }
@@ -219,7 +219,7 @@ fn profile_image_asset_path<R: Runtime>(
     Ok(active_profile_image_dir(app)?.join(file_name))
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn profile_image_pick_file<R: Runtime>(
     app: AppHandle<R>,
@@ -279,7 +279,7 @@ pub fn profile_image_delete_file<R: Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ganbaru_notes::image_metadata::ManagedImageKind;
+    use ganbaru_notes::assets::image_metadata::ManagedImageKind;
 
     fn png(width: u32, height: u32) -> Vec<u8> {
         let mut bytes = vec![0; 33];

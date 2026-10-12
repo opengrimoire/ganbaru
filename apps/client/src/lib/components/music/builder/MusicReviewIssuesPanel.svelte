@@ -7,8 +7,8 @@
   import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
   import Youtube from "@lucide/svelte/icons/youtube";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { groupMusicIssues, type MusicIssueGroup } from "$lib/music/music-issue-presentation";
-  import type { MusicIssue, MusicItemListEntry, MusicSourceSummary } from "$lib/music/library-contracts";
+  import { groupMusicIssues, type MusicIssueGroup } from "$lib/music/library/issue-presentation";
+  import type { MusicIssue, MusicItemListEntry, MusicSourceSummary } from "$lib/music/library/contracts";
   import { cn } from "$lib/utils";
 
   let {

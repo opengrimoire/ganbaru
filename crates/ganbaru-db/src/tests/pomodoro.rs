@@ -7,7 +7,7 @@ fn schema_accepts_current_pomodoro_preset_keys() {
         insert_event(&pool).await;
 
         sqlx::query(
-            "INSERT INTO pomodoro_configs
+            "INSERT INTO calendar_event_pomodoro_configs
                 (event_id, rhythm_kind, rhythm_source, preset_key, idle_timeout_minutes)
              VALUES ('event-1', 'count', 'preset', 'adaptive', 3)",
         )
@@ -16,7 +16,7 @@ fn schema_accepts_current_pomodoro_preset_keys() {
         .unwrap();
 
         sqlx::query(
-            "UPDATE pomodoro_configs SET preset_key = 'balanced' WHERE event_id = 'event-1'",
+            "UPDATE calendar_event_pomodoro_configs SET preset_key = 'balanced' WHERE event_id = 'event-1'",
         )
         .execute(&pool)
         .await
@@ -36,7 +36,7 @@ fn schema_accepts_current_pomodoro_preset_keys() {
         .unwrap();
 
         sqlx::query(
-            "INSERT INTO calendar_events_archive
+            "INSERT INTO calendar_event_archives
                 (id, source_event_id, archived_at, title, start_time, end_time,
                  calendar_id, created_at, updated_at)
              VALUES ('archive-1', 'event-1', '2026-05-23T11:00:00Z', 'Focus block',
@@ -63,8 +63,14 @@ fn schema_keeps_pomodoro_foreign_key_targets() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
         let references = [
-            ("pomodoro_config_count_rhythms", "pomodoro_configs"),
-            ("pomodoro_config_sequence_steps", "pomodoro_configs"),
+            (
+                "calendar_event_pomodoro_config_count_rhythms",
+                "calendar_event_pomodoro_configs",
+            ),
+            (
+                "calendar_event_pomodoro_config_sequence_steps",
+                "calendar_event_pomodoro_configs",
+            ),
             ("pomodoro_runs", "pomodoro_runs"),
             ("pomodoro_run_count_rhythms", "pomodoro_runs"),
             ("pomodoro_run_sequence_steps", "pomodoro_runs"),
@@ -83,7 +89,7 @@ fn schema_keeps_pomodoro_foreign_key_targets() {
             ("pomodoro_adaptive_decisions", "pomodoro_runs"),
             ("pomodoro_adaptive_planned_blocks", "pomodoro_runs"),
             ("pomodoro_adaptive_assignments", "pomodoro_runs"),
-            ("doomscrolling_block_events", "pomodoro_runs"),
+            ("distractions_block_events", "pomodoro_runs"),
         ];
 
         for (child_table, target_table) in references {
@@ -208,8 +214,8 @@ fn schema_creates_pomodoro_adaptive_tables() {
             "pomodoro_adaptive_experiment_variants",
             "pomodoro_adaptive_assignments",
             "pomodoro_adaptive_outcomes",
-            "doomscrolling_block_events",
-            "doomscrolling_block_event_rule_snapshots",
+            "distractions_block_events",
+            "distractions_block_event_rule_snapshots",
         ];
 
         for table in adaptive_tables {

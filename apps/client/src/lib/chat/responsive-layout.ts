@@ -163,12 +163,12 @@ export function chatLayoutDecision(input: ChatLayoutInput): ChatLayoutDecision {
   const previous = input.previousVariant;
   const replyThreadOpen = input.replyThreadOpen ?? false;
   const replyThreadWidth = input.replyThreadWidth ?? CHAT_REPLY_THREAD_WIDTH_PX * scale;
-  const minimum = previous === "minimum_recovery"
+  const needsMinimumRecovery = previous === "minimum_recovery"
     ? input.containerWidth < BASE_MINIMUM_EXIT_WIDTH * scale
       || input.containerHeight < BASE_MINIMUM_EXIT_HEIGHT * scale
     : input.containerWidth < BASE_MINIMUM_ENTER_WIDTH * scale
       || input.containerHeight < BASE_MINIMUM_ENTER_HEIGHT * scale;
-  if (minimum) {
+  if (needsMinimumRecovery) {
     return {
       variant: "minimum_recovery",
       railPresentation: "sheet",

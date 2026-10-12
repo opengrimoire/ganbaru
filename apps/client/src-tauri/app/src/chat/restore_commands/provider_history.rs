@@ -16,7 +16,7 @@ pub(super) async fn target_turn_id(
         .map_err(persistence_error)?
         .map(ChatTurnId::new)
         .transpose()
-        .map_err(|_| corrupt_data())
+        .map_err(|_| corrupt_data_error())
 }
 
 pub(super) async fn stored_provider_rollback_cursor(
@@ -54,10 +54,10 @@ pub(super) fn stored_rollback_cursor(
     schema_version: Option<i64>,
     data: Option<&str>,
 ) -> ChatResult<VersionedJson> {
-    let schema_version = schema_version.ok_or_else(corrupt_data)?;
-    let data = data.ok_or_else(corrupt_data)?;
+    let schema_version = schema_version.ok_or_else(corrupt_data_error)?;
+    let data = data.ok_or_else(corrupt_data_error)?;
     Ok(VersionedJson {
-        schema_version: u32::try_from(schema_version).map_err(|_| corrupt_data())?,
+        schema_version: u32::try_from(schema_version).map_err(|_| corrupt_data_error())?,
         value: serde_json::from_str(data).map_err(json_error)?,
     })
 }

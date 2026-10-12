@@ -1,13 +1,17 @@
 import type {
-  CalendarEvent, EventColor, PomodoroConfig, RecurrenceConfig, RecurringScope,
-} from "./types";
-import { recurrenceConfigsEqual } from "./rrule";
-import { parseCalendarDate } from "./utils";
+  CalendarEvent,
+  EventColor,
+  PomodoroConfig,
+  RecurrenceConfig,
+  RecurringScope,
+} from "$lib/calendar/types";
+import { recurrenceConfigsEqual } from "$lib/calendar/rrule";
+import { parseCalendarDate } from "$lib/calendar/utils";
 import {
   DEFAULT_FOCUS_IDLE_PAUSE_ON_EVENT_CREATE,
   DEFAULT_FOCUS_IDLE_THRESHOLD_MINUTES,
   clampFocusIdleThresholdMinutes,
-} from "$lib/stores/preferences";
+} from "$lib/stores/preference-options";
 import {
   clonePomodoroConfig,
   createPresetPomodoroConfig,
@@ -204,6 +208,8 @@ export function isDirtyDiff(
   return false;
 }
 
+let nextSessionKey = 0;
+
 export function createEditSession(
   getFocusIdleDefaults: () => Partial<FocusIdleEventDefaults> = () => STATIC_FOCUS_IDLE_DEFAULTS,
 ) {
@@ -212,7 +218,6 @@ export function createEditSession(
   let baseline = $state<Partial<CalendarEvent>>({});
   let scope = $state<RecurringScope>("this");
   let createPreview = $state<CreatePreview | null>(null);
-  let nextSessionKey = 0;
 
   const dirty = $derived(isDirtyDiff(changes, baseline));
 
@@ -236,8 +241,8 @@ export function createEditSession(
       createPreview = updated;
     }
 
-    // Keep create-mode state start/end in sync for panel (only when changed,
-    // to avoid reassigning state and triggering anchor effect reset)
+    // Mirror start and end into create-mode state only when they change, since
+    // reassigning state resets the panel anchor effect.
     if (state.mode === "create" && (data.start || data.end)) {
       state = {
         ...state,
@@ -250,6 +255,7 @@ export function createEditSession(
   return {
     get state() { return state; },
     get changes() { return changes; },
+    get baseline() { return baseline; },
     get scope() { return scope; },
     get dirty() { return dirty; },
     get createPreview() { return createPreview; },
@@ -328,26 +334,17 @@ export function createEditSession(
     },
 
     /**
-     * Sync panel-initial field values into both `changes` and `baseline`.
-     * Because both sides receive the same shape, dirty stays false until the
-     * user edits a field to a value that differs. If the user later reverts a
-     * change to its baseline value, dirty flips back to false and the panel
-     * can be closed silently (no "Discard unsaved changes?" prompt).
+     * Merge panel-initial field values into both `changes` and `baseline`.
+     * Both sides receive the same values, so dirty stays false until the user
+     * edits a field, and reverting a field to its baseline value lets the
+     * panel close without a discard prompt.
      *
-     * Called by the panel on mount for both create mode (captures the default
-     * field values) and edit mode (captures the event's current field values).
-     * If any drag/resize already populated `changes` before the sync fires,
-     * the sync preserves those values: the drag's start/end are propagated
-     * into the baseline too if they weren't already supplied, so a drag
-     * followed by a revert-drag still reaches a clean state.
+     * The panel calls this when deferred event details arrive. Keys absent
+     * from `data`, such as start and end already moved by a drag, keep their
+     * current values on both sides.
      */
     setInitialChanges(data: Partial<CalendarEvent>) {
       applyChanges(data);
-      // Merge into baseline. Existing baseline fields from this call win over
-      // pre-existing ones so the panel's initial view is the canonical
-      // baseline; any field that had already been patched by a pre-mount drag
-      // stays in `changes` but also becomes part of the baseline via the
-      // matching key that the panel just emitted (drag-adjusted start/end).
       baseline = { ...baseline, ...data };
     },
 
@@ -364,5 +361,3 @@ export function createEditSession(
     },
   };
 }
-
-export type EditSession = ReturnType<typeof createEditSession>;

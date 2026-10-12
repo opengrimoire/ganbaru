@@ -100,11 +100,11 @@
   style="left: var(--visual-viewport-offset-left); top: var(--visual-viewport-offset-top); width: var(--visual-viewport-width); height: var(--visual-viewport-height); padding: calc(var(--safe-area-top) + 1rem) calc(var(--safe-area-right) + 1rem) calc(var(--safe-area-bottom) + 1rem) calc(var(--safe-area-left) + 1rem);"
   onclick={(e) => { e.stopPropagation(); onDismiss(); }}
 >
-  <div class="absolute inset-0 bg-black/50"></div>
+  <div class="surface-backdrop absolute inset-0"></div>
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     bind:this={element}
-    class="confirm-dialog relative z-10 max-h-full w-full max-w-md overflow-y-auto rounded-md border border-black/20 bg-card px-5 py-5 text-card-foreground outline-none dark:border-white/10 dark:bg-sidebar dark:text-sidebar-foreground sm:px-8"
+    class="confirm-dialog surface-dialog relative z-10 max-h-full w-full max-w-md overflow-y-auto px-5 py-5 outline-none sm:px-8"
     style="--foreground: var(--card-foreground);"
     role="dialog"
     aria-modal="true"

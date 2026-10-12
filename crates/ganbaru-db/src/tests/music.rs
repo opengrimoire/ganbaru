@@ -7,7 +7,7 @@ fn repeated_migration_startup_preserves_music_data() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
         sqlx::query(
-            "INSERT INTO music_playlists (id, name, icon, created_at, updated_at)
+            "INSERT INTO music_playlists (id, name, icon, created_at_ms, updated_at_ms)
              VALUES ('playlist-1', 'Deep focus', 'emoji:🎧', 1, 1)",
         )
         .execute(&pool)
@@ -60,7 +60,7 @@ fn canonical_music_schema_keeps_device_paths_out_of_logical_roots() {
             "idx_music_playlist_memberships_order",
             "idx_music_snoozes_active_item",
             "idx_music_recent_selections_playlist",
-            "music_library_items_review_deferred_until_idx",
+            "idx_music_library_items_review_deferred_until",
         ] {
             let exists: Option<i64> =
                 sqlx::query_scalar("SELECT 1 FROM sqlite_schema WHERE name = ?")
@@ -91,7 +91,7 @@ fn canonical_music_schema_keeps_device_paths_out_of_logical_roots() {
         assert!(
             item_columns
                 .iter()
-                .any(|column| column == "review_deferred_until")
+                .any(|column| column == "review_deferred_until_ms")
         );
         let membership_columns =
             sqlx::query("SELECT name FROM pragma_table_info('music_playlist_memberships')")
@@ -114,7 +114,7 @@ fn canonical_music_schema_enforces_identity_membership_and_snooze_invariants() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
         sqlx::query(
-            "INSERT INTO music_playlists (id, name, created_at, updated_at)
+            "INSERT INTO music_playlists (id, name, created_at_ms, updated_at_ms)
              VALUES ('playlist-1', 'Focus', 1700000000000, 1700000000000)",
         )
         .execute(&pool)
@@ -123,7 +123,7 @@ fn canonical_music_schema_enforces_identity_membership_and_snooze_invariants() {
         sqlx::query(
             "INSERT INTO music_library_items
                 (id, identity_key, source_kind, youtube_video_id, original_title,
-                 availability, review_state, discovered_at, updated_at)
+                 availability, review_state, discovered_at_ms, updated_at_ms)
              VALUES
                 ('item-1', 'local:item-1', 'local-file', NULL, 'Focus',
                  'available', 'unreviewed', 1700000000000, 1700000000000),
@@ -135,7 +135,7 @@ fn canonical_music_schema_enforces_identity_membership_and_snooze_invariants() {
         .unwrap();
         sqlx::query(
             "INSERT INTO music_playlist_memberships
-                (id, playlist_id, item_id, position, created_at, updated_at)
+                (id, playlist_id, item_id, position, created_at_ms, updated_at_ms)
              VALUES ('membership-1', 'playlist-1', 'item-1', 0, 1700000000000, 1700000000000)",
         )
         .execute(&pool)
@@ -144,7 +144,7 @@ fn canonical_music_schema_enforces_identity_membership_and_snooze_invariants() {
 
         let duplicate_membership = sqlx::query(
             "INSERT INTO music_playlist_memberships
-                (id, playlist_id, item_id, position, created_at, updated_at)
+                (id, playlist_id, item_id, position, created_at_ms, updated_at_ms)
              VALUES ('membership-2', 'playlist-1', 'item-1', 1, 1700000000000, 1700000000000)",
         )
         .execute(&pool)
@@ -153,7 +153,7 @@ fn canonical_music_schema_enforces_identity_membership_and_snooze_invariants() {
 
         let local_item_with_youtube_id = sqlx::query(
             "INSERT INTO music_library_items
-                (id, identity_key, source_kind, youtube_video_id, discovered_at, updated_at)
+                (id, identity_key, source_kind, youtube_video_id, discovered_at_ms, updated_at_ms)
              VALUES ('bad-item', 'local:bad', 'local-file', 'video-bad', 1700000000000, 1700000000000)",
         )
         .execute(&pool)
@@ -162,7 +162,7 @@ fn canonical_music_schema_enforces_identity_membership_and_snooze_invariants() {
 
         let playlist_snooze_without_playlist = sqlx::query(
             "INSERT INTO music_snoozes
-                (id, item_id, scope, playlist_id, starts_at, created_at)
+                (id, item_id, scope, playlist_id, starts_at_ms, created_at_ms)
              VALUES ('bad-snooze', 'item-1', 'playlist', NULL, 1700000000000, 1700000000000)",
         )
         .execute(&pool)
@@ -179,7 +179,7 @@ fn canonical_music_schema_enforces_identity_membership_and_snooze_invariants() {
 }
 
 #[test]
-fn default_playlists_without_memberships_do_not_block_playback_state_persistence() {
+fn default_playlists_have_a_complete_order_without_memberships_or_obsolete_resume_storage() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
 
@@ -201,35 +201,9 @@ fn default_playlists_without_memberships_do_not_block_playback_state_persistence
         assert_eq!(memberships, 0);
         assert_eq!(sort_orders, (0..11).collect::<Vec<_>>());
 
-        sqlx::query(
-            "INSERT INTO music_playback_states
-                (source_identity, source_kind, position_ms, duration_ms, status, updated_at)
-             VALUES ('local:/music/focus.flac', 'local-file', 42000, 180000, 'paused', 1700000000000)",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        let restored: (i64, Option<i64>, String) = sqlx::query_as(
-            "SELECT position_ms, duration_ms, status
-             FROM music_playback_states
-             WHERE source_identity = 'local:/music/focus.flac'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(restored, (42_000, Some(180_000), "paused".to_string()));
-
-        let playlists_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM music_playlists")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        let memberships_after: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM music_playlist_memberships")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(playlists_after, 11);
-        assert_eq!(memberships_after, 0);
+        let obsolete_tables: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'music_playback_states'",
+        ).fetch_one(&pool).await.unwrap();
+        assert_eq!(obsolete_tables, 0);
     });
 }

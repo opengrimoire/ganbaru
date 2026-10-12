@@ -154,7 +154,7 @@ function validateProviderSpecificFields(
   }
   if (draft.familyId === "cursor") {
     const endpoint = config.endpoint;
-    if (endpoint !== undefined && endpoint !== null && (typeof endpoint !== "string" || !safeHttpEndpoint(endpoint))) {
+    if (endpoint !== undefined && endpoint !== null && (typeof endpoint !== "string" || !isSafeHttpEndpoint(endpoint))) {
       fields["providerConfig.endpoint"] = "Enter an HTTPS endpoint or a loopback HTTP endpoint.";
     }
   }
@@ -178,7 +178,7 @@ function validateProviderSpecificFields(
   }
 }
 
-function safeHttpEndpoint(value: string): boolean {
+function isSafeHttpEndpoint(value: string): boolean {
   const origin = parseHttpOrigin(value);
   return origin !== null && (origin.secure || origin.loopback);
 }

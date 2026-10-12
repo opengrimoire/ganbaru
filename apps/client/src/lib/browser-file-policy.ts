@@ -17,7 +17,7 @@ export const NOTES_PAGE_COVER_IMAGE_MAX_BYTES: number = NOTES_PAGE_COVER_IMAGE_M
   * KIBIBYTES_PER_MEBIBYTE
   * BYTES_PER_KIBIBYTE;
 
-/** Maximum decoded geometry shared with `ganbaru_notes::image_metadata`. */
+/** Maximum decoded geometry shared with `ganbaru_notes::assets::image_metadata`. */
 export const MANAGED_IMAGE_MAX_DIMENSION_PIXELS: number = 8192;
 export const MANAGED_IMAGE_MAX_TOTAL_PIXELS: number = 16_000_000;
 export const MANAGED_IMAGE_MAX_MEGAPIXELS: number = MANAGED_IMAGE_MAX_TOTAL_PIXELS / 1_000_000;

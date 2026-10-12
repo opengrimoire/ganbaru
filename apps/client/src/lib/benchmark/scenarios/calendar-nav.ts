@@ -10,10 +10,10 @@
  * the entire benchmark DB file is deleted on summary close, so
  * per-calendar deletion would be redundant.
  */
-import { getCalendarNavHandle } from "$lib/components/calendar/nav-handle.svelte";
-import { NAV_HOLD_DELAY_MS } from "$lib/components/calendar/held-navigation";
+import { getCalendarNavHandle } from "$lib/calendar/nav-handle.svelte";
+import { NAV_HOLD_DELAY_MS } from "$lib/calendar/held-navigation";
+import { requireScenarioMetadata } from "../registry";
 import {
-  DEFAULT_BENCHMARK_DATASET,
   HELD_NAVIGATION_DURATION_MS,
   type BenchmarkMetric,
   type BenchmarkDatasetProfile,
@@ -29,19 +29,7 @@ import {
 } from "./calendar-utils";
 
 export const calendarNavScenario: BenchmarkScenario = {
-  id: "calendar-nav",
-  label: "Calendar week-view nav",
-  description:
-    "Dispatches initial and repeated ArrowRight keydown events plus keyup for a 3-second hold, using the same window keyboard handler and held-navigation controller as a physical right-arrow hold. It runs against the 1-year practical dense calendar. The isolated benchmark DB keeps your real calendar untouched.",
-  workload: {
-    kind: "stress-memory",
-    question: "How much memory does repeated week navigation use?",
-    label: "held right-arrow week-view navigation",
-    durationMs: HELD_NAVIGATION_DURATION_MS,
-    memoryMode: "post-workload",
-  },
-  defaultDataset: DEFAULT_BENCHMARK_DATASET,
-  runMode: "dense-only",
+  ...requireScenarioMetadata("calendar-nav"),
 
   async setup(context: BenchmarkScenarioContext): Promise<void> {
     const handle = getCalendarNavHandle();
@@ -103,10 +91,8 @@ export const calendarNavScenario: BenchmarkScenario = {
   },
 
   async cleanup(_seedHandle: { calendarId: string }): Promise<void> {
-    // The whole benchmark DB file is deleted on summary close, so
-    // per-calendar deletion would just be an extra round-trip against a DB
-    // that is about to disappear. The parameter stays in the signature for
-    // scenarios that need finer-grained cleanup.
+    // The isolated benchmark DB file is deleted on summary close, so
+    // per-calendar deletion is unnecessary.
   },
 };
 

@@ -1,148 +1,69 @@
 # Recurrence and timezones
 
-Recurrence and timezones are the highest-risk part of iCalendar compatibility. The implementation must preserve accepted source semantics and project only what it can expand correctly.
+Status: Partial. Common value types, all-day dates, zoned and UTC recurrence identities, and the supported `RRULE` subset are implemented. Custom `VTIMEZONE` evaluation, first-class floating events, and sub-daily or time-of-day rule parts are not.
+
+Recurrence and timezones are the highest-risk part of iCalendar compatibility. The rule is: preserve accepted source semantics, and project only what the app can expand correctly. Occurrence expansion itself is specified in [Recurrence expansion](../../algorithms/calendar/recurrence-expansion.md); user-facing recurrence behavior is in [Calendar recurrence](../../features/calendar/recurrence.md).
 
 ## Time value categories
 
-Ganbaru AI must distinguish:
+The app must distinguish these forms. Projection may convert them to row fields, but preservation keeps the value type and parameters:
 
-- date-only values, such as `DTSTART;VALUE=DATE:20260513`
-- UTC date-time values, such as `DTSTART:20260513T150000Z`
-- `TZID` date-time values, such as `DTSTART;TZID=America/New_York:20260513T090000`
-- floating date-time values, such as `DTSTART:20260513T090000`
-- duration values, such as `DURATION:PT1H`
-- period values, such as `FREEBUSY:20260513T090000Z/20260513T100000Z`
-
-Projection can convert these to app row fields, but preservation must retain the semantic value type and parameters. Original lexical formatting is not guaranteed.
+- Date-only: `DTSTART;VALUE=DATE:20260513`
+- UTC date-time: `DTSTART:20260513T150000Z`
+- Zoned date-time: `DTSTART;TZID=America/New_York:20260513T090000`
+- Floating date-time: `DTSTART:20260513T090000`
+- Duration: `DURATION:PT1H`
+- Period: `FREEBUSY:20260513T090000Z/20260513T100000Z`
 
 ## All-day events
 
-All-day iCalendar `DTEND;VALUE=DATE` is exclusive. Ganbaru AI's internal all-day visible end date is inclusive.
+iCalendar `DTEND;VALUE=DATE` is exclusive; the app's visible all-day end is inclusive.
 
-Required conversions:
-
-- import `DTSTART:20260513`, `DTEND:20260514` as visible May 13 only
-- export visible May 13 only as `DTSTART:20260513`, `DTEND:20260514`
-- preserve missing `DTEND` as one visible day unless a `DURATION` says otherwise
-- keep `RECURRENCE-ID`, `EXDATE`, and `RDATE` date-only for all-day recurrences
+- Import `DTSTART:20260513`, `DTEND:20260514` as May 13 only, and export it back the same way.
+- A missing `DTEND` means one day unless `DURATION` says otherwise.
+- `RECURRENCE-ID`, `EXDATE`, and `RDATE` stay date-only for all-day series.
 
 ## Floating timed events
 
-Floating date-times have no UTC marker and no `TZID`. They are not the same as device-zone events.
+Floating date-times have no `Z` and no `TZID`; they are not device-zone events.
 
-Initial behavior:
+- Implemented: the floating shape is preserved, the event is projected in the current render zone, and linked export keeps it floating.
+- Planned: a first-class floating projection, if fixtures show floating events are common. Until then, an edit that would pin a floating event to a zone narrows its meaning.
 
-- preserve floating value shape in the structured preservation layer.
-- project into the current render zone for display only.
-- mark as partial if editing would convert it to a specific timezone.
-- export as floating if the user did not make a timezone-changing edit.
+## Timezones
 
-Future behavior:
+- An IANA `TZID` is used directly for projection and recurrence.
+- A known Windows `TZID` (common in Outlook) is mapped to IANA for projection; the original stays in preservation.
+- A custom `VTIMEZONE` is preserved in full and exported before generated stubs. The app does not evaluate its transition rules; projection relies on the mapped IANA zone.
+- Planned: warn before projection or export when a custom definition cannot be matched to an IANA zone.
 
-- add a projection flag for floating timed events if they become common in fixtures.
+Foreign `VTIMEZONE` definitions must never be discarded just because projection uses IANA zones.
 
-## Timezone strategy
+## Recurrence properties
 
-For `TZID` values:
+All `RRULE` parts defined by RFC 5545 (`FREQ`, `UNTIL`, `COUNT`, `INTERVAL`, `BYSECOND`, `BYMINUTE`, `BYHOUR`, `BYDAY`, `BYMONTHDAY`, `BYYEARDAY`, `BYWEEKNO`, `BYMONTH`, `BYSETPOS`, `WKST`), plus `RDATE`, `EXDATE`, `RECURRENCE-ID`, and `RANGE=THISANDFUTURE`, survive in structured preservation.
 
-- if `TZID` is an IANA name, use it for projection and recurrence expansion.
-- if `TZID` is a known Windows name, map to IANA for projection and preserve original `TZID`.
-- if `TZID` has a custom `VTIMEZONE`, preserve the full definition.
-- if custom rules can be matched to IANA confidently, use IANA for projection and preserve custom rules for export.
-- if custom rules cannot be interpreted, preserve the component and warn before projection or export.
+Projection represents `FREQ` (`DAILY`, `WEEKLY`, `MONTHLY`, `YEARLY`), `INTERVAL`, `COUNT`, `UNTIL`, `BYDAY` (including ordinals), `BYMONTHDAY`, `BYMONTH`, `BYSETPOS`, `BYYEARDAY`, `BYWEEKNO`, and `WKST`. The native engine validates rule combinations and rejects anything else instead of guessing.
 
-The app must not discard foreign `VTIMEZONE` definitions just because the current projection uses IANA zones.
+Known narrowing: on import, the parser canonicalizes `RRULE` into the projected subset. `BYSECOND`, `BYMINUTE`, and `BYHOUR` are dropped from the projection, and `SECONDLY`, `MINUTELY`, and `HOURLY` frequencies project as `DAILY`, without a warning. Because export regenerates `RRULE` from the projection, these parts are not restored on export. This conflicts with the preservation rule and is tracked as a [conformance gap](./conformance/README.md#critical-compatibility-gaps).
 
-## Recurrence storage
+### RDATE and EXDATE
 
-Preserve raw structured recurrence properties:
+- Preserve the value type and timezone parameters of each property.
+- Projected exclusions are stored as local date keys and exported at the master's original start time, never at midnight unless the master starts at midnight.
+- An `RDATE` whose local time differs from the series time is preservation-only until date-time recurrence identities are supported.
 
-- `RRULE`
-- `RDATE`
-- `EXDATE`
-- `RECURRENCE-ID`
-- `RANGE=THISANDFUTURE`
+### RECURRENCE-ID
 
-Projection may continue to store normalized recurrence config for rendering, but the original recurrence property and value types remain in preserved data.
-
-## RRULE completeness
-
-RFC 5545 defines these rule parts, all of which must survive structured preservation when accepted:
-
-- `FREQ`
-- `UNTIL`
-- `COUNT`
-- `INTERVAL`
-- `BYSECOND`
-- `BYMINUTE`
-- `BYHOUR`
-- `BYDAY`
-- `BYMONTHDAY`
-- `BYYEARDAY`
-- `BYWEEKNO`
-- `BYMONTH`
-- `BYSETPOS`
-- `WKST`
-
-Current projection supports `FREQ`, `UNTIL`, `COUNT`, `INTERVAL`, `BYDAY`, `BYMONTHDAY`, `BYYEARDAY`, `BYWEEKNO`, `BYMONTH`, `BYSETPOS`, and `WKST` to varying depths. `BYSECOND`, `BYMINUTE`, and `BYHOUR` are not represented in `RecurrenceConfig` and are not editable or expanded by the app. They remain preservation-only for linked exports.
-
-## RDATE and EXDATE
-
-Rules:
-
-- Preserve value type per property.
-- Preserve timezone parameters.
-- For projected event exceptions, store recurrence local dates when the current recurrence engine needs date keys.
-- On export from projection, emit exclusions at the master event's original start time.
-- Do not use midnight for timed recurrence exclusions unless the master itself starts at midnight.
-
-## RECURRENCE-ID
-
-Rules:
-
-- Value type must match the master `DTSTART` type.
-- Zoned master events should export zoned recurrence IDs.
-- UTC master events should export UTC recurrence IDs.
-- All-day master events should export date-only recurrence IDs.
-- Preserve `RANGE=THISANDFUTURE` even before full edit support exists.
-- Imported cancelled recurrence overrides with `RANGE=THISANDFUTURE` suppress that occurrence and later generated occurrences during expansion.
+- Its value type matches the master `DTSTART`: zoned for zoned masters, UTC for UTC masters, date-only for all-day masters.
+- `RANGE=THISANDFUTURE` is always preserved. A cancelled override with that range suppresses its occurrence and all later ones during expansion. A non-cancelled one is preservation-only, and the app cannot create the range itself; "this and following" edits are exported as capped series.
 
 ## Expansion
 
-Expansion must remain window-bounded:
+Expansion is window-bounded and never runs over preserved-only data at startup. The native engine rejects requests whose windows or generated occurrence counts exceed fixed caps rather than truncating silently. For user-facing recurrence, wall-clock intent wins: a 9 AM daily zoned event stays at 9 AM local time across DST.
 
-- Generate only instances needed for the visible window plus any small prefetch window.
-- Cap instance generation for pathological recurrence rules.
-- Emit diagnostics when a cap is reached.
-- Avoid expanding preserved-only unsupported recurrences during startup.
-- Prefer a deterministic library or well-tested local algorithm over ad hoc recurrence logic.
+## Test expectations
 
-## DST rules
+DST coverage must include daily recurrence through spring-forward gaps and fall-back repeated hours, weekly and all-day recurrence across transitions, custom `VTIMEZONE` transitions, and local times that exist in one zone but not another.
 
-Tests must cover:
-
-- daily recurrence through spring-forward gaps
-- daily recurrence through fall-back repeated hours
-- weekly recurrence across DST transitions
-- all-day recurrence across DST transitions
-- custom `VTIMEZONE` transitions
-- events whose local time exists in one zone but not another
-
-For user-facing recurrence, wall-clock intent wins: a 9 AM daily zoned event stays at 9 AM local time.
-
-## Semantic equivalence
-
-Recurrence tests should compare occurrence sets in bounded windows, not only raw serialized strings.
-
-For each recurrence fixture:
-
-- parse source
-- preserve source component
-- project if supported
-- expand a bounded window
-- export
-- parse export
-- expand the same bounded window
-- compare occurrence start/end pairs and value-type expectations
-
-Unsupported recurrence data can pass preservation tests even before it passes projection tests.
+Recurrence fixtures compare occurrence sets in bounded windows, not serialized strings: parse, preserve, project, expand a window, export, reparse, expand the same window, and compare start and end pairs and value types. Unsupported recurrence data can pass preservation tests before it passes projection tests.

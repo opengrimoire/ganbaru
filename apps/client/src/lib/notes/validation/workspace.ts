@@ -1,3 +1,4 @@
+import { parseNotesIndent } from "./blocks";
 import type { NotesChildPageBlockPayload, NotesFolder, NotesPage, NotesPageTemplate, NotesTemplateBlockPayload } from "../contracts/core";
 import type { NotesBlockFrontier, NotesBlockOutline, NotesLoadedPage, NotesPageOpenResponse, NotesSidebarPageList } from "../contracts/workspace";
 import { parseNullableNotesIcon, parseNullablePageCover } from "./assets";
@@ -110,6 +111,7 @@ export function parseNotesBlockOutline(value: unknown): NotesBlockOutline {
     sort_order: readFiniteNumber(record.sort_order, "block outline.sort_order"),
     has_children: readBoolean(record.has_children, "block outline.has_children"),
     retained_height: retainedHeight,
+    ganbaru_indent: parseNotesIndent(record.ganbaru_indent ?? 0),
   };
 }
 

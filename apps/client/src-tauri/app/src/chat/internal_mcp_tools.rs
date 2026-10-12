@@ -1,7 +1,7 @@
 //! Closed-world organizational host tools for provider assignments.
 
 use super::internal_mcp::{InternalMcpRunScope, generate_opaque_handle};
-use super::models::{ChatError, ChatErrorCode, ChatFolderCapability, ChatResult};
+use ganbaru_chat_contracts::models::{ChatError, ChatErrorCode, ChatFolderCapability, ChatResult};
 use rmcp::model::{Tool, ToolAnnotations};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -57,7 +57,7 @@ enum OpaqueCursor {
 pub(crate) struct HostToolContext<'a> {
     pub app: &'a tauri::AppHandle,
     pub pool: &'a SqlitePool,
-    pub thread_id: &'a super::models::ChatThreadId,
+    pub thread_id: &'a ganbaru_chat_contracts::models::ChatThreadId,
     pub scope: &'a InternalMcpRunScope,
     pub runtime: &'a InternalMcpToolRuntime,
 }
@@ -199,7 +199,7 @@ pub(crate) async fn call(
         response_reservation.unwrap_or(0),
     )
     .await
-    .map_err(|_| generic_denial())?;
+    .map_err(|_| generic_denial_error())?;
     let result = call_authorized(&context, name, arguments).await;
     match result {
         Ok(value) => {
@@ -215,7 +215,7 @@ pub(crate) async fn call(
                     host_tool_is_mutating(name),
                 )
                 .await?;
-                return Err(generic_denial());
+                return Err(generic_denial_error());
             }
             let truncated = value
                 .get("truncated")
@@ -264,7 +264,7 @@ pub(crate) async fn call(
                 mutation_outcome_unknown,
             )
             .await?;
-            Err(generic_denial())
+            Err(generic_denial_error())
         }
     }
 }
@@ -286,7 +286,7 @@ async fn call_authorized(
         "chat_create_workspace_file" => write_workspace_file(context, arguments, true).await,
         "chat_patch_workspace_file" => patch_workspace_file(context, arguments).await,
         "chat_delete_workspace_file" => delete_workspace_file(context, arguments).await,
-        _ => Err(generic_denial()),
+        _ => Err(generic_denial_error()),
     }
 }
 
@@ -352,7 +352,7 @@ impl InternalMcpToolRuntime {
                     before_item_id,
                 })
             }
-            _ => Err(generic_denial()),
+            _ => Err(generic_denial_error()),
         }
     }
 
@@ -368,7 +368,7 @@ impl InternalMcpToolRuntime {
                 query_hash: stored_query,
                 provider_cursor,
             }) if stored_root == root_handle && stored_query == query_hash => Ok(provider_cursor),
-            _ => Err(generic_denial()),
+            _ => Err(generic_denial_error()),
         }
     }
 }
@@ -422,7 +422,7 @@ fn required_string<'a>(
         .and_then(Value::as_str)
         .filter(|value| value.len() <= maximum_bytes)
         .filter(|value| !value.contains('\0') && !value.chars().any(char::is_control))
-        .ok_or_else(generic_denial)
+        .ok_or_else(generic_denial_error)
 }
 
 fn optional_string<'a>(
@@ -444,7 +444,7 @@ fn optional_limit(arguments: &Map<String, Value>) -> ChatResult<Option<u32>> {
             .and_then(|value| u32::try_from(value).ok())
             .filter(|value| (1..=MAX_PAGE_SIZE).contains(value))
             .map(Some)
-            .ok_or_else(generic_denial),
+            .ok_or_else(generic_denial_error),
     }
 }
 
@@ -478,7 +478,7 @@ fn host_tool_is_mutating(name: &str) -> bool {
     )
 }
 
-fn generic_denial() -> ChatError {
+fn generic_denial_error() -> ChatError {
     ChatError::new(ChatErrorCode::Permission, GENERIC_DENIAL, false)
 }
 

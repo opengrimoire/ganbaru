@@ -4,7 +4,7 @@ use tauri::{
     plugin::{PluginApi, PluginHandle},
 };
 
-const PLUGIN_IDENTIFIER: &str = "app.ganbaru.mobile_notifications";
+const PLUGIN_IDENTIFIER: &str = "org.opengrimoire.ganbaruai.mobile.notifications";
 
 #[derive(Debug)]
 pub struct MobileNotifications<R: Runtime>(PluginHandle<R>);
@@ -34,6 +34,26 @@ pub struct BackgroundExecutionStatus {
     pub battery_optimization_exempt: bool,
 }
 
+/// Device-zone facts from Android's timezone database for bounded native policy inputs.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeviceLocalTimeFact {
+    pub epoch_ms: i64,
+    pub date_key: String,
+    pub date_string: String,
+    pub hour: u8,
+}
+
+/// Android Activity lifecycle evidence delivered directly to the Rust owner.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativeFocusLifecycle {
+    pub sequence: u64,
+    pub foreground: bool,
+    pub observed_at_ms: i64,
+    pub elapsed_realtime_ms: i64,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CalendarChannelRequest<'a> {
@@ -50,6 +70,142 @@ pub(crate) fn init<R: Runtime, C: serde::de::DeserializeOwned>(
 }
 
 impl<R: Runtime> MobileNotifications<R> {
+    /// Persist presentation copy separately from accepted execution projections.
+    pub fn configure_focus_notification_copy<T: Serialize>(&self, copy: &T) -> Result<(), String> {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Request<'a, T> {
+            copy: &'a T,
+            process_nonce: i64,
+        }
+        self.0
+            .run_mobile_plugin(
+                "configureFocusNotificationCopy",
+                Request {
+                    copy,
+                    process_nonce: super::authority::process_nonce()?,
+                },
+            )
+            .map_err(|error| format!("Configure Android Focus notification language: {error}"))
+    }
+
+    /// Read retained notification language without using a phase as execution evidence.
+    pub fn focus_notification_copy<T: serde::de::DeserializeOwned>(
+        &self,
+    ) -> Result<Option<T>, String> {
+        #[derive(Deserialize)]
+        struct Response<T> {
+            copy: Option<T>,
+        }
+        self.0
+            .run_mobile_plugin::<Response<T>>("focusNotificationCopy", ())
+            .map(|response| response.copy)
+            .map_err(|error| format!("Read Android Focus notification language: {error}"))
+    }
+
+    /// Publish a canonical accepted phase through the private Guardian adapter.
+    pub fn publish_focus_notification<T: Serialize>(
+        &self,
+        state: &T,
+        generation: u64,
+        revision: i64,
+    ) -> Result<(), String> {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Request<'a, T> {
+            state: &'a T,
+            process_nonce: i64,
+            generation: u64,
+            revision: i64,
+        }
+        self.0
+            .run_mobile_plugin(
+                "updatePomodoroNotification",
+                Request {
+                    state,
+                    process_nonce: super::authority::process_nonce()?,
+                    generation,
+                    revision,
+                },
+            )
+            .map_err(|error| format!("Publish accepted Android Focus notification: {error}"))
+    }
+
+    /// Deliver a committed phase boundary with Guardian's retained notification receipt.
+    pub fn complete_focus_notification<T: Serialize>(
+        &self,
+        state: &T,
+        generation: u64,
+        revision: i64,
+    ) -> Result<(), String> {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Request<'a, T> {
+            state: &'a T,
+            process_nonce: i64,
+            generation: u64,
+            revision: i64,
+        }
+        self.0
+            .run_mobile_plugin(
+                "completeFocusNotification",
+                Request {
+                    state,
+                    process_nonce: super::authority::process_nonce()?,
+                    generation,
+                    revision,
+                },
+            )
+            .map_err(|error| format!("Deliver committed Android Focus boundary: {error}"))
+    }
+
+    /// Revoke presentation and Guardian phase validity without changing execution history.
+    pub fn cancel_focus_notification(&self) -> Result<(), String> {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Request {
+            process_nonce: i64,
+        }
+        self.0
+            .run_mobile_plugin(
+                "cancelPomodoroNotification",
+                Request {
+                    process_nonce: super::authority::process_nonce()?,
+                },
+            )
+            .map_err(|error| format!("Revoke Android Focus notification: {error}"))
+    }
+
+    /// Attach a native-only lifecycle callback. It never admits or advances phases.
+    pub fn attach_focus_lifecycle(&self, channel: tauri::ipc::Channel) -> Result<(), String> {
+        #[derive(Serialize)]
+        struct Request {
+            channel: tauri::ipc::Channel,
+        }
+        self.0
+            .run_mobile_plugin("attachFocusLifecycle", Request { channel })
+            .map_err(|error| format!("Attach Android Focus lifecycle observation: {error}"))
+    }
+
+    /// Resolve historical local dates and hours using Android's current device zone.
+    /// Values are observation facts, never a frontend-supplied fixed offset.
+    pub fn device_local_time_facts(
+        &self,
+        instants: &[i64],
+    ) -> Result<Vec<DeviceLocalTimeFact>, String> {
+        const MAX_INSTANTS: usize = 4096;
+        if instants.len() > MAX_INSTANTS {
+            return Err("Device local time request exceeds its instant limit".to_owned());
+        }
+        #[derive(Serialize)]
+        struct Request<'a> {
+            instants: &'a [i64],
+        }
+        self.0
+            .run_mobile_plugin("deviceLocalTimeFacts", Request { instants })
+            .map_err(|error| format!("Read Android device local time facts: {error}"))
+    }
+
     /// Ensure Calendar reminders use Android's current default notification sound.
     pub fn ensure_calendar_channel(&self, name: &str, description: &str) -> Result<(), String> {
         self.0

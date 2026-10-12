@@ -66,7 +66,6 @@ export const theme = {
     discardChanges: "Descartar cambios",
     keepEditing: "Seguir editando",
     operationFailed: "La operación del tema falló. El editor permanece abierto.",
-    colorPicker: "Selector de color",
     jsonCopied: "JSON copiado al portapapeles",
     jsonCopyFailed: "No se pudo copiar el JSON",
     jsonSaving: "Guardando…",

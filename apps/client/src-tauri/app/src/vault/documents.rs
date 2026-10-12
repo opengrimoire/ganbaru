@@ -1,19 +1,19 @@
 //! Native Calendar and theme document transfer, independent of vault selection.
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 use super::{dialog_path, require_absolute_path, write_text_file_atomically};
 #[cfg(target_os = "android")]
 use ganbaru_mobile_documents::MobileDocumentsExt;
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 use std::fs;
 #[cfg(not(target_os = "android"))]
 use std::io::Read;
 #[cfg(target_os = "ios")]
 use std::io::Write;
 use std::path::Path;
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 use std::path::PathBuf;
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 use tauri::Manager;
 #[cfg(target_os = "ios")]
 use tauri::Runtime;
@@ -24,7 +24,7 @@ use tauri_plugin_dialog::FilePath;
 #[cfg(target_os = "ios")]
 use tauri_plugin_fs::{FsExt, OpenOptions};
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 fn require_extension(path: &Path, allowed: &[&str], label: &str) -> Result<(), String> {
     require_absolute_path(path)?;
     let ext = path
@@ -85,7 +85,7 @@ fn require_text_within_limit(contents: &str, max_bytes: u64, label: &str) -> Res
     Ok(())
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 fn read_text_file_capped(path: &Path, max_bytes: u64, label: &str) -> Result<String, String> {
     require_absolute_path(path)?;
     let metadata = fs::metadata(path).map_err(|e| format!("failed to inspect {label}: {e}"))?;
@@ -100,7 +100,7 @@ fn read_text_file_capped(path: &Path, max_bytes: u64, label: &str) -> Result<Str
     read_utf8_capped(&mut file, max_bytes, label)
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 fn pick_open_path(
     app: &tauri::AppHandle,
     title: &str,
@@ -119,8 +119,8 @@ fn pick_open_path(
     picker.blocking_pick_file().map(dialog_path).transpose()
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn pick_save_path(
+#[cfg(desktop)]
+pub(crate) fn pick_save_path(
     app: &tauri::AppHandle,
     title: &str,
     default_name: &str,
@@ -140,29 +140,29 @@ fn pick_save_path(
     picker.blocking_save_file().map(dialog_path).transpose()
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn existing_downloads_directory(app: &tauri::AppHandle) -> Option<PathBuf> {
+#[cfg(desktop)]
+pub(crate) fn existing_downloads_directory(app: &tauri::AppHandle) -> Option<PathBuf> {
     app.path().download_dir().ok().filter(|path| path.is_dir())
 }
 
-/// Hard cap on the number of entries we will inspect inside a single zip.
+/// Hard cap on the number of entries inspected inside a single zip.
 /// 1024 is well above the realistic count for an export from Google
 /// Calendar (one .ics per calendar a user owns or subscribes to is usually
 /// < 50) and protects against pathological inputs that could DoS the read
 /// loop.
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 const ICS_ZIP_MAX_ENTRIES: usize = 1024;
 
 /// Hard cap on the uncompressed size of a single entry, in bytes. 25 MiB
 /// is large enough for a multi-decade calendar with thousands of events
 /// (text-only iCalendar averages ~1 KiB per event) while clearly rejecting
 /// decompression bombs.
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 const ICS_ZIP_MAX_ENTRY_BYTES: u64 = 25 * 1024 * 1024;
 
 /// Hard cap on the aggregate uncompressed size across every entry. Keeps a
 /// zip with many oversized entries from defeating the per-entry guard.
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 const ICS_ZIP_MAX_TOTAL_BYTES: u64 = 250 * 1024 * 1024;
 
 /// Plain `.ics` imports share the zip per-entry cap so the import flow has
@@ -230,17 +230,18 @@ pub struct IcsZipEntry {
 ///
 /// Safety contract:
 ///
-/// - Path must be absolute (matching every other `vault_*` helper).
+/// - `path` comes from a native picker, never from IPC, and must have a
+///   `.zip` extension.
 /// - Entry paths are validated through `enclosed_name`, which rejects any
 ///   entry that tries to escape (zip-slip via `..` or absolute paths).
-/// - Encrypted entries are refused; we only ship the deflate feature.
+/// - Encrypted entries are refused; only the deflate feature is enabled.
 /// - Per-entry and aggregate decompressed-size caps reject decompression
 ///   bombs even if the zip header lies about uncompressed size (the read
 ///   itself is wrapped in a `Take` adapter so the cap holds at I/O level).
 /// - Only entries whose extension matches `.ics` are returned. Anything
 ///   else (`__MACOSX/`, `.DS_Store`, signature files, archived metadata)
 ///   is silently skipped so the importer never sees them.
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 fn read_ics_zip_entries_from_path(path: &Path) -> Result<Vec<IcsZipEntry>, String> {
     require_extension(path, &["zip"], "ICS zip import")?;
 
@@ -268,8 +269,8 @@ fn read_ics_zip_entries_from_path(path: &Path) -> Result<Vec<IcsZipEntry>, Strin
         }
 
         // `enclosed_name` returns `None` for any entry whose path escapes
-        // the archive root (zip-slip protection). Treat that as fatal so we
-        // never silently import from a tampered bundle.
+        // the archive root (zip-slip protection). Treat that as fatal so a
+        // tampered bundle is never silently imported.
         let enclosed = match entry.enclosed_name() {
             Some(name) => name,
             None => {
@@ -316,8 +317,8 @@ fn read_ics_zip_entries_from_path(path: &Path) -> Result<Vec<IcsZipEntry>, Strin
         drop(enclosed);
 
         // The `Take` adapter is the real defense against a lying header:
-        // even if `entry.size()` claims a small value, we still stop after
-        // one byte past the cap and reject the entry.
+        // even if `entry.size()` claims a small value, reading stops one
+        // byte past the cap and the entry is rejected.
         let mut contents = String::new();
         let mut limited = entry.by_ref().take(ICS_ZIP_MAX_ENTRY_BYTES + 1);
         limited
@@ -338,7 +339,7 @@ fn read_ics_zip_entries_from_path(path: &Path) -> Result<Vec<IcsZipEntry>, Strin
     Ok(entries)
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 fn read_plain_ics_entry_from_path(path: &Path) -> Result<IcsZipEntry, String> {
     require_extension(path, &["ics"], "ICS import")?;
     let contents = read_text_file_capped(path, ICS_PLAIN_MAX_BYTES, "ICS import")?;
@@ -352,7 +353,7 @@ fn read_plain_ics_entry_from_path(path: &Path) -> Result<IcsZipEntry, String> {
 /// Open a native file picker and read one `.ics` file or every `.ics` entry
 /// inside one `.zip` bundle. The selected path never crosses the IPC
 /// boundary, and Rust re-validates the extension before reading.
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn vault_pick_and_read_ics_import(
     app: tauri::AppHandle,
@@ -382,7 +383,7 @@ pub async fn vault_pick_and_read_ics_import(
 
 /// Open a native save dialog and write a calendar `.ics` export. The
 /// selected path stays in Rust and must still have a `.ics` extension.
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn vault_pick_and_write_ics_export(
     app: tauri::AppHandle,
@@ -468,7 +469,7 @@ pub async fn vault_pick_and_write_ics_export(
 }
 
 /// Open a native file picker and read a theme `.json` file with a small cap.
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn vault_pick_and_read_theme_json(
     app: tauri::AppHandle,
@@ -481,7 +482,7 @@ pub async fn vault_pick_and_read_theme_json(
 }
 
 /// Open a native save dialog and write a theme `.json` export.
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn vault_pick_and_write_theme_json(
     app: tauri::AppHandle,
@@ -629,7 +630,7 @@ pub async fn vault_pick_and_write_theme_json(
     Ok(ThemeJsonWriteOutcome::saved_to_downloads(file_name))
 }
 
-#[cfg(all(test, not(any(target_os = "android", target_os = "ios"))))]
+#[cfg(all(test, desktop))]
 mod tests {
     use super::*;
     use crate::vault::tests::unique_path;

@@ -11,7 +11,7 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-/** Represents the HTML cover installed before the desktop entry runs. */
+/** Installs the pre-entry HTML cover and returns readiness options with test-controlled barriers. */
 function setup(activeCover = false) {
   document.body.innerHTML = '<div id="app"></div><div id="vault-ownership-transition-cover" data-storage-key="transition"></div>';
   const cover = document.getElementById("vault-ownership-transition-cover")!;

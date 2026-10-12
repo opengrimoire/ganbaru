@@ -7,26 +7,31 @@
   import { getProjects } from "$lib/stores/projects.svelte";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { getViewport } from "$lib/stores/viewport.svelte";
-  import type { CalendarEvent, CalendarViewMode } from "$lib/components/calendar/types";
+  import type { CalendarEvent, CalendarViewMode } from "$lib/calendar/types";
   import type {
     ProjectChatIntegration,
     ProjectSection,
-    ProjectStatus,
     ProjectTask,
+    ProjectViewId,
   } from "$lib/projects/types";
   import {
     projectCalendarCreateDefaults as buildProjectCalendarCreateDefaults,
     projectEventDurationMinutesInDateRange,
-  } from "$lib/projects/project-scheduling";
+  } from "$lib/projects/scheduling/schedule";
   import {
     pickProjectTaskModalLayout,
-  } from "$lib/projects/project-toolbar";
+    type ProjectToolbarPanel,
+  } from "$lib/projects/toolbar";
+  import CollectionSettings from "$lib/components/collections/CollectionSettings.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import ProjectEmptyState from "./ProjectEmptyState.svelte";
   import ProjectWorkspaceHeader from "./ProjectWorkspaceHeader.svelte";
-  import type { ProjectViewComponents } from "./project-view-components";
-  import { ProjectTaskQueryController } from "./project-task-query-controller.svelte";
-  import { ProjectRouteLoadController } from "./project-route-load-controller.svelte";
-  import { ProjectRouteUiController } from "./project-route-ui-controller.svelte";
+  import ProjectTaskDetailPanel from "./task-detail/ProjectTaskDetailPanel.svelte";
+  import type { ProjectViewComponents } from "./view-components";
+  import { ProjectTaskQueryController } from "./task-query-controller.svelte";
+  import { ProjectRouteLoadController } from "./route-load-controller.svelte";
+  import { ProjectRouteUiController } from "./route-ui-controller.svelte";
 
   let {
     mobileLayout = false,
@@ -63,7 +68,6 @@
   const toolbarLoadState = $derived(routeLoad.optionalState("toolbar"));
   const bulkActionsLoadState = $derived(routeLoad.optionalState("bulk-actions"));
   const taskFinderLoadState = $derived(routeLoad.optionalState("task-finder"));
-  const taskDetailLoadState = $derived(routeLoad.optionalState("task-detail"));
 
   const selectedProject = $derived(projects.selectedProject);
   const selectedGroup = $derived(projects.selectedGroup);
@@ -73,10 +77,11 @@
     return Boolean(
       projectId
       && projects.taskViewPage?.projectId === projectId
-      && projects.projectOptionalDataLoaded("saved_views", projectId),
+      && projects.isProjectOptionalDataLoaded("saved_views", projectId),
     );
   });
   const taskDetailDataReady = $derived.by(() => {
+    if (routeUi.taskDraftProjectId) return true;
     return Boolean(
       routeUi.selectedTaskId
       && projects.taskById(routeUi.selectedTaskId)?.detailLoaded,
@@ -84,7 +89,7 @@
   });
 
   $effect(() => {
-    if (!selectedProjectId || projects.projectDataLoaded(selectedProjectId)) return;
+    if (!selectedProjectId || projects.isProjectDataLoaded(selectedProjectId)) return;
     void projects.ensureProjectData(selectedProjectId).catch((error) => {
       console.error("load selected project data failed", error);
     });
@@ -138,17 +143,12 @@
     viewportHeight: viewport.height,
   }));
 
-  const taskDetailComponentReady = $derived(
-    taskDetailDataReady
-      && taskDetailLoadState?.status === "ready"
-      && taskDetailLoadState.component.kind === "task-detail",
-  );
-
   $effect(() => {
-    if (!mobileLayout || routeUi.selectedTaskId === null || taskDetailComponentReady) return;
+    if (!mobileLayout || taskDetailDataReady) return;
+    if (routeUi.selectedTaskId === null && routeUi.taskDraftProjectId === null) return;
     return mobileBackStack.activate({
       handle: () => {
-        routeUi.selectedTaskId = null;
+        routeUi.closeTaskDetail();
         routeLoad.invalidateTaskDetailData();
       },
     });
@@ -178,12 +178,23 @@
     });
   });
 
+  let viewDataFailure = $state<{ projectId: string; view: ProjectViewId } | null>(null);
+  const viewDataFailed = $derived(
+    viewDataFailure?.projectId === selectedProjectId && viewDataFailure?.view === projects.activeView,
+  );
+
+  function requestViewData(projectId: string, view: ProjectViewId): void {
+    viewDataFailure = null;
+    void projects.ensureProjectViewData(projectId, view).catch((error) => {
+      viewDataFailure = { projectId, view };
+      console.error(`load optional Project ${view} data failed`, error);
+    });
+  }
+
   $effect(() => {
     const view = projects.activeView;
     if (!selectedProject || !selectedGroup) return;
-    void projects.ensureProjectViewData(selectedProject.id, view).catch((error) => {
-      console.error(`load optional Project ${view} data failed`, error);
-    });
+    requestViewData(selectedProject.id, view);
   });
 
   $effect(() => {
@@ -216,8 +227,13 @@
   });
 
   $effect(() => {
+    if (routeUi.taskDraftProjectId && routeUi.taskDraftProjectId !== selectedProjectId) {
+      routeUi.taskDraftProjectId = null;
+    }
+  });
+
+  $effect(() => {
     if (!routeUi.selectedTaskId) return;
-    routeLoad.requestOptional("task-detail");
     void routeLoad.requestTaskDetailData(selectedProjectId, routeUi.selectedTaskId);
   });
 
@@ -242,17 +258,29 @@
     taskQuery.repairDisappearingFields();
   });
 
-  function terminalStatus(): ProjectStatus | undefined {
-    return statuses.find((status) => status.terminal);
-  }
-
-  function firstOpenStatus(): ProjectStatus | undefined {
-    return statuses.find((status) => status.name.toLowerCase() === "to do")
-      ?? statuses.find((status) => !status.terminal);
-  }
-
   function clearTaskFilters(): void {
     taskQuery.reset();
+  }
+
+  /** Return the localized name of a toolbar panel, used when the panel cannot open. */
+  function toolbarPanelLabel(panel: ProjectToolbarPanel): string {
+    if (panel === "settings") return t("projects.header.projectSettings");
+    if (panel === "filters") return t("projects.filters.title");
+    if (panel === "sort") return t("projects.toolbar.sort");
+    if (panel === "customize") return t("projects.toolbar.customize");
+    return t("projects.toolbar.group");
+  }
+
+  /** Retry whichever part of the toolbar panel failed: its project data or its lazy component. */
+  function retryToolbarPanel(): Promise<void> | void {
+    if (!routeLoad.toolbarDataError) {
+      routeLoad.requestOptional("toolbar", true);
+      return;
+    }
+    const projectId = selectedProjectId;
+    return routeLoad.requestToolbarData(projectId, () => (
+      routeUi.toolbarPanel !== null && selectedProjectId === projectId
+    ));
   }
 
   function revealCreatedTask(task: ProjectTask | undefined): void {
@@ -307,15 +335,17 @@
             showInactiveProjects = value;
           }}
           onProjectSelected={() => {
-            routeUi.selectedTaskId = null;
+            routeUi.closeTaskDetail();
             routeUi.closeToolbarImmediately();
           }}
           onToggleToolbarPanel={(panel) => routeUi.toggleToolbarPanel(panel)}
+          onCreateTask={() => { if (selectedProjectId) routeUi.openTaskDraft(selectedProjectId); }}
         />
         {#if routeUi.toolbarPanel}
           {#if toolbarDataReady && toolbarLoadState?.status === "ready" && toolbarLoadState.component.kind === "toolbar"}
             {@const ProjectToolbarPanels = toolbarLoadState.component.component}
             <ProjectToolbarPanels
+              {taskQuery}
               {mobileLayout}
               panel={routeUi.toolbarPanel}
               projectId={selectedProjectId}
@@ -330,6 +360,8 @@
               {taskFiltersActive}
               savedViewSaving={taskQuery.savedViewSaving}
               savedViewError={taskQuery.savedViewError}
+              listColumnsSaving={taskQuery.listColumnsSaving || taskQuery.propertySaving}
+              listColumnsError={taskQuery.listColumnsError}
               bind:taskStatusFilter={taskQuery.statusFilter}
               bind:taskSectionFilter={taskQuery.sectionFilter}
               bind:taskPriorityFilter={taskQuery.priorityFilter}
@@ -364,53 +396,19 @@
               onToggleTaskListColumn={(column) => { void taskQuery.toggleColumn(column); }}
             />
           {:else if routeLoad.toolbarDataError || toolbarLoadState?.status === "failed"}
-            <div class="flex min-h-9 items-center justify-center gap-2 border-t border-border px-3 text-xs text-muted-foreground" role="alert">
-              <span>{t("common.viewLoadFailed", t("projects.header.projectSettings"))}</span>
-              <button
-                type="button"
-                class="font-medium text-foreground underline-offset-2 hover:underline"
-                onclick={() => {
-                  if (routeLoad.toolbarDataError) {
-                    const projectId = selectedProjectId;
-                    void routeLoad.requestToolbarData(projectId, () => (
-                      routeUi.toolbarPanel !== null && selectedProjectId === projectId
-                    ));
-                  } else routeLoad.requestOptional("toolbar", true);
-                }}
-              >
-                {t("common.retry")}
-              </button>
-            </div>
-          {:else}
-            <span class="sr-only" aria-busy="true">{t("common.loading")}</span>
-          {/if}
-        {/if}
-        {#if routeUi.selectedTaskIds.length > 0}
-          {#if bulkActionsLoadState?.status === "ready" && bulkActionsLoadState.component.kind === "bulk-actions"}
-            {@const ProjectBulkActionController = bulkActionsLoadState.component.component}
-            <ProjectBulkActionController
-              {selectedProject}
-              {priorities}
-              {selectedTasks}
-              {selectableTasks}
-              {selectedActiveTaskCount}
-              {selectedArchivedTaskCount}
-              terminalStatus={terminalStatus()}
-              firstOpenStatus={firstOpenStatus()}
-              bind:selectedTaskIds={routeUi.selectedTaskIds}
-              bind:showArchivedTasks={taskQuery.showArchivedTasks}
-            />
-          {:else if bulkActionsLoadState?.status === "failed"}
-            <div class="flex min-h-9 items-center justify-center gap-2 border-t border-border px-3 text-xs text-muted-foreground" role="alert">
-              <span>{t("common.viewLoadFailed", t("projects.bulk.selected", routeUi.selectedTaskIds.length))}</span>
-              <button
-                type="button"
-                class="font-medium text-foreground underline-offset-2 hover:underline"
-                onclick={() => routeLoad.requestOptional("bulk-actions", true)}
-              >
-                {t("common.retry")}
-              </button>
-            </div>
+            {@const panelLabel = toolbarPanelLabel(routeUi.toolbarPanel)}
+            <CollectionSettings
+              label={panelLabel}
+              anchor={document.querySelector<HTMLElement>(`[data-project-toolbar-trigger="${routeUi.toolbarPanel}"]`)}
+              onClose={() => routeUi.requestToolbarClose()}
+            >
+              <Notice
+                class="px-1.5 py-1"
+                message={t("common.viewLoadFailed", panelLabel)}
+                copy={routeLoad.toolbarDataError ?? false}
+                onRetry={retryToolbarPanel}
+              />
+            </CollectionSettings>
           {:else}
             <span class="sr-only" aria-busy="true">{t("common.loading")}</span>
           {/if}
@@ -429,14 +427,45 @@
 
     <div
       data-projects-content-frame
+      data-collection-selection-scope
       class="relative min-h-0 flex-1"
       style="background-color: var(--cal-bg);"
     >
       {#if selectedProject && selectedGroup}
+        {#if routeUi.selectedTaskIds.length > 0}
+          <!-- The selection toolbar floats over the bottom of the header so selecting tasks never shifts them. -->
+          <div class="pointer-events-none absolute right-3 bottom-full left-3 z-30 mb-1.5 flex flex-col items-start gap-1 *:pointer-events-auto">
+          {#if bulkActionsLoadState?.status === "ready" && bulkActionsLoadState.component.kind === "bulk-actions"}
+            {@const ProjectBulkActionController = bulkActionsLoadState.component.component}
+            <ProjectBulkActionController
+              {selectedProject}
+              {statuses}
+              {priorities}
+              {selectedTasks}
+              {selectableTasks}
+              {selectedActiveTaskCount}
+              {selectedArchivedTaskCount}
+              bind:selectedTaskIds={routeUi.selectedTaskIds}
+              bind:showArchivedTasks={taskQuery.showArchivedTasks}
+            />
+          {:else if bulkActionsLoadState?.status === "failed"}
+            <Notice
+              class="surface-floating px-2.5 py-1.5"
+              message={t("common.viewLoadFailed", t("collections.selection.selected", routeUi.selectedTaskIds.length))}
+              copy={false}
+              onRetry={() => routeLoad.requestOptional("bulk-actions", true)}
+              onDismiss={() => routeUi.clearTaskSelection()}
+            />
+          {:else}
+            <span class="sr-only" aria-busy="true">{t("common.loading")}</span>
+          {/if}
+          </div>
+        {/if}
           {#if projects.activeView === "list"}
             {@const ProjectListView = viewComponents?.list ?? null}
-            {#if ProjectListView}
+            {#if ProjectListView && projects.isProjectViewDataLoaded(selectedProjectId, "list")}
             <ProjectListView
+              {taskQuery}
               {mobileLayout}
               {selectedProjectId}
               {sections}
@@ -459,15 +488,19 @@
                 routeUi.selectedTaskIds = taskIds;
               }}
               onRevealTask={revealCreatedTask}
-              onTaskListColumnWidthsChange={(widths, options) => {
-                void taskQuery.updateColumnWidths(widths, options);
-              }}
+              onTaskListColumnWidthsChange={(widths, options) => taskQuery.updateColumnWidths(widths, options)}
               onNeedMore={() => taskQuery.loadNextList(routeUi.selectedTaskIds)}
             />
+            {:else if viewDataFailed}
+              <Notice
+                layout="fill"
+                class="text-sm"
+                message={t("common.viewLoadFailed", t("projects.tabs.list"))}
+                copy={false}
+                onRetry={() => { if (selectedProjectId) requestViewData(selectedProjectId, "list"); }}
+              />
             {:else}
-              <div class="flex h-full items-center justify-center text-sm text-muted-foreground" aria-busy="true">
-                {t("common.loading")}
-              </div>
+              <Loading layout="fill" />
             {/if}
           {:else if projects.activeView === "kanban" && viewComponents?.kanban}
             {@const ProjectKanbanView = viewComponents.kanban}
@@ -532,9 +565,7 @@
             />
             {/if}
           {:else}
-            <div class="flex h-full items-center justify-center text-sm text-muted-foreground" aria-busy="true">
-              {t("common.loading")}
-            </div>
+            <Loading layout="fill" />
           {/if}
       {:else}
         <ProjectEmptyState
@@ -542,7 +573,7 @@
           bind:showInactiveProjects
           {mobileLayout}
           onProjectSelected={() => {
-            routeUi.selectedTaskId = null;
+            routeUi.closeTaskDetail();
             routeUi.closeToolbarImmediately();
           }}
         />
@@ -565,31 +596,31 @@
         onClearAndClose={() => routeUi.closeOrClearFinder(taskQuery.search, () => { taskQuery.search = ""; })}
       />
     {:else if taskFinderLoadState?.status === "failed"}
-      <div class="absolute inset-x-3 top-3 z-80 flex min-h-10 items-center justify-center gap-2 rounded-md border border-border bg-card px-3 text-xs text-muted-foreground shadow-lg" role="alert">
-        <span>{t("common.viewLoadFailed", t("projects.finder.label"))}</span>
-        <button
-          type="button"
-          class="font-medium text-foreground underline-offset-2 hover:underline"
-          onclick={() => routeLoad.requestOptional("task-finder", true)}
-        >
-          {t("common.retry")}
-        </button>
+      <div class="pointer-events-none absolute inset-x-0 bottom-4 z-40 flex justify-center px-3">
+        <Notice
+          class="pointer-events-auto surface-floating w-[min(32rem,100%)] px-3 py-2.5"
+          message={t("common.viewLoadFailed", t("projects.finder.label"))}
+          copy={false}
+          onRetry={() => routeLoad.requestOptional("task-finder", true)}
+          onDismiss={() => routeUi.closeOrClearFinder(taskQuery.search, () => { taskQuery.search = ""; })}
+        />
       </div>
     {:else}
       <span class="sr-only" aria-busy="true">{t("common.loading")}</span>
     {/if}
   {/if}
 
-  {#if routeUi.selectedTaskId}
-    {#if taskDetailDataReady && taskDetailLoadState?.status === "ready" && taskDetailLoadState.component.kind === "task-detail"}
-      {@const ProjectTaskDetailPanel = taskDetailLoadState.component.component}
+  {#if routeUi.selectedTaskId || routeUi.taskDraftProjectId}
+    {#if taskDetailDataReady}
       <ProjectTaskDetailPanel
         taskId={routeUi.selectedTaskId}
+        draftProjectId={routeUi.taskDraftProjectId}
+        onCreated={(task) => routeUi.completeTaskDraft(task)}
         layout={taskDetailModalLayout}
         showArchivedTasks={taskQuery.showArchivedTasks}
         showInactiveSections={taskQuery.showInactiveSections}
         onClose={() => {
-          routeUi.selectedTaskId = null;
+          routeUi.closeTaskDetail();
           routeLoad.invalidateTaskDetailData();
         }}
         onOpenTask={(taskId) => {
@@ -599,40 +630,22 @@
           taskQuery.showArchivedTasks = true;
         }}
       />
-    {:else if routeLoad.taskDetailDataError || taskDetailLoadState?.status === "failed"}
-      <div class="absolute inset-0 z-80 flex items-center justify-center bg-black/40 p-4" role="alert">
-        <div class="flex min-h-32 w-full max-w-sm flex-col items-center justify-center gap-3 rounded-lg border border-border bg-card p-4 text-center text-sm text-muted-foreground shadow-xl">
-          <p>{t("common.viewLoadFailed", t("projects.detail.title"))}</p>
-          <div class="flex gap-2">
-            <button
-              type="button"
-              class="min-h-9 rounded-md border border-border bg-background px-3 font-medium text-foreground hover:bg-accent"
-              onclick={() => {
-                if (routeLoad.taskDetailDataError) {
-                  void routeLoad.requestTaskDetailData(selectedProjectId, routeUi.selectedTaskId);
-                } else routeLoad.requestOptional("task-detail", true);
-              }}
-            >
-              {t("common.retry")}
-            </button>
-            <button
-              type="button"
-              class="min-h-9 rounded-md px-3 font-medium text-foreground hover:bg-accent"
-              onclick={() => {
-                routeUi.selectedTaskId = null;
-                routeLoad.invalidateTaskDetailData();
-              }}
-            >
-              {t("common.cancel")}
-            </button>
-          </div>
-        </div>
+    {:else if routeLoad.taskDetailDataError}
+      <div class="absolute inset-0 z-80 surface-backdrop flex items-center justify-center p-4">
+        <Notice
+          class="surface-dialog max-w-sm px-4 py-3 text-sm"
+          message={t("common.viewLoadFailed", t("projects.detail.title"))}
+          copy={routeLoad.taskDetailDataError}
+          onRetry={() => routeLoad.requestTaskDetailData(selectedProjectId, routeUi.selectedTaskId)}
+          onDismiss={() => {
+            routeUi.closeTaskDetail();
+            routeLoad.invalidateTaskDetailData();
+          }}
+        />
       </div>
     {:else}
-      <div class="absolute inset-0 z-80 flex items-center justify-center bg-black/30 p-4" aria-busy="true">
-        <div class="rounded-md border border-border bg-card px-4 py-3 text-sm text-muted-foreground shadow-lg">
-          {t("common.loading")}
-        </div>
+      <div class="absolute inset-0 z-80 surface-backdrop flex items-center justify-center p-4">
+        <Loading layout="fill" />
       </div>
     {/if}
   {/if}

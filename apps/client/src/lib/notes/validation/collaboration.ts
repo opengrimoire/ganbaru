@@ -1,7 +1,7 @@
-import { NOTES_MENTION_NOTIFICATION_KINDS, NOTES_MENTION_NOTIFICATION_STATUSES, NOTES_MENTION_NOTIFICATION_TARGET_TYPES } from "../contracts/collaboration";
-import type { NotesComment, NotesCommentAnchor, NotesCommentDisplayName, NotesCommentParent, NotesCommentThread, NotesCommentThreadStatus, NotesLocalUser, NotesMentionNotification, NotesMentionNotificationKind, NotesMentionNotificationStatus, NotesMentionNotificationTargetType, NotesPartialUser, NotesSuggestion, NotesSuggestionStatus } from "../contracts/collaboration";
+import { NOTES_MENTION_NOTIFICATION_KINDS, NOTES_MENTION_NOTIFICATION_SOURCE_TYPES, NOTES_MENTION_NOTIFICATION_STATUSES, NOTES_MENTION_NOTIFICATION_TARGET_TYPES, NOTES_PAGE_NOTIFICATION_LEVELS } from "../contracts/collaboration";
+import type { NotesComment, NotesCommentAnchor, NotesCommentReaction, NotesCommentDisplayName, NotesCommentParent, NotesCommentThread, NotesCommentThreadStatus, NotesLocalUser, NotesMentionNotification, NotesMentionNotificationKind, NotesMentionNotificationSourceType, NotesMentionNotificationStatus, NotesMentionNotificationTargetType, NotesPageNotificationLevel, NotesPageNotificationSettings, NotesPartialUser, NotesSuggestion, NotesSuggestionStatus } from "../contracts/collaboration";
 import { parseNotesParent } from "./blocks";
-import { readBoolean, readDisplayString, readInteger, readNullableString, readRecord, readString } from "./readers";
+import { readBoolean, readDisplayString, readInteger, readNonNegativeInteger, readNullableString, readRecord, readString, readStringArray } from "./readers";
 import { parseNotesRichTextArray } from "./rich-text";
 
 function parseNotesCommentParent(value: unknown, label: string): NotesCommentParent {
@@ -46,6 +46,45 @@ function parseCommentAttachments(value: unknown, label: string): Record<string, 
   return value.map((attachment, index) => readRecord(attachment, `${label}[${index}]`));
 }
 
+function parseCommentReaction(value: unknown, label: string): NotesCommentReaction {
+  const record = readRecord(value, label);
+  const emoji = readString(record.emoji, `${label}.emoji`);
+  if (!emoji.trim()) throw new Error(`${label}.emoji must not be empty`);
+  const count = readInteger(record.count, `${label}.count`);
+  const names = readStringArray(record.names, `${label}.names`);
+  if (count < 1 || count !== names.length) {
+    throw new Error(`${label}.count must match its names`);
+  }
+  return {
+    emoji,
+    count,
+    reacted_by_me: readBoolean(record.reacted_by_me, `${label}.reacted_by_me`),
+    names,
+  };
+}
+
+function parseCommentReactions(value: unknown, label: string): NotesCommentReaction[] {
+  if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
+  return value.map((reaction, index) => parseCommentReaction(reaction, `${label}[${index}]`));
+}
+
+/** Validate one page's notification level for the current local user. */
+export function parseNotesPageNotificationSettings(value: unknown): NotesPageNotificationSettings {
+  const record = readRecord(value, "page notification settings");
+  if (record.object !== "page_notification_settings") {
+    throw new Error("page notification settings.object must be page_notification_settings");
+  }
+  const level = readString(record.level, "page notification settings.level");
+  if (!(NOTES_PAGE_NOTIFICATION_LEVELS as readonly string[]).includes(level)) {
+    throw new Error("page notification settings.level is unsupported");
+  }
+  return {
+    object: "page_notification_settings",
+    page_id: readString(record.page_id, "page notification settings.page_id"),
+    level: level as NotesPageNotificationLevel,
+  };
+}
+
 function parseNotesMentionNotificationKind(value: unknown): NotesMentionNotificationKind {
   const kind = readString(value, "mention notification.kind");
   if ((NOTES_MENTION_NOTIFICATION_KINDS as readonly string[]).includes(kind)) {
@@ -72,19 +111,23 @@ function parseNotesMentionNotificationStatus(value: unknown): NotesMentionNotifi
   throw new Error("mention notification.status is unsupported");
 }
 
+function parseNotesMentionNotificationSourceType(value: unknown): NotesMentionNotificationSourceType {
+  const sourceType = readString(value, "mention notification.source_type");
+  if ((NOTES_MENTION_NOTIFICATION_SOURCE_TYPES as readonly string[]).includes(sourceType)) {
+    return sourceType as NotesMentionNotificationSourceType;
+  }
+  throw new Error("mention notification.source_type is unsupported");
+}
+
 export function parseNotesMentionNotification(value: unknown): NotesMentionNotification {
   const record = readRecord(value, "mention notification");
   if (record.object !== "mention_notification") {
     throw new Error("mention notification.object must be mention_notification");
   }
-  const sourceType = readString(record.source_type, "mention notification.source_type");
-  if (sourceType !== "block" && sourceType !== "comment") {
-    throw new Error("mention notification.source_type is unsupported");
-  }
   return {
     object: "mention_notification",
     id: readString(record.id, "mention notification.id"),
-    source_type: sourceType,
+    source_type: parseNotesMentionNotificationSourceType(record.source_type),
     source_id: readString(record.source_id, "mention notification.source_id"),
     page_id: readString(record.page_id, "mention notification.page_id"),
     page_title: readString(record.page_title, "mention notification.page_title"),
@@ -94,6 +137,10 @@ export function parseNotesMentionNotification(value: unknown): NotesMentionNotif
     target_type: parseNotesMentionNotificationTargetType(record.target_type),
     target_id: readNullableString(record.target_id, "mention notification.target_id"),
     trigger_at: readNullableString(record.trigger_at, "mention notification.trigger_at"),
+    remind_minutes_before: readNonNegativeInteger(
+      record.remind_minutes_before,
+      "mention notification.remind_minutes_before",
+    ),
     plain_text: readString(record.plain_text, "mention notification.plain_text"),
     source_plain_text: readString(
       record.source_plain_text,
@@ -101,6 +148,7 @@ export function parseNotesMentionNotification(value: unknown): NotesMentionNotif
     ),
     status: parseNotesMentionNotificationStatus(record.status),
     delivered_at: readNullableString(record.delivered_at, "mention notification.delivered_at"),
+    suppressed: readBoolean(record.suppressed, "mention notification.suppressed"),
     created_time: readString(record.created_time, "mention notification.created_time"),
     last_edited_time: readString(
       record.last_edited_time,
@@ -167,6 +215,7 @@ export function parseNotesComment(value: unknown): NotesComment {
     attachments: parseCommentAttachments(record.attachments, "comment.attachments"),
     display_name: parseNotesCommentDisplayName(record.display_name, "comment.display_name"),
     deleted_at: readNullableString(record.deleted_at, "comment.deleted_at"),
+    reactions: parseCommentReactions(record.reactions, "comment.reactions"),
   };
 }
 
@@ -195,6 +244,7 @@ export function parseNotesCommentThread(value: unknown): NotesCommentThread {
     created_time: readString(record.created_time, "comment thread.created_time"),
     last_edited_time: readString(record.last_edited_time, "comment thread.last_edited_time"),
     unread: readBoolean(record.unread, "comment thread.unread"),
+    muted: readBoolean(record.muted, "comment thread.muted"),
     comments: record.comments.map(parseNotesComment),
   };
 }

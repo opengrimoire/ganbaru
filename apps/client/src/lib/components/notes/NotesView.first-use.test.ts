@@ -33,8 +33,8 @@ const backend = vi.hoisted(() => {
   };
 });
 
-vi.mock("./notes-component-registry", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./notes-component-registry")>();
+vi.mock("./component-registry", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./component-registry")>();
   return {
     ...actual,
     loadNotesSurface: (kind: string) => {
@@ -87,8 +87,8 @@ vi.mock("$lib/api/projects", async (importOriginal) => {
   };
 });
 
-vi.mock("$lib/api/notes-project-history", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("$lib/api/notes-project-history")>();
+vi.mock("$lib/api/notes/project-history", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("$lib/api/notes/project-history")>();
   return {
     ...actual,
     flushDueNotesProjectHistory: () => {
@@ -136,4 +136,40 @@ describe("NotesView first use", () => {
     expect(target.querySelector("[data-notes-first-use-state]")?.textContent).not.toContain("Loading");
     expect(backend.componentCalls).toEqual([]);
   }, 15_000);
+
+  it("keeps the sidebar choice when leaving Notes and returning", async () => {
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      callback(0);
+      return 1;
+    });
+    target = document.createElement("div");
+    document.body.append(target);
+    const { default: NotesView } = await import("./NotesView.svelte");
+    const { getNotes } = await import("$lib/stores/notes.svelte");
+    const notes = getNotes();
+    notes.explorerCollapsed = false;
+    component = mount(NotesView, { target });
+    await tick();
+
+    const collapse = target.querySelector<HTMLButtonElement>('button[aria-label="Collapse sidebar"]');
+    expect(collapse).not.toBeNull();
+    collapse?.click();
+    await tick();
+    expect(target.querySelector("[data-notes-explorer]")?.classList.contains("notes-project-explorer-collapsed")).toBe(true);
+
+    await unmount(component);
+    component = mount(NotesView, { target });
+    await tick();
+    expect(target.querySelector("[data-notes-explorer]")?.classList.contains("notes-project-explorer-collapsed")).toBe(true);
+
+    const expand = target.querySelector<HTMLButtonElement>('button[aria-label="Expand sidebar"]');
+    expect(expand).not.toBeNull();
+    expand?.click();
+    await tick();
+    await unmount(component);
+    component = mount(NotesView, { target });
+    await tick();
+    expect(target.querySelector("[data-notes-explorer]")?.classList.contains("notes-project-explorer-collapsed")).toBe(false);
+  });
+
 });

@@ -10,8 +10,8 @@ Decision:
 
 Ganbaru AI will pursue broad `.ics` compatibility with two layers:
 
-- a structured iCalendar preservation layer
-- the existing normalized app projection layer
+- A structured iCalendar preservation layer
+- The existing normalized app projection layer
 
 Rationale:
 

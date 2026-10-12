@@ -1,13 +1,15 @@
 //! Tauri command adapters for hosted source-control services.
 
 use super::credentials::PlatformCredentialStore;
-use super::models::{ChatError, ChatErrorCode, ChatResult, ProjectWorkingFolderId};
 use super::workspace::WorkingFolderAuthorizationOperation;
-use crate::db_path;
+use crate::db;
+use ganbaru_chat_contracts::models::{
+    ChatError, ChatErrorCode, ChatResult, ProjectWorkingFolderId,
+};
 use std::path::PathBuf;
 use tauri::Manager;
 
-pub use ganbaru_chat::chat::source_control::*;
+pub use ganbaru_chat::source_control::*;
 
 #[tauri::command]
 pub async fn chat_discover_source_control(
@@ -78,7 +80,7 @@ pub async fn chat_checkout_hosted_change_request(
     provider_kind: HostedSourceControlKind,
     reference: String,
     remote_name: Option<String>,
-) -> ChatResult<super::git_service::GitStatusRead> {
+) -> ChatResult<ganbaru_chat::git::GitStatusRead> {
     let root = source_control_root(
         &app,
         &db_url,
@@ -87,7 +89,7 @@ pub async fn chat_checkout_hosted_change_request(
     )
     .await?;
     let _guard = app
-        .state::<super::workspace_mutation::ChatWorkspaceMutationRegistry>()
+        .state::<super::workspace::mutation::ChatWorkspaceMutationRegistry>()
         .try_mutation(&root)?;
     checkout_hosted_change_request(&root, provider_kind, reference, remote_name).await
 }
@@ -110,10 +112,10 @@ async fn source_control_root(
     working_folder_id: &ProjectWorkingFolderId,
     execution_environment_id: Option<&str>,
 ) -> ChatResult<PathBuf> {
-    let pool = db_path::connect_sqlite(app.clone(), db_url.to_string())
+    let pool = db::connect_sqlite(app.clone(), db_url.to_string())
         .await
         .map_err(|_| ChatError::new(ChatErrorCode::Persistence, "open Chat database", true))?;
-    let authorized = super::workspace_commands::authorize_working_folder(
+    let authorized = super::workspace::commands::authorize_working_folder(
         app,
         &pool,
         working_folder_id,

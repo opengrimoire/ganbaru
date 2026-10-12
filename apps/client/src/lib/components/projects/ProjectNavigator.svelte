@@ -1,8 +1,8 @@
 <script lang="ts">
-  import type { ProjectNavigatorPanelMode } from "$lib/projects/project-toolbar";
+  import type { ProjectNavigatorPanelMode } from "$lib/projects/toolbar";
   import type { Project } from "$lib/projects/types";
   import { getProjects } from "$lib/stores/projects.svelte";
-  import ProjectPickerPanels from "./ProjectPickerPanels.svelte";
+  import ProjectPickerPanels from "$lib/components/projects/pickers/ProjectPickerPanels.svelte";
 
   let {
     selectedProjectId,

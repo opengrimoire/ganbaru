@@ -1,5 +1,5 @@
 use super::{
-    PreviewBounds, loopback_urls, navigation_allowed, validate_bounds, validate_navigation,
+    BrowserTabBounds, loopback_urls, navigation_allowed, validate_bounds, validate_navigation,
 };
 
 #[test]
@@ -24,7 +24,7 @@ fn navigation_requires_external_confirmation_and_stays_within_origin() {
 #[test]
 fn preview_bounds_are_finite_and_bounded() {
     assert!(
-        validate_bounds(&PreviewBounds {
+        validate_bounds(&BrowserTabBounds {
             x: 0.0,
             y: 0.0,
             width: 320.0,
@@ -33,7 +33,7 @@ fn preview_bounds_are_finite_and_bounded() {
         .is_ok()
     );
     assert!(
-        validate_bounds(&PreviewBounds {
+        validate_bounds(&BrowserTabBounds {
             x: -1.0,
             y: 0.0,
             width: 320.0,

@@ -3,18 +3,18 @@
 use super::support::{chat_pool, now_timestamp, persistence_error, require_workspace};
 use crate::chat::credentials::{PlatformCredentialStore, materialize_provider_environment};
 use crate::chat::device_state::{read_active_device_scope, update_active_device_scope};
-use crate::chat::driver_operations::{complete_driver_operation, replay_driver_receipt};
-use crate::chat::models::{
+use crate::chat::workspace::WorkingFolderAuthorizationOperation;
+use ganbaru_chat::driver_operations::{complete_driver_operation, replay_driver_receipt};
+use ganbaru_chat::repository::receipts::{CommandReceiptClaim, claim_command_receipt};
+use ganbaru_chat::runtime::ChatRuntimeRegistry;
+use ganbaru_chat_contracts::models::{
     ChatCommandContext, ChatCommandId, ChatError, ChatErrorCode, ChatResult, ChatThreadId,
     ChatTurnId, CompactContextRequest, DriverOperationReceipt, InterruptTurnRequest, McpStatusRead,
     McpStatusRequest, ProjectWorkingFolderId, ProviderInstanceId,
 };
-use crate::chat::providers::{
+use ganbaru_chat_providers::{
     DriverCancellation, DriverOperationContext, ProviderDriverFactory, ProviderDriverRegistry,
 };
-use crate::chat::repository::receipts::{CommandReceiptClaim, claim_command_receipt};
-use crate::chat::runtime::ChatRuntimeRegistry;
-use crate::chat::workspace::WorkingFolderAuthorizationOperation;
 use sqlx::Row;
 use std::time::{Duration, Instant};
 use tauri::Manager;
@@ -223,7 +223,7 @@ pub(crate) async fn stop_session(
     }
     if force {
         let mutations =
-            app.state::<crate::chat::workspace_mutation::ChatWorkspaceMutationRegistry>();
+            app.state::<crate::chat::workspace::mutation::ChatWorkspaceMutationRegistry>();
         let result = owner
             .stop_session_and_release(
                 true,

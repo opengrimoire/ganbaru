@@ -33,6 +33,7 @@ export const mobile = {
     review: "Revisar",
     continue: "Continuar",
     continueIn: (seconds: number) => `Continuar en ${seconds} s`,
+    checkingAccess: "Comprobando el acceso de Android",
     statusError: "No se pudo consultar parte del acceso de Android. Aún puedes revisar cada ajuste.",
   },
   settings: {

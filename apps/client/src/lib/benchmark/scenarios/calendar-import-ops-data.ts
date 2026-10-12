@@ -1,4 +1,4 @@
-import type { CalendarEvent } from "$lib/components/calendar/types";
+import type { CalendarEvent } from "$lib/calendar/types";
 
 /**
  * Namespace dense child row ids so operation-benchmark imports can run

@@ -5,13 +5,13 @@ use super::device_state::{
     ChatDiagnosticPreferences, MAX_DIAGNOSTIC_RETENTION_DAYS, read_active_device_scope,
     update_active_device_scope,
 };
-use super::models::{
-    ChatError, ChatErrorCode, ChatResult, ChatThreadId, ProbeState, VersionedJson,
-};
-use super::repository::rebuild::rebuild_thread_projections;
-use super::runtime::ChatRuntimeRegistry;
 use super::terminal::ChatTerminalRegistry;
 use chrono::{SecondsFormat, Utc};
+use ganbaru_chat::repository::rebuild::rebuild_thread_projections;
+use ganbaru_chat::runtime::ChatRuntimeRegistry;
+use ganbaru_chat_contracts::models::{
+    ChatError, ChatErrorCode, ChatResult, ChatThreadId, ProbeState, VersionedJson,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{Row, SqlitePool};
@@ -53,9 +53,9 @@ pub struct ChatDiagnosticsRead {
     pub projection_healthy: bool,
     pub inconsistent_projection_count: u64,
     pub credential_store_available: bool,
-    pub provider_probe_healthy: u64,
-    pub provider_probe_unhealthy: u64,
-    pub provider_probe_unknown: u64,
+    pub healthy_provider_probes: u64,
+    pub unhealthy_provider_probes: u64,
+    pub unknown_provider_probes: u64,
     pub live_provider_processes: u64,
     pub active_turns: u64,
     pub live_terminals: u64,
@@ -151,7 +151,7 @@ pub async fn chat_export_redacted_diagnostics(
 pub async fn chat_stop_all_processes(
     app: tauri::AppHandle,
     runtimes: tauri::State<'_, ChatRuntimeRegistry>,
-    mutations: tauri::State<'_, super::workspace_mutation::ChatWorkspaceMutationRegistry>,
+    mutations: tauri::State<'_, super::workspace::mutation::ChatWorkspaceMutationRegistry>,
     terminals: tauri::State<'_, ChatTerminalRegistry>,
     internal_mcp: tauri::State<'_, super::internal_mcp::InternalMcpRegistry>,
     request: ChatMaintenanceConfirmation,
@@ -162,7 +162,7 @@ pub async fn chat_stop_all_processes(
         .await?;
     let terminals_stopped = terminals.stop_all()?;
     internal_mcp.stop_all().await;
-    app.state::<super::preview::ChatPreviewManager>()
+    app.state::<super::preview::ChatBrowserManager>()
         .close_all(&app);
     Ok(ChatStopAllResult {
         provider_processes_stopped,
@@ -211,8 +211,8 @@ pub async fn chat_rebuild_projections(
 
 pub fn attach_opt_in_diagnostic<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-    event: &mut super::events::CanonicalRuntimeEvent,
-) -> ChatResult<Option<super::models::UtcTimestamp>> {
+    event: &mut ganbaru_chat_contracts::events::CanonicalRuntimeEvent,
+) -> ChatResult<Option<ganbaru_chat_contracts::models::UtcTimestamp>> {
     let preferences = read_active_device_scope(app)
         .map_err(device_state_error)?
         .diagnostics;
@@ -250,9 +250,11 @@ pub fn attach_opt_in_diagnostic<R: tauri::Runtime>(
         .ok_or_else(|| {
             ChatError::new(ChatErrorCode::Internal, "create diagnostic expiry", false)
         })?;
-    super::models::UtcTimestamp::new(expires.to_rfc3339_opts(SecondsFormat::Millis, true))
-        .map(Some)
-        .map_err(identifier_error)
+    ganbaru_chat_contracts::models::UtcTimestamp::new(
+        expires.to_rfc3339_opts(SecondsFormat::Millis, true),
+    )
+    .map(Some)
+    .map_err(identifier_error)
 }
 
 async fn read_diagnostics(
@@ -300,17 +302,17 @@ async fn read_diagnostics(
             COALESCE(SUM(CASE WHEN cleanup_kind = 'checkpoint_ref' AND state = 'failed' THEN 1 ELSE 0 END), 0) AS failed,
             COALESCE(SUM(CASE WHEN cleanup_kind = 'attachment_file' AND state IN ('pending', 'running') THEN 1 ELSE 0 END), 0) AS attachment_pending,
             COALESCE(SUM(CASE WHEN cleanup_kind = 'attachment_file' AND state = 'failed' THEN 1 ELSE 0 END), 0) AS attachment_failed
-         FROM chat_cleanup_queue",
+         FROM chat_cleanup_jobs",
     ).fetch_one(pool).await.map_err(persistence_error)?;
     let (live_provider_processes, active_turns) = runtimes.process_counts()?;
-    let mut provider_probe_healthy = 0u64;
-    let mut provider_probe_unhealthy = 0u64;
-    let mut provider_probe_unknown = 0u64;
+    let mut healthy_provider_probes = 0u64;
+    let mut unhealthy_provider_probes = 0u64;
+    let mut unknown_provider_probes = 0u64;
     for provider in scope.provider_instances.values() {
         match provider.last_probe.as_ref().map(|probe| probe.state) {
-            Some(ProbeState::Healthy) => provider_probe_healthy += 1,
-            Some(_) => provider_probe_unhealthy += 1,
-            None => provider_probe_unknown += 1,
+            Some(ProbeState::Healthy) => healthy_provider_probes += 1,
+            Some(_) => unhealthy_provider_probes += 1,
+            None => unknown_provider_probes += 1,
         }
     }
     Ok(ChatDiagnosticsRead {
@@ -337,9 +339,9 @@ async fn read_diagnostics(
             PlatformCredentialStore::default().availability(),
             super::credentials::CredentialStoreAvailability::Available
         ),
-        provider_probe_healthy,
-        provider_probe_unhealthy,
-        provider_probe_unknown,
+        healthy_provider_probes,
+        unhealthy_provider_probes,
+        unknown_provider_probes,
         live_provider_processes: u64::try_from(live_provider_processes).unwrap_or(u64::MAX),
         active_turns: u64::try_from(active_turns).unwrap_or(u64::MAX),
         live_terminals: u64::try_from(terminals.live_count()?).unwrap_or(u64::MAX),
@@ -471,7 +473,7 @@ fn count(value: i64) -> ChatResult<u64> {
 }
 
 async fn connect_pool(app: tauri::AppHandle, db_url: String) -> ChatResult<SqlitePool> {
-    crate::db_path::connect_sqlite(app, db_url)
+    crate::db::connect_sqlite(app, db_url)
         .await
         .map_err(persistence_error)
 }

@@ -1,6 +1,6 @@
-use super::provider_not_found;
-use crate::chat::config::{ChatVaultConfig, RememberedComposerSelection};
-use crate::chat::models::{ChatResult, ProjectWorkingFolderId, ProviderInstanceId};
+use super::provider_not_found_error;
+use ganbaru_chat_contracts::config::{ChatVaultConfig, RememberedComposerSelection};
+use ganbaru_chat_contracts::models::{ChatResult, ProjectWorkingFolderId, ProviderInstanceId};
 
 pub(crate) fn set_working_folder_provider_preference(
     config: &mut ChatVaultConfig,
@@ -14,7 +14,7 @@ pub(crate) fn set_working_folder_provider_preference(
                 .iter()
                 .any(|provider| provider.instance_id == instance_id)
             {
-                return Err(provider_not_found());
+                return Err(provider_not_found_error());
             }
             config
                 .working_folder_provider_preferences
@@ -38,7 +38,7 @@ pub(crate) fn remember_composer_selection(
         .iter()
         .any(|provider| provider.instance_id == selection.provider_instance_id)
     {
-        return Err(provider_not_found());
+        return Err(provider_not_found_error());
     }
     config.remembered_selections.retain(|existing| {
         existing.working_folder_id != selection.working_folder_id

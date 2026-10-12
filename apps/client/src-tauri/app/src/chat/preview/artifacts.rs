@@ -3,7 +3,7 @@ use super::*;
 pub(super) async fn persist_browser_artifact(
     app: &tauri::AppHandle,
     db_url: String,
-    tab: &RuntimePreviewTab,
+    tab: &RuntimeBrowserTab,
     payload: BrowserArtifactPayload<'_>,
 ) -> ChatResult<ChatResourceRead> {
     let pool = chat_pool(app, db_url).await?;
@@ -14,7 +14,7 @@ pub(super) async fn persist_browser_artifact(
 pub(super) async fn persist_browser_artifact_with_pool(
     pool: &SqlitePool,
     vault_root: &std::path::Path,
-    tab: &RuntimePreviewTab,
+    tab: &RuntimeBrowserTab,
     payload: BrowserArtifactPayload<'_>,
 ) -> ChatResult<ChatResourceRead> {
     let working_folder_id =

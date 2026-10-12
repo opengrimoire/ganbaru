@@ -1,10 +1,8 @@
-use crate::chat::{
-    config::{
-        CHAT_VAULT_CONFIG_SCHEMA_VERSION, ChatVaultConfig, parse_chat_config_branch,
-        replace_chat_config_branch,
-    },
-    models::ChatErrorCode,
+use ganbaru_chat_contracts::config::{
+    CHAT_VAULT_CONFIG_SCHEMA_VERSION, ChatVaultConfig, parse_chat_config_branch,
+    replace_chat_config_branch,
 };
+use ganbaru_chat_contracts::models::ChatErrorCode;
 use serde_json::json;
 
 fn valid_config() -> serde_json::Value {

@@ -3,12 +3,12 @@
   import Download from "@lucide/svelte/icons/download";
   import Upload from "@lucide/svelte/icons/upload";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import type { MusicPlaylistSummary } from "$lib/music/library-contracts";
-  import type { MusicBuilderDestination } from "$lib/music/music-builder-routing";
-  import { orderMusicPlaylists, systemMusicPlaylistName } from "$lib/music/music-system-playlists";
+  import type { MusicPlaylistSummary } from "$lib/music/library/contracts";
+  import type { MusicBuilderDestination } from "$lib/music/builder/routing";
+  import { orderMusicPlaylists, systemMusicPlaylistName } from "$lib/music/playlists/system";
   import MusicBuilderAsyncState from "./MusicBuilderAsyncState.svelte";
   import MusicPlaylistIcon from "./MusicPlaylistIcon.svelte";
-  import MusicSoundscapeBuilder from "$lib/components/music/MusicSoundscapeBuilder.svelte";
+  import MusicSoundscapeBuilder from "$lib/components/music/soundscape/MusicSoundscapeBuilder.svelte";
 
   let {
     destination,

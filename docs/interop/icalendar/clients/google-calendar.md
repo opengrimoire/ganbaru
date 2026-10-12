@@ -1,6 +1,6 @@
 # Google Calendar
 
-Google Calendar is a practical compatibility target, not the source of truth for iCalendar behavior. Standards behavior is defined in [Standards scope](../standards-scope.md).
+Google Calendar is a practical compatibility target, not the source of truth for iCalendar behavior. Shared procedure, import expectations, and questions are in the [client index](./README.md).
 
 ## Source notes
 
@@ -35,44 +35,20 @@ These are client-compatibility notes, not standards rules. Ganbaru AI should sta
 - Keep exporting "following" deletes as capped recurrence rules so other clients receive a bounded series.
 - Preserve raw Google fields where possible, but do not promise Google API-only behavior from file import/export.
 
-## Known fixture priorities
+## Client-specific priorities
 
-- single-day all-day event, verifying exclusive `DTEND`
-- yearly all-day birthday or anniversary
-- multi-day all-day event
-- timed recurring event with `EXDATE`
-- recurring override with zoned `RECURRENCE-ID`
-- event with guests and guest permissions
-- event with Google Meet or conference data
-- free event with `TRANSP:TRANSPARENT`
-- private event with `CLASS:PRIVATE`
-- non-ASCII title and description
-- exported calendar zip with multiple `.ics` files
-
-## Import into Ganbaru AI
-
-Expected handling:
-
-- Preserve Google `X-*` properties.
-- Project normal `VEVENT` rows.
-- Keep all-day dates correct with exclusive `DTEND`.
-- Keep `TRANSP` as scheduling metadata, not a color modifier.
-- Preserve attendees and organizer as data.
-- Treat guest RSVP data as read-only unless future identity support proves the attendee is the current user.
-
-## Manual test
-
-Use the [shared client procedure](./README.md#shared-procedure). Include all-day spans, mixed UTC and `TZID` values, recurrence exclusions and overrides, guest fields, conference data, and an exported calendar zip.
+- Yearly all-day birthday or anniversary
+- Mixed UTC and `TZID` values in one export
+- Events with guests, guest permissions, and Google Meet or conference data
+- Free (`TRANSP:TRANSPARENT`) and private (`CLASS:PRIVATE`) events; `TRANSP` stays scheduling metadata, not a color modifier
+- An exported calendar zip with multiple `.ics` files
 
 ## Behavior to verify
 
-- Whether Google preserves unknown `X-*` properties on import/export.
 - Whether Google rewrites organizer and attendee fields on import.
 - Whether Google drops conference data from imported files.
 - Whether Google exports stale unbounded recurring masters that are hidden in the UI.
-- Whether Google represents "this and following" edits as capped `RRULE`, split master events, `RANGE=THISANDFUTURE`, or no visible future deletion marker.
-- Whether Google imports `VTODO`, `VJOURNAL`, or `VFREEBUSY`, or ignores them.
-- Whether Google rewrites custom `VTIMEZONE` definitions.
+- Whether Google represents "this and following" edits as a capped `RRULE`, split master events, `RANGE=THISANDFUTURE`, or no visible marker.
 - Whether Google accepts binary attachments or only URI attachments.
 
 ## Observed behavior log

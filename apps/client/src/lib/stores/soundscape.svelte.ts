@@ -24,10 +24,10 @@ import type {
   MusicSoundscapeSnapshot,
   MusicSoundscapeState,
   MusicSoundscapeWrite,
-} from "$lib/music/soundscape-contracts";
-import { MAX_SOUNDSCAPE_LAYERS } from "$lib/music/soundscape-contracts";
-import { INITIAL_SOUNDSCAPE_VOLUME } from "$lib/music/soundscape-defaults";
-import { soundSelectionAction } from "$lib/music/soundscape-selection";
+} from "$lib/music/soundscape/contracts";
+import { MAX_SOUNDSCAPE_LAYERS } from "$lib/music/soundscape/contracts";
+import { INITIAL_SOUNDSCAPE_VOLUME } from "$lib/music/soundscape/defaults";
+import { soundSelectionAction } from "$lib/music/soundscape/selection";
 
 class SoundscapeStore {
   definitions = $state<MusicSoundscapeDefinition[]>([]);
@@ -60,10 +60,11 @@ class SoundscapeStore {
     this.error = null;
     try {
       const deviceId = await getDeviceId();
-      const [definitions, persisted, groups] = await Promise.all([
+      const [definitions, persisted, groups, snapshot] = await Promise.all([
         getMusicSoundscapes(deviceId),
         getMusicSoundscapeState(),
         getMusicSoundscapeGroups(),
+        getSoundscapeSnapshot(),
       ]);
       if (generation !== this.generation) return;
       this.deviceId = deviceId;
@@ -71,8 +72,8 @@ class SoundscapeStore {
       this.groups = groups;
       this.persisted = persisted;
       this.sectionLevels = { generated: persisted.generatedLevel, local: persisted.localLevel };
-      this.snapshot = { status: "idle", sourceId: null, volume: persisted.volume, errorCode: null };
-      if (persisted.desiredPlaying) {
+      this.snapshot = snapshot;
+      if (persisted.desiredPlaying && !persisted.automaticIntent && snapshot.status !== "playing") {
         const available = persisted.activeIds.filter((id) => definitions.some((definition) => definition.id === id && definition.availability === "available"));
         if (available.length > 0) await this.startSelection(available, available.length !== persisted.activeIds.length);
         else {
@@ -84,6 +85,24 @@ class SoundscapeStore {
       if (generation === this.generation) this.error = message(error);
     } finally {
       if (generation === this.generation) this.loading = false;
+    }
+  }
+
+  /** Refreshes presentation after an accepted native effect without issuing playback commands. */
+  async refreshAcceptedOutput(): Promise<void> {
+    const generation = this.generation;
+    try {
+      const [persisted, snapshot] = await Promise.all([
+        getMusicSoundscapeState(),
+        getSoundscapeSnapshot(),
+      ]);
+      if (generation !== this.generation || this.playbackPending || this.modePending
+        || (this.persisted && this.persisted.version > persisted.version)) return;
+      this.persisted = persisted;
+      this.snapshot = snapshot;
+      this.sectionLevels = { generated: persisted.generatedLevel, local: persisted.localLevel };
+    } catch (error) {
+      if (generation === this.generation) this.error = message(error);
     }
   }
 
@@ -131,7 +150,10 @@ class SoundscapeStore {
 
   private async startSelection(ids: string[], persist = true, multipleEnabled = this.persisted?.multipleEnabled ?? false): Promise<void> {
     if (this.playbackPending) return;
-    if (!multipleEnabled && ids.length > 1) throw new Error("Multiple background sounds are disabled.");
+    if (!multipleEnabled && ids.length > 1) {
+      this.error = "Multiple background sounds are disabled.";
+      return;
+    }
     const definitions = ids.map((id) => this.definitions.find((entry) => entry.id === id));
     if (definitions.some((entry) => !entry || entry.availability !== "available") || ids.length === 0) {
       this.error = "This background sound needs to be repaired before it can play.";
@@ -249,7 +271,7 @@ class SoundscapeStore {
       this.volumePersistTimer = null;
     }
     if (this.levelsPersistTimer !== null) { window.clearTimeout(this.levelsPersistTimer); this.levelsPersistTimer = null; }
-    try { this.snapshot = await stopSoundscape(); } catch { this.snapshot = { status: "idle", sourceId: null, volume: INITIAL_SOUNDSCAPE_VOLUME, errorCode: null }; }
+    this.snapshot = { status: "idle", sourceId: null, volume: INITIAL_SOUNDSCAPE_VOLUME, errorCode: null };
     this.definitions = [];
     this.groups = [];
     this.persisted = null;
@@ -265,7 +287,7 @@ class SoundscapeStore {
     try {
       const saved = await upsertMusicSoundscape({ ...write, deviceId: this.deviceId });
       this.definitions = [...this.definitions.filter((entry) => entry.id !== saved.id), saved]
-        .sort((left, right) => left.createdAt - right.createdAt || left.name.localeCompare(right.name));
+        .sort((left, right) => left.createdAtMs - right.createdAtMs || left.name.localeCompare(right.name));
     } catch (error) { this.error = message(error); throw error; }
     finally { this.saving = false; }
   }
@@ -321,7 +343,7 @@ class SoundscapeStore {
         desiredPlaying,
         volume,
         expectedVersion: current.version,
-        updatedAt: Date.now(),
+        updatedAtMs: Date.now(),
       });
       if (generation === this.generation) this.persisted = saved;
     });

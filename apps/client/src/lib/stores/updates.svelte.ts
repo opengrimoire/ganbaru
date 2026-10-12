@@ -14,8 +14,8 @@ import {
   shouldRunAutomaticUpdateCheck,
   updatePrimaryAction,
   updateCheckErrorMessage,
-} from "./updates";
-import { GITHUB_REPOSITORY } from "$lib/buildInfo";
+} from "./update-policy";
+import { GITHUB_REPOSITORY } from "$lib/build-info";
 
 export type UpdateStatus =
   | "idle"

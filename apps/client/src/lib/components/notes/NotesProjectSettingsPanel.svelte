@@ -7,20 +7,23 @@
   import {
     getNotesHistoryRetentionImpact,
     pruneNotesProjectHistory,
-  } from "$lib/api/notes-project-history";
+  } from "$lib/api/notes/project-history";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
     isNotesPageOpenMode,
     type NotesPageOpenMode,
-  } from "$lib/notes/page-open-mode";
+  } from "$lib/notes/pages/open-mode";
   import {
     DEFAULT_NOTES_HISTORY_RETENTION_DAYS,
     effectiveNotesHistoryRetentionDays,
     isNotesHistoryRetentionDays,
     type NotesHistoryRetentionDays,
-  } from "$lib/notes/history-retention";
-  import { projectToolbarPanelGeometry } from "$lib/projects/project-toolbar";
+  } from "$lib/notes/history/retention";
+  import {
+    PROJECT_SETTINGS_PANEL_MAX_HEIGHT,
+    projectToolbarPanelGeometry,
+  } from "$lib/projects/toolbar";
   import { getProjects } from "$lib/stores/projects.svelte";
   import { getNotes } from "$lib/stores/notes.svelte";
   import { getViewport } from "$lib/stores/viewport.svelte";
@@ -28,9 +31,9 @@
     APP_FLOATING_SURFACE_SELECTOR,
     isAppFloatingSurfaceTarget,
   } from "$lib/utils";
-  import CustomSelect from "$lib/components/settings/CustomSelect.svelte";
-  import ProjectSettingsPanelShell from "$lib/components/projects/ProjectSettingsPanelShell.svelte";
-  import ProjectSettingsSectionHeading from "$lib/components/projects/ProjectSettingsSectionHeading.svelte";
+  import Select from "$lib/components/ui/Select.svelte";
+  import ProjectSettingsPanelShell from "$lib/components/projects/settings/ProjectSettingsPanelShell.svelte";
+  import ProjectSettingsSectionHeading from "$lib/components/projects/settings/ProjectSettingsSectionHeading.svelte";
 
   type NotesProjectDefaultOpenMode = "default" | NotesPageOpenMode;
   type NotesProjectHistoryRetention = "global" | NotesHistoryRetentionDays;
@@ -137,13 +140,12 @@
       viewportWidth: viewport.width,
       viewportHeight: viewport.height,
       preferredWidth: 430,
-      preferredHeight: 340,
+      preferredHeight: PROJECT_SETTINGS_PANEL_MAX_HEIGHT,
     });
     panelStyle = [
       `left: ${Math.round(geometry.left)}px`,
       `top: ${Math.round(geometry.top)}px`,
       `width: ${Math.round(geometry.width)}px`,
-      `height: ${Math.round(geometry.maxHeight)}px`,
       `max-height: ${Math.round(geometry.maxHeight)}px`,
     ].join("; ");
   }
@@ -290,7 +292,7 @@
 {#if selectedProject}
   <div
     bind:this={panelElement}
-    class="fixed z-80 flex min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-card text-[0.8rem] text-foreground shadow-xl"
+    class="surface-floating fixed z-80 flex min-h-0 flex-col overflow-hidden"
     style={panelStyle}
     role="dialog"
     tabindex="-1"
@@ -316,7 +318,7 @@
         <div class="h-px bg-border/70" aria-hidden="true"></div>
         <div class="flex flex-col gap-1.5">
           <ProjectSettingsSectionHeading label={t("settings.section.appearance")} />
-          <CustomSelect
+          <Select
             label={t("notes.projectSettingsDefaultViewMode")}
             value={defaultOpenModeDraft}
             options={openModeOptions}
@@ -331,7 +333,7 @@
 
       <section class="flex flex-col gap-1.5">
         <ProjectSettingsSectionHeading label={t("notes.projectSettingsRestore")} />
-        <CustomSelect
+        <Select
           label={t("notes.projectSettingsHistoryRetention")}
           value={String(historyRetentionDraft)}
           options={historyRetentionOptions}
@@ -341,7 +343,7 @@
           class="w-44"
         />
         {#if effectiveHistoryRetentionDraft === 365}
-          <div class="flex items-center gap-1.5 px-1 text-[0.733333rem] text-warning">
+          <div class="flex items-center gap-1.5 px-1 text-panel-detail text-warning">
             <TriangleAlert class="size-3.5 shrink-0" />
             <span>{t("settings.notesGeneral.historyRetention365Warning")}</span>
           </div>
@@ -349,7 +351,7 @@
         <div class="flex flex-wrap justify-start gap-2 px-1 py-1">
           <button
             type="button"
-            class="flex h-7 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent dark:bg-transparent"
+            class="flex min-h-(--panel-row-height) items-center gap-1.5 rounded-floating-item border border-border px-2.5 font-medium text-popover-foreground transition-colors hover:bg-accent"
             onclick={onOpenVersionHistory}
           >
             <History size={13} strokeWidth={1.75} />
@@ -357,7 +359,7 @@
           </button>
           <button
             type="button"
-            class="flex h-7 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent dark:bg-transparent"
+            class="flex min-h-(--panel-row-height) items-center gap-1.5 rounded-floating-item border border-border px-2.5 font-medium text-popover-foreground transition-colors hover:bg-accent"
             onclick={onOpenArchive}
           >
             <Archive size={13} strokeWidth={1.75} />
@@ -365,7 +367,7 @@
           </button>
           <button
             type="button"
-            class="flex h-7 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent dark:bg-transparent"
+            class="flex min-h-(--panel-row-height) items-center gap-1.5 rounded-floating-item border border-border px-2.5 font-medium text-popover-foreground transition-colors hover:bg-accent"
             onclick={onOpenTrash}
           >
             <Trash2 size={13} strokeWidth={1.75} />

@@ -228,34 +228,54 @@ describe("ChatWorkspaceHeader", () => {
     expect(syncProjectSelection).not.toHaveBeenCalled();
   });
 
-  it("keeps the organization and channel breadcrumb stable across explorer states", () => {
+  it("shows the channel breadcrumb only when the explorer is collapsed", () => {
     const expanded = setup(true);
     expect(expanded.querySelector("[data-chat-group-trigger]")?.textContent).toContain("Work");
     expect(expanded.querySelector("[data-chat-project-trigger]")?.textContent).toContain("Ganbaru");
-    expect(expanded.querySelector("[data-chat-channel-trigger]")?.textContent).toContain("general");
+    expect(expanded.querySelector("[data-chat-channel-trigger]")).toBeNull();
+    expect(expanded.querySelector("[data-chat-channel-topic]")).toBeNull();
+    expect(expanded.querySelector("[data-chat-context-chevron]")?.closest("button")).toBe(expanded.querySelector("[data-chat-project-trigger]"));
+    expect(expanded.querySelectorAll("[data-chat-context-chevron]")).toHaveLength(1);
+    expect(expanded.querySelector("[data-chat-new-channel-button]")).not.toBeNull();
 
     const collapsed = setup(false);
     expect(collapsed.querySelector("[data-chat-channel-trigger]")?.textContent).toContain("general");
+    expect(collapsed.querySelector("[data-chat-channel-topic]")?.textContent).toBe("Project coordination");
+    expect(collapsed.querySelector("[data-chat-context-chevron]")?.closest("button")).toBe(collapsed.querySelector("[data-chat-channel-trigger]"));
+    expect(collapsed.querySelectorAll("[data-chat-context-chevron]")).toHaveLength(1);
     expect(collapsed.querySelector("[data-chat-new-channel-button]")).not.toBeNull();
   });
 
-  it("uses one members icon and portals the roster outside the Chat header", async () => {
+  it("opens the selected channel's members panel from the avatar stack", async () => {
     const target = setup(true);
-    const rosterTrigger = target.querySelector<HTMLButtonElement>("[data-chat-roster-trigger]");
+    const membersTrigger = target.querySelector<HTMLButtonElement>("[data-chat-members-trigger]");
 
-    expect(rosterTrigger?.querySelectorAll("svg")).toHaveLength(1);
-    expect(rosterTrigger?.textContent?.trim()).toBe("");
+    expect(membersTrigger?.querySelector(".chat-members-count")?.textContent).toBe("1");
+    expect(membersTrigger?.querySelector(".chat-members-stack")?.getAttribute("aria-hidden")).toBe("true");
+    expect(membersTrigger?.getAttribute("aria-expanded")).toBe("false");
+    expect(document.querySelector("[data-chat-members-panel]")).toBeNull();
 
-    rosterTrigger?.click();
+    membersTrigger?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector("[data-chat-members-panel]")).not.toBeNull();
+    });
+
+    const panel = document.querySelector("[data-chat-members-panel]");
+    expect(membersTrigger?.getAttribute("aria-expanded")).toBe("true");
+    expect(panel?.getAttribute("role")).toBe("dialog");
+    expect(panel?.textContent).toContain("#general");
+    expect(panel?.textContent).toContain("Project coordination");
+    expect(panel?.textContent).toContain("Owner");
+
+    membersTrigger?.click();
     await tick();
 
-    const roster = document.querySelector("#chat-channel-roster");
-    expect(roster?.parentElement).toBe(document.body);
-    expect(roster?.classList.contains("roster-popover")).toBe(true);
+    expect(document.querySelector("[data-chat-members-panel]")).toBeNull();
+    expect(membersTrigger?.getAttribute("aria-expanded")).toBe("false");
   });
 
   it("opens the current project's complete channel navigator from the channel segment", async () => {
-    const target = setup(true);
+    const target = setup(false);
     const channelTrigger = target.querySelector("[data-chat-channel-trigger]");
 
     (channelTrigger as HTMLButtonElement | null)?.click();
@@ -266,6 +286,13 @@ describe("ChatWorkspaceHeader", () => {
     expect(channelPicker?.textContent).toContain("design");
     expect(channelPicker?.querySelectorAll("[data-chat-channel-option]")).toHaveLength(2);
     expect(channelTrigger?.querySelector("svg")?.getAttribute("stroke-width")).toBe("1.5");
+    const search = channelPicker?.querySelector<HTMLInputElement>("input");
+    expect(search).not.toBeNull();
+    search!.value = "design";
+    search!.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+    expect(channelPicker?.querySelectorAll("[data-chat-channel-option]")).toHaveLength(1);
+    expect(channelPicker?.querySelector("[data-chat-channel-option]")?.textContent).toContain("design");
   });
 
   it("cascades from a hovered project to that project's channels", async () => {
@@ -283,6 +310,8 @@ describe("ChatWorkspaceHeader", () => {
     const channelPicker = document.querySelector("[data-chat-channel-picker]");
     expect(channelPicker?.textContent).toContain("research");
     expect(channelPicker?.textContent).not.toContain("general");
+    expect(channelPicker?.querySelector("input")).toBeNull();
+    expect(target.querySelectorAll('[role="dialog"] input')).toHaveLength(1);
   });
 
   it("keeps the full group to project to channel hover hierarchy", async () => {
@@ -305,6 +334,8 @@ describe("ChatWorkspaceHeader", () => {
     await tick();
 
     expect(document.querySelector("[data-chat-channel-picker]")?.textContent).toContain("general");
+    expect(target.querySelectorAll('[role="dialog"] input')).toHaveLength(1);
+    expect(target.querySelectorAll('.project-picker-panel.fixed input, [data-chat-channel-picker] input')).toHaveLength(0);
   });
 
   it("reveals the chat segment editor when renaming from an expanded explorer", () => {

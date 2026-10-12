@@ -27,7 +27,7 @@ const deferredComponents = vi.hoisted(() => {
   };
 });
 
-vi.mock("$lib/components/projects/project-component-registry", () => ({
+vi.mock("$lib/components/projects/component-registry", () => ({
   loadProjectView: () => {
     deferredComponents.viewCalls += 1;
     return deferredComponents.promise;

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { hasOnlyShortcutModifier } from "$lib/keyboard-shortcuts";
   import {
@@ -8,10 +8,9 @@
     resolveLazyComponentLoad,
     type LazyComponentLoadState,
   } from "$lib/lazy-component-loader";
-  import { parseNotesLinkHash } from "$lib/notes/block-link";
-  import { notesPageContainingFolderId } from "$lib/notes/hierarchy-navigation";
-  import type { NotesPageOpenMode } from "$lib/notes/page-open-mode";
-  import { notesUndoShortcutAction } from "$lib/notes/undo-history";
+  import { parseNotesLinkHash } from "$lib/notes/links/block-link";
+  import { notesPageContainingFolderId } from "$lib/notes/navigation/hierarchy-menu";
+  import { notesUndoShortcutAction } from "$lib/notes/history/undo-history";
   import type { NotesWorkingMarkdownFileRef } from "$lib/notes/types";
   import { getNotes } from "$lib/stores/notes.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
@@ -27,23 +26,21 @@
     type LoadedNotesSurface,
     type NotesOptionalComponentKind,
     type NotesSurfaceKind,
-  } from "./notes-component-registry";
+  } from "./component-registry";
   import NotesEditor from "./NotesEditor.svelte";
+  import NotesDatabasePage from "$lib/components/notes/database/NotesDatabasePage.svelte";
+  import NotesLoadingSkeleton from "./NotesLoadingSkeleton.svelte";
   import NotesProjectHome from "./NotesProjectHome.svelte";
   import NotesProjectSettingsPanel from "$lib/components/notes/NotesProjectSettingsPanel.svelte";
   import NotesWorkspaceHeader from "./NotesWorkspaceHeader.svelte";
-  import NotesWorkingMarkdownEditor from "$lib/components/notes/NotesWorkingMarkdownEditor.svelte";
-  import {
-    EMPTY_NOTES_MUSIC_MENTION_CONTEXT,
-    type NotesMusicMentionContext,
-  } from "./notes-block-mention-targets";
+  import NotesWorkingMarkdownEditor from "$lib/components/notes/working-markdown/NotesWorkingMarkdownEditor.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
 
   let {
     mobileLayout = false,
-    musicMentionContext = EMPTY_NOTES_MUSIC_MENTION_CONTEXT,
   }: {
     mobileLayout?: boolean;
-    musicMentionContext?: NotesMusicMentionContext;
   } = $props();
 
   const notes = getNotes();
@@ -57,11 +54,11 @@
   type ActiveNotesSurfaceKind = NotesSurfaceKind | "home" | "editor";
 
   let showInactiveProjects = $state(false);
-  let explorerCollapsed = $state(false);
   let creationFolderOverride = $state<string | null | undefined>(undefined);
   let creationContextProjectId = $state<string | null>(null);
   let creationContextPageId = $state<string | null>(null);
   let notesRootElement = $state<HTMLDivElement | null>(null);
+  let pageActionsTarget = $state<HTMLElement | null>(null);
   let projectSettingsOpen = $state(false);
   let projectSettingsDirty = $state(false);
   let projectSettingsDiscardConfirmOpen = $state(false);
@@ -71,6 +68,7 @@
   let selectedWorkingMarkdownFile = $state<NotesWorkingMarkdownFileRef | null>(null);
   let workingMarkdownDirty = $state(false);
   let workingMarkdownProjectId = $state<string | null>(null);
+  let retainedEditorPages = $state<Record<string, string>>({});
   let surfaceLoadStates = $state<Partial<Record<
     NotesSurfaceKind,
     LazyComponentLoadState<NotesSurfaceKind, LoadedNotesSurface>
@@ -79,6 +77,10 @@
     NotesOptionalComponentKind,
     LazyComponentLoadState<NotesOptionalComponentKind, LoadedNotesOptionalComponent>
   >>>({});
+  let databaseDeletionDialogLoadState = $state<LazyComponentLoadState<
+    "database-deletion",
+    typeof import("$lib/components/notes/database/NotesDatabaseDeletionDialog.svelte").default
+  > | null>(null);
   const selectedProject = $derived(projects.selectedProject);
   const selectedGroup = $derived(projects.selectedGroup);
   const selectedProjectId = $derived(selectedProject?.id ?? null);
@@ -86,44 +88,38 @@
     if (creationFolderOverride !== undefined) return creationFolderOverride;
     return notesPageContainingFolderId(
       notes.selectedPageId,
-      [...new Map(
-        [...notes.allPages, ...notes.linkResolutionPages].map((page) => [page.id, page]),
-      ).values()],
+      notes.navigationPages,
     );
   });
   const topBarSelectedPage = $derived.by(() => {
-    if ((!mobileLayout && notes.pageOpenMode !== "full") || !notes.selectedPageId) return null;
+    if (!notes.selectedPageId) return null;
     if (notes.loadedPage?.id === notes.selectedPageId) return notes.loadedPage;
     return notes.allPages.find((page) => page.id === notes.selectedPageId)
       ?? notes.linkResolutionPages.find((page) => page.id === notes.selectedPageId)
       ?? null;
   });
-  const hasOpenPage = $derived(
-    notes.viewMode === "pages"
-      && notes.selectedPageId !== null
-      && notes.loadedPage?.id === notes.selectedPageId
-      && notes.primaryContentReady,
+  const showDatabasePage = $derived(notes.viewMode === "pages" && notes.selectedDatabaseBlockId != null);
+  const contextualPane = $derived(notes.previewPane
+    ?? notes.editorPanes.find((pane) => pane.store.pageOpenMode !== "full") ?? null);
+  const hasContextualSelection = $derived(
+    notes.viewMode === "pages" && contextualPane?.store.selectedPageId != null,
   );
   const peekPromotesToFullPage = $derived(
-    hasOpenPage
-      && notes.pageOpenMode !== "full"
-      && (
-        viewport.width < CENTER_PEEK_FULL_PAGE_MIN_WIDTH_PX
-        || viewport.height < CENTER_PEEK_FULL_PAGE_MIN_HEIGHT_PX
-      ),
-  );
-  const showFullPageEditor = $derived(
-    hasOpenPage && (notes.pageOpenMode === "full" || peekPromotesToFullPage),
+    hasContextualSelection && (
+      viewport.width < CENTER_PEEK_FULL_PAGE_MIN_WIDTH_PX
+      || viewport.height < CENTER_PEEK_FULL_PAGE_MIN_HEIGHT_PX
+    ),
   );
   const showPagePeek = $derived(
-    hasOpenPage && notes.pageOpenMode !== "full" && !peekPromotesToFullPage,
+    hasContextualSelection && !peekPromotesToFullPage,
   );
-  const showCenterPeek = $derived(showPagePeek && notes.pageOpenMode === "center");
-  const showSidePeek = $derived(showPagePeek && notes.pageOpenMode === "side");
+  const showCenterPeek = $derived(showPagePeek && contextualPane?.store.pageOpenMode === "center");
+  const showSidePeek = $derived(showPagePeek && contextualPane?.store.pageOpenMode === "side");
   const activeSurfaceKind = $derived.by((): ActiveNotesSurfaceKind => {
     if (notes.viewMode === "archive") return "archive";
     if (notes.viewMode === "trash") return "trash";
-    if (notes.selectedPageId !== null) return "editor";
+    if (notes.selectedPageId !== null
+      && !notes.isPagePendingRemoval(notes.selectedPageId)) return "editor";
     return "home";
   });
   const activeSurfaceLoadState = $derived(
@@ -135,6 +131,23 @@
   const showPrimaryContent = $derived(!mobileLayout || activeSurfaceKind !== "home");
   const projectHistoryLoadState = $derived(optionalLoadStates["project-history"] ?? null);
   const confirmDialogLoadState = $derived(optionalLoadStates["confirm-dialog"] ?? null);
+  const databaseDeletionPanes = $derived(notes.editorPanes.filter(({ store }) => store.databaseDeletion.prompt));
+
+  $effect(() => {
+    const previous = untrack(() => retainedEditorPages);
+    const retained = Object.fromEntries(notes.editorPanes.flatMap(({ id, store }) => {
+      const pageId = store.selectedPageId;
+      if (!pageId) return [];
+      if (!store.selectedDatabaseBlockId && store.loadedPage?.id === pageId && store.primaryContentReady) {
+        return [[id, pageId]];
+      }
+      return previous[id] === pageId ? [[id, pageId]] : [];
+    }));
+    if (Object.keys(retained).length !== Object.keys(previous).length
+      || Object.entries(retained).some(([id, pageId]) => previous[id] !== pageId)) {
+      retainedEditorPages = retained;
+    }
+  });
 
   function requestNotesSurface(kind: NotesSurfaceKind, retry = false): void {
     const current = surfaceLoadStates[kind] ?? null;
@@ -189,13 +202,39 @@
     });
   }
 
+  /** Load the shared database confirmation only after a pane requests deletion. */
+  function requestDatabaseDeletionDialog(retry = false): void {
+    if (!retry && databaseDeletionDialogLoadState) return;
+    const loading = beginLazyComponentLoad(databaseDeletionDialogLoadState, "database-deletion");
+    databaseDeletionDialogLoadState = loading;
+    void import("$lib/components/notes/database/NotesDatabaseDeletionDialog.svelte").then((module) => {
+      if (!databaseDeletionDialogLoadState) return;
+      databaseDeletionDialogLoadState = resolveLazyComponentLoad(
+        databaseDeletionDialogLoadState, "database-deletion", loading.requestId, module.default,
+      );
+    }).catch((error: unknown) => {
+      if (!databaseDeletionDialogLoadState) return;
+      databaseDeletionDialogLoadState = rejectLazyComponentLoad(
+        databaseDeletionDialogLoadState, "database-deletion", loading.requestId, error,
+      );
+      console.error("Load Notes database deletion confirmation failed", error);
+    });
+  }
+
+  $effect(() => {
+    if (databaseDeletionPanes.length) untrack(() => requestDatabaseDeletionDialog());
+  });
+
   $effect(() => {
     if (!mobileLayout || notes.selectedPageId === null) return;
     return mobileBackStack.activate({
       handle: () => {
         if (!beforeDocumentNavigation()) return;
-        void notes.closeContextualPage();
-        clearMobileNotesHash();
+        if (notes.selectedDatabaseBlockId) {
+          notes.closeDatabase();
+          return;
+        }
+        closePagePeek();
       },
     });
   });
@@ -237,14 +276,14 @@
     void projects.ensureLoaded().catch((error) => {
       console.error("load projects failed", error);
     });
-    const onHashChange = () => {
+    const handleHashChange = () => {
       void openHashTarget().catch((error) => {
         console.error("open notes block link failed", error);
       });
     };
-    window.addEventListener("hashchange", onHashChange);
+    window.addEventListener("hashchange", handleHashChange);
     return () => {
-      window.removeEventListener("hashchange", onHashChange);
+      window.removeEventListener("hashchange", handleHashChange);
     };
   });
 
@@ -261,9 +300,6 @@
     if (activeSurfaceKind === "archive" || activeSurfaceKind === "trash") {
       requestNotesSurface(activeSurfaceKind);
     }
-  });
-
-  $effect(() => {
   });
 
   $effect(() => {
@@ -398,8 +434,9 @@
   }
 
   function closePagePeek(): void {
-    void notes.closeContextualPage();
-    if (mobileLayout) clearMobileNotesHash();
+    void notes.closeContextualPage().then(() => {
+      if (mobileLayout) clearMobileNotesHash();
+    }).catch((error: unknown) => console.warn("Close Notes preview failed", error));
   }
 
   function clearMobileNotesHash(): void {
@@ -412,14 +449,6 @@
       oldURL: previousUrl,
       newURL: nextUrl.href,
     }));
-  }
-
-  function showSelectedPageAs(openMode: NotesPageOpenMode): void {
-    notes.showSelectedPageAs(openMode);
-  }
-
-  function handleCenterPeekBackdropClick(event: MouseEvent): void {
-    if (event.target === event.currentTarget) closePagePeek();
   }
 
   function notesShortcutTargetBlocked(target: EventTarget | Element | null): boolean {
@@ -511,7 +540,7 @@
     {selectedGroup}
     {selectedProjectId}
     selectedPage={topBarSelectedPage}
-    {explorerCollapsed}
+    explorerCollapsed={notes.explorerCollapsed}
     {creationFolderId}
     {showInactiveProjects}
     onShowInactiveProjectsChange={(value) => {
@@ -521,6 +550,7 @@
     onShowHome={showProjectHome}
     {projectSettingsOpen}
     onToggleProjectSettings={toggleProjectSettings}
+    bind:pageActionsTarget
   />
   {#if !mobileLayout && projectSettingsOpen && selectedProjectId}
     <NotesProjectSettingsPanel
@@ -550,18 +580,16 @@
         }}
       />
     {:else}
-      <div class="fixed inset-0 z-90 flex items-center justify-center bg-black/45 p-4" role="dialog" aria-modal="true" aria-busy={projectHistoryLoadState?.status !== "failed"}>
-        <div class="rounded-md border border-border bg-popover p-4 text-sm text-popover-foreground shadow-lg">
-          {#if projectHistoryLoadState?.status === "failed"}
-            <p role="alert">{t("common.viewLoadFailed", t("notes.projectSettingsVersionHistory"))}</p>
-            <div class="mt-3 flex gap-2">
-              <button class="min-h-8 rounded-md border border-border px-2 hover:bg-accent" type="button" onclick={() => requestNotesOptionalComponent("project-history", true)}>{t("common.retry")}</button>
-              <button class="min-h-8 rounded-md border border-border px-2 hover:bg-accent" type="button" onclick={() => { projectVersionHistoryOpen = false; }}>{t("common.close")}</button>
-            </div>
-          {:else}
-            {t("common.loading")}
-          {/if}
-        </div>
+      <div class="fixed inset-0 z-90 flex items-center justify-center surface-backdrop p-4" role="dialog" aria-modal="true" aria-busy={projectHistoryLoadState?.status !== "failed"}>
+        {#if projectHistoryLoadState?.status === "failed"}
+          <div class="surface-dialog p-4 text-sm">
+            <Notice message={t("common.viewLoadFailed", t("notes.projectSettingsVersionHistory"))} copy={false} onRetry={() => requestNotesOptionalComponent("project-history", true)}>
+              {#snippet actions()}<button type="button" class="notice-action-text" onclick={() => { projectVersionHistoryOpen = false; }}>{t("common.close")}</button>{/snippet}
+            </Notice>
+          </div>
+        {:else}
+          <Loading layout="fill" label={t("notes.projectSettingsVersionHistory")} />
+        {/if}
       </div>
     {/if}
   {/if}
@@ -577,27 +605,44 @@
         onCancel={cancelDiscardProjectSettings}
       />
     {:else if confirmDialogLoadState?.status === "failed"}
-      <div class="fixed inset-0 z-100 flex items-center justify-center bg-black/45 p-4" role="alert">
-        <div class="rounded-md border border-border bg-popover p-4 text-sm text-popover-foreground shadow-lg">
-          <p>{t("common.viewLoadFailed", t("calendar.view.discard"))}</p>
-          <div class="mt-3 flex gap-2">
-            <button class="min-h-8 rounded-md border border-border px-2 hover:bg-accent" type="button" onclick={() => requestNotesOptionalComponent("confirm-dialog", true)}>{t("common.retry")}</button>
-            <button class="min-h-8 rounded-md border border-border px-2 hover:bg-accent" type="button" onclick={cancelDiscardProjectSettings}>{t("common.cancel")}</button>
-          </div>
+      <div class="fixed inset-0 z-100 flex items-center justify-center surface-backdrop p-4" role="dialog" aria-modal="true">
+        <div class="surface-dialog p-4 text-sm">
+          <Notice message={t("common.viewLoadFailed", t("calendar.view.discard"))} copy={false} onRetry={() => requestNotesOptionalComponent("confirm-dialog", true)}>
+            {#snippet actions()}<button type="button" class="notice-action-text" onclick={cancelDiscardProjectSettings}>{t("common.cancel")}</button>{/snippet}
+          </Notice>
         </div>
       </div>
     {:else}
-      <div class="fixed inset-0 z-100 flex items-center justify-center bg-black/45 p-4" role="dialog" aria-modal="true" aria-busy="true">
-        <div class="rounded-md border border-border bg-popover px-4 py-3 text-sm text-muted-foreground shadow-lg">{t("common.loading")}</div>
+      <div class="fixed inset-0 z-100 flex items-center justify-center surface-backdrop p-4" role="dialog" aria-modal="true" aria-busy="true">
+        <Loading layout="fill" />
       </div>
     {/if}
   {/if}
+  {#each databaseDeletionPanes as pane (pane.id)}
+    {#if databaseDeletionDialogLoadState?.status === "ready"}
+      {@const DatabaseDeletionDialog = databaseDeletionDialogLoadState.component}
+      <DatabaseDeletionDialog controller={pane.store.databaseDeletion} />
+    {:else}
+      <div class="fixed inset-0 z-100 flex items-center justify-center surface-backdrop p-4" role="dialog" aria-modal="true" aria-busy={databaseDeletionDialogLoadState?.status !== "failed"}>
+        <div class="surface-dialog p-4 text-sm">
+          {#if databaseDeletionDialogLoadState?.status === "failed"}
+            <Notice message={t("common.viewLoadFailed", t("notes.databaseDelete"))} copy={false} onRetry={() => requestDatabaseDeletionDialog(true)}>
+              {#snippet actions()}<button type="button" class="notice-action-text" onclick={pane.store.databaseDeletion.cancel}>{t("common.cancel")}</button>{/snippet}
+            </Notice>
+          {:else}
+            <Loading layout="fill" label={t("notes.databaseDelete")} class="p-2" />
+            <button type="button" class="mt-3 min-h-9 rounded-floating-item border border-border px-3 hover:bg-accent" onclick={pane.store.databaseDeletion.cancel}>{t("common.cancel")}</button>
+          {/if}
+        </div>
+      </div>
+    {/if}
+  {/each}
   <div class="notes-view-layout relative flex min-h-0 flex-1 overflow-hidden">
     {#if showProjectExplorer}
       <NotesProjectHome
         {mobileLayout}
         projectId={selectedProjectId}
-        bind:explorerCollapsed
+        bind:explorerCollapsed={notes.explorerCollapsed}
         {creationFolderId}
         {selectedWorkingMarkdownFile}
         onSelectWorkingMarkdownFile={selectWorkingMarkdownFile}
@@ -608,21 +653,10 @@
       />
     {/if}
     {#if showPrimaryContent}
-      <div class={showSidePeek ? "flex min-w-0 basis-1/2 overflow-hidden" : "flex min-w-0 flex-1 overflow-hidden"}>
+      <div class="flex min-w-0 flex-1 overflow-hidden">
         {#if !notes.loaded && notes.loadError}
-          <div class="flex min-w-0 flex-1 flex-col items-center justify-center gap-3 p-4 text-center" role="alert" data-notes-first-use-state>
-            <p class="text-sm text-destructive">{t("notes.loadFailed", notes.loadError)}</p>
-            <button
-              type="button"
-              class="rounded-md border border-border px-3 text-sm hover:bg-accent {mobileLayout ? 'min-h-12' : 'min-h-9'}"
-              onclick={() => {
-                void notes.load().catch((error) => {
-                  console.error("retry Notes load failed", error);
-                });
-              }}
-            >
-              {t("common.retry")}
-            </button>
+          <div class="flex min-w-0 flex-1 text-sm" data-notes-first-use-state>
+            <Notice layout="fill" message={t("notes.loadFailed", notes.loadError)} onRetry={() => notes.load()} />
           </div>
         {:else if !mobileLayout && selectedWorkingMarkdownFile}
           <NotesWorkingMarkdownEditor
@@ -634,70 +668,106 @@
             {@const ActiveNotesSurface = activeSurfaceLoadState.component.component}
             <ActiveNotesSurface />
           {:else if activeSurfaceLoadState?.status === "failed"}
-            <div class="flex min-w-0 flex-1 flex-col items-center justify-center gap-3 p-4 text-center" role="alert">
-              <p class="text-sm text-destructive">{t("common.viewLoadFailed", activeSurfaceKind === "archive" ? t("notes.archive") : t("notes.trash"))}</p>
-              <button type="button" class="rounded-md border border-border px-3 text-sm hover:bg-accent {mobileLayout ? 'min-h-12' : 'min-h-9'}" onclick={() => requestNotesSurface(activeSurfaceKind, true)}>{t("common.retry")}</button>
+            <div class="flex min-w-0 flex-1 text-sm">
+              <Notice
+                layout="fill"
+                message={t("common.viewLoadFailed", activeSurfaceKind === "archive" ? t("notes.archive") : t("notes.trash"))}
+                copy={false}
+                onRetry={() => requestNotesSurface(activeSurfaceKind, true)}
+              />
             </div>
           {:else}
-            <div class="flex min-w-0 flex-1 items-center justify-center p-4 text-sm text-muted-foreground" aria-busy="true">{t("common.loading")}</div>
+            <Loading layout="fill" label={activeSurfaceKind === "archive" ? t("notes.loadingArchive") : t("notes.loadingTrash")} class="min-w-0 flex-1" />
           {/if}
-        {:else if showFullPageEditor}
-          <NotesEditor
-            projectId={selectedProjectId}
-            openMode="full"
-            onClose={closePagePeek}
-            onOpenModeChange={showSelectedPageAs}
-            {musicMentionContext}
-          />
-        {:else if mobileLayout && activeSurfaceKind === "editor"}
-          <div class="flex min-w-0 flex-1 items-center justify-center p-4 text-sm text-muted-foreground" aria-busy="true">
-            {t("common.loading")}
-          </div>
         {:else}
-          <div class="min-w-0 flex-1"></div>
+          {#each notes.editorPanes as pane (pane.id)}
+            {@const store = pane.store}
+            {@const isContextual = contextualPane?.id === pane.id}
+            {@const center = !showDatabasePage && isContextual && showCenterPeek}
+            {@const side = !showDatabasePage && isContextual && showSidePeek}
+            {@const hidden = showDatabasePage
+              ? notes.activePaneId !== pane.id
+              : !isContextual && peekPromotesToFullPage}
+            {@const selected = store.selectedPageId !== null && !store.isPagePendingRemoval(store.selectedPageId)}
+            <div
+              class={hidden ? "hidden" : center
+                ? "surface-backdrop fixed inset-x-0 bottom-0 z-50 flex items-center justify-center px-3 py-4 sm:px-6 sm:py-8"
+                : side ? "ml-auto flex min-w-0 basis-1/2 overflow-hidden"
+                  : !showDatabasePage && showSidePeek ? "flex min-w-0 basis-1/2 overflow-hidden" : "flex min-w-0 flex-1 overflow-hidden"}
+              style={center ? "top: calc(var(--titlebar-h) + var(--cal-header-row-h));" : undefined}
+              inert={hidden || (!showDatabasePage && !isContextual && showCenterPeek)}
+              data-notes-pane={pane.id}
+              data-floating-root
+              data-notes-main-page={pane.id === notes.mainPaneId ? store.selectedPageId : undefined}
+              role="presentation"
+              onpointerdowncapture={(event) => {
+                if (event.target !== event.currentTarget || !center) notes.activatePane(pane.id);
+              }}
+              onfocusincapture={() => notes.activatePane(pane.id)}
+              onclick={(event) => { if (center && event.target === event.currentTarget) closePagePeek(); }}
+            >
+              <div
+                class={center
+                  ? "notes-center-peek-panel flex min-w-0 overflow-hidden rounded-floating border border-border shadow-floating"
+                  : side ? "flex min-w-0 flex-1 overflow-hidden border-l border-border" : "flex min-w-0 flex-1 overflow-hidden"}
+                style="background-color: var(--cal-bg);"
+                role={!showDatabasePage && isContextual && showPagePeek ? "dialog" : undefined}
+                aria-modal={!showDatabasePage && isContextual && showPagePeek ? center : undefined}
+                data-notes-page-peek={!showDatabasePage && isContextual && showPagePeek || undefined}
+              >
+                {#if selected}
+                  {#if store.selectedDatabaseBlockId}
+                    {#key store.selectedDatabaseBlockId}
+                      <NotesDatabasePage
+                        editorStore={store}
+                        {mobileLayout}
+                        pageActionsTarget={notes.activePaneId === pane.id ? pageActionsTarget : null}
+                      />
+                    {/key}
+                  {/if}
+                  <div
+                    class={store.selectedDatabaseBlockId ? "hidden" : "flex min-h-0 min-w-0 flex-1 overflow-hidden"}
+                    inert={store.selectedDatabaseBlockId != null}
+                    data-notes-editor-container
+                  >
+                  {#key store.selectedPageId}
+                    <NotesLoadingSkeleton
+                      ready={store.loadedPage?.id === store.selectedPageId && store.primaryContentReady || !!store.loadError}
+                      page={store.allPages.find((page) => page.id === store.selectedPageId) ?? store.linkResolutionPages.find((page) => page.id === store.selectedPageId) ?? null}
+                      openMode={isContextual && showPagePeek ? store.pageOpenMode : "full"}
+                    >
+                      {#snippet children()}
+                        {#if store.loadedPage?.id === store.selectedPageId && store.primaryContentReady
+                          && (!store.selectedDatabaseBlockId || retainedEditorPages[pane.id] === store.selectedPageId)}
+                          <NotesEditor
+                            projectId={selectedProjectId}
+                            editorStore={store}
+                            active={!store.selectedDatabaseBlockId && notes.activePaneId === pane.id}
+                            openMode={isContextual && showPagePeek ? store.pageOpenMode : "full"}
+                            pageActionsTarget={!store.selectedDatabaseBlockId && notes.activePaneId === pane.id ? pageActionsTarget : null}
+                            onClose={() => { void notes.closePane(pane.id).catch((error: unknown) => console.warn("Close Notes pane failed", error)); }}
+                            onOpenModeChange={(mode) => { void notes.showPaneAs(pane.id, mode).catch((error: unknown) => console.warn("Change Notes pane mode failed", error)); }}
+                          />
+                        {:else if store.loadError}
+                          <div class="flex min-w-0 flex-1 text-sm">
+                            <Notice layout="fill" message={t("notes.loadFailed", store.loadError)} onRetry={() => store.selectPageLocally(store.selectedPageId)}>
+                              {#snippet actions()}
+                                {#if isContextual && showPagePeek}
+                                  <button type="button" class="notice-action-text" onclick={() => { void notes.closePane(pane.id).catch((error: unknown) => console.warn("Close Notes pane failed", error)); }}>{t("notes.closePeek")}</button>
+                                {/if}
+                              {/snippet}
+                            </Notice>
+                          </div>
+                        {/if}
+                      {/snippet}
+                    </NotesLoadingSkeleton>
+                  {/key}
+                  </div>
+                {/if}
+              </div>
+            </div>
+          {/each}
         {/if}
-      </div>
-    {/if}
-
-    {#if showSidePeek}
-      <div
-        class="flex min-w-0 basis-1/2 overflow-hidden border-l border-border"
-        role="dialog"
-        aria-modal="false"
-        data-notes-page-peek
-      >
-        <NotesEditor
-          projectId={selectedProjectId}
-          openMode="side"
-          onClose={closePagePeek}
-          onOpenModeChange={showSelectedPageAs}
-          {musicMentionContext}
-        />
-      </div>
-    {/if}
-
-    {#if showCenterPeek}
-      <div
-        class="fixed inset-x-0 bottom-0 z-50 flex items-center justify-center bg-black/45 px-3 py-4 sm:px-6 sm:py-8"
-        style="top: calc(var(--titlebar-h) + var(--cal-header-row-h));"
-        role="presentation"
-        onclick={handleCenterPeekBackdropClick}
-      >
-        <div
-          class="notes-center-peek-panel flex min-w-0 overflow-hidden rounded-lg border border-border"
-          style="background-color: var(--cal-bg);"
-          role="dialog"
-          aria-modal="true"
-          data-notes-page-peek
-        >
-          <NotesEditor
-            projectId={selectedProjectId}
-            openMode="center"
-            onClose={closePagePeek}
-            onOpenModeChange={showSelectedPageAs}
-            {musicMentionContext}
-          />
-        </div>
       </div>
     {/if}
   </div>

@@ -307,28 +307,16 @@
           "markdownDescription": "Denies the artworkDataUrl command without any pre-configured scope."
         },
         {
-          "description": "Enables the load command without any pre-configured scope.",
+          "description": "Enables the attachSession command without any pre-configured scope.",
           "type": "string",
-          "const": "allow-load",
-          "markdownDescription": "Enables the load command without any pre-configured scope."
+          "const": "allow-attachSession",
+          "markdownDescription": "Enables the attachSession command without any pre-configured scope."
         },
         {
-          "description": "Denies the load command without any pre-configured scope.",
+          "description": "Denies the attachSession command without any pre-configured scope.",
           "type": "string",
-          "const": "deny-load",
-          "markdownDescription": "Denies the load command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the pause command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-pause",
-          "markdownDescription": "Enables the pause command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the pause command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-pause",
-          "markdownDescription": "Denies the pause command without any pre-configured scope."
+          "const": "deny-attachSession",
+          "markdownDescription": "Denies the attachSession command without any pre-configured scope."
         },
         {
           "description": "Enables the pickArtworkFile command without any pre-configured scope.",
@@ -355,18 +343,6 @@
           "markdownDescription": "Denies the pickMediaTree command without any pre-configured scope."
         },
         {
-          "description": "Enables the play command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-play",
-          "markdownDescription": "Enables the play command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the play command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-play",
-          "markdownDescription": "Denies the play command without any pre-configured scope."
-        },
-        {
           "description": "Enables the probe command without any pre-configured scope.",
           "type": "string",
           "const": "allow-probe",
@@ -389,78 +365,6 @@
           "type": "string",
           "const": "deny-scanMediaTree",
           "markdownDescription": "Denies the scanMediaTree command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the seek command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-seek",
-          "markdownDescription": "Enables the seek command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the seek command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-seek",
-          "markdownDescription": "Denies the seek command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the setMuted command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-setMuted",
-          "markdownDescription": "Enables the setMuted command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the setMuted command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-setMuted",
-          "markdownDescription": "Denies the setMuted command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the setRate command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-setRate",
-          "markdownDescription": "Enables the setRate command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the setRate command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-setRate",
-          "markdownDescription": "Denies the setRate command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the setVolume command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-setVolume",
-          "markdownDescription": "Enables the setVolume command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the setVolume command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-setVolume",
-          "markdownDescription": "Denies the setVolume command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the snapshot command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-snapshot",
-          "markdownDescription": "Enables the snapshot command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the snapshot command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-snapshot",
-          "markdownDescription": "Denies the snapshot command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the stop command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-stop",
-          "markdownDescription": "Enables the stop command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the stop command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-stop",
-          "markdownDescription": "Denies the stop command without any pre-configured scope."
         }
       ]
     }

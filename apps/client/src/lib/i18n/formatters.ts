@@ -42,3 +42,13 @@ export function formatRelativeMinutes(
   if (rounded > 0) return t("format.relativeMinutesFuture", rounded);
   return t("format.relativeMinutesPast", Math.abs(rounded));
 }
+
+export function formatRelativeDays(
+  t: Translate,
+  daysFromNow: number,
+): string {
+  const rounded = Math.round(daysFromNow);
+  if (rounded === 0) return t("format.relativeDaysToday");
+  if (rounded > 0) return t("format.relativeDaysFuture", rounded);
+  return t("format.relativeDaysPast", Math.abs(rounded));
+}

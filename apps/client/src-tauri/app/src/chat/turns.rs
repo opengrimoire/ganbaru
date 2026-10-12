@@ -1,8 +1,8 @@
 //! Provider-turn application services shared by direct and organizational Chat.
 
-use super::agent_runs::TurnOrigin;
-use super::models::{ChatResult, DriverOperationReceipt};
 use super::send_commands::{SendChatTurnCommand, SendChatTurnResult, SteerChatTurnCommand};
+use ganbaru_chat::agent_runs::TurnOrigin;
+use ganbaru_chat_contracts::models::{ChatResult, DriverOperationReceipt};
 
 pub(crate) struct SendChatTurnInvocation {
     pub command: SendChatTurnCommand,

@@ -1,4 +1,4 @@
-use crate::chat::process::{ProviderProcessConfig, spawn_provider_process};
+use ganbaru_chat_providers::process::{ProviderProcessConfig, spawn_provider_process};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;

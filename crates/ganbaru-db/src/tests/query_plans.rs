@@ -26,14 +26,14 @@ fn hot_domain_queries_use_expected_indexes() {
                 "idx_notes_blocks_parent_block",
             ),
             (
-                "Music playback state",
-                "SELECT source_identity FROM music_playback_states WHERE source_identity = 'local:a'",
-                "sqlite_autoindex_music_playback_states_1",
+                "Music session checkpoint",
+                "SELECT device_id FROM music_session_checkpoints WHERE device_id = 'device:a'",
+                "sqlite_autoindex_music_session_checkpoints_1",
             ),
             (
-                "Doomscrolling usage window",
-                "SELECT id FROM doomscrolling_usage_samples WHERE local_date >= '2026-07-01' AND local_date <= '2026-07-11' ORDER BY local_date, source_type, source_key",
-                "idx_doomscrolling_usage_samples_date_source",
+                "Distractions usage window",
+                "SELECT id FROM distractions_usage_samples WHERE local_date >= '2026-07-01' AND local_date <= '2026-07-11' ORDER BY local_date, source_type, source_key",
+                "idx_distractions_usage_samples_date_source",
             ),
             (
                 "open Pomodoro run",
@@ -47,12 +47,12 @@ fn hot_domain_queries_use_expected_indexes() {
             ),
             (
                 "active Quick notes",
-                "SELECT id FROM quick_notes WHERE archived = 0 AND trashed_at IS NULL ORDER BY pinned DESC, manual_order ASC, id ASC LIMIT 60",
+                "SELECT id FROM quick_notes WHERE archived = 0 AND trashed_at IS NULL ORDER BY pinned DESC, order_key ASC, id ASC LIMIT 60",
                 "idx_quick_notes_active",
             ),
             (
                 "tagged Quick notes",
-                "SELECT id FROM quick_notes WHERE tag_id = 'tag-1' AND archived = 0 AND trashed_at IS NULL ORDER BY pinned DESC, manual_order ASC, id ASC LIMIT 60",
+                "SELECT id FROM quick_notes WHERE tag_id = 'tag-1' AND archived = 0 AND trashed_at IS NULL ORDER BY pinned DESC, order_key ASC, id ASC LIMIT 60",
                 "idx_quick_notes_tag_active",
             ),
         ];

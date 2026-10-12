@@ -25,9 +25,9 @@ export interface ChatDiagnosticsRead {
   projectionHealthy: boolean;
   inconsistentProjectionCount: number;
   credentialStoreAvailable: boolean;
-  providerProbeHealthy: number;
-  providerProbeUnhealthy: number;
-  providerProbeUnknown: number;
+  healthyProviderProbes: number;
+  unhealthyProviderProbes: number;
+  unknownProviderProbes: number;
   liveProviderProcesses: number;
   activeTurns: number;
   liveTerminals: number;

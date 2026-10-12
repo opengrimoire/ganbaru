@@ -1,50 +1,26 @@
 # Proton Calendar
 
-Proton Calendar is a practical compatibility target. Its encryption and product model may affect what it imports, exports, or rewrites, so behavior must be tested from real fixtures.
+Proton Calendar is a practical compatibility target. Its encryption and product model may affect what it imports, exports, or rewrites, so behavior must be tested from real fixtures. Shared procedure, import expectations, and questions are in the [client index](./README.md).
 
 ## Source notes
 
-- Proton documents importing calendars from other services.
-- Proton documents exporting a calendar as an iCalendar `.ics` file.
-- Proton's import/export flow is account-based, but Ganbaru AI's base `.ics` compatibility does not depend on Proton account access.
+- Proton documents importing calendars from other services and exporting a calendar as `.ics`.
+- Proton's import and export flow is account-based, but Ganbaru AI's `.ics` compatibility never depends on Proton account access.
 
 Sources:
 
 - <https://proton.me/support/protoncalendar-calendars>
 - <https://proton.me/support/easy-switch-calendars>
 
-## Known fixture priorities
+## Client-specific priorities
 
-- Proton-exported calendar with simple events
-- all-day single and multi-day events
-- recurring event with exceptions
-- moved recurring instance
-- reminders
-- attendees if exported
-- imported calendar exported again from Proton
-- non-ASCII text
-
-## Import into Ganbaru AI
-
-Expected handling:
-
-- Preserve Proton-specific `X-*` fields.
-- Project supported `VEVENT` rows.
-- Preserve recurrence and timezone data.
-- Preserve alarms even if Proton has limited alarm import/export behavior.
-
-## Manual test
-
-Use the [shared client procedure](./README.md#shared-procedure). Record the Proton surface and plan only when they affect import or export behavior.
+- Record the Proton surface, and the plan only when it affects behavior.
+- Include a calendar imported into Proton and exported again, reminders, and attendees if Proton exports them.
 
 ## Behavior to verify
 
 - Whether Proton imports multi-event `.ics` files reliably on web and desktop.
-- Whether Proton preserves unknown `X-*` fields.
-- Whether Proton preserves or rewrites timezones.
-- Whether Proton exports attendees.
-- Whether Proton exports alarms.
-- Whether Proton accepts custom `VTIMEZONE`.
+- Whether Proton exports attendees and alarms.
 
 ## Observed behavior log
 

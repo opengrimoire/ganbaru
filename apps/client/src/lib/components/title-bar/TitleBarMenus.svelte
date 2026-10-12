@@ -5,8 +5,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { DetachableTabView } from "$lib/navigation";
   import { getPreferences } from "$lib/stores/preferences.svelte";
-  import type { TitleBarControlId } from "$lib/stores/preferences";
-  import { cn } from "$lib/utils";
+  import type { TitleBarControlId } from "$lib/stores/preference-options";
 
   let {
     showTabContextMenu = $bindable(),
@@ -45,17 +44,17 @@
     oncontextmenu={(e) => { e.preventDefault(); showTabContextMenu = false; tabContextView = null; }}
   ></div>
   <div
-    class="fixed z-50 overflow-hidden rounded-lg border border-border bg-popover/95 text-popover-foreground shadow-2xl backdrop-blur-xl"
+    class="surface-floating fixed z-50 overflow-hidden"
     style={tabContextMenuStyle}
     role="menu"
   >
-    <div class="p-1">
+    <div class="surface-floating-body">
       <button
         role="menuitem"
         disabled={!detachedWindow && !canDetachTab}
         title={!detachedWindow && !canDetachTab ? t("titleBar.keepOneTabInMainWindow") : undefined}
         onclick={onTabContextAction}
-        class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-popover-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:text-muted-foreground disabled:opacity-60"
+        class="menu-item"
       >
         {#if detachedWindow}
           <SquareArrowLeft size={15} strokeWidth={2.2} />
@@ -78,50 +77,32 @@
     oncontextmenu={(e) => { e.preventDefault(); showTitleBarMenu = false; }}
   ></div>
   <div
-    class="fixed z-50 overflow-hidden rounded-lg border border-border bg-popover/95 text-popover-foreground shadow-2xl backdrop-blur-xl"
+    class="surface-floating fixed z-50 overflow-hidden"
     style={titleBarMenuStyle}
     role="menu"
   >
-    <div class="p-1">
+    <div class="surface-floating-body">
       {#each controls as control}
         {@const checked = preferences.titleBarVisibility[control.id]}
         <button
           role="menuitemcheckbox"
           aria-checked={checked}
           onclick={() => onToggleControl(control.id)}
-          class={cn(
-            "flex w-full items-center gap-2 rounded-md px-1.5 py-1.5 text-left text-sm transition-colors",
-            checked
-              ? "text-popover-foreground hover:bg-accent"
-              : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-          )}
+          class="menu-item"
         >
-          <span class="flex size-5 shrink-0 items-center justify-center text-primary">
-            {#if checked}
-              <Check size={15} strokeWidth={2.4} />
-            {/if}
-          </span>
           <span class="min-w-0 flex-1 truncate">{control.label}</span>
+          {#if checked}<Check class="size-3.5 shrink-0" aria-hidden="true" />{/if}
         </button>
       {/each}
-      <div class="my-1 h-px bg-border/80"></div>
+      <div role="separator" class="menu-separator"></div>
       <button
         role="menuitemcheckbox"
         aria-checked={preferences.titleBarVisibility.compactTabs}
         onclick={() => onToggleControl("compactTabs")}
-        class={cn(
-          "flex w-full items-center gap-2 rounded-md px-1.5 py-1.5 text-left text-sm transition-colors",
-          preferences.titleBarVisibility.compactTabs
-            ? "text-popover-foreground hover:bg-accent"
-            : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-        )}
+        class="menu-item"
       >
-        <span class="flex size-5 shrink-0 items-center justify-center text-primary">
-          {#if preferences.titleBarVisibility.compactTabs}
-            <Check size={15} strokeWidth={2.4} />
-          {/if}
-        </span>
         <span class="min-w-0 flex-1 truncate">{t("titleBar.control.compactTabs")}</span>
+        {#if preferences.titleBarVisibility.compactTabs}<Check class="size-3.5 shrink-0" aria-hidden="true" />{/if}
       </button>
     </div>
   </div>

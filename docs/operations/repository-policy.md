@@ -1,242 +1,84 @@
 # Repository policy
 
-This document is the normative GitHub policy for `opengrimoire/ganbaru-ai`. It records the intended rulesets, adjacent Actions settings, and protected release environment. Rulesets for a public repository are visible and are not treated as secrets.
+**Status: Reference.** This is the normative GitHub policy for `opengrimoire/ganbaru-ai`: its rulesets, adjacent Actions settings, and protected release environment. Rulesets for a public repository are visible at <https://github.com/opengrimoire/ganbaru-ai/rules> and are not secrets.
 
-Last verified against live GitHub settings: 2026-09-12.
+Last verified against live GitHub settings: 2026-09-12, with no drift found.
 
-If live settings differ, treat the difference as configuration drift. Fix the live settings or deliberately change this policy through review. Do not silently rewrite the policy to match weaker enforcement.
+If live settings differ, treat the difference as configuration drift. Fix the live settings or change this policy through review; never silently rewrite the policy to match weaker enforcement.
 
-The public rules view is:
-
-```text
-https://github.com/opengrimoire/ganbaru-ai/rules
-```
-
-Rulesets are the enforcement layer for branch and tag movement. GitHub Actions workflows must not be used to enforce branch routing, especially through `pull_request_target`, unless a separate security review explicitly accepts the added privileged automation surface.
-
-This document defines these three rulesets:
-
-- `protect main`
-- `protect dev`
-- `protect release tags`
-
-## Table of contents
-
-- [Roles](#roles)
-- [protect main](#protect-main)
-- [protect dev](#protect-dev)
-- [protect release tags](#protect-release-tags)
-- [Required adjacent settings](#required-adjacent-settings)
-- [Current configuration drift](#current-configuration-drift)
-- [Verification](#verification)
-- [Review cadence](#review-cadence)
+Rulesets are the enforcement layer for branch and tag movement. Workflows must not enforce branch routing, especially through `pull_request_target`, unless a separate security review accepts that privileged automation surface.
 
 ## Roles
 
-`Organization admin` is the current GitHub bypass actor for release tags and the protected release environment. It maps to the organization owner today. Do not use `Write`, `Maintain`, `Repository Admin`, or `Deploy keys` for release bypass unless this policy is deliberately changed.
+- **Organization admin** is the only bypass actor, for release tags and the protected `release` environment. Today this is the organization owner. Do not use Write, Maintain, Repository Admin, or Deploy keys for release bypass without changing this policy.
+- **Project maintainer** has write or maintain access for normal work. Today this is the same person as the organization admin.
 
-`Project maintainer` means a trusted maintainer with write or maintain access for normal repository work. Today this is expected to be the same person as the organization admin unless access is deliberately delegated.
+GitHub lets anyone with write access merge a pull request once the target branch requirements are met. While the project has one maintainer, limited write access is the strongest practical control. Before granting write access to anyone else, revisit this policy and raise required approvals, stale-approval dismissal, Code Owners, and most-recent-push approval on both branches.
 
-Do not grant write, maintain, or admin access casually. If more maintainers are added, revisit this file before granting access because GitHub can allow anyone with write access to merge a pull request once the target branch requirements are satisfied.
+## Branch rulesets
 
-## protect main
+`protect main` and `protect dev` are active branch rulesets with an empty bypass list, each targeting only its own branch.
 
-Purpose: keep `main` as the audited release source branch. It should move through release pull requests from `dev` by merge queue, and a merge to `main` must not publish by itself.
-
-Ruleset basics:
-
-- Ruleset type: branch.
-- Enforcement: active.
-- Bypass list: empty.
-- Target branches: include `main`.
-
-Branch rules:
-
-- [ ] Restrict creations.
-- [ ] Restrict updates.
-- [x] Restrict deletions.
-- [ ] Require linear history.
-- [x] Require merge queue.
-  - Merge method: merge.
-  - Build concurrency: 1.
-  - Minimum group size: 1.
-  - Maximum group size: 1.
-  - Wait time to meet minimum group size: 0 minutes.
-  - Require all queue entries to pass required checks: enabled.
-  - Status check timeout: 60 minutes.
-- [ ] Require deployments to succeed.
-- [x] Require signed commits.
-- [x] Require a pull request before merging.
-  - Required approvals: 0 while the repository has a single maintainer. Raise this before granting write access to more maintainers.
-  - [ ] Dismiss stale pull request approvals when new commits are pushed.
-  - [ ] Require review from specific teams.
-  - [ ] Require review from Code Owners.
-  - [ ] Require approval of the most recent reviewable push.
-  - [x] Require approval for unattributed changes.
-  - [x] Require conversation resolution before merging.
-  - Allowed merge methods: merge only.
-- [x] Require status checks to pass.
-  - [ ] Require branches to be up to date before merging.
-  - [x] Do not require status checks on creation.
-  - Required status checks: `linux validation`, `windows Rust check`, and `Android ARM64 build`.
-  - Required status check source: GitHub Actions.
-- [x] Block force pushes.
-- [ ] Require code scanning results.
-- [ ] Require code quality results.
-- [ ] Automatically request Copilot code review.
-
-Restrictions:
-
-- [ ] Restrict commit metadata.
-- [ ] Restrict branch names.
+| Rule | `main` | `dev` |
+| --- | --- | --- |
+| Restrict deletions, block force pushes | On | On |
+| Require signed commits | On | On |
+| Require a pull request | On, 0 approvals | On, 0 approvals |
+| Require approval for unattributed changes | On | On |
+| Require conversation resolution | On | On |
+| Allowed merge methods | Merge only | Merge only |
+| Required status checks (GitHub Actions source) | `linux validation`, `windows Rust check`, `Android ARM64 build` | Same |
+| Do not require status checks on creation | On | On |
+| Require branches to be up to date | Off | On |
+| Require merge queue | On: merge method, build concurrency 1, group size 1, no wait, all entries must pass, 60 minute check timeout | Off |
+| Linear history, deployments, code scanning, code quality, Copilot review, commit metadata, branch name restrictions | Off | Off |
 
 Rationale:
 
-- `main` is a release staging boundary, not the daily integration branch.
-- Release publication happens only from `app-v*` tags and a protected release environment.
-- Merge commits on `main` are intentional because release pull requests are promotion events from `dev` to `main`.
-- `Require linear history` is off because release pull requests should preserve useful pull request history for generated release notes.
-- `Require merge queue` is enabled because it validates the merge result without forcing `dev` to merge `main`. GitHub documents merge queue as providing the same benefit as requiring branches to be up to date, without requiring authors to update the pull request branch: <https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue>.
-- `Require branches to be up to date before merging` is off on `main` because merge queue provides the stale-base protection. Keeping both would force `dev` to absorb main-only release merge commits.
-- `Require deployments to succeed` is off because the protected `release` environment belongs to the tag-based release workflow after `main` is updated, not to the branch merge gate.
-- `Require signed commits` is enabled on `main` after SSH commit signing was configured locally and a test commit verified successfully on GitHub.
-- Review requirements that need another reviewer stay off while the repository has one maintainer. Raise required approvals, stale approval dismissal, Code Owners, and most-recent-push approval before granting write access to more maintainers.
-- The strongest practical control while the project has one maintainer is limited write access. If more write maintainers are added, the `main` policy must be revisited before access is granted.
-- Code scanning and code quality gates should stay off until they are configured, stable, and documented.
-- `Restrict branch names` is off because the ruleset target already narrows the branch namespace to `main`.
+- `dev` is the integration branch; all normal work enters it through visible pull requests. `main` is the audited release staging boundary, not the daily integration branch, and a merge to `main` publishes nothing by itself.
+- Merge commits preserve the original signed topic-branch commits, authorship, timestamps, and topology, keeping the repository itself as the audit trail. Linear history is off for that reason, and on `main` it also keeps pull request history for generated release notes.
+- Signed commits are required on `dev` too, so unsigned history cannot accumulate and later block promotion into `main`.
+- `main` uses a merge queue instead of up-to-date branches. The queue validates the merge result ([GitHub documentation](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue)) without forcing `dev` to absorb main-only release merge commits. `dev` traffic is low, so it requires up-to-date branches instead of a queue.
+- Deployment gates are off because the `release` environment belongs to the tag-based release workflow, not to branch merges.
+- Code scanning and code quality gates stay off until they are configured, stable, and documented. Pull request title conventions carry release-note quality better than a commit metadata regex.
 
-## protect dev
+## Release tag ruleset
 
-Purpose: keep `dev` as the normal integration branch where accepted work accumulates before a release.
-
-Ruleset basics:
-
-- Ruleset type: branch.
-- Enforcement: active.
-- Bypass list: empty.
-- Target branches: include `dev`.
-
-Branch rules:
-
-- [ ] Restrict creations.
-- [ ] Restrict updates.
-- [x] Restrict deletions.
-- [ ] Require linear history.
-- [ ] Require merge queue.
-- [ ] Require deployments to succeed.
-- [x] Require signed commits.
-- [x] Require a pull request before merging.
-  - Required approvals: 0 while the repository has a single maintainer.
-  - [ ] Dismiss stale pull request approvals when new commits are pushed.
-  - [ ] Require review from specific teams.
-  - [ ] Require review from Code Owners.
-  - [ ] Require approval of the most recent reviewable push.
-  - [x] Require approval for unattributed changes.
-  - [x] Require conversation resolution before merging.
-  - Allowed merge methods: merge only.
-- [x] Require status checks to pass.
-  - [x] Require branches to be up to date before merging.
-  - [x] Do not require status checks on creation.
-  - Required status checks: `linux validation`, `windows Rust check`, and `Android ARM64 build`.
-  - Required status check source: GitHub Actions.
-- [x] Block force pushes.
-- [ ] Require code scanning results.
-- [ ] Require code quality results.
-- [ ] Automatically request Copilot code review.
-
-Restrictions:
-
-- [ ] Restrict commit metadata.
-- [ ] Restrict branch names.
+`protect release tags` is an active tag ruleset targeting `app-v*`, with `Organization admin` as an always-allowed bypass actor. It restricts creation, update, and deletion, blocks force pushes, and requires signed commits. Linear history, deployments, status checks, commit metadata, and tag name restrictions are off.
 
 Rationale:
 
-- All normal work should be visible in pull requests.
-- Merge commits preserve the original signed topic-branch commits, authorship, timestamps, and Git topology instead of replacing them with one squash commit.
-- Preserving topic-branch commits keeps the repository itself as the durable audit trail. Pull requests retain the corresponding review and check history.
-- `dev` requires signed commits so unsigned history cannot accumulate and later block promotion into `main`.
-- `dev` should not require release-specific controls such as deployment gates.
-- `Require linear history` is off because merge commits intentionally record where reviewed topic branches join the integration branch.
-- `Require merge queue` is off for `dev` because traffic is currently low and `dev` already requires branches to be up to date before merging.
-- Review requirements that need another reviewer stay off while the repository has one maintainer. Raise them before granting write access to more maintainers.
-- Code scanning and code quality gates should stay off until they are configured, stable, and documented.
-- PR title conventions carry release note quality better than a branch-level commit metadata regex.
-- `Restrict branch names` is off because the ruleset target already narrows the branch namespace to `dev`.
-
-## protect release tags
-
-Purpose: prevent untrusted users from creating, moving, or deleting release tags that trigger signed desktop and Android release builds.
-
-Ruleset basics:
-
-- Ruleset type: tag.
-- Enforcement: active.
-- Bypass list: `Organization admin`, with `Always allow`.
-- Target tags: include `app-v*`.
-
-Tag rules:
-
-- [x] Restrict creations.
-- [x] Restrict updates.
-- [x] Restrict deletions.
-- [ ] Require linear history.
-- [ ] Require deployments to succeed.
-- [x] Require signed commits.
-- [ ] Require status checks to pass.
-- [x] Block force pushes.
-
-Restrictions:
-
-- [ ] Restrict commit metadata.
-- [ ] Restrict tag names.
-
-Rationale:
-
-- `app-v*` tags are the release trigger. Protecting only force pushes is not enough because an attacker with write access could still create a new matching tag.
-- Release tags and the protected `release` environment are separate controls. Both should exist.
-- Tags point at commits and do not need linear history.
-- The release workflow runs after the tag is created and contains its own build, signing, draft publishing, and protected environment gates.
-- Release tags point at signed release commits on `main`. Signed-commit enforcement therefore applies to the tag target as an additional release identity check.
-- `Restrict tag names` is off because the ruleset target already narrows the tag namespace to `app-v*`.
+- `app-v*` tags trigger signed desktop and Android release builds. Blocking only force pushes is not enough, because anyone with write access could still create a new matching tag.
+- Tags point at signed release commits on `main`, so signed-commit enforcement adds a release identity check on the tag target.
+- Release tags and the protected `release` environment are separate controls, and both must exist. The release workflow carries its own build, signing, draft publishing, and environment gates.
 
 ## Required adjacent settings
 
 Repository access:
 
-- Keep write, maintain, and admin access limited.
-- External contributors should use forks or topic branches and pull requests.
-- Revisit this document before adding any new write or maintain user.
+- Keep write, maintain, and admin access limited. External contributors use forks or topic branches and pull requests.
 
 GitHub Actions:
 
-- Set default workflow token permissions to read-only.
-- Do not allow GitHub Actions to create or approve pull requests unless a specific reviewed workflow requires it.
-- Prefer selected actions and full SHA pins for third-party actions.
-- Keep release jobs cache-free.
-- Required checks for `main` must run on `merge_group` as well as `pull_request`, otherwise merge queue cannot satisfy branch protection.
-- The `check` workflow should not run on branch pushes to `dev` or `main`. Those branches are PR-only through rulesets, and branch push checks would duplicate the pull request or merge queue checks that already gated the merge.
+- Default workflow token permissions are read-only.
+- Actions may not create or approve pull requests unless a specific reviewed workflow requires it.
+- Third-party actions use selected actions and full SHA pins.
+- Release jobs are cache-free.
+- Required checks run on `merge_group` as well as `pull_request`, otherwise the merge queue cannot satisfy the ruleset.
+- The `check` workflow does not run on pushes to `dev` or `main`; those branches are pull-request-only, so push checks would duplicate the checks that already gated the merge.
+- No `pull_request_target` workflow for branch routing or contributor messaging. If one is ever needed, it must not check out pull request code, install dependencies, use caches, run build scripts, or read untrusted files.
 
-Protected environment:
+Protected `release` environment:
 
-- Environment name: `release`.
-- Required reviewers: the organization owner, or a dedicated release team if release authority is delegated later.
-- Environment secrets: Tauri updater signing private key and password, Android keystore and passwords, package repository GPG private key and passphrase, plus the dedicated AUR publish SSH private key. The exact names are listed in [Release signing](release/signing.md).
-- Do not expose signing secrets to pull request, test, or unsigned build jobs outside the protected `release` environment.
+- Required reviewer: the organization owner, or a dedicated release team if release authority is delegated later.
+- Deployment refs restricted to `main` and `app-v*`.
+- Holds the updater, Android, package repository, and AUR secrets listed in [release signing](release/signing.md). Signing secrets are never exposed to pull request, test, or unsigned build jobs.
 
-Workflow policy:
-
-- Do not add a `pull_request_target` workflow for branch routing or contributor messaging.
-- If `pull_request_target` is ever needed, it must not checkout pull request code, install dependencies, restore or save caches, run build scripts, or read untrusted files.
-
-## Current configuration drift
-
-The 2026-09-12 audit and correction found no known drift from this policy. The `dev` and `main` rulesets require all three documented checks, `main` does not require checks on branch creation, the release-tag ruleset requires signed commits, and the `release` environment has a required reviewer, the documented branch and tag restrictions, and all required secret names. The later 2026-09-12 review changed `dev` from squash-only linear history to merge commits so accepted work retains its signed commit history and Git topology.
-
-Secret values cannot be read back through GitHub. Their presence does not replace the signed-artifact and installation checks required for each release.
+Secret values cannot be read back through GitHub, so their presence does not replace the signed-artifact and installation checks required for each release.
 
 ## Verification
 
-Use read-only GitHub API calls from an authenticated maintainer session:
+Verify with read-only API calls from an authenticated maintainer session:
 
 ```sh
 gh api repos/opengrimoire/ganbaru-ai/rulesets
@@ -246,10 +88,6 @@ gh api repos/opengrimoire/ganbaru-ai/actions/permissions
 gh api repos/opengrimoire/ganbaru-ai/actions/permissions/workflow
 ```
 
-Inspect each ruleset detail endpoint returned by the first command. Confirm targets, bypass actors, pull request rules, merge queue, status-check names and sources, deletion and force-push protection, signed commits, and tag creation restrictions. Also compare workflow triggers and job environments in `.github/workflows/`.
+Inspect each ruleset detail endpoint returned by the first command and compare targets, bypass actors, pull request rules, merge queue, status checks, deletion and force-push protection, signed commits, and tag restrictions. Also compare workflow triggers and job environments in `.github/workflows/`. Changing live policy is a deliberate maintainer action reviewed alongside this file.
 
-Verification is read-only. Changing live policy requires deliberate maintainer action and should be reviewed alongside this file.
-
-## Review cadence
-
-Review this document before adding maintainers, after any GitHub ruleset feature change that affects these options, and after any supply-chain incident that changes the threat model.
+Review this policy before adding maintainers, after GitHub ruleset feature changes that affect these options, and after any supply-chain incident that changes the threat model.

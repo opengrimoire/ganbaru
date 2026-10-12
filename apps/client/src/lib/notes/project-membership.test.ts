@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   NOTES_PAGE_PROJECT_ID_PROPERTY,
+  mergeNotesNavigationPages,
   notesPageMatchesProject,
   notesPageProjectId,
   notesPageProjectProperties,
@@ -53,6 +54,21 @@ describe("notes project membership", () => {
 
     expect(notesPagesForProject(pages, null).map((item) => item.id)).toEqual(["page-a", "page-b"]);
     expect(notesPageMatchesProject(pages[1], null)).toBe(true);
+  });
+
+  it("keeps current workspace records ahead of cached destination records", () => {
+    const current = {
+      ...page("page-a", "project-a"),
+      folder_id: "new-folder",
+      last_edited_time: "2026-07-04T00:00:00.000Z",
+    };
+    const stale = { ...current, folder_id: "old-folder", last_edited_time: "2026-07-03T00:00:00.000Z" };
+    const destinationOnly = page("page-b", "project-a");
+
+    expect(mergeNotesNavigationPages([current], [stale, destinationOnly])).toEqual([
+      current,
+      destinationOnly,
+    ]);
   });
 
   it("builds create properties only when a project is selected", () => {

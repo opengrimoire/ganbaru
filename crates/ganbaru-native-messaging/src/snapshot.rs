@@ -1,20 +1,35 @@
 //! Device snapshot discovery, vault path checks, and runtime freshness.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use serde::{Deserialize, Deserializer};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use crate::config::{DoomscrollingConfig, default_config, read_config};
+use crate::config::{DistractionsConfig, default_config, read_config};
 use crate::{NativeResponse, now_utc};
 
-const STATE_FILE: &str = "doomscrolling-state.json";
-const LIMIT_STATE_FILE: &str = "doomscrolling-limit-state.json";
+const STATE_FILE: &str = "distractions-state.json";
+const LIMIT_STATE_FILE: &str = "distractions-limit-state.json";
 const APP_STATE_FILE: &str = "app-state.json";
 const CONFIG_FILE: &str = "config.json";
 const APP_SQLITE_FILE: &str = "ganbaru-ai.sqlite";
 const STALE_STATE_SECONDS: i64 = 75;
 const ACTIVE_STATE_STALE_SECONDS: i64 = 45;
 const LIMIT_STATE_STALE_SECONDS: i64 = 20;
+const MAX_DEVICE_STATE_BYTES: u64 = 1024 * 1024;
+
+fn read_bounded_state(path: &Path) -> Option<String> {
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(MAX_DEVICE_STATE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > MAX_DEVICE_STATE_BYTES {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -29,13 +44,15 @@ pub(super) struct RuntimeState {
     #[serde(deserialize_with = "required_nullable")]
     pub(super) remaining_seconds: Option<i64>,
     pub(super) updated_at: String,
+    #[serde(default)]
+    pub(super) valid_until_ms: Option<i64>,
 }
 
 #[derive(Debug)]
 pub(super) struct StateSnapshot {
     pub(super) config_dir: Option<PathBuf>,
     pub(super) vault_path: Option<PathBuf>,
-    pub(super) config: DoomscrollingConfig,
+    pub(super) config: DistractionsConfig,
     pub(super) runtime: Option<RuntimeState>,
     pub(super) limit_state: Option<LimitState>,
 }
@@ -47,6 +64,8 @@ pub(super) struct LimitState {
     pub(super) week_start_local_date: String,
     pub(super) updated_at: String,
     pub(super) database_path: String,
+    #[serde(default)]
+    pub(super) configuration_digest: Option<String>,
     pub(super) limits: Vec<LimitStateItem>,
 }
 
@@ -97,7 +116,11 @@ pub(super) fn load_snapshot() -> StateSnapshot {
         .and_then(|dir| read_runtime_state(&dir.join(STATE_FILE)));
     let limit_state = config_dir
         .as_ref()
-        .and_then(|dir| read_limit_state(&dir.join(LIMIT_STATE_FILE), vault_path.as_deref()));
+        .and_then(|dir| read_limit_state(&dir.join(LIMIT_STATE_FILE), vault_path.as_deref()))
+        .filter(|state| {
+            state.configuration_digest.is_some()
+                && state.configuration_digest == config.limit_configuration_digest
+        });
     StateSnapshot {
         config_dir,
         vault_path,
@@ -149,12 +172,12 @@ pub(super) fn config_dir_candidates() -> Vec<PathBuf> {
 }
 
 fn read_runtime_state(path: &std::path::Path) -> Option<RuntimeState> {
-    let contents = std::fs::read_to_string(path).ok()?;
+    let contents = read_bounded_state(path)?;
     serde_json::from_str(&contents).ok()
 }
 
 fn read_app_state(path: &std::path::Path) -> Option<AppState> {
-    let contents = std::fs::read_to_string(path).ok()?;
+    let contents = read_bounded_state(path)?;
     serde_json::from_str(&contents).ok()
 }
 
@@ -167,7 +190,7 @@ fn active_vault_path_from_state(state: AppState) -> Option<PathBuf> {
 }
 
 fn read_limit_state(path: &std::path::Path, vault_path: Option<&Path>) -> Option<LimitState> {
-    let contents = std::fs::read_to_string(path).ok()?;
+    let contents = read_bounded_state(path)?;
     let state: LimitState = serde_json::from_str(&contents).ok()?;
     limit_state_is_fresh(&state, vault_path).then_some(state)
 }
@@ -187,7 +210,7 @@ pub(super) fn runtime_status_at(
             false,
             "inactive".to_string(),
             None,
-            Some("Doomscrolling disabled".to_string()),
+            Some("distraction rules are disabled".to_string()),
         );
     }
 
@@ -208,20 +231,40 @@ pub(super) fn runtime_status_at(
             Some("runtime state has invalid timestamp".to_string()),
         );
     };
-    let age_seconds = (checked_at - updated_at.with_timezone(&Utc))
-        .num_seconds()
-        .max(0);
+    let age = checked_at - updated_at.with_timezone(&Utc);
+    let age_seconds = age.num_seconds();
     let stale_state_seconds = if runtime.active {
         ACTIVE_STATE_STALE_SECONDS
     } else {
         STALE_STATE_SECONDS
     };
-    if age_seconds > stale_state_seconds {
+    if age < chrono::Duration::zero() || age > chrono::Duration::seconds(stale_state_seconds) {
         return (
             false,
             "inactive".to_string(),
             None,
             Some("runtime state is stale".to_string()),
+        );
+    }
+
+    if runtime
+        .valid_until_ms
+        .is_some_and(|deadline| deadline < 0 || checked_at.timestamp_millis() >= deadline)
+        || (runtime.active
+            && !runtime.paused
+            && runtime.remaining_seconds.is_some_and(|remaining| {
+                remaining < 0
+                    || checked_at.timestamp_millis()
+                        >= updated_at
+                            .timestamp_millis()
+                            .saturating_add(remaining.saturating_mul(1000))
+            }))
+    {
+        return (
+            false,
+            "inactive".into(),
+            None,
+            Some("accepted phase validity expired".into()),
         );
     }
 
@@ -240,7 +283,7 @@ pub(super) fn runtime_status_at(
     )
 }
 
-pub(super) fn should_enforce(snapshot: &StateSnapshot, response: &mut NativeResponse) -> bool {
+pub(super) fn should_enforce(snapshot: &StateSnapshot, response: &NativeResponse) -> bool {
     if !response.active {
         return false;
     }
@@ -266,7 +309,7 @@ fn pause_should_suspend_enforcement(runtime: &RuntimeState) -> bool {
     runtime.paused && !matches!(runtime.pause_reason.as_deref(), Some("idle" | "suspend"))
 }
 
-pub(super) fn valid_local_date(value: &str) -> bool {
+pub(super) fn is_valid_local_date(value: &str) -> bool {
     let bytes = value.as_bytes();
     bytes.len() == 10
         && bytes[4] == b'-'
@@ -275,6 +318,8 @@ pub(super) fn valid_local_date(value: &str) -> bool {
             .iter()
             .enumerate()
             .all(|(index, byte)| index == 4 || index == 7 || byte.is_ascii_digit())
+        && !value.starts_with("0000")
+        && NaiveDate::parse_from_str(value, "%Y-%m-%d").is_ok()
 }
 
 fn database_path_is_allowed(path: &Path, vault_path: Option<&Path>) -> bool {
@@ -297,17 +342,69 @@ pub(super) fn usage_db_path(vault_path: &Path, limit_state: Option<&LimitState>)
 }
 
 fn limit_state_is_fresh(state: &LimitState, vault_path: Option<&Path>) -> bool {
-    if !valid_local_date(&state.local_date) {
+    let now = now_utc();
+    let Ok(zone) = jiff::tz::TimeZone::try_system() else {
+        return false;
+    };
+    let Ok(timestamp) = jiff::Timestamp::from_millisecond(now.timestamp_millis()) else {
+        return false;
+    };
+    limit_state_is_fresh_at(
+        state,
+        vault_path,
+        now,
+        &zone.to_datetime(timestamp).date().to_string(),
+    )
+}
+
+fn limit_state_is_fresh_at(
+    state: &LimitState,
+    vault_path: Option<&Path>,
+    checked_at: DateTime<Utc>,
+    local_date: &str,
+) -> bool {
+    if !is_valid_local_date(&state.local_date) {
         return false;
     }
-    if !valid_local_date(&state.week_start_local_date) {
+    if !is_valid_local_date(&state.week_start_local_date) {
         return false;
     }
+    let Ok(date) = NaiveDate::parse_from_str(&state.local_date, "%Y-%m-%d") else {
+        return false;
+    };
+    let week = date.checked_sub_signed(chrono::Duration::days(i64::from(
+        date.weekday().num_days_from_monday(),
+    )));
+    if state.local_date != local_date
+        || state.limits.len() > 512
+        || week
+            .is_none_or(|week| week.format("%Y-%m-%d").to_string() != state.week_start_local_date)
+    {
+        return false;
+    }
+    let mut identities = std::collections::HashSet::new();
     if state.limits.iter().any(|limit| {
         !matches!(limit.period.as_str(), "day" | "week")
-            || !valid_local_date(&limit.window_start_local_date)
-            || !valid_local_date(&limit.window_end_local_date)
+            || !is_valid_local_date(&limit.window_start_local_date)
+            || !is_valid_local_date(&limit.window_end_local_date)
             || limit.window_start_local_date > limit.window_end_local_date
+            || limit.window_end_local_date != state.local_date
+            || limit.window_start_local_date
+                != if limit.period == "day" {
+                    &state.local_date
+                } else {
+                    &state.week_start_local_date
+                }
+                .as_str()
+            || limit.used_seconds < 0
+            || limit.limit_seconds <= 0
+            || limit.remaining_seconds
+                != limit
+                    .limit_seconds
+                    .saturating_sub(limit.used_seconds)
+                    .max(0)
+            || limit.exhausted != (limit.used_seconds >= limit.limit_seconds)
+            || !identities.insert((&limit.id, &limit.period))
     }) {
         return false;
     }
@@ -317,8 +414,66 @@ fn limit_state_is_fresh(state: &LimitState, vault_path: Option<&Path>) -> bool {
     let Ok(updated_at) = DateTime::parse_from_rfc3339(&state.updated_at) else {
         return false;
     };
-    let age_seconds = (now_utc() - updated_at.with_timezone(&Utc))
-        .num_seconds()
-        .max(0);
-    age_seconds <= LIMIT_STATE_STALE_SECONDS
+    let age = checked_at - updated_at.with_timezone(&Utc);
+    age >= chrono::Duration::zero() && age <= chrono::Duration::seconds(LIMIT_STATE_STALE_SECONDS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn budgets_require_the_current_day_consistent_arithmetic_and_nonfuture_freshness() {
+        let checked_at = "2026-10-02T12:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let vault = Path::new("/tmp/vault");
+        let mut state = LimitState {
+            local_date: "2026-10-02".into(),
+            week_start_local_date: "2026-09-28".into(),
+            updated_at: checked_at.to_rfc3339(),
+            database_path: "/tmp/vault/ganbaru-ai.sqlite".into(),
+            configuration_digest: None,
+            limits: vec![LimitStateItem {
+                id: "habit".into(),
+                period: "day".into(),
+                window_start_local_date: "2026-10-02".into(),
+                window_end_local_date: "2026-10-02".into(),
+                used_seconds: 60,
+                limit_seconds: 60,
+                remaining_seconds: 0,
+                exhausted: true,
+            }],
+        };
+        assert!(limit_state_is_fresh_at(
+            &state,
+            Some(vault),
+            checked_at,
+            "2026-10-02"
+        ));
+        assert!(!limit_state_is_fresh_at(
+            &state,
+            Some(vault),
+            checked_at,
+            "2026-10-03"
+        ));
+        assert!(!limit_state_is_fresh_at(
+            &state,
+            Some(vault),
+            checked_at - chrono::Duration::milliseconds(1),
+            "2026-10-02"
+        ));
+        assert!(!limit_state_is_fresh_at(
+            &state,
+            Some(vault),
+            checked_at + chrono::Duration::milliseconds(20_001),
+            "2026-10-02"
+        ));
+        state.limits[0].exhausted = false;
+        assert!(!limit_state_is_fresh_at(
+            &state,
+            Some(vault),
+            checked_at,
+            "2026-10-02"
+        ));
+        assert!(!is_valid_local_date("2026-02-29"));
+    }
 }

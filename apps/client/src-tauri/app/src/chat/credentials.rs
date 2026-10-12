@@ -1,8 +1,8 @@
 //! Operating-system credential storage for Chat secrets.
 
-use super::models::CredentialReferenceId;
+use ganbaru_chat_contracts::models::CredentialReferenceId;
 
-pub use ganbaru_chat::chat::credentials::*;
+pub use ganbaru_chat::credentials::*;
 
 const CHAT_CREDENTIAL_SERVICE: &str = "com.ganbaru-ai.chat";
 const AVAILABILITY_PROBE_REFERENCE: &str = "credential-store-availability-probe";

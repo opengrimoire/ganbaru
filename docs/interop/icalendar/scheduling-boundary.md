@@ -1,95 +1,41 @@
 # Scheduling boundary
 
-iCalendar scheduling metadata is data. Sending scheduling messages is a separate capability.
+Status: Reference. Scheduling metadata is preserved offline; transport-backed scheduling is Planned.
+
+iCalendar scheduling metadata is data. Sending scheduling messages is a separate capability that needs identity and a transport. See the [decision record](./decisions.md#2026-05-14-preserve-scheduling-metadata-but-do-not-act-without-transport).
 
 ## Offline compatibility
 
-Ganbaru AI can parse, preserve, edit carefully, and export scheduling-related fields offline:
+Without any account, Ganbaru AI parses, preserves, and exports scheduling fields: `METHOD`, `ORGANIZER`, `ATTENDEE` with `PARTSTAT`, `RSVP`, `ROLE`, `CUTYPE`, `DELEGATED-FROM`, `DELEGATED-TO`, `SENT-BY`, and `MEMBER`, `REQUEST-STATUS`, `STATUS:CANCELLED`, and the recurrence overrides used for updates and cancellations.
 
-- `METHOD`
-- `ORGANIZER`
-- `ATTENDEE`
-- `PARTSTAT`
-- `RSVP`
-- `ROLE`
-- `CUTYPE`
-- `DELEGATED-FROM`
-- `DELEGATED-TO`
-- `SENT-BY`
-- `MEMBER`
-- `REQUEST-STATUS`
-- `STATUS:CANCELLED`
-- recurrence overrides used for updates and cancellations
+## Transport-backed actions (planned)
 
-This requires no account setup.
-
-## Transport-backed actions
-
-These actions require identity and transport:
-
-- send meeting invitations
-- send cancellation messages
-- send RSVP replies
-- update someone else's calendar
-- notify attendees
-- send email alarms
-- sync with Google Calendar, CalDAV, Outlook, or another remote provider
-
-Future transports may include:
-
-- user-configured email
-- CalDAV
-- Google Calendar integration
-- Microsoft integration
-- local `.ics` invitation file export
-
-No transport should be required for base import/export compatibility.
+These require identity and a user-configured transport (email, CalDAV, Google, Microsoft, or another provider): sending invitations, cancellations, and RSVP replies; updating someone else's calendar; notifying attendees; sending email alarms; and remote sync. No transport is required for base import and export.
 
 ## UI policy
 
-Until Ganbaru AI has an identity model:
+Ganbaru AI has no identity model yet. Therefore:
 
-- attendee response status is read-only.
-- the app must not let a user accept, decline, or tentatively accept as another attendee.
-- organizer and attendee data can be displayed as imported metadata.
-- offline edits should not imply that attendees were notified.
-- local placeholder RSVP state may be stored for UI patterns, but it is app-local metadata and must not be exported as an `ATTENDEE`.
+- Imported attendee response status is read-only metadata, not proof that a reply was sent.
+- The user cannot accept, decline, or tentatively accept as another attendee.
+- Organizer-side edits, such as marking a guest optional, are allowed only where editing the event is allowed.
+- Offline edits never imply that attendees were notified.
+- Local RSVP state is app-local metadata and is never exported as an `ATTENDEE`.
 
-If future identity support exists:
+With future identity support, the app can match the current user's attendee row and update it, but sending the reply still requires a transport.
 
-- the app can identify the attendee row matching the current user.
-- RSVP actions can update that attendee row.
-- sending the reply still requires a configured transport.
+## Import and export
 
-## Import policy
+- Import preserves `METHOD` and all organizer and attendee parameters, projects event data where possible, and treats the result as the user's local copy.
+- Export reuses a preserved `METHOD` only when the calendar has exactly one valid distinct method. Missing, invalid, or mixed methods normalize to `METHOD:PUBLISH`, because the generated `VCALENDAR` carries one object-level method. This fallback does not preserve the meaning of mixed methods; a future backup mode may omit `METHOD` instead.
+- Ordinary export never generates `METHOD:REQUEST` and never fabricates attendee replies.
+- Planned: user-visible diagnostics when an edited offline invitation is exported, and an import note that invitation workflow semantics are not acted on.
 
-When importing scheduling components:
+## Future export modes
 
-- preserve `METHOD`.
-- preserve organizer and attendee parameters.
-- project event data into calendar rows when possible.
-- warn that invitation workflow semantics are not acted on.
-- treat imported data as the user's local copy unless a future sync source says otherwise.
+Each mode should declare whether it preserves, strips, or generates scheduling metadata:
 
-## Export policy
-
-When exporting scheduling metadata:
-
-- preserve original scheduling fields when no unsafe edit occurred.
-- include diagnostics for edited offline invitations once user-visible export diagnostics are implemented.
-- avoid generating `METHOD:REQUEST` for ordinary local calendar export unless the source calendar has one distinct preserved scheduling method or the user explicitly exports an invitation.
-- current calendar export normalizes missing, invalid, or mixed preserved methods to `METHOD:PUBLISH`, because the generated `VCALENDAR` emits one object-level method.
-- do not fabricate attendee replies.
-
-The `METHOD:PUBLISH` fallback is a current export-normalization choice, not a claim that mixed scheduling semantics were preserved without loss. A future calendar-backup mode may instead omit `METHOD` when no single scheduling method truthfully describes the output.
-
-## Future scheduling modes
-
-Suggested explicit modes:
-
-- **Calendar backup export:** exports calendar data, no send semantics.
-- **Invitation file export:** exports one event as a scheduling object for manual sending.
-- **Transport send:** sends via configured email, CalDAV, or provider API.
-- **Subscription export:** produces a read-only feed shape.
-
-Each mode should declare whether it preserves, strips, or generates scheduling metadata.
+- **Calendar backup:** calendar data with no send semantics.
+- **Invitation file:** one event as a scheduling object for manual sending.
+- **Transport send:** delivery through a configured email, CalDAV, or provider API.
+- **Subscription feed:** a read-only feed shape.

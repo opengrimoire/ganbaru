@@ -6,7 +6,7 @@ plugins {
 }
 
 android {
-    namespace = "app.ganbaru.mobile_documents"
+    namespace = "org.opengrimoire.ganbaruai.mobile.documents"
     compileSdk = 36
 
     defaultConfig {

@@ -1,0 +1,58 @@
+[
+  {
+    "name": "COUNT is bounded before excluding the original",
+    "startDate": "2026-03-15", "endDate": "2026-03-15", "count": 3, "until": null,
+    "exceptions": ["2026-03-15"], "rdate": [],
+    "windowStart": "2026-03-01", "windowEnd": "2026-04-01",
+    "expectedDates": ["2026-03-16", "2026-03-17"]
+  },
+  {
+    "name": "COUNT is bounded before excluding a later occurrence",
+    "startDate": "2026-03-15", "endDate": "2026-03-15", "count": 3, "until": null,
+    "exceptions": ["2026-03-16"], "rdate": [],
+    "windowStart": "2026-03-01", "windowEnd": "2026-04-01",
+    "expectedDates": ["2026-03-15", "2026-03-17"]
+  },
+  {
+    "name": "excluding every counted date cannot generate replacement occurrences",
+    "startDate": "2026-03-15", "endDate": "2026-03-15", "count": 3, "until": null,
+    "exceptions": ["2026-03-15", "2026-03-16", "2026-03-17"], "rdate": [],
+    "windowStart": "2026-03-01", "windowEnd": "2026-04-01",
+    "expectedDates": []
+  },
+  {
+    "name": "additional dates remain independent of RRULE UNTIL",
+    "startDate": "2026-03-15", "endDate": "2026-03-15", "count": null, "until": "2026-03-16",
+    "exceptions": [], "rdate": ["2026-03-20"],
+    "windowStart": "2026-03-01", "windowEnd": "2026-04-01",
+    "expectedDates": ["2026-03-15", "2026-03-16", "2026-03-20"]
+  },
+  {
+    "name": "additional dates remain independent of COUNT and deduplicate each other",
+    "startDate": "2026-03-15", "endDate": "2026-03-15", "count": 1, "until": null,
+    "exceptions": [], "rdate": ["2026-03-20", "2026-03-20", "2026-03-15"],
+    "windowStart": "2026-03-01", "windowEnd": "2026-04-01",
+    "expectedDates": ["2026-03-15", "2026-03-20"]
+  },
+  {
+    "name": "exclusions take precedence over additional dates after UNTIL",
+    "startDate": "2026-03-15", "endDate": "2026-03-15", "count": null, "until": "2026-03-16",
+    "exceptions": ["2026-03-20"], "rdate": ["2026-03-20", "2026-03-21"],
+    "windowStart": "2026-03-01", "windowEnd": "2026-04-01",
+    "expectedDates": ["2026-03-15", "2026-03-16", "2026-03-21"]
+  },
+  {
+    "name": "fast-forward includes earlier starts whose multi-day span overlaps",
+    "startDate": "2026-03-15", "endDate": "2026-03-17", "count": 5, "until": null,
+    "exceptions": [], "rdate": [],
+    "windowStart": "2026-03-19", "windowEnd": "2026-03-19",
+    "expectedDates": ["2026-03-17", "2026-03-18", "2026-03-19"]
+  },
+  {
+    "name": "window navigation does not restart COUNT after excluded earlier dates",
+    "startDate": "2026-03-15", "endDate": "2026-03-15", "count": 5, "until": null,
+    "exceptions": ["2026-03-16", "2026-03-17"], "rdate": [],
+    "windowStart": "2026-03-18", "windowEnd": "2026-04-01",
+    "expectedDates": ["2026-03-18", "2026-03-19"]
+  }
+]

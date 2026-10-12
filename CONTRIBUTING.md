@@ -42,7 +42,7 @@ Before opening a PR:
 
 1. Make sure the branch is based on current `dev`.
 2. Keep unrelated edits out of the branch.
-3. Update relevant specs when the change affects product behavior, data, architecture, commands, configuration, or user-visible workflow.
+3. Update the owning doc when the change alters intended behavior, a data or security invariant, a public contract, or an important decision. See the maintenance rules in [docs/README.md](docs/README.md).
 4. Run the relevant local gate from `AGENTS.md`. For normal code and UI changes, use `pnpm -w run validate`.
 5. Include a short PR summary and note any checks that were not run.
 
@@ -50,19 +50,6 @@ When a PR should not appear in generated release notes, add the `skip-changelog`
 
 ## Release pull requests
 
-Release PRs merge `dev` into `main` after accepted work and release preparation are ready. Use a direct `dev` to `main` pull request so the release source matches the integration branch. Do not update `dev` with `main` only to satisfy the release PR; `main` uses merge queue to validate the merge result without adding release merge commits to `dev`.
+Release PRs come directly from `dev` into `main` and land through the `main` merge queue, so `dev` never needs to be updated with `main`. Version bumps happen beforehand through a normal pull request into `dev`. After the release commit lands, an organization admin tags it with `app-v*`, which builds a draft GitHub Release; publishing that draft updates the apt, RPM, and AUR packages. Pull requests that target `main` and do not come from `dev` should be retargeted to `dev` or closed.
 
-Before opening a release PR:
-
-1. Verify `dev` is green.
-2. If needed, update the app version in `apps/client/package.json`, `apps/client/src-tauri/Cargo.toml`, and `apps/client/src-tauri/tauri.conf.json` through a normal pull request into `dev`.
-3. Run `pnpm -w run validate:full`.
-4. Open a pull request from `dev` into `main`.
-5. Summarize the user-facing changes since the previous release.
-6. After review and green pull request checks, add the PR to the `main` merge queue.
-
-After the merge queue lands the release PR in `main`, create and push the matching `app-v*` tag from the release commit. The release workflow builds signed assets and creates or updates a draft GitHub Release with generated notes. Inspect the draft release before publishing. Publishing the GitHub Release updates the apt, RPM, and AUR package paths.
-
-Pull requests that target `main` and do not come from `dev` should be retargeted to `dev` or closed.
-
-See the [release guide](docs/operations/release/README.md) for the full release process.
+The [release guide](docs/operations/release/README.md) owns the full procedure.

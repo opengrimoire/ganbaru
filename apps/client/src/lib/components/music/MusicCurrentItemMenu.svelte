@@ -1,21 +1,25 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import Check from "@lucide/svelte/icons/check";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import ListTodo from "@lucide/svelte/icons/list-todo";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
-  import MusicPlaylistIcon from "./builder/MusicPlaylistIcon.svelte";
+  import MusicPlaylistIcon from "$lib/components/music/builder/MusicPlaylistIcon.svelte";
+  import Checkbox from "$lib/components/ui/Checkbox.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import {
     bulkEditMusicMemberships,
     getMusicMembershipMatrix,
     getMusicPlaylistSummaries,
   } from "$lib/api/music-library";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { notifyMusicLibraryChanged } from "$lib/music/music-library-events";
-  import type { MusicPlaylistSummary } from "$lib/music/library-contracts";
-  import { sortReviewPlaylists } from "$lib/music/music-review";
-  import { systemMusicPlaylistName } from "$lib/music/music-system-playlists";
+  import { notifyMusicLibraryChanged } from "$lib/music/library/events";
+  import type { MusicPlaylistSummary } from "$lib/music/library/contracts";
+  import { sortReviewPlaylists } from "$lib/music/review";
+  import { systemMusicPlaylistName } from "$lib/music/playlists/system";
   import { getMusicPlayer } from "$lib/stores/music-player.svelte";
+  import { cn } from "$lib/utils";
+  import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
 
   let { onOpenBuilder, active = true }: {
     onOpenBuilder: (itemId: string | null) => void;
@@ -137,7 +141,7 @@
         removePlaylistIds,
         weightPlaylistIds: [],
         weight: null,
-        updatedAt: Date.now(),
+        updatedAtMs: Date.now(),
       });
       notifyMusicLibraryChanged();
       if (open && request === generation && itemId === targetItemId) {
@@ -163,32 +167,30 @@
 <div bind:this={root} class="relative">
   <button bind:this={trigger} type="button" onclick={activate} class="inline-flex h-9 w-9 items-center justify-center rounded-md bg-secondary text-secondary-foreground transition-colors hover:bg-accent" aria-label={available ? t("music.itemMenu.actions") : t("music.playlistBuilder")} aria-expanded={open} aria-haspopup={available ? "dialog" : undefined}><ListTodo size={15} /></button>
   {#if open}
-    <div role="dialog" aria-label={t("music.itemMenu.actions")} class="absolute bottom-[calc(100%+0.45rem)] right-0 z-40 flex max-h-[calc(100vh-1rem)] w-[min(19rem,calc(100vw-1rem))] flex-col rounded-xl border border-border/75 bg-popover p-3 text-popover-foreground shadow-md">
-      <h2 class="px-1 text-xs font-semibold">{t("music.launcher.playlists")}</h2>
-      {#if error}<p class="mt-2 px-1 text-xs text-destructive" role="alert">{error}</p>{/if}
-      <div class="mt-2 h-56 min-h-0 shrink overflow-y-auto" data-music-scrollable="true">
+    <div role="dialog" aria-label={t("music.itemMenu.actions")} class="surface-floating absolute bottom-[calc(100%+0.45rem)] right-0 z-40 flex max-h-[calc(100vh-1rem)] w-floating-lg flex-col overflow-hidden">
+      <h2 class="shrink-0 px-3 pb-1 pt-2.5 font-semibold">{t("music.launcher.playlists")}</h2>
+      {#if error && playlists.length > 0}<Notice class="shrink-0 px-3 text-panel-detail" message={error} />{/if}
+      <div use:scrollEdgeFadeAction class="surface-floating-body h-56 min-h-0 shrink overflow-y-auto" data-music-scrollable="true">
         {#if loading}
-          <div class="flex h-full items-center justify-center" aria-label={t("music.itemMenu.loading")}><LoaderCircle class="animate-spin motion-reduce:animate-none" size={17} strokeWidth={2.6} /></div>
+          <Loading layout="rows" rows={3} label={t("music.itemMenu.loading")} />
         {:else if error && playlists.length === 0}
-          <button type="button" onclick={() => { if (itemId) void loadPlaylists(itemId); }} class="mx-1 my-4 rounded-md px-2 py-1 text-xs font-medium text-foreground hover:bg-accent/60">{t("common.retry")}</button>
+          <Notice layout="fill" class="text-panel-detail" message={error} onRetry={() => (itemId ? loadPlaylists(itemId) : undefined)} />
         {:else if playlists.length === 0}
-          <p class="px-1 py-5 text-xs text-muted-foreground">{t("music.itemMenu.noPlaylists")}</p>
+          <p class="px-2 py-5 text-muted-foreground">{t("music.itemMenu.noPlaylists")}</p>
         {:else}
-          <div class="space-y-0.5">
-            {#each sortedPlaylists as playlist (playlist.id)}
-              {@const selected = draftIds.has(playlist.id)}
-              <button type="button" onclick={() => togglePlaylist(playlist.id)} disabled={saving} aria-pressed={selected} aria-label={selected ? t("music.builder.removeFromPlaylist", playlist.name) : t("music.builder.addToPlaylist", playlist.name)} class="flex min-h-9 w-full items-center gap-2 rounded-lg px-1.5 text-left text-xs transition-colors hover:bg-accent/60 disabled:cursor-wait aria-pressed:bg-primary/10">
-                <span class="grid h-6 w-6 shrink-0 place-items-center"><MusicPlaylistIcon icon={playlist.icon} size={15} /></span>
-                <span class="min-w-0 flex-1 truncate">{systemMusicPlaylistName(playlist.id, playlist.name, t)}</span>
-                <span class={selected ? "grid h-4 w-4 shrink-0 place-items-center rounded border border-primary bg-primary text-primary-foreground" : "grid h-4 w-4 shrink-0 place-items-center rounded border border-border"}>{#if selected}<Check size={11} strokeWidth={2.5} />{/if}</span>
-              </button>
-            {/each}
-          </div>
+          {#each sortedPlaylists as playlist (playlist.id)}
+            {@const selected = draftIds.has(playlist.id)}
+            <label class={cn("menu-item", saving ? "cursor-wait" : "cursor-pointer")}>
+              <span class="grid h-6 w-6 shrink-0 place-items-center"><MusicPlaylistIcon icon={playlist.icon} size={15} /></span>
+              <span class="min-w-0 flex-1 truncate">{systemMusicPlaylistName(playlist.id, playlist.name, t)}</span>
+              <Checkbox checked={selected} disabled={saving} onChange={() => togglePlaylist(playlist.id)} label={selected ? t("music.builder.removeFromPlaylist", playlist.name) : t("music.builder.addToPlaylist", playlist.name)} />
+            </label>
+          {/each}
         {/if}
       </div>
-      <div class="mt-3 flex items-center justify-between gap-2">
-        <button type="button" onclick={openBuilder} class="inline-flex h-8 items-center gap-0.5 rounded-md px-1.5 text-xs font-medium text-muted-foreground hover:bg-accent/60 hover:text-foreground">{t("music.itemMenu.openInBuilder")}<ChevronRight size={13} /></button>
-        <button type="button" onclick={() => { void save(); }} disabled={!changed || loading || saving} class="inline-flex h-8 min-w-16 items-center justify-center rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground disabled:cursor-not-allowed disabled:bg-secondary disabled:text-muted-foreground">{#if saving}<LoaderCircle class="animate-spin motion-reduce:animate-none" size={14} strokeWidth={2.5} />{:else}{t("common.save")}{/if}</button>
+      <div class="flex shrink-0 items-center justify-between gap-2 border-t border-border p-1.5">
+        <button type="button" onclick={openBuilder} class="inline-flex h-8 items-center gap-0.5 rounded-floating-item px-2 font-medium text-muted-foreground hover:bg-accent hover:text-foreground">{t("music.itemMenu.openInBuilder")}<ChevronRight size={13} /></button>
+        <button type="button" onclick={() => { void save(); }} disabled={!changed || loading || saving} class="inline-flex h-8 min-w-16 items-center justify-center rounded-floating-item bg-primary px-3 font-semibold text-primary-foreground disabled:cursor-not-allowed disabled:bg-secondary disabled:text-muted-foreground">{#if saving}<LoaderCircle class="animate-spin motion-reduce:animate-none" size={14} strokeWidth={2.5} />{:else}{t("common.save")}{/if}</button>
       </div>
     </div>
   {/if}

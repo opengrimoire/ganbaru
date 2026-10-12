@@ -1,0 +1,19 @@
+[package]
+name = "ganbaru-music-player"
+version = "0.1.0"
+description = "Ganbaru AI desktop local media inspection and native playback for Music sessions"
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+ganbaru-music-library = { workspace = true }
+rodio = { workspace = true }
+serde = { workspace = true }

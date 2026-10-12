@@ -1,4 +1,4 @@
-import type { CalendarEvent } from "$lib/components/calendar/types";
+import type { CalendarEvent } from "$lib/calendar/types";
 
 /**
  * Result of parsing a `.ics` file: events ready for upsert plus warnings about

@@ -6,55 +6,53 @@ Ganbaru AI stores calendar, work, Notes, browsing-control, focus, and AI convers
 
 The application must limit:
 
-- compromised or malicious dependencies during development, build, install, and runtime;
-- untrusted provider processes, provider protocol events, repository content, Markdown, terminal output, URLs, media metadata, imports, and native callbacks;
-- a webview or frontend defect attempting to exceed its narrow native commands;
-- path traversal, symlink escape, replaced external folders, stale Git identity, and unsafe archive or import expansion;
-- accidental disclosure through logs, diagnostics, search, summaries, exports, attachments, caches, and cross-channel references;
-- network observation or server-side plaintext access when future synchronization is enabled;
-- release, updater, package-repository, and CI credential compromise.
+- Compromised or malicious dependencies during development, build, install, and runtime.
+- Untrusted provider processes, provider protocol events, repository content, Markdown, terminal output, URLs, media metadata, imports, and native callbacks.
+- A webview or frontend defect attempting to exceed its narrow native commands.
+- Path traversal, symlink escape, replaced external folders, stale Git identity, and unsafe archive or import expansion.
+- Accidental disclosure through logs, diagnostics, search, summaries, exports, attachments, caches, and cross-channel references.
+- Network observation of device linking, and server-side plaintext access when future remote synchronization is enabled.
+- Release, updater, package-repository, and CI credential compromise.
 
-The application can constrain native processes it starts and the data it deliberately sends to external services. It cannot stop arbitrary same-user malware from reading an unencrypted vault through ordinary operating-system access. Local data is not application-encrypted. The security boundary assumes the user's operating-system account and disk encryption protect files at rest.
+The application can constrain native processes it starts and the data it deliberately sends to external services. It cannot stop same-user malware from reading an unencrypted vault through ordinary operating-system access. Local data is not application-encrypted; the operating-system account and disk encryption protect files at rest (see [Network and privacy](network-and-privacy.md#local-data-encryption)).
 
-The application also does not defend against a user intentionally modifying their own database, a determined attacker with physical access to an unlocked or unencrypted device, or an AI provider retaining content according to its own policy after the user chose to send it.
+The application also does not defend against a user intentionally modifying their own database, an attacker with physical access to an unlocked or unencrypted device, or an AI provider retaining content according to its own policy after the user chose to send it.
 
 ## Trust boundaries
 
-Rust application services are the policy boundary for filesystem, process, credential, database, import, export, update, and operating-system operations. The Svelte webview receives validated DTOs and scoped commands, not ambient shell or filesystem access.
+Rust application services are the policy boundary for filesystem, process, credential, database, import, export, update, network, and operating-system operations. The Svelte webview receives validated DTOs and scoped commands, not ambient shell or filesystem access.
 
 Provider-native trust never widens organizational authority. Portable IDs do not authorize a device path. User-authored text, mentions, URLs, repository instructions, and provider events are data, not commands or grants.
 
-The active vault is user-owned durable storage. The platform app config directory is trusted only for device-local bootstrap and binding state. Secrets are resolved through native credential storage and are not copied into ordinary config, SQLite, diagnostics, or provider DTOs.
+The active vault is user-owned durable storage. The platform app config directory is trusted only for device-local bootstrap, binding, and pairing state. Secrets are resolved through native credential storage and are not copied into ordinary config, SQLite, diagnostics, or provider DTOs.
 
-## Security documents
+## Status
 
-- [Supply chain](supply-chain.md) covers dependencies, CI, releases, copied code, and contributor rules.
-- [Application boundaries](application-boundaries.md) covers Tauri capabilities, native I/O, imports, assets, Notes, overlays, and loopback services.
-- [Unsafe Rust](unsafe-rust.md) defines the first-party unsafe-code policy and records reviewed native and FFI boundaries.
-- [Chat security](chat.md) covers provider processes, working folders, terminals, attachments, previews, checkpoints, and internal host tools.
-- [Network and privacy](network-and-privacy.md) covers telemetry, current and future network flows, local encryption, sync encryption, and metadata exposure.
-- [Dependency audits](dependency-audits.md) records reviewed advisory exceptions and the current warning snapshot.
-- [Chat access control](../access-control.md) is the normative authorization specification.
+Local LAN device linking and single-writer whole-vault handoff are implemented in source: pinned certificates, mutual TLS, single-use invitations, and no relay or account. Concurrent operation sync, the end-to-end encrypted relay, and its key lifecycle remain planned. Both are specified in [Synchronization](../sync.md).
 
-## Status discipline
-
-Device linking remains planned. The accepted enrollment, encrypted relay, key lifecycle,
-revocation and recovery boundaries are recorded in [Synchronization](../sync.md). No sync
-endpoint or key store is enabled by the local focus and SQLite durability prerequisites.
-
-Current local features, proposed architecture, and future security requirements must be labeled separately. Remote synchronization, hosted BYOK chat, an external MCP service, and the ganbaru-ai CLI are not implemented. Security requirements for them remain normative design constraints, not claims about current traffic or capability.
+Remote synchronization, hosted BYOK chat, an external MCP service, and the `ganbaru-ai` CLI are not implemented. Their security requirements are normative design constraints, not claims about current traffic or capability. Documents must label current behavior and planned requirements separately.
 
 ## Required properties
 
 Across domains:
 
-- deny unknown, stale, oversized, malformed, or unsupported input;
-- validate before mutation and again at the privileged boundary;
-- use bounded reads, writes, decompression, parsing, process output, queues, and worker counts;
-- remove secrets and unnecessary absolute paths from persisted errors and diagnostics;
-- use explicit allowlists for native commands, URL schemes, origins, file types, and tool methods;
-- preserve user-authored data when a safe repair or export path exists;
-- make cleanup retryable when immediate deletion is unsafe;
-- keep security-sensitive decisions in testable Rust services rather than presentation code.
+- Deny unknown, stale, oversized, malformed, or unsupported input.
+- Validate before mutation and again at the privileged boundary.
+- Bound reads, writes, decompression, parsing, process output, queues, and worker counts.
+- Remove secrets and unnecessary absolute paths from persisted errors and diagnostics.
+- Use explicit allowlists for native commands, URL schemes, origins, file types, and tool methods.
+- Preserve user-authored data when a safe repair or export path exists.
+- Make cleanup retryable when immediate deletion is unsafe.
+- Keep security-sensitive decisions in testable Rust services rather than presentation code.
 
-Security documentation records rationale and policy. Exact capabilities, CSP directives, URL scopes, and dependency versions remain authoritative in configuration and lockfiles and must be reviewed when they change.
+These documents record rationale and policy. Exact capabilities, CSP directives, URL scopes, and dependency versions are authoritative in configuration and lockfiles and must be reviewed when they change.
+
+## Security documents
+
+- [Supply chain](supply-chain.md): dependencies, CI, releases, copied code, and contributor rules.
+- [Application boundaries](application-boundaries.md): Tauri capabilities, CSP, native I/O, imports, assets, Notes, overlays, and loopback services.
+- [Chat security](chat.md): provider processes, working folders, terminals, attachments, previews, checkpoints, and internal host tools.
+- [Network and privacy](network-and-privacy.md): telemetry, current and planned network flows, local encryption, sync encryption, and data minimization.
+- [Unsafe Rust](unsafe-rust.md): first-party unsafe-code policy and the reviewed native and FFI boundary inventory.
+- [Dependency audits](dependency-audits.md): reviewed advisory exceptions and allowed warnings.
+- [Chat access control](../access-control.md): the normative authorization specification.

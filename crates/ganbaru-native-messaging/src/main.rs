@@ -14,8 +14,8 @@ use events::log_block_event;
 use linked_usage::{UsageSample, record_usage_sample};
 use rules::{decide_url_with_limits, feed_fingerprint, host_from_url, rules_fingerprint};
 use snapshot::{
-    StateSnapshot, config_dir_candidates, load_snapshot, runtime_status, should_enforce,
-    valid_local_date,
+    StateSnapshot, config_dir_candidates, is_valid_local_date, load_snapshot, runtime_status,
+    should_enforce,
 };
 
 fn block_on<F: std::future::Future>(future: F) -> F::Output {
@@ -27,9 +27,9 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
 }
 
 // Chromium native messaging host names allow underscores but not hyphens.
-const HOST_NAME: &str = "org.opengrimoire.ganbaru_ai.doomscrolling";
-const DEV_HOST_NAME: &str = "org.opengrimoire.ganbaru_ai.doomscrolling_dev";
-const EXTENSION_CONNECTION_FILE: &str = "doomscrolling-extension-status.json";
+const HOST_NAME: &str = "org.opengrimoire.ganbaru_ai.distractions";
+const DEV_HOST_NAME: &str = "org.opengrimoire.ganbaru_ai.distractions_dev";
+const EXTENSION_CONNECTION_FILE: &str = "distractions-extension-status.json";
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -43,7 +43,7 @@ struct NativeRequest {
     source_key: Option<String>,
     display_name: Option<String>,
     elapsed_seconds: Option<i64>,
-    started_at: Option<i64>,
+    started_at_ms: Option<i64>,
     local_date: Option<String>,
 }
 
@@ -113,7 +113,7 @@ fn run() -> Result<NativeResponse, String> {
     if request.message_type == "decide_url" {
         if let Some(host) = normalized_request_host(&request) {
             response.host = Some(host.clone());
-            let regular_rules_active = should_enforce(&snapshot, &mut response);
+            let regular_rules_active = should_enforce(&snapshot, &response);
             let decision = decide_url_with_limits(
                 &host,
                 request.url.as_deref(),
@@ -121,7 +121,7 @@ fn run() -> Result<NativeResponse, String> {
                 snapshot.limit_state.as_ref(),
                 regular_rules_active,
             );
-            response.blocked = decision.blocked();
+            response.blocked = decision.is_blocked();
             response.matched_rule_name = decision.matched_rule_name();
             if response.blocked && request.log_event.unwrap_or(true) {
                 log_block_event(&snapshot, &host, &decision);
@@ -162,14 +162,14 @@ fn write_text_file_atomically(path: &Path, contents: &str) -> Result<(), String>
         .file_name()
         .ok_or_else(|| "connection status path has no file name".to_string())?
         .to_string_lossy();
-    let tmp_path = parent.join(format!("{file_name}.tmp"));
+    let temporary_path = parent.join(format!("{file_name}.tmp"));
     {
-        let mut file = std::fs::File::create(&tmp_path).map_err(|e| e.to_string())?;
+        let mut file = std::fs::File::create(&temporary_path).map_err(|e| e.to_string())?;
         file.write_all(contents.as_bytes())
             .map_err(|e| e.to_string())?;
         file.sync_all().map_err(|e| e.to_string())?;
     }
-    std::fs::rename(&tmp_path, path).map_err(|e| e.to_string())
+    std::fs::rename(&temporary_path, path).map_err(|e| e.to_string())
 }
 
 fn extension_connection_dir(config_dir: Option<&Path>) -> Option<PathBuf> {
@@ -182,14 +182,14 @@ fn record_extension_connection(
     config_dir: Option<&Path>,
     message_type: &str,
 ) -> Result<(), String> {
-    let dir = extension_connection_dir(config_dir)
+    let status_dir = extension_connection_dir(config_dir)
         .ok_or_else(|| "app config directory is unavailable".to_string())?;
     let payload = serde_json::json!({
         "lastSeenAt": now_utc().to_rfc3339_opts(SecondsFormat::Millis, true),
         "lastMessageType": message_type,
     });
     let json = serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?;
-    write_text_file_atomically(&dir.join(EXTENSION_CONNECTION_FILE), &json)
+    write_text_file_atomically(&status_dir.join(EXTENSION_CONNECTION_FILE), &json)
 }
 
 fn read_native_message() -> Result<NativeRequest, String> {
@@ -287,17 +287,17 @@ fn normalize_usage_sample(request: &NativeRequest) -> Result<UsageSample, String
     if elapsed_seconds <= 0 || elapsed_seconds > 86_400 {
         return Err("usage elapsedSeconds must be between 1 and 86400".to_string());
     }
-    let started_at = request
-        .started_at
+    let started_at_ms = request
+        .started_at_ms
         .ok_or_else(|| "usage startedAt is required".to_string())?;
-    if started_at < 0 {
+    if started_at_ms < 0 {
         return Err("usage startedAt must be non-negative".to_string());
     }
     let local_date = request
         .local_date
         .clone()
         .ok_or_else(|| "usage localDate is required".to_string())?;
-    if !valid_local_date(&local_date) {
+    if !is_valid_local_date(&local_date) {
         return Err("usage localDate must use yyyy-mm-dd".to_string());
     }
     let display_name = request.display_name.as_ref().and_then(|value| {
@@ -308,7 +308,7 @@ fn normalize_usage_sample(request: &NativeRequest) -> Result<UsageSample, String
     for value in [
         source_type,
         source_key.as_str(),
-        &started_at.to_string(),
+        &started_at_ms.to_string(),
         &elapsed_seconds.to_string(),
         local_date.as_str(),
     ] {
@@ -319,10 +319,10 @@ fn normalize_usage_sample(request: &NativeRequest) -> Result<UsageSample, String
         source_type: source_type.to_string(),
         source_key,
         display_name,
-        started_at,
+        started_at_ms,
         elapsed_seconds,
         local_date,
-        created_at: now_epoch_ms(),
+        created_at_ms: now_epoch_ms(),
     })
 }
 

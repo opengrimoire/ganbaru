@@ -15,12 +15,12 @@ const DEFAULT_INDEX = APP_ZOOM_LEVELS.indexOf(1);
 
 function findClosestIndex(level: number): number {
   let best = 0;
-  let bestDist = Math.abs(APP_ZOOM_LEVELS[0] - level);
+  let bestDistance = Math.abs(APP_ZOOM_LEVELS[0] - level);
   for (let i = 1; i < APP_ZOOM_LEVELS.length; i++) {
-    const dist = Math.abs(APP_ZOOM_LEVELS[i] - level);
-    if (dist < bestDist) {
+    const distance = Math.abs(APP_ZOOM_LEVELS[i] - level);
+    if (distance < bestDistance) {
       best = i;
-      bestDist = dist;
+      bestDistance = distance;
     }
   }
   return best;

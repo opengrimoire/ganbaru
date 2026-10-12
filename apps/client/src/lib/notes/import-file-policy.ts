@@ -1,5 +1,4 @@
-import type { Translate } from "$lib/i18n/translator.svelte";
-import type { NotesFileAssetMetadata, NotesMediaBlockType } from "./media";
+import type { NotesMediaBlockType } from "$lib/notes/block-types/media";
 
 export const NOTES_IMPORT_FILE_CONTEXTS = [
   "notion_export",
@@ -43,13 +42,6 @@ export interface NotesImportFileDiagnostic {
   message: string;
 }
 
-export interface NotesImportFileReferenceResult {
-  action: NotesImportFileAction;
-  asset: NotesFileAssetMetadata | null;
-  externalUrl: string | null;
-  diagnostics: NotesImportFileDiagnostic[];
-}
-
 export function classifyNotesImportFileReference(
   reference: string,
 ): NotesImportFileReferenceKind {
@@ -69,44 +61,4 @@ export function notesImportFileChoicesForReference(
   if (kind === "empty" || kind === "managed_asset") return ["skip"];
   if (kind === "external_url") return ["keep_external_reference", "skip"];
   return hasImportRoot ? ["copy_local_file", "skip"] : ["skip"];
-}
-
-export function notesImportFileChoiceLabel(
-  t: Translate,
-  choice: NotesImportFileChoice,
-): string {
-  if (choice === "copy_local_file") return t("notes.importFileChoiceCopy");
-  if (choice === "keep_external_reference") return t("notes.importFileChoiceKeepExternal");
-  return t("notes.importFileChoiceSkip");
-}
-
-export function notesImportFileDiagnosticText(
-  t: Translate,
-  diagnostic: NotesImportFileDiagnostic,
-): string {
-  if (diagnostic.code === "import_reference_copied") return t("notes.importFileCopied");
-  if (diagnostic.code === "import_reference_external_kept") {
-    return t("notes.importFileExternalKept");
-  }
-  if (diagnostic.code === "import_reference_skipped") return t("notes.importFileSkipped");
-  if (diagnostic.code === "import_reference_requires_explicit_choice") {
-    return t("notes.importFileChoosePolicy");
-  }
-  if (diagnostic.code === "import_reference_external_requires_https") {
-    return t("notes.importFileRequiresHttps");
-  }
-  if (diagnostic.code === "import_reference_external_unsupported_type") {
-    return t("notes.importFileUnsupportedType");
-  }
-  if (diagnostic.code === "import_reference_external_not_copied") {
-    return t("notes.importFileExternalNotCopied");
-  }
-  if (diagnostic.code === "import_reference_root_required") {
-    return t("notes.importFileRootRequired");
-  }
-  if (diagnostic.code === "import_reference_path_escape") {
-    return t("notes.importFilePathEscape");
-  }
-  if (diagnostic.code === "import_reference_too_large") return t("notes.importFileTooLarge");
-  return diagnostic.message;
 }

@@ -11,42 +11,44 @@
   import Volume2 from "@lucide/svelte/icons/volume-2";
   import VolumeX from "@lucide/svelte/icons/volume-x";
   import CalendarScrollbar from "$lib/components/calendar/CalendarScrollbar.svelte";
-  import MusicPlaylistLauncher from "$lib/components/music/MusicPlaylistLauncher.svelte";
-  import MusicCurrentItemMenu from "$lib/components/music/MusicCurrentItemMenu.svelte";
-  import MusicTrackPreferences from "$lib/components/music/MusicTrackPreferences.svelte";
-  import MusicSnoozeButton from "$lib/components/music/MusicSnoozeButton.svelte";
-  import MusicPlaybackModeControl from "$lib/components/music/MusicPlaybackModeControl.svelte";
-  import MusicSoundscapeControl from "$lib/components/music/MusicSoundscapeControl.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
+  import MusicPlaylistLauncher from "./MusicPlaylistLauncher.svelte";
+  import MusicCurrentItemMenu from "./MusicCurrentItemMenu.svelte";
+  import MusicTrackPreferences from "./MusicTrackPreferences.svelte";
+  import MusicSnoozeButton from "./MusicSnoozeButton.svelte";
+  import MusicPlaybackModeControl from "./MusicPlaybackModeControl.svelte";
+  import MusicSoundscapeControl from "$lib/components/music/soundscape/MusicSoundscapeControl.svelte";
   import MusicPreparationActivity from "$lib/components/music/builder/MusicPreparationActivity.svelte";
   import { revealLocalFile } from "$lib/api/music";
   import { getMusicInspectorDetail, removeMusicSnooze } from "$lib/api/music-library";
-  import { notifyMusicLibraryChanged } from "$lib/music/music-library-events";
+  import { notifyMusicLibraryChanged } from "$lib/music/library/events";
   import { formatPlaybackTime } from "$lib/music/playback";
   import { fittedSidePlaylistPanelHeight } from "$lib/music/panel-layout";
   import {
     MUSIC_PLAYLIST_ROW_HEIGHT_PX,
     musicPlaylistWindow,
-  } from "$lib/music/playlist-window";
+  } from "$lib/music/playlists/window";
   import { getMusicPlayer } from "$lib/stores/music-player.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import { cn } from "$lib/utils";
   import { formatShortcut, hasShortcutModifier } from "$lib/keyboard-shortcuts";
+  import { captureFocusReturn } from "$lib/modal-focus";
   import {
     musicBuilderLoader,
     type MusicBuilderComponent,
     type MusicBuilderInitialAction,
-  } from "$lib/music/music-builder-loader";
-  import { getMusicSourcesController } from "$lib/music/music-sources-controller.svelte";
+  } from "$lib/music/builder/loader";
+  import { getMusicSourcesController } from "$lib/music/sources/controller.svelte";
 
   let {
-    onclose,
+    onClose,
     visible = true,
     presentation = "desktop",
     mobilePlayerPanelStyle = "",
     mobilePlaylistPanelStyle = "",
   }: {
-    onclose: () => void;
+    onClose: () => void;
     visible?: boolean;
     presentation?: "desktop" | "mobile";
     mobilePlayerPanelStyle?: string;
@@ -92,7 +94,7 @@
   let mediaTitleMeasuredCenterPx = $state<number | null>(null);
   let panel = $state<HTMLElement | null>(null);
   let fittedPanelHeightPx = $state<number | null>(null);
-  let returnFocus = $state<HTMLElement | null>(null);
+  let returnFocus: ReturnType<typeof captureFocusReturn> | null = null;
   let previouslyVisible = false;
 
   const mediaSurfaceFullscreenEvent = "ganbaru-ai-music-media-surface-fullscreen";
@@ -280,14 +282,13 @@
 
   $effect(() => {
     if (visible && !previouslyVisible) {
-      returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      returnFocus = captureFocusReturn();
       void tick().then(() => {
         if (visible) panel?.focus();
       });
     } else if (!visible && previouslyVisible) {
-      const target = returnFocus;
+      returnFocus?.(panel);
       returnFocus = null;
-      queueMicrotask(() => target?.focus());
     }
     previouslyVisible = visible;
   });
@@ -376,10 +377,10 @@
     if (!itemId) return;
     const playlistId = player.activePlaylistId;
     const now = Date.now();
-    const active = (await getMusicInspectorDetail(itemId)).snoozes.filter((entry) =>
-      entry.startsAt <= now && (entry.endsAt === null || entry.endsAt > now)
+    const activeSnoozes = (await getMusicInspectorDetail(itemId)).snoozes.filter((entry) =>
+      entry.startsAtMs <= now && (entry.endsAtMs === null || entry.endsAtMs > now)
       && (playlistId === null || entry.scope === "all-playlists" || entry.playlistId === playlistId));
-    await Promise.all(active.map((entry) => removeMusicSnooze(entry.id)));
+    await Promise.all(activeSnoozes.map((entry) => removeMusicSnooze(entry.id)));
     if (player.activeQueueItemIds[index] === itemId && player.activePlaylistId === playlistId) {
       player.clearQueueItemSnooze(index);
     }
@@ -450,7 +451,7 @@
       if (musicPage === "playlist-builder") return;
       if (typeof document !== "undefined" && document.querySelector("[data-app-floating-surface], [data-music-track-preferences-open]")) return;
       claimKeyboardShortcut(event);
-      onclose();
+      onClose();
       return;
     }
     if (event.key === "Tab") {
@@ -711,12 +712,12 @@
   hidden={!visible}
   class={cn("fixed z-40", mobileBuilderPresentation ? "bg-background" : !mobilePresentation && "inset-0")}
   style={mobilePresentation ? "left: var(--visual-viewport-offset-left); top: var(--visual-viewport-offset-top); width: var(--visual-viewport-width); height: var(--visual-viewport-height);" : undefined}
-  onclick={(event) => { if (!mobileBuilderPresentation && event.target === event.currentTarget) onclose(); }}
+  onclick={(event) => { if (!mobileBuilderPresentation && event.target === event.currentTarget) onClose(); }}
 ></div>
 {#if !mobilePresentation}
   <div
     hidden={!visible}
-    class="pointer-events-none fixed right-2 z-50 w-[min(1000px,calc(100vw-1rem))] overflow-hidden rounded-xl shadow-lg"
+    class="pointer-events-none fixed right-2 z-50 w-[min(1000px,calc(100vw-1rem))] overflow-hidden rounded-floating shadow-floating"
     style={desktopPanelStyle}
     aria-hidden="true"
   >
@@ -731,8 +732,8 @@
     mobileBuilderPresentation
       ? "bg-background"
       : mobilePresentation
-        ? "rounded-xl border border-border shadow-xl"
-        : "right-2 w-[min(1000px,calc(100vw-1rem))] rounded-xl",
+        ? "rounded-floating border border-border shadow-floating"
+        : "right-2 w-[min(1000px,calc(100vw-1rem))] rounded-floating border border-border",
   )}
   style={mobilePresentation
     ? mobileBuilderPresentation
@@ -760,12 +761,13 @@
     <section class="relative grid h-full min-h-40 place-items-center overflow-hidden p-5 text-center text-foreground" style="background-color: var(--cal-bg);">
       {#if playlistBuilderLoadError}
         <button type="button" onclick={closePlaylistBuilder} class="absolute left-3 top-3 inline-flex h-8 items-center rounded-full bg-secondary px-3 text-[0.7rem] font-medium text-secondary-foreground hover:bg-accent hover:text-accent-foreground">{t("music.mediaPlayer")}</button>
-        <div class="w-full max-w-sm">
-          <AlertCircle class="mx-auto text-destructive" size={24} strokeWidth={1.5} />
-          <h1 class="mt-3 text-lg font-semibold tracking-tight">{t("music.builder.loadFailed")}</h1>
-          <p class="mt-2 text-xs leading-relaxed text-muted-foreground">{playlistBuilderLoadError}</p>
-          <button type="button" onclick={() => { void loadPlaylistBuilder(); }} class="mt-4 inline-flex h-8 items-center rounded-full bg-primary px-3 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90">{t("music.builder.retry")}</button>
-        </div>
+        <Notice
+          class="max-w-sm text-sm"
+          title={t("music.builder.loadFailed")}
+          message={playlistBuilderLoadError}
+          retryLabel={t("music.builder.retry")}
+          onRetry={loadPlaylistBuilder}
+        />
       {:else}
         <div class="w-full max-w-lg">
           <MusicPreparationActivity />
@@ -824,8 +826,8 @@
       </div>
       {#if player.parseError || player.playerError}
         <div class="relative z-10 ml-auto flex min-w-0 items-center gap-2">
-          <div class="hidden min-w-0 max-w-56 items-center gap-1.5 text-[0.733333rem] text-destructive min-[720px]:flex" role="alert">
-            <AlertCircle class="shrink-0" size={musicIconSize} strokeWidth={musicIconStrokeWidth} />
+          <div class="hidden min-w-0 max-w-56 items-center gap-1.5 text-[0.733333rem] text-foreground min-[720px]:flex" role="alert">
+            <AlertCircle class="shrink-0 text-muted-foreground" size={musicIconSize} strokeWidth={musicIconStrokeWidth} />
             <span class="truncate">{player.parseError ?? player.playerError}</span>
           </div>
         </div>
@@ -851,28 +853,37 @@
     </div>
   {/if}
 
-  {#if visibleContext}
-    <div
-      class={cn(
-        "flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 border-y border-border/55 px-3 py-2 text-[0.68rem]",
-        visibleContext.state === "unavailable" || visibleContext.issue ? "bg-warning/10" : "bg-primary/6",
-      )}
-      role={visibleContext.state === "unavailable" || visibleContext.issue ? "alert" : "status"}
+  {#if visibleContext && (visibleContext.state === "unavailable" || visibleContext.issue)}
+    <Notice
+      class="shrink-0 border-y border-border/55 px-3 py-2 text-[0.68rem]"
+      tone="warning"
+      title={contextSummary}
+      message={visibleContext.issue
+        ? `${t(`music.assignment.context.state.${visibleContext.state}`)} ${t(`music.assignment.context.issue.${visibleContext.issue}`)}`
+        : t(`music.assignment.context.state.${visibleContext.state}`)}
+      retryLabel={t("music.assignment.context.retry")}
+      onRetry={visibleContext.state === "unavailable" ? () => player.requestContextRetry() : undefined}
+      copy={false}
     >
-      {#if visibleContext.state === "unavailable" || visibleContext.issue}<AlertCircle size={14} class="shrink-0 text-warning" />{:else}<CalendarClock size={14} class="shrink-0 text-primary" />{/if}
+      {#snippet actions()}
+        {#if visibleContext.state === "prepared"}
+          <button type="button" class="notice-action-text" onclick={() => { void player.playPlayback(); }}>{t("music.assignment.context.preparedPlay")}</button>
+        {/if}
+        {#if visibleContext.state === "unavailable"}
+          <button type="button" class="notice-action-text" onclick={() => openPlaylistBuilder({ kind: "open-issues" })}>{t("music.assignment.context.openIssues")}</button>
+        {/if}
+        <button type="button" class="notice-action-text" onclick={() => player.inspectContextAssignment()}>{t("music.assignment.context.inspect")}</button>
+      {/snippet}
+    </Notice>
+  {:else if visibleContext}
+    <div class="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 border-y border-border/55 bg-primary/6 px-3 py-2 text-[0.68rem]" role="status">
+      <CalendarClock size={14} class="shrink-0 text-primary" />
       <div class="min-w-40 flex-1 leading-relaxed">
         <p class="font-semibold text-foreground">{contextSummary}</p>
-        <p class="text-muted-foreground">
-          {t(`music.assignment.context.state.${visibleContext.state}`)}
-          {#if visibleContext.issue} {t(`music.assignment.context.issue.${visibleContext.issue}`)}{/if}
-        </p>
+        <p class="text-muted-foreground">{t(`music.assignment.context.state.${visibleContext.state}`)}</p>
       </div>
       {#if visibleContext.state === "prepared"}
         <button type="button" onclick={() => { void player.playPlayback(); }} class="rounded-md bg-primary px-2.5 py-1 font-semibold text-primary-foreground hover:bg-primary/90">{t("music.assignment.context.preparedPlay")}</button>
-      {/if}
-      {#if visibleContext.state === "unavailable"}
-        <button type="button" onclick={() => player.requestContextRetry()} class="rounded-md bg-secondary px-2.5 py-1 font-semibold hover:bg-accent">{t("music.assignment.context.retry")}</button>
-        <button type="button" onclick={() => openPlaylistBuilder({ kind: "open-issues" })} class="rounded-md px-2.5 py-1 font-semibold text-primary hover:bg-primary/10">{t("music.assignment.context.openIssues")}</button>
       {/if}
       <button type="button" onclick={() => player.inspectContextAssignment()} class="rounded-md px-2.5 py-1 font-semibold text-primary hover:bg-primary/10">{t("music.assignment.context.inspect")}</button>
     </div>
@@ -1137,7 +1148,7 @@
               {/if}
             </button>
             {#if volumeMenuOpen}
-              <div class="music-volume-panel absolute bottom-full left-1/2 z-30 mb-2 flex -translate-x-1/2 flex-col items-center gap-2 rounded-md border border-border p-2 text-foreground shadow-lg">
+              <div class="music-volume-panel absolute bottom-full left-1/2 z-30 mb-2 flex -translate-x-1/2 flex-col items-center gap-2 surface-floating p-2 text-foreground">
                 <button
                   type="button"
                   onclick={() => { void player.toggleMute(); }}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Calendar, CalendarEvent } from "./types";
+import type { Calendar, CalendarEvent } from "$lib/calendar/types";
 import {
   getCalendarEventEditLock,
   hasCalendarEventEnded,

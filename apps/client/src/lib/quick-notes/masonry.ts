@@ -1,6 +1,7 @@
 export const QUICK_NOTE_MASONRY_MIN_CARD_WIDTH = 210;
+/** Mobile cards leave their actions to the editor, so two fit side by side on common phones. */
+export const QUICK_NOTE_MOBILE_MASONRY_MIN_CARD_WIDTH = 140;
 export const QUICK_NOTE_MASONRY_GAP = 12;
-export const QUICK_NOTE_MOBILE_TABLET_MIN_WIDTH = 600;
 export const QUICK_NOTE_MOBILE_WIDE_MIN_WIDTH = 900;
 
 export interface MasonryPosition {
@@ -20,10 +21,24 @@ export interface MasonryInsertion {
   distanceSquared: number;
 }
 
-/** Bound mobile density to one phone column, two tablet columns, or three wide columns. */
-export function quickNoteMobileMasonryMaxColumns(containerWidth: number): number {
-  if (!Number.isFinite(containerWidth) || containerWidth < QUICK_NOTE_MOBILE_TABLET_MIN_WIDTH) return 1;
-  return containerWidth < QUICK_NOTE_MOBILE_WIDE_MIN_WIDTH ? 2 : 3;
+export interface QuickNoteMasonryDensity {
+  minimumCardWidth: number;
+  maximumColumns: number;
+}
+
+/** Desktop fits as many standard-width columns as the container allows. */
+export const QUICK_NOTE_DESKTOP_MASONRY_DENSITY: QuickNoteMasonryDensity = {
+  minimumCardWidth: QUICK_NOTE_MASONRY_MIN_CARD_WIDTH,
+  maximumColumns: Number.POSITIVE_INFINITY,
+};
+
+/** Bound mobile density to two compact columns, or three in wide windows. */
+export function quickNoteMobileMasonryDensity(containerWidth: number): QuickNoteMasonryDensity {
+  const wide = Number.isFinite(containerWidth) && containerWidth >= QUICK_NOTE_MOBILE_WIDE_MIN_WIDTH;
+  return {
+    minimumCardWidth: QUICK_NOTE_MOBILE_MASONRY_MIN_CARD_WIDTH,
+    maximumColumns: wide ? 3 : 2,
+  };
 }
 
 export function quickNoteMasonryLayout(
@@ -67,7 +82,7 @@ export function quickNoteMasonryInsertion(
   targetLeft: number,
   targetTop: number,
   preferredIndex = draggedIndex,
-  maximumColumns = Number.POSITIVE_INFINITY,
+  density = QUICK_NOTE_DESKTOP_MASONRY_DENSITY,
 ): MasonryInsertion {
   if (draggedIndex < 0 || draggedIndex >= heights.length) {
     return { index: 0, distanceSquared: Number.POSITIVE_INFINITY };
@@ -80,9 +95,9 @@ export function quickNoteMasonryInsertion(
     const position = quickNoteMasonryLayout(
       containerWidth,
       candidate,
-      QUICK_NOTE_MASONRY_MIN_CARD_WIDTH,
+      density.minimumCardWidth,
       QUICK_NOTE_MASONRY_GAP,
-      maximumColumns,
+      density.maximumColumns,
     ).positions[index];
     if (!position) continue;
     const distanceSquared = (position.left - targetLeft) ** 2 + (position.top - targetTop) ** 2;

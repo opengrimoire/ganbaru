@@ -4,8 +4,8 @@
   import ListMusic from "@lucide/svelte/icons/list-music";
   import RadioTower from "@lucide/svelte/icons/radio-tower";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { projectMusicBuilderDockItems } from "$lib/music/music-builder-navigation";
-  import type { MusicBuilderDestination, MusicBuilderPrimaryDestinationKind } from "$lib/music/music-builder-routing";
+  import { projectMusicBuilderDockItems } from "$lib/music/builder/navigation";
+  import type { MusicBuilderDestination, MusicBuilderPrimaryDestinationKind } from "$lib/music/builder/routing";
 
   let {
     destination,

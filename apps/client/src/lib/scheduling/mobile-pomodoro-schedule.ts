@@ -1,11 +1,28 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { CalendarEvent } from "$lib/components/calendar/types";
-import { parseCalendarDate } from "$lib/components/calendar/utils";
+import type { CalendarEvent } from "$lib/calendar/types";
+import { parseCalendarDate } from "$lib/calendar/utils";
 import type { Translate } from "$lib/i18n/translator.svelte";
 import { loadNotificationSchedulerEvents } from "./mobile-calendar-notifications";
 
 const MAX_NATIVE_REMINDERS = 128;
 const MAX_EVENT_TITLE_LENGTH = 160;
+
+/** Supply localized copy without execution state to the native Focus owner. */
+export function buildMobileFocusNotificationCopy(t: Translate) {
+  return {
+    channelName: t("pomodoroNotification.channelName"),
+    channelDescription: t("pomodoroNotification.channelDescription"),
+    alertsChannelName: t("pomodoroNotification.alertsChannelName"),
+    alertsChannelDescription: t("pomodoroNotification.alertsChannelDescription"),
+    focusTitle: t("pomodoroNotification.focusTitle"),
+    shortBreakTitle: t("pomodoroNotification.shortBreakTitle"),
+    longBreakTitle: t("pomodoroNotification.longBreakTitle"),
+    pausedText: t("pomodoroNotification.pausedText"),
+    focusCompleteTitle: t("pomodoroNotification.focusCompleteTitle"),
+    breakCompleteTitle: t("pomodoroNotification.breakCompleteTitle"),
+    sessionCompleteText: t("pomodoroNotification.sessionCompleteText"),
+  };
+}
 
 function stableHash(value: string): string {
   let hash = 0x811c9dc5;
@@ -86,9 +103,14 @@ export function buildMobilePomodoroSchedule(
 
 /** Reconcile Android's durable focus reminders with Calendar. */
 export async function reconcileMobilePomodoroSchedule(t: Translate): Promise<void> {
-  const events = await loadNotificationSchedulerEvents();
-  const schedule = buildMobilePomodoroSchedule(events, t);
-  await invoke("plugin:ganbaru-mobile-notifications|reconcilePomodoroSchedule", { schedule });
+  await Promise.all([
+    invoke("focus_notification_copy", { copy: buildMobileFocusNotificationCopy(t) }),
+    (async () => {
+      const events = await loadNotificationSchedulerEvents();
+      const schedule = buildMobilePomodoroSchedule(events, t);
+      await invoke("plugin:ganbaru-mobile-notifications|reconcilePomodoroSchedule", { schedule });
+    })(),
+  ]);
 }
 
 /** Serialize Android focus reminder reconciliation across rapid Calendar mutations. */

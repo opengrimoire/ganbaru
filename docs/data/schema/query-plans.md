@@ -12,7 +12,7 @@ The ganbaru-db query-plan test protects these reads:
 | Projects | Dependencies from one blocked task | idx_project_task_dependencies_blocked |
 | Notes | Active sidebar pages in display order | idx_notes_pages_active |
 | Notes | Visible child blocks under one parent | idx_notes_blocks_parent_block |
-| Doomscrolling | Usage samples over a local-date window in source order | idx_doomscrolling_usage_samples_date_source |
+| Distraction blocker | Usage samples over a local-date window in source order | idx_distractions_usage_samples_date_source |
 | Pomodoro | Open run lookup | idx_pomodoro_runs_open |
 | Pomodoro | Global active segment lookup | idx_pomodoro_segments_single_active |
 | Quick notes | Active notes in pin and manual order | idx_quick_notes_active |
@@ -28,7 +28,7 @@ Some hot reads are best asserted beside their domain query because their SQL sha
 - Notes full-text keyset paging is asserted in search tests. Database row-window reads also assert indexed filtering and ordering.
 - Music library review uses idx_music_library_items_review.
 - Ordered music playlist membership uses idx_music_playlist_memberships_order.
-- Playback resume by stable source identity uses the primary-key autoindex on music_playback_states.source_identity.
+- Native Music checkpoint reads use the primary-key autoindex on music_session_checkpoints.device_id.
 
 The absence of a query from this page does not mean it may scan without review. It may have a domain-local assertion or may not yet have demonstrated enough scale to justify another index.
 

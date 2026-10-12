@@ -1,10 +1,10 @@
 //! Android Storage Access Framework refresh into the shared canonical music library.
 
-use super::{
+use ganbaru_mobile_media::{MobileMediaExt, MobileMediaTreeTrack};
+use ganbaru_music_library::{
     MusicCollectionKind, MusicLibraryError, MusicLibraryResult, MusicLocalRefreshRequest,
     MusicRefreshJobProgress, MusicRefreshJobState,
 };
-use ganbaru_mobile_media::{MobileMediaExt, MobileMediaTreeTrack};
 use sha2::{Digest, Sha256};
 use sqlx::{FromRow, SqlitePool};
 
@@ -26,10 +26,10 @@ struct RefreshJobRow {
     truncated_count: i64,
     absence_determined: i64,
     status_message: String,
-    requested_at: i64,
-    started_at: Option<i64>,
-    finished_at: Option<i64>,
-    updated_at: i64,
+    requested_at_ms: i64,
+    started_at_ms: Option<i64>,
+    finished_at_ms: Option<i64>,
+    updated_at_ms: i64,
 }
 
 impl TryFrom<RefreshJobRow> for MusicRefreshJobProgress {
@@ -52,10 +52,10 @@ impl TryFrom<RefreshJobRow> for MusicRefreshJobProgress {
             truncated_count: row.truncated_count,
             absence_determined: row.absence_determined == 1,
             status_message: row.status_message,
-            requested_at: row.requested_at,
-            started_at: row.started_at,
-            finished_at: row.finished_at,
-            updated_at: row.updated_at,
+            requested_at_ms: row.requested_at_ms,
+            started_at_ms: row.started_at_ms,
+            finished_at_ms: row.finished_at_ms,
+            updated_at_ms: row.updated_at_ms,
         })
     }
 }
@@ -78,7 +78,7 @@ pub(super) async fn start(
 
     let collection_root: Option<(Option<String>, i64)> = sqlx::query_as(
         "SELECT local_root_id, discovery_enabled FROM music_source_collections
-         WHERE id = ? AND kind = 'local-root' AND removed_at IS NULL",
+         WHERE id = ? AND kind = 'local-root' AND removed_at_ms IS NULL",
     )
     .bind(&request.collection_id)
     .fetch_optional(&mut *transaction)
@@ -116,11 +116,11 @@ pub(super) async fn start(
     sqlx::query(
         "UPDATE music_refresh_jobs
          SET state = 'cancelled', status_message = 'Superseded by a newer refresh.',
-             finished_at = ?, updated_at = ?
+             finished_at_ms = ?, updated_at_ms = ?
          WHERE source_collection_id = ? AND state IN ('queued', 'running')",
     )
-    .bind(request.requested_at)
-    .bind(request.requested_at)
+    .bind(request.requested_at_ms)
+    .bind(request.requested_at_ms)
     .bind(&request.collection_id)
     .execute(&mut *transaction)
     .await
@@ -142,7 +142,7 @@ pub(super) async fn start(
         "INSERT INTO music_refresh_jobs
             (id, source_collection_id, local_root_id, kind, state, generation,
              discovered_count, processed_count, truncated_count, absence_determined,
-             status_message, requested_at, started_at, finished_at, updated_at)
+             status_message, requested_at_ms, started_at_ms, finished_at_ms, updated_at_ms)
          VALUES (?, ?, ?, 'local-root', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&request.job_id)
@@ -155,20 +155,20 @@ pub(super) async fn start(
     .bind(if tree.truncated { 1_i64 } else { 0_i64 })
     .bind(if tree.truncated { 0_i64 } else { 1_i64 })
     .bind(status_message)
-    .bind(request.requested_at)
-    .bind(request.requested_at)
-    .bind(request.requested_at)
-    .bind(request.requested_at)
+    .bind(request.requested_at_ms)
+    .bind(request.requested_at_ms)
+    .bind(request.requested_at_ms)
+    .bind(request.requested_at_ms)
     .execute(&mut *transaction)
     .await
     .map_err(|error| MusicLibraryError::database("record Android music refresh", error))?;
 
     if !tree.truncated {
         sqlx::query(
-            "UPDATE music_local_locations SET availability = 'missing', updated_at = ?
+            "UPDATE music_local_locations SET availability = 'missing', updated_at_ms = ?
              WHERE root_id = ?",
         )
-        .bind(request.requested_at)
+        .bind(request.requested_at_ms)
         .bind(&request.root_id)
         .execute(&mut *transaction)
         .await
@@ -203,25 +203,25 @@ pub(super) async fn start(
              SELECT 1 FROM music_local_locations AS location
              WHERE location.item_id = music_library_items.id AND location.availability = 'available'
            ) THEN 'available' ELSE 'missing' END,
-           updated_at = ?
+           updated_at_ms = ?
          WHERE source_kind = 'local-file'",
     )
-    .bind(request.requested_at)
+    .bind(request.requested_at_ms)
     .execute(&mut *transaction)
     .await
     .map_err(|error| MusicLibraryError::database("reconcile Android music availability", error))?;
 
     sqlx::query(
         "UPDATE music_source_collections
-         SET refresh_state = ?, previous_successful_refresh_at = last_successful_refresh_at,
-             last_successful_refresh_at = ?, last_refresh_error_code = NULL,
-             snapshot_generation = ?, updated_at = ?, version = version + 1
+         SET refresh_state = ?, previous_successful_refresh_at_ms = last_successful_refresh_at_ms,
+             last_successful_refresh_at_ms = ?, last_refresh_error_code = NULL,
+             snapshot_generation = ?, updated_at_ms = ?, version = version + 1
          WHERE id = ?",
     )
     .bind(source_state)
-    .bind(request.requested_at)
+    .bind(request.requested_at_ms)
     .bind(generation)
-    .bind(request.requested_at)
+    .bind(request.requested_at_ms)
     .bind(&request.collection_id)
     .execute(&mut *transaction)
     .await
@@ -231,7 +231,7 @@ pub(super) async fn start(
         .commit()
         .await
         .map_err(|error| MusicLibraryError::database("commit Android music refresh", error))?;
-    super::search::rebuild(pool, request.requested_at).await?;
+    ganbaru_music_library::search::rebuild(pool, request.requested_at_ms).await?;
     progress(pool, &request.job_id).await
 }
 
@@ -267,7 +267,7 @@ async fn persist_track(
         "INSERT INTO music_library_items
             (id, identity_key, source_kind, media_kind, original_title, original_artist,
              original_album, original_track_number, original_artwork_identity, duration_ms,
-             availability, discovered_at, updated_at)
+             availability, discovered_at_ms, updated_at_ms)
          VALUES (?, ?, 'local-file', ?, ?, ?, ?, ?, ?, ?, 'available', ?, ?)
          ON CONFLICT(id) DO UPDATE SET
             media_kind = excluded.media_kind,
@@ -277,7 +277,7 @@ async fn persist_track(
             original_track_number = excluded.original_track_number,
             original_artwork_identity = excluded.original_artwork_identity,
             duration_ms = excluded.duration_ms,
-            availability = 'available', updated_at = excluded.updated_at,
+            availability = 'available', updated_at_ms = excluded.updated_at_ms,
             version = music_library_items.version + 1",
     )
     .bind(&item_id)
@@ -289,8 +289,8 @@ async fn persist_track(
     .bind(track.track_number)
     .bind(artwork_identity)
     .bind(track.duration_ms)
-    .bind(request.requested_at)
-    .bind(request.requested_at)
+    .bind(request.requested_at_ms)
+    .bind(request.requested_at_ms)
     .execute(&mut **transaction)
     .await
     .map_err(|error| MusicLibraryError::database("save Android music item", error))?;
@@ -303,14 +303,14 @@ async fn persist_track(
     sqlx::query(
         "INSERT INTO music_local_locations
             (id, item_id, root_id, relative_path, file_size_bytes, modified_at_ms,
-             lightweight_fingerprint, availability, last_seen_generation, first_seen_at, updated_at)
+             lightweight_fingerprint, availability, last_seen_generation, first_seen_at_ms, updated_at_ms)
          VALUES (?, ?, ?, ?, ?, ?, ?, 'available', ?, ?, ?)
          ON CONFLICT(root_id, relative_path) DO UPDATE SET
             item_id = excluded.item_id, file_size_bytes = excluded.file_size_bytes,
             modified_at_ms = excluded.modified_at_ms,
             lightweight_fingerprint = excluded.lightweight_fingerprint,
             availability = 'available', last_seen_generation = excluded.last_seen_generation,
-            updated_at = excluded.updated_at",
+            updated_at_ms = excluded.updated_at_ms",
     )
     .bind(location_id)
     .bind(&item_id)
@@ -320,15 +320,15 @@ async fn persist_track(
     .bind(track.modified_at_ms)
     .bind(lightweight_fingerprint)
     .bind(generation)
-    .bind(request.requested_at)
-    .bind(request.requested_at)
+    .bind(request.requested_at_ms)
+    .bind(request.requested_at_ms)
     .execute(&mut **transaction)
     .await
     .map_err(|error| MusicLibraryError::database("save Android music location", error))?;
 
     sqlx::query(
         "INSERT INTO music_source_collection_items
-            (collection_id, item_id, source_position, first_discovered_at,
+            (collection_id, item_id, source_position, first_discovered_at_ms,
              last_seen_generation, missing_from_latest_snapshot)
          VALUES (?, ?, ?, ?, ?, 0)
          ON CONFLICT(collection_id, item_id) DO UPDATE SET
@@ -339,7 +339,7 @@ async fn persist_track(
     .bind(&request.collection_id)
     .bind(&item_id)
     .bind(position)
-    .bind(request.requested_at)
+    .bind(request.requested_at_ms)
     .bind(generation)
     .execute(&mut **transaction)
     .await
@@ -354,8 +354,8 @@ pub(super) async fn progress(
     let row = sqlx::query_as::<_, RefreshJobRow>(
         "SELECT id, source_collection_id, local_root_id, kind, state, generation,
                 discovered_count, processed_count, skipped_count, issue_count,
-                truncated_count, absence_determined, status_message, requested_at,
-                started_at, finished_at, updated_at
+                truncated_count, absence_determined, status_message, requested_at_ms,
+                started_at_ms, finished_at_ms, updated_at_ms
          FROM music_refresh_jobs WHERE id = ?",
     )
     .bind(job_id)
@@ -385,7 +385,7 @@ fn validate_request(request: &MusicLocalRefreshRequest) -> MusicLibraryResult<()
             return Err(MusicLibraryError::validation(field, "is required"));
         }
     }
-    if request.requested_at <= 0 {
+    if request.requested_at_ms <= 0 {
         return Err(MusicLibraryError::validation(
             "requestedAt",
             "must be a positive Unix epoch millisecond value",

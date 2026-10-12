@@ -4,7 +4,9 @@
   import { chatErrorMessage } from "$lib/chat/error-presentation";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getChat } from "$lib/stores/chat.svelte";
-  import ToggleSetting from "../ToggleSetting.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
+  import SwitchField from "$lib/components/ui/SwitchField.svelte";
 
   const chat = getChat();
   const { t } = getLocalization();
@@ -29,6 +31,12 @@
     }
   }
 
+  /** Retries loading Chat settings and rejects when the load fails again. */
+  async function retryInitialize(): Promise<void> {
+    await initialize();
+    if (error) throw new Error(error);
+  }
+
   async function update(patch: Partial<ChatBehaviorPreferences>): Promise<void> {
     if (!behavior || saving) return;
     saving = true;
@@ -50,26 +58,24 @@
     </h2>
 
     {#if loading}
-      <p class="px-1 text-[0.8rem] text-muted-foreground" aria-busy="true">
-        {t("common.loading")}
-      </p>
+      <Loading layout="rows" rows={3} />
     {:else if behavior}
       <div class="flex flex-col gap-3">
-        <ToggleSetting
+        <SwitchField
           label={t("settings.chat.behavior.restoreThread")}
           description={t("settings.chat.behavior.restoreThreadDescription")}
           checked={behavior.restoreLastSelectedThread}
           disabled={saving}
           onChange={(value) => void update({ restoreLastSelectedThread: value })}
         />
-        <ToggleSetting
+        <SwitchField
           label={t("settings.chat.behavior.reasoning")}
           description={t("settings.chat.behavior.reasoningDescription")}
           checked={behavior.showReasoningSummaries}
           disabled={saving}
           onChange={(value) => void update({ showReasoningSummaries: value })}
         />
-        <ToggleSetting
+        <SwitchField
           label={t("settings.chat.behavior.foldWork")}
           description={t("settings.chat.behavior.foldWorkDescription")}
           checked={behavior.automaticallyFoldSettledWork}
@@ -80,16 +86,7 @@
     {/if}
 
     {#if error}
-      <div class="flex items-center justify-between gap-3 px-1" role="alert">
-        <span class="min-w-0 text-[0.8rem] text-destructive">{error}</span>
-        <button
-          type="button"
-          class="inline-flex h-7 shrink-0 items-center justify-center rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-foreground active:bg-accent dark:bg-transparent"
-          onclick={() => void initialize()}
-        >
-          {t("common.retry")}
-        </button>
-      </div>
+      <Notice class="px-1 text-[0.8rem]" message={error} onRetry={behavior ? undefined : retryInitialize} />
     {/if}
   </section>
 </div>

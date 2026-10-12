@@ -1,0 +1,8 @@
+[
+  { "weights": ["rarely", "normal", "much-more-often"], "recent": [], "draw": 0.0, "expected": 0 },
+  { "weights": ["rarely", "normal", "much-more-often"], "recent": [], "draw": 0.2, "expected": 1 },
+  { "weights": ["rarely", "normal", "much-more-often"], "recent": [], "draw": 0.9, "expected": 2 },
+  { "weights": ["rarely", "normal", "much-more-often"], "recent": [2], "draw": 0.9, "expected": 1 },
+  { "weights": ["rarely", "normal", "much-more-often"], "recent": [2], "draw": 0.99, "expected": 2 },
+  { "weights": ["normal", "normal", "normal"], "recent": [0, 1], "draw": 0.5, "expected": 2 }
+]

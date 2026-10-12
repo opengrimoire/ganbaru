@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Calendar, CalendarEvent } from "$lib/components/calendar/types";
+import type { Calendar, CalendarEvent } from "$lib/calendar/types";
 import { serializeCalendarToIcs } from "./serializer";
 
 const baseCalendar: Calendar = {

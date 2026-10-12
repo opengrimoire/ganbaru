@@ -5,16 +5,17 @@
   import { onMount } from "svelte";
   import VaultSetupContent from "$lib/components/vault/VaultSetupContent.svelte";
   import VaultWelcomeContent from "$lib/components/vault/VaultWelcomeContent.svelte";
+  import { onboardingPrimaryAction } from "$lib/vault/onboarding-primary-action";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
-    formatDataFolderError,
-    getDefaultDataFolderLocation,
-    importDataFolder,
+    formatVaultError,
+    getDefaultVaultLocation,
+    pickOpenVault,
     restoreVaultBackup,
-    useDefaultDataFolder,
-    type DataFolderDefaultLocation,
-    type DataFolderErrorAction,
-    type DataFolderInfo,
+    useDefaultVault,
+    type VaultDefaultLocation,
+    type VaultErrorAction,
+    type VaultInfo,
   } from "$lib/vault/state";
 
   let {
@@ -22,21 +23,21 @@
     onReady,
   }: {
     initialError?: string | null;
-    onReady: (info: DataFolderInfo) => void;
+    onReady: (info: VaultInfo) => void;
   } = $props();
 
-  type SetupError = { raw: unknown; action: DataFolderErrorAction };
+  type SetupError = { raw: unknown; action: VaultErrorAction };
 
   const { t } = getLocalization();
   const fallbackDefaultPath = import.meta.env.DEV
     ? "Android app storage/Ganbaru AI Dev"
     : "Android app storage/Ganbaru AI";
-  let defaultLocation = $state<DataFolderDefaultLocation | null>(null);
+  let defaultLocation = $state<VaultDefaultLocation | null>(null);
   let busy = $state<"default" | "restore" | "import" | null>(null);
   let setupError = $state<SetupError | null>(null);
   let welcomeComplete = $state(false);
   const error = $derived(
-    setupError ? formatDataFolderError(setupError.raw, setupError.action, t) : null,
+    setupError ? formatVaultError(setupError.raw, setupError.action, t) : null,
   );
 
   onMount(() => {
@@ -46,26 +47,26 @@
 
   async function loadDefaultLocation(): Promise<void> {
     try {
-      defaultLocation = await getDefaultDataFolderLocation();
+      defaultLocation = await getDefaultVaultLocation();
     } catch (cause) {
-      console.warn("Could not load the default data folder:", cause);
+      console.warn("Could not load the default vault location:", cause);
       setupError = { raw: cause, action: "general" };
     }
   }
 
-  async function chooseDataFolder(mode: "default" | "restore" | "import"): Promise<void> {
+  async function chooseVault(mode: "default" | "restore" | "import"): Promise<void> {
     if (busy) return;
     busy = mode;
     setupError = null;
     try {
       const info = mode === "default"
-        ? await useDefaultDataFolder()
+        ? await useDefaultVault()
         : mode === "restore"
           ? await restoreVaultBackup()
-          : await importDataFolder();
+          : await pickOpenVault();
       if (info) onReady(info);
     } catch (cause) {
-      console.warn(`Could not ${mode} the data folder:`, cause);
+      console.warn(`Could not ${mode} the vault:`, cause);
       setupError = { raw: cause, action: mode };
     } finally {
       busy = null;
@@ -77,8 +78,9 @@
 {#snippet setupActions()}
   <div class="grid gap-2">
     <button
+      use:onboardingPrimaryAction
       type="button"
-      onclick={() => void chooseDataFolder("default")}
+      onclick={() => void chooseVault("default")}
       disabled={busy !== null}
       class="flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-colors active:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
     >
@@ -90,7 +92,7 @@
 
     <button
       type="button"
-      onclick={() => void chooseDataFolder("restore")}
+      onclick={() => void chooseVault("restore")}
       disabled={busy !== null}
       class="flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm font-medium text-foreground transition-colors active:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
     >
@@ -104,7 +106,7 @@
 
     <button
       type="button"
-      onclick={() => void chooseDataFolder("import")}
+      onclick={() => void chooseVault("import")}
       disabled={busy !== null}
       class="flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm font-medium text-foreground transition-colors active:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
     >

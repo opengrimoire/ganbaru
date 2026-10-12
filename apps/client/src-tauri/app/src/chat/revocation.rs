@@ -1,11 +1,11 @@
 //! Immediate runtime cleanup for durable organizational access revocations.
 
 use super::internal_mcp::generate_opaque_handle;
-use super::models::{
+use ganbaru_chat::runtime::ChatRuntimeRegistry;
+use ganbaru_chat_contracts::models::{
     ChatAgentRunId, ChatAuthorizationRevisionId, ChatError, ChatErrorCode, ChatResult,
     ChatThreadId, ChatTurnId,
 };
-use super::runtime::ChatRuntimeRegistry;
 use sqlx::{Row, SqlitePool};
 use std::time::Duration;
 use tauri::Manager;
@@ -49,7 +49,7 @@ pub(crate) fn start_startup_recovery(app: &tauri::AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let db_url = format!("sqlite:{}", crate::vault::APP_SQLITE_FILE);
-        let pool = match crate::db_path::connect_sqlite(app.clone(), db_url).await {
+        let pool = match crate::db::connect_sqlite(app.clone(), db_url).await {
             Ok(pool) => pool,
             Err(error) => {
                 eprintln!("Chat revocation startup recovery could not open the database: {error}");
@@ -205,7 +205,7 @@ async fn drain_claimed_job(
 
     let mcp = app.state::<super::internal_mcp::InternalMcpRegistry>();
     let runtime = app.state::<ChatRuntimeRegistry>();
-    let mutations = app.state::<super::workspace_mutation::ChatWorkspaceMutationRegistry>();
+    let mutations = app.state::<super::workspace::mutation::ChatWorkspaceMutationRegistry>();
     for run in &runs {
         let exact_scope = mcp
             .revoke_matching_run_scope(

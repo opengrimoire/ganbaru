@@ -11,9 +11,9 @@ import type {
 	EventVisibility,
 	GeoCoordinates,
 	GuestPermissions,
-} from "$lib/components/calendar/types";
-import { recurrenceToRrule, rruleToRecurrence } from "$lib/components/calendar/rrule";
-import { utcIsoToWallClock, wallClockToUtcIso } from "$lib/components/calendar/utils";
+} from "$lib/calendar/types";
+import { recurrenceToRrule, rruleToRecurrence } from "$lib/calendar/rrule";
+import { utcIsoToWallClock, wallClockToUtcIso } from "$lib/calendar/utils";
 import type {
 	IcsParseResult,
 	IcsPreservedComponent,
@@ -866,7 +866,7 @@ function calendarEventBaseFromComponent(
 	}
 
 	// In-memory wall-clock is anchored to the device zone (matching `mapRow`
-	// in the calendar store). The home zone is preserved in `event.timezone`
+	// in `db-rows.ts`). The home zone is preserved in `event.timezone`
 	// for recurrence anchoring; the serializer reverses through `deviceZone`
 	// so the round trip is lossless.
 	const start = isAllDay ? `${startDate} 00:00` : utcIsoToWallClock(startUtc, deviceZone);

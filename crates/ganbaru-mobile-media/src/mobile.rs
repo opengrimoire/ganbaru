@@ -4,7 +4,7 @@ use tauri::{
     plugin::{PluginApi, PluginHandle},
 };
 
-const PLUGIN_IDENTIFIER: &str = "app.ganbaru.mobile_media";
+const PLUGIN_IDENTIFIER: &str = "org.opengrimoire.ganbaruai.mobile.media";
 
 #[derive(Debug)]
 pub struct MobileMedia<R: Runtime>(PluginHandle<R>);
@@ -17,24 +17,6 @@ impl<R: Runtime> Clone for MobileMedia<R> {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MobileMediaSource {
-    pub kind: String,
-    pub path: String,
-    pub identity: String,
-    pub title: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MobileMediaLoadRequest {
-    pub source: MobileMediaSource,
-    pub start_ms: Option<u64>,
-    pub volume: Option<f64>,
-    pub rate: Option<f64>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct MobileMediaProbe {
     pub path: String,
     pub title: String,
@@ -42,23 +24,6 @@ pub struct MobileMediaProbe {
     pub extension: Option<String>,
     pub media_kind: String,
     pub playable_start_ms: Option<u64>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MobilePlayerSnapshot {
-    pub status: String,
-    pub source_identity: Option<String>,
-    pub title: Option<String>,
-    pub position_ms: u64,
-    pub duration_ms: Option<u64>,
-    pub volume: f64,
-    pub muted: bool,
-    pub rate: f64,
-    pub has_video: bool,
-    pub backend_kind: String,
-    pub playable_start_ms: Option<u64>,
-    pub error: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -96,27 +61,6 @@ struct PathRequest<'a> {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct SeekRequest {
-    position_ms: u64,
-}
-
-#[derive(Serialize)]
-struct VolumeRequest {
-    volume: f64,
-}
-
-#[derive(Serialize)]
-struct MutedRequest {
-    muted: bool,
-}
-
-#[derive(Serialize)]
-struct RateRequest {
-    rate: f64,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
 struct TreeScanRequest<'a> {
     tree_uri: &'a str,
     max_files: u32,
@@ -132,7 +76,7 @@ struct TreePickRequest {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct PickMediaFileResponse {
+struct PickArtworkFileResponse {
     uri: Option<String>,
 }
 
@@ -164,6 +108,16 @@ pub(crate) fn init<R: Runtime, C: serde::de::DeserializeOwned>(
 }
 
 impl<R: Runtime> MobileMedia<R> {
+    /// Attaches the process-owned native callback to the Media3 service once.
+    pub async fn attach_session(&self, channel: tauri::ipc::Channel) -> Result<(), String> {
+        #[derive(Serialize)]
+        struct AttachRequest {
+            channel: tauri::ipc::Channel,
+        }
+        self.command("attachSession", AttachRequest { channel })
+            .await
+    }
+
     async fn command<T: serde::de::DeserializeOwned>(
         &self,
         name: &str,
@@ -177,45 +131,6 @@ impl<R: Runtime> MobileMedia<R> {
 
     pub async fn probe(&self, path: &str) -> Result<MobileMediaProbe, String> {
         self.command("probe", PathRequest { path }).await
-    }
-
-    pub async fn load(
-        &self,
-        request: MobileMediaLoadRequest,
-    ) -> Result<MobilePlayerSnapshot, String> {
-        self.command("load", request).await
-    }
-
-    pub async fn play(&self) -> Result<MobilePlayerSnapshot, String> {
-        self.command("play", ()).await
-    }
-
-    pub async fn pause(&self) -> Result<MobilePlayerSnapshot, String> {
-        self.command("pause", ()).await
-    }
-
-    pub async fn stop(&self) -> Result<MobilePlayerSnapshot, String> {
-        self.command("stop", ()).await
-    }
-
-    pub async fn seek(&self, position_ms: u64) -> Result<MobilePlayerSnapshot, String> {
-        self.command("seek", SeekRequest { position_ms }).await
-    }
-
-    pub async fn set_volume(&self, volume: f64) -> Result<MobilePlayerSnapshot, String> {
-        self.command("setVolume", VolumeRequest { volume }).await
-    }
-
-    pub async fn set_muted(&self, muted: bool) -> Result<MobilePlayerSnapshot, String> {
-        self.command("setMuted", MutedRequest { muted }).await
-    }
-
-    pub async fn set_rate(&self, rate: f64) -> Result<MobilePlayerSnapshot, String> {
-        self.command("setRate", RateRequest { rate }).await
-    }
-
-    pub async fn snapshot(&self) -> Result<MobilePlayerSnapshot, String> {
-        self.command("snapshot", ()).await
     }
 
     pub async fn pick_media_tree(
@@ -252,7 +167,7 @@ impl<R: Runtime> MobileMedia<R> {
     }
 
     pub async fn pick_artwork_file(&self) -> Result<Option<String>, String> {
-        self.command::<PickMediaFileResponse>("pickArtworkFile", ())
+        self.command::<PickArtworkFileResponse>("pickArtworkFile", ())
             .await
             .map(|response| response.uri)
     }

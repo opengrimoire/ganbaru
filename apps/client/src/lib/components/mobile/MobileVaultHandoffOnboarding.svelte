@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { PairingStatus } from "$lib/api/vault-handoff";
-  import VaultHandoffOnboardingContent from "$lib/components/vault/VaultHandoffOnboardingContent.svelte";
+  import VaultHandoffOnboardingContent from "$lib/components/vault/handoff/VaultHandoffOnboardingContent.svelte";
   import { requireActiveVaultIdentity } from "$lib/vault/active-vault";
 
   let {

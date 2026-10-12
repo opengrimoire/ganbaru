@@ -30,6 +30,7 @@ export const mobile = {
     review: "Review",
     continue: "Continue",
     continueIn: (seconds: number) => `Continue in ${seconds}s`,
+    checkingAccess: "Checking Android access",
     statusError: "Some Android access status could not be read. You can still review each setting.",
   },
   settings: {

@@ -1,55 +1,59 @@
 # Music automation
 
-Music automation selects playlist and soundscape behavior for Pomodoro phases without moving per-track configuration into Calendar events.
+Music automation selects playlist and background-sound behavior for Pomodoro phases and Calendar blocks without moving per-track configuration into Calendar events. All automatic selection happens in the native Music session (see [Playback](playback.md)); the frontend only renders provenance and accepted output.
 
 ## Phase assignments
 
-Assignments are defined independently for focus, short break, long break, and applicable no-Pomodoro context. Each phase can:
+Assignments are defined independently for focus, short break, long break, and the no-Pomodoro context of a timed event. Each phase can:
 
 - Inherit from a lower-precedence source.
 - Play a selected playlist automatically.
 - Prepare a selected playlist without starting it.
 - Pause music.
 - Keep the current music.
-- Select, pause, keep, or inherit a soundscape independently where supported.
+- Select, pause, keep, or inherit a background sound independently where supported.
 
-Assignment records store playlist and soundscape intent. Start, end, skip, rate, volume, weighting, and enabled state remain playlist-membership behavior.
+Assignments store playlist and background-sound intent only. Start, end, skip, rate, volume, weighting, and enabled state remain playlist-membership behavior.
 
-## Ownership and provenance
+The Project settings UI currently exposes Focus, Short break, and Long break playlists under Event defaults. A chosen playlist plays automatically and an empty choice means silence; each phase boundary starts a fresh track, avoiding the previous one when alternatives exist. The broader assignment record and event override controls support the full behavior list above. Configuring background sounds inside playlists is planned.
 
-Current assignment owners include:
+## Ownership and precedence
+
+Assignment sources:
 
 - **Project default:** the reusable project setting.
-- **Event snapshot:** project intent copied when an event is created or explicitly refreshed.
-- **Event override:** an explicit event-specific choice.
-- **Work environment:** a planned context-specific source.
+- **Event snapshot:** project intent copied when an event is created or explicitly refreshed. Editing the project later does not rewrite existing snapshots.
+- **Event override:** an explicit event-specific choice, always distinguishable from inherited intent.
+- **Work environment:** planned.
 
-Runtime resolution reports the winning source and availability. Current precedence is event override, future work-environment assignment when present, then the event's project snapshot. Missing or deleted playlists and soundscapes produce an unavailable result rather than silently selecting another unrelated source.
+Precedence is event override, then a future work-environment assignment, then the event's project snapshot. This holds even for assignments that only select a background sound. Missing or deleted playlists and sounds produce an explicit unavailable result instead of silently selecting something else.
 
-Project defaults are real playlist selectors. They are not placeholder `None` fields.
+## Calendar activation (desktop)
 
-## Calendar behavior
+When a timed event without Pomodoro is active, the native owner reads canonical Calendar occurrences and resolves its assignment. If events overlap, the one ending earliest wins, then creation order and stable identity. The owner schedules the next known boundary and refreshes on edits. All-day, cancelled, and Focus-configured events cannot manufacture a Focus phase. A failed Calendar read leaves unrelated playback running.
 
-When a scheduled event becomes active, Calendar resolves its phase assignment and prepares or plays the selected context. Editing a project later does not silently rewrite an existing event snapshot. An explicit event override always remains distinguishable from inherited intent.
+## Focus activation
 
-An event without Pomodoro can use its applicable context assignment. Future work environments may add another inherited layer, but that feature is not currently the canonical owner of Music settings.
+An open committed Focus run takes priority over Calendar automation. Committed Focus transitions apply their assignment through the native owner with a bounded validity lease tied to the run, segment, and vault generation. Duplicate delivery cannot restart a track or extend its lease; an expired or revoked lease pauses playback still owned by that effect, and delayed older effects cannot revive it. Scheduled Calendar projections alone never authorize Focus playback.
 
-## Pomodoro behavior
+A background-only assignment leaves main music ownership unchanged. The accepted state commits before decoder delivery.
 
-Phase transitions apply the corresponding assignment. Automation records enough context to explain why a playlist started, paused, or remained unchanged.
+## Manual control and ownership
 
-The user preference `Pause if the focus session is paused` pauses Music only when it was playing and records that Pomodoro caused the pause. Resume restarts Music only when that ownership still applies. Manual Music actions clear or supersede automation ownership as appropriate.
+Manual actions always win until the next accepted activation. Music keeps a separate manual-intent revision so a manual action supersedes any pending automation pause or resume.
 
-Calendar or Pomodoro transitions can supersede temporary Review playback. The UI keeps the resulting queue visible and explains the active assignment source.
+- The preference `Pause if the focus session is paused` pauses Music only when it was playing and records that Focus caused the pause. Resume restarts Music only if that ownership still applies.
+- Desktop Focus completion audio attenuates and pauses playing Music, keeping its position and persisted volume. Music resumes after the completion sound only if the same session, track, manual revision, and Focus context still own the pause. A manual control, new track, or changed assignment supersedes it.
+- Review playback in the playlist builder defers automatic takeover. Leaving Review lets the owner reconcile eligible automation without treating the deferred activation as consumed.
 
-## Soundscapes
+## Background sounds
 
-Desktop soundscapes can run independently of playlist media. Each phase resolves soundscape behavior separately, allowing music to continue while a soundscape changes or vice versa. Platforms without a soundscape engine omit those actions rather than simulating them.
+Desktop background sounds run independently of playlist media, and each phase resolves them separately, so music can continue while the sound changes or vice versa. Automation selects one specified sound; it never silently adds a layer to the listener's current selection. Platforms without the engine omit these actions. See [Background sounds](soundscapes.md).
 
 ## Planned integrations
 
-- Work environments can provide context-specific phase overrides once their product and storage model is implemented.
-- A future sleep alarm can request a user-selected wake-up playlist after dismissal.
-- A future edge panel can expose the same transport state without owning automation.
+- Work environments can provide context-specific phase overrides once their model exists.
+- A sleep alarm can request a wake-up playlist after dismissal.
+- An edge panel can expose transport state without owning automation.
 
 See [Projects settings and scheduling](../projects/settings-and-scheduling.md), [Pomodoro](../pomodoro/README.md), and [Work environments](../work-environments.md).

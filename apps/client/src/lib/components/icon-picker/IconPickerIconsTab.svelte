@@ -1,24 +1,25 @@
 <script lang="ts">
+  import IconPickerColorControl from "./IconPickerColorControl.svelte";
   import CircleEllipsis from "@lucide/svelte/icons/circle-ellipsis";
   import LayoutGrid from "@lucide/svelte/icons/layout-grid";
   import Search from "@lucide/svelte/icons/search";
   import Shapes from "@lucide/svelte/icons/shapes";
   import Shuffle from "@lucide/svelte/icons/shuffle";
-  import type { EventColor } from "$lib/components/calendar/types";
-  import { EVENT_COLOR_OPTIONS } from "$lib/components/calendar/utils";
+  import type { EventColor } from "$lib/calendar/types";
   import type {
-    ProjectIconPickerGroupVirtualWindow,
-    ProjectIconPickerLucideCategoryOption,
-    ProjectIconPickerColor,
-  } from "$lib/projects/project-icon-picker";
+    IconPickerGroupVirtualWindow,
+    IconPickerLucideCategoryOption,
+    IconPickerColor,
+  } from "$lib/projects/icons/picker";
   import type {
     ProjectLucideCategory,
     ProjectLucideIconEntry,
     ProjectLucideIconNode,
-  } from "$lib/projects/project-lucide-catalog.generated";
+  } from "$lib/projects/icons/lucide-catalog.generated";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { cn } from "$lib/utils";
-  import LucideNodeIcon from "$lib/components/projects/LucideNodeIcon.svelte";
+  import LucideNodeIcon from "./LucideNodeIcon.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import ProjectIcon from "$lib/components/projects/ProjectIcon.svelte";
 
   let {
@@ -28,7 +29,7 @@
     iconCategory,
     iconCategoryMenuOpen,
     iconCategoryOverflowActive,
-    iconColor = $bindable<ProjectIconPickerColor>(),
+    iconColor = $bindable<IconPickerColor>(),
     iconColorPanelOpen = $bindable(false),
     skinTonePanelOpen = $bindable(false),
     askIconColorEveryTime,
@@ -62,7 +63,7 @@
     iconCategory: ProjectLucideCategory | "all";
     iconCategoryMenuOpen: boolean;
     iconCategoryOverflowActive: boolean;
-    iconColor: ProjectIconPickerColor;
+    iconColor: IconPickerColor;
     iconColorPanelOpen: boolean;
     skinTonePanelOpen: boolean;
     askIconColorEveryTime: boolean;
@@ -72,11 +73,11 @@
     gridCanScrollDown: boolean;
     gridColumnCount: number;
     lucideRecentValues: readonly string[];
-    lucideGroupVirtual: ProjectIconPickerGroupVirtualWindow<ProjectLucideCategory, ProjectLucideIconEntry>;
+    lucideGroupVirtual: IconPickerGroupVirtualWindow<ProjectLucideCategory, ProjectLucideIconEntry>;
     lucideLoading: boolean;
-    primaryLucideCategoryOptions: readonly ProjectIconPickerLucideCategoryOption[];
+    primaryLucideCategoryOptions: readonly IconPickerLucideCategoryOption[];
     automaticIconColor: string;
-    iconColorLabel: (color: ProjectIconPickerColor) => string;
+    iconColorLabel: (color: IconPickerColor) => string;
     iconColorSwatch: (color: EventColor) => string;
     iconColorStyle: (color: EventColor) => string;
     lucideRecentPreviewValue: (rawValue: string) => string;
@@ -89,7 +90,7 @@
       iconNode: readonly ProjectLucideIconNode[] | null,
       target: EventTarget | null,
     ) => void;
-    onSelectIconColor: (color: ProjectIconPickerColor) => void;
+    onSelectIconColor: (color: IconPickerColor) => void;
     onDefaultIconColorPanelOpen: () => void;
     onAskIconColorEveryTimeChange: (enabled: boolean) => void;
     onSelectIconCategory: (category: ProjectLucideCategory | "all") => void;
@@ -100,113 +101,35 @@
 </script>
 
 <div class="flex shrink-0 items-center gap-2 px-3 pt-3">
-  <div class="flex min-w-0 flex-1 items-center gap-2 rounded-md border border-border bg-background px-2">
+  <div class="field flex h-8 min-w-0 flex-1 items-center gap-2 py-0">
     <Search size={14} strokeWidth={1.75} class="shrink-0 text-muted-foreground" />
     <input
       bind:value={iconQuery}
-      class="h-8 min-w-0 flex-1 bg-transparent text-[0.866667rem] outline-none placeholder:text-muted-foreground"
+      class="field-bare h-full"
       placeholder={t("projects.iconPicker.filter")}
     />
   </div>
   <button
     type="button"
-    class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-accent hover:text-foreground"
+    class="flex size-8 shrink-0 items-center justify-center rounded-floating-item border border-border text-muted-foreground hover:bg-accent hover:text-foreground"
     aria-label={t("projects.iconPicker.random")}
     onclick={onChooseRandom}
   >
     <Shuffle size={14} strokeWidth={1.75} />
   </button>
-  <div class="relative shrink-0" data-icon-picker-inline-panel>
-      <button
-        type="button"
-        class={cn(
-          "flex h-8 w-8 items-center justify-center rounded-md border border-border hover:bg-accent",
-          iconColorPanelOpen && "bg-accent text-foreground",
-        )}
-        aria-label={t("projects.iconPicker.iconColor")}
-        data-app-tooltip-disabled="true"
-        onclick={(event) => {
-          event.stopPropagation();
-          const nextOpen = !iconColorPanelOpen;
-          iconColorPanelOpen = nextOpen;
-          if (nextOpen) onDefaultIconColorPanelOpen();
-          skinTonePanelOpen = false;
-        }}
-      >
-        <span
-          class="h-4 w-4 rounded-full border border-border"
-          style={`background: ${iconColor === "default" ? automaticIconColor : iconColorSwatch(iconColor)};`}
-        ></span>
-      </button>
-      {#if iconColorPanelOpen}
-        <div
-          class="absolute right-0 top-9 z-10 w-40 rounded-lg border border-border px-2.5 py-2 shadow-lg"
-          style={`background-color: var(--icon-picker-bg); color: var(--icon-picker-text); --project-icon-color-selection-border: ${colorSelectionBorder};`}
-        >
-          <button
-            type="button"
-            class={cn(
-              "grid h-8 w-full items-center justify-center gap-2 rounded-md text-left text-[0.8rem] text-foreground hover:bg-accent",
-              iconColor === "default" && "bg-accent/70",
-            )}
-            style="grid-template-columns: repeat(4, 1.375rem);"
-            aria-label={iconColorLabel("default")}
-            data-app-tooltip-disabled="true"
-            onclick={(event) => {
-              event.stopPropagation();
-              onSelectIconColor("default");
-              iconColorPanelOpen = false;
-            }}
-          >
-            <span
-              class="size-5.5 rounded-full"
-              style={`background-color: ${automaticIconColor};`}
-            ></span>
-            <span class="col-span-3 min-w-0 truncate">{iconColorLabel("default")}</span>
-          </button>
-          <div class="mt-1 grid justify-center gap-2" style="grid-template-columns: repeat(4, 1.375rem);">
-            {#each EVENT_COLOR_OPTIONS as color}
-              <button
-                type="button"
-                class={cn(
-                  "project-icon-color-swatch relative size-5.5 rounded-full",
-                  iconColor === color && "swatch-selected",
-                )}
-                style={`background-color: ${iconColorSwatch(color)};`}
-                aria-label={iconColorLabel(color)}
-                data-app-tooltip-disabled="true"
-                onclick={(event) => {
-                  event.stopPropagation();
-                  onSelectIconColor(color);
-                  iconColorPanelOpen = false;
-                }}
-              ></button>
-            {/each}
-          </div>
-          <div class="mx-1.5 mt-2 h-px bg-border/70" aria-hidden="true"></div>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={askIconColorEveryTime}
-            class="mt-1 flex h-8 w-full items-center justify-between rounded-md px-1.5 text-left text-[0.8rem] text-foreground hover:bg-accent"
-            onclick={(event) => {
-              event.stopPropagation();
-              onAskIconColorEveryTimeChange(!askIconColorEveryTime);
-            }}
-          >
-            <span>{t("projects.iconPicker.askEveryTime")}</span>
-            <span
-              class={cn(
-                "flex h-4 w-7 shrink-0 items-center rounded-full p-0.5",
-                askIconColorEveryTime ? "justify-end bg-primary" : "justify-start bg-muted-foreground/30",
-              )}
-            >
-              <span class="h-3 w-3 rounded-full bg-background shadow-sm"></span>
-            </span>
-          </button>
-        </div>
-      {/if}
-  </div>
+  <IconPickerColorControl
+    bind:open={iconColorPanelOpen}
+    color={iconColor}
+    label={t("projects.iconPicker.iconColor")}
+    askEveryTime={askIconColorEveryTime}
+    {colorSelectionBorder}
+    automaticColor={automaticIconColor}
+    colorLabel={iconColorLabel}
+    colorSwatch={iconColorSwatch}
+    onSelect={onSelectIconColor}
+    onOpen={() => { onDefaultIconColorPanelOpen(); skinTonePanelOpen = false; }}
+    onAskEveryTimeChange={onAskIconColorEveryTimeChange}
+  />
 </div>
 
 <div
@@ -253,7 +176,7 @@
   {/if}
 
   {#if lucideLoading}
-    <div class="py-6 text-center text-[0.8rem] text-muted-foreground">{t("common.loading")}</div>
+    <Loading layout="fill" class="min-h-24" />
   {:else}
     <div style={`height: ${lucideGroupVirtual.beforeHeight}px;`} aria-hidden="true"></div>
     {#each lucideGroupVirtual.groups as group (group.category)}
@@ -353,16 +276,4 @@
     mask-image: linear-gradient(to bottom, transparent, black 20px, black calc(100% - 20px), transparent);
   }
 
-  .project-icon-color-swatch {
-    overflow: hidden;
-  }
-
-  .project-icon-color-swatch.swatch-selected::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    border: 2px solid var(--project-icon-color-selection-border);
-    border-radius: inherit;
-    pointer-events: none;
-  }
 </style>

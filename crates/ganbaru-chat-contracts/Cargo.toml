@@ -14,6 +14,6 @@ doctest = false
 workspace = true
 
 [dependencies]
-ganbaru-working-folders = { path = "../ganbaru-working-folders" }
+ganbaru-working-folders = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

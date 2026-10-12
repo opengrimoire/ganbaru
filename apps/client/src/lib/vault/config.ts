@@ -1,5 +1,5 @@
 /**
- * Frontend bridge to the active Ganbaru AI folder's root `config.json`.
+ * Frontend bridge to the active vault's root `config.json`.
  *
  * Reads the file once at boot, keeps an in-memory cache, and flushes bounded
  * key-level patches through a debounced write so a burst of edits (dragging a
@@ -12,9 +12,9 @@
  * nested objects on disk so the JSON stays human-readable and orthogonal
  * concerns live under their own branches.
  *
- * The Ganbaru AI folder path itself is owned by the Rust side (see
- * `src-tauri/src/vault.rs`). This module only knows how to read cached values
- * and request patches, and never talks to the filesystem directly.
+ * The vault path itself is owned by the Rust side (see
+ * `src-tauri/app/src/vault.rs`). This module only reads cached values and
+ * requests patches, and never talks to the filesystem directly.
  */
 
 import { invoke } from "@tauri-apps/api/core";
@@ -133,9 +133,9 @@ export function ensureConfigLoaded(): Promise<void> {
 }
 
 /**
- * Read a dotted-path config value. Returns `fallback` when the key is
- * missing or the stored value is the wrong shape (i.e. callers may pass a
- * runtime guard via the fallback's type).
+ * Read a dotted-path config value. Returns `fallback` only when the key is
+ * missing. The stored value is not checked against `T`, so callers must
+ * validate its shape.
  */
 export function getConfigKey<T>(key: string, fallback: T): T {
   const parts = splitKey(key);

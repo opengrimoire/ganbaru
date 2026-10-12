@@ -4,7 +4,7 @@ Platform documents describe operating-system composition, capability differences
 
 ## Android
 
-[Android](android/README.md) is the current mobile target. Its source implementation includes the local offline shell, application-private vault, Calendar, Projects, Notes, provider-free Chat, Quick notes, Pomodoro, Music, Themes, localization, backup and restore, native notifications, and selected-app Doomscrolling. Release readiness still requires the documented signed-artifact and device validation.
+[Android](android/README.md) is the current mobile target. Its source implementation includes the local offline shell, application-private vault, Calendar, Projects, Notes, provider-free Chat, Quick notes, Pomodoro, Music, Themes, localization, backup and restore, native notifications, and selected-app distraction blocking. Release readiness still requires the documented signed-artifact and device validation.
 
 ## Desktop
 

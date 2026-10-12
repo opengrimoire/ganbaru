@@ -1,10 +1,10 @@
 //! Durable cleanup service for exact checkpoint refs.
 
-use super::delete_exact_ref;
-use crate::chat::models::{
+use crate::chat::workspace::WorkingFolderAuthorizationOperation;
+use ganbaru_chat::checkpoints::delete_exact_ref;
+use ganbaru_chat_contracts::models::{
     ChatError, ChatErrorCode, ChatResult, ProjectWorkingFolderId, UtcTimestamp,
 };
-use crate::chat::workspace::WorkingFolderAuthorizationOperation;
 use sqlx::{Row, SqlitePool};
 
 pub(crate) async fn run_checkpoint_cleanup(
@@ -14,10 +14,10 @@ pub(crate) async fn run_checkpoint_cleanup(
 ) -> ChatResult<u64> {
     let rows = sqlx::query(
         "SELECT id, working_folder_id, exact_target, repository_identity, expected_object_id
-         FROM chat_cleanup_queue
+         FROM chat_cleanup_jobs
          WHERE cleanup_kind = 'checkpoint_ref' AND state IN ('pending', 'failed')
-           AND not_before <= ?
-         ORDER BY not_before, id LIMIT 100",
+           AND available_at <= ?
+         ORDER BY available_at, id LIMIT 100",
     )
     .bind(now.as_str())
     .fetch_all(pool)
@@ -37,8 +37,8 @@ pub(crate) async fn run_checkpoint_cleanup(
             .try_get("expected_object_id")
             .map_err(persistence_error)?;
         sqlx::query(
-            "UPDATE chat_cleanup_queue
-             SET state = 'running', attempts = attempts + 1, updated_at = ? WHERE id = ?",
+            "UPDATE chat_cleanup_jobs
+             SET state = 'running', attempt_count = attempt_count + 1, updated_at = ? WHERE id = ?",
         )
         .bind(now.as_str())
         .bind(&cleanup_id)
@@ -47,9 +47,9 @@ pub(crate) async fn run_checkpoint_cleanup(
         .map_err(persistence_error)?;
         let result = match (working_folder_id, repository_identity, expected_object_id) {
             (Some(working_folder_id), Some(repository_identity), Some(expected_object_id)) => {
-                let working_folder_id =
-                    ProjectWorkingFolderId::new(working_folder_id).map_err(|_| corrupt_data())?;
-                let authorized = super::super::workspace_commands::authorize_working_folder(
+                let working_folder_id = ProjectWorkingFolderId::new(working_folder_id)
+                    .map_err(|_| corrupt_data_error())?;
+                let authorized = super::super::workspace::commands::authorize_working_folder(
                     app,
                     pool,
                     &working_folder_id,
@@ -71,12 +71,12 @@ pub(crate) async fn run_checkpoint_cleanup(
                     .map_err(|_| checkpoint_command_error())?
                 }
             }
-            _ => Err(corrupt_data()),
+            _ => Err(corrupt_data_error()),
         };
         match result {
             Ok(()) => {
                 sqlx::query(
-                    "UPDATE chat_cleanup_queue
+                    "UPDATE chat_cleanup_jobs
                      SET state = 'completed', last_error_code = NULL, updated_at = ? WHERE id = ?",
                 )
                 .bind(now.as_str())
@@ -88,7 +88,7 @@ pub(crate) async fn run_checkpoint_cleanup(
             }
             Err(error) => {
                 sqlx::query(
-                    "UPDATE chat_cleanup_queue
+                    "UPDATE chat_cleanup_jobs
                      SET state = 'failed', last_error_code = ?, updated_at = ? WHERE id = ?",
                 )
                 .bind(format!("{:?}", error.code).to_lowercase())
@@ -119,7 +119,7 @@ fn persistence_error<T>(_error: T) -> ChatError {
     )
 }
 
-fn corrupt_data() -> ChatError {
+fn corrupt_data_error() -> ChatError {
     ChatError::new(
         ChatErrorCode::Persistence,
         "Stored Chat checkpoint cleanup data is invalid",

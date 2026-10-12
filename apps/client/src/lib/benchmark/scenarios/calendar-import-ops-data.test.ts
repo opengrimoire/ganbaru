@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { CalendarEvent } from "$lib/components/calendar/types";
+import type { CalendarEvent } from "$lib/calendar/types";
 import { namespaceImportChildIds } from "./calendar-import-ops-data";
 
 function event(): CalendarEvent {

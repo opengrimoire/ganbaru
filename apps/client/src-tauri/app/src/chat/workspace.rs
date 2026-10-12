@@ -1,16 +1,22 @@
 //! Tauri device-state integration for project working folders.
 
-use super::models::{ChatError, ChatErrorCode, ChatResult, ProjectWorkingFolderId};
+pub mod commands;
+pub mod files;
+pub mod observer;
+
 use crate::projects::working_folders::{
     ProjectWorkingFolderBindingState, read_active_working_folder_scope,
     update_active_working_folder_scope,
 };
 use crate::vault;
+use ganbaru_chat_contracts::models::{
+    ChatError, ChatErrorCode, ChatResult, ProjectWorkingFolderId,
+};
 use std::fs;
 use std::path::Path;
 use tauri::Runtime;
 
-pub use ganbaru_chat::chat::workspace::*;
+pub use ganbaru_chat::workspace::*;
 
 pub fn ensure_managed_working_folder_binding<R: Runtime>(
     app: &tauri::AppHandle<R>,

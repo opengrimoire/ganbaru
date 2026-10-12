@@ -6,6 +6,11 @@ export type ActiveVaultIdentityListener = (
 let activeVaultId: string | null = null;
 const listeners = new Set<ActiveVaultIdentityListener>();
 
+/** Return the validated vault identity, or null before a vault is active. */
+export function activeVaultIdentity(): string | null {
+  return activeVaultId;
+}
+
 /** Returns the active vault identity after startup validation. */
 export function requireActiveVaultIdentity(): string {
   if (!activeVaultId) {

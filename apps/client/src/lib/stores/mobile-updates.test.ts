@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { vi } from "vitest";
 
-type MobileUpdatesModule = typeof import("./mobile-updates");
+type MobileUpdatesModule = typeof import("./mobile-updates.svelte");
 
 let module: MobileUpdatesModule | null = null;
 
@@ -15,7 +15,7 @@ function getModule(): MobileUpdatesModule {
 beforeAll(async () => {
   vi.stubGlobal("__GANBARU_AI_BUILD_REF__", "0.1.5+abc123");
   vi.stubGlobal("__GANBARU_AI_GITHUB_REPOSITORY__", "opengrimoire/ganbaru-ai");
-  module = await import("./mobile-updates");
+  module = await import("./mobile-updates.svelte");
 });
 
 describe("mobile version parsing", () => {

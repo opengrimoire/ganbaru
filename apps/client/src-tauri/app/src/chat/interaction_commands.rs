@@ -1,20 +1,22 @@
 //! Native composer resources and interaction command facade.
 
 use super::command_support::{chat_pool, now_timestamp};
-use super::events::{AccountStatusEvent, RateLimitStatusEvent, ThreadUsageUpdatedEvent};
 use super::interaction;
-use super::models::{
+use ganbaru_chat::repository::{attachments, recovery::recover_orphaned_turns};
+use ganbaru_chat::runtime::ChatRuntimeRegistry;
+use ganbaru_chat_contracts::events::{
+    AccountStatusEvent, RateLimitStatusEvent, ThreadUsageUpdatedEvent,
+};
+use ganbaru_chat_contracts::models::{
     ChatAttachmentId, ChatCommandId, ChatPromptCatalogEntry, ChatResult, ChatThreadId,
     DriverOperationReceipt, McpStatusRead, ProjectWorkingFolderId, ProviderCapabilities,
     ProviderInstanceId, ProviderSessionState, UtcTimestamp, VersionedJson,
 };
-use super::repository::{attachments, recovery::recover_orphaned_turns};
-use super::runtime::ChatRuntimeRegistry;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use tauri::Manager;
 
-pub use super::composer::workspace_mentions::ProjectWorkingFolderPathPage;
+pub use ganbaru_chat::composer::workspace_mentions::ProjectWorkingFolderPathPage;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -73,8 +75,8 @@ pub struct ChatQueuedFollowupRead {
     pub text: String,
     pub provider_instance_id: ProviderInstanceId,
     pub model_selection: VersionedJson,
-    pub safety_mode: super::models::SafetyMode,
-    pub interaction_mode: super::models::InteractionMode,
+    pub safety_mode: ganbaru_chat_contracts::models::SafetyMode,
+    pub interaction_mode: ganbaru_chat_contracts::models::InteractionMode,
     pub attachment_ids: Vec<ChatAttachmentId>,
     pub mentions: VersionedJson,
     pub created_at: UtcTimestamp,
@@ -104,8 +106,8 @@ pub struct SaveQueuedFollowupRequest {
     pub text: String,
     pub provider_instance_id: ProviderInstanceId,
     pub model_selection: VersionedJson,
-    pub safety_mode: super::models::SafetyMode,
-    pub interaction_mode: super::models::InteractionMode,
+    pub safety_mode: ganbaru_chat_contracts::models::SafetyMode,
+    pub interaction_mode: ganbaru_chat_contracts::models::InteractionMode,
     pub attachment_ids: Vec<ChatAttachmentId>,
     pub mentions: VersionedJson,
 }

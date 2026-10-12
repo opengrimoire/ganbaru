@@ -18,7 +18,7 @@
       "inputs": [
         "index.html",
         "package.json",
-        "scripts/check-tailwind-diagnostics.mjs",
+        "scripts/checks/check-tailwind-diagnostics.mjs",
         "src/**/*.css",
         "src/**/*.html",
         "src/**/*.js",
@@ -34,11 +34,8 @@
       "env": ["GANBARU_AI_RELEASE_REPOSITORY"],
       "inputs": [
         "package.json",
-        "scripts/android-bundle-baseline.json",
-        "scripts/build-android-bundle-contract.mjs",
-        "scripts/check-android-bundle.mjs",
-        "scripts/check-first-use-bundle.mjs",
-        "scripts/first-use-bundle-baseline.json"
+        "scripts/bundle-contracts/**",
+        "scripts/checks/check-android-project.mjs"
       ],
       "outputs": [".bundle-contracts/android/**"]
     }

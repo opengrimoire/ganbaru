@@ -66,6 +66,7 @@ export const vaultOwnership = {
 export const vaultOwnershipPrompt = {
   title: (device: string) => `${device} is the main device`,
   description: "Only the main device can make changes.",
+  replicaDescription: "Quick notes stay editable here and sync with your devices. Only the main device can change everything else.",
   continueReadOnly: "Continue in read-only",
   switching: "Switching to this device...",
   replacementTitle: "Replace this device's current data?",
@@ -135,7 +136,7 @@ export const vaultHandoff = {
   refreshesIn: (time: string) => `Code refreshes in ${time}`,
   refreshingCode: "Refreshing code...",
   scanQr: "Scan desktop QR code",
-  cameraStarting: "Starting camera...",
+  cameraStarting: "Starting camera",
   notNow: "Not now",
   continue: "Continue",
   deviceLabel: "Phone",

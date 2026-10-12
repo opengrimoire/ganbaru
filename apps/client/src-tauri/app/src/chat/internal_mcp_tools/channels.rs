@@ -3,10 +3,10 @@
 use super::authorization::verify_channel_source;
 use super::{
     DEFAULT_PAGE_SIZE, HostToolContext, MAX_QUERY_BYTES, MAX_RESPONSE_BYTES, OpaqueCursor,
-    generic_denial, internal_error, optional_limit, optional_string, persistence_error,
+    generic_denial_error, internal_error, optional_limit, optional_string, persistence_error,
     required_string, sha256_hex, truncate_utf8,
 };
-use crate::chat::models::ChatResult;
+use ganbaru_chat_contracts::models::ChatResult;
 use serde_json::{Map, Value, json};
 use sqlx::{QueryBuilder, Row, Sqlite};
 
@@ -37,7 +37,7 @@ pub(super) async fn channel_messages(
         .channel_sources
         .iter()
         .find(|source| source.source_handle == source_handle)
-        .ok_or_else(generic_denial)?;
+        .ok_or_else(generic_denial_error)?;
     verify_channel_source(context.pool, context.scope, source).await?;
     let terms = if searching {
         normalized_query_terms(required_string(arguments, "query", MAX_QUERY_BYTES)?)?
@@ -91,9 +91,9 @@ pub(super) async fn channel_messages(
     );
     query.push_bind(&source.conversation_id);
     query.push(" AND message.deleted_at IS NULL AND coalesce(root_item.ordinal, item.ordinal) >= ");
-    query.push_bind(i64::try_from(source.lower_ordinal).map_err(|_| generic_denial())?);
+    query.push_bind(i64::try_from(source.lower_ordinal).map_err(|_| generic_denial_error())?);
     query.push(" AND coalesce(root_item.ordinal, item.ordinal) <= ");
-    query.push_bind(i64::try_from(source.high_ordinal).map_err(|_| generic_denial())?);
+    query.push_bind(i64::try_from(source.high_ordinal).map_err(|_| generic_denial_error())?);
     if let Some(cursor) = cursor {
         query.push(" AND (item.created_at < ");
         query.push_bind(cursor.before_created_at);
@@ -131,7 +131,7 @@ pub(super) async fn channel_messages(
             "messageId": item_id,
             "revisionId": row.try_get::<String, _>("revision_id").map_err(persistence_error)?,
             "revision": u64::try_from(row.try_get::<i64, _>("revision").map_err(persistence_error)?)
-                .map_err(|_| generic_denial())?,
+                .map_err(|_| generic_denial_error())?,
             "author": {
                 "id": row.try_get::<String, _>("author_id").map_err(persistence_error)?,
                 "displayName": row.try_get::<String, _>("author_name").map_err(persistence_error)?,
@@ -190,7 +190,7 @@ pub(super) async fn channel_messages(
 
 fn normalized_query_terms(query: &str) -> ChatResult<Vec<String>> {
     if query.is_empty() || query.len() > MAX_QUERY_BYTES {
-        return Err(generic_denial());
+        return Err(generic_denial_error());
     }
     let mut terms = Vec::new();
     for term in query.split_whitespace().map(str::to_lowercase) {
@@ -198,12 +198,12 @@ fn normalized_query_terms(query: &str) -> ChatResult<Vec<String>> {
             continue;
         }
         if terms.len() >= MAX_QUERY_TERMS {
-            return Err(generic_denial());
+            return Err(generic_denial_error());
         }
         terms.push(term);
     }
     if terms.is_empty() {
-        Err(generic_denial())
+        Err(generic_denial_error())
     } else {
         Ok(terms)
     }

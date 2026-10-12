@@ -1,6 +1,6 @@
 use super::{
     NativeResponse,
-    config::{DoomscrollingConfig, DoomscrollingMode, UsageLimitsConfig},
+    config::{DistractionsConfig, DistractionsMode, UsageLimitsConfig},
     events::{block_event_phase, record_block_event_in_database},
     rules::{HostDecision, decide_url, host_from_url, host_matches_rule},
     snapshot::{RuntimeState, StateSnapshot, runtime_status_at, should_enforce},
@@ -8,12 +8,11 @@ use super::{
 use chrono::{DateTime, SecondsFormat, Utc};
 use sqlx::Row;
 
-static APP_MIGRATOR: sqlx::migrate::Migrator =
-    sqlx::migrate!("../../apps/client/src-tauri/migrations");
+static APP_MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../ganbaru-db/migrations");
 
-fn config() -> DoomscrollingConfig {
-    DoomscrollingConfig {
-        mode: DoomscrollingMode::Blacklist,
+fn config() -> DistractionsConfig {
+    DistractionsConfig {
+        mode: DistractionsMode::Blacklist,
         enabled: true,
         block_during_focus: true,
         block_during_short_breaks: true,
@@ -28,6 +27,7 @@ fn config() -> DoomscrollingConfig {
             enabled: true,
             items: Vec::new(),
         },
+        limit_configuration_digest: Some("native-test-digest".into()),
     }
 }
 
@@ -67,6 +67,7 @@ fn runtime_for_phase_updated_at(phase: &str, paused: bool, updated_at: String) -
         phase: phase.to_string(),
         remaining_seconds: Some(60),
         updated_at,
+        valid_until_ms: None,
     }
 }
 
@@ -158,7 +159,7 @@ fn decision_reasons_preserve_wire_labels_and_typed_event_metadata() {
         ),
     ];
     for (decision, blocked, label, kind) in cases {
-        assert_eq!(decision.blocked(), blocked);
+        assert_eq!(decision.is_blocked(), blocked);
         assert_eq!(decision.matched_rule_name().as_deref(), label);
         assert_eq!(decision.rule_kind(), kind);
         let is_limit = matches!(
@@ -174,11 +175,11 @@ fn decision_reasons_preserve_wire_labels_and_typed_event_metadata() {
             }
         );
         assert_eq!(
-            decision.blocker_mode(&DoomscrollingMode::Blacklist),
+            decision.blocker_mode(&DistractionsMode::Blacklist),
             if is_limit { "limit" } else { "blacklist" }
         );
         assert_eq!(
-            decision.blocker_mode(&DoomscrollingMode::Whitelist),
+            decision.blocker_mode(&DistractionsMode::Whitelist),
             if is_limit { "limit" } else { "whitelist" }
         );
     }
@@ -243,7 +244,7 @@ fn records_block_event_to_sqlite_without_full_url() {
             .unwrap();
         let table_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM sqlite_schema
-             WHERE type = 'table' AND name = 'doomscrolling_block_events'",
+             WHERE type = 'table' AND name = 'distractions_block_events'",
         )
         .fetch_one(&pool)
         .await
@@ -277,8 +278,8 @@ fn records_block_event_to_sqlite_without_full_url() {
             .unwrap();
         let row = sqlx::query(
             "SELECT e.source_key, e.decision, e.phase, s.rule_kind, s.blocker_mode
-                 FROM doomscrolling_block_events e
-                 JOIN doomscrolling_block_event_rule_snapshots s ON s.block_event_id = e.id",
+                 FROM distractions_block_events e
+                 JOIN distractions_block_event_rule_snapshots s ON s.block_event_id = e.id",
         )
         .fetch_one(&pool)
         .await
@@ -324,10 +325,10 @@ fn usage_samples_are_spooled_outside_the_vault_until_the_app_acknowledges_them()
         source_type: "website".to_string(),
         source_key: "example.com".to_string(),
         display_name: Some("Example".to_string()),
-        started_at: 1_700_000_000_000,
+        started_at_ms: 1_700_000_000_000,
         elapsed_seconds: 30,
         local_date: "2026-06-10".to_string(),
-        created_at: 1_700_000_030_000,
+        created_at_ms: 1_700_000_030_000,
     };
 
     assert!(super::record_usage_sample(None, Some(&vault_path), sample()).is_err());
@@ -337,7 +338,7 @@ fn usage_samples_are_spooled_outside_the_vault_until_the_app_acknowledges_them()
         let spool_url = format!(
             "sqlite:{}",
             config_path
-                .join("doomscrolling-device-spool.sqlite")
+                .join("distractions-device-spool.sqlite")
                 .to_string_lossy()
         );
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
@@ -372,7 +373,7 @@ fn retried_browser_usage_keeps_the_same_device_sample_id() {
         source_key: Some("example.com".to_string()),
         display_name: Some("Example".to_string()),
         elapsed_seconds: Some(30),
-        started_at: Some(1_700_000_000_000),
+        started_at_ms: Some(1_700_000_000_000),
         local_date: Some("2026-06-10".to_string()),
     };
     let first = super::normalize_usage_sample(&request).unwrap();
@@ -463,6 +464,39 @@ fn active_runtime_state_fails_open_after_missed_heartbeat() {
     assert_eq!(phase, "inactive");
     assert_eq!(remaining_seconds, None);
     assert_eq!(reason.as_deref(), Some("runtime state is stale"));
+}
+
+#[test]
+fn fresh_heartbeat_cannot_extend_accepted_phase_or_owner_validity() {
+    let updated = "2026-05-26T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+    let mut snapshot = StateSnapshot {
+        config_dir: None,
+        vault_path: None,
+        config: config(),
+        limit_state: None,
+        runtime: Some(runtime_for_phase_updated_at(
+            "focus",
+            false,
+            updated.to_rfc3339(),
+        )),
+    };
+    snapshot.runtime.as_mut().unwrap().valid_until_ms = Some(updated.timestamp_millis() + 500);
+    assert!(runtime_status_at(&snapshot, updated + chrono::Duration::milliseconds(499)).0);
+    let expired = runtime_status_at(&snapshot, updated + chrono::Duration::milliseconds(500));
+    assert!(!expired.0);
+    assert_eq!(expired.1, "inactive");
+    assert_eq!(
+        expired.3.as_deref(),
+        Some("accepted phase validity expired")
+    );
+    snapshot.runtime.as_mut().unwrap().paused = true;
+    assert!(!runtime_status_at(&snapshot, updated + chrono::Duration::milliseconds(500)).0);
+    let runtime = snapshot.runtime.as_mut().unwrap();
+    runtime.valid_until_ms = None;
+    runtime.paused = false;
+    runtime.remaining_seconds = Some(1);
+    assert!(runtime_status_at(&snapshot, updated + chrono::Duration::milliseconds(999)).0);
+    assert!(!runtime_status_at(&snapshot, updated + chrono::Duration::seconds(1)).0);
 }
 
 #[test]
@@ -557,7 +591,7 @@ fn predecessor_string_rule_entries_are_not_loaded() {
 }
 
 #[test]
-fn doomscrolling_mode_and_rule_enabled_flags_are_explicit() {
+fn distractions_mode_and_rule_enabled_flags_are_explicit() {
     assert!(super::config::read_mode(&serde_json::json!({})).is_none());
     assert!(super::config::read_host_rule(&serde_json::json!({ "host": "example.com" })).is_none());
     assert!(
@@ -573,7 +607,7 @@ fn doomscrolling_mode_and_rule_enabled_flags_are_explicit() {
 #[test]
 fn lets_exceptions_override_blocked_parent_domains() {
     let decision = decide_url("music.youtube.com", None, &config());
-    assert!(!decision.blocked());
+    assert!(!decision.is_blocked());
     assert_eq!(
         decision.matched_rule_name().as_deref(),
         Some("exception: music.youtube.com")
@@ -583,7 +617,7 @@ fn lets_exceptions_override_blocked_parent_domains() {
 #[test]
 fn blocks_matching_parent_domain() {
     let decision = decide_url("old.reddit.com", None, &config());
-    assert!(decision.blocked());
+    assert!(decision.is_blocked());
     assert_eq!(
         decision.matched_rule_name().as_deref(),
         Some("blocked host: reddit.com")
@@ -608,11 +642,12 @@ fn blocks_exhausted_daily_website_limits_without_active_pomodoro_rules() {
             desktop_app_name: None,
         }],
     }];
-    let limit_state = super::snapshot::LimitState {
+    let mut limit_state = super::snapshot::LimitState {
         local_date: "2026-05-28".to_string(),
         week_start_local_date: "2026-05-25".to_string(),
         updated_at: super::now_utc().to_rfc3339_opts(SecondsFormat::Millis, true),
         database_path: "/tmp/ganbaru-ai-vault/ganbaru-ai.sqlite".to_string(),
+        configuration_digest: Some("native-test-digest".into()),
         limits: vec![super::snapshot::LimitStateItem {
             id: "youtube".to_string(),
             period: "day".to_string(),
@@ -633,10 +668,44 @@ fn blocks_exhausted_daily_website_limits_without_active_pomodoro_rules() {
         false,
     );
 
-    assert!(decision.blocked());
+    assert!(decision.is_blocked());
     assert_eq!(
         decision.matched_rule_name().as_deref(),
         Some("daily limit: YouTube")
+    );
+    let mut increased_budget = config.clone();
+    increased_budget.limits.items[0].minutes_per_day = Some(20);
+    assert!(
+        !super::rules::decide_url_with_limits(
+            "music.youtube.com",
+            None,
+            &increased_budget,
+            Some(&limit_state),
+            false
+        )
+        .is_blocked()
+    );
+    limit_state.configuration_digest = Some("obsolete-configuration".into());
+    assert!(
+        !super::rules::decide_url_with_limits(
+            "music.youtube.com",
+            None,
+            &config,
+            Some(&limit_state),
+            false
+        )
+        .is_blocked()
+    );
+    limit_state.configuration_digest = None;
+    assert!(
+        !super::rules::decide_url_with_limits(
+            "music.youtube.com",
+            None,
+            &config,
+            Some(&limit_state),
+            false
+        )
+        .is_blocked()
     );
 }
 
@@ -662,6 +731,7 @@ fn active_focus_rules_win_over_limit_blocks() {
         week_start_local_date: "2026-05-25".to_string(),
         updated_at: super::now_utc().to_rfc3339_opts(SecondsFormat::Millis, true),
         database_path: "/tmp/ganbaru-ai-vault/ganbaru-ai.sqlite".to_string(),
+        configuration_digest: Some("native-test-digest".into()),
         limits: vec![super::snapshot::LimitStateItem {
             id: "reddit".to_string(),
             period: "day".to_string(),
@@ -682,7 +752,7 @@ fn active_focus_rules_win_over_limit_blocks() {
         true,
     );
 
-    assert!(decision.blocked());
+    assert!(decision.is_blocked());
     assert_eq!(
         decision.matched_rule_name().as_deref(),
         Some("blocked host: reddit.com")
@@ -697,6 +767,7 @@ fn uses_limit_state_database_path_for_usage_samples() {
         week_start_local_date: "2026-05-25".to_string(),
         updated_at: super::now_utc().to_rfc3339_opts(SecondsFormat::Millis, true),
         database_path: "/tmp/ganbaru-ai-vault/ganbaru-ai.sqlite".to_string(),
+        configuration_digest: Some("native-test-digest".into()),
         limits: Vec::new(),
     };
 
@@ -754,7 +825,7 @@ fn blocks_enabled_built_in_categories() {
     config.blocked_hosts.clear();
     config.blocked_category_ids = vec!["social-media".to_string()];
     let decision = decide_url("old.reddit.com", None, &config);
-    assert!(decision.blocked());
+    assert!(decision.is_blocked());
     assert_eq!(
         decision.matched_rule_name().as_deref(),
         Some("category: Social media")
@@ -771,7 +842,7 @@ fn blocks_streaming_category_keyword_matches_in_domains() {
         Some("https://watch-anime.example/episode/1"),
         &config,
     );
-    assert!(decision.blocked());
+    assert!(decision.is_blocked());
     assert_eq!(
         decision.matched_rule_name().as_deref(),
         Some("category: Streaming")
@@ -829,7 +900,7 @@ fn blocks_built_in_category_keyword_matches_in_domains() {
         config.blocked_hosts.clear();
         config.blocked_category_ids = vec![category_id.to_string()];
         let decision = decide_url(host, Some(url), &config);
-        assert!(decision.blocked());
+        assert!(decision.is_blocked());
         assert_eq!(
             decision.matched_rule_name().as_deref(),
             Some(matched_rule_name)
@@ -847,7 +918,7 @@ fn blocks_porn_category_keyword_matches_in_domains() {
         Some("https://example-porn-site.test/watch"),
         &config,
     );
-    assert!(decision.blocked());
+    assert!(decision.is_blocked());
     assert_eq!(
         decision.matched_rule_name().as_deref(),
         Some("category: Porn")
@@ -864,7 +935,7 @@ fn blocks_porn_category_keyword_matches_in_reddit_subreddits() {
         Some("https://old.reddit.com/r/gwstories/comments/123/title"),
         &config,
     );
-    assert!(decision.blocked());
+    assert!(decision.is_blocked());
     assert_eq!(
         decision.matched_rule_name().as_deref(),
         Some("category: Porn")
@@ -881,7 +952,7 @@ fn ignores_reddit_post_titles_for_porn_category_keyword_matching() {
         Some("https://reddit.com/r/productivity/comments/123/nsfw_post_title"),
         &config,
     );
-    assert!(!decision.blocked());
+    assert!(!decision.is_blocked());
     assert_eq!(decision.matched_rule_name(), None);
 }
 
@@ -895,7 +966,7 @@ fn blocks_enabled_custom_category_stacks() {
         hosts: vec!["news.ycombinator.com".to_string()],
     }];
     let decision = decide_url("news.ycombinator.com", None, &config);
-    assert!(decision.blocked());
+    assert!(decision.is_blocked());
     assert_eq!(
         decision.matched_rule_name().as_deref(),
         Some("custom stack: Research traps")
@@ -914,11 +985,11 @@ fn enforces_short_and_long_break_settings_independently() {
         runtime: None,
         limit_state: None,
     };
-    let mut short_break = response_for_phase("short_break");
-    let mut long_break = response_for_phase("long_break");
+    let short_break = response_for_phase("short_break");
+    let long_break = response_for_phase("long_break");
 
-    assert!(should_enforce(&snapshot, &mut short_break));
-    assert!(!should_enforce(&snapshot, &mut long_break));
+    assert!(should_enforce(&snapshot, &short_break));
+    assert!(!should_enforce(&snapshot, &long_break));
 }
 
 #[test]
@@ -933,11 +1004,11 @@ fn enforces_focus_independently_from_break_toggles() {
         runtime: None,
         limit_state: None,
     };
-    let mut focus = response_for_phase("focus");
-    let mut short_break = response_for_phase("short_break");
+    let focus = response_for_phase("focus");
+    let short_break = response_for_phase("short_break");
 
-    assert!(!should_enforce(&snapshot, &mut focus));
-    assert!(should_enforce(&snapshot, &mut short_break));
+    assert!(!should_enforce(&snapshot, &focus));
+    assert!(should_enforce(&snapshot, &short_break));
 }
 
 #[test]
@@ -949,9 +1020,9 @@ fn skips_paused_focus_when_pause_setting_enabled() {
         runtime: Some(runtime_for_phase("focus", true)),
         limit_state: None,
     };
-    let mut focus = response_for_phase("focus");
+    let focus = response_for_phase("focus");
 
-    assert!(!should_enforce(&snapshot, &mut focus));
+    assert!(!should_enforce(&snapshot, &focus));
 }
 
 #[test]
@@ -965,9 +1036,9 @@ fn keeps_enforcing_idle_paused_focus() {
         runtime: Some(runtime),
         limit_state: None,
     };
-    let mut focus = response_for_phase("focus");
+    let focus = response_for_phase("focus");
 
-    assert!(should_enforce(&snapshot, &mut focus));
+    assert!(should_enforce(&snapshot, &focus));
 }
 
 #[test]
@@ -981,9 +1052,9 @@ fn keeps_enforcing_suspend_paused_focus() {
         runtime: Some(runtime),
         limit_state: None,
     };
-    let mut focus = response_for_phase("focus");
+    let focus = response_for_phase("focus");
 
-    assert!(should_enforce(&snapshot, &mut focus));
+    assert!(should_enforce(&snapshot, &focus));
 }
 
 #[test]
@@ -997,9 +1068,9 @@ fn treats_missing_pause_reason_as_regular_pause() {
         runtime: Some(runtime),
         limit_state: None,
     };
-    let mut focus = response_for_phase("focus");
+    let focus = response_for_phase("focus");
 
-    assert!(!should_enforce(&snapshot, &mut focus));
+    assert!(!should_enforce(&snapshot, &focus));
 }
 
 #[test]
@@ -1013,17 +1084,17 @@ fn enforces_paused_focus_when_pause_setting_disabled() {
         runtime: Some(runtime_for_phase("focus", true)),
         limit_state: None,
     };
-    let mut focus = response_for_phase("focus");
+    let focus = response_for_phase("focus");
 
-    assert!(should_enforce(&snapshot, &mut focus));
+    assert!(should_enforce(&snapshot, &focus));
 }
 
 #[test]
 fn blocks_hosts_outside_whitelist_mode() {
     let mut config = config();
-    config.mode = DoomscrollingMode::Whitelist;
+    config.mode = DistractionsMode::Whitelist;
     let decision = decide_url("reddit.com", None, &config);
-    assert!(decision.blocked());
+    assert!(decision.is_blocked());
     assert_eq!(
         decision.matched_rule_name().as_deref(),
         Some("not in whitelist")
@@ -1033,9 +1104,9 @@ fn blocks_hosts_outside_whitelist_mode() {
 #[test]
 fn allows_hosts_inside_whitelist_mode() {
     let mut config = config();
-    config.mode = DoomscrollingMode::Whitelist;
+    config.mode = DistractionsMode::Whitelist;
     let decision = decide_url("docs.github.com", None, &config);
-    assert!(!decision.blocked());
+    assert!(!decision.is_blocked());
     assert_eq!(
         decision.matched_rule_name().as_deref(),
         Some("whitelist: github.com")
@@ -1047,10 +1118,10 @@ fn rules_fingerprint_changes_when_mode_or_rules_change() {
     let mut changed_config = config();
     let base = super::rules::rules_fingerprint(&changed_config, None);
 
-    changed_config.mode = DoomscrollingMode::Whitelist;
+    changed_config.mode = DistractionsMode::Whitelist;
     assert_ne!(super::rules::rules_fingerprint(&changed_config, None), base);
 
-    changed_config.mode = DoomscrollingMode::Blacklist;
+    changed_config.mode = DistractionsMode::Blacklist;
     changed_config
         .blocked_hosts
         .push("news.ycombinator.com".to_string());

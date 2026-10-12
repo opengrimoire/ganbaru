@@ -1,5 +1,7 @@
 # Notes import and export
 
+Status: implemented with documented loss diagnostics.
+
 All transfers preserve the source-of-truth boundary. Imports create canonical SQLite pages, blocks, rows, comments, and assets. Exports are derivative views or diagnostic snapshots and never become authoritative merely because a file exists.
 
 ## Shared safety rules
@@ -14,7 +16,7 @@ All transfers preserve the source-of-truth boundary. Imports create canonical SQ
 
 ## Markdown import
 
-Markdown import creates a new page and normal blocks. It supports headings, paragraphs, safe inline links, lists, to-dos, quotes, dividers, fenced code, supported images, and simple tables. Safe frontmatter can provide a title.
+Markdown import creates a new page and normal blocks. It preserves heading levels 1 through 6 and supports paragraphs, safe inline links, lists, to-dos, quotes, dividers, fenced code, supported images, and simple tables. Safe frontmatter can provide a title.
 
 Unknown frontmatter, unsafe or local file references, unsupported HTML, reference definitions, and syntax that cannot be represented return diagnostics. Unsupported source can become a visible preservation block when useful.
 
@@ -22,7 +24,7 @@ Imported Markdown records provenance, but the source text is not retained as edi
 
 ## HTML import
 
-HTML import sanitizes before conversion. It supports common text formatting, headings, links, lists, checkbox items, quotes, preformatted code, dividers, callouts, toggles, simple tables, and explicitly retained supported HTTPS media.
+HTML import sanitizes before conversion. It supports common text formatting, heading levels 1 through 6, links, lists, checkbox items, quotes, preformatted code, dividers, callouts, toggles, simple tables, and explicitly retained supported HTTPS media.
 
 Scripts, styles, event attributes, unsafe URLs, SVG, iframes, and unapproved embedded content are removed and reported. Local and relative media references require the managed import-file flow.
 
@@ -89,3 +91,11 @@ This bridge is the current agent-readable Notes export. It is not the planned ex
 Transfer surfaces report object counts and categorized outcomes such as preserved, approximated, skipped, unsupported, warning, and error. Diagnostics can point to safe source lines, object IDs, paths inside the selected root, CSV rows, or local Notes targets.
 
 Navigation links in diagnostics are convenience only. They do not make the source file, folder, archive, CSV, JSON, or derivative output authoritative.
+
+## Structure fidelity
+
+Markdown and HTML transfers preserve all six heading levels. HTML body headings use matching `h1` through `h6` elements rather than shifting levels beneath the page title, so deep headings are neither flattened nor emitted as an invalid `h7`.
+
+Explicit text indentation is kept in graph export, shown as relative margins in HTML, and emitted as leading spaces in Markdown, where readers may interpret deep indentation as code. Indentation beyond the bounded whitespace budget produces a diagnostic while keeping the text.
+
+HTML and Markdown exports omit page cover appearance and report `page_cover_omitted`; graph export keeps the editable cover descriptor. See [Page covers](page-covers.md#persistence-and-transfer).

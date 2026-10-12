@@ -1,6 +1,6 @@
 # Client compatibility
 
-Client notes record practical import and export behavior. They are dated observations, not standards rules. The [standards scope](../standards-scope.md) and [conformance audit](../conformance/README.md) define Ganbaru AI's compatibility contract.
+Client notes record practical import and export behavior. They are dated observations, not standards rules. The [iCalendar overview](../README.md) and [conformance audit](../conformance/README.md) define Ganbaru AI's compatibility contract.
 
 ## Manual test status
 
@@ -34,31 +34,51 @@ Use disposable calendars and test accounts. Never begin with a user's primary ca
 
 Each manual run should state:
 
-- client and platform
-- app, web, or server version when visible
-- account or plan type only when it affects behavior
-- test date
-- timezone and locale
-- input fixture names
-- import result in the external client
-- export and re-import result in Ganbaru AI
-- semantic differences, dropped fields, warnings, and UI surprises
-- raw fixture path and screenshots when retained
+- Client and platform
+- App, web, or server version when visible
+- Account or plan type only when it affects behavior
+- Test date
+- Timezone and locale
+- Input fixture names
+- Import result in the external client
+- Export and re-import result in Ganbaru AI
+- Semantic differences, dropped fields, warnings, and UI surprises
+- Raw fixture path and screenshots when retained
 
 Do not report byte-level differences as compatibility failures by themselves. Legal serializers can normalize ordering, case, escaping, and line folding.
+
+## Import expectations
+
+Files from every client go through the same standards-based import. Client documents list only deviations from this baseline.
+
+- Supported `VEVENT` data is projected; all-day `DTEND` is treated as exclusive.
+- Everything else accepted is preserved under the [preservation rule](../README.md#preservation-rule): client `X-*` fields, unsupported components such as `VTODO`, custom `VTIMEZONE` definitions, alarm fields beyond the basic projection, and organizer and attendee parameters.
+- Scheduling metadata and attendee responses stay inert and read-only. See [scheduling boundary](../scheduling-boundary.md).
+- Attachments and URIs stay inert data until the user explicitly opens them.
+- Data a client omits from its export, such as alarms, is recorded as a client observation. It never becomes a Ganbaru AI rule.
 
 ## Shared priority set
 
 Every client should eventually receive at least:
 
-- single-day and multi-day all-day events
-- zoned, UTC, and floating timed events
-- recurring events with exclusions and moved instances
-- attendees, organizer, and inert scheduling metadata
-- basic alarms
-- non-ASCII and escaped text
-- unknown extensions
-- custom timezone definitions
-- mixed components where the client claims support
+- Single-day and multi-day all-day events
+- Zoned, UTC, and floating timed events
+- Recurring events with exclusions and moved instances
+- Attendees, organizer, and inert scheduling metadata
+- Basic alarms
+- Non-ASCII and escaped text
+- Unknown extensions
+- Custom timezone definitions
+- Mixed components where the client claims support
 
-Client-specific priorities and official behavior notes remain in the individual files.
+## Shared questions
+
+Every client run should answer:
+
+- Does the client keep unknown `X-*` properties through import and export?
+- Does it rewrite timezones or custom `VTIMEZONE` definitions?
+- Does it accept or drop `VTODO`, `VJOURNAL`, and `VFREEBUSY`?
+- Does it keep `VALARM` repeat and duration?
+- Does it handle `RANGE=THISANDFUTURE`?
+
+Client documents add only client-specific priorities, quirks, questions, and observations.

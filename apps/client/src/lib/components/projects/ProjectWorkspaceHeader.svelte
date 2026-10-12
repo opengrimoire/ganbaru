@@ -1,16 +1,13 @@
 <script lang="ts">
+  import CollectionViewButton from "$lib/components/collections/CollectionViewButton.svelte";
   import ArrowUpDown from "@lucide/svelte/icons/arrow-up-down";
-  import CalendarDays from "@lucide/svelte/icons/calendar-days";
+  import Check from "@lucide/svelte/icons/check";
   import Columns3 from "@lucide/svelte/icons/columns-3";
-  import FileChartColumnIncreasing from "@lucide/svelte/icons/file-chart-column-increasing";
   import Layers from "@lucide/svelte/icons/layers";
   import ListFilter from "@lucide/svelte/icons/list-filter";
-  import Route from "@lucide/svelte/icons/route";
-  import ListCollapse from "@lucide/svelte/icons/list-collapse";
   import MessageSquare from "@lucide/svelte/icons/message-square";
   import Settings2 from "@lucide/svelte/icons/settings-2";
   import SlidersHorizontal from "@lucide/svelte/icons/sliders-horizontal";
-  import SquareKanban from "@lucide/svelte/icons/square-kanban";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
     COMPACT_IDENTITY_EMOJI_SCALE,
@@ -20,12 +17,12 @@
   import {
     projectLifecycleBadgeClass,
     projectLifecycleLabel,
-  } from "$lib/projects/project-display";
+  } from "$lib/projects/display";
   import {
     projectNavigatorPanelGeometry,
     type ProjectToolbarPanel,
     type ProjectNavigatorPanelMode,
-  } from "$lib/projects/project-toolbar";
+  } from "$lib/projects/toolbar";
   import {
     PROJECT_VIEW_IDS,
     type Project,
@@ -38,9 +35,10 @@
   import { getViewport } from "$lib/stores/viewport.svelte";
   import { cn } from "$lib/utils";
   import ProjectIcon from "./ProjectIcon.svelte";
-  import WorkspaceBreadcrumbTerminalIcon from "$lib/components/WorkspaceBreadcrumbTerminalIcon.svelte";
+  import WorkspaceBreadcrumbTerminalIcon from "$lib/components/ui/WorkspaceBreadcrumbTerminalIcon.svelte";
   import ProjectNavigator from "./ProjectNavigator.svelte";
-  import ProjectPickerMobileDialog from "./ProjectPickerMobileDialog.svelte";
+  import ProjectPickerMobileDialog from "$lib/components/projects/pickers/ProjectPickerMobileDialog.svelte";
+  import Select from "$lib/components/ui/Select.svelte";
 
   let {
     selectedProject,
@@ -54,6 +52,7 @@
     onShowInactiveProjectsChange,
     onProjectSelected,
     onToggleToolbarPanel,
+    onCreateTask,
     mobileLayout = false,
     projectChat = null,
   }: {
@@ -68,6 +67,7 @@
     onShowInactiveProjectsChange: (value: boolean) => void;
     onProjectSelected: () => void;
     onToggleToolbarPanel: (panel: ProjectToolbarPanel) => void;
+    onCreateTask: () => void;
     mobileLayout?: boolean;
     projectChat?: ProjectChatIntegration | null;
   } = $props();
@@ -85,17 +85,12 @@
   let mobileCustomizationMenuOpen = $state(false);
   let projectNavigatorMode = $state<ProjectNavigatorPanelMode>("groups");
   let projectHeaderElement = $state<HTMLDivElement | null>(null);
-  let projectIdentityElement = $state<HTMLDivElement | null>(null);
   let projectNavigatorAnchorElement = $state<HTMLButtonElement | null>(null);
   let projectGroupTriggerElement = $state<HTMLButtonElement | null>(null);
-  let projectProjectTriggerElement = $state<HTMLButtonElement | null>(null);
+  let projectTriggerElement = $state<HTMLButtonElement | null>(null);
   let projectNavigatorPanelElement = $state<HTMLDivElement | null>(null);
-  let expandedViewTabsMeasureElement = $state<HTMLElement | null>(null);
-  let toolbarActionsElement = $state<HTMLDivElement | null>(null);
-  let viewLabelsCollapsed = $state(false);
   let projectNavigatorPanelStyle = $state("");
   let projectNavigatorPanelMaxHeight = $state(0);
-  let viewTabDensityFrame: number | null = null;
   const projectWorkingFolders = $derived(
     projectChat?.listWorkingFolders(selectedProject.id) ?? [],
   );
@@ -116,15 +111,6 @@
     right: number;
     top: number;
     bottom: number;
-  }
-
-  function viewIcon(view: ProjectViewId) {
-    if (view === "dashboard") return FileChartColumnIncreasing;
-    if (view === "list") return ListCollapse;
-    if (view === "kanban") return SquareKanban;
-    if (view === "calendar") return CalendarDays;
-    if (view === "gantt") return Route;
-    return ListCollapse;
   }
 
   function viewLabel(view: ProjectViewId): string {
@@ -188,37 +174,6 @@
     onToggleToolbarPanel(panel);
   }
 
-  function projectHeaderGap(): number {
-    if (!projectHeaderElement) return 0;
-    const style = getComputedStyle(projectHeaderElement);
-    return Number.parseFloat(style.columnGap || style.gap) || 0;
-  }
-
-  function projectHeaderHorizontalPadding(): number {
-    if (!projectHeaderElement) return 0;
-    const style = getComputedStyle(projectHeaderElement);
-    return (Number.parseFloat(style.paddingLeft) || 0) + (Number.parseFloat(style.paddingRight) || 0);
-  }
-
-  function syncViewTabDensity(): void {
-    viewTabDensityFrame = null;
-    if (!projectHeaderElement || !projectIdentityElement || !expandedViewTabsMeasureElement || !toolbarActionsElement) {
-      return;
-    }
-
-    const requiredExpandedWidth = projectHeaderHorizontalPadding()
-      + projectIdentityElement.getBoundingClientRect().width
-      + expandedViewTabsMeasureElement.getBoundingClientRect().width
-      + toolbarActionsElement.getBoundingClientRect().width
-      + projectHeaderGap() * 3;
-    viewLabelsCollapsed = requiredExpandedWidth > projectHeaderElement.clientWidth;
-  }
-
-  function requestViewTabDensitySync(): void {
-    if (viewTabDensityFrame !== null) cancelAnimationFrame(viewTabDensityFrame);
-    viewTabDensityFrame = requestAnimationFrame(syncViewTabDensity);
-  }
-
   function projectNavigatorBounds(): ProjectNavigatorBounds {
     const boundsElement = projectHeaderElement?.closest(".projects-view-root");
     const rect = boundsElement?.getBoundingClientRect();
@@ -272,7 +227,7 @@
     projectNavigatorMode = mode;
     projectNavigatorAnchorElement = mode === "groups"
       ? projectGroupTriggerElement
-      : projectProjectTriggerElement;
+      : projectTriggerElement;
     projectNavigatorOpen = true;
     refreshProjectNavigatorPanelGeometry();
     requestAnimationFrame(refreshProjectNavigatorPanelGeometry);
@@ -304,7 +259,7 @@
     if (
       projectNavigatorOpen
       && !projectGroupTriggerElement?.contains(target)
-      && !projectProjectTriggerElement?.contains(target)
+      && !projectTriggerElement?.contains(target)
       && !projectNavigatorPanelElement?.contains(target)
     ) {
       projectNavigatorOpen = false;
@@ -320,30 +275,6 @@
     requestAnimationFrame(refreshProjectNavigatorPanelGeometry);
   });
 
-  $effect(() => {
-    const elements = [
-      projectHeaderElement,
-      projectIdentityElement,
-      expandedViewTabsMeasureElement,
-      toolbarActionsElement,
-    ];
-    if (elements.some((element) => element === null)) return;
-
-    requestViewTabDensitySync();
-    if (typeof ResizeObserver === "undefined") return;
-
-    const observer = new ResizeObserver(requestViewTabDensitySync);
-    for (const element of elements) {
-      if (element) observer.observe(element);
-    }
-    return () => {
-      observer.disconnect();
-      if (viewTabDensityFrame !== null) {
-        cancelAnimationFrame(viewTabDensityFrame);
-        viewTabDensityFrame = null;
-      }
-    };
-  });
 </script>
 
 <svelte:window onpointerdown={handleProjectWindowPointerDown} />
@@ -358,7 +289,6 @@
   onscroll={refreshProjectNavigatorPanelGeometry}
 >
   <div
-    bind:this={projectIdentityElement}
     class={cn(
       "relative",
       mobileLayout
@@ -393,9 +323,9 @@
         {/if}
         <span class="min-w-0 truncate text-foreground">{selectedGroup.name}</span>
       </button>
-      <span class="shrink-0 px-0.5 text-muted-foreground">/</span>
+      <span class="shrink-0 px-0.5 font-semibold text-muted-foreground">/</span>
       <button
-        bind:this={projectProjectTriggerElement}
+        bind:this={projectTriggerElement}
         type="button"
         class={cn(
           "flex min-w-0 items-center gap-1.5 rounded-md px-1.5 text-left hover:bg-accent",
@@ -419,12 +349,22 @@
           />
         {/if}
         <span class="min-w-0 truncate text-foreground">{selectedProject.name}</span>
-        <WorkspaceBreadcrumbTerminalIcon kind="chevron" class="shrink-0 text-muted-foreground" />
         {#if selectedProject.status !== "active"}
           <span class={cn("shrink-0 rounded border px-1.5 py-0.5 text-[0.666667rem]", projectLifecycleBadgeClass(selectedProject.status))}>
             {projectLifecycleLabel(selectedProject.status, t)}
           </span>
         {/if}
+        <WorkspaceBreadcrumbTerminalIcon kind="chevron" class="shrink-0 text-muted-foreground" />
+      </button>
+      <button
+        type="button"
+        class={toolbarIconButtonClass(false)}
+        aria-label={t("projects.header.addTask")}
+        title={t("projects.header.addTask")}
+        data-project-new-task-button
+        onclick={onCreateTask}
+      >
+        <WorkspaceBreadcrumbTerminalIcon kind="plus" />
       </button>
     </div>
     {#if projectNavigatorOpen}
@@ -475,12 +415,11 @@
     {/if}
   </div>
   {#if mobileLayout}
-    {@const ActiveViewIcon = viewIcon(projects.activeView)}
     <div class="flex shrink-0 items-center gap-0">
       <div class="relative shrink-0">
         <button
           type="button"
-          class={toolbarIconButtonClass(false, mobileViewMenuOpen)}
+          class={cn("flex h-12 items-center rounded-md px-2 text-sm hover:bg-accent", mobileViewMenuOpen && "bg-accent")}
           aria-label={viewLabel(projects.activeView)}
           title={viewLabel(projects.activeView)}
           aria-haspopup="menu"
@@ -491,42 +430,28 @@
             mobileViewMenuOpen = !mobileViewMenuOpen;
           }}
         >
-          <ActiveViewIcon
-            size={16}
-            strokeWidth={1.75}
-            class={projects.activeView === "gantt" ? "-scale-x-100" : undefined}
-          />
+          {viewLabel(projects.activeView)}
         </button>
         {#if mobileViewMenuOpen}
           <!-- svelte-ignore a11y_click_events_have_key_events -->
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div class="fixed inset-0 z-40" onclick={closeMobileMenus}></div>
           <div
-            class="absolute right-0 top-full z-50 mt-1 w-52 rounded-md border border-border bg-card p-1.5 text-card-foreground shadow-lg"
+            class="surface-floating surface-floating-body absolute right-0 top-full z-50 mt-1 w-floating-sm"
             role="menu"
             aria-label={t("projects.toolbar.views")}
           >
             {#each PROJECT_VIEW_IDS as view}
-              {@const Icon = viewIcon(view)}
               {@const label = viewLabel(view)}
               <button
                 type="button"
                 role="menuitemradio"
                 aria-checked={projects.activeView === view}
-                class={cn(
-                  "flex min-h-12 w-full items-center gap-3 rounded-md px-3 text-left text-sm hover:bg-accent",
-                  projects.activeView === view
-                    ? "bg-accent text-foreground"
-                    : "text-muted-foreground",
-                )}
+                class="menu-item"
                 onclick={() => selectMobileView(view)}
               >
-                <Icon
-                  size={16}
-                  strokeWidth={1.75}
-                  class={view === "gantt" ? "-scale-x-100" : undefined}
-                />
-                <span>{label}</span>
+                <span class="min-w-0 flex-1 truncate">{label}</span>
+                {#if projects.activeView === view}<Check class="size-3.5 shrink-0" aria-hidden="true" />{/if}
               </button>
             {/each}
           </div>
@@ -557,7 +482,7 @@
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div class="fixed inset-0 z-40" onclick={closeMobileMenus}></div>
           <div
-            class="absolute right-0 top-full z-50 mt-1 w-52 rounded-md border border-border bg-card p-1.5 text-card-foreground shadow-lg"
+            class="surface-floating surface-floating-body absolute right-0 top-full z-50 mt-1 w-floating-sm"
             role="menu"
             aria-label={t("projects.toolbar.customization")}
           >
@@ -568,14 +493,12 @@
               <button
                 type="button"
                 role="menuitem"
-                class={cn(
-                  "flex min-h-12 w-full items-center gap-3 rounded-md px-3 text-left text-sm hover:bg-accent",
-                  active ? "bg-accent text-foreground" : "text-muted-foreground",
-                )}
+                class="menu-item"
                 onclick={() => selectMobileCustomization(panel)}
               >
-                <Icon size={16} strokeWidth={1.75} />
-                <span>{label}</span>
+                <Icon class="text-muted-foreground" size={16} strokeWidth={1.75} />
+                <span class="min-w-0 flex-1 truncate">{label}</span>
+                {#if active}<Check class="size-3.5 shrink-0" aria-hidden="true" />{/if}
               </button>
             {/each}
           </div>
@@ -600,49 +523,12 @@
     </div>
   {:else}
     <div class="flex-1"></div>
-    <nav
-      bind:this={expandedViewTabsMeasureElement}
-      class="pointer-events-none fixed left-0 top-0 flex h-7 items-center gap-0.5 overflow-visible whitespace-nowrap opacity-0"
-      aria-hidden="true"
-      inert
-    >
+    <nav class="flex shrink-0 items-center gap-0.5" aria-label={t("projects.toolbar.views")}>
       {#each PROJECT_VIEW_IDS as view}
-        {@const Icon = viewIcon(view)}
-        {@const label = viewLabel(view)}
-        <span class="flex h-6 shrink-0 items-center gap-1 rounded-md px-2 text-xs font-medium">
-          <Icon size={14} strokeWidth={1.75} class={view === "gantt" ? "-scale-x-100" : undefined} />
-          <span>{label}</span>
-        </span>
+        <CollectionViewButton class="text-xs" label={viewLabel(view)} title={viewShortcutTitle(view)} active={projects.activeView === view} onclick={() => { projects.activeView = view; }} />
       {/each}
     </nav>
-    <nav class="flex min-w-0 shrink-0 items-center gap-0.5">
-      {#each PROJECT_VIEW_IDS as view}
-        {@const Icon = viewIcon(view)}
-        {@const label = viewLabel(view)}
-        {@const title = viewShortcutTitle(view)}
-        <button
-          type="button"
-          class={cn(
-            "flex shrink-0 items-center gap-1 rounded-md text-xs font-medium transition-colors hover:bg-accent",
-            viewLabelsCollapsed ? "h-6 w-7 justify-center px-0" : "h-6 px-2",
-            projects.activeView === view
-              ? "text-foreground"
-              : "text-muted-foreground",
-          )}
-          aria-label={label}
-          title={title}
-          onclick={() => {
-            projects.activeView = view;
-          }}
-        >
-          <Icon size={14} strokeWidth={1.75} class={view === "gantt" ? "-scale-x-100" : undefined} />
-          {#if !viewLabelsCollapsed}
-            <span>{label}</span>
-          {/if}
-        </button>
-      {/each}
-    </nav>
-    <div bind:this={toolbarActionsElement} class="flex shrink-0 items-center gap-1">
+    <div class="flex shrink-0 items-center gap-1">
       {#if projectChat}
         <button
           type="button"
@@ -654,21 +540,18 @@
           <MessageSquare size={14} strokeWidth={1.75} />
         </button>
         {#if projectWorkingFolders.length > 1}
-          <select
-            class="h-7 max-w-28 rounded-md border border-border bg-background px-1 text-[0.68rem] text-muted-foreground"
-            aria-label={t("projects.header.chatFolder")}
+          <Select
+            inline
+            class="w-auto max-w-32"
             value=""
-            onchange={(event) => {
-              const workingFolderId = event.currentTarget.value;
-              event.currentTarget.value = "";
+            triggerLabel={t("projects.header.chatFolder")}
+            ariaLabel={t("projects.header.chatFolder")}
+            popoverAlign="end"
+            options={projectWorkingFolders.map((folder) => ({ value: folder.id, label: folder.displayName }))}
+            onChange={(workingFolderId) => {
               if (workingFolderId) void openProjectChat(workingFolderId);
             }}
-          >
-            <option value="">{t("projects.header.chatFolder")}</option>
-            {#each projectWorkingFolders as folder (folder.id)}
-              <option value={folder.id}>{folder.displayName}</option>
-            {/each}
-          </select>
+          />
         {/if}
       {/if}
       <button

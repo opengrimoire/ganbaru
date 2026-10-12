@@ -4,22 +4,23 @@
   import MobileNavigation from "$lib/components/mobile/MobileNavigation.svelte";
   import MobileTopBar from "$lib/components/mobile/MobileTopBar.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { ensureDbUrl } from "$lib/api/db";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
     MobileBackListenerController,
     resolveMobileBackAction,
-  } from "$lib/mobile-back";
+  } from "$lib/mobile/back";
   import {
     mobileNavigationPresentation,
     mobileTopBarPanelGeometry,
-  } from "$lib/mobile-layout";
+  } from "$lib/mobile/layout";
   import {
     classifyLoadFailure,
     recoverLoadFailure,
     type LoadFailure,
   } from "$lib/module-load-recovery";
-  import { MobilePersistenceLifecycleController } from "$lib/mobile-persistence-lifecycle";
+  import { MobilePersistenceLifecycleController } from "$lib/mobile/persistence-lifecycle";
   import type { View } from "$lib/navigation";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import { flushQuickNoteEditors } from "$lib/quick-notes/persistence";
@@ -29,8 +30,8 @@
   import { getPomodoro } from "$lib/stores/pomodoro.svelte";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { getViewport } from "$lib/stores/viewport.svelte";
-  import { getSettingsLauncher } from "$lib/stores/settingsLauncher.svelte";
-  import { mark as perfMark } from "$lib/stores/perflog.svelte";
+  import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
+  import { mark as perfMark } from "$lib/stores/perf-log.svelte";
   import { getZoom } from "$lib/stores/zoom.svelte";
   import { flushConfig } from "$lib/vault/config";
 
@@ -49,17 +50,11 @@
   type MusicComponent = typeof import("$lib/components/music/MusicPanel.svelte").default;
   type MusicPlaybackHostComponent = typeof import("$lib/components/music/MusicPlaybackHost.svelte").default;
   type PomodoroMenuComponent = typeof import("$lib/components/pomodoro/PomodoroMenuContent.svelte").default;
-  type LinkedDeviceControlComponent = typeof import("$lib/components/vault/LinkedDeviceControl.svelte").default;
-  type ProjectViewComponents = import("$lib/components/projects/project-view-components").ProjectViewComponents;
+  type LinkedDeviceControlComponent = typeof import("$lib/components/vault/handoff/LinkedDeviceControl.svelte").default;
+  type ProjectViewComponents = import("$lib/components/projects/view-components").ProjectViewComponents;
   type NotesStore = ReturnType<typeof import("$lib/stores/notes.svelte").getNotes>;
+  type QuickNotesTrashPurgeRuntime = import("$lib/quick-notes/trash-purge-runtime").QuickNotesTrashPurgeRuntime;
   type DeferredSurface = Exclude<View, "calendar"> | "settings" | "quickNotes" | "music";
-  interface PomodoroCalendarScheduler {
-    setEnabled(enabled: boolean): void;
-    invalidate(): void;
-    resume(): void;
-    dispose(): void;
-    isEnabled(): boolean;
-  }
   interface CalendarNotificationScheduler {
     reconcile(): Promise<void>;
     takeAction(): Promise<string | null>;
@@ -126,13 +121,12 @@
   let removeSettingsBackLayer = (): void => undefined;
   let removeQuickNotesBackLayer = (): void => undefined;
   let removeMusicBackLayer = (): void => undefined;
-  let activeBlockScheduler = $state.raw<PomodoroCalendarScheduler | null>(null);
-  let activeBlockSchedulerLoad: Promise<void> | null = null;
-  let activeBlockSchedulerDisposed = false;
   let calendarNotificationScheduler = $state.raw<CalendarNotificationScheduler | null>(null);
   let calendarNotificationSchedulerLoad: Promise<void> | null = null;
   let calendarNotificationSchedulerDisposed = false;
   let pomodoroScheduleScheduler = $state.raw<PomodoroScheduleScheduler | null>(null);
+  let quickNotesTrashPurge = $state.raw<QuickNotesTrashPurgeRuntime | null>(null);
+  let quickNotesTrashPurgeLoad: Promise<void> | null = null;
 
   const navigationPresentation = $derived(
     mobileNavigationPresentation(viewport.layoutWidth),
@@ -243,28 +237,6 @@
     );
   }
 
-  async function ensureActiveBlockScheduler(): Promise<void> {
-    if (activeBlockScheduler) return;
-    if (activeBlockSchedulerLoad) return activeBlockSchedulerLoad;
-    activeBlockSchedulerLoad = (async () => {
-      const { createPomodoroCalendarScheduler } = await import(
-        "$lib/stores/pomodoro-calendar-scheduler"
-      );
-      if (activeBlockSchedulerDisposed) return;
-      activeBlockScheduler = createPomodoroCalendarScheduler({
-        calendar,
-        pomodoro,
-        isBlocked: () => suspendDecisionOpen || pomodoro.idlePaused !== null,
-        onError: (error) => {
-          console.warn("active mobile pomodoro block check failed", error);
-        },
-      });
-    })().finally(() => {
-      activeBlockSchedulerLoad = null;
-    });
-    return activeBlockSchedulerLoad;
-  }
-
   async function ensureCalendarNotificationScheduler(): Promise<void> {
     if (calendarNotificationScheduler || calendarNotificationSchedulerDisposed) return;
     if (calendarNotificationSchedulerLoad) return calendarNotificationSchedulerLoad;
@@ -293,6 +265,21 @@
     return calendarNotificationSchedulerLoad;
   }
 
+  /** Loads the Quick notes trash purge job outside the shell bundle. */
+  function ensureQuickNotesTrashPurge(): void {
+    if (quickNotesTrashPurge || quickNotesTrashPurgeLoad || mobileAppDisposed) return;
+    quickNotesTrashPurgeLoad = import("$lib/quick-notes/trash-purge-runtime")
+      .then((module) => {
+        if (!mobileAppDisposed) quickNotesTrashPurge = module.startQuickNotesTrashPurge();
+      })
+      .catch((error: unknown) => {
+        console.error("Failed to start the Quick notes trash purge", error);
+      })
+      .finally(() => {
+        quickNotesTrashPurgeLoad = null;
+      });
+  }
+
   function afterAnimationFrames(count: number): Promise<void> {
     return new Promise((resolve) => {
       const advance = (remaining: number): void => {
@@ -306,11 +293,23 @@
     });
   }
 
+  /**
+   * Recovers the Focus run without blocking startup or resume: a read-only replica cannot
+   * recover, and the native projection reports that failure to the Focus surface.
+   */
+  async function recoverFocusRun(): Promise<void> {
+    try {
+      await pomodoro.recoverMobileRun();
+    } catch (error) {
+      console.warn("Failed to recover the mobile Focus run", error);
+    }
+  }
+
   async function prepareCriticalSurfaces(): Promise<void> {
     const [calendarModule, pomodoroMenuModule, linkedDeviceControlModule] = await Promise.all([
       import("$lib/components/calendar/CalendarView.svelte"),
       import("$lib/components/pomodoro/PomodoroMenuContent.svelte"),
-      import("$lib/components/vault/LinkedDeviceControl.svelte"),
+      import("$lib/components/vault/handoff/LinkedDeviceControl.svelte"),
     ]);
     if (mobileAppDisposed) return;
     CalendarSurface = calendarModule.default;
@@ -345,10 +344,10 @@
       ] = await Promise.all([
         import("$lib/stores/projects.svelte"),
         import("$lib/components/projects/ProjectsView.svelte"),
-        import("$lib/components/projects/ProjectListView.svelte"),
-        import("$lib/components/projects/ProjectDashboardView.svelte"),
-        import("$lib/components/projects/ProjectKanbanView.svelte"),
-        import("$lib/components/projects/ProjectGanttView.svelte"),
+        import("$lib/components/projects/list/ProjectListView.svelte"),
+        import("$lib/components/projects/views/ProjectDashboardView.svelte"),
+        import("$lib/components/projects/views/ProjectKanbanView.svelte"),
+        import("$lib/components/projects/views/ProjectGanttView.svelte"),
         import("$lib/components/calendar/CalendarView.svelte"),
       ]);
       if (mobileAppDisposed) return;
@@ -413,7 +412,7 @@
     const [panelModule, playbackHostModule, preloadModule] = await Promise.all([
       import("$lib/components/music/MusicPanel.svelte"),
       import("$lib/components/music/MusicPlaybackHost.svelte"),
-      import("$lib/music/music-first-use-preload"),
+      import("$lib/music/first-use-preload"),
     ]);
     if (mobileAppDisposed) return;
     MusicSurface = panelModule.default;
@@ -451,7 +450,7 @@
     perfMark("boot.mobile-calendar-presented");
     primarySurfacePresented = true;
     reportInitialSurfacePresentedIfReady();
-    void synchronizeMobileDoomscrolling();
+    void synchronizeMobileDistractions();
     void ensureCalendarNotificationScheduler();
     const batches: readonly (readonly DeferredSurface[])[] = [
       ["projects"],
@@ -500,12 +499,11 @@
       perfMark("boot.mobile-database-ready");
       await Promise.all([
         criticalSurfaces,
-        pomodoro.recoverMobileRun(),
+        recoverFocusRun(),
         calendars.load(),
         calendar.load(),
       ]);
       perfMark("boot.mobile-calendar-data-ready");
-      await ensureActiveBlockScheduler();
       backendReady = true;
       perfMark("boot.mobile-shell-ready");
       void prepareDeferredSurfacesAfterPaint();
@@ -518,36 +516,42 @@
     }
   }
 
-  async function synchronizeMobileDoomscrolling(): Promise<void> {
+  async function synchronizeMobileDistractions(): Promise<void> {
     try {
       const [storeModule, usageModule, mobileModule] = await Promise.all([
-        import("$lib/stores/doomscrolling.svelte"),
-        import("$lib/stores/doomscrolling-usage.svelte"),
-        import("$lib/scheduling/mobile-doomscrolling"),
+        import("$lib/stores/distractions.svelte"),
+        import("$lib/stores/distractions-usage.svelte"),
+        import("$lib/scheduling/mobile-distractions"),
       ]);
-      await storeModule.getDoomscrolling().publishMobileRules();
-      await usageModule.getDoomscrollingUsage().refresh();
-      const target = await mobileModule.takeMobileDoomscrollingNotificationAction();
-      if (target) settingsLauncher.open("doomscrolling", { doomscrollingTab: target });
+      await storeModule.getDistractions().publishMobileRules();
+      await usageModule.getDistractionsUsage().refresh();
+      const target = await mobileModule.takeMobileDistractionsNotificationAction();
+      if (target) settingsLauncher.open("distractions", { distractionsTab: target });
     } catch (error) {
-      console.warn("Failed to synchronize Android Doomscrolling", error);
+      console.warn("Failed to synchronize Android Distractions", error);
     }
   }
 
-  function retryWorkspaceLoad(): void {
+  /** Retries startup and returns the attempt so the notice can follow it; a document reload returns nothing. */
+  function retryWorkspaceLoad(): Promise<void> | undefined {
     const failure = loadError;
-    if (!failure) return;
+    if (!failure || initializingWorkspace) return undefined;
+    let attempt: Promise<void> | undefined;
     recoverLoadFailure(failure, () => {
-      void initializeWorkspace();
+      attempt = initializeWorkspace();
     });
+    return attempt;
   }
 
-  function retryDeferredSurface(surface: DeferredSurface): void {
+  /** Retries a deferred surface and returns the attempt so the notice can follow it. */
+  function retryDeferredSurface(surface: DeferredSurface): Promise<void> | undefined {
     const failure = deferredLoadErrors[surface];
-    if (!failure) return;
+    if (!failure) return undefined;
+    let attempt: Promise<void> | undefined;
     recoverLoadFailure(failure, () => {
-      void prepareDeferredSurface(surface);
+      attempt = prepareDeferredSurface(surface);
     });
+    return attempt;
   }
 
   function clearNestedRoute(): void {
@@ -582,7 +586,6 @@
   }
 
   function stopSuspendedSession(): void {
-    pomodoro.dismissedBlockId = pomodoro.activeBlockId;
     void pomodoro.dismissSuspend(false);
   }
 
@@ -694,15 +697,16 @@
         }));
       }, 0);
     };
-    const resumePomodoroScheduler = (): void => {
-      if (document.visibilityState !== "visible" || !backendReady || schedulerResume) return;
+    const resumeLifecycleSchedulers = (): void => {
+      if (document.visibilityState !== "visible" || !backendReady) return;
+      quickNotesTrashPurge?.scheduler.resume();
+      if (schedulerResume) return;
       schedulerResume = (async () => {
-        await pomodoro.recoverMobileRun();
-        activeBlockScheduler?.resume();
+        await recoverFocusRun();
         await Promise.all([
           calendarNotificationScheduler?.reconcile(),
           pomodoroScheduleScheduler?.reconcile(),
-          synchronizeMobileDoomscrolling(),
+          synchronizeMobileDistractions(),
         ]);
         const eventId = await calendarNotificationScheduler?.takeAction();
         if (eventId) navigate("calendar");
@@ -717,14 +721,14 @@
         pomodoro.prepareForMobileBackground();
         return;
       }
-      resumePomodoroScheduler();
+      resumeLifecycleSchedulers();
     };
     syncNestedRoute();
     window.addEventListener("hashchange", syncNestedRoute);
     window.addEventListener("popstate", syncNestedRoute);
     window.addEventListener("ganbaru-ai:inspect-music-assignment", handleMusicAssignmentInspection);
     document.addEventListener("visibilitychange", handleVisibilityChange);
-    window.addEventListener("focus", resumePomodoroScheduler);
+    window.addEventListener("focus", resumeLifecycleSchedulers);
 
     void initializeWorkspace();
 
@@ -734,7 +738,7 @@
       window.removeEventListener("popstate", syncNestedRoute);
       window.removeEventListener("ganbaru-ai:inspect-music-assignment", handleMusicAssignmentInspection);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
-      window.removeEventListener("focus", resumePomodoroScheduler);
+      window.removeEventListener("focus", resumeLifecycleSchedulers);
       removePomodoroBackLayer();
       removeSettingsBackLayer();
       removeQuickNotesBackLayer();
@@ -743,13 +747,22 @@
       stopMusicPreload();
       void persistenceLifecycle.flush();
       void backListenerController.dispose();
-      activeBlockSchedulerDisposed = true;
-      activeBlockScheduler?.dispose();
-      activeBlockScheduler = null;
       calendarNotificationSchedulerDisposed = true;
       calendarNotificationScheduler = null;
       pomodoroScheduleScheduler = null;
+      quickNotesTrashPurge?.dispose();
+      quickNotesTrashPurge = null;
     };
+  });
+
+  $effect(() => {
+    const ready = backendReady;
+    const purge = quickNotesTrashPurge;
+    if (!purge) {
+      if (ready) ensureQuickNotesTrashPurge();
+      return;
+    }
+    purge.scheduler.setEnabled(ready);
   });
 
   $effect(() => {
@@ -758,23 +771,10 @@
 
   $effect(() => {
     const _calendarVersion = calendar.indexVersion;
+    const _notificationLocale = localization.locale;
     if (!backendReady || !calendar.loaded) return;
     void calendarNotificationScheduler?.reconcile();
     void pomodoroScheduleScheduler?.reconcile();
-  });
-
-  $effect(() => {
-    const _calendarVersion = calendar.indexVersion;
-    const _expired = pomodoro.blockExpired;
-    const _suspended = suspendDecisionOpen;
-    const _idle = pomodoro.idlePaused;
-    const _suppressed = pomodoro.autoStartSuppressed;
-    const scheduler = activeBlockScheduler;
-    if (!scheduler) return;
-    const enabled = backendReady && calendar.loaded;
-    const wasEnabled = scheduler.isEnabled();
-    scheduler.setEnabled(enabled);
-    if (enabled && wasEnabled) scheduler.invalidate();
   });
 
   $effect(() => {
@@ -821,29 +821,25 @@
   title: string,
   onClose: (() => void) | null = null,
 )}
-  <div class="flex h-full w-full flex-col items-center justify-center gap-3 p-6 text-center">
-    {#if deferredLoadErrors[surface]}
-      {@const failure = deferredLoadErrors[surface]}
-      <p class="text-sm font-medium" role="alert">{t("common.viewLoadFailed", title)}</p>
-      <p class="max-w-md wrap-break-word text-xs text-muted-foreground">{failure.message}</p>
-      <button
-        type="button"
-        class="min-h-12 rounded-xl border border-border bg-card px-5 text-sm font-medium active:bg-accent"
-        onclick={() => retryDeferredSurface(surface)}
-      >{t("common.retry")}</button>
-      {#if onClose}
-        <button
-          type="button"
-          class="min-h-12 rounded-xl px-5 text-sm font-medium active:bg-accent"
-          onclick={onClose}
-        >{t("common.close")}</button>
-      {/if}
-    {:else}
+  {#if deferredLoadErrors[surface]}
+    {@const failure = deferredLoadErrors[surface]}
+    <div class="flex h-full w-full p-6">
+      <Notice
+        layout="fill"
+        class="text-sm"
+        title={t("common.viewLoadFailed", title)}
+        message={failure.message}
+        onRetry={() => retryDeferredSurface(surface)}
+        onDismiss={onClose ?? undefined}
+      />
+    </div>
+  {:else}
+    <div class="flex h-full w-full flex-col items-center justify-center gap-3 p-6 text-center">
       <div role="status" aria-label={t("common.loading")}>
         {@render loadingRing()}
       </div>
-    {/if}
-  </div>
+    </div>
+  {/if}
 {/snippet}
 
 <div
@@ -906,17 +902,14 @@
 
       <main class="relative min-h-0 min-w-0 flex-1 overflow-hidden bg-background">
         {#if loadError}
-          <div class="flex h-full flex-col items-center justify-center gap-3 p-6 text-center" role="alert">
-            <p class="text-sm font-medium">{t("common.viewLoadFailed", currentTitle)}</p>
-            <p class="max-w-md text-xs text-muted-foreground">{loadError.message}</p>
-            <button
-              type="button"
-              disabled={initializingWorkspace}
-              class="min-h-12 rounded-xl border border-border bg-card px-5 text-sm font-medium active:bg-accent"
-              onclick={retryWorkspaceLoad}
-            >
-              {initializingWorkspace ? t("common.loading") : t("common.retry")}
-            </button>
+          <div class="flex h-full p-6">
+            <Notice
+              layout="fill"
+              class="text-sm"
+              title={t("common.viewLoadFailed", currentTitle)}
+              message={loadError.message}
+              onRetry={retryWorkspaceLoad}
+            />
           </div>
         {:else if nav.current === "calendar" && CalendarSurface}
           <CalendarSurface initialViewMode="day" mobileLayout />
@@ -951,7 +944,7 @@
         presentation="mobile"
         mobilePlayerPanelStyle={musicPanelStyle}
         mobilePlaylistPanelStyle={musicPlaylistPanelStyle}
-        onclose={closeMusic}
+        onClose={closeMusic}
       />
     </div>
   {:else if showMusic}
@@ -970,7 +963,8 @@
       <SettingsSurface
         presentation="mobile"
         initialSection={settingsLauncher.targetSection}
-        initialDoomscrollingTab={settingsLauncher.targetDoomscrollingTab}
+        initialDistractionsTab={settingsLauncher.targetDistractionsTab}
+        initialContactsTab={settingsLauncher.targetContactsTab}
         initialChatSubsection={settingsLauncher.targetChatSubsection}
         initialChatTeammateId={settingsLauncher.targetChatTeammateId}
         initialChatChannelId={settingsLauncher.targetChatChannelId}
@@ -991,7 +985,7 @@
 
   {#if showQuickNotes && QuickNotesSurface}
     <div inert={suspendDecisionOpen} aria-hidden={suspendDecisionOpen ? "true" : undefined}>
-      <QuickNotesSurface mobileLayout mobilePanelStyle={quickNotesPanelStyle} onclose={closeQuickNotes} />
+      <QuickNotesSurface mobileLayout mobilePanelStyle={quickNotesPanelStyle} onClose={closeQuickNotes} />
     </div>
   {:else if showQuickNotes}
     <div

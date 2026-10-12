@@ -1,4 +1,4 @@
-//! Readable send-turn coordinator across validation, persistence, and runtime launch.
+//! Send-turn coordinator across validation, persistence, and runtime launch.
 
 use super::checkpoints::ensure_pre_turn_checkpoint;
 use super::persistence::{
@@ -14,19 +14,19 @@ use super::validation::{
     validate_explicit_model, validate_mentions, validate_modes, validate_prompt,
     validate_provider_selection, validate_send_mentions,
 };
-use crate::chat::agent_runs::{AgentRunBinding, TurnOrigin};
 use crate::chat::credentials::{PlatformCredentialStore, materialize_provider_environment};
 use crate::chat::device_state::{full_access_is_trusted, read_active_device_scope};
-use crate::chat::models::*;
-use crate::chat::providers::{ProviderDriverFactory, ProviderDriverRegistry};
-use crate::chat::repository::receipts::{
-    CommandReceiptState, complete_command_receipt, read_command_receipt,
-};
-use crate::chat::repository::{reads, workspaces};
-use crate::chat::runtime::ChatRuntimeRegistry;
 use crate::chat::send_commands::{SendChatTurnCommand, SendChatTurnResult};
 use crate::chat::workspace::WorkingFolderAuthorizationOperation;
 use crate::vault;
+use ganbaru_chat::agent_runs::{AgentRunBinding, TurnOrigin};
+use ganbaru_chat::repository::receipts::{
+    CommandReceiptState, complete_command_receipt, read_command_receipt,
+};
+use ganbaru_chat::repository::{reads, workspaces};
+use ganbaru_chat::runtime::ChatRuntimeRegistry;
+use ganbaru_chat_contracts::models::*;
+use ganbaru_chat_providers::{ProviderDriverFactory, ProviderDriverRegistry};
 use sqlx::{Row, SqlitePool};
 use std::collections::BTreeMap;
 use tauri::Manager;
@@ -183,7 +183,7 @@ pub(crate) async fn send_turn(
     .await?;
     let persistence_now = now_timestamp()?;
     let mutation_registry =
-        app.state::<crate::chat::workspace_mutation::ChatWorkspaceMutationRegistry>();
+        app.state::<crate::chat::workspace::mutation::ChatWorkspaceMutationRegistry>();
     let reservation = mutation_registry.begin_provider_turn(
         &authorized.canonical_path,
         &thread_id,
@@ -274,7 +274,7 @@ pub(crate) async fn send_turn(
         }
     };
     if let Some(binding) = origin.run() {
-        crate::chat::agent_runs::settle_launch(
+        ganbaru_chat::agent_runs::settle_launch(
             &pool,
             binding,
             launch_error.as_ref(),
@@ -357,7 +357,7 @@ async fn resolve_turn_target(
             }
             let logical_workspace = workspaces::read_workspace(pool, working_folder_id).await?;
             let scope = read_active_device_scope(app).map_err(device_state_error)?;
-            let authorized = crate::chat::workspace_commands::authorize_working_folder(
+            let authorized = crate::chat::workspace::commands::authorize_working_folder(
                 app,
                 pool,
                 working_folder_id,
@@ -659,7 +659,7 @@ pub(super) async fn load_internal_mcp_scope(
           AND live.teammate_id = assignment.teammate_id
           AND live.working_folder_id = frozen.working_folder_id
           AND live.revoked_at IS NULL
-         JOIN chat_ai_channel_memberships channel_access
+         JOIN chat_teammate_channel_memberships channel_access
            ON channel_access.conversation_id = live.conversation_id
           AND channel_access.teammate_id = live.teammate_id
          WHERE frozen.authorization_revision_id = ?

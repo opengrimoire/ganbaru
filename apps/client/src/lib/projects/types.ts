@@ -1,23 +1,25 @@
-import type { EventColor } from "$lib/components/calendar/types";
+import type { EventColor } from "$lib/calendar/types";
 import type {
   ProjectDefaultIdleSettingsSource,
   ProjectDefaultPomodoroMode,
-} from "$lib/projects/project-default-pomodoro";
+} from "./default-pomodoro";
 import type { PomodoroPresetKey } from "$lib/pomodoro/rhythm";
 import {
   DEFAULT_FOCUS_IDLE_PAUSE_ON_EVENT_CREATE,
   DEFAULT_FOCUS_IDLE_THRESHOLD_MINUTES,
   type FocusIdleThresholdMinutes,
-} from "$lib/stores/preferences";
-import type { MusicContextAssignmentDraft } from "$lib/music/music-context-assignment";
-import type { ProjectDefaultEventTimeMode } from "$lib/projects/project-settings-duration";
-import type { NotesPageOpenMode } from "$lib/notes/page-open-mode";
-import type { NotesHistoryRetentionDays } from "$lib/notes/history-retention";
+} from "$lib/stores/preference-options";
+import type { MusicContextAssignmentDraft } from "$lib/music/context-assignment";
+import type { ProjectDefaultEventTimeMode } from "$lib/projects/settings/duration";
+import type { NotesPageOpenMode } from "$lib/notes/pages/open-mode";
+import type { NotesHistoryRetentionDays } from "$lib/notes/history/retention";
+
+/** One step toward the start (-1) or the end (1) of a manual order. */
+export type MoveDirection = -1 | 1;
 
 export const PROJECT_VIEW_IDS = ["dashboard", "list", "kanban", "calendar", "gantt"] as const;
 export type ProjectViewId = (typeof PROJECT_VIEW_IDS)[number];
 
-export const PROJECT_PRIORITIES = ["low", "normal", "high", "urgent"] as const;
 export type ProjectPriority = string;
 export const PROJECT_TAG_DEFAULT_COLOR: EventColor = 13;
 
@@ -29,10 +31,12 @@ export type ProjectTaskTagFilter = string | "all" | "none";
 export type ProjectCustomFieldReference = `custom:${string}`;
 export const PROJECT_TASK_SORT_MODES = [
   "manual",
+  "title",
   "status",
   "section",
   "priority",
   "due",
+  "start",
   "scheduled",
   "created",
   "updated",
@@ -288,6 +292,8 @@ export interface ProjectPriorityConfig {
 }
 
 export interface ProjectTask {
+  /** Native monotonic row version. Local drafts can exist before persistence. */
+  revision?: number;
   id: string;
   projectId: string;
   sectionId: string;
@@ -302,8 +308,10 @@ export interface ProjectTask {
   estimateMinutes?: number;
   dueDate?: string;
   dueTime?: string;
+  dueReminderMinutes?: number;
   startDate?: string;
   startTime?: string;
+  startReminderMinutes?: number;
   targetEndDate?: string;
   completedAt?: string;
   archivedAt?: string;
@@ -368,6 +376,7 @@ export interface ProjectTaskViewPage {
   nextCursor?: string;
   columnCounts: ProjectTaskColumnCount[];
   aggregates?: ProjectDashboardTaskAggregates;
+  columnCalculations?: ProjectTaskColumnCalculations[];
   matchedEventIds: string[];
   taskTagLinks: ProjectTaskTagLink[];
   customFieldValues: ProjectCustomFieldValue[];
@@ -377,6 +386,17 @@ export interface ProjectTaskViewPage {
   tags: ProjectTag[];
   customFields: ProjectCustomField[];
   customFieldOptions: ProjectCustomFieldOption[];
+}
+
+/** Reductions over the complete filtered task set, independent of visible pages. */
+export interface ProjectTaskColumnCalculations {
+  column: "name" | ProjectTaskListColumn;
+  total: number;
+  filled: number;
+  sum?: number;
+  average?: number;
+  minimum?: number;
+  maximum?: number;
 }
 
 export interface ProjectTaskDetailData {
@@ -421,16 +441,22 @@ export interface ProjectTaskTagLink {
 }
 
 export interface ProjectCustomField {
+  /** Canonical revision is available after native persistence. */
+  revision?: number;
   id: string;
   projectId: string;
   name: string;
   fieldType: ProjectCustomFieldType;
   sortOrder: number;
+  /** Chosen `lucide:` icon value; null shows the field type icon. */
+  icon: string | null;
   createdAt: string;
   updatedAt: string;
 }
 
 export interface ProjectCustomFieldOption {
+  /** Canonical revision is available after native persistence. */
+  revision?: number;
   id: string;
   fieldId: string;
   name: string;
@@ -623,12 +649,16 @@ export interface ProjectCustomFieldCreate {
   name: string;
   fieldType: ProjectCustomFieldType;
   sortOrder: number;
+  icon?: string | null;
+  duplicateSourceId?: string;
 }
 
+/** Full replacement of a field's editable definition; a null icon resets it to the type icon. */
 export interface ProjectCustomFieldUpdate {
   id: string;
   name: string;
   sortOrder: number;
+  icon: string | null;
 }
 
 export interface ProjectCustomFieldOptionCreate {
@@ -874,8 +904,10 @@ export interface ProjectTaskUpdate {
   estimateMinutes: number | null;
   dueDate: string | null;
   dueTime: string | null;
+  dueReminderMinutes: number | null;
   startDate: string | null;
   startTime: string | null;
+  startReminderMinutes: number | null;
   targetEndDate: string | null;
   archivedAt: string | null;
   blockerReason: string | null;

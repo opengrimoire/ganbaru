@@ -1,0 +1,366 @@
+{
+  "schemaVersion": 1,
+  "routes": [
+    {
+      "name": "Projects",
+      "module": "src/lib/components/projects/ProjectsView.svelte",
+      "maxSourceModules": 367
+    },
+    {
+      "name": "Notes",
+      "module": "src/lib/components/notes/NotesView.svelte",
+      "maxSourceModules": 367
+    },
+    {
+      "name": "Chat",
+      "module": "src/lib/components/chat/ChatWorkspace.svelte",
+      "maxSourceModules": 367
+    }
+  ],
+  "noVaultStartup": {
+    "roots": [
+      {
+        "name": "desktop entry",
+        "loadedModules": [
+          "src/main.ts",
+          "src/main-desktop.ts"
+        ]
+      },
+      {
+        "name": "vault setup",
+        "loadedModules": [
+          "src/lib/components/vault/VaultSetupView.svelte"
+        ]
+      },
+      {
+        "name": "setup onboarding prewarm",
+        "loadedModules": [
+          "src/lib/components/vault/handoff/VaultHandoffOnboardingView.svelte",
+          "src/lib/components/vault/handoff/PairingQrCode.svelte"
+        ]
+      }
+    ],
+    "forbiddenModules": [
+      "src/App.svelte",
+      "src/lib/components/calendar/CalendarView.svelte",
+      "src/lib/components/projects/ProjectsView.svelte",
+      "src/lib/components/notes/NotesView.svelte",
+      "src/lib/components/chat/ChatWorkspace.svelte",
+      "src/lib/components/music/MusicPanel.svelte",
+      "src/lib/components/quick-notes/QuickNotesPanel.svelte"
+    ],
+    "forbiddenModuleSubstrings": [
+      "/node_modules/@pierre/diffs/",
+      "/node_modules/@pierre/theme/",
+      "/node_modules/@pierre/theming/",
+      "/node_modules/@shikijs/",
+      "/node_modules/shiki/",
+      "/node_modules/codemirror/",
+      "/node_modules/@codemirror/",
+      "/node_modules/@lezer/",
+      "/node_modules/@replit/codemirror-lang-svelte/",
+      "/node_modules/@xterm/",
+      "/node_modules/hast-util-to-html/",
+      "/node_modules/lru_map/",
+      "/node_modules/diff/",
+      "/node_modules/oniguruma-parser/",
+      "/node_modules/oniguruma-to-es/",
+      "/node_modules/regex/",
+      "/node_modules/regex-recursion/",
+      "/node_modules/regex-utilities/",
+      "/node_modules/ccount/",
+      "/node_modules/character-entities-html4/",
+      "/node_modules/character-entities-legacy/",
+      "/node_modules/comma-separated-tokens/",
+      "/node_modules/hast-util-whitespace/",
+      "/node_modules/html-void-elements/",
+      "/node_modules/property-information/",
+      "/node_modules/space-separated-tokens/",
+      "/node_modules/stringify-entities/",
+      "/node_modules/zwitch/",
+      "/node_modules/marked/",
+      "/node_modules/dompurify/"
+    ]
+  },
+  "shell": {
+    "loadedModules": ["src/App.svelte"],
+    "requiredModules": [
+      "src/lib/components/calendar/CalendarView.svelte",
+      "src/lib/components/projects/ProjectsView.svelte",
+      "src/lib/components/notes/NotesView.svelte",
+      "src/lib/components/chat/ChatWorkspace.svelte",
+      "src/lib/components/music/MusicPanel.svelte",
+      "src/lib/components/quick-notes/QuickNotesPanel.svelte"
+    ],
+    "forbiddenModules": [
+      "src/lib/components/notes/transfer/NotesHtmlImportDialog.svelte",
+      "src/lib/components/notes/transfer/NotesJsonGraphExportDialog.svelte",
+      "src/lib/components/settings/sections/NotesTransferSettingsPanel.svelte"
+    ]
+  },
+  "chatShell": {
+    "loadedModules": [
+      "src/lib/components/chat/ChatWorkspace.svelte"
+    ],
+    "requiredModules": [
+      "src/lib/components/chat/workspace/ChatWorkspacePanel.svelte",
+      "src/lib/components/chat/review/ChatReviewPanel.svelte",
+      "src/lib/components/chat/review/ChatPierreDiff.svelte",
+      "src/lib/components/chat/review/ChatPlainDiff.svelte"
+    ],
+    "forbiddenModules": [
+      "src/lib/chat/review/diff-runtime.ts",
+      "src/lib/chat/workspace/code-editor-runtime.ts"
+    ],
+    "forbiddenModuleSubstrings": [
+      "/node_modules/@pierre/diffs/",
+      "/node_modules/@pierre/theme/",
+      "/node_modules/@pierre/theming/",
+      "/node_modules/@shikijs/",
+      "/node_modules/shiki/",
+      "/node_modules/codemirror/",
+      "/node_modules/@codemirror/",
+      "/node_modules/@lezer/",
+      "/node_modules/@replit/codemirror-lang-svelte/",
+      "/node_modules/@xterm/xterm/lib/",
+      "/node_modules/@xterm/addon-fit/",
+      "/node_modules/hast-util-to-html/",
+      "/node_modules/lru_map/",
+      "/node_modules/diff/",
+      "/node_modules/oniguruma-parser/",
+      "/node_modules/oniguruma-to-es/",
+      "/node_modules/regex/",
+      "/node_modules/regex-recursion/",
+      "/node_modules/regex-utilities/",
+      "/node_modules/ccount/",
+      "/node_modules/character-entities-html4/",
+      "/node_modules/character-entities-legacy/",
+      "/node_modules/comma-separated-tokens/",
+      "/node_modules/hast-util-whitespace/",
+      "/node_modules/html-void-elements/",
+      "/node_modules/property-information/",
+      "/node_modules/space-separated-tokens/",
+      "/node_modules/stringify-entities/",
+      "/node_modules/zwitch/"
+    ]
+  },
+  "editorRuntime": {
+    "module": "src/lib/chat/workspace/code-editor-runtime.ts",
+    "requiredModuleSubstrings": [
+      "/node_modules/codemirror/",
+      "/node_modules/@codemirror/language-data/"
+    ],
+    "requiredDynamicChunkPrefixes": [
+      "assets/chat-editor-language-"
+    ],
+    "forbiddenStaticChunkPrefixes": [
+      "assets/chat-editor-language-"
+    ]
+  },
+  "reviewRuntime": {
+    "module": "src/lib/chat/review/diff-runtime.ts",
+    "catalogModuleSubstrings": [
+      "/node_modules/@shikijs/langs/dist/",
+      "/node_modules/@shikijs/themes/dist/",
+      "/node_modules/@pierre/theme/dist/"
+    ],
+    "requiredDynamicChunkPrefixes": [
+      "assets/chat-review-language-",
+      "assets/chat-review-theme-",
+      "assets/chat-review-pierre-theme-"
+    ],
+    "maxCatalogModulesPerChunk": 8
+  },
+  "projectsShell": {
+    "loadedModules": [
+      "src/lib/components/projects/ProjectsView.svelte"
+    ],
+    "requiredModules": [
+      "src/lib/components/projects/list/ProjectListView.svelte",
+      "src/lib/components/projects/views/ProjectKanbanView.svelte",
+      "src/lib/components/calendar/CalendarView.svelte",
+      "src/lib/components/projects/views/ProjectGanttView.svelte",
+      "src/lib/components/projects/views/ProjectDashboardView.svelte",
+      "src/lib/components/projects/ProjectNavigator.svelte",
+      "src/lib/components/projects/pickers/ProjectPickerPanels.svelte",
+      "src/lib/components/projects/task-detail/ProjectTaskDetailPanel.svelte"
+    ],
+    "forbiddenModules": [
+      "src/lib/components/projects/ProjectToolbarPanels.svelte",
+      "src/lib/components/projects/settings/ProjectSettingsPanel.svelte",
+      "src/lib/components/projects/pickers/ProjectTaskFinder.svelte",
+      "src/lib/components/projects/ProjectBulkActionController.svelte"
+    ]
+  },
+  "projectsToolbar": {
+    "loadedModules": [
+      "src/lib/components/projects/ProjectToolbarPanels.svelte"
+    ],
+    "requiredModules": [
+      "src/lib/components/projects/settings/ProjectSettingsPanel.svelte"
+    ],
+    "forbiddenModules": []
+  },
+  "notesShell": {
+    "loadedModules": [
+      "src/lib/components/notes/NotesView.svelte"
+    ],
+    "requiredModules": [
+      "src/lib/components/notes/NotesProjectHome.svelte",
+      "src/lib/components/notes/NotesEditor.svelte",
+      "src/lib/components/notes/blocks/NotesBlockList.svelte",
+      "src/lib/components/notes/blocks/NotesBlockRow.svelte",
+      "src/lib/components/notes/NotesProjectSettingsPanel.svelte",
+      "src/lib/components/notes/navigation/NotesProjectNavigator.svelte",
+      "src/lib/components/notes/navigation/NotesHierarchyPickerPanel.svelte"
+    ],
+    "forbiddenModules": [
+      "src/lib/components/notes/database/NotesDatabaseDeletionDialog.svelte",
+      "src/lib/components/notes/database/NotesDatabasePastePrompt.svelte",
+      "src/lib/components/notes/database/NotesDatabaseTableView.svelte",
+      "src/lib/components/notes/database/NotesDatabaseBoardView.svelte",
+      "src/lib/components/notes/database/NotesDatabaseGalleryView.svelte",
+      "src/lib/components/notes/database/NotesDatabaseListView.svelte",
+      "src/lib/components/notes/database/NotesDatabaseCalendarView.svelte",
+      "src/lib/components/notes/database/NotesDatabaseTimelineView.svelte",
+      "src/lib/components/notes/transfer/NotesHtmlImportDialog.svelte",
+      "src/lib/components/notes/transfer/NotesNotionApiImportDialog.svelte",
+      "src/lib/components/notes/transfer/NotesNotionExportImportDialog.svelte",
+      "src/lib/components/notes/transfer/NotesJsonGraphExportDialog.svelte",
+      "src/lib/components/icon-picker/IconPicker.svelte",
+      "src/lib/components/notes/history/NotesPageVersionHistoryModal.svelte",
+      "src/lib/components/notes/history/NotesProjectVersionHistoryModal.svelte",
+      "src/lib/components/notes/pages/NotesArchiveView.svelte",
+      "src/lib/components/notes/pages/NotesTrashView.svelte",
+      "src/lib/components/notes/navigation/NotesDestinationPickerList.svelte",
+      "src/lib/components/notes/blocks/NotesSlashMenu.svelte"
+    ]
+  },
+  "notesParagraphEditor": {
+    "loadedModules": [
+      "src/lib/components/notes/NotesEditor.svelte",
+      "src/lib/components/notes/blocks/NotesBlockList.svelte",
+      "src/lib/components/notes/blocks/NotesBlockRow.svelte",
+      "src/lib/components/notes/blocks/NotesTextBlockEditor.svelte"
+    ],
+    "forbiddenModules": [
+      "src/lib/components/notes/database/NotesDatabaseDeletionDialog.svelte",
+      "src/lib/components/notes/database/NotesDatabasePastePrompt.svelte",
+      "src/lib/components/notes/blocks/NotesMediaBlock.svelte",
+      "src/lib/components/notes/blocks/NotesChildDatabaseBlock.svelte",
+      "src/lib/components/notes/blocks/NotesTableBlock.svelte",
+      "src/lib/components/notes/blocks/NotesCardBlock.svelte",
+      "src/lib/components/notes/blocks/NotesUnsupportedBlock.svelte",
+      "src/lib/components/notes/blocks/NotesColumnListBlock.svelte",
+      "src/lib/components/notes/blocks/NotesTabBlock.svelte",
+      "src/lib/components/notes/database/NotesDatabaseTableView.svelte",
+      "src/lib/components/notes/database/NotesDatabaseBoardView.svelte",
+      "src/lib/components/notes/database/NotesDatabaseGalleryView.svelte",
+      "src/lib/components/notes/database/NotesDatabaseListView.svelte",
+      "src/lib/components/notes/database/NotesDatabaseCalendarView.svelte",
+      "src/lib/components/notes/database/NotesDatabaseTimelineView.svelte",
+      "src/lib/components/icon-picker/IconPicker.svelte",
+      "src/lib/components/notes/pages/NotesPageCover.svelte",
+      "src/lib/components/notes/pages/NotesPageCoverMenu.svelte",
+      "src/lib/components/notes/transfer/NotesHtmlExportDialog.svelte",
+      "src/lib/components/notes/transfer/NotesAgentBridgeExportDialog.svelte",
+      "src/lib/components/notes/history/NotesPageVersionHistoryModal.svelte",
+      "src/lib/components/notes/pages/NotesBacklinks.svelte",
+      "src/lib/components/notes/pages/NotesPageLinks.svelte",
+      "src/lib/components/notes/pages/comments/NotesPageComments.svelte",
+      "src/lib/components/notes/pages/comments/NotesDiscussionsPopover.svelte",
+      "src/lib/components/notes/pages/comments/NotesDiscussionsPanel.svelte",
+      "src/lib/components/notes/database/row-page/NotesDatabaseRowPageProperties.svelte",
+      "src/lib/components/notes/pages/NotesSuggestions.svelte",
+      "src/lib/components/notes/navigation/NotesDestinationPickerList.svelte",
+      "src/lib/components/notes/rich-text/NotesTextContextMenu.svelte",
+      "src/lib/components/notes/rich-text/NotesTextColorPalette.svelte",
+      "src/lib/components/notes/rich-text/NotesLinkEditor.svelte",
+      "src/lib/components/notes/rich-text/NotesMentionMenu.svelte",
+      "src/lib/components/notes/blocks/NotesSlashMenu.svelte",
+      "src/lib/components/notes/blocks/NotesTemplateBlockControls.svelte",
+      "src/lib/components/notes/blocks/NotesButtonBlockControls.svelte"
+    ]
+  },
+  "notesAdvancedModules": [
+    "src/lib/components/notes/blocks/NotesMediaBlock.svelte",
+    "src/lib/components/notes/blocks/NotesChildDatabaseBlock.svelte",
+    "src/lib/components/notes/blocks/NotesTableBlock.svelte",
+    "src/lib/components/notes/blocks/NotesCardBlock.svelte",
+    "src/lib/components/notes/blocks/NotesUnsupportedBlock.svelte",
+    "src/lib/components/notes/blocks/NotesColumnListBlock.svelte",
+    "src/lib/components/notes/blocks/NotesTabBlock.svelte",
+    "src/lib/components/notes/database/NotesDatabaseTableView.svelte",
+    "src/lib/components/notes/database/NotesDatabaseBoardView.svelte",
+    "src/lib/components/notes/database/NotesDatabaseGalleryView.svelte",
+    "src/lib/components/notes/database/NotesDatabaseListView.svelte",
+    "src/lib/components/notes/database/NotesDatabaseCalendarView.svelte",
+    "src/lib/components/notes/database/NotesDatabaseTimelineView.svelte"
+  ],
+  "notesDatabaseTable": {
+    "loadedModules": [
+      "src/lib/components/notes/database/NotesDatabaseTableView.svelte"
+    ],
+    "forbiddenModules": [
+      "src/lib/components/notes/database/NotesDatabaseCsvImportPanel.svelte",
+      "src/lib/components/notes/database/NotesDatabaseCsvExportPanel.svelte"
+    ]
+  },
+  "settingsAppearance": {
+    "loadedModules": [
+      "src/lib/components/settings/SettingsModal.svelte",
+      "src/lib/components/settings/sections/AppearanceSection.svelte"
+    ],
+    "requiredModules": [
+      "src/lib/components/settings/sections/AppearanceSection.svelte",
+      "src/lib/components/settings/sections/ProfileSection.svelte",
+      "src/lib/components/settings/sections/CalendarsSection.svelte",
+      "src/lib/components/settings/sections/ProjectsSection.svelte",
+      "src/lib/components/settings/sections/NotesSection.svelte",
+      "src/lib/components/settings/sections/FocusSection.svelte",
+      "src/lib/components/settings/sections/MusicSection.svelte",
+      "src/lib/components/settings/distractions/DistractionsSection.svelte",
+      "src/lib/components/settings/sections/UpdatesSection.svelte",
+      "src/lib/components/settings/sections/ShortcutsSection.svelte",
+      "src/lib/components/settings/sections/AboutSection.svelte"
+    ],
+    "forbiddenModules": [
+      "src/lib/components/settings/sections/DataSection.svelte",
+      "src/lib/components/settings/distractions/DistractionsLimitEditor.svelte",
+      "src/lib/components/settings/sections/NotesTransferSettingsPanel.svelte",
+      "src/lib/components/notes/transfer/NotesHtmlImportDialog.svelte",
+      "src/lib/components/notes/transfer/NotesNotionApiImportDialog.svelte",
+      "src/lib/components/notes/transfer/NotesNotionExportImportDialog.svelte",
+      "src/lib/components/notes/transfer/NotesJsonGraphExportDialog.svelte"
+    ]
+  },
+  "settingsDetailModules": [
+    "src/lib/components/settings/sections/NotesTransferSettingsPanel.svelte",
+    "src/lib/components/notes/transfer/NotesHtmlImportDialog.svelte",
+    "src/lib/components/notes/transfer/NotesNotionApiImportDialog.svelte",
+    "src/lib/components/notes/transfer/NotesNotionExportImportDialog.svelte",
+    "src/lib/components/notes/transfer/NotesJsonGraphExportDialog.svelte",
+    "src/lib/components/settings/distractions/DistractionsLimitEditor.svelte"
+  ],
+  "defaultEnglishStartup": {
+    "loadedModules": [
+      "src/main.ts",
+      "src/App.svelte"
+    ],
+    "forbiddenModulePrefixes": [
+      "src/lib/i18n/messages/es/"
+    ]
+  },
+  "forbiddenEntryModules": [
+    "src/lib/chat/review/diff-runtime.ts",
+    "src/lib/chat/workspace/code-editor-runtime.ts",
+    "src/lib/components/notes/transfer/NotesHtmlImportDialog.svelte",
+    "src/lib/components/notes/transfer/NotesNotionApiImportDialog.svelte",
+    "src/lib/components/notes/transfer/NotesNotionExportImportDialog.svelte"
+  ],
+  "forbiddenModuleSubstrings": [
+    "src/lib/stores/mobile-back-stack.svelte.ts",
+    "/node_modules/react/",
+    "/node_modules/react-dom/"
+  ]
+}

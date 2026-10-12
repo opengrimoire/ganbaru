@@ -264,11 +264,6 @@ export function parseCssColor(value: string | undefined): CssRgbColor | null {
   return parseRgbFunction(color) ?? parseSrgbFunction(color);
 }
 
-export function isVisibleCssColor(value: string | undefined): boolean {
-  const color = parseCssColor(value);
-  return color !== null && color.a > 0.02;
-}
-
 /** Finds the stable surface behind a tooltip target, ignoring interactive hover fills. */
 export function tooltipSurfaceColorFor(
   element: HTMLElement,

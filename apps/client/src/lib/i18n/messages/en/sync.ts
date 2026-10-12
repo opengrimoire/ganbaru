@@ -1,0 +1,50 @@
+export const sync = {
+  heading: "Sync",
+  description: "Quick notes sync between your linked devices when both are on the same network.",
+  state: {
+    off: "Off",
+    idle: "Up to date",
+    syncing: "Syncing...",
+    offline: "Waiting for your other device",
+    paused: "Paused",
+    waiting_for_identity: "Waiting for your other device to confirm the link",
+    error: "Sync stopped because of an error",
+  },
+  role: {
+    hub: "Your other devices sync through this device",
+    client: "This device syncs through your main device",
+  },
+  lastExchange: (time: string) => `Last synced ${time}`,
+  neverExchanged: "Not synced yet",
+  pending: (count: number) => `${count} ${count === 1 ? "change" : "changes"} waiting to sync`,
+  waiting: (count: number) => `${count} received ${count === 1 ? "change" : "changes"} waiting to apply`,
+  heldHeading: "Changes this device cannot use yet",
+  heldNewerFormat: (count: number) =>
+    `${count} ${count === 1 ? "change needs" : "changes need"} a newer version of Ganbaru AI`,
+  heldNewerManifest: (count: number) =>
+    `${count} ${count === 1 ? "change comes" : "changes come"} from a newer data layout. Update Ganbaru AI on this device.`,
+  heldInvalid: (count: number) =>
+    `${count} ${count === 1 ? "change was" : "changes were"} rejected because ${count === 1 ? "it was" : "they were"} invalid`,
+  conflicts: (count: number) =>
+    `${count} ${count === 1 ? "note was" : "notes were"} edited on two devices. Open ${count === 1 ? "it" : "them"} in Quick notes to choose what to keep.`,
+  syncNow: "Sync now",
+  syncNowFailed: "Sync could not start",
+  pause: "Pause sync",
+  pauseFailed: "The sync setting could not be changed",
+  errorDetail: (message: string) => `Last error: ${message}`,
+  recovery: {
+    heading: "Recently deleted with unsaved edits",
+    description: "These notes were deleted on one device while another device was still editing them.",
+    restore: "Restore",
+    discard: "Discard",
+    restored: "Note restored",
+    discarded: "Edits discarded",
+    failed: "The note could not be restored",
+    discardFailed: "The edits could not be discarded",
+    loadFailed: "Deleted notes could not be loaded",
+    untitled: "Untitled note",
+    editedBy: (device: string, time: string) => `Edited on ${device}, ${time}`,
+    thisDevice: "this device",
+    otherDevice: "another device",
+  },
+} as const;

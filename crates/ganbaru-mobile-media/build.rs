@@ -1,15 +1,7 @@
 fn main() {
     tauri_plugin::Builder::new(&[
         "probe",
-        "load",
-        "play",
-        "pause",
-        "stop",
-        "seek",
-        "setVolume",
-        "setMuted",
-        "setRate",
-        "snapshot",
+        "attachSession",
         "pickMediaTree",
         "scanMediaTree",
         "pickArtworkFile",

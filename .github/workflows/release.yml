@@ -56,14 +56,14 @@ jobs:
           node-version: "24"
 
       - name: validate release metadata
-        run: node apps/client/scripts/release-metadata.mjs
+        run: node apps/client/scripts/release/resolve-release-metadata.mjs
 
       - name: enable pnpm
         env:
           COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
         run: |
           corepack enable
-          corepack prepare pnpm@11.1.1 --activate
+          corepack install
 
       - name: install pinned Rust toolchain
         run: rustup show
@@ -81,13 +81,13 @@ jobs:
         run: cargo fetch --locked
 
       - name: write release updater config
-        run: node apps/client/scripts/write-tauri-release-config.mjs
+        run: node apps/client/scripts/release/write-tauri-release-config.mjs
 
       - name: build release bundle
         run: pnpm --dir apps/client tauri build --config src-tauri/tauri.release.conf.json -- --locked
 
       - name: stage release assets
-        run: node apps/client/scripts/stage-tauri-release-assets.mjs
+        run: node apps/client/scripts/release/stage-tauri-release-assets.mjs
 
       - name: upload unsigned assets
         # actions/upload-artifact v7.0.1
@@ -133,7 +133,7 @@ jobs:
           COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
         run: |
           corepack enable
-          corepack prepare pnpm@11.1.1 --activate
+          corepack install
 
       - name: install pinned Rust toolchain and Android targets
         run: |
@@ -187,13 +187,13 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: node apps/client/scripts/write-android-signing-properties.mjs
+        run: node apps/client/scripts/release/write-android-signing-properties.mjs
 
       - name: build signed Android release
         run: pnpm --dir apps/client tauri android build --ci
 
       - name: stage Android release assets
-        run: node apps/client/scripts/stage-android-release-assets.mjs
+        run: node apps/client/scripts/release/stage-android-release-assets.mjs
 
       - name: verify Android release signatures
         env:
@@ -214,7 +214,7 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: node apps/client/scripts/sign-tauri-release-assets.mjs
+        run: node apps/client/scripts/release/sign-tauri-release-assets.mjs
 
       - name: remove Android signing files
         if: always()
@@ -257,7 +257,7 @@ jobs:
 
       - name: resolve release metadata
         id: release
-        run: node apps/client/scripts/release-metadata.mjs
+        run: node apps/client/scripts/release/resolve-release-metadata.mjs
 
       - name: download signed assets
         # actions/download-artifact v7.0.0
@@ -292,7 +292,7 @@ jobs:
           GANBARU_AI_RELEASE_REPOSITORY: ${{ github.repository }}
           GANBARU_AI_RELEASE_TAG: ${{ steps.release.outputs.tag_name }}
           GANBARU_AI_RELEASE_NOTES_PATH: dist/generated-release-notes.md
-        run: node apps/client/scripts/write-tauri-latest-json.mjs
+        run: node apps/client/scripts/release/write-tauri-latest-json.mjs
 
       - name: write checksums
         run: |
@@ -402,7 +402,7 @@ jobs:
       - name: build package repo
         env:
           GANBARU_AI_PACKAGE_PAGES_DIR: dist/pages
-        run: node apps/client/scripts/build-package-repo.mjs
+        run: node apps/client/scripts/release/build-package-repo.mjs
 
       - name: push package repo
         run: |
@@ -470,7 +470,7 @@ jobs:
       - name: write AUR package files
         env:
           GANBARU_AI_AUR_DIR: dist/aur/ganbaru-ai-bin
-        run: node apps/client/scripts/write-aur-package.mjs
+        run: node apps/client/scripts/release/write-aur-package.mjs
 
       - name: push AUR package
         run: |

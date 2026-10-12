@@ -46,14 +46,19 @@ export function pairingFrameToLuma(rgba: Uint8ClampedArray): Uint8Array {
   return luma;
 }
 
-/** Owns the Android WebView camera stream used to scan a desktop pairing invitation. */
+/** Turns one bounded grayscale frame into the validated payload of the QR code it contains. */
+export type QrFrameDecoder = (width: number, height: number, luma: Uint8Array) => Promise<string>;
+
+/** Owns the Android WebView camera stream used to scan a desktop pairing invitation or a contact card. */
 export class PairingCameraScanner {
   readonly #video: HTMLVideoElement;
   readonly #canvas = document.createElement("canvas");
+  readonly #decode: QrFrameDecoder;
   #stream: MediaStream | null = null;
 
-  constructor(video: HTMLVideoElement) {
+  constructor(video: HTMLVideoElement, decode: QrFrameDecoder = decodePairingQr) {
     this.#video = video;
+    this.#decode = decode;
   }
 
   /** Requests the rear camera and attaches its preview to the supplied video element. */
@@ -77,7 +82,7 @@ export class PairingCameraScanner {
     await this.#video.play();
   }
 
-  /** Decodes the current preview frame, returning a validated invitation string. */
+  /** Decodes the current preview frame, returning the validated payload string. */
   async scanFrame(): Promise<string> {
     const sourceWidth = this.#video.videoWidth;
     const sourceHeight = this.#video.videoHeight;
@@ -101,7 +106,7 @@ export class PairingCameraScanner {
       crop.outputSize,
     );
     const rgba = context.getImageData(0, 0, crop.outputSize, crop.outputSize).data;
-    return decodePairingQr(
+    return this.#decode(
       crop.outputSize,
       crop.outputSize,
       pairingFrameToLuma(rgba),

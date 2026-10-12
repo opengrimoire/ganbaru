@@ -78,6 +78,12 @@ export interface NotesDataSource {
   last_edited_time: string;
 }
 
+/** A data source in the vault-wide list, with where its database lives. */
+export interface NotesDataSourceListItem extends NotesDataSource {
+  /** Outermost first: project group and project names, folder names, then the titles of the pages (and row databases) leading to the page that holds the database. Page titles may be empty. */
+  location: string[];
+}
+
 export const NOTES_DATA_SOURCE_PROPERTY_TYPES = [
   "title",
   "rich_text",
@@ -177,6 +183,15 @@ export const NOTES_DATA_SOURCE_STATUS_GROUPS = [
 
 export type NotesDataSourceStatusGroup = (typeof NOTES_DATA_SOURCE_STATUS_GROUPS)[number];
 
+/** How a property appears on row pages; the schema omits the first, default value. */
+export const NOTES_DATA_SOURCE_PAGE_VISIBILITIES = [
+  "always_show",
+  "hide_when_empty",
+  "always_hide",
+] as const;
+
+export type NotesDataSourcePageVisibility = (typeof NOTES_DATA_SOURCE_PAGE_VISIBILITIES)[number];
+
 export interface NotesDataSourceSchema {
   data_source: NotesDataSource;
   view: NotesDatabaseView;
@@ -189,8 +204,32 @@ export interface NotesDatabaseViewScope {
 
 export interface NotesDataSourceSchemaUpdate {
   properties: Record<string, unknown>;
-  property_order: string[];
-  hidden_property_ids: string[];
+}
+
+export interface NotesDataSourceCreateRequest {
+  id: string;
+  database_id: string;
+  view_id: string;
+  title: string;
+  view_name: string;
+}
+
+export interface NotesDataSourceAttachRequest {
+  data_source_id: string;
+  database_id: string;
+  view_id: string;
+  view_name: string;
+}
+
+export type NotesDataSourcePropertyAction =
+  | { type: "insert"; property_id: string; side: "left" | "right"; property: Record<string, unknown> }
+  | { type: "duplicate"; property_id: string; name: string }
+  | { type: "change_type"; property_id: string; property_type: NotesDataSourcePropertyType; config?: Record<string, unknown> | null }
+  | { type: "delete"; property_id: string };
+
+export interface NotesDataSourcePropertyActionResult {
+  property_id: string;
+  schema: NotesDataSourceSchema;
 }
 
 export interface NotesDataSourceRowPageCreateRequest {
@@ -208,19 +247,9 @@ export interface NotesDataSourceTemplateCreateFromRowRequest {
 }
 
 export interface NotesDataSourceTemplateApplyRequest {
+  /** Reserve the resulting page identity while template body block IDs are generated. */
+  id?: string;
   title?: string | null;
-}
-
-export interface NotesDataSourceTemplateUpdateRequest {
-  name?: string;
-  source_page_id?: string;
-  is_default?: boolean;
-}
-
-export interface NotesDataSourceTemplateDuplicateRequest {
-  id: string;
-  name: string;
-  is_default?: boolean | null;
 }
 
 export interface NotesDataSourceButtonClickRequest {
@@ -290,3 +319,21 @@ export interface NotesDatabaseCreateRequest {
   icon?: NotesPageIcon | null;
   cover?: NotesPageCover | null;
 }
+
+export interface NotesDatabaseViewDuplicateRequest {
+  id: string;
+  database_id: string;
+  source_view_id: string;
+  name: string;
+}
+
+export const NOTES_DATABASE_VIEW_KINDS = [
+  "table",
+  "board",
+  "gallery",
+  "list",
+  "calendar",
+  "timeline",
+] as const;
+
+export type NotesDatabaseViewKind = (typeof NOTES_DATABASE_VIEW_KINDS)[number];

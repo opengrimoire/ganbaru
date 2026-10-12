@@ -1,5 +1,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
+  import Check from "@lucide/svelte/icons/check";
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
   import RotateCcw from "@lucide/svelte/icons/rotate-ccw";
   import X from "@lucide/svelte/icons/x";
@@ -8,6 +9,7 @@
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { cn } from "$lib/utils";
   import { portal } from "$lib/utils/portal";
+  import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import {
     COLOR_PICKER_EDGE_MARGIN,
     COLOR_PICKER_HEIGHT,
@@ -17,7 +19,7 @@
   import {
     checkerboardBackground,
     checkerboardBackgroundForCells,
-  } from "./colorDisplay";
+  } from "$lib/color/display";
   import {
     type HsvColor,
     clampChannel,
@@ -30,7 +32,7 @@
     normalizeHex,
     rgbToHsv,
     rgbaToHex,
-  } from "./colorMath";
+  } from "$lib/color/math";
 
   let {
     value,
@@ -135,9 +137,9 @@
     open = true;
   }
 
-  // External value can change (theme switch, reset). Sync local state when
-  // the popover is closed, or when the incoming value differs from the hex
-  // we currently emit, so the picker stays in lockstep with the model.
+  // The external value can change (theme switch, reset). Sync local state
+  // when the popover is closed, or when the incoming value differs from the
+  // hex this field emits, so the picker stays in lockstep with the model.
   $effect(() => {
     const normalized = normalizeHex(value);
     if (!normalized) return;
@@ -443,7 +445,7 @@
     bind:this={triggerEl}
     type="button"
     disabled={readOnly}
-    aria-label={label ? `Edit ${label}` : "Edit color"}
+    aria-label={label ? t("common.color.editNamed", label) : t("common.color.edit")}
     onclick={toggleOpen}
     class={cn(
       "relative shrink-0 overflow-hidden rounded-md border transition-shadow",
@@ -472,6 +474,7 @@
     bind:value={hexDraft}
     disabled={readOnly}
     onpointerdown={handleHexPointerDown}
+    aria-label={t("common.color.hexValue")}
     onfocus={selectHexInput}
     onclick={selectHexInput}
     onblur={commitHexDraft}
@@ -483,7 +486,7 @@
       }
     }}
     class={cn(
-      "h-7 rounded-md border border-border bg-card px-2 text-[0.8rem] leading-6.5 text-foreground focus:outline-none focus:ring-1 focus:ring-ring",
+      "field h-7 py-0 text-[0.8rem] leading-6.5 text-foreground",
       mobileShell && "h-9",
       fluid ? "min-w-0 flex-1" : "w-19",
       readOnly && "cursor-not-allowed opacity-60",
@@ -494,7 +497,7 @@
       type="button"
       onclick={onReset}
       disabled={!canReset}
-      aria-label="Reset color"
+      aria-label={t("common.color.reset")}
       data-app-tooltip-disabled="true"
       class={cn(
         "flex shrink-0 items-center justify-center text-secondary-foreground transition-colors",
@@ -515,12 +518,10 @@
       bind:this={popoverEl}
       use:portal
       role="dialog"
-      aria-label={label ? `${label} color picker` : "Color picker"}
+      aria-label={label ? t("common.color.pickerNamed", label) : t("common.color.picker")}
       class={cn(
-        "fixed z-80 overflow-y-auto border border-border bg-popover p-3 shadow-xl",
-        mobileShell && "mobile-color-picker z-95 flex flex-col border-0 p-0",
-        pickerGeometry.layout === "popover" && "rounded-lg",
-        pickerGeometry.layout === "sheet" && "rounded-lg",
+        "surface-floating fixed z-80 overflow-y-auto p-3",
+        mobileShell && "mobile-color-picker z-95 flex flex-col rounded-none border-0 p-0 shadow-none",
         pickerGeometry.layout === "fullscreen" && "rounded-none border-x-0 border-b-0",
       )}
       style={pickerStyle}
@@ -528,7 +529,7 @@
       {#if mobileShell}
         <header class="flex min-h-14 shrink-0 items-center justify-between border-b border-border px-2">
           <h2 class="px-2 text-base font-semibold">
-            {label ?? t("settings.theme.editor.colorPicker")}
+            {label ?? t("common.color.picker")}
           </h2>
           <button
             type="button"
@@ -540,12 +541,12 @@
           </button>
         </header>
       {/if}
-      <div class={mobileShell ? "min-h-0 flex-1 overflow-y-auto p-4" : "contents"}>
+      <div use:scrollEdgeFadeAction class={mobileShell ? "min-h-0 flex-1 overflow-y-auto p-4" : "contents"}>
         <div
         bind:this={svEl}
         onpointerdown={startSvDrag}
         role="slider"
-        aria-label="Saturation and value"
+        aria-label={t("common.color.saturationAndValue")}
         aria-valuenow={Math.round(hsv.s)}
         tabindex="0"
         class="relative h-37.5 w-full touch-none rounded-md"
@@ -564,7 +565,7 @@
         bind:this={hueEl}
         onpointerdown={startHueDrag}
         role="slider"
-        aria-label="Hue"
+        aria-label={t("common.color.hue")}
         aria-valuenow={Math.round(hsv.h)}
         tabindex="0"
         class={cn(
@@ -583,7 +584,7 @@
         bind:this={alphaEl}
         onpointerdown={startAlphaDrag}
         role="slider"
-        aria-label="Alpha"
+        aria-label={t("common.color.alpha")}
         aria-valuenow={alphaPercentDisplay}
         tabindex="0"
         class={cn(
@@ -609,7 +610,7 @@
             aria-haspopup="listbox"
             aria-expanded={formatMenuOpen}
             onclick={() => (formatMenuOpen = !formatMenuOpen)}
-            class="flex h-7 w-15.5 items-center justify-between rounded-md border border-border bg-card px-2 font-medium text-foreground transition-colors hover:bg-accent focus:outline-none focus:ring-1 focus:ring-ring"
+            class="flex h-7 w-15.5 items-center justify-between rounded-floating-item border border-border px-2 font-medium text-foreground transition-colors hover:bg-accent focus:outline-none focus:ring-1 focus:ring-ring"
           >
             <span>{activeFormatLabel}</span>
             <ChevronDown size={12} strokeWidth={2.25} />
@@ -617,8 +618,8 @@
           {#if formatMenuOpen}
             <div
               role="listbox"
-              aria-label="Color value format"
-              class="absolute bottom-full left-0 z-10 mb-1 w-18 overflow-hidden rounded-md border border-border bg-popover p-1 shadow-lg"
+              aria-label={t("common.color.format")}
+              class="surface-floating surface-floating-body absolute bottom-full left-0 z-10 mb-1 w-24 overflow-hidden"
             >
               {#each COLOR_FORMAT_OPTIONS as option}
                 <button
@@ -626,14 +627,10 @@
                   role="option"
                   aria-selected={activeFormat === option.value}
                   onclick={() => selectFormat(option.value)}
-                  class={cn(
-                    "flex h-7 w-full items-center rounded px-2 text-left font-medium transition-colors",
-                    activeFormat === option.value
-                      ? "bg-accent text-foreground"
-                      : "text-muted-foreground hover:bg-accent hover:text-foreground",
-                  )}
+                  class="menu-item font-medium"
                 >
-                  {option.label}
+                  <span class="min-w-0 flex-1 truncate">{option.label}</span>
+                  {#if activeFormat === option.value}<Check class="size-3.5 shrink-0" aria-hidden="true" />{/if}
                 </button>
               {/each}
             </div>
@@ -655,8 +652,8 @@
                 (e.currentTarget as HTMLInputElement).blur();
               }
             }}
-            aria-label="Hex color value"
-            class="h-7 min-w-0 flex-1 rounded-md border border-border bg-card px-2 text-[0.8rem] leading-6.5 text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+            aria-label={t("common.color.hexValue")}
+            class="field h-7 min-w-0 flex-1 py-0 text-[0.8rem] leading-6.5 text-foreground"
           />
         {:else if activeFormat === "rgb"}
           <div class="grid min-w-0 flex-1 grid-cols-3 gap-1.5">
@@ -671,8 +668,8 @@
                   rgb.g,
                   rgb.b,
                 )}
-              aria-label="Red channel"
-              class="h-7 min-w-0 rounded-md border border-border bg-card px-2 text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+              aria-label={t("common.color.redChannel")}
+              class="field h-7 min-w-0 py-0 text-foreground"
             />
             <input
               type="number"
@@ -685,8 +682,8 @@
                   Number((e.currentTarget as HTMLInputElement).value),
                   rgb.b,
                 )}
-              aria-label="Green channel"
-              class="h-7 min-w-0 rounded-md border border-border bg-card px-2 text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+              aria-label={t("common.color.greenChannel")}
+              class="field h-7 min-w-0 py-0 text-foreground"
             />
             <input
               type="number"
@@ -699,8 +696,8 @@
                   rgb.g,
                   Number((e.currentTarget as HTMLInputElement).value),
                 )}
-              aria-label="Blue channel"
-              class="h-7 min-w-0 rounded-md border border-border bg-card px-2 text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+              aria-label={t("common.color.blueChannel")}
+              class="field h-7 min-w-0 py-0 text-foreground"
             />
           </div>
         {:else}
@@ -712,8 +709,8 @@
               value={Math.round(hsv.h)}
               onchange={(e) =>
                 setHsv("h", Number((e.currentTarget as HTMLInputElement).value))}
-              aria-label="Hue channel"
-              class="h-7 min-w-0 rounded-md border border-border bg-card px-2 text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+              aria-label={t("common.color.hueChannel")}
+              class="field h-7 min-w-0 py-0 text-foreground"
             />
             <input
               type="number"
@@ -722,8 +719,8 @@
               value={Math.round(hsv.s)}
               onchange={(e) =>
                 setHsv("s", Number((e.currentTarget as HTMLInputElement).value))}
-              aria-label="Saturation channel"
-              class="h-7 min-w-0 rounded-md border border-border bg-card px-2 text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+              aria-label={t("common.color.saturationChannel")}
+              class="field h-7 min-w-0 py-0 text-foreground"
             />
             <input
               type="number"
@@ -732,8 +729,8 @@
               value={Math.round(hsv.v)}
               onchange={(e) =>
                 setHsv("v", Number((e.currentTarget as HTMLInputElement).value))}
-              aria-label="Value channel"
-              class="h-7 min-w-0 rounded-md border border-border bg-card px-2 text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+              aria-label={t("common.color.valueChannel")}
+              class="field h-7 min-w-0 py-0 text-foreground"
             />
           </div>
         {/if}

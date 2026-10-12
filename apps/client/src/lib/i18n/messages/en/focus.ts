@@ -34,6 +34,12 @@ export const pomodoroOverlay = {
 } as const;
 
 export const pomodoroNotification = {
+  endingWarningTitle: "Your focus session is ending",
+  extendFocusLabel: "Extend focus 3 minutes",
+  pausedReminderTitle: "Focus session is paused",
+  pausedReminderBody: "Your focus session is still paused.",
+  resumeFocusLabel: "Resume focus",
+  dismissPromptsLabel: "Stop asking",
   startScheduledSession: "Start scheduled session",
   noCommitmentDue: "No focus session is due. Schedule one in Calendar.",
   startFailed: "The session could not be saved. Try starting it again.",

@@ -2,6 +2,7 @@ export const updates = {
   checkingFeed: "Checking the configured release feed",
   current: "Ganbaru AI is up to date",
   versionAvailable: (version: string) => `Version ${version} is available`,
+  updateAvailable: "An update is available",
   downloadingBytes: (bytes: string) => `Downloading ${bytes}`,
   downloadingPercent: (percent: number) => `Downloading ${percent}%`,
   installedRestarting: "Update installed. Restarting Ganbaru AI",

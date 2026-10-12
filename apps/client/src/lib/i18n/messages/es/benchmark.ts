@@ -87,7 +87,7 @@ export const benchmark = {
       label: "Navegación semanal del calendario",
       sectionTitle: "Memoria de navegación sostenida del calendario",
       description:
-        "Envía eventos keydown iniciales y repetidos de ArrowRight más keyup durante una pulsación de 3 segundos, usando el mismo controlador de teclado de ventana y el mismo controlador de navegación sostenida que una pulsación física de flecha derecha. Corre contra el calendario denso práctico de 1 año.",
+        "Envía eventos keydown iniciales y repetidos de ArrowRight más keyup durante una pulsación de 3 segundos, usando el mismo controlador de teclado de ventana y el mismo controlador de navegación sostenida que una pulsación física de flecha derecha. Corre contra el conjunto de datos de calendario denso predeterminado.",
     },
     calendarPanelLatency: {
       label: "Latencia del panel de calendario",

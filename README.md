@@ -61,10 +61,10 @@ These statuses describe the current repository head. The latest published releas
 | **Notes** | SQLite-backed pages, blocks, databases, templates, links, comments, assets, history, and transfer workflows | Partial |
 | **Quick notes** | Lightweight rich-text capture with search, colors, and synchronized windows | Implemented |
 | **Chat** | Durable project channels with optional local Codex, Claude, Cursor, Grok, and OpenCode sessions, workspace tools, terminals, checkpoints, and review | Partial |
-| **Doomscrolling** | Chromium website blocking through a registered local host, desktop application blocking, and consent-based selected-application enforcement on Android | Partial |
+| **Distraction blocker** | Chromium website blocking through a registered local host, desktop application blocking, and consent-based selected-application enforcement on Android | Partial |
 | **Music** | Local libraries and playlists, desktop and Android playback, platform media controls, assignments, and YouTube integration | Partial |
 | **Themes and localization** | Custom themes plus typed English and Spanish interface catalogs | Partial |
-| **Android** | Adaptive Calendar, Projects, Notes, Chat, Pomodoro, Music, Settings, backup, notifications, and Doomscrolling surfaces | Pre-release |
+| **Android** | Adaptive Calendar, Projects, Notes, Chat, Pomodoro, Music, Settings, backup, notifications, and distraction blocker surfaces | Pre-release |
 | **Diary, sleep, and work environments** | Missing parts of the planned anti-burnout and context-preparation loop | Planned |
 | **Sync and BYOK assistants** | User-provisioned collaboration, external assistants, and explicit external access | Planned |
 | **Gamification** | Ethical progress systems that protect recovery and avoid paid chance mechanics | Deferred |
@@ -76,7 +76,7 @@ See the [documentation index](docs/README.md), [feature index](docs/features/REA
 ### Prerequisites
 
 - [Node.js](https://nodejs.org/) 24 LTS recommended. Node 22.12.0 or newer is also supported while Node 22 remains maintained.
-- [Corepack](https://nodejs.org/api/corepack.html) enabled for the pinned [pnpm](https://pnpm.io/) 11 version in `package.json`
+- [Corepack](https://nodejs.org/api/corepack.html) enabled for the pinned [pnpm](https://pnpm.io/) 12 version in `package.json`
 - [Rust](https://rustup.rs/) via rustup, using the toolchain pinned in [rust-toolchain.toml](rust-toolchain.toml) (edition 2024)
 - Tauri v2 system dependencies for your platform: [v2.tauri.app/start/prerequisites](https://v2.tauri.app/start/prerequisites/)
 
@@ -121,11 +121,11 @@ pnpm --dir apps/client run tauri android dev --host 127.0.0.1
 
 This installs the separate `.dev` application identity and keeps the frontend development server on the USB and ADB loopback path instead of exposing it to the local network. Keep the terminal running for logs and hot reload. Native Rust or Android changes may trigger a rebuild and reinstall.
 
-For an ordinary contribution, test the changed flow on the physical device, including Android Back, background and resume, rotation or responsive layout, and relevant permission denial or recovery. A debug launch is not release acceptance. Use the complete [Android testing matrix](docs/testing/android.md) for lifecycle, storage, notifications, media, Doomscrolling, artifact, and release validation.
+For an ordinary contribution, test the changed flow on the physical device, including Android Back, background and resume, rotation or responsive layout, and relevant permission denial or recovery. A debug launch is not release acceptance. Use the complete [Android testing matrix](docs/testing/android.md) for lifecycle, storage, notifications, media, distraction blocker, artifact, and release validation.
 
 ### Browser extension local testing
 
-The Doomscrolling extension is tested as an unpacked Chromium extension during development. The registration helper below supports Linux and macOS and applies to Chrome, Chromium, Brave, and Edge. It does not create the native-host manifest and registry key required on Windows, so Windows registration remains a manual tooling gap.
+The anti-distraction browser extension is tested as an unpacked Chromium extension during development. The registration helper below supports Linux and macOS and applies to Chrome, Chromium, Brave, and Edge. It does not create the native-host manifest and registry key required on Windows, so Windows registration remains a manual tooling gap.
 
 From the repo root, build the native messaging host and generate the dev extension folder:
 
@@ -133,19 +133,19 @@ From the repo root, build the native messaging host and generate the dev extensi
 pnpm -w run setup:chromium-extension
 ```
 
-Open the browser's extensions page, enable developer mode, load `extensions/chrome` as the normal unpacked extension, copy the extension id, then register the native host:
+Open the browser's extensions page, enable developer mode, load `extensions/chromium` as the normal unpacked extension, copy the extension id, then register the native host:
 
 ```bash
-node apps/client/scripts/install-chrome-native-host.mjs <extension-id> <chrome|chromium|brave|edge> app
+node apps/client/scripts/browser-extension/install-native-host.mjs <extension-id> <chrome|chromium|brave|edge> app
 ```
 
-To test the extension against `pnpm tauri dev` while keeping the normal extension connected, load the generated `extensions/chrome-dev` folder as a second unpacked extension, copy its extension id, then register the dev host:
+To test the extension against `pnpm tauri dev` while keeping the normal extension connected, load the generated `extensions/chromium-dev` folder as a second unpacked extension, copy its extension id, then register the dev host:
 
 ```bash
-node apps/client/scripts/install-chrome-native-host.mjs <dev-extension-id> <chrome|chromium|brave|edge> dev
+node apps/client/scripts/browser-extension/install-native-host.mjs <dev-extension-id> <chrome|chromium|brave|edge> dev
 ```
 
-After first setup, keep `pnpm tauri dev` running, configure Settings > Doomscrolling > Browser in the app, keep Blacklist mode selected, start a Pomodoro focus session, and open a blocked website such as `reddit.com`.
+After first setup, keep `pnpm tauri dev` running, configure Settings > Distractions > Browser in the app, keep Blacklist mode selected, start a Pomodoro focus session, and open a blocked website such as `reddit.com`.
 
 For repeat testing:
 
@@ -153,7 +153,7 @@ For repeat testing:
 - Rust command changes need `pnpm tauri dev` restarted.
 - Native host changes need `pnpm -w run build:native-host`.
 - Extension HTML, CSS, JS, manifest, or icon changes need the reload button on the extension card in the browser's extensions page.
-- Doomscrolling mode, category, or website list changes are picked up by already open browser tabs on the next extension state poll.
+- Anti-distraction mode, category, or website list changes are picked up by already open browser tabs on the next extension state poll.
 - Removing and adding the unpacked extension gives it a new id, so the native host registration command must be run again.
 
 ### Build

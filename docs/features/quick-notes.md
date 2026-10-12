@@ -8,11 +8,13 @@ A Quick note has no project membership, page hierarchy, blocks, icons, covers, c
 
 The title-bar control opens a floating collection panel on desktop and mobile. The panel stays within the visible viewport and adapts to narrow windows without becoming a primary destination.
 
-The collection supports All, up to nine ordered tags, search, Archive, and Trash. A note has at most one tag. Numeric shortcuts can select All and tag views when the user is not typing or interacting with a nested modal.
+The collection supports All, ordered tags, search, Archive, and Trash. A note has at most one tag. Numeric shortcuts can select All and the first nine tag views when the user is not typing or interacting with a nested modal.
 
-Active notes have durable manual order with separate pinned and unpinned groups. Reordering inside a filtered tag view changes only the relative order of visible matching notes. Search, Archive, and Trash use relevance or lifecycle order and cannot be manually reordered.
+A device can create tags only while fewer than nine exist. Merging changes from linked devices can leave more than nine; they all stay visible so the user can rename or delete them. Tag names are unique without regard to case. The selected tag can be renamed or, after confirmation, deleted; deleting a tag keeps its notes and clears the tag from them, and a note saved with a tag that was deleted meanwhile is left untagged instead of failing.
 
-Cards use a responsive masonry layout. Pointer users can drag from a valid card area; touch users use an explicit handle so scrolling remains reliable. Keyboard movement and live announcements provide an equivalent reorder path. Cancellation and persistence failure restore canonical order.
+Active notes have durable manual order with separate pinned and unpinned groups. Moving a note changes only its own position between its new visible neighbors, so reordering inside a filtered tag view changes only the relative order of visible matching notes. Creating, pinning, unarchiving, and restoring place a note first in its group; content edits never move it. Concurrent reorders on linked devices converge to the same order everywhere. Search, Archive, and Trash use relevance or lifecycle order and cannot be manually reordered.
+
+Cards use a responsive masonry layout. Mobile cards are compact, with two columns on phones, and leave note actions to the editor. Pointer users can drag from a valid card area. Touch users reorder with a long press on the card, so swipes keep scrolling; the desktop card also keeps an explicit drag handle. Keyboard movement and live announcements provide an equivalent reorder path. Cancellation and persistence failure restore canonical order.
 
 Search uses a local rebuildable SQLite projection. Collection reads are bounded. Loading and view changes keep stable controls available and do not expose unpositioned cards as a false final layout.
 
@@ -24,7 +26,7 @@ Titles are limited to 200 characters and bodies to 65,536 characters. Empty new 
 
 The background uses a theme-aware event-palette slot. Notes store the slot identity, so theme changes recolor them without rewriting content. Text chooses the stronger black or white contrast against the resolved background.
 
-Edits autosave after a short debounce, and pending writes flush at relevant lifecycle boundaries. Revision checks prevent another window from silently overwriting newer content. Conflicts can reload the canonical note or preserve local work as a separate copy.
+Edits autosave after a short debounce, and pending writes flush at relevant lifecycle boundaries. Revision checks prevent another window or device from silently overwriting newer content. When the canonical note changed meanwhile, the editor merges its unsaved edits with it: fields only the editor changed keep the local value and fields only the other side changed take the canonical value. Only a field changed on both sides to different values stops autosave and offers to reload the canonical note or preserve local work as a separate copy. While the editor has nothing unsaved, it follows remote changes directly.
 
 Revision-sensitive native writes return a stable `revision_conflict` code for stale revisions and `failed` for other failures. Recovery decisions use that code, never words in the diagnostic message.
 
@@ -32,7 +34,15 @@ Revision-sensitive native writes return a stable `revision_conflict` code for st
 
 Active notes can be pinned, archived, or moved to Trash. Archive and Trash clear pin state. Trash remembers whether the note came from active or Archive so restore returns it appropriately.
 
-Trashed notes are read-only and are permanently deleted after seven days. Manual permanent deletion and Empty Trash require confirmation.
+Trashed notes are read-only and are permanently deleted after seven days. Expired notes are hidden at once and purged by a background job on a device that can write them. Manual permanent deletion and Empty Trash require confirmation.
+
+## Linked devices
+
+**Implemented in source; physical multi-device acceptance is pending.** Quick notes and their tags are editable on every linked device, online or offline, including devices that hold a read-only copy of the rest of the vault. Changes reach other devices on the same LAN through the coordinator desktop and converge to identical state everywhere. Protocol, writers, and delivery are owned by [Device linking and synchronization](../data/sync.md); merge rules are in the [sync algorithm](../algorithms/sync/README.md).
+
+- **Silent merges:** concurrent changes to color, tag, lifecycle, and order resolve deterministically without asking the user. Two devices that create a tag with the same name end with one tag that keeps every assignment.
+- **Conflicts:** concurrent edits of the same note's title or body to different values become a conflict. The card shows a conflict badge, and the editor shows a banner listing each version with its device and time: keep this keeps the displayed version, use this picks another version, and keep both keeps the displayed version and creates a new note from the other. Resolving on one device clears the conflict everywhere, and unsaved edits to other fields survive the resolution.
+- **Recovery:** a note deleted on one device, including by the Trash purge, while another device edited it is not lost silently. The edit becomes a recovery entry in the Settings sync section, where Restore creates an active note from the retained values and Discard drops them. Either choice applies on every device.
 
 ## Data ownership
 
@@ -42,6 +52,6 @@ Quick notes creates no Markdown files and does not participate in Notes search, 
 
 ## Accessibility
 
-The panel and editor manage focus, close with Escape or Android Back as appropriate, and restore prior focus. DOM order remains canonical even when masonry changes visual placement. Reorder, tags, lifecycle, formatting, color, and close actions are keyboard reachable and have visible touch equivalents.
+The panel and editor manage focus, close with Escape or Android Back as appropriate, and restore prior focus. DOM order remains canonical even when masonry changes visual placement. Reorder, tags, lifecycle, formatting, color, and close actions are keyboard reachable and have touch equivalents.
 
-Reduced-motion preference disables displacement animation. At recovery-size windows, primary close, Save state, restore, and delete actions remain reachable.
+Reduced motion disables displacement animation. At recovery-size windows, close, save state, restore, and delete actions remain reachable.

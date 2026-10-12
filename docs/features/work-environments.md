@@ -8,7 +8,7 @@ A work environment can eventually define portable intent such as:
 
 - Project and optional task, Note, or Chat destination.
 - Music phase assignments.
-- Doomscrolling rule overrides.
+- Distraction rule overrides.
 - Edge-panel context.
 - Preferred application and browser resources expressed as user-approved references.
 
@@ -23,7 +23,7 @@ Desktop adapters may offer:
 - Minimize a previously activated environment window when safely identified.
 - Prepare Music and the relevant Ganbaru AI context.
 
-Closing an application is never a generic environment action. If supported, it uses the same on-demand selection, protected-app policy, exact process identity, fresh persisted authorization, confirmation, and fail-safe behavior as [Doomscrolling native enforcement](doomscrolling/native-apps.md). Process name or PID alone is insufficient.
+Closing an application is never a generic environment action. If supported, it uses the same on-demand selection, protected-app policy, exact process identity, fresh persisted authorization, confirmation, and fail-safe behavior as [anti-distraction native enforcement](distractions/native-apps.md). Process name or PID alone is insufficient.
 
 The app does not close terminals, editors, browsers with unsaved work, system utilities, shells, generic runtimes, or unrelated processes merely because they are absent from the new template.
 
@@ -45,10 +45,10 @@ Precedence between global defaults, project defaults, environment intent, event 
 
 ## Mobile boundary
 
-Mobile can consume portable context and feature-level defaults but cannot orchestrate arbitrary applications like a desktop. Android selected-app Doomscrolling is a separate safety feature, not environment window management.
+Mobile can consume portable context and feature-level defaults but cannot orchestrate arbitrary applications like a desktop. Android selected-app distraction blocking is a separate safety feature, not environment window management.
 
 ## AI execution distinction
 
-A human work environment prepares the person's context. An AI execution environment is exactly one authorized project working folder or private scratch generation resolved for a run. Activating a work environment cannot grant a teammate access, choose an unapproved folder, or change a running provider session.
+A human work environment prepares the person's context. An AI execution environment is exactly one authorized project working folder or private scratch generation resolved for a run. Activating a work environment cannot grant an agent access, choose an unapproved folder, or change a running provider session.
 
-See [Calendar](calendar/README.md), [Music automation](music/automation.md), [Doomscrolling](doomscrolling/README.md), [Edge panel](edge-panel.md), and [Chat execution](chat/execution-and-workspace.md).
+See [Calendar](calendar/README.md), [Music automation](music/automation.md), [Distraction blocker](distractions/README.md), [Edge panel](edge-panel.md), and [Chat execution](chat/execution-and-workspace.md).

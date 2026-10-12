@@ -1,4 +1,4 @@
-import { doomscrolling } from "./doomscrolling";
+import { distractions } from "./distractions";
 import { focusAndShortcuts } from "./focus-and-shortcuts";
 import { general } from "./general";
 import { chatSettings } from "./chat";
@@ -9,5 +9,5 @@ export const settings = {
   theme,
   ...focusAndShortcuts,
   chat: chatSettings,
-  doomscrolling,
+  distractions,
 } as const;

@@ -1,12 +1,18 @@
 //! Android Media3 playback and selected music access for Ganbaru AI.
 
+#![deny(clippy::undocumented_unsafe_blocks, unsafe_op_in_unsafe_fn)]
+
+#[cfg(any(target_os = "android", test))]
+mod authority;
+#[cfg(target_os = "android")]
+pub use authority::set_music_authority_checker;
+
 #[cfg(target_os = "android")]
 mod mobile;
 
 #[cfg(target_os = "android")]
 pub use mobile::{
-    MobileMedia, MobileMediaExt, MobileMediaLoadRequest, MobileMediaProbe, MobileMediaSource,
-    MobileMediaTree, MobileMediaTreeTrack, MobilePlayerSnapshot,
+    MobileMedia, MobileMediaExt, MobileMediaProbe, MobileMediaTree, MobileMediaTreeTrack,
 };
 
 #[cfg(target_os = "android")]

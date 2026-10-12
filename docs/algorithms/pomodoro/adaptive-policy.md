@@ -1,189 +1,119 @@
 # Adaptive Pomodoro policy
 
-Adaptive Pomodoro is a local, explicit opt-in policy that adjusts bounded rhythm choices using the user's own history. Its goal is sustainable completed focus, not maximum timer length. It must not diagnose health, punish missed work, or turn noisy behavior into confident advice.
+Adaptive Pomodoro is a local, explicit opt-in policy that adjusts bounded rhythm choices from the user's own history. Its goal is sustainable completed focus, not maximum timer length. It must not diagnose health, punish missed work, or turn noisy behavior into confident advice.
 
-The policy is deterministic from persisted inputs, versioned, auditable, reversible, and applied only at safe run or phase boundaries.
+The policy is deterministic from persisted inputs, versioned, auditable, reversible, and applied only at run or phase boundaries.
+
+**Status: Implemented.** `ganbaru-pomodoro` owns state scoring, the base policy, seven experiment lanes, bounded replay approval, snapshots, and transactional run and phase decisions. Physical platform acceptance remains open.
 
 ## Objective
 
-The policy balances:
+The policy balances clean completed focus, completion and stop behavior, break return and skips, blocker pressure, planned-work completion, next-day willingness to return, and uncertainty from small samples.
 
-- clean completed focus;
-- completion and stop behavior;
-- break return and skip behavior;
-- blocker or doomscrolling pressure;
-- planned-work completion;
-- next-day willingness to return;
-- uncertainty and limited sample size.
-
-More focus seconds are not automatically better. A treatment that increases one session but increases stops, avoidance, missed blocks, or harmful break drift must not be preferred.
+More focus seconds are not automatically better. A treatment that lengthens one session but increases stops, avoidance, missed blocks, or break drift must not be preferred.
 
 ## Scope and consent
 
-Adaptive analysis runs locally against the active vault. It does not upload behavioral history or require a cloud model. Enabling ordinary Pomodoro does not enable experimentation.
+Analysis runs locally against the active vault; behavioral history is never uploaded and no cloud model is involved. Ordinary Pomodoro does not enable adaptation: the user must choose the adaptive preset. Custom rhythms stay user-authored. Leaving adaptive mode stops new assignments without rewriting historical decisions or outcomes.
 
-The user chooses the adaptive preset or equivalent explicit control. Custom rhythms remain user-authored unless the user deliberately enters adaptive mode. Leaving adaptive mode stops new assignments without rewriting historical decisions or outcomes.
+The product presents adaptation as experimental assistance based on local behavior, never inferred energy, strain, or avoidance as medical fact.
 
-The product explains that adaptation is experimental assistance based on local behavior. It does not present inferred energy, strain, recovery need, or avoidance as a medical fact.
+## Safe range
+
+Adaptive choices stay within fixed bounds regardless of evidence:
+
+| Value | Range |
+| --- | --- |
+| Focus | 15 to 60 minutes in 5 minute steps (reductions stop at 25 unless recent focus failure justifies going lower) |
+| Short break | 3 to 12 minutes |
+| Long break | 10 to 30 minutes in 5 minute steps |
+| Long-break cadence | Every 2 to 5 focus positions |
+
+The active event end always clips the selected phase.
 
 ## Decision boundaries
 
-Adaptation may occur:
+Adaptation occurs only at run start, at a phase boundary before the next segment starts, or through an explicit reconfiguration. It never changes the duration of a running phase.
 
-- at run start, before the run snapshot and experiment assignment commit;
-- at a phase boundary, before the next segment starts;
-- after an explicit reconfiguration request, through the normal reconfiguration transaction.
-
-It never silently changes the duration of an already running phase. Once a segment starts, its selected duration and planned boundary remain persisted facts.
-
-Decision, assignment, and new run or segment state commit together. A crash cannot leave an unexplained selected duration.
+The decision, any experiment assignment, and the new run or segment commit in one transaction, so a crash cannot leave an unexplained duration. The initial run rhythm stays an immutable snapshot; later boundary choices are separate decisions, and recovery reads the latest accepted decision rather than reverting to the initial rhythm.
 
 ## Context
 
-Policy context may include only validated, relevant local evidence, such as:
+Context may include only validated local evidence: coarse time of day, session position and recent completed focus, event length and remaining window, current and recently used rhythm, recent stops, focus failures, skipped breaks, break overtime, blocker pressure, same-day missed planned blocks, next-day return, and optional user-entered energy or environment.
 
-- coarse time of day;
-- session position and recent completed focus;
-- event length and remaining planned window;
-- current rhythm and recent rhythm exposure;
-- recent stops, focus failures, skipped breaks, and break overtime;
-- blocker pressure during focus or break overtime;
-- same-day missed planned blocks;
-- next-day observed return;
-- optional user-entered energy or work-environment category.
+Context uses coarse categories so evidence is not fragmented and unnecessary detail is not exposed. Calendar titles, Notes, Chat, keystrokes, camera data, and arbitrary application activity are never features. Missing optional context stays unknown rather than being filled with a negative assumption.
 
-Context uses coarse categories where exact values would fragment evidence or expose unnecessary detail. Calendar titles, Notes content, Chat messages, keystrokes, camera data, and arbitrary application activity are not adaptive features.
+## Policy postures
 
-Missing optional context remains unknown. It is not filled with a negative assumption.
+Before experimentation, the deterministic policy picks a broad posture, recorded as a decision kind (`fallback`, `recovery`, `guardrail`, `hold`, `explore`, or `exploit`):
 
-## Stable policy states
+- **Fallback:** confidence is too low or there is no comparable history. Keep the current rhythm.
+- **Recovery and guardrail:** recent stops, focus failure, high blocker pressure, repeated missed work, break drift, or weak return. Prefer a shorter or more conservative rhythm and never assign a capacity-expansion treatment.
+- **Hold:** evidence is mixed, sparse, or stable without a clear reason to change. Uncertainty favors holding.
+- **Explore:** comparable history is sufficient, behavior is stable, completion is healthy, and strain, recovery debt, avoidance, and drift are low. A bounded treatment may be tried. Longer breaks or earlier long breaks are explored only for a clean return-drift pattern without blocker pressure during overtime.
+- **Exploit:** apply a treatment that already won in a compatible context.
 
-The deterministic policy can choose among broad postures before experimentation:
+Postures guide experiment eligibility; they do not prove a treatment is beneficial.
 
-### Recovery
+## Replay approval
 
-Prefer a conservative or shorter established rhythm when recent evidence shows stops, focus failure, high blocker pressure, repeated missed planned work, unhealthy break drift, or weak return behavior. Recovery does not assign a capacity-expansion treatment.
+At run start, the owner may evaluate the bounded candidate catalog against at most 50 historical opportunities. Inputs, historical evidence, outcomes, and the current decision share the accepted transaction's snapshot, and device-local timezone facts are resolved natively for both current and historical opportunities.
 
-### Maintain
+- An outcome counts for a candidate only when the candidate's rhythm matches the rhythm actually observed.
+- Comparable contexts need enough matching outcomes and acceptable guardrail burden. Multi-parameter candidates are also compared with their individual components.
+- Harmful actual exposure or an antagonistic component comparison vetoes a candidate. Sparse evidence stays inconclusive and does not overturn a passing context gate. Ties keep catalog order.
+- Replay never overrides recovery, fallback, or guardrail decisions. Historical evidence excludes anything recorded after its observation cutoff.
 
-Keep the current proven rhythm when evidence is mixed, sparse, or stable without a clear reason to explore. Uncertainty favors maintain.
+## Evidence bounds
 
-### Capacity exploration
+Evidence reads are bounded in the same snapshot as the calculation: a history read admits at most 100,000 aggregate input rows, a replay read shares 1,000,000 rows across all opportunities, and each policy admits at most 4,096 experiments. Exceeding a bound fails explicitly and rolls back the attempted execution; it never substitutes an empty aggregate, truncates evidence, or deletes history. Raising a bound requires measured work and memory evidence.
 
-Consider a bounded treatment only when comparable history is sufficient, recent behavior is stable, completion is healthy, and strain, recovery debt, avoidance pressure, and relevant drift guardrails are low.
-
-### Break support
-
-Explore a longer break or earlier long-break cadence only for the corresponding clean return-drift pattern. Blocker pressure during overtime or broader avoidance blocks this path.
-
-These states guide experiment eligibility. They do not directly prove that a treatment is beneficial.
+Rationale: a truncated aggregate looks complete and would silently bias decisions.
 
 ## Evidence hierarchy
 
-Analysis prefers the most comparable evidence that has enough observations in both arms:
+Analysis prefers the most comparable evidence with enough observations in both arms:
 
 1. Exact coarse context.
-2. Paired neighboring contexts with similar session, time, event, workload, energy, and environment categories.
+2. Paired neighboring contexts with similar session, time, event, workload, energy, and environment.
 3. Broader non-context evidence for the same experiment.
 4. Global experiment evidence.
 5. Inconclusive when none is sufficient.
 
-Neighboring and broader evidence is discounted. It provides a small prior, not a substitute for observing both variants in the relevant context.
+Neighboring and broader evidence is discounted to a small prior. Sparse evidence never yields a confident win merely because its point estimate is positive.
 
-Sparse evidence never produces a confident treatment win merely because its point estimate is positive.
+## Assignment and outcomes
 
-## Assignment
+An eligible run receives a deterministic assignment from a persisted seed, experiment identity, policy version, participant scope, and context. Retries return the existing assignment. Control is a real assigned variant; treatment is never compared only with unrelated historical defaults.
 
-An eligible run receives a deterministic assignment from a persisted seed, experiment identity, policy version, participant scope, and context. Assignment remains stable across retries and windows.
-
-The policy balances exposure without making a provider or frontend random number generator authoritative. A command replay returns the existing assignment rather than creating another observation.
-
-Control remains a real assigned variant. The analyzer does not compare treatment runs only with unrelated historical defaults.
-
-## Outcomes
-
-Assignment and outcome are separate durable records. Outcomes mature after enough time exists to observe relevant behavior.
-
-Depending on the experiment, outcomes may include:
-
-- clean focus seconds;
-- phase and run completion;
-- stop or focus-failure count;
-- blocker pressure;
-- skipped breaks;
-- short-break or long-break overtime;
-- same-day missed planned work;
-- next-day observed return.
-
-Unknown future outcomes remain absent rather than counted as failure. Recomputing aggregates does not rewrite original assignments or raw outcomes.
+Assignment and outcome are separate records. Outcomes (clean focus, completion, stops and focus failures, blocker pressure, skipped breaks, break overtime, same-day missed work, next-day return) attach only once mature. Unknown outcomes stay absent rather than counting as failure, and recomputing aggregates never rewrites assignments or raw outcomes.
 
 ## Conservative analysis
 
-Binary outcomes use conservative interval comparisons and severe point-harm stops. Numeric outcomes use counts, sums, and squared sums so noisy mean differences remain inconclusive until uncertainty is acceptably small.
+Binary outcomes use conservative interval comparisons with severe point-harm stops. Numeric outcomes keep counts, sums, and squared sums so noisy differences stay inconclusive until uncertainty is small.
 
-A treatment wins only when its primary outcome improves meaningfully and every required guardrail remains acceptable. Control wins or exploration stops when a guardrail shows conservative harm or severe direct harm.
+A treatment wins only when its primary outcome improves meaningfully and every guardrail holds. Control wins when a guardrail shows conservative or severe harm. Otherwise the result is inconclusive and exploration waits for more observations.
 
-No result is equivalent to no evidence. Inconclusive analysis keeps or returns to control and waits for more eligible observations.
-
-## Guardrails
-
-Common guardrails include:
-
-- completion does not materially decline;
-- stop and focus-failure rates do not rise;
-- blocker pressure does not rise;
-- clean focus does not fall where it is a guardrail;
-- skipped breaks and break drift do not worsen beyond experiment-specific limits;
-- same-day planned work does not worsen;
-- next-day return does not worsen.
-
-An experiment may add stricter guardrails but may not omit a material known risk merely to reach a result sooner.
+Common guardrails: completion does not decline; stop and focus-failure rates, blocker pressure, skipped breaks, and break drift do not rise; clean focus does not fall where it is a guardrail; same-day planned work and next-day return do not worsen. An experiment may add stricter guardrails but may not omit a known material risk to reach a result sooner.
 
 ## Terminal state and cooldown
 
-When evidence reaches a terminal result, the experiment records completed when treatment wins or abandoned when guardrails force control. It does not create another assignment merely to persist the terminal state.
-
-Current policy applies a 14-day cooldown after terminal state. An abandoned experiment holds its control value during cooldown. A completed treatment remains bounded to its supported adaptive context and does not become a universal user preference.
-
-Different experiment lanes retain independent results. Harm in a combined rhythm bundle does not automatically prove that every component is harmful by itself.
+A terminal result records completed (treatment won) or abandoned (guardrails forced control) without creating a synthetic assignment. A 14-day cooldown follows. An abandoned experiment holds control during cooldown. A completed treatment applies only within its supported context and never becomes a universal preference. Lanes keep independent results; harm in a bundle does not prove each component harmful.
 
 ## Explainability
 
-Every selected value retains:
-
-- policy and experiment version;
-- previous and selected value;
-- control or treatment assignment;
-- coarse context key;
-- reason codes and posture;
-- relevant state scores or guardrail inputs;
-- assignment seed identity;
-- later result and cooldown state.
-
-User-facing explanation should summarize the main reason and uncertainty in plain language. It should not expose a giant feature vector or claim causation from correlation.
+Every selected value retains policy and experiment version, previous and selected value, assigned variant, coarse context key, reason codes and posture, state scores, assignment seed identity, and later result and cooldown. User-facing explanations summarize the main reason and uncertainty in plain language without exposing raw feature vectors or claiming causation.
 
 ## Privacy and retention
 
-Raw adaptive history stays in the vault and follows explicit product retention. Derived aggregates are rebuildable. Export or synchronization of detailed Pomodoro behavior is disabled by default and requires an explicit audience.
+Raw adaptive history stays in the vault. Derived aggregates are rebuildable. Export or synchronization of detailed Pomodoro behavior is off by default and requires an explicit audience. Sensitive traits are never inferred from Notes, Chat, Calendar titles, browsing history, or biometric data.
 
-Do not infer sensitive traits from Notes, Chat, calendar titles, browsing history, or biometric data. Webcam-use suppression is an idle-detection input and is not retained as adaptive behavioral history.
+## Versioning
 
-## Policy versioning
-
-A material change to eligibility, context bucketing, assignment, outcomes, statistics, guardrails, or terminal interpretation increments the policy or experiment version. Older decisions remain interpretable under the version that created them.
-
-Do not bump a version for a source refactor that leaves semantics unchanged. Do not reinterpret old observations under a new outcome definition without an explicit migration or separate analysis version.
+A material change to eligibility, context bucketing, assignment, outcomes, statistics, guardrails, or terminal interpretation increments the policy or experiment version, and older decisions stay interpretable under their original version. Refactors that leave semantics unchanged do not bump versions.
 
 ## Non-goals
 
-Adaptive Pomodoro does not:
+Adaptive Pomodoro does not maximize every focus interval, diagnose burnout, attention, sleep, or mood, alter an active phase, use a cloud model to choose timer values, hide assignments or history, share productivity behavior by default, or override an explicit custom rhythm.
 
-- maximize every focus interval;
-- diagnose burnout, attention disorders, sleep, or mood;
-- alter an active phase without explicit reconfiguration;
-- use a cloud LLM to choose timer values;
-- hide treatment assignment or history from the user;
-- share detailed productivity behavior by default;
-- override an explicit custom rhythm.
-
-Current experiment lanes are specified in [Adaptive experiments](adaptive-experiments.md).
+The current lanes are in [Adaptive experiments](adaptive-experiments.md).

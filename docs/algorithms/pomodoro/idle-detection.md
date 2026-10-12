@@ -1,119 +1,67 @@
 # Idle detection
 
-Idle detection pauses a running focus phase when operating-system input inactivity reaches the event's configured threshold. It never captures keystrokes, pointer content, camera frames, or application text.
+Idle detection pauses a running desktop focus phase when operating-system input inactivity reaches the event's threshold. It never captures keystrokes, pointer content, camera frames, or application text.
 
-The user-visible overlay and choices are defined by the Pomodoro idle feature. This document defines native activity sources, polling, pause timing, focus failure, and recovery interaction.
+The overlay and user choices are defined in [Idle and suspend](../../features/pomodoro/idle-and-suspend.md). This document defines activity sources, sampling, pause timing, focus failure, and the interaction with suspend.
 
 ## Platform sources
 
-The Rust adapter returns elapsed idle milliseconds when the platform source succeeds, an explicit unavailable value when it fails, and a best-effort webcam-in-use signal.
+The native adapter (`pomodoro/idle.rs`) returns elapsed idle milliseconds when the platform source succeeds, an explicit unavailable value when it fails, and a best-effort webcam-in-use signal.
 
-### Linux
+| Platform | Idle source | Webcam signal |
+| --- | --- | --- |
+| Linux | GNOME Mutter `IdleMonitor.GetIdletime` through `gdbus`, then `xprintidle` | Any other process holding an open `/dev/video*` file descriptor |
+| Windows | `GetLastInputInfo` against the system tick count, handling one 32-bit wrap | Current user's camera capability-use registry state |
+| macOS | `ioreg` `HIDIdleTime` for `IOHIDSystem` | Known camera helper processes running |
+| Android and others | Unavailable | None |
 
-The primary idle source is GNOME Mutter's IdleMonitor GetIdletime call through gdbus. If that is unavailable, the adapter tries xprintidle. When neither succeeds, the adapter reports the source as unavailable.
+Platforms without a source report unavailable. Mobile lifecycle recovery is separate and never infers idle from missing foreground activity.
 
-Webcam use is inferred by scanning process file descriptors for opened video devices. The adapter does not read device content.
+## Webcam suppression
 
-Current code does not directly call XScreenSaver, implement a KDE-specific API, or fall back to rdev or evdev.
-
-### Windows
-
-Idle duration comes from GetLastInputInfo and the system tick count. Webcam use is inferred through the current user's camera capability-use registry state.
-
-The calculation handles one 32-bit system tick wrap and returns a bounded non-negative duration. A GetLastInputInfo failure reports the source as unavailable instead of reporting user activity.
-
-### macOS
-
-Idle duration is read by invoking ioreg for IOHIDSystem and parsing HIDIdleTime. Webcam use is inferred from a bounded process-name check for known camera consumers.
-
-This is not direct in-process IOKit integration. A future native adapter may replace the command without changing threshold semantics.
-
-### Other platforms
-
-Unsupported targets report the idle source as unavailable and report no webcam use. Mobile lifecycle recovery is separate from desktop idle detection and must not infer idle from missing foreground ticks.
-
-## Privacy and webcam suppression
-
-When webcam use is detected, idle pausing is suppressed and the scheduler uses its coarse polling interval. This avoids marking a meeting or recording session as failed focus merely because keyboard and pointer input stopped.
-
-The signal is best effort. False negatives may still produce an idle pause, and false positives may delay one. No camera stream, frame, microphone data, window title, or meeting identity is collected or persisted.
+When the webcam appears to be in use, idle pausing is suppressed so a meeting or recording is not marked as failed focus just because keyboard and pointer input stopped. The signal is best effort: false negatives may still produce an idle pause, and false positives may delay one. No camera stream, frame, microphone data, window title, or meeting identity is collected or persisted, and the signal is not retained as adaptive history.
 
 ## Threshold contract
 
-The event configuration supplies idle_timeout_minutes. Null disables idle detection. A configured value must be a positive integer. Zero is rejected by SQLite and Rust validation.
+The run's configuration (or an explicit runtime override) supplies `idle_timeout_minutes`. Null disables detection. A configured value must be an integer from 1 to 120; zero is rejected rather than treated as disabled. The settings UI offers 1, 2, 3, 4, 5, 10, and 15 minutes.
 
-Idle triggers when reported idle duration is greater than or equal to the threshold. Detection runs only when:
+Idle triggers when the reported idle duration is greater than or equal to the threshold, and only when all of these hold:
 
-- a Pomodoro run is active;
-- the current phase is focus;
-- no suspend-away state is active;
-- no idle pause is already active;
-- the threshold is enabled;
-- webcam use is not detected.
+- The platform is desktop and the sample is fresh and valid.
+- A run is open and in running mode (not paused, suspended, or waiting).
+- The active segment is focus.
+- The threshold is enabled.
+- The webcam is not in use.
 
-The run snapshots the idle setting. Explicit reconfiguration updates current runtime interpretation through the same controlled reconfiguration path as rhythm changes.
+## Sampling
 
-## Threshold-aware scheduling
-
-Current policy uses a minimum check interval of one second and a maximum of 15 seconds.
-
-When reported idle is far below the threshold, the next check waits at most 15 seconds. As the threshold approaches, the delay becomes the remaining time to the threshold, bounded to at least one second. Webcam suppression uses the maximum interval.
-
-These values are implementation policy, not database meaning. They may change after measurement without a schema migration as long as threshold and backdating semantics remain intact.
+While a run is open, the native owner samples activity every 15 seconds. Because the pause is backdated to the inferred idle start, sampling delay never counts as focus; it only delays when the overlay appears. The interval is implementation policy, not stored meaning, and may change after measurement.
 
 ## Creating an idle pause
 
-At threshold crossing, the pure decision calculates:
-
-- idle start as now minus the operating-system idle duration;
-- remaining focus at that inferred boundary;
-- the observed idle duration for presentation and audit.
-
-The controller bounds the inferred start against the active segment and existing pause state, persists an idle pause, freezes the timer, stops ordinary idle checks, updates enforcement and tray state, and shows the idle overlay.
-
-Backdating prevents the threshold interval from being counted as focus merely because detection was delayed. The active segment remains active while the pause is recoverable.
+At threshold crossing, the idle start is the sample time minus the reported idle duration, clamped to the active segment and prior pause evidence. The owner persists an idle pause from that start, appends an `idle_detected` run event, and enters idle pause mode. The focus segment remains active while the pause is recoverable.
 
 ## Focus failure
 
-If the idle overlay remains unresolved for 60 seconds, current behavior marks the active focus segment interrupted with focus-failed reason at the pause start boundary and appends a focus-failure run event. The overlay may then offer a fresh focus restart if the calendar block remains eligible.
+The 60-second grace starts only when the idle overlay reports that it was painted and visible. The overlay acknowledges one specific run, segment, and detection time within the current vault generation, and Rust records the first accepted acknowledgement using its own clock.
 
-Restart after failure creates a new active focus segment with the configured duration, capped by the event boundary. It does not reopen or extend the interrupted segment.
+- Duplicate or stale acknowledgements cannot extend the grace or acknowledge a newer warning.
+- A failed acknowledgement write is rejected and may be retried; slow or failed presentation leaves the pause recoverable, and the event end still applies.
+- Grace is measured with a monotonic clock, so civil clock corrections cannot shorten or extend it.
+- Recovery and vault resume discard visibility markers; a restarted owner must show and acknowledge its own warning.
 
-This 60-second delay is user-visible policy, not a persistence encoding. A future product change must update feature copy and focused tests.
+When the grace elapses, the focus segment is interrupted at the idle start with reason `focus_failed`. Returning afterward starts a new focus segment with the configured duration, capped by the event end. The failed segment is never reopened. The 60-second value is user-visible policy; changing it requires updating feature copy and tests.
 
-## Return before focus failure
+Rationale: counting from detection would let a slow or hidden overlay fail the user's focus before they ever saw a warning.
 
-When the user returns before failure, resuming closes the idle pause at the chosen return boundary and shifts the phase deadline by the effective pause duration. Focus progress continues from the remaining amount captured at idle start.
+## Return before failure
 
-Stopping instead closes the segment and run without counting the idle interval as focus. Repeated resume or stop commands are idempotent.
+Resuming closes the idle pause at the return time and shifts the phase deadline by the pause duration. Stopping closes the segment and run without counting the idle interval as focus. Repeated resume or stop commands are idempotent.
 
 ## Interaction with suspend
 
-A long frontend tick gap may mean the operating system suspended rather than the user merely stopped input. Suspend lifecycle handling takes precedence. Idle detection skips while suspend-away state exists and does not create a second pause over the same interval.
+A clock discontinuity means the system slept or the owner stalled, not that the user stopped typing. Suspend handling runs first and idle detection is skipped while suspended, so one away interval never produces two pauses. Startup recovery never queries current idle time to reclassify an offline interval as idle.
 
-On cold startup, recovery uses persisted heartbeat, pause, segment, event, and platform evidence. It does not call current idle duration and retroactively classify the entire offline interval as idle.
+## Unavailable sources
 
-See [Pomodoro state machine](state-machine.md) for recovery order.
-
-## Failure behavior
-
-Failure to query a platform source produces an explicit unavailable sample. The controller does not interpret that sample as recent activity and does not create or backdate an idle pause. It retries at the maximum polling interval. This preserves the distinction between known activity and missing platform evidence while remaining safe against false idle pauses.
-
-Diagnostic presentation is still pending. A future improvement may add bounded logging or a user-visible degraded-state indicator without changing the unavailable-sample contract.
-
-## Required tests
-
-Required coverage includes:
-
-- exact threshold and one millisecond below it;
-- disabled and invalid thresholds;
-- focus versus break, paused, suspended, and stopped states;
-- webcam suppression;
-- inferred start and segment-start clamping;
-- threshold-aware delay bounds;
-- repeated idle periods in one segment;
-- focus failure at exactly 60 seconds;
-- resume, stop, event expiry, and fresh restart;
-- suspend and cold-recovery precedence;
-- platform parser failures and bounded output;
-- unavailable source samples and retry scheduling.
+A failed platform query produces an explicit unavailable sample. The owner does not treat it as activity, does not create or backdate an idle pause, and exposes the unavailable state in the accepted snapshot. A user-visible degraded-state indicator is planned.

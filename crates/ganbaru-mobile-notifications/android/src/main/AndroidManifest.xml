@@ -33,6 +33,10 @@
 
     <application>
         <provider
+            android:name=".NativeFocusAuthorityProvider"
+            android:authorities="${applicationId}.ganbaru.focus.authority"
+            android:exported="false" />
+        <provider
             android:name=".PomodoroGuardianProvider"
             android:authorities="${applicationId}.ganbaru.guardian.notifications"
             android:exported="false"

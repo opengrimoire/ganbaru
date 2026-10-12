@@ -7,8 +7,9 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
     isPointerAimingAtSubmenu,
+    SUBMENU_AIM_TOLERANCES,
     type MenuAimPoint,
-  } from "$lib/projects/menu-aim";
+  } from "$lib/utils/menu-aim";
   import {
     projectPickerBridgeFrameStyle,
     projectPickerMenuAimRect,
@@ -17,13 +18,15 @@
     projectPickerSubpanelAimOrigin,
     projectPickerSubpanelGeometry,
     projectPickerSubpanelSide,
-  } from "$lib/projects/project-picker-panels";
-  import { PROJECT_NAVIGATOR_PANEL_WIDTH } from "$lib/projects/project-toolbar";
+  } from "$lib/projects/picker-panels";
+  import { PROJECT_NAVIGATOR_PANEL_WIDTH } from "$lib/projects/toolbar";
   import type { Project, ProjectGroup } from "$lib/projects/types";
   import { getProjects } from "$lib/stores/projects.svelte";
   import { portal } from "$lib/utils/portal";
   import CalendarScrollbar from "$lib/components/calendar/CalendarScrollbar.svelte";
-  import SettingsCheckbox from "../SettingsCheckbox.svelte";
+  import Checkbox from "$lib/components/ui/Checkbox.svelte";
+  import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
+  import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
 
   type CompactStage = "groups" | "projects" | "channels";
 
@@ -51,12 +54,12 @@
 
   const projects = getProjects();
   const { t } = getLocalization();
-  const panelGap = 4;
-  const panelWidth = PROJECT_NAVIGATOR_PANEL_WIDTH;
-  const panelRowHeight = 32;
-  const panelListPadding = 8;
-  const channelPanelChromeHeight = 42;
-  const viewportMargin = 8;
+  const PANEL_GAP = 4;
+  const PANEL_WIDTH = PROJECT_NAVIGATOR_PANEL_WIDTH;
+  const PANEL_FALLBACK_ROW_HEIGHT = 32;
+  const PANEL_FALLBACK_LIST_PADDING = 12;
+  const CHANNEL_PANEL_CHROME_HEIGHT = 42;
+  const VIEWPORT_MARGIN = 8;
 
   let query = $state("");
   let channelQuery = $state("");
@@ -133,10 +136,10 @@
 
   function viewportBounds() {
     return {
-      left: viewportMargin,
-      right: window.innerWidth - viewportMargin,
-      top: viewportMargin,
-      bottom: window.innerHeight - viewportMargin,
+      left: VIEWPORT_MARGIN,
+      right: window.innerWidth - VIEWPORT_MARGIN,
+      top: VIEWPORT_MARGIN,
+      bottom: window.innerHeight - VIEWPORT_MARGIN,
     };
   }
 
@@ -155,12 +158,23 @@
     return paddingTop + paddingBottom;
   }
 
+  /** Rendered height of one picker row, read from the main list so submenu sizing follows the shared row height. */
+  function rowHeight(): number {
+    const row = mainScrollContentElement?.querySelector<HTMLElement>(".menu-item");
+    return row?.offsetHeight || PANEL_FALLBACK_ROW_HEIGHT;
+  }
+
+  /** Combined top and bottom padding of a picker list, read from the rendered main list. */
+  function listPadding(): number {
+    return mainScrollElement ? verticalPadding(mainScrollElement) : PANEL_FALLBACK_LIST_PADDING;
+  }
+
   function updateMainPanelGeometry(): void {
     if (!mainPanelElement || !mainScrollElement || !mainScrollContentElement) return;
     const trigger = anchor.getBoundingClientRect();
     const bounds = viewportBounds();
     const usableWidth = Math.max(0, bounds.right - bounds.left);
-    const width = Math.min(compact ? 320 : panelWidth, usableWidth);
+    const width = Math.min(compact ? FLOATING_WIDTH.lg : PANEL_WIDTH, usableWidth);
     const maxHeight = Math.max(0, bounds.bottom - bounds.top);
     const naturalHeight = outerHeight(mainSearchElement)
       + outerHeight(compactBackElement)
@@ -168,10 +182,10 @@
       + verticalPadding(mainScrollElement);
     const height = Math.min(naturalHeight, maxHeight);
     const left = Math.min(Math.max(bounds.left, trigger.left), Math.max(bounds.left, bounds.right - width));
-    const belowTop = trigger.bottom + panelGap;
+    const belowTop = trigger.bottom + PANEL_GAP;
     const top = belowTop + height <= bounds.bottom
       ? belowTop
-      : Math.max(bounds.top, trigger.top - panelGap - height);
+      : Math.max(bounds.top, trigger.top - PANEL_GAP - height);
     mainPanelStyle = [
       "visibility:visible",
       `left:${Math.round(left)}px`,
@@ -195,10 +209,7 @@
       point,
       submenu: projectPickerMenuAimRect(panelRect),
       side: projectPickerSubpanelSide(rowRect, panelRect),
-      tolerance: 12,
-      topTolerance: 8,
-      bottomTolerance: 32,
-      minTowardDistance: 3,
+      ...SUBMENU_AIM_TOLERANCES,
     });
   }
 
@@ -208,12 +219,12 @@
       anchorRect: groupAnchorElement.getBoundingClientRect(),
       panelRect: mainPanelElement.getBoundingClientRect(),
       bounds: viewportBounds(),
-      gap: panelGap,
+      gap: PANEL_GAP,
       footerHeight: 0,
       projectCount: visibleProjects.length,
       visibleRows: null,
-      listPadding: panelListPadding,
-      rowHeight: panelRowHeight,
+      listPadding: listPadding(),
+      rowHeight: rowHeight(),
     });
     projectBridgeStyle = projectPickerBridgeFrameStyle(geometry.bridge);
     projectPanelStyle = projectPickerPanelFrameStyle(geometry.panel);
@@ -225,12 +236,12 @@
       anchorRect: projectAnchorElement.getBoundingClientRect(),
       panelRect: projectPanelElement.getBoundingClientRect(),
       bounds: viewportBounds(),
-      gap: panelGap,
-      footerHeight: channelPanelChromeHeight,
+      gap: PANEL_GAP,
+      footerHeight: CHANNEL_PANEL_CHROME_HEIGHT,
       projectCount: Math.max(1, filteredChannels.length),
       visibleRows: null,
-      listPadding: panelListPadding,
-      rowHeight: panelRowHeight,
+      listPadding: listPadding(),
+      rowHeight: rowHeight(),
     });
     channelBridgeStyle = projectPickerBridgeFrameStyle(geometry.bridge);
     channelPanelStyle = projectPickerPanelFrameStyle(geometry.panel);
@@ -380,15 +391,16 @@
 
   <div
     bind:this={mainPanelElement}
-    class="access-picker-panel main-panel"
+    class="access-picker-panel main-panel surface-floating"
     style={mainPanelStyle}
     role="dialog"
     aria-label={t("settings.chat.teammates.channelPickerLabel")}
     data-app-floating-surface
   >
-    <label bind:this={mainSearchElement} class="access-picker-search">
+    <label bind:this={mainSearchElement} class="access-picker-search field">
       <Search size={13} />
       <input
+        class="field-bare"
         bind:this={searchInputElement}
         bind:value={query}
         aria-label={t("settings.chat.teammates.searchChannels")}
@@ -408,12 +420,12 @@
     {/if}
 
     <div class="access-picker-scroll-frame">
-      <div bind:this={mainScrollElement} class="access-picker-list hide-scrollbar">
+      <div bind:this={mainScrollElement} class="access-picker-list surface-floating-body hide-scrollbar" use:scrollEdgeFadeAction>
         <div bind:this={mainScrollContentElement}>
           {#if normalizedQuery}
             {#each searchResults as result (result.channel.id)}
-              <div class="access-picker-row search-result-row">
-                <SettingsCheckbox
+              <div class="access-picker-row search-result-row menu-item">
+                <Checkbox
                   checked={selectedChannelIds.has(result.channel.id)}
                   label={t("settings.chat.teammates.channelAccessTitle", result.channel.name)}
                   {disabled}
@@ -431,15 +443,15 @@
             {#each visibleProjects as project (project.id)}
               {@const projectChannelIds = channelsForProject(project.id).map((channel) => channel.id)}
               {@const state = selectionState(projectChannelIds)}
-              <div class="access-picker-row">
-                <SettingsCheckbox checked={state === "all"} mixed={state === "some"} label={project.name} {disabled} onChange={() => toggleChannels(projectChannelIds)} />
+              <div class="access-picker-row menu-item">
+                <Checkbox checked={state === "all"} indeterminate={state === "some"} label={project.name} {disabled} onChange={() => toggleChannels(projectChannelIds)} />
                 <button type="button" class="access-picker-name" {disabled} onclick={(event) => openProject(project, event.currentTarget, true)}><span>{project.name}</span><ChevronRight size={13} /></button>
               </div>
             {/each}
           {:else if compact && compactStage === "channels"}
             {#each visibleChannels as channel (channel.id)}
-              <div class="access-picker-row">
-                <SettingsCheckbox checked={selectedChannelIds.has(channel.id)} label={t("settings.chat.teammates.channelAccessTitle", channel.name)} {disabled} onChange={() => toggleChannel(channel.id)} />
+              <div class="access-picker-row menu-item">
+                <Checkbox checked={selectedChannelIds.has(channel.id)} label={t("settings.chat.teammates.channelAccessTitle", channel.name)} {disabled} onChange={() => toggleChannel(channel.id)} />
                 <button type="button" class="access-picker-name" {disabled} onclick={() => toggleChannel(channel.id)}><span>{channel.name}</span></button>
               </div>
             {/each}
@@ -447,8 +459,8 @@
             {#each visibleGroups as group (group.id)}
               {@const groupChannelIds = channelsForGroup(group.id).map((channel) => channel.id)}
               {@const state = selectionState(groupChannelIds)}
-              <div class:active={activeGroupId === group.id} class="access-picker-row">
-                <SettingsCheckbox checked={state === "all"} mixed={state === "some"} label={group.name} {disabled} onChange={() => toggleChannels(groupChannelIds)} />
+              <div class="access-picker-row menu-item" data-highlighted={activeGroupId === group.id ? "" : undefined}>
+                <Checkbox checked={state === "all"} indeterminate={state === "some"} label={group.name} {disabled} onChange={() => toggleChannels(groupChannelIds)} />
                 <button
                   type="button"
                   class="access-picker-name"
@@ -471,14 +483,14 @@
 
   {#if !compact && !normalizedQuery && activeGroup && groupAnchorElement}
     <div aria-hidden="true" class="access-picker-bridge" style={projectBridgeStyle}></div>
-    <div bind:this={projectPanelElement} class="access-picker-panel subpanel" style={projectPanelStyle}>
+    <div bind:this={projectPanelElement} class="access-picker-panel subpanel surface-floating" style={projectPanelStyle}>
       <div class="access-picker-scroll-frame">
-        <div bind:this={projectScrollElement} class="access-picker-list hide-scrollbar">
+        <div bind:this={projectScrollElement} class="access-picker-list surface-floating-body hide-scrollbar" use:scrollEdgeFadeAction>
           {#each visibleProjects as project (project.id)}
             {@const projectChannelIds = channelsForProject(project.id).map((channel) => channel.id)}
             {@const state = selectionState(projectChannelIds)}
-            <div class:active={activeProjectId === project.id} class="access-picker-row">
-              <SettingsCheckbox checked={state === "all"} mixed={state === "some"} label={project.name} {disabled} onChange={() => toggleChannels(projectChannelIds)} />
+            <div class="access-picker-row menu-item" data-highlighted={activeProjectId === project.id ? "" : undefined}>
+              <Checkbox checked={state === "all"} indeterminate={state === "some"} label={project.name} {disabled} onChange={() => toggleChannels(projectChannelIds)} />
               <button
                 type="button"
                 class="access-picker-name"
@@ -498,20 +510,21 @@
 
   {#if !compact && !normalizedQuery && activeProject && projectAnchorElement && projectPanelElement}
     <div aria-hidden="true" class="access-picker-bridge" style={channelBridgeStyle}></div>
-    <div bind:this={channelPanelElement} class="access-picker-panel subpanel" style={channelPanelStyle}>
-      <label class="access-picker-search">
+    <div bind:this={channelPanelElement} class="access-picker-panel subpanel surface-floating" style={channelPanelStyle}>
+      <label class="access-picker-search field">
         <Search size={13} />
         <input
+          class="field-bare"
           bind:value={channelQuery}
           aria-label={t("chat.channels.search")}
           placeholder={t("chat.channels.search")}
         />
       </label>
       <div class="access-picker-scroll-frame">
-        <div bind:this={channelScrollElement} class="access-picker-list hide-scrollbar">
+        <div bind:this={channelScrollElement} class="access-picker-list surface-floating-body hide-scrollbar" use:scrollEdgeFadeAction>
           {#each filteredChannels as channel (channel.id)}
-            <div class="access-picker-row">
-              <SettingsCheckbox checked={selectedChannelIds.has(channel.id)} label={t("settings.chat.teammates.channelAccessTitle", channel.name)} {disabled} onChange={() => toggleChannel(channel.id)} />
+            <div class="access-picker-row menu-item">
+              <Checkbox checked={selectedChannelIds.has(channel.id)} label={t("settings.chat.teammates.channelAccessTitle", channel.name)} {disabled} onChange={() => toggleChannel(channel.id)} />
               <button type="button" class="access-picker-name" {disabled} onclick={() => toggleChannel(channel.id)}><span>{channel.name}</span></button>
             </div>
           {:else}
@@ -527,28 +540,25 @@
 <style>
   .access-picker-layer { position:fixed; z-index:84; inset:0; pointer-events:none; }
   .access-picker-dismiss { position:fixed; inset:0; pointer-events:auto; cursor:default; }
-  .access-picker-panel { position:fixed; z-index:2; display:flex; min-height:0; flex-direction:column; overflow:hidden; border:1px solid color-mix(in srgb,var(--border) 60%,transparent); border-radius:0.55rem; background:var(--popover); color:var(--popover-foreground); box-shadow:0 0.45rem 1.25rem color-mix(in srgb,var(--foreground) 14%,transparent); pointer-events:auto; }
+  .access-picker-panel { position:fixed; z-index:2; display:flex; min-height:0; flex-direction:column; overflow:hidden; pointer-events:auto; }
   .main-panel { height:auto; }
   .subpanel { z-index:4; }
   .access-picker-bridge { position:fixed; z-index:3; background:transparent; pointer-events:auto; }
-  .access-picker-search { display:flex; min-height:2rem; flex:0 0 auto; align-items:center; gap:0.45rem; margin:0.4rem 0.4rem 0.15rem; border:1px solid color-mix(in srgb,var(--border) 70%,transparent); border-radius:0.42rem; padding-inline:0.55rem; color:var(--muted-foreground); }
-  .access-picker-search input { min-width:0; flex:1; background:transparent; color:var(--popover-foreground); font-size:calc(0.733333rem * var(--type-scale)); outline:0; }
+  .access-picker-search { display:flex; min-height:2rem; flex:0 0 auto; align-items:center; gap:0.45rem; margin:var(--floating-padding) var(--floating-padding) 0; color:var(--muted-foreground); }
+  .access-picker-search input { color:var(--popover-foreground); }
   .access-picker-scroll-frame { position:relative; min-height:0; flex:1; }
-  .access-picker-list { height:100%; overflow-y:auto; overscroll-behavior:contain; padding:0.25rem; }
-  .access-picker-row { display:grid; min-height:2rem; grid-template-columns:auto minmax(0,1fr); align-items:center; gap:0.45rem; border-radius:0.4rem; padding:0 0.35rem; }
-  .access-picker-row:hover,.access-picker-row.active { background:var(--accent); color:var(--accent-foreground); }
-  .access-picker-name { display:flex; min-width:0; height:100%; align-items:center; justify-content:space-between; gap:0.5rem; overflow:hidden; color:inherit; text-align:left; }
+  .access-picker-list { height:100%; overflow-y:auto; overscroll-behavior:contain; }
+  .access-picker-name { display:flex; min-width:0; flex:1; height:100%; align-items:center; justify-content:space-between; gap:0.5rem; overflow:hidden; color:inherit; text-align:left; }
   .access-picker-name > span,.access-picker-name strong,.access-picker-name small { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .access-picker-name > span { flex:1; font-size:calc(0.733333rem * var(--type-scale)); font-weight:500; }
+  .access-picker-name > span { flex:1; font-weight:500; }
   .access-picker-name :global(svg) { flex:0 0 auto; color:var(--muted-foreground); }
   .search-result-row { min-height:2.55rem; }
   .access-picker-name.search-result { display:grid; justify-content:stretch; align-content:center; }
-  .access-picker-name strong { font-size:calc(0.733333rem * var(--type-scale)); font-weight:550; }
-  .access-picker-name small { color:var(--muted-foreground); font-size:calc(0.616667rem * var(--type-scale)); }
-  .access-picker-empty { padding:0.65rem 0.75rem; color:var(--muted-foreground); font-size:calc(0.7rem * var(--type-scale)); }
-  .compact-back { display:flex; min-height:2rem; flex:0 0 auto; align-items:center; gap:0.45rem; margin:0.1rem 0.4rem 0; border-bottom:1px solid color-mix(in srgb,var(--border) 60%,transparent); padding:0 0.25rem; color:var(--muted-foreground); font-size:calc(0.7rem * var(--type-scale)); font-weight:600; }
+  .access-picker-name strong { font-weight:550; }
+  .access-picker-name small { color:var(--muted-foreground); font-size:var(--panel-detail-font-size); }
+  .access-picker-empty { padding:0.65rem 0.75rem; color:var(--muted-foreground); font-size:var(--panel-detail-font-size); }
+  .compact-back { display:flex; min-height:2rem; flex:0 0 auto; align-items:center; gap:0.45rem; margin:0.1rem 0.4rem 0; border-bottom:1px solid color-mix(in srgb,var(--border) 60%,transparent); padding:0 0.25rem; color:var(--muted-foreground); font-size:var(--panel-detail-font-size); font-weight:600; }
   @media (pointer:coarse) {
-    .access-picker-row,.compact-back { min-height:2.75rem; }
-    .access-picker-row :global(button[role="checkbox"]) { width:1.4rem; height:1.4rem; }
+    .compact-back { min-height:2.75rem; }
   }
 </style>

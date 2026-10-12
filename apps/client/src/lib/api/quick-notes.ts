@@ -1,19 +1,27 @@
 import { invoke } from "@tauri-apps/api/core";
 import { ensureDbUrl } from "$lib/api/db";
-import { normalizeEventColor } from "$lib/components/calendar/utils";
+import { normalizeEventColor } from "$lib/calendar/utils";
+import { mapSyncDeviceRef } from "$lib/api/sync";
 import type {
   QuickNote,
+  QuickNoteConflict,
+  QuickNoteConflictField,
+  QuickNoteConflictGroup,
+  QuickNoteConflictResolution,
+  QuickNoteConflictResolved,
+  QuickNoteConflictVersion,
   QuickNoteCreate,
   QuickNoteRevisionRequest,
   QuickNoteReorderRequest,
   QuickNotesCollection,
+  QuickNotesTrashPurge,
   QuickNotesWindow,
   QuickNoteTextRun,
   QuickNoteTag,
   QuickNoteUpdate,
 } from "$lib/quick-notes/types";
 import {
-  QUICK_NOTE_TAG_LIMIT,
+  QUICK_NOTE_ORDER_KEY_MAX_CHARS,
   QUICK_NOTE_TAG_NAME_MAX_CHARS,
 } from "$lib/quick-notes/types";
 
@@ -74,6 +82,7 @@ export function mapQuickNote(value: unknown): QuickNote {
     revision: integer(row.revision, "quick note.revision"),
     createdAt: string(row.createdAt, "quick note.createdAt"),
     updatedAt: string(row.updatedAt, "quick note.updatedAt"),
+    hasConflict: boolean(row.hasConflict, "quick note.hasConflict"),
   };
 }
 
@@ -116,7 +125,7 @@ async function invokeNote(command: string, args: Record<string, unknown>): Promi
 }
 
 export function getQuickNote(id: string): Promise<QuickNote> {
-  return invokeNote("quick_notes_get", { id });
+  return invokeNote("quick_notes_load", { id });
 }
 
 export function createQuickNote(note: QuickNoteCreate): Promise<QuickNote> {
@@ -159,40 +168,171 @@ export async function emptyQuickNotesTrash(): Promise<number> {
   return invoke<number>("quick_notes_empty_trash", { dbUrl: await ensureDbUrl() });
 }
 
+const ORDER_KEY_PATTERN = /^[0-9A-Za-z]+$/u;
+
 export function mapQuickNoteTag(value: unknown): QuickNoteTag {
   const row = record(value, "quick note tag");
   const id = string(row.id, "quick note tag.id");
   const name = string(row.name, "quick note tag.name");
-  const sortOrder = integer(row.sortOrder, "quick note tag.sortOrder");
+  const orderKey = string(row.orderKey, "quick note tag.orderKey");
   if (id.length === 0 || id.length > 128) throw new Error("quick note tag.id is invalid");
   if (name !== name.trim() || name.length === 0 || [...name].length > QUICK_NOTE_TAG_NAME_MAX_CHARS) {
     throw new Error("quick note tag.name is invalid");
   }
-  if (sortOrder < 0 || sortOrder >= QUICK_NOTE_TAG_LIMIT) {
-    throw new Error("quick note tag.sortOrder is invalid");
+  if (!ORDER_KEY_PATTERN.test(orderKey) || orderKey.length > QUICK_NOTE_ORDER_KEY_MAX_CHARS) {
+    throw new Error("quick note tag.orderKey is invalid");
   }
   return {
     id,
     name,
-    sortOrder,
+    orderKey,
     createdAt: string(row.createdAt, "quick note tag.createdAt"),
     updatedAt: string(row.updatedAt, "quick note tag.updatedAt"),
   };
 }
 
+const QUICK_NOTE_TAG_ERROR_CODES = ["duplicate_name", "limit_reached", "not_found", "failed"] as const;
+
+export type QuickNoteTagErrorCode = (typeof QUICK_NOTE_TAG_ERROR_CODES)[number];
+
+/** A native tag write failure with a stable code for user-facing messages. */
+export class QuickNoteTagError extends Error {
+  constructor(readonly code: QuickNoteTagErrorCode, message: string) {
+    super(message);
+    this.name = "QuickNoteTagError";
+  }
+}
+
+function isQuickNoteTagErrorCode(value: unknown): value is QuickNoteTagErrorCode {
+  return QUICK_NOTE_TAG_ERROR_CODES.some((code) => code === value);
+}
+
+async function invokeTagWrite(command: string, args: Record<string, unknown>): Promise<unknown> {
+  try {
+    return await invoke<unknown>(command, { dbUrl: await ensureDbUrl(), ...args });
+  } catch (error: unknown) {
+    if (typeof error === "object" && error !== null && "code" in error && "message" in error
+      && isQuickNoteTagErrorCode(error.code) && typeof error.message === "string") {
+      throw new QuickNoteTagError(error.code, error.message);
+    }
+    throw error;
+  }
+}
+
 export async function listQuickNoteTags(): Promise<QuickNoteTag[]> {
-  const value = await invoke<unknown>("quick_note_tags_list", { dbUrl: await ensureDbUrl() });
+  const value = await invoke<unknown>("quick_notes_list_tags", { dbUrl: await ensureDbUrl() });
   if (!Array.isArray(value)) throw new Error("quick note tags must be an array");
   return value.map(mapQuickNoteTag);
 }
 
 export async function createQuickNoteTag(id: string, name: string): Promise<QuickNoteTag> {
-  return mapQuickNoteTag(await invoke<unknown>("quick_note_tags_create", {
+  return mapQuickNoteTag(await invokeTagWrite("quick_notes_create_tag", { tag: { id, name } }));
+}
+
+export async function renameQuickNoteTag(id: string, name: string): Promise<QuickNoteTag> {
+  return mapQuickNoteTag(await invokeTagWrite("quick_notes_rename_tag", { tag: { id, name } }));
+}
+
+/** Deletes a tag and untags its notes; deleting a tag that no longer exists succeeds. */
+export async function deleteQuickNoteTag(id: string): Promise<void> {
+  await invokeTagWrite("quick_notes_delete_tag", { id });
+}
+
+export function mapQuickNotesTrashPurge(value: unknown): QuickNotesTrashPurge {
+  const row = record(value, "quick notes trash purge");
+  const purged = integer(row.purged, "quick notes trash purge.purged");
+  if (purged < 0) throw new Error("quick notes trash purge.purged is invalid");
+  return {
+    purged,
+    nextPurgeAt: nullableString(row.nextPurgeAt, "quick notes trash purge.nextPurgeAt"),
+  };
+}
+
+/** Deletes trash past its retention when this device may write the vault. */
+export async function purgeExpiredQuickNotesTrash(): Promise<QuickNotesTrashPurge> {
+  return mapQuickNotesTrashPurge(await invoke<unknown>("quick_notes_purge_expired_trash", {
     dbUrl: await ensureDbUrl(),
-    tag: { id, name },
   }));
 }
 
-export async function deleteQuickNoteTag(id: string): Promise<void> {
-  await invoke("quick_note_tags_delete", { dbUrl: await ensureDbUrl(), id });
+/** A conflict read or resolution failure; `resolved` means the conflict or version is gone. */
+export class QuickNoteConflictError extends Error {
+  constructor(readonly code: "resolved" | "failed", message: string) {
+    super(message);
+    this.name = "QuickNoteConflictError";
+  }
+}
+
+async function invokeConflict(command: string, args: Record<string, unknown>): Promise<unknown> {
+  try {
+    return await invoke<unknown>(command, { dbUrl: await ensureDbUrl(), ...args });
+  } catch (error: unknown) {
+    if (typeof error === "object" && error !== null && "code" in error && "message" in error
+      && (error.code === "resolved" || error.code === "failed") && typeof error.message === "string") {
+      throw new QuickNoteConflictError(error.code, error.message);
+    }
+    throw error;
+  }
+}
+
+function conflictField(value: unknown, label: string): QuickNoteConflictField {
+  if (value !== "title" && value !== "body") throw new Error(`${label} is invalid`);
+  return value;
+}
+
+function mapConflictVersion(value: unknown, label: string, field: QuickNoteConflictField): QuickNoteConflictVersion {
+  const row = record(value, label);
+  const editedAtMs = integer(row.editedAtMs, `${label}.editedAtMs`);
+  if (editedAtMs < 0) throw new Error(`${label}.editedAtMs is invalid`);
+  const title = nullableString(row.title, `${label}.title`);
+  let runs: QuickNoteTextRun[] | null = null;
+  if (row.runs !== null) {
+    if (!Array.isArray(row.runs)) throw new Error(`${label}.runs must be an array`);
+    runs = row.runs.map((run, index) => mapRun(run, `${label}.runs[${index}]`));
+  }
+  if ((field === "title") !== (title !== null) || (field === "body") !== (runs !== null)) {
+    throw new Error(`${label} does not match its field`);
+  }
+  return {
+    version: string(row.version, `${label}.version`),
+    device: mapSyncDeviceRef(row.device, `${label}.device`),
+    editedAtMs,
+    displayed: boolean(row.displayed, `${label}.displayed`),
+    title,
+    runs,
+  };
+}
+
+/** Validates the conflicts of a note from the native side. */
+export function mapQuickNoteConflict(value: unknown): QuickNoteConflict {
+  const row = record(value, "quick note conflict");
+  if (!Array.isArray(row.groups)) throw new Error("quick note conflict.groups must be an array");
+  const groups: QuickNoteConflictGroup[] = row.groups.map((entry, index) => {
+    const label = `quick note conflict.groups[${index}]`;
+    const group = record(entry, label);
+    const field = conflictField(group.field, `${label}.field`);
+    if (!Array.isArray(group.versions)) throw new Error(`${label}.versions must be an array`);
+    return {
+      field,
+      versions: group.versions.map((version, position) =>
+        mapConflictVersion(version, `${label}.versions[${position}]`, field)),
+    };
+  });
+  return { id: string(row.id, "quick note conflict.id"), groups };
+}
+
+/** Reads the concurrent versions of a note's conflicted fields. */
+export async function getQuickNoteConflict(id: string): Promise<QuickNoteConflict> {
+  return mapQuickNoteConflict(await invokeConflict("quick_notes_conflict", { id }));
+}
+
+/** Resolves one conflicted field on every linked device. */
+export async function resolveQuickNoteConflict(
+  resolution: QuickNoteConflictResolution,
+): Promise<QuickNoteConflictResolved> {
+  const row = record(await invokeConflict("quick_notes_resolve_conflict", { resolution }), "quick note resolution");
+  return {
+    note: mapQuickNote(row.note),
+    copy: row.copy === null ? null : mapQuickNote(row.copy),
+  };
 }

@@ -1,12 +1,12 @@
 //! Shared infrastructure for thin Chat command facades.
 
-use super::models::{ChatError, ChatErrorCode, ChatResult, UtcTimestamp};
-use crate::db_path;
+use crate::db;
 use chrono::{SecondsFormat, Utc};
+use ganbaru_chat_contracts::models::{ChatError, ChatErrorCode, ChatResult, UtcTimestamp};
 use sqlx::SqlitePool;
 
 pub(crate) async fn chat_pool(app: tauri::AppHandle, db_url: String) -> ChatResult<SqlitePool> {
-    db_path::connect_sqlite(app, db_url)
+    db::connect_sqlite(app, db_url)
         .await
         .map_err(|_| ChatError::new(ChatErrorCode::Persistence, "open Chat database", true))
 }

@@ -3,7 +3,7 @@
   import StickyNote from "@lucide/svelte/icons/sticky-note";
   import PomodoroMenuContent from "$lib/components/pomodoro/PomodoroMenuContent.svelte";
   import PomodoroProgressRing from "$lib/components/pomodoro/PomodoroProgressRing.svelte";
-  import LinkedDeviceControl from "$lib/components/vault/LinkedDeviceControl.svelte";
+  import LinkedDeviceControl from "$lib/components/vault/handoff/LinkedDeviceControl.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getMusicPlayer } from "$lib/stores/music-player.svelte";
   import { getPomodoro } from "$lib/stores/pomodoro.svelte";
@@ -120,7 +120,7 @@
             onwheel={handleVolumeWheel}
           ></div>
           <div
-            class="absolute right-0 top-9 z-50 w-60 max-w-[calc(100vw-1rem)] rounded-lg border border-border bg-popover py-1 shadow-lg"
+            class="surface-floating surface-floating-body absolute right-0 top-9 z-50 w-floating-sm"
             onwheel={handleVolumeWheel}
           >
             <PomodoroMenuContent

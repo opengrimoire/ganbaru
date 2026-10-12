@@ -1,21 +1,20 @@
 <script lang="ts">
-  import AlertCircle from "@lucide/svelte/icons/alert-circle";
   import Disc3 from "@lucide/svelte/icons/disc-3";
-  import RotateCcw from "@lucide/svelte/icons/rotate-ccw";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
 
   let {
     kind,
     title = "",
     description = "",
-    onRetry = () => undefined,
+    onRetry,
     actionLabel = null,
     onAction = () => undefined,
   }: {
     kind: "loading" | "error" | "empty";
     title?: string;
     description?: string;
-    onRetry?: () => void;
+    onRetry?: () => unknown;
     actionLabel?: string | null;
     onAction?: () => void;
   } = $props();
@@ -36,24 +35,17 @@
       {/each}
     </div>
   </div>
+{:else if kind === "error"}
+  <Notice layout="fill" class="text-sm" message={description ? `${title} ${description}` : title} retryLabel={t("music.builder.retryLoad")} {onRetry} />
 {:else}
   <div class="grid h-full min-h-40 place-items-center p-5 text-center">
     <div class="max-w-sm">
       <div class="mx-auto mb-3 grid h-11 w-11 place-items-center rounded-2xl bg-secondary/75 text-muted-foreground">
-        {#if kind === "error"}
-          <AlertCircle size={20} strokeWidth={1.5} />
-        {:else}
-          <Disc3 size={21} strokeWidth={1.45} />
-        {/if}
+        <Disc3 size={21} strokeWidth={1.45} />
       </div>
       <h2 class="text-sm font-semibold text-foreground">{title}</h2>
       {#if description}<p class="mt-1.5 text-xs leading-relaxed text-muted-foreground">{description}</p>{/if}
-      {#if kind === "error"}
-        <button type="button" onclick={onRetry} class="mt-4 inline-flex h-8 items-center gap-1.5 rounded-lg bg-secondary px-3 text-xs font-medium text-secondary-foreground hover:bg-accent hover:text-accent-foreground">
-          <RotateCcw size={13} strokeWidth={1.7} />
-          {t("music.builder.retryLoad")}
-        </button>
-      {:else if actionLabel}
+      {#if actionLabel}
         <button type="button" onclick={onAction} class="mt-4 inline-flex h-8 items-center rounded-lg bg-primary px-3 text-xs font-semibold text-primary-foreground hover:bg-primary/90">
           {actionLabel}
         </button>

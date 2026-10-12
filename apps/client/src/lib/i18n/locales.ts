@@ -18,7 +18,6 @@ export interface LocaleMetadata {
   readonly nativeLabel: string;
   readonly direction: LocaleDirection;
 }
-
 export const LOCALE_METADATA: Readonly<Record<AppLocale, LocaleMetadata>> =
   Object.freeze({
     en: Object.freeze({
@@ -98,12 +97,4 @@ export function resolveLanguagePreference(
 
 export function localeDirection(locale: AppLocale): LocaleDirection {
   return LOCALE_METADATA[locale].direction;
-}
-
-export function localeLabel(locale: AppLocale): string {
-  return LOCALE_METADATA[locale].label;
-}
-
-export function localeNativeLabel(locale: AppLocale): string {
-  return LOCALE_METADATA[locale].nativeLabel;
 }

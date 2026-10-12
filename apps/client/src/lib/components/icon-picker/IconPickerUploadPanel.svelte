@@ -1,9 +1,10 @@
 <script lang="ts">
+  import type { MaybePromise } from "$lib/utils";
   import ImageIcon from "@lucide/svelte/icons/image";
-  import type { IconPickerAsset } from "$lib/components/icon-picker/types";
+  import Notice from "$lib/components/ui/Notice.svelte";
+  import type { IconPickerAsset } from "./types";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-
-  type ActionResult = void | Promise<void>;
+  import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
 
   let {
     uploadDraft,
@@ -24,17 +25,17 @@
     uploading: boolean;
     uploadBodyStyle: string;
     uploadUrl: string;
-    onChooseFile: () => ActionResult;
-    onDiscardDraft: () => ActionResult;
-    onSelectDraft: () => ActionResult;
-    onDownloadUrl: () => ActionResult;
+    onChooseFile: () => MaybePromise;
+    onDiscardDraft: () => MaybePromise;
+    onSelectDraft: () => MaybePromise;
+    onDownloadUrl: () => MaybePromise;
     remoteUrlAvailable?: boolean;
   } = $props();
 
   const { t } = getLocalization();
 </script>
 
-<div class="min-h-0 space-y-3 overflow-y-auto p-3" style={uploadBodyStyle}>
+<div use:scrollEdgeFadeAction class="min-h-0 space-y-3 overflow-y-auto p-3" style={uploadBodyStyle}>
   {#if uploadDraft}
     <div class="grid gap-3">
       <div class="flex h-36 items-center justify-center rounded-lg bg-muted/45">
@@ -51,14 +52,14 @@
       <div class="flex items-center justify-between gap-2">
         <button
           type="button"
-          class="h-8 rounded-md px-2 text-[0.866667rem] text-muted-foreground hover:bg-accent hover:text-foreground"
+          class="h-8 rounded-floating-item px-2 text-muted-foreground hover:bg-accent hover:text-foreground"
           onclick={() => { void onDiscardDraft(); }}
         >
           {t("common.cancel")}
         </button>
         <button
           type="button"
-          class="h-8 rounded-md bg-primary px-3 text-[0.866667rem] font-medium text-primary-foreground"
+          class="h-8 rounded-floating-item bg-primary px-3 font-medium text-primary-foreground"
           onclick={() => { void onSelectDraft(); }}
         >
           {t("common.save")}
@@ -68,24 +69,24 @@
   {:else}
     <button
       type="button"
-      class="flex min-h-16 w-full items-center justify-center gap-2 rounded-md bg-muted/50 text-[0.866667rem] text-muted-foreground hover:bg-accent hover:text-foreground"
+      class="flex min-h-16 w-full items-center justify-center gap-2 rounded-floating-item bg-muted/50 text-muted-foreground hover:bg-accent hover:text-foreground"
       disabled={uploading}
       onclick={() => { void onChooseFile(); }}
     >
       <ImageIcon size={17} strokeWidth={1.75} />
       {t("projects.iconPicker.uploadImage")}
     </button>
-    <div class="text-center text-[0.733333rem] text-muted-foreground">{t("projects.iconPicker.pasteHint")}</div>
+    <div class="text-center text-panel-detail text-muted-foreground">{t("projects.iconPicker.pasteHint")}</div>
     {#if remoteUrlAvailable}
       <div class="flex gap-2">
         <input
           bind:value={uploadUrl}
-          class="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-[0.8rem] outline-none placeholder:text-muted-foreground focus:border-ring"
+          class="field h-8 min-w-0 flex-1 py-0"
           placeholder={t("projects.iconPicker.imageUrl")}
         />
         <button
           type="button"
-          class="h-8 rounded-md bg-primary px-2 text-[0.8rem] font-medium text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
+          class="h-8 rounded-floating-item bg-primary px-2 font-medium text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
           disabled={uploading || !uploadUrl.trim()}
           onclick={() => { void onDownloadUrl(); }}
         >
@@ -95,6 +96,6 @@
     {/if}
   {/if}
   {#if uploadError}
-    <div class="rounded-md bg-destructive/10 px-2 py-1 text-[0.8rem] text-destructive">{uploadError}</div>
+    <Notice class="text-panel-detail" message={uploadError} />
   {/if}
 </div>

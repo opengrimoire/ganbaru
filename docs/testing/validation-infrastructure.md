@@ -10,15 +10,15 @@ Run commands through rustup without a conflicting toolchain override. CI install
 
 Toolchain or edition changes require `validate:full` and the platform checks. Compatibility diagnostics must be reviewed for temporary lifetimes, lock and resource cleanup, and native unsafe boundaries rather than fixed mechanically to suppress warnings.
 
-The shared Clippy policy allows `collapsible_if`: nested guards and edition-2024 let-chains are both valid styles. Choose the form that makes control flow and resource scope clearest. This avoids a mandatory rewrite of existing guards merely because the edition now permits let-chains. Other compiler and Clippy warnings remain errors in the normal gate; dependency audit policy is unchanged.
+The shared Clippy policy allows `collapsible_if`: nested guards and edition-2024 let-chains are both valid styles, so choose the form that makes control flow and resource scope clearest. Other compiler and Clippy warnings remain errors in the normal gate.
 
 ## Root execution order
 
 The complete normal gate runs in this order:
 
 1. Rust formatting and Clippy with one Cargo build job locally, or two in Linux CI.
-2. Rust workspace tests with the same Cargo build limit and one runtime test thread.
-3. Svelte Check with a 1,792 MiB Node old-space limit, then TypeScript checking.
+2. Rust workspace tests with the same Cargo build limit and two runtime test threads. Running tests peaks far below compilation (under 500 MB), and a second thread cuts the stage by about a quarter; more Cargo build jobs make local builds slower because large crates compete for memory.
+3. Provider protocol snapshot checks, Svelte Check with a 2,048 MiB Node old-space limit, then TypeScript checking.
 4. Four sequential one-worker Vitest shards, excluding benchmark-harness tests.
 5. Tailwind diagnostics through Turbo.
 6. Desktop and Android production builds and bundle contracts through Turbo.
@@ -31,17 +31,19 @@ Benchmark fixture and harness contracts are deliberately outside `validate`. Run
 
 ## Resource policy
 
-The 1,792 MiB Svelte Check heap is the lowest measured stable limit for the current full graph. Treat exhaustion as a controlled failure. Investigate graph growth and checker topology before raising it.
+The 2,048 MiB Svelte Check heap leaves headroom over the measured full-graph peak of about 1,750 MiB after Quick notes sync (whole-process resident peak about 2.35 GiB). Treat exhaustion as a controlled failure. Investigate graph growth and checker topology before raising it.
 
-Cargo development and test profiles retain line-level debugging with reduced debug detail. One-job development builds prevent competing compiler or linker peaks. Restore full native debug information only for a concrete debugging session:
+Cargo development builds keep only line tables as debug information, and the test profile inherits that setting so tests and development builds reuse the same dependency artifacts. One-job development builds prevent competing compiler or linker peaks, but they cannot bound a single crate: a cold rebuild of the Tauri app crate's test target peaks at about 4.4 GB in one compiler process, and an incremental rebuild at about 3 GB. Keep Tauri-free logic in workspace crates so that peak does not keep growing. Restore full native debug information only for a concrete debugging session:
 
 ```sh
 CARGO_PROFILE_DEV_DEBUG=full CARGO_BUILD_JOBS=1 pnpm --dir apps/client tauri dev
 ```
 
-The repository-owned Tauri wrapper sets one Cargo build job for development commands when the caller has not supplied one. On Wayland it removes an inherited exact `GDK_BACKEND=x11` override unless `GANBARU_AI_DEV_PRESERVE_GDK_BACKEND=1` is set. Android commands select JDK 21, with `GANBARU_AI_ANDROID_JAVA_HOME` as the explicit override.
+The repository-owned Tauri wrapper sets one Cargo build job for development commands when the caller has not supplied one. On Wayland it removes an inherited exact `GDK_BACKEND=x11` override unless `GANBARU_AI_DEV_PRESERVE_GDK_BACKEND=1` is set. Android commands select JDK 21, with `GANBARU_AI_ANDROID_JAVA_HOME` as the explicit override. The Android Gradle daemon stops after ten idle minutes so its heap does not stay resident during later gates.
 
-Persistent swap is a system safety margin, not a replacement for bounded jobs. Do not clear Cargo or Turbo caches as a routine memory fix.
+Persistent swap is a system safety margin, not a replacement for bounded jobs. Do not clear Cargo or Turbo caches as a routine memory fix. On Linux desktops where `systemd-oomd` kills by memory pressure, it kills a whole cgroup, usually the terminal that started the gate. Running a broad gate in its own scope, for example `systemd-run --user --scope pnpm -w run validate`, limits such a kill to the gate.
+
+Cargo never removes stale artifacts. Version bumps, lockfile and toolchain updates, per-package feature sets, and each Android ABI leave separate copies, so `target/` grows by tens of gigabytes per month of active work. Run `pnpm -w run clean:rust` when it grows large (with no dev run or gate active); the next build is a cold rebuild.
 
 ## Cache behavior
 
@@ -59,16 +61,16 @@ Desktop contracts inspect the transitive static imports of the entry, vault setu
 
 Desktop and Android builds use different platform entries. The Android wrapper sets the platform before Vite configuration loads and writes to the isolated `.bundle-contracts/android/` directory. Contracts verify required roots and platform adapters, follow static imports transitively, enforce source-module ceilings, and reject desktop-only authority from the mobile artifact.
 
-The Android artifact intentionally includes mobile Doomscrolling, notification, document, and media adapters. It rejects desktop Doomscrolling process control, the desktop App shell, PTYs, Git and provider execution, Rodio, desktop media controls, tray and title bar code, benchmark surfaces, desktop working-folder tools, and heavy editor graphs that are not part of the mobile route.
+The Android artifact intentionally includes mobile anti-distraction, notification, document, and media adapters. It rejects desktop anti-distraction process control, the desktop App shell, PTYs, Git and provider execution, Rodio, desktop media controls, tray and title bar code, benchmark surfaces, desktop working-folder tools, and heavy editor graphs that are not part of the mobile route.
 
 The machine-readable ceilings and required or forbidden module sets are authoritative in:
 
-- `apps/client/scripts/first-use-bundle-baseline.json`
-- `apps/client/scripts/android-bundle-baseline.json`
+- `apps/client/scripts/bundle-contracts/baselines/first-use.json`
+- `apps/client/scripts/bundle-contracts/baselines/android.json`
 
-The current Projects, Notes, and Chat desktop route ceiling is 365 source modules. Their shared chunk includes the persistent music player, whose new playback-order control, track-preferences panel, and two focused helpers account for the four-module increase. Keeping the music player resident preserves playback controls across route changes. The ceiling has no extra headroom, and required and forbidden loading boundaries remain unchanged. Changes to a ceiling require a concrete user-visible rationale and should remove obsolete narrative rather than accumulating a chronology in documentation.
+Both checks fail before inspecting the build when a baseline names an application source path that no longer exists, so renaming or deleting a module cannot silently disable a rule. Dependency package entries are not checked on disk because forbidden packages may be intentionally absent.
 
-Android ceilings include the three theme modules and three Notes block modules behind their existing public APIs. These splits preserve theme editing, import/export, and the supported Notes block operations while separating their maintenance boundaries. The Music route allows 169 source modules for the playlist chooser, playback-order control, track preferences, and the shared project icon renderer used by editable soundscape icons. The Android build allows 1,025 source modules overall, including the first-run welcome screen, its information dialog, and shared acknowledgments content. Route and total limits match the measured graph without extra headroom. These first-run modules are required, and forbidden platform imports remain enforced.
+Ceilings are set to the measured import graph without extra headroom, so an unexpected eager import fails the contract. Raising a ceiling requires a concrete user-visible rationale. Record the reason in the change, not as a chronology in this document. Uncommon panels and heavy layouts, such as Notes database layouts, link editing, and deletion confirmation, stay behind lazy boundaries so initial routes remain small.
 
 ## Android project and pull request build
 
@@ -86,7 +88,7 @@ The root bundle contract builds desktop first, then Android through Turbo.
 
 ## Provider protocol snapshots
 
-Routine checks validate committed provider compatibility artifacts without requiring globally installed tools. A recorded CLI version is provenance for a snapshot, not a developer installation requirement.
+Routine checks validate the committed Codex app-server schema and OpenCode OpenAPI contract without requiring globally installed tools. A recorded CLI version is provenance for a snapshot, not a developer installation requirement.
 
 Provider maintenance can compare an installed Codex app-server schema with the committed snapshot:
 
@@ -94,7 +96,7 @@ Provider maintenance can compare an installed Codex app-server schema with the c
 pnpm --dir apps/client run check:codex-protocol-installed
 ```
 
-Use `generate:codex-protocol` only after reviewed protocol change.
+The scripts under `apps/client/scripts/provider-protocols/` check by default and regenerate only with `--write`; the OpenCode script also needs `--source <path-or-url>` to compare or regenerate. Use `generate:codex-protocol` or `generate:opencode-protocol` only after a reviewed protocol change.
 
 ## Changing validation topology
 

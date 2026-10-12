@@ -2,7 +2,7 @@
   import { onDestroy, onMount } from "svelte";
   import { getMusicPlayer } from "$lib/stores/music-player.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { coverPlaybackHostRect } from "$lib/music/playback-host-layout";
+  import { coverPlaybackHostRect } from "$lib/music/session/playback-host-layout";
 
   const player = getMusicPlayer();
   const { t } = getLocalization();

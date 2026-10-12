@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Calendar, CalendarEvent } from "$lib/components/calendar/types";
+import type { Calendar, CalendarEvent } from "$lib/calendar/types";
 import { parseIcs } from "./parser";
 import { serializeCalendarToIcs } from "./serializer";
 import googleSample from "../../../../test-fixtures/ics/google-calendar-sample.ics?raw";

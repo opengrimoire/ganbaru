@@ -2,6 +2,10 @@ import type { music as enMusic } from "../en/music";
 import type { MessageShape } from "../types";
 
 export const music = {
+  nativeSession: {
+    browserUnavailable: "La reproducción está pausada porque esta fuente necesita el reproductor visible. Abre la aplicación y pulsa Reproducir para continuar.",
+    interrupted: "La reproducción se interrumpió. Pulsa Reproducir para continuar desde la posición guardada.",
+  },
   title: "Música",
   removeSnooze: "Dejar de posponer",
   playlistBuilder: "Editor de playlists",

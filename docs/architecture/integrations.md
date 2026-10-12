@@ -6,7 +6,7 @@ Ganbaru AI integrates with local tools and operating-system services while remai
 
 Desktop Chat supports Rust-owned native transports for Codex, Claude Code, Cursor, Grok, and OpenCode. Ganbaru preserves provider-native interaction concepts while normalizing durable events and organizational history.
 
-Provider sessions do not own channels, teammate identity, project commitments, or access policy. Each organizational run resolves one execution target and one immutable authorization revision before dispatch. Provider-specific safety is enforced only where the adapter can verify it.
+Provider sessions do not own channels, agent identity, project commitments, or access policy. Each organizational run resolves one execution target and one immutable authorization revision before dispatch. Provider-specific safety is enforced only where the adapter can verify it.
 
 See [AI integration](../features/ai/README.md), [Chat](../features/chat/README.md), and [Chat access control](../data/access-control.md).
 
@@ -20,7 +20,7 @@ A separately authorized MCP service for external clients is planned. It must not
 
 The Chromium Manifest V3 extension communicates with a separate local native messaging host. It receives bounded blocker state, reports redacted events, and opens an extension-owned block page. The extension does not turn the browser into a general data bridge.
 
-Firefox support is planned behind the same product-level rule semantics. See [Doomscrolling](../features/doomscrolling/README.md).
+Firefox support is planned behind the same product-level rule semantics. See [Distraction blocker](../features/distractions/README.md).
 
 ## Media
 
@@ -44,9 +44,11 @@ Normal productivity features work without network access. Network use is feature
 
 Loopback servers use random bearer tokens, bounded requests, narrow registries, and process-lifetime scope. A loopback address is not sufficient authentication by itself.
 
-## Planned sync and collaboration
+## Device linking, sync, and collaboration
 
-Typed domain operations, Yrs/Yjs collaborative text, secure local device linking, and an optional user-hosted Rust relay for encrypted records are planned. Multi-person collaboration follows personal device sync. They are not current runtime dependencies. The future transport must preserve local canonical storage and enforce resource visibility for derived data as well as direct reads.
+Private-LAN device linking with single-writer whole-vault handoff is implemented between one person's desktop and Android devices. It uses pinned, paired transport and moves one validated complete vault; it is not concurrent sync.
+
+Typed domain operations, Yrs/Yjs collaborative text, and an optional user-hosted Rust relay for encrypted records are planned, followed by multi-person collaboration. They are not current runtime dependencies. The future transport must preserve local canonical storage and enforce resource visibility for derived data as well as direct reads.
 
 See [Sync and collaboration](../data/sync.md).
 

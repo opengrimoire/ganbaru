@@ -13,9 +13,9 @@ This document defines the ownership boundaries between Ganbaru AI systems. It is
 | Lightweight capture cards | Quick notes | Promote or copy content through an explicit user action |
 | Communication, mentions, replies, and decision provenance | Chat | Propose typed changes to Projects, Notes, and Calendar |
 | Provider turns, tools, terminals, artifacts, and checkpoints | Execution sessions | Report normalized activity beneath an authorized Chat work thread |
-| Browser and application blocking rules and evidence | Doomscrolling | React to Pomodoro and environment state without owning either |
+| Browser and application blocking rules and evidence | Distraction blocker | React to Pomodoro and environment state without owning either |
 | Playlists, media library, playback state, and media controls | Music | React to Calendar and Pomodoro context |
-| Human workspace setup | Work environments | Activate configured apps, tabs, Music, and Doomscrolling policy |
+| Human workspace setup | Work environments (planned) | Activate configured apps, tabs, Music, and anti-distraction policy |
 | Identity presentation | Profile and participant records | Resolve names and avatars without rewriting historical content |
 
 ## Important transitions
@@ -36,21 +36,21 @@ Projects stores committed work. Notes stores specifications and research. Chat s
 
 Channels and reply threads outlive provider sessions. A coding-agent run has one authorized execution target and a frozen authorization revision. Provider identity, model, and continuation state are execution metadata, not organizational participant identity.
 
-### Pomodoro, Doomscrolling, and Music
+### Pomodoro, the distraction blocker, and Music
 
-Pomodoro phase changes can activate or relax configured Doomscrolling rules and can pause, resume, or switch Music according to user settings. Neither subsystem may infer broader authority from the timer alone, particularly on Android where operating-system access requires separate consent.
+Pomodoro phase changes can activate or relax configured distraction rules and can pause, resume, or switch Music according to user settings. Neither subsystem may infer broader authority from the timer alone, particularly on Android where operating-system access requires separate consent.
 
-### Calendar and work environments
+### Calendar and work environments (planned)
 
-An eligible session block can activate a human work environment. That action may open applications, prepare browser tabs, choose Music, and apply Doomscrolling policy. It never grants an AI teammate folder or shell access.
+An eligible session block can activate a human work environment. That action may open applications, prepare browser tabs, choose Music, and apply anti-distraction policy. It never grants an AI agent folder or shell access.
 
-### Diary, sleep, and future AI
+### Diary, sleep, and future AI (planned)
 
 The future sleep flow can open morning or evening diary prompts. Diary data remains private user content. Any later AI analysis is opt-in, permission-bounded, and replaceable without changing diary ownership.
 
 ### Sync and collaboration
 
-Future synchronization distributes authorized canonical data; it does not replace local storage with a hosted source of truth. Search, reports, mentions, exports, notifications, and AI context must enforce the same resource visibility as direct reads.
+Local device linking moves a complete vault between one person's devices with a single writer at a time. Planned concurrent synchronization distributes authorized canonical data; neither replaces local storage with a hosted source of truth. Search, reports, mentions, exports, notifications, and AI context must enforce the same resource visibility as direct reads.
 
 ## Integration rule
 

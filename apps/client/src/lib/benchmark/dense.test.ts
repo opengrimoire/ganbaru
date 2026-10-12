@@ -10,7 +10,7 @@ import {
   DEFAULT_BENCHMARK_DATASET,
   LARGE_BENCHMARK_DATASET,
 } from "./types";
-import { PALETTE_SIZE } from "$lib/components/calendar/types";
+import { PALETTE_SIZE } from "$lib/calendar/types";
 
 const ANCHOR = new Date(2026, 3, 30);
 

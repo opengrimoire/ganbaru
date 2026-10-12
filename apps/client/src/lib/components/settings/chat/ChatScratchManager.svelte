@@ -6,6 +6,7 @@
   import File from "@lucide/svelte/icons/file";
   import Folder from "@lucide/svelte/icons/folder";
   import HardDrive from "@lucide/svelte/icons/hard-drive";
+  import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import Search from "@lucide/svelte/icons/search";
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import Upload from "@lucide/svelte/icons/upload";
@@ -22,10 +23,13 @@
     ProjectWorkingFolderId,
   } from "$lib/chat/contracts";
   import { chatErrorMessage } from "$lib/chat/error-presentation";
-  import CustomSelect from "$lib/components/settings/CustomSelect.svelte";
+  import Select from "$lib/components/ui/Select.svelte";
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
 
   let {
     initialReplyThreadId,
@@ -146,6 +150,12 @@
     } finally {
       loading = false;
     }
+  }
+
+  /** Retries loading scratch scopes and rejects when the load fails again. */
+  async function retryScopes(): Promise<void> {
+    await loadScopes();
+    if (error) throw new Error(error);
   }
 
   async function selectScope(scope: ChatScratchScopeRead): Promise<void> {
@@ -358,8 +368,8 @@
   }
 </script>
 
-<div class="scratch-manager-backdrop" role="presentation" onclick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-  <div bind:this={dialog} class="scratch-manager" role="dialog" aria-modal="true" aria-labelledby="chat-scratch-manager-title" tabindex="-1">
+<div class="scratch-manager-backdrop surface-backdrop" role="presentation" onclick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+  <div bind:this={dialog} class="scratch-manager surface-dialog" role="dialog" aria-modal="true" aria-labelledby="chat-scratch-manager-title" tabindex="-1">
     <header>
       <div><h3 id="chat-scratch-manager-title">{t("settings.chat.teammates.scratchManager.heading")}</h3><p>{t("settings.chat.teammates.scratchManager.description")}</p></div>
       <button type="button" aria-label={t("settings.chat.teammates.scratchManager.close")} onclick={onClose}><X size={17} /></button>
@@ -367,8 +377,8 @@
     <div class="scratch-manager-body">
       <aside>
         <label class="scratch-search"><Search size={14} /><input bind:value={search} aria-label={t("settings.chat.teammates.scratchManager.search")} placeholder={t("settings.chat.teammates.scratchManager.search")} /></label>
-        <nav aria-label={t("settings.chat.teammates.scratchManager.scopeList")}>
-          {#if loading}<p class="empty" role="status">{t("common.loading")}</p>
+        <nav aria-label={t("settings.chat.teammates.scratchManager.scopeList")} use:scrollEdgeFadeAction>
+          {#if loading}<Loading layout="rows" rows={3} />
           {:else if scopes.length === 0}<p class="empty">{t("settings.chat.teammates.scratchManager.empty")}</p>
           {:else if filteredScopes.length === 0}<p class="empty">{t("settings.chat.teammates.scratchManager.noMatch")}</p>
           {:else}{#each filteredScopes as scope (scope.id)}
@@ -379,8 +389,8 @@
         </nav>
       </aside>
 
-      <main>
-        {#if error}<p class="alert" role="alert">{error}</p>{/if}
+      <main use:scrollEdgeFadeAction>
+        {#if error}<Notice class="scratch-error" message={error} onRetry={scopes.length === 0 ? retryScopes : undefined} />{/if}
         {#if notice}<p class="notice" role="status">{notice}</p>{/if}
         {#if selectedScope}
           <section class="scope-heading">
@@ -409,7 +419,7 @@
           {#if selectedGeneration && directory}
             <section class="browser" aria-label={t("settings.chat.teammates.scratchManager.browseLabel")}>
               <header><button type="button" disabled={!directory.relativePath || directoryLoading} aria-label={t("settings.chat.teammates.scratchManager.up")} onclick={() => void loadDirectory(upPath(directory?.relativePath ?? ""))}><ArrowLeft size={14} /></button><span><HardDrive size={14} /><strong>{directory.relativePath || t("settings.chat.teammates.scratchManager.root")}</strong></span></header>
-              {#if directoryError}<p class="alert" role="alert">{directoryError}</p>{/if}
+              {#if directoryError}<Notice class="scratch-error" message={directoryError} />{/if}
               <div class="entry-list">
                 {#if directory.entries.length === 0}<p class="empty">{t("settings.chat.teammates.scratchManager.emptyFolder")}</p>{/if}
                 {#each directory.entries as entry (entry.relativePath)}
@@ -419,7 +429,7 @@
                   </div>
                 {/each}
               </div>
-              {#if directory.nextCursor}<button type="button" class="load-more" disabled={directoryLoading} onclick={() => void loadDirectory(directory?.relativePath ?? "", directory?.nextCursor ?? null)}>{directoryLoading ? t("common.loading") : t("settings.chat.teammates.scratchManager.loadMore")}</button>{/if}
+              {#if directory.nextCursor}<button type="button" class="load-more" disabled={directoryLoading} aria-busy={directoryLoading || undefined} onclick={() => void loadDirectory(directory?.relativePath ?? "", directory?.nextCursor ?? null)}>{#if directoryLoading}<LoaderCircle class="size-3.5 animate-spin" aria-hidden="true" />{/if}{t("settings.chat.teammates.scratchManager.loadMore")}</button>{/if}
             </section>
           {/if}
 
@@ -427,14 +437,14 @@
             <form class="promotion" onsubmit={(event) => { event.preventDefault(); void promote(); }}>
               <header><div><h4>{t("settings.chat.teammates.scratchManager.promoteHeading")}</h4><p>{promotionEntry.relativePath}</p></div><button type="button" aria-label={t("common.close")} onclick={() => { promotionEntry = null; }}><X size={15} /></button></header>
               <div class="promotion-fields">
-                <div class="select-field"><span>{t("settings.chat.teammates.scratchManager.destination")}</span><CustomSelect value={promotionKind} options={[{ value: "workingFolder", label: t("settings.chat.teammates.scratchManager.projectFolder") }, { value: "managedAttachment", label: t("settings.chat.teammates.scratchManager.managedAttachment") }]} onChange={selectPromotionKind} class="w-full" /></div>
+                <div class="select-field"><span>{t("settings.chat.teammates.scratchManager.destination")}</span><Select value={promotionKind} options={[{ value: "workingFolder", label: t("settings.chat.teammates.scratchManager.projectFolder") }, { value: "managedAttachment", label: t("settings.chat.teammates.scratchManager.managedAttachment") }]} onChange={selectPromotionKind} class="w-full" /></div>
                 {#if promotionKind === "workingFolder"}
-                  {#if editableFolders.length === 0}<p class="alert full" role="alert">{t("settings.chat.teammates.scratchManager.chooseFolder")}</p>{:else}<div class="select-field"><span>{t("settings.chat.teammates.scratchManager.chooseFolder")}</span><CustomSelect value={promotionFolderId ?? ""} options={editableFolders.map((folder) => ({ value: folder.workingFolderId, label: folder.displayName }))} onChange={selectPromotionFolder} class="w-full" /></div><label class="full"><span>{t("settings.chat.teammates.scratchManager.targetPath")}</span><input bind:value={promotionTargetPath} maxlength="4096" /></label>{/if}
+                  {#if editableFolders.length === 0}<p class="alert full" role="alert">{t("settings.chat.teammates.scratchManager.chooseFolder")}</p>{:else}<div class="select-field"><span>{t("settings.chat.teammates.scratchManager.chooseFolder")}</span><Select value={promotionFolderId ?? ""} options={editableFolders.map((folder) => ({ value: folder.workingFolderId, label: folder.displayName }))} onChange={selectPromotionFolder} class="w-full" /></div><label class="full"><span>{t("settings.chat.teammates.scratchManager.targetPath")}</span><input bind:value={promotionTargetPath} maxlength="4096" /></label>{/if}
                 {:else}
                   <label class="full"><span>{t("settings.chat.teammates.scratchManager.attachmentName")}</span><input bind:value={promotionDisplayName} maxlength="1000" /></label>
                 {/if}
               </div>
-              <footer><button type="button" onclick={() => { promotionEntry = null; }}>{t("common.cancel")}</button><button type="submit" class="primary" disabled={!canPromote}>{promoting ? t("common.loading") : t("settings.chat.teammates.scratchManager.promote")}</button></footer>
+              <footer><button type="button" onclick={() => { promotionEntry = null; }}>{t("common.cancel")}</button><button type="submit" class="primary" disabled={!canPromote} aria-busy={promoting || undefined}>{#if promoting}<LoaderCircle class="size-3.5 animate-spin" aria-hidden="true" />{/if}{t("settings.chat.teammates.scratchManager.promote")}</button></footer>
             </form>
           {/if}
         {:else if !loading}<p class="empty">{t("settings.chat.teammates.scratchManager.empty")}</p>{/if}
@@ -455,8 +465,8 @@
 {/if}
 
 <style>
-  .scratch-manager-backdrop { position:fixed; z-index:110; inset:0; display:grid; place-items:center; background:color-mix(in srgb,#000 48%,transparent); padding:1rem; }
-  .scratch-manager { display:grid; width:min(56rem,90vw); height:min(40rem,80dvh); grid-template-rows:auto minmax(0,1fr); border:1px solid var(--border); border-radius:0.8rem; background:var(--card); color:var(--card-foreground); box-shadow:0 24px 70px color-mix(in srgb,#000 35%,transparent); overflow:hidden; outline:0; }
+  .scratch-manager-backdrop { position:fixed; z-index:110; inset:0; display:grid; place-items:center; padding:1rem; }
+  .scratch-manager { display:grid; width:min(56rem,90vw); height:min(40rem,80dvh); grid-template-rows:auto minmax(0,1fr); overflow:hidden; outline:0; }
   .scratch-manager > header { display:flex; align-items:center; justify-content:space-between; gap:1rem; border-bottom:1px solid var(--border); padding:0.8rem 0.95rem; }
   .scratch-manager h3 { font-size:calc(0.92rem * var(--type-scale)); font-weight:650; }
   .scratch-manager > header p,.scope-heading p,.promotion header p { margin-top:0.15rem; color:var(--muted-foreground); font-size:calc(0.67rem * var(--type-scale)); }
@@ -465,7 +475,7 @@
   .scratch-manager button:disabled { cursor:not-allowed; opacity:0.5; }
   .scratch-manager-body { display:grid; min-height:0; grid-template-columns:minmax(14rem,0.72fr) minmax(0,2fr); }
   .scratch-manager-body > aside { display:grid; min-height:0; grid-template-rows:auto minmax(0,1fr); gap:0.55rem; border-right:1px solid var(--border); padding:0.65rem; }
-  .scratch-search { display:flex; min-height:2.25rem; align-items:center; gap:0.4rem; border:1px solid var(--border); border-radius:0.45rem; padding-inline:0.55rem; color:var(--muted-foreground); }
+  .scratch-search { display:flex; min-height:2.25rem; align-items:center; gap:0.4rem; border:1px solid var(--border); border-radius:var(--floating-item-radius); padding-inline:0.55rem; color:var(--muted-foreground); }
   .scratch-search input { width:100%; min-width:0; border:0; background:transparent; color:var(--foreground); outline:0; font-size:calc(0.68rem * var(--type-scale)); }
   .scratch-manager nav { display:grid; align-content:start; gap:0.18rem; overflow-y:auto; }
   .scratch-manager nav button { display:grid; min-height:3rem; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:0.5rem; border-radius:0.5rem; padding:0.48rem; text-align:left; }
@@ -511,10 +521,11 @@
   .promotion-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:0.55rem; }
   .promotion-fields label,.promotion-fields .select-field { display:grid; gap:0.28rem; color:var(--muted-foreground); font-size:calc(0.64rem * var(--type-scale)); }
   .promotion-fields .full { grid-column:1/-1; }
-  .promotion-fields input { min-height:2.25rem; border:1px solid var(--border); border-radius:0.42rem; background:var(--card); padding:0.4rem 0.5rem; color:var(--foreground); }
+  .promotion-fields input { min-height:2.25rem; border:1px solid var(--border); border-radius:var(--floating-item-radius); background:transparent; outline:0; padding:0.4rem 0.5rem; color:var(--foreground); }
   .promotion footer { display:flex; justify-content:flex-end; gap:0.4rem; }
   .promotion footer .primary { background:var(--primary); color:var(--primary-foreground); }
   .empty,.alert,.notice { padding:0.65rem; border-radius:0.5rem; font-size:calc(0.67rem * var(--type-scale)); }
+  .scratch-manager :global(.scratch-error) { padding:0.65rem; font-size:calc(0.67rem * var(--type-scale)); }
   .empty { color:var(--muted-foreground); }
   .alert { background:color-mix(in srgb,var(--destructive) 10%,transparent); color:var(--destructive); }
   .notice { background:color-mix(in srgb,var(--primary) 10%,transparent); color:var(--foreground); }

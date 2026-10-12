@@ -1,10 +1,56 @@
-import { describe, expect, it } from "vitest";
-import type { CalendarEvent } from "$lib/components/calendar/types";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { CalendarEvent } from "$lib/calendar/types";
 import type { Translate } from "$lib/i18n/translator.svelte";
 import { createPresetPomodoroConfig } from "$lib/pomodoro/rhythm";
-import { buildMobilePomodoroSchedule } from "./mobile-pomodoro-schedule";
+import { buildMobileFocusNotificationCopy, buildMobilePomodoroSchedule, reconcileMobilePomodoroSchedule } from "./mobile-pomodoro-schedule";
+
+const { invokeMock, loadEventsMock } = vi.hoisted(() => ({
+  invokeMock: vi.fn<(command: string, args?: Record<string, unknown>) => Promise<unknown>>(),
+  loadEventsMock: vi.fn<() => Promise<CalendarEvent[]>>(),
+}));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
+vi.mock("./mobile-calendar-notifications", () => ({ loadNotificationSchedulerEvents: loadEventsMock }));
+afterEach(() => {
+  vi.restoreAllMocks();
+  invokeMock.mockReset();
+  loadEventsMock.mockReset();
+});
 
 const t = ((key: string) => key) as Translate;
+
+it("supplies notification language without any execution or deadline fields", () => {
+  const copy = buildMobileFocusNotificationCopy(t);
+  expect(Object.keys(copy).sort()).toEqual([
+    "alertsChannelDescription", "alertsChannelName", "breakCompleteTitle", "channelDescription",
+    "channelName", "focusCompleteTitle", "focusTitle", "longBreakTitle", "pausedText",
+    "sessionCompleteText", "shortBreakTitle",
+  ]);
+  const translated = buildMobileFocusNotificationCopy(((key: string) => `translated:${key}`) as Translate);
+  expect(translated.focusTitle).toBe("translated:pomodoroNotification.focusTitle");
+  expect(translated.sessionCompleteText).toBe("translated:pomodoroNotification.sessionCompleteText");
+});
+
+it("reconciles canonical reminders while sending only localized copy to the native owner", async () => {
+  invokeMock.mockResolvedValue(undefined);
+  loadEventsMock.mockResolvedValue([]);
+  await reconcileMobilePomodoroSchedule(t);
+  expect(invokeMock.mock.calls).toEqual([
+    ["focus_notification_copy", { copy: buildMobileFocusNotificationCopy(t) }],
+    ["plugin:ganbaru-mobile-notifications|reconcilePomodoroSchedule", { schedule: [] }],
+  ]);
+  expect(loadEventsMock).toHaveBeenCalledOnce();
+});
+
+it("keeps commitment reminders independent of failed notification language delivery", async () => {
+  invokeMock.mockImplementation(async (command) => {
+    if (command === "focus_notification_copy") throw new Error("Language delivery unavailable");
+  });
+  loadEventsMock.mockResolvedValue([]);
+  await expect(reconcileMobilePomodoroSchedule(t)).rejects.toThrow("Language delivery unavailable");
+  expect(invokeMock).toHaveBeenCalledWith(
+    "plugin:ganbaru-mobile-notifications|reconcilePomodoroSchedule", { schedule: [] },
+  );
+});
 
 function focusEvent(overrides: Partial<CalendarEvent> = {}): CalendarEvent {
   return {

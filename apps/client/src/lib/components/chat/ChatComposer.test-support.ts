@@ -1,6 +1,6 @@
 import { mount, tick, unmount } from "svelte";
 import { vi } from "vitest";
-import type { ChatComposerSnapshot } from "$lib/chat/composer-controller";
+import type { ChatComposerSnapshot } from "$lib/chat/composer/controller";
 import type {
   ChatAttachmentRead,
   ChatInteractionStateRead,
@@ -8,7 +8,7 @@ import type {
   ChatThreadShellRead,
 } from "$lib/chat/contracts";
 import { getChat } from "$lib/stores/chat.svelte";
-import ChatComposer from "./ChatComposer.svelte";
+import ChatComposer from "$lib/components/chat/composer/ChatComposer.svelte";
 
 class ResizeObserverMock implements ResizeObserver {
   constructor(_callback: ResizeObserverCallback) {}
@@ -140,7 +140,7 @@ export function interactionState(): ChatInteractionStateRead {
       contextLimit: 258_000,
       cost: null,
     },
-    accountStatus: { accountLabel: "victor@example.com", planLabel: "Plus", usage: null },
+    accountStatus: { accountLabel: "alice@example.com", planLabel: "Plus", usage: null },
     rateLimitStatus: {
       limited: false,
       resetsAt: null,

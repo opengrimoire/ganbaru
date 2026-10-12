@@ -1,10 +1,10 @@
 <script lang="ts">
-  import { getCalendarZoom } from "$lib/stores/calendarZoom.svelte";
+  import { getCalendarZoom } from "$lib/stores/calendar-zoom.svelte";
   import {
     CALENDAR_FORWARDED_WHEEL_EVENT,
     getSmoothScrollDelta,
     type CalendarForwardedWheelDetail,
-  } from "./timeline-scroll";
+  } from "$lib/calendar/timeline-scroll";
 
   let {
     scrollContainer,
@@ -22,7 +22,7 @@
     activeThumb?: boolean;
   } = $props();
 
-  const calZoom = getCalendarZoom();
+  const calendarZoom = getCalendarZoom();
   const SCROLLBAR_VISIBILITY_THRESHOLD_PX = 2;
 
   let trackEl: HTMLDivElement | undefined = $state();
@@ -37,7 +37,7 @@
     // Freeze the scrollbar during zoom animations to avoid forced reflows
     // that cause visual flashes. The scrollbar updates on the next
     // scroll or resize event after the zoom animation completes.
-    if (calZoom.isAnimating) return;
+    if (calendarZoom.isAnimating) return;
     if (!scrollContainer || !trackEl) return;
     const { scrollTop, scrollHeight, clientHeight } = scrollContainer;
     const scrollRange = scrollHeight - clientHeight;
@@ -46,11 +46,11 @@
       thumbTop = 0;
       return;
     }
-    const trackH = trackEl.clientHeight;
+    const trackHeight = trackEl.clientHeight;
     const ratio = clientHeight / scrollHeight;
-    thumbHeight = Math.max(ratio * trackH, 24);
+    thumbHeight = Math.max(ratio * trackHeight, 24);
     thumbTop = scrollRange > 0
-      ? (scrollTop / scrollRange) * (trackH - thumbHeight)
+      ? (scrollTop / scrollRange) * (trackHeight - thumbHeight)
       : 0;
   }
 
@@ -79,9 +79,9 @@
     const onThumb = clickY >= thumbTop && clickY <= thumbTop + thumbHeight;
 
     if (!onThumb) {
-      const trackH = trackEl.clientHeight;
+      const trackHeight = trackEl.clientHeight;
       const scrollRange = scrollContainer.scrollHeight - scrollContainer.clientHeight;
-      const targetRatio = (clickY - thumbHeight / 2) / (trackH - thumbHeight);
+      const targetRatio = (clickY - thumbHeight / 2) / (trackHeight - thumbHeight);
       scrollContainer.scrollTop = Math.max(0, Math.min(scrollRange, targetRatio * scrollRange));
     }
 
@@ -100,9 +100,9 @@
   function handlePointerMove(e: PointerEvent) {
     if (!dragging || !scrollContainer || !trackEl) return;
     const deltaY = e.clientY - dragStartY;
-    const trackH = trackEl.clientHeight;
+    const trackHeight = trackEl.clientHeight;
     const scrollRange = scrollContainer.scrollHeight - scrollContainer.clientHeight;
-    const thumbRange = trackH - thumbHeight;
+    const thumbRange = trackHeight - thumbHeight;
     if (thumbRange <= 0) return;
     scrollContainer.scrollTop = dragStartScrollTop + (deltaY / thumbRange) * scrollRange;
   }

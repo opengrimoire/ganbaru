@@ -1,6 +1,6 @@
 # Documentation
 
-Ganbaru AI documentation is organized by the kind of decision it records. Start here instead of opening the largest specification directly.
+Ganbaru AI documentation describes what the app is supposed to be and why its important decisions were made. It is organized by the kind of decision it records. Start here instead of opening the largest specification directly.
 
 ## Start here
 
@@ -28,33 +28,43 @@ Feature documentation can describe both shipped behavior and the intended end st
 - **Deferred:** intentionally outside the active delivery sequence.
 - **Reference:** a normative rule, decision, standard, or historical measurement. It is not a feature-status claim.
 
-A feature's main document should state its current status near the beginning. Target behavior belongs in clearly named sections such as `Target behavior`, `Planned work`, or `Open decisions`.
+A feature's main document states its current status in one sentence near the beginning. Target behavior belongs in clearly named sections such as `Target behavior`, `Planned work`, or `Open decisions`.
 
 ## Where information belongs
 
 - `product/` explains what Ganbaru AI is, why it exists, and which system owns each cross-feature responsibility.
 - `features/` specifies user-facing behavior. Large domains have one `README.md` and a small set of focused supporting documents.
-- `architecture/` describes current code boundaries and durable technology decisions. Exact dependency versions remain authoritative in manifests.
-- `data/` describes sources of truth, durable storage, authorization, migration rules, and cross-domain invariants. Exact SQL remains authoritative in migrations.
+- `architecture/` describes code boundaries and durable technology decisions. Exact dependency versions remain authoritative in manifests.
+- `data/` describes sources of truth, durable storage, authorization, and cross-domain invariants. Exact SQL remains authoritative in migrations.
 - `algorithms/` contains logic that should remain understandable independently of UI and persistence code.
 - `interop/` records external standards, preservation rules, fixtures, and client observations.
 - `platforms/` records operating-system capabilities, lifecycle, permissions, native services, and acceptance requirements.
 - `performance/` separates methodology from immutable recorded measurements.
 - `testing/` defines validation gates, infrastructure, test design, and manual acceptance matrices.
 - `operations/` contains contributor and maintainer procedures.
+- `development/` contains small contributor-facing implementation references.
 
 ## Maintenance rules
 
-Prefer durable intent over a tour of the current implementation. Record the behavior, boundary, invariant, or reason that future changes must preserve. Link to a source directory when ownership matters, but do not mirror every component, command, table column, or private helper in prose.
+Docs record intent, not a transcript of development. Write down the intended behavior, the boundaries and invariants that future changes must preserve, and the rationale for decisions that would otherwise prompt "why do we do it this way?". Source code, manifests, migrations, and generated platform projects own exact implementation shape.
 
-Split a document when it combines independent audiences or workflows, not only because it has many lines. A long conformance checklist or decision log can remain one file when splitting would make it harder to use. A feature document should usually split when product behavior, platform behavior, data details, and validation procedures have become separate references.
+Do not add to the docs for every change. Update a document only when the change alters intended behavior, a user-facing guarantee, a source of truth, a security or authorization boundary, a status claim, or an important decision. A bug fix, refactor, rename, visual tweak, or performance tuning usually needs no doc change.
 
-Avoid repeating the same contract in multiple places. Choose one normative document and link to it. In particular:
+Keep out of the docs:
+
+- Micro-interaction detail such as keystroke edge cases, hover or animation behavior, and pixel values, unless it is a deliberate product contract.
+- Implementation tours of private modules, helper names, or step-by-step code flow.
+- Mid-development notes, changelog-style history, and "X was removed or replaced" narration. Describe the current intended state. Keep a short "why not X" only when it explains an important decision.
+- Repeated "pending acceptance" notes. State acceptance gaps once in the owning feature, platform, or testing document.
+- Compatibility or migration narration for internal formats. There are no external users yet, so only the current format is documented.
+
+Avoid repeating the same contract in multiple places. Choose one normative document and link to it:
 
 - Feature docs own user behavior.
 - Data docs own persistence and authorization rules.
 - Algorithm docs own pure decision rules.
-- The roadmap owns delivery order, not detailed feature design.
-- Source code, manifests, migrations, and generated platform projects own exact implementation shape.
+- The roadmap owns delivery order, not feature design.
 
-When a current-state claim changes, update the feature index, the domain's main document, and the roadmap only if the delivery sequence also changed. Recorded benchmark rows and dated architecture decisions are historical records and must not be rewritten to resemble the present.
+Split a document when it combines independent audiences or workflows, not only because it is long. A conformance checklist or decision log can remain one file when splitting would make it harder to use.
+
+When a status claim changes, update the feature index and the domain's main document. Update the roadmap only if the delivery horizon changed. Recorded benchmark rows and dated architecture decisions are historical records and must not be rewritten to resemble the present.

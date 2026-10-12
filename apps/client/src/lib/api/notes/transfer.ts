@@ -2,26 +2,18 @@ import { invoke } from "@tauri-apps/api/core";
 import { ensureDbUrl } from "$lib/api/db";
 import {
   mapNotesHtmlArchiveSaveDto,
-  mapNotesHtmlExportDto,
   mapNotesHtmlImportDto,
-  mapNotesAgentBridgeExportDto,
   mapNotesAgentBridgeExportSaveDto,
-  mapNotesJsonGraphExportDto,
   mapNotesJsonGraphExportSaveDto,
   mapNotesNotionApiImportDto,
   mapNotesNotionExportImportDto,
-  mapNotesMarkdownExportDto,
-  mapNotesMarkdownImportDto,
-} from "$lib/notes/notion-mappers";
+} from "$lib/notes/validation/response-mappers";
 import type {
   NotesHtmlArchiveSaveResult,
   NotesHtmlExportRequest,
-  NotesHtmlExportResult,
   NotesAgentBridgeExportRequest,
-  NotesAgentBridgeExportResult,
   NotesAgentBridgeExportSaveResult,
   NotesJsonGraphExportRequest,
-  NotesJsonGraphExportResult,
   NotesJsonGraphExportSaveResult,
   NotesHtmlImportRequest,
   NotesHtmlImportResult,
@@ -29,21 +21,8 @@ import type {
   NotesNotionApiImportResult,
   NotesNotionExportImportRequest,
   NotesNotionExportImportResult,
-  NotesMarkdownExportRequest,
-  NotesMarkdownExportResult,
-  NotesMarkdownImportRequest,
-  NotesMarkdownImportResult,
 } from "$lib/notes/types";
 import { invokeNotesMutation } from "./mutation";
-
-export async function importNotesMarkdownPage(
-  request: NotesMarkdownImportRequest,
-): Promise<NotesMarkdownImportResult> {
-  const dbUrl = await ensureDbUrl();
-  return mapNotesMarkdownImportDto(
-    await invokeNotesMutation("notes_import_markdown_page", { dbUrl, request }),
-  );
-}
 
 export async function importNotesHtmlPage(
   request: NotesHtmlImportRequest,
@@ -72,22 +51,6 @@ export async function importNotesNotionExportFolder(
   );
 }
 
-export async function exportNotesMarkdownPage(
-  request: NotesMarkdownExportRequest,
-): Promise<NotesMarkdownExportResult> {
-  const dbUrl = await ensureDbUrl();
-  return mapNotesMarkdownExportDto(
-    await invoke<unknown>("notes_export_markdown_page", { dbUrl, request }),
-  );
-}
-
-export async function exportNotesHtmlPage(
-  request: NotesHtmlExportRequest,
-): Promise<NotesHtmlExportResult> {
-  const dbUrl = await ensureDbUrl();
-  return mapNotesHtmlExportDto(await invoke<unknown>("notes_export_html_page", { dbUrl, request }));
-}
-
 export async function saveNotesHtmlArchive(
   request: NotesHtmlExportRequest,
 ): Promise<NotesHtmlArchiveSaveResult> {
@@ -97,30 +60,12 @@ export async function saveNotesHtmlArchive(
   );
 }
 
-export async function exportNotesJsonGraph(
-  request: NotesJsonGraphExportRequest,
-): Promise<NotesJsonGraphExportResult> {
-  const dbUrl = await ensureDbUrl();
-  return mapNotesJsonGraphExportDto(
-    await invoke<unknown>("notes_export_json_graph", { dbUrl, request }),
-  );
-}
-
 export async function saveNotesJsonGraph(
   request: NotesJsonGraphExportRequest,
 ): Promise<NotesJsonGraphExportSaveResult> {
   const dbUrl = await ensureDbUrl();
   return mapNotesJsonGraphExportSaveDto(
     await invoke<unknown>("notes_pick_and_write_json_graph", { dbUrl, request }),
-  );
-}
-
-export async function exportNotesAgentBridge(
-  request: NotesAgentBridgeExportRequest,
-): Promise<NotesAgentBridgeExportResult> {
-  const dbUrl = await ensureDbUrl();
-  return mapNotesAgentBridgeExportDto(
-    await invoke<unknown>("notes_export_agent_bridge", { dbUrl, request }),
   );
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { quickNoteViewIndexForKey, quickNoteViewShortcut } from "$lib/quick-notes/tags";
+import { compareQuickNoteTags, quickNoteViewIndexForKey, quickNoteViewShortcut } from "$lib/quick-notes/tags";
 
 describe("Quick notes tag shortcuts", () => {
   it("maps All and nine tag views to 1 through 9 and then 0", () => {
@@ -19,5 +19,18 @@ describe("Quick notes tag shortcuts", () => {
     expect(quickNoteViewShortcut(1.5)).toBeNull();
     expect(quickNoteViewIndexForKey("Digit1")).toBeNull();
     expect(quickNoteViewIndexForKey("a")).toBeNull();
+  });
+});
+
+describe("Quick notes tag order", () => {
+  it("sorts by order key in byte order, then by id", () => {
+    const tags = [
+      { id: "b", orderKey: "a1" },
+      { id: "c", orderKey: "a0" },
+      { id: "a", orderKey: "a0" },
+      { id: "d", orderKey: "Zz" },
+      { id: "e", orderKey: "a0V" },
+    ];
+    expect(tags.sort(compareQuickNoteTags).map((tag) => tag.id)).toEqual(["d", "a", "c", "e", "b"]);
   });
 });

@@ -1,13 +1,13 @@
 //! Device-local Chat execution environments and safe Git worktree lifecycle.
 
 use super::device_state::{read_active_device_scope, update_active_device_scope};
-use super::git_service;
-use super::models::{
+use super::workspace::{AuthorizedWorkingFolder, WorkingFolderAuthorizationOperation};
+use crate::db;
+use chrono::{SecondsFormat, Utc};
+use ganbaru_chat::git;
+use ganbaru_chat_contracts::models::{
     ChatError, ChatErrorCode, ChatResult, ChatThreadId, ProjectWorkingFolderId, UtcTimestamp,
 };
-use super::workspace::{AuthorizedWorkingFolder, WorkingFolderAuthorizationOperation};
-use crate::db_path;
-use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use sqlx::{Row, SqlitePool};
@@ -98,7 +98,7 @@ pub async fn chat_list_execution_environments(
 #[tauri::command]
 pub async fn chat_create_worktree_environment(
     app: tauri::AppHandle,
-    mutations: tauri::State<'_, super::workspace_mutation::ChatWorkspaceMutationRegistry>,
+    mutations: tauri::State<'_, super::workspace::mutation::ChatWorkspaceMutationRegistry>,
     db_url: String,
     request: CreateChatWorktreeRequest,
 ) -> ChatResult<ChatExecutionEnvironmentRead> {
@@ -113,7 +113,7 @@ pub async fn chat_create_worktree_environment(
     let root = authorized_workspace(&app, &pool, &request.working_folder_id).await?;
     let _mutation = mutations.try_mutation(&root.canonical_path)?;
     if request.fetch_remote {
-        git_service::fetch(&root.canonical_path, request.remote_name.as_deref()).await?;
+        git::fetch(&root.canonical_path, request.remote_name.as_deref()).await?;
     }
     let path = worktree_path(&app, &request.environment_id)?;
     prepare_worktree_parent(&app)?;
@@ -172,7 +172,7 @@ pub async fn chat_create_worktree_environment(
         Ok(())
     })
     .map_err(device_state_error)?;
-    if let Err(error) = git_service::add_worktree(
+    if let Err(error) = git::add_worktree(
         &root.canonical_path,
         &path_text,
         &request.branch_name,
@@ -188,7 +188,7 @@ pub async fn chat_create_worktree_environment(
         mark_environment_failure(&pool, &request.environment_id, &error.message).await?;
         return Err(error);
     }
-    let head = git_service::head_object_id(&path).await?;
+    let head = git::head_object_id(&path).await?;
     sqlx::query(
         "UPDATE chat_execution_environments SET lifecycle_state = 'available', updated_at = ?
          WHERE id = ?",
@@ -209,44 +209,6 @@ pub async fn chat_create_worktree_environment(
     .await
     .map_err(persistence_error)?;
     read_environment(&app, &pool, &request.environment_id).await
-}
-
-#[tauri::command]
-pub async fn chat_select_thread_execution_environment(
-    app: tauri::AppHandle,
-    db_url: String,
-    thread_id: ChatThreadId,
-    environment_id: String,
-) -> ChatResult<()> {
-    validate_id(&environment_id)?;
-    let pool = chat_pool(&app, db_url).await?;
-    let result = sqlx::query(
-        "UPDATE chat_threads
-         SET execution_environment_id = ?, updated_at = ?, revision = revision + 1
-         WHERE id = ? AND state != 'closed'
-           AND NOT EXISTS (SELECT 1 FROM chat_turns WHERE thread_id = chat_threads.id)
-           AND EXISTS (
-             SELECT 1 FROM chat_execution_environments environment
-             WHERE environment.id = ?
-               AND environment.working_folder_id = chat_threads.working_folder_id
-               AND environment.lifecycle_state = 'available'
-           )",
-    )
-    .bind(&environment_id)
-    .bind(now_timestamp()?.as_str())
-    .bind(thread_id.as_str())
-    .bind(&environment_id)
-    .execute(&pool)
-    .await
-    .map_err(persistence_error)?;
-    if result.rows_affected() == 0 {
-        return Err(ChatError::new(
-            ChatErrorCode::Conflict,
-            "Execution environment can only change before the first turn",
-            true,
-        ));
-    }
-    Ok(())
 }
 
 #[tauri::command]
@@ -275,7 +237,7 @@ pub async fn chat_read_thread_execution_environment(
 #[tauri::command]
 pub async fn chat_remove_worktree_environment(
     app: tauri::AppHandle,
-    mutations: tauri::State<'_, super::workspace_mutation::ChatWorkspaceMutationRegistry>,
+    mutations: tauri::State<'_, super::workspace::mutation::ChatWorkspaceMutationRegistry>,
     db_url: String,
     working_folder_id: ProjectWorkingFolderId,
     environment_id: String,
@@ -309,7 +271,7 @@ pub async fn chat_remove_worktree_environment(
         .to_str()
         .ok_or_else(|| ChatError::validation("environmentId", "Worktree path is unsupported"))?
         .to_string();
-    let status = git_service::status(&resolved.canonical_path).await?;
+    let status = git::status(&resolved.canonical_path).await?;
     if !status.files.is_empty() {
         sqlx::query(
             "UPDATE chat_worktrees SET cleanup_state = 'dirty', updated_at = ?
@@ -326,7 +288,7 @@ pub async fn chat_remove_worktree_environment(
             true,
         ));
     }
-    git_service::remove_worktree(&root.canonical_path, &path_text).await?;
+    git::remove_worktree(&root.canonical_path, &path_text).await?;
     let now = now_timestamp()?;
     sqlx::query(
         "UPDATE chat_execution_environments
@@ -378,7 +340,7 @@ pub async fn resolve_environment_workspace(
     if environment.kind == ChatExecutionEnvironmentKind::CurrentFolder {
         return Ok(authorized);
     }
-    if authorized.repository_kind != super::models::RepositoryKind::Git
+    if authorized.repository_kind != ganbaru_chat_contracts::models::RepositoryKind::Git
         || authorized.repository_identity.is_none()
     {
         return Err(worktree_ownership_error());
@@ -456,7 +418,7 @@ pub async fn authorize_thread_environment(
             .map_err(persistence_error)?,
     )
     .map_err(|_| persistence_error("invalid thread revision"))?;
-    let authorized = super::workspace_commands::authorize_working_folder(
+    let authorized = super::workspace::commands::authorize_working_folder(
         app,
         pool,
         &working_folder_id,
@@ -473,7 +435,7 @@ async fn authorized_workspace(
     pool: &SqlitePool,
     working_folder_id: &ProjectWorkingFolderId,
 ) -> ChatResult<AuthorizedWorkingFolder> {
-    super::workspace_commands::authorize_working_folder(
+    super::workspace::commands::authorize_working_folder(
         app,
         pool,
         working_folder_id,
@@ -625,7 +587,7 @@ async fn verify_worktree_ownership(
     environment_id: &str,
     candidate: &Path,
 ) -> ChatResult<()> {
-    if authorized.repository_kind != super::models::RepositoryKind::Git
+    if authorized.repository_kind != ganbaru_chat_contracts::models::RepositoryKind::Git
         || authorized.repository_identity.is_none()
     {
         return Err(worktree_ownership_error());
@@ -636,12 +598,12 @@ async fn verify_worktree_ownership(
         return Err(worktree_ownership_error());
     }
     let identity_before = managed_worktree_identity(&local_data_root, candidate)?;
-    let listed = git_service::worktrees(&authorized.canonical_path).await?;
+    let listed = git::worktrees(&authorized.canonical_path).await?;
     if !registered_worktree_matches(&listed, candidate) {
         return Err(worktree_ownership_error());
     }
-    let repository_common = git_service::common_directory(&authorized.canonical_path).await?;
-    let worktree_common = git_service::common_directory(candidate).await?;
+    let repository_common = git::common_directory(&authorized.canonical_path).await?;
+    let worktree_common = git::common_directory(candidate).await?;
     let repository_common = repository_common
         .canonicalize()
         .map_err(|_| worktree_ownership_error())?;
@@ -658,7 +620,7 @@ async fn verify_worktree_ownership(
     Ok(())
 }
 
-fn registered_worktree_matches(listed: &[git_service::GitWorktreeRead], candidate: &Path) -> bool {
+fn registered_worktree_matches(listed: &[git::GitWorktreeRead], candidate: &Path) -> bool {
     listed.iter().any(|worktree| {
         !worktree.bare
             && !worktree.prunable
@@ -863,7 +825,7 @@ fn now_timestamp() -> ChatResult<UtcTimestamp> {
 }
 
 async fn chat_pool(app: &tauri::AppHandle, db_url: String) -> ChatResult<SqlitePool> {
-    db_path::connect_sqlite(app.clone(), db_url)
+    db::connect_sqlite(app.clone(), db_url)
         .await
         .map_err(|_| ChatError::new(ChatErrorCode::Persistence, "open Chat database", true))
 }
@@ -960,7 +922,7 @@ mod tests {
     #[test]
     fn worktree_registration_requires_the_exact_live_non_bare_path() {
         let candidate = Path::new("/device/chat-worktrees/managed");
-        let mut entry = git_service::GitWorktreeRead {
+        let mut entry = git::GitWorktreeRead {
             path: candidate.to_string_lossy().to_string(),
             head: "0123456789abcdef".to_string(),
             branch: Some("feature".to_string()),

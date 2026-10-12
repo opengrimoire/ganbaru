@@ -1,4 +1,4 @@
-import type { NotesDataSourceCsvExportDiagnostic, NotesDataSourceCsvExportDiagnosticSeverity, NotesDataSourceCsvExportResult, NotesDataSourceCsvExportSaveResult, NotesDataSourceCsvExportScope, NotesDataSourceCsvImportColumn, NotesDataSourceCsvImportDiagnostic, NotesDataSourceCsvImportDiagnosticSeverity, NotesDataSourceCsvImportResult, NotesDataSourceCsvImportRow } from "../contracts/database";
+import type { NotesDataSourceCsvExportDiagnostic, NotesDataSourceCsvExportDiagnosticSeverity, NotesDataSourceCsvExportResult, NotesDataSourceCsvExportSaveResult, NotesDataSourceCsvExportScope, NotesDataSourceCsvImportColumn, NotesDataSourceCsvImportDiagnostic, NotesDataSourceCsvImportDiagnosticSeverity, NotesDataSourceCsvImportResult, NotesDataSourceCsvImportRow } from "$lib/notes/contracts/database";
 import { readBoolean, readInteger, readNonNegativeInteger, readNullableString, readRecord, readString, readUuidString } from "./readers";
 
 export function parseNotesDataSourceCsvImportResult(

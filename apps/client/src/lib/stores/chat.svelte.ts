@@ -40,42 +40,42 @@ import type {
   UtcTimestamp,
   VersionedJson,
 } from "$lib/chat/contracts";
-import type { ChatComposerSnapshot } from "$lib/chat/composer-controller";
+import type { ChatComposerSnapshot } from "$lib/chat/composer/controller";
 import { chatErrorMessage } from "$lib/chat/error-presentation";
-import { AsyncFrameCoalescer } from "$lib/chat/frame-coalescer";
+import { AsyncFrameCoalescer } from "$lib/chat/timeline/frame-coalescer";
 import {
   toggleChatMessageReactionParticipant,
   type ChatMessageReaction,
-} from "$lib/chat/organizational-message-model";
-import { LOCAL_CHAT_PARTICIPANT_ID } from "$lib/chat/participant-display";
+} from "$lib/chat/timeline/organizational-message-model";
+import { LOCAL_CHAT_PARTICIPANT_ID } from "$lib/chat/teammates/participant-display";
 import { getProjects } from "$lib/stores/projects.svelte";
 import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
-import { preferredProjectWorkingFolder } from "$lib/chat/working-folder-selection";
+import { preferredProjectWorkingFolder } from "$lib/chat/workspace/working-folder-selection";
 import { readLastChatChannelId, saveLastChatChannelId } from "$lib/chat/channel-sections";
 import {
   ChatOrganizationalController,
   type ChatOrganizationalDraft,
-} from "./chat-organizational-controller.svelte";
-import { ChatCommunicationController } from "./chat-communication-controller.svelte";
-import { ChatTimelineController } from "./chat-timeline-controller.svelte";
-import { ChatConfigurationController } from "./chat-configuration-controller.svelte";
-import { ChatChannelNavigationController } from "./chat-channel-navigation-controller.svelte";
-import { ChatThreadCollectionController } from "./chat-thread-collection-controller.svelte";
-import { ChatComposerDefaultsCoordinator } from "./chat-composer-defaults-coordinator";
+} from "$lib/stores/chat/organizational-controller.svelte";
+import { ChatCommunicationController } from "$lib/stores/chat/communication-controller.svelte";
+import { ChatTimelineController } from "$lib/stores/chat/timeline-controller.svelte";
+import { ChatConfigurationController } from "$lib/stores/chat/configuration-controller.svelte";
+import { ChatChannelNavigationController } from "$lib/stores/chat/channel-navigation-controller.svelte";
+import { ChatThreadCollectionController } from "$lib/stores/chat/thread-collection-controller.svelte";
+import { ChatComposerDefaultsCoordinator } from "$lib/stores/chat/composer-defaults-coordinator";
 import {
   ChatComposerRuntimeController,
   composerSeedForThread,
   type ChatComposerSendOptions,
-} from "./chat-composer-runtime-controller.svelte";
+} from "$lib/stores/chat/composer-runtime-controller.svelte";
 
-export type { ChatOrganizationalDraft } from "./chat-organizational-controller.svelte";
+export type { ChatOrganizationalDraft } from "$lib/stores/chat/organizational-controller.svelte";
 
 const projects = getProjects();
 const localExecutionAvailable = platformHasCapability(
   BUILD_PLATFORM_PROFILE,
   "chat.local-execution",
 );
-export type { ChatComposerSendOptions } from "./chat-composer-runtime-controller.svelte";
+export type { ChatComposerSendOptions } from "$lib/stores/chat/composer-runtime-controller.svelte";
 
 class ChatStore {
   private readonly channelNavigationController: ChatChannelNavigationController;
@@ -217,10 +217,10 @@ class ChatStore {
   set draftWorkingFolderId(workingFolderId: ProjectWorkingFolderId | null) { this.composerRuntimeController.draftWorkingFolderId = workingFolderId; }
   get draftThreadId(): ChatThreadId | null { return this.composerRuntimeController.draftThreadId; }
   set draftThreadId(threadId: ChatThreadId | null) { this.composerRuntimeController.draftThreadId = threadId; }
-  get pendingUserMessage(): { threadId: ChatThreadId; row: import("$lib/chat/timeline-model").TimelineMessageRow } | null {
+  get pendingUserMessage(): { threadId: ChatThreadId; row: import("$lib/chat/timeline/model").TimelineMessageRow } | null {
     return this.composerRuntimeController.pendingUserMessage;
   }
-  set pendingUserMessage(message: { threadId: ChatThreadId; row: import("$lib/chat/timeline-model").TimelineMessageRow } | null) {
+  set pendingUserMessage(message: { threadId: ChatThreadId; row: import("$lib/chat/timeline/model").TimelineMessageRow } | null) {
     this.composerRuntimeController.pendingUserMessage = message;
   }
 
@@ -325,9 +325,19 @@ class ChatStore {
       : null;
   }
 
+  private providerDiscoveryStarted = false;
+
+  /** Opens Chat from cached history and discovers providers without delaying that history. */
   async ensureLoaded(): Promise<void> {
+    const vaultGeneration = this.vaultGeneration;
+    await this.ensureCachedLoaded();
+    if (vaultGeneration === this.vaultGeneration && this.loaded) this.startProviderDiscovery();
+  }
+
+  /** Shares workspace hydration without starting provider discovery during prewarming. */
+  private async ensureCachedLoaded(): Promise<void> {
     if (this.loaded) return;
-    this.loadPromise ??= this.reload().finally(() => {
+    this.loadPromise ??= this.reload(false).finally(() => {
       this.loadPromise = null;
     });
     await this.loadPromise;
@@ -335,7 +345,7 @@ class ChatStore {
 
   /** Starts the bounded Chat working set before the route is opened. */
   async prewarmForProject(projectId: string | null): Promise<void> {
-    await this.ensureLoaded();
+    await this.ensureCachedLoaded();
     if (projectId && this.selectedChannel?.projectId !== projectId) {
       await this.syncProjectSelection(projectId);
     }
@@ -358,6 +368,7 @@ class ChatStore {
     this.channelReadPromise = null;
     this.sessionMessageReactions = {};
     this.configurationController.reset();
+    this.providerDiscoveryStarted = false;
     this.selectedChannelId = null;
     this.teammates = [];
     this.archivedTeammates = [];
@@ -371,7 +382,8 @@ class ChatStore {
     this.composerRuntimeController.reset();
   }
 
-  async reload(): Promise<void> {
+  /** Refreshes local Chat data; background prewarming leaves provider CLIs dormant. */
+  async reload(discoverProviders = true): Promise<void> {
     const request = ++this.loadRequest;
     const vaultGeneration = this.vaultGeneration;
     this.loading = true;
@@ -393,16 +405,7 @@ class ChatStore {
       this.archivedTeammates = archivedTeammates;
       this.channelNavigationController.hydrateNavigation(navigationChannels);
       this.threadCollectionController.resetWindow();
-      const isCurrentLoad = () => request === this.loadRequest && vaultGeneration === this.vaultGeneration;
-      void this.configurationController.discoverProviders(isCurrentLoad).catch(async (error: unknown) => {
-        if (!isCurrentLoad()) return;
-        console.error("Automatic Chat provider discovery failed", error);
-        try {
-          await this.configurationController.refreshSettings(isCurrentLoad);
-        } catch (refreshError: unknown) {
-          if (isCurrentLoad()) console.error("Chat settings refresh after discovery failed", refreshError);
-        }
-      });
+      if (discoverProviders) this.startProviderDiscovery();
       if (localExecutionAvailable) {
         void chatApi.recoverChatAssignmentDispatchJobs().catch((error: unknown) => {
           console.error("Chat assignment recovery failed", error);
@@ -443,6 +446,23 @@ class ChatStore {
     } finally {
       if (request === this.loadRequest) this.loading = false;
     }
+  }
+
+  /** Starts at most one automatic discovery per vault, without delaying local history. */
+  private startProviderDiscovery(): void {
+    if (this.providerDiscoveryStarted) return;
+    this.providerDiscoveryStarted = true;
+    const vaultGeneration = this.vaultGeneration;
+    const isCurrentVault = () => vaultGeneration === this.vaultGeneration;
+    void this.configurationController.discoverProviders(isCurrentVault).catch(async (error: unknown) => {
+      if (!isCurrentVault()) return;
+      console.error("Automatic Chat provider discovery failed", error);
+      try {
+        await this.configurationController.refreshSettings(isCurrentVault);
+      } catch (refreshError: unknown) {
+        if (isCurrentVault()) console.error("Chat settings refresh after discovery failed", refreshError);
+      }
+    });
   }
 
   private async prefetchRememberedProjectChannels(

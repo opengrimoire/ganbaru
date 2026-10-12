@@ -1,9 +1,9 @@
 <script lang="ts">
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import type { LocalRootBinding, MusicItemListEntry } from "$lib/music/library-contracts";
-  import type { MusicSourceBrowserNode } from "$lib/music/music-source-browser";
-  import type { MusicSnoozePreset } from "$lib/music/music-snooze";
+  import type { LocalRootBinding, MusicItemListEntry } from "$lib/music/library/contracts";
+  import type { MusicSourceBrowserNode } from "$lib/music/sources/browser";
+  import type { MusicSnoozePreset } from "$lib/music/session/snooze";
   import MusicSourceContentList from "./MusicSourceContentList.svelte";
 
   let {

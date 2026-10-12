@@ -35,7 +35,7 @@ Isolation state is part of theme persistence and export. Runtime-only colors can
 
 Derivation uses perceptual operations suitable for lightness and mixing rather than raw channel addition. App-canvas Calendar defaults apply a direction-aware lightness offset so the Calendar remains distinct in both light and dark themes.
 
-Exact constants and helper function names are implementation details. Durable requirements are:
+Exact constants live in source. Durable requirements are:
 
 - Deterministic output for identical source, snapshot, isolation, and engine version.
 - Valid bounded colors for every result.
@@ -55,7 +55,7 @@ The engine evaluates text, controls, focus rings, semantic actions, event labels
 
 Warnings do not silently change authored colors. The editor can offer a derived repair suggestion, but applying it is an explicit edit. Decorative surfaces are not presented as if they satisfy text contrast requirements.
 
-Shared tooltips contrast with the stable containing surface, not a hovered control's temporary fill or a translucent highlight. A tooltip keeps the same palette while that control changes hover or selection state; a change to the actual containing surface or theme can update it.
+Shared tooltips contrast with the stable containing surface, not a control's temporary hover or selection fill.
 
 ## Engine versions and rebaking
 

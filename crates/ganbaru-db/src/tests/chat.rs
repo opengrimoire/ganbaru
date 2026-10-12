@@ -117,7 +117,7 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "chat_events",
             "chat_command_receipts",
             "chat_checkpoints",
-            "chat_cleanup_queue",
+            "chat_cleanup_jobs",
             "chat_checkpoint_failures",
             "chat_restore_previews",
             "chat_restore_operations",
@@ -133,7 +133,7 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "chat_provider_cleanup_jobs",
             "chat_terminal_layouts",
             "chat_participants",
-            "chat_ai_teammates",
+            "chat_teammates",
             "chat_teammate_policy_revisions",
             "chat_conversations",
             "chat_channels",
@@ -141,8 +141,8 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "chat_teammate_working_folder_grants",
             "chat_access_profiles",
             "chat_access_profile_revisions",
-            "chat_ai_teammate_access_state",
-            "chat_ai_channel_memberships",
+            "chat_teammate_access_state",
+            "chat_teammate_channel_memberships",
             "chat_conversation_audience_state",
             "chat_message_references",
             "chat_participant_reference_targets",
@@ -180,7 +180,7 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "chat_scheduled_messages",
             "chat_scheduled_message_attachment_references",
             "chat_scheduled_message_references",
-            "chat_project_primary_working_folders",
+            "project_primary_working_folders",
             "chat_communication_search_fts",
             "idx_chat_threads_active_project",
             "idx_chat_threads_active_working_folder",
@@ -213,13 +213,13 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "idx_chat_channels_project_default",
             "idx_chat_channels_active_project",
             "idx_chat_participants_local_user",
-            "idx_chat_ai_teammate_display_name",
-            "idx_chat_teammate_folder_default",
+            "idx_chat_participants_teammate_display_name",
+            "idx_chat_teammate_working_folder_grants_default",
             "idx_chat_access_profiles_builtin",
-            "idx_chat_ai_channel_memberships_teammate",
-            "idx_chat_assignment_authorization_active",
+            "idx_chat_teammate_channel_memberships_teammate",
+            "idx_chat_assignment_authorization_revisions_active",
             "idx_chat_host_tool_invocations_authorization",
-            "idx_chat_scratch_generation_active",
+            "idx_chat_scratch_generations_active",
             "idx_chat_scratch_promotions_generation",
             "idx_chat_scratch_promotions_destination",
             "idx_chat_scratch_cleanup_jobs_ready",
@@ -230,7 +230,7 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "idx_chat_assignment_dispatch_jobs_ready",
             "idx_chat_scheduled_messages_due",
             "idx_chat_scheduled_messages_destination",
-            "idx_chat_scheduled_message_attachments_attachment",
+            "idx_chat_scheduled_message_attachment_references_attachment",
             "idx_chat_scheduled_message_references_target",
         ] {
             let exists: Option<i64> =
@@ -343,7 +343,7 @@ fn fresh_projects_create_general_owner_membership_and_primary_folder() {
         .await
         .unwrap();
         let primary_folders: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM chat_project_primary_working_folders")
+            sqlx::query_scalar("SELECT count(*) FROM project_primary_working_folders")
                 .fetch_one(&pool)
                 .await
                 .unwrap();
@@ -401,7 +401,7 @@ fn standalone_teammate_identity_is_inert_until_access_is_replaced() {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO chat_ai_teammates
+            "INSERT INTO chat_teammates
                 (participant_id, role, instructions, created_at, updated_at)
              VALUES ('teammate:inert', 'General support', '', ?, ?)",
         )
@@ -412,7 +412,7 @@ fn standalone_teammate_identity_is_inert_until_access_is_replaced() {
         .unwrap();
 
         let access_revision: i64 = sqlx::query_scalar(
-            "SELECT access_revision FROM chat_ai_teammate_access_state
+            "SELECT access_revision FROM chat_teammate_access_state
              WHERE teammate_id = 'teammate:inert'",
         )
         .fetch_one(&pool)
@@ -426,7 +426,7 @@ fn standalone_teammate_identity_is_inert_until_access_is_replaced() {
         .await
         .unwrap();
         let ai_access: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM chat_ai_channel_memberships
+            "SELECT count(*) FROM chat_teammate_channel_memberships
              WHERE teammate_id = 'teammate:inert'",
         )
         .fetch_one(&pool)
@@ -483,7 +483,7 @@ fn access_profile_revisions_are_immutable_and_do_not_create_memberships() {
         .execute(&pool)
         .await;
         let memberships: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM chat_ai_channel_memberships")
+            sqlx::query_scalar("SELECT count(*) FROM chat_teammate_channel_memberships")
                 .fetch_one(&pool)
                 .await
                 .unwrap();
@@ -517,7 +517,7 @@ fn live_profile_expansion_preserves_active_access_revision_and_membership_intent
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO chat_ai_teammates
+            "INSERT INTO chat_teammates
                 (participant_id, role, instructions, created_at, updated_at)
              VALUES ('teammate:profile-test', 'Tester', '', ?, ?)",
         )
@@ -560,7 +560,7 @@ fn live_profile_expansion_preserves_active_access_revision_and_membership_intent
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO chat_ai_channel_memberships
+            "INSERT INTO chat_teammate_channel_memberships
                 (conversation_id, teammate_id, access_profile_id,
                  read_history, read_history_inherits_profile,
                  participate, participate_inherits_profile,
@@ -578,7 +578,7 @@ fn live_profile_expansion_preserves_active_access_revision_and_membership_intent
         let (project_id, working_folder_id): (String, String) = sqlx::query_as(
             "SELECT channel.project_id, primary_folder.working_folder_id
              FROM chat_channels channel
-             JOIN chat_project_primary_working_folders primary_folder
+             JOIN project_primary_working_folders primary_folder
                ON primary_folder.project_id = channel.project_id
              WHERE channel.conversation_id = ?",
         )
@@ -621,7 +621,7 @@ fn live_profile_expansion_preserves_active_access_revision_and_membership_intent
         .unwrap();
 
         let access_revision: i64 = sqlx::query_scalar(
-            "SELECT access_revision FROM chat_ai_teammate_access_state
+            "SELECT access_revision FROM chat_teammate_access_state
              WHERE teammate_id = 'teammate:profile-test'",
         )
         .fetch_one(&pool)
@@ -629,7 +629,7 @@ fn live_profile_expansion_preserves_active_access_revision_and_membership_intent
         .unwrap();
         let latest_profile_revision: i64 = sqlx::query_scalar(
             "SELECT profile.latest_revision
-             FROM chat_ai_channel_memberships membership
+             FROM chat_teammate_channel_memberships membership
              JOIN chat_access_profiles profile ON profile.id = membership.access_profile_id
              WHERE membership.teammate_id = 'teammate:profile-test'",
         )
@@ -645,7 +645,7 @@ fn live_profile_expansion_preserves_active_access_revision_and_membership_intent
         .await
         .unwrap();
         let pinned_column: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM pragma_table_info('chat_ai_channel_memberships')
+            "SELECT count(*) FROM pragma_table_info('chat_teammate_channel_memberships')
              WHERE name = 'access_profile_revision'",
         )
         .fetch_one(&pool)
@@ -656,7 +656,7 @@ fn live_profile_expansion_preserves_active_access_revision_and_membership_intent
                     THEN revision.maximum_folder_capability
                     ELSE grant_row.capability END
              FROM chat_teammate_working_folder_grants grant_row
-             JOIN chat_ai_channel_memberships membership
+             JOIN chat_teammate_channel_memberships membership
                ON membership.conversation_id = grant_row.conversation_id
               AND membership.teammate_id = grant_row.teammate_id
              JOIN chat_access_profiles profile ON profile.id = membership.access_profile_id
@@ -817,7 +817,7 @@ fn scheduled_message_schema_retains_attachments_until_the_schedule_is_removed() 
         let (channel_id, working_folder_id): (String, String) = sqlx::query_as(
             "SELECT channel.id, folder.working_folder_id
              FROM chat_channels channel
-             JOIN chat_project_primary_working_folders folder
+             JOIN project_primary_working_folders folder
                ON folder.project_id = channel.project_id
              WHERE channel.is_default = 1 LIMIT 1",
         )
@@ -1208,7 +1208,7 @@ fn working_folder_tool_schema_tracks_restore_invalidation_and_exact_cleanup() {
             ("chat_turns", vec!["invalidated_at", "invalidation_reason"]),
             ("chat_events", vec!["invalidated_at", "invalidation_reason"]),
             (
-                "chat_cleanup_queue",
+                "chat_cleanup_jobs",
                 vec!["working_folder_id", "expected_object_id"],
             ),
         ] {
@@ -1353,9 +1353,9 @@ fn cleanup_queue_survives_thread_deletion_and_requires_exact_refs() {
         insert_working_folder(&pool, "working-folder-1", "project-1").await;
         insert_thread(&pool, "thread-1", "working-folder-1", "project-1").await;
         sqlx::query(
-            "INSERT INTO chat_cleanup_queue
+            "INSERT INTO chat_cleanup_jobs
                 (id, working_folder_id, source_thread_id, cleanup_kind, exact_target,
-                 repository_identity, not_before, created_at, updated_at)
+                 repository_identity, available_at, created_at, updated_at)
              VALUES ('cleanup-1', 'working-folder-1', 'thread-1', 'checkpoint_ref',
                      'refs/ganbaru-ai/chat/thread-1/checkpoint-1',
                      'git-sha256:repository', ?, ?, ?)",
@@ -1371,12 +1371,11 @@ fn cleanup_queue_survives_thread_deletion_and_requires_exact_refs() {
             .await
             .unwrap();
 
-        let target: String = sqlx::query_scalar(
-            "SELECT exact_target FROM chat_cleanup_queue WHERE id = 'cleanup-1'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let target: String =
+            sqlx::query_scalar("SELECT exact_target FROM chat_cleanup_jobs WHERE id = 'cleanup-1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(target, "refs/ganbaru-ai/chat/thread-1/checkpoint-1");
     });
 }

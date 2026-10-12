@@ -145,7 +145,8 @@ function androidJavaHome(environment) {
 /**
  * Builds the environment for the Tauri child process.
  *
- * Development terminals can inherit an X11 override while the desktop session
+ * Development runs default to one Cargo build job, and Android runs use the
+ * supported JDK as `JAVA_HOME`. Development terminals can inherit an X11 override while the desktop session
  * itself uses Wayland. Letting GTK select the native backend keeps development
  * rendering on the same path as an installed Ganbaru AI build.
  *

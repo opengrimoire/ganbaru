@@ -1,6 +1,6 @@
 use serde::Serialize;
 use std::collections::BTreeMap;
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 use std::{fs, path::Path};
 use tauri::Runtime;
 
@@ -53,7 +53,7 @@ fn require_active_vault<R: Runtime>(
     Ok(active_vault_id)
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 fn canonical_existing_directory(folder_path: &str) -> Result<String, String> {
     let path = std::path::PathBuf::from(folder_path.trim());
     if !path.is_absolute() {
@@ -87,7 +87,7 @@ fn root_bindings_for_vault<'a>(
     state.music_root_bindings.get(vault_id)
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 fn binding_status(path: Option<&str>) -> LocalRootBindingStatus {
     match path {
         None => LocalRootBindingStatus::NeedsRelink,
@@ -138,7 +138,7 @@ fn clear_binding(state: &mut VaultAppState, vault_id: &str, root_id: &str) {
 }
 
 #[tauri::command]
-pub fn music_get_local_root_bindings(
+pub fn music_local_root_bindings(
     app: tauri::AppHandle,
     vault_id: String,
     root_ids: Vec<String>,

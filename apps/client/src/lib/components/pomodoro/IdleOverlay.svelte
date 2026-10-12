@@ -1,118 +1,57 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWindow } from "@tauri-apps/api/window";
-  import { APP_SOUND_IDS, playAppSound } from "$lib/app-sounds";
-  import {
-    delayUntil,
-    elapsedSecondsSince,
-    nextIntervalTargetAfter,
-    shouldScheduleIdleAlert,
-  } from "./blocked-screen";
+  import { elapsedSecondsSince } from "$lib/pomodoro/blocked-screen";
   import PomodoroBlockedScreen from "./PomodoroBlockedScreen.svelte";
-  import { getLocalization } from "$lib/i18n/translator.svelte";
-
-  const { t } = getLocalization();
 
   let {
     idleSeconds,
     nativeOverlay = false,
     focusFailed = false,
     onResume,
-    onFocusFailed,
+    onVisible,
   }: {
     idleSeconds: number;
     nativeOverlay?: boolean;
     focusFailed?: boolean;
     onResume: () => void | Promise<void>;
-    onFocusFailed: (failedAtMs: number) => void | Promise<void>;
+    onVisible: () => Promise<void>;
   } = $props();
-
-  const IDLE_ALERT_INTERVAL_MS = 10_000;
-  const FOCUS_FAILURE_DELAY_MS = 60_000;
 
   let elapsed = $state(0);
   let overlayVisibleAtMs = Date.now();
-  let focusFailureDueAtMs = overlayVisibleAtMs + FOCUS_FAILURE_DELAY_MS;
-  let alertTimeoutId: ReturnType<typeof setTimeout> | null = null;
-  let failureTimeoutId: ReturnType<typeof setTimeout> | null = null;
   let tickIntervalId: ReturnType<typeof setInterval> | null = null;
-  let localFocusFailed = $state(false);
-
-  const overlayFocusFailed = $derived(focusFailed || localFocusFailed);
-
-  function clearAlertTimer() {
-    if (alertTimeoutId !== null) {
-      clearTimeout(alertTimeoutId);
-      alertTimeoutId = null;
-    }
-  }
-
-  function clearFailureTimer() {
-    if (failureTimeoutId !== null) {
-      clearTimeout(failureTimeoutId);
-      failureTimeoutId = null;
-    }
-  }
-
-  function playIdleAlert() {
-    playAppSound(APP_SOUND_IDS.idleAlert).catch(() => {});
-  }
-
-  function scheduleNextIdleAlert(targetMs: number) {
-    if (!shouldScheduleIdleAlert(targetMs, focusFailureDueAtMs)) return;
-    alertTimeoutId = setTimeout(() => {
-      alertTimeoutId = null;
-      if (localFocusFailed || focusFailed) return;
-      if (!shouldScheduleIdleAlert(Date.now(), focusFailureDueAtMs)) {
-        triggerFocusFailure();
-        return;
-      }
-      playIdleAlert();
-      scheduleNextIdleAlert(
-        nextIntervalTargetAfter(targetMs, IDLE_ALERT_INTERVAL_MS, Date.now()),
-      );
-    }, delayUntil(targetMs, Date.now()));
-  }
-
-  function triggerFocusFailure() {
-    if (localFocusFailed || focusFailed) return;
-    localFocusFailed = true;
-    clearAlertTimer();
-    clearFailureTimer();
-    elapsed = idleSeconds + elapsedSecondsSince(overlayVisibleAtMs, focusFailureDueAtMs);
-    playAppSound(APP_SOUND_IDS.focusSessionFailedLongIdle).catch(() => {});
-    void onFocusFailed(focusFailureDueAtMs);
-  }
-
   let wasFullscreen = false;
+  const VISIBILITY_RETRY_MS = 5000;
 
   async function enterFullscreen() {
-    const win = getCurrentWindow();
+    const appWindow = getCurrentWindow();
     try {
-      wasFullscreen = await win.isFullscreen();
-      await win.setAlwaysOnTop(true);
-      await win.setFullscreen(true);
-      await win.setFocus();
+      wasFullscreen = await appWindow.isFullscreen();
+      await appWindow.setAlwaysOnTop(true);
+      await appWindow.setFullscreen(true);
+      await appWindow.setFocus();
     } catch (e) {
       console.warn("Failed to enter fullscreen for idle overlay:", e);
     }
   }
 
   async function exitFullscreen() {
-    const win = getCurrentWindow();
+    const appWindow = getCurrentWindow();
     try {
       if (!wasFullscreen) {
-        await win.setFullscreen(false);
+        await appWindow.setFullscreen(false);
       }
-      await win.setAlwaysOnTop(false);
+      await appWindow.setAlwaysOnTop(false);
     } catch (e) {
       console.warn("Failed to exit fullscreen:", e);
     }
   }
 
   function handleResume() {
-    void exitFullscreen().then(() => onResume());
+    void Promise.resolve(onResume()).then(exitFullscreen).catch((error: unknown) => {
+      console.error("Native Focus resume failed:", error);
+    });
   }
 
   function afterNextPaint(callback: () => void): () => void {
@@ -133,34 +72,38 @@
   }
 
   onMount(() => {
+    let painted = false;
+    let accepted = false;
+    let pending = false;
+    let disposed = false;
+    async function reportVisibility(): Promise<void> {
+      if (!painted || accepted || pending || disposed || focusFailed) return;
+      pending = true;
+      try {
+        if (!await getCurrentWindow().isVisible() || disposed) return;
+        await onVisible();
+        accepted = true;
+      } catch (error: unknown) {
+        console.warn("Native Focus fallback visibility acknowledgement failed:", error);
+      } finally {
+        pending = false;
+      }
+    }
     elapsed = idleSeconds;
     // When the native overlay window is active, it handles fullscreen, sounds,
     // notifications, and key capture. Skip those side effects here.
     const cancelPaintSideEffects = afterNextPaint(() => {
       overlayVisibleAtMs = Date.now();
-      focusFailureDueAtMs = overlayVisibleAtMs + FOCUS_FAILURE_DELAY_MS;
       elapsed = idleSeconds;
-
-      if (nativeOverlay) return;
-      enterFullscreen();
-
-      invoke("show_event_notification", {
-        title: t("pomodoroOverlay.focusPausedTitle"),
-        body: t("pomodoroOverlay.focusPausedBody"),
-        playSound: false,
-      }).catch(() => {});
-
-      playIdleAlert();
-      scheduleNextIdleAlert(overlayVisibleAtMs + IDLE_ALERT_INTERVAL_MS);
-      failureTimeoutId = setTimeout(
-        triggerFocusFailure,
-        delayUntil(focusFailureDueAtMs, Date.now()),
-      );
+      painted = true;
+      void reportVisibility();
+      if (!nativeOverlay) void enterFullscreen();
     });
 
     tickIntervalId = setInterval(() => {
       elapsed = idleSeconds + elapsedSecondsSince(overlayVisibleAtMs, Date.now());
     }, 1000);
+    const visibilityRetryId = setInterval(() => { void reportVisibility(); }, VISIBILITY_RETRY_MS);
 
     function handleKeydown(e: KeyboardEvent) {
       if (nativeOverlay) return; // Native overlay captures keys.
@@ -173,10 +116,10 @@
     window.addEventListener("keydown", handleKeydown, true);
 
     return () => {
+      disposed = true;
+      clearInterval(visibilityRetryId);
       cancelPaintSideEffects();
       window.removeEventListener("keydown", handleKeydown, true);
-      clearAlertTimer();
-      clearFailureTimer();
       if (tickIntervalId !== null) clearInterval(tickIntervalId);
     };
   });
@@ -184,7 +127,7 @@
 
 <div class="fixed inset-0 z-60">
   <PomodoroBlockedScreen
-    state={overlayFocusFailed ? "idle_failed" : "idle"}
+    state={focusFailed ? "idle_failed" : "idle"}
     seconds={elapsed}
   />
 </div>

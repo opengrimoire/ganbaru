@@ -1,0 +1,23 @@
+[package]
+name = "ganbaru-mobile-distractions"
+version = "0.1.0"
+description = "Android Distractions enforcement bridge for Ganbaru AI"
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+build = "build.rs"
+links = "ganbaru-mobile-distractions"
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+tauri = { workspace = true }
+
+[build-dependencies]
+tauri-plugin = { version = "2.5", features = ["build"] }

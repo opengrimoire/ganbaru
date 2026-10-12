@@ -7,14 +7,15 @@
     QUICK_NOTE_TAG_NAME_MAX_CHARS,
   } from "$lib/quick-notes/types";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
+  import { cn } from "$lib/utils";
 
   let {
     tagCount,
-    oncreate,
+    onCreate,
     mobileLayout = false,
   }: {
     tagCount: number;
-    oncreate: (name: string) => Promise<void>;
+    onCreate: (name: string) => Promise<void>;
     mobileLayout?: boolean;
   } = $props();
 
@@ -42,7 +43,7 @@
     busy = true;
     error = "";
     try {
-      await oncreate(value);
+      await onCreate(value);
       name = "";
       creating = false;
     } catch {
@@ -69,7 +70,7 @@
 <div class="shrink-0" data-quick-note-tag-creator>
   {#if creating}
     <form
-      class={`flex items-center gap-1 bg-accent/60 px-2 text-foreground ${mobileLayout ? "min-h-12 w-44 rounded-xl" : "h-7 w-30 rounded-md"} ${error ? "ring-1 ring-destructive" : ""}`}
+      class={cn("field flex items-center gap-1 py-0 text-foreground", mobileLayout ? "min-h-12 w-44" : "h-7 w-30", error && "border-destructive focus-within:border-destructive")}
       title={error || t("quickNotes.tag.namePlaceholder")}
       onsubmit={(event) => { event.preventDefault(); void create(); }}
     >
@@ -79,7 +80,7 @@
         type="text"
         bind:value={name}
         maxlength={QUICK_NOTE_TAG_NAME_MAX_CHARS}
-        class={mobileLayout ? "min-h-12 min-w-0 flex-1 bg-transparent text-base caret-primary outline-none placeholder:text-muted-foreground" : "min-w-0 flex-1 bg-transparent text-xs caret-primary outline-none placeholder:text-muted-foreground"}
+        class={mobileLayout ? "field-bare min-h-12 text-base caret-primary" : "field-bare text-xs caret-primary"}
         placeholder={t("quickNotes.tag.namePlaceholder")}
         aria-label={t("quickNotes.tag.namePlaceholder")}
         aria-invalid={error ? "true" : undefined}

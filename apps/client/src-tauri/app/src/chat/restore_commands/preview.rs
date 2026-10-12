@@ -62,9 +62,9 @@ pub(super) fn add_duration(
     duration: chrono::Duration,
 ) -> ChatResult<UtcTimestamp> {
     let parsed = chrono::DateTime::parse_from_rfc3339(timestamp.as_str())
-        .map_err(|_| corrupt_data())?
+        .map_err(|_| corrupt_data_error())?
         .with_timezone(&Utc)
         + duration;
     UtcTimestamp::new(parsed.to_rfc3339_opts(SecondsFormat::Millis, true))
-        .map_err(|_| corrupt_data())
+        .map_err(|_| corrupt_data_error())
 }

@@ -5,9 +5,9 @@
   "scripts": {
     "dev": "turbo dev",
     "build": "turbo build",
+    "clean:rust": "cargo clean",
     "build:native-host": "cargo build --bin ganbaru-ai-native-messaging",
-    "setup:chromium-extension": "node apps/client/scripts/setup-chromium-extension.mjs",
-    "setup:brave-extension": "node apps/client/scripts/setup-brave-extension.mjs",
+    "setup:chromium-extension": "node apps/client/scripts/browser-extension/setup-dev-extension.mjs",
     "audit:deps": "pnpm audit --audit-level low",
     "audit:rust": "cargo audit",
     "audit": "pnpm -w run audit:deps && pnpm -w run audit:rust",
@@ -15,8 +15,8 @@
     "check:rust:ci": "cargo fmt --check && cargo clippy --workspace -j 2 -- -D warnings",
     "check:frontend": "turbo check --concurrency=1",
     "check": "pnpm -w run check:rust && pnpm -w run check:frontend",
-    "test:rust": "cargo test --workspace -j 1 -- --test-threads=1",
-    "test:rust:ci": "cargo test --workspace -j 2 -- --test-threads=1",
+    "test:rust": "cargo test --workspace -j 1 -- --test-threads=2",
+    "test:rust:ci": "cargo test --workspace -j 2 -- --test-threads=2",
     "test:frontend": "turbo test --concurrency=1 -- --maxWorkers=1 --exclude=\"src/lib/benchmark/**/*.test.ts\" --shard=1/4 && turbo test --concurrency=1 -- --maxWorkers=1 --exclude=\"src/lib/benchmark/**/*.test.ts\" --shard=2/4 && turbo test --concurrency=1 -- --maxWorkers=1 --exclude=\"src/lib/benchmark/**/*.test.ts\" --shard=3/4 && turbo test --concurrency=1 -- --maxWorkers=1 --exclude=\"src/lib/benchmark/**/*.test.ts\" --shard=4/4",
     "test": "pnpm -w run test:rust && pnpm -w run test:frontend",
     "test:benchmark-contracts:rust": "cargo test -p ganbaru-tauri-app --lib -j 1 music::library::fixtures::tests::dense_fixture_is_complete_deterministic_and_repeatable -- --ignored --test-threads=1",
@@ -32,9 +32,9 @@
     "turbo": "^2.9.14",
     "typescript": "6.0.3"
   },
-  "packageManager": "pnpm@11.1.1",
+  "packageManager": "pnpm@12.10.1+sha512.ba40a37eb1a370d60fea8c4cf1d364c13bcccef518e98ad2bcee954f539d38da37458e58261a3fa55e06523450ea0ffff9f497b135be41f2c15c1642bacace6c",
   "engines": {
     "node": "^22.12.0 || ^24.0.0",
-    "pnpm": ">=11 <12"
+    "pnpm": ">=12 <13"
   }
 }

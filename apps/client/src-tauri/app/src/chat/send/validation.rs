@@ -1,14 +1,14 @@
 //! Bounded request, provider, model, and workspace validation.
 
 use super::support::{json_error, persistence_error};
-use crate::chat::models::{
+use crate::chat::send_commands::SendChatTurnCommand;
+use crate::chat::workspace::AuthorizedWorkingFolder;
+use ganbaru_chat_contracts::models::{
     ApprovalDecision, ApprovalDecisionKind, ChatError, ChatErrorCode, ChatRequestId, ChatResult,
     ChatThreadId, InteractionMode, ModelAvailability, ModelId, ModelOptionDefinition,
     ModelOptionSelection, ModelOptionValue, ProbeState, ProviderCapabilities, ProviderCapability,
     ProviderRequestId, SafetyMode, TurnModeSnapshot, UserInputAnswer, WorkspaceMentionReference,
 };
-use crate::chat::send_commands::SendChatTurnCommand;
-use crate::chat::workspace::AuthorizedWorkingFolder;
 use sqlx::SqlitePool;
 use std::collections::BTreeSet;
 

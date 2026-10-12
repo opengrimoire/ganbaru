@@ -60,3 +60,46 @@ pub(super) fn assert_plan_uses(plan: &str, expected: &str) {
         "expected query plan to use {expected}, got:\n{plan}",
     );
 }
+
+/// Embedded migrations up to and including one version, for upgrade tests.
+#[derive(Debug)]
+struct MigrationsThrough(i64);
+
+impl sqlx::migrate::MigrationSource<'static> for MigrationsThrough {
+    fn resolve(
+        self,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<Vec<sqlx::migrate::Migration>, sqlx::error::BoxDynError>,
+                > + Send,
+        >,
+    > {
+        let migrations = crate::MIGRATOR
+            .iter()
+            .filter(|migration| migration.version <= self.0)
+            .cloned()
+            .collect();
+        Box::pin(async move { Ok(migrations) })
+    }
+}
+
+/// A memory pool migrated through `version`; `run_migrations` later applies the rest.
+pub(super) async fn memory_pool_migrated_through(version: i64) -> SqlitePool {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    sqlx::raw_sql("PRAGMA foreign_keys=ON")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::migrate::Migrator::new(MigrationsThrough(version))
+        .await
+        .unwrap()
+        .run(&pool)
+        .await
+        .unwrap();
+    pool
+}

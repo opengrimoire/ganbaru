@@ -1,0 +1,191 @@
+/*
+ * Shared chrome for floating surfaces (menus, popovers, pickers, nonmodal panels), their rows, and their fields.
+ * Database collection panels define the look; docs/architecture/ui-foundations.md owns the rules.
+ */
+
+:root {
+  /* Outer radius of floating surfaces. */
+  --floating-radius: calc(var(--radius) + 4px);
+  /* Inset between a floating surface edge and its rows. */
+  --floating-padding: 0.375rem;
+  /* Rows and fields stay concentric with the surface corner. */
+  --floating-item-radius: calc(var(--floating-radius) - var(--floating-padding));
+  /* One barely visible shadow for every floating surface; the border carries the separation. */
+  --floating-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+  /* Minimum gap between a floating surface and the viewport edge. */
+  --floating-viewport-margin: 0.5rem;
+  /* Dimming behind modal dialogs. */
+  --backdrop: rgb(0 0 0 / 0.45);
+  /* Panel text matches collection tables, slightly smaller than Notes paragraphs. */
+  --panel-font-size: var(--collection-font-size);
+  /* Secondary panel text such as section labels, descriptions, and shortcuts. */
+  --panel-detail-font-size: calc(var(--panel-font-size) * 0.875);
+  /* Row and field height inside panels; touch layouts raise it to a 44px target. */
+  --panel-row-height: calc(var(--panel-font-size) * 1.5 + 0.5rem);
+}
+
+html[data-shell="mobile"] {
+  --panel-row-height: 2.75rem;
+}
+
+@media (any-pointer: coarse) and (any-hover: none) {
+  :root {
+    --panel-row-height: 2.75rem;
+  }
+}
+
+@theme inline {
+  --text-panel: var(--panel-font-size);
+  --text-panel--line-height: 1.5;
+  --text-panel-detail: var(--panel-detail-font-size);
+  --text-panel-detail--line-height: 1.4;
+  /* Floating surface widths; keep in sync with lib/components/ui/floating-width.ts. */
+  --container-floating-sm: 240px;
+  --container-floating: 280px;
+  --container-floating-lg: 320px;
+  --radius-floating: var(--floating-radius);
+  --radius-floating-item: var(--floating-item-radius);
+  --shadow-floating: var(--floating-shadow);
+}
+
+/* The surface of a menu, popover, picker, or nonmodal panel. Scroll an inner element so edge fades keep the border. */
+@utility surface-floating {
+  max-width: calc(100vw - 2 * var(--floating-viewport-margin));
+  border: 1px solid var(--border);
+  border-radius: var(--floating-radius);
+  background-color: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow: var(--floating-shadow);
+  font-size: var(--panel-font-size);
+  line-height: 1.5;
+}
+
+/* The surface of a modal dialog or a large nonmodal window. It shares the floating radius, border, and shadow. */
+@utility surface-dialog {
+  border: 1px solid var(--border);
+  border-radius: var(--floating-radius);
+  background-color: var(--card);
+  color: var(--card-foreground);
+  box-shadow: var(--floating-shadow);
+}
+
+/* The dimmed layer behind a modal dialog. */
+@utility surface-backdrop {
+  background-color: var(--backdrop);
+}
+
+/* Padding between a floating surface and its rows. */
+@utility surface-floating-body {
+  padding: var(--floating-padding);
+}
+
+/*
+ * An actionable row inside a floating surface. Background highlight marks only the pointer, keyboard focus, and an open
+ * submenu; the current choice shows a trailing check instead.
+ */
+@utility menu-item {
+  display: flex;
+  width: 100%;
+  min-height: var(--panel-row-height);
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: var(--floating-item-radius);
+  text-align: start;
+  &:focus-visible {
+    outline: none;
+  }
+  &:is(:hover, :focus-visible, [aria-expanded="true"], [data-highlighted]):not(:disabled, [aria-disabled="true"]:not(.control-unavailable)) {
+    background-color: var(--accent);
+  }
+  &:is(:disabled, [aria-disabled="true"]):not(.control-unavailable) {
+    cursor: not-allowed;
+    color: color-mix(in srgb, var(--muted-foreground) 60%, transparent);
+  }
+  & > svg {
+    width: 1rem;
+    height: 1rem;
+    flex-shrink: 0;
+  }
+}
+
+/* A destructive row; pair it with `menu-item`. */
+@utility menu-item-destructive {
+  color: var(--destructive);
+  &:is(:hover, :focus-visible, [data-highlighted]):not(:disabled, [aria-disabled="true"]) {
+    background-color: color-mix(in srgb, var(--destructive) 10%, transparent);
+  }
+}
+
+/* A divider between groups of rows. */
+@utility menu-separator {
+  flex-shrink: 0;
+  height: 1px;
+  margin: 0.25rem;
+  border: 0;
+  background-color: var(--border);
+}
+
+/* A quiet heading above a group of rows. */
+@utility menu-label {
+  padding: 0.375rem 0.5rem 0.25rem;
+  color: var(--muted-foreground);
+  font-size: var(--panel-detail-font-size);
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+/*
+ * A text field: transparent over its surface with a thin border. Focus never adds a contour, ring, or fill; the caret
+ * is enough. Use it on bare inputs, textareas, and on wrappers that hold a borderless input with icons.
+ */
+@utility field {
+  min-height: var(--panel-row-height);
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--floating-item-radius);
+  background-color: transparent;
+  &::placeholder {
+    color: var(--muted-foreground);
+  }
+  &:is(:focus, :focus-visible, :focus-within) {
+    outline: none;
+    box-shadow: none;
+  }
+  /* Invalid input keeps its signal while focused. */
+  &:is([aria-invalid="true"], [data-invalid], :has(> [aria-invalid="true"])) {
+    border-color: var(--destructive);
+  }
+  &:is(:disabled, [aria-disabled="true"]):not(.control-unavailable) {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+}
+
+/*
+ * A control whose behavior is not implemented yet. It keeps its final appearance and placement, shows the not-allowed
+ * cursor, and has no activation handler; pair it with `aria-disabled="true"`. It never dims or explains itself, so it
+ * stays distinguishable from a control disabled by state. docs/features/collaboration/README.md records the rule.
+ */
+@utility control-unavailable {
+  cursor: not-allowed;
+  & > * {
+    cursor: inherit;
+  }
+}
+
+/* A borderless input inside a `field` wrapper. */
+@utility field-bare {
+  min-width: 0;
+  flex: 1 1 0%;
+  border: 0;
+  background-color: transparent;
+  &::placeholder {
+    color: var(--muted-foreground);
+  }
+  &:is(:focus, :focus-visible) {
+    outline: none;
+    box-shadow: none;
+  }
+}

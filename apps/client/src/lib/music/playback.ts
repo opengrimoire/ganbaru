@@ -1,5 +1,3 @@
-import type { MusicSourceKind } from "$lib/music/sources";
-
 export type PlaybackStatus = "idle" | "loading" | "ready" | "playing" | "paused" | "ended" | "error";
 
 export interface PlaybackSnapshot {
@@ -11,31 +9,6 @@ export interface PlaybackSnapshot {
   error: string | null;
 }
 
-export interface PlaybackPersistenceInput {
-  sourceIdentity: string;
-  sourceKind: string;
-  positionMs: number;
-  durationMs: number | null;
-  status: PlaybackStatus;
-  nowMs: number;
-}
-
-export interface PersistedPlaybackState {
-  sourceIdentity: string;
-  sourceKind: MusicSourceKind;
-  positionMs: number;
-  durationMs: number | null;
-  status: PlaybackStatus;
-  updatedAt: number;
-}
-
-export type LocalPlaybackBackendKind = "none" | "rodio" | "webview" | "media3";
-
-export interface LocalPlaybackBackendSnapshot {
-  backendKind: LocalPlaybackBackendKind;
-  hasVideo: boolean;
-}
-
 export const DEFAULT_PLAYBACK_SNAPSHOT: PlaybackSnapshot = Object.freeze({
   status: "idle",
   positionMs: 0,
@@ -45,34 +18,9 @@ export const DEFAULT_PLAYBACK_SNAPSHOT: PlaybackSnapshot = Object.freeze({
   error: null,
 });
 
-const POSITION_SAVE_INTERVAL_MS = 5_000;
-const POSITION_SAVE_DELTA_MS = 10_000;
 export const MAX_VOLUME = 1;
 export const MIN_RATE = 0.25;
 export const MAX_RATE = 2;
-export const PREVIOUS_RESTART_THRESHOLD_MS = 3_000;
-
-export interface ShuffleSelection {
-  index: number | null;
-  remainingOrder: number[];
-}
-
-export interface PreviousQueueSelection {
-  action: "none" | "restart" | "previous";
-  index: number | null;
-}
-
-export function shouldPersistPlaybackState(
-  next: PlaybackPersistenceInput,
-  previous: PersistedPlaybackState | null,
-): boolean {
-  if (!previous) return true;
-  if (previous.sourceIdentity !== next.sourceIdentity) return true;
-  if (previous.status !== next.status) return true;
-  if (previous.durationMs !== next.durationMs) return true;
-  if (next.nowMs - previous.updatedAt >= POSITION_SAVE_INTERVAL_MS) return true;
-  return Math.abs(next.positionMs - previous.positionMs) >= POSITION_SAVE_DELTA_MS;
-}
 
 export function stableStatusDuringYouTubeBuffering(
   current: PlaybackStatus,
@@ -106,10 +54,6 @@ export function clampRate(value: number): number {
   return Math.min(MAX_RATE, Math.max(MIN_RATE, value));
 }
 
-export function shouldUseWebviewLocalVideo(snapshot: LocalPlaybackBackendSnapshot): boolean {
-  return snapshot.hasVideo && snapshot.backendKind === "webview";
-}
-
 export function normalizeLocalPlayableStartMs(startMs: number | null): number {
   if (startMs === null || !Number.isFinite(startMs) || startMs <= 0) return 0;
   return Math.round(startMs);
@@ -122,63 +66,4 @@ export function localMediaSeekTargetMs(positionMs: number, playableStartMs: numb
 
 export function formatVolumePercent(value: number): string {
   return `${Math.round(clampVolume(value) * 100)}%`;
-}
-
-export function shuffledQueueOrder(
-  queueLength: number,
-  currentIndex: number,
-  random: () => number = Math.random,
-): number[] {
-  if (queueLength <= 0) return [];
-  const indexes = Array.from({ length: queueLength }, (_, index) => index)
-    .filter((index) => queueLength === 1 || index !== currentIndex);
-  for (let index = indexes.length - 1; index > 0; index--) {
-    const swapIndex = Math.floor(random() * (index + 1));
-    [indexes[index], indexes[swapIndex]] = [indexes[swapIndex], indexes[index]];
-  }
-  return indexes;
-}
-
-export function nextShuffleIndex(
-  queueLength: number,
-  currentIndex: number,
-  remainingOrder: readonly number[],
-  random: () => number = Math.random,
-): ShuffleSelection {
-  if (queueLength <= 0) return { index: null, remainingOrder: [] };
-  if (queueLength === 1) return { index: 0, remainingOrder: [] };
-
-  const validRemaining = remainingOrder.filter(
-    (index) => index >= 0 && index < queueLength && index !== currentIndex,
-  );
-  const order = validRemaining.length > 0
-    ? [...validRemaining]
-    : shuffledQueueOrder(queueLength, currentIndex, random);
-  const [index, ...nextRemaining] = order;
-  return { index: index ?? null, remainingOrder: nextRemaining };
-}
-
-export function initialQueueSelection(
-  queueLength: number,
-  shuffleEnabled: boolean,
-  random: () => number = Math.random,
-): ShuffleSelection {
-  if (queueLength <= 0) return { index: null, remainingOrder: [] };
-  if (!shuffleEnabled) return { index: 0, remainingOrder: [] };
-  return nextShuffleIndex(queueLength, -1, [], random);
-}
-
-export function previousQueueSelection(
-  currentIndex: number,
-  positionMs: number,
-  queueLength: number,
-  thresholdMs = PREVIOUS_RESTART_THRESHOLD_MS,
-): PreviousQueueSelection {
-  if (queueLength <= 0 || currentIndex < 0 || currentIndex >= queueLength) {
-    return { action: "none", index: null };
-  }
-  if (positionMs > thresholdMs || currentIndex === 0) {
-    return { action: "restart", index: currentIndex };
-  }
-  return { action: "previous", index: currentIndex - 1 };
 }

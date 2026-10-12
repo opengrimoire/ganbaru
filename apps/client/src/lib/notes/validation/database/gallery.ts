@@ -1,4 +1,4 @@
-import type { NotesDataSourceGalleryView } from "../../contracts/database";
+import type { NotesDataSourceGalleryView } from "$lib/notes/contracts/database";
 import { isNotesGalleryCoverSource } from ".././assets";
 import { isNotesGalleryCardSize, isNotesGalleryRowOpenMode } from ".././blocks";
 import { readRecord, readString, readStringArray } from ".././readers";

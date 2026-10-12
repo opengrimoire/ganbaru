@@ -62,10 +62,10 @@
     "category": "Productivity",
     "linux": {
       "deb": {
-        "desktopTemplate": "deb.desktop.hbs"
+        "desktopTemplate": "packaging/linux/ganbaru-ai.desktop.hbs"
       },
       "rpm": {
-        "desktopTemplate": "deb.desktop.hbs"
+        "desktopTemplate": "packaging/linux/ganbaru-ai.desktop.hbs"
       }
     },
     "icon": [

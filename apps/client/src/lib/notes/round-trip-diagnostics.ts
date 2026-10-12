@@ -2,7 +2,7 @@ import {
   buildNotesBlockLink,
   buildNotesPageLink,
   isNotesUuid,
-} from "$lib/notes/block-link";
+} from "$lib/notes/links/block-link";
 
 export type NotesRoundTripDiagnosticSeverity = "info" | "warning" | "error";
 
@@ -124,7 +124,7 @@ export function roundTripCategoryCounts(
 }
 
 /**
- * Count non-info diagnostics for existing completion summaries.
+ * Count warning and error diagnostics for completion summaries.
  */
 export function roundTripWarningCount(
   diagnostics: Pick<NotesRoundTripDiagnosticItem, "severity">[],

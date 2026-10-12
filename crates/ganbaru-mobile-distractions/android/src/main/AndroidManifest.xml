@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <permission
+        android:name="${applicationId}.permission.INTERNAL_GUARDIAN"
+        android:protectionLevel="signature" />
+
+    <uses-permission android:name="${applicationId}.permission.INTERNAL_GUARDIAN" />
+    <uses-permission
+        android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions" />
+
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
+    <application>
+        <provider
+            android:name="org.opengrimoire.ganbaruai.mobile.distractions.DistractionsGuardianProvider"
+            android:authorities="${applicationId}.ganbaru.guardian.distractions"
+            android:exported="false"
+            android:process=":guardian" />
+
+        <service
+            android:name="org.opengrimoire.ganbaruai.mobile.distractions.DistractionsAccessibilityService"
+            android:exported="true"
+            android:label="@string/ganbaru_distractions_accessibility_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:process=":guardian">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/distractions_accessibility_service" />
+        </service>
+
+        <receiver
+            android:name="org.opengrimoire.ganbaruai.mobile.distractions.DistractionsPhaseReceiver"
+            android:exported="false"
+            android:process=":guardian">
+            <intent-filter>
+                <action android:name="app.ganbaru.intent.action.DISTRACTIONS_PHASE" />
+                <action android:name="app.ganbaru.intent.action.DISTRACTIONS_PHASE_CLEAR" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

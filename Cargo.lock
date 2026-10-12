@@ -123,9 +123,9 @@ dependencies = [
 
 [[package]]
 name = "ammonia"
-version = "4.1.4"
+version = "4.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc6d763210e2eb7670d1a5183a08bebefa3f97db2a738a684f2ce00bd49f681d"
+checksum = "36322ccf536de7b7afd259098615203e4cc5caca1b78482b58334a720c66e40a"
 dependencies = [
  "cssparser 0.37.0",
  "html5ever 0.39.0",
@@ -1076,6 +1076,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "defmt"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e2953bfe4f93bbd20cc71198842756f77d161884c99ebbabc41d80231ded88d1"
+dependencies = [
+ "bitflags 1.3.2",
+ "defmt-macros",
+]
+
+[[package]]
+name = "defmt-macros"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bad9c72e7ca2137e0dc3813245a0d282fd6daad32fd800af018306a9169b5fe8"
+dependencies = [
+ "defmt-parser",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "defmt-parser"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10d60334b3b2e7c9d91ef8150abfb6fa4c1c39ebbcf4a81c2e346aad939fee3e"
+dependencies = [
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "der"
 version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1702,8 +1733,8 @@ dependencies = [
 name = "ganbaru-ai"
 version = "0.1.9"
 dependencies = [
+ "ganbaru-mobile-distractions",
  "ganbaru-mobile-documents",
- "ganbaru-mobile-doomscrolling",
  "ganbaru-mobile-media",
  "ganbaru-mobile-notifications",
  "ganbaru-tauri-app",
@@ -1716,6 +1747,25 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
+]
+
+[[package]]
+name = "ganbaru-calendar"
+version = "0.1.0"
+dependencies = [
+ "ammonia",
+ "chrono",
+ "ganbaru-civil-time",
+ "ganbaru-db",
+ "ganbaru-music",
+ "ganbaru-pomodoro",
+ "ganbaru-projects",
+ "jiff",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "tokio",
 ]
 
 [[package]]
@@ -1765,6 +1815,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "ganbaru-civil-time"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "jiff",
+]
+
+[[package]]
+name = "ganbaru-contacts"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "ring",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "ganbaru-db"
 version = "0.1.5"
 dependencies = [
@@ -1773,18 +1843,39 @@ dependencies = [
 ]
 
 [[package]]
-name = "ganbaru-focus"
-version = "0.1.5"
+name = "ganbaru-distractions"
+version = "0.1.0"
 dependencies = [
  "chrono",
- "ganbaru-db",
+ "ganbaru-civil-time",
+ "jiff",
  "serde",
+ "serde_json",
+ "sha2",
  "sqlx",
  "tokio",
 ]
 
 [[package]]
-name = "ganbaru-mobile-documents"
+name = "ganbaru-handoff"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "ganbaru-contacts",
+ "ganbaru-sync-contracts",
+ "qrcode",
+ "quircs",
+ "rcgen",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+]
+
+[[package]]
+name = "ganbaru-mobile-distractions"
 version = "0.1.0"
 dependencies = [
  "serde",
@@ -1793,7 +1884,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ganbaru-mobile-doomscrolling"
+name = "ganbaru-mobile-documents"
 version = "0.1.0"
 dependencies = [
  "serde",
@@ -1820,12 +1911,50 @@ dependencies = [
 ]
 
 [[package]]
+name = "ganbaru-music"
+version = "0.1.0"
+dependencies = [
+ "ganbaru-db",
+ "serde",
+ "sqlx",
+ "tokio",
+]
+
+[[package]]
+name = "ganbaru-music-library"
+version = "0.1.0"
+dependencies = [
+ "ganbaru-db",
+ "ganbaru-music",
+ "ganbaru-projects",
+ "jiff",
+ "rodio",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "ganbaru-music-player"
+version = "0.1.0"
+dependencies = [
+ "ganbaru-music-library",
+ "rodio",
+ "serde",
+]
+
+[[package]]
 name = "ganbaru-native-messaging"
 version = "0.1.5"
 dependencies = [
  "chrono",
+ "jiff",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "tokio",
 ]
@@ -1850,28 +1979,120 @@ dependencies = [
 ]
 
 [[package]]
+name = "ganbaru-pomodoro"
+version = "0.1.5"
+dependencies = [
+ "chrono",
+ "ganbaru-db",
+ "serde",
+ "sqlx",
+ "tokio",
+]
+
+[[package]]
+name = "ganbaru-projects"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "ganbaru-db",
+ "ganbaru-music",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "tokio",
+]
+
+[[package]]
+name = "ganbaru-quick-notes"
+version = "0.1.0"
+dependencies = [
+ "ganbaru-db",
+ "ganbaru-sync",
+ "ganbaru-sync-contracts",
+ "ring",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+]
+
+[[package]]
+name = "ganbaru-sync"
+version = "0.1.0"
+dependencies = [
+ "ganbaru-contacts",
+ "ganbaru-db",
+ "ganbaru-sync-contracts",
+ "serde",
+ "sqlx",
+ "tokio",
+]
+
+[[package]]
+name = "ganbaru-sync-contracts"
+version = "0.1.0"
+dependencies = [
+ "ganbaru-contacts",
+ "ring",
+ "sha2",
+]
+
+[[package]]
+name = "ganbaru-sync-replica"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "ganbaru-contacts",
+ "ganbaru-db",
+ "ganbaru-handoff",
+ "ganbaru-quick-notes",
+ "ganbaru-sync",
+ "ganbaru-sync-contracts",
+ "keyring",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+]
+
+[[package]]
 name = "ganbaru-tauri-app"
 version = "0.1.5"
 dependencies = [
- "ammonia",
  "axum",
  "base64 0.22.1",
  "block2",
  "cairo-rs",
  "chrono",
  "flate2",
+ "ganbaru-calendar",
  "ganbaru-chat",
  "ganbaru-chat-contracts",
  "ganbaru-chat-providers",
+ "ganbaru-civil-time",
+ "ganbaru-contacts",
  "ganbaru-db",
- "ganbaru-focus",
+ "ganbaru-distractions",
+ "ganbaru-handoff",
+ "ganbaru-mobile-distractions",
  "ganbaru-mobile-documents",
- "ganbaru-mobile-doomscrolling",
  "ganbaru-mobile-media",
  "ganbaru-mobile-notifications",
+ "ganbaru-music",
+ "ganbaru-music-library",
+ "ganbaru-music-player",
  "ganbaru-notes",
+ "ganbaru-pomodoro",
+ "ganbaru-projects",
+ "ganbaru-quick-notes",
+ "ganbaru-sync",
+ "ganbaru-sync-contracts",
+ "ganbaru-sync-replica",
+ "ganbaru-themes",
  "ganbaru-working-folders",
  "gtk",
+ "jiff",
  "keyring",
  "libc",
  "notify",
@@ -1882,9 +2103,6 @@ dependencies = [
  "objc2-foundation",
  "objc2-web-kit",
  "portable-pty",
- "qrcode",
- "quircs",
- "rcgen",
  "reqwest",
  "rmcp",
  "rodio",
@@ -1909,6 +2127,16 @@ dependencies = [
  "windows 0.61.3",
  "x11rb",
  "zip 8.6.0",
+]
+
+[[package]]
+name = "ganbaru-themes"
+version = "0.1.0"
+dependencies = [
+ "ganbaru-db",
+ "serde",
+ "sqlx",
+ "tokio",
 ]
 
 [[package]]
@@ -2707,6 +2935,60 @@ dependencies = [
  "gobject-sys",
  "libc",
  "system-deps",
+]
+
+[[package]]
+name = "jiff"
+version = "0.2.37"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ab1baf72f08796de0260609515130699b890ac25f30e610ad894bc5856cafdb"
+dependencies = [
+ "defmt",
+ "jiff-core",
+ "jiff-static",
+ "jiff-tzdb-platform",
+ "log",
+ "portable-atomic",
+ "portable-atomic-util",
+ "serde_core",
+ "windows-link 0.2.1",
+]
+
+[[package]]
+name = "jiff-core"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e52fe76043ccecc9005d2305ebaadf7d7fc0cc89ca6baa10a94d6bc68c7128c"
+dependencies = [
+ "defmt",
+ "log",
+]
+
+[[package]]
+name = "jiff-static"
+version = "0.2.37"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "378268a1116ad67ae6228701118ac9f491d78fda38a40a1f1a9e1348de6f7212"
+dependencies = [
+ "jiff-core",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "jiff-tzdb"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "142bd39932ad231f10513df9ab62661fead8719872150b7ad02a2df79f4e141e"
+
+[[package]]
+name = "jiff-tzdb-platform"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "875a5a69ac2bab1a891711cf5eccbec1ce0341ea805560dcd90b7a2e925132e8"
+dependencies = [
+ "jiff-tzdb",
 ]
 
 [[package]]
@@ -3945,6 +4227,21 @@ dependencies = [
  "pin-project-lite",
  "rustix",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "portable-atomic"
+version = "1.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05c8b63e8d9609db387f0324918f81d68fe27748f084ef092fb35954d0539a85"
+
+[[package]]
+name = "portable-atomic-util"
+version = "0.2.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10ab3eb7f3becc3a1cbc4f2c6f20267996cfc1a6467a873763411b136a122715"
+dependencies = [
+ "portable-atomic",
 ]
 
 [[package]]

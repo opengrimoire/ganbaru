@@ -30,6 +30,13 @@ describe("classifyLoadFailure", () => {
       requiresDocumentReload: false,
     });
   });
+
+  it("reads the message of a native command error object", () => {
+    expect(classifyLoadFailure({ code: "read_only", message: "This vault is read-only on this device" })).toEqual({
+      message: "This vault is read-only on this device",
+      requiresDocumentReload: false,
+    });
+  });
 });
 
 describe("recoverLoadFailure", () => {

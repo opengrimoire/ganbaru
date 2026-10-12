@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "./ui-foundations.css";
 
 /* Register the application font before the static ownership transition can paint. */
 @font-face {
@@ -131,7 +132,14 @@
   --default-type-scale: 1.066667;
   --font-scale: 1;
   --type-scale: calc(var(--default-type-scale) * var(--font-scale));
+  /* Notes paragraph size. */
+  --paragraph-font-size: calc(1rem * var(--font-scale));
+  /* Collection tables and their panels read slightly smaller than paragraphs, keeping the proportion Notion uses for databases. */
+  --collection-font-size: calc(var(--paragraph-font-size) * 0.875);
+  /* Minimum height of collection table rows and headers; touch layouts raise it to a 44px target. */
+  --collection-table-row-height: 2.375rem;
   --radius: 0.5rem;
+  --explorer-width: 17rem;
   --icon-stroke-width: 1.6;
   --icon-stroke-width-compact: 1.5;
   --icon-stroke-width-delicate: 1;
@@ -217,15 +225,15 @@
   --touch-target-min: 48px;
 }
 
-svg.lucide:not(.app-title-bar *) {
+svg.lucide:not(.app-title-bar *, .explorer-sidebar *) {
   stroke-width: var(--icon-stroke-width);
 }
 
-svg.lucide[stroke-width="1"]:not(.app-title-bar *) {
+svg.lucide[stroke-width="1"]:not(.app-title-bar *, .explorer-sidebar *) {
   stroke-width: var(--icon-stroke-width-delicate);
 }
 
-svg.lucide[stroke-width="1.5"]:not(.app-title-bar *) {
+svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
   stroke-width: var(--icon-stroke-width-compact);
 }
 
@@ -297,6 +305,8 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *) {
   --text-sm--line-height: calc(1.25rem * var(--type-scale));
   --text-base: calc(1rem * var(--type-scale));
   --text-base--line-height: calc(1.5rem * var(--type-scale));
+  --text-collection: var(--collection-font-size);
+  --text-collection--line-height: 1.5;
   --text-identity: calc(0.875rem * var(--type-scale));
   --text-identity--line-height: calc(1.25rem * var(--type-scale));
   --text-lg: calc(1.125rem * var(--type-scale));
@@ -429,6 +439,10 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *) {
     outline: 2px solid var(--ring);
     outline-offset: 2px;
   }
+  /* Text entry shows focus through its caret, never a contour. */
+  html[data-focus-intent="keyboard"] :where(textarea, input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"], [type="button"], [type="submit"], [type="reset"])):focus {
+    outline: none;
+  }
   html:not([data-focus-intent="keyboard"]) :where(button, a, input, select, textarea, [tabindex]):focus,
   html:not([data-focus-intent="keyboard"]) :where(button, a, input, select, textarea, [tabindex]):focus-visible {
     box-shadow: none;
@@ -456,6 +470,7 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *) {
   html[data-shell="mobile"] {
     --titlebar-h: var(--mobile-topbar-h);
     --cal-header-row-h: 56px;
+    --collection-table-row-height: 2.75rem;
   }
   .mobile-viewport-height {
     height: 100%;
@@ -463,6 +478,11 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *) {
   @supports (height: 100dvh) {
     .mobile-viewport-height {
       height: 100dvh;
+    }
+  }
+  @media (any-pointer: coarse) and (any-hover: none) {
+    :root {
+      --collection-table-row-height: 2.75rem;
     }
   }
   html[data-shell="mobile"] :where(button, a, input, select, textarea) {
@@ -486,7 +506,7 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *) {
 
 @layer utilities {
   /*
-   * Existing components use exact rem sizes for their relative hierarchy.
+   * Components use exact rem sizes for their relative hierarchy.
    * These aliases apply the font preference without resizing rem-based layout.
    */
   [class~="text-[0.52rem]"] { font-size: calc(0.52rem * var(--type-scale)); }
@@ -531,7 +551,18 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *) {
   [class~="text-[2.5rem]"] { font-size: calc(2.5rem * var(--type-scale)); }
 
   .notes-editor-body-text {
-    font-size: calc(1rem * var(--font-scale));
+    font-size: var(--paragraph-font-size);
+  }
+
+  .notes-heading-1 { --notes-heading-size: 1.875rem; }
+  .notes-heading-2 { --notes-heading-size: 1.5rem; }
+  .notes-heading-3 { --notes-heading-size: 1.375rem; }
+  .notes-heading-4 { --notes-heading-size: 1.25rem; }
+  .notes-heading-5 { --notes-heading-size: 1.125rem; }
+  .notes-heading-6 { --notes-heading-size: 1rem; }
+
+  .notes-heading-text {
+    font-size: calc(var(--notes-heading-size) * var(--font-scale));
   }
 
   .notes-editor-page-title {
@@ -645,4 +676,278 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *) {
 }
 .hide-scrollbar::-webkit-scrollbar {
   display: none;
+}
+
+/* Scroll containers using the scroll edge fade action fade the edges that have more content beyond them. */
+:root {
+  --scroll-fade-size: 1.5rem;
+}
+[data-scroll-fade="top"] {
+  -webkit-mask-image: linear-gradient(to bottom, transparent, black var(--scroll-fade-size), black);
+  mask-image: linear-gradient(to bottom, transparent, black var(--scroll-fade-size), black);
+}
+[data-scroll-fade="bottom"] {
+  -webkit-mask-image: linear-gradient(to bottom, black, black calc(100% - var(--scroll-fade-size)), transparent);
+  mask-image: linear-gradient(to bottom, black, black calc(100% - var(--scroll-fade-size)), transparent);
+}
+[data-scroll-fade="both"] {
+  -webkit-mask-image: linear-gradient(to bottom, transparent, black var(--scroll-fade-size), black calc(100% - var(--scroll-fade-size)), transparent);
+  mask-image: linear-gradient(to bottom, transparent, black var(--scroll-fade-size), black calc(100% - var(--scroll-fade-size)), transparent);
+}
+
+/*
+ * Collection tables highlight one surface at a time. Cells, column names, and standalone header controls share one
+ * square highlight. An open cell or column menu, a focused text field, a column resize, or a column drag suppresses
+ * hover feedback everywhere else, and a column name stays unhighlighted while its resize handle is under the pointer.
+ */
+:root {
+  --collection-highlight: color-mix(in srgb, var(--accent) 40%, transparent);
+  --collection-row-highlight: color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+[data-collection-hover-target] {
+  border-radius: 0;
+  background-color: transparent;
+}
+
+:root:not([data-collection-column-dragging]):not(:has(:is([data-collection-cell-primary], [data-collection-hover-target])[aria-expanded="true"], [data-collection-cell-primary]:is(textarea, input:not([type="checkbox"], [type="radio"])):focus, [data-collection-resize]:active)) :is(
+  .collection-cell:has([data-collection-cell-primary]:not(:disabled)):not(:has([data-collection-resize]:hover)),
+  [data-collection-hover-target]:not(:disabled)
+):hover,
+.collection-cell:has([data-collection-cell-primary][aria-expanded="true"], [data-collection-cell-primary]:is(textarea, input:not([type="checkbox"], [type="radio"])):focus, :focus-visible),
+[data-collection-hover-target]:is([aria-expanded="true"], :focus-visible) {
+  background-image: linear-gradient(var(--collection-highlight), var(--collection-highlight));
+}
+
+:root:not([data-collection-column-dragging]):not(:has(:is([data-collection-cell-primary], [data-collection-hover-target])[aria-expanded="true"], [data-collection-cell-primary]:is(textarea, input:not([type="checkbox"], [type="radio"])):focus, [data-collection-resize]:active)) .collection-row[data-collection-hoverable]:hover {
+  --collection-row-hover: var(--collection-row-highlight);
+}
+
+:root[data-collection-column-dragging] .collection-row :is(a, button, label):hover,
+:root:has(:is([data-collection-cell-primary], [data-collection-hover-target])[aria-expanded="true"], [data-collection-cell-primary]:is(textarea, input:not([type="checkbox"], [type="radio"])):focus, [data-collection-resize]:active) .collection-row :is(a, button, label):not([aria-expanded="true"], [data-collection-resize]):not(:is([role="menu"], [role="dialog"], [role="listbox"]) *):hover {
+  background-color: transparent;
+}
+
+/* A column drag owns the pointer: the grabbing cursor holds everywhere and pointer travel selects no text. */
+:root[data-collection-column-dragging],
+:root[data-collection-column-dragging] * {
+  cursor: grabbing !important;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Cover geometry follows the page container, including narrow page previews. */
+.notes-page-banner {
+  height: min(clamp(8rem, 20cqw, 15rem), 25svh);
+}
+
+/* Mentions read as one inline object; the chip paints the selection itself so its icon is covered too. */
+.notes-mention-chip {
+  border-radius: 0.2em;
+  padding: 0.02em 0.16em;
+  color: var(--notes-rich-text-color, inherit);
+  background: var(--notes-rich-text-bg, color-mix(in srgb, var(--muted-foreground) 7%, transparent));
+  box-shadow: inset 0 0 0 1px var(--notes-rich-text-border, transparent);
+  box-decoration-break: clone;
+  cursor: default;
+}
+.notes-mention-chip-link {
+  text-decoration-line: underline;
+  text-decoration-color: color-mix(in srgb, var(--muted-foreground) 40%, transparent);
+  text-underline-offset: 0.2em;
+  text-decoration-thickness: 0.06em;
+  cursor: pointer;
+}
+.notes-mention-chip-link:hover { background: var(--notes-rich-text-bg, color-mix(in srgb, var(--muted-foreground) 13%, transparent)); }
+.notes-mention-chip-link:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.notes-mention-chip[data-notes-strikethrough="true"] { text-decoration-line: line-through; }
+.notes-mention-chip-link[data-notes-strikethrough="true"] { text-decoration-line: underline line-through; }
+.notes-mention-chip-link[aria-disabled="true"] { cursor: default; }
+.notes-mention-chip-icon { display: inline-flex; margin-inline-end: 0.22em; vertical-align: -0.12em; color: var(--muted-foreground); }
+.notes-mention-chip.notes-rich-text-comment-anchor { background: color-mix(in srgb, var(--primary) 16%, transparent); box-shadow: inset 0 -0.12rem 0 color-mix(in srgb, var(--primary) 45%, transparent); }
+.notes-mention-chip.notes-rich-text-comment-anchor-resolved { background: color-mix(in srgb, var(--muted-foreground) 12%, transparent); box-shadow: inset 0 -0.12rem 0 color-mix(in srgb, var(--muted-foreground) 35%, transparent); }
+.notes-mention-chip.notes-rich-text-suggestion-anchor { background: color-mix(in srgb, var(--secondary) 38%, transparent); box-shadow: inset 0 -0.12rem 0 color-mix(in srgb, var(--primary) 70%, transparent); }
+.notes-mention-chip.notes-rich-text-suggestion-anchor-accepted { background: color-mix(in srgb, var(--primary) 12%, transparent); box-shadow: inset 0 -0.12rem 0 color-mix(in srgb, var(--primary) 45%, transparent); }
+.notes-mention-chip.notes-rich-text-suggestion-anchor-rejected { background: color-mix(in srgb, var(--destructive) 10%, transparent); box-shadow: inset 0 -0.12rem 0 color-mix(in srgb, var(--destructive) 35%, transparent); }
+.notes-mention-chip[data-notes-selected="true"] { background: var(--selection-background); }
+.notes-mention-chip[data-notes-selected="true"]::selection,
+.notes-mention-chip[data-notes-selected="true"] *::selection { background-color: transparent; }
+
+/* Notes and Chat share explorer surfaces, controls, and navigation states. */
+.explorer-sidebar {
+  --explorer-toolbar-height: var(--cal-header-row-h);
+  --explorer-row-icon-size: 14px;
+  --explorer-toolbar-icon-size: var(--explorer-row-icon-size);
+  --explorer-action-size: 1.75rem;
+  --explorer-row-action-end-inset: 0.375rem;
+  --explorer-icon-stroke: var(--icon-stroke-width-compact);
+  --explorer-text-size: calc(0.866667rem * var(--type-scale));
+  --explorer-line-height: calc(1.3rem * var(--type-scale));
+  --explorer-row-padding: 0.375rem;
+  --explorer-row-height: max(2rem, calc(var(--explorer-line-height) + 2 * var(--explorer-row-padding)));
+  --explorer-text-weight: 400;
+  --explorer-background: color-mix(in oklab, var(--sidebar) 45%, var(--cal-bg));
+  background: var(--explorer-background);
+  color: var(--foreground);
+}
+
+.explorer-toolbar {
+  display: flex;
+  height: var(--explorer-toolbar-height);
+  min-height: var(--explorer-toolbar-height);
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.125rem;
+  padding-inline: 0.5rem;
+}
+
+.explorer-icon {
+  display: inline-flex;
+  width: var(--explorer-action-size);
+  height: var(--explorer-action-size);
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.375rem;
+  color: var(--muted-foreground);
+}
+
+.explorer-icon:hover,
+.explorer-icon[aria-pressed="true"],
+.explorer-icon.explorer-icon-active,
+.explorer-icon[aria-expanded="true"].explorer-row-action {
+  background: var(--accent);
+  color: var(--foreground);
+}
+
+.explorer-icon:disabled {
+  pointer-events: none;
+  opacity: 0.45;
+}
+
+.explorer-sidebar .explorer-row-disclosure {
+  width: var(--explorer-action-size);
+  height: var(--explorer-action-size);
+  flex: 0 0 auto;
+}
+
+.explorer-sidebar :is(button, summary):focus-visible,
+.explorer-row :is(button, summary):focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
+/* Sidebar search fields take the explorer row height; the `field` utility owns their look. */
+.explorer-sidebar .explorer-search {
+  min-height: var(--explorer-row-height);
+}
+
+.explorer-search input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.explorer-row {
+  --explorer-row-highlight: color-mix(in oklab, var(--accent) 50%, transparent);
+  min-height: var(--explorer-row-height, 2rem);
+  border-radius: 0.375rem;
+}
+
+.explorer-row:hover {
+  background: var(--explorer-row-highlight);
+}
+
+.explorer-row.explorer-selected {
+  --explorer-row-highlight: var(--selection-background);
+  background: var(--explorer-row-highlight);
+}
+
+.explorer-row-action {
+  margin-inline-end: var(--explorer-row-action-end-inset);
+}
+
+.explorer-sidebar .explorer-row-action:is(:hover, :focus-visible, [aria-expanded="true"]) {
+  background: transparent;
+  color: var(--foreground);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .explorer-row-action {
+    opacity: 0;
+  }
+
+  :is(.explorer-row, .section-heading):hover .explorer-row-action,
+  :is(.explorer-row, .section-heading):has(:focus-visible) .explorer-row-action,
+  .explorer-row-action[aria-expanded="true"] {
+    opacity: 1;
+  }
+}
+
+.explorer-touch .explorer-toolbar {
+  --explorer-toolbar-height: calc(var(--touch-target-min) + 0.5rem);
+  padding-block: 0.25rem;
+}
+
+.explorer-touch :is(.explorer-icon, .explorer-row-disclosure, .channel-row, .archive-button, .section-heading > button) {
+  min-height: var(--touch-target-min);
+}
+
+.explorer-touch :is(.explorer-icon, .explorer-row-disclosure, .section-heading > button) {
+  min-width: var(--touch-target-min);
+}
+
+.explorer-touch .explorer-row-action {
+  opacity: 1;
+}
+
+/* Explorer icons have one owner, independent of feature-specific SVG rules. */
+.explorer-sidebar svg.lucide {
+  stroke-width: var(--explorer-icon-stroke);
+  flex-shrink: 0;
+}
+
+.explorer-sidebar .explorer-toolbar > .explorer-icon svg,
+.explorer-sidebar .explorer-toolbar > div > .explorer-icon svg {
+  width: var(--explorer-toolbar-icon-size);
+  height: var(--explorer-toolbar-icon-size);
+}
+
+.explorer-sidebar :is(.explorer-row, .section-heading, .explorer-section-title, .explorer-search) svg.lucide {
+  width: var(--explorer-row-icon-size);
+  height: var(--explorer-row-icon-size);
+}
+
+.explorer-sidebar .explorer-row-label,
+.explorer-sidebar .section-toggle,
+.explorer-sidebar .section-heading,
+.explorer-sidebar .explorer-section-title,
+.explorer-sidebar .archive-button,
+.explorer-sidebar .explorer-search input {
+  font-size: var(--explorer-text-size);
+  line-height: var(--explorer-line-height);
+  font-weight: var(--explorer-text-weight);
+}
+
+/* Section headings occupy one navigation row, preserving the same baseline rhythm. */
+.explorer-sidebar .section-heading,
+.explorer-sidebar .explorer-section-title {
+  min-height: var(--explorer-row-height);
+}
+
+.explorer-sidebar .explorer-row-icon {
+  width: var(--explorer-row-icon-size);
+  height: var(--explorer-row-icon-size);
+  flex: 0 0 auto;
+}
+
+.explorer-sidebar svg.explorer-row-icon {
+  stroke-width: var(--explorer-icon-stroke);
+}
+
+.explorer-touch {
+  --explorer-row-height: max(var(--touch-target-min), calc(var(--explorer-line-height) + 2 * var(--explorer-row-padding)));
+}
+
+.explorer-sidebar .explorer-row > button.explorer-row-label,
+.explorer-sidebar button.explorer-row.explorer-row-label {
+  padding-block: var(--explorer-row-padding);
 }

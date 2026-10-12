@@ -11,7 +11,7 @@ use crate::rules::HostDecision;
 use crate::snapshot::{RuntimeState, StateSnapshot, usage_db_path};
 use crate::{block_on, now_utc};
 
-const EVENTS_FILE: &str = "doomscrolling-events.jsonl";
+const EVENTS_FILE: &str = "distractions-events.jsonl";
 
 pub(super) fn log_block_event(snapshot: &StateSnapshot, host: &str, decision: &HostDecision) {
     let matched_rule_name = decision.matched_rule_name();
@@ -37,7 +37,7 @@ pub(super) fn log_block_event(snapshot: &StateSnapshot, host: &str, decision: &H
     }
     if native_vault_is_writable(config_dir, snapshot.vault_path.as_deref()) {
         if let Err(err) = record_block_event_in_database(snapshot, &occurred_at, host, decision) {
-            eprintln!("failed to record doomscrolling block event: {err}");
+            eprintln!("failed to record distraction block event: {err}");
         }
     }
 }
@@ -92,7 +92,7 @@ pub(super) fn record_block_event_in_database(
             .await
             .map_err(|e| format!("usage database busy timeout: {e}"))?;
         sqlx::query(
-            "INSERT OR IGNORE INTO doomscrolling_block_events
+            "INSERT OR IGNORE INTO distractions_block_events
                 (id, run_id, segment_id, occurred_at, source_type, source_key,
                  display_name, phase, decision, rule_id, category_id)
              VALUES (?, ?, NULL, ?, 'browser', ?, ?, ?, ?, NULL, NULL)",
@@ -108,7 +108,7 @@ pub(super) fn record_block_event_in_database(
         .await
         .map_err(|e| format!("record block event: {e}"))?;
         sqlx::query(
-            "INSERT OR REPLACE INTO doomscrolling_block_event_rule_snapshots
+            "INSERT OR REPLACE INTO distractions_block_event_rule_snapshots
                     (block_event_id, rule_id, rule_kind, rule_label, environment_id, blocker_mode)
                  VALUES (?, NULL, ?, ?, NULL, ?)",
         )

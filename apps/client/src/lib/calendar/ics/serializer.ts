@@ -7,9 +7,9 @@ import type {
 	EventAttendee,
 	EventOrganizer,
 	EventOverride,
-} from "$lib/components/calendar/types";
-import { recurrenceToRrule } from "$lib/components/calendar/rrule";
-import { wallClockToUtcIso } from "$lib/components/calendar/utils";
+} from "$lib/calendar/types";
+import { recurrenceToRrule } from "$lib/calendar/rrule";
+import { wallClockToUtcIso } from "$lib/calendar/utils";
 
 const CRLF = "\r\n";
 const PRODID = "-//Ganbaru AI//Calendar//EN";

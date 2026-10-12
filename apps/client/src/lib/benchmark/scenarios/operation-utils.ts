@@ -3,8 +3,6 @@ import { dbUrl, ensureDbUrl } from "$lib/api/db";
 import { type BenchmarkMetric } from "../types";
 import { timingStatsMetric } from "./calendar-utils";
 
-export const DEFAULT_OPERATION_RUNS = 8;
-
 export function throwIfAborted(signal: AbortSignal): void {
   if (signal.aborted) throw new DOMException("aborted", "AbortError");
 }
@@ -24,21 +22,6 @@ export async function measureMs(operation: () => Promise<void>): Promise<number>
   const started = performance.now();
   await operation();
   return performance.now() - started;
-}
-
-export async function repeatedTimingMetric(
-  label: string,
-  runs: number,
-  signal: AbortSignal,
-  operation: (index: number) => Promise<void>,
-  details: Record<string, string | number> = {},
-): Promise<BenchmarkMetric> {
-  const samples: number[] = [];
-  for (let i = 0; i < runs; i++) {
-    throwIfAborted(signal);
-    samples.push(await measureMs(() => operation(i)));
-  }
-  return timingStatsMetric(label, samples, details);
 }
 
 export async function repeatedMeasuredTimingMetric(
@@ -66,9 +49,4 @@ export function scalarMsMetric(label: string, value: number): BenchmarkMetric {
 
 export function nowIso(): string {
   return new Date().toISOString();
-}
-
-export function isoMinutesFromAnchor(minutes: number): string {
-  const base = Date.UTC(2026, 3, 30, 8, 0, 0);
-  return new Date(base + minutes * 60_000).toISOString();
 }

@@ -3,6 +3,7 @@ import {
   formatDateTime,
   formatList,
   formatNumber,
+  formatRelativeDays,
   formatRelativeMinutes,
   pluralCategory,
 } from "./formatters";
@@ -59,5 +60,15 @@ describe("locale-aware formatters", () => {
     expect(formatRelativeMinutes(t, 5)).toBe("en 5 min");
     expect(formatRelativeMinutes(t, 0)).toBe("Now");
     expect(formatRelativeMinutes(t, -3)).toBe("3 min ago");
+  });
+
+  it("formats relative day labels with singular and plural forms", () => {
+    const t: Translate = ((key, ...args) =>
+      translateFromPartialCatalog({}, key, ...args)) as Translate;
+
+    expect(formatRelativeDays(t, 0)).toBe("Today");
+    expect(formatRelativeDays(t, 1)).toBe("in 1 day");
+    expect(formatRelativeDays(t, 7)).toBe("in 7 days");
+    expect(formatRelativeDays(t, -2)).toBe("2 days ago");
   });
 });

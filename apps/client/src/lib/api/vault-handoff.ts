@@ -9,7 +9,7 @@ export interface PairingInvitation {
   invitation: string;
   qr: PairingQrMatrix;
   endpoint: string;
-  expiresAtUnixMs: number;
+  expiresAtMs: number;
   networkAccess?: DesktopNetworkAccess;
 }
 
@@ -64,7 +64,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function parseQrMatrix(value: unknown): PairingQrMatrix {
+/** Validates a native QR module grid; pairing invitations and contact cards share the shape. */
+export function parseQrMatrix(value: unknown): PairingQrMatrix {
   if (!isRecord(value) || !Number.isSafeInteger(value.width) || !Array.isArray(value.modules)) {
     throw new Error("Invalid pairing QR matrix response");
   }
@@ -90,7 +91,7 @@ function parseInvitation(value: unknown): PairingInvitation {
     !isRecord(value) ||
     typeof value.invitation !== "string" ||
     typeof value.endpoint !== "string" ||
-    typeof value.expiresAtUnixMs !== "number"
+    typeof value.expiresAtMs !== "number"
   ) {
     throw new Error("Invalid pairing invitation response");
   }
@@ -98,7 +99,7 @@ function parseInvitation(value: unknown): PairingInvitation {
     invitation: value.invitation,
     qr: parseQrMatrix(value.qr),
     endpoint: value.endpoint,
-    expiresAtUnixMs: value.expiresAtUnixMs,
+    expiresAtMs: value.expiresAtMs,
     networkAccess: value.networkAccess === undefined
       ? undefined
       : parseDesktopNetworkAccess(value.networkAccess),

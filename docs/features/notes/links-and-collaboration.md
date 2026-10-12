@@ -1,5 +1,19 @@
 # Notes links and collaboration
 
+Status: implemented for local links, backlinks, comments, suggestions, mentions, and notifications. Shared access control and sync are planned.
+
+## Inline links
+
+Linked text uses semantic anchors. Hovering a link in the editor opens a small floating preview with its destination, Copy, and Edit; clicking the link opens it. Ctrl/Cmd+K or Edit opens an anchored panel with Page or URL and Link title fields, where note titles can be searched without reading database rows. Applying keeps surrounding text and formatting, and Remove link keeps the text. Link panels float outside the document layout, and invalid destinations, stale selections, and failed actions stay visible in the panel.
+
+Pasting a single valid URL onto selected text links the existing words, including across a document selection as one undo step; code blocks and database blocks are unchanged.
+
+Local links persist as `#notes?page=UUID` with an optional `block=UUID`; a link to a database view adds `view=UUID` beside its block and opens that database with the view selected. Links copied from the current app origin normalize to this form. Rust validates the identities before saving, and navigation checks whether the target is still available. This is not an operating-system URL scheme or a public sharing URL.
+
+Page and database mentions render as compact inline references. Hovering shows the current title with its route above it, from project group and project through folders and parent notes; a database's route ends with the note that holds it, and its card adds a schematic preview that fetches no rows. Metadata loads only on hover intent or activation. Clicking a database mention opens its database surface. Within the vault, rich clipboard paste keeps mention identities without duplicating their destinations; missing or invalid metadata degrades to readable text or an ordinary hyperlink.
+
+External links open through a Notes-owned native command that allows only HTTP, HTTPS, and email destinations, rejects embedded credentials, fetches nothing, and does not widen the generic opener allowlist. Local references stay within Notes navigation.
+
 ## Stable links and aliases
 
 Local Notes links resolve to stable page identities when known. Aliases provide alternate names for pages and database rows without changing the canonical title.
@@ -24,9 +38,9 @@ Link facts derive a graph across pages, row pages, blocks, properties, comments,
 
 ## Comments
 
-Notes supports page discussions, block comment threads, and inline text-range anchors. Comments retain author snapshots, status, timestamps, attachments, and soft-delete state. Per-user read state is local metadata rather than content.
+Notes supports page discussions, block comment threads, and inline text-range anchors. Comments retain author snapshots, status, timestamps, attachments, emoji reactions, and soft-delete state. Comment text can mention dates, people, and pages, and can attach files. Per-user read state, muted discussions, and per-page notification levels (mentions and reminders, mentions only, or off) are local preferences rather than content.
 
-Resolving a thread does not delete it. Inline anchors retain surrounding context so a moved or edited range can be identified or reported stale.
+Page discussions appear under the title and, on row pages, under the properties. Once a page has discussions, a header button summarizes the latest comment of the most recently active open discussion with the page's notification settings and a way into the All discussions panel, which filters open, resolved, or all discussions. Resolving a thread does not delete it. Inline anchors retain surrounding context so a moved or edited range can be identified or reported stale.
 
 ## Suggestions
 
@@ -34,7 +48,13 @@ Suggestions store original and proposed text, range and context anchors, author,
 
 ## Mentions and notifications
 
-Rich text can mention users, projects, tasks, pages, dates, and supported local objects. Reminder and participant mentions can create local notification rows. Delivery is owned by the local application or platform scheduler and never by a hosted Notes service.
+Rich text can mention people, pages, databases, dates, projects, Project tasks, and Calendar events. Live state such as the Focus timer or the Music queue is not mentionable. Task and Calendar event suggestions come only from the projects in the page's project group (its own project and the active projects beside it), so collaborators see the same scope; pages outside a project and comments offer none, while projects stay mentionable everywhere. Date mentions understand relative days, weekdays, numeric dates (`2025-12-2`), and month names in the active language or English (`oct 30`, `30 de octubre`); a date typed without a year falls in the current year. A trailing time needs a colon or am/pm (`12:1` is 12:01, `3pm`), applies to every suggested day, and is stored as a floating wall time that reminders read in the device's current zone. A leading reminder word (`remind`, `recordar`) turns the mention into a reminder. Reminder and participant mentions, and database date values with a reminder, can create local notification rows. Delivery is owned by the local application or platform scheduler and never by a hosted Notes service.
+
+The mention catalog loads only while a mention menu is open, so opening a note never reads database rows for mentions.
+
+Every mention is one atomic token in the editor: the caret cannot enter it, one arrow key or Shift+arrow press crosses it, one Backspace or Delete removes it whole, and formatting or partial selections widen to cover it. Its icon is decoration that follows the selection highlight but is never copied as text, while rich copy and paste keep the identity of every mention kind. Project mentions show the project's icon, project and task mentions open Projects (a task opens its project), Calendar event mentions open Calendar, and people mentions are not navigable. Clicking a date mention in the editor opens the date editor shared with database date properties: day, time, end date, spelling (full, short, numeric, or year-month-day), reminder with how early it fires, and removal. Timed mentions offer minutes, hours, days, or a week before; date-only mentions offer whole days or a week before, so the reminder keeps its usual hour, and a minute offset falls back to the date itself when the time is removed. An edit rewrites the chip text in the chosen spelling, so relative chips such as "Tomorrow" become fixed dates once edited; times stay floating wall times. Hovering any mention with a mouse or pen opens the same kind of card: a project shows its group above its name, a task its group and project, and a Calendar event its calendar, with its date and time and location read from Calendar storage regardless of the range Calendar has loaded. A date shows the spelled date and its reminder, with how early it fires; a person shows their name only.
+
+The editor mention menu groups suggestions by kind (dates, people, pages, projects, Calendar), shows each page or database with its route, and collapses long groups behind a "more results" row. People always offer an invite panel with the final layout; sending invitations stays unavailable until shared access exists.
 
 Notification previews and deep links obey the same effective page access as direct reads.
 
@@ -46,7 +66,7 @@ Resolve, reopen, accept, and reject operations validate base versions. Future sy
 
 ## Access
 
-Future collaboration can grant group-wide, project-wide, folder-subtree, page, comment, or task-context access. Project membership alone does not imply access to every Note.
+**Planned:** shared collaboration can grant group-wide, project-wide, folder-subtree, page, comment, or task-context access. Project membership alone does not imply access to every Note. A page's Share action uses the shared participant picker from [Contacts and invitations](../collaboration/README.md) with page or subtree scope and the roles Can view, Can comment, Can edit, and Full access.
 
 Search, backlinks, mentions, notifications, history, templates, imports, exports, Chat links, reports, and AI context packages enforce the same effective access as direct page reads.
 
@@ -54,7 +74,7 @@ Inviting a participant requires an explicit history-visibility choice when prior
 
 ## Sync direction
 
-Local editing remains SQLite-canonical. Future encrypted CRDT sync may coordinate changes over the same page and block graph, but it must preserve local canonical data, explicit access, conflict semantics, and derivative Markdown boundaries.
+Local editing remains SQLite-canonical. Planned encrypted CRDT sync may coordinate changes over the same page and block graph, but it must preserve local canonical data, explicit access, conflict semantics, and derivative Markdown boundaries.
 
 Exact encryption, key distribution, offline revocation, and multi-author conflict behavior belong to the [sync](../../data/sync.md) and [access-control](../../data/access-control.md) specifications.
 

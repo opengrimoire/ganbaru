@@ -11,12 +11,15 @@
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import type { Component } from "svelte";
   import { getMusicInspectorDetail } from "$lib/api/music-library";
+  import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import type { MusicItemListEntry, MusicSnooze, MusicWeight } from "$lib/music/library-contracts";
-  import { formatMusicDuration } from "$lib/music/music-builder-presentation";
-  import { projectMusicItemMenuLayout } from "$lib/music/music-item-menu-layout";
-  import { musicSnoozePreset, type MusicSnoozePreset } from "$lib/music/music-snooze";
+  import type { MusicItemListEntry, MusicSnooze, MusicWeight } from "$lib/music/library/contracts";
+  import { formatMusicDuration } from "$lib/music/builder/presentation";
+  import { projectMusicItemMenuLayout } from "$lib/music/builder/item-menu-layout";
+  import { musicSnoozePreset, type MusicSnoozePreset } from "$lib/music/session/snooze";
   import { portal } from "$lib/utils/portal";
+  import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
 
   type Subpanel = "details" | "snooze" | "weight";
 
@@ -56,10 +59,10 @@
   const duration = $derived(formatMusicDuration(item.durationMs));
   const selectedSnooze = $derived.by(() => {
     const now = Date.now();
-    const scoped = snoozes.filter((entry) => entry.startsAt <= now && (entry.endsAt === null || entry.endsAt > now)
+    const scoped = snoozes.filter((entry) => entry.startsAtMs <= now && (entry.endsAtMs === null || entry.endsAtMs > now)
       && (context === "source" ? entry.scope === "all-playlists" : entry.scope === "playlist" && entry.playlistId === snoozePlaylistId));
     return scoped.length === 1
-      ? musicSnoozePreset(scoped[0].startsAt, scoped[0].endsAt, Intl.DateTimeFormat().resolvedOptions().timeZone)
+      ? musicSnoozePreset(scoped[0].startsAtMs, scoped[0].endsAtMs, Intl.DateTimeFormat().resolvedOptions().timeZone)
       : null;
   });
 
@@ -82,7 +85,7 @@
       anchor: trigger.getBoundingClientRect(),
       viewportWidth: window.innerWidth,
       viewportHeight: window.innerHeight,
-      panelWidth: 240,
+      panelWidth: FLOATING_WIDTH.sm,
       panelHeight: 250,
     });
     panelLeft = layout.panelLeft;
@@ -167,7 +170,7 @@
     <div
       bind:this={panel}
       use:portal
-      class="menu-panel fixed z-80 w-60 max-w-[calc(100vw-0.75rem)] overflow-y-auto"
+      class="surface-floating fixed z-80 flex w-floating-sm flex-col overflow-hidden outline-none"
       style={`left:${panelLeft}px;top:${panelTop}px;max-height:calc(100vh - ${panelTop + 6}px)`}
       role="dialog"
       tabindex="-1"
@@ -175,21 +178,21 @@
       data-app-shortcuts="ignore"
     >
       {#if subpanel}
-        <div class="flex items-center gap-1.5 border-b border-border/60 p-1.5">
+        <div class="flex shrink-0 items-center gap-1.5 border-b border-border p-1.5">
           <button type="button" class="back-button" aria-label={t("music.builder.back")} onclick={() => subpanel = null}><ArrowLeft size={14} /></button>
           <span class="min-w-0">
-            <strong class="block text-[0.72rem] font-semibold">{subpanelTitle(subpanel)}</strong>
-            <span class="block truncate text-[0.6rem] text-muted-foreground">{item.title}</span>
+            <strong class="block font-semibold">{subpanelTitle(subpanel)}</strong>
+            <span class="block truncate text-panel-detail text-muted-foreground">{item.title}</span>
           </span>
         </div>
       {:else}
-        <div class="border-b border-border/60 px-2.5 py-2">
-          <strong class="block truncate text-[0.72rem] font-semibold">{item.title}</strong>
-          <span class="mt-0.5 block truncate text-[0.62rem] text-muted-foreground">{item.artist || t("music.builder.noArtist")}</span>
+        <div class="shrink-0 border-b border-border px-2.5 py-2">
+          <strong class="block truncate font-semibold">{item.title}</strong>
+          <span class="mt-0.5 block truncate text-panel-detail text-muted-foreground">{item.artist || t("music.builder.noArtist")}</span>
         </div>
       {/if}
 
-      <div class="grid p-1">
+      <div use:scrollEdgeFadeAction class="surface-floating-body grid min-h-0 overflow-y-auto">
         {#if subpanel === "details"}
           <dl class="grid gap-0.5">
             {@render metadataRow(item.sourceKind === "local-file" ? t("music.builder.artistOnly") : t("music.builder.artist"), item.artist || t("music.builder.noArtist"))}
@@ -199,59 +202,49 @@
           </dl>
         {:else if subpanel === "snooze"}
           {#each snoozePresets as snoozeDuration (snoozeDuration)}
-            <button type="button" class="option-row" disabled={snoozesLoading} aria-pressed={selectedSnooze === snoozeDuration} onclick={() => { void run(() => onSnooze(item, snoozeDuration, context === "source")); }}>{t(`music.preferences.${snoozeDuration}`)}</button>
+            <button type="button" class="option-row menu-item justify-between" disabled={snoozesLoading} aria-pressed={selectedSnooze === snoozeDuration} onclick={() => { void run(() => onSnooze(item, snoozeDuration, context === "source")); }}><span>{t(`music.preferences.${snoozeDuration}`)}</span>{#if selectedSnooze === snoozeDuration}<Check size={12} />{/if}</button>
           {/each}
         {:else if subpanel === "weight"}
           {#each ["rarely", "less-often", "normal", "more-often", "much-more-often"] as weight (weight)}
             {@const typedWeight = weight as MusicWeight}
-            <button type="button" class="option-row" onclick={() => { if (onWeight) void run(() => onWeight(item, typedWeight)); }}><span>{weightLabel(typedWeight)}</span>{#if item.membershipWeight === typedWeight}<Check size={12} />{/if}</button>
+            <button type="button" class="option-row menu-item justify-between" onclick={() => { if (onWeight) void run(() => onWeight(item, typedWeight)); }}><span>{weightLabel(typedWeight)}</span>{#if item.membershipWeight === typedWeight}<Check size={12} />{/if}</button>
           {/each}
         {:else}
           {@render panelRow(t("music.builder.details"), item.album || t("music.builder.noAlbum"), Info, "details")}
           {@render panelRow(t("music.builder.snoozeTrack"), item.activeSnoozeCount > 0 ? t("music.builder.snoozed") : "", Clock3, "snooze")}
           {#if context === "playlist"}{@render panelRow(t("music.builder.frequency"), weightLabel(item.membershipWeight), SlidersHorizontal, "weight")}{/if}
           {#if item.sourceKind === "local-file" && showLocationAction}
-            <button type="button" class="action-row" disabled={busy} onclick={() => { void run(() => onShowLocation(item)); }}><FolderSearch size={14} />{t("music.itemMenu.showLocation")}</button>
+            <button type="button" class="menu-item" disabled={busy} onclick={() => { void run(() => onShowLocation(item)); }}><FolderSearch size={14} />{t("music.itemMenu.showLocation")}</button>
           {/if}
           {#if context === "playlist" && onRemove}
-            <div class="my-1 border-t border-border/60"></div>
-            <button type="button" class="action-row text-destructive" disabled={busy} onclick={() => { void run(() => onRemove(item)); }}><Trash2 size={14} />{t("music.builder.removeFromPlaylist", playlistName)}</button>
+            <div role="separator" class="menu-separator"></div>
+            <button type="button" class="menu-item menu-item-destructive" disabled={busy} onclick={() => { void run(() => onRemove(item)); }}><Trash2 size={14} />{t("music.builder.removeFromPlaylist", playlistName)}</button>
           {/if}
         {/if}
       </div>
 
-      {#if busy}<div class="absolute inset-0 grid place-items-center rounded-lg bg-card/75"><LoaderCircle class="animate-spin motion-reduce:animate-none" size={16} /></div>{/if}
-      {#if error}<p class="mx-1 mb-1 rounded-md bg-destructive/10 px-2 py-1.5 text-[0.62rem] text-destructive" role="alert">{error}</p>{/if}
+      {#if busy}<div class="absolute inset-0 grid place-items-center rounded-floating bg-popover/75"><LoaderCircle class="animate-spin motion-reduce:animate-none" size={16} /></div>{/if}
+      {#if error}<Notice class="mx-1.5 mb-1.5 shrink-0 px-2 py-1.5 text-panel-detail" message={error} />{/if}
     </div>
   {/if}
 </div>
 
 {#snippet panelRow(label: string, value: string, Icon: Component, target: Subpanel)}
-  <button type="button" class="panel-row" onclick={() => showSubpanel(target)}>
+  <button type="button" class="panel-row menu-item" onclick={() => showSubpanel(target)}>
     <Icon size={14} class="text-muted-foreground" />
     <span class="min-w-0 flex-1 truncate">{label}</span>
-    <span class="max-w-20 truncate text-[0.6rem] text-muted-foreground">{value}</span>
+    <span class="max-w-20 truncate text-panel-detail text-muted-foreground">{value}</span>
     <ChevronRight size={12} class="text-muted-foreground" />
   </button>
 {/snippet}
 
 {#snippet metadataRow(label: string, value: string)}
-  <div class="grid grid-cols-[4rem_minmax(0,1fr)] gap-2 rounded-md px-2 py-1.5 text-[0.65rem]"><dt class="text-muted-foreground">{label}</dt><dd class="truncate text-right" title={value}>{value}</dd></div>
+  <div class="grid grid-cols-[4rem_minmax(0,1fr)] gap-2 px-2 py-1.5"><dt class="text-muted-foreground">{label}</dt><dd class="truncate text-right" title={value}>{value}</dd></div>
 {/snippet}
 
 <style>
   .menu-trigger { display: grid; height: 1.75rem; width: 1.75rem; place-items: center; border-radius: 0.375rem; color: var(--muted-foreground); opacity: 0.7; }
   .menu-trigger:hover, .menu-trigger:focus-visible, .menu-trigger[aria-expanded="true"] { background: var(--accent); color: var(--accent-foreground); opacity: 1; outline: none; }
-  .menu-panel { border: 1px solid var(--border); border-radius: 0.5rem; background: var(--popover); color: var(--popover-foreground); box-shadow: 0 10px 28px color-mix(in srgb, black 18%, transparent); outline: none; }
-  .back-button { display: grid; height: 1.75rem; width: 1.75rem; flex: none; place-items: center; border-radius: 0.375rem; color: var(--muted-foreground); }
+  .back-button { display: grid; height: 1.75rem; width: 1.75rem; flex: none; place-items: center; border-radius: var(--floating-item-radius); color: var(--muted-foreground); }
   .back-button:hover, .back-button:focus-visible { background: var(--accent); color: var(--accent-foreground); outline: none; }
-  .panel-row { display: grid; min-height: 2rem; width: 100%; grid-template-columns: 1.25rem minmax(0,1fr) auto 0.9rem; align-items: center; gap: 0.35rem; border-radius: 0.375rem; padding-inline: 0.45rem; text-align: left; font-size: calc(0.68rem * var(--type-scale)); }
-  .panel-row:hover, .panel-row:focus-visible { background: var(--accent); outline: none; }
-  .action-row { display: flex; min-height: 2rem; width: 100%; align-items: center; gap: 0.6rem; border-radius: 0.375rem; padding-inline: 0.45rem; text-align: left; font-size: calc(0.68rem * var(--type-scale)); }
-  .action-row:hover, .action-row:focus-visible { background: var(--accent); outline: none; }
-  .action-row:disabled { opacity: 0.5; }
-  .option-row { display: flex; min-height: 2rem; width: 100%; align-items: center; justify-content: space-between; gap: 0.5rem; border-radius: 0.375rem; padding-inline: 0.5rem; text-align: left; font-size: calc(0.68rem * var(--type-scale)); }
-  .option-row:hover, .option-row:focus-visible { background: var(--accent); outline: none; }
-  .option-row[aria-pressed="true"] { background: color-mix(in srgb, var(--primary) 15%, var(--accent)); }
-  .option-row:disabled { opacity: 0.5; }
 </style>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mapPageSummary } from "./workspace-parsing";
+import { mapNavigationDatabase, mapPageSummary } from "./workspace-parsing";
 
 function pageSummary(icon: string | null): Record<string, unknown> {
   return {
@@ -18,6 +18,17 @@ function pageSummary(icon: string | null): Record<string, unknown> {
 }
 
 describe("Notes workspace parsing", () => {
+  it("accepts empty database titles while validating every navigation identity", () => {
+    const database = {
+      id: "00000000-0000-4000-8000-000000000001", page_id: "00000000-0000-4000-8000-000000000002",
+      data_source_id: "00000000-0000-4000-8000-000000000003", title: "",
+    };
+    expect(mapNavigationDatabase(database)).toEqual(database);
+    for (const field of ["id", "page_id", "data_source_id"] as const) {
+      expect(() => mapNavigationDatabase({ ...database, [field]: "invalid" })).toThrow("identities must be UUIDs");
+    }
+    expect(() => mapNavigationDatabase({ ...database, title: null })).toThrow("database.title must be a string");
+  });
   it("reports stored icon JSON failures with field context", () => {
     expect(() => mapPageSummary(pageSummary("{{"))).toThrow(
       'page.icon for page "page-1" must contain valid JSON',

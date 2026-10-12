@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { publishNotesDatabaseChange } from "$lib/notes/database/window-sync";
 import { ensureDbUrl } from "$lib/api/db";
 import {
   mapNotesBlockListDto,
@@ -6,7 +7,7 @@ import {
   mapNotesPageHistorySettingsDto,
   mapNotesPageHistorySnapshotDto,
   mapNotesPageTemplateDto,
-} from "$lib/notes/notion-mappers";
+} from "$lib/notes/validation/response-mappers";
 import type {
   NotesLoadedPage,
   NotesPageHistoryCopyBlocksRequest,
@@ -45,9 +46,9 @@ export async function applyNotesPageTemplate(
   request: NotesPageTemplateApplyRequest,
 ): Promise<NotesLoadedPage> {
   const dbUrl = await ensureDbUrl();
-  return mapNotesLoadedPageDto(
-    await invoke<unknown>("notes_apply_page_template", { dbUrl, templateId, request }),
-  );
+  const applied = await invoke<unknown>("notes_apply_page_template", { dbUrl, templateId, request });
+  publishNotesDatabaseChange();
+  return mapNotesLoadedPageDto(applied);
 }
 
 export async function updateNotesPageTemplate(
@@ -82,7 +83,7 @@ export async function deleteNotesPageTemplate(templateId: string): Promise<strin
 export async function getNotesPageHistorySettings(): Promise<NotesPageHistorySettings> {
   const dbUrl = await ensureDbUrl();
   return mapNotesPageHistorySettingsDto(
-    await invoke<unknown>("notes_get_page_history_settings", { dbUrl }),
+    await invoke<unknown>("notes_load_page_history_settings", { dbUrl }),
   );
 }
 

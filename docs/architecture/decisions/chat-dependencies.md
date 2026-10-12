@@ -20,7 +20,7 @@ This record explains dependency boundaries that materially affect Chat security,
 
 ## Provider transport decisions
 
-Codex and Claude use their native supported transports. Cursor and Grok use the official ACP types with ACP v1 negotiation. The previous handwritten ACP-core direction is superseded.
+Codex and Claude use their native supported transports. Cursor and Grok use the official ACP types with ACP v1 negotiation rather than a handwritten protocol implementation.
 
 OpenCode event streams use the existing HTTP stack and a small repository-owned bounded Server-Sent Events decoder. A larger event-stream dependency is unnecessary for the required grammar, reconnection, deduplication, and history reconciliation.
 

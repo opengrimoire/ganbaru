@@ -407,6 +407,11 @@
     };
 
     const handlePointerMove = (event: PointerEvent) => {
+      // Disabled surfaces also opt out of scrollbar tooltip layout checks.
+      if (event.target instanceof Element && event.target.closest('[data-app-tooltip-disabled="true"]')) {
+        if (anchorTextOverride !== undefined) hideTooltip();
+        return;
+      }
       const scrollbar = horizontalScrollbarAtPointer(event);
       if (scrollbar) {
         showTooltipFor(

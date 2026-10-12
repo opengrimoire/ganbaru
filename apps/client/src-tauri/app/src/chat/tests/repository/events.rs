@@ -408,12 +408,12 @@ fn projection_failure_rolls_back_event_and_thread_advance() {
         let pool = pool_with_thread().await;
         let mut request = content_event("event-invalid", "ignored");
         request.runtime.event =
-            CanonicalEvent::TurnStarted(crate::chat::events::TurnStartedEvent {
+            CanonicalEvent::TurnStarted(ganbaru_chat_contracts::events::TurnStartedEvent {
                 provider_turn_id: None,
-                state: crate::chat::models::ChatTurnState::Active,
-                modes: crate::chat::models::TurnModeSnapshot {
-                    safety_mode: crate::chat::models::SafetyMode::AskForApproval,
-                    interaction_mode: crate::chat::models::InteractionMode::Build,
+                state: ganbaru_chat_contracts::models::ChatTurnState::Active,
+                modes: ganbaru_chat_contracts::models::TurnModeSnapshot {
+                    safety_mode: ganbaru_chat_contracts::models::SafetyMode::AskForApproval,
+                    interaction_mode: ganbaru_chat_contracts::models::InteractionMode::Build,
                 },
                 model_id: None,
                 model_options: Vec::new(),

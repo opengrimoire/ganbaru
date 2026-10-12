@@ -3,10 +3,11 @@
 mod incoming;
 mod outgoing;
 
+use super::pairing::PairingManager;
 use super::protocol::{
-    BundleMetadata, BundlePurpose, DoomscrollingSampleMessage, HandoffCompatibility,
+    BundleMetadata, BundlePurpose, ContactRequestOutcome, DistractionsSampleMessage,
+    HandoffCompatibility,
 };
-use super::state::PairingManager;
 use crate::vault::ownership::VaultOwnershipManager;
 use crate::vault::quiescence::SourceQuiescence;
 use std::collections::BTreeSet;
@@ -42,12 +43,12 @@ pub(crate) enum CoordinatorOperation {
     RequestUpload {
         purpose: BundlePurpose,
     },
-    DoomscrollingExchange {
+    DistractionsExchange {
         vault_id: String,
         device_id: String,
-        samples: Vec<DoomscrollingSampleMessage>,
+        samples: Vec<DistractionsSampleMessage>,
         acknowledged_peer_sample_ids: Vec<String>,
-        owner_snapshot: Vec<DoomscrollingSampleMessage>,
+        owner_snapshot: Vec<DistractionsSampleMessage>,
     },
     Uploaded {
         metadata: BundleMetadata,
@@ -66,6 +67,22 @@ pub(crate) enum CoordinatorOperation {
     Cancel {
         transfer_id: String,
     },
+    /// Unauthenticated contact request addressed to the person owning this vault.
+    ContactRequest {
+        recipient_card_nonce: String,
+        requester_card: String,
+        request_id: String,
+        signature: String,
+    },
+    /// Unauthenticated status poll for a contact request sent earlier.
+    ContactRequestStatus {
+        request_id: String,
+        requester_public_key: String,
+        issued_at_ms: i64,
+        signature: String,
+    },
+    /// Authenticated request from a linked device for the person's signing key.
+    ReleasePersonKey,
     Shutdown,
 }
 
@@ -105,10 +122,27 @@ pub(crate) enum CoordinatorResponse {
         transfer_id: String,
         already_received: bool,
     },
-    DoomscrollingAcknowledged {
+    DistractionsAcknowledged {
         acknowledged_sample_ids: Vec<String>,
-        peer_samples: Vec<DoomscrollingSampleMessage>,
-        combined_samples: Vec<DoomscrollingSampleMessage>,
+        peer_samples: Vec<DistractionsSampleMessage>,
+        combined_samples: Vec<DistractionsSampleMessage>,
+    },
+    ContactRequestReceived {
+        request_id: String,
+    },
+    ContactRequestState {
+        state: ContactRequestOutcome,
+        recipient_card: Option<String>,
+    },
+    PersonKeyReleased {
+        public_key: String,
+        private_key_pkcs8: String,
+    },
+    /// A domain rejection that reaches the peer as a protocol error with a stable code.
+    Rejected {
+        code: String,
+        message: String,
+        retryable: bool,
     },
 }
 
@@ -242,14 +276,14 @@ impl<R: Runtime> CoordinatorState<R> {
                 self.poll_upload(vault_id, device_id, generation)
             }
             CoordinatorOperation::RequestUpload { purpose } => self.request_upload(purpose),
-            CoordinatorOperation::DoomscrollingExchange {
+            CoordinatorOperation::DistractionsExchange {
                 vault_id,
                 device_id,
                 samples,
                 acknowledged_peer_sample_ids,
                 owner_snapshot,
             } => {
-                self.doomscrolling_exchange(
+                self.distractions_exchange(
                     vault_id,
                     device_id,
                     samples,
@@ -282,7 +316,40 @@ impl<R: Runtime> CoordinatorState<R> {
                 self.commit_uploaded_ownership(metadata, source_device_id)
                     .await
             }
-            CoordinatorOperation::Cancel { transfer_id } => self.cancel(transfer_id),
+            CoordinatorOperation::Cancel { transfer_id } => self.cancel(transfer_id).await,
+            CoordinatorOperation::ContactRequest {
+                recipient_card_nonce,
+                requester_card,
+                request_id,
+                signature,
+            } => {
+                crate::contacts::requests::receive_request_for_coordinator(
+                    &self.app,
+                    recipient_card_nonce,
+                    requester_card,
+                    request_id,
+                    signature,
+                )
+                .await
+            }
+            CoordinatorOperation::ContactRequestStatus {
+                request_id,
+                requester_public_key,
+                issued_at_ms,
+                signature,
+            } => {
+                crate::contacts::requests::request_state_for_coordinator(
+                    &self.app,
+                    request_id,
+                    requester_public_key,
+                    issued_at_ms,
+                    signature,
+                )
+                .await
+            }
+            CoordinatorOperation::ReleasePersonKey => {
+                crate::contacts::identity::release_key_for_coordinator(&self.app).await
+            }
             CoordinatorOperation::Shutdown => unreachable!("shutdown is handled by the run loop"),
         }
     }
@@ -361,13 +428,13 @@ impl<R: Runtime> CoordinatorState<R> {
         }
     }
 
-    async fn doomscrolling_exchange(
+    async fn distractions_exchange(
         &mut self,
         vault_id: String,
         device_id: String,
-        samples: Vec<DoomscrollingSampleMessage>,
+        samples: Vec<DistractionsSampleMessage>,
         acknowledged_peer_sample_ids: Vec<String>,
-        owner_snapshot: Vec<DoomscrollingSampleMessage>,
+        owner_snapshot: Vec<DistractionsSampleMessage>,
     ) -> Result<CoordinatorResponse, String> {
         let status = self
             .app
@@ -376,15 +443,15 @@ impl<R: Runtime> CoordinatorState<R> {
         if status.can_write {
             if !owner_snapshot.is_empty() || !acknowledged_peer_sample_ids.is_empty() {
                 return Err(
-                    "the non-owner cannot publish authoritative Doomscrolling state".to_string(),
+                    "the non-owner cannot publish authoritative Distractions state".to_string(),
                 );
             }
-            let pool = crate::db_path::connect_sqlite(
+            let pool = crate::db::connect_sqlite(
                 self.app.clone(),
                 format!("sqlite:{}", crate::vault::APP_SQLITE_FILE),
             )
             .await?;
-            crate::doomscrolling_linked::drain_local_spool(
+            crate::distractions::linked::drain_local_spool(
                 &self.app,
                 &pool,
                 &vault_id,
@@ -392,39 +459,44 @@ impl<R: Runtime> CoordinatorState<R> {
             )
             .await?;
             let acknowledged_sample_ids =
-                crate::doomscrolling_linked::import_linked_samples(&pool, &samples).await?;
+                crate::distractions::linked::import_linked_samples(&pool, &samples).await?;
             let combined_samples =
-                crate::doomscrolling_linked::aggregate_owner_samples(&pool).await?;
-            return Ok(CoordinatorResponse::DoomscrollingAcknowledged {
+                crate::distractions::linked::aggregate_owner_samples(&pool).await?;
+            return Ok(CoordinatorResponse::DistractionsAcknowledged {
                 acknowledged_sample_ids,
                 peer_samples: Vec::new(),
                 combined_samples,
             });
         }
         if status.owner_device_id != device_id || !samples.is_empty() {
-            return Err(
-                "Doomscrolling exchange does not match the current vault owner".to_string(),
-            );
+            return Err("Distractions exchange does not match the current vault owner".to_string());
         }
-        crate::doomscrolling_linked::acknowledge(
-            &self.app,
-            &vault_id,
-            &status.device_id,
-            &acknowledged_peer_sample_ids,
-        )
-        .await?;
         if !owner_snapshot.is_empty() {
-            crate::doomscrolling_linked::replace_accepted(&self.app, &vault_id, &owner_snapshot)
-                .await?;
+            crate::distractions::linked::apply_owner_snapshot(
+                &self.app,
+                &vault_id,
+                &status.device_id,
+                &acknowledged_peer_sample_ids,
+                &owner_snapshot,
+            )
+            .await?;
+        } else {
+            crate::distractions::linked::acknowledge(
+                &self.app,
+                &vault_id,
+                &status.device_id,
+                &acknowledged_peer_sample_ids,
+            )
+            .await?;
         }
         let peer_samples =
-            crate::doomscrolling_linked::pending(&self.app, &vault_id, &status.device_id).await?;
+            crate::distractions::linked::pending(&self.app, &vault_id, &status.device_id).await?;
         let combined_samples = if peer_samples.is_empty() {
-            crate::doomscrolling_linked::accepted(&self.app, &vault_id).await?
+            crate::distractions::linked::accepted(&self.app, &vault_id).await?
         } else {
             Vec::new()
         };
-        Ok(CoordinatorResponse::DoomscrollingAcknowledged {
+        Ok(CoordinatorResponse::DistractionsAcknowledged {
             acknowledged_sample_ids: Vec::new(),
             peer_samples,
             combined_samples,
@@ -444,9 +516,13 @@ impl<R: Runtime> CoordinatorState<R> {
     }
 
     fn shutdown(&mut self) {
-        self.prepared
+        if let Some(quiescence) = self
+            .prepared
             .as_mut()
-            .and_then(|prepared| prepared.quiescence.take());
+            .and_then(|prepared| prepared.quiescence.take())
+        {
+            quiescence.retain_outgoing();
+        }
     }
 
     fn reload_shell(&self) -> Result<(), String> {
@@ -502,9 +578,8 @@ pub(crate) async fn request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vault::handoff::pairing::{StoredOutgoingTransfer, random_token};
     use crate::vault::handoff::protocol::PROTOCOL_VERSION;
-    use crate::vault::handoff::state::{StoredOutgoingTransfer, random_token};
-    use std::path::PathBuf;
 
     #[test]
     fn owner_reachability_requires_a_recent_poll_from_the_current_owner() {
@@ -561,7 +636,7 @@ mod tests {
             .unwrap();
         let prepared = restore_prepared(&restarted).unwrap().unwrap();
         assert_eq!(prepared.metadata, metadata);
-        assert_eq!(prepared.archive_path, PathBuf::from(archive_path));
+        assert_eq!(prepared.archive_path, archive_path);
         assert!(!prepared.committed);
         assert_eq!(
             restarted.outgoing_bundle(transfer_id).unwrap().metadata,

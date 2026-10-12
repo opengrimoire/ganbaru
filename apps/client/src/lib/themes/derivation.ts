@@ -30,6 +30,7 @@ const DERIVED_APP_TOKEN_KEYS: readonly string[] = Object.freeze([
   "--event-panel-input-text",
   "--event-panel-placeholder",
   "--form-indicator",
+  "--cal-header-bg",
 ] as const);
 
 /**
@@ -191,6 +192,7 @@ export function deriveAppTokens(
   const eventPanelContrast = shift(deltas.eventPanelContrastDeltaL);
   return {
     "--background": canvas,
+    "--cal-header-bg": canvas,
     "--card": card,
     "--card-foreground": fg(card),
     "--popover": popover,

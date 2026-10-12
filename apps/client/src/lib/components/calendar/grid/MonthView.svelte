@@ -330,7 +330,7 @@
     class="sticky top-0 z-10 shrink-0"
     style="
       height: var(--toolbar-h);
-      background-color: var(--background);
+      background-color: var(--cal-header-bg);
       border-bottom: 1px solid var(--sidebar);
     "
   >

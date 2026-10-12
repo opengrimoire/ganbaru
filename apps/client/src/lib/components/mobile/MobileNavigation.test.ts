@@ -15,7 +15,7 @@ describe("MobileNavigation", () => {
     target = null;
   });
 
-  it("marks only the current top destination and navigates from its compact control", async () => {
+  it("marks only the current bottom destination and navigates from its labeled tab", async () => {
     const onNavigate = vi.fn();
     target = document.createElement("div");
     document.body.append(target);
@@ -23,7 +23,7 @@ describe("MobileNavigation", () => {
       target,
       props: {
         current: "projects",
-        presentation: "top",
+        presentation: "bottom",
         onNavigate,
       },
     });
@@ -33,7 +33,8 @@ describe("MobileNavigation", () => {
     expect(buttons).toHaveLength(4);
     expect(buttons.filter((button) => button.getAttribute("aria-current") === "page")).toEqual([buttons[1]]);
     expect(target.querySelectorAll("[data-mobile-navigation-indicator]")).toHaveLength(1);
-    expect(target.textContent?.trim()).toBe("");
+    expect(buttons.map((button) => button.textContent?.trim())).toEqual(["Calendar", "Projects", "Notes", "Chat"]);
+    expect(buttons[1]?.querySelector("[data-mobile-navigation-indicator]")).not.toBeNull();
 
     buttons[2]?.click();
     expect(onNavigate).toHaveBeenCalledWith("notes");

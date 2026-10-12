@@ -132,6 +132,7 @@
     mobileNavigationPresentation(viewport.layoutWidth),
   );
   const useNavigationRail = $derived(navigationPresentation === "rail");
+  const bottomNavigationVisible = $derived(!useNavigationRail && viewport.keyboardInset <= 0);
   const suspendInfo = $derived(pomodoro.suspendedAway);
   const suspendDecisionOpen = $derived(suspendInfo !== null);
   const modalOpen = $derived(
@@ -679,6 +680,12 @@
     }
   }
 
+  $effect(() => {
+    const root = document.documentElement;
+    root.style.setProperty("--mobile-bottom-chrome-h", bottomNavigationVisible ? "var(--mobile-bottom-nav-h)" : "0px");
+    return () => root.style.removeProperty("--mobile-bottom-chrome-h");
+  });
+
   onMount(() => {
     mobileAppDisposed = false;
     const detachPersistenceLifecycle = persistenceLifecycle.attach();
@@ -843,9 +850,9 @@
 {/snippet}
 
 <div
-  class="mobile-app-shell mobile-viewport-height flex w-screen flex-col overflow-hidden bg-background text-foreground"
+  class="mobile-app-shell mobile-viewport-height flex w-screen flex-col overflow-hidden text-foreground"
   data-size-class={viewport.sizeClass}
-  style="width: calc(100vw * var(--mobile-interface-scale-inverse, 1)); height: calc(100vh * var(--mobile-interface-scale-inverse, 1)); height: calc(100dvh * var(--mobile-interface-scale-inverse, 1)); padding: var(--safe-area-top) var(--safe-area-right) var(--safe-area-bottom) var(--safe-area-left);"
+  style="background-color: var(--cal-bg); width: calc(100vw * var(--mobile-interface-scale-inverse, 1)); height: calc(100vh * var(--mobile-interface-scale-inverse, 1)); height: calc(100dvh * var(--mobile-interface-scale-inverse, 1)); padding: var(--safe-area-top) var(--safe-area-right) var(--safe-area-bottom) var(--safe-area-left);"
 >
   {#if !backendReady && !loadError}
     <section
@@ -863,7 +870,6 @@
   >
     {#if PomodoroMenuSurface && LinkedDeviceControlSurface}
     <MobileTopBar
-      current={nav.current}
       pomodoroTime={pomodoro.formattedTime}
       pomodoroActive={pomodoro.isActive}
       pomodoroRemainingSeconds={pomodoro.remainingSeconds}
@@ -882,7 +888,6 @@
       musicOpen={showMusic}
       musicDisabled={!backendReady}
       musicVisible={musicAvailable}
-      primaryNavigationVisible={!useNavigationRail}
       onTogglePomodoro={() => {
         if (showPomodoro) closePomodoro();
         else openPomodoro();
@@ -891,7 +896,6 @@
       onOpenQuickNotes={openQuickNotes}
       onOpenMusic={openMusic}
       onOpenSettings={openSettings}
-      onNavigate={navigate}
     />
     {/if}
 
@@ -931,6 +935,9 @@
         {/if}
       </main>
     </div>
+    {#if bottomNavigationVisible}
+      <MobileNavigation current={nav.current} presentation="bottom" onNavigate={navigate} />
+    {/if}
   </div>
 
   {#if MusicPlaybackHostSurface}

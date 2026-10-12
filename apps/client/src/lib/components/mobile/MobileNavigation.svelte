@@ -5,6 +5,7 @@
   import MessageSquare from "@lucide/svelte/icons/message-square";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { View } from "$lib/navigation";
+  import type { MobileNavigationPresentation } from "$lib/mobile/layout";
   import { cn } from "$lib/utils";
 
   let {
@@ -13,7 +14,7 @@
     onNavigate,
   }: {
     current: View;
-    presentation: "top" | "rail";
+    presentation: MobileNavigationPresentation;
     onNavigate: (view: View) => void;
   } = $props();
 
@@ -32,8 +33,9 @@
     "mobile-primary-navigation",
     presentation === "rail"
       ? "flex w-(--mobile-nav-rail-w) shrink-0 flex-col border-r border-sidebar-border bg-sidebar px-2 py-3 text-sidebar-foreground"
-      : "col-span-4 grid min-w-0 self-stretch grid-cols-4 px-1 text-foreground",
+      : "grid h-(--mobile-bottom-nav-h) shrink-0 grid-cols-4 border-t border-sidebar-border px-2 text-foreground",
   )}
+  style={presentation === "bottom" ? "background-color: var(--cal-bg);" : undefined}
 >
   {#each destinations as destination}
     {@const Icon = destination.icon}
@@ -41,13 +43,10 @@
     <button
       type="button"
       aria-current={selected ? "page" : undefined}
-      aria-label={t(`titleBar.tab.${destination.view}`)}
       onclick={() => onNavigate(destination.view)}
       class={cn(
-        "group relative flex items-center justify-center text-xs font-medium transition-colors",
-        presentation === "rail"
-          ? "mb-2 min-h-12 flex-col gap-1 rounded-xl"
-          : "min-h-0 min-w-0",
+        "group relative flex min-w-0 flex-col items-center justify-center gap-1 text-xs font-medium transition-colors",
+        presentation === "rail" && "mb-2 min-h-12 rounded-xl",
         presentation === "rail"
           ? selected
             ? "bg-sidebar-accent text-sidebar-accent-foreground"
@@ -57,18 +56,17 @@
             : "text-muted-foreground",
       )}
     >
-      <span class={cn(
-        "grid place-items-center transition-colors",
-        presentation === "top" && "h-8 w-8 rounded-full group-active:bg-accent/70",
-      )}>
-        <Icon size={presentation === "top" ? 19 : 21} strokeWidth={selected ? 2 : 1.7} aria-hidden="true" />
-      </span>
-      {#if presentation === "top" && selected}
-        <span data-mobile-navigation-indicator class="absolute bottom-0 h-0.5 w-5 rounded-full bg-foreground/75" aria-hidden="true"></span>
+      {#if presentation === "bottom"}
+        <span
+          class={cn("grid h-8 w-14 place-items-center rounded-full transition-colors", selected ? "bg-accent" : "group-active:bg-accent/60")}
+          data-mobile-navigation-indicator={selected || undefined}
+        >
+          <Icon size={20} strokeWidth={selected ? 2 : 1.7} aria-hidden="true" />
+        </span>
+      {:else}
+        <Icon size={21} strokeWidth={selected ? 2 : 1.7} aria-hidden="true" />
       {/if}
-      {#if presentation === "rail"}
-        <span>{t(`titleBar.tab.${destination.view}`)}</span>
-      {/if}
+      <span class="max-w-full truncate">{t(`titleBar.tab.${destination.view}`)}</span>
     </button>
   {/each}
 </nav>

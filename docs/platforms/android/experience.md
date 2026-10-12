@@ -2,7 +2,7 @@
 
 ## Adaptive shell
 
-Phones use a compact global top bar for primary destinations and utility surfaces. Larger windows can use a navigation rail. Calendar, Projects, Notes, and Chat are primary destinations. Pomodoro, Quick notes, Music, and Settings open as contextual surfaces without adding another permanent bar.
+Phones use a labeled bottom tab bar for the primary destinations (Calendar, Projects, Notes, and Chat), within thumb reach, and a slim top bar for utilities: a Pomodoro chip that shows the remaining time while a session runs, plus linked devices, Quick notes, Music, and Settings. The bottom bar hides while the keyboard is open so editing keeps the space. Larger windows use a navigation rail instead of the bottom bar. Both bars share the content surface color, so a screen reads as one page rather than stacked bands.
 
 The shell uses touch-sized controls, visible selection, localized accessible names, system safe areas, and the current theme. It does not spend scarce phone width repeating the active destination label.
 

@@ -184,7 +184,8 @@ pub async fn notes_list_mention_scope<R: Runtime>(
         MENTION_SCOPE_TASK_LIMIT,
     )
     .await?;
-    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let now: chrono::DateTime<chrono::Utc> = std::time::SystemTime::now().into();
+    let now = now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let events = ganbaru_calendar::reads::project_events::list_project_event_summaries(
         &pool,
         &project_ids,

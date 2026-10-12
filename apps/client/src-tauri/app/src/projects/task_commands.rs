@@ -1,4 +1,5 @@
 use ganbaru_projects::task_commands;
+#[cfg(desktop)]
 use ganbaru_projects::task_reminders::{ProjectTaskReminder, list_upcoming_task_reminders};
 use ganbaru_projects::{
     ProjectChecklistItemCreate, ProjectChecklistItemUpdate, ProjectTaskCreate, ProjectTaskUpdate,
@@ -58,6 +59,7 @@ pub async fn projects_delete_checklist_item<R: Runtime>(
     task_commands::delete_checklist_item(&pool, item_id).await
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn projects_list_upcoming_task_reminders<R: Runtime>(
     app: AppHandle<R>,

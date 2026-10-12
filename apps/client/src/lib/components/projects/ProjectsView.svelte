@@ -86,7 +86,11 @@
   const sidebarPlaces = $derived(projectSidebarPlaces(hostablePlaces));
   /** Chat opens from the sidebar when it is a place, so the header keeps its shortcut only otherwise. */
   const chatIsPlace = $derived(sidebarDocked && sidebarPlaces.includes("chat"));
-  const activePlace = $derived(resolveProjectPlace(projects.hostedPlace, projects.activeView));
+  // A hosted place this window cannot open (its tab is detached) falls back to the view place.
+  const activePlace = $derived(resolveProjectPlace(
+    projects.hostedPlace && hostablePlaces.includes(projects.hostedPlace) ? projects.hostedPlace : null,
+    projects.activeView,
+  ));
   const toolbarDataReady = $derived.by(() => {
     const projectId = selectedProjectId;
     return Boolean(

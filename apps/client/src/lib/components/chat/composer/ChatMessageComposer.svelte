@@ -1430,8 +1430,8 @@
   .approval-pill { border-radius:999px; background:var(--accent); padding:0.18rem 0.4rem; color:var(--foreground); }
   .organizational-composer { position:relative; width:100%; border:1px solid color-mix(in srgb,var(--border) 88%,transparent); border-radius:1.3rem; background:var(--card); box-shadow:0 8px 22px -18px rgb(0 0 0 / 0.24),0 1px 4px -3px rgb(0 0 0 / 0.16); }
   .editor-frame { max-height:8.2rem; overflow-y:auto; padding:1rem 1.25rem 0.4rem; }
-  .organizational-editor { min-height:2.625rem; outline:none; white-space:pre-wrap; overflow-wrap:anywhere; font-size:var(--chat-conversation-font-size,calc(0.875rem * var(--type-scale))); line-height:var(--chat-conversation-line-height,calc(1.3125rem * var(--type-scale))); }
-  .organizational-editor.empty::before { pointer-events:none; content:attr(data-placeholder); color:color-mix(in srgb,var(--muted-foreground) 52%,transparent); }
+  .organizational-editor { position:relative; min-height:2.625rem; outline:none; white-space:pre-wrap; overflow-wrap:anywhere; font-size:var(--chat-conversation-font-size,calc(0.875rem * var(--type-scale))); line-height:var(--chat-conversation-line-height,calc(1.3125rem * var(--type-scale))); }
+  .organizational-editor.empty::before { position:absolute; pointer-events:none; content:attr(data-placeholder); color:color-mix(in srgb,var(--muted-foreground) 52%,transparent); }
   .organizational-editor :global(.chat-reference-atom) { display:inline-block; border-radius:0.3rem; background:color-mix(in srgb,var(--primary) 13%,transparent); padding-inline:0.12rem; color:color-mix(in srgb,var(--primary) 78%,var(--foreground)); box-decoration-break:clone; cursor:default; user-select:all; }
   .reference-picker { position:absolute; z-index:100; right:0.6rem; bottom:3rem; left:0.6rem; display:flex; max-height:min(22rem,55vh); flex-direction:column; overflow:hidden; }
   .reference-picker-scroll { min-height:0; flex:1 1 auto; overflow-y:auto; }

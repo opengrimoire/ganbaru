@@ -385,7 +385,6 @@
           {taskCustomizeActive}
           {mobileLayout}
           projectChat={chatIsPlace ? null : projectChat}
-          sidebarCollapsed={!sidebarDocked || projects.sidebarCollapsed}
           onShowInactiveProjectsChange={(value) => {
             projects.showInactiveProjects = value;
           }}

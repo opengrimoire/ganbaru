@@ -982,7 +982,6 @@
     <ChatWorkspaceHeader
       bind:editingTitle={headerEditingTitle}
       explorerExpanded={layout.railPresentation === "column" && visibleRailOpen}
-      placeTitle={projectPlaces && layout.railPresentation === "column" && visibleRailOpen ? t("projects.sidebar.chat") : undefined}
       showRailButton={layout.railPresentation === "sheet" && !visibleRailOpen && !railUsesMobileSurface}
       reserveGlobalActions={!chat.inspectorOpen && !threadColumnOpen}
       mobilePresentation={mobileShell}

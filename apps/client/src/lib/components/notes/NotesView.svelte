@@ -551,7 +551,6 @@
       {selectedProjectId}
       selectedPage={topBarSelectedPage}
       explorerCollapsed={notes.explorerCollapsed}
-      placeTitle={projectPlaces && !notes.explorerCollapsed ? t("projects.sidebar.notes") : undefined}
       {creationFolderId}
       {showInactiveProjects}
       onShowInactiveProjectsChange={(value) => {

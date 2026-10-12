@@ -59,7 +59,6 @@
     onCreateTask,
     mobileLayout = false,
     projectChat = null,
-    sidebarCollapsed = true,
   }: {
     selectedProject: Project;
     selectedGroup: ProjectGroup;
@@ -75,8 +74,6 @@
     onCreateTask: () => void;
     mobileLayout?: boolean;
     projectChat?: ProjectChatIntegration | null;
-    /** Whether the project identity is out of view, so the header shows the group and project breadcrumb. */
-    sidebarCollapsed?: boolean;
   } = $props();
 
   const projects = getProjects();
@@ -147,11 +144,6 @@
   const customizeContent = $derived(projectCustomizeContent(projects.activeView, savedViewsHome));
   const customizationPanels = $derived(toolbarPanels.filter((panel) => panel !== "settings"));
   const activePlace = $derived(projectPlaceForView(projects.activeView));
-  const showBreadcrumb = $derived(mobileLayout || sidebarCollapsed);
-
-  function placeLabel(): string {
-    return activePlace === "overview" ? t("projects.sidebar.overview") : t("projects.sidebar.tasks");
-  }
 
   function panelIcon(panel: ProjectToolbarPanel) {
     if (panel === "filters") return ListFilter;
@@ -265,10 +257,6 @@
   }
 
   $effect(() => {
-    if (!showBreadcrumb) projectNavigatorOpen = false;
-  });
-
-  $effect(() => {
     if (!mobileLayout || (!mobileViewMenuOpen && !mobileCustomizationMenuOpen)) return;
     return mobileBackStack.activate({
       handle: closeMobileMenus,
@@ -320,7 +308,6 @@
     )}
   >
     <div class="flex min-w-0 max-w-full items-center gap-0.5 text-identity font-medium {mobileLayout ? 'h-12' : 'h-7'}">
-      {#if showBreadcrumb}
       <button
         bind:this={projectGroupTriggerElement}
         type="button"
@@ -380,9 +367,6 @@
         {/if}
         <WorkspaceBreadcrumbTerminalIcon kind="chevron" class="shrink-0 text-muted-foreground" />
       </button>
-      {:else}
-        <h2 class="min-w-0 truncate px-1.5 text-identity font-medium text-foreground" data-project-place-title>{placeLabel()}</h2>
-      {/if}
       <button
         type="button"
         class={toolbarIconButtonClass(false)}

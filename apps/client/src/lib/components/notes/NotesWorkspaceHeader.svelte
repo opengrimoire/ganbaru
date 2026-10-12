@@ -67,7 +67,6 @@
     onShowHome,
     projectSettingsOpen,
     onToggleProjectSettings,
-    placeTitle = undefined,
     pageActionsTarget = $bindable<HTMLElement | null>(null),
   }: {
     mobileLayout?: boolean;
@@ -83,8 +82,6 @@
     onShowHome: () => void;
     projectSettingsOpen: boolean;
     onToggleProjectSettings: () => void;
-    /** Replaces the group and project breadcrumb while a host sidebar already shows the project. */
-    placeTitle?: string;
     pageActionsTarget?: HTMLElement | null;
   } = $props();
 
@@ -164,10 +161,6 @@
   const showSelectedPagePath = $derived(
     (databaseSelected || mobileLayout || explorerCollapsed) && selectedPagePath.length > 0,
   );
-
-  $effect(() => {
-    if (placeTitle && navigatorMode !== "notes") navigatorOpen = false;
-  });
 
   function toolbarIconButtonClass(active = false, open = false, primary = false): string {
     return cn(
@@ -543,36 +536,7 @@
       databaseSelected ? "overflow-x-auto" : "overflow-hidden",
       mobileLayout ? "h-12" : "h-7",
     )}>
-      {#if selectedProject && selectedGroup && placeTitle}
-        {#if selectedPageTitle}
-          <button
-            type="button"
-            class="flex h-7 min-w-0 items-center rounded-md px-1.5 text-left hover:bg-accent"
-            aria-label={t("notes.showProjectHome")}
-            data-project-place-title
-            onclick={onShowHome}
-          >
-            <span class="min-w-0 truncate text-foreground">{placeTitle}</span>
-          </button>
-        {:else}
-          <h2 class="min-w-0 truncate px-1.5 text-identity font-medium text-foreground" data-project-place-title>{placeTitle}</h2>
-        {/if}
-        {#if !showSelectedPagePath}
-          <button
-            type="button"
-            class={inlineNewPageButtonClass()}
-            aria-label={t("notes.newPage")}
-            aria-keyshortcuts="Control+N Meta+N"
-            title={newPageTitle}
-            onclick={createPage}
-          >
-            <WorkspaceBreadcrumbTerminalIcon kind="plus" />
-          </button>
-        {/if}
-        {#if showSelectedPagePath}
-          {@render selectedPagePathBreadcrumb()}
-        {/if}
-      {:else if selectedProject && selectedGroup}
+      {#if selectedProject && selectedGroup}
         <button
           bind:this={groupTriggerElement}
           type="button"

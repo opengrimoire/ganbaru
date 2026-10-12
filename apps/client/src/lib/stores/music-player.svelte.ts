@@ -487,9 +487,16 @@ class MusicPlayerStore {
   }
   setContextPlayback(context: MusicContextPlayback): void { this.contextPlayback = context; this.contextOwner = context.owner; }
   clearContextPlayback(): void { this.contextPlayback = null; this.contextOwner = "manual"; }
-  requestContextRetry(): void {
+  /** Resolves whether the retry command succeeded; failures are reported through the player error. */
+  async requestContextRetry(): Promise<boolean> {
     this.contextRetryRequest += 1;
-    void this.command({ kind: "retry-context" }, "context").catch((error: unknown) => this.reportError(error));
+    try {
+      await this.command({ kind: "retry-context" }, "context");
+      return true;
+    } catch (error: unknown) {
+      this.reportError(error);
+      return false;
+    }
   }
   inspectContextAssignment(): void {
     if (!this.contextPlayback) return;

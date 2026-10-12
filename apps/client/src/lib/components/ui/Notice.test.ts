@@ -89,6 +89,16 @@ describe("Notice", () => {
     warn.mockRestore();
   });
 
+  it("treats a retry that resolves false as failed", async () => {
+    const root = render({ onRetry: () => Promise.resolve(false) });
+    const retry = button(root, "[data-notice-retry]");
+
+    retry.click();
+    await settle(480);
+
+    expect(retry.getAttribute("data-notice-retry")).toBe("idle");
+  });
+
   it("copies the title and message by default and confirms with a check mark", async () => {
     const root = render({ title: "Launch failed:" });
     const copy = button(root, "[data-notice-copy]");

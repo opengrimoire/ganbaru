@@ -44,7 +44,10 @@
     tone?: NoticeTone;
     layout?: NoticeLayout;
     role?: "alert" | "status";
-    /** Retries the failed work. A returned promise keeps the icon turning until it settles. */
+    /**
+     * Retries the failed work. A returned promise keeps the icon turning until it settles; rejecting or resolving
+     * `false` marks the attempt as failed, for handlers that report their own errors.
+     */
     onRetry?: () => unknown;
     retryLabel?: string;
     /** Text the copy button writes; defaults to the title and message, and `false` hides the button. */
@@ -86,7 +89,7 @@
     const startedAt = performance.now();
     let succeeded = true;
     try {
-      await onRetry();
+      succeeded = (await onRetry()) !== false;
     } catch (error: unknown) {
       succeeded = false;
       console.warn("Notice retry failed", error);

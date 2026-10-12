@@ -1,4 +1,4 @@
-//! Desktop native notifications for Calendar, Notes, benchmarks, Focus, and the distraction blocker.
+//! Desktop native notifications for Calendar, Notes, Projects tasks, benchmarks, Focus, and the distraction blocker.
 
 #[cfg(target_os = "linux")]
 use notify_rust::Hint;
@@ -12,6 +12,12 @@ use crate::sound_effects::{AppSound, AppSoundState};
 struct NotesNotificationOpenPayload {
     page_id: String,
     block_id: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+struct ProjectTaskNotificationOpenPayload {
+    project_id: String,
+    task_id: String,
 }
 
 fn apply_linux_notification_hints(
@@ -196,6 +202,49 @@ pub fn show_notes_notification(
                         NotesNotificationOpenPayload {
                             page_id: page_id.clone(),
                             block_id: block_id.clone(),
+                        },
+                    );
+                    focus_main_window(app.clone());
+                }
+            },
+        );
+    });
+}
+
+#[tauri::command]
+pub fn show_project_task_notification(
+    app: tauri::AppHandle,
+    title: String,
+    body: String,
+    project_id: String,
+    task_id: String,
+    play_sound: Option<bool>,
+    app_sounds: State<'_, AppSoundState>,
+) {
+    if play_sound.unwrap_or(true) {
+        app_sounds.play(AppSound::EventNotification);
+    }
+    std::thread::spawn(move || {
+        let summary = notification_summary(&title);
+        let body = escape_notification_markup(&body);
+        let mut notification = Notification::new();
+        notification
+            .appname("Ganbaru AI")
+            .summary(&summary)
+            .body(&body)
+            .action("open", "Open task")
+            .timeout(15_000);
+        apply_linux_notification_hints(&mut notification, Some("reminder"), true, true);
+        show_notification_with_linux_action(
+            &notification,
+            "Failed to show project task notification",
+            |action| {
+                if action == "open" || action == "default" {
+                    let _ = app.emit(
+                        "project-task-notification-open",
+                        ProjectTaskNotificationOpenPayload {
+                            project_id: project_id.clone(),
+                            task_id: task_id.clone(),
                         },
                     );
                     focus_main_window(app.clone());

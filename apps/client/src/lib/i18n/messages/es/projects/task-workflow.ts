@@ -32,6 +32,10 @@ export const taskWorkflow = {
     targetEndDate: "Fecha objetivo",
     noDate: "Sin fecha",
     clearDate: (label: string) => `Limpiar ${label}`,
+    remind: "Recordarme",
+    remindWhen: "Cuándo recordar",
+    remindOnDay: "El mismo día",
+    remindAtTime: "A la hora",
     blockerReason: "Motivo del bloqueo",
     changeReason: "Motivo del cambio",
     changeReasonPlaceholder: "Motivo de esta edición",
@@ -184,6 +188,12 @@ export const taskWorkflow = {
       event: "Bloque programado",
       dependency: "Dependencia",
     },
+  },
+  taskReminder: {
+    startTitle: (task: string) => `Empieza: ${task}`,
+    dueTitle: (task: string) => `Vence: ${task}`,
+    untitledTask: "Tarea sin título",
+    body: (project: string, when: string) => `${project}, ${when}`,
   },
   bulk: {
     selected: (count: number) => `${count} seleccionadas`,

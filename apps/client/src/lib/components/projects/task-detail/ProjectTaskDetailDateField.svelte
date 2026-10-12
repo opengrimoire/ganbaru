@@ -8,9 +8,11 @@
   import { portal } from "$lib/utils/portal";
   import { pickSelectPopoverGeometry } from "$lib/utils/select-popover-position";
   import CalendarDays from "@lucide/svelte/icons/calendar-days";
+  import Bell from "@lucide/svelte/icons/bell";
   import Clock from "@lucide/svelte/icons/clock";
   import Eraser from "@lucide/svelte/icons/eraser";
   import X from "@lucide/svelte/icons/x";
+  import DateReminderOptions from "$lib/components/ui/DateReminderOptions.svelte";
   import MiniDatePicker from "$lib/components/ui/MiniDatePicker.svelte";
   import TimePicker from "$lib/components/ui/TimePicker.svelte";
   import { cn } from "$lib/utils";
@@ -31,6 +33,8 @@
     highlightMode = undefined,
     time = "",
     onTimeChange = undefined,
+    reminderMinutes = null,
+    onReminderChange = undefined,
     onToggle,
     onClear,
     onSelect,
@@ -44,6 +48,10 @@
     pickerOpen: boolean;
     selectedDate: string;
     rangeStartDate?: string | undefined;
+    /** Minutes before the date its reminder fires, or null for no reminder. */
+    reminderMinutes?: number | null;
+    /** Offers a reminder below the calendar once a date is set; null removes the reminder. */
+    onReminderChange?: ((minutes: number | null) => void) | undefined;
     rangeEndDate?: string | undefined;
     highlightToday?: boolean | undefined;
     highlightMode?: MiniDatePickerHighlightMode | undefined;
@@ -157,6 +165,9 @@
       onclick={onToggle}>
       <CalendarDays size={14} strokeWidth={1.75} class="shrink-0 text-muted-foreground" />
       <span class="truncate">{displayValue}</span>
+      {#if value && reminderMinutes !== null}
+        <Bell size={12} strokeWidth={1.75} class="shrink-0 text-muted-foreground" aria-hidden="true" />
+      {/if}
     </button>
     {#if value}
       <button type="button" class="flex size-7 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -196,6 +207,16 @@
             <Eraser size={13} strokeWidth={1.75} />
           </button>
         {/if}
+      </div>
+    {/if}
+    {#if value && onReminderChange}
+      <div class="mt-2 grid gap-0.5 border-t border-border/70 pt-2">
+        <DateReminderOptions minutes={reminderMinutes} timed={Boolean(time)} onChange={onReminderChange} labels={{
+          remind: t("projects.detail.remind"),
+          remindWhen: t("projects.detail.remindWhen"),
+          remindOnDay: t("projects.detail.remindOnDay"),
+          remindAtTime: t("projects.detail.remindAtTime"),
+        }} />
       </div>
     {/if}
   </div>

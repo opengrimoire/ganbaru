@@ -175,8 +175,10 @@ interface ProjectTaskRow {
   estimate_minutes: number | null;
   due_date: string | null;
   due_time: string | null;
+  due_reminder_minutes: number | null;
   start_date: string | null;
   start_time: string | null;
+  start_reminder_minutes: number | null;
   target_end_date: string | null;
   completed_at: string | null;
   archived_at: string | null;
@@ -186,7 +188,8 @@ interface ProjectTaskRow {
   updated_at: string;
 }
 
-interface ProjectTaskSummaryRow extends Omit<ProjectTaskRow, "description" | "blocker_reason"> {
+interface ProjectTaskSummaryRow
+  extends Omit<ProjectTaskRow, "description" | "blocker_reason" | "due_reminder_minutes" | "start_reminder_minutes"> {
   blocker_reason_present: number;
 }
 
@@ -570,8 +573,10 @@ function mapTask(row: ProjectTaskRow): ProjectTask {
     estimateMinutes: optionalNumber(row.estimate_minutes),
     dueDate: optionalText(row.due_date),
     dueTime: optionalText(row.due_time),
+    dueReminderMinutes: optionalNumber(row.due_reminder_minutes),
     startDate: optionalText(row.start_date),
     startTime: optionalText(row.start_time),
+    startReminderMinutes: optionalNumber(row.start_reminder_minutes),
     targetEndDate: optionalText(row.target_end_date),
     completedAt: optionalText(row.completed_at),
     archivedAt: optionalText(row.archived_at),
@@ -585,7 +590,13 @@ function mapTask(row: ProjectTaskRow): ProjectTask {
 
 function mapTaskSummary(row: ProjectTaskSummaryRow): ProjectTask {
   return {
-    ...mapTask({ ...row, description: "", blocker_reason: null }),
+    ...mapTask({
+      ...row,
+      description: "",
+      blocker_reason: null,
+      due_reminder_minutes: null,
+      start_reminder_minutes: null,
+    }),
     detailLoaded: false,
     summaryBlocked: row.blocker_reason_present !== 0,
   };
@@ -1221,8 +1232,11 @@ function parseCompoundProjectRows(
       description: readText(task, "description"), priority: readText(task, "priority"), task_type: taskType,
       section_sort_order: readNumber(task, "section_sort_order"), status_sort_order: readNumber(task, "status_sort_order"),
       estimate_minutes: readOptionalNumber(task, "estimate_minutes"), due_date: readOptionalText(task, "due_date"),
-      due_time: readOptionalText(task, "due_time"), start_date: readOptionalText(task, "start_date"),
-      start_time: readOptionalText(task, "start_time"), target_end_date: readOptionalText(task, "target_end_date"),
+      due_time: readOptionalText(task, "due_time"), due_reminder_minutes: readOptionalNumber(task, "due_reminder_minutes"),
+      start_date: readOptionalText(task, "start_date"),
+      start_time: readOptionalText(task, "start_time"),
+      start_reminder_minutes: readOptionalNumber(task, "start_reminder_minutes"),
+      target_end_date: readOptionalText(task, "target_end_date"),
       completed_at: readOptionalText(task, "completed_at"), archived_at: readOptionalText(task, "archived_at"),
       blocker_reason: readOptionalText(task, "blocker_reason"), milestone: readNumber(task, "milestone"),
       created_at: readText(task, "created_at"), updated_at: readText(task, "updated_at"),

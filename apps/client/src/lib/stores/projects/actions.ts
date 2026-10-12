@@ -111,6 +111,7 @@ import {
   type ProjectTemplateId,
   type ProjectUpdate,
 } from "$lib/projects/types";
+import { invalidateProjectTaskReminderSchedule } from "$lib/projects/task-reminder-schedule.svelte";
 import type { ProjectStoreSelectors } from "./selectors";
 
 export interface ProjectStoreActionContext {
@@ -171,6 +172,7 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     const generation = (mutationGenerations.get(key) ?? 0) + 1;
     mutationGenerations.set(key, generation);
     const mutation = await request();
+    invalidateProjectTaskReminderSchedule();
     if (
       mutationGenerations.get(key) === generation
       && readLoadGeneration() === originatingLoadGeneration

@@ -3,8 +3,7 @@ import type {
   NotesMentionNotification,
   NotesMentionNotificationKind,
 } from "$lib/notes/types";
-
-export const NOTES_DATE_ONLY_REMINDER_HOUR = 9;
+import { DATE_ONLY_REMINDER_HOUR } from "$lib/utils/date-reminders";
 
 export interface NotesMentionNotificationPreferenceSnapshot {
   mentionNotificationsEnabled: boolean;
@@ -70,7 +69,7 @@ export function notesMentionNotificationDueAtMs(
   const triggerAt = notification.trigger_at?.trim();
   if (!triggerAt) return null;
   const timeZone = options.timeZone ?? currentTimeZone();
-  const dateOnlyHour = options.dateOnlyReminderHour ?? NOTES_DATE_ONLY_REMINDER_HOUR;
+  const dateOnlyHour = options.dateOnlyReminderHour ?? DATE_ONLY_REMINDER_HOUR;
   const triggerMs = dateOnlyReminderMs(triggerAt, timeZone, dateOnlyHour)
     ?? dateTimeReminderMs(triggerAt, timeZone);
   return triggerMs === null ? null : triggerMs - notification.remind_minutes_before * 60_000;

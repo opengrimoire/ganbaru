@@ -9,8 +9,10 @@
     estimateMinutes,
     startDate,
     startTime,
+    startReminderMinutes,
     dueDate,
     dueTime,
+    dueReminderMinutes,
     targetEndDate,
     blockerReason,
     changeReason,
@@ -30,6 +32,8 @@
     onSelectDate,
     onStartTimeChange,
     onDueTimeChange,
+    onStartReminderChange,
+    onDueReminderChange,
     onCancelDatePicker,
   }: {
     milestone: boolean;
@@ -37,8 +41,10 @@
     estimateMinutes: string;
     startDate: string;
     startTime: string;
+    startReminderMinutes: number | null;
     dueDate: string;
     dueTime: string;
+    dueReminderMinutes: number | null;
     targetEndDate: string;
     blockerReason: string;
     changeReason: string;
@@ -57,6 +63,8 @@
     onClearTargetEndDate: () => void;
     onSelectDate: (date: string) => void;
     onStartTimeChange: (time: string | null) => void;
+    onStartReminderChange: (minutes: number | null) => void;
+    onDueReminderChange: (minutes: number | null) => void;
     onDueTimeChange: (time: string | null) => void;
     onCancelDatePicker: () => void;
   } = $props();
@@ -70,6 +78,8 @@
     value={startDate}
     time={startTime}
     onTimeChange={onStartTimeChange}
+    reminderMinutes={startReminderMinutes}
+    onReminderChange={onStartReminderChange}
     noDateLabel={t("projects.detail.noDate")}
     clearLabel={t("projects.detail.clearDate", t("projects.detail.startDate"))}
     pickerOpen={startPickerOpen}
@@ -88,6 +98,8 @@
     value={dueDate}
     time={dueTime}
     onTimeChange={onDueTimeChange}
+    reminderMinutes={dueReminderMinutes}
+    onReminderChange={onDueReminderChange}
     noDateLabel={t("projects.detail.noDate")}
     clearLabel={t("projects.detail.clearDate", t("projects.detail.dueDate"))}
     pickerOpen={duePickerOpen}

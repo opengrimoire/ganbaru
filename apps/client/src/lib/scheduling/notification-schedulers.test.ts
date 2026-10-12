@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
+import type { ProjectTaskReminder } from "$lib/api/project-task-reminders";
 import type { CalendarEvent } from "$lib/calendar/types";
 import type { NotesMentionNotification } from "$lib/notes/types";
 import type { SchedulerClock, SchedulerTimeout } from "./lifecycle-scheduler";
 import {
   createEventNotificationScheduler,
   createNotesNotificationScheduler,
+  createProjectTaskReminderScheduler,
 } from "./notification-schedulers";
 
 class FakeSchedulerClock implements SchedulerClock {
@@ -50,6 +52,20 @@ class FakeSchedulerClock implements SchedulerClock {
 
 async function settleScheduler(): Promise<void> {
   for (let index = 0; index < 10; index += 1) await Promise.resolve();
+}
+
+function taskReminder(overrides: Partial<ProjectTaskReminder>): ProjectTaskReminder {
+  return {
+    taskId: "task-a",
+    projectId: "project-a",
+    projectName: "Launch",
+    title: "Ship",
+    anchor: "due",
+    date: "2026-10-12",
+    time: null,
+    minutesBefore: 0,
+    ...overrides,
+  };
 }
 
 function calendarEvent(start: string): CalendarEvent {
@@ -231,5 +247,67 @@ describe("notification deadline schedulers", () => {
 
     expect(dismiss).toHaveBeenCalledExactlyOnceWith(muted);
     expect(deliver).not.toHaveBeenCalled();
+  });
+
+  it("lists task reminders from the local day and delivers each once at its deadline", async () => {
+    const nowMs = Date.parse("2026-10-11T23:30:00.000Z");
+    const clock = new FakeSchedulerClock(nowMs);
+    const timed = taskReminder({ date: "2026-10-12", time: "02:00", minutesBefore: 15 });
+    const dateOnly = taskReminder({ taskId: "task-b", anchor: "start", date: "2026-10-13", minutesBefore: 1440 });
+    const listUpcoming = vi.fn(async () => [timed, dateOnly]);
+    const deliver = vi.fn(async () => undefined);
+    const scheduler = createProjectTaskReminderScheduler({
+      clock,
+      listUpcoming,
+      deliver,
+      getTimeZone: () => "Europe/Madrid",
+    });
+
+    scheduler.setEnabled(true);
+    await settleScheduler();
+    expect(listUpcoming).toHaveBeenCalledExactlyOnceWith("2026-10-12");
+    expect(deliver).not.toHaveBeenCalled();
+
+    // Madrid is two hours ahead in October, so 15 minutes before 02:00 local is 23:45 UTC the day before.
+    await clock.advanceTo(Date.parse("2026-10-11T23:45:00.000Z"));
+    expect(deliver).toHaveBeenCalledExactlyOnceWith({
+      reminder: timed,
+      deadlineMs: Date.parse("2026-10-11T23:45:00.000Z"),
+    });
+
+    await clock.advanceTo(Date.parse("2026-10-12T07:00:00.000Z"));
+    expect(deliver).toHaveBeenCalledTimes(2);
+    expect(deliver).toHaveBeenLastCalledWith({
+      reminder: dateOnly,
+      deadlineMs: Date.parse("2026-10-12T07:00:00.000Z"),
+    });
+
+    scheduler.invalidate();
+    await settleScheduler();
+    expect(deliver).toHaveBeenCalledTimes(2);
+  });
+
+  it("skips task reminders that passed before it started and retries a failed delivery", async () => {
+    const nowMs = Date.parse("2026-10-11T12:00:00.000Z");
+    const clock = new FakeSchedulerClock(nowMs);
+    const missed = taskReminder({ date: "2026-10-11", time: "11:00", minutesBefore: 0 });
+    const upcoming = taskReminder({ taskId: "task-b", date: "2026-10-11", time: "12:10", minutesBefore: 10 });
+    const deliver = vi.fn()
+      .mockRejectedValueOnce(new Error("notification unavailable"))
+      .mockResolvedValue(undefined);
+    const scheduler = createProjectTaskReminderScheduler({
+      clock,
+      listUpcoming: async () => [missed, upcoming],
+      deliver,
+      getTimeZone: () => "UTC",
+    });
+
+    scheduler.setEnabled(true);
+    await settleScheduler();
+    expect(deliver).toHaveBeenCalledOnce();
+    expect(deliver).toHaveBeenLastCalledWith({ reminder: upcoming, deadlineMs: nowMs });
+    await clock.advanceTo(nowMs + 61_000);
+    expect(deliver).toHaveBeenCalledTimes(2);
+    expect(deliver).toHaveBeenLastCalledWith({ reminder: upcoming, deadlineMs: nowMs });
   });
 });

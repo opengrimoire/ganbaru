@@ -1,4 +1,5 @@
 use ganbaru_projects::task_commands;
+use ganbaru_projects::task_reminders::{ProjectTaskReminder, list_upcoming_task_reminders};
 use ganbaru_projects::{
     ProjectChecklistItemCreate, ProjectChecklistItemUpdate, ProjectTaskCreate, ProjectTaskUpdate,
     ProjectsMutationRows,
@@ -55,4 +56,14 @@ pub async fn projects_delete_checklist_item<R: Runtime>(
 ) -> Result<ProjectsMutationRows, String> {
     let pool = connect_sqlite(app, db_url).await?;
     task_commands::delete_checklist_item(&pool, item_id).await
+}
+
+#[tauri::command]
+pub async fn projects_list_upcoming_task_reminders<R: Runtime>(
+    app: AppHandle<R>,
+    db_url: String,
+    from_date: String,
+) -> Result<Vec<ProjectTaskReminder>, String> {
+    let pool = connect_sqlite(app, db_url).await?;
+    list_upcoming_task_reminders(&pool, &from_date).await
 }

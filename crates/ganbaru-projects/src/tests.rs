@@ -82,8 +82,10 @@ pub(super) fn task_update_from_row(task: &ProjectTaskRow) -> ProjectTaskUpdate {
         estimate_minutes: task.estimate_minutes,
         due_date: task.due_date.clone(),
         due_time: task.due_time.clone(),
+        due_reminder_minutes: task.due_reminder_minutes,
         start_date: task.start_date.clone(),
         start_time: task.start_time.clone(),
+        start_reminder_minutes: task.start_reminder_minutes,
         target_end_date: task.target_end_date.clone(),
         archived_at: task.archived_at.clone(),
         blocker_reason: task.blocker_reason.clone(),
@@ -103,5 +105,6 @@ mod routine;
 mod structure;
 mod task_bulk;
 mod task_lifecycle;
+mod task_reminders;
 mod task_summaries;
 mod task_views;

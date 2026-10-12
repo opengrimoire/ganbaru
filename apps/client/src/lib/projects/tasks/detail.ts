@@ -12,6 +12,7 @@ import type {
   ProjectTaskDependency,
 } from "$lib/projects/types";
 import type { ProjectTaskUpdatePatch } from "$lib/projects/snapshot/update-payloads";
+import { offeredDateReminderMinutes } from "$lib/utils/date-reminders";
 
 export interface ProjectTaskDetailDraft {
   title: string;
@@ -24,9 +25,13 @@ export interface ProjectTaskDetailDraft {
   startDate: string;
   /** The `HH:MM` start time, or empty for a whole day. */
   startTime: string;
+  /** Minutes before the start date its reminder fires, or null for no reminder. */
+  startReminderMinutes: number | null;
   dueDate: string;
   /** The `HH:MM` due time, or empty for a whole day. */
   dueTime: string;
+  /** Minutes before the due date its reminder fires, or null for no reminder. */
+  dueReminderMinutes: number | null;
   targetEndDate: string;
   blockerReason: string;
   changeReason: string;
@@ -78,6 +83,19 @@ function normalizeOptionalDetailPositiveInteger(value: string): number | undefin
   return parsed;
 }
 
+/**
+ * A detail date's reminder as it would be saved: none without the date, and otherwise an offset the date's time
+ * still offers.
+ *
+ * @param date The draft `YYYY-MM-DD` date, or empty.
+ * @param time The draft `HH:MM` time, or empty for a whole day.
+ * @param minutes The chosen minutes before the date, or null for no reminder.
+ */
+export function projectTaskDetailDateReminder(date: string, time: string, minutes: number | null): number | null {
+  if (!date.trim() || minutes === null) return null;
+  return offeredDateReminderMinutes(minutes, Boolean(time));
+}
+
 export function projectTaskDetailDraftFromTask(task: ProjectTask): ProjectTaskDetailDraft {
   return {
     title: task.title,
@@ -89,8 +107,10 @@ export function projectTaskDetailDraftFromTask(task: ProjectTask): ProjectTaskDe
     estimateMinutes: String(task.estimateMinutes ?? ""),
     startDate: task.startDate ?? "",
     startTime: task.startTime ?? "",
+    startReminderMinutes: task.startReminderMinutes ?? null,
     dueDate: task.dueDate ?? "",
     dueTime: task.dueTime ?? "",
+    dueReminderMinutes: task.dueReminderMinutes ?? null,
     targetEndDate: task.targetEndDate ?? "",
     blockerReason: task.blockerReason ?? "",
     changeReason: "",
@@ -113,8 +133,10 @@ export function projectTaskNewDetailDraft(placement: {
     estimateMinutes: "",
     startDate: "",
     startTime: "",
+    startReminderMinutes: null,
     dueDate: "",
     dueTime: "",
+    dueReminderMinutes: null,
     targetEndDate: "",
     blockerReason: "",
     changeReason: "",
@@ -155,8 +177,12 @@ export function projectTaskDetailDraftDirty(task: ProjectTask, draft: ProjectTas
     || draft.estimateMinutes !== String(task.estimateMinutes ?? "")
     || draft.startDate !== (task.startDate ?? "")
     || (draft.startDate ? draft.startTime : "") !== (task.startTime ?? "")
+    || projectTaskDetailDateReminder(draft.startDate, draft.startTime, draft.startReminderMinutes)
+      !== (task.startReminderMinutes ?? null)
     || draft.dueDate !== (task.dueDate ?? "")
     || (draft.dueDate ? draft.dueTime : "") !== (task.dueTime ?? "")
+    || projectTaskDetailDateReminder(draft.dueDate, draft.dueTime, draft.dueReminderMinutes)
+      !== (task.dueReminderMinutes ?? null)
     || draft.targetEndDate !== (task.targetEndDate ?? "")
     || draft.blockerReason !== (task.blockerReason ?? "")
     || draft.milestone !== task.milestone;
@@ -194,8 +220,12 @@ export function projectTaskDetailDraftPatch(draft: ProjectTaskDetailDraft): Proj
       estimateMinutes,
       startDate,
       startTime: startDate ? draft.startTime || undefined : undefined,
+      startReminderMinutes: projectTaskDetailDateReminder(startDate ?? "", draft.startTime, draft.startReminderMinutes)
+        ?? undefined,
       dueDate,
       dueTime: dueDate ? draft.dueTime || undefined : undefined,
+      dueReminderMinutes: projectTaskDetailDateReminder(dueDate ?? "", draft.dueTime, draft.dueReminderMinutes)
+        ?? undefined,
       targetEndDate,
       blockerReason: draft.blockerReason.trim() || undefined,
       milestone: draft.milestone,

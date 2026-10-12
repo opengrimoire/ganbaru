@@ -139,8 +139,10 @@ describe("project task detail helpers", () => {
         estimateMinutes: 45,
         startDate: "2026-06-21",
         startTime: undefined,
+        startReminderMinutes: undefined,
         dueDate: "2026-06-22",
         dueTime: undefined,
+        dueReminderMinutes: undefined,
         targetEndDate: "2026-06-23",
         blockerReason: undefined,
         milestone: false,
@@ -163,6 +165,27 @@ describe("project task detail helpers", () => {
     const cleared = { ...draft, dueDate: "" };
     expect(projectTaskDetailDraftPatch(cleared)).toMatchObject({ ok: true, patch: { dueDate: undefined, dueTime: undefined } });
     expect(projectTaskDetailDraftDirty(task({ startTime: "09:00", dueDate: undefined }), cleared)).toBe(false);
+  });
+
+  it("saves date reminders the date's time still offers and drops them with their date", () => {
+    const timed = task({ startTime: "09:00", startReminderMinutes: 15, dueReminderMinutes: 1440 });
+    const draft = projectTaskDetailDraftFromTask(timed);
+    expect(draft).toMatchObject({ startReminderMinutes: 15, dueReminderMinutes: 1440 });
+    expect(projectTaskDetailDraftDirty(timed, draft)).toBe(false);
+    expect(projectTaskDetailDraftDirty(timed, { ...draft, dueReminderMinutes: null })).toBe(true);
+    expect(projectTaskDetailDraftPatch(draft)).toMatchObject({
+      ok: true,
+      patch: { startReminderMinutes: 15, dueReminderMinutes: 1440 },
+    });
+
+    const untimed = { ...draft, startTime: "" };
+    expect(projectTaskDetailDraftPatch(untimed)).toMatchObject({ ok: true, patch: { startReminderMinutes: 0 } });
+    expect(projectTaskDetailDraftDirty(timed, untimed)).toBe(true);
+
+    const cleared = { ...draft, startDate: "", dueDate: "" };
+    const patch = projectTaskDetailDraftPatch(cleared);
+    expect(patch.ok && patch.patch).toMatchObject({ startReminderMinutes: undefined, dueReminderMinutes: undefined });
+    expect(projectTaskDetailDraftDirty(task({ startDate: undefined, dueDate: undefined }), cleared)).toBe(false);
   });
 
   it("reports invalid base task drafts", () => {

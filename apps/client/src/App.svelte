@@ -74,11 +74,15 @@
   import {
     createEventNotificationScheduler,
     createNotesNotificationScheduler,
+    createProjectTaskReminderScheduler,
   } from "$lib/scheduling/notification-schedulers";
   import { onMount } from "svelte";
   import { getNotesProjectHistoryScheduler } from "$lib/notes/history/project-history-scheduler";
   import { activeVaultIdentity, onActiveVaultIdentityChange } from "$lib/vault/active-vault";
   import { listenForNotesDatabaseChanges } from "$lib/notes/database/window-sync";
+  import { listUpcomingProjectTaskReminders } from "$lib/api/project-task-reminders";
+  import { getProjectTaskReminderSchedule } from "$lib/projects/task-reminder-schedule.svelte";
+  import { projectTaskReminderNotificationText } from "$lib/projects/task-reminder-notification";
   import type { ProjectChatIntegration } from "$lib/projects/types";
   import type { QuickNotesTrashPurgeRuntime } from "$lib/quick-notes/trash-purge-runtime";
 
@@ -110,6 +114,7 @@
   const locale = $derived(localization.locale);
   const detachedWindows = getDetachedWindows();
   const notesNotificationSchedule = getNotesNotificationSchedule();
+  const projectTaskReminderSchedule = getProjectTaskReminderSchedule();
   const notesProjectHistoryScheduler = getNotesProjectHistoryScheduler();
   const projectViewComponents = {
     list: ProjectListView,
@@ -138,6 +143,7 @@
   };
   let unlistenCalendarNotificationOpen: UnlistenFn | null = null;
   let unlistenNotesNotificationOpen: UnlistenFn | null = null;
+  let unlistenProjectTaskNotificationOpen: UnlistenFn | null = null;
   let unlistenDistractionsDesktopSettingsOpen: UnlistenFn | null = null;
   let unlistenDistractionsLimitsSettingsOpen: UnlistenFn | null = null;
   const NOTES_NOTIFICATION_BODY_MAX_CHARS = 180;
@@ -254,6 +260,21 @@
     window.location.hash = nextHash;
   }
 
+  function projectTaskNotificationProjectId(payload: unknown): string | null {
+    if (!payload || typeof payload !== "object") return null;
+    const projectId = (payload as Record<string, unknown>).project_id;
+    return typeof projectId === "string" && projectId.length > 0 ? projectId : null;
+  }
+
+  async function openProjectTaskNotification(projectId: string): Promise<void> {
+    try {
+      await projects.selectProject(projectId);
+      nav.navigate("projects");
+    } catch (error: unknown) {
+      console.error("Failed to open the project of a task reminder", error);
+    }
+  }
+
   /**
    * Time spent before App.svelte could emit `boot.script-start`. The Rust
    * command is process-spawn anchored, while performance.now is anchored to
@@ -321,6 +342,19 @@
           unlistenNotesNotificationOpen = unlisten;
         })
         .catch((e) => console.error("Failed to listen for Notes notification opens:", e));
+      listen<unknown>("project-task-notification-open", (event) => {
+        if (disposed) return;
+        const projectId = projectTaskNotificationProjectId(event.payload);
+        if (projectId) void openProjectTaskNotification(projectId);
+      })
+        .then((unlisten) => {
+          if (disposed) {
+            unlisten();
+            return;
+          }
+          unlistenProjectTaskNotificationOpen = unlisten;
+        })
+        .catch((e) => console.error("Failed to listen for project task notification opens:", e));
       listen("distractions-open-desktop-settings", () => {
         if (disposed) return;
         settingsLauncher.open("distractions", { distractionsTab: "desktop" });
@@ -351,6 +385,7 @@
           notesProjectHistoryScheduler.switchVault();
           chat.resetForVault();
           syncQuickNotesTrashPurge();
+          projectTaskReminderScheduler.invalidate();
           if (!nextVaultId) return;
           const projectsRequest = previousVaultId ? projects.load() : projects.ensureLoaded();
           void projectsRequest.then(() => Promise.all([
@@ -452,6 +487,8 @@
       unlistenCalendarNotificationOpen = null;
       unlistenNotesNotificationOpen?.();
       unlistenNotesNotificationOpen = null;
+      unlistenProjectTaskNotificationOpen?.();
+      unlistenProjectTaskNotificationOpen = null;
       unlistenDistractionsDesktopSettingsOpen?.();
       unlistenDistractionsDesktopSettingsOpen = null;
       unlistenDistractionsLimitsSettingsOpen?.();
@@ -789,6 +826,37 @@
     if (enabled && wasEnabled) eventNotificationScheduler.invalidate();
   });
 
+  // Projects task date reminders
+  const projectTaskReminderScheduler = createProjectTaskReminderScheduler({
+    listUpcoming: listUpcomingProjectTaskReminders,
+    deliver: async ({ reminder }) => {
+      const text = projectTaskReminderNotificationText(reminder, {
+        startTitle: (task) => t("projects.taskReminder.startTitle", task),
+        dueTitle: (task) => t("projects.taskReminder.dueTitle", task),
+        untitledTask: t("projects.taskReminder.untitledTask"),
+        body: (project, when) => t("projects.taskReminder.body", project, when),
+      }, locale, preferences.calendarTimeFormat);
+      await invoke("show_project_task_notification", {
+        title: text.title,
+        body: text.body,
+        projectId: reminder.projectId,
+        taskId: reminder.taskId,
+        playSound: true,
+      });
+    },
+    onError: (error) => {
+      console.error("[project task reminders] failed:", error);
+    },
+  });
+
+  $effect(() => {
+    const _version = projectTaskReminderSchedule.version;
+    const enabled = isMainWindow && projects.loaded;
+    const wasEnabled = projectTaskReminderScheduler.isEnabled();
+    projectTaskReminderScheduler.setEnabled(enabled);
+    if (enabled && wasEnabled) projectTaskReminderScheduler.invalidate();
+  });
+
   let quickNotesTrashPurge: QuickNotesTrashPurgeRuntime | null = null;
   let lifecycleSchedulersDisposed = false;
 
@@ -817,6 +885,7 @@
   function resumeLifecycleSchedulers(): void {
     eventNotificationScheduler.resume();
     notesNotificationScheduler.resume();
+    projectTaskReminderScheduler.resume();
     chatScheduledMessageScheduler.resume();
     notesProjectHistoryScheduler.resume();
     distractionsUsageScheduler.resume();
@@ -828,6 +897,7 @@
     lifecycleSchedulersDisposed = true;
     eventNotificationScheduler.dispose();
     notesNotificationScheduler.dispose();
+    projectTaskReminderScheduler.dispose();
     chatScheduledMessageScheduler.dispose();
     distractionsUsageScheduler.dispose();
     quickNotesTrashPurge?.dispose();

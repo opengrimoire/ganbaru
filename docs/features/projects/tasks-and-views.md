@@ -60,7 +60,7 @@ A saved view captures the selected tab and its search, filters, sorting, visible
 
 ## Task detail
 
-Task detail is a focused editor available from every view. It edits a local draft, shows content (description, checklists, subtasks, dependencies, scheduled blocks, activity) beside an always-visible property column, and stacks them on narrow layouts. Unsaved closure uses the shared discard flow. Links to Calendar, Notes, Chat, files, and dependencies remain explicit and navigable.
+Task detail is a focused editor available from every view. It edits a local draft, shows content (description, checklists, subtasks, dependencies, scheduled blocks, activity) beside an always-visible property column, and stacks them on narrow layouts. Unsaved closure uses the shared discard flow. Links to Calendar, Notes, Chat, files, and dependencies remain explicit and navigable. Start and due dates can each carry a reminder with the same offsets as Notes dates; reminders are delivered on desktop while the app runs, are not replayed after the app was closed, and opening one selects the task's project.
 
 ## Accessibility and touch
 

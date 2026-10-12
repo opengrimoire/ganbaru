@@ -38,6 +38,7 @@
     projectTaskDetailCustomFieldRawDraft,
     projectTaskDetailCustomFieldSaveDraft,
     projectTaskDetailDraftDirty,
+    projectTaskDetailDateReminder,
     projectTaskDetailDraftFromTask,
     projectTaskDetailDraftPatch,
     projectTaskDetailDraftsEqual,
@@ -124,8 +125,10 @@
   let detailEstimateMinutes = $state("");
   let detailStartDate = $state("");
   let detailStartTime = $state("");
+  let detailStartReminderMinutes = $state<number | null>(null);
   let detailDueDate = $state("");
   let detailDueTime = $state("");
+  let detailDueReminderMinutes = $state<number | null>(null);
   let detailTargetEndDate = $state("");
   let detailBlockerReason = $state("");
   let detailChangeReason = $state("");
@@ -349,8 +352,10 @@
       estimateMinutes: detailEstimateMinutes,
       startDate: detailStartDate,
       startTime: detailStartTime,
+      startReminderMinutes: detailStartReminderMinutes,
       dueDate: detailDueDate,
       dueTime: detailDueTime,
+      dueReminderMinutes: detailDueReminderMinutes,
       targetEndDate: detailTargetEndDate,
       blockerReason: detailBlockerReason,
       changeReason: detailChangeReason,
@@ -433,8 +438,10 @@
     detailEstimateMinutes = detailDraft.estimateMinutes;
     detailStartDate = detailDraft.startDate;
     detailStartTime = detailDraft.startTime;
+    detailStartReminderMinutes = detailDraft.startReminderMinutes;
     detailDueDate = detailDraft.dueDate;
     detailDueTime = detailDraft.dueTime;
+    detailDueReminderMinutes = detailDraft.dueReminderMinutes;
     detailTargetEndDate = detailDraft.targetEndDate;
     detailBlockerReason = detailDraft.blockerReason;
     detailChangeReason = detailDraft.changeReason;
@@ -575,18 +582,36 @@
   function setDetailDateValue(target: DetailDateTarget, value: string): void {
     if (target === "start") {
       detailStartDate = value;
-      if (!value) detailStartTime = "";
+      if (!value) {
+        detailStartTime = "";
+        detailStartReminderMinutes = null;
+      }
       return;
     }
     if (target === "due") {
       detailDueDate = value;
-      if (!value) detailDueTime = "";
+      if (!value) {
+        detailDueTime = "";
+        detailDueReminderMinutes = null;
+      }
       return;
     }
     if (target === "target") {
       detailTargetEndDate = value;
       return;
     }
+  }
+
+  /** Set a start time, keeping a reminder offset the new time still offers. */
+  function changeDetailStartTime(time: string | null): void {
+    detailStartTime = time ?? "";
+    detailStartReminderMinutes = projectTaskDetailDateReminder(detailStartDate, detailStartTime, detailStartReminderMinutes);
+  }
+
+  /** Set a due time, keeping a reminder offset the new time still offers. */
+  function changeDetailDueTime(time: string | null): void {
+    detailDueTime = time ?? "";
+    detailDueReminderMinutes = projectTaskDetailDateReminder(detailDueDate, detailDueTime, detailDueReminderMinutes);
   }
 
   function toggleDetailDatePicker(target: DetailDateTarget): void {
@@ -1340,8 +1365,12 @@
                     onClearDueDate={() => clearDetailDate("due")}
                     onClearTargetEndDate={() => clearDetailDate("target")}
                     onSelectDate={selectDetailDate}
-                    onStartTimeChange={(time) => { detailStartTime = time ?? ""; }}
-                    onDueTimeChange={(time) => { detailDueTime = time ?? ""; }}
+                    startReminderMinutes={detailStartReminderMinutes}
+                    dueReminderMinutes={detailDueReminderMinutes}
+                    onStartTimeChange={changeDetailStartTime}
+                    onDueTimeChange={changeDetailDueTime}
+                    onStartReminderChange={(minutes) => { detailStartReminderMinutes = minutes; }}
+                    onDueReminderChange={(minutes) => { detailDueReminderMinutes = minutes; }}
                     onCancelDatePicker={() => { datePickerTarget = null; }}
                   />
 

@@ -1,5 +1,5 @@
 //! Projects domain independent of Tauri and the WebView: groups, projects, sections, statuses,
-//! priorities, tags, tasks, checklists, custom fields, relationships, task history, reviewed
+//! priorities, tags, tasks, checklists, custom fields, relationships, task history, task date reminders, reviewed
 //! dependency cascades, reordering, workspace reads, and Calendar scheduling rows.
 //!
 //! Callers supply an authorized vault pool. Project creation also creates the managed working
@@ -22,6 +22,7 @@ pub mod scheduling;
 pub mod structure_commands;
 pub mod task_bulk;
 pub mod task_commands;
+pub mod task_reminders;
 pub mod task_summaries;
 mod task_views;
 mod templates;

@@ -12,6 +12,8 @@ const MAX_PROJECT_POMODORO_CYCLE_COUNT: i64 = 12;
 const PROJECT_EVENT_TIME_MODES: &[&str] = &["timed", "all_day"];
 const PROJECT_IDLE_SETTINGS_SOURCES: &[&str] = &["global", "custom"];
 const PROJECT_IDLE_THRESHOLD_MINUTES: &[i64] = &[1, 2, 3, 4, 5, 10, 15];
+/// The longest a task date reminder can fire before its date: four weeks, matching Notes date reminders.
+const MAX_TASK_REMINDER_MINUTES: i64 = 4 * 7 * 24 * 60;
 pub(super) const MAX_TASK_CHANGE_REASON_LENGTH: usize = 1000;
 
 fn is_valid_lucide_slug(value: &str) -> bool {
@@ -314,6 +316,18 @@ pub(super) fn validate_task_update(task: &ProjectTaskUpdate) -> Result<(), Strin
     if task.due_time.is_some() && task.due_date.is_none() {
         return Err("due_time requires due_date".to_string());
     }
+    validate_optional_task_reminder(
+        task.start_reminder_minutes,
+        task.start_date.is_some(),
+        "start_reminder_minutes",
+        "start_date",
+    )?;
+    validate_optional_task_reminder(
+        task.due_reminder_minutes,
+        task.due_date.is_some(),
+        "due_reminder_minutes",
+        "due_date",
+    )?;
     if let (Some(start_date), Some(target_end_date)) = (&task.start_date, &task.target_end_date) {
         if start_date > target_end_date {
             return Err("start_date must be before target_end_date".to_string());
@@ -348,6 +362,27 @@ fn validate_optional_task_time(value: &Option<String>, field: &str) -> Result<()
     let minute = (bytes[3] - b'0') * 10 + (bytes[4] - b'0');
     if hour > 23 || minute > 59 {
         return Err(format!("{field} must use HH:MM"));
+    }
+    Ok(())
+}
+
+/// Checks a date reminder offset against the schema range; a reminder needs its date, as a time does.
+fn validate_optional_task_reminder(
+    minutes: Option<i64>,
+    has_date: bool,
+    field: &str,
+    date_field: &str,
+) -> Result<(), String> {
+    let Some(minutes) = minutes else {
+        return Ok(());
+    };
+    if !has_date {
+        return Err(format!("{field} requires {date_field}"));
+    }
+    if !(0..=MAX_TASK_REMINDER_MINUTES).contains(&minutes) {
+        return Err(format!(
+            "{field} must be between 0 and {MAX_TASK_REMINDER_MINUTES}"
+        ));
     }
     Ok(())
 }

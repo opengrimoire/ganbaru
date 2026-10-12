@@ -16,8 +16,19 @@ import type {
   ProjectTaskUpdate,
   ProjectUpdate,
 } from "$lib/projects/types";
+import { offeredDateReminderMinutes } from "$lib/utils/date-reminders";
 
 export type ProjectTaskUpdatePatch = Partial<ProjectTask> & { changeReason?: string | null };
+
+/** A task date's reminder: none without the date, and an offset its time still offers. */
+function taskDateReminderMinutes(
+  date: string | undefined,
+  time: string | undefined,
+  minutes: number | undefined,
+): number | null {
+  if (!date || minutes === undefined) return null;
+  return offeredDateReminderMinutes(minutes, Boolean(time));
+}
 
 export function taskUpdatePayload(task: ProjectTask, patch: ProjectTaskUpdatePatch): ProjectTaskUpdate {
   const merged = { ...task, ...patch };
@@ -35,8 +46,10 @@ export function taskUpdatePayload(task: ProjectTask, patch: ProjectTaskUpdatePat
     estimateMinutes: merged.estimateMinutes ?? null,
     dueDate: merged.dueDate ?? null,
     dueTime: merged.dueDate ? merged.dueTime ?? null : null,
+    dueReminderMinutes: taskDateReminderMinutes(merged.dueDate, merged.dueTime, merged.dueReminderMinutes),
     startDate: merged.startDate ?? null,
     startTime: merged.startDate ? merged.startTime ?? null : null,
+    startReminderMinutes: taskDateReminderMinutes(merged.startDate, merged.startTime, merged.startReminderMinutes),
     targetEndDate: merged.targetEndDate ?? null,
     archivedAt: merged.archivedAt ?? null,
     blockerReason: merged.blockerReason ?? null,

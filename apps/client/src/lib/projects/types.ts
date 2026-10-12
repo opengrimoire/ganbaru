@@ -308,8 +308,10 @@ export interface ProjectTask {
   estimateMinutes?: number;
   dueDate?: string;
   dueTime?: string;
+  dueReminderMinutes?: number;
   startDate?: string;
   startTime?: string;
+  startReminderMinutes?: number;
   targetEndDate?: string;
   completedAt?: string;
   archivedAt?: string;
@@ -902,8 +904,10 @@ export interface ProjectTaskUpdate {
   estimateMinutes: number | null;
   dueDate: string | null;
   dueTime: string | null;
+  dueReminderMinutes: number | null;
   startDate: string | null;
   startTime: string | null;
+  startReminderMinutes: number | null;
   targetEndDate: string | null;
   archivedAt: string | null;
   blockerReason: string | null;

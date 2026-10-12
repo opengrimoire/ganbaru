@@ -122,8 +122,10 @@ pub async fn update_task(
              estimate_minutes = ?,
              due_date = ?,
              due_time = ?,
+             due_reminder_minutes = ?,
              start_date = ?,
              start_time = ?,
+             start_reminder_minutes = ?,
              target_end_date = ?,
              completed_at = ?,
              archived_at = ?,
@@ -144,8 +146,10 @@ pub async fn update_task(
     .bind(task.estimate_minutes)
     .bind(&task.due_date)
     .bind(&task.due_time)
+    .bind(task.due_reminder_minutes)
     .bind(&task.start_date)
     .bind(&task.start_time)
+    .bind(task.start_reminder_minutes)
     .bind(&task.target_end_date)
     .bind(&completed_at)
     .bind(&task.archived_at)

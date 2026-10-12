@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { MusicInterchangeController } from "$lib/music/library/interchange-controller.svelte";
   import type { MusicTransferCommit } from "$lib/music/library/interchange";
@@ -72,7 +73,7 @@
         <label class="mt-4 block text-[0.68rem] font-semibold" for="music-m3u-name">{t("music.builder.playlistName")}</label><input id="music-m3u-name" bind:value={controller.importPlaylistName} disabled={controller.busy || controller.retryPending} onchange={() => { void controller.refreshPreview(); }} class="field mt-1.5 h-9 w-full text-xs" />
         <label class="mt-3 block text-[0.68rem] font-semibold" for="music-m3u-root">{t("music.builder.relativePathRoot")}</label><div class="mt-1.5"><Select inline value={controller.m3u8RootId} options={rootOptions} onChange={chooseRoot} disabled={controller.busy || controller.retryPending} ariaLabel={t("music.builder.relativePathRoot")} triggerProps={{ id: "music-m3u-root" }} class="w-full" /></div><p class="mt-1 text-[0.63rem] text-muted-foreground">{t("music.builder.relativePathRootHint")}</p>
       {/if}
-      {#if controller.error}<p class="mt-3 text-sm text-destructive" role="alert">{controller.error}</p>{/if}
+      {#if controller.error}<Notice class="mt-3 text-sm" message={controller.error} />{/if}
     </div>
     {#snippet footer()}
       <button type="button" onclick={onClose} disabled={controller.busy} class="min-h-10 rounded-md border border-border bg-card px-3.5 py-2 text-sm font-medium hover:bg-accent disabled:opacity-50">{controller.importResult ? t("music.builder.close") : t("music.builder.cancel")}</button>

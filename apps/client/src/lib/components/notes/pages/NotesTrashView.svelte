@@ -1,5 +1,6 @@
 <script lang="ts">
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { filterNotesPagesByTitle } from "$lib/notes/pages/selection";
   import { notesPageRestoresToWorkspace } from "$lib/notes/pages/recovery";
@@ -99,8 +100,8 @@
     {#if notes.trashLoading && notes.trashedPages.length === 0}
       <div class="py-2 text-[0.866667rem] text-muted-foreground">{t("notes.loadingTrash")}</div>
     {:else if notes.trashError}
-      <div class="py-2 text-[0.866667rem] text-destructive">
-        {t("notes.loadTrashFailed", notes.trashError)}
+      <div class="h-full min-h-32 text-[0.866667rem]">
+        <Notice layout="fill" message={t("notes.loadTrashFailed", notes.trashError)} copy={notes.trashError} onRetry={() => notes.reloadTrashedPages(search)} />
       </div>
     {:else if filteredPages.length === 0}
       <div class="py-2 text-[0.866667rem] text-muted-foreground">

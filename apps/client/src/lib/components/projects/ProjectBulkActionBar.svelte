@@ -10,6 +10,7 @@
   import CollectionPropertyIcon from "$lib/components/collections/CollectionPropertyIcon.svelte";
   import CollectionSelectionAction from "$lib/components/collections/CollectionSelectionAction.svelte";
   import CollectionSelectionBar from "$lib/components/collections/CollectionSelectionBar.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { ProjectPriority, ProjectPriorityConfig, ProjectStatus } from "$lib/projects/types";
   import { getTheme } from "$lib/stores/theme.svelte";
@@ -138,7 +139,7 @@
         </label>
       </div>
       {#if bulkTaskError}
-        <p class="rounded border border-destructive/30 bg-destructive/10 px-2 py-1 text-destructive" role="alert">{bulkTaskError}</p>
+        <Notice class="px-1 py-0.5" message={bulkTaskError} />
       {/if}
       <button type="submit" data-collection-menu-keep-open
         class="rounded-md bg-primary px-2 py-1.5 font-medium text-primary-foreground disabled:cursor-not-allowed disabled:opacity-60"

@@ -48,6 +48,7 @@
   import ChatModelAvatar from "$lib/components/chat/identity/ChatModelAvatar.svelte";
   import ChatModelControls from "$lib/components/chat/composer/ChatModelControls.svelte";
   import ChatParticipantAvatar from "$lib/components/chat/identity/ChatParticipantAvatar.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import ChatChannelAccessPicker from "./ChatChannelAccessPicker.svelte";
   import ChatChannelScopeControls from "./ChatChannelScopeControls.svelte";
   type ChatAccessProfilesManagerComponent = typeof import("./ChatAccessProfilesManager.svelte").default;
@@ -776,13 +777,9 @@
                   </div>
                 </aside>
               {:else if editor.conflictError}
-                <aside bind:this={conflictPanelElement} class="conflict-panel" role="alert" tabindex="-1">
-                  <div>
-                    <strong>{t("settings.chat.teammates.conflict.loadFailedTitle")}</strong>
-                    <p>{editor.conflictError}</p>
-                  </div>
-                  <button type="button" class="secondary-button" onclick={editor.retryAccessConflict}>{t("common.retry")}</button>
-                </aside>
+                <div bind:this={conflictPanelElement} class="conflict-notice" tabindex="-1">
+                  <Notice title={t("settings.chat.teammates.conflict.loadFailedTitle")} message={editor.conflictError} onRetry={editor.retryAccessConflict} />
+                </div>
               {/if}
 
               {#if editor.conflictRecoveryNotice}
@@ -991,7 +988,8 @@
   .form-field textarea { resize:vertical; }
   .form-field small { color:var(--muted-foreground); font-weight:400; line-height:1rem; }
   .conflict-panel { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:start; gap:0.8rem; margin-bottom:1rem; border:1px solid color-mix(in srgb,var(--destructive) 45%,var(--border)); border-radius:0.6rem; background:color-mix(in srgb,var(--destructive) 7%,var(--background)); padding:0.8rem; outline:0; }
-  .conflict-panel:focus-visible,.conflict-recovery-notice:focus-visible { box-shadow:0 0 0 2px color-mix(in srgb,var(--primary) 55%,transparent); }
+  .conflict-notice { margin-bottom:1rem; border-radius:0.5rem; outline:0; font-size:calc(0.7rem * var(--type-scale)); }
+  .conflict-panel:focus-visible,.conflict-notice:focus-visible,.conflict-recovery-notice:focus-visible { box-shadow:0 0 0 2px color-mix(in srgb,var(--primary) 55%,transparent); }
   .conflict-copy { min-width:0; }
   .conflict-panel strong { font-size:calc(0.75rem * var(--type-scale)); }
   .conflict-panel p,.conflict-panel li { color:var(--muted-foreground); font-size:calc(0.68rem * var(--type-scale)); line-height:1rem; }
@@ -1022,7 +1020,7 @@
   .empty-detail { display:grid; height:100%; place-items:center; align-content:center; gap:0.5rem; color:var(--muted-foreground); font-size:calc(0.73rem * var(--type-scale)); }
   @media (max-width:900px) { .field-grid.compact { grid-template-columns:repeat(2,minmax(0,1fr)); }.folder-row { grid-template-columns:auto auto minmax(7rem,1fr); }.folder-controls { grid-column:3; justify-content:flex-start; } }
   @media (max-width:700px) { .directory-panel { border-right:0; border-bottom:1px solid var(--border); }.directory-list { grid-template-columns:repeat(auto-fill,minmax(11rem,1fr)); }.field-grid,.field-grid.compact,.capability-switches { grid-template-columns:1fr; }.capability-switches legend { grid-column:auto; }.conflict-panel { grid-template-columns:1fr; }.conflict-actions { justify-content:stretch; }.conflict-actions button { flex:1; }.editor-footer { align-items:stretch; flex-direction:column; }.editor-footer > div,.save-area { justify-content:space-between; }.save-area .primary-button { flex:1; } }
-  @media (pointer:coarse) { .conflict-actions button,.conflict-panel > button { min-height:44px; } }
+  @media (pointer:coarse) { .conflict-actions button { min-height:44px; } }
 
   .teammate-settings { display:grid; height:100%; min-height:0; grid-template-rows:auto minmax(0,1fr); gap:0.8rem; }
   .directory-header { display:flex; flex-wrap:wrap; align-items:start; justify-content:space-between; gap:0.75rem; padding-inline:0.25rem; }

@@ -9,6 +9,7 @@
   import ChatPermissionsSettings from "$lib/components/settings/chat/ChatPermissionsSettings.svelte";
   import ChatProvidersSettings from "$lib/components/settings/chat/ChatProvidersSettings.svelte";
   import ChatTeammatesSettings from "$lib/components/settings/chat/ChatTeammatesSettings.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
 
   let {
     initialSubsection,
@@ -65,6 +66,12 @@
     }
   }
 
+  /** Retries loading Chat settings and rejects when the load fails again. */
+  async function retryInitialize(): Promise<void> {
+    await initialize();
+    if (loadError) throw new Error(loadError);
+  }
+
   function selectTab(tab: ChatSettingsSubsection): void {
     if (tab === activeTab) return;
     onRequestNavigation(() => {
@@ -106,10 +113,7 @@
   {#if initializing}
     <div class="flex min-h-40 items-center justify-center text-sm text-muted-foreground" role="status">{t("common.loading")}</div>
   {:else if loadError}
-    <div class="flex min-h-40 flex-col items-center justify-center gap-3 text-center text-sm text-destructive" role="alert">
-      <span>{loadError}</span>
-      <button type="button" class="chat-settings-button" onclick={() => void initialize()}>{t("common.retry")}</button>
-    </div>
+    <div class="min-h-40 text-sm"><Notice layout="fill" message={loadError} onRetry={retryInitialize} /></div>
   {:else if activeTab === "teammates"}
     <ChatTeammatesSettings initialTeammateId={initialChatTeammateId} initialChannelId={initialChatChannelId} initialCreate={initialChatCreateTeammate} onDraftStateChange={onTeammateDraftStateChange} />
   {:else if activeTab === "providers"}

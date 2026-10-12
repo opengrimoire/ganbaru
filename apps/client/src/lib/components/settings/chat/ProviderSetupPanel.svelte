@@ -23,6 +23,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getChat } from "$lib/stores/chat.svelte";
   import type { ChatProviderSetupTarget } from "$lib/settings/types";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import SwitchField from "$lib/components/ui/SwitchField.svelte";
 
   let {
@@ -153,6 +154,13 @@
       await tick();
       scrollElement?.focus();
     }
+  }
+
+  /** Retries preparing the setup form and rejects when it still cannot be prepared. */
+  async function retryInitialize(): Promise<void> {
+    operationError = null;
+    await initialize();
+    if (operationError) throw new Error(operationError);
   }
 
   function initializeFamily(familyId: string, displayName: string, executable: string): void {
@@ -791,7 +799,7 @@
             </div>
           {/if}
         {:else if operationError}
-          <p class="py-10 text-center text-sm text-destructive">{operationError}</p>
+          <div class="min-h-40 text-sm"><Notice layout="fill" message={operationError} onRetry={retryInitialize} /></div>
         {/if}
       {/if}
     </div>
@@ -802,7 +810,7 @@
     style="padding-left: {contentPaddingX}; padding-right: {contentPaddingX}; padding-bottom: {contentPaddingBottom};"
   >
     <div class="footer-content">
-      <div class="footer-message" role={operationError ? "alert" : undefined}>{operationError ?? ""}</div>
+      <div class="footer-message">{#if operationError && family}<Notice message={operationError} />{/if}</div>
       <div class="footer-actions">
         <button type="button" class="secondary-button" onclick={onCancel}>{t("common.cancel")}</button>
         <button
@@ -867,7 +875,7 @@
   .test-result > i { display:grid; width:1rem; height:1rem; place-items:center; border:1px solid currentColor; border-radius:999px; }
   .test-result small { color:var(--muted-foreground); }
   .footer-content { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:0.6rem; border-top:1px solid var(--border); padding-top:0.75rem; }
-  .footer-message { min-width:0; flex:1; color:var(--destructive); font-size:calc(0.75rem * var(--type-scale)); }
+  .footer-message { min-width:0; flex:1; font-size:calc(0.75rem * var(--type-scale)); }
   .footer-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:0.45rem; }
   .secondary-button,.primary-button { display:inline-flex; height:2rem; align-items:center; justify-content:center; gap:0.4rem; border-radius:0.375rem; padding-inline:0.75rem; font-size:calc(0.78rem * var(--type-scale)); font-weight:500; }
   .secondary-button { border:1px solid var(--border); background:var(--background); color:var(--foreground); }

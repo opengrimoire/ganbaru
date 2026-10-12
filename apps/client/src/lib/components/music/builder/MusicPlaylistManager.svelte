@@ -3,6 +3,7 @@
   import Pencil from "@lucide/svelte/icons/pencil";
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import { onDestroy, onMount, tick, untrack } from "svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { MusicPlaylistSummary } from "$lib/music/library/contracts";
   import {
@@ -520,7 +521,7 @@
     </div>
   {/each}
 </div>
-{#if reorderError}<p class="mt-2 text-xs text-destructive" role="alert">{t("music.builder.playlistReorderFailed")}</p>{/if}
+{#if reorderError}<Notice class="mt-2 text-xs" message={t("music.builder.playlistReorderFailed")} />{/if}
 <p class="sr-only" aria-live="polite">{announcement}</p>
 
 <style>

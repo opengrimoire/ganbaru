@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { notesPageTitle } from "$lib/notes/pages/title";
   import type { NotesBacklink } from "$lib/notes/types";
@@ -11,6 +12,12 @@
   let { embedded = false }: { embedded?: boolean } = $props();
   let open = $state(false);
   const panelOpen = $derived(embedded || open);
+
+  /** Loads the backlinks again, rejecting while they are still unavailable. */
+  async function retryBacklinks(): Promise<void> {
+    await notes.reloadBacklinks();
+    if (notes.backlinksError) throw new Error(notes.backlinksError);
+  }
 
   function backlinkTypeLabel(backlink: NotesBacklink): string {
     switch (backlink.reference_type) {
@@ -67,9 +74,7 @@
   {#if panelOpen}
     <div class={embedded ? "min-w-0 rounded-md bg-background/70 p-1" : "mt-1 max-w-2xl rounded-md border border-border bg-background/70 p-1"}>
       {#if notes.backlinksError}
-        <div class="px-2 py-1.5 text-[0.8rem] text-destructive">
-          {t("notes.loadBacklinksFailed", notes.backlinksError)}
-        </div>
+        <Notice class="px-2 py-1.5 text-[0.8rem]" message={t("notes.loadBacklinksFailed", notes.backlinksError)} copy={notes.backlinksError} onRetry={retryBacklinks} />
       {:else if notes.backlinks.length === 0}
         <div class="px-2 py-1.5 text-[0.8rem] text-muted-foreground">
           {t("notes.noBacklinks")}

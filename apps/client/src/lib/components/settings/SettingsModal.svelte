@@ -43,6 +43,7 @@
   import { settingsSectionsForShell } from "./section-catalog";
   import SettingsSectionRenderer from "$lib/components/settings/SettingsSectionRenderer.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
 
   type SettingsDetailView =
     | { kind: "distractions-limit"; target: DistractionsLimitEditorTarget }
@@ -158,6 +159,12 @@
     }
   }
 
+  /** Retries loading the mobile theme editor and rejects when it fails again. */
+  async function retryMobileThemeEditorLoad(): Promise<void> {
+    await prepareMobileThemeEditor(true);
+    if (mobileThemeEditorLoadError) throw new Error(mobileThemeEditorLoadError);
+  }
+
   async function cancelUnloadedThemeEditor(): Promise<void> {
     mobileThemeEditorLoadError = "";
     await themeEditor.cancel();
@@ -191,12 +198,13 @@
     if (!draft) pendingDraftNavigation = null;
   }
 
-  function requestSettingsDetail(kind: SettingsDetailKind, retry = false): void {
-    if (!retry && detailLoadState?.key === kind) return;
+  /** Loads a Settings detail component and resolves once the load state settles; failures land in the load state. */
+  function requestSettingsDetail(kind: SettingsDetailKind, retry = false): Promise<void> {
+    if (!retry && detailLoadState?.key === kind) return Promise.resolve();
     const loadingState = beginLazyComponentLoad(detailLoadState, kind);
     detailLoadState = loadingState;
     const request = retry ? retrySettingsDetail(kind) : loadSettingsDetail(kind);
-    void request
+    return request
       .then((component) => {
         if (!detailLoadState) return;
         const nextState = resolveLazyComponentLoad(
@@ -219,6 +227,14 @@
         detailLoadState = nextState;
         console.error(`Failed to load ${kind} Settings detail:`, error);
       });
+  }
+
+  /** Retries a failed Settings detail load and rejects when it fails again, so the notice shows the outcome. */
+  async function retrySettingsDetailLoad(kind: SettingsDetailKind): Promise<void> {
+    await requestSettingsDetail(kind, true);
+    if (detailLoadState?.key === kind && detailLoadState.status === "failed") {
+      throw new Error(`The ${kind} Settings detail could not be loaded`);
+    }
   }
 
   function activeSectionLabel(): string {
@@ -301,7 +317,7 @@
     detailScrollEl = undefined;
     detailScrollbarInsetTop = 0;
     detailScrollbarInsetBottom = 0;
-    requestSettingsDetail("distractions-limit");
+    void requestSettingsDetail("distractions-limit");
     scrollSettingsToTop();
   }
 
@@ -311,7 +327,7 @@
     detailScrollEl = undefined;
     detailScrollbarInsetTop = 0;
     detailScrollbarInsetBottom = 0;
-    requestSettingsDetail("notes-transfer");
+    void requestSettingsDetail("notes-transfer");
     scrollSettingsToTop();
   }
 
@@ -322,7 +338,7 @@
     detailScrollEl = undefined;
     detailScrollbarInsetTop = 0;
     detailScrollbarInsetBottom = 0;
-    requestSettingsDetail("chat-provider");
+    void requestSettingsDetail("chat-provider");
     scrollSettingsToTop();
   }
 
@@ -451,18 +467,12 @@
             {/if}
           {:else if activeDetailLoadState?.status === "failed"}
             {@const failedDetailKind = activeDetailLoadState.key}
-            <div
-              class="flex h-full flex-col items-center justify-center gap-3 p-4 text-center text-sm text-muted-foreground"
-              role="alert"
-            >
-              <p>{t("common.viewLoadFailed", activeSectionLabel())}</p>
-              <button
-                type="button"
-                class="min-h-9 rounded-md border border-border bg-background px-3 font-medium text-foreground active:bg-accent"
-                onclick={() => requestSettingsDetail(failedDetailKind, true)}
-              >
-                {t("common.retry")}
-              </button>
+            <div class="h-full text-sm">
+              <Notice
+                layout="fill"
+                message={t("common.viewLoadFailed", activeSectionLabel())}
+                onRetry={() => retrySettingsDetailLoad(failedDetailKind)}
+              />
             </div>
           {:else}
             <div
@@ -712,18 +722,12 @@
             {/if}
           {:else if activeDetailLoadState?.status === "failed"}
             {@const failedDetailKind = activeDetailLoadState.key}
-            <div
-              class="flex h-full flex-col items-center justify-center gap-3 p-4 text-center text-sm text-muted-foreground"
-              role="alert"
-            >
-              <p>{t("common.viewLoadFailed", activeSectionLabel())}</p>
-              <button
-                type="button"
-                class="min-h-9 rounded-md border border-border bg-background px-3 font-medium text-foreground hover:bg-accent"
-                onclick={() => requestSettingsDetail(failedDetailKind, true)}
-              >
-                {t("common.retry")}
-              </button>
+            <div class="h-full text-sm">
+              <Notice
+                layout="fill"
+                message={t("common.viewLoadFailed", activeSectionLabel())}
+                onRetry={() => retrySettingsDetailLoad(failedDetailKind)}
+              />
             </div>
           {:else}
             <div
@@ -811,29 +815,23 @@
     >
       <div class="flex w-full max-w-sm flex-col items-center gap-3 text-center">
         {#if mobileThemeEditorLoadError}
-          <p class="text-sm font-medium" role="alert">
-            {t("common.viewLoadFailed", t("settings.theme.editor.dialogLabel"))}
-          </p>
-          <p class="max-w-full wrap-break-word text-xs text-muted-foreground">
-            {mobileThemeEditorLoadError}
-          </p>
-          <button
-            type="button"
-            class="min-h-12 w-full rounded-xl border border-border px-4 text-sm font-medium active:bg-accent"
-            onclick={() => void prepareMobileThemeEditor(true)}
-          >
-            {t("common.retry")}
-          </button>
+          <Notice
+            class="text-sm"
+            title={t("common.viewLoadFailed", t("settings.theme.editor.dialogLabel"))}
+            message={mobileThemeEditorLoadError}
+            onRetry={retryMobileThemeEditorLoad}
+            onDismiss={() => void cancelUnloadedThemeEditor()}
+          />
         {:else}
           <p class="text-sm text-muted-foreground" aria-busy="true">{t("common.loading")}</p>
+          <button
+            type="button"
+            class="min-h-12 w-full rounded-xl px-4 text-sm font-medium active:bg-accent"
+            onclick={() => void cancelUnloadedThemeEditor()}
+          >
+            {t("common.cancel")}
+          </button>
         {/if}
-        <button
-          type="button"
-          class="min-h-12 w-full rounded-xl px-4 text-sm font-medium active:bg-accent"
-          onclick={() => void cancelUnloadedThemeEditor()}
-        >
-          {t("common.cancel")}
-        </button>
       </div>
     </div>
   {/if}

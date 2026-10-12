@@ -2,6 +2,7 @@
   import { onMount, tick, type Snippet } from "svelte";
   import ArrowLeft from "@lucide/svelte/icons/arrow-left";
   import X from "@lucide/svelte/icons/x";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
 
   let {
@@ -155,9 +156,7 @@
               </button>
             </div>
             {#if error}
-              <div class="mt-2 rounded-md bg-destructive/10 px-2 py-1.5 text-[0.733333rem] text-destructive">
-                {error}
-              </div>
+              <Notice class="mt-2 text-panel-detail" message={error} />
             {/if}
           </div>
 

@@ -4,6 +4,7 @@
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import { tick, untrack, type Snippet } from "svelte";
   import MiniDatePicker from "$lib/components/ui/MiniDatePicker.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import Switch from "$lib/components/ui/Switch.svelte";
   import TimePicker from "$lib/components/ui/TimePicker.svelte";
   import { formatTimeLabel } from "$lib/calendar/utils";
@@ -207,7 +208,7 @@
       {/if}
     </div>
   {/if}
-  {#if error}<p class="px-2 pt-2 text-panel-detail text-destructive" role="alert">{error}</p>{/if}
+  {#if error}<Notice class="px-2 pt-2 text-panel-detail" message={error} />{/if}
 </div>
 
 {#if timeOpen && value}

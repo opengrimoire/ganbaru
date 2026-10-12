@@ -5,6 +5,7 @@
     restoreSyncRecovery,
     type SyncRecoveryEntry,
   } from "$lib/api/sync";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { publishQuickNotesChanged, touchesQuickNotes } from "$lib/quick-notes/window-sync";
   import { formatSyncTime, syncDeviceName } from "$lib/sync/status";
@@ -28,6 +29,7 @@
   let busyKey = $state<string | null>(null);
   let message = $state("");
   let failed = $state(false);
+  let loadFailed = $state(false);
   let loadGeneration = 0;
 
   const actionClass = $derived(mobileLayout ? `${buttonClass} min-h-12` : buttonClass);
@@ -42,12 +44,20 @@
       const next = await listSyncRecovery();
       if (expected !== loadGeneration) return;
       entries = next;
+      loadFailed = false;
     } catch (cause: unknown) {
       if (expected !== loadGeneration) return;
       console.warn("sync recovery entries could not be loaded", cause);
       failed = true;
+      loadFailed = true;
       message = t("sync.recovery.loadFailed");
     }
+  }
+
+  function retryLoad(): Promise<void> {
+    message = "";
+    failed = false;
+    return load();
   }
 
   async function act(entry: SyncRecoveryEntry, restore: boolean): Promise<void> {
@@ -107,6 +117,10 @@
     </div>
   {/each}
   {#if message}
-    <p role={failed ? "alert" : "status"} class={failed ? "px-1 text-[0.8rem] leading-5 text-destructive" : "px-1 text-[0.8rem] leading-5 text-muted-foreground"}>{message}</p>
+    {#if failed}
+      <Notice class="px-1 text-[0.8rem] leading-5" {message} copy={false} onRetry={loadFailed ? retryLoad : undefined} />
+    {:else}
+      <p role="status" class="px-1 text-[0.8rem] leading-5 text-muted-foreground">{message}</p>
+    {/if}
   {/if}
 </div>

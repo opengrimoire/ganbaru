@@ -1,5 +1,6 @@
 <script lang="ts">
   import NotesLoadingSkeleton from "$lib/components/notes/NotesLoadingSkeleton.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { NOTES_TEXT_COLORS, notesBlockColorStyle } from "$lib/notes/blocks/color";
   import CollectionRow from "$lib/components/collections/CollectionRow.svelte";
   import CollectionCell from "$lib/components/collections/CollectionCell.svelte";
@@ -315,14 +316,14 @@
   function requestCsvPanel(
     kind: "database-csv-import" | "database-csv-export",
     retry = false,
-  ): void {
-    if (kind === "database-csv-import" && editingLocked) return;
+  ): Promise<void> {
+    if (kind === "database-csv-import" && editingLocked) return Promise.resolve();
     openCsvPanelKind = kind;
-    if (!retry && csvPanelLoadState?.key === kind) return;
+    if (!retry && csvPanelLoadState?.key === kind) return Promise.resolve();
     const loadingState = beginLazyComponentLoad(csvPanelLoadState, kind);
     csvPanelLoadState = loadingState;
     const request = retry ? retryNotesEditorPanel(kind) : loadNotesEditorPanel(kind);
-    void request.then((component) => {
+    return request.then((component) => {
       if (!csvPanelLoadState) return;
       csvPanelLoadState = resolveLazyComponentLoad(
         csvPanelLoadState,
@@ -339,12 +340,13 @@
         error,
       );
       console.error(`load Notes ${kind} panel failed`, error);
+      if (retry) throw error;
     });
   }
 
-  function retryCsvPanel(): void {
+  function retryCsvPanel(): Promise<void> {
     const kind = csvPanelLoadState?.key;
-    if (kind) requestCsvPanel(kind, true);
+    return kind ? requestCsvPanel(kind, true) : Promise.resolve();
   }
 
   const visibleRows = $derived(rowCreation.rowsFor(dataSourceId, table?.rows ?? []));
@@ -592,6 +594,12 @@
     } finally {
       if (requestId === tableRequestId) loading = false;
     }
+  }
+
+  /** Reloads a table that failed to load, rejecting while it is still unavailable. */
+  async function retryTable(): Promise<void> {
+    await loadTable();
+    if (error) throw new Error(error);
   }
 
   async function loadMoreTableRows(): Promise<void> {
@@ -1180,16 +1188,11 @@
   <NotesDatabaseQueryBar properties={columns} {filters} {sorts} pending={mutating || editingLocked} onFiltersChange={saveFilters} onSortsChange={saveSorts} />
   {#if table}<span class="sr-only" role="status">{t("notes.databaseRowsCount", visibleRows.length)}</span>{/if}
 
-  {#if error}
-    <div class="flex items-center gap-2 text-[0.8rem] text-destructive" role="alert">
-      <span>{error}</span>
-      {#if !table}
-        <button type="button" class="rounded-md px-2 py-1 hover:bg-destructive/10" onclick={() => { void loadTable(); }}>{t("common.retry")}</button>
-      {/if}
-    </div>
-  {/if}
+  {#if error && table}<Notice class="text-[0.8rem]" message={error} />{/if}
 
-  {#if !table && !error}<NotesLoadingSkeleton kind="table" />{/if}
+  {#if !table && error}
+    <div class="min-h-32 text-[0.8rem]"><Notice layout="fill" message={t("notes.databaseTableFailed", error)} copy={error} onRetry={retryTable} /></div>
+  {:else if !table}<NotesLoadingSkeleton kind="table" />{/if}
   {#if table}
     <div class="grid gap-2 @container">
       {#if settingsOpen}
@@ -1302,7 +1305,7 @@
           disabled={mutating || loading}
         />
       {:else if openCsvPanelKind && csvPanelLoadState?.status === "failed"}
-        <button class="min-h-8 rounded-md border border-border px-2 text-[0.8rem] hover:bg-accent" type="button" onclick={retryCsvPanel}>{t("common.retry")}</button>
+        <Notice class="text-[0.8rem]" message={t("common.viewLoadFailed", t(openCsvPanelKind === "database-csv-import" ? "notes.databaseCsvImportTitle" : "notes.databaseCsvExportTitle"))} copy={false} onRetry={retryCsvPanel} />
       {/if}
 
       {#if selectedRows.length > 0}
@@ -1502,10 +1505,7 @@
                 {/each}
                 <div role="cell"></div>
                 {#if rowCreation.errorFor(row.id)}
-                  <div class="col-span-full flex items-center gap-2 px-2 py-1 text-[0.8rem] text-destructive" role="alert">
-                    <span>{rowCreation.errorFor(row.id)}</span>
-                    <button type="button" class="rounded-md px-2 py-1 hover:bg-destructive/10" onclick={() => rowCreation.retry(row.id)}>{t("common.retry")}</button>
-                  </div>
+                  <Notice class="col-span-full px-2 py-1 text-[0.8rem]" message={rowCreation.errorFor(row.id) ?? ""} onRetry={() => rowCreation.retry(row.id)} />
                 {/if}
               </CollectionRow>
               {/if}

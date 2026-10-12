@@ -24,6 +24,7 @@
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
   import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
 
   let {
     channel = null,
@@ -252,7 +253,7 @@
         </ul>
       </div>
 
-      {#if error}<p class="text-panel-detail text-destructive" role="alert">{error}</p>{/if}
+      {#if error}<Notice class="text-panel-detail" message={error} />{/if}
     </div>
 
     <footer class="flex justify-end gap-2 px-5 pt-2 pb-4">

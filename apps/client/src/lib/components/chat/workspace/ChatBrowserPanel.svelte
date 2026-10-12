@@ -16,6 +16,7 @@
   import type { BrowserTabBounds, BrowserTabRead } from "$lib/chat/contracts";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getChat } from "$lib/stores/chat.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
 
   type ViewportPreset = "responsive" | "mobile" | "tablet" | "desktop";
 
@@ -350,7 +351,7 @@
     {#if browserTab}<span>{browserTab.viewportWidth} × {browserTab.viewportHeight}</span>{/if}
   </div>
   {#if artifactStatus}<p role="status" class="artifact-status">{artifactStatus}</p>{/if}
-  {#if error}<p role="alert" class="error">{error}</p>{/if}
+  {#if error}<Notice class="error" message={error} />{/if}
   <div bind:this={viewport} class="browser-viewport">
     {#if !browserTab?.visible}
       <div class="empty">
@@ -382,6 +383,6 @@
   .viewport-toolbar span { margin-left: auto; color: var(--muted-foreground); font-size: calc(0.62rem * var(--type-scale)); }
   .browser-viewport { position: relative; min-height: 0; flex: 1; overflow: hidden; background: color-mix(in srgb, var(--muted) 28%, var(--background)); }
   .empty { display: grid; height: 100%; place-items: center; align-content: center; gap: 0.55rem; padding: 1rem; color: var(--muted-foreground); text-align: center; font-size: calc(0.72rem * var(--type-scale)); }
-  .error { border-bottom: 1px solid color-mix(in srgb, var(--destructive) 35%, transparent); padding: 0.45rem 0.65rem; color: var(--destructive); font-size: calc(0.68rem * var(--type-scale)); }
+  .browser-panel > :global(.error) { border-bottom: 1px solid var(--border); padding: 0.45rem 0.65rem; font-size: calc(0.68rem * var(--type-scale)); }
   .artifact-status { border-bottom: 1px solid var(--border); padding: 0.35rem 0.65rem; color: var(--muted-foreground); font-size: calc(0.66rem * var(--type-scale)); }
 </style>

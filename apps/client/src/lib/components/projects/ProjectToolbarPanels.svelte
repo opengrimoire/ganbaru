@@ -3,6 +3,7 @@
   import CollectionMenuSeparator from "$lib/components/collections/CollectionMenuSeparator.svelte";
   import CollectionPanel from "$lib/components/collections/CollectionPanel.svelte";
   import CollectionSettings from "$lib/components/collections/CollectionSettings.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import Archive from "@lucide/svelte/icons/archive";
   import ArrowDown from "@lucide/svelte/icons/arrow-down";
   import ArrowUp from "@lucide/svelte/icons/arrow-up";
@@ -615,7 +616,7 @@
             {@render optionRow(control.label, control.visible, () => { void onToggleTaskListColumn(control.column); }, listColumnsSaving)}
           {/each}
           {#if listColumnsError}
-            <p class="px-2 py-1 text-destructive" role="alert">{listColumnsError}</p>
+            <Notice class="px-2 py-1" message={listColumnsError} />
           {/if}
         </CollectionMenu>
         <CollectionMenu fullWidth kind="layout" icon={Save} label={t("projects.savedViews.title")} summary={savedTaskViews.length > 0 ? formatNumber(localization.locale, savedTaskViews.length) : t("projects.toolbar.none")}>
@@ -667,7 +668,7 @@
             </div>
           {/each}
           {#if savedViewError}
-            <p class="px-2 py-1 text-destructive" role="alert">{savedViewError}</p>
+            <Notice class="px-2 py-1" message={savedViewError} />
           {/if}
         </CollectionMenu>
       {/if}

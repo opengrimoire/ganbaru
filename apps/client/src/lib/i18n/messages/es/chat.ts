@@ -571,6 +571,7 @@ export const chat = {
     closeTerminal: "Cerrar terminal",
     terminalExited: (code: string) => `Terminó con código ${code}`,
     terminalStopped: "Detenida",
+    terminalUnavailable: "No se pudo iniciar la terminal.",
     confirmCloseTerminal: "Esta terminal sigue en ejecución. ¿Quieres cerrarla y terminar su proceso?",
     confirmMultilinePaste: "¿Pegar varias líneas en la terminal?",
     toggleTerminalSplit: "Alternar terminales divididas",

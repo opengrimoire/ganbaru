@@ -29,6 +29,7 @@
   import type { NotesDatabasePropertyActionRequest, NotesDatabaseSourceEditingScope } from "$lib/notes/database/data-source-schema";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import {
     deleteNotesDatabaseView,
     duplicateNotesDatabaseView,
@@ -249,7 +250,7 @@
 
   $effect(() => {
     activeViewKind;
-    requestActiveView();
+    void requestActiveView();
   });
 
   $effect(() => {
@@ -380,26 +381,34 @@
     }
   }
 
-  function requestActiveView(retry = false): void {
-    if (!selectedView) return;
-    if (!retry && viewLoadState?.key === activeViewKind) return;
+  /** Loads the active view renderer. A retry rejects when the load fails again. */
+  function requestActiveView(retry = false): Promise<void> {
+    if (!selectedView) return Promise.resolve();
+    if (!retry && viewLoadState?.key === activeViewKind) return Promise.resolve();
     const kind = activeViewKind;
     const component = readNotesDatabaseView(kind);
     if (component) {
       viewLoadState = { key: kind, status: "ready", requestId: (viewLoadState?.requestId ?? 0) + 1, component };
-      return;
+      return Promise.resolve();
     }
     const loadingState = beginLazyComponentLoad(viewLoadState, kind);
     viewLoadState = loadingState;
     const request = retry ? retryNotesDatabaseView(kind) : loadNotesDatabaseView(kind);
-    void request.then((component) => {
+    return request.then((component) => {
       if (!viewLoadState) return;
       viewLoadState = resolveLazyComponentLoad(viewLoadState, kind, loadingState.requestId, component);
     }).catch((error: unknown) => {
       if (!viewLoadState) return;
       viewLoadState = rejectLazyComponentLoad(viewLoadState, kind, loadingState.requestId, error);
       console.error(`load Notes ${kind} database view failed`, error);
+      if (retry) throw error;
     });
+  }
+
+  /** Reloads the view list after it failed, rejecting while the list is still unavailable. */
+  async function retryViews(): Promise<void> {
+    await reloadViews(initialViewId);
+    if (viewError) throw new Error(viewError);
   }
 
   function viewLabel(view: NotesDatabaseViewKind): string {
@@ -781,7 +790,7 @@
   <CollectionMenu bind:this={sourceSettingsRow} fullWidth label={t("notes.databaseViewSource")} summary={activeSource ? sourceTitle(activeSource) : ""} icon={Database} disabled={selectionDisabled}>
     <input class="field mb-1 w-full min-w-0" aria-label={t("notes.databaseSourceSearch")} placeholder={t("notes.databaseSourceSearch")}
       bind:value={sourceName} disabled={selectionDisabled} onkeydown={(event) => event.stopPropagation()} />
-    {#if sourceError}<p class="px-2 py-1 text-destructive" role="alert">{sourceError}</p>{/if}
+    {#if sourceError}<Notice class="px-2 py-1" message={sourceError} />{/if}
     {#if sourcesLoading && dataSources.length === 0}<p class="px-2 py-1 text-muted-foreground" role="status">{t("notes.databaseSourcesLoading")}</p>{/if}
     {#if matchingAttachedSources.length > 0}
       <p class="menu-label">{t("notes.databaseSourcesAttached")}</p>
@@ -910,7 +919,7 @@
     <span class="h-5 w-px bg-primary-foreground/25" aria-hidden="true"></span>
     <CollectionMenu label={t("notes.databaseNewOptions")} kind="new-options" iconOnly primary showHeader={false} dismissOnAction>
       <p class="menu-label">{t("notes.databaseTemplatesTitle")}</p>
-      {#if templateError}<p class="mb-2 px-2 text-panel-detail text-destructive" role="alert">{templateError}</p>{/if}
+      {#if templateError}<Notice class="mb-2 px-2 text-panel-detail" message={templateError} />{/if}
       {#if templates.length === 0}
         <p class="mb-2 px-2 text-panel-detail text-muted-foreground">{t("notes.databaseTemplatesEmpty")}</p>
       {:else}
@@ -938,13 +947,8 @@
   />
 {/if}
 
-{#if viewError}
-  <div class="my-2 flex items-center gap-2 text-[0.8rem] text-destructive" role="alert">
-    <span>{viewError}</span>
-    {#if !selectedView}
-      <button type="button" class="rounded-md px-2 py-1 hover:bg-destructive/10" onclick={() => { void reloadViews(initialViewId); }}>{t("common.retry")}</button>
-    {/if}
-  </div>
+{#if viewError && selectedView}
+  <Notice class="my-2 text-[0.8rem]" message={viewError} />
 {/if}
 
 {#key layoutInstance.identity}
@@ -967,8 +971,10 @@
 {:else if selectedView && viewLoadState?.status === "ready" && viewLoadState.key === activeViewKind && viewLoadState.component.kind === "timeline"}
   {@const NotesDatabaseTimelineView = viewLoadState.component.component}
   <NotesDatabaseTimelineView settingsOpen={viewSettingsOpen} {settingsAnchor} {settingsHeader} onCloseSettings={() => { viewSettingsOpen = false; }} onEditProperties={editProperties} {onReady} onSavingChange={reportLayoutSaving} dataSourceId={activeSourceId} {databaseId} {editingLocked} viewId={activeViewId} {onSelectPage} reloadKey={reloadKeys.timeline} />
+{:else if viewError && !selectedView}
+  <div class="min-h-32 text-[0.8rem]"><Notice layout="fill" message={viewError} onRetry={retryViews} /></div>
 {:else if viewLoadState?.status === "failed" && viewLoadState.key === activeViewKind}
-  <div class="my-3 rounded-md border border-destructive/40 p-3 text-[0.8rem] text-destructive" role="alert"><p>{t("common.viewLoadFailed", viewLabel(activeViewKind))}</p><button class="mt-2 min-h-8 rounded-md border border-border px-2 text-foreground hover:bg-accent" type="button" onclick={() => requestActiveView(true)}>{t("common.retry")}</button></div>
+  <div class="min-h-32 text-[0.8rem]"><Notice layout="fill" message={t("common.viewLoadFailed", viewLabel(activeViewKind))} copy={false} onRetry={() => requestActiveView(true)} /></div>
 {:else}
   <NotesLoadingSkeleton kind={activeViewKind} />
 {/if}

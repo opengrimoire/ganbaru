@@ -11,6 +11,7 @@
   import { formatList, formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getChat } from "$lib/stores/chat.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
 
   const { pending } = $props<{ pending: ChatPendingRequestRead }>();
   const localization = getLocalization();
@@ -205,7 +206,7 @@
     <div class="request-actions">{#if step > 0}<button type="button" disabled={resolving} onclick={() => { step -= 1; error = null; }}>{t("chat.composer.back")}</button>{/if}<button type="button" disabled={resolving} onclick={() => void advanceOrSubmit()}>{step < questions.length - 1 ? t("chat.save") : t("chat.composer.submitAnswer")}</button></div>
   {/if}
   {#if resolving}<p class="resolving"><LoaderCircle size={13} class="animate-spin" />{t("chat.composer.resolving")}</p>{/if}
-  {#if error}<p role="alert" class="text-xs text-destructive">{error}</p>{/if}
+  {#if error}<Notice class="text-xs" message={error} />{/if}
 </section>
 
 <style>

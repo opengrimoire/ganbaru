@@ -16,6 +16,7 @@
   import { getCalendar } from "$lib/stores/calendar.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import ProjectBulkActionBar from "./ProjectBulkActionBar.svelte";
 
   let {
@@ -154,6 +155,7 @@
       await refreshScheduledTasks(vaultId, receipt.commandId);
     } catch (error) {
       bulkTaskError = t("projects.bulk.actionFailed", error instanceof Error ? error.message : String(error));
+      throw error;
     } finally {
       scheduleRecovery = scheduling.recoverable;
       bulkTaskActionPending = false;
@@ -244,13 +246,16 @@
 {#if scheduleRecovery || (bulkTaskError && !bulkScheduleOpen)}
   <div class="absolute top-full left-0 mt-3 flex max-w-full flex-col items-start gap-1">
     {#if scheduleRecovery}
-      <div class="surface-floating flex min-h-8 items-center gap-2 px-2.5" role="status">
-        <span>{t("projects.bulk.schedule")}</span>
-        <button type="button" class="min-h-7 rounded px-2 text-primary hover:bg-accent" disabled={bulkTaskActionPending} onclick={() => { void retryScheduledTasks(); }}>{t("common.retry")}</button>
-        {#if bulkTaskError}<span class="text-destructive">{bulkTaskError}</span>{/if}
-      </div>
-    {:else}
-      <p class="surface-floating px-2.5 py-1.5 text-destructive" role="alert">{bulkTaskError}</p>
+      <Notice
+        class="surface-floating px-2.5 py-1.5"
+        message={bulkTaskError ?? t("projects.bulk.scheduleUnfinished")}
+        tone={bulkTaskError ? "neutral" : "warning"}
+        role={bulkTaskError ? "alert" : "status"}
+        copy={bulkTaskError ?? false}
+        onRetry={retryScheduledTasks}
+      />
+    {:else if bulkTaskError}
+      <Notice class="surface-floating px-2.5 py-1.5" message={bulkTaskError} />
     {/if}
   </div>
 {/if}

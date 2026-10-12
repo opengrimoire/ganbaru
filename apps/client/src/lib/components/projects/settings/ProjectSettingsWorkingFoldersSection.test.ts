@@ -341,7 +341,7 @@ describe("Project working folder settings", () => {
     expect(target.querySelector<HTMLButtonElement>('[aria-label="AI provider for external"]')?.disabled).toBe(true);
     expect(target.querySelector<HTMLButtonElement>('[aria-label="Options for external"]')?.disabled).toBe(true);
     rejectOpen(new Error("Folder could not be opened"));
-    await vi.waitFor(() => expect(target.querySelector('[role="alert"]')?.textContent).toBe("Folder could not be opened"));
+    await vi.waitFor(() => expect(target.querySelector('[role="alert"]')?.textContent?.trim()).toBe("Folder could not be opened"));
     expect(target.querySelector<HTMLButtonElement>('[aria-label="AI provider for external"]')?.disabled).toBe(false);
   });
 });

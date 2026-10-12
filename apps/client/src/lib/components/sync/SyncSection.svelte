@@ -2,6 +2,7 @@
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
   import SwitchField from "$lib/components/ui/SwitchField.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getSync } from "$lib/stores/sync.svelte";
   import {
@@ -97,7 +98,7 @@
         <div class="text-muted-foreground">{t("sync.waiting", status.waiting)}</div>
       {/if}
       {#if status.state === "error" && status.lastError}
-        <div class="wrap-break-word text-destructive">{t("sync.errorDetail", status.lastError)}</div>
+        <Notice message={t("sync.errorDetail", status.lastError)} />
       {/if}
       {#if conflictTotal > 0}
         <div class="text-foreground">{t("sync.conflicts", conflictTotal)}</div>
@@ -132,7 +133,7 @@
       </button>
     </div>
     {#if actionError}
-      <p role="alert" class="px-1 text-[0.8rem] leading-5 text-destructive">{actionError}</p>
+      <Notice class="px-1 text-[0.8rem] leading-5" message={actionError} />
     {/if}
 
     {#if status.recoveryCount > 0}

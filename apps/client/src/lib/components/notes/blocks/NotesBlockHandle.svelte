@@ -1,5 +1,6 @@
 <script lang="ts">
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import {
     beginLazyComponentLoad,
     rejectLazyComponentLoad,
@@ -232,14 +233,15 @@
         return t("notes.blockColor.redBackground");
     }
   }
-  function requestDestinationPicker(retry = false): void {
-    if (!retry && destinationPickerLoadState) return;
+  /** Loads the destination picker on first use. A retry rejects when the load fails again. */
+  function requestDestinationPicker(retry = false): Promise<void> {
+    if (!retry && destinationPickerLoadState) return Promise.resolve();
     const loadingState = beginLazyComponentLoad(destinationPickerLoadState, "destination-picker");
     destinationPickerLoadState = loadingState;
     const request = retry
       ? retryNotesEditorPanel("destination-picker")
       : loadNotesEditorPanel("destination-picker");
-    void request.then((component) => {
+    return request.then((component) => {
       if (!destinationPickerLoadState) return;
       destinationPickerLoadState = resolveLazyComponentLoad(
         destinationPickerLoadState,
@@ -256,11 +258,12 @@
         error,
       );
       console.error("load Notes block destination picker failed", error);
+      if (retry) throw error;
     });
   }
 
   $effect(() => {
-    if (moveMenuOpen) requestDestinationPicker();
+    if (moveMenuOpen) void requestDestinationPicker();
   });
 </script>
 
@@ -455,7 +458,7 @@
               }}
             />
           {:else if destinationPickerLoadState?.status === "failed"}
-            <button class="menu-item" type="button" onclick={() => requestDestinationPicker(true)}>{t("common.retry")}</button>
+            <Notice class="p-2" message={t("common.viewLoadFailed", t("notes.moveBlockToPage"))} copy={false} onRetry={() => requestDestinationPicker(true)} />
           {:else}
             <div class="p-2 text-muted-foreground" aria-busy="true">{t("common.loading")}</div>
           {/if}

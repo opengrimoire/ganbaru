@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { cn } from "$lib/utils";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getDistractions } from "$lib/stores/distractions.svelte";
   import {
@@ -48,6 +49,16 @@
     } finally {
       loadingStatus = false;
     }
+  }
+
+  /**
+   * Reloads Android access status for the error notice retry action.
+   *
+   * @returns A promise that rejects when the status still cannot be read.
+   */
+  async function retryStatus(): Promise<void> {
+    await refreshStatus();
+    if (statusError) throw new Error("Android Distractions access status is unavailable");
   }
 
   async function openAccessSettings(target: AccessTarget | null): Promise<void> {
@@ -200,7 +211,7 @@
           ? t("settings.distractions.mobile.protectionActive")
           : t("settings.distractions.mobile.protectionInactive")}
     </p>
-    {#if statusError}<p class="px-1 text-[0.8rem] text-destructive">{t("mobile.focusOnboarding.statusError")}</p>{/if}
+    {#if statusError}<Notice class="px-1 text-[0.8rem]" message={t("mobile.focusOnboarding.statusError")} onRetry={retryStatus} />{/if}
   </section>
 
   <fieldset disabled={!distractions.mobileEnabled} class={cn("m-0 flex min-w-0 flex-col gap-4 border-0 p-0", !distractions.mobileEnabled && "opacity-50")}>

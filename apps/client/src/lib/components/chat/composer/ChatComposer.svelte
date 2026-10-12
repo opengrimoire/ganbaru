@@ -12,9 +12,11 @@
 
 <script lang="ts">
   import { onMount, tick } from "svelte";
+  import Archive from "@lucide/svelte/icons/archive";
   import ArrowUp from "@lucide/svelte/icons/arrow-up";
   import AtSign from "@lucide/svelte/icons/at-sign";
   import Bold from "@lucide/svelte/icons/bold";
+  import FolderX from "@lucide/svelte/icons/folder-x";
   import ImagePlus from "@lucide/svelte/icons/image-plus";
   import Italic from "@lucide/svelte/icons/italic";
   import ListChecks from "@lucide/svelte/icons/list-checks";
@@ -62,6 +64,7 @@
   import ChatComposerInfoPanel from "./ChatComposerInfoPanel.svelte";
   import ChatComposerSuggestionMenu from "./ChatComposerSuggestionMenu.svelte";
   import ChatWorkingFolderControl from "./ChatWorkingFolderControl.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import ChatImageGallery from "$lib/components/chat/timeline/ChatImageGallery.svelte";
   import ChatModelControls from "./ChatModelControls.svelte";
   import ChatRequestPanel from "$lib/components/chat/timeline/ChatRequestPanel.svelte";
@@ -605,7 +608,8 @@
 
   async function retryFailedComposerSend(): Promise<void> {
     const retried = await run(() => chat.retryFailedSend());
-    if (retried && !chat.sendError) clearProviderCommand();
+    if (!retried || chat.sendError) throw new Error(operationError ?? chat.sendError ?? "Chat send retry failed");
+    clearProviderCommand();
   }
 
   function executeTypedAppCommand(): boolean {
@@ -837,9 +841,13 @@
 
 <section class:hero class="chat-composer" data-chat-composer-container role="group" ondragover={(event) => event.preventDefault()} ondrop={handleDrop}>
   {#if chat.interaction?.queuedFollowup}<div class="queued-row"><div><strong>{t("chat.composer.queued")}</strong><p>{chat.interaction.queuedFollowup.text}</p></div><button type="button" onclick={() => void chat.editQueuedFollowup()}>{t("chat.composer.editQueued")}</button><button type="button" onclick={() => void chat.cancelQueuedFollowup()}>{t("chat.composer.cancelQueued")}</button></div>{/if}
-  {#if chat.sendError}<div role="alert" class="recovery-row"><strong>{t("chat.composer.launchFailed")}</strong><span>{chat.sendError}</span><button type="button" onclick={() => void retryFailedComposerSend()}>{t("chat.timeline.retry")}</button><button type="button" onclick={() => void chat.editFailedSend()}>{t("chat.composer.editDraft")}</button><button type="button" onclick={() => void chat.changeProviderAfterFailure()}>{t("chat.composer.changeProvider")}</button></div>{/if}
-  {#if projectArchived}<div role="status" class="recovery-row"><strong>{t("chat.firstUse.archivedProjectTitle")}</strong><span>{t("chat.composer.archivedProject")}</span></div>{/if}
-  {#if workingFolderUnavailable}<div role="status" class="recovery-row"><strong>{t("chat.firstUse.missingBindingTitle")}</strong><span>{t("chat.composer.workingFolderUnavailable")}</span></div>{/if}
+  {#if chat.sendError}
+    <Notice class="composer-notice" title={t("chat.composer.launchFailed")} message={chat.sendError} retryLabel={t("chat.timeline.retry")} onRetry={retryFailedComposerSend}>
+      {#snippet actions()}<button type="button" class="notice-action-text" onclick={() => void chat.editFailedSend()}>{t("chat.composer.editDraft")}</button><button type="button" class="notice-action-text" onclick={() => void chat.changeProviderAfterFailure()}>{t("chat.composer.changeProvider")}</button>{/snippet}
+    </Notice>
+  {/if}
+  {#if projectArchived}<Notice class="composer-notice" role="status" tone="warning" icon={Archive} title={t("chat.firstUse.archivedProjectTitle")} message={t("chat.composer.archivedProject")} copy={false} />{/if}
+  {#if workingFolderUnavailable}<Notice class="composer-notice" role="status" tone="warning" icon={FolderX} title={t("chat.firstUse.missingBindingTitle")} message={t("chat.composer.workingFolderUnavailable")} copy={false} />{/if}
   {#if composerPanel}
     <ChatComposerInfoPanel
       panel={composerPanel}
@@ -933,7 +941,7 @@
     </div>
   </div>
   {#if pending}<div class="request-panel-shell"><ChatRequestPanel {pending} /></div>{/if}
-  {#if operationError || chat.composer.error}<p role="alert" class="composer-error">{operationError ?? chat.composer.error}</p>{/if}
+  {#if operationError || chat.composer.error}<Notice class="composer-notice composer-notice-end" message={operationError ?? chat.composer.error ?? ""} />{/if}
 </section>
 
 <style>
@@ -981,12 +989,12 @@
   .mention-chips { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.65rem; }
   .mention-chips > span { display: inline-flex; max-width: 100%; align-items: center; gap: 0.2rem; border: 1px solid var(--border); border-radius: 999px; padding: 0.2rem 0.4rem; font-size: calc(0.666667rem * var(--type-scale)); }
   .mention-chips small { color: var(--status-tentative); }
-  .queued-row, .recovery-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; margin-top: 0.65rem; border: 1px solid var(--border); border-radius: 0.55rem; padding: 0.45rem; font-size: calc(0.7rem * var(--type-scale)); }
+  .queued-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; margin-top: 0.65rem; border: 1px solid var(--border); border-radius: 0.55rem; padding: 0.45rem; font-size: calc(0.7rem * var(--type-scale)); }
   .queued-row div { min-width: 0; flex: 1; }
   .queued-row p { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted-foreground); }
-  .queued-row button, .recovery-row button { border-radius: 0.3rem; padding: 0.25rem 0.4rem; }
-  .recovery-row { border-color: color-mix(in oklab, var(--destructive) 45%, var(--border)); color: var(--destructive); }
-  .composer-error { margin-bottom: 0.65rem; color: var(--destructive); font-size: calc(0.733333rem * var(--type-scale)); }
+  .queued-row button { border-radius: 0.3rem; padding: 0.25rem 0.4rem; }
+  .chat-composer :global(.composer-notice) { margin: 0.75rem 1.25rem 0; font-size: calc(0.733333rem * var(--type-scale)); }
+  .chat-composer :global(.composer-notice-end) { margin: 0 1.25rem 0.75rem; }
   .request-panel-shell { margin-bottom: 0.75rem; }
   @container chat-composer (max-width: 640px) { .toolbar-right small { max-width: 8rem; } }
   @container chat-composer (max-width: 460px) { .format-action { display: none; } }

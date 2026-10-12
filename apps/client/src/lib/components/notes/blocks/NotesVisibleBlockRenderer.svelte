@@ -1,5 +1,6 @@
 <script lang="ts">
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import type {
     NotesBlockTreeItem,
     NotesColumnBlockItems,
@@ -61,10 +62,7 @@
       dropPosition={drag.dropPositionForBlock(item.block.id)}
     />
   {:else if columnFailed}
-    <div class="my-1 rounded-md border border-destructive/40 p-2 text-[0.8rem] text-destructive" role="alert">
-      <p>{t("common.viewLoadFailed", t("notes.blockType.columns"))}</p>
-      <button class="mt-2 min-h-8 rounded-md border border-border px-2 text-foreground hover:bg-accent" type="button" onclick={() => retryStructural("column-list")}>{t("common.retry")}</button>
-    </div>
+    <Notice class="my-1 text-[0.8rem]" message={t("common.viewLoadFailed", t("notes.blockType.columns"))} copy={false} onRetry={() => retryStructural("column-list")} />
   {:else}<div class="my-1 min-h-8 text-[0.8rem] text-muted-foreground" aria-busy="true">{t("common.loading")}</div>{/if}
 {:else if item.block.type === "tab"}
   {#if tabComponent}
@@ -76,10 +74,7 @@
       dropPosition={drag.dropPositionForBlock(item.block.id)}
     />
   {:else if tabFailed}
-    <div class="my-1 rounded-md border border-destructive/40 p-2 text-[0.8rem] text-destructive" role="alert">
-      <p>{t("common.viewLoadFailed", t("notes.blockType.tab"))}</p>
-      <button class="mt-2 min-h-8 rounded-md border border-border px-2 text-foreground hover:bg-accent" type="button" onclick={() => retryStructural("tab")}>{t("common.retry")}</button>
-    </div>
+    <Notice class="my-1 text-[0.8rem]" message={t("common.viewLoadFailed", t("notes.blockType.tab"))} copy={false} onRetry={() => retryStructural("tab")} />
   {:else}<div class="my-1 min-h-8 text-[0.8rem] text-muted-foreground" aria-busy="true">{t("common.loading")}</div>{/if}
 {:else}
   <NotesBlockRow

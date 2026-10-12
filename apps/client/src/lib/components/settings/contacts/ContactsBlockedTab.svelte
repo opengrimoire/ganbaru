@@ -4,6 +4,7 @@
   import ContactsEmptyState from "$lib/components/contacts/ContactsEmptyState.svelte";
   import MemberRow from "$lib/components/contacts/MemberRow.svelte";
   import PersonAvatar from "$lib/components/contacts/PersonAvatar.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { contactsMutationErrorKey } from "$lib/contacts/presentation";
   import { getContacts } from "$lib/stores/contacts.svelte";
@@ -30,10 +31,7 @@
 <section class="flex flex-col gap-4">
   <h2 class="px-1 text-[0.866667rem] font-semibold text-foreground">{t("contacts.blocked.heading")}</h2>
   {#if errorMessage}
-    <div class="flex items-start gap-2 px-1 text-[0.8rem]" aria-live="polite">
-      <span class="flex-1 text-destructive">{errorMessage}</span>
-      <button type="button" class="contacts-row-action" onclick={() => contacts.clearError()}>{t("contacts.list.dismiss")}</button>
-    </div>
+    <Notice class="px-1 text-[0.8rem]" message={errorMessage} onDismiss={() => contacts.clearError()} />
   {/if}
   {#if contacts.blocked.length === 0}
     <div class="px-1">

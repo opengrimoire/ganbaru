@@ -1,6 +1,7 @@
 <script lang="ts">
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import { untrack } from "svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { MusicAddSourceKind, MusicLocalSourceSelection } from "$lib/music/sources/drafts";
   import type { MusicSourcesController } from "$lib/music/sources/controller.svelte";
@@ -119,7 +120,7 @@
         {#if preview.kind === "youtube-playlist" && preview.duplicateCount > 0}<p class="mt-2 text-xs text-muted-foreground">{t("music.builder.knownDuplicates", preview.duplicateCount)}</p>{/if}
       {/if}
     {/if}
-    {#if error}<p class="mt-3 text-sm text-destructive" role="alert">{error}</p>{/if}
+    {#if error}<Notice class="mt-3 text-sm" message={error} />{/if}
   </div>
 
   {#snippet footer()}

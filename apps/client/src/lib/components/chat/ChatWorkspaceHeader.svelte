@@ -22,6 +22,7 @@
   import LocalPersonAvatar from "$lib/components/contacts/LocalPersonAvatar.svelte";
   import ProjectIcon from "$lib/components/projects/ProjectIcon.svelte";
   import ProjectPickerMobileDialog from "$lib/components/projects/pickers/ProjectPickerMobileDialog.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import WorkspaceBreadcrumbTerminalIcon from "$lib/components/ui/WorkspaceBreadcrumbTerminalIcon.svelte";
   import ChatChannelPickerPanel from "$lib/components/chat/channels/ChatChannelPickerPanel.svelte";
   import ChatProjectNavigator from "$lib/components/chat/channels/ChatProjectNavigator.svelte";
@@ -308,7 +309,7 @@
     {/if}
   </div>
   {#if !mobilePresentation}<div class="flex-1"></div>{/if}
-  {#if actionError}<p role="alert" class="max-w-40 truncate text-[0.666667rem] text-destructive">{actionError}</p>{/if}
+  {#if actionError}<Notice class="header-action-error max-w-48 text-[0.666667rem]" message={actionError} />{/if}
   <div class="flex shrink-0 items-center gap-1">
     {#if selectedFolder?.bindingStatus === "available"}<button type="button" class="chat-toolbar-icon-button" title={t("chat.openFolder")} aria-label={t("chat.openFolder")} onclick={() => run(() => chat.openWorkingFolder(selectedFolder.workingFolder.id))}><FolderOpen size={14} /></button>{/if}
     {#if selectedChannel}
@@ -330,6 +331,7 @@
 {/if}
 
 <style>
+  .chat-workspace-header :global(.header-action-error .notice-message) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .chat-workspace-header.mobilePresentation { scrollbar-width: none; }
   .chat-workspace-header.mobilePresentation::-webkit-scrollbar { display: none; }
   .chat-context-segment { display:flex;height:1.75rem;min-width:0;align-items:center;gap:0.375rem;border-radius:0.375rem;padding-inline:0.375rem;text-align:left; }

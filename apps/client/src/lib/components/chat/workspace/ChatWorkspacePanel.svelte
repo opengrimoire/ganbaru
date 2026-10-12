@@ -78,6 +78,7 @@
   import ChatSourceControlPanel from "./ChatSourceControlPanel.svelte";
   import ChatTerminalView from "./ChatTerminalView.svelte";
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
 
   let {
@@ -124,6 +125,8 @@
   const workingFolderId = $derived(chat.selectedWorkingFolderId);
   const sessionKey = $derived(inspectorSessionKey(threadId, workingFolderId));
   const selectedTerminal = $derived(terminals.find((terminal) => terminal.id === selectedTerminalId) ?? null);
+  /** True when the terminal tab has no terminal to show after loading, so its failure fills the tab. */
+  const terminalLoadFailed = $derived(panelState.tab === "terminal" && !terminalsLoading && !(isTerminalSplit && terminals.length > 1) && !selectedTerminal);
   const panelTabs: {
     id: Exclude<ChatInspectorTab, "terminal">;
     label: "plan" | "files" | "sourceControl" | "browser" | "review";
@@ -491,13 +494,14 @@
     await tabController.reveal(terminalWorkspacePanelTabKey(snapshot.terminal.id));
   }
 
-  function retryTerminalLoad(): void {
+  async function retryTerminalLoad(): Promise<void> {
     const thread = threadId;
     const workspace = workingFolderId;
-    if (!thread || !workspace) return;
+    if (!thread || !workspace) throw new Error("Terminal retry needs a thread and a working folder");
     const scopeKey = `${thread}:${workspace}`;
     terminalScopeKey = scopeKey;
-    void loadTerminals(thread, workspace, scopeKey);
+    await loadTerminals(thread, workspace, scopeKey);
+    if (error) throw new Error(error);
   }
 
   function openOrAddTerminal(): void {
@@ -870,7 +874,7 @@
     {/if}
   </div>
 
-  {#if error}<p role="alert" class="border-b border-destructive/30 p-2 text-xs text-destructive">{error}</p>{/if}
+  {#if error && !terminalLoadFailed}<Notice class="border-b border-border p-2 text-xs" message={error} />{/if}
   <div class="min-h-0 flex-1" role="tabpanel" aria-label={t(`chat.inspector.${panelState.tab}`)}>
     {#if panelState.openTabs.includes("review")}
       <div class="retained-workspace-panel" class:hidden={panelState.tab !== "review"}>
@@ -936,8 +940,8 @@
           {/key}
         </div>
       {:else}
-        <div class="grid h-full place-items-center p-4">
-          <button type="button" class="chat-secondary-button" onclick={retryTerminalLoad}>{t("common.retry")}</button>
+        <div class="h-full text-xs">
+          <Notice layout="fill" icon={SquareTerminal} message={error ?? t("chat.inspector.terminalUnavailable")} onRetry={retryTerminalLoad} copy={error ?? false} />
         </div>
       {/if}
     {:else if panelState.tab === "plan"}

@@ -1,5 +1,6 @@
 <script lang="ts">
   import Plus from "@lucide/svelte/icons/plus";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { notesDatabaseTableRelationItems, type NotesDatabaseTableColumn } from "$lib/notes/database/table";
   import type { NotesPage } from "$lib/notes/types";
@@ -82,7 +83,7 @@
       </button>
     {/if}
   </div>
-  {#if error}<p class="px-1.5 text-panel-detail text-destructive" role="alert">{error}</p>{/if}
+  {#if error}<Notice class="px-1.5 text-panel-detail" message={error} />{/if}
 </div>
 
 {#if pickerOpen && addButton && column.relationDataSourceId}

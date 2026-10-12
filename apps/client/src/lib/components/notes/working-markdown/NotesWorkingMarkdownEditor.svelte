@@ -23,6 +23,7 @@
     workingMarkdownRefreshDecision,
   } from "$lib/notes/working-markdown/editor";
   import { cn } from "$lib/utils";
+  import Notice from "$lib/components/ui/Notice.svelte";
 
   let {
     file,
@@ -220,7 +221,7 @@
       </div>
     </div>
   {:else if error}
-    <div class="shrink-0 border-b border-destructive/30 px-3 py-2 text-sm text-destructive" role="alert">{error}</div>
+    <Notice class="shrink-0 border-b border-border px-3 py-2 text-sm" message={error} />
   {/if}
 
   {#if loading && !loadedFile}

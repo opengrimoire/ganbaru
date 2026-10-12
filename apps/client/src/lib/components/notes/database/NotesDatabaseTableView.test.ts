@@ -865,7 +865,7 @@ describe("immediate Notes table creation", () => {
     reject(new Error("Create failed"));
     await vi.waitFor(() => expect(document.querySelector('[role="alert"]')?.textContent).toContain("Create failed"));
     expect(titleInput().value).toBe("Keep this title");
-    document.querySelector<HTMLButtonElement>('[role="alert"] button')!.click();
+    document.querySelector<HTMLButtonElement>('[role="alert"] [data-notice-retry]')!.click();
     await vi.waitFor(() => expect(updateNotesDataSourceRowProperty).toHaveBeenCalledWith("source", expect.any(String), {
       property_id: "title", value: "Keep this title",
     }));

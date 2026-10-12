@@ -8,6 +8,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getNotesHistoryRetentionImpact } from "$lib/api/notes/project-history";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import {
     DEFAULT_NOTES_HISTORY_RETENTION_DAYS,
     isNotesHistoryRetentionDays,
@@ -188,7 +189,7 @@
         </div>
       {/if}
       {#if retentionError}
-        <div class="px-1 text-[0.8rem] text-destructive">{retentionError}</div>
+        <Notice class="px-1 text-[0.8rem]" message={retentionError} />
       {/if}
       <SwitchField
         label={t("settings.notesGeneral.showPropertyIcons")}

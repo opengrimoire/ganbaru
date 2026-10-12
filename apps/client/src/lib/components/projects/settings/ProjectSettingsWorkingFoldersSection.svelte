@@ -10,6 +10,7 @@
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import Unplug from "@lucide/svelte/icons/unplug";
   import WandSparkles from "@lucide/svelte/icons/wand-sparkles";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { ProjectWorkingFolderRead } from "$lib/chat/contracts";
   import { onDestroy } from "svelte";
@@ -243,7 +244,7 @@
     </button>
   </div>
   {#if error}
-    <p class="px-1 text-[0.75rem] text-destructive" role="alert">{error}</p>
+    <Notice class="px-1 text-xs" message={error} />
   {/if}
   <div class="flex flex-col gap-1.5">
     {#each folders as folder (folder.workingFolder.id)}

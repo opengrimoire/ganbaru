@@ -1,5 +1,6 @@
 <script lang="ts">
   import { getNotesEditor } from "$lib/components/notes/editor-context";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
     NOTES_PAGE_NOTIFICATION_LEVELS,
@@ -78,5 +79,5 @@
   </button>
 {/each}
 {#if errorMessage}
-  <p class="px-2 py-1 text-panel-detail text-destructive" role="alert">{errorMessage}</p>
+  <Notice class="px-2 py-1 text-panel-detail" message={errorMessage} />
 {/if}

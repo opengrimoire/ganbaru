@@ -196,6 +196,7 @@ export const taskWorkflow = {
     selectFiltered: (count: number) => `Select ${count}`,
     schedule: "Schedule",
     scheduleSelected: "Schedule selected",
+    scheduleUnfinished: "Scheduling the selected tasks did not finish.",
     scheduleHint: (count: number) => `${count} active ${count === 1 ? "task" : "tasks"}, back to back`,
     archive: "Archive",
     restore: "Restore",

@@ -34,6 +34,7 @@
   import NotesProjectSettingsPanel from "$lib/components/notes/NotesProjectSettingsPanel.svelte";
   import NotesWorkspaceHeader from "./NotesWorkspaceHeader.svelte";
   import NotesWorkingMarkdownEditor from "$lib/components/notes/working-markdown/NotesWorkingMarkdownEditor.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
 
   let {
     mobileLayout = false,
@@ -581,11 +582,9 @@
       <div class="fixed inset-0 z-90 flex items-center justify-center surface-backdrop p-4" role="dialog" aria-modal="true" aria-busy={projectHistoryLoadState?.status !== "failed"}>
         <div class="surface-dialog p-4 text-sm">
           {#if projectHistoryLoadState?.status === "failed"}
-            <p role="alert">{t("common.viewLoadFailed", t("notes.projectSettingsVersionHistory"))}</p>
-            <div class="mt-3 flex gap-2">
-              <button class="min-h-8 rounded-floating-item border border-border px-2 hover:bg-accent" type="button" onclick={() => requestNotesOptionalComponent("project-history", true)}>{t("common.retry")}</button>
-              <button class="min-h-8 rounded-floating-item border border-border px-2 hover:bg-accent" type="button" onclick={() => { projectVersionHistoryOpen = false; }}>{t("common.close")}</button>
-            </div>
+            <Notice message={t("common.viewLoadFailed", t("notes.projectSettingsVersionHistory"))} copy={false} onRetry={() => requestNotesOptionalComponent("project-history", true)}>
+              {#snippet actions()}<button type="button" class="notice-action-text" onclick={() => { projectVersionHistoryOpen = false; }}>{t("common.close")}</button>{/snippet}
+            </Notice>
           {:else}
             {t("common.loading")}
           {/if}
@@ -605,13 +604,11 @@
         onCancel={cancelDiscardProjectSettings}
       />
     {:else if confirmDialogLoadState?.status === "failed"}
-      <div class="fixed inset-0 z-100 flex items-center justify-center surface-backdrop p-4" role="alert">
+      <div class="fixed inset-0 z-100 flex items-center justify-center surface-backdrop p-4" role="dialog" aria-modal="true">
         <div class="surface-dialog p-4 text-sm">
-          <p>{t("common.viewLoadFailed", t("calendar.view.discard"))}</p>
-          <div class="mt-3 flex gap-2">
-            <button class="min-h-8 rounded-floating-item border border-border px-2 hover:bg-accent" type="button" onclick={() => requestNotesOptionalComponent("confirm-dialog", true)}>{t("common.retry")}</button>
-            <button class="min-h-8 rounded-floating-item border border-border px-2 hover:bg-accent" type="button" onclick={cancelDiscardProjectSettings}>{t("common.cancel")}</button>
-          </div>
+          <Notice message={t("common.viewLoadFailed", t("calendar.view.discard"))} copy={false} onRetry={() => requestNotesOptionalComponent("confirm-dialog", true)}>
+            {#snippet actions()}<button type="button" class="notice-action-text" onclick={cancelDiscardProjectSettings}>{t("common.cancel")}</button>{/snippet}
+          </Notice>
         </div>
       </div>
     {:else}
@@ -628,12 +625,13 @@
       <div class="fixed inset-0 z-100 flex items-center justify-center surface-backdrop p-4" role="dialog" aria-modal="true" aria-busy={databaseDeletionDialogLoadState?.status !== "failed"}>
         <div class="surface-dialog p-4 text-sm">
           {#if databaseDeletionDialogLoadState?.status === "failed"}
-            <p role="alert">{t("common.viewLoadFailed", t("notes.databaseDelete"))}</p>
-            <button type="button" class="mt-3 min-h-9 rounded-floating-item border border-border px-3 hover:bg-accent" onclick={() => requestDatabaseDeletionDialog(true)}>{t("common.retry")}</button>
+            <Notice message={t("common.viewLoadFailed", t("notes.databaseDelete"))} copy={false} onRetry={() => requestDatabaseDeletionDialog(true)}>
+              {#snippet actions()}<button type="button" class="notice-action-text" onclick={pane.store.databaseDeletion.cancel}>{t("common.cancel")}</button>{/snippet}
+            </Notice>
           {:else}
             <p>{t("common.loading")}</p>
+            <button type="button" class="mt-3 min-h-9 rounded-floating-item border border-border px-3 hover:bg-accent" onclick={pane.store.databaseDeletion.cancel}>{t("common.cancel")}</button>
           {/if}
-          <button type="button" class="mt-3 min-h-9 rounded-floating-item border border-border px-3 hover:bg-accent" onclick={pane.store.databaseDeletion.cancel}>{t("common.cancel")}</button>
         </div>
       </div>
     {/if}
@@ -656,19 +654,8 @@
     {#if showPrimaryContent}
       <div class="flex min-w-0 flex-1 overflow-hidden">
         {#if !notes.loaded && notes.loadError}
-          <div class="flex min-w-0 flex-1 flex-col items-center justify-center gap-3 p-4 text-center" role="alert" data-notes-first-use-state>
-            <p class="text-sm text-destructive">{t("notes.loadFailed", notes.loadError)}</p>
-            <button
-              type="button"
-              class="rounded-md border border-border px-3 text-sm hover:bg-accent {mobileLayout ? 'min-h-12' : 'min-h-9'}"
-              onclick={() => {
-                void notes.load().catch((error) => {
-                  console.error("retry Notes load failed", error);
-                });
-              }}
-            >
-              {t("common.retry")}
-            </button>
+          <div class="flex min-w-0 flex-1 text-sm" data-notes-first-use-state>
+            <Notice layout="fill" message={t("notes.loadFailed", notes.loadError)} onRetry={() => notes.load()} />
           </div>
         {:else if !mobileLayout && selectedWorkingMarkdownFile}
           <NotesWorkingMarkdownEditor
@@ -680,9 +667,13 @@
             {@const ActiveNotesSurface = activeSurfaceLoadState.component.component}
             <ActiveNotesSurface />
           {:else if activeSurfaceLoadState?.status === "failed"}
-            <div class="flex min-w-0 flex-1 flex-col items-center justify-center gap-3 p-4 text-center" role="alert">
-              <p class="text-sm text-destructive">{t("common.viewLoadFailed", activeSurfaceKind === "archive" ? t("notes.archive") : t("notes.trash"))}</p>
-              <button type="button" class="rounded-md border border-border px-3 text-sm hover:bg-accent {mobileLayout ? 'min-h-12' : 'min-h-9'}" onclick={() => requestNotesSurface(activeSurfaceKind, true)}>{t("common.retry")}</button>
+            <div class="flex min-w-0 flex-1 text-sm">
+              <Notice
+                layout="fill"
+                message={t("common.viewLoadFailed", activeSurfaceKind === "archive" ? t("notes.archive") : t("notes.trash"))}
+                copy={false}
+                onRetry={() => requestNotesSurface(activeSurfaceKind, true)}
+              />
             </div>
           {:else}
             <div class="flex min-w-0 flex-1 items-center justify-center p-4 text-sm text-muted-foreground" aria-busy="true">{t("common.loading")}</div>
@@ -757,12 +748,14 @@
                             onOpenModeChange={(mode) => { void notes.showPaneAs(pane.id, mode).catch((error: unknown) => console.warn("Change Notes pane mode failed", error)); }}
                           />
                         {:else if store.loadError}
-                          <div class="flex min-w-0 flex-1 flex-col gap-3 p-4">
-                            {#if isContextual && showPagePeek}
-                              <button type="button" class="min-h-8 self-end rounded-md border border-border px-3 hover:bg-accent" onclick={() => { void notes.closePane(pane.id).catch((error: unknown) => console.warn("Close Notes pane failed", error)); }}>{t("notes.closePeek")}</button>
-                            {/if}
-                            <p role="alert" class="text-sm text-destructive">{t("notes.loadFailed", store.loadError)}</p>
-                            <button type="button" class="min-h-8 self-start rounded-md border border-border px-3 hover:bg-accent" onclick={() => { void store.selectPageLocally(store.selectedPageId).catch((error: unknown) => console.warn("Retry Notes page load failed", error)); }}>{t("common.retry")}</button>
+                          <div class="flex min-w-0 flex-1 text-sm">
+                            <Notice layout="fill" message={t("notes.loadFailed", store.loadError)} onRetry={() => store.selectPageLocally(store.selectedPageId)}>
+                              {#snippet actions()}
+                                {#if isContextual && showPagePeek}
+                                  <button type="button" class="notice-action-text" onclick={() => { void notes.closePane(pane.id).catch((error: unknown) => console.warn("Close Notes pane failed", error)); }}>{t("notes.closePeek")}</button>
+                                {/if}
+                              {/snippet}
+                            </Notice>
                           </div>
                         {/if}
                       {/snippet}

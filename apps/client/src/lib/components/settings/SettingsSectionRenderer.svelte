@@ -14,6 +14,7 @@
   import UpdatesSection from "$lib/components/settings/sections/UpdatesSection.svelte";
   import ShortcutsSection from "$lib/components/settings/sections/ShortcutsSection.svelte";
   import AboutSection from "$lib/components/settings/sections/AboutSection.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import {
     getPreloadedDataSection,
     preloadDataSection,
@@ -41,14 +42,24 @@
   let DataSection = $state<Component | null>(getPreloadedDataSection());
   let dataSectionLoadFailed = $state(false);
 
-  function loadDataSection(): void {
+  /** Loads the Data section chunk; a failure is logged and recorded for the retry notice. */
+  async function loadDataSection(): Promise<void> {
     dataSectionLoadFailed = false;
-    void preloadDataSection()
-      .then((component) => { DataSection = component; })
-      .catch(() => { dataSectionLoadFailed = true; });
+    try {
+      DataSection = await preloadDataSection();
+    } catch (error: unknown) {
+      dataSectionLoadFailed = true;
+      console.error("Failed to load the Data Settings section", error);
+    }
   }
 
-  if (getPreloadedDataSection() === null) loadDataSection();
+  /** Retries the Data section load and rejects when it fails again, so the notice shows the outcome. */
+  async function retryDataSection(): Promise<void> {
+    await loadDataSection();
+    if (dataSectionLoadFailed) throw new Error("The Data Settings section could not be loaded");
+  }
+
+  if (getPreloadedDataSection() === null) void loadDataSection();
 
   const BASIC_SECTION_COMPONENTS: Partial<Record<SectionId, Component>> = {
     appearance: AppearanceSection,
@@ -90,11 +101,8 @@
   {#if DataSection}
     <DataSection />
   {:else if dataSectionLoadFailed}
-    <div class="flex min-h-36 flex-col items-center justify-center gap-3 text-sm text-destructive" role="alert">
-      <span>{t("common.viewLoadFailed", t("settings.section.data"))}</span>
-      <button type="button" class="rounded-md border border-border px-3 py-1.5 text-foreground" onclick={loadDataSection}>
-        {t("common.retry")}
-      </button>
+    <div class="min-h-36 text-sm">
+      <Notice layout="fill" message={t("common.viewLoadFailed", t("settings.section.data"))} onRetry={retryDataSection} />
     </div>
   {:else}
     <div class="flex min-h-36 items-center justify-center text-sm text-muted-foreground" aria-busy="true">

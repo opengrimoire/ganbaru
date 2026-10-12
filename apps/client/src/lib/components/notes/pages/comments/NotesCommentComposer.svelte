@@ -4,6 +4,7 @@
   import { buildNotesMentionTargets } from "$lib/components/notes/blocks/mention-targets";
   import { getNotesEditor } from "$lib/components/notes/editor-context";
   import NotesRichTextInline from "$lib/components/notes/rich-text/NotesRichTextInline.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { notesCommentAttachmentFromAsset } from "$lib/notes/collaboration/comment-attachments";
@@ -459,7 +460,7 @@
       </div>
     {/if}
     {#if errorMessage}
-      <p class="mt-1 text-panel-detail text-destructive" role="alert">{errorMessage}</p>
+      <Notice class="mt-1 text-panel-detail" message={errorMessage} />
     {/if}
     {#if mentionOpen}
       <NotesCommentMentionMenu

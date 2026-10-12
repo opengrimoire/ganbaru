@@ -23,6 +23,7 @@
     type LoadedNotesEditorPanel,
   } from "$lib/components/notes/editor-component-registry";
   import NotesLoadingSkeleton from "$lib/components/notes/NotesLoadingSkeleton.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
 
   let {
     editorStore,
@@ -55,42 +56,44 @@
     return component ? { key: "child-database", status: "ready", requestId: 0, component } : null;
   }));
 
-  /** Reuse the lazy block renderer and its bounded database session snapshots. */
-  function requestRenderer(retry = false): void {
-    if (!retry && rendererLoadState) return;
+  /** Reuse the lazy block renderer and its bounded database session snapshots. A retry rejects when the load fails again. */
+  function requestRenderer(retry = false): Promise<void> {
+    if (!retry && rendererLoadState) return Promise.resolve();
     const loading = beginLazyComponentLoad(rendererLoadState, "child-database");
     rendererLoadState = loading;
     const request = retry ? retryNotesAdvancedBlock("child-database") : loadNotesAdvancedBlock("child-database");
-    void request.then((component) => {
+    return request.then((component) => {
       if (!rendererLoadState) return;
       rendererLoadState = resolveLazyComponentLoad(rendererLoadState, "child-database", loading.requestId, component);
     }).catch((error: unknown) => {
       if (!rendererLoadState) return;
       rendererLoadState = rejectLazyComponentLoad(rendererLoadState, "child-database", loading.requestId, error);
       console.error("Load Notes database page failed", error);
+      if (retry) throw error;
     });
   }
 
-  /** Load the share popover only when the database page needs it. */
-  function requestSharePanel(retry = false): void {
-    if (!retry && sharePanelLoadState) return;
+  /** Load the share popover only when the database page needs it. A retry rejects when the load fails again. */
+  function requestSharePanel(retry = false): Promise<void> {
+    if (!retry && sharePanelLoadState) return Promise.resolve();
     const loading = beginLazyComponentLoad(sharePanelLoadState, "share");
     sharePanelLoadState = loading;
     const request = retry ? retryNotesEditorPanel("share") : loadNotesEditorPanel("share");
-    void request.then((component) => {
+    return request.then((component) => {
       if (!sharePanelLoadState) return;
       sharePanelLoadState = resolveLazyComponentLoad(sharePanelLoadState, "share", loading.requestId, component);
     }).catch((error: unknown) => {
       if (!sharePanelLoadState) return;
       sharePanelLoadState = rejectLazyComponentLoad(sharePanelLoadState, "share", loading.requestId, error);
       console.error("Load Notes share panel failed", error);
+      if (retry) throw error;
     });
   }
 
   /** Toggle the share popover, loading its surface only on first use. */
   function toggleSharePanel(): void {
     shareOpen = !shareOpen;
-    if (shareOpen) requestSharePanel();
+    if (shareOpen) void requestSharePanel();
   }
 
   /** Delete through the store's shared confirmation and mutation boundary. */
@@ -130,7 +133,7 @@
     return (databaseId, title) => editorStore.reconcileDatabaseTitle(blockId, databaseId, title);
   }
 
-  $effect(() => { if (block) untrack(() => requestRenderer()); });
+  $effect(() => { if (block) untrack(() => void requestRenderer()); });
 </script>
 
 {#snippet actions()}
@@ -162,7 +165,7 @@
       {@const NotesSharePopover = sharePanelLoadState.component.component}
       <NotesSharePopover anchor={shareButton} pageTitle={databaseTitle} {mobileLayout} onClose={() => { shareOpen = false; }} />
     {:else if sharePanelLoadState?.status === "failed"}
-      <button class="surface-floating fixed inset-0 z-50 m-auto h-10 px-3" type="button" onclick={() => requestSharePanel(true)}>{t("common.retry")}</button>
+      <Notice layout="floating" class="text-panel" message={t("common.viewLoadFailed", t("notes.share"))} copy={false} onRetry={() => requestSharePanel(true)} onDismiss={() => { shareOpen = false; }} />
     {/if}
   {/if}
   <button
@@ -184,7 +187,7 @@
     <div class="flex shrink-0 justify-end gap-1 px-3 py-2">{@render actions()}</div>
   {/if}
   <div class="min-h-0 min-w-0 flex-1 overflow-auto px-4 py-4 sm:px-6">
-    {#if actionError}<p class="mb-3 text-sm text-destructive" role="alert">{actionError}</p>{/if}
+    {#if actionError}<Notice class="mb-3 text-sm" message={actionError} />{/if}
     {#if block}
       {#if rendererLoadState?.status === "ready" && rendererLoadState.component.kind === "child-database"}
         {@const DatabaseRenderer = rendererLoadState.component.component}
@@ -201,9 +204,8 @@
           onTitleSaved={createTitleSavedHandler(block.id)}
         />
       {:else if rendererLoadState?.status === "failed"}
-        <div class="flex flex-col items-start gap-3" role="alert">
-          <p class="text-sm text-destructive">{t("common.viewLoadFailed", block.child_database.title || t("notes.untitled"))}</p>
-          <button type="button" class="min-h-9 rounded-md border border-border px-3 text-sm hover:bg-accent" onclick={() => requestRenderer(true)}>{t("common.retry")}</button>
+        <div class="h-full min-h-48 text-sm">
+          <Notice layout="fill" message={t("common.viewLoadFailed", databaseTitle)} copy={false} onRetry={() => requestRenderer(true)} />
         </div>
       {:else}
         <NotesLoadingSkeleton kind="database" />

@@ -6,6 +6,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getChat } from "$lib/stores/chat.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
+  import Notice from "$lib/components/ui/Notice.svelte";
 
   let {
     panel,
@@ -148,7 +149,7 @@
     {:else if loading}
       <p class="panel-state"><LoaderCircle size={14} class="animate-spin" />{t("common.loading")}</p>
     {:else if error}
-      <p class="panel-error" role="alert">{error}</p>
+      <Notice class="panel-error" message={error} />
     {:else if !mcpStatus || mcpStatus.servers.length === 0}
       <p class="panel-state">{t("chat.composer.mcpEmpty")}</p>
     {:else}
@@ -191,7 +192,7 @@
   .mcp-status-table span { color: var(--muted-foreground); }
   .mcp-status-table span:last-child { justify-self: end; color: var(--destructive); }
   .mcp-status-table span.enabled { color: var(--foreground); }
-  .panel-state, .panel-error { display: flex; min-height: 4.5rem; align-items: center; gap: 0.5rem; padding: 0.75rem 0.9rem; color: var(--muted-foreground); }
-  .panel-error { color: var(--destructive); }
+  .panel-state { display: flex; min-height: 4.5rem; align-items: center; gap: 0.5rem; padding: 0.75rem 0.9rem; color: var(--muted-foreground); }
+  .composer-info-panel :global(.panel-error) { min-height: 4.5rem; align-items: center; padding: 0.75rem 0.9rem; }
   @container chat-composer (max-width: 390px) { .status-panel-grid > div { grid-template-columns: 5rem minmax(0, 1fr); } .mcp-status-table > div { grid-template-columns: minmax(0, 1fr) auto; gap: 0.65rem; } .mcp-status-table span:nth-child(2) { grid-column: 1 / -1; grid-row: 2; } }
 </style>

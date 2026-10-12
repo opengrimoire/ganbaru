@@ -24,6 +24,7 @@
   import { cn } from "$lib/utils";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import { CHAT_OPEN_MEMBERS_EVENT, type ChatOpenMembersDetail } from "./members-panel-events";
+  import Notice from "$lib/components/ui/Notice.svelte";
 
   /**
    * Read-only view of who is in a channel, opened from the header. Adding members is possible here because it
@@ -145,7 +146,7 @@
         {/each}
       </ul>
     {/if}
-    {#if error}<p class="px-2 pb-1.5 text-panel-detail text-destructive" role="alert">{error}</p>{/if}
+    {#if error}<Notice class="px-2 pb-1.5 text-panel-detail" message={error} />{/if}
   </div>
 
   <footer class={cn("relative z-10 shrink-0 bg-popover", mobile ? "p-2" : "p-1.5")}>

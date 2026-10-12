@@ -9,6 +9,7 @@
   } from "$lib/notes/round-trip-diagnostics";
   import type { NotesHtmlImportResult } from "$lib/notes/types";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import NotesImportDestinationRow from "./NotesImportDestinationRow.svelte";
   import NotesRoundTripDiagnostics from "$lib/components/notes/NotesRoundTripDiagnostics.svelte";
   import NotesTransferFieldRow from "./NotesTransferFieldRow.svelte";
@@ -237,9 +238,7 @@
       </NotesTransferFieldRow>
 
       {#if error}
-        <div class="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-[0.8rem] text-destructive">
-          {t("notes.htmlImportFailed", error)}
-        </div>
+        <Notice class="text-[0.8rem]" message={t("notes.htmlImportFailed", error)} copy={error} />
       {/if}
 
       {#if result}

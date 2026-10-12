@@ -6,6 +6,7 @@
   import IconPickerColorControl from "$lib/components/icon-picker/IconPickerColorControl.svelte";
   import IconPickerColorChoicePanel from "$lib/components/icon-picker/IconPickerColorChoicePanel.svelte";
   import IconPickerUploadPanel from "$lib/components/icon-picker/IconPickerUploadPanel.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { contrastRatio } from "$lib/color/math";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
@@ -421,7 +422,7 @@
           {#if matchingDesigns.length === 0}<p class="py-6 text-center text-[0.8rem] text-muted-foreground">{t("notes.pageCoverNoDesigns")}</p>{/if}
         </div>
       </div>
-      {#if error}<p class="mx-3 mb-3 rounded-md bg-destructive/10 px-2 py-1 text-[0.8rem] text-destructive" role="alert">{error}</p>{/if}
+      {#if error}<Notice class="mx-3 mb-3 text-[0.8rem]" message={error} />{/if}
     {:else}
       <IconPickerUploadPanel uploadDraft={null} uploadPreviewUrl={null} uploadError={error} uploading={busy}
         uploadBodyStyle={`max-height:${Math.max(0, panelPlacement.height - 48)}px;`} bind:uploadUrl

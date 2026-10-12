@@ -1,5 +1,6 @@
 <script lang="ts" generics="T extends string">
   import { onMount } from "svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { anchoredPanelContentHeight, anchoredPanelStyle } from "$lib/utils/anchored-panel";
   import { portal } from "$lib/utils/portal";
@@ -155,7 +156,7 @@
       <div data-collection-menu-content class="@container flow-root h-max p-1.5">
         <div data-collection-menu-body>
           <CollectionPropertyCreator {types} pending={busy} onCreate={(type) => { void create(type); }} />
-          {#if error}<p role="alert" class="px-2 py-1 text-destructive">{error}</p>{/if}
+          {#if error}<Notice class="px-2 py-1" message={error} />{/if}
         </div>
       </div>
     </div>

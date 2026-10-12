@@ -1,6 +1,7 @@
 <script lang="ts">
   import Search from "@lucide/svelte/icons/search";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { sortReviewPlaylists } from "$lib/music/review";
   import { partitionMusicPlaylists, systemMusicPlaylistName } from "$lib/music/playlists/system";
@@ -88,7 +89,7 @@
           <Checkbox data-review-playlist-id={playlist.id} {checked} indeterminate={mixed && !checked} {disabled} onChange={() => onToggle(playlist)} label={checked ? t("music.builder.removeFromPlaylist", playlist.name) : t("music.builder.addToPlaylist", playlist.name)} aria-describedby={errorId} />
         </span>
       </label>
-      {#if errors[playlist.id]}<p id={errorId} class="mb-1 px-2 text-[0.62rem] text-destructive" role="alert">{errors[playlist.id]}</p>{/if}
+      {#if errors[playlist.id]}<div id={errorId}><Notice class="mb-1 px-2 text-[0.62rem]" message={errors[playlist.id]} /></div>{/if}
     {/each}
         </div>
       {/if}

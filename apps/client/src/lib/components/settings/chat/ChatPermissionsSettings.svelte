@@ -5,6 +5,7 @@
   import { readChatProviderFiles, saveChatProviderFile } from "$lib/api/chat";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getChat } from "$lib/stores/chat.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import Select from "$lib/components/ui/Select.svelte";
 
   const { t } = getLocalization();
@@ -117,6 +118,13 @@
     if (selectedInstanceId) void loadFiles(selectedInstanceId);
   }
 
+  /** Retries loading the selected provider's files and rejects when the load fails again. */
+  async function retryLoadFiles(): Promise<void> {
+    if (!selectedInstanceId) throw new Error("No Chat provider is selected to reload");
+    await loadFiles(selectedInstanceId);
+    if (error) throw new Error(error);
+  }
+
   function fileLabel(file: ProviderFileRead): string {
     return file.name;
   }
@@ -146,7 +154,7 @@
     />
 
     {#if error}
-      <p role="alert" class="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-[0.733333rem] text-destructive">{error}</p>
+      <Notice class="px-1 text-[0.733333rem]" message={error} onRetry={files.length === 0 && selectedInstanceId ? retryLoadFiles : undefined} />
     {/if}
 
     {#if loading}

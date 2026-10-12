@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { filterNotesPagesByTitle } from "$lib/notes/pages/selection";
   import { notesPageTitle } from "$lib/notes/pages/title";
@@ -80,8 +81,8 @@
     {#if notes.archiveLoading && notes.archivedPages.length === 0}
       <div class="py-2 text-[0.866667rem] text-muted-foreground">{t("notes.loadingArchive")}</div>
     {:else if notes.archiveError}
-      <div class="py-2 text-[0.866667rem] text-destructive">
-        {t("notes.loadArchiveFailed", notes.archiveError)}
+      <div class="h-full min-h-32 text-[0.866667rem]">
+        <Notice layout="fill" message={t("notes.loadArchiveFailed", notes.archiveError)} copy={notes.archiveError} onRetry={() => notes.reloadArchivedPages(search)} />
       </div>
     {:else if filteredPages.length === 0}
       <div class="py-2 text-[0.866667rem] text-muted-foreground">

@@ -49,6 +49,7 @@
   import NotesHierarchyPickerPanel from "$lib/components/notes/navigation/NotesHierarchyPickerPanel.svelte";
   import NotesPageIcon from "$lib/components/notes/pages/NotesPageIcon.svelte";
   import NotesProjectNavigator from "$lib/components/notes/navigation/NotesProjectNavigator.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
 
   type NotesNavigatorMode = ProjectNavigatorPanelMode | "notes";
 
@@ -692,6 +693,14 @@
               />
             {/if}
           </ProjectPickerMobileDialog>
+        {:else if mobileProjectPickerLoadState?.status === "failed"}
+          <Notice
+            layout="floating"
+            message={t("common.viewLoadFailed", navigatorMode === "notes" ? t("notes.noteNavigatorLabel") : t("projects.navigator.pickerLabel"))}
+            copy={false}
+            onRetry={requestMobileProjectPicker}
+            onDismiss={() => { navigatorOpen = false; }}
+          />
         {/if}
       {:else}
         <div

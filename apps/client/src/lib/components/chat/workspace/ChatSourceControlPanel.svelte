@@ -14,6 +14,7 @@
   import type { ChatExecutionEnvironmentRead, GitChangedPathRead, GitStatusRead, HostedChangeRequestRead, HostedSourceControlRead } from "$lib/chat/contracts";
   import { subscribeChatWorkspaceChanges } from "$lib/chat/workspace/observer-client";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getChat } from "$lib/stores/chat.svelte";
 
@@ -593,7 +594,7 @@
     {/if}
   </section>
 
-  {#if error}<p role="alert" class="error">{error}</p>{/if}
+  {#if error}<Notice class="error" message={error} />{/if}
   {#if !status && !loading}
     <section class="repository-setup">
       <button type="button" onclick={() => { repositorySetupOpen = !repositorySetupOpen; }}>
@@ -719,5 +720,5 @@
   .commit button { display: inline-flex; align-items: center; justify-content: center; gap: 0.3rem; }
   .empty { padding: 1rem; text-align: center; color: var(--muted-foreground); font-size: calc(0.72rem * var(--type-scale)); }
   .empty.compact { padding: 0.4rem; }
-  .error { border-bottom: 1px solid color-mix(in srgb, var(--destructive) 35%, transparent); padding: 0.5rem 0.7rem; color: var(--destructive); font-size: calc(0.7rem * var(--type-scale)); }
+  .source-panel > :global(.error) { border-bottom: 1px solid var(--border); padding: 0.5rem 0.7rem; font-size: calc(0.7rem * var(--type-scale)); }
 </style>

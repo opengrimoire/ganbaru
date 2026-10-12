@@ -3,6 +3,7 @@
   import { tick } from "svelte";
   import { floatPanel } from "$lib/components/contacts/float-panel";
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { NotesDataSourceSchemaOptionDraft } from "$lib/notes/database/data-source-schema";
   import { NOTES_DATA_SOURCE_MAX_OPTIONS, notesDataSourceOptionName, type NotesDataSourceOptionEdit } from "$lib/notes/database/property-options";
@@ -254,7 +255,7 @@
         {/each}
       {/each}
     </div>
-    {#if error}<p class="border-t border-border px-3 py-1.5 text-panel-detail text-destructive" role="alert">{error}</p>{/if}
+    {#if error}<Notice class="border-t border-border px-3 py-1.5 text-panel-detail" message={error} />{/if}
   </div>
 {/if}
 

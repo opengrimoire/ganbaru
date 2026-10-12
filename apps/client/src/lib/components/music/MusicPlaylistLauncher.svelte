@@ -11,6 +11,7 @@
     getLocalRootBindings,
     getMusicPlaylistPlaybackEntries,
   } from "$lib/api/music-library";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { MusicPlaylistSummary } from "$lib/music/library/contracts";
   import { projectMusicPlaylistPlayback } from "$lib/music/playlists/playback";
@@ -259,7 +260,7 @@
       </div>
       <div use:scrollEdgeFadeAction class="surface-floating-body min-h-0 flex-1 overflow-y-auto overscroll-contain" data-music-scrollable="true">
         {#if error}
-          <div class="rounded-floating-item border border-destructive/25 bg-destructive/8 p-3 text-panel-detail"><div class="flex gap-2"><AlertCircle size={15} class="mt-0.5 shrink-0 text-destructive" /><p class="min-w-0 wrap-break-word">{error}</p></div><button type="button" onclick={() => { void refresh(); }} class="mt-2 font-medium text-primary hover:underline">{t("music.launcher.retry")}</button></div>
+          <Notice class="px-2 py-2 text-panel-detail" message={error} retryLabel={t("music.launcher.retry")} onRetry={refresh} />
         {:else if matching.length === 0}
           <div class="grid min-h-32 place-items-center px-5 text-center"><div><ListMusic class="mx-auto mb-2 text-muted-foreground" size={20} /><p class="font-medium">{playlists.length === 0 ? t("music.launcher.empty") : t("music.launcher.noMatches")}</p><p class="mt-1 text-panel-detail text-muted-foreground">{playlists.length === 0 ? t("music.launcher.emptyHint") : t("music.launcher.noMatchesHint")}</p></div></div>
         {:else}

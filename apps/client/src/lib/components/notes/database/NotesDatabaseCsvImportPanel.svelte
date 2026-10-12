@@ -18,6 +18,7 @@
   import Eye from "@lucide/svelte/icons/eye";
   import Upload from "@lucide/svelte/icons/upload";
   import NotesRoundTripDiagnostics from "$lib/components/notes/NotesRoundTripDiagnostics.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
 
@@ -203,9 +204,7 @@
     </div>
 
     {#if error}
-      <p class="rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-destructive">
-        {t("notes.databaseCsvImportFailed", error)}
-      </p>
+      <Notice message={t("notes.databaseCsvImportFailed", error)} copy={error} />
     {/if}
 
     {#if result}

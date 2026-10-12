@@ -4,6 +4,8 @@
     QuickNoteConflictError,
     resolveQuickNoteConflict,
   } from "$lib/api/quick-notes";
+  import Info from "@lucide/svelte/icons/info";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { quickNotePlainText } from "$lib/quick-notes/rich-text";
   import type {
@@ -38,6 +40,7 @@
   let loading = $state(true);
   let busy = $state(false);
   let message = $state("");
+  let messageKind = $state<"resolved" | "loadFailed" | "resolveFailed">("resolveFailed");
   let loadGeneration = 0;
 
   const actionClass = $derived(mobileLayout
@@ -80,6 +83,7 @@
       }
       console.warn("quick note conflict could not be loaded", cause);
       message = t("quickNotes.conflict.loadFailed");
+      messageKind = "loadFailed";
     } finally {
       if (expected === loadGeneration) loading = false;
     }
@@ -94,10 +98,12 @@
     } catch (cause: unknown) {
       if (cause instanceof QuickNoteConflictError && cause.code === "resolved") {
         message = t("quickNotes.conflict.resolved");
+        messageKind = "resolved";
         onStale();
       } else {
         console.warn("quick note conflict could not be resolved", cause);
         message = t("quickNotes.conflict.failed");
+        messageKind = "resolveFailed";
       }
     } finally {
       busy = false;
@@ -137,5 +143,15 @@
       {/each}
     </div>
   {/each}
-  {#if message}<p role="alert" class="text-destructive">{message}</p>{/if}
+  {#if message}
+    <div data-quick-note-notice>
+      <Notice
+        {message}
+        icon={messageKind === "resolved" ? Info : undefined}
+        role={messageKind === "resolved" ? "status" : "alert"}
+        copy={false}
+        onRetry={messageKind === "loadFailed" ? () => load(noteId) : undefined}
+      />
+    </div>
+  {/if}
 </div>

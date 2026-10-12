@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { MaybePromise } from "$lib/utils";
   import ImageIcon from "@lucide/svelte/icons/image";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import type { IconPickerAsset } from "./types";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
@@ -95,6 +96,6 @@
     {/if}
   {/if}
   {#if uploadError}
-    <div class="rounded-floating-item bg-destructive/10 px-2 py-1 text-panel-detail text-destructive">{uploadError}</div>
+    <Notice class="text-panel-detail" message={uploadError} />
   {/if}
 </div>

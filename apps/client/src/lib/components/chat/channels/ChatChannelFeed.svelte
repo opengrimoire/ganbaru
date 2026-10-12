@@ -7,6 +7,7 @@
   import { getChat } from "$lib/stores/chat.svelte";
   import ChatMessageComposer from "$lib/components/chat/composer/ChatMessageComposer.svelte";
   import ChatOrganizationalMessage from "$lib/components/chat/timeline/ChatOrganizationalMessage.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
 
   let { onThreadOpened = () => undefined }: { onThreadOpened?: (trigger: HTMLElement) => void } = $props();
   const chat = getChat();
@@ -112,6 +113,13 @@
       chat.clearMessageAnchor(anchorId);
     });
   });
+
+  /** Reloads the channel history that failed and rejects when the load fails again. */
+  function retryChannelMessages(): Promise<void> {
+    if (chat.channelMessages.length > 0) return chat.loadOlderChannelMessages();
+    if (!channel) return Promise.reject(new Error("No Chat channel is selected to reload"));
+    return chat.loadChannelMessages(channel.id, true);
+  }
 </script>
 
 <section class="channel-surface" aria-label={channel ? `#${channel.name}` : t("chat.title")}>
@@ -130,7 +138,7 @@
           <p>{channel.topic || t("chat.channels.welcomeDescription")}</p>
         </header>
       {/if}
-      {#if chat.channelMessagesError}<p class="feed-error" role="alert">{chat.channelMessagesError}</p>{/if}
+      {#if chat.channelMessagesError}<Notice class="feed-error" message={chat.channelMessagesError} onRetry={retryChannelMessages} />{/if}
       {#if chat.channelPages[0]?.previousCursor}<button type="button" class="load-older" onclick={() => void chat.loadOlderChannelMessages()}>{t("chat.organization.loadOlder")}</button>{/if}
       {#each chat.channelMessages as message, index (message.itemId)}
         {#if index === unreadStart && (channel?.unreadCount ?? 0) > 0}<div class="divider unread"><span>{t("chat.organization.unreadMessages")}</span></div>{/if}
@@ -163,6 +171,7 @@
   .divider::before,.divider::after { height:1px; flex:1; background:var(--border); content:""; }.divider.unread { color:var(--primary); }.divider.unread::before,.divider.unread::after { background:color-mix(in srgb,var(--primary) 55%,var(--border)); }
   .load-older { display:block; margin:0.6rem auto; border-radius:0.4rem; padding:0.3rem 0.55rem; color:var(--muted-foreground); font-size: calc(0.7rem * var(--type-scale)); }.load-older:hover { background:var(--accent); }
   .channel-composer-dock { display:flex; flex:0 0 auto; justify-content:center; padding:0.5rem var(--chat-conversation-gutter,1rem) 0.75rem; background:linear-gradient(to bottom,transparent,var(--cal-bg) 18%); }
-  .loading,.feed-error { padding:1rem; text-align:center; color:var(--muted-foreground); font-size: calc(0.78rem * var(--type-scale)); }.feed-error { color:var(--destructive); }
+  .loading { padding:1rem; text-align:center; color:var(--muted-foreground); font-size: calc(0.78rem * var(--type-scale)); }
+  .feed-canvas > :global(.feed-error) { width:fit-content; max-width:100%; margin-inline:auto; padding:1rem; font-size: calc(0.78rem * var(--type-scale)); }
   @container chat-shell (max-width:440px) { .channel-surface { --chat-conversation-gutter:0.5rem; } }
 </style>

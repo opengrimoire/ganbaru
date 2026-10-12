@@ -927,9 +927,7 @@
             musicAssignmentsDisabled={sessionState.projectSettingsSaving || musicAssignmentsProjectId !== selectedProject.id}
             {musicAssignmentsAvailable}
             {idleDetectionAvailable}
-            onRetryMusicAssignments={() => {
-              if (selectedProject) void loadMusicAssignments(selectedProject.id);
-            }}
+            onRetryMusicAssignments={() => (selectedProject ? loadMusicAssignments(selectedProject.id) : undefined)}
           />
 
           <div class="h-px bg-border/70" aria-hidden="true"></div>

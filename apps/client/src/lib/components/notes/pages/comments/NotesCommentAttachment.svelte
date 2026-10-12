@@ -1,6 +1,7 @@
 <script lang="ts">
   import { notesFileAssetUrl, releaseNotesFileAssetUrl } from "$lib/api/notes/file-assets";
   import { openNotesExternalUrl } from "$lib/api/notes/knowledge";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { notesCommentAttachmentFile } from "$lib/notes/collaboration/comment-attachments";
   import ExternalLink from "@lucide/svelte/icons/external-link";
@@ -101,7 +102,7 @@
     </button>
   {/if}
   {#if openError}
-    <p class="mt-1 text-panel-detail text-destructive" role="alert">{openError}</p>
+    <Notice class="mt-1 text-panel-detail" message={openError} />
   {/if}
 </div>
 

@@ -1,5 +1,6 @@
 <script lang="ts">
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import ArrowUp from "@lucide/svelte/icons/arrow-up";
   import ArrowDown from "@lucide/svelte/icons/arrow-down";
   import CollectionBoard from "$lib/components/collections/CollectionBoard.svelte";
@@ -66,7 +67,7 @@
   }
 </script>
 
-{#if error}<p class="px-3 py-2 text-[0.8rem] text-destructive" role="alert">{error}</p>{/if}
+{#if error}<Notice class="px-3 py-2 text-[0.8rem]" message={error} />{/if}
 <CollectionBoard groups={statuses} items={tasksForStatus} label={(status) => status.name} count={total} fill
   reorder={taskSortMode === "manual"} {canMove} onMove={move}
   emptyLabel={t("projects.kanban.emptyColumn")} dragLabel={(task) => t("projects.actions.dragTask", task.title)}

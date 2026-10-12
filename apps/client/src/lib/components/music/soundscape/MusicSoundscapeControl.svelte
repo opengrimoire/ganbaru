@@ -8,6 +8,7 @@
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import Volume2 from "@lucide/svelte/icons/volume-2";
   import { onMount, tick } from "svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { orderedGeneratedSounds } from "$lib/music/soundscape/presentation";
   import { centeredSoundscapePanelLeft } from "$lib/music/soundscape/popover-position";
@@ -94,7 +95,7 @@
           <span class="w-9 shrink-0 text-right text-panel-detail tabular-nums text-muted-foreground">{Math.round(volume * 100)}%</span>
           <button type="button" disabled={!active || soundscape.saving} aria-label={playing ? t("music.soundscape.pause") : t("music.soundscape.play", activeName)} class="grid h-8 w-8 shrink-0 place-items-center rounded-floating-item bg-secondary hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40" onclick={toggleActive}>{#if playing}<Pause size={15} />{:else}<Play size={15} />{/if}</button>
         </div>
-        {#if soundscape.error}<p class="mt-1 px-1 text-panel-detail text-destructive" role="alert">{t("music.soundscape.genericError")}</p>{/if}
+        {#if soundscape.error}<Notice class="mt-1 px-1 text-panel-detail" message={t("music.soundscape.genericError")} />{/if}
         <div class="mt-3 px-1"><MusicSoundscapeSectionControls title={t("music.soundscape.generated")} section="generated" idPrefix="player-soundscape" compact /></div>
         <div class="grid grid-cols-3 gap-1.5">
           {#each generated as definition (definition.id)}

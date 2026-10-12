@@ -16,6 +16,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getChat } from "$lib/stores/chat.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import "@xterm/xterm/css/xterm.css";
 
   let {
@@ -235,7 +236,7 @@
 </script>
 
 <div class="terminal-view" data-terminal-capture>
-  {#if error}<p role="alert" class="border-b border-destructive/30 p-2 text-xs text-destructive">{error}</p>{/if}
+  {#if error}<Notice class="border-b border-border p-2 text-xs" message={error} />{/if}
   <div class="terminal-host" bind:this={host} onpaste={handlePaste}></div>
 </div>
 

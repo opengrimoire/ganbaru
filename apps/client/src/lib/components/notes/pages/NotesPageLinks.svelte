@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Notice from "$lib/components/ui/Notice.svelte";
   import Select from "$lib/components/ui/Select.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { notesPageTitle } from "$lib/notes/pages/title";
@@ -26,6 +27,18 @@
     if (!alias) return;
     await notes.addPageAlias(alias);
     aliasDraft = "";
+  }
+
+  /** Loads the aliases again, rejecting while they are still unavailable. */
+  async function retryAliases(): Promise<void> {
+    await notes.reloadPageAliases();
+    if (notes.pageAliasesError) throw new Error(notes.pageAliasesError);
+  }
+
+  /** Loads the unresolved links again, rejecting while they are still unavailable. */
+  async function retryUnresolvedLinks(): Promise<void> {
+    await notes.reloadUnresolvedLinks();
+    if (notes.unresolvedLinksError) throw new Error(notes.unresolvedLinksError);
   }
 
   function selectedTarget(link: NotesUnresolvedLink): string {
@@ -107,9 +120,7 @@
       </div>
     {/if}
     {#if notes.pageAliasesError}
-      <div class="text-[0.8rem] text-destructive">
-        {t("notes.loadPageAliasesFailed", notes.pageAliasesError)}
-      </div>
+      <Notice class="text-[0.8rem]" message={t("notes.loadPageAliasesFailed", notes.pageAliasesError)} copy={notes.pageAliasesError} onRetry={retryAliases} />
     {/if}
     <div class="flex min-w-0 flex-wrap items-center gap-2">
       <input
@@ -175,9 +186,7 @@
       </div>
     {/if}
     {#if notes.unresolvedLinksError}
-      <div class="text-[0.8rem] text-destructive">
-        {t("notes.loadUnresolvedLinksFailed", notes.unresolvedLinksError)}
-      </div>
+      <Notice class="text-[0.8rem]" message={t("notes.loadUnresolvedLinksFailed", notes.unresolvedLinksError)} copy={notes.unresolvedLinksError} onRetry={retryUnresolvedLinks} />
     {:else if notes.unresolvedLinks.length === 0}
       <div class="text-[0.8rem] text-muted-foreground">{t("notes.noUnresolvedLinks")}</div>
     {:else}

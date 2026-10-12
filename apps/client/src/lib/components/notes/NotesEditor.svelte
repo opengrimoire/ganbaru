@@ -102,6 +102,7 @@
   import NotesBlockList from "$lib/components/notes/blocks/NotesBlockList.svelte";
   import NotesPageIcon from "$lib/components/notes/pages/NotesPageIcon.svelte";
   import NotesPeekModeIcon from "$lib/components/notes/pages/NotesPeekModeIcon.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import {
     loadNotesEditorPanel,
     readNotesEditorPanel,
@@ -1095,10 +1096,11 @@
     data-mobile={mobileLayout || undefined}
   >
     {#if notes.editorSaveError}
-      <div role="alert" class="flex items-center gap-2 border-b border-destructive/30 px-4 py-2 text-sm text-destructive">
-        <span>{t("notes.editorSaveFailed", notes.editorSaveError)}</span>
-        <button type="button" class="shrink-0 rounded-md border px-2 py-1" onclick={() => void notes.retryEditorMutations().catch(() => undefined)}>{t("common.retry")}</button>
-      </div>
+      <Notice
+        class="shrink-0 border-b border-border px-4 py-2 text-sm"
+        message={t("notes.editorSaveFailed", notes.editorSaveError)}
+        onRetry={() => notes.retryEditorMutations()}
+      />
     {/if}
     {#snippet discussionsTrigger()}
       <button
@@ -1132,7 +1134,7 @@
             onOpenDiscussion={openDiscussionsPanel}
           />
         {:else if panelLoadStates["discussions-popover"]?.status === "failed"}
-          <button class="surface-floating fixed inset-0 z-50 m-auto h-10 px-3" type="button" onclick={() => requestEditorPanel("discussions-popover", true)}>{t("common.retry")}</button>
+          <Notice layout="floating" message={t("common.viewLoadFailed", t("notes.discussions"))} copy={false} onRetry={() => requestEditorPanel("discussions-popover", true)} onDismiss={() => { discussionsPopoverOpen = false; }} />
         {/if}
       {/if}
     {/snippet}
@@ -1261,7 +1263,7 @@
             {@const NotesSharePopover = panelLoadStates.share.component.component}
             <NotesSharePopover anchor={shareButton} pageTitle={currentPageTitle} {mobileLayout} onClose={() => { shareOpen = false; }} />
           {:else if panelLoadStates.share?.status === "failed"}
-            <button class="surface-floating fixed inset-0 z-50 m-auto h-10 px-3" type="button" onclick={() => requestEditorPanel("share", true)}>{t("common.retry")}</button>
+            <Notice layout="floating" message={t("common.viewLoadFailed", t("notes.share"))} copy={false} onRetry={() => requestEditorPanel("share", true)} onDismiss={() => { shareOpen = false; }} />
           {/if}
         {/if}
         <button
@@ -1387,7 +1389,7 @@
                       }}
                       />
                     {:else if panelLoadStates["destination-picker"]?.status === "failed"}
-                      <button class="m-2 min-h-8 rounded-floating-item border border-border px-2 hover:bg-accent" type="button" onclick={() => requestEditorPanel("destination-picker", true)}>{t("common.retry")}</button>
+                      <Notice class="p-2" message={t("common.viewLoadFailed", t("notes.movePageTo"))} copy={false} onRetry={() => requestEditorPanel("destination-picker", true)} />
                     {:else}
                       <div class="p-2 text-muted-foreground" aria-busy="true">{t("common.loading")}</div>
                     {/if}
@@ -1430,7 +1432,7 @@
                         }}
                         />
                       {:else if panelLoadStates["destination-picker"]?.status === "failed"}
-                        <button class="m-2 min-h-8 rounded-floating-item border border-border px-2 hover:bg-accent" type="button" onclick={() => requestEditorPanel("destination-picker", true)}>{t("common.retry")}</button>
+                        <Notice class="p-2" message={t("common.viewLoadFailed", t("notes.movePageToFolder"))} copy={false} onRetry={() => requestEditorPanel("destination-picker", true)} />
                       {:else}
                         <div class="p-2 text-muted-foreground" aria-busy="true">{t("common.loading")}</div>
                       {/if}
@@ -1500,7 +1502,11 @@
                     <NotesPageLinks embedded />
                   {/if}
                   {#if panelLoadStates.backlinks?.status === "failed" || panelLoadStates["page-links"]?.status === "failed"}
-                    <button class="min-h-8 rounded-floating-item border border-border px-2 hover:bg-accent" type="button" onclick={() => { if (panelLoadStates.backlinks?.status === "failed") requestEditorPanel("backlinks", true); if (panelLoadStates["page-links"]?.status === "failed") requestEditorPanel("page-links", true); }}>{t("common.retry")}</button>
+                    <Notice
+                      message={t("common.viewLoadFailed", t("notes.noteLinks"))}
+                      copy={false}
+                      onRetry={() => { if (panelLoadStates.backlinks?.status === "failed") requestEditorPanel("backlinks", true); if (panelLoadStates["page-links"]?.status === "failed") requestEditorPanel("page-links", true); }}
+                    />
                   {/if}
                 </div>
               </div>
@@ -1510,7 +1516,7 @@
                   {@const NotesSuggestions = panelLoadStates.suggestions.component.component}
                   <NotesSuggestions embedded />
                 {:else if panelLoadStates.suggestions?.status === "failed"}
-                  <button class="min-h-8 rounded-floating-item border border-border px-2 hover:bg-accent" type="button" onclick={() => requestEditorPanel("suggestions", true)}>{t("common.retry")}</button>
+                  <Notice message={t("common.viewLoadFailed", t("notes.suggestedEdits"))} copy={false} onRetry={() => requestEditorPanel("suggestions", true)} />
                 {/if}
               </div>
             {/if}
@@ -1520,12 +1526,11 @@
     {/if}
 
     {#if notes.pageCreationError}
-      <div class="flex shrink-0 items-center justify-between gap-3 border-b border-destructive/30 bg-destructive/10 px-3 py-2 text-[0.8rem] text-destructive" role="alert">
-        <span>{t("notes.pageCreationFailed", notes.pageCreationError)}</span>
-        <button class="min-h-7 shrink-0 rounded-md border border-destructive/40 px-2 font-medium hover:bg-destructive/10" type="button" onclick={notes.retryPageCreation}>
-          {t("common.retry")}
-        </button>
-      </div>
+      <Notice
+        class="shrink-0 border-b border-border px-3 py-2 text-[0.8rem]"
+        message={t("notes.pageCreationFailed", notes.pageCreationError)}
+        onRetry={notes.retryPageCreation}
+      />
     {/if}
 
     <div class="notes-editor-body relative flex min-h-0 flex-1">
@@ -1548,7 +1553,9 @@
               onFocalPoint={coverPosition ? (point) => { if (coverPosition && !coverPositionSaving) coverPosition.focal = point; } : undefined}
               onStatus={(status) => { coverStatus = status; }} />
           {:else if panelLoadStates["page-cover"]?.status === "failed"}
-            <button class="m-2 min-h-8 rounded-floating-item border border-border bg-popover px-2" type="button" onclick={() => requestEditorPanel("page-cover", true)}>{t("common.retry")}</button>
+            <div class="size-full text-[0.8rem]">
+              <Notice layout="fill" message={t("common.viewLoadFailed", t("notes.pageCover"))} copy={false} onRetry={() => requestEditorPanel("page-cover", true)} />
+            </div>
           {:else}
             <NotesLoadingSkeleton kind="cover" />
           {/if}
@@ -1586,7 +1593,7 @@
         </div>
       {/if}
 
-      {#if coverPositionError}<p class="bg-destructive/10 px-3 py-2 text-[0.8rem] text-destructive" role="alert">{coverPositionError}</p>{/if}
+      {#if coverPositionError}<Notice class="px-3 py-2 text-[0.8rem]" message={coverPositionError} />{/if}
 
       {#if coverMenuOpen}
         {#if panelLoadStates["cover-menu"]?.status === "ready" && panelLoadStates["cover-menu"].component.kind === "cover-menu"}
@@ -1601,7 +1608,7 @@
             />
           {/key}
         {:else if panelLoadStates["cover-menu"]?.status === "failed"}
-          <button class="min-h-8 rounded-floating-item border border-border px-2 hover:bg-accent" type="button" onclick={() => requestEditorPanel("cover-menu", true)}>{t("common.retry")}</button>
+          <Notice layout="floating" message={t("common.viewLoadFailed", t("notes.changePageCover"))} copy={false} onRetry={() => requestEditorPanel("cover-menu", true)} onDismiss={closeCoverMenu} />
         {/if}
       {/if}
 
@@ -1757,7 +1764,7 @@
                 />
               {/key}
             {:else if panelLoadStates["row-properties"]?.status === "failed"}
-              <button class="min-h-8 rounded-floating-item border border-border px-2 hover:bg-accent" type="button" onclick={() => requestEditorPanel("row-properties", true)}>{t("common.retry")}</button>
+              <Notice class="text-sm" message={t("common.viewLoadFailed", t("notes.databaseRowPageProperties"))} copy={false} onRetry={() => requestEditorPanel("row-properties", true)} />
             {/if}
           </div>
         {/if}
@@ -1777,7 +1784,7 @@
                 />
               {/key}
             {:else if panelLoadStates["page-comments"]?.status === "failed"}
-              <button class="min-h-8 rounded-floating-item border border-border px-2 hover:bg-accent" type="button" onclick={() => requestEditorPanel("page-comments", true)}>{t("common.retry")}</button>
+              <Notice class="text-sm" message={t("common.viewLoadFailed", t("notes.commentsHeading"))} copy={false} onRetry={() => requestEditorPanel("page-comments", true)} />
             {/if}
           </div>
         {/if}
@@ -1814,8 +1821,8 @@
           onClose={closeDiscussionsPanel}
         />
       {:else if panelLoadStates["discussions-panel"]?.status === "failed"}
-        <div class="flex w-56 shrink-0 items-start justify-center border-l border-border p-4">
-          <button class="min-h-8 rounded-floating-item border border-border px-2 hover:bg-accent" type="button" onclick={() => requestEditorPanel("discussions-panel", true)}>{t("common.retry")}</button>
+        <div class="w-56 shrink-0 border-l border-border text-panel">
+          <Notice layout="fill" message={t("common.viewLoadFailed", t("notes.discussions"))} copy={false} onRetry={() => requestEditorPanel("discussions-panel", true)} />
         </div>
       {/if}
     {/if}
@@ -1833,7 +1840,7 @@
       }}
       />
     {:else if panelLoadStates["html-export"]?.status === "failed"}
-      <button class="surface-floating fixed inset-0 z-50 m-auto h-10 px-3" type="button" onclick={() => requestEditorPanel("html-export", true)}>{t("common.retry")}</button>
+      <Notice layout="floating" message={t("common.viewLoadFailed", t("notes.htmlExportOpen"))} copy={false} onRetry={() => requestEditorPanel("html-export", true)} onDismiss={() => { htmlExportOpen = false; }} />
     {/if}
   {/if}
 
@@ -1848,7 +1855,7 @@
       }}
       />
     {:else if panelLoadStates["agent-export"]?.status === "failed"}
-      <button class="surface-floating fixed inset-0 z-50 m-auto h-10 px-3" type="button" onclick={() => requestEditorPanel("agent-export", true)}>{t("common.retry")}</button>
+      <Notice layout="floating" message={t("common.viewLoadFailed", t("notes.agentBridgeExportOpen"))} copy={false} onRetry={() => requestEditorPanel("agent-export", true)} onDismiss={() => { agentBridgeExportOpen = false; }} />
     {/if}
   {/if}
 
@@ -1863,7 +1870,7 @@
       }}
       />
     {:else if panelLoadStates["page-history"]?.status === "failed"}
-      <button class="surface-floating fixed inset-0 z-50 m-auto h-10 px-3" type="button" onclick={() => requestEditorPanel("page-history", true)}>{t("common.retry")}</button>
+      <Notice layout="floating" message={t("common.viewLoadFailed", t("notes.pageHistory"))} copy={false} onRetry={() => requestEditorPanel("page-history", true)} onDismiss={() => { pageHistoryModalOpen = false; notes.setPagePanelSubsystemOpen("page-history", false); }} />
     {/if}
   {/if}
 
@@ -1881,7 +1888,7 @@
       }}
       />
     {:else if panelLoadStates["confirm-dialog"]?.status === "failed"}
-      <button class="surface-floating fixed inset-0 z-50 m-auto h-10 px-3" type="button" onclick={() => requestEditorPanel("confirm-dialog", true)}>{t("common.retry")}</button>
+      <Notice layout="floating" message={t("common.viewLoadFailed", t("notes.archivePage"))} copy={false} onRetry={() => requestEditorPanel("confirm-dialog", true)} onDismiss={() => { pendingArchivePage = null; }} />
     {/if}
   {/if}
 
@@ -1899,7 +1906,7 @@
       }}
       />
     {:else if panelLoadStates["confirm-dialog"]?.status === "failed"}
-      <button class="surface-floating fixed inset-0 z-50 m-auto h-10 px-3" type="button" onclick={() => requestEditorPanel("confirm-dialog", true)}>{t("common.retry")}</button>
+      <Notice layout="floating" message={t("common.viewLoadFailed", t("notes.moveToTrash"))} copy={false} onRetry={() => requestEditorPanel("confirm-dialog", true)} onDismiss={() => { pendingTrashPage = null; }} />
     {/if}
   {/if}
 {:else}

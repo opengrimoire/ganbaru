@@ -1,5 +1,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import MusicBuilderDialog from "./MusicBuilderDialog.svelte";
 
@@ -26,7 +27,7 @@
     <span class="mb-1.5 block text-xs font-medium">{t("music.builder.sourceName")}</span>
     <input data-dialog-autofocus bind:value={name} maxlength="200" class="field h-11 w-full px-3 text-sm" onkeydown={(event) => { if (event.key === "Enter" && name.trim() && name.trim() !== currentName) onSave(name.trim()); }} />
   </label>
-  {#if error}<p class="mt-3 text-sm text-destructive" role="alert">{error}</p>{/if}
+  {#if error}<Notice class="mt-3 text-sm" message={error} />{/if}
 
   {#snippet footer()}
     <button type="button" onclick={onClose} disabled={saving} class="name-cancel">{t("music.builder.cancel")}</button>

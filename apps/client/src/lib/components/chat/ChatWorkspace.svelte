@@ -42,6 +42,7 @@
   import { getProjects } from "$lib/stores/projects.svelte";
   import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import ChatWorkspaceHeader from "./ChatWorkspaceHeader.svelte";
   import ChatFirstUse from "./ChatFirstUse.svelte";
   import ChatHeaderActions from "./ChatHeaderActions.svelte";
@@ -926,6 +927,16 @@
     }
   }
 
+  async function retryWorkspaceLoad(): Promise<void> {
+    try {
+      await chat.reload();
+      loadError = null;
+    } catch (error: unknown) {
+      loadError = error instanceof Error ? error.message : String(error);
+      throw error;
+    }
+  }
+
   async function restoreMessageCheckpoint(threadId: string, checkpointId: string): Promise<void> {
     const thread = chat.selectedThread;
     if (!thread || thread.id !== threadId) return;
@@ -953,7 +964,7 @@
   {#if WorkspaceObserver}<WorkspaceObserver />{/if}
   <div class="sr-only" aria-live="polite" aria-atomic="true">{politeAnnouncement}</div>
   <div class="sr-only" aria-live="assertive" aria-atomic="true">{assertiveAnnouncement}</div>
-  {#if layoutError}<div role="alert" class="absolute inset-x-2 top-2 z-50 rounded border border-destructive/40 bg-background p-2 text-xs text-destructive">{layoutError}</div>{/if}
+  {#if layoutError}<Notice class="surface-floating absolute inset-x-0 top-2 z-50 mx-auto w-fit max-w-md px-2.5 py-2 text-xs" message={layoutError} />{/if}
   {#if layout.inspectorPresentation === "sheet" && chat.inspectorOpen}
     <button type="button" class="chat-sheet-backdrop chat-inspector-backdrop" aria-label={t("chat.closeInspector")} onclick={() => { chat.inspectorOpen = false; }}></button>
   {:else if railIsModal}
@@ -981,7 +992,7 @@
   </div>
   <main class="main-shell relative flex min-w-0 flex-col">
         {#if loadError}
-          <div role="alert" class="m-auto max-w-md p-4 text-center text-sm text-destructive">{loadError}<div><button type="button" class="chat-secondary-button mt-3" onclick={() => { loadError = null; void chat.reload().catch((error) => { loadError = error instanceof Error ? error.message : String(error); }); }}>{t("common.retry")}</button></div></div>
+          <div class="min-h-0 flex-1 text-sm"><Notice layout="fill" message={loadError} onRetry={retryWorkspaceLoad} /></div>
         {:else if chat.channelArchiveOpen}
           <ChatChannelArchive />
         {:else if chat.selectedChannel}

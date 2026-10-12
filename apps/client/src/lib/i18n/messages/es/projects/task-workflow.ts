@@ -199,6 +199,7 @@ export const taskWorkflow = {
     selectFiltered: (count: number) => `Seleccionar ${count}`,
     schedule: "Programar",
     scheduleSelected: "Programar seleccionadas",
+    scheduleUnfinished: "No terminó la programación de las tareas seleccionadas.",
     scheduleHint: (count: number) => `${count} ${count === 1 ? "tarea activa" : "tareas activas"}, seguidas`,
     archive: "Archivar",
     restore: "Restaurar",

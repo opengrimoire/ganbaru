@@ -5,6 +5,7 @@
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import MusicPlaylistIcon from "$lib/components/music/builder/MusicPlaylistIcon.svelte";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import {
     bulkEditMusicMemberships,
     getMusicMembershipMatrix,
@@ -167,12 +168,12 @@
   {#if open}
     <div role="dialog" aria-label={t("music.itemMenu.actions")} class="surface-floating absolute bottom-[calc(100%+0.45rem)] right-0 z-40 flex max-h-[calc(100vh-1rem)] w-floating-lg flex-col overflow-hidden">
       <h2 class="shrink-0 px-3 pb-1 pt-2.5 font-semibold">{t("music.launcher.playlists")}</h2>
-      {#if error}<p class="shrink-0 px-3 text-panel-detail text-destructive" role="alert">{error}</p>{/if}
+      {#if error && playlists.length > 0}<Notice class="shrink-0 px-3 text-panel-detail" message={error} />{/if}
       <div use:scrollEdgeFadeAction class="surface-floating-body h-56 min-h-0 shrink overflow-y-auto" data-music-scrollable="true">
         {#if loading}
           <div class="flex h-full items-center justify-center" aria-label={t("music.itemMenu.loading")}><LoaderCircle class="animate-spin motion-reduce:animate-none" size={17} strokeWidth={2.6} /></div>
         {:else if error && playlists.length === 0}
-          <button type="button" onclick={() => { if (itemId) void loadPlaylists(itemId); }} class="menu-item my-4 w-auto font-medium">{t("common.retry")}</button>
+          <Notice layout="fill" class="text-panel-detail" message={error} onRetry={() => (itemId ? loadPlaylists(itemId) : undefined)} />
         {:else if playlists.length === 0}
           <p class="px-2 py-5 text-muted-foreground">{t("music.itemMenu.noPlaylists")}</p>
         {:else}

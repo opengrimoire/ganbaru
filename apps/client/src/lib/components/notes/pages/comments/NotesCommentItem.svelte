@@ -7,6 +7,7 @@
   import NotesRichTextInline from "$lib/components/notes/rich-text/NotesRichTextInline.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import { formatList } from "$lib/i18n/formatters";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { notesCommentBodyRichText } from "$lib/notes/collaboration/comments";
   import type { NotesComment, NotesCommentReaction, NotesCommentThread } from "$lib/notes/contracts/collaboration";
@@ -246,7 +247,7 @@
       {/if}
     {/if}
     {#if errorMessage}
-      <p class="mt-1 text-panel-detail text-destructive" role="alert">{errorMessage}</p>
+      <Notice class="mt-1 text-panel-detail" message={errorMessage} />
     {/if}
   </div>
   {#if !editing}

@@ -12,6 +12,7 @@
   import PencilLine from "@lucide/svelte/icons/pencil-line";
   import X from "@lucide/svelte/icons/x";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
 
   const notes = getNotesEditor();
   const localization = getLocalization();
@@ -136,9 +137,7 @@
       </div>
 
       {#if notes.suggestionsError}
-        <div class="mt-2 rounded-md border border-destructive/35 bg-destructive/10 px-2 py-1.5 text-[0.8rem] text-destructive">
-          {suggestionErrorMessage(notes.suggestionsError)}
-        </div>
+        <Notice class="mt-2 text-[0.8rem]" message={suggestionErrorMessage(notes.suggestionsError)} />
       {/if}
 
       {#if draft}

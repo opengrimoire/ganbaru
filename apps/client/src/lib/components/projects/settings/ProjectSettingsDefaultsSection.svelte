@@ -31,6 +31,7 @@
     type ProjectDurationPresetValue,
     type ProjectDurationUnit,
   } from "$lib/projects/settings/duration";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import Select from "$lib/components/ui/Select.svelte";
   import { moveTextInputCaretToPointer } from "$lib/utils/text-input-caret";
   import SwitchField from "$lib/components/ui/SwitchField.svelte";
@@ -94,7 +95,7 @@
     onMusicAssignmentsChange: (assignments: MusicContextAssignmentDraft[]) => void;
     loadingMusicPlaylists?: boolean;
     musicAssignmentsError?: string | null;
-    onRetryMusicAssignments: () => void;
+    onRetryMusicAssignments: () => Promise<void> | void;
     musicAssignmentsDisabled?: boolean;
     musicAssignmentsAvailable?: boolean;
     idleDetectionAvailable?: boolean;
@@ -587,10 +588,7 @@
     {#if musicAssignmentsAvailable}
       <div class="flex min-w-0 flex-col gap-1.5">
         {#if musicAssignmentsError}
-          <div class="flex items-start justify-between gap-3 px-1 py-1 text-[0.75rem]" role="alert">
-            <span class="min-w-0 leading-relaxed text-destructive">{musicAssignmentsError}</span>
-            <button type="button" onclick={onRetryMusicAssignments} class="shrink-0 text-primary hover:underline">{t("common.retry")}</button>
-          </div>
+          <Notice class="px-1 py-1 text-xs" message={musicAssignmentsError} onRetry={onRetryMusicAssignments} />
         {/if}
         <ProjectSettingsPlaylistRows
           assignments={musicAssignments}

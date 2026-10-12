@@ -20,7 +20,10 @@
   } from "$lib/projects/scheduling/schedule";
   import {
     pickProjectTaskModalLayout,
+    type ProjectToolbarPanel,
   } from "$lib/projects/toolbar";
+  import CollectionSettings from "$lib/components/collections/CollectionSettings.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import ProjectEmptyState from "./ProjectEmptyState.svelte";
   import ProjectWorkspaceHeader from "./ProjectWorkspaceHeader.svelte";
   import ProjectTaskDetailPanel from "./task-detail/ProjectTaskDetailPanel.svelte";
@@ -258,6 +261,27 @@
     taskQuery.reset();
   }
 
+  /** Return the localized name of a toolbar panel, used when the panel cannot open. */
+  function toolbarPanelLabel(panel: ProjectToolbarPanel): string {
+    if (panel === "settings") return t("projects.header.projectSettings");
+    if (panel === "filters") return t("projects.filters.title");
+    if (panel === "sort") return t("projects.toolbar.sort");
+    if (panel === "customize") return t("projects.toolbar.customize");
+    return t("projects.toolbar.group");
+  }
+
+  /** Retry whichever part of the toolbar panel failed: its project data or its lazy component. */
+  function retryToolbarPanel(): Promise<void> | void {
+    if (!routeLoad.toolbarDataError) {
+      routeLoad.requestOptional("toolbar", true);
+      return;
+    }
+    const projectId = selectedProjectId;
+    return routeLoad.requestToolbarData(projectId, () => (
+      routeUi.toolbarPanel !== null && selectedProjectId === projectId
+    ));
+  }
+
   function revealCreatedTask(task: ProjectTask | undefined): void {
     if (!task) return;
     projects.activeView = "list";
@@ -371,23 +395,19 @@
               onToggleTaskListColumn={(column) => { void taskQuery.toggleColumn(column); }}
             />
           {:else if routeLoad.toolbarDataError || toolbarLoadState?.status === "failed"}
-            <div class="flex min-h-9 items-center justify-center gap-2 border-t border-border px-3 text-xs text-muted-foreground" role="alert">
-              <span>{t("common.viewLoadFailed", t("projects.header.projectSettings"))}</span>
-              <button
-                type="button"
-                class="font-medium text-foreground underline-offset-2 hover:underline"
-                onclick={() => {
-                  if (routeLoad.toolbarDataError) {
-                    const projectId = selectedProjectId;
-                    void routeLoad.requestToolbarData(projectId, () => (
-                      routeUi.toolbarPanel !== null && selectedProjectId === projectId
-                    ));
-                  } else routeLoad.requestOptional("toolbar", true);
-                }}
-              >
-                {t("common.retry")}
-              </button>
-            </div>
+            {@const panelLabel = toolbarPanelLabel(routeUi.toolbarPanel)}
+            <CollectionSettings
+              label={panelLabel}
+              anchor={document.querySelector<HTMLElement>(`[data-project-toolbar-trigger="${routeUi.toolbarPanel}"]`)}
+              onClose={() => routeUi.requestToolbarClose()}
+            >
+              <Notice
+                class="px-1.5 py-1"
+                message={t("common.viewLoadFailed", panelLabel)}
+                copy={routeLoad.toolbarDataError ?? false}
+                onRetry={retryToolbarPanel}
+              />
+            </CollectionSettings>
           {:else}
             <span class="sr-only" aria-busy="true">{t("common.loading")}</span>
           {/if}
@@ -428,16 +448,13 @@
               bind:showArchivedTasks={taskQuery.showArchivedTasks}
             />
           {:else if bulkActionsLoadState?.status === "failed"}
-            <div class="surface-floating flex min-h-8 items-center gap-2 px-2.5 text-muted-foreground" role="alert">
-              <span>{t("common.viewLoadFailed", t("collections.selection.selected", routeUi.selectedTaskIds.length))}</span>
-              <button
-                type="button"
-                class="font-medium text-foreground underline-offset-2 hover:underline"
-                onclick={() => routeLoad.requestOptional("bulk-actions", true)}
-              >
-                {t("common.retry")}
-              </button>
-            </div>
+            <Notice
+              class="surface-floating px-2.5 py-1.5"
+              message={t("common.viewLoadFailed", t("collections.selection.selected", routeUi.selectedTaskIds.length))}
+              copy={false}
+              onRetry={() => routeLoad.requestOptional("bulk-actions", true)}
+              onDismiss={() => routeUi.clearTaskSelection()}
+            />
           {:else}
             <span class="sr-only" aria-busy="true">{t("common.loading")}</span>
           {/if}
@@ -474,16 +491,13 @@
               onNeedMore={() => taskQuery.loadNextList(routeUi.selectedTaskIds)}
             />
             {:else if viewDataFailed}
-              <div class="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground" role="alert">
-                <span>{t("common.viewLoadFailed", t("projects.tabs.list"))}</span>
-                <button
-                  type="button"
-                  class="font-medium text-foreground underline-offset-2 hover:underline"
-                  onclick={() => { if (selectedProjectId) requestViewData(selectedProjectId, "list"); }}
-                >
-                  {t("common.retry")}
-                </button>
-              </div>
+              <Notice
+                layout="fill"
+                class="text-sm"
+                message={t("common.viewLoadFailed", t("projects.tabs.list"))}
+                copy={false}
+                onRetry={() => { if (selectedProjectId) requestViewData(selectedProjectId, "list"); }}
+              />
             {:else}
               <div class="flex h-full items-center justify-center text-sm text-muted-foreground" aria-busy="true">
                 {t("common.loading")}
@@ -585,15 +599,14 @@
         onClearAndClose={() => routeUi.closeOrClearFinder(taskQuery.search, () => { taskQuery.search = ""; })}
       />
     {:else if taskFinderLoadState?.status === "failed"}
-      <div class="absolute inset-x-3 top-3 z-80 flex min-h-10 items-center justify-center gap-2 surface-floating px-3 text-muted-foreground" role="alert">
-        <span>{t("common.viewLoadFailed", t("projects.finder.label"))}</span>
-        <button
-          type="button"
-          class="font-medium text-foreground underline-offset-2 hover:underline"
-          onclick={() => routeLoad.requestOptional("task-finder", true)}
-        >
-          {t("common.retry")}
-        </button>
+      <div class="pointer-events-none absolute inset-x-0 bottom-4 z-40 flex justify-center px-3">
+        <Notice
+          class="pointer-events-auto surface-floating w-[min(32rem,100%)] px-3 py-2.5"
+          message={t("common.viewLoadFailed", t("projects.finder.label"))}
+          copy={false}
+          onRetry={() => routeLoad.requestOptional("task-finder", true)}
+          onDismiss={() => routeUi.closeOrClearFinder(taskQuery.search, () => { taskQuery.search = ""; })}
+        />
       </div>
     {:else}
       <span class="sr-only" aria-busy="true">{t("common.loading")}</span>
@@ -621,29 +634,17 @@
         }}
       />
     {:else if routeLoad.taskDetailDataError}
-      <div class="absolute inset-0 z-80 surface-backdrop flex items-center justify-center p-4" role="alert">
-        <div class="flex min-h-32 w-full max-w-sm flex-col items-center justify-center gap-3 surface-dialog p-4 text-center text-sm text-muted-foreground">
-          <p>{t("common.viewLoadFailed", t("projects.detail.title"))}</p>
-          <div class="flex gap-2">
-            <button
-              type="button"
-              class="min-h-9 rounded-md border border-border bg-background px-3 font-medium text-foreground hover:bg-accent"
-              onclick={() => { void routeLoad.requestTaskDetailData(selectedProjectId, routeUi.selectedTaskId); }}
-            >
-              {t("common.retry")}
-            </button>
-            <button
-              type="button"
-              class="min-h-9 rounded-md px-3 font-medium text-foreground hover:bg-accent"
-              onclick={() => {
-                routeUi.closeTaskDetail();
-                routeLoad.invalidateTaskDetailData();
-              }}
-            >
-              {t("common.cancel")}
-            </button>
-          </div>
-        </div>
+      <div class="absolute inset-0 z-80 surface-backdrop flex items-center justify-center p-4">
+        <Notice
+          class="surface-dialog max-w-sm px-4 py-3 text-sm"
+          message={t("common.viewLoadFailed", t("projects.detail.title"))}
+          copy={routeLoad.taskDetailDataError}
+          onRetry={() => routeLoad.requestTaskDetailData(selectedProjectId, routeUi.selectedTaskId)}
+          onDismiss={() => {
+            routeUi.closeTaskDetail();
+            routeLoad.invalidateTaskDetailData();
+          }}
+        />
       </div>
     {:else}
       <div class="absolute inset-0 z-80 surface-backdrop flex items-center justify-center p-4" aria-busy="true">

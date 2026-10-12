@@ -19,6 +19,7 @@
     getMusicPlaylistSummaries,
     removeMusicSnooze,
   } from "$lib/api/music-library";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { MusicMembershipMatrixEntry, MusicPlaylistSummary, MusicSnooze, MusicWeight } from "$lib/music/library/contracts";
   import { notifyMusicLibraryChanged } from "$lib/music/library/events";
@@ -298,7 +299,7 @@
       {#if loading}
         <div class="flex h-24 items-center justify-center" aria-label={t("music.itemMenu.loading")}><LoaderCircle size={17} strokeWidth={2.6} class="animate-spin motion-reduce:animate-none" /></div>
       {:else}
-        {#if error}<p class="mb-2 text-panel-detail text-destructive" role="alert">{error}</p>{/if}
+        {#if error}<Notice class="mb-2 text-panel-detail" message={error} />{/if}
         <div class="flex items-center justify-between gap-3">
           <span class="shrink-0 font-semibold">{t("music.preferences.applyTo")}</span>
           <Select

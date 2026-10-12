@@ -6,6 +6,7 @@
   import { cn } from "$lib/utils";
   import { portal } from "$lib/utils/portal";
   import ProjectIcon from "$lib/components/projects/ProjectIcon.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
 
   let {
     rootElement = $bindable<HTMLElement | undefined>(),
@@ -69,7 +70,7 @@
     />
   </label>
   {#if customEmojiError}
-    <div class="mt-2 rounded-floating-item bg-destructive/10 px-2 py-1 text-panel-detail text-destructive">{customEmojiError}</div>
+    <Notice class="mt-2 text-panel-detail" message={customEmojiError} />
   {/if}
   <div class="mt-5 flex justify-between gap-2">
     <button

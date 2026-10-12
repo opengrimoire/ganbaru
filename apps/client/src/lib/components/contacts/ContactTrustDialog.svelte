@@ -2,6 +2,7 @@
   import { untrack } from "svelte";
   import { normalizeContactsError, type Contact } from "$lib/api/contacts";
   import Select from "$lib/components/ui/Select.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { contactsMutationErrorKey, type ContactsMutationErrorKey } from "$lib/contacts/presentation";
   import { trustDurationForKind, trustKindForDuration } from "$lib/contacts/trust";
@@ -68,6 +69,6 @@
     onChange={(value) => { if (isContactTrustDuration(value)) message = value; }}
   />
   {#if error}
-    <p class="text-panel-detail text-destructive" aria-live="polite">{t(`contacts.list.error.${error}`)}</p>
+    <Notice class="text-panel-detail" message={t(`contacts.list.error.${error}`)} />
   {/if}
 </ContactsDialog>

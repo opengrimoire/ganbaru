@@ -23,6 +23,7 @@
   import ChatExecutionTimeline from "./ChatExecutionTimeline.svelte";
   import ChatMessageComposer from "$lib/components/chat/composer/ChatMessageComposer.svelte";
   import ChatOrganizationalMessage from "./ChatOrganizationalMessage.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import ChatRequestPanel from "./ChatRequestPanel.svelte";
 
   interface ExactExecutionRead {
@@ -111,6 +112,14 @@
     event.preventDefault();
     event.stopPropagation();
     onClose();
+  }
+
+  /** Reloads the reply thread history that failed and rejects when the load fails again. */
+  function retryReplyThread(): Promise<void> {
+    if (page) return chat.loadOlderReplyThreadMessages();
+    const replyThreadId = chat.openReplyThreadId;
+    if (!replyThreadId) return Promise.reject(new Error("No reply thread is open to reload"));
+    return chat.loadReplyThread(replyThreadId, true);
   }
 
   function rememberScrollPosition(): void {
@@ -317,7 +326,7 @@
     {/if}
   </header>
 
-  {#if actionError || exactExecutionError}<p class="thread-error" role="alert">{actionError ?? exactExecutionError}</p>{/if}
+  {#if actionError || exactExecutionError}<Notice class="thread-error" message={actionError ?? exactExecutionError ?? ""} />{/if}
 
   <div
     bind:this={scroller}
@@ -325,7 +334,10 @@
     aria-busy={!executionPresentationReady || chat.replyThreadLoading || undefined}
     onscroll={rememberScrollPosition}
   >
-    {#if chat.replyThreadError}<p class="thread-error" role="alert">{chat.replyThreadError}</p>{/if}
+    {#if chat.replyThreadError}
+      {#if page}<Notice class="thread-error" message={chat.replyThreadError} onRetry={retryReplyThread} />
+      {:else}<div class="thread-failure"><Notice layout="fill" message={chat.replyThreadError} onRetry={retryReplyThread} /></div>{/if}
+    {/if}
     {#if page && executionPresentationReady}
       {#if page.previousCursor}<button type="button" class="load-older" onclick={() => void chat.loadOlderReplyThreadMessages()}>{t("chat.organization.loadOlder")}</button>{/if}
       <div class="date-divider"><span>{formatDateTime(localization.locale, Date.parse(page.rootMessage.createdAt), { dateStyle: "full" })}</span></div>
@@ -395,7 +407,8 @@
   .date-divider::before,.date-divider::after { height:1px; flex:1; background:var(--border); content:""; }
   .thread-request { flex:0 0 auto; border-top:1px solid var(--border); padding:0.5rem; }
   .thread-composer { display:flex; flex:0 0 auto; justify-content:center; padding:0.5rem 0.5rem 0.75rem; }
-  .thread-error,.thread-loading { padding:0.6rem; color:var(--destructive); font-size: calc(0.7rem * var(--type-scale)); }.thread-loading { color:var(--muted-foreground); }
+  .reply-thread-panel :global(.thread-error),.thread-loading { padding:0.6rem; font-size: calc(0.7rem * var(--type-scale)); }.thread-loading { color:var(--muted-foreground); }
+  .thread-failure { height:100%; font-size: calc(0.7rem * var(--type-scale)); }
   .load-older { display:block; margin:0.3rem auto 0.6rem; border-radius:0.4rem; padding:0.3rem 0.5rem; color:var(--muted-foreground); font-size: calc(0.68rem * var(--type-scale)); }.load-older:hover { background:var(--accent); }
   @media (pointer:coarse) { .scratch-inspector { min-width:2.75rem; min-height:2.75rem; } }
   @media (hover:none) { .tab-close { opacity:1; } }

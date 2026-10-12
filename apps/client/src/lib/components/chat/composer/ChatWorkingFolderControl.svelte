@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getChat } from "$lib/stores/chat.svelte";
   import ChatControlMenu from "./ChatControlMenu.svelte";
@@ -56,11 +57,11 @@
     compact
     showTooltip={false}
   />
-  {#if error}<p class="folder-error" role="alert">{error}</p>{/if}
+  {#if error}<Notice class="surface-floating folder-error" message={error} />{/if}
 </div>
 
 <style>
   .folder-control { position: relative; min-width: 0; }
   .folder-control :global(.control-trigger) { max-width: 12rem; border: 1px solid color-mix(in srgb, var(--border) 75%, transparent); background: color-mix(in srgb, var(--card) 88%, transparent); }
-  .folder-error { position: absolute; right: 0; bottom: calc(100% + 0.45rem); z-index: 60; width: min(18rem, calc(100vw - 1.5rem)); border: 1px solid color-mix(in srgb, var(--destructive) 45%, var(--border)); border-radius: var(--floating-radius); background: var(--popover); padding: 0.45rem 0.55rem; color: var(--destructive); font-size: var(--panel-detail-font-size); box-shadow: var(--floating-shadow); }
+  .folder-control :global(.folder-error) { position: absolute; right: 0; bottom: calc(100% + 0.45rem); z-index: 60; width: min(18rem, calc(100vw - 1.5rem)); padding: 0.45rem 0.55rem; color: var(--popover-foreground); font-size: var(--panel-detail-font-size); }
 </style>

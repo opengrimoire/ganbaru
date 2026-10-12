@@ -10,6 +10,7 @@
   import Plus from "@lucide/svelte/icons/plus";
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
   import Undo2 from "@lucide/svelte/icons/undo-2";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import { revealLocalFile } from "$lib/api/music";
@@ -1155,11 +1156,11 @@
                 {#if choosingFirstUseFolder}<LoaderCircle class="animate-spin motion-reduce:animate-none" size={32} />{:else}<FolderSearch size={34} strokeWidth={1.35} />{/if}
               </button>
               <h1 class="mt-5 text-lg font-semibold tracking-tight">{t("music.builder.chooseMusicFolder")}</h1>
-              {#if firstUseFolderError || sources.defaultFolderPreparationError}<p class="mt-3 text-xs text-destructive" role="alert">{firstUseFolderError ?? sources.defaultFolderPreparationError}</p>{/if}
+              {#if firstUseFolderError || sources.defaultFolderPreparationError}<Notice class="mt-3 justify-center text-xs" message={firstUseFolderError || sources.defaultFolderPreparationError || ""} />{/if}
             </div>
           </div>
         {:else if library.error && library.currentWindow.items.length === 0}
-          <MusicBuilderAsyncState kind="error" title={library.error.message} onRetry={() => { void library.refresh(); }} />
+          <MusicBuilderAsyncState kind="error" title={library.error.message} onRetry={() => library.refresh()} />
         {:else if library.busy && library.currentWindow.items.length === 0}
           <MusicBuilderAsyncState kind="loading" />
         {:else if library.currentWindow.items.length === 0}
@@ -1204,7 +1205,7 @@
         />
         {/if}
         {#if library.error && library.currentWindow.items.length === 0}
-          <MusicBuilderAsyncState kind="error" title={library.error.message} onRetry={() => { void library.refresh(); }} />
+          <MusicBuilderAsyncState kind="error" title={library.error.message} onRetry={() => library.refresh()} />
         {:else if library.busy && library.currentWindow.items.length === 0}
           <MusicBuilderAsyncState kind="loading" />
         {:else if library.currentWindow.items.length === 0}

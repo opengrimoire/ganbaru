@@ -5,6 +5,7 @@
   import X from "@lucide/svelte/icons/x";
   import CalendarScrollbar from "$lib/components/calendar/CalendarScrollbar.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { cn } from "$lib/utils";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
@@ -112,9 +113,7 @@
 
       <footer class="flex shrink-0 items-center gap-2 px-3 pb-2 pt-1">
         {#if error}
-          <div class="min-w-0 flex-1 rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1.5 text-panel-detail text-destructive">
-            {error}
-          </div>
+          <Notice class="min-w-0 flex-1 text-panel-detail" message={error} />
         {:else}
           <div class="min-w-0 flex-1"></div>
         {/if}

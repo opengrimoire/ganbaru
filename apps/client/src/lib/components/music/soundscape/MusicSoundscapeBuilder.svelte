@@ -9,6 +9,7 @@
   import Volume2 from "@lucide/svelte/icons/volume-2";
   import IconPicker from "$lib/components/icon-picker/IconPicker.svelte";
   import { pickSoundscapeFile } from "$lib/api/music";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { MusicSoundscapeDefinition, MusicSoundscapeGroup } from "$lib/music/soundscape/contracts";
   import { orderedGeneratedSounds } from "$lib/music/soundscape/presentation";
@@ -142,7 +143,7 @@
     <button type="button" disabled={selectedIds.length === 0 || soundscape.saving} aria-label={soundscape.snapshot.status === "playing" ? t("music.soundscape.pause") : t("music.soundscape.playSelected")} class="grid h-8 w-8 place-items-center rounded-lg text-muted-foreground hover:bg-accent/60 hover:text-foreground disabled:opacity-40" onclick={() => { if (soundscape.snapshot.status !== "playing") onPlaybackStart(); void soundscape.togglePlayback(); }}>{#if soundscape.snapshot.status === "playing"}<Pause size={15} />{:else}<Play size={15} />{/if}</button>
   </div>
   {#if soundscape.error}
-    <p class="mb-3 rounded-lg bg-destructive/5 px-3 py-2 text-xs" role="alert">{t("music.soundscape.genericError")}</p>
+    <Notice class="mb-3 px-1 text-xs" message={t("music.soundscape.genericError")} />
   {/if}
 
   {#if filter === "all" || filter === "generated"}

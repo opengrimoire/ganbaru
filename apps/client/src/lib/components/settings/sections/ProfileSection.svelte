@@ -8,6 +8,7 @@
   import ProfileAvatar from "$lib/components/profile/ProfileAvatar.svelte";
   import ProfileAvatarPanel from "$lib/components/profile/ProfileAvatarPanel.svelte";
   import ProfileImageCropDialog from "$lib/components/profile/ProfileImageCropDialog.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { NotesLocalUser } from "$lib/notes/types";
   import type { EventColor } from "$lib/calendar/types";
@@ -427,9 +428,7 @@
     <div class="flex flex-wrap items-center justify-between gap-2 border-t border-border/70 pt-3">
       <div class="min-w-0 flex-1 px-1 text-[0.8rem] leading-5">
         {#if saveError}
-          <span role="alert" class="text-destructive">
-            {t("settings.profileIdentity.saveFailed", saveError)}
-          </span>
+          <Notice message={t("settings.profileIdentity.saveFailed", saveError)} />
         {:else if validationMessage}
           <span role="alert" class="text-destructive">
             {validationMessage}

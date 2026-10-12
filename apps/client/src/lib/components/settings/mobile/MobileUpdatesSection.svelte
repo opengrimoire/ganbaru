@@ -9,6 +9,7 @@
   import { latestReleasePageUrl } from "$lib/stores/update-policy";
   import { getMobileUpdateManager } from "$lib/stores/mobile-updates.svelte";
   import { cn } from "$lib/utils";
+  import Notice from "$lib/components/ui/Notice.svelte";
 
   const { t, locale } = getLocalization();
   const releasePageUrl = latestReleasePageUrl(GITHUB_REPOSITORY);
@@ -103,7 +104,7 @@
       </div>
 
       {#if updates.status === "error"}
-        <p class="px-1 text-[0.8rem] text-destructive" role="alert">{updates.statusCopy}</p>
+        <Notice class="px-1 text-[0.8rem]" message={updates.statusCopy} />
       {/if}
     </div>
   </section>
@@ -173,6 +174,6 @@
   {/if}
 
   {#if openPageError}
-    <p class="px-1 text-[0.8rem] text-destructive" role="alert">{openPageError}</p>
+    <Notice class="px-1 text-[0.8rem]" message={openPageError} />
   {/if}
 </div>

@@ -27,6 +27,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
 
   let {
     initialReplyThreadId,
@@ -147,6 +148,12 @@
     } finally {
       loading = false;
     }
+  }
+
+  /** Retries loading scratch scopes and rejects when the load fails again. */
+  async function retryScopes(): Promise<void> {
+    await loadScopes();
+    if (error) throw new Error(error);
   }
 
   async function selectScope(scope: ChatScratchScopeRead): Promise<void> {
@@ -381,7 +388,7 @@
       </aside>
 
       <main use:scrollEdgeFadeAction>
-        {#if error}<p class="alert" role="alert">{error}</p>{/if}
+        {#if error}<Notice class="scratch-error" message={error} onRetry={scopes.length === 0 ? retryScopes : undefined} />{/if}
         {#if notice}<p class="notice" role="status">{notice}</p>{/if}
         {#if selectedScope}
           <section class="scope-heading">
@@ -410,7 +417,7 @@
           {#if selectedGeneration && directory}
             <section class="browser" aria-label={t("settings.chat.teammates.scratchManager.browseLabel")}>
               <header><button type="button" disabled={!directory.relativePath || directoryLoading} aria-label={t("settings.chat.teammates.scratchManager.up")} onclick={() => void loadDirectory(upPath(directory?.relativePath ?? ""))}><ArrowLeft size={14} /></button><span><HardDrive size={14} /><strong>{directory.relativePath || t("settings.chat.teammates.scratchManager.root")}</strong></span></header>
-              {#if directoryError}<p class="alert" role="alert">{directoryError}</p>{/if}
+              {#if directoryError}<Notice class="scratch-error" message={directoryError} />{/if}
               <div class="entry-list">
                 {#if directory.entries.length === 0}<p class="empty">{t("settings.chat.teammates.scratchManager.emptyFolder")}</p>{/if}
                 {#each directory.entries as entry (entry.relativePath)}
@@ -516,6 +523,7 @@
   .promotion footer { display:flex; justify-content:flex-end; gap:0.4rem; }
   .promotion footer .primary { background:var(--primary); color:var(--primary-foreground); }
   .empty,.alert,.notice { padding:0.65rem; border-radius:0.5rem; font-size:calc(0.67rem * var(--type-scale)); }
+  .scratch-manager :global(.scratch-error) { padding:0.65rem; font-size:calc(0.67rem * var(--type-scale)); }
   .empty { color:var(--muted-foreground); }
   .alert { background:color-mix(in srgb,var(--destructive) 10%,transparent); color:var(--destructive); }
   .notice { background:color-mix(in srgb,var(--primary) 10%,transparent); color:var(--foreground); }

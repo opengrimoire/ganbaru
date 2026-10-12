@@ -6,6 +6,7 @@
     selectDateRangeEnd,
     selectDateRangeStart,
   } from "$lib/calendar/date-range-selection";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { activateModalFocus } from "$lib/modal-focus";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
@@ -1465,9 +1466,7 @@
         </div>
 
         {#if detailError}
-          <div role="alert" class="shrink-0 border-t border-destructive/20 bg-destructive/10 px-5 py-2 text-[0.8rem] text-destructive">
-            {detailError}
-          </div>
+          <Notice class="shrink-0 border-t border-border px-5 py-2 text-[0.8rem]" message={detailError} />
         {/if}
 
         <ProjectTaskDetailFooter

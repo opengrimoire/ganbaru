@@ -10,6 +10,7 @@
   import CollectionMenuSeparator from "$lib/components/collections/CollectionMenuSeparator.svelte";
   import CollectionMenuTextField from "$lib/components/collections/CollectionMenuTextField.svelte";
   import { getCollectionSettingsNavigation } from "$lib/components/collections/collection-settings-context";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { notesBlockColorStyle } from "$lib/notes/blocks/color";
   import type { NotesDataSourceSchemaOptionDraft } from "$lib/notes/database/data-source-schema";
@@ -265,5 +266,5 @@
       {#if adding === null}<p class="px-2 py-1 text-muted-foreground">{t("collections.property.noOptions")}</p>{/if}
     {/each}
   {/if}
-  {#if error}<p role="alert" class="px-2 py-1 text-panel-detail text-destructive">{error}</p>{/if}
+  {#if error}<Notice class="px-2 py-1 text-panel-detail" message={error} />{/if}
 </div>

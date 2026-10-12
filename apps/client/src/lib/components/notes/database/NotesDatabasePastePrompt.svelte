@@ -2,6 +2,7 @@
   import { tick } from "svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { anchoredPanelStyle } from "$lib/utils/anchored-panel";
   import { portal } from "$lib/utils/portal";
   import type { NotesDatabasePasteController } from "$lib/stores/notes/database-paste.svelte";
@@ -10,6 +11,12 @@
   const { t } = getLocalization();
   const TEXT_SCALE = 0.8;
   const current = $derived(controller.prompt);
+
+  /** Retries a paste whose writes already started, rejecting while it still fails. */
+  async function retryStartedPaste(): Promise<void> {
+    await controller.linkedView();
+    if (controller.error) throw new Error(controller.error);
+  }
 
   /** Keep paste choices attached to their row without taking space in the document. */
   function floatPanel(node: HTMLDivElement) {
@@ -61,16 +68,16 @@
   <div use:floatPanel role="dialog" aria-label={t("notes.databasePasteAs")} aria-busy={controller.busy}
     data-app-floating-surface data-floating-root class="surface-floating surface-floating-body z-50 overflow-y-auto">
     <p class="menu-label">{t(current.kind === "copy" ? "notes.databasePastedCopy" : "notes.databasePasteAs")}</p>
-    {#if controller.started}
-      {#if controller.error}<button type="button" class="menu-item disabled:pointer-events-none" disabled={controller.busy} onclick={() => void controller.linkedView()}>{t("common.retry")}</button>{/if}
-    {:else if current.kind === "link"}
+    {#if !controller.started && current.kind === "link"}
       <button type="button" class="menu-item disabled:pointer-events-none" disabled={controller.busy} onclick={() => void controller.mention()}>{t("notes.databasePasteMention")}</button>
       <button type="button" class="menu-item disabled:pointer-events-none" disabled={controller.busy} onclick={() => void controller.linkedView()}>{t("notes.databasePasteLinkedView")}</button>
       <button type="button" class="menu-item disabled:pointer-events-none" disabled={controller.busy} onclick={controller.dismiss}>{t("notes.databasePasteUrl")}</button>
-    {:else}
+    {:else if !controller.started}
       <button type="button" class="menu-item disabled:pointer-events-none" disabled={controller.busy} onclick={() => void controller.linkedView()}>{t("notes.databasePasteAndSync")}</button>
       <button type="button" class="menu-item disabled:pointer-events-none" disabled={controller.busy} onclick={controller.dismiss}>{t("notes.databasePasteDismiss")}</button>
     {/if}
-    {#if controller.error}<p role="alert" class="px-2 py-1.5 text-panel-detail text-destructive">{t("notes.databasePasteFailed", controller.error)}</p>{/if}
+    {#if controller.error}
+      <Notice class="px-2 py-1.5 text-panel-detail" message={t("notes.databasePasteFailed", controller.error)} copy={controller.error} onRetry={controller.started ? retryStartedPaste : undefined} />
+    {/if}
   </div>
 {/if}

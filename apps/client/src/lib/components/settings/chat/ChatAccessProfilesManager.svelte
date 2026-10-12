@@ -17,6 +17,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
 
   let {
     profiles,
@@ -320,7 +321,7 @@
               {#each impact.issues as issue}<small>{issue.message}</small>{/each}
             </aside>
           {/if}
-          {#if error}<p class="profile-error" role="alert">{error}</p>{/if}
+          {#if error}<Notice class="profile-error" message={error} />{/if}
         </div>
         <footer>
           <div>{#if mode === "existing" && selected && !selected.builtinKey}<button type="button" class="archive-button" disabled={saving} onclick={() => { archiveTarget = selected; }}><Archive size={14} />{t("settings.chat.teammates.profileManager.archive")}</button>{/if}</div>
@@ -377,7 +378,7 @@
   .profile-impact { border-left:2px solid var(--ring); padding:0.25rem 0.7rem; }
   .profile-impact strong { font-size:calc(0.7rem * var(--type-scale)); }
   .profile-impact p,.profile-impact small { display:block; margin-top:0.15rem; color:var(--muted-foreground); font-size:calc(0.64rem * var(--type-scale)); }
-  .profile-error { color:var(--destructive); font-size:calc(0.67rem * var(--type-scale)); }
+  .profile-editor-scroll > :global(.profile-error) { font-size:calc(0.67rem * var(--type-scale)); }
   .profile-manager form > footer { display:flex; align-items:center; justify-content:space-between; gap:0.7rem; border-top:1px solid var(--border); padding:0.65rem 0.8rem; }
   .profile-manager form > footer > div { display:flex; align-items:center; gap:0.45rem; }
   .primary-button,.secondary-button { display:inline-flex; min-height:2rem; align-items:center; justify-content:center; border-radius:0.42rem; padding:0.35rem 0.7rem; font-size:calc(0.7rem * var(--type-scale)); font-weight:600; }

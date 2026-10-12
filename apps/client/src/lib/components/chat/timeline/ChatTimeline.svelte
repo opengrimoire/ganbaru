@@ -4,23 +4,24 @@
 
 <script lang="ts">
   import { onDestroy, onMount, tick } from "svelte";
+  import Archive from "@lucide/svelte/icons/archive";
   import ArrowDown from "@lucide/svelte/icons/arrow-down";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
-  import CircleAlert from "@lucide/svelte/icons/circle-alert";
   import FileText from "@lucide/svelte/icons/file-text";
+  import FolderArchive from "@lucide/svelte/icons/folder-archive";
+  import FolderX from "@lucide/svelte/icons/folder-x";
   import Globe from "@lucide/svelte/icons/globe";
   import ImageIcon from "@lucide/svelte/icons/image";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import ListChecks from "@lucide/svelte/icons/list-checks";
-  import MessageSquare from "@lucide/svelte/icons/message-square";
   import Search from "@lucide/svelte/icons/search";
-  import Settings from "@lucide/svelte/icons/settings";
   import Terminal from "@lucide/svelte/icons/terminal";
+  import Unplug from "@lucide/svelte/icons/unplug";
   import Wrench from "@lucide/svelte/icons/wrench";
   import RotateCcw from "@lucide/svelte/icons/rotate-ccw";
   import { executionMessageActionTarget } from "$lib/chat/timeline/message-action-target";
   import { chatScrollBehavior } from "$lib/chat/responsive-layout";
-  import type { ChatParticipantRead, ChatThreadShellRead, ChatTimelinePageRead, ChatTurnId } from "$lib/chat/contracts";
+  import type { ChatParticipantRead, ChatThreadShellRead, ChatTimelinePageRead, ChatTurnId, ProviderInstanceId, ProviderProbeResult } from "$lib/chat/contracts";
   import { activityFilePath, fileChangePresentation, fileReadActivityPresentation, fileSearchActivityPresentation, isFileReadActivity, isFileSearchActivity, isImageViewActivity, summarizeActivityKinds, transientActivitySummary, type ActivitySummaryCount } from "$lib/chat/timeline/activity-presentation";
   import { LOCAL_CHAT_PARTICIPANT_ID } from "$lib/chat/teammates/participant-display";
   import { chatModelParticipant, type ChatModelParticipant } from "$lib/chat/teammates/participant-identity";
@@ -32,6 +33,7 @@
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
   import { writeTextToClipboard } from "$lib/utils/clipboard";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import ChatMarkdown from "./ChatMarkdown.svelte";
   import ChatActivityDetail from "./ChatActivityDetail.svelte";
   import ChatChangedFilesSummary from "$lib/components/chat/review/ChatChangedFilesSummary.svelte";
@@ -731,9 +733,26 @@
   }
 
   async function retryTimeline(): Promise<void> {
-    operationError = null;
-    if (chat.selectedChannelId) await chat.selectChannel(chat.selectedChannelId);
-    else if (selectedThread) chat.selectThread(selectedThread.id);
+    try {
+      if (chat.selectedChannelId) await chat.selectChannel(chat.selectedChannelId);
+      else if (selectedThread) chat.selectThread(selectedThread.id);
+      operationError = null;
+    } catch (error: unknown) {
+      reportError(error);
+      throw error;
+    }
+  }
+
+  /** Probes the provider again and rejects while it still reports an unhealthy state. */
+  async function retryProvider(instanceId: ProviderInstanceId): Promise<void> {
+    let result: ProviderProbeResult;
+    try {
+      result = await chat.probeProvider(instanceId);
+    } catch (error: unknown) {
+      reportError(error);
+      throw error;
+    }
+    if (result.state !== "healthy") throw new Error(`Chat provider probe reported ${result.state}`);
   }
 </script>
 
@@ -863,12 +882,57 @@
 
 <div class="chat-execution-timeline relative min-h-0 flex-1" class:embedded>
   {#if !embedded}
-    {#if selectedThread?.archivedAt}<div class="chat-timeline-banner"><span>{t("chat.firstUse.archivedDescription")}</span><button type="button" onclick={() => void chat.restoreThread(selectedThread).catch(reportError)}><RotateCcw size={13} />{t("chat.restore")}</button></div>{/if}
-    {#if selectedWorkingFolder?.workingFolder.archivedAt}<div class="chat-timeline-banner text-status-tentative"><CircleAlert size={14} /><span>{t("chat.timeline.workingFolderArchived")}</span><button type="button" onclick={() => void chat.restoreWorkingFolder(selectedWorkingFolder.workingFolder.id).catch(reportError)}>{t("chat.restore")}</button></div>{:else if selectedWorkingFolder && selectedWorkingFolder.bindingStatus !== "available"}<div class="chat-timeline-banner text-status-tentative"><CircleAlert size={14} /><span>{t("chat.timeline.workspaceMissing")}</span>{#if selectedWorkingFolder.workingFolder.kind === "managed"}<button type="button" onclick={() => void chat.recreateManagedWorkingFolder(selectedWorkingFolder.workingFolder.id).catch(reportError)}>{t("chat.firstUse.recreateFolder")}</button>{:else}<button type="button" onclick={() => void chat.rebindWorkingFolder(selectedWorkingFolder.workingFolder.id, t("chat.firstUse.chooseWorkingFolder")).catch(reportError)}>{t("chat.timeline.rebind")}</button>{/if}</div>{/if}
-    {#if selectedProvider && (!selectedProvider.configuration.enabled || selectedProvider.lastProbe?.state !== "healthy")}<div class="chat-timeline-banner text-status-tentative"><CircleAlert size={14} /><span>{selectedProvider.lastProbe?.detail ?? t("chat.status.providerUnavailable")}</span><button type="button" onclick={() => void chat.probeProvider(selectedProvider.configuration.instanceId).catch(reportError)}>{t("chat.timeline.retry")}</button><button type="button" onclick={() => settings.open("chat", { chatSubsection: "providers" })}><Settings size={13} />{t("chat.timeline.openSettings")}</button></div>{/if}
-    {#if selectedThread?.state === "error"}<div class="chat-timeline-banner text-destructive"><CircleAlert size={14} /><span>{t("chat.timeline.threadError")}</span><button type="button" onclick={() => void chat.startNewChannelSession().catch(reportError)}><MessageSquare size={13} />{t("chat.timeline.startNewThread")}</button></div>{/if}
+    {#if selectedThread?.archivedAt}
+      <div class="chat-timeline-banner">
+        <Notice class="chat-timeline-banner-notice" role="status" icon={Archive} message={t("chat.firstUse.archivedDescription")} copy={false}>
+          {#snippet actions()}<button type="button" class="notice-action-text" onclick={() => void chat.restoreThread(selectedThread).catch(reportError)}>{t("chat.restore")}</button>{/snippet}
+        </Notice>
+      </div>
+    {/if}
+    {#if selectedWorkingFolder?.workingFolder.archivedAt}
+      <div class="chat-timeline-banner">
+        <Notice class="chat-timeline-banner-notice" role="status" tone="warning" icon={FolderArchive} message={t("chat.timeline.workingFolderArchived")} copy={false}>
+          {#snippet actions()}<button type="button" class="notice-action-text" onclick={() => void chat.restoreWorkingFolder(selectedWorkingFolder.workingFolder.id).catch(reportError)}>{t("chat.restore")}</button>{/snippet}
+        </Notice>
+      </div>
+    {:else if selectedWorkingFolder && selectedWorkingFolder.bindingStatus !== "available"}
+      <div class="chat-timeline-banner">
+        <Notice class="chat-timeline-banner-notice" role="status" tone="warning" icon={FolderX} message={t("chat.timeline.workspaceMissing")} copy={false}>
+          {#snippet actions()}
+            {#if selectedWorkingFolder.workingFolder.kind === "managed"}<button type="button" class="notice-action-text" onclick={() => void chat.recreateManagedWorkingFolder(selectedWorkingFolder.workingFolder.id).catch(reportError)}>{t("chat.firstUse.recreateFolder")}</button>{:else}<button type="button" class="notice-action-text" onclick={() => void chat.rebindWorkingFolder(selectedWorkingFolder.workingFolder.id, t("chat.firstUse.chooseWorkingFolder")).catch(reportError)}>{t("chat.timeline.rebind")}</button>{/if}
+          {/snippet}
+        </Notice>
+      </div>
+    {/if}
+    {#if selectedProvider && (!selectedProvider.configuration.enabled || selectedProvider.lastProbe?.state !== "healthy")}
+      <div class="chat-timeline-banner">
+        <Notice
+          class="chat-timeline-banner-notice"
+          role="status"
+          tone="warning"
+          icon={Unplug}
+          message={selectedProvider.lastProbe?.detail ?? t("chat.status.providerUnavailable")}
+          retryLabel={t("chat.timeline.retry")}
+          onRetry={() => retryProvider(selectedProvider.configuration.instanceId)}
+          copy={selectedProvider.lastProbe?.detail ?? false}
+        >
+          {#snippet actions()}<button type="button" class="notice-action-text" onclick={() => settings.open("chat", { chatSubsection: "providers" })}>{t("chat.timeline.openSettings")}</button>{/snippet}
+        </Notice>
+      </div>
+    {/if}
+    {#if selectedThread?.state === "error"}
+      <div class="chat-timeline-banner">
+        <Notice class="chat-timeline-banner-notice" message={t("chat.timeline.threadError")} copy={false}>
+          {#snippet actions()}<button type="button" class="notice-action-text" onclick={() => void chat.startNewChannelSession().catch(reportError)}>{t("chat.timeline.startNewThread")}</button>{/snippet}
+        </Notice>
+      </div>
+    {/if}
   {/if}
-  {#if operationError || !timelinePage && chat.timelineError}<div role="alert" class="chat-timeline-banner text-destructive"><span>{operationError ?? chat.timelineError}</span>{#if selectedThread || chat.selectedChannelId}<button type="button" onclick={() => void retryTimeline().catch(reportError)}>{t("chat.timeline.retry")}</button>{/if}</div>{/if}
+  {#if operationError || !timelinePage && chat.timelineError}
+    <div class="chat-timeline-banner">
+      <Notice class="chat-timeline-banner-notice" message={operationError ?? chat.timelineError ?? ""} retryLabel={t("chat.timeline.retry")} onRetry={selectedThread || chat.selectedChannelId ? retryTimeline : undefined} />
+    </div>
+  {/if}
   <div bind:this={scroller} class="chat-timeline-scroller h-full overflow-y-auto" role="feed" aria-busy={timelineLoading || undefined} aria-label={t("chat.title")} onscroll={handleScroll} onpointerleave={clearActionToolbar}>
     <div
       bind:this={timelineContent}
@@ -1009,8 +1073,8 @@
   .chat-participant-header { display: flex; min-height: 1.25rem; min-width: 0; align-items: baseline; gap: 0.45rem; margin-bottom: 0.12rem; line-height: calc(1.25rem * var(--type-scale)); }
   .chat-participant-header strong { min-width: 0; overflow: hidden; color: var(--foreground); font-size: var(--chat-conversation-font-size, calc(0.875rem * var(--type-scale))); font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
   .chat-participant-header span { flex: 0 0 auto; color: var(--muted-foreground); font-size: calc(0.6875rem * var(--type-scale)); font-weight: 400; }
-  .chat-timeline-banner { display: flex; min-height: 2.25rem; align-items: center; justify-content: center; gap: 0.5rem; border-bottom: 1px solid var(--border); background: var(--background); padding: 0.4rem 0.75rem; font-size: calc(0.733333rem * var(--type-scale)); }
-  .chat-timeline-banner button { display: inline-flex; align-items: center; gap: 0.25rem; border-radius: 0.25rem; border: 1px solid var(--border); padding: 0.2rem 0.45rem; }
+  .chat-timeline-banner { display: flex; min-height: 2.25rem; align-items: center; border-bottom: 1px solid var(--border); background: var(--background); padding-block: 0.4rem; font-size: calc(0.733333rem * var(--type-scale)); }
+  .chat-timeline-banner > :global(.chat-timeline-banner-notice) { width: min(calc(100% - var(--chat-conversation-gutter,1rem) - var(--chat-conversation-gutter,1rem)),var(--chat-conversation-max-width,60rem)); margin-inline: auto; }
   .chat-user-message, .chat-assistant-message { width:100%; min-width:0; color:var(--foreground); font-size:var(--chat-conversation-font-size, calc(0.875rem * var(--type-scale))); line-height:var(--chat-conversation-line-height, calc(1.3125rem * var(--type-scale))); }
   .chat-message-secondary-actions { display:flex; flex-wrap:wrap; align-items:center; gap:0.75rem; margin-top:0.4rem; font-size: calc(0.7rem * var(--type-scale)); }
   .chat-user-context { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.55rem; }

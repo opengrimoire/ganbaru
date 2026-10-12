@@ -1,5 +1,6 @@
 <script lang="ts">
   import NotesLoadingSkeleton from "$lib/components/notes/NotesLoadingSkeleton.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import type { NotesMentionCatalog } from "./mention-data-controller.svelte";
   import { tick } from "svelte";
   import {
@@ -437,20 +438,21 @@
     return family === "eager" || family === "column-list" || family === "tab" ? null : family;
   });
 
-  function requestAdvancedBlock(retry = false): void {
+  /** Loads the advanced block renderer on first use. A retry rejects when the load fails again. */
+  function requestAdvancedBlock(retry = false): Promise<void> {
     const family = advancedBlockFamily;
-    if (!family || (!retry && advancedBlockLoadState?.key === family)) return;
+    if (!family || (!retry && advancedBlockLoadState?.key === family)) return Promise.resolve();
     const component = readNotesAdvancedBlock(family);
     if (component) {
       advancedBlockLoadState = { key: family, status: "ready", requestId: (advancedBlockLoadState?.requestId ?? 0) + 1, component };
-      return;
+      return Promise.resolve();
     }
     const loadingState = beginLazyComponentLoad(advancedBlockLoadState, family);
     advancedBlockLoadState = loadingState;
     const request = retry
       ? retryNotesAdvancedBlock(family)
       : loadNotesAdvancedBlock(family);
-    void request.then((component) => {
+    return request.then((component) => {
       if (!advancedBlockLoadState) return;
       advancedBlockLoadState = resolveLazyComponentLoad(
         advancedBlockLoadState,
@@ -467,17 +469,19 @@
         error,
       );
       console.error(`load Notes ${family} block failed`, error);
+      if (retry) throw error;
     });
   }
 
-  function requestSlashMenu(retry = false): void {
-    if (!retry && slashMenuLoadState?.key === "slash-menu") return;
+  /** Loads the slash menu on first use. A retry rejects when the load fails again. */
+  function requestSlashMenu(retry = false): Promise<void> {
+    if (!retry && slashMenuLoadState?.key === "slash-menu") return Promise.resolve();
     const loadingState = beginLazyComponentLoad(slashMenuLoadState, "slash-menu");
     slashMenuLoadState = loadingState;
     const request = retry
       ? retryNotesTextControl("slash-menu")
       : loadNotesTextControl("slash-menu");
-    void request.then((component) => {
+    return request.then((component) => {
       if (!slashMenuLoadState) return;
       slashMenuLoadState = resolveLazyComponentLoad(
         slashMenuLoadState,
@@ -494,13 +498,14 @@
         error,
       );
       console.error("load Notes slash menu failed", error);
+      if (retry) throw error;
     });
   }
 
   $effect(() => {
     advancedBlockFamily;
-    requestAdvancedBlock();
-    if (slashOpen) requestSlashMenu();
+    void requestAdvancedBlock();
+    if (slashOpen) void requestSlashMenu();
   });
 
   $effect(() => {
@@ -1063,10 +1068,7 @@
       {/if}
 
       {#if advancedBlockFamily && advancedBlockLoadState?.status === "failed" && advancedBlockLoadState.key === advancedBlockFamily}
-        <div class="my-1 rounded-md border border-destructive/40 p-2 text-[0.8rem] text-destructive" role="alert">
-          <p>{t("common.viewLoadFailed", block.type)}</p>
-          <button class="mt-2 min-h-8 rounded-md border border-border px-2 text-foreground hover:bg-accent" type="button" onclick={() => requestAdvancedBlock(true)}>{t("common.retry")}</button>
-        </div>
+        <Notice class="my-1 text-[0.8rem]" message={t("common.viewLoadFailed", block.type)} copy={false} onRetry={() => requestAdvancedBlock(true)} />
       {:else if advancedBlockFamily && advancedBlockFamily !== "child-database" && advancedBlockLoadState?.status !== "ready"}
         <NotesLoadingSkeleton kind={advancedBlockFamily === "table" ? "table" : "block"} />
       {/if}
@@ -1081,7 +1083,9 @@
             onSelect={selectSlashCommand}
           />
         {:else if slashMenuLoadState?.status === "failed"}
-          <button class="min-h-8 rounded-md border border-border px-2 text-[0.8rem] text-foreground hover:bg-accent" type="button" onclick={() => requestSlashMenu(true)}>{t("common.retry")}</button>
+          <div class="absolute top-full left-[calc(var(--notes-depth)*1.25rem+1.75rem)] z-50 mt-1 surface-floating surface-floating-body w-floating-lg">
+            <Notice message={t("common.viewLoadFailed", t("notes.slashMenu"))} copy={false} onRetry={() => requestSlashMenu(true)} />
+          </div>
         {/if}
       {/if}
     </div>

@@ -59,6 +59,7 @@
   import { subscribeChatWorkspaceChanges } from "$lib/chat/workspace/observer-client";
   import { writeTextToClipboard } from "$lib/utils/clipboard";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import Select from "$lib/components/ui/Select.svelte";
   import ChatChangedFileTree from "./ChatChangedFileTree.svelte";
   import ChatFileIcon from "$lib/components/chat/workspace/ChatFileIcon.svelte";
@@ -238,6 +239,16 @@
     const first = pages[0];
     return first ? { ...first, hunks: pages.flatMap((page) => page.hunks) } : null;
   });
+  /** True when the diff area has nothing else to show, so the load failure takes its place. */
+  const reviewContentFailed = $derived(
+    Boolean(error)
+      && renderItems.length === 0
+      && !selectedReviewFile?.flags.binary
+      && selectedPatch?.state !== "oversized_hunk"
+      && selectedPatch?.state !== "unavailable"
+      && !(selectedReviewFile && loadingPatchIds.includes(selectedReviewFile.fileId))
+      && !loadingInitial,
+  );
   const selectionHunkIds = $derived.by(() => {
     const currentSelection = selection as ReviewLineSelection | null;
     return selectedReviewHunkIds(
@@ -393,6 +404,11 @@
   function openReview(preserveVisible: boolean): Promise<void> {
     error = null;
     return reviewSession.open(preserveVisible);
+  }
+
+  async function retryReview(): Promise<void> {
+    await openReview(true);
+    if (error) throw new Error(error);
   }
 
   async function loadComments(persistedThreadId: string, key: string, request: number): Promise<void> {
@@ -718,7 +734,7 @@
     {/if}
   </div>
 
-  {#if error}<p role="alert" class="review-error">{error}<button type="button" onclick={() => void openReview(true)}>{t("common.retry")}</button></p>{/if}
+  {#if error && !reviewContentFailed}<Notice class="review-error" message={error} onRetry={retryReview} />{/if}
   {#if snapshot?.freshness === "outdated" || refreshing}
     <p role="status" class="freshness"><RefreshCw size={12} class={refreshing ? "spinning" : undefined} />{refreshing ? t("chat.review.updating") : t("chat.review.outdated")}</p>
   {/if}
@@ -807,7 +823,7 @@
         {:else if loadingInitial}
           <div class="review-notice"><RefreshCw class="spinning" size={18} /><p>{t("common.loading")}</p></div>
         {:else if error}
-          <div class="review-notice"><AlertTriangle size={22} /><p>{t("chat.review.reviewUnavailable")}</p></div>
+          <div class="review-failure"><Notice layout="fill" title={t("chat.review.reviewUnavailable")} message={error} onRetry={retryReview} /></div>
         {:else}
           <div class="review-notice"><FileDiff size={22} /><p>{t("chat.inspector.noChanges")}</p></div>
         {/if}
@@ -869,9 +885,9 @@
   .search-toolbar label { display: flex; min-width: 5rem; max-width: 18rem; flex: 1; align-items: center; gap: 0.3rem; border: 1px solid var(--border); border-radius: 0.35rem; padding: 0.22rem 0.35rem; color: var(--muted-foreground); }
   .search-toolbar input { min-width: 0; flex: 1; background: transparent; color: var(--foreground); font-size: calc(0.666667rem * var(--type-scale)); outline: none; }
   .search-toolbar > span { color: var(--muted-foreground); font-family: monospace; font-size: calc(0.633333rem * var(--type-scale)); }
-  .review-error, .freshness { display: flex; flex: 0 0 auto; align-items: center; gap: 0.4rem; border-bottom: 1px solid color-mix(in srgb, var(--destructive) 30%, var(--border)); padding: 0.4rem 0.55rem; color: var(--destructive); font-size: calc(0.7rem * var(--type-scale)); }
-  .review-error button { margin-left: auto; border-radius: 0.3rem; padding: 0.2rem 0.4rem; }
-  .freshness { border-color: color-mix(in srgb, var(--status-tentative) 30%, var(--border)); color: var(--status-tentative); }
+  .freshness { display: flex; flex: 0 0 auto; align-items: center; gap: 0.4rem; border-bottom: 1px solid color-mix(in srgb, var(--status-tentative) 30%, var(--border)); padding: 0.4rem 0.55rem; color: var(--status-tentative); font-size: calc(0.7rem * var(--type-scale)); }
+  .review-panel > :global(.review-error) { flex: 0 0 auto; border-bottom: 1px solid var(--border); padding: 0.4rem 0.55rem; font-size: calc(0.7rem * var(--type-scale)); }
+  .review-failure { display: grid; min-height: 0; flex: 1; font-size: calc(0.733333rem * var(--type-scale)); }
   .review-workspace { display: grid; min-width: 0; min-height: 0; flex: 1; grid-template-columns: minmax(0, 1fr); overflow: hidden; }
   .review-workspace.comments-open { grid-template-columns: minmax(0, 1fr) minmax(13rem, 22rem); }
   .review-main { display: grid; min-width: 0; min-height: 0; grid-template-columns: 13.5rem minmax(0, 1fr); overflow: hidden; }

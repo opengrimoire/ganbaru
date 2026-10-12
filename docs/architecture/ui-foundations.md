@@ -9,7 +9,7 @@ Panels were restyled one at a time, so radii, shadows, text sizes, input styles,
 ## Where it lives
 
 - `apps/client/src/ui-foundations.css` defines the tokens and Tailwind utilities below.
-- `apps/client/src/lib/components/ui/` holds the shared components: `Checkbox`, `Switch`, `SwitchField`, `Select`, `SearchField`, `ConfirmDialog`, `ActionToast`, and the tooltip host.
+- `apps/client/src/lib/components/ui/` holds the shared components: `Checkbox`, `Switch`, `SwitchField`, `Select`, `SearchField`, `ConfirmDialog`, `ActionToast`, `Notice`, and the tooltip host.
 - `apps/client/src/lib/components/ui/floating-width.ts` mirrors the width utilities for positioning code.
 - `apps/client/src/lib/utils/scroll-edge-fade.ts` and `apps/client/src/lib/utils/menu-aim.ts` own scroll fades and hover-submenu behavior.
 
@@ -46,6 +46,13 @@ Panels were restyled one at a time, so radii, shadows, text sizes, input styles,
 ## Unavailable controls
 
 - `control-unavailable` marks a control whose behavior is not implemented yet: it keeps its final appearance, shows the not-allowed cursor, carries `aria-disabled="true"`, and has no activation handler. It never dims, badges, or explains; [Contacts and invitations](../features/collaboration/README.md) records why. Do not use `disabled` or muted colors for this purpose, so unavailable controls remain distinguishable from controls that are disabled by state. `menu-item`, `field`, and `Select` (through its `unavailable` prop) keep their normal colors and hover for such controls.
+
+## Notices
+
+- Failures and limiting conditions use `ui/Notice`: a muted icon and plain foreground text, with retry, copy, and any extra actions as quiet trailing controls. Notices never use destructive colors, tinted boxes, or primary buttons, because a failure the user can recover from should not be louder than the content it replaces. Destructive color stays reserved for actions that remove data.
+- The notice sits where the failed content would have been: `inline` inside the row, panel, or banner that owns it, `fill` centered in a failed view or pane, and `floating` as a small centered surface only when a dialog or panel with no host surface failed to open. A floating notice always offers a close button so the user can back out.
+- Retry turns while the retried work is pending and shows a check when it succeeds; copy shows a check when the message reaches the clipboard. Copy is hidden when the message is fixed text with no detail worth sharing.
+- `tone="warning"` tints the icon for conditions that limit a feature without being a failure, such as an unavailable provider.
 
 ## Widths
 

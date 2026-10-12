@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, untrack } from "svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getCalendar } from "$lib/stores/calendar.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
@@ -526,17 +527,18 @@
 >
   <div class="flex min-h-full flex-col gap-5 p-3">
     {#if viewport.resizeError}
-      <p role="alert" class="text-sm text-destructive">{viewport.resizeError}</p>
+      <Notice class="text-sm" message={viewport.resizeError} />
     {/if}
     {#if taskQuery?.loadError}
-      <div class="flex flex-wrap items-center gap-2 text-xs">
-        <p role="alert" class="text-destructive">{t("projects.tasks.loadFailed", taskQuery.loadError)}</p>
-        <button class="min-h-8 rounded px-2 hover:bg-accent" disabled={taskQuery.loading} onclick={() => taskQuery?.retryCurrent(selectedTaskIds, selectedTaskId)}>{t("common.retry")}</button>
-      </div>
+      <Notice
+        class="text-sm"
+        message={t("projects.tasks.loadFailed", taskQuery.loadError)}
+        onRetry={() => taskQuery?.retryCurrent(selectedTaskIds, selectedTaskId)}
+      />
     {/if}
-    {#if taskQuery?.presentationError}<p role="alert" class="text-xs text-destructive">{taskQuery.presentationError}</p>{/if}
-    {#if taskQuery?.propertyError}<p role="alert" class="text-xs text-destructive">{taskQuery.propertyError}</p>{/if}
-    {#if taskQuery?.listColumnsError}<p role="alert" class="text-xs text-destructive">{taskQuery.listColumnsError}</p>{/if}
+    {#if taskQuery?.presentationError}<Notice class="text-xs" message={taskQuery.presentationError} />{/if}
+    {#if taskQuery?.propertyError}<Notice class="text-xs" message={taskQuery.propertyError} />{/if}
+    {#if taskQuery?.listColumnsError}<Notice class="text-xs" message={taskQuery.listColumnsError} />{/if}
     {#if taskGroupBy === "section"}
       {#each sections as section (section.id)}
         {@const sectionTasks = drag.tasksForSection(section)}

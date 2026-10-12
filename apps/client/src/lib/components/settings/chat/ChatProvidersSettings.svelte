@@ -25,6 +25,7 @@
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getChat } from "$lib/stores/chat.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import Switch from "$lib/components/ui/Switch.svelte";
   import type { ChatProviderSetupTarget } from "$lib/settings/types";
 
@@ -545,7 +546,7 @@
                   {refreshSummary(refreshResult)}
                 </p>
               {/if}
-              {#if operationError}<p role="alert" class="operation-error">{operationError}</p>{/if}
+              {#if operationError}<Notice class="operation-error" message={operationError} />{/if}
 
               {#if selectedProvider}
                 {@const instanceId = selectedProvider.configuration.instanceId}
@@ -750,11 +751,12 @@
   .editor-account { display:inline-grid; width:1rem; height:1rem; flex:0 0 auto; place-items:center; border-radius:0.2rem; color:var(--muted-foreground); }
   .editor-account:hover,.editor-account:focus-visible { color:var(--foreground); }
   .header-actions { display:flex; flex-shrink:0; align-items:center; gap:0.3rem; }
-  .refresh-summary,.operation-error { border-left:2px solid var(--action-confirm); padding:0.15rem 0.25rem 0.15rem 0.65rem; font-size:calc(0.68rem * var(--type-scale)); }
+  .refresh-summary { border-left:2px solid var(--action-confirm); padding:0.15rem 0.25rem 0.15rem 0.65rem; font-size:calc(0.68rem * var(--type-scale)); }
+  .detail-scroll > :global(.operation-error) { padding:0.15rem 0.25rem 0.15rem 0.65rem; font-size:calc(0.68rem * var(--type-scale)); }
   .refresh-summary { color:var(--muted-foreground); }
   .refresh-summary.attention,.catalog-warning,.provider-notice { color:var(--status-tentative); }
-  .refresh-summary.attention,.operation-error { border-left-color:var(--destructive); }
-  .operation-error,.custom-model-editor p { color:var(--destructive); }
+  .refresh-summary.attention { border-left-color:var(--destructive); }
+  .custom-model-editor p { color:var(--destructive); }
   .editor-content { display:grid; align-content:start; gap:1rem; }
   .editor-section { display:grid; min-width:0; gap:0.65rem; }
   .catalog-section { gap:0; }

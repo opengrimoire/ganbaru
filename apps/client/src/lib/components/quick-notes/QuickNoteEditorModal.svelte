@@ -23,6 +23,7 @@
     notesTextSelectionFromEditableRoot,
     restoreNotesEditableSelection,
   } from "$lib/notes/editor/selection";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getQuickNoteColor } from "$lib/quick-notes/colors";
   import { registerQuickNotesFlusher } from "$lib/quick-notes/persistence";
@@ -741,15 +742,17 @@
         />
       {/if}
       {#if status === "conflict"}
-        <div class="mb-2 flex flex-wrap items-center gap-2 rounded-md bg-warning/15 px-2.5 py-2 text-xs">
-          <span>{t("quickNotes.editor.conflict")}</span>
-          <button class={mobileLayout ? "min-h-12 px-2 font-medium underline" : "font-medium underline"} type="button" onclick={() => void reloadConflict()}>{t("quickNotes.editor.reload")}</button>
-          <button class={mobileLayout ? "min-h-12 px-2 font-medium underline" : "font-medium underline"} type="button" onclick={() => void saveAsCopy()}>{t("quickNotes.editor.saveCopy")}</button>
+        <div class="mb-2 text-xs" data-quick-note-notice>
+          <Notice message={t("quickNotes.editor.conflict")} tone="warning" copy={false}>
+            {#snippet actions()}
+              <button class="notice-action-text" type="button" onclick={() => void reloadConflict()}>{t("quickNotes.editor.reload")}</button>
+              <button class="notice-action-text" type="button" onclick={() => void saveAsCopy()}>{t("quickNotes.editor.saveCopy")}</button>
+            {/snippet}
+          </Notice>
         </div>
       {:else if status === "failed"}
-        <div class="mb-2 flex items-center gap-2 rounded-md bg-destructive/10 px-2.5 py-2 text-xs text-destructive">
-          <span>{t("quickNotes.editor.failed")}</span>
-          <button class={mobileLayout ? "min-h-12 px-2 font-medium underline" : "font-medium underline"} type="button" onclick={() => void flush()}>{t("quickNotes.editor.retry")}</button>
+        <div class="mb-2 text-xs" data-quick-note-notice>
+          <Notice message={t("quickNotes.editor.failed")} retryLabel={t("quickNotes.editor.retry")} copy={false} onRetry={flush} />
         </div>
       {/if}
     </div>
@@ -794,6 +797,13 @@
 
   .quick-note-content {
     caret-color: var(--quick-editor-fg);
+  }
+
+  /* Notices sit on the note color, so they follow its contrasting text instead of the app foreground. */
+  .quick-note-editor :global([data-quick-note-notice]) {
+    --foreground: var(--quick-editor-fg);
+    --muted-foreground: color-mix(in srgb, var(--quick-editor-fg) 64%, transparent);
+    --accent: color-mix(in srgb, var(--quick-editor-fg) 10%, transparent);
   }
 
   .quick-note-content :global([data-notes-editor-sentinel="empty-line"]) {

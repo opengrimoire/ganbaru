@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick, untrack } from "svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalTimezone } from "$lib/calendar/timezone-utils";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getNotesEditor } from "$lib/components/notes/editor-context";
@@ -99,12 +100,20 @@
   let pastePromptError = $state<string | null>(null);
   let pastePromptAnchor = $state<HTMLElement | null>(null);
   const databasePastePrompt = $derived(notes.databasePaste.prompt?.pageId === pageId ? notes.databasePaste.prompt : null);
+  /** Loads the database paste prompt on first use. A retry rejects when the load fails again. */
+  function loadPastePrompt(retry = false): Promise<void> {
+    pastePromptLoading = true;
+    return import("$lib/components/notes/database/NotesDatabasePastePrompt.svelte").then((module) => {
+      DatabasePastePrompt = module.default;
+      pastePromptError = null;
+    }).catch((caught: unknown) => {
+      pastePromptError = caught instanceof Error ? caught.message : String(caught);
+      if (retry) throw caught;
+    }).finally(() => { pastePromptLoading = false; });
+  }
   $effect(() => {
     if (!databasePastePrompt || DatabasePastePrompt || pastePromptLoading || pastePromptError) return;
-    pastePromptLoading = true;
-    void import("$lib/components/notes/database/NotesDatabasePastePrompt.svelte").then((module) => { DatabasePastePrompt = module.default; })
-      .catch((caught: unknown) => { pastePromptError = caught instanceof Error ? caught.message : String(caught); })
-      .finally(() => { pastePromptLoading = false; });
+    void loadPastePrompt();
   });
   const blockHandle = createNotesBlockHandleController();
   const blockSelectionController = createNotesBlockSelectionController({
@@ -739,7 +748,8 @@
       ]} />
   {/if}
   {#if documentSelection.error || selectionActionError || selectionMenuError}
-    <p role="status" class="text-sm text-destructive">{t("notes.selectionActionFailed")} {documentSelection.error ?? selectionActionError ?? selectionMenuError}</p>
+    {@const selectionError = documentSelection.error ?? selectionActionError ?? selectionMenuError ?? ""}
+    <Notice class="text-sm" role="status" message={`${t("notes.selectionActionFailed")} ${selectionError}`} copy={selectionError} />
   {/if}
   {#if visibleRange.topHeight > 0}
     <div aria-hidden="true" style:height={`${visibleRange.topHeight}px`}></div>
@@ -789,8 +799,7 @@
     <DatabasePastePrompt controller={notes.databasePaste} anchor={pastePromptAnchor} />
   {/key}
 {:else if databasePastePrompt && pastePromptError}
-  <p role="alert" class="text-sm text-destructive">{t("notes.databasePasteFailed", pastePromptError)}</p>
-  <button type="button" class="text-sm hover:underline" onclick={() => { pastePromptError = null; }}>{t("common.retry")}</button>
+  <Notice layout="floating" class="text-panel" message={t("notes.databasePasteFailed", pastePromptError)} copy={pastePromptError} onRetry={() => loadPastePrompt(true)} onDismiss={() => notes.databasePaste.dismiss()} />
 {/if}
 
 <style>

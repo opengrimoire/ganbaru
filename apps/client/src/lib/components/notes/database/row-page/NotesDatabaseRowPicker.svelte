@@ -7,6 +7,7 @@
   import { floatPanel } from "$lib/components/contacts/float-panel";
   import NotesPageIcon from "$lib/components/notes/pages/NotesPageIcon.svelte";
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { notesDatabaseRowSearch } from "$lib/notes/database/row-page-properties";
   import { notesDatabaseRowTitle } from "$lib/notes/database/table";
@@ -112,6 +113,12 @@
     }
   }
 
+  /** Loads the rows again after a failure, rejecting while they are still unavailable. */
+  async function retryLoad(): Promise<void> {
+    await load();
+    if (loadError) throw new Error(loadError);
+  }
+
   async function choose(option: PickerOption | undefined): Promise<void> {
     if (!option || pending) return;
     pending = true;
@@ -189,10 +196,7 @@
     {#if loading}
       <p class="px-2 py-1.5 text-panel-detail text-muted-foreground">{t("notes.databaseRelationLoading")}</p>
     {:else if loadError}
-      <div class="flex min-w-0 flex-wrap items-center gap-2 px-2 py-1.5 text-panel-detail">
-        <p class="min-w-0 text-destructive" role="alert">{t("notes.databaseRowPickerLoadFailed", loadError)}</p>
-        <button type="button" class="min-h-8 rounded-floating-item border border-border px-2 hover:bg-accent" onclick={() => { void load(); }}>{t("common.retry")}</button>
-      </div>
+      <Notice class="px-2 py-1.5 text-panel-detail" message={t("notes.databaseRowPickerLoadFailed", loadError)} copy={loadError} onRetry={retryLoad} />
     {:else if matches.length === 0}
       <p class="px-2 py-1.5 text-panel-detail text-muted-foreground">{t("notes.databaseRowPickerEmpty")}</p>
     {/if}
@@ -218,7 +222,7 @@
       </div>
     {/each}
   </div>
-  {#if error}<p class="border-t border-border px-3 py-1.5 text-panel-detail text-destructive" role="alert">{error}</p>{/if}
+  {#if error}<Notice class="border-t border-border px-3 py-1.5 text-panel-detail" message={error} />{/if}
 </div>
 
 <style>

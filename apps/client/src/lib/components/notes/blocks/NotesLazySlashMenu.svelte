@@ -12,6 +12,7 @@
     retryNotesTextControl,
     type LoadedNotesTextControl,
   } from "$lib/components/notes/editor-component-registry";
+  import Notice from "$lib/components/ui/Notice.svelte";
 
   let {
     onSelect,
@@ -22,14 +23,15 @@
 
   let loadState = $state<LazyComponentLoadState<"slash-menu", LoadedNotesTextControl> | null>(null);
 
-  function request(retry = false): void {
-    if (!retry && loadState) return;
+  /** Loads the slash menu on first use. A retry rejects when the load fails again. */
+  function request(retry = false): Promise<void> {
+    if (!retry && loadState) return Promise.resolve();
     const loadingState = beginLazyComponentLoad(loadState, "slash-menu");
     loadState = loadingState;
     const result = retry
       ? retryNotesTextControl("slash-menu")
       : loadNotesTextControl("slash-menu");
-    void result.then((component) => {
+    return result.then((component) => {
       if (!loadState) return;
       loadState = resolveLazyComponentLoad(
         loadState,
@@ -46,11 +48,12 @@
         error,
       );
       console.error("load Notes slash menu failed", error);
+      if (retry) throw error;
     });
   }
 
   $effect(() => {
-    request();
+    void request();
   });
 </script>
 
@@ -58,7 +61,9 @@
   {@const NotesSlashMenu = loadState.component.component}
   <NotesSlashMenu canSetColor={false} {onSelect} />
 {:else if loadState?.status === "failed"}
-  <button class="min-h-8 rounded-md border border-border px-2 text-[0.8rem] hover:bg-accent" type="button" onclick={() => request(true)}>{t("common.retry")}</button>
+  <div class="absolute top-full left-[calc(var(--notes-depth)*1.25rem+1.75rem)] z-50 mt-1 surface-floating surface-floating-body w-floating-lg">
+    <Notice message={t("common.viewLoadFailed", t("notes.slashMenu"))} copy={false} onRetry={() => request(true)} />
+  </div>
 {:else}
   <div class="min-h-8" aria-busy="true"></div>
 {/if}

@@ -11,6 +11,7 @@
   import MemberRow from "$lib/components/contacts/MemberRow.svelte";
   import PersonAvatar from "$lib/components/contacts/PersonAvatar.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { formatRelativeDays } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { formatContactTrustDetail, contactsMutationErrorKey } from "$lib/contacts/presentation";
@@ -129,9 +130,11 @@
     <h2 class="text-[0.866667rem] font-semibold text-foreground">{t("contacts.list.heading")}</h2>
     <ContactsHeadingAction label={t("contacts.list.add")} expanded={addContactOpen} onclick={() => { addContactOpen = true; }} />
   </div>
-  {#if notice || errorMessage}
+  {#if errorMessage}
+    <Notice class="px-1 text-[0.8rem]" message={errorMessage} onDismiss={() => { notice = null; contacts.clearError(); }} />
+  {:else if notice}
     <div class="flex items-start gap-2 px-1 text-[0.8rem]" aria-live="polite">
-      <span class={errorMessage ? "flex-1 text-destructive" : "flex-1 text-muted-foreground"}>{errorMessage ?? notice}</span>
+      <span class="flex-1 text-muted-foreground">{notice}</span>
       <button type="button" class="contacts-row-action" onclick={() => { notice = null; contacts.clearError(); }}>{t("contacts.list.dismiss")}</button>
     </div>
   {/if}

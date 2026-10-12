@@ -6,6 +6,7 @@
   import LinkIcon from "@lucide/svelte/icons/link";
   import Sigma from "@lucide/svelte/icons/sigma";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { bookmarkCaptionPlainText, canOpenBookmarkUrl } from "$lib/notes/block-types/bookmark";
   import { blockPlainText } from "$lib/notes/blocks/factory";
   import {
@@ -209,9 +210,7 @@
         onkeydown={(event) => handleInputKeydown(event, text || event.currentTarget.value)}
       />
       {#if bookmarkOpenError}
-        <p class="text-[0.733333rem] text-destructive">
-          {t("notes.openBookmarkFailed", bookmarkOpenError)}
-        </p>
+        <Notice class="text-[0.733333rem]" message={t("notes.openBookmarkFailed", bookmarkOpenError)} copy={bookmarkOpenError} />
       {/if}
     </div>
     <button
@@ -265,9 +264,7 @@
         {/if}
       </output>
       {#if linkPreviewOpenError}
-        <p class="text-[0.733333rem] text-destructive">
-          {t("notes.openLinkPreviewFailed", linkPreviewOpenError)}
-        </p>
+        <Notice class="text-[0.733333rem]" message={t("notes.openLinkPreviewFailed", linkPreviewOpenError)} copy={linkPreviewOpenError} />
       {/if}
     </div>
     <button
@@ -314,9 +311,7 @@
         {embedTitle || t("notes.blockType.embed")}
       </output>
       {#if embedOpenError}
-        <p class="text-[0.733333rem] text-destructive">
-          {t("notes.openEmbedFailed", embedOpenError)}
-        </p>
+        <Notice class="text-[0.733333rem]" message={t("notes.openEmbedFailed", embedOpenError)} copy={embedOpenError} />
       {/if}
     </div>
     <button

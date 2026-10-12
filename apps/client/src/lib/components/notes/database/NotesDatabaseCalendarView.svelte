@@ -1,5 +1,6 @@
 <script lang="ts">
   import NotesLoadingSkeleton from "$lib/components/notes/NotesLoadingSkeleton.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { untrack, type Snippet } from "svelte";
   import { databaseResource, notesDatabaseSession, rememberDatabaseScroll } from "$lib/notes/database/session.svelte";
   import NotesDatabasePropertyValue from "./NotesDatabasePropertyValue.svelte";
@@ -168,6 +169,12 @@
     } finally {
       if (currentRequest === requestId) loading = false;
     }
+  }
+
+  /** Reloads a view that failed to load, rejecting while it is still unavailable. */
+  async function retryCalendar(): Promise<void> {
+    await loadCalendar();
+    if (error) throw new Error(error);
   }
 
   async function loadMoreCalendar(): Promise<void> {
@@ -401,7 +408,7 @@
 <section class="space-y-3 pt-2" aria-label={t("notes.databaseCalendarTitle")}>
 
   <NotesDatabaseQueryBar properties={columns} {filters} {sorts} pending={mutating || editingLocked} onFiltersChange={saveFilters} onSortsChange={saveSorts} />
-  {#if error}<p class="text-[0.8rem] text-destructive" role="alert">{error}</p>{/if}
+  {#if error && calendar}<Notice class="text-[0.8rem]" message={error} />{/if}
   {#if settingsOpen}
     <CollectionSettings label={t("notes.databaseViewSettings")} anchor={settingsAnchor} preferredWidth={COLLECTION_VIEW_SETTINGS_PANEL_WIDTH} showHeader={false} onClose={onCloseSettings}>
       {@render settingsHeader?.()}
@@ -444,7 +451,9 @@
     </button>
   </div>
 
-  {#if !calendar && !error}<NotesLoadingSkeleton kind="calendar" />{/if}
+  {#if !calendar && error}
+    <div class="min-h-32 text-[0.8rem]"><Notice layout="fill" message={t("notes.databaseCalendarFailed", error)} copy={error} onRetry={retryCalendar} /></div>
+  {:else if !calendar}<NotesLoadingSkeleton kind="calendar" />{/if}
   {#if calendar}
     {#if dateColumns.length === 0}
       <div class="rounded-md border border-border p-3 text-[0.866667rem] text-muted-foreground">

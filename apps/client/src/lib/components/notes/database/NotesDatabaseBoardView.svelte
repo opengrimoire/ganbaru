@@ -1,5 +1,6 @@
 <script lang="ts">
   import NotesLoadingSkeleton from "$lib/components/notes/NotesLoadingSkeleton.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { untrack, type Snippet } from "svelte";
   import { databaseResource, notesDatabaseSession, rememberDatabaseScroll } from "$lib/notes/database/session.svelte";
   import NotesDatabaseOptionBadge from "./NotesDatabaseOptionBadge.svelte";
@@ -170,6 +171,12 @@
     } finally {
       if (currentRequest === requestId) loading = false;
     }
+  }
+
+  /** Reloads a view that failed to load, rejecting while it is still unavailable. */
+  async function retryBoard(): Promise<void> {
+    await loadBoard();
+    if (error) throw new Error(error);
   }
 
   async function loadMoreBoard(): Promise<void> {
@@ -417,7 +424,7 @@
 <section class="space-y-3 pt-2" aria-label={t("notes.databaseBoardTitle")}>
 
   <NotesDatabaseQueryBar properties={columns} {filters} {sorts} pending={mutating || editingLocked} onFiltersChange={saveFilters} onSortsChange={saveSorts} />
-  {#if error}<p class="text-[0.8rem] text-destructive" role="alert">{error}</p>{/if}
+  {#if error && board}<Notice class="text-[0.8rem]" message={error} />{/if}
   {#if settingsOpen}
     <CollectionSettings label={t("notes.databaseViewSettings")} anchor={settingsAnchor} preferredWidth={COLLECTION_VIEW_SETTINGS_PANEL_WIDTH} showHeader={false} onClose={onCloseSettings}>
       {@render settingsHeader?.()}
@@ -428,7 +435,9 @@
     </CollectionSettings>
   {/if}
 
-  {#if !board && !error}<NotesLoadingSkeleton kind="board" />{/if}
+  {#if !board && error}
+    <div class="min-h-32 text-[0.8rem]"><Notice layout="fill" message={t("notes.databaseBoardFailed", error)} copy={error} onRetry={retryBoard} /></div>
+  {:else if !board}<NotesLoadingSkeleton kind="board" />{/if}
   {#if board}
     <div use:rememberDatabaseScroll={databaseResource("board", dataSourceId, viewScope()).key} class="grid gap-2 @container">
       <CollectionBoard groups={visibleGroups} items={(group) => group.rows} label={(group) => group.name}

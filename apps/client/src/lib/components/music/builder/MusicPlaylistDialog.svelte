@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import IconPicker from "$lib/components/icon-picker/IconPicker.svelte";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
@@ -174,7 +175,7 @@
           </div>
         {/if}
       {/if}
-      {#if controller.error}<p class="mt-3 text-[0.68rem] text-destructive" role="alert">{controller.error}</p>{/if}
+      {#if controller.error}<Notice class="mt-3 text-[0.68rem]" message={controller.error} />{/if}
     </div>
 
     {#snippet footer()}

@@ -16,6 +16,7 @@
   import NotesPageIcon from "$lib/components/notes/pages/NotesPageIcon.svelte";
   import Select from "$lib/components/ui/Select.svelte";
   import { formatDateTime } from "$lib/i18n/formatters";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { blockPlainText } from "$lib/notes/blocks/factory";
   import {
@@ -143,6 +144,12 @@
   onDestroy(() => {
     if (highlightTimer) clearTimeout(highlightTimer);
   });
+
+  /** Loads the comments again, rejecting while they are still unavailable. */
+  async function retryComments(): Promise<void> {
+    await notes.reloadComments();
+    if (notes.commentsError) throw new Error(notes.commentsError);
+  }
 
   function filterLabel(value: NotesDiscussionFilter): string {
     switch (value) {
@@ -325,12 +332,7 @@
     {/if}
 
     {#if notes.commentsError}
-      <p class="mt-3 flex flex-wrap items-center gap-2 text-panel-detail text-destructive" role="alert">
-        <span>{t("notes.loadCommentsFailed", notes.commentsError)}</span>
-        <button type="button" class="rounded-md px-1.5 py-0.5 text-foreground hover:bg-accent" onclick={() => void notes.reloadComments()}>
-          {t("common.retry")}
-        </button>
-      </p>
+      <Notice class="mt-3 text-panel-detail" message={t("notes.loadCommentsFailed", notes.commentsError)} copy={notes.commentsError} onRetry={retryComments} />
     {/if}
 
     {#if groups.length === 0}

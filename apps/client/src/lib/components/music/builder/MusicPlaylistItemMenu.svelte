@@ -12,6 +12,7 @@
   import type { Component } from "svelte";
   import { getMusicInspectorDetail } from "$lib/api/music-library";
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { MusicItemListEntry, MusicSnooze, MusicWeight } from "$lib/music/library/contracts";
   import { formatMusicDuration } from "$lib/music/builder/presentation";
@@ -223,7 +224,7 @@
       </div>
 
       {#if busy}<div class="absolute inset-0 grid place-items-center rounded-floating bg-popover/75"><LoaderCircle class="animate-spin motion-reduce:animate-none" size={16} /></div>{/if}
-      {#if error}<p class="mx-1.5 mb-1.5 shrink-0 rounded-floating-item bg-destructive/10 px-2 py-1.5 text-panel-detail text-destructive" role="alert">{error}</p>{/if}
+      {#if error}<Notice class="mx-1.5 mb-1.5 shrink-0 px-2 py-1.5 text-panel-detail" message={error} />{/if}
     </div>
   {/if}
 </div>

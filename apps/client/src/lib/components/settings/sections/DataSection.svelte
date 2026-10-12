@@ -2,9 +2,9 @@
   import { invoke } from "@tauri-apps/api/core";
   import FolderInput from "@lucide/svelte/icons/folder-input";
   import FolderOpen from "@lucide/svelte/icons/folder-open";
-  import HardDrive from "@lucide/svelte/icons/hard-drive";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import VaultHandoffPanel from "$lib/components/vault/handoff/VaultHandoffPanel.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
     formatVaultError,
@@ -28,8 +28,6 @@
   const actionButtonClass =
     "inline-flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border px-2.5 text-[0.8rem] font-medium transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-55";
   const secondaryButtonClass = `${actionButtonClass} bg-card text-foreground hover:bg-accent dark:bg-transparent`;
-  const linkButtonClass =
-    "inline-flex h-7 min-w-0 max-w-full items-center gap-1.5 rounded-md px-1 text-[0.8rem] font-medium text-foreground transition-colors hover:text-primary focus:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-55";
 
   const currentFolderPath = $derived(
     !folderStateLoaded
@@ -49,6 +47,16 @@
       folderStateLoaded = true;
       if (showLoadingState) busy = null;
     }
+  }
+
+  /**
+   * Reloads the active vault status for the error notice retry action.
+   *
+   * @returns A promise that rejects when the status still cannot be read.
+   */
+  async function retryVaultState(): Promise<void> {
+    await loadVaultState();
+    if (error) throw new Error(error);
   }
 
   function restartApp(): void {
@@ -167,22 +175,12 @@
 
     <section class="flex flex-col gap-4">
       <h2 class="px-1 text-[0.866667rem] font-semibold text-foreground">{t("settings.data.statusHeading")}</h2>
-      <div role="alert" class="px-1 text-[0.8rem] leading-5 text-destructive">
-        {error}
-      </div>
-      <button
-        type="button"
-        onclick={() => void loadVaultState()}
-        disabled={busy !== null}
-        class={linkButtonClass}
-      >
-        {#if busy === "load"}
-          <LoaderCircle size={13} strokeWidth={2.25} class="shrink-0 animate-spin" />
-        {:else}
-          <HardDrive size={13} strokeWidth={2.25} class="shrink-0" />
-        {/if}
-        <span>{t("settings.data.reloadFolderStatus")}</span>
-      </button>
+      <Notice
+        class="px-1 text-[0.8rem]"
+        message={error}
+        retryLabel={t("settings.data.reloadFolderStatus")}
+        onRetry={busy === null ? retryVaultState : undefined}
+      />
     </section>
   {/if}
 </div>

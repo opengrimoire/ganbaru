@@ -10,6 +10,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getChat } from "$lib/stores/chat.svelte";
   import ChatMarkdown from "$lib/components/chat/timeline/ChatMarkdown.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
 
   const { t } = getLocalization();
   const chat = getChat();
@@ -59,7 +60,7 @@
 </script>
 
 <div class="h-full min-h-0 overflow-auto p-3">
-  {#if error}<p role="alert" class="mb-2 text-xs text-destructive">{error}</p>{/if}
+  {#if error}<Notice class="mb-2 text-xs" message={error} />{/if}
   {#if latest}
     <article class="space-y-3" aria-label={t("chat.inspector.plan")}>
       <div class="flex flex-wrap items-center gap-2 text-[0.666667rem] text-muted-foreground">

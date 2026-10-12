@@ -1,6 +1,7 @@
 <script lang="ts">
   import CornerLeftUp from "@lucide/svelte/icons/corner-left-up";
   import ListTree from "@lucide/svelte/icons/list-tree";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { NotesDatabaseRowHierarchyMetadata } from "$lib/notes/database/row-hierarchy";
   import { notesDatabaseParentExclusions, notesDatabaseRowCanAddSubitems, notesDatabaseSubitemExclusions } from "$lib/notes/database/row-page-properties";
@@ -134,7 +135,7 @@
     </button>
   </span>
 
-  {#if error}<p class="px-1.5 py-1 text-panel-detail text-destructive" role="alert">{error}</p>{/if}
+  {#if error}<Notice class="px-1.5 py-1 text-panel-detail" message={error} />{/if}
 </div>
 
 {#if picker?.mode === "subitems"}

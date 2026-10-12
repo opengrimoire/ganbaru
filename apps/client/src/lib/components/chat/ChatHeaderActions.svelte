@@ -8,6 +8,7 @@
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import { getChat } from "$lib/stores/chat.svelte";
   import { cn } from "$lib/utils";
+  import Notice from "$lib/components/ui/Notice.svelte";
 
   let {
     bottomPanelOpen,
@@ -42,7 +43,7 @@
 </script>
 
 <div class="chat-header-actions flex min-w-0 shrink-0 items-center gap-1" class:mobilePresentation data-chat-header-actions>
-  {#if actionError}<p role="alert" class="max-w-40 truncate text-[0.666667rem] text-destructive">{actionError}</p>{/if}
+  {#if actionError}<Notice class="header-action-error max-w-48 text-[0.666667rem]" message={actionError} />{/if}
   {#if localExecutionAvailable}
     <button type="button" class={cn("chat-header-icon-button", bottomPanelOpen && "bg-accent text-foreground")} aria-label={bottomPanelOpen ? t("chat.closeBottomPanel") : t("chat.openBottomPanel")} aria-pressed={bottomPanelOpen} data-chat-bottom-panel-action onclick={onToggleBottomPanel}>
       <PanelBottom size={14} strokeWidth={1.75} />
@@ -75,6 +76,7 @@
 <style>
   .chat-header-icon-button { display: flex; height: 1.75rem; width: 1.75rem; flex: 0 0 auto; align-items: center; justify-content: center; border-radius: 0.375rem; color: var(--foreground); transition: background-color 120ms ease; }
   .chat-header-icon-button:hover { background: var(--accent); }
+  .chat-header-actions :global(.header-action-error .notice-message) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .chat-header-actions.mobilePresentation .chat-header-icon-button { width: 3rem; height: 3rem; }
   @media (prefers-reduced-motion: reduce) { .chat-header-icon-button { transition: none; } }
 </style>

@@ -15,6 +15,7 @@
     type ChatScheduleSuggestion,
   } from "$lib/chat/composer/message-scheduling";
   import MiniDatePicker from "$lib/components/ui/MiniDatePicker.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import TimePicker from "$lib/components/ui/TimePicker.svelte";
   import { formatTimeLabel } from "$lib/calendar/utils";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -162,6 +163,7 @@
       onMessagesChange(scheduledMessages.map((message) => message.id === id ? retried : message));
     } catch (cause: unknown) {
       error = cause instanceof Error ? cause.message : String(cause);
+      throw cause;
     } finally {
       pendingMessageIds = new Set([...pendingMessageIds].filter((messageId) => messageId !== id));
     }
@@ -239,7 +241,7 @@
           message={scheduled}
           pending={pendingMessageIds.has(scheduled.id)}
           onSendNow={() => { void sendScheduledMessageNow(scheduled.id); }}
-          onRetry={() => { void retryScheduledMessage(scheduled.id); }}
+          onRetry={() => retryScheduledMessage(scheduled.id)}
           onCancel={() => { void cancelScheduledMessage(scheduled.id); }}
         />
       {/each}
@@ -317,7 +319,7 @@
       </div>
     {/if}
   {/if}
-  {#if error}<p class="schedule-error" role="alert">{error}</p>{/if}
+  {#if error}<Notice class="schedule-error" message={error} />{/if}
 </div>
 
 <style>
@@ -338,6 +340,6 @@
   .schedule-submit { min-height:var(--panel-row-height); border-radius:var(--floating-item-radius); background:var(--primary); color:var(--primary-foreground); font-weight:600; }
   .schedule-submit:disabled { opacity:0.45; }
   .scheduled-list { max-height:min(28rem,calc(100vh - 7rem)); overflow-y:auto; overscroll-behavior:contain; }
-  .schedule-error { padding:0.4rem 0.35rem 0.2rem; color:var(--destructive); font-size:var(--panel-detail-font-size); }
+  .schedule-menu :global(.schedule-error) { padding:0.4rem 0.35rem 0.2rem; font-size:var(--panel-detail-font-size); }
   :global(.schedule-time-picker .time-picker-scroll) { max-height:var(--chat-schedule-time-picker-max-height,12.5rem); }
 </style>

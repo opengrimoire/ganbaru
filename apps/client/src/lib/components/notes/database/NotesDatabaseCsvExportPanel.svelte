@@ -13,6 +13,7 @@
   } from "$lib/notes/types";
   import Download from "@lucide/svelte/icons/download";
   import NotesRoundTripDiagnostics from "$lib/components/notes/NotesRoundTripDiagnostics.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
 
   let {
     dataSourceId,
@@ -129,9 +130,7 @@
     </div>
 
     {#if error}
-      <p class="rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-destructive">
-        {t("notes.databaseCsvExportFailed", error)}
-      </p>
+      <Notice message={t("notes.databaseCsvExportFailed", error)} copy={error} />
     {/if}
 
     {#if result}

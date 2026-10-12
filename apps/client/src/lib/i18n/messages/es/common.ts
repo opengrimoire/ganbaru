@@ -17,6 +17,11 @@ export const common = {
   loadMore: "Cargar más",
   retry: "Reintentar",
   viewLoadFailed: (label: string) => `No se pudo cargar ${label}.`,
+  notice: {
+    copy: "Copiar mensaje",
+    copied: "Mensaje copiado",
+    copyFailed: "No se pudo copiar el mensaje",
+  },
   none: "Ninguno",
   disabled: "Desactivado",
   enabled: "Activado",

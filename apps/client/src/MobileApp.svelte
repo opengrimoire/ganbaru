@@ -4,6 +4,7 @@
   import MobileNavigation from "$lib/components/mobile/MobileNavigation.svelte";
   import MobileTopBar from "$lib/components/mobile/MobileTopBar.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { ensureDbUrl } from "$lib/api/db";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
@@ -531,20 +532,26 @@
     }
   }
 
-  function retryWorkspaceLoad(): void {
+  /** Retries startup and returns the attempt so the notice can follow it; a document reload returns nothing. */
+  function retryWorkspaceLoad(): Promise<void> | undefined {
     const failure = loadError;
-    if (!failure) return;
+    if (!failure || initializingWorkspace) return undefined;
+    let attempt: Promise<void> | undefined;
     recoverLoadFailure(failure, () => {
-      void initializeWorkspace();
+      attempt = initializeWorkspace();
     });
+    return attempt;
   }
 
-  function retryDeferredSurface(surface: DeferredSurface): void {
+  /** Retries a deferred surface and returns the attempt so the notice can follow it. */
+  function retryDeferredSurface(surface: DeferredSurface): Promise<void> | undefined {
     const failure = deferredLoadErrors[surface];
-    if (!failure) return;
+    if (!failure) return undefined;
+    let attempt: Promise<void> | undefined;
     recoverLoadFailure(failure, () => {
-      void prepareDeferredSurface(surface);
+      attempt = prepareDeferredSurface(surface);
     });
+    return attempt;
   }
 
   function clearNestedRoute(): void {
@@ -814,29 +821,25 @@
   title: string,
   onClose: (() => void) | null = null,
 )}
-  <div class="flex h-full w-full flex-col items-center justify-center gap-3 p-6 text-center">
-    {#if deferredLoadErrors[surface]}
-      {@const failure = deferredLoadErrors[surface]}
-      <p class="text-sm font-medium" role="alert">{t("common.viewLoadFailed", title)}</p>
-      <p class="max-w-md wrap-break-word text-xs text-muted-foreground">{failure.message}</p>
-      <button
-        type="button"
-        class="min-h-12 rounded-xl border border-border bg-card px-5 text-sm font-medium active:bg-accent"
-        onclick={() => retryDeferredSurface(surface)}
-      >{t("common.retry")}</button>
-      {#if onClose}
-        <button
-          type="button"
-          class="min-h-12 rounded-xl px-5 text-sm font-medium active:bg-accent"
-          onclick={onClose}
-        >{t("common.close")}</button>
-      {/if}
-    {:else}
+  {#if deferredLoadErrors[surface]}
+    {@const failure = deferredLoadErrors[surface]}
+    <div class="flex h-full w-full p-6">
+      <Notice
+        layout="fill"
+        class="text-sm"
+        title={t("common.viewLoadFailed", title)}
+        message={failure.message}
+        onRetry={() => retryDeferredSurface(surface)}
+        onDismiss={onClose ?? undefined}
+      />
+    </div>
+  {:else}
+    <div class="flex h-full w-full flex-col items-center justify-center gap-3 p-6 text-center">
       <div role="status" aria-label={t("common.loading")}>
         {@render loadingRing()}
       </div>
-    {/if}
-  </div>
+    </div>
+  {/if}
 {/snippet}
 
 <div
@@ -899,17 +902,14 @@
 
       <main class="relative min-h-0 min-w-0 flex-1 overflow-hidden bg-background">
         {#if loadError}
-          <div class="flex h-full flex-col items-center justify-center gap-3 p-6 text-center" role="alert">
-            <p class="text-sm font-medium">{t("common.viewLoadFailed", currentTitle)}</p>
-            <p class="max-w-md text-xs text-muted-foreground">{loadError.message}</p>
-            <button
-              type="button"
-              disabled={initializingWorkspace}
-              class="min-h-12 rounded-xl border border-border bg-card px-5 text-sm font-medium active:bg-accent"
-              onclick={retryWorkspaceLoad}
-            >
-              {initializingWorkspace ? t("common.loading") : t("common.retry")}
-            </button>
+          <div class="flex h-full p-6">
+            <Notice
+              layout="fill"
+              class="text-sm"
+              title={t("common.viewLoadFailed", currentTitle)}
+              message={loadError.message}
+              onRetry={retryWorkspaceLoad}
+            />
           </div>
         {:else if nav.current === "calendar" && CalendarSurface}
           <CalendarSurface initialViewMode="day" mobileLayout />

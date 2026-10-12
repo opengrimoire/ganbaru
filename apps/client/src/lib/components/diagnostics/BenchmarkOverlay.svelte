@@ -6,6 +6,7 @@
   import { buildBenchmarkSuitePreview, formatBenchmarkSuiteMarkdown } from "$lib/benchmark/output";
   import type { BenchmarkScalarMetricRow } from "$lib/benchmark/output";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
 
@@ -514,22 +515,12 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="fixed inset-0 z-75 flex items-center justify-center">
     <div class="surface-backdrop absolute inset-0 cursor-not-allowed"></div>
-    <div
-      class="relative z-10 flex w-[min(480px,90vw)] flex-col gap-3 px-6 py-5 surface-dialog"
-    >
-      <h2 class="text-[0.933333rem] font-semibold text-destructive">{t("benchmark.failedTitle")}</h2>
-      <p class="text-[0.8rem] text-foreground">
-        {runner.errorMessage ?? t("benchmark.unknownError")}
-      </p>
-      <div class="flex justify-end">
-        <button
-          type="button"
-          onclick={() => runner.closeSummary()}
-          class="rounded-md border border-border bg-card px-3 py-1.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent dark:bg-transparent"
-        >
-          {t("benchmark.returnToData")}
-        </button>
-      </div>
-    </div>
+    <Notice
+      layout="floating"
+      class="text-[0.8rem]"
+      title={t("benchmark.failedTitle")}
+      message={runner.errorMessage ?? t("benchmark.unknownError")}
+      onDismiss={() => runner.closeSummary()}
+    />
   </div>
 {/if}

@@ -1,10 +1,10 @@
 <script lang="ts">
-  import RotateCcw from "@lucide/svelte/icons/rotate-ccw";
   import Send from "@lucide/svelte/icons/send";
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import type { ChatScheduledMessageRead } from "$lib/chat/contracts";
   import { chatReferenceTextSegments } from "$lib/chat/composer/message-references";
   import ProfileAvatar from "$lib/components/profile/ProfileAvatar.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { formatDateTime } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
@@ -19,7 +19,8 @@
     message: ChatScheduledMessageRead;
     pending?: boolean;
     onSendNow: () => void;
-    onRetry: () => void;
+    /** Retries a failed delivery and rejects when the retry fails. */
+    onRetry: () => Promise<void>;
     onCancel: () => void;
   } = $props();
 
@@ -50,23 +51,30 @@
       </div>
     {/if}
     <div class="delivery-row">
-      <span class:failed={message.state === "failed"}>
-        {message.state === "failed"
-          ? t("chat.organization.scheduledMessageFailed")
-          : message.state === "dispatching"
+      {#if message.state === "failed"}
+        <Notice
+          class="delivery-notice"
+          title={message.lastError ? t("chat.organization.scheduledMessageFailed") : undefined}
+          message={message.lastError ?? t("chat.organization.scheduledMessageFailed")}
+          retryLabel={t("chat.organization.retryScheduledMessage")}
+          {onRetry}
+          copy={message.lastError ?? false}
+        />
+      {:else}
+        <span>
+          {message.state === "dispatching"
             ? t("chat.organization.sendingScheduledMessage")
             : t("chat.organization.scheduledDelivery", formatDateTime(localization.locale, Date.parse(message.scheduledFor), { dateStyle: "medium", timeStyle: "short" }))}
-      </span>
+        </span>
+      {/if}
       <div class="message-actions">
-        {#if message.state === "failed"}
-          <button type="button" disabled={pending} onclick={onRetry}><RotateCcw size={13} />{t("chat.organization.retryScheduledMessage")}</button>
-        {:else}
+        {#if message.state !== "failed"}
           <button type="button" disabled={pending || message.state === "dispatching"} onclick={onSendNow}><Send size={13} />{t("chat.organization.sendScheduledNow")}</button>
         {/if}
         <button class="cancel-action" type="button" disabled={pending || message.state === "dispatching"} onclick={onCancel}><Trash2 size={13} />{t("chat.organization.cancelScheduledMessage")}</button>
       </div>
     </div>
-    {#if message.lastError}<p class="delivery-error">{message.lastError}</p>{/if}
+    {#if message.lastError && message.state !== "failed"}<Notice class="delivery-notice delivery-notice-detail" role="status" message={message.lastError} />{/if}
   </div>
 </article>
 
@@ -85,12 +93,11 @@
   .message-context span { border-radius:999px; background:var(--accent); padding:0.15rem 0.4rem; color:var(--muted-foreground); font-size: calc(0.65rem * var(--type-scale)); }
   .delivery-row { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:0.4rem; margin-top:0.55rem; }
   .delivery-row > span { color:var(--muted-foreground); font-size: calc(0.68rem * var(--type-scale)); }
-  .delivery-row > span.failed,.delivery-error { color:var(--destructive); }
+  .scheduled-preview :global(.delivery-notice) { flex:1 1 12rem; font-size: calc(0.68rem * var(--type-scale)); }
+  .scheduled-preview :global(.delivery-notice-detail) { margin-top:0.35rem; }
   .message-actions { display:flex; flex-wrap:wrap; align-items:center; gap:0.2rem; }
   .message-actions button { display:flex; min-height:1.8rem; align-items:center; gap:0.3rem; border-radius:0.4rem; padding:0.25rem 0.45rem; color:var(--foreground); font-size: calc(0.68rem * var(--type-scale)); font-weight:500; }
   .message-actions button:hover:not(:disabled) { background:var(--accent); }
   .message-actions button:disabled { opacity:0.45; }
   .message-actions .cancel-action { color:var(--muted-foreground); }
-  .message-actions .cancel-action:hover:not(:disabled) { color:var(--destructive); }
-  .delivery-error { margin-top:0.35rem; white-space:pre-wrap; overflow-wrap:anywhere; font-size: calc(0.66rem * var(--type-scale)); line-height: calc(1rem * var(--type-scale)); }
-</style>
+  .message-actions .cancel-action:hover:not(:disabled) { color:var(--destructive); }</style>

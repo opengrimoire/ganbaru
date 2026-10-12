@@ -51,6 +51,7 @@
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import NotesFolderRow from "$lib/components/notes/navigation/NotesFolderRow.svelte";
   import NotesPageRow from "$lib/components/notes/navigation/NotesPageRow.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import {
     loadNotesOptionalComponent,
     retryNotesOptionalComponent,
@@ -1115,19 +1116,13 @@
   {/if}
 
   {#if folderActionError}
-    <div class="shrink-0 px-3 py-2 text-[0.8rem] text-destructive" role="alert">
-      {t("notes.folderActionFailed", folderActionError)}
-    </div>
+    <Notice class="shrink-0 px-3 py-2 text-[0.8rem]" message={t("notes.folderActionFailed", folderActionError)} />
   {/if}
   {#if notes.trashActionError}
-    <div class="shrink-0 px-3 py-2 text-[0.8rem] text-destructive" role="alert">
-      {t("notes.trashFailed", notes.trashActionError)}
-    </div>
+    <Notice class="shrink-0 px-3 py-2 text-[0.8rem]" message={t("notes.trashFailed", notes.trashActionError)} />
   {/if}
   {#if navigationDragError}
-    <div class="shrink-0 px-3 py-2 text-[0.8rem] text-destructive" role="alert">
-      {t("notes.navigationMoveFailed", navigationDragError)}
-    </div>
+    <Notice class="shrink-0 px-3 py-2 text-[0.8rem]" message={t("notes.navigationMoveFailed", navigationDragError)} />
   {/if}
 
   <div
@@ -1144,9 +1139,7 @@
     use:resetCreationLocationOnBlankPointer
   >
     {#if notes.loadError}
-      <div class="px-1 py-2 text-[0.8rem] text-destructive">
-        {t("notes.loadFailed", notes.loadError)}
-      </div>
+      <Notice class="px-1 py-2 text-[0.8rem]" message={t("notes.loadFailed", notes.loadError)} />
     {/if}
     {#if notes.loaded && treeItems.length === 0 && (mobileLayout || !workingMarkdownHasMatches) && search.trim()}
       <div class="px-1 py-2 text-[0.8rem] text-muted-foreground">
@@ -1314,13 +1307,11 @@
       />
     {/if}
   {:else if confirmDialogLoadState?.status === "failed"}
-    <div class="fixed inset-0 z-100 flex items-center justify-center surface-backdrop p-4" role="alert">
+    <div class="fixed inset-0 z-100 flex items-center justify-center surface-backdrop p-4" role="dialog" aria-modal="true">
       <div class="surface-dialog p-4 text-sm">
-        <p>{t("common.viewLoadFailed", t("common.confirm"))}</p>
-        <div class="mt-3 flex gap-2">
-          <button class="min-h-8 rounded-floating-item border border-border px-2 hover:bg-accent" type="button" onclick={() => requestConfirmDialog(true)}>{t("common.retry")}</button>
-          <button class="min-h-8 rounded-floating-item border border-border px-2 hover:bg-accent" type="button" onclick={clearPendingConfirmation}>{t("common.cancel")}</button>
-        </div>
+        <Notice message={t("common.viewLoadFailed", t("common.confirm"))} copy={false} onRetry={() => requestConfirmDialog(true)}>
+          {#snippet actions()}<button type="button" class="notice-action-text" onclick={clearPendingConfirmation}>{t("common.cancel")}</button>{/snippet}
+        </Notice>
       </div>
     </div>
   {:else}

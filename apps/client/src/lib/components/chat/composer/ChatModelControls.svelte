@@ -46,6 +46,7 @@
   import ChatProviderIcon from "$lib/components/chat/identity/ChatProviderIcon.svelte";
   import ChatProviderForkDialog from "./ChatProviderForkDialog.svelte";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import { cn } from "$lib/utils";
 
@@ -953,7 +954,7 @@
                       </section>
                     {/each}
                     {#if modelCompanySections.length === 0}<p>{t("chat.composer.noModels")}</p>{/if}
-                    {#if modelPickerError}<p class="model-picker-error" role="alert">{modelPickerError}</p>{/if}
+                    {#if modelPickerError}<Notice class="model-picker-error" message={modelPickerError} />{/if}
                     </div>
                   </div>
                   <CalendarScrollbar scrollContainer={modelListElement} stickyTop={4} stickyBottom={4} wheelPassthrough />
@@ -1118,7 +1119,7 @@
   .favorite-model-label :global(svg) { color: var(--muted-foreground); }
   .model-favorite { display: grid; width: 2rem; height: 2rem; place-items: center; border-radius: var(--floating-item-radius); color: var(--muted-foreground); }
   .model-favorite:hover, .model-favorite:focus-visible, .model-favorite.active { color: var(--foreground); }
-  .model-picker-error { color: var(--destructive) !important; }
+  .model-list-content > :global(.model-picker-error) { padding: 0.38rem 0.5rem; font-size: var(--panel-detail-font-size); }
   .option-list > label > span { min-width: 0; flex: 1; }
   .range-option, .text-option { display: flex; flex-direction: column; gap: 0.35rem; padding: 0.375rem 0.5rem; }
   .range-option input, .text-option input { width: 100%; }

@@ -23,6 +23,7 @@
     unarchiveQuickNote,
     updateQuickNote,
   } from "$lib/api/quick-notes";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getQuickNoteColor } from "$lib/quick-notes/colors";
   import { compareQuickNoteTags, quickNoteViewIndexForKey, quickNoteViewShortcut } from "$lib/quick-notes/tags";
@@ -663,9 +664,8 @@
     {/if}
 
     {#if loadError && notes.length === 0}
-      <div class="flex min-h-40 flex-col items-center justify-center gap-3 text-center">
-        <p class="text-sm text-muted-foreground">{t("quickNotes.loadFailed")}</p>
-        <button type="button" class={mobileLayout ? "min-h-12 rounded-xl border border-border px-4 text-sm active:bg-accent" : "rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent"} onclick={() => void load()}>{t("quickNotes.retry")}</button>
+      <div class="flex min-h-40">
+        <Notice layout="fill" class="text-sm" message={t("quickNotes.loadFailed")} copy={loadError} retryLabel={t("quickNotes.retry")} onRetry={() => load()} />
       </div>
     {:else if !initializing && notes.length === 0}
       {#if emptyMessage}<div class="flex min-h-40 items-center justify-center text-center text-sm text-muted-foreground">{emptyMessage}</div>{/if}
@@ -682,7 +682,7 @@
         <button use:observeMore type="button" class={mobileLayout ? "mt-4 min-h-12 w-full rounded-xl px-3 text-xs text-muted-foreground active:bg-accent" : "mt-4 w-full rounded-md py-2 text-xs text-muted-foreground hover:bg-accent"} disabled={loadingMore} onclick={() => { animateLayout = true; void load(false); }}>{loadingMore ? t("common.loading") : t("quickNotes.action.loadMore")}</button>
       {/if}
     {/if}
-    {#if loadError && notes.length > 0}<p class="mt-3 text-center text-xs text-destructive">{loadError}</p>{/if}
+    {#if loadError && notes.length > 0}<Notice class="mt-3 justify-center text-xs" message={loadError} />{/if}
     <p class="sr-only" aria-live="polite">{reorderAnnouncement}</p>
   </div>
 

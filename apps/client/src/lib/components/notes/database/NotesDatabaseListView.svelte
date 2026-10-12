@@ -1,5 +1,6 @@
 <script lang="ts">
   import NotesLoadingSkeleton from "$lib/components/notes/NotesLoadingSkeleton.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { untrack, type Snippet } from "svelte";
   import { databaseResource, notesDatabaseSession } from "$lib/notes/database/session.svelte";
   import NotesDatabasePropertyValue from "./NotesDatabasePropertyValue.svelte";
@@ -166,6 +167,12 @@
     } finally {
       if (currentRequest === requestId) loading = false;
     }
+  }
+
+  /** Reloads a view that failed to load, rejecting while it is still unavailable. */
+  async function retryList(): Promise<void> {
+    await loadList();
+    if (error) throw new Error(error);
   }
 
   async function loadMoreList(): Promise<void> {
@@ -369,7 +376,7 @@
 <section class="space-y-3 pt-2" aria-label={t("notes.databaseListTitle")}>
 
   <NotesDatabaseQueryBar properties={columns} {filters} {sorts} pending={mutating || editingLocked} onFiltersChange={saveFilters} onSortsChange={saveSorts} />
-  {#if error}<p class="text-[0.8rem] text-destructive" role="alert">{error}</p>{/if}
+  {#if error && list}<Notice class="text-[0.8rem]" message={error} />{/if}
   {#if settingsOpen}
     <CollectionSettings label={t("notes.databaseViewSettings")} anchor={settingsAnchor} preferredWidth={COLLECTION_VIEW_SETTINGS_PANEL_WIDTH} showHeader={false} onClose={onCloseSettings}>
       {@render settingsHeader?.()}
@@ -380,7 +387,9 @@
     </CollectionSettings>
   {/if}
 
-  {#if !list && !error}<NotesLoadingSkeleton kind="list" />{/if}
+  {#if !list && error}
+    <div class="min-h-32 text-[0.8rem]"><Notice layout="fill" message={t("notes.databaseListFailed", error)} copy={error} onRetry={retryList} /></div>
+  {:else if !list}<NotesLoadingSkeleton kind="list" />{/if}
   {#if list}
     <div class="grid gap-2 @container">
       <CollectionRow template={listTemplate} compactTemplate="minmax(0, 1fr) 2rem" header>

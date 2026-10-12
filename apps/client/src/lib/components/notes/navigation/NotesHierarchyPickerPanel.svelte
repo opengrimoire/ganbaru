@@ -17,6 +17,7 @@
   import ChartGantt from "@lucide/svelte/icons/chart-gantt";
   import CalendarScrollbar from "$lib/components/calendar/CalendarScrollbar.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import {
     notesHierarchyPickerChildren,
     notesHierarchyPickerTitle,
@@ -484,14 +485,11 @@
   <div class="relative flex min-h-0 flex-auto flex-col">
     <div bind:this={scrollElement} use:scrollEdgeFadeAction class={cn("hide-scrollbar min-h-0 flex-auto overflow-y-auto", mobileLayout ? "overscroll-contain px-2 py-2" : "surface-floating-body")}>
       {#if navigationError || viewError}
-        <div class="px-3 py-2 text-destructive" role="alert">
-          {navigationError ?? viewError}
-          {#if viewError}<button type="button" class="mt-1 block rounded-floating-item px-1 py-1 text-popover-foreground hover:bg-accent" onclick={() => { viewRetryCount += 1; }}>{t("common.retry")}</button>{/if}
-        </div>
+        <Notice class="px-3 py-2" message={navigationError ?? viewError ?? ""} onRetry={viewError ? () => { viewRetryCount += 1; } : undefined} />
       {:else if isLoadingViews || (notes.loading && projectPages.length === 0 && projectFolders.length === 0)}
         <div class="px-3 py-2 text-popover-foreground/60">{t("notes.loading")}</div>
       {:else if notes.loadError}
-        <div class="px-3 py-2 text-destructive">{t("notes.loadFailed", notes.loadError)}</div>
+        <Notice class="px-3 py-2" message={t("notes.loadFailed", notes.loadError)} copy={notes.loadError} onRetry={() => notes.load()} />
       {:else if items.length === 0}
         <div class="px-3 py-2 text-popover-foreground/60">
           {normalizedSearch ? t("notes.noSearchResults") : t(effectiveParent.kind === "database" ? "notes.databaseNoViews" : "notes.noPages")}
@@ -655,9 +653,7 @@
       </div>
     {/if}
     {#if folderCreationError}
-      <div class="px-1 pt-1 text-panel-detail text-destructive" role="alert">
-        {t("notes.folderActionFailed", folderCreationError)}
-      </div>
+      <Notice class="px-1 pt-1 text-panel-detail" message={t("notes.folderActionFailed", folderCreationError)} copy={folderCreationError} />
     {/if}
   </div>
   {/if}

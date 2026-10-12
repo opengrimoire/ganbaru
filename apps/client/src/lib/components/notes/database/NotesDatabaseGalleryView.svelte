@@ -1,5 +1,6 @@
 <script lang="ts">
   import NotesLoadingSkeleton from "$lib/components/notes/NotesLoadingSkeleton.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { untrack, type Snippet } from "svelte";
   import { databaseResource, notesDatabaseSession } from "$lib/notes/database/session.svelte";
   import NotesDatabasePropertyValue from "./NotesDatabasePropertyValue.svelte";
@@ -164,6 +165,12 @@
     } finally {
       if (currentRequest === requestId) loading = false;
     }
+  }
+
+  /** Reloads a view that failed to load, rejecting while it is still unavailable. */
+  async function retryGallery(): Promise<void> {
+    await loadGallery();
+    if (error) throw new Error(error);
   }
 
   async function loadMoreGallery(): Promise<void> {
@@ -371,7 +378,7 @@
 <section class="space-y-3 pt-2" aria-label={t("notes.databaseGalleryTitle")}>
 
   <NotesDatabaseQueryBar properties={columns} {filters} {sorts} pending={mutating || editingLocked} onFiltersChange={saveFilters} onSortsChange={saveSorts} />
-  {#if error}<p class="text-[0.8rem] text-destructive" role="alert">{error}</p>{/if}
+  {#if error && gallery}<Notice class="text-[0.8rem]" message={error} />{/if}
   {#if settingsOpen}
     <CollectionSettings label={t("notes.databaseViewSettings")} anchor={settingsAnchor} preferredWidth={COLLECTION_VIEW_SETTINGS_PANEL_WIDTH} showHeader={false} onClose={onCloseSettings}>
       {@render settingsHeader?.()}
@@ -382,7 +389,9 @@
     </CollectionSettings>
   {/if}
 
-  {#if !gallery && !error}<NotesLoadingSkeleton kind="gallery" />{/if}
+  {#if !gallery && error}
+    <div class="min-h-32 text-[0.8rem]"><Notice layout="fill" message={t("notes.databaseGalleryFailed", error)} copy={error} onRetry={retryGallery} /></div>
+  {:else if !gallery}<NotesLoadingSkeleton kind="gallery" />{/if}
   {#if gallery}
     <div class="grid gap-2 @container">
       <div class="grid min-w-0 gap-3" style={gridStyle}>

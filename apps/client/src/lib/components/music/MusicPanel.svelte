@@ -11,6 +11,7 @@
   import Volume2 from "@lucide/svelte/icons/volume-2";
   import VolumeX from "@lucide/svelte/icons/volume-x";
   import CalendarScrollbar from "$lib/components/calendar/CalendarScrollbar.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import MusicPlaylistLauncher from "./MusicPlaylistLauncher.svelte";
   import MusicCurrentItemMenu from "./MusicCurrentItemMenu.svelte";
   import MusicTrackPreferences from "./MusicTrackPreferences.svelte";
@@ -760,12 +761,13 @@
     <section class="relative grid h-full min-h-40 place-items-center overflow-hidden p-5 text-center text-foreground" style="background-color: var(--cal-bg);">
       {#if playlistBuilderLoadError}
         <button type="button" onclick={closePlaylistBuilder} class="absolute left-3 top-3 inline-flex h-8 items-center rounded-full bg-secondary px-3 text-[0.7rem] font-medium text-secondary-foreground hover:bg-accent hover:text-accent-foreground">{t("music.mediaPlayer")}</button>
-        <div class="w-full max-w-sm">
-          <AlertCircle class="mx-auto text-destructive" size={24} strokeWidth={1.5} />
-          <h1 class="mt-3 text-lg font-semibold tracking-tight">{t("music.builder.loadFailed")}</h1>
-          <p class="mt-2 text-xs leading-relaxed text-muted-foreground">{playlistBuilderLoadError}</p>
-          <button type="button" onclick={() => { void loadPlaylistBuilder(); }} class="mt-4 inline-flex h-8 items-center rounded-full bg-primary px-3 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90">{t("music.builder.retry")}</button>
-        </div>
+        <Notice
+          class="max-w-sm text-sm"
+          title={t("music.builder.loadFailed")}
+          message={playlistBuilderLoadError}
+          retryLabel={t("music.builder.retry")}
+          onRetry={loadPlaylistBuilder}
+        />
       {:else}
         <div class="w-full max-w-lg">
           <MusicPreparationActivity />
@@ -824,8 +826,8 @@
       </div>
       {#if player.parseError || player.playerError}
         <div class="relative z-10 ml-auto flex min-w-0 items-center gap-2">
-          <div class="hidden min-w-0 max-w-56 items-center gap-1.5 text-[0.733333rem] text-destructive min-[720px]:flex" role="alert">
-            <AlertCircle class="shrink-0" size={musicIconSize} strokeWidth={musicIconStrokeWidth} />
+          <div class="hidden min-w-0 max-w-56 items-center gap-1.5 text-[0.733333rem] text-foreground min-[720px]:flex" role="alert">
+            <AlertCircle class="shrink-0 text-muted-foreground" size={musicIconSize} strokeWidth={musicIconStrokeWidth} />
             <span class="truncate">{player.parseError ?? player.playerError}</span>
           </div>
         </div>
@@ -851,28 +853,37 @@
     </div>
   {/if}
 
-  {#if visibleContext}
-    <div
-      class={cn(
-        "flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 border-y border-border/55 px-3 py-2 text-[0.68rem]",
-        visibleContext.state === "unavailable" || visibleContext.issue ? "bg-warning/10" : "bg-primary/6",
-      )}
-      role={visibleContext.state === "unavailable" || visibleContext.issue ? "alert" : "status"}
+  {#if visibleContext && (visibleContext.state === "unavailable" || visibleContext.issue)}
+    <Notice
+      class="shrink-0 border-y border-border/55 px-3 py-2 text-[0.68rem]"
+      tone="warning"
+      title={contextSummary}
+      message={visibleContext.issue
+        ? `${t(`music.assignment.context.state.${visibleContext.state}`)} ${t(`music.assignment.context.issue.${visibleContext.issue}`)}`
+        : t(`music.assignment.context.state.${visibleContext.state}`)}
+      retryLabel={t("music.assignment.context.retry")}
+      onRetry={visibleContext.state === "unavailable" ? () => player.requestContextRetry() : undefined}
+      copy={false}
     >
-      {#if visibleContext.state === "unavailable" || visibleContext.issue}<AlertCircle size={14} class="shrink-0 text-warning" />{:else}<CalendarClock size={14} class="shrink-0 text-primary" />{/if}
+      {#snippet actions()}
+        {#if visibleContext.state === "prepared"}
+          <button type="button" class="notice-action-text" onclick={() => { void player.playPlayback(); }}>{t("music.assignment.context.preparedPlay")}</button>
+        {/if}
+        {#if visibleContext.state === "unavailable"}
+          <button type="button" class="notice-action-text" onclick={() => openPlaylistBuilder({ kind: "open-issues" })}>{t("music.assignment.context.openIssues")}</button>
+        {/if}
+        <button type="button" class="notice-action-text" onclick={() => player.inspectContextAssignment()}>{t("music.assignment.context.inspect")}</button>
+      {/snippet}
+    </Notice>
+  {:else if visibleContext}
+    <div class="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 border-y border-border/55 bg-primary/6 px-3 py-2 text-[0.68rem]" role="status">
+      <CalendarClock size={14} class="shrink-0 text-primary" />
       <div class="min-w-40 flex-1 leading-relaxed">
         <p class="font-semibold text-foreground">{contextSummary}</p>
-        <p class="text-muted-foreground">
-          {t(`music.assignment.context.state.${visibleContext.state}`)}
-          {#if visibleContext.issue} {t(`music.assignment.context.issue.${visibleContext.issue}`)}{/if}
-        </p>
+        <p class="text-muted-foreground">{t(`music.assignment.context.state.${visibleContext.state}`)}</p>
       </div>
       {#if visibleContext.state === "prepared"}
         <button type="button" onclick={() => { void player.playPlayback(); }} class="rounded-md bg-primary px-2.5 py-1 font-semibold text-primary-foreground hover:bg-primary/90">{t("music.assignment.context.preparedPlay")}</button>
-      {/if}
-      {#if visibleContext.state === "unavailable"}
-        <button type="button" onclick={() => player.requestContextRetry()} class="rounded-md bg-secondary px-2.5 py-1 font-semibold hover:bg-accent">{t("music.assignment.context.retry")}</button>
-        <button type="button" onclick={() => openPlaylistBuilder({ kind: "open-issues" })} class="rounded-md px-2.5 py-1 font-semibold text-primary hover:bg-primary/10">{t("music.assignment.context.openIssues")}</button>
       {/if}
       <button type="button" onclick={() => player.inspectContextAssignment()} class="rounded-md px-2.5 py-1 font-semibold text-primary hover:bg-primary/10">{t("music.assignment.context.inspect")}</button>
     </div>

@@ -9,6 +9,7 @@
   import CollectionPropertyTypeMenu from "$lib/components/collections/CollectionPropertyTypeMenu.svelte";
   import CollectionSettings from "$lib/components/collections/CollectionSettings.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { tick, untrack } from "svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
@@ -542,10 +543,10 @@
     {/if}
   </div>
   {#if titleError}
-    <p class="px-1 text-[0.8rem] text-destructive" role="alert">{titleError}</p>
+    <Notice class="px-1 text-[0.8rem]" message={titleError} />
   {/if}
   {#if linkedViewError}
-    <p class="mt-2 text-[0.8rem] text-destructive">{linkedViewError}</p>
+    <Notice class="mt-2 text-[0.8rem]" message={linkedViewError} />
   {/if}
 
   {#if isLocalDatabase && dataSourceId}
@@ -587,7 +588,7 @@
 
 {#snippet panelMessages()}
   {#if editingLocked}<p class="px-2 py-1 text-panel-detail text-muted-foreground">{t("notes.databaseEditingLockDescription")}</p>{/if}
-  {#if error}<p class="px-2 py-1 text-panel-detail text-destructive" role="alert">{error}</p>{/if}
+  {#if error}<Notice class="px-2 py-1 text-panel-detail" message={error} />{/if}
 {/snippet}
 
 {#snippet propertyEditor(propertyId: string)}

@@ -8,6 +8,7 @@
   import Smartphone from "@lucide/svelte/icons/smartphone";
   import { onMount, untrack } from "svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import {
     cancelDesktopBundleReceive,
     createPairingInvitation,
@@ -119,6 +120,12 @@
         : t("vaultHandoff.networkAccessAllowed"),
   );
   const isCoordinatorClient = $derived(status?.coordinatorEndpoint != null);
+  /** Failures that replace the content they block render in that place instead of the trailing error line. */
+  const errorShownInPlace = $derived(
+    error !== null
+      && (!status
+        || (!status.linked && platform === "desktop" && presentation === "onboarding" && !invitation)),
+  );
 
   function fail(cause: unknown): void {
     error = formatHandoffError(cause, t);
@@ -531,9 +538,15 @@
       </div>
     {:else if !status.linked && platform === "desktop" && presentation === "onboarding" && !invitation}
       {#if error}
-        <button type="button" class={buttonClass} disabled={busy !== null} onclick={() => void showInvitation()}>
-          {t("vaultHandoff.retry")}
-        </button>
+        <div class="flex min-h-56">
+          <Notice
+            layout="fill"
+            class="text-sm"
+            message={error}
+            retryLabel={t("vaultHandoff.retry")}
+            onRetry={() => (busy !== null ? undefined : showInvitation())}
+          />
+        </div>
       {:else}
         {@render onboardingLoader()}
       {/if}
@@ -591,14 +604,10 @@
                 {t("vaultHandoff.networkAccessGranted")}
               </p>
             {:else if networkAccess?.state === "manualActionRequired"}
-              <p role="alert" class="text-[0.8rem] leading-5 text-destructive">
-                {t("vaultHandoff.networkAccessManual")}
-              </p>
+              <Notice class="text-[0.8rem] leading-5" tone="warning" copy={false} message={t("vaultHandoff.networkAccessManual")} />
             {/if}
             {#if networkError}
-              <p role="alert" class="w-full max-w-88 text-center text-[0.8rem] leading-5 text-destructive">
-                {networkError}
-              </p>
+              <Notice class="w-full max-w-88 justify-center text-[0.8rem] leading-5" message={networkError} />
             {/if}
           </div>
         {/if}
@@ -707,10 +716,25 @@
     {#if presentation === "settings" && status.linked}
       <SyncSection {buttonClass} mobileLayout={platform === "android"} />
     {/if}
-  {:else if error && presentation !== "onboarding"}
-    <button type="button" class={buttonClass} disabled={busy !== null} onclick={() => void refreshStatus()}>
-      {t("vaultHandoff.retry")}
-    </button>
+  {:else if error}
+    {#if presentation === "onboarding"}
+      <div class="flex min-h-56">
+        <Notice
+          layout="fill"
+          class="text-sm"
+          message={error}
+          retryLabel={t("vaultHandoff.retry")}
+          onRetry={() => (busy !== null ? undefined : refreshStatus())}
+        />
+      </div>
+    {:else}
+      <Notice
+        class="px-1 text-[0.8rem] leading-5"
+        message={error}
+        retryLabel={t("vaultHandoff.retry")}
+        onRetry={() => (busy !== null ? undefined : refreshStatus())}
+      />
+    {/if}
   {/if}
 
   {#if presentation !== "control" && (busy === "ownership" || busy === "refresh")}
@@ -727,7 +751,7 @@
     </p>
   {/if}
   {#if notice && presentation !== "control" && presentation !== "onboarding"}<p role="status" class="px-1 text-[0.8rem] leading-5 text-muted-foreground">{notice}</p>{/if}
-  {#if error}<p role="alert" class={`px-1 text-[0.8rem] leading-5 text-destructive ${presentation === "onboarding" ? "text-center" : ""}`}>{error}</p>{/if}
+  {#if error && !errorShownInPlace}<Notice class={`px-1 text-[0.8rem] leading-5 ${presentation === "onboarding" ? "justify-center" : ""}`} message={error} />{/if}
 </section>
 
 {#if desktopQrAvailable && platform === "desktop" && qrDialogVisible && presentation === "settings"}
@@ -783,7 +807,7 @@
       invitationError={busy === "invite" ? null : error}
       onGrantNetworkAccess={() => { confirmation = "network"; }}
       onRefresh={() => void showInvitation()}
-      onRetry={() => void showInvitation()}
+      onRetry={() => showInvitation()}
       onClose={() => { qrDialogVisible = false; invitation = null; }}
     />
   {/await}

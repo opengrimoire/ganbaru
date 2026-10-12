@@ -3,6 +3,7 @@
     CalendarEvent, EventSurfaceStatus, EventTransparency, EventVisibility, RecurringScope,
   } from "$lib/calendar/types";
   import MiniDatePicker from "$lib/components/ui/MiniDatePicker.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import TimePicker from "$lib/components/ui/TimePicker.svelte";
   import EventColorPicker from "$lib/components/calendar/EventColorPicker.svelte";
   import CalendarScrollbar from "$lib/components/calendar/CalendarScrollbar.svelte";
@@ -1416,10 +1417,7 @@
           {#if openSection === "music"}
             <div transition:slide={{ duration: 180, easing: cubicOut }} data-section="music" class="px-2.5 py-2.5" style="background-color: var(--panel-bg);">
               {#if musicAssignmentsError}
-                <div class="mb-2 flex items-start justify-between gap-2 rounded-lg border border-destructive/25 bg-destructive/8 px-2.5 py-2 text-[0.65rem]" role="alert">
-                  <span class="min-w-0 leading-relaxed text-destructive">{musicAssignmentsError}</span>
-                  <button type="button" onclick={() => { void initializeMusicAssignments(session.lastInitKey); }} class="shrink-0 font-semibold text-primary hover:underline">{t("common.retry")}</button>
-                </div>
+                <Notice class="mb-2 px-1 text-[0.65rem]" message={musicAssignmentsError} onRetry={() => initializeMusicAssignments(session.lastInitKey)} />
               {/if}
               <MusicSoundtrackAssignmentEditor
                 assignments={musicOverrides}

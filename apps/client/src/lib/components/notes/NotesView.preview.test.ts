@@ -776,7 +776,7 @@ describe("Notes preview ownership", () => {
     rejectLoad(new Error("Read failed"));
     await failure; await tick();
     expect(document.querySelector("[data-notes-page-peek] [role='alert']")?.textContent).toContain("Read failed");
-    document.querySelector<HTMLButtonElement>("[data-notes-page-peek] button")!.click();
+    [...document.querySelectorAll<HTMLButtonElement>("[data-notes-page-peek] button")].find((button) => button.textContent?.trim() === "Close")!.click();
     await vi.waitFor(() => {
       expect(notes.selectedPageId).toBe(parent.page.id);
       expect(notes.loadedPage?.id).toBe(parent.page.id);
@@ -815,10 +815,11 @@ describe("Notes preview ownership", () => {
     const pane = document.querySelector("[data-notes-main-page]")!;
     expect(pane.querySelector("[role='alert']")?.textContent).toContain("Read failed");
     expect(pane.querySelector('[data-notes-skeleton="page"]')).toBeNull();
-    const buttons = pane.querySelectorAll<HTMLButtonElement>("button");
-    expect(buttons).toHaveLength(1);
-    expect(buttons[0].textContent).toBe("Retry");
-    buttons[0].click();
+    expect([...pane.querySelectorAll<HTMLButtonElement>("button")].some((button) => button.textContent?.trim() === "Close")).toBe(false);
+    expect(pane.querySelector("[data-notice-dismiss]")).toBeNull();
+    const retry = pane.querySelector<HTMLButtonElement>('button[aria-label="Retry"]');
+    expect(retry).not.toBeNull();
+    retry!.click();
     await vi.waitFor(() => expect(pane.querySelector("[data-notes-editor-scroll]")).not.toBeNull());
     expect(notes.loadedPage?.id).toBe(child.page.id);
     expect(backend.open).toHaveBeenCalledTimes(2);

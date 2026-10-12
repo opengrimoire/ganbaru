@@ -3,6 +3,7 @@
   import Plus from "@lucide/svelte/icons/plus";
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import CollectionMenu from "$lib/components/collections/CollectionMenu.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import Select from "$lib/components/ui/Select.svelte";
   import { EVENT_COLOR_OPTIONS, getEventColor } from "$lib/calendar/utils";
   import { FALLBACK_COLOR_INDEX } from "$lib/calendar/types";
@@ -71,5 +72,5 @@
     </div>
   {/each}
   <button type="button" class="menu-item" disabled={query.presentationSaving || query.statuses.length === 0 || query.listPresentation.colorRules.length >= 32} onclick={addRule}><Plus class="size-3.5" />{t("projects.columns.addColorRule")}</button>
-  {#if query.presentationError}<p role="alert" class="px-2 py-1 text-destructive">{query.presentationError}</p>{/if}
+  {#if query.presentationError}<Notice class="px-2 py-1" message={query.presentationError} />{/if}
 </CollectionMenu>

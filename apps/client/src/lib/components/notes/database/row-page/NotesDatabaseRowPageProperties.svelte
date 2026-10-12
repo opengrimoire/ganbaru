@@ -31,6 +31,7 @@
   import NotesDatabasePropertySchemaEditor from "$lib/components/notes/database/NotesDatabasePropertySchemaEditor.svelte";
   import { notesPropertyHasSchemaOptions, notesPropertyKind, notesPropertyTypeOptions } from "$lib/components/notes/database/property-kinds";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { notesDatabaseCellCaret, notesDatabaseCellKeepsKey } from "$lib/notes/database/cell-keyboard";
@@ -205,20 +206,17 @@
   }
 
   /** Read the row again, or once open editors and saves finish, so a reload never replaces text being typed. */
-  function refresh(): void {
+  function refresh(): Promise<void> {
     if (busy()) {
       stale = true;
-      return;
+      return Promise.resolve();
     }
     stale = false;
     const request = ++loadRequest;
     const epoch = writeEpoch;
-    getNotesDataSourceRowPageContext(dataSourceId, pageId).then((loaded) => {
+    return getNotesDataSourceRowPageContext(dataSourceId, pageId).then((loaded) => {
       if (request !== loadRequest) return;
-      if (epoch !== writeEpoch) {
-        refresh();
-        return;
-      }
+      if (epoch !== writeEpoch) return refresh();
       context = loaded;
       loadError = null;
     }).catch((caught: unknown) => {
@@ -228,9 +226,15 @@
     });
   }
 
+  /** Reads the row again after its first load failed, rejecting while it is still unavailable. */
+  async function retryLoad(): Promise<void> {
+    await refresh();
+    if (loadError) throw new Error(loadError);
+  }
+
   /** Run a reload that waited for editors and saves, once none remain. */
   function settle(): void {
-    if (stale && !busy()) refresh();
+    if (stale && !busy()) void refresh();
   }
 
   function trackEditing(propertyId: string, editing: boolean): void {
@@ -605,7 +609,7 @@
 
 {#snippet messages()}
   {#if locked}<p class="px-2 py-1 text-panel-detail text-muted-foreground">{t("notes.databaseEditingLockDescription")}</p>{/if}
-  {#if error}<p class="px-2 py-1 text-panel-detail text-destructive" role="alert">{error}</p>{/if}
+  {#if error}<Notice class="px-2 py-1 text-panel-detail" message={error} />{/if}
 {/snippet}
 
 {#snippet propertyMenu(property: NotesDataSourceSchemaPropertyDraft, index: number)}
@@ -714,7 +718,7 @@
         {/if}
       {/if}
     </div>
-    {#if error}<p class="px-1.5 py-1 text-panel-detail text-destructive" role="alert">{error}</p>{/if}
+    {#if error}<Notice class="px-1.5 py-1 text-panel-detail" message={error} />{/if}
     <NotesDatabaseRowPageRelations {dataSourceId} sourceName={sourceTitle(context.schema.data_source)} {row}
       hierarchy={context.hierarchy} parent={context.parent} subitems={context.children} {onOpenPage}
       onSetParent={setParent} onCreateParent={createParent} onLinkSubitem={linkSubitem} onUnlinkSubitem={unlinkSubitem}
@@ -725,10 +729,7 @@
       maxLength={NOTES_DATA_SOURCE_PROPERTY_NAME_MAX_CHARACTERS} onCreate={createProperty} onClose={() => { adding = false; }} />
   {/if}
 {:else if loadError}
-  <div class="flex min-w-0 flex-wrap items-center gap-2 text-panel-detail">
-    <p class="min-w-0 text-destructive" role="alert">{t("notes.databaseRowPageLoadFailed", loadError)}</p>
-    <button type="button" class="min-h-8 rounded-floating-item border border-border px-2 hover:bg-accent" onclick={refresh}>{t("common.retry")}</button>
-  </div>
+  <Notice class="text-panel-detail" message={t("notes.databaseRowPageLoadFailed", loadError)} copy={loadError} onRetry={retryLoad} />
 {/if}
 
 {#if pendingConfirm}

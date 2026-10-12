@@ -15,6 +15,7 @@
   import Pencil from "@lucide/svelte/icons/pencil";
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import {
     COMPACT_IDENTITY_ICON_SIZE,
     COMPACT_IDENTITY_ICON_STROKE_WIDTH,
@@ -154,17 +155,18 @@
   });
 
   $effect(() => {
-    if (moveMenuOpen) requestDestinationPicker();
+    if (moveMenuOpen) void requestDestinationPicker();
   });
 
-  function requestDestinationPicker(retry = false): void {
-    if (!retry && destinationPickerLoadState?.key === "destination-picker") return;
+  /** Loads the destination picker on first use. A retry rejects when the load fails again. */
+  function requestDestinationPicker(retry = false): Promise<void> {
+    if (!retry && destinationPickerLoadState?.key === "destination-picker") return Promise.resolve();
     const loadingState = beginLazyComponentLoad(destinationPickerLoadState, "destination-picker");
     destinationPickerLoadState = loadingState;
     const request = retry
       ? retryNotesOptionalComponent("destination-picker")
       : loadNotesOptionalComponent("destination-picker");
-    void request.then((component) => {
+    return request.then((component) => {
       if (!destinationPickerLoadState) return;
       destinationPickerLoadState = resolveLazyComponentLoad(
         destinationPickerLoadState,
@@ -181,6 +183,7 @@
         error,
       );
       console.error("load Notes folder destination picker failed", error);
+      if (retry) throw error;
     });
   }
 
@@ -433,10 +436,7 @@
                   }}
                 />
               {:else if destinationPickerLoadState?.status === "failed"}
-                <div class="p-2 text-destructive" role="alert">
-                  <p>{t("common.viewLoadFailed", t("notes.moveFolderTo"))}</p>
-                  <button class="mt-2 min-h-8 rounded-floating-item border border-border px-2 text-foreground hover:bg-accent" type="button" onclick={() => requestDestinationPicker(true)}>{t("common.retry")}</button>
-                </div>
+                <Notice class="p-2" message={t("common.viewLoadFailed", t("notes.moveFolderTo"))} copy={false} onRetry={() => requestDestinationPicker(true)} />
               {:else}
                 <div class="p-2 text-muted-foreground" aria-busy="true">{t("common.loading")}</div>
               {/if}

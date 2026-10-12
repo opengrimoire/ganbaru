@@ -1,5 +1,6 @@
 <script lang="ts">
   import { getNotesEditor } from "$lib/components/notes/editor-context";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { notesPageDiscussionsInReadingOrder } from "$lib/notes/collaboration/discussions";
   import type { NotesActivityTimeLabels } from "$lib/notes/pages/activity";
@@ -58,6 +59,12 @@
     return notes.createComment(richText, attachments, { type: "page_id", page_id: pageId });
   }
 
+  /** Loads the comments again, rejecting while they are still unavailable. */
+  async function retryComments(): Promise<void> {
+    await notes.reloadComments();
+    if (notes.commentsError) throw new Error(notes.commentsError);
+  }
+
   function leaveEmpty(): void {
     if (threads.length === 0) onLeaveEmpty();
   }
@@ -66,12 +73,7 @@
 <section bind:this={root} {id} class="notes-page-comments min-w-0 text-collection" aria-labelledby={headingId}>
   <h2 id={headingId} class="mb-1.5 text-panel-detail font-medium text-muted-foreground">{t("notes.commentsHeading")}</h2>
   {#if notes.commentsError}
-    <p class="mb-2 flex flex-wrap items-center gap-2 text-panel-detail text-destructive" role="alert">
-      <span>{t("notes.loadCommentsFailed", notes.commentsError)}</span>
-      <button type="button" class="rounded-md px-1.5 py-0.5 text-foreground hover:bg-accent" onclick={() => void notes.reloadComments()}>
-        {t("common.retry")}
-      </button>
-    </p>
+    <Notice class="mb-2 text-panel-detail" message={t("notes.loadCommentsFailed", notes.commentsError)} copy={notes.commentsError} onRetry={retryComments} />
   {/if}
   {#if threads.length > 0}
     <div class="flex min-w-0 flex-col gap-2">

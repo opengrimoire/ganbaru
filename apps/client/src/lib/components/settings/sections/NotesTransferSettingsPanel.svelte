@@ -20,6 +20,7 @@
     type LoadedNotesTransferDialog,
   } from "./notes-transfer-dialog-registry";
   import type { NotesTransferOperation } from "$lib/settings/types";
+  import Notice from "$lib/components/ui/Notice.svelte";
 
   let {
     operation,
@@ -51,14 +52,15 @@
   const contentPaddingX = $derived(compactLayout ? "0.75rem" : iconRailLayout ? "1.25rem" : "2rem");
   const contentPaddingY = $derived(compactLayout ? "1rem" : iconRailLayout ? "1.25rem" : "2rem");
 
-  function requestDialog(nextOperation: NotesTransferOperation, retry = false): void {
-    if (!retry && dialogLoadState?.key === nextOperation) return;
+  /** Loads a transfer dialog component and resolves once the load state settles; failures land in the load state. */
+  function requestDialog(nextOperation: NotesTransferOperation, retry = false): Promise<void> {
+    if (!retry && dialogLoadState?.key === nextOperation) return Promise.resolve();
     const loadingState = beginLazyComponentLoad(dialogLoadState, nextOperation);
     dialogLoadState = loadingState;
     const request = retry
       ? retryNotesTransferDialog(nextOperation)
       : loadNotesTransferDialog(nextOperation);
-    void request
+    return request
       .then((component) => {
         if (!dialogLoadState) return;
         const nextState = resolveLazyComponentLoad(
@@ -83,11 +85,19 @@
       });
   }
 
+  /** Retries a failed transfer dialog load and rejects when it fails again, so the notice shows the outcome. */
+  async function retryDialog(nextOperation: NotesTransferOperation): Promise<void> {
+    await requestDialog(nextOperation, true);
+    if (dialogLoadState?.key === nextOperation && dialogLoadState.status === "failed") {
+      throw new Error(`The ${nextOperation} Notes transfer dialog could not be loaded`);
+    }
+  }
+
   const initialOperation = untrack(() => operation);
-  requestDialog(initialOperation);
+  void requestDialog(initialOperation);
 
   $effect(() => {
-    requestDialog(operation);
+    void requestDialog(operation);
   });
 
   $effect(() => {
@@ -261,15 +271,8 @@
       {/if}
     {:else if activeDialogLoadState?.status === "failed"}
       {@const failedOperation = activeDialogLoadState.key}
-      <div class="flex min-h-40 flex-col items-center justify-center gap-3 text-center text-sm text-muted-foreground" role="alert">
-        <p>{t("common.viewLoadFailed", operationDescription())}</p>
-        <button
-          type="button"
-          class="min-h-9 rounded-md border border-border bg-background px-3 font-medium text-foreground hover:bg-accent"
-          onclick={() => requestDialog(failedOperation, true)}
-        >
-          {t("common.retry")}
-        </button>
+      <div class="min-h-40 text-sm">
+        <Notice layout="fill" message={t("common.viewLoadFailed", operationDescription())} onRetry={() => retryDialog(failedOperation)} />
       </div>
     {:else}
       <div class="flex min-h-40 items-center justify-center text-sm text-muted-foreground" aria-busy="true">

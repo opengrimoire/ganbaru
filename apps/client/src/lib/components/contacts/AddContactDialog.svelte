@@ -3,6 +3,7 @@
   import X from "@lucide/svelte/icons/x";
   import { decodeContactCardQr, normalizeContactsError, parseContactCard, type ContactsErrorCode, type ParsedContactCard } from "$lib/api/contacts";
   import MobilePairingScanner from "$lib/components/vault/handoff/MobilePairingScanner.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { trustKindForDuration } from "$lib/contacts/trust";
   import { BUILD_PLATFORM_PROFILE } from "$lib/platform";
@@ -203,7 +204,11 @@
   {/if}
 
   {#if message}
-    <p class={cn("text-panel-detail", sendError || parseError || scanFailed ? "text-destructive" : "text-muted-foreground")} aria-live="polite">{message}</p>
+    {#if sendError || parseError || scanFailed}
+      <Notice class="text-panel-detail" {message} />
+    {:else}
+      <p class="text-panel-detail text-muted-foreground" aria-live="polite">{message}</p>
+    {/if}
   {/if}
 </ContactsDialog>
 

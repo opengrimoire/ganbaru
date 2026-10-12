@@ -1,5 +1,6 @@
 <script lang="ts">
   import NotesLoadingSkeleton from "$lib/components/notes/NotesLoadingSkeleton.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { untrack, type Snippet } from "svelte";
   import CollectionSettings from "$lib/components/collections/CollectionSettings.svelte";
   import { COLLECTION_VIEW_SETTINGS_PANEL_WIDTH } from "$lib/components/collections/collection-panel-width";
@@ -184,6 +185,12 @@
     } finally {
       if (currentRequest === requestId) loading = false;
     }
+  }
+
+  /** Reloads a view that failed to load, rejecting while it is still unavailable. */
+  async function retryTimeline(): Promise<void> {
+    await loadTimeline();
+    if (error) throw new Error(error);
   }
 
   async function loadMoreTimeline(): Promise<void> {
@@ -427,7 +434,7 @@
 <section class="space-y-3 pt-2" aria-label={t("notes.databaseTimelineTitle")}>
 
   <NotesDatabaseQueryBar properties={columns} {filters} {sorts} pending={mutating || editingLocked} onFiltersChange={saveFilters} onSortsChange={saveSorts} />
-  {#if error}<p class="text-[0.8rem] text-destructive" role="alert">{error}</p>{/if}
+  {#if error && timeline}<Notice class="text-[0.8rem]" message={error} />{/if}
   {#if settingsOpen}
     <CollectionSettings label={t("notes.databaseViewSettings")} anchor={settingsAnchor} preferredWidth={COLLECTION_VIEW_SETTINGS_PANEL_WIDTH} showHeader={false} onClose={onCloseSettings}>
       {@render settingsHeader?.()}
@@ -510,7 +517,9 @@
 
   </div>
 
-  {#if !timeline && !error}<NotesLoadingSkeleton kind="timeline" />{/if}
+  {#if !timeline && error}
+    <div class="min-h-32 text-[0.8rem]"><Notice layout="fill" message={t("notes.databaseTimelineFailed", error)} copy={error} onRetry={retryTimeline} /></div>
+  {:else if !timeline}<NotesLoadingSkeleton kind="timeline" />{/if}
   {#if timeline}
     {#if dateColumns.length === 0}
       <div class="rounded-md border border-border p-3 text-[0.866667rem] text-muted-foreground">

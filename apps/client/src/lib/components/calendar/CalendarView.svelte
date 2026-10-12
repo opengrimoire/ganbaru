@@ -22,6 +22,7 @@
   import type { CalendarEditDraft } from "$lib/components/calendar/view/native-edit-controller.svelte";
   import type { CalendarDeleteOutcome } from "$lib/api/calendar-edit";
   import { activeVaultIdentity } from "$lib/vault/active-vault";
+  import CalendarX from "@lucide/svelte/icons/calendar-x";
   import Plus from "@lucide/svelte/icons/plus";
   import CalendarHeader from "./CalendarHeader.svelte";
   import WeekView from "$lib/components/calendar/grid/WeekView.svelte";
@@ -29,6 +30,7 @@
   import MonthView from "$lib/components/calendar/grid/MonthView.svelte";
   import ActionToast from "$lib/components/ui/ActionToast.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { createEditSession } from "./edit-session.svelte";
   import type { EditSessionState, PanelAnchor } from "./edit-session.svelte";
   import { mark as perfMark } from "$lib/stores/perf-log.svelte";
@@ -100,6 +102,7 @@
   const preferences = getPreferences();
   const mobileBackStack = getMobileBackStack();
   const { t } = getLocalization();
+  const calendarBannerClass = "shrink-0 border-b border-border bg-popover px-3 py-2 text-sm";
   const toasts = createCalendarViewToastController();
   const confirm = createCalendarViewConfirmationController({
     defaultYesLabel: () => t("common.yes"),
@@ -1289,34 +1292,42 @@
   />
 
   {#if deleteEditor.uncertain || deleteEditor.resultPending}
-    <div role="status" class="flex shrink-0 items-center gap-3 border-b border-border bg-popover px-3 py-2 text-sm">
-      <span class="min-w-0 flex-1">{t(deleteEditor.uncertain ? "calendar.view.deleteUncertain" : "calendar.view.deleteRefreshPending")}</span>
-      <button type="button" class="shrink-0 underline underline-offset-2 disabled:opacity-50"
-        disabled={deleteEditor.committing} onclick={() => deleteController.retry()}>{t("common.retry")}</button>
-    </div>
+    <Notice
+      class={calendarBannerClass}
+      role="status"
+      tone="warning"
+      copy={false}
+      message={t(deleteEditor.uncertain ? "calendar.view.deleteUncertain" : "calendar.view.deleteRefreshPending")}
+      onRetry={() => (deleteEditor.committing ? undefined : deleteController.retry())}
+    />
   {:else if nativeEditor.uncertain || directEditor.uncertain}
-    <div role="status" class="flex shrink-0 items-center gap-3 border-b border-border bg-popover px-3 py-2 text-sm">
-      <span class="min-w-0 flex-1">{t("calendar.view.saveUncertain")}</span>
-      <button type="button" class="shrink-0 underline underline-offset-2 disabled:opacity-50"
-        disabled={nativeEditor.committing || directEditor.committing}
-        onclick={retryCalendarSave}>{t("common.retry")}</button>
-    </div>
+    <Notice
+      class={calendarBannerClass}
+      role="status"
+      tone="warning"
+      copy={false}
+      message={t("calendar.view.saveUncertain")}
+      onRetry={() => (nativeEditor.committing || directEditor.committing ? undefined : retryCalendarSave())}
+    />
   {:else if nativeEditor.error && session.state.mode !== "closed" && !nativeEditor.committing}
-    <div role="status" class="flex shrink-0 items-center gap-3 border-b border-border bg-popover px-3 py-2 text-sm">
-      <span class="min-w-0 flex-1">{t("calendar.view.previewFailed", nativeEditor.error)}</span>
-      <button type="button" class="shrink-0 underline underline-offset-2"
-        onclick={retryCalendarPreview}>{t("common.retry")}</button>
-    </div>
+    <Notice
+      class={calendarBannerClass}
+      role="status"
+      message={t("calendar.view.previewFailed", nativeEditor.error)}
+      copy={nativeEditor.error}
+      onRetry={retryCalendarPreview}
+    />
   {/if}
 
   {#if persistedSegments.unavailable}
-    <div role="status" class="flex shrink-0 items-center gap-3 border-b border-border bg-popover px-3 py-2 text-sm">
-      <span class="min-w-0 flex-1">{t("calendar.view.historyUnavailable")}</span>
-      <button type="button" class="shrink-0 underline underline-offset-2"
-        onclick={() => persistedSegments.refreshForTarget({ mode: viewMode, date: new Date(anchorDate) })}>
-        {t("common.retry")}
-      </button>
-    </div>
+    <Notice
+      class={calendarBannerClass}
+      role="status"
+      icon={CalendarX}
+      copy={false}
+      message={t("calendar.view.historyUnavailable")}
+      onRetry={() => persistedSegments.refreshForTarget({ mode: viewMode, date: new Date(anchorDate) })}
+    />
   {/if}
 
   <div

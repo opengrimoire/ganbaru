@@ -39,6 +39,7 @@
   import ChatFileIcon from "./ChatFileIcon.svelte";
   import ChatPaneResizeHandle from "./ChatPaneResizeHandle.svelte";
   import ChatWorkspaceFileTree from "./ChatWorkspaceFileTree.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
 
   let {
     active = true,
@@ -601,7 +602,7 @@
         {:else if observerMatchesScope && observerStatus?.degradedReason}
           <p role="status" class="live-update-status warning">{t("chat.inspector.liveUpdatesDegraded")}</p>
         {/if}
-        {#if visibleError}<p role="alert" class="border-b border-destructive/30 p-2 text-xs text-destructive">{visibleError}</p>{/if}
+        {#if visibleError}<Notice class="border-b border-border p-2 text-xs" message={visibleError} />{/if}
         {#if loadingRoot && !loadingRootVisible}
           <span aria-hidden="true"></span>
         {:else if loadingRootVisible}
@@ -650,7 +651,7 @@
           </div>
         </form>
       {/if}
-      {#if visibleError && !treeVisible}<p role="alert" class="border-b border-destructive/30 p-2 text-xs text-destructive">{visibleError}</p>{/if}
+      {#if visibleError && !treeVisible}<Notice class="border-b border-border p-2 text-xs" message={visibleError} />{/if}
       {#if editorSession.fileDeleted}
         <div role="alert" class="save-conflict">
           <span>{fileDirty ? t("chat.inspector.fileDeletedWithUnsavedChanges") : t("chat.inspector.fileDeletedOnDisk")}</span>

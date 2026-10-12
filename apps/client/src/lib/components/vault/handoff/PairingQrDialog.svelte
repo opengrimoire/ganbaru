@@ -7,6 +7,7 @@
     DesktopNetworkAccess,
     PairingInvitation,
   } from "$lib/api/vault-handoff";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
     activateModalFocus,
@@ -33,7 +34,7 @@
     invitationError: string | null;
     onGrantNetworkAccess: () => void;
     onRefresh: () => void;
-    onRetry: () => void;
+    onRetry: () => unknown;
     onClose: () => void;
   } = $props();
 
@@ -122,23 +123,17 @@
     <div class="mt-5">
       {#if invitation}
         <PairingQrCode {invitation} onExpired={onRefresh} />
+      {:else if invitationError}
+        <div class="grid justify-items-center gap-3">
+          <div class="flex aspect-square w-full max-w-80">
+            <Notice layout="fill" class="text-[0.8rem]" message={invitationError} {onRetry} />
+          </div>
+          <div class="h-5" aria-hidden="true"></div>
+        </div>
       {:else}
         <div class="grid justify-items-center gap-3" role="status" aria-label={t("common.loading")}>
           <div class="grid aspect-square w-full max-w-80 place-items-center bg-white">
-            {#if invitationError}
-              <div class="flex max-w-56 flex-col items-center gap-3 px-4 text-center">
-                <p class="text-[0.8rem] leading-5 text-destructive">{invitationError}</p>
-                <button
-                  type="button"
-                  class="inline-flex min-h-9 items-center justify-center rounded-md border border-border bg-background px-3 text-[0.8rem] font-medium text-foreground hover:bg-accent"
-                  onclick={onRetry}
-                >
-                  {t("common.retry")}
-                </button>
-              </div>
-            {:else}
-              <LoaderCircle size={28} strokeWidth={1.8} class="animate-spin text-black/45" aria-hidden="true" />
-            {/if}
+            <LoaderCircle size={28} strokeWidth={1.8} class="animate-spin text-black/45" aria-hidden="true" />
           </div>
           <div class="h-5" aria-hidden="true"></div>
         </div>
@@ -158,9 +153,7 @@
       {/if}
     </div>
     {#if copyFailed}
-      <p role="alert" class="mt-2 text-center text-[0.8rem] text-destructive">
-        {t("vaultHandoff.copyCodeFailed")}
-      </p>
+      <Notice class="mt-2 justify-center text-[0.8rem]" copy={false} message={t("vaultHandoff.copyCodeFailed")} />
     {/if}
 
     {#if networkAccess?.state === "authorizationRequired"}
@@ -179,14 +172,10 @@
         </button>
       </div>
     {:else if networkAccess?.state === "manualActionRequired"}
-      <p role="alert" class="mt-4 text-center text-[0.8rem] leading-5 text-destructive">
-        {t("vaultHandoff.networkAccessManual")}
-      </p>
+      <Notice class="mt-4 justify-center text-[0.8rem] leading-5" tone="warning" copy={false} message={t("vaultHandoff.networkAccessManual")} />
     {/if}
     {#if networkError}
-      <p role="alert" class="mt-3 text-center text-[0.8rem] leading-5 text-destructive">
-        {networkError}
-      </p>
+      <Notice class="mt-3 justify-center text-[0.8rem] leading-5" message={networkError} />
     {/if}
   </div>
 </div>

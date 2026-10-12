@@ -57,6 +57,7 @@
   import { requireActiveVaultIdentity } from "$lib/vault/active-vault";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import ChatParticipantAvatar from "$lib/components/chat/identity/ChatParticipantAvatar.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import Select from "$lib/components/ui/Select.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
 
@@ -969,6 +970,7 @@
       onRequestScrollToBottom();
     } catch (cause: unknown) {
       error = cause instanceof Error ? cause.message : String(cause);
+      throw cause;
     } finally {
       retryingAssignment = false;
     }
@@ -1264,11 +1266,7 @@
 <div class="composer-stack">
   <span class="sr-only" aria-live="polite">{announcement}</span>
   {#if failedAssignment}
-    <div class="assignment-error-summary" role="status">
-      <CircleAlert size={13} />
-      <span>{t("chat.organization.workStopped")}</span>
-      <button type="button" disabled={retryingAssignment} onclick={() => void retryFailedAssignment()}>{t("chat.organization.retry")}</button>
-    </div>
+    <Notice class="assignment-notice" role="status" message={t("chat.organization.workStopped")} retryLabel={t("chat.organization.retry")} onRetry={retryFailedAssignment} copy={false} />
   {/if}
   {#if nextScheduledMessage}
     <div class="scheduled-summary">
@@ -1410,16 +1408,16 @@
         </div>
       </div>
     {/if}
-    {#if error}<p class="composer-error" role="alert">{error}</p>{/if}
+    {#if error}<Notice class="composer-error" message={error} />{/if}
   </div>
 </div>
 
 <style>
   .composer-stack { width:min(100%,var(--chat-conversation-max-width,60rem)); }
-  .assignment-error-summary,.scheduled-summary { display:flex; min-height:2rem; align-items:center; gap:0.45rem; margin:0 0.35rem 0.35rem; border-radius:0.55rem; padding:0.25rem 0.35rem 0.25rem 0.55rem; }
-  .assignment-error-summary { background:color-mix(in srgb,var(--destructive) 9%,transparent); color:var(--destructive); }
-  .assignment-error-summary > span,.scheduled-summary > span { min-width:0; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:calc(0.7rem * var(--type-scale)); }
-  .assignment-error-summary > button,.scheduled-summary button { min-height:1.75rem; border-radius:0.4rem; padding:0.2rem 0.45rem; font-size:calc(0.68rem * var(--type-scale)); font-weight:500; }
+  .scheduled-summary { display:flex; min-height:2rem; align-items:center; gap:0.45rem; margin:0 0.35rem 0.35rem; border-radius:0.55rem; padding:0.25rem 0.35rem 0.25rem 0.55rem; }
+  .composer-stack :global(.assignment-notice) { margin:0 0.35rem 0.35rem; padding:0.25rem 0.35rem 0.25rem 0.55rem; font-size:calc(0.7rem * var(--type-scale)); }
+  .scheduled-summary > span { min-width:0; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:calc(0.7rem * var(--type-scale)); }
+  .scheduled-summary button { min-height:1.75rem; border-radius:0.4rem; padding:0.2rem 0.45rem; font-size:calc(0.68rem * var(--type-scale)); font-weight:500; }
   .scheduled-summary { background:color-mix(in srgb,var(--accent) 58%,transparent); color:var(--muted-foreground); }
   .scheduled-summary-anchor,.menu-anchor { position:relative; }
   .assignment-preview { display:grid; min-height:2.45rem; grid-template-columns:auto minmax(0,1fr) auto auto; align-items:center; gap:0.5rem; margin:0 0.4rem 0.4rem; border:1px solid color-mix(in srgb,var(--border) 68%,transparent); border-radius:0.65rem; background:color-mix(in srgb,var(--card) 80%,transparent); padding:0.35rem 0.55rem; color:var(--muted-foreground); }
@@ -1446,7 +1444,7 @@
   .send-button { display:grid; width:2rem; height:2rem; flex:0 0 auto; place-items:center; border-radius:999px; background:color-mix(in srgb,var(--primary) 92%,transparent); color:var(--primary-foreground); box-shadow:0 2px 7px color-mix(in srgb,var(--primary) 22%,transparent); transition:transform 120ms ease,filter 120ms ease; }.send-button:hover:not(:disabled) { filter:brightness(1.04); transform:scale(1.04); }.send-button:disabled,.send-button[aria-disabled="true"] { opacity:0.45; }
   .composer-menu { position:absolute; z-index:110; max-width:calc(100vw - 1rem); }.add-menu,.schedule-loading { bottom:calc(100% + 0.35rem); left:0; }.schedule-loading.align-right { right:0; left:auto; }
   .composer-blocker { display:flex; gap:0.45rem; margin:0 0.65rem 0.5rem; border-radius:0.5rem; background:color-mix(in srgb,var(--destructive) 8%,transparent); padding:0.45rem 0.55rem; color:var(--destructive); outline:none; }.composer-blocker:focus-visible { outline:2px solid var(--ring); }.composer-blocker > div { display:grid; gap:0.2rem; }.composer-blocker p { font-size:calc(0.68rem * var(--type-scale)); }.composer-blocker span { display:flex; flex-wrap:wrap; gap:0.25rem; }.composer-blocker button { min-height:1.75rem; border-radius:0.35rem; padding:0.2rem 0.4rem; font-size:calc(0.62rem * var(--type-scale)); font-weight:600; }.composer-blocker button:hover { background:color-mix(in srgb,var(--destructive) 10%,transparent); }
-  .composer-error { padding:0 0.75rem 0.5rem; color:var(--destructive); font-size:calc(0.7rem * var(--type-scale)); }
+  .composer-stack :global(.composer-error) { padding:0 0.75rem 0.5rem; font-size:calc(0.7rem * var(--type-scale)); }
   .sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; }
   @media (max-width:42rem) { .assignment-preview { grid-template-columns:auto minmax(0,1fr); }.assignment-preview :global(.assignment-target-select),.approval-pill { grid-column:2; }.reference-picker { right:0.3rem; left:0.3rem; }.composer-tools { gap:0.05rem; } }
   @media (pointer:coarse) { .tool-button,.send-button { min-width:2.75rem; min-height:2.75rem; } }

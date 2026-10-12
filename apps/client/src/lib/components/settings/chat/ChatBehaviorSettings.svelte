@@ -6,6 +6,7 @@
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getChat } from "$lib/stores/chat.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import Select from "$lib/components/ui/Select.svelte";
   import SwitchField from "$lib/components/ui/SwitchField.svelte";
 
@@ -56,6 +57,17 @@
 
   async function loadDiagnostics(): Promise<void> {
     diagnostics = await chatApi.readChatDiagnostics();
+  }
+
+  /** Retries loading Chat diagnostics and rejects when the load fails again. */
+  async function retryDiagnostics(): Promise<void> {
+    error = null;
+    try {
+      await loadDiagnostics();
+    } catch (cause: unknown) {
+      error = cause instanceof Error ? cause.message : String(cause);
+      throw cause;
+    }
   }
 
   async function updateDiagnosticPreferences(patch: Partial<ChatDiagnosticsRead["preferences"]>): Promise<string> {
@@ -129,7 +141,7 @@
   <div class="px-1">
     <h2 class="text-[0.866667rem] font-semibold text-foreground">{t("settings.chat.behavior.heading")}</h2>
   </div>
-  {#if error}<p role="alert" class="text-sm text-destructive">{error}</p>{/if}
+  {#if error}<Notice class="text-sm" message={error} onRetry={diagnostics ? undefined : retryDiagnostics} />{/if}
   {#if status}<p role="status" class="text-sm text-action-confirm">{status}</p>{/if}
   {#if behavior}
     <div class="flex flex-col gap-3">

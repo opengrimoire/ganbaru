@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { MusicSourceCollection } from "$lib/music/library/contracts";
   import type { MusicSourcesController } from "$lib/music/sources/controller.svelte";
@@ -75,7 +76,7 @@
     </label>
   </fieldset>
   <p class="mt-4 text-xs leading-relaxed text-muted-foreground"><span class="font-medium text-foreground">{t("music.builder.sourceRemovalFilesStay")}</span> {consequence}</p>
-  {#if error}<p class="mt-3 text-sm text-destructive" role="alert">{error}</p>{/if}
+  {#if error}<Notice class="mt-3 text-sm" message={error} />{/if}
   {#snippet footer()}
     <button type="button" onclick={onClose} disabled={saving} class="min-h-10 rounded-md border border-border bg-card px-3.5 py-2 text-sm font-medium hover:bg-accent disabled:opacity-50">{t("music.builder.cancel")}</button>
     <button type="button" onclick={() => { void confirm(); }} disabled={saving} class:destructive-action={choice !== "binding"} class:primary-action={choice === "binding"} class="min-h-10 rounded-md px-3.5 py-2 text-sm font-medium disabled:opacity-50">{actionLabel}</button>

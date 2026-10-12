@@ -6,6 +6,7 @@
     type PairingStatus,
   } from "$lib/api/vault-handoff";
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { mobileTopBarPanelGeometry } from "$lib/mobile/layout";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
@@ -268,20 +269,17 @@
         <MobileLinkingScreen initialStatus={status} onComplete={handleMobileLinkingComplete} />
       {:else if mobileLinkingLoadError}
         <div
-          class="mobile-viewport-height grid place-items-center px-6 text-center"
+          class="mobile-viewport-height flex px-6"
           style="padding-top: var(--safe-area-top); padding-bottom: var(--safe-area-bottom);"
-          role="alert"
         >
-          <div class="flex max-w-sm flex-col items-center gap-4">
-            <p class="text-sm leading-6 text-muted-foreground">{mobileLinkingLoadError}</p>
-            <button
-              type="button"
-              class="min-h-11 rounded-md border border-border px-4 text-sm font-medium"
-              onclick={() => void loadMobileLinkingScreen()}
-            >
-              {t("vaultHandoff.retry")}
-            </button>
-          </div>
+          <Notice
+            layout="fill"
+            class="text-sm"
+            message={mobileLinkingLoadError}
+            retryLabel={t("vaultHandoff.retry")}
+            onRetry={loadMobileLinkingScreen}
+            onDismiss={closePanel}
+          />
         </div>
       {:else}
         <div
@@ -325,16 +323,12 @@
             onOpenDataSettings={openDataSettings}
           />
         {:else if panelLoadError}
-          <div class="flex flex-col gap-3" role="alert">
-            <p class="wrap-break-word text-panel-detail text-muted-foreground">{panelLoadError}</p>
-            <button
-              type="button"
-              class="min-h-9 rounded-floating-item border border-border px-3 font-medium hover:bg-accent"
-              onclick={() => void loadPanel()}
-            >
-              {t("vaultHandoff.retry")}
-            </button>
-          </div>
+          <Notice
+            class="px-3 py-2 text-panel-detail"
+            message={panelLoadError}
+            retryLabel={t("vaultHandoff.retry")}
+            onRetry={loadPanel}
+          />
         {:else}
           <p class="p-4 text-center text-muted-foreground" aria-busy="true">
             {t("common.loading")}

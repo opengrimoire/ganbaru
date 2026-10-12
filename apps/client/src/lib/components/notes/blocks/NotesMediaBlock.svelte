@@ -8,6 +8,7 @@
   } from "$lib/api/notes/file-assets";
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import {
     mediaCaptionPlainText,
@@ -413,14 +414,10 @@
         </p>
       {/if}
       {#if localFileError}
-        <p class="text-[0.733333rem] text-destructive">
-          {t("notes.mediaLocalAttachFailed", localFileError)}
-        </p>
+        <Notice class="text-[0.733333rem]" message={t("notes.mediaLocalAttachFailed", localFileError)} copy={localFileError} />
       {/if}
       {#if openError}
-        <p class="text-[0.733333rem] text-destructive">
-          {t("notes.openMediaFailed", openError)}
-        </p>
+        <Notice class="text-[0.733333rem]" message={t("notes.openMediaFailed", openError)} copy={openError} />
       {/if}
     </div>
     {#if nativeFilePickerAvailable}

@@ -1,6 +1,7 @@
 <script lang="ts" generics="Item extends { id: string }, Group extends { id: string }">
   import type { Snippet } from "svelte";
   import GripVertical from "@lucide/svelte/icons/grip-vertical";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { cn } from "$lib/utils";
   import { collectionWindow } from "./collection-window";
 
@@ -99,7 +100,7 @@
 </script>
 
 <div class={cn("flex min-h-0 min-w-0 flex-col", fill && "h-full")}>
-  {#if error}<p role="alert" class="px-3 py-2 text-[0.8rem] text-destructive">{error}</p>{/if}
+  {#if error}<Notice class="px-3 py-2 text-[0.8rem]" message={error} />{/if}
   <div data-collection-scroll class={cn("collection-board flex min-h-0 min-w-0 gap-3 overflow-x-auto py-2", fill && "h-full px-3")}>
     {#each groups as group (group.id)}
       {@const rows = items(group)}

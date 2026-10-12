@@ -2,6 +2,7 @@
   import { tick } from "svelte";
   import type { HTMLInputAttributes } from "svelte/elements";
   import Plus from "@lucide/svelte/icons/plus";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { cn } from "$lib/utils";
   let { label, draft = $bindable(""), active = $bindable(false), disabled = false, inputAttributes, contentColumn, indent, onDraftChange, onActiveChange, onSubmit, onCreate }: {
@@ -76,5 +77,5 @@
   {:else}
     <button bind:this={trigger} type="button" class="flex min-h-(--collection-table-row-height) w-full items-center gap-2 rounded-md px-2 text-left text-collection text-muted-foreground hover:bg-accent/40 hover:text-foreground" {disabled} onclick={() => { void begin(); }}><Plus class="size-4" />{label}</button>
   {/if}
-  {#if error}<p role="alert" class="px-2 py-1 text-[0.8rem] text-destructive" style={contentStyle}>{error}</p>{/if}
+  {#if error}<div style={contentStyle}><Notice class="px-2 py-1 text-[0.8rem]" message={error} /></div>{/if}
 </div>

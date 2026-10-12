@@ -568,6 +568,7 @@ export const chat = {
     closeTerminal: "Close terminal",
     terminalExited: (code: string) => `Exited with code ${code}`,
     terminalStopped: "Stopped",
+    terminalUnavailable: "The terminal could not start.",
     confirmCloseTerminal: "This terminal is still running. Close it and terminate its process?",
     confirmMultilinePaste: "Paste multiple terminal lines?",
     toggleTerminalSplit: "Toggle split terminals",

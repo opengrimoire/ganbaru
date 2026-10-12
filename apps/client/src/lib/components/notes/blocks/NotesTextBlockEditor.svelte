@@ -1,5 +1,6 @@
 <script lang="ts">
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import type { NotesHeadingBlockType } from "$lib/notes/blocks/factory";
   import type { NotesBlockInsertRequest } from "$lib/notes/blocks/insertion";
@@ -321,7 +322,7 @@
         onChange={(nextValue) => onCodeLanguageChange(block.id, nextValue)}
       />
     {:else if controlLoadStates["code-language"]?.status === "failed"}
-      <button type="button" class="h-7 rounded-md px-2 text-[0.8rem] hover:bg-accent" onclick={() => runtime.requestControl("code-language", true)}>{t("common.retry")}</button>
+      <Notice class="text-[0.8rem]" message={t("common.viewLoadFailed", t("notes.codeLanguage"))} copy={false} onRetry={() => runtime.requestControl("code-language", true)} />
     {:else}
       <span class="h-7 px-2 text-[0.8rem] text-muted-foreground" aria-busy="true">{block.code.language}</span>
     {/if}
@@ -336,8 +337,10 @@
     {onUseTemplate}
     {onAddTemplateChild}
     />
+  {:else if controller.templateControlsOpen && controlLoadStates["template-controls"]?.status === "failed"}
+    <Notice class="mb-1 text-[0.8rem]" message={t("common.viewLoadFailed", t("notes.blockType.template"))} copy={false} onRetry={controller.openTemplateControls} />
   {:else}
-    <button class="mb-1 min-h-8 rounded-md border border-border px-2 text-[0.8rem] text-foreground hover:bg-accent" type="button" onclick={controller.openTemplateControls}>{controlLoadStates["template-controls"]?.status === "failed" ? t("common.retry") : t("notes.blockType.template")}</button>
+    <button class="mb-1 min-h-8 rounded-md border border-border px-2 text-[0.8rem] text-foreground hover:bg-accent" type="button" onclick={controller.openTemplateControls}>{t("notes.blockType.template")}</button>
   {/if}
 {:else if block.type === "button"}
   {#if controller.buttonControlsOpen && controlLoadStates["button-controls"]?.status === "ready" && controlLoadStates["button-controls"].component.kind === "button-controls"}
@@ -352,8 +355,10 @@
     {onButtonIconChange}
     {onButtonInsertPositionChange}
     />
+  {:else if controller.buttonControlsOpen && controlLoadStates["button-controls"]?.status === "failed"}
+    <Notice class="mb-1 text-[0.8rem]" message={t("common.viewLoadFailed", t("notes.blockType.button"))} copy={false} onRetry={controller.openButtonControls} />
   {:else}
-    <button class="mb-1 min-h-8 rounded-md border border-border px-2 text-[0.8rem] text-foreground hover:bg-accent" type="button" onclick={controller.openButtonControls}>{controlLoadStates["button-controls"]?.status === "failed" ? t("common.retry") : text || t("notes.blockType.button")}</button>
+    <button class="mb-1 min-h-8 rounded-md border border-border px-2 text-[0.8rem] text-foreground hover:bg-accent" type="button" onclick={controller.openButtonControls}>{text || t("notes.blockType.button")}</button>
   {/if}
 {/if}
 <div
@@ -431,7 +436,7 @@
       onClose={controller.closeContextMenu}
     />
   {:else if controlLoadStates["text-context-menu"]?.status === "failed"}
-    <button class="surface-floating fixed z-50 min-h-8 px-2" style:left={`${contextMenuPoint.x}px`} style:top={`${contextMenuPoint.y}px`} type="button" onclick={() => runtime.requestControl("text-context-menu", true)}>{t("common.retry")}</button>
+    <Notice layout="floating" class="text-panel" message={t("common.viewLoadFailed", t("notes.textContextMenu"))} copy={false} onRetry={() => runtime.requestControl("text-context-menu", true)} onDismiss={() => controller.closeContextMenu(true)} />
   {/if}
 {/if}
 {#if mentionOpen || slashOpen}
@@ -476,7 +481,7 @@
     onCancel={controller.cancelLinkEditor}
     />
   {:else if controlLoadStates["link-editor"]?.status === "failed"}
-    <button class="surface-floating fixed z-60 min-h-8 px-2" type="button" onclick={() => runtime.requestControl("link-editor", true)}>{t("common.retry")}</button>
+    <Notice layout="floating" class="text-panel" message={t("common.viewLoadFailed", t("notes.openLinkEditor"))} copy={false} onRetry={() => runtime.requestControl("link-editor", true)} onDismiss={() => controller.cancelLinkEditor(true)} />
   {/if}
 {/if}
 
@@ -486,7 +491,7 @@
     <NotesDateMentionEditor anchor={controller.dateMentionAnchor} mention={controller.editedDateMention}
       onChange={controller.changeDateMention} onClose={controller.closeDateMentionEditor} />
   {:else if controlLoadStates["date-mention-editor"]?.status === "failed"}
-    <button class="surface-floating fixed z-60 min-h-8 px-2" type="button" onclick={() => runtime.requestControl("date-mention-editor", true)}>{t("common.retry")}</button>
+    <Notice layout="floating" class="text-panel" message={t("common.viewLoadFailed", t("notes.dateMentionEditor"))} copy={false} onRetry={() => runtime.requestControl("date-mention-editor", true)} onDismiss={() => controller.closeDateMentionEditor(true)} />
   {/if}
 {/if}
 
@@ -511,7 +516,10 @@
     onInviteDismiss={() => { void controller.closeMentionInvite(false); }}
     />
   {:else if controlLoadStates["mention-menu"]?.status === "failed"}
-    <button class="min-h-8 rounded-md border border-border px-2 text-[0.8rem]" type="button" onclick={() => runtime.requestControl("mention-menu", true)}>{t("common.retry")}</button>
+    <!-- Keeping editor focus keeps the menu open while its retry is pressed. -->
+    <div class="mt-1 text-[0.8rem]" role="presentation" onmousedown={(event) => event.preventDefault()}>
+      <Notice message={t("common.viewLoadFailed", t("notes.mentionMenu"))} copy={false} onRetry={() => runtime.requestControl("mention-menu", true)} />
+    </div>
   {/if}
 {:else if slashOpen}
   {#if controlLoadStates["slash-menu"]?.status === "ready" && controlLoadStates["slash-menu"].component.kind === "slash-menu"}
@@ -530,7 +538,10 @@
     onSelect={selectSlashCommand}
     />
   {:else if controlLoadStates["slash-menu"]?.status === "failed"}
-    <button class="min-h-8 rounded-md border border-border px-2 text-[0.8rem]" type="button" onmousedown={(event) => event.preventDefault()} onclick={() => runtime.requestControl("slash-menu", true)}>{t("common.retry")}</button>
+    <!-- Keeping editor focus keeps the menu open while its retry is pressed. -->
+    <div class="mt-1 text-[0.8rem]" role="presentation" onmousedown={(event) => event.preventDefault()}>
+      <Notice message={t("common.viewLoadFailed", t("notes.slashMenu"))} copy={false} onRetry={() => runtime.requestControl("slash-menu", true)} />
+    </div>
   {:else}
     <div class="text-sm text-muted-foreground" role="status">{t("common.loading")}</div>
   {/if}

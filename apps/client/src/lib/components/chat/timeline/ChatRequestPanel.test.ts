@@ -78,7 +78,7 @@ describe("ChatRequestPanel", () => {
     await Promise.resolve();
     await tick();
 
-    expect(body.querySelector('[role="alert"]')?.textContent).toBe("Chat thread revision is stale");
+    expect(body.querySelector('[role="alert"]')?.textContent?.trim()).toBe("Chat thread revision is stale");
     expect(body.textContent).not.toContain("[object Object]");
     expect(body.querySelector<HTMLButtonElement>(".request-actions button")?.disabled).toBe(false);
   });

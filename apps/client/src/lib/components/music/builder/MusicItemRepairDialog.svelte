@@ -1,5 +1,6 @@
 <script lang="ts">
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { MusicSourcesController } from "$lib/music/sources/controller.svelte";
   import { formatMusicDuration } from "$lib/music/builder/presentation";
@@ -63,7 +64,7 @@
       {:else}
         <div class="py-8 text-center"><button type="button" onclick={() => { void choose(); }} class="min-h-10 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">{t("music.builder.chooseReplacementFile")}</button></div>
       {/if}
-      {#if error}<p class="mt-3 text-sm text-destructive" role="alert">{error}</p>{/if}
+      {#if error}<Notice class="mt-3 text-sm" message={error} />{/if}
     </div>
     {#snippet footer()}
       <button type="button" onclick={onClose} disabled={busy} class="min-h-10 rounded-md border border-border bg-card px-3.5 py-2 text-sm font-medium hover:bg-accent disabled:opacity-50">{t("music.builder.close")}</button>

@@ -2,6 +2,7 @@
   import ArrowRight from "@lucide/svelte/icons/arrow-right";
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
     buildProjectGanttDatePatch,
@@ -350,9 +351,7 @@
                   </p>
                 {/each}
                 {#if cascade.error}
-                  <div class="rounded border border-destructive/30 bg-destructive/10 px-2 py-1 text-[0.766667rem] text-destructive">
-                    {cascade.error}
-                  </div>
+                  <Notice class="text-[0.766667rem]" message={cascade.error} />
                 {/if}
               </section>
             {/if}

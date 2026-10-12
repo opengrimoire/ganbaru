@@ -1,5 +1,6 @@
 <script lang="ts">
   import Select from "$lib/components/ui/Select.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { listNotesDataSourceRowPages } from "$lib/api/notes";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
@@ -61,6 +62,12 @@
     } finally {
       loading = false;
     }
+  }
+
+  /** Reloads relation targets after a failure, rejecting while they are still unavailable. */
+  async function retryTargets(): Promise<void> {
+    await loadTargets();
+    if (error) throw new Error(error);
   }
 
   function addRelation(targetId: string): void {
@@ -137,6 +144,6 @@
   {/if}
 
   {#if error}
-    <p class="text-[0.733333rem] text-destructive">{t("notes.databaseRelationLoadFailed", error)}</p>
+    <Notice class="text-[0.733333rem]" message={t("notes.databaseRelationLoadFailed", error)} copy={error} onRetry={retryTargets} />
   {/if}
 </div>

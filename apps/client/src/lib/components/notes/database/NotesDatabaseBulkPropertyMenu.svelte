@@ -8,6 +8,7 @@
   import CollectionMenuSeparator from "$lib/components/collections/CollectionMenuSeparator.svelte";
   import CollectionMenuTextField from "$lib/components/collections/CollectionMenuTextField.svelte";
   import CollectionPropertyIcon from "$lib/components/collections/CollectionPropertyIcon.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { listNotesDataSourceRowPages } from "$lib/api/notes";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { notesDatabaseBulkToggledItem, notesDatabaseBulkValue } from "$lib/notes/database/bulk-edit";
@@ -62,6 +63,12 @@
     } finally {
       targetsLoading = false;
     }
+  }
+
+  /** Reloads relation targets after a failure, rejecting while they are still unavailable. */
+  async function retryTargets(): Promise<void> {
+    await loadTargets(true);
+    if (targetsError) throw new Error(targetsError);
   }
 
   let dateTrigger: HTMLButtonElement | undefined = $state();
@@ -138,7 +145,7 @@
         {/each}
       {:else if column.type === "relation"}
         {#if targetsError}
-          <p class="px-2 py-1 text-destructive">{t("notes.databaseRelationLoadFailed", targetsError)}</p>
+          <Notice class="px-2 py-1" message={t("notes.databaseRelationLoadFailed", targetsError)} copy={targetsError} onRetry={retryTargets} />
         {:else if targetsLoading && targetRows.length === 0}
           <p class="px-2 py-1 text-muted-foreground">{t("notes.databaseRelationLoading")}</p>
         {:else if !column.relationDataSourceId}

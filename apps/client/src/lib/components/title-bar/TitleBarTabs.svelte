@@ -125,7 +125,7 @@
 <div class="relative flex min-w-0 items-center gap-0.5 overflow-hidden pl-1.5">
   {#if indicatorStyle}
     <div
-      class="tab-indicator absolute top-0 h-full rounded-md bg-card shadow-(--tab-active-shadow) dark:bg-accent"
+      class="tab-indicator absolute top-0 h-full rounded-md bg-card shadow-(--tab-active-shadow)"
       style={indicatorStyle}
     ></div>
   {/if}

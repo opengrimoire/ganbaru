@@ -86,7 +86,7 @@ export type CalendarColorDefaultMode =
  * a stored theme's stamp and this constant to render an opt-in "rebake"
  * banner so non-pinned colors do not silently drift across app updates.
  */
-export const DERIVATION_ENGINE_VERSION = 6;
+export const DERIVATION_ENGINE_VERSION = 7;
 
 /**
  * A built-in theme ships with the app, never persists to SQLite, and paints
@@ -273,7 +273,7 @@ export const darkTheme: BuiltinTheme = Object.freeze({
   base: "dark",
   iconLabel: "dark",
   eventPalette: DARK_EVENT_PALETTE,
-  blendCanvas: "#131314",
+  blendCanvas: "#1F2023",
 });
 
 /**
@@ -537,20 +537,20 @@ export const BASE_APP_TOKENS: Readonly<
   light: Object.freeze({
     "--background": "#F4F4F7",
     "--card": "#FFFFFF",
-    "--card-foreground": "#141420",
+    "--card-foreground": "#17171F",
     "--popover": "#FFFFFF",
-    "--popover-foreground": "#141420",
+    "--popover-foreground": "#17171F",
     "--secondary": "#E2E2E7",
-    "--secondary-foreground": "#141420",
+    "--secondary-foreground": "#17171F",
     "--muted": "#E2E2E7",
-    "--muted-foreground": "#646470",
+    "--muted-foreground": "#6F6F7A",
     "--accent": "#E8E8ED",
-    "--accent-foreground": "#141420",
+    "--accent-foreground": "#17171F",
     "--ring": "#8C8C98",
-    "--sidebar": "#ECECEF",
-    "--sidebar-foreground": "#141420",
+    "--sidebar": "#EEEEF1",
+    "--sidebar-foreground": "#17171F",
     "--sidebar-accent": "#E0E0E5",
-    "--sidebar-accent-foreground": "#141420",
+    "--sidebar-accent-foreground": "#17171F",
     "--event-panel-bg": "#F0F4F9",
     "--event-panel-contrast": "#E8EDF5",
     "--event-panel-edge": "#0000004D",
@@ -560,7 +560,7 @@ export const BASE_APP_TOKENS: Readonly<
     "--event-panel-placeholder": "#444746",
     "--event-panel-text": "#141420",
     "--event-panel-muted-text": "#646470",
-    "--foreground": "#141420",
+    "--foreground": "#17171F",
     "--form-indicator": "#6B6F6E",
     "--primary": "#404048",
     "--primary-foreground": "#F4F4F7",
@@ -590,9 +590,9 @@ export const BASE_APP_TOKENS: Readonly<
     "--accent": "#3B3B3F",
     "--accent-foreground": "#ECECF2",
     "--ring": "#606070",
-    "--sidebar": "#1E1E23",
+    "--sidebar": "#151518",
     "--sidebar-foreground": "#FFFFFF",
-    "--sidebar-accent": "#3B3B3F",
+    "--sidebar-accent": "#2A2B2F",
     "--sidebar-accent-foreground": "#FFFFFF",
     "--event-panel-bg": "#2A2B2E",
     "--event-panel-contrast": "#222325",
@@ -630,16 +630,16 @@ export const BASE_CALENDAR_TOKENS: Readonly<
 > = Object.freeze({
   light: Object.freeze({
     "--cal-bg": "#FFFFFF",
-    "--cal-gridline": "#DDDDE3",
-    "--cal-time-label": "#646470",
+    "--cal-gridline": "#ECECF0",
+    "--cal-time-label": "#6F6F7A",
     "--cal-timeline-rail": "#E5E7EB",
     "--cal-current-time": "#B83A3A",
     "--cal-timeline-break": "#000000",
     "--cal-timeline-focus": "#39965c",
   }),
   dark: Object.freeze({
-    "--cal-bg": "#131314",
-    "--cal-gridline": "#333537",
+    "--cal-bg": "#1F2023",
+    "--cal-gridline": "#2A2B2F",
     "--cal-time-label": "#9494A0",
     "--cal-timeline-rail": "#3F3F46",
     "--cal-current-time": "#B83A3A",

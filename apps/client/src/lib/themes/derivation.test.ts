@@ -473,13 +473,13 @@ describe("deriveCalendarTokens", () => {
   for (const base of ["light", "dark"] as const) {
     const sources = base === "light" ? LIGHT_SOURCES : DARK_SOURCES;
 
-    it(`gridline sits at or above 1.4:1 against the calendar canvas (${base})`, () => {
-      // The 1.4 gridline target lets cloned themes inherit the
-      // built-in's subtle gridline style (~1.5:1) instead of
-      // prominent 3:1 lines.
+    it(`gridline stays a quiet but visible hairline against the calendar canvas (${base})`, () => {
+      // Cloned themes inherit the built-in hairline (about 1.15:1): enough to
+      // separate cells without drawing a prominent grid.
       const tokens = deriveCalendarTokens(sources);
       const ratio = contrastRatio(tokens["--cal-gridline"], tokens["--cal-bg"]);
-      expect(ratio).toBeGreaterThanOrEqual(1.4);
+      expect(ratio).toBeGreaterThanOrEqual(1.1);
+      expect(ratio).toBeLessThan(1.4);
     });
 
     it(`time label stays at or above 3:1 against the calendar canvas (${base})`, () => {

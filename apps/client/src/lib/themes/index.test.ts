@@ -412,7 +412,7 @@ describe("luminance-driven canvas resolution", () => {
     expect(resolveCanvas(lightTheme).toLowerCase()).toBe("#f4f4f7");
     expect(resolveCanvas(darkTheme).toLowerCase()).toBe("#27282a");
     expect(resolveCalendarCanvas(lightTheme).toLowerCase()).toBe("#ffffff");
-    expect(resolveCalendarCanvas(darkTheme).toLowerCase()).toBe("#131314");
+    expect(resolveCalendarCanvas(darkTheme).toLowerCase()).toBe("#1f2023");
     expect(isThemeDark(lightTheme)).toBe(false);
     expect(isThemeDark(darkTheme)).toBe(true);
     expect(isThemeCalendarDark(lightTheme)).toBe(false);

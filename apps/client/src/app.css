@@ -147,19 +147,19 @@
 
   /* Content area */
   --background: #F4F4F7;
-  --foreground: #141420;
+  --foreground: #17171F;
   --card: #FFFFFF;
-  --card-foreground: #141420;
+  --card-foreground: #17171F;
   --popover: #FFFFFF;
-  --popover-foreground: #141420;
+  --popover-foreground: #17171F;
   --primary: #404048;
   --primary-foreground: #F4F4F7;
   --secondary: #E2E2E7;
-  --secondary-foreground: #141420;
+  --secondary-foreground: #17171F;
   --muted: #E2E2E7;
-  --muted-foreground: #646470;
+  --muted-foreground: #6F6F7A;
   --accent: #E8E8ED;
-  --accent-foreground: #141420;
+  --accent-foreground: #17171F;
   --destructive: #D93B3B;
   --destructive-foreground: #FFFFFF;
   --border: rgba(0, 0, 20, 0.10);
@@ -170,10 +170,10 @@
   --app-scrollbar-thumb-hover: color-mix(in srgb, var(--foreground) 36%, transparent);
 
   /* Frame / contour (titlebar) */
-  --sidebar: #ECECEF;
-  --sidebar-foreground: #141420;
+  --sidebar: #EEEEF1;
+  --sidebar-foreground: #17171F;
   --sidebar-accent: #E0E0E5;
-  --sidebar-accent-foreground: #141420;
+  --sidebar-accent-foreground: #17171F;
   --sidebar-border: rgba(0, 0, 20, 0.08);
 
   /* Event panel surface + form controls (light) */
@@ -264,9 +264,9 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
   --selection-background: rgba(96, 165, 250, 0.38);
 
   /* Frame / contour (titlebar) */
-  --sidebar: #1E1E23;
+  --sidebar: #151518;
   --sidebar-foreground: #FFFFFF;
-  --sidebar-accent: #3B3B3F;
+  --sidebar-accent: #2A2B2F;
   --sidebar-accent-foreground: #FFFFFF;
   --sidebar-border: rgba(255, 255, 255, 0.08);
 
@@ -644,8 +644,8 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
 /* Calendar theme variables */
 :root {
   --cal-bg: #FFFFFF;
-  --cal-gridline: #DDDDE3;
-  --cal-time-label: #646470;
+  --cal-gridline: #ECECF0;
+  --cal-time-label: #6F6F7A;
   --cal-current-time: #B83A3A;
   --cal-hover: rgba(0, 0, 20, 0.04);
   --cal-timeline-rail: #E5E7EB;
@@ -656,8 +656,8 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
 }
 
 .dark {
-  --cal-bg: #131314;
-  --cal-gridline: #333537;
+  --cal-bg: #1F2023;
+  --cal-gridline: #2A2B2F;
   --cal-time-label: #9494A0;
   --cal-current-time: #B83A3A;
   --cal-hover: rgba(255, 255, 255, 0.04);

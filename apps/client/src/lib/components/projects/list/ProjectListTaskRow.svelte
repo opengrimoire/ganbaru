@@ -1,8 +1,9 @@
 <script lang="ts">
   import CollectionRow from "$lib/components/collections/CollectionRow.svelte";
   import CollectionCell from "$lib/components/collections/CollectionCell.svelte";
-  import Check from "@lucide/svelte/icons/check";
-  import ChevronRight from "@lucide/svelte/icons/chevron-right";
+  import CollectionExpandToggle from "$lib/components/collections/CollectionExpandToggle.svelte";
+  import CollectionSelectionCheckbox from "$lib/components/collections/CollectionSelectionCheckbox.svelte";
+  import { collectionRowIndent } from "$lib/components/collections/row-expansion";
   import PanelRight from "@lucide/svelte/icons/panel-right";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
@@ -25,7 +26,6 @@
   import type { Theme } from "$lib/themes";
   import { cn } from "$lib/utils";
   import ProjectListColumnCell from "./ProjectListColumnCell.svelte";
-  import ProjectListSubtaskRows from "./ProjectListSubtaskRows.svelte";
   import { getProjectListTableContext } from "./table-context";
 
   let {
@@ -33,7 +33,10 @@
     status,
     statuses,
     priorities,
-    subtasks,
+    subtaskCount,
+    depth = 0,
+    expandable,
+    expanded,
     scheduled,
     taskTags,
     hiddenTagCount,
@@ -59,10 +62,10 @@
     customFieldOptions,
     customFieldValue,
     customFieldOptionValues,
-    statusForTask,
     onSaveCustomFieldValue,
     onToggleTaskSelection,
     onOpenTask,
+    onToggleExpanded,
     onPointerDown,
     onPointerUp,
     onPointerCancel,
@@ -87,13 +90,17 @@
     onSetDueTime,
     onClearDueTime,
     onRename,
-    onToggleSubtaskDone,
   }: {
     task: ProjectTask;
     status: ProjectStatus | undefined;
     statuses: ProjectStatus[];
     priorities: ProjectPriorityConfig[];
-    subtasks: ProjectTask[];
+    subtaskCount: number;
+    /** Nesting level; subtasks sit one level under their parent. */
+    depth?: number;
+    /** Whether the row can show nested rows, which subtasks cannot. */
+    expandable: boolean;
+    expanded: boolean;
     scheduled: string | null;
     taskTags: ProjectTag[];
     hiddenTagCount: number;
@@ -119,7 +126,6 @@
     customFieldOptions: (field: ProjectCustomField) => ProjectCustomFieldOption[];
     customFieldValue: (task: ProjectTask, field: ProjectCustomField) => ProjectCustomFieldValue | undefined;
     customFieldOptionValues: (task: ProjectTask, field: ProjectCustomField) => ProjectCustomFieldOption[];
-    statusForTask: (task: ProjectTask) => ProjectStatus | undefined;
     onSaveCustomFieldValue: (
       task: ProjectTask,
       field: ProjectCustomField,
@@ -127,6 +133,7 @@
     ) => Promise<void>;
     onToggleTaskSelection: (task: ProjectTask) => void;
     onOpenTask: (task: ProjectTask) => void;
+    onToggleExpanded: () => void;
     onPointerDown?: (event: PointerEvent) => void;
     onPointerUp?: (event: PointerEvent) => void;
     onPointerCancel?: (event: PointerEvent) => void;
@@ -152,7 +159,6 @@
     onClearDueTime: () => void;
     /** Saves the title edited in the name cell. */
     onRename: (title: string) => void;
-    onToggleSubtaskDone: (task: ProjectTask) => void;
   } = $props();
 
   const { t } = getLocalization();
@@ -205,34 +211,19 @@
     ondrop={(event) => onDrop?.(event)}
   >
     <div class={`flex h-full items-center justify-center ${context?.cellClass("selection") ?? ""}`} style={context?.cellStyle("selection")}>
-      <button
-        type="button"
-        class={cn(
-          "project-list-selection-control flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded border",
-          taskSelected
-            ? "border-primary bg-primary text-primary-foreground opacity-100"
-            : "border-border bg-background opacity-0 hover:bg-accent group-hover/row:opacity-100 group-focus-within/row:opacity-100",
-        )}
-        aria-label={taskSelected ? t("projects.actions.unselectTask", task.title) : t("projects.actions.selectTask", task.title)}
-        onclick={() => onToggleTaskSelection(task)}
-      >
-        {#if taskSelected}
-          <Check size={13} strokeWidth={2} />
-        {/if}
-      </button>
+      <CollectionSelectionCheckbox checked={taskSelected}
+        label={taskSelected ? t("projects.actions.unselectTask", task.title) : t("projects.actions.selectTask", task.title)}
+        onToggle={() => onToggleTaskSelection(task)} />
     </div>
-    <div class={`flex h-full items-center justify-center ${context?.cellClass("open") ?? ""}`} style={context?.cellStyle("open")}>
-      <button
-        type="button"
-        class="project-list-open-control flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground opacity-0 hover:bg-accent hover:text-foreground group-hover/row:opacity-100 group-focus-within/row:opacity-100"
-        aria-label={t("projects.actions.openTaskDetails", task.title)}
-        onclick={() => onOpenTask(task)}
-      >
-        <ChevronRight size={14} strokeWidth={1.75} />
-      </button>
+    <div class={`flex h-full items-center justify-center ${context?.cellClass("expand") ?? ""}`} style={context?.cellStyle("expand")}>
+      {#if expandable}
+        <CollectionExpandToggle {expanded} hasChildren={subtaskCount > 0}
+          label={expanded ? t("collections.selection.collapse", task.title) : t("collections.selection.expand", task.title)}
+          onToggle={onToggleExpanded} />
+      {/if}
     </div>
     <CollectionCell class={context?.cellClass("name")} style={context?.cellStyle("name")}>
-    <div class="flex w-full min-w-0 flex-col justify-center">
+    <div class="flex w-full min-w-0 flex-col justify-center" style={depth > 0 ? `padding-left: ${collectionRowIndent(depth)};` : undefined}>
       <input
         data-collection-cell-primary
         class="h-7 w-full min-w-0 truncate rounded-sm border border-transparent bg-transparent p-0 text-foreground outline-none"
@@ -243,13 +234,13 @@
         onblur={commitTitle}
         onkeydown={handleTitleKeydown}
       />
-      {#if sectionName || subtasks.length > 0}
+      {#if sectionName || subtaskCount > 0}
         <div class="mt-0.5 flex min-w-0 flex-wrap items-center gap-1 text-[0.733333rem] text-muted-foreground">
           {#if sectionName}
             <span class="truncate">{sectionName}</span>
           {/if}
-          {#if subtasks.length > 0}
-            <span>{t("projects.list.subtasks", subtasks.length)}</span>
+          {#if subtaskCount > 0}
+            <span>{t("projects.list.subtasks", subtaskCount)}</span>
           {/if}
         </div>
       {/if}
@@ -324,19 +315,4 @@
     {/each}
     <div class="min-h-(--collection-table-row-height) self-stretch" aria-hidden="true"></div>
   </CollectionRow>
-  <ProjectListSubtaskRows
-    {subtasks}
-    {selectedTaskId}
-    {statusForTask}
-    onToggleDone={onToggleSubtaskDone}
-    onOpenTask={onOpenTask}
-  />
 </div>
-
-<style>
-  @media (hover: none) and (pointer: coarse) {
-    .project-list-selection-control,
-    .project-list-open-control { opacity: 1; }
-  }
-
-</style>

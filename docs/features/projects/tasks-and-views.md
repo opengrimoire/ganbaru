@@ -26,6 +26,8 @@ List and Kanban support multi-select with bulk completion, reopening, status, pr
 
 List is the default view. It shows section or computed groups, configurable columns, inline editing, selection, task creation, and horizontal access to wide schemas. It uses the [shared collection components](../collections.md); task property editors, section controls, subtasks, selection, and manual ordering stay project-specific.
 
+Expanding a task lists its subtasks as indented rows with the same columns, followed by an add-subtask row that creates a subtask in the parent's section with the default status. Subtasks have one level, so their rows have no chevron, and they are not dragged in the list. Expansion lasts for the session.
+
 Columns can include status, dates, priority, assignee, reviewer, estimate, schedule, dependencies, tags, and custom fields. Per project, users can show, hide, reorder (by dragging a header or from its menu), resize, wrap, and freeze columns, and choose display formats (date style, time style, number grouping or percent). Display choices never change stored values, query predicates, or sorting.
 
 Column headers can insert a custom property beside the current column, rename it, change its icon, edit its options, and delete it after confirmation together with its values. Status, priority, due, and scheduled columns can also group the list. Built-in columns keep their fixed names and icons and cannot be deleted. Duplicating a property creates a new schema with fresh option identities and no copied values.

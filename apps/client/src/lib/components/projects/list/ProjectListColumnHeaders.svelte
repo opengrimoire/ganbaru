@@ -57,7 +57,7 @@
 <CollectionRow template={gridTemplate} minWidth={gridMinWidth} header divider={false} role="row"
   class={mode === "section" ? "project-list-divider group/column-header" : "project-list-divider group/list-column-header"}>
   <div class={context?.cellClass("selection")} style={context?.cellStyle("selection")}></div>
-  <div class={context?.cellClass("open")} style={context?.cellStyle("open")}></div>
+  <div class={context?.cellClass("expand")} style={context?.cellStyle("expand")}></div>
   {@render columnHeaderCell(t("projects.list.name"), "name")}
   {#each taskListColumns as column (column)}
     {@render columnHeaderCell(taskListColumnLabel(column), column)}

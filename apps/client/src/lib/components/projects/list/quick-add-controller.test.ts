@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { ProjectTask } from "$lib/projects/types";
 import {
   ProjectListQuickAddController,
   type ProjectListQuickAddControllerContext,
@@ -49,5 +50,30 @@ describe("ProjectListQuickAddController", () => {
     expect(quickAdd.groupTaskDrafts["status:active"]).toBe("");
     expect(quickAdd.errorTarget).toBeNull();
     expect(quickAdd.errorMessage).toBeNull();
+  });
+
+  it("creates a subtask under its parent and keeps the row open for the next one", async () => {
+    const parent = { id: "parent", projectId: "project-a", sectionId: "section-b" } as ProjectTask;
+    const addTask = vi.fn(async () => ({ id: "child" }) as ProjectTask);
+    const quickAdd = new ProjectListQuickAddController({
+      projects: { addTask } as unknown as ProjectListQuickAddControllerContext["projects"],
+      getSelectedProjectId: () => "project-a",
+      getGroupBy: () => "section",
+      getStatuses: () => [],
+      getPriorities: () => [],
+      revealTask: vi.fn(),
+      selectProjectFirstMessage: () => "Select a project",
+      createFailedMessage: () => "Create failed",
+    });
+    quickAdd.setSubtaskActive(parent, true);
+    quickAdd.setSubtaskDraft(parent, "  Child  ");
+
+    await quickAdd.submitSubtask(parent);
+    expect(addTask).toHaveBeenCalledWith("project-a", "Child", "section-b", undefined, "parent");
+    expect(quickAdd.subtaskDraft(parent)).toBe("");
+    expect(quickAdd.subtaskActive(parent)).toBe(true);
+
+    quickAdd.cancelForOutsideTarget({ closest: () => null } as unknown as Element);
+    expect(quickAdd.subtaskActive(parent)).toBe(false);
   });
 });

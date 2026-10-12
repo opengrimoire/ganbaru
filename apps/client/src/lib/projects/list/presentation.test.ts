@@ -35,10 +35,10 @@ describe("Projects table presentation", () => {
   it("freezes the leading selection, name, and visible columns through the stable selected property", () => {
     const presentation = { ...defaultProjectListPresentation(), frozenThrough: "due" as const };
     const input = {columns: ["status", "due", "priority"] as const, columnWidths: { name: 30, status: 10, due: 12 }};
-    expect(projectListFrozenOffsets(presentation, input)).toEqual({ selection: 0, open: 1.5, name: 3.25, status: 33.25, due: 43.25 });
+    expect(projectListFrozenOffsets(presentation, input)).toEqual({ selection: 0, expand: 1.5, name: 3.25, status: 33.25, due: 43.25 });
     expect(projectListFrozenOffsets(presentation, { ...input, columnWidths: { ...input.columnWidths, name: 25 } }).due).toBe(38.25);
     expect(projectListFrozenOffsets(presentation, { columns: ["priority"] })).toEqual({});
-    expect(projectListFrozenOffsets(presentation, input, 22)).toEqual({selection: 0, open: 1.5});
+    expect(projectListFrozenOffsets(presentation, input, 22)).toEqual({selection: 0, expand: 1.5});
     expect(projectListFrozenOffsets(presentation, input, 80)).toEqual(projectListFrozenOffsets(presentation, input));
   });
 

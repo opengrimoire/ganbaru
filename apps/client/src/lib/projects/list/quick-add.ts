@@ -6,7 +6,7 @@ import type {
   ProjectTaskGroupMode,
 } from "$lib/projects/types";
 
-export type ProjectListTaskCreateTarget = `section:${string}` | `group:${string}`;
+export type ProjectListTaskCreateTarget = `section:${string}` | `group:${string}` | `subtask:${string}`;
 export type ProjectListQuickAddPatch = Partial<Pick<ProjectTask, "priority" | "dueDate">>;
 
 export interface ProjectListGroupQuickAddInput {
@@ -25,6 +25,10 @@ export interface ProjectListGroupQuickAddPlan {
 
 export function projectListSectionTaskCreateTarget(sectionId: string): ProjectListTaskCreateTarget {
   return `section:${sectionId}`;
+}
+
+export function projectListSubtaskCreateTarget(parentTaskId: string): ProjectListTaskCreateTarget {
+  return `subtask:${parentTaskId}`;
 }
 
 export function projectListGroupTaskDraftKey(

@@ -21,6 +21,7 @@
   import ProjectListSectionHeader from "./ProjectListSectionHeader.svelte";
   import ProjectListTaskAddRow from "./ProjectListTaskAddRow.svelte";
   import ProjectListTaskRows from "./ProjectListTaskRows.svelte";
+  import type { ProjectListSubtaskQuickAdd } from "./quick-add-controller.svelte";
 
 
   let {
@@ -120,7 +121,9 @@
     onSetDueTime,
     onClearDueTime,
     onRenameTask,
-    onToggleSubtaskDone,
+    taskExpanded,
+    onToggleTaskExpanded,
+    subtaskQuickAdd,
     onTaskDraftChange,
     onTaskAddActiveChange,
     onSubmitTask,
@@ -226,7 +229,9 @@
     onClearDueTime: (task: ProjectTask) => void;
     /** Saves a task title edited in its name cell. */
     onRenameTask: (task: ProjectTask, title: string) => void;
-    onToggleSubtaskDone: (task: ProjectTask) => void;
+    taskExpanded: (task: ProjectTask, hasSubtasks: boolean) => boolean;
+    onToggleTaskExpanded: (task: ProjectTask, hasSubtasks: boolean) => void;
+    subtaskQuickAdd: ProjectListSubtaskQuickAdd;
     onTaskDraftChange: (value: string) => void;
     onTaskAddActiveChange: (active: boolean) => void;
     onSubmitTask: () => MaybePromise;
@@ -346,7 +351,9 @@
       {onSetDueTime}
       {onClearDueTime}
       {onRenameTask}
-      {onToggleSubtaskDone}
+      {taskExpanded}
+      {onToggleTaskExpanded}
+      {subtaskQuickAdd}
     />
     {#if taskSectionDropMarkerVisible}
       <div class="h-1 rounded-full bg-primary"></div>

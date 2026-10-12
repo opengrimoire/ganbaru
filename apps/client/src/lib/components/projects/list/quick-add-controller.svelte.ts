@@ -4,6 +4,7 @@ import {
   projectListGroupTaskCreateTarget,
   projectListGroupTaskDraftKey,
   projectListSectionTaskCreateTarget,
+  projectListSubtaskCreateTarget,
   type ProjectListGroupQuickAddPlan,
   type ProjectListTaskCreateTarget,
 } from "$lib/projects/list/quick-add";
@@ -31,15 +32,31 @@ export interface ProjectListQuickAddControllerContext {
   createFailedMessage: (error: unknown) => string;
 }
 
-export class ProjectListQuickAddController {
+/**
+ * The add-subtask row under an expanded task. Drafts and errors are keyed by the parent task, and one row is active at
+ * a time.
+ */
+export interface ProjectListSubtaskQuickAdd {
+  readonly pending: boolean;
+  subtaskDraft(parent: ProjectTask): string;
+  subtaskActive(parent: ProjectTask): boolean;
+  subtaskError(parent: ProjectTask): string | null;
+  setSubtaskDraft(parent: ProjectTask, draft: string): void;
+  setSubtaskActive(parent: ProjectTask, active: boolean): void;
+  submitSubtask(parent: ProjectTask): Promise<void>;
+}
+
+export class ProjectListQuickAddController implements ProjectListSubtaskQuickAdd {
   pendingTarget = $state<ProjectListTaskCreateTarget | null>(null);
   errorTarget = $state<ProjectListTaskCreateTarget | null>(null);
   errorMessage = $state<string | null>(null);
   sectionDraft = $state("");
   sectionTaskDrafts = $state<Record<string, string>>({});
   groupTaskDrafts = $state<Record<string, string>>({});
+  subtaskDrafts = $state<Record<string, string>>({});
   activeSectionTaskDraftInputId = $state<string | null>(null);
   activeGroupTaskDraftInputId = $state<string | null>(null);
+  activeSubtaskDraftParentId = $state<string | null>(null);
   sectionDraftInputActive = $state(false);
 
   constructor(private readonly context: ProjectListQuickAddControllerContext) {}
@@ -47,9 +64,11 @@ export class ProjectListQuickAddController {
   hasActiveDraft(): boolean {
     return this.activeSectionTaskDraftInputId !== null
       || this.activeGroupTaskDraftInputId !== null
+      || this.activeSubtaskDraftParentId !== null
       || this.sectionDraftInputActive
       || this.sectionDraft.trim().length > 0
-      || Object.values(this.groupTaskDrafts).some((draft) => draft.trim().length > 0);
+      || Object.values(this.groupTaskDrafts).some((draft) => draft.trim().length > 0)
+      || Object.values(this.subtaskDrafts).some((draft) => draft.trim().length > 0);
   }
 
   clearError(target: ProjectListTaskCreateTarget): void {
@@ -75,10 +94,19 @@ export class ProjectListQuickAddController {
       this.activeGroupTaskDraftInputId = null;
       this.clearError(projectListGroupTaskCreateTarget(id));
     }
+    this.cancelSubtaskDraft();
     if (this.sectionDraftInputActive || this.sectionDraft.trim()) {
       this.sectionDraft = "";
       this.sectionDraftInputActive = false;
     }
+  }
+
+  private cancelSubtaskDraft(): void {
+    const id = this.activeSubtaskDraftParentId;
+    if (!id) return;
+    this.subtaskDrafts = { ...this.subtaskDrafts, [id]: "" };
+    this.activeSubtaskDraftParentId = null;
+    this.clearError(projectListSubtaskCreateTarget(id));
   }
 
   cancelForOutsideTarget(target: Element): void {
@@ -97,6 +125,12 @@ export class ProjectListQuickAddController {
         this.activeGroupTaskDraftInputId = null;
         this.clearError(projectListGroupTaskCreateTarget(id));
       }
+    }
+    if (
+      this.activeSubtaskDraftParentId
+      && target.closest("[data-subtask-add-row]")?.getAttribute("data-subtask-add-row") !== this.activeSubtaskDraftParentId
+    ) {
+      this.cancelSubtaskDraft();
     }
     if ((this.sectionDraftInputActive || this.sectionDraft.trim()) && !target.closest("[data-add-section-row='true']")) {
       this.sectionDraft = "";
@@ -124,6 +158,7 @@ export class ProjectListQuickAddController {
     options: {
       sectionId?: string;
       statusId?: string;
+      parentTaskId?: string;
       patch?: Partial<Pick<ProjectTask, "priority" | "dueDate">>;
     } = {},
   ): Promise<ProjectTask | undefined> {
@@ -142,6 +177,7 @@ export class ProjectListQuickAddController {
         displayTitle,
         options.sectionId,
         options.statusId,
+        options.parentTaskId ?? null,
       );
       if (!created || !options.patch || Object.keys(options.patch).length === 0) return created;
       await this.context.projects.updateTask(created, options.patch);
@@ -175,6 +211,41 @@ export class ProjectListQuickAddController {
     if (!created) return;
     this.groupTaskDrafts = { ...this.groupTaskDrafts, [key]: "" };
     this.context.revealTask(created);
+  }
+
+  get pending(): boolean {
+    return this.pendingTarget !== null;
+  }
+
+  subtaskDraft(parent: ProjectTask): string {
+    return this.subtaskDrafts[parent.id] ?? "";
+  }
+
+  subtaskActive(parent: ProjectTask): boolean {
+    return this.activeSubtaskDraftParentId === parent.id;
+  }
+
+  subtaskError(parent: ProjectTask): string | null {
+    return this.errorFor(projectListSubtaskCreateTarget(parent.id));
+  }
+
+  setSubtaskDraft(parent: ProjectTask, draft: string): void {
+    this.subtaskDrafts = { ...this.subtaskDrafts, [parent.id]: draft };
+  }
+
+  setSubtaskActive(parent: ProjectTask, active: boolean): void {
+    if (active) this.activeSubtaskDraftParentId = parent.id;
+    else if (this.activeSubtaskDraftParentId === parent.id) this.activeSubtaskDraftParentId = null;
+  }
+
+  /** Creates a subtask in the parent's section with the project's default status. */
+  async submitSubtask(parent: ProjectTask): Promise<void> {
+    const created = await this.createTask(projectListSubtaskCreateTarget(parent.id), this.subtaskDraft(parent), {
+      sectionId: parent.sectionId,
+      parentTaskId: parent.id,
+    });
+    if (!created) return;
+    this.setSubtaskDraft(parent, "");
   }
 
   async submitSection(): Promise<void> {

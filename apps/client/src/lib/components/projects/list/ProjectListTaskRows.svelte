@@ -13,8 +13,12 @@
     ProjectTaskDependency,
     ProjectTaskListColumn,
   } from "$lib/projects/types";
+  import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { Theme } from "$lib/themes";
+  import { collectionRowIndent } from "$lib/components/collections/row-expansion";
+  import ProjectListTaskAddRow from "./ProjectListTaskAddRow.svelte";
   import ProjectListTaskRow from "./ProjectListTaskRow.svelte";
+  import type { ProjectListSubtaskQuickAdd } from "./quick-add-controller.svelte";
 
   let {
     tasks,
@@ -75,7 +79,9 @@
     onSetDueTime,
     onClearDueTime,
     onRenameTask,
-    onToggleSubtaskDone,
+    taskExpanded,
+    onToggleTaskExpanded,
+    subtaskQuickAdd,
   }: {
     tasks: ProjectTask[];
     statuses: ProjectStatus[];
@@ -140,78 +146,112 @@
     onClearDueTime: (task: ProjectTask) => void;
     /** Saves a task title edited in its name cell. */
     onRenameTask: (task: ProjectTask, title: string) => void;
-    onToggleSubtaskDone: (task: ProjectTask) => void;
+    /** Whether a top-level task shows its subtasks and the add-subtask row. */
+    taskExpanded: (task: ProjectTask, hasSubtasks: boolean) => boolean;
+    onToggleTaskExpanded: (task: ProjectTask, hasSubtasks: boolean) => void;
+    subtaskQuickAdd: ProjectListSubtaskQuickAdd;
   } = $props();
+
+  const { t } = getLocalization();
 </script>
+
+{#snippet taskRow(task: ProjectTask, depth: number, subtaskCount: number, expanded: boolean)}
+  {@const topLevel = depth === 0}
+  <ProjectListTaskRow
+    {task}
+    status={statusForTask(task)}
+    {statuses}
+    {priorities}
+    {subtaskCount}
+    {depth}
+    expandable={topLevel}
+    {expanded}
+    scheduled={scheduledLabel(task.id)}
+    taskTags={visibleTaskTags(task)}
+    hiddenTagCount={hiddenTaskTagCount(task)}
+    blockedByCount={blockedByDependencies(task).length}
+    blocksCount={blocksDependencies(task).length}
+    {taskListColumns}
+    {projectCustomFields}
+    {selectedTaskId}
+    taskSelected={taskSelected(task)}
+    {gridTemplate}
+    {gridMinWidth}
+    sectionName={topLevel ? sectionNameForTask?.(task) : undefined}
+    draggable={topLevel && (canStartTaskDrag?.(task) ?? false)}
+    dragging={draggingTaskId === task.id}
+    dropPending={dropPendingTaskId === task.id}
+    statusMenuOpen={statusMenuTaskId === task.id}
+    priorityMenuOpen={priorityMenuTaskId === task.id}
+    startDateMenuOpen={startDateMenuTaskId === task.id}
+    dueDateMenuOpen={dueDateMenuTaskId === task.id}
+    {theme}
+    {estimateLabel}
+    {customFieldDisplayValue}
+    {customFieldOptions}
+    {customFieldValue}
+    {customFieldOptionValues}
+    {onSaveCustomFieldValue}
+    {onToggleTaskSelection}
+    {onOpenTask}
+    onToggleExpanded={() => onToggleTaskExpanded(task, subtaskCount > 0)}
+    onPointerDown={topLevel && onPointerDown ? (event) => onPointerDown(event, task) : undefined}
+    onPointerUp={topLevel ? onPointerUp : undefined}
+    onPointerCancel={topLevel ? onPointerCancel : undefined}
+    onDragStart={topLevel && onDragStart ? (event) => onDragStart(event, task) : undefined}
+    onDragEnd={topLevel ? onDragEnd : undefined}
+    onDragOver={topLevel && onDragOver ? (event) => onDragOver(event, task) : undefined}
+    onDrop={topLevel && onDrop ? (event) => onDrop(event, task) : undefined}
+    onToggleStatusMenu={() => onToggleStatusMenu(task)}
+    onSetStatus={(nextStatus) => onSetStatus(task, nextStatus)}
+    onTogglePriorityMenu={() => onTogglePriorityMenu(task)}
+    onSetPriority={(priority) => onSetPriority(task, priority)}
+    onToggleStartDateMenu={() => onToggleStartDateMenu(task)}
+    {onCloseStartDateMenu}
+    onSetStartDate={(startDate) => onSetStartDate(task, startDate)}
+    onClearStartDate={() => onClearStartDate(task)}
+    onSetStartTime={(startTime) => onSetStartTime(task, startTime)}
+    onClearStartTime={() => onClearStartTime(task)}
+    onToggleDueDateMenu={() => onToggleDueDateMenu(task)}
+    {onCloseDueDateMenu}
+    onSetDueDate={(dueDate) => onSetDueDate(task, dueDate)}
+    onClearDueDate={() => onClearDueDate(task)}
+    onSetDueTime={(dueTime) => onSetDueTime(task, dueTime)}
+    onClearDueTime={() => onClearDueTime(task)}
+    onRename={(title) => onRenameTask(task, title)}
+  />
+{/snippet}
 
 <div class="grid">
   {#each tasks as task (task.id)}
-    {@const status = statusForTask(task)}
     {@const subtasks = subtasksForTask(task)}
+    {@const expanded = taskExpanded(task, subtasks.length > 0)}
     {#if dropMarkerVisible?.(task, "before")}
       <div class="h-1 rounded-full bg-primary"></div>
     {/if}
-    <ProjectListTaskRow
-      {task}
-      {status}
-      {statuses}
-      {priorities}
-      {subtasks}
-      scheduled={scheduledLabel(task.id)}
-      taskTags={visibleTaskTags(task)}
-      hiddenTagCount={hiddenTaskTagCount(task)}
-      blockedByCount={blockedByDependencies(task).length}
-      blocksCount={blocksDependencies(task).length}
-      {taskListColumns}
-      {projectCustomFields}
-      {selectedTaskId}
-      taskSelected={taskSelected(task)}
-      {gridTemplate}
-      {gridMinWidth}
-      sectionName={sectionNameForTask?.(task)}
-      draggable={canStartTaskDrag?.(task) ?? false}
-      dragging={draggingTaskId === task.id}
-      dropPending={dropPendingTaskId === task.id}
-      statusMenuOpen={statusMenuTaskId === task.id}
-      priorityMenuOpen={priorityMenuTaskId === task.id}
-      startDateMenuOpen={startDateMenuTaskId === task.id}
-      dueDateMenuOpen={dueDateMenuTaskId === task.id}
-      {theme}
-      {estimateLabel}
-      {customFieldDisplayValue}
-      {customFieldOptions}
-      {customFieldValue}
-      {customFieldOptionValues}
-      {statusForTask}
-      {onSaveCustomFieldValue}
-      {onToggleTaskSelection}
-      {onOpenTask}
-      onPointerDown={onPointerDown ? (event) => onPointerDown(event, task) : undefined}
-      {onPointerUp}
-      {onPointerCancel}
-      onDragStart={onDragStart ? (event) => onDragStart(event, task) : undefined}
-      {onDragEnd}
-      onDragOver={onDragOver ? (event) => onDragOver(event, task) : undefined}
-      onDrop={onDrop ? (event) => onDrop(event, task) : undefined}
-      onToggleStatusMenu={() => onToggleStatusMenu(task)}
-      onSetStatus={(nextStatus) => onSetStatus(task, nextStatus)}
-      onTogglePriorityMenu={() => onTogglePriorityMenu(task)}
-      onSetPriority={(priority) => onSetPriority(task, priority)}
-      onToggleStartDateMenu={() => onToggleStartDateMenu(task)}
-      {onCloseStartDateMenu}
-      onSetStartDate={(startDate) => onSetStartDate(task, startDate)}
-      onClearStartDate={() => onClearStartDate(task)}
-      onSetStartTime={(startTime) => onSetStartTime(task, startTime)}
-      onClearStartTime={() => onClearStartTime(task)}
-      onToggleDueDateMenu={() => onToggleDueDateMenu(task)}
-      {onCloseDueDateMenu}
-      onSetDueDate={(dueDate) => onSetDueDate(task, dueDate)}
-      onClearDueDate={() => onClearDueDate(task)}
-      onSetDueTime={(dueTime) => onSetDueTime(task, dueTime)}
-      onClearDueTime={() => onClearDueTime(task)}
-      onRename={(title) => onRenameTask(task, title)}
-      onToggleSubtaskDone={onToggleSubtaskDone}
-    />
+    {@render taskRow(task, 0, subtasks.length, expanded)}
+    {#if expanded}
+      {#each subtasks as subtask (subtask.id)}
+        {@render taskRow(subtask, 1, 0, false)}
+      {/each}
+      {#if !task.archivedAt}
+        <ProjectListTaskAddRow
+          mode="subtask"
+          rowId={task.id}
+          {gridTemplate}
+          {gridMinWidth}
+          label={t("projects.detail.addSubtask")}
+          indent={collectionRowIndent(1)}
+          draft={subtaskQuickAdd.subtaskDraft(task)}
+          active={subtaskQuickAdd.subtaskActive(task)}
+          pending={subtaskQuickAdd.pending}
+          error={subtaskQuickAdd.subtaskError(task)}
+          onDraftChange={(value) => subtaskQuickAdd.setSubtaskDraft(task, value)}
+          onActiveChange={(active) => subtaskQuickAdd.setSubtaskActive(task, active)}
+          onSubmit={() => subtaskQuickAdd.submitSubtask(task)}
+        />
+      {/if}
+    {/if}
     {#if dropMarkerVisible?.(task, "after")}
       <div class="h-1 rounded-full bg-primary"></div>
     {/if}

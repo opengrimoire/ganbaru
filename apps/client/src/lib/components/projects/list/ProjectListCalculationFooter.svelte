@@ -42,7 +42,7 @@
     <p class="mb-1 px-2">{t("projects.columns.completeCalculations")}</p>
     <CollectionRow template={gridTemplate} minWidth={gridMinWidth} divider={false} role="row">
       <div class={context?.cellClass("selection")} style={context?.cellStyle("selection")}></div>
-      <div class={context?.cellClass("open")} style={context?.cellStyle("open")}></div>
+      <div class={context?.cellClass("expand")} style={context?.cellStyle("expand")}></div>
       <CollectionCell class={context?.cellClass("name")} style={context?.cellStyle("name")} aria-label={t("projects.list.name")}><span>{valueFor("name")}</span></CollectionCell>
       {#each columns as column (column)}
         <CollectionCell class={context?.cellClass(column)} style={context?.cellStyle(column)} aria-label={columnLabel(column)}><span>{valueFor(column)}</span></CollectionCell>

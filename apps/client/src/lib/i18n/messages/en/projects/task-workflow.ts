@@ -193,7 +193,6 @@ export const taskWorkflow = {
     body: (project: string, when: string) => `${project}, ${when}`,
   },
   bulk: {
-    selected: (count: number) => `${count} selected`,
     selectFiltered: (count: number) => `Select ${count}`,
     markDone: "Done",
     reopen: "Reopen",
@@ -202,7 +201,6 @@ export const taskWorkflow = {
     scheduleHint: (count: number) => `${count} active ${count === 1 ? "task" : "tasks"}, back to back`,
     archive: "Archive",
     restore: "Restore",
-    clear: "Clear",
     actionFailed: (message: string) => `Bulk action failed: ${message}`,
     scheduleFailed: (count: number, message: string) =>
       `Scheduled ${count}; could not finish scheduling selected tasks: ${message}`,

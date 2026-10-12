@@ -50,4 +50,13 @@ export const collections = {
     open: "Abrir",
     saveFailed: (message: string) => `No se pudo guardar la propiedad: ${message}`,
   },
+  selection: {
+    selected: (count: number) => `${count} seleccionados`,
+    clear: "Limpiar",
+    select: (name: string) => `Seleccionar ${name}`,
+    unselect: (name: string) => `Deseleccionar ${name}`,
+    expand: (name: string) => `Expandir ${name}`,
+    collapse: (name: string) => `Contraer ${name}`,
+    more: "Más acciones",
+  },
 } as const satisfies MessageShape<typeof enCollections>;

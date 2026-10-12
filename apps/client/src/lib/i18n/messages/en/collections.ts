@@ -47,4 +47,13 @@ export const collections = {
     open: "Open",
     saveFailed: (message: string) => `Could not save the property: ${message}`,
   },
+  selection: {
+    selected: (count: number) => `${count} selected`,
+    clear: "Clear",
+    select: (name: string) => `Select ${name}`,
+    unselect: (name: string) => `Unselect ${name}`,
+    expand: (name: string) => `Expand ${name}`,
+    collapse: (name: string) => `Collapse ${name}`,
+    more: "More actions",
+  },
 } as const;

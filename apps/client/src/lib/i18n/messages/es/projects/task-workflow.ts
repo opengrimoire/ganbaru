@@ -196,7 +196,6 @@ export const taskWorkflow = {
     body: (project: string, when: string) => `${project}, ${when}`,
   },
   bulk: {
-    selected: (count: number) => `${count} seleccionadas`,
     selectFiltered: (count: number) => `Seleccionar ${count}`,
     markDone: "Hechas",
     reopen: "Reabrir",
@@ -205,7 +204,6 @@ export const taskWorkflow = {
     scheduleHint: (count: number) => `${count} ${count === 1 ? "tarea activa" : "tareas activas"}, seguidas`,
     archive: "Archivar",
     restore: "Restaurar",
-    clear: "Limpiar",
     actionFailed: (message: string) => `Falló la acción masiva: ${message}`,
     scheduleFailed: (count: number, message: string) =>
       `Se programaron ${count}; no se pudo terminar de programar las tareas seleccionadas: ${message}`,

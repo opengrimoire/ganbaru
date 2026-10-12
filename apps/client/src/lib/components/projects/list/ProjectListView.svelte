@@ -180,7 +180,7 @@
   const taskListGridMinWidth = $derived(projectTaskListGridMinWidth(taskListGridInput));
   const taskListLeadingGridTemplate = $derived(projectTaskListLeadingGridTemplate(taskListGridInput));
   const listRangeDateColumnsVisible = $derived(taskListColumns.includes("start") && taskListColumns.includes("due"));
-  const frozenOffsets: Partial<Record<ProjectTaskListResizableColumn | "selection" | "open", number>> = $derived(taskQuery ? projectListFrozenOffsets(taskQuery.listPresentation, taskListGridInput, listViewportWidthRem) : {});
+  const frozenOffsets: Partial<Record<ProjectTaskListResizableColumn | "selection" | "expand", number>> = $derived(taskQuery ? projectListFrozenOffsets(taskQuery.listPresentation, taskListGridInput, listViewportWidthRem) : {});
   $effect(() => {
     sections.length;
     listTaskGroups.length;
@@ -200,7 +200,7 @@
     query: tableQuery,
     cellClass: (column) => [
       frozenOffsets[column] !== undefined ? "project-list-frozen-cell" : "",
-      column !== "selection" && column !== "open" && tableQuery.listPresentation.wrappedColumns.includes(column) ? "project-list-wrap-cell" : "",
+      column !== "selection" && column !== "expand" && tableQuery.listPresentation.wrappedColumns.includes(column) ? "project-list-wrap-cell" : "",
     ].join(" "),
     cellStyle: (column) => frozenOffsets[column] === undefined ? "" : `left: calc(var(--project-list-content-inset) + ${frozenOffsets[column]}rem);`,
     rowStyle: (task, selected) => {
@@ -647,7 +647,9 @@
             onSetDueTime={(task, dueTime) => { void setTaskDueTimeFromList(task, dueTime); }}
             onClearDueTime={(task) => { void setTaskDueTimeFromList(task, undefined); }}
             onRenameTask={(task, title) => { void renameTaskFromList(task, title); }}
-            onToggleSubtaskDone={(subtask) => { void projects.toggleTaskDone(subtask); }}
+            taskExpanded={(task, hasSubtasks) => interaction.taskExpanded(task, hasSubtasks)}
+            onToggleTaskExpanded={(task, hasSubtasks) => interaction.toggleTaskExpanded(task, hasSubtasks)}
+            subtaskQuickAdd={quickAdd}
             onTaskDraftChange={(value) => {
                 quickAdd.sectionTaskDrafts = {
                   ...quickAdd.sectionTaskDrafts,
@@ -758,7 +760,9 @@
             onSetDueTime={(task, dueTime) => { void setTaskDueTimeFromList(task, dueTime); }}
             onClearDueTime={(task) => { void setTaskDueTimeFromList(task, undefined); }}
             onRenameTask={(task, title) => { void renameTaskFromList(task, title); }}
-            onToggleSubtaskDone={(subtask) => { void projects.toggleTaskDone(subtask); }}
+            taskExpanded={(task, hasSubtasks) => interaction.taskExpanded(task, hasSubtasks)}
+            onToggleTaskExpanded={(task, hasSubtasks) => interaction.toggleTaskExpanded(task, hasSubtasks)}
+            subtaskQuickAdd={quickAdd}
           />
             {#if groupQuickAddPlan.enabled}
               <ProjectListTaskAddRow
@@ -817,23 +821,6 @@
     position: absolute;
     right: var(--project-list-divider-right);
     bottom: 0;
-    left: var(--project-list-divider-left);
-    height: 0;
-    border-bottom: 1px solid var(--cal-gridline);
-    content: "";
-    pointer-events: none;
-  }
-
-  :global(.project-list-scroll .project-list-inline-divider) {
-    position: relative;
-    --project-list-divider-left: 3.25rem;
-    --project-list-divider-right: 0.25rem;
-  }
-
-  :global(.project-list-scroll .project-list-inline-divider)::before {
-    position: absolute;
-    top: 0;
-    right: var(--project-list-divider-right);
     left: var(--project-list-divider-left);
     height: 0;
     border-bottom: 1px solid var(--cal-gridline);

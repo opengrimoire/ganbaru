@@ -108,7 +108,7 @@ export function projectListColumnGroupMode(column: ProjectTaskListResizableColum
 }
 
 /** Calculate frozen offsets from the same responsive tracks used to render the table. */
-export function projectListFrozenOffsets(presentation: ProjectListPresentation, input: ProjectTaskListGridInput, viewportWidthRem?: number): Partial<Record<ProjectTaskListResizableColumn | "selection" | "open", number>> {
+export function projectListFrozenOffsets(presentation: ProjectListPresentation, input: ProjectTaskListGridInput, viewportWidthRem?: number): Partial<Record<ProjectTaskListResizableColumn | "selection" | "expand", number>> {
   const columns = ["name", ...input.columns] as ProjectTaskListResizableColumn[];
   const end = presentation.frozenThrough === null ? -1 : columns.indexOf(presentation.frozenThrough);
   if (end < 0) return {};
@@ -117,7 +117,7 @@ export function projectListFrozenOffsets(presentation: ProjectListPresentation, 
   const reserve = scrollingTracks.length ? Math.min(...scrollingTracks) : widths.at(-1) ?? 0;
   const budget = viewportWidthRem === undefined ? Number.POSITIVE_INFINITY : Math.max(0, viewportWidthRem - reserve);
   if (widths[0] + widths[1] > budget) return {};
-  const result: Partial<Record<ProjectTaskListResizableColumn | "selection" | "open", number>> = { selection: 0, open: widths[0] };
+  const result: Partial<Record<ProjectTaskListResizableColumn | "selection" | "expand", number>> = { selection: 0, expand: widths[0] };
   let offset = widths[0] + widths[1];
   for (const [index, column] of columns.entries()) {
     if (index > end) break;

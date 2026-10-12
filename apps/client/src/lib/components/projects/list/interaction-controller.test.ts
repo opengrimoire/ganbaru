@@ -69,4 +69,20 @@ describe("ProjectListInteractionController", () => {
     expect(controller.priorityMenuTaskId).toBe("task-a");
     expect(controller.sectionOptionsMenuId).toBeNull();
   });
+
+  it("expands tasks with subtasks by default and opens childless tasks on request", () => {
+    const controller = new ProjectListInteractionController({
+      getSelectedTaskIds: () => [],
+      selectedTaskIdsChanged: vi.fn(),
+    });
+    const parent = task("parent");
+    const leaf = task("leaf");
+
+    expect(controller.taskExpanded(parent, true)).toBe(true);
+    expect(controller.taskExpanded(leaf, false)).toBe(false);
+    controller.toggleTaskExpanded(parent, true);
+    controller.toggleTaskExpanded(leaf, false);
+    expect(controller.taskExpanded(parent, true)).toBe(false);
+    expect(controller.taskExpanded(leaf, false)).toBe(true);
+  });
 });

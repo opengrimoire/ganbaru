@@ -419,7 +419,7 @@
             />
           {:else if bulkActionsLoadState?.status === "failed"}
             <div class="flex min-h-9 items-center justify-center gap-2 border-t border-border px-3 text-xs text-muted-foreground" role="alert">
-              <span>{t("common.viewLoadFailed", t("projects.bulk.selected", routeUi.selectedTaskIds.length))}</span>
+              <span>{t("common.viewLoadFailed", t("collections.selection.selected", routeUi.selectedTaskIds.length))}</span>
               <button
                 type="button"
                 class="font-medium text-foreground underline-offset-2 hover:underline"

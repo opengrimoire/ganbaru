@@ -1,3 +1,8 @@
+import {
+  collectionRowExpanded,
+  toggledCollectionRowExpansion,
+  type CollectionRowExpansion,
+} from "$lib/components/collections/row-expansion";
 import type { ProjectTask } from "$lib/projects/types";
 
 export type ProjectListTaskMenu = "status" | "priority" | "start" | "due";
@@ -13,8 +18,18 @@ export class ProjectListInteractionController {
   priorityMenuTaskId = $state<string | null>(null);
   startDateMenuTaskId = $state<string | null>(null);
   dueDateMenuTaskId = $state<string | null>(null);
+  private expansion = $state<CollectionRowExpansion>({ collapsedIds: new Set(), openedIds: new Set() });
 
   constructor(private readonly context: ProjectListInteractionControllerContext) {}
+
+  /** Whether a task shows its subtasks and the add-subtask row. */
+  taskExpanded(task: ProjectTask, hasSubtasks: boolean): boolean {
+    return collectionRowExpanded(task.id, hasSubtasks, this.expansion);
+  }
+
+  toggleTaskExpanded(task: ProjectTask, hasSubtasks: boolean): void {
+    this.expansion = toggledCollectionRowExpansion(task.id, hasSubtasks, this.expansion);
+  }
 
   private selectedIds(): Set<string> {
     return new Set(this.context.getSelectedTaskIds());

@@ -6,8 +6,8 @@ import type { CollectionColumnReorder } from "$lib/components/collections/column
 
 export interface ProjectListTableContext {
   query: ProjectTaskQueryController;
-  cellClass: (column: ProjectTaskListResizableColumn | "selection" | "open") => string;
-  cellStyle: (column: ProjectTaskListResizableColumn | "selection" | "open") => string;
+  cellClass: (column: ProjectTaskListResizableColumn | "selection" | "expand") => string;
+  cellStyle: (column: ProjectTaskListResizableColumn | "selection" | "expand") => string;
   rowStyle: (task: ProjectTask, selected: boolean) => string;
   /** Drags column headers to reorder the list columns; every header row of the table shares it. */
   columnReorder?: CollectionColumnReorder;

@@ -98,7 +98,7 @@ export interface ProjectTaskListGridInput {
 }
 
 const PROJECT_LIST_SELECTION_TRACK_REM = 1.5;
-const PROJECT_LIST_OPEN_TRACK_REM = 1.75;
+const PROJECT_LIST_EXPAND_TRACK_REM = 1.75;
 const PROJECT_LIST_ADD_COLUMN_TRACK_REM = 2.25;
 const PROJECT_LIST_TEXT_PADDING_REM = 1.35;
 const PROJECT_LIST_TEXT_CHARACTER_REM = 0.42;
@@ -442,7 +442,7 @@ export function projectTaskListGridColumnWidths(
   const normalizedInput = normalizeProjectTaskListGridInput(input);
   return [
     PROJECT_LIST_SELECTION_TRACK_REM,
-    PROJECT_LIST_OPEN_TRACK_REM,
+    PROJECT_LIST_EXPAND_TRACK_REM,
     projectTaskListNameColumnWidth(normalizedInput),
     ...normalizedInput.columns.map((column) => projectTaskListColumnWidthRem(column, normalizedInput)),
     PROJECT_LIST_ADD_COLUMN_TRACK_REM,

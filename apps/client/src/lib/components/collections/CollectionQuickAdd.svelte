@@ -4,7 +4,7 @@
   import Plus from "@lucide/svelte/icons/plus";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { cn } from "$lib/utils";
-  let { label, draft = $bindable(""), active = $bindable(false), disabled = false, inputAttributes, contentColumn, onDraftChange, onActiveChange, onSubmit, onCreate }: {
+  let { label, draft = $bindable(""), active = $bindable(false), disabled = false, inputAttributes, contentColumn, indent, onDraftChange, onActiveChange, onSubmit, onCreate }: {
     label: string;
     draft?: string;
     active?: boolean;
@@ -12,13 +12,18 @@
     inputAttributes?: HTMLInputAttributes;
     /** Grid column where content starts when the control fills a whole collection row and relies on the row hover. */
     contentColumn?: number;
+    /** Start inset of the content, matching the title indent of the nested rows it adds to. */
+    indent?: string;
     onDraftChange?: (draft: string) => void;
     onActiveChange?: (active: boolean) => void;
   } & ({ onSubmit: (title: string) => Promise<boolean>; onCreate?: never }
     | { onCreate: () => void; onSubmit?: never }) = $props();
   const { t } = getLocalization();
   const spansRow = $derived(contentColumn !== undefined);
-  const contentStyle = $derived(spansRow ? `grid-column: ${contentColumn} / -1;` : undefined);
+  const contentStyle = $derived([
+    spansRow ? `grid-column: ${contentColumn} / -1;` : "",
+    indent ? `margin-left: ${indent};` : "",
+  ].join(" ") || undefined);
   let input: HTMLInputElement | undefined = $state();
   let trigger: HTMLButtonElement | undefined = $state();
   let pending = $state(false);

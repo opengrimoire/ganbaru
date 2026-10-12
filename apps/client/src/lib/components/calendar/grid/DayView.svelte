@@ -368,7 +368,7 @@
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       bind:offsetHeight={stickyHeaderHeight}
-      class="grid {allDayEvents.length === 0 ? 'border-b border-sidebar' : ''}"
+      class="grid"
       onwheel={handleHeaderWheel}
       style="
         grid-column: 1 / -1;

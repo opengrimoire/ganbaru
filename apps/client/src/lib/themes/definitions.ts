@@ -536,7 +536,6 @@ export const BASE_APP_TOKENS: Readonly<
 > = Object.freeze({
   light: Object.freeze({
     "--background": "#F4F4F7",
-    "--cal-header-bg": "#F4F4F7",
     "--card": "#FFFFFF",
     "--card-foreground": "#141420",
     "--popover": "#FFFFFF",
@@ -580,7 +579,6 @@ export const BASE_APP_TOKENS: Readonly<
   }),
   dark: Object.freeze({
     "--background": "#27282A",
-    "--cal-header-bg": "#27282A",
     "--card": "#2E2F31",
     "--card-foreground": "#ECECF2",
     "--popover": "#353638",

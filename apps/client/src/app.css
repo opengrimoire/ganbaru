@@ -147,7 +147,6 @@
 
   /* Content area */
   --background: #F4F4F7;
-  --cal-header-bg: #F4F4F7;
   --foreground: #141420;
   --card: #FFFFFF;
   --card-foreground: #141420;
@@ -243,7 +242,6 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
 .dark {
   /* Content area */
   --background: #27282A;
-  --cal-header-bg: #27282A;
   --foreground: #ECECF2;
   --card: #2E2F31;
   --card-foreground: #ECECF2;

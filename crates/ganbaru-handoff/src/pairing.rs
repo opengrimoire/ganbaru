@@ -8,7 +8,6 @@ mod storage;
 mod tests;
 mod transfers;
 
-#[cfg(any(target_os = "linux", mobile))]
 pub use storage::write_private_file_atomically;
 use storage::{
     persist_initialized_state, persist_state, read_state, recover_private_state, validate_state,

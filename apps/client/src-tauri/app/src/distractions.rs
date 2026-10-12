@@ -9,7 +9,7 @@ use crate::vault;
 use chrono::{DateTime, SecondsFormat, Utc};
 #[cfg(desktop)]
 use serde_json::Value;
-#[cfg(desktop)]
+#[cfg(all(desktop, target_os = "linux"))]
 use sha2::{Digest, Sha256};
 #[cfg(desktop)]
 use std::collections::{HashMap, HashSet};

@@ -43,7 +43,7 @@ collapsible_if = "allow"
 
 [workspace.dependencies]
 agent-client-protocol = "2.0.0"
-ammonia = "4.1.4"
+ammonia = "4.1.7"
 axum = "0.8.8"
 base64 = "0.22.1"
 block2 = "0.6.2"

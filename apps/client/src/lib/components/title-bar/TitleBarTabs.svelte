@@ -125,7 +125,7 @@
 <div class="relative flex min-w-0 items-center gap-0.5 overflow-hidden pl-1.5">
   {#if indicatorStyle}
     <div
-      class="tab-indicator absolute top-0 h-full rounded-md bg-background dark:bg-accent"
+      class="tab-indicator absolute top-0 h-full rounded-md bg-card shadow-xs dark:bg-accent dark:shadow-none"
       style={indicatorStyle}
     ></div>
   {/if}
@@ -142,7 +142,7 @@
         compact ? "titlebar-tab-compact justify-center" : "gap-1.5 px-3",
         nav.current === tab.view
           ? "text-foreground dark:text-white"
-          : "text-sidebar-foreground dark:text-white/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+          : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
       )}
       title={t("titleBar.tab.withShortcut", tab.label(), `Alt+${index + 1}`)}
     >
@@ -154,11 +154,11 @@
 
 <style>
   .titlebar-tab {
-    height: 32px;
+    height: 28px;
   }
 
   .titlebar-tab-compact {
-    width: 32px;
+    width: 28px;
   }
 
   .tab-indicator {

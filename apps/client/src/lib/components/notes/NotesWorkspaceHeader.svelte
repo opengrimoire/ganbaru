@@ -453,7 +453,7 @@
     "flex shrink-0 items-center gap-1 px-3",
     mobileLayout ? "overflow-hidden" : "overflow-x-auto",
   )}
-  style="height: var(--cal-header-row-h); background-color: var(--cal-header-bg); border-bottom: 1px solid var(--sidebar);"
+  style="height: var(--toolbar-h); background-color: var(--cal-bg);"
   onscroll={refreshNavigatorPanelGeometry}
   data-notes-workspace-header
 >

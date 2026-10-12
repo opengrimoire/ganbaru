@@ -319,7 +319,7 @@
 >
   <section class="flex min-w-0 flex-1 flex-col">
     {#if selectedProject && selectedGroup}
-      <header class="flex shrink-0 flex-col" style="background-color: var(--cal-header-bg);">
+      <header class="flex shrink-0 flex-col" style="background-color: var(--cal-bg);">
         <ProjectWorkspaceHeader
           {selectedProject}
           {selectedGroup}
@@ -418,8 +418,8 @@
     {:else}
       <header
         data-projects-shell-header
-        class="flex h-11 shrink-0 items-center border-b border-border px-4 text-sm font-semibold"
-        style="background-color: var(--cal-header-bg);"
+        class="flex shrink-0 items-center px-4 text-sm font-semibold"
+        style="height: var(--toolbar-h); background-color: var(--cal-bg);"
       >
         {t("titleBar.tab.projects")}
       </header>

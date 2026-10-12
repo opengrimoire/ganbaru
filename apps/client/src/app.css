@@ -170,9 +170,9 @@
   --app-scrollbar-thumb-hover: color-mix(in srgb, var(--foreground) 36%, transparent);
 
   /* Frame / contour (titlebar) */
-  --sidebar: #DCDCE2;
+  --sidebar: #ECECEF;
   --sidebar-foreground: #141420;
-  --sidebar-accent: #CFCFD6;
+  --sidebar-accent: #E0E0E5;
   --sidebar-accent-foreground: #141420;
   --sidebar-border: rgba(0, 0, 20, 0.08);
 
@@ -208,8 +208,8 @@
 
   --shell-gap: 0.375rem;
   --content-radius: 0.5rem;
-  --titlebar-h: 42px;
-  --toolbar-h: 42px;
+  --titlebar-h: 36px;
+  --toolbar-h: 40px;
   --panel-margin: 0.5rem;
   --safe-area-top: env(safe-area-inset-top, 0px);
   --safe-area-right: env(safe-area-inset-right, 0px);
@@ -470,6 +470,7 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
   html[data-shell="mobile"] {
     --titlebar-h: var(--mobile-topbar-h);
     --cal-header-row-h: 56px;
+    --toolbar-h: 56px;
     --collection-table-row-height: 2.75rem;
   }
   .mobile-viewport-height {
@@ -624,16 +625,12 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
 .app-shell[data-size-class="narrow"] {
   --shell-gap: 0.125rem;
   --content-radius: 0.25rem;
-  --titlebar-h: 40px;
-  --toolbar-h: 40px;
   --panel-margin: 0.25rem;
 }
 
 .app-shell[data-size-class="micro"] {
   --shell-gap: 0;
   --content-radius: 0;
-  --titlebar-h: 38px;
-  --toolbar-h: 38px;
   --panel-margin: 0.125rem;
 }
 
@@ -775,7 +772,7 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
 
 /* Notes and Chat share explorer surfaces, controls, and navigation states. */
 .explorer-sidebar {
-  --explorer-toolbar-height: var(--cal-header-row-h);
+  --explorer-toolbar-height: var(--toolbar-h);
   --explorer-row-icon-size: 14px;
   --explorer-toolbar-icon-size: var(--explorer-row-icon-size);
   --explorer-action-size: 1.75rem;
@@ -857,7 +854,7 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
 }
 
 .explorer-row.explorer-selected {
-  --explorer-row-highlight: var(--selection-background);
+  --explorer-row-highlight: var(--accent);
   background: var(--explorer-row-highlight);
 }
 

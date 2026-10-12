@@ -68,7 +68,7 @@
 
 <section class="flex h-full min-h-0 flex-col overflow-hidden">
   {#if showBack}
-    <div class="flex shrink-0 items-center px-3" style="height: var(--cal-header-row-h);">
+    <div class="flex shrink-0 items-center px-3" style="height: var(--toolbar-h);">
       <button
         type="button"
         class="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[0.8rem] text-muted-foreground hover:bg-accent hover:text-foreground"

@@ -694,7 +694,7 @@
                 ? "surface-backdrop fixed inset-x-0 bottom-0 z-50 flex items-center justify-center px-3 py-4 sm:px-6 sm:py-8"
                 : side ? "ml-auto flex min-w-0 basis-1/2 overflow-hidden"
                   : !showDatabasePage && showSidePeek ? "flex min-w-0 basis-1/2 overflow-hidden" : "flex min-w-0 flex-1 overflow-hidden"}
-              style={center ? "top: calc(var(--titlebar-h) + var(--cal-header-row-h));" : undefined}
+              style={center ? "top: calc(var(--titlebar-h) + var(--toolbar-h));" : undefined}
               inert={hidden || (!showDatabasePage && !isContextual && showCenterPeek)}
               data-notes-pane={pane.id}
               data-floating-root

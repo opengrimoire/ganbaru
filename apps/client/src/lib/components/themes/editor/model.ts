@@ -68,7 +68,7 @@ export const APP_TOKEN_INFO: Record<string, TokenInfo> = {
   },
   "--cal-header-bg": {
     title: "Calendar header",
-    description: "Calendar toolbar and day/time headers",
+    description: "Calendar day and time headers",
   },
   "--foreground": {
     title: "Text color",

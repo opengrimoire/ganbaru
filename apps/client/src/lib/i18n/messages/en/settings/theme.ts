@@ -149,7 +149,7 @@ export const theme = {
       },
       calendarHeader: {
         title: "Calendar header",
-        description: "Calendar toolbar and day/time headers",
+        description: "Calendar day and time headers",
       },
       textColor: {
         title: "Text color",

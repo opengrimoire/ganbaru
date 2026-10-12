@@ -152,7 +152,7 @@ export const theme = {
       },
       calendarHeader: {
         title: "Encabezado del calendario",
-        description: "Barra del calendario y encabezados de día y hora",
+        description: "Encabezados de día y hora del calendario",
       },
       textColor: {
         title: "Color de texto",

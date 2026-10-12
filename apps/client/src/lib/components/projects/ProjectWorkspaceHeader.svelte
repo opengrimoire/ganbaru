@@ -285,7 +285,7 @@
     "flex shrink-0 items-center gap-1",
     mobileLayout ? "overflow-visible px-3" : "hide-scrollbar overflow-x-auto px-3",
   )}
-  style="height: var(--cal-header-row-h); background-color: var(--cal-header-bg); border-bottom: 1px solid var(--sidebar);"
+  style="height: var(--toolbar-h); background-color: var(--cal-bg);"
   onscroll={refreshProjectNavigatorPanelGeometry}
 >
   <div

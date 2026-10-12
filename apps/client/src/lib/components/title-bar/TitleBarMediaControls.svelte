@@ -182,7 +182,7 @@
 
 <style>
   .titlebar-icon-button {
-    width: 32px;
-    height: 32px;
+    width: 28px;
+    height: 28px;
   }
 </style>

@@ -960,7 +960,7 @@
   .workspace-panel { display: flex; height: 100%; min-height: 0; flex-direction: column; background: var(--cal-bg); }
   .retained-workspace-panel { height: 100%; min-height: 0; }
   .panel-tabbar { --workspace-panel-tab-width: 9.5rem; position: relative; display: flex; min-height: 2.65rem; flex: 0 0 auto; align-items: center; gap: 0.2rem; padding-inline: 0.45rem; }
-  .workspace-panel[data-placement="inspector"] .panel-tabbar { height: var(--cal-header-row-h); min-height: var(--cal-header-row-h); border-bottom: 1px solid var(--sidebar); background: var(--cal-header-bg); padding-right: var(--chat-global-actions-width); }
+  .workspace-panel[data-placement="inspector"] .panel-tabbar { height: var(--toolbar-h); min-height: var(--toolbar-h); background: var(--cal-bg); padding-right: var(--chat-global-actions-width); }
   .panel-tabbar.reordering { user-select: none; }
   .panel-tabbar > :global(.chat-icon-button) { flex: 0 0 auto; align-self: center; }
   .panel-add-button { display: grid; width: 1.75rem; height: 1.75rem; flex: 0 0 1.75rem; place-items: center; align-self: center; border-radius: 0.375rem; color: var(--foreground); transition: color 120ms ease, background-color 120ms ease; }

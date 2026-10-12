@@ -219,7 +219,7 @@
 
 <svelte:window onpointerdown={handleWindowPointerDown} />
 
-<div bind:this={headerElement} class={cn("chat-workspace-header flex min-w-0 items-center gap-1", mobilePresentation ? "overflow-hidden pl-3" : "overflow-x-auto pl-3")} class:mobilePresentation style={`height:var(--cal-header-row-h);background-color:var(--cal-header-bg);border-bottom:1px solid var(--sidebar);padding-right:${mobilePresentation ? "0.75rem" : `var(--chat-header-action-inset, ${reserveGlobalActions ? "6.5rem" : "0.75rem"})`}`} onscroll={refreshNavigatorGeometry} data-chat-workspace-header>
+<div bind:this={headerElement} class={cn("chat-workspace-header flex min-w-0 items-center gap-1", mobilePresentation ? "overflow-hidden pl-3" : "overflow-x-auto pl-3")} class:mobilePresentation style={`height:var(--toolbar-h);background-color:var(--cal-bg);padding-right:${mobilePresentation ? "0.75rem" : `var(--chat-header-action-inset, ${reserveGlobalActions ? "6.5rem" : "0.75rem"})`}`} onscroll={refreshNavigatorGeometry} data-chat-workspace-header>
   {#if showRailButton}<button type="button" class="chat-toolbar-icon-button" aria-label={t("chat.openRail")} onclick={onOpenRail}><Menu size={14} /></button>{/if}
   <div bind:this={identityElement} class={cn("relative", mobilePresentation ? "min-w-0 flex-1 overflow-hidden" : "min-w-36 shrink-0 min-[760px]:max-w-3xl")}>
     <div class={cn("flex min-w-0 max-w-full items-center gap-0.5 overflow-hidden text-identity font-medium", mobilePresentation ? "h-12" : "h-7")}>
@@ -342,7 +342,7 @@
   .chat-members-trigger { display:flex;height:1.75rem;flex:0 0 auto;align-items:center;gap:0.3rem;border-radius:0.375rem;padding-inline:0.3rem 0.5rem;color:var(--foreground); }
   .chat-members-trigger:hover,.chat-members-trigger.open { background:var(--accent); }
   .chat-members-stack { display:flex;align-items:center; }
-  .chat-members-stack > :global(span) { flex:0 0 auto;border-radius:22%;box-shadow:0 0 0 1.5px var(--cal-header-bg); }
+  .chat-members-stack > :global(span) { flex:0 0 auto;border-radius:22%;box-shadow:0 0 0 1.5px var(--cal-bg); }
   .chat-members-trigger:hover .chat-members-stack > :global(span),.chat-members-trigger.open .chat-members-stack > :global(span) { box-shadow:0 0 0 1.5px var(--accent); }
   .chat-members-stack > :global(span + span) { margin-inline-start:-0.3rem; }
   .chat-members-count { font-size: calc(0.733333rem * var(--type-scale));font-weight:500; }

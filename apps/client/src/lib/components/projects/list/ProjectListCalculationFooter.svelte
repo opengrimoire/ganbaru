@@ -40,7 +40,7 @@
 {#if active && !query.loadError}
   <div aria-label={t("projects.columns.completeCalculations")} class="text-xs text-muted-foreground">
     <p class="mb-1 px-2">{t("projects.columns.completeCalculations")}</p>
-    <CollectionRow template={gridTemplate} minWidth={gridMinWidth} divider={false} role="row">
+    <CollectionRow template={gridTemplate} minWidth={gridMinWidth} gutter={context?.gutter} divider={false} role="row">
       <div class={context?.cellClass("selection")} style={context?.cellStyle("selection")}></div>
       <div class={context?.cellClass("expand")} style={context?.cellStyle("expand")}></div>
       <CollectionCell class={context?.cellClass("name")} style={context?.cellStyle("name")} aria-label={t("projects.list.name")}><span>{valueFor("name")}</span></CollectionCell>

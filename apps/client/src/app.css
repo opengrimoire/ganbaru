@@ -720,7 +720,7 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
 }
 
 :root:not([data-collection-column-dragging]):not(:has(:is([data-collection-cell-primary], [data-collection-hover-target])[aria-expanded="true"], [data-collection-cell-primary]:is(textarea, input:not([type="checkbox"], [type="radio"])):focus, [data-collection-resize]:active)) .collection-row[data-collection-hoverable]:hover {
-  background-image: linear-gradient(var(--collection-row-highlight), var(--collection-row-highlight));
+  --collection-row-hover: var(--collection-row-highlight);
 }
 
 :root[data-collection-column-dragging] .collection-row :is(a, button, label):hover,

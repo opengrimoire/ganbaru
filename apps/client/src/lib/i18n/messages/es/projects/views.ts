@@ -9,7 +9,6 @@ export const views = {
     noTasks: "Aún no hay tareas",
     hiddenSection: "Oculta",
     archivedSection: "Archivada",
-    subtasks: (count: number) => `${count} ${count === 1 ? "subtarea" : "subtareas"}`,
     status: "Estado",
     priority: "Prioridad",
     estimate: "Estimación",

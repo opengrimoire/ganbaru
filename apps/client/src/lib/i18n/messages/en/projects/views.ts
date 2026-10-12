@@ -6,7 +6,6 @@ export const views = {
     noTasks: "No tasks yet",
     hiddenSection: "Hidden",
     archivedSection: "Archived",
-    subtasks: (count: number) => `${count} ${count === 1 ? "subtask" : "subtasks"}`,
     status: "Status",
     priority: "Priority",
     estimate: "Estimate",

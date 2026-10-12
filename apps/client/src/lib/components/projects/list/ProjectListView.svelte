@@ -5,6 +5,7 @@
   import { getProjects } from "$lib/stores/projects.svelte";
   import { getTheme } from "$lib/stores/theme.svelte";
   import { getEventColor } from "$lib/calendar/utils";
+  import { collectionRowContentStart } from "$lib/components/collections/row-expansion";
   import { projectListFrozenOffsets, projectListRowColor } from "$lib/projects/list/presentation";
   import { setProjectListTableContext } from "./table-context";
   import type { ProjectTaskQueryController } from "$lib/components/projects/task-query-controller.svelte";
@@ -17,6 +18,7 @@
   import {
     projectTaskListGridMinWidth,
     projectTaskListGridTemplate,
+    projectTaskListGutterWidth,
     projectTaskListLeadingGridTemplate,
     type ProjectTaskListColumnWidths,
     type ProjectTaskListGridInput,
@@ -179,6 +181,7 @@
   const taskListGridTemplate = $derived(projectTaskListGridTemplate(taskListGridInput));
   const taskListGridMinWidth = $derived(projectTaskListGridMinWidth(taskListGridInput));
   const taskListLeadingGridTemplate = $derived(projectTaskListLeadingGridTemplate(taskListGridInput));
+  const taskListContentStart = collectionRowContentStart(projectTaskListGutterWidth());
   const listRangeDateColumnsVisible = $derived(taskListColumns.includes("start") && taskListColumns.includes("due"));
   const frozenOffsets: Partial<Record<ProjectTaskListResizableColumn | "selection" | "expand", number>> = $derived(taskQuery ? projectListFrozenOffsets(taskQuery.listPresentation, taskListGridInput, listViewportWidthRem) : {});
   $effect(() => {
@@ -198,8 +201,10 @@
   });
   if (tableQuery) setProjectListTableContext({
     query: tableQuery,
+    gutter: projectTaskListGutterWidth(),
     cellClass: (column) => [
       frozenOffsets[column] !== undefined ? "project-list-frozen-cell" : "",
+      column === "selection" || column === "expand" ? "project-list-gutter-cell" : "",
       column !== "selection" && column !== "expand" && tableQuery.listPresentation.wrappedColumns.includes(column) ? "project-list-wrap-cell" : "",
     ].join(" "),
     cellStyle: (column) => frozenOffsets[column] === undefined ? "" : `left: calc(var(--project-list-content-inset) + ${frozenOffsets[column]}rem);`,
@@ -207,7 +212,7 @@
       const color = projectListRowColor(task, tableQuery.listPresentation.colorRules);
       const background = selected ? "color-mix(in srgb, var(--accent) 40%, var(--cal-bg))"
         : color === undefined ? "var(--cal-bg)" : `color-mix(in srgb, ${getEventColor(color, theme.current).bg} 15%, var(--cal-bg))`;
-      return `--project-list-row-bg: ${background}; background-color: ${background};`;
+      return `--project-list-row-bg: ${background}; background: linear-gradient(to right, var(--cal-bg) ${taskListContentStart}, ${background} ${taskListContentStart});`;
     },
     columnReorder,
   });
@@ -515,6 +520,7 @@
   bind:this={viewport.container}
   bind:clientWidth={listViewportWidth}
   class="project-list-scroll h-full min-h-0 overflow-auto overscroll-contain"
+  style={`--project-list-divider-left: ${taskListContentStart};`}
   data-mobile-layout={mobileLayout}
   onscroll={handleScroll}
 >
@@ -813,7 +819,6 @@
 <style>
   :global(.project-list-scroll .project-list-divider) {
     position: relative;
-    --project-list-divider-left: 3.25rem;
     --project-list-divider-right: 0.25rem;
   }
 
@@ -871,6 +876,11 @@
     z-index: 3;
     border-radius: 0;
     background-color: var(--project-list-row-bg, var(--cal-bg));
+  }
+
+  /* The gutter sits outside the table, so a frozen checkbox or chevron keeps the list surface instead of the row color. */
+  :global(.project-list-scroll .project-list-frozen-cell.project-list-gutter-cell) {
+    background-color: var(--cal-bg);
   }
 
   :global(.project-list-scroll .project-list-frozen-cell:focus-within),

@@ -651,14 +651,14 @@ describe("saved grouped table presentation", () => {
     vi.mocked(updateNotesDataSourceTableView).mockImplementation(() => new Promise(() => {}));
     const { handle } = await open(vi.fn(), initial);
     const statusHeader = document.querySelector<HTMLElement>('[role="columnheader"] button[aria-label="Status"]')!.closest<HTMLElement>('[role="columnheader"]')!;
-    expect(statusHeader.style.left).toBe("240px");
+    expect(statusHeader.style.left).toBe("calc(240px + 3.5rem)");
     pointer(handle, "pointerdown", 200);
     pointer(window, "pointermove", 240);
     await tick();
-    expect(statusHeader.style.left).toBe("280px");
+    expect(statusHeader.style.left).toBe("calc(280px + 3.5rem)");
     pointer(window, "pointerup", 240);
     await tick();
-    expect(statusHeader.style.left).toBe("280px");
+    expect(statusHeader.style.left).toBe("calc(280px + 3.5rem)");
     expect(updateNotesDataSourceTableView).toHaveBeenCalledOnce();
   });
 
@@ -721,7 +721,7 @@ describe("saved grouped table presentation", () => {
     expect(document.querySelectorAll('[data-database-row-id]')).toHaveLength(1);
     expect(document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Name"]')?.value).toBe("Loaded row");
     const frozenCell = document.querySelector<HTMLElement>('[data-database-row-id] .collection-cell');
-    expect(frozenCell?.style.left).toBe("0px");
+    expect(frozenCell?.style.left).toBe("calc(0px + 3.5rem)");
     document.querySelector<HTMLButtonElement>('[data-table-group-id="todo"] button[aria-expanded]')!.click();
     await vi.waitFor(() => expect(updateNotesDataSourceTableView).toHaveBeenCalledOnce());
     expect(vi.mocked(updateNotesDataSourceTableView).mock.calls[0][1].configuration).toMatchObject({

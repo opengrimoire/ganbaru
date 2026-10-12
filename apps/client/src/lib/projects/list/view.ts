@@ -449,6 +449,11 @@ export function projectTaskListGridColumnWidths(
   ];
 }
 
+/** Width of the selection and expand tracks that sit outside the table, before the name column. */
+export function projectTaskListGutterWidth(): string {
+  return formatProjectTaskListRem(PROJECT_LIST_SELECTION_TRACK_REM + PROJECT_LIST_EXPAND_TRACK_REM);
+}
+
 export function projectTaskListGridTemplate(
   input: readonly ProjectTaskListColumn[] | ProjectTaskListGridInput,
 ): string {

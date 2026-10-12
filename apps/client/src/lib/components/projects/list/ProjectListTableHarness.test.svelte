@@ -5,11 +5,12 @@
   import ProjectListCalculationFooter from "./ProjectListCalculationFooter.svelte";
   import { createProjectListColumnReorder } from "./column-reorder";
   import { setProjectListTableContext } from "./table-context";
+  import { projectTaskListGutterWidth } from "$lib/projects/list/view";
 
   let { query }: { query: ProjectTaskQueryController } = $props();
   const columnReorder = createProjectListColumnReorder(untrack(() => query));
   onDestroy(() => columnReorder.destroy());
-  setProjectListTableContext({ get query() { return query; }, cellClass: () => "", cellStyle: () => "", rowStyle: () => "", columnReorder });
+  setProjectListTableContext({ get query() { return query; }, gutter: projectTaskListGutterWidth(), cellClass: () => "", cellStyle: () => "", rowStyle: () => "", columnReorder });
 </script>
 
 <div data-floating-root>

@@ -2,6 +2,7 @@
   import type { MaybePromise } from "$lib/utils";
   import CollectionRow from "$lib/components/collections/CollectionRow.svelte";
   import CollectionQuickAdd from "$lib/components/collections/CollectionQuickAdd.svelte";
+  import { getProjectListTableContext } from "./table-context";
 
   type TaskAddMode = "section" | "group" | "subtask";
 
@@ -36,9 +37,10 @@
     onSubmit: () => MaybePromise;
   } = $props();
 
+  const context = getProjectListTableContext();
 </script>
 
-<CollectionRow template={gridTemplate} minWidth={gridMinWidth} divider={false} class="project-list-divider"
+<CollectionRow template={gridTemplate} minWidth={gridMinWidth} gutter={context?.gutter} divider={false} class="project-list-divider"
   data-section-task-add-row={mode === "section" ? rowId : undefined}
   data-group-task-add-row={mode === "group" ? rowId : undefined}
   data-subtask-add-row={mode === "subtask" ? rowId : undefined}>

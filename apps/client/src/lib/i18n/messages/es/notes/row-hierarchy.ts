@@ -1,6 +1,5 @@
 export const rowHierarchy = {
   databaseSubitemCreate: "Añadir subelemento",
-  databaseSubitemCount: (count: string) => `${count} subelementos`,
   databaseSubitemMoveToRoot: "Mover al nivel superior",
   databaseSubitemMove: "Mover debajo de otra fila",
   databaseSubitemParent: "Fila principal",

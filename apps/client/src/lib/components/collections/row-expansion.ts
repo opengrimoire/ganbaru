@@ -39,3 +39,17 @@ export const COLLECTION_ROW_INDENT_REM = 0.75;
 export function collectionRowIndent(depth: number): string {
   return `${Math.max(0, depth) * COLLECTION_ROW_INDENT_REM}rem`;
 }
+
+/** Inline padding of a collection row before its first track, in rem. */
+export const COLLECTION_ROW_INSET_REM = 0.25;
+
+/** Inline padding of a collection row before its first track. */
+export const COLLECTION_ROW_INSET = `${COLLECTION_ROW_INSET_REM}rem`;
+
+/**
+ * Where a row's table content starts after its leading gutter, the tracks that hold the selection checkbox and expand
+ * chevron outside the table, as a CSS length. Dividers and row fills begin here.
+ */
+export function collectionRowContentStart(gutter: string): string {
+  return `calc(${COLLECTION_ROW_INSET} + ${gutter})`;
+}

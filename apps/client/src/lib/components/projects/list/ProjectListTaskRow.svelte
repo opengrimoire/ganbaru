@@ -198,7 +198,7 @@
   )}
   style={`min-width: ${gridMinWidth}; ${context?.rowStyle(task, selectedTaskId === task.id) ?? ""}`}
 >
-  <CollectionRow template={gridTemplate} minWidth={gridMinWidth} divider={false} selected={selectedTaskId === task.id}
+  <CollectionRow template={gridTemplate} minWidth={gridMinWidth} gutter={context?.gutter} divider={false} selected={selectedTaskId === task.id}
     role="group"
     aria-label={task.title}
     {draggable}
@@ -223,10 +223,11 @@
       {/if}
     </div>
     <CollectionCell class={context?.cellClass("name")} style={context?.cellStyle("name")}>
-    <div class="flex w-full min-w-0 flex-col justify-center" style={depth > 0 ? `padding-left: ${collectionRowIndent(depth)};` : undefined}>
+    <!-- Section, tags, and the archived badge share the title line so every row keeps the shared row height. -->
+    <div class="flex w-full min-w-0 items-center gap-1.5" style={depth > 0 ? `padding-left: ${collectionRowIndent(depth)};` : undefined}>
       <input
         data-collection-cell-primary
-        class="h-7 w-full min-w-0 truncate rounded-sm border border-transparent bg-transparent p-0 text-foreground outline-none"
+        class="h-7 min-w-0 flex-1 truncate rounded-sm border border-transparent bg-transparent p-0 text-foreground outline-none"
         value={task.title}
         aria-label={t("projects.detail.titleLabel")}
         placeholder={t("projects.detail.titlePlaceholder")}
@@ -234,20 +235,13 @@
         onblur={commitTitle}
         onkeydown={handleTitleKeydown}
       />
-      {#if sectionName || subtaskCount > 0}
-        <div class="mt-0.5 flex min-w-0 flex-wrap items-center gap-1 text-[0.733333rem] text-muted-foreground">
+      {#if sectionName || taskTags.length > 0 || task.archivedAt}
+        <div class="flex max-w-1/2 min-w-0 shrink-0 items-center gap-1 overflow-hidden text-[0.666667rem] text-muted-foreground">
           {#if sectionName}
-            <span class="truncate">{sectionName}</span>
+            <span class="min-w-0 truncate">{sectionName}</span>
           {/if}
-          {#if subtaskCount > 0}
-            <span>{t("projects.list.subtasks", subtaskCount)}</span>
-          {/if}
-        </div>
-      {/if}
-      {#if taskTags.length > 0}
-        <div class="mt-1 flex min-w-0 flex-wrap gap-1">
           {#each taskTags as tag (tag.id)}
-            <span class="inline-flex max-w-full items-center gap-1 rounded border border-border bg-muted/50 px-1.5 py-0.5 text-[0.666667rem] text-muted-foreground">
+            <span class="inline-flex min-w-0 items-center gap-1 rounded border border-border bg-muted/50 px-1.5 py-0.5">
               <span
                 class={cn("h-1.5 w-1.5 shrink-0 rounded-full border", projectTagColorSwatchClass(tag.color))}
                 style={projectTagColorDotStyle(tag.color, theme)}
@@ -256,16 +250,16 @@
             </span>
           {/each}
           {#if hiddenTagCount > 0}
-            <span class="rounded border border-border bg-muted/50 px-1.5 py-0.5 text-[0.666667rem] text-muted-foreground">
+            <span class="shrink-0 rounded border border-border bg-muted/50 px-1.5 py-0.5">
               {t("projects.list.moreTags", hiddenTagCount)}
             </span>
           {/if}
+          {#if task.archivedAt}
+            <span class={cn("shrink-0 rounded border px-1.5 py-0.5", projectTaskArchivedBadgeClass(task))}>
+              {t("projects.taskLifecycle.archived")}
+            </span>
+          {/if}
         </div>
-      {/if}
-      {#if task.archivedAt}
-        <span class={cn("mt-1 inline-flex w-fit rounded border px-1.5 py-0.5 text-[0.733333rem]", projectTaskArchivedBadgeClass(task))}>
-          {t("projects.taskLifecycle.archived")}
-        </span>
       {/if}
     </div>
     <button type="button" data-collection-hover-reveal=""

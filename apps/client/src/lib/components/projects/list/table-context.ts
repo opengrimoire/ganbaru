@@ -6,6 +6,8 @@ import type { CollectionColumnReorder } from "$lib/components/collections/column
 
 export interface ProjectListTableContext {
   query: ProjectTaskQueryController;
+  /** Width of the selection and expand tracks outside the table, passed to rows so fills skip it. */
+  gutter: string;
   cellClass: (column: ProjectTaskListResizableColumn | "selection" | "expand") => string;
   cellStyle: (column: ProjectTaskListResizableColumn | "selection" | "expand") => string;
   rowStyle: (task: ProjectTask, selected: boolean) => string;

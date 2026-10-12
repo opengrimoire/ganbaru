@@ -30,7 +30,8 @@
   import CollectionExpandToggle from "$lib/components/collections/CollectionExpandToggle.svelte";
   import CollectionSelectionBar from "$lib/components/collections/CollectionSelectionBar.svelte";
   import CollectionSelectionAction from "$lib/components/collections/CollectionSelectionAction.svelte";
-  import { collectionRowExpanded, collectionRowIndent, toggledCollectionRowExpansion, type CollectionRowExpansion } from "$lib/components/collections/row-expansion";
+  import { COLLECTION_ROW_INSET, COLLECTION_ROW_INSET_REM, collectionRowExpanded, collectionRowIndent, toggledCollectionRowExpansion, type CollectionRowExpansion } from "$lib/components/collections/row-expansion";
+  import { collectionGutterRoom } from "$lib/components/collections/gutter-room";
   import { NOTES_DATABASE_MAX_COLLAPSED_ROWS, NOTES_DATABASE_ROW_MAX_DEPTH, notesDatabaseCollapsedRows, notesDatabaseHierarchyItems, notesDatabaseTopmostRows } from "$lib/notes/database/row-hierarchy";
   import { NOTES_DATABASE_QUERY_MAX_SORTS, notesDatabaseFilterCount, notesDatabaseFilterConditions, notesDatabaseNewFilter, notesDatabaseRowMatchesFilters, notesDatabaseSortsWithColumn } from "$lib/notes/database/query-controls";
   import { onDestroy, tick, untrack, type Snippet } from "svelte";
@@ -197,11 +198,19 @@
   $effect(() => {
     const root = tableRoot;
     if (!root) return;
-    const measure = () => { tableViewportWidth = root.clientWidth || undefined; };
+    const content = root.parentElement;
+    const measure = () => {
+      tableViewportWidth = root.clientWidth || undefined;
+      const rem = Number.parseFloat(getComputedStyle(document.documentElement).fontSize);
+      remPixels = Number.isFinite(rem) ? rem : undefined;
+      if (content) gutterRoom = collectionGutterRoom(content).room;
+    };
     measure();
     if (typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(measure);
     observer.observe(root);
+    const clip = content ? collectionGutterRoom(content).clip : null;
+    if (clip) observer.observe(clip);
     return () => observer.disconnect();
   });
   let table = $state<NotesDataSourceTableView | null>(untrack(() => notesDatabaseSession.read(databaseResource("table", dataSourceId, viewScope()))));
@@ -344,14 +353,48 @@
   const renderedColumns = $derived(visibleColumns.map((column) => ({ ...column,
     width: columnResize?.id === column.id ? columnResize.width : pendingColumnWidth?.id === column.id ? pendingColumnWidth.width : column.width,
   })));
-  function frozenOffset(columnId: string): number | null {
-    return notesTableFrozenOffset(renderedColumns, tableConfiguration?.presentation?.frozen_property_id, columnId, tableViewportWidth);
-  }
   /** Minimum width of the trailing track, which only holds the add property button (`size-9`). */
   const ADD_PROPERTY_TRACK_MIN = "2.25rem";
-  /** Leading tracks for the selection checkbox and the expand chevron (`size-7`). */
-  const SELECTION_TRACK = "1.5rem";
-  const EXPAND_TRACK = "1.75rem";
+  /** Leading tracks for the selection checkbox and the expand chevron (`size-7`), in rem. */
+  const SELECTION_TRACK_REM = 1.5;
+  const EXPAND_TRACK_REM = 1.75;
+  const SELECTION_TRACK = `${SELECTION_TRACK_REM}rem`;
+  const EXPAND_TRACK = `${EXPAND_TRACK_REM}rem`;
+  /**
+   * The selection and expand tracks sit outside the table: row fills and dividers start after them, and the table hangs
+   * them into the margin so its content lines up with the database title and toolbar.
+   */
+  const ROW_GUTTER = `calc(${SELECTION_TRACK} + ${EXPAND_TRACK})`;
+  const ROW_CONTENT_START_REM = COLLECTION_ROW_INSET_REM + SELECTION_TRACK_REM + EXPAND_TRACK_REM;
+  const ROW_CONTENT_START = `${ROW_CONTENT_START_REM}rem`;
+  /** Draws row dividers above sticky frozen cells (`z-20`) and frozen headers (`z-30`). */
+  const ROW_DIVIDER_LAYER = 31;
+  /** Pixels of one rem, so frozen columns can budget the viewport left after the gutter. */
+  let remPixels = $state<number | undefined>();
+  /** Margin room left of the table content that the gutter can hang into without being clipped. */
+  let gutterRoom = $state(0);
+  const frozenViewportWidth = $derived(tableViewportWidth !== undefined && remPixels !== undefined
+    ? Math.max(0, tableViewportWidth - ROW_CONTENT_START_REM * remPixels) : tableViewportWidth);
+  function frozenOffset(columnId: string): number | null {
+    return notesTableFrozenOffset(renderedColumns, tableConfiguration?.presentation?.frozen_property_id, columnId, frozenViewportWidth);
+  }
+  /** Sticky position of a frozen column, after the gutter. */
+  function frozenStyle(columnId: string): string | undefined {
+    const offset = frozenOffset(columnId);
+    return offset === null ? undefined : `left: calc(${ROW_CONTENT_START} + ${offset}px);`;
+  }
+  /** While a column is frozen, the gutter sticks too, so scrolled cells pass beneath both instead of over the margin. */
+  const gutterFrozen = $derived(renderedColumns.some((column) => frozenOffset(column.id) !== null));
+  function gutterCellClass(header: boolean): string {
+    return gutterFrozen ? `sticky bg-background ${header ? "z-30" : "z-20"}` : "";
+  }
+  function gutterCellStyle(track: "selection" | "expand"): string | undefined {
+    if (!gutterFrozen) return undefined;
+    // The selection cell also covers the row inset, which would otherwise show scrolled cells at the margin edge.
+    return track === "selection"
+      ? `left: ${COLLECTION_ROW_INSET}; box-shadow: calc(-1 * ${COLLECTION_ROW_INSET}) 0 0 var(--background);`
+      : `left: calc(${COLLECTION_ROW_INSET} + ${SELECTION_TRACK});`;
+  }
   const gridTemplate = $derived(`${SELECTION_TRACK} ${EXPAND_TRACK} ${renderedColumns.map((column) => `${column.width}px`).join(" ")} minmax(${ADD_PROPERTY_TRACK_MIN}, 1fr)`);
   const filters = $derived(table ? notesDatabaseTableFiltersFromView(table.view) : []);
   const sorts = $derived(table ? notesDatabaseTableSortsFromView(table.view) : []);
@@ -963,12 +1006,15 @@
     if (property) saveColorRules([...(tableConfiguration?.presentation?.color_rules ?? []), { id: crypto.randomUUID(), property_id: null, color: "blue", filters: [notesDatabaseNewFilter(property)] }]);
   }
 
+  /** Paint a matching color rule: a row-level color fills the row after the gutter, a property color fills its cell. */
   function conditionalColorStyle(row: NotesPage, propertyId: string | null): string {
     const rules = tableConfiguration?.presentation?.color_rules ?? [];
     const matches = (candidate: NotesDatabaseTableColorRule) => notesDatabaseRowMatchesFilters(row, columns, candidate.filters);
     const rule = rules.find((candidate) => candidate.property_id === propertyId && matches(candidate))
       ?? (propertyId === null ? undefined : rules.find((candidate) => candidate.property_id === null && matches(candidate)));
-    return rule ? `${notesBlockColorStyle(`${rule.color}_background` as NotesColor)}; background-color: var(--notes-block-bg);` : "";
+    if (!rule) return "";
+    const fill = propertyId === null ? "--collection-row-fill" : "background-color";
+    return `${notesBlockColorStyle(`${rule.color}_background` as NotesColor)}; ${fill}: var(--notes-block-bg);`;
   }
 
   /** Move a visible property one place left or right, keeping the required title first. */
@@ -1074,12 +1120,13 @@
 
 {#snippet calculationRow(groupId: string | null)}
   {#if visibleColumns.some((column) => notesTableColumnPresentation(tableConfiguration?.presentation, column.id).calculation)}
-    <CollectionRow template={gridTemplate} role="row" data-table-calculation-group={groupId ?? "__all__"} class="border-t border-(--cal-gridline) bg-muted/20 text-muted-foreground">
-      <div role="cell"></div>
-      <div role="cell"></div>
+    <CollectionRow template={gridTemplate} gutter={ROW_GUTTER} role="row" data-table-calculation-group={groupId ?? "__all__"} class="text-muted-foreground"
+      style="--collection-row-fill: color-mix(in srgb, var(--muted) 20%, transparent);">
+      <div role="cell" class={`self-stretch ${gutterCellClass(false)}`} style={gutterCellStyle("selection")}></div>
+      <div role="cell" class={`self-stretch ${gutterCellClass(false)}`} style={gutterCellStyle("expand")}></div>
       {#each visibleColumns as column (column.id)}
         {@const calculation = notesTableColumnPresentation(tableConfiguration?.presentation, column.id).calculation}
-        <CollectionCell role="cell" class={frozenOffset(column.id) !== null ? "sticky z-20 bg-background" : ""} style={frozenOffset(column.id) !== null ? `left: ${frozenOffset(column.id)}px` : undefined}>
+        <CollectionCell role="cell" class={frozenOffset(column.id) !== null ? "sticky z-20 bg-background" : ""} style={frozenStyle(column.id)}>
           {#if calculation}<span class="min-w-0 truncate text-[0.75rem]" title={calculationLabel(calculation)}>{calculationLabel(calculation)} <span class="text-foreground">{calculationText(groupId, column)}</span></span>{/if}
         </CollectionCell>
       {/each}
@@ -1247,21 +1294,22 @@
       {/if}
 
       <!-- The bottom padding keeps the last row border inside the scroll clip when zoom gives rows fractional heights. -->
-      <div bind:this={tableRoot} use:rememberDatabaseScroll={databaseResource("table", dataSourceId, viewScope()).key} class="min-w-0 overflow-x-auto overflow-y-hidden pb-px">
-        <div role="table" aria-label={t("notes.databaseViewTable")} class="min-w-max">
-          <CollectionRow template={gridTemplate} header role="row" class="border-t border-(--cal-gridline)">
-            <div role="columnheader" class="flex justify-center">
+      <div bind:this={tableRoot} use:rememberDatabaseScroll={databaseResource("table", dataSourceId, viewScope()).key} class="min-w-0 overflow-x-auto overflow-y-hidden pb-px"
+        style={`margin-left: calc(-1 * min(${gutterRoom}px, ${ROW_CONTENT_START}));`}>
+        <div role="table" aria-label={t("notes.databaseViewTable")} class="isolate min-w-max" style={`--collection-divider-layer: ${ROW_DIVIDER_LAYER};`}>
+          <CollectionRow template={gridTemplate} gutter={ROW_GUTTER} header dividerTop role="row">
+            <div role="columnheader" class={`flex justify-center self-stretch items-center ${gutterCellClass(true)}`} style={gutterCellStyle("selection")}>
               <CollectionSelectionCheckbox checked={allRowsSelected} indeterminate={!allRowsSelected && selectedRows.length > 0} disabled={selectableRows.length === 0}
                 label={t(allRowsSelected ? "collections.selection.unselectAll" : "collections.selection.selectAll")} onToggle={toggleAllRowsSelected} />
             </div>
-            <div role="columnheader"></div>
+            <div role="columnheader" class={`self-stretch ${gutterCellClass(true)}`} style={gutterCellStyle("expand")}></div>
             {#each visibleColumns as column (column.id)}
               {@const columnIndex = visibleColumns.findIndex((candidate) => candidate.id === column.id)}
               {@const sortUnavailable = mutating || editingLocked || (sorts.length >= NOTES_DATABASE_QUERY_MAX_SORTS && !sorts.some((sort) => sort.property_id === column.id))}
               <CollectionColumnHeader label={column.name} resizeLabel={t("notes.databaseTableResizeColumn", column.name)} disabled={mutating || editingLocked}
                 columnId={column.id} movable={column.type !== "title"} reorder={columnReorder}
                 class={frozenOffset(column.id) !== null ? "sticky z-30 bg-background" : ""}
-                style={frozenOffset(column.id) !== null ? `left: ${frozenOffset(column.id)}px` : undefined}
+                style={frozenStyle(column.id)}
                 onpointerdown={(event) => startColumnResize(event, column)} onkeydown={(event) => resizeColumnKey(event, column)}>
                 {#snippet actions()}
                   {@const presentation = notesTableColumnPresentation(tableConfiguration?.presentation, column.id)}
@@ -1353,7 +1401,8 @@
           </CollectionRow>
             {#each tableItems as item (item.id)}
               {#if item.type === "group"}
-                <div role="row" data-table-group-id={item.group.id} class="flex min-h-(--collection-table-row-height) items-center gap-2 border-t border-(--cal-gridline) px-2 text-[0.8rem]">
+                <div role="row" data-table-group-id={item.group.id} class="flex min-h-(--collection-table-row-height) items-center gap-2 px-2 text-[0.8rem]"
+                  style={`margin-left: ${ROW_CONTENT_START}; box-shadow: inset 0 -1px 0 var(--cal-gridline);`}>
                   <button type="button" class="flex min-h-8 min-w-0 items-center gap-2 rounded px-1 text-left hover:bg-accent" disabled={mutating || editingLocked} aria-expanded={!item.group.collapsed} onclick={() => toggleGroup(item.group.id)}><ChevronRight class={`size-3.5 shrink-0 ${item.group.collapsed ? "" : "rotate-90"}`} /><span>{groupName(item.group)}</span><span class="text-muted-foreground">{formatNumber(localization.locale, item.group.count)}</span></button>
                   {#if ["select", "multi_select", "status", "checkbox", "date"].includes(columns.find((column) => column.id === tableConfiguration?.group_property_id)?.type ?? "")}
                     <button type="button" class="ml-auto flex size-7 items-center justify-center rounded text-muted-foreground hover:bg-accent" aria-label={t("notes.databaseNewPage")} disabled={mutating || loading} onclick={() => createRow(item.group.id)}><Plus class="size-3.5" /></button>
@@ -1362,7 +1411,7 @@
               {:else if item.type === "calculation"}
                 {@render calculationRow(item.groupId)}
               {:else if item.type === "addSubitem"}
-                <CollectionRow template={gridTemplate} role="row" data-database-subitem-add-row={item.parent.id}>
+                <CollectionRow template={gridTemplate} gutter={ROW_GUTTER} role="row" data-database-subitem-add-row={item.parent.id}>
                   <CollectionQuickAdd label={t("notes.databaseSubitemCreate")} contentColumn={3}
                     indent={titleIndent((rowHierarchy[item.parent.id]?.depth ?? 0) + 1)}
                     disabled={mutating || loading || rowCreation.blocked(item.parent.id)} onCreate={() => { void createSubitem(item.parent); }} />
@@ -1374,21 +1423,20 @@
               {@const hierarchy = rowHierarchy[row.id]}
               {@const selected = selectedRowIds.includes(row.id)}
               {@const expanded = rowExpanded(row)}
-              <CollectionRow template={gridTemplate} role="row" {selected} data-database-row-id={row.id} data-database-row-depth={hierarchy?.depth ?? 0} style={conditionalColorStyle(row, null)}>
-                <div role="cell" class="flex justify-center">
+              <CollectionRow template={gridTemplate} gutter={ROW_GUTTER} role="row" {selected} data-database-row-id={row.id} data-database-row-depth={hierarchy?.depth ?? 0} style={conditionalColorStyle(row, null)}>
+                <div role="cell" class={`flex items-center justify-center self-stretch ${gutterCellClass(false)}`} style={gutterCellStyle("selection")}>
                   <CollectionSelectionCheckbox checked={selected} disabled={rowCreation.blocked(row.id)}
                     label={t(selected ? "collections.selection.unselect" : "collections.selection.select", title)} onToggle={() => toggleRowSelected(row)} />
                 </div>
-                <div role="cell" class="flex justify-center">
+                <div role="cell" class={`flex items-center justify-center self-stretch ${gutterCellClass(false)}`} style={gutterCellStyle("expand")}>
                   <CollectionExpandToggle {expanded} hasChildren={rowHasChildren(row)} disabled={rowExpansionLocked(row) || rowCreation.blocked(row.id)}
                     label={t(expanded ? "collections.selection.collapse" : "collections.selection.expand", title)}
-                    title={rowHasChildren(row) ? t("notes.databaseSubitemCount", formatNumber(localization.locale, hierarchy?.child_count ?? 0)) : undefined}
                     onToggle={() => toggleRowExpanded(row)} />
                 </div>
                 {#each visibleColumns as column, columnIndex (column.id)}
                   {@const editValue = rowCreation.valueFor(row, column)}
                   <CollectionCell role="cell" class={`${frozenOffset(column.id) !== null ? "sticky z-20 bg-background" : ""} ${notesTableColumnPresentation(tableConfiguration?.presentation, column.id).wrap ? "notes-table-wrap" : ""}`}
-                    style={`${frozenOffset(column.id) !== null ? `left: ${frozenOffset(column.id)}px;` : ""} ${conditionalColorStyle(row, column.id)}`}>
+                    style={`${frozenStyle(column.id) ?? ""} ${conditionalColorStyle(row, column.id)}`}>
                     <div class={column.type === "title" ? "flex w-full min-w-0 items-start gap-0.5" : "contents"}
                       style={column.type === "title" ? `padding-left: ${titleIndent(hierarchy?.depth ?? 0)};` : ""}>
                     <NotesDatabasePropertyEditor {row} {column} {rowIndex} {columnIndex} value={editValue}
@@ -1420,7 +1468,7 @@
             {@render calculationRow(null)}
 
           {#key addRowKey}
-            <CollectionRow template={gridTemplate} data-database-new-row>
+            <CollectionRow template={gridTemplate} gutter={ROW_GUTTER} data-database-new-row>
               <CollectionQuickAdd label={t("notes.databaseNewPage")} contentColumn={3} disabled={mutating || loading} onCreate={() => { void createRow(); }} />
             </CollectionRow>
           {/key}

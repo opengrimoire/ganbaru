@@ -24,7 +24,7 @@
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-<div {...attributes} class={cn("collection-cell relative flex min-h-(--collection-table-row-height) min-w-0 items-center self-stretch px-2 py-1", className)} onclick={focusPrimaryField}>
+<div {...attributes} class={cn("collection-cell relative flex min-h-(--collection-table-row-height) min-w-0 items-center self-stretch px-2 py-0.5", className)} onclick={focusPrimaryField}>
   {@render children()}
 </div>
 

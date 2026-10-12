@@ -6,6 +6,7 @@
   import ProjectListPropertyMenu from "./ProjectListPropertyMenu.svelte";
   import { ProjectTaskQueryController } from "$lib/components/projects/task-query-controller.svelte";
   import { setProjectListTableContext } from "./table-context";
+  import { projectTaskListGutterWidth } from "$lib/projects/list/view";
 
   let { initialField, column }: { initialField: ProjectCustomField; column?: ProjectTaskListColumn } = $props();
   let field = $state(untrack(() => initialField));
@@ -23,7 +24,7 @@
     calendar: {sourceEvents: []} as unknown as Input["calendar"],
     translate: getLocalization().t,
   });
-  setProjectListTableContext({query, cellClass: () => "", cellStyle: () => "", rowStyle: () => ""});
+  setProjectListTableContext({query, gutter: projectTaskListGutterWidth(), cellClass: () => "", cellStyle: () => "", rowStyle: () => ""});
 
   /** Expose the shared query so tests can observe sorting and grouping. */
   export function taskQuery(): ProjectTaskQueryController {

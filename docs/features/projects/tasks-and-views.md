@@ -20,7 +20,7 @@ Archive is preferred to deletion when a task has history, scheduled blocks, depe
 
 ## Selection and bulk actions
 
-List and Kanban support multi-select with bulk completion, reopening, status, priority, archive, and restore. A bulk change commits the complete accepted selection and its history atomically. Missing tasks, mixed projects, or values that changed since selection reject the whole operation rather than silently skipping items. Archive and restore include descendants outside the loaded view, and a failed or uncertain response can be retried with the same operation identity.
+List and Kanban support multi-select with bulk status, priority, scheduling, archive, and restore from the shared selection toolbar. Bulk edits of dates and custom fields are not supported yet. A bulk change commits the complete accepted selection and its history atomically. Missing tasks, mixed projects, or values that changed since selection reject the whole operation rather than silently skipping items. Archive and restore include descendants outside the loaded view, and a failed or uncertain response can be retried with the same operation identity.
 
 ## List
 

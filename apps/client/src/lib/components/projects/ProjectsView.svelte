@@ -11,7 +11,6 @@
   import type {
     ProjectChatIntegration,
     ProjectSection,
-    ProjectStatus,
     ProjectTask,
     ProjectViewId,
   } from "$lib/projects/types";
@@ -255,15 +254,6 @@
     taskQuery.repairDisappearingFields();
   });
 
-  function terminalStatus(): ProjectStatus | undefined {
-    return statuses.find((status) => status.terminal);
-  }
-
-  function firstOpenStatus(): ProjectStatus | undefined {
-    return statuses.find((status) => status.name.toLowerCase() === "to do")
-      ?? statuses.find((status) => !status.terminal);
-  }
-
   function clearTaskFilters(): void {
     taskQuery.reset();
   }
@@ -402,36 +392,6 @@
             <span class="sr-only" aria-busy="true">{t("common.loading")}</span>
           {/if}
         {/if}
-        {#if routeUi.selectedTaskIds.length > 0}
-          {#if bulkActionsLoadState?.status === "ready" && bulkActionsLoadState.component.kind === "bulk-actions"}
-            {@const ProjectBulkActionController = bulkActionsLoadState.component.component}
-            <ProjectBulkActionController
-              {selectedProject}
-              {priorities}
-              {selectedTasks}
-              {selectableTasks}
-              {selectedActiveTaskCount}
-              {selectedArchivedTaskCount}
-              terminalStatus={terminalStatus()}
-              firstOpenStatus={firstOpenStatus()}
-              bind:selectedTaskIds={routeUi.selectedTaskIds}
-              bind:showArchivedTasks={taskQuery.showArchivedTasks}
-            />
-          {:else if bulkActionsLoadState?.status === "failed"}
-            <div class="flex min-h-9 items-center justify-center gap-2 border-t border-border px-3 text-xs text-muted-foreground" role="alert">
-              <span>{t("common.viewLoadFailed", t("collections.selection.selected", routeUi.selectedTaskIds.length))}</span>
-              <button
-                type="button"
-                class="font-medium text-foreground underline-offset-2 hover:underline"
-                onclick={() => routeLoad.requestOptional("bulk-actions", true)}
-              >
-                {t("common.retry")}
-              </button>
-            </div>
-          {:else}
-            <span class="sr-only" aria-busy="true">{t("common.loading")}</span>
-          {/if}
-        {/if}
       </header>
 
     {:else}
@@ -450,6 +410,38 @@
       style="background-color: var(--cal-bg);"
     >
       {#if selectedProject && selectedGroup}
+        {#if routeUi.selectedTaskIds.length > 0}
+          <!-- The selection toolbar floats over the bottom of the header so selecting tasks never shifts them. -->
+          <div class="pointer-events-none absolute right-3 bottom-full left-3 z-30 mb-1.5 flex flex-col items-start gap-1 *:pointer-events-auto">
+          {#if bulkActionsLoadState?.status === "ready" && bulkActionsLoadState.component.kind === "bulk-actions"}
+            {@const ProjectBulkActionController = bulkActionsLoadState.component.component}
+            <ProjectBulkActionController
+              {selectedProject}
+              {statuses}
+              {priorities}
+              {selectedTasks}
+              {selectableTasks}
+              {selectedActiveTaskCount}
+              {selectedArchivedTaskCount}
+              bind:selectedTaskIds={routeUi.selectedTaskIds}
+              bind:showArchivedTasks={taskQuery.showArchivedTasks}
+            />
+          {:else if bulkActionsLoadState?.status === "failed"}
+            <div class="surface-floating flex min-h-8 items-center gap-2 px-2.5 text-muted-foreground" role="alert">
+              <span>{t("common.viewLoadFailed", t("collections.selection.selected", routeUi.selectedTaskIds.length))}</span>
+              <button
+                type="button"
+                class="font-medium text-foreground underline-offset-2 hover:underline"
+                onclick={() => routeLoad.requestOptional("bulk-actions", true)}
+              >
+                {t("common.retry")}
+              </button>
+            </div>
+          {:else}
+            <span class="sr-only" aria-busy="true">{t("common.loading")}</span>
+          {/if}
+          </div>
+        {/if}
           {#if projects.activeView === "list"}
             {@const ProjectListView = viewComponents?.list ?? null}
             {#if ProjectListView && projects.isProjectViewDataLoaded(selectedProjectId, "list")}

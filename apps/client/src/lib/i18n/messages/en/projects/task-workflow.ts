@@ -194,8 +194,6 @@ export const taskWorkflow = {
   },
   bulk: {
     selectFiltered: (count: number) => `Select ${count}`,
-    markDone: "Done",
-    reopen: "Reopen",
     schedule: "Schedule",
     scheduleSelected: "Schedule selected",
     scheduleHint: (count: number) => `${count} active ${count === 1 ? "task" : "tasks"}, back to back`,

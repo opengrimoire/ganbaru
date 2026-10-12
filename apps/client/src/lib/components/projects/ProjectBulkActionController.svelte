@@ -25,8 +25,7 @@
     selectableTasks,
     selectedActiveTaskCount,
     selectedArchivedTaskCount,
-    terminalStatus,
-    firstOpenStatus,
+    statuses,
     selectedTaskIds = $bindable<string[]>(),
     showArchivedTasks = $bindable<boolean>(),
   }: {
@@ -36,8 +35,7 @@
     selectableTasks: ProjectTask[];
     selectedActiveTaskCount: number;
     selectedArchivedTaskCount: number;
-    terminalStatus: ProjectStatus | undefined;
-    firstOpenStatus: ProjectStatus | undefined;
+    statuses: ProjectStatus[];
     selectedTaskIds: string[];
     showArchivedTasks: boolean;
   } = $props();
@@ -57,6 +55,16 @@
   let scheduleRecovery = $state(scheduling.recoverable);
 
   const selectedSchedulableTasks = $derived(selectedTasks.filter((task) => !task.archivedAt));
+  const sharedStatusId = $derived(sharedTaskValue((task) => task.statusId));
+  const sharedPriority = $derived(sharedTaskValue((task) => task.priority));
+
+  /** Read a value every selected task shares, or null when they differ. */
+  function sharedTaskValue<T>(read: (task: ProjectTask) => T): T | null {
+    const first = selectedTasks[0];
+    if (!first) return null;
+    const value = read(first);
+    return selectedTasks.every((task) => read(task) === value) ? value : null;
+  }
 
   function selectFilteredTasks(): void {
     const nextIds = new Set(selectedTaskIds);
@@ -89,8 +97,7 @@
     }
   }
 
-  async function bulkSetSelectedStatus(status: ProjectStatus | undefined): Promise<void> {
-    if (!status) return;
+  async function bulkSetSelectedStatus(status: ProjectStatus): Promise<void> {
     await runBulkTaskAction(() => projects.setTasksStatus(selectedTasks, status.id));
   }
 
@@ -194,14 +201,6 @@
   }
 </script>
 
-{#if scheduleRecovery}
-  <div class="mx-3 my-2 flex items-center gap-2 rounded-md border border-border bg-card px-2 py-1">
-    <span class="text-sm">{t("projects.bulk.schedule")}</span>
-    <button type="button" class="min-h-8 rounded px-2 text-primary hover:bg-accent" disabled={bulkTaskActionPending} onclick={() => { void retryScheduledTasks(); }}>{t("common.retry")}</button>
-    {#if bulkTaskError}<span class="text-sm text-destructive">{bulkTaskError}</span>{/if}
-  </div>
-{/if}
-
 {#if selectedTasks.length > 0}
   <ProjectBulkActionBar
     selectedTaskCount={selectedTasks.length}
@@ -210,23 +209,19 @@
     {selectedArchivedTaskCount}
     bulkSchedulableCount={selectedSchedulableTasks.length}
     bulkTaskActionPending={bulkTaskActionPending || scheduleRecovery}
-    {bulkScheduleOpen}
     {bulkScheduleDate}
     {bulkScheduleStartTime}
     {bulkScheduleDurationMinutes}
-    {bulkTaskError}
+    bulkTaskError={bulkScheduleOpen ? bulkTaskError : null}
+    {statuses}
     {priorities}
-    canMarkDone={Boolean(terminalStatus)}
-    canReopen={Boolean(firstOpenStatus)}
+    {sharedStatusId}
+    {sharedPriority}
     onSelectFiltered={selectFilteredTasks}
-    onMarkDone={() => { void bulkSetSelectedStatus(terminalStatus); }}
-    onReopen={() => { void bulkSetSelectedStatus(firstOpenStatus); }}
-    onToggleBulkSchedule={() => {
-      if (bulkScheduleOpen) {
-        closeBulkScheduleForm();
-      } else {
-        openBulkScheduleForm();
-      }
+    onSetStatus={(status) => { void bulkSetSelectedStatus(status); }}
+    onScheduleOpenChange={(open) => {
+      if (open) openBulkScheduleForm();
+      else closeBulkScheduleForm();
     }}
     onSetPriority={(priority) => { void bulkSetSelectedPriority(priority); }}
     onArchive={() => { void bulkArchiveSelectedTasks(); }}
@@ -242,6 +237,20 @@
       if (Number.isFinite(value)) bulkScheduleDurationMinutes = value;
     }}
     onBulkScheduleSubmit={() => { void bulkScheduleSelectedTasks(); }}
-    onCloseBulkSchedule={closeBulkScheduleForm}
   />
+{/if}
+
+<!-- Notices float below the toolbar, over the top of the view, so the toolbar stays one row tall inside the header. -->
+{#if scheduleRecovery || (bulkTaskError && !bulkScheduleOpen)}
+  <div class="absolute top-full left-0 mt-3 flex max-w-full flex-col items-start gap-1">
+    {#if scheduleRecovery}
+      <div class="surface-floating flex min-h-8 items-center gap-2 px-2.5" role="status">
+        <span>{t("projects.bulk.schedule")}</span>
+        <button type="button" class="min-h-7 rounded px-2 text-primary hover:bg-accent" disabled={bulkTaskActionPending} onclick={() => { void retryScheduledTasks(); }}>{t("common.retry")}</button>
+        {#if bulkTaskError}<span class="text-destructive">{bulkTaskError}</span>{/if}
+      </div>
+    {:else}
+      <p class="surface-floating px-2.5 py-1.5 text-destructive" role="alert">{bulkTaskError}</p>
+    {/if}
+  </div>
 {/if}

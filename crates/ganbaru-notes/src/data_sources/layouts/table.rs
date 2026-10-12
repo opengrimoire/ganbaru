@@ -27,6 +27,8 @@ const MIN_COLUMN_WIDTH: i64 = 96;
 const MAX_COLUMN_WIDTH: i64 = 480;
 const MAX_TABLE_CONFIGURATION_BYTES: usize = 50 * 1024;
 const ROW_OPEN_MODES: &[&str] = &["full_page", "side_panel"];
+/// Most rows one bulk property edit may change, matching the Projects bulk task limit.
+const MAX_BULK_ROW_UPDATES: usize = 1_000;
 
 #[cfg(test)]
 pub async fn data_source_table_view(
@@ -144,19 +146,129 @@ pub async fn update_data_source_row_property(
         &data_source.properties,
         "data source properties",
     )?)?;
-    let property = schema
+    let property = schema_property(&schema, &update.property_id)?;
+    write_row_property_tx(
+        &mut tx,
+        data_source_id,
+        page_id,
+        &schema,
+        property,
+        &update.value,
+    )
+    .await?;
+    data_sources::rollups::invalidate_rollup_cache_for_data_source_tx(
+        &mut tx,
+        data_source_id.trim(),
+    )
+    .await?;
+    touch_data_source_and_database_tx(&mut tx, data_source_id, &database.id).await?;
+    let updated = load_active_row_page_tx(&mut tx, data_source_id, page_id).await?;
+    tx.commit()
+        .await
+        .map_err(|e| format!("commit notes data source row property update: {e}"))?;
+    NotePageDto::new(updated)
+}
+
+/// Set one property to the same value on several rows of a data source in one transaction, so a bulk edit either
+/// changes every selected row or none of them.
+///
+/// Returns the updated page ids in request order.
+pub async fn update_data_source_rows_property(
+    pool: &SqlitePool,
+    data_source_id: &str,
+    page_ids: &[String],
+    update: NoteDataSourceRowPropertyUpdate,
+) -> Result<Vec<String>, String> {
+    require_uuid(data_source_id, "data_source_id")?;
+    let page_ids = bulk_row_page_ids(page_ids)?;
+    crate::project_history::ensure_data_source_baseline_for_mutation(pool, data_source_id).await?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| format!("begin notes data source rows property update: {e}"))?;
+    let (data_source, database) =
+        load_active_data_source_and_database_tx(&mut tx, data_source_id, "table").await?;
+    let schema = table_schema(&parse_json(
+        &data_source.properties,
+        "data source properties",
+    )?)?;
+    let property = schema_property(&schema, &update.property_id)?;
+    for page_id in &page_ids {
+        write_row_property_tx(
+            &mut tx,
+            data_source_id,
+            page_id,
+            &schema,
+            property,
+            &update.value,
+        )
+        .await?;
+    }
+    data_sources::rollups::invalidate_rollup_cache_for_data_source_tx(
+        &mut tx,
+        data_source_id.trim(),
+    )
+    .await?;
+    touch_data_source_and_database_tx(&mut tx, data_source_id, &database.id).await?;
+    tx.commit()
+        .await
+        .map_err(|e| format!("commit notes data source rows property update: {e}"))?;
+    Ok(page_ids)
+}
+
+/// Validate a bulk edit's page ids: at least one, at most [`MAX_BULK_ROW_UPDATES`], each a UUID, no duplicates.
+fn bulk_row_page_ids(page_ids: &[String]) -> Result<Vec<String>, String> {
+    if page_ids.is_empty() {
+        return Err("bulk row property update needs at least one row".to_string());
+    }
+    if page_ids.len() > MAX_BULK_ROW_UPDATES {
+        return Err(format!(
+            "bulk row property update is limited to {MAX_BULK_ROW_UPDATES} rows"
+        ));
+    }
+    let mut seen = HashSet::with_capacity(page_ids.len());
+    page_ids
         .iter()
-        .find(|property| property.id == update.property_id.trim())
-        .ok_or_else(|| "row property update references an unknown property".to_string())?;
-    let row = load_active_row_page_tx(&mut tx, data_source_id, page_id).await?;
-    page_history::record_page_snapshot_tx(&mut tx, page_id, "update_database_row_property").await?;
+        .map(|page_id| {
+            require_uuid(page_id, "page_id")?;
+            let page_id = page_id.trim().to_string();
+            if !seen.insert(page_id.clone()) {
+                return Err("bulk row property update lists a row twice".to_string());
+            }
+            Ok(page_id)
+        })
+        .collect()
+}
+
+fn schema_property<'a>(
+    schema: &'a [TableProperty],
+    property_id: &str,
+) -> Result<&'a TableProperty, String> {
+    schema
+        .iter()
+        .find(|property| property.id == property_id.trim())
+        .ok_or_else(|| "row property update references an unknown property".to_string())
+}
+
+/// Store one property edit on one active row: snapshot the page, write the canonical value, refresh relation links
+/// and mention notifications. Callers invalidate rollups and touch the data source once per transaction.
+async fn write_row_property_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    data_source_id: &str,
+    page_id: &str,
+    schema: &[TableProperty],
+    property: &TableProperty,
+    value: &Value,
+) -> Result<(), String> {
+    let row = load_active_row_page_tx(tx, data_source_id, page_id).await?;
+    page_history::record_page_snapshot_tx(tx, page_id, "update_database_row_property").await?;
     let current_properties = parse_json(&row.properties, "row page properties")?;
     let (mut title, mut properties) =
-        normalized_row_properties(&schema, &current_properties, &row.title)?;
+        normalized_row_properties(schema, &current_properties, &row.title)?;
     let previous_date = properties
         .get(&property.key)
         .and_then(|value| value.get("date"));
-    let next_value = property_value_from_edit(property, &update.value, previous_date)?;
+    let next_value = property_value_from_edit(property, value, previous_date)?;
     if property.property_type == "title" {
         title = title_from_property_value(&next_value).unwrap_or_default();
     }
@@ -182,12 +294,12 @@ pub async fn update_data_source_row_property(
     .bind(properties.to_string())
     .bind(page_id.trim())
     .bind(data_source_id.trim())
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await
     .map_err(|e| format!("update notes data source row property: {e}"))?;
     if let Some(relation_value) = relation_value {
         data_sources::relations::replace_relation_property_links_tx(
-            &mut tx,
+            tx,
             data_source_id.trim(),
             page_id.trim(),
             &property.schema,
@@ -196,18 +308,8 @@ pub async fn update_data_source_row_property(
         )
         .await?;
     }
-    data_sources::rollups::invalidate_rollup_cache_for_data_source_tx(
-        &mut tx,
-        data_source_id.trim(),
-    )
-    .await?;
-    mention_notifications::sync_page_properties_tx(&mut tx, page_id.trim()).await?;
-    touch_data_source_and_database_tx(&mut tx, data_source_id, &database.id).await?;
-    let updated = load_active_row_page_tx(&mut tx, data_source_id, page_id).await?;
-    tx.commit()
-        .await
-        .map_err(|e| format!("commit notes data source row property update: {e}"))?;
-    NotePageDto::new(updated)
+    mention_notifications::sync_page_properties_tx(tx, page_id.trim()).await?;
+    Ok(())
 }
 
 async fn load_table_view_tx(

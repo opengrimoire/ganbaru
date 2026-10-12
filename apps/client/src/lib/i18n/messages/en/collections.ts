@@ -49,7 +49,7 @@ export const collections = {
   },
   selection: {
     selected: (count: number) => `${count} selected`,
-    clear: "Clear",
+    clear: "Clear selection",
     select: (name: string) => `Select ${name}`,
     unselect: (name: string) => `Unselect ${name}`,
     selectAll: "Select all rows",
@@ -57,5 +57,10 @@ export const collections = {
     expand: (name: string) => `Expand ${name}`,
     collapse: (name: string) => `Collapse ${name}`,
     more: "More actions",
+    mixed: "Mixed values",
+    mixedHint: "The selected rows differ. A choice replaces each of their values.",
+    clearValue: "Clear",
+    checked: "Checked",
+    unchecked: "Unchecked",
   },
 } as const;

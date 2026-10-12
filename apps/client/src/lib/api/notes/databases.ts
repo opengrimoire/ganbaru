@@ -474,6 +474,33 @@ export async function updateNotesDataSourceRowProperty(
   return page;
 }
 
+/**
+ * Set one property to the same value on several rows in one transaction; either every row changes or none does.
+ *
+ * @param dataSourceId The data source that owns every row.
+ * @param pageIds The row pages to change, without duplicates.
+ * @param update The property and the value every row receives.
+ * @returns The updated row page ids in request order.
+ */
+export async function updateNotesDataSourceRowsProperty(
+  dataSourceId: string,
+  pageIds: readonly string[],
+  update: NotesDataSourceRowPropertyUpdate,
+): Promise<string[]> {
+  const dbUrl = await ensureDbUrl();
+  const updated = await invokeNotesMutation("notes_update_data_source_rows_property", {
+    dbUrl,
+    dataSourceId,
+    pageIds: [...pageIds],
+    update,
+  });
+  if (!Array.isArray(updated) || !updated.every((id): id is string => typeof id === "string")) {
+    throw new Error("notes_update_data_source_rows_property returned invalid page ids");
+  }
+  invalidateNotesNotificationSchedule();
+  return updated;
+}
+
 export async function clickNotesDataSourceButton(
   dataSourceId: string,
   pageId: string,

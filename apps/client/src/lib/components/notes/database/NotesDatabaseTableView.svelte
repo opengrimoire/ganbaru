@@ -26,6 +26,8 @@
   import NotesDatabaseQueryBar from "./NotesDatabaseQueryBar.svelte";
   import NotesDatabasePropertyEditor from "./NotesDatabasePropertyEditor.svelte";
   import NotesDatabaseRowParentControls from "./NotesDatabaseRowParentControls.svelte";
+  import NotesDatabaseBulkPropertyMenu from "./NotesDatabaseBulkPropertyMenu.svelte";
+  import { notesDatabaseBulkEditableColumns } from "$lib/notes/database/bulk-edit";
   import CollectionSelectionCheckbox from "$lib/components/collections/CollectionSelectionCheckbox.svelte";
   import CollectionExpandToggle from "$lib/components/collections/CollectionExpandToggle.svelte";
   import CollectionSelectionBar from "$lib/components/collections/CollectionSelectionBar.svelte";
@@ -56,6 +58,7 @@
     listNotesDataSourceTemplates,
     trashNotesPage,
     updateNotesDataSourceRowProperty,
+    updateNotesDataSourceRowsProperty,
     updateNotesDataSourceRowParent,
     updateNotesDataSourceTableView,
   } from "$lib/api/notes";
@@ -120,6 +123,7 @@
   import Plus from "@lucide/svelte/icons/plus";
   import Sigma from "@lucide/svelte/icons/sigma";
   import Trash2 from "@lucide/svelte/icons/trash-2";
+  import X from "@lucide/svelte/icons/x";
   import ArrowLeftToLine from "@lucide/svelte/icons/arrow-left-to-line";
   import ArrowRightToLine from "@lucide/svelte/icons/arrow-right-to-line";
   import CalendarCog from "@lucide/svelte/icons/calendar-cog";
@@ -193,6 +197,7 @@
   const propertyTypeOptions = $derived(notesPropertyTypeOptions(t));
 
   let tableRoot: HTMLDivElement | null = $state(null);
+  let tableSection: HTMLElement | null = $state(null);
   let tableViewportWidth = $state<number | undefined>();
 
   $effect(() => {
@@ -350,6 +355,8 @@
   })) : []);
   const columns = $derived(pendingColumnOrder ? collectionOrderById(savedColumns, pendingColumnOrder) : savedColumns);
   const visibleColumns = $derived(notesDatabaseTableVisibleColumns(columns));
+  /** Properties the selection toolbar sets on every selected row; read-only and computed values stay per row. */
+  const bulkColumns = $derived(notesDatabaseBulkEditableColumns(visibleColumns));
   const renderedColumns = $derived(visibleColumns.map((column) => ({ ...column,
     width: columnResize?.id === column.id ? columnResize.width : pendingColumnWidth?.id === column.id ? pendingColumnWidth.width : column.width,
   })));
@@ -893,6 +900,37 @@
     }
   }
 
+  /** Set one property on every selected row in one save, so the rows change together or not at all. */
+  async function saveRowsProperty(rows: readonly NotesPage[], column: NotesDatabaseTableColumn, value: NotesDatabaseTableEditValue): Promise<boolean> {
+    const targets = rows.filter((row) => !rowCreation.blocked(row.id));
+    if (targets.length === 0) return false;
+    mutating = true;
+    error = null;
+    try {
+      await updateNotesDataSourceRowsProperty(dataSourceId, targets.map((row) => row.id), { property_id: column.id, value });
+      await loadTable();
+      return true;
+    } catch (caught) {
+      error = caught instanceof Error ? caught.message : String(caught);
+      return false;
+    } finally {
+      mutating = false;
+    }
+  }
+
+  /**
+   * Delete moves the selected rows to the trash while focus is in this table or nowhere, unless a value, a cell editor,
+   * or a menu owns the key.
+   */
+  function trashSelectionKey(event: KeyboardEvent): void {
+    if (event.key !== "Delete" || event.defaultPrevented || selectedRows.length === 0 || isEditingCell || mutating) return;
+    const target = event.target;
+    if (!(target instanceof Element) || !(target === document.body || tableSection?.contains(target)) || target.closest("[data-app-floating-surface]")
+      || target.matches("textarea, select, [contenteditable]:not([contenteditable='false']), input:not([type='checkbox']):not([type='radio']):not([type='button'])")) return;
+    event.preventDefault();
+    void trashRows(selectedRows);
+  }
+
   async function saveCell(
     row: NotesPage,
     column: NotesDatabaseTableColumn,
@@ -1135,9 +1173,9 @@
   {/if}
 {/snippet}
 
-<svelte:window onpointermove={moveColumnResize} onpointerup={(event) => finishColumnResize(event, true)} onpointercancel={(event) => finishColumnResize(event, false)} onkeydown={(event) => { if (event.key === "Escape") columnResize = null; }} />
+<svelte:window onpointermove={moveColumnResize} onpointerup={(event) => finishColumnResize(event, true)} onpointercancel={(event) => finishColumnResize(event, false)} onkeydown={(event) => { if (event.key === "Escape") columnResize = null; trashSelectionKey(event); }} />
 
-<section class="space-y-3 pt-2" aria-label={t("notes.databaseTableTitle")}>
+<section bind:this={tableSection} class="space-y-3 pt-2" aria-label={t("notes.databaseTableTitle")}>
 
   <NotesDatabaseQueryBar properties={columns} {filters} {sorts} pending={mutating || editingLocked} onFiltersChange={saveFilters} onSortsChange={saveSorts} />
   {#if table}<span class="sr-only" role="status">{t("notes.databaseRowsCount", visibleRows.length)}</span>{/if}
@@ -1269,28 +1307,35 @@
 
       {#if selectedRows.length > 0}
         {@const single = selectedRows.length === 1 ? selectedRows[0] : null}
-        <CollectionSelectionBar count={selectedRows.length} onClear={() => { selectedRowIds = []; }}>
-          <CollectionSelectionAction icon={Trash2} label={t("notes.databaseSelectionTrash")} destructive disabled={mutating} onclick={() => { void trashRows(selectedRows); }} />
-          <CollectionMenu iconOnly kind="actions" label={t("collections.selection.more")} disabled={mutating}>
-            <div class="grid gap-0">
-              {#if single}
-                <CollectionMenuItem icon={rowOpenMode === "side_panel" ? PanelRight : FileText} label={t("collections.property.open")} onclick={() => openRow(single)} />
-              {/if}
-              <CollectionMenuItem icon={Copy} label={t("notes.databaseSelectionDuplicate")} onclick={() => { void duplicateRows(selectedRows); }} />
-              {#if single}
-                <CollectionMenu label={t("notes.databaseSubitemMove")} kind="property" icon={CornerDownRight} fullWidth disabled={mutating}>
-                  <NotesDatabaseRowParentControls rowId={single.id} rows={visibleRows} hierarchy={rowHierarchy} titleFor={rowTitle} pending={mutating} onSave={(parentId) => moveSubitems([single], parentId)} />
-                </CollectionMenu>
-              {/if}
-              {#if selectedRows.some((row) => rowHierarchy[row.id]?.parent_row_page_id)}
-                <CollectionMenuItem icon={ArrowUp} label={t("notes.databaseSubitemMoveToRoot")}
-                  onclick={() => { void moveSubitems(selectedRows.filter((row) => rowHierarchy[row.id]?.parent_row_page_id), null); }} />
-              {/if}
-              <CollectionMenuSeparator />
-              <CollectionMenuItem icon={Trash2} label={t("notes.databaseSelectionTrash")} destructive onclick={() => { void trashRows(selectedRows); }} />
-            </div>
-          </CollectionMenu>
-        </CollectionSelectionBar>
+        <!-- A zero-height sticky anchor floats the toolbar over the controls above the header without moving the rows, and keeps it in view while the table scrolls under the page top. -->
+        <div class="sticky top-11 z-30 -mb-2 h-0">
+          <CollectionSelectionBar class="absolute bottom-1 left-0" count={selectedRows.length} onClear={() => { selectedRowIds = []; }}>
+            {#each bulkColumns as column (column.id)}
+              <NotesDatabaseBulkPropertyMenu {column} rows={selectedRows} disabled={mutating} onApply={(value) => saveRowsProperty(selectedRows, column, value)} />
+            {/each}
+            <CollectionSelectionAction icon={Trash2} iconOnly label={t("notes.databaseSelectionTrash")} disabled={mutating} onclick={() => { void trashRows(selectedRows); }} />
+            <CollectionMenu iconOnly kind="actions" label={t("collections.selection.more")} triggerClass="h-8 rounded-none px-2.5" disabled={mutating}>
+              <div class="grid gap-0">
+                {#if single}
+                  <CollectionMenuItem icon={rowOpenMode === "side_panel" ? PanelRight : FileText} label={t("collections.property.open")} onclick={() => openRow(single)} />
+                {/if}
+                <CollectionMenuItem icon={Copy} label={t("notes.databaseSelectionDuplicate")} onclick={() => { void duplicateRows(selectedRows); }} />
+                {#if single}
+                  <CollectionMenu label={t("notes.databaseSubitemMove")} kind="property" icon={CornerDownRight} fullWidth disabled={mutating}>
+                    <NotesDatabaseRowParentControls rowId={single.id} rows={visibleRows} hierarchy={rowHierarchy} titleFor={rowTitle} pending={mutating} onSave={(parentId) => moveSubitems([single], parentId)} />
+                  </CollectionMenu>
+                {/if}
+                {#if selectedRows.some((row) => rowHierarchy[row.id]?.parent_row_page_id)}
+                  <CollectionMenuItem icon={ArrowUp} label={t("notes.databaseSubitemMoveToRoot")}
+                    onclick={() => { void moveSubitems(selectedRows.filter((row) => rowHierarchy[row.id]?.parent_row_page_id), null); }} />
+                {/if}
+                <CollectionMenuItem icon={X} label={t("collections.selection.clear")} onclick={() => { selectedRowIds = []; }} />
+                <CollectionMenuSeparator />
+                <CollectionMenuItem icon={Trash2} label={t("notes.databaseSelectionTrash")} destructive onclick={() => { void trashRows(selectedRows); }} />
+              </div>
+            </CollectionMenu>
+          </CollectionSelectionBar>
+        </div>
       {/if}
 
       <!-- The bottom padding keeps the last row border inside the scroll clip when zoom gives rows fractional heights. -->

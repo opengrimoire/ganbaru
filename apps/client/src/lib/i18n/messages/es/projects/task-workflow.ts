@@ -197,8 +197,6 @@ export const taskWorkflow = {
   },
   bulk: {
     selectFiltered: (count: number) => `Seleccionar ${count}`,
-    markDone: "Hechas",
-    reopen: "Reabrir",
     schedule: "Programar",
     scheduleSelected: "Programar seleccionadas",
     scheduleHint: (count: number) => `${count} ${count === 1 ? "tarea activa" : "tareas activas"}, seguidas`,

@@ -6,7 +6,7 @@ import type { NotesDatabasePropertyActionRequest } from "$lib/notes/database/dat
 import {
   createNotesDataSourceRowPage, getNotesDataSourceTableView, listNotesDataSourceTemplates, loadNotesPage,
   createNotesDataSourceSubitem, duplicateNotesPage, trashNotesPage,
-  updateNotesDataSourceRowProperty, updateNotesDataSourceTableView,
+  updateNotesDataSourceRowProperty, updateNotesDataSourceRowsProperty, updateNotesDataSourceTableView,
 } from "$lib/api/notes";
 import { createProvisionalNotesPage } from "$lib/notes/pages/creation";
 import NotesDatabaseTableView from "./NotesDatabaseTableView.svelte";
@@ -22,6 +22,7 @@ vi.mock("$lib/api/notes", () => ({
   trashNotesPage: vi.fn(),
   updateNotesDataSourceRowParent: vi.fn(),
   updateNotesDataSourceRowProperty: vi.fn(),
+  updateNotesDataSourceRowsProperty: vi.fn(),
   applyNotesDataSourceTemplate: vi.fn(),
   loadNotesPage: vi.fn(),
 }));
@@ -315,11 +316,30 @@ describe("Notes table sub-items", () => {
     expect(Array.from(menu.querySelectorAll("button")).some((button) => button.textContent?.trim() === "Open")).toBe(false);
     action(menu, "Duplicate").click();
     await vi.waitFor(() => expect(duplicateNotesPage).toHaveBeenCalledExactlyOnceWith("parent", {}));
-    await vi.waitFor(() => expect(Array.from(bar.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Move to trash")!.disabled).toBe(false));
-    Array.from(bar.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Move to trash")!.click();
+    const trash = () => bar.querySelector<HTMLButtonElement>('button[aria-label="Move to trash"]')!;
+    await vi.waitFor(() => expect(trash().disabled).toBe(false));
+    trash().click();
     await vi.waitFor(() => expect(trashNotesPage).toHaveBeenCalledTimes(2));
     expect(vi.mocked(trashNotesPage).mock.calls.map(([id]) => id)).toEqual(["parent", "child"]);
     await vi.waitFor(() => expect(document.querySelector('[role="toolbar"]')).toBeNull());
+  });
+
+  it("sets one visible property on every selected row in one request and keeps the selection", async () => {
+    const page = (id: string, title: string) => createProvisionalNotesPage({ id, first_block_id: `block-${id}`, title, parent: { type: "data_source_id", data_source_id: "source" }, folder_id: null }).page;
+    const initial = configuredTable();
+    initial.rows = [page("first", "First"), page("second", "Second"), page("third", "Third")];
+    vi.mocked(updateNotesDataSourceRowsProperty).mockResolvedValue(["first", "third"]);
+    await open(vi.fn(), initial);
+    document.querySelector<HTMLInputElement>('[aria-label="Select First"]')!.click();
+    document.querySelector<HTMLInputElement>('[aria-label="Select Third"]')!.click();
+    await tick();
+    const bar = document.querySelector<HTMLElement>('[role="toolbar"]')!;
+    expect(bar.querySelector('button[aria-label="Internal"]')).toBeNull();
+    expect(bar.querySelector('button[aria-label="Name"]')).toBeNull();
+    const menu = await submenu(bar, "Done");
+    action(menu, "Checked").click();
+    await vi.waitFor(() => expect(updateNotesDataSourceRowsProperty).toHaveBeenCalledExactlyOnceWith("source", ["first", "third"], { property_id: "done", value: true }));
+    expect(document.querySelector('[role="toolbar"]')?.textContent).toContain("2 selected");
   });
 });
 

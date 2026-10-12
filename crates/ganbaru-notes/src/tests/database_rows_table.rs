@@ -152,6 +152,99 @@ fn database_date_edits_preserve_ranges_and_zones_and_reject_invalid_ranges_atomi
 }
 
 #[test]
+fn bulk_row_property_edits_change_every_listed_row_or_none() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        dated_database(&pool).await;
+        data_sources::rows::create_data_source_row_page(
+            &pool,
+            DATA_SOURCE_A,
+            NoteDataSourceRowPageCreate {
+                id: PAGE_C.to_string(),
+                first_block_id: BLOCK_C.to_string(),
+                title: "Review".to_string(),
+                properties: None,
+            },
+        )
+        .await
+        .unwrap();
+        let rows = |ids: &[&str]| ids.iter().map(|id| id.to_string()).collect::<Vec<_>>();
+        let set_all = |page_ids: Vec<String>, value: serde_json::Value| {
+            let pool = pool.clone();
+            async move {
+                data_sources::layouts::table::update_data_source_rows_property(
+                    &pool,
+                    DATA_SOURCE_A,
+                    &page_ids,
+                    NoteDataSourceRowPropertyUpdate {
+                        property_id: "when".to_string(),
+                        value,
+                    },
+                )
+                .await
+            }
+        };
+        let dates = || async {
+            let table = data_sources::layouts::table::data_source_table_view(
+                &pool,
+                DATA_SOURCE_A,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+            let table = serde_json::to_value(table).unwrap();
+            table["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| row["properties"]["When"]["date"]["start"].clone())
+                .collect::<Vec<_>>()
+        };
+
+        let updated = set_all(rows(&[PAGE_C, PAGE_B]), json!("2026-10-05"))
+            .await
+            .unwrap();
+        assert_eq!(updated, rows(&[PAGE_C, PAGE_B]));
+        assert_eq!(
+            dates().await,
+            vec![json!("2026-10-05"), json!("2026-10-05")]
+        );
+
+        for invalid in [
+            rows(&[]),
+            rows(&[PAGE_B, PAGE_B]),
+            rows(&[PAGE_B, PAGE_A]),
+            rows(&[PAGE_B, "not-a-uuid"]),
+        ] {
+            assert!(set_all(invalid, json!("2026-11-01")).await.is_err());
+        }
+        assert!(
+            set_all(rows(&[PAGE_B, PAGE_C]), json!("2026-02-30"))
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            dates().await,
+            vec![json!("2026-10-05"), json!("2026-10-05")]
+        );
+        assert!(
+            data_sources::layouts::table::update_data_source_rows_property(
+                &pool,
+                DATA_SOURCE_A,
+                &rows(&[PAGE_B]),
+                NoteDataSourceRowPropertyUpdate {
+                    property_id: "missing".to_string(),
+                    value: json!(null),
+                },
+            )
+            .await
+            .is_err()
+        );
+    });
+}
+
+#[test]
 fn database_view_window_keyset_pages_ten_thousand_rows_with_bounded_payloads() {
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;

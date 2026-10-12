@@ -52,7 +52,7 @@ export const collections = {
   },
   selection: {
     selected: (count: number) => `${count} seleccionados`,
-    clear: "Limpiar",
+    clear: "Quitar selección",
     select: (name: string) => `Seleccionar ${name}`,
     unselect: (name: string) => `Deseleccionar ${name}`,
     selectAll: "Seleccionar todas las filas",
@@ -60,5 +60,10 @@ export const collections = {
     expand: (name: string) => `Expandir ${name}`,
     collapse: (name: string) => `Contraer ${name}`,
     more: "Más acciones",
+    mixed: "Valores distintos",
+    mixedHint: "Las filas seleccionadas son distintas. Una elección reemplaza cada uno de sus valores.",
+    clearValue: "Borrar",
+    checked: "Marcado",
+    unchecked: "Sin marcar",
   },
 } as const satisfies MessageShape<typeof enCollections>;

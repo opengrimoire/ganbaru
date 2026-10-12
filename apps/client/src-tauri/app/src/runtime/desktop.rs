@@ -780,6 +780,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             notes::notes_data_source_table_view,
             notes::notes_update_data_source_table_view,
             notes::notes_update_data_source_row_property,
+            notes::notes_update_data_source_rows_property,
             notes::notes_create_data_source_subitem,
             notes::notes_update_data_source_row_parent,
             notes::notes_get_data_source_row_page_context,

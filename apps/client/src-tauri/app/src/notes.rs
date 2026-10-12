@@ -1062,6 +1062,25 @@ pub async fn notes_update_data_source_row_property<R: Runtime>(
 }
 
 #[tauri::command]
+pub async fn notes_update_data_source_rows_property<R: Runtime>(
+    app: AppHandle<R>,
+    db_url: String,
+    data_source_id: String,
+    page_ids: Vec<String>,
+    update: NoteDataSourceRowPropertyUpdate,
+) -> Result<project_history::NotesMutationResultDto<Vec<String>>, String> {
+    let pool = connect_sqlite(app, db_url).await?;
+    let value = data_sources::layouts::table::update_data_source_rows_property(
+        &pool,
+        &data_source_id,
+        &page_ids,
+        update,
+    )
+    .await?;
+    project_history::mutation_result(&pool, value).await
+}
+
+#[tauri::command]
 pub async fn notes_click_data_source_button<R: Runtime>(
     app: AppHandle<R>,
     db_url: String,

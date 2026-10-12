@@ -90,7 +90,7 @@ const APP_DERIVATION = {
  * --event-panel-text) land within a few rgb units of the BASE hex.
  */
 const APP_FRACTIONS = {
-  mutedForeground: 0.442563,
+  mutedForeground: 0.400377,
   ring: 0.673365,
   eventPanelText: 0.180110,
   eventPanelInputText: 0.044202,
@@ -128,11 +128,11 @@ const CALENDAR_DERIVATION = {
 /**
  * Fractional walks for calendar tokens that land at specific OKLab-L
  * recessions against `cal-bg`. Calibrated from BASE_CALENDAR_TOKENS.dark.
- * --cal-time-label and --muted-foreground both land at the BASE hex #9494A0
+ * --cal-time-label and --muted-foreground both land at the BASE hex #9C9CA8
  * from their own surfaces.
  */
 const CALENDAR_FRACTIONS = {
-  calendarTimeLabel: 0.391143,
+  calendarTimeLabel: 0.353858,
 } as const;
 
 /**

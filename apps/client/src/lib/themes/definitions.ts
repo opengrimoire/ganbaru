@@ -586,7 +586,7 @@ export const BASE_APP_TOKENS: Readonly<
     "--secondary": "#333436",
     "--secondary-foreground": "#ECECF2",
     "--muted": "#333436",
-    "--muted-foreground": "#9494A0",
+    "--muted-foreground": "#9C9CA8",
     "--accent": "#3B3B3F",
     "--accent-foreground": "#ECECF2",
     "--ring": "#606070",
@@ -640,7 +640,7 @@ export const BASE_CALENDAR_TOKENS: Readonly<
   dark: Object.freeze({
     "--cal-bg": "#1F2023",
     "--cal-gridline": "#2A2B2F",
-    "--cal-time-label": "#9494A0",
+    "--cal-time-label": "#9C9CA8",
     "--cal-timeline-rail": "#3F3F46",
     "--cal-current-time": "#B83A3A",
     "--cal-timeline-break": "#000000",

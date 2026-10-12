@@ -85,13 +85,10 @@ const AA_LARGE_PAIRS: ReadonlyArray<[string, string]> = [
 
 /**
  * Tokens whose job is to recede (not disappear): at or above AA-large
- * 3:1, but not so prominent they compete with primary body text. On
- * BASE.dark `--muted-foreground` on `--muted` lands at exactly 3:1. On
- * BASE.light it sits at 4.4:1. User canvases whose lightness clamps at
- * the gamut edge (near-white / near-black) push the derived muted-bg to
- * the boundary, so the achieved ratio can drift slightly above BASE's
- * own; the upper bound is therefore relaxed to 5.0 to accommodate that
- * clamp without losing the "recessed" constraint. Event-panel
+ * 3:1, but not so prominent they compete with primary body text. The
+ * built-in captions sit between about 4.5:1 and 5.4:1 on `--muted`, and
+ * canvases whose lightness clamps at the gamut edge push the ratio a
+ * little higher, so the upper bound is 5.5. Event-panel
  * placeholders and muted-text land higher on BASE.dark (closer to
  * primary body), so they are not in this band.
  */
@@ -148,12 +145,12 @@ describe("deriveAppTokens", () => {
       }
     });
 
-    it(`parks muted captions inside [3.0, 5.0] (${base})`, () => {
+    it(`parks muted captions inside [3.0, 5.5] (${base})`, () => {
       const tokens = deriveAppTokens(sources);
       for (const { fg, bg } of MUTED_BANDS) {
         const ratio = contrastRatio(tokens[fg], tokens[bg]);
         expect(ratio).toBeGreaterThanOrEqual(3.0);
-        expect(ratio).toBeLessThanOrEqual(5.0);
+        expect(ratio).toBeLessThanOrEqual(5.5);
       }
     });
 

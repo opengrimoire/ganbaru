@@ -253,7 +253,7 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
   --secondary: #333436;
   --secondary-foreground: #ECECF2;
   --muted: #333436;
-  --muted-foreground: #9494A0;
+  --muted-foreground: #9C9CA8;
   --accent: #3B3B3F;
   --accent-foreground: #ECECF2;
   --destructive: #E54545;
@@ -658,7 +658,7 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
 .dark {
   --cal-bg: #1F2023;
   --cal-gridline: #2A2B2F;
-  --cal-time-label: #9494A0;
+  --cal-time-label: #9C9CA8;
   --cal-current-time: #B83A3A;
   --cal-hover: rgba(255, 255, 255, 0.04);
   --cal-timeline-rail: #3F3F46;

@@ -1,11 +1,14 @@
 <script lang="ts">
+  import Bell from "@lucide/svelte/icons/bell";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { NotesDatabaseDateValue } from "$lib/notes/database/date";
   import { notesDatabaseDateDisplay } from "$lib/notes/database/property-display";
   import { notesDatabaseTableDateValue, type NotesDatabaseTableColumn } from "$lib/notes/database/table";
+  import { notesDateMentionValueWithDates } from "$lib/notes/rich-text/date-mention-edit";
   import type { NotesPage } from "$lib/notes/types";
   import { cn } from "$lib/utils";
   import NotesDateEditorPanel from "./NotesDateEditorPanel.svelte";
+  import NotesDateReminderOptions from "./NotesDateReminderOptions.svelte";
 
   /**
    * Edits a date property with the calendar, time, and range controls Projects uses for task dates.
@@ -80,6 +83,11 @@
     }).finally(() => { pendingSaves -= 1; });
   }
 
+  /** Save dates picked in the editor, keeping the reminder the value already has. */
+  function commitDates(next: NotesDatabaseDateValue | null): void {
+    commit(next === null || shown === null ? next : notesDateMentionValueWithDates(shown, next));
+  }
+
   /** The text of one boundary, formatted like the value itself. */
   function boundaryText(boundary: string): string {
     return notesDatabaseDateDisplay({ start: boundary, end: null, time_zone: shown?.time_zone ?? null }, localization, column.displayFormat);
@@ -94,9 +102,18 @@
   onclick={() => { if (open) close(false); else show(); }}
   onkeydown={(event) => { if (event.key !== "Enter" && event.key !== " ") onNavigate(event, rowIndex, columnIndex); }}>
   <span class="min-w-0 truncate">{text || t("notes.databaseTableEmptyCell")}</span>
+  {#if shown?.ganbaru_reminder?.enabled}
+    <Bell size={12} strokeWidth={1.75} class="ml-1 shrink-0 text-muted-foreground" aria-label={t("notes.dateMentionRemind")} />
+  {/if}
 </button>
 
 {#if open}
   <NotesDateEditorPanel anchor={trigger} id={pickerId} label={column.name} value={shown} formatBoundary={boundaryText}
-    {error} onCommit={commit} onClose={close} />
+    {error} onCommit={commitDates} onClose={close}>
+    {#snippet extras()}
+      {#if shown}
+        <NotesDateReminderOptions value={shown} onChange={commit} />
+      {/if}
+    {/snippet}
+  </NotesDateEditorPanel>
 {/if}

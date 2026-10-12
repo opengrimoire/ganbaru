@@ -39,5 +39,5 @@ pub use requests::{
 };
 pub use rich_text::{
     date_mention_reminder_minutes_before, validate_comment_body_rich_text,
-    validate_comment_rich_text, validate_rich_text_url,
+    validate_comment_rich_text, validate_date_mention_reminder, validate_rich_text_url,
 };

@@ -71,7 +71,9 @@ export async function updateNotesPage(
   update: NotesPageUpdate,
 ): Promise<NotesPage> {
   const dbUrl = await ensureDbUrl();
-  return mapNotesPageDto(await invokeNotesMutation("notes_update_page", { dbUrl, pageId, update }));
+  const page = mapNotesPageDto(await invokeNotesMutation("notes_update_page", { dbUrl, pageId, update }));
+  if (update.properties !== undefined || update.title !== undefined) invalidateNotesNotificationSchedule();
+  return page;
 }
 
 export async function trashNotesPage(

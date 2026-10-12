@@ -119,4 +119,10 @@ describe("date mention reminder offsets", () => {
       expect(notesDateMentionReminderMinutes(notesDateMentionValueWithDates(value, withTime))).toBe(minutes);
     }
   });
+
+  it("keeps a database date's reminder when its dates change, without adding a mention format", () => {
+    const saved = { start: "2026-10-30T15:00", end: null, time_zone: null, ganbaru_reminder: { enabled: true, minutes_before: 1440 } };
+    expect(notesDateMentionValueWithDates(saved, { start: "2026-11-02T08:00", end: "2026-11-02T09:00", time_zone: "America/Monterrey" }))
+      .toEqual({ start: "2026-11-02T08:00", end: "2026-11-02T09:00", time_zone: "America/Monterrey", ganbaru_reminder: { enabled: true, minutes_before: 1440 } });
+  });
 });

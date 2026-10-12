@@ -1,4 +1,6 @@
 import { Temporal } from "@js-temporal/polyfill";
+import { notesDateMentionValueWithDates } from "$lib/notes/rich-text/date-mention-edit";
+import { notesDatabaseDateValue } from "./date";
 import { notesDatabaseSerializeFilters } from "./filters";
 import {
   notesDatabaseTableCellText,
@@ -319,6 +321,20 @@ export function notesDatabaseTimelineDateValue(start: string, end: string): Reco
     end: normalizedEnd.equals(startDate) ? null : normalizedEnd.toString(),
     time_zone: null,
   };
+}
+
+/** The date a resized timeline row saves, keeping the reminder its date property already has. */
+export function notesDatabaseTimelineResizedDateValue(
+  row: NotesPage,
+  datePropertyId: string,
+  start: string,
+  end: string,
+): Record<string, unknown> {
+  const next = notesDatabaseTimelineDateValue(start, end);
+  const property = Object.values(row.properties).find((value) => isRecord(value) && value.id === datePropertyId);
+  const previous = isRecord(property) ? notesDatabaseDateValue(property.date) : null;
+  const dates = notesDatabaseDateValue(next);
+  return previous && dates ? { ...notesDateMentionValueWithDates(previous, dates) } : next;
 }
 
 function initialGroups(

@@ -463,6 +463,18 @@ fn schema_creates_notes_mention_notifications() {
                 .unwrap();
         assert_eq!(exists, Some(1));
 
+        let index_count: i64 = sqlx::query_scalar(
+            "SELECT count(*)
+             FROM sqlite_schema
+             WHERE type = 'index'
+               AND tbl_name = 'notes_mention_notifications'
+               AND name LIKE 'idx_notes_mention_notifications_%'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(index_count, 3);
+
         let page_fk: Option<i64> = sqlx::query_scalar(
             "SELECT 1
              FROM pragma_foreign_key_list('notes_mention_notifications')
@@ -534,6 +546,53 @@ fn schema_creates_notes_mention_notifications() {
             .execute(&pool)
             .await;
             assert_eq!(inserted.is_ok(), accepted, "offset {offset}");
+        }
+
+        // Property reminders come from their page and name their property; they carry no block or comment.
+        for (id, source_id, block_id, kind, target_id, accepted) in [
+            ("property-a", "page-a", None, "reminder", Some("due"), true),
+            (
+                "property-other-page",
+                "page-b",
+                None,
+                "reminder",
+                Some("due"),
+                false,
+            ),
+            (
+                "property-block",
+                "page-a",
+                Some("block-a"),
+                "reminder",
+                Some("due"),
+                false,
+            ),
+            (
+                "property-mention",
+                "page-a",
+                None,
+                "user_mention",
+                Some("user"),
+                false,
+            ),
+            ("property-unnamed", "page-a", None, "reminder", None, false),
+        ] {
+            let inserted = sqlx::query(
+                "INSERT INTO notes_mention_notifications (
+                    id, source_type, source_id, page_id, block_id, kind, target_type, target_id, fingerprint,
+                    trigger_at
+                 )
+                 VALUES (?, 'page_property', ?, 'page-a', ?, ?, 'date', ?, ?, '2026-07-05')",
+            )
+            .bind(id)
+            .bind(source_id)
+            .bind(block_id)
+            .bind(kind)
+            .bind(target_id)
+            .bind(format!("fingerprint-{id}"))
+            .execute(&pool)
+            .await;
+            assert_eq!(inserted.is_ok(), accepted, "{id}");
         }
     });
 }

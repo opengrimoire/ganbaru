@@ -9,6 +9,7 @@ import {
   notesDatabaseTimelineGroups,
   notesDatabaseTimelineItems,
   notesDatabaseTimelineMonthRange,
+  notesDatabaseTimelineResizedDateValue,
   notesDatabaseTimelineRowCreateProperties,
   notesDatabaseTimelineRowTitle,
   notesDatabaseTimelineShiftMonth,
@@ -272,6 +273,42 @@ describe("database timeline helpers", () => {
     });
     expect(notesDatabaseTimelineDateValue("2026-08-12", "2026-08-10")).toEqual({
       start: "2026-08-12",
+      end: null,
+      time_zone: null,
+    });
+  });
+});
+
+describe("notesDatabaseTimelineResizedDateValue", () => {
+  it("keeps the row's reminder when a resize moves its dates", () => {
+    const reminded: NotesPage = {
+      ...alphaPage,
+      properties: {
+        ...alphaPage.properties,
+        Window: {
+          id: "window",
+          type: "date",
+          date: { start: "2026-07-10", end: "2026-07-15", time_zone: null, ganbaru_reminder: { enabled: true, minutes_before: 1440 } },
+        },
+      },
+    };
+    expect(notesDatabaseTimelineResizedDateValue(reminded, "window", "2026-07-12", "2026-07-20")).toEqual({
+      start: "2026-07-12",
+      end: "2026-07-20",
+      time_zone: null,
+      ganbaru_reminder: { enabled: true, minutes_before: 1440 },
+    });
+  });
+
+  it("saves plain dates when the row has no date yet or no reminder", () => {
+    const undated: NotesPage = { ...alphaPage, properties: { Name: alphaPage.properties.Name } };
+    expect(notesDatabaseTimelineResizedDateValue(undated, "window", "2026-07-12", "2026-07-20")).toEqual({
+      start: "2026-07-12",
+      end: "2026-07-20",
+      time_zone: null,
+    });
+    expect(notesDatabaseTimelineResizedDateValue(alphaPage, "window", "2026-07-12", "2026-07-12")).toEqual({
+      start: "2026-07-12",
       end: null,
       time_zone: null,
     });

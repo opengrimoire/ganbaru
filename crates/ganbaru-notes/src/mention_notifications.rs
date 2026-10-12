@@ -13,6 +13,8 @@ const PAGE_NOTIFICATION_LEVELS: [&str; 3] = [PAGE_NOTIFICATION_LEVEL_ALL, "menti
 const MAX_NOTIFICATION_BATCH: usize = 200;
 const MAX_PLAIN_TEXT_LENGTH: usize = 500;
 const MAX_SOURCE_TEXT_LENGTH: usize = 2000;
+/// Reminders of a database row's date properties, keyed by the row page and named by their property.
+const PAGE_PROPERTY_SOURCE: &str = "page_property";
 
 struct MentionNotificationCandidate {
     kind: &'static str,
@@ -236,6 +238,20 @@ pub async fn refresh_all(pool: &SqlitePool) -> Result<i64, String> {
         .await?;
     }
 
+    let row_page_ids = sqlx::query_scalar::<_, String>(
+        "SELECT id
+         FROM notes_pages
+         WHERE parent_type = 'data_source_id'
+           AND in_trash = 0
+           AND archived = 0",
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| format!("load notes database rows for reminder refresh: {e}"))?;
+    for page_id in row_page_ids {
+        sync_page_properties_tx(&mut tx, &page_id).await?;
+    }
+
     tx.commit()
         .await
         .map_err(|e| format!("commit notes mention notification refresh: {e}"))?;
@@ -290,6 +306,103 @@ pub async fn sync_comment_tx(
         candidates,
     )
     .await
+}
+
+/// Replaces the pending reminders of a database row's date properties. A page outside a database has none.
+pub async fn sync_page_properties_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    page_id: &str,
+) -> Result<(), String> {
+    let row = sqlx::query_as::<_, (String, String, Option<String>)>(
+        "SELECT page.title, page.properties, source.properties
+         FROM notes_pages AS page
+         LEFT JOIN notes_data_sources AS source
+           ON page.parent_type = 'data_source_id'
+          AND source.id = page.parent_data_source_id
+         WHERE page.id = ?",
+    )
+    .bind(page_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| format!("load notes page properties for reminders: {e}"))?;
+    let Some((title, properties, schema)) = row else {
+        return clear_source_tx(tx, PAGE_PROPERTY_SOURCE, page_id).await;
+    };
+    let candidates = match schema {
+        Some(schema) => {
+            let properties = serde_json::from_str::<Value>(&properties)
+                .map_err(|e| format!("parse notes page properties for reminders: {e}"))?;
+            let schema = serde_json::from_str::<Value>(&schema)
+                .map_err(|e| format!("parse notes data source schema for reminders: {e}"))?;
+            date_property_candidates(&properties, &schema)
+        }
+        None => Vec::new(),
+    };
+    replace_source_candidates(
+        tx,
+        SourceTarget {
+            source_type: PAGE_PROPERTY_SOURCE,
+            source_id: page_id,
+            page_id,
+            block_id: None,
+            comment_id: None,
+            source_plain_text: &title,
+        },
+        candidates,
+    )
+    .await
+}
+
+/// Reminders of the schema's date properties whose row value has its reminder on.
+fn date_property_candidates(
+    properties: &Value,
+    schema: &Value,
+) -> Vec<MentionNotificationCandidate> {
+    let (Some(properties), Some(schema)) = (properties.as_object(), schema.as_object()) else {
+        return Vec::new();
+    };
+    let mut candidates = Vec::new();
+    for property in schema.values() {
+        if property.get("type").and_then(Value::as_str) != Some("date") {
+            continue;
+        }
+        let Some(id) = property.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(date) = properties
+            .values()
+            .find(|value| value.get("id").and_then(Value::as_str) == Some(id))
+            .and_then(|value| value.get("date"))
+            .and_then(Value::as_object)
+        else {
+            continue;
+        };
+        let Some(reminder) = date.get("ganbaru_reminder").and_then(Value::as_object) else {
+            continue;
+        };
+        if reminder.get("enabled").and_then(Value::as_bool) != Some(true) {
+            continue;
+        }
+        let Some(start) = date
+            .get("start")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|start| !start.is_empty())
+        else {
+            continue;
+        };
+        let name = property.get("name").and_then(Value::as_str).unwrap_or("");
+        candidates.push(MentionNotificationCandidate {
+            kind: "reminder",
+            target_type: "date",
+            target_id: Some(id.to_string()),
+            trigger_at: Some(start.to_string()),
+            remind_minutes_before: date_mention_reminder_minutes_before(reminder),
+            plain_text: truncate_chars(name, MAX_PLAIN_TEXT_LENGTH),
+            fingerprint: format!("reminder:{id}:{start}"),
+        });
+    }
+    candidates
 }
 
 pub async fn clear_source_tx(
@@ -440,6 +553,19 @@ async fn active_pending_notification_rows(
                                    AND block.in_trash = 0
                              )
                          )
+                   )
+               )
+               OR (
+                   notification.source_type = 'page_property'
+                   AND page.parent_type = 'data_source_id'
+                   AND EXISTS (
+                       SELECT 1
+                       FROM notes_data_sources AS source,
+                            json_each(source.properties) AS property
+                       WHERE source.id = page.parent_data_source_id
+                         AND source.in_trash = 0
+                         AND json_extract(property.value, '$.id') = notification.target_id
+                         AND json_extract(property.value, '$.type') = 'date'
                    )
                )
            )

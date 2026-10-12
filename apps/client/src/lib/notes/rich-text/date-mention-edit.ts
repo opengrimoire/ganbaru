@@ -79,14 +79,14 @@ export function notesDateMentionEditorValue(value: NotesDateMentionValue): Notes
 }
 
 /**
- * A mention value with dates from the editor, keeping the mention's format and reminder. A reminder offset the new
+ * A mention or database date with dates from the editor, keeping its format and reminder. A reminder offset the new
  * dates do not offer, such as minutes before a date that lost its time, falls back to the date itself.
  */
-export function notesDateMentionValueWithDates(
-  value: NotesDateMentionValue,
+export function notesDateMentionValueWithDates<T extends NotesDateMentionValue>(
+  value: T,
   dates: NotesDatabaseDateValue,
-): NotesDateMentionValue {
-  const next: NotesDateMentionValue = { ...value, start: dates.start, end: dates.end, time_zone: dates.time_zone };
+): T {
+  const next: T = { ...value, start: dates.start, end: dates.end, time_zone: dates.time_zone };
   const offered = notesDateMentionReminderOffsets(next).includes(notesDateMentionReminderMinutes(next));
   return offered ? next : notesDateMentionWithReminderMinutes(next, 0);
 }
@@ -107,8 +107,8 @@ export function notesDateMentionReminderMinutes(value: NotesDateMentionValue): n
   return value.ganbaru_reminder?.minutes_before ?? 0;
 }
 
-/** A mention value whose reminder fires a number of minutes before its date; a mention without a reminder is unchanged. */
-export function notesDateMentionWithReminderMinutes(value: NotesDateMentionValue, minutes: number): NotesDateMentionValue {
+/** A date whose reminder fires a number of minutes before it; a date without a reminder is unchanged. */
+export function notesDateMentionWithReminderMinutes<T extends NotesDateMentionValue>(value: T, minutes: number): T {
   const reminder = value.ganbaru_reminder;
   if (!reminder) return value;
   return {

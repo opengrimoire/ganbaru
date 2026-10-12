@@ -1,52 +1,82 @@
 use super::helpers::*;
 
+/// A database with a `When` date property and one row page, `Meeting`, at `PAGE_B`.
+async fn dated_database(pool: &sqlx::SqlitePool) {
+    create_page(pool, PAGE_A, BLOCK_A).await;
+    databases::create_database(
+        pool,
+        NoteDatabaseCreate {
+            id: DATABASE_A.to_string(),
+            data_source_id: DATA_SOURCE_A.to_string(),
+            view_id: DATABASE_VIEW_A.to_string(),
+            title: "Dates".to_string(),
+            parent: Some(page_parent(PAGE_A)),
+            after_block_id: Some(BLOCK_A.to_string()),
+            replace_block_id: None,
+            icon: None,
+            cover: None,
+        },
+    )
+    .await
+    .unwrap();
+    data_sources::schema::update_data_source_schema(
+        pool,
+        DATA_SOURCE_A,
+        None,
+        None,
+        NoteDataSourceSchemaUpdate {
+            properties: json!({
+                "Name": { "id": "title", "name": "Name", "type": "title", "title": {} },
+                "When": { "id": "when", "name": "When", "type": "date", "date": {} }
+            }),
+        },
+    )
+    .await
+    .unwrap();
+    data_sources::rows::create_data_source_row_page(
+        pool,
+        DATA_SOURCE_A,
+        NoteDataSourceRowPageCreate {
+            id: PAGE_B.to_string(),
+            first_block_id: BLOCK_B.to_string(),
+            title: "Meeting".to_string(),
+            properties: None,
+        },
+    )
+    .await
+    .unwrap();
+}
+
+async fn set_when(
+    pool: &sqlx::SqlitePool,
+    value: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    data_sources::layouts::table::update_data_source_row_property(
+        pool,
+        DATA_SOURCE_A,
+        PAGE_B,
+        NoteDataSourceRowPropertyUpdate {
+            property_id: "when".to_string(),
+            value,
+        },
+    )
+    .await
+    .map(|page| serde_json::to_value(page).unwrap())
+}
+
+async fn pending_reminders(pool: &sqlx::SqlitePool) -> Vec<serde_json::Value> {
+    serde_json::to_value(mention_notifications::list_pending(pool).await.unwrap())
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .clone()
+}
+
 #[test]
 fn database_date_edits_preserve_ranges_and_zones_and_reject_invalid_ranges_atomically() {
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;
-        create_page(&pool, PAGE_A, BLOCK_A).await;
-        databases::create_database(
-            &pool,
-            NoteDatabaseCreate {
-                id: DATABASE_A.to_string(),
-                data_source_id: DATA_SOURCE_A.to_string(),
-                view_id: DATABASE_VIEW_A.to_string(),
-                title: "Dates".to_string(),
-                parent: Some(page_parent(PAGE_A)),
-                after_block_id: Some(BLOCK_A.to_string()),
-                replace_block_id: None,
-                icon: None,
-                cover: None,
-            },
-        )
-        .await
-        .unwrap();
-        data_sources::schema::update_data_source_schema(
-            &pool,
-            DATA_SOURCE_A,
-            None,
-            None,
-            NoteDataSourceSchemaUpdate {
-                properties: json!({
-                    "Name": { "id": "title", "name": "Name", "type": "title", "title": {} },
-                    "When": { "id": "when", "name": "When", "type": "date", "date": {} }
-                }),
-            },
-        )
-        .await
-        .unwrap();
-        data_sources::rows::create_data_source_row_page(
-            &pool,
-            DATA_SOURCE_A,
-            NoteDataSourceRowPageCreate {
-                id: PAGE_B.to_string(),
-                first_block_id: BLOCK_B.to_string(),
-                title: "Meeting".to_string(),
-                properties: None,
-            },
-        )
-        .await
-        .unwrap();
+        dated_database(&pool).await;
         let original = json!({ "start": "2026-10-01T09:00:00", "end": "2026-10-01T11:00:00", "time_zone": "America/Monterrey" });
         data_sources::layouts::table::update_data_source_row_property(
             &pool,
@@ -750,5 +780,102 @@ fn editable_database_table_view_persists_cells_configuration_filters_and_sorts()
         let filtered_json = serde_json::to_value(filtered).unwrap();
         assert_eq!(filtered_json["rows"].as_array().unwrap().len(), 1);
         assert_eq!(filtered_json["rows"][0]["id"], PAGE_B);
+    });
+}
+
+#[test]
+fn database_date_reminders_follow_the_row_value_and_its_schema() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        dated_database(&pool).await;
+        let stored = set_when(
+            &pool,
+            json!({
+                "start": "2026-10-20T15:00",
+                "end": null,
+                "time_zone": null,
+                "color": "red",
+                "ganbaru_reminder": { "enabled": true, "minutes_before": 30, "sound": "bell" }
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            stored["properties"]["When"]["date"],
+            json!({
+                "start": "2026-10-20T15:00",
+                "end": null,
+                "time_zone": null,
+                "ganbaru_reminder": { "enabled": true, "minutes_before": 30 }
+            })
+        );
+        let pending = pending_reminders(&pool).await;
+        assert_eq!(pending.len(), 1);
+        let reminder = &pending[0];
+        assert_eq!(reminder["source_type"], "page_property");
+        assert_eq!(reminder["source_id"], PAGE_B);
+        assert_eq!(reminder["page_id"], PAGE_B);
+        assert!(reminder["block_id"].is_null());
+        assert_eq!(reminder["kind"], "reminder");
+        assert_eq!(reminder["target_id"], "when");
+        assert_eq!(reminder["trigger_at"], "2026-10-20T15:00");
+        assert_eq!(reminder["remind_minutes_before"], 30);
+        assert_eq!(reminder["plain_text"], "When");
+        assert_eq!(reminder["source_plain_text"], "Meeting");
+
+        for invalid in [
+            json!({ "enabled": true, "minutes_before": 40_321 }),
+            json!({ "enabled": "yes" }),
+            json!("on"),
+        ] {
+            let value = json!({ "start": "2026-10-21", "end": null, "time_zone": null, "ganbaru_reminder": invalid });
+            assert!(set_when(&pool, value).await.is_err());
+        }
+        assert_eq!(pending_reminders(&pool).await, pending);
+
+        mention_notifications::mark_delivered(
+            &pool,
+            NoteMentionNotificationDeliveryUpdate {
+                ids: vec![reminder["id"].as_str().unwrap().to_string()],
+            },
+        )
+        .await
+        .unwrap();
+        let earlier = json!({ "enabled": true, "minutes_before": 60 });
+        set_when(&pool, json!({ "start": "2026-10-20T15:00", "end": null, "time_zone": null, "ganbaru_reminder": earlier }))
+            .await
+            .unwrap();
+        assert!(pending_reminders(&pool).await.is_empty());
+        set_when(&pool, json!({ "start": "2026-10-22", "end": null, "time_zone": null, "ganbaru_reminder": earlier }))
+            .await
+            .unwrap();
+        let moved = pending_reminders(&pool).await;
+        assert_eq!(moved.len(), 1);
+        assert_eq!(moved[0]["trigger_at"], "2026-10-22");
+        assert_eq!(moved[0]["remind_minutes_before"], 60);
+
+        set_when(&pool, json!({ "start": "2026-10-22", "end": null, "time_zone": null, "ganbaru_reminder": { "enabled": false } }))
+            .await
+            .unwrap();
+        assert!(pending_reminders(&pool).await.is_empty());
+        set_when(&pool, json!({ "start": "2026-10-22", "end": null, "time_zone": null, "ganbaru_reminder": { "enabled": true } }))
+            .await
+            .unwrap();
+        assert_eq!(pending_reminders(&pool).await.len(), 1);
+
+        data_sources::schema::update_data_source_schema(
+            &pool,
+            DATA_SOURCE_A,
+            None,
+            None,
+            NoteDataSourceSchemaUpdate {
+                properties: json!({
+                    "Name": { "id": "title", "name": "Name", "type": "title", "title": {} }
+                }),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(pending_reminders(&pool).await.is_empty());
     });
 }

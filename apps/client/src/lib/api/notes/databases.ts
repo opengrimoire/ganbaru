@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { ensureDbUrl } from "$lib/api/db";
+import { invalidateNotesNotificationSchedule } from "$lib/notes/collaboration/notification-schedule.svelte";
 import {
   mapNotesCreatedDatabaseDto,
   mapNotesDataSourceDto,
@@ -218,7 +219,7 @@ export async function updateNotesDataSourceSchema(
   scope?: NotesDatabaseViewScope | null,
 ): Promise<NotesDataSourceSchema> {
   const dbUrl = await ensureDbUrl();
-  return mapNotesDataSourceSchemaDto(
+  const schema = mapNotesDataSourceSchemaDto(
     await invokeNotesMutation("notes_update_data_source_schema", {
       dbUrl,
       dataSourceId,
@@ -226,6 +227,8 @@ export async function updateNotesDataSourceSchema(
       ...databaseViewScopeArgs(scope),
     }),
   );
+  invalidateNotesNotificationSchedule();
+  return schema;
 }
 
 export async function listNotesDataSources(): Promise<NotesDataSourceListItem[]> {
@@ -459,7 +462,7 @@ export async function updateNotesDataSourceRowProperty(
   update: NotesDataSourceRowPropertyUpdate,
 ): Promise<NotesPage> {
   const dbUrl = await ensureDbUrl();
-  return mapNotesPageDto(
+  const page = mapNotesPageDto(
     await invokeNotesMutation("notes_update_data_source_row_property", {
       dbUrl,
       dataSourceId,
@@ -467,6 +470,8 @@ export async function updateNotesDataSourceRowProperty(
       update,
     }),
   );
+  invalidateNotesNotificationSchedule();
+  return page;
 }
 
 export async function clickNotesDataSourceButton(

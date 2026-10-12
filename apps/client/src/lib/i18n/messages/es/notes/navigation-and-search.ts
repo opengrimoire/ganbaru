@@ -256,6 +256,7 @@ export const navigationAndSearch = {
     userMentionTitle: "Mención en nota",
     taskMentionTitle: "Mención de tarea",
     privateBody: (pageTitle: string) => `Abrir ${pageTitle}`,
+    propertyBody: (propertyName: string, pageTitle: string) => `${propertyName}: ${pageTitle}`,
   },
   archive: "Archivo",
   trash: "Papelera",

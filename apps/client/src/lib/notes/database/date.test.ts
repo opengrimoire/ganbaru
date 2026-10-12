@@ -30,6 +30,20 @@ describe("Notes database dates", () => {
     expect(notesDatabaseIsTimeZoneValid("America/Monterrey")).toBe(true);
     expect(notesDatabaseIsTimeZoneValid("Unknown/Nowhere")).toBe(false);
   });
+
+  it("reads a stored reminder, keeping its offset only when it is a whole number in range", () => {
+    const start = "2026-10-01T09:00";
+    expect(notesDatabaseDateValue({ start, ganbaru_reminder: { enabled: true, minutes_before: 30 } })?.ganbaru_reminder)
+      .toEqual({ enabled: true, minutes_before: 30 });
+    expect(notesDatabaseDateValue({ start, ganbaru_reminder: { enabled: false } })?.ganbaru_reminder).toEqual({ enabled: false });
+    for (const minutes_before of [0, -5, 2.5, 40321, "30", null]) {
+      expect(notesDatabaseDateValue({ start, ganbaru_reminder: { enabled: true, minutes_before } })?.ganbaru_reminder)
+        .toEqual({ enabled: true });
+    }
+    for (const ganbaru_reminder of [null, true, { enabled: "yes" }, []]) {
+      expect(notesDatabaseDateValue({ start, ganbaru_reminder })).not.toHaveProperty("ganbaru_reminder");
+    }
+  });
 });
 
 describe("Notes database date range editing", () => {

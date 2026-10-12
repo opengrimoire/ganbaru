@@ -1,7 +1,22 @@
+import { NOTES_DATE_MENTION_MAX_REMINDER_MINUTES_BEFORE, type NotesDateMentionReminder } from "$lib/notes/contracts/core";
+
 export interface NotesDatabaseDateValue {
   start: string;
   end: string | null;
   time_zone: string | null;
+  /** A reminder before the start, stored like a date mention's; absent when the date has never reminded. */
+  ganbaru_reminder?: NotesDateMentionReminder | null;
+}
+
+/** A stored reminder with a boolean switch, keeping its offset only when it is a whole number in range. */
+function notesDatabaseDateReminder(value: unknown): NotesDateMentionReminder | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const reminder = value as Record<string, unknown>;
+  if (typeof reminder.enabled !== "boolean") return null;
+  const minutes = reminder.minutes_before;
+  const offered = typeof minutes === "number" && Number.isInteger(minutes) && minutes > 0
+    && minutes <= NOTES_DATE_MENTION_MAX_REMINDER_MINUTES_BEFORE;
+  return offered ? { enabled: reminder.enabled, minutes_before: minutes } : { enabled: reminder.enabled };
 }
 
 /** Identify real ISO calendar dates and optional local or offset time components. */
@@ -34,10 +49,12 @@ export function notesDatabaseDateValue(value: unknown): NotesDatabaseDateValue |
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const date = value as Record<string, unknown>;
   if (typeof date.start !== "string" || !date.start) return null;
+  const reminder = notesDatabaseDateReminder(date.ganbaru_reminder);
   return {
     start: date.start,
     end: typeof date.end === "string" && date.end ? date.end : null,
     time_zone: typeof date.time_zone === "string" && date.time_zone ? date.time_zone : null,
+    ...(reminder ? { ganbaru_reminder: reminder } : {}),
   };
 }
 

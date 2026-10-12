@@ -30,7 +30,7 @@
     notesDatabaseTimelineConfigurationFromView,
     notesDatabaseTimelineDateColumns,
     notesDatabaseTimelineDates,
-    notesDatabaseTimelineDateValue,
+    notesDatabaseTimelineResizedDateValue,
     notesDatabaseTimelineFiltersFromView,
     notesDatabaseTimelineGroupableColumns,
     notesDatabaseTimelineGroups,
@@ -275,7 +275,7 @@
     try {
       await updateNotesDataSourceRowProperty(dataSourceId, row.id, {
         property_id: configuration.date_property_id,
-        value: notesDatabaseTimelineDateValue(start, end),
+        value: notesDatabaseTimelineResizedDateValue(row, configuration.date_property_id, start, end),
       });
       await loadTimeline();
     } catch (caught) {

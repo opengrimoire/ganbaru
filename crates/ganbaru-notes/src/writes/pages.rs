@@ -13,7 +13,7 @@ use crate::validation::{
     plain_text_from_payload, require_uuid, validate_page_create, validate_page_update,
     validate_sort_order,
 };
-use crate::{assets, page_history, project_history, reads};
+use crate::{assets, mention_notifications, page_history, project_history, reads};
 use serde_json::Value;
 use sqlx::{Row, SqlitePool};
 
@@ -450,6 +450,7 @@ pub async fn update_page(
         .map_err(|e| format!("begin notes page update: {e}"))?;
     page_history::record_page_snapshot_tx(&mut tx, page_id, "update_page").await?;
     let page_properties_changed = update.properties.is_some();
+    let page_title_changed = update.title.is_some();
     if let Some(parent) = &update.parent {
         validate_page_parent_exists(&mut tx, parent).await?;
         let (parent_type, parent_page_id, parent_block_id, parent_data_source_id) =
@@ -549,6 +550,9 @@ pub async fn update_page(
             cover_reference_value.as_ref(),
         )
         .await?;
+    }
+    if page_properties_changed || page_title_changed {
+        mention_notifications::sync_page_properties_tx(&mut tx, page_id).await?;
     }
     if page_properties_changed {
         let updated_page = load_page_row(&mut tx, page_id).await?;

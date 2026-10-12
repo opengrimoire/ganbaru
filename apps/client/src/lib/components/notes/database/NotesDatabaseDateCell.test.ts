@@ -94,6 +94,23 @@ describe("Notes database date editor", () => {
     expect(document.querySelector('[role="dialog"]')).toBeNull();
   });
 
+  it("turns on a reminder, picks how early it fires, and keeps it when the date moves", async () => {
+    const onSave = vi.fn(async () => true);
+    const date = { start: "2026-10-01T09:00", end: null, time_zone: null };
+    await open(date, onSave);
+    document.querySelector<HTMLButtonElement>('[role="switch"][aria-label="Remind me"]')!.click();
+    await tick(); await tick();
+    expect(onSave).toHaveBeenLastCalledWith({ ...date, ganbaru_reminder: { enabled: true } });
+    expect(trigger().querySelector("svg")).not.toBeNull();
+    const offsets = document.querySelectorAll<HTMLButtonElement>('[role="radiogroup"] [role="radio"]');
+    expect(offsets[0]!.getAttribute("aria-checked")).toBe("true");
+    offsets[4]!.click();
+    await tick(); await tick();
+    expect(onSave).toHaveBeenLastCalledWith({ ...date, ganbaru_reminder: { enabled: true, minutes_before: 30 } });
+    await pickDay("2026-10-02");
+    await vi.waitFor(() => expect(onSave).toHaveBeenLastCalledWith({ start: "2026-10-02T09:00", end: null, time_zone: null, ganbaru_reminder: { enabled: true, minutes_before: 30 } }));
+  });
+
   it("closes on Escape without saving", async () => {
     const onSave = vi.fn(async () => true);
     await open({ start: "2026-10-01", end: null, time_zone: null }, onSave);

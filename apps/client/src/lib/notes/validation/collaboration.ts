@@ -1,5 +1,5 @@
-import { NOTES_MENTION_NOTIFICATION_KINDS, NOTES_MENTION_NOTIFICATION_STATUSES, NOTES_MENTION_NOTIFICATION_TARGET_TYPES, NOTES_PAGE_NOTIFICATION_LEVELS } from "../contracts/collaboration";
-import type { NotesComment, NotesCommentAnchor, NotesCommentReaction, NotesCommentDisplayName, NotesCommentParent, NotesCommentThread, NotesCommentThreadStatus, NotesLocalUser, NotesMentionNotification, NotesMentionNotificationKind, NotesMentionNotificationStatus, NotesMentionNotificationTargetType, NotesPageNotificationLevel, NotesPageNotificationSettings, NotesPartialUser, NotesSuggestion, NotesSuggestionStatus } from "../contracts/collaboration";
+import { NOTES_MENTION_NOTIFICATION_KINDS, NOTES_MENTION_NOTIFICATION_SOURCE_TYPES, NOTES_MENTION_NOTIFICATION_STATUSES, NOTES_MENTION_NOTIFICATION_TARGET_TYPES, NOTES_PAGE_NOTIFICATION_LEVELS } from "../contracts/collaboration";
+import type { NotesComment, NotesCommentAnchor, NotesCommentReaction, NotesCommentDisplayName, NotesCommentParent, NotesCommentThread, NotesCommentThreadStatus, NotesLocalUser, NotesMentionNotification, NotesMentionNotificationKind, NotesMentionNotificationSourceType, NotesMentionNotificationStatus, NotesMentionNotificationTargetType, NotesPageNotificationLevel, NotesPageNotificationSettings, NotesPartialUser, NotesSuggestion, NotesSuggestionStatus } from "../contracts/collaboration";
 import { parseNotesParent } from "./blocks";
 import { readBoolean, readDisplayString, readInteger, readNonNegativeInteger, readNullableString, readRecord, readString, readStringArray } from "./readers";
 import { parseNotesRichTextArray } from "./rich-text";
@@ -111,19 +111,23 @@ function parseNotesMentionNotificationStatus(value: unknown): NotesMentionNotifi
   throw new Error("mention notification.status is unsupported");
 }
 
+function parseNotesMentionNotificationSourceType(value: unknown): NotesMentionNotificationSourceType {
+  const sourceType = readString(value, "mention notification.source_type");
+  if ((NOTES_MENTION_NOTIFICATION_SOURCE_TYPES as readonly string[]).includes(sourceType)) {
+    return sourceType as NotesMentionNotificationSourceType;
+  }
+  throw new Error("mention notification.source_type is unsupported");
+}
+
 export function parseNotesMentionNotification(value: unknown): NotesMentionNotification {
   const record = readRecord(value, "mention notification");
   if (record.object !== "mention_notification") {
     throw new Error("mention notification.object must be mention_notification");
   }
-  const sourceType = readString(record.source_type, "mention notification.source_type");
-  if (sourceType !== "block" && sourceType !== "comment") {
-    throw new Error("mention notification.source_type is unsupported");
-  }
   return {
     object: "mention_notification",
     id: readString(record.id, "mention notification.id"),
-    source_type: sourceType,
+    source_type: parseNotesMentionNotificationSourceType(record.source_type),
     source_id: readString(record.source_id, "mention notification.source_id"),
     page_id: readString(record.page_id, "mention notification.page_id"),
     page_title: readString(record.page_title, "mention notification.page_title"),

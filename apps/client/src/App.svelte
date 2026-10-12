@@ -683,6 +683,9 @@
   function notesMentionNotificationBody(notification: NotesMentionNotification): string {
     const pageTitle = notification.page_title.trim() || t("notes.untitled");
     if (preferences.notesNotificationIncludeContent) {
+      if (notification.source_type === "page_property") {
+        return truncateNotificationText(t("notes.notification.propertyBody", notification.plain_text, pageTitle));
+      }
       const sourceText = truncateNotificationText(
         notification.source_plain_text || notification.plain_text,
       );

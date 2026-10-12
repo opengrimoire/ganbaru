@@ -33,6 +33,40 @@ describe("notes collaboration-history boundary validation", () => {
       });
     });
 
+  it("parses database date reminders and rejects unknown sources", () => {
+    const reminder = {
+      object: "mention_notification",
+      id: "notification-b",
+      source_type: "page_property",
+      source_id: basePage.id,
+      page_id: basePage.id,
+      page_title: "Meeting",
+      block_id: null,
+      comment_id: null,
+      kind: "reminder",
+      target_type: "date",
+      target_id: "when",
+      trigger_at: "2026-07-02T09:00:00",
+      remind_minutes_before: 30,
+      plain_text: "When",
+      source_plain_text: "Meeting",
+      status: "pending",
+      delivered_at: null,
+      suppressed: false,
+      created_time: "2026-07-01T12:00:00.000Z",
+      last_edited_time: "2026-07-01T12:00:00.000Z",
+    };
+
+    expect(parseNotesMentionNotification(reminder)).toMatchObject({
+      source_type: "page_property",
+      block_id: null,
+      target_id: "when",
+      remind_minutes_before: 30,
+    });
+    expect(() => parseNotesMentionNotification({ ...reminder, source_type: "page" }))
+      .toThrow("mention notification.source_type is unsupported");
+  });
+
   const commentDto = (reactions: unknown) => ({
     object: "comment",
     id: "10101010-1010-4010-8010-101010101010",

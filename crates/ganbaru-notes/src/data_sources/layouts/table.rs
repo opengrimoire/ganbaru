@@ -6,7 +6,7 @@ use crate::models::{
     NoteDataSourceTableViewUpdate, NoteDataSourceViewWindowRequest, NoteDatabaseViewRow,
     NotePageDto, NotePageRow,
 };
-use crate::validation::require_uuid;
+use crate::validation::{require_uuid, validate_date_mention_reminder};
 use crate::{
     data_sources,
     data_sources::views::{
@@ -14,7 +14,7 @@ use crate::{
         read_string_field, rich_text_plain_text, stored_filters, stored_sorts,
         title_from_property_value,
     },
-    page_history, writes,
+    mention_notifications, page_history, writes,
 };
 use chrono::{DateTime, NaiveDate, NaiveDateTime};
 use serde_json::{Map, Value, json};
@@ -201,6 +201,7 @@ pub async fn update_data_source_row_property(
         data_source_id.trim(),
     )
     .await?;
+    mention_notifications::sync_page_properties_tx(&mut tx, page_id.trim()).await?;
     touch_data_source_and_database_tx(&mut tx, data_source_id, &database.id).await?;
     let updated = load_active_row_page_tx(&mut tx, data_source_id, page_id).await?;
     tx.commit()
@@ -921,7 +922,27 @@ fn checked_date_payload(value: &Value) -> Result<Value, String> {
             );
         }
     }
-    Ok(value.clone())
+    let mut checked = Map::new();
+    for key in ["start", "end", "time_zone"] {
+        checked.insert(
+            key.to_string(),
+            date.get(key).cloned().unwrap_or(Value::Null),
+        );
+    }
+    if let Some(reminder) = date
+        .get("ganbaru_reminder")
+        .filter(|value| !value.is_null())
+    {
+        validate_date_mention_reminder(reminder)?;
+        let mut canonical = Map::new();
+        for key in ["enabled", "minutes_before"] {
+            if let Some(field) = reminder.get(key).filter(|value| !value.is_null()) {
+                canonical.insert(key.to_string(), field.clone());
+            }
+        }
+        checked.insert("ganbaru_reminder".to_string(), Value::Object(canonical));
+    }
+    Ok(Value::Object(checked))
 }
 
 fn date_boundary_order(value: &str) -> Result<i64, String> {

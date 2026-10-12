@@ -31,7 +31,15 @@ export const NOTES_MENTION_NOTIFICATION_STATUSES = [
 export type NotesMentionNotificationStatus =
   (typeof NOTES_MENTION_NOTIFICATION_STATUSES)[number];
 
-export type NotesMentionNotificationSourceType = "block" | "comment";
+/** Where a notification comes from; `page_property` is a reminder on a database row's date property. */
+export const NOTES_MENTION_NOTIFICATION_SOURCE_TYPES = [
+  "block",
+  "comment",
+  "page_property",
+] as const;
+
+export type NotesMentionNotificationSourceType =
+  (typeof NOTES_MENTION_NOTIFICATION_SOURCE_TYPES)[number];
 
 export interface NotesMentionNotification {
   object: "mention_notification";

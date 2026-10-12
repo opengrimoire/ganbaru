@@ -73,6 +73,30 @@ describe("Loading", () => {
     expect(render({ layout: "inline" }).querySelector(".loading-spinner")).not.toBeNull();
   });
 
+  it("shows the label beside an inline spinner for standalone status lines", () => {
+    const status = render({ layout: "inline", label: "Checking browser extension", showLabel: true });
+
+    expect(status.textContent).toBe("Checking browser extension");
+    expect(status.querySelector(".sr-only")).toBeNull();
+    expect(status.querySelector(".loading-label")?.textContent).toBe("Checking browser extension");
+    expect(status.querySelector(".loading-spinner")).not.toBeNull();
+  });
+
+  it("shows the label under a fill spinner when asked", () => {
+    const status = render({ layout: "fill", label: "Starting camera", showLabel: true });
+
+    expect(status.textContent).toBe("Starting camera");
+    expect(status.querySelector(".loading-label")?.textContent).toBe("Starting camera");
+    expect(status.querySelector(".loading-spinner")).not.toBeNull();
+  });
+
+  it("keeps the label hidden for skeleton rows", () => {
+    const status = render({ layout: "rows", label: "Loading projects", showLabel: true });
+
+    expect(status.querySelector(".loading-label")).toBeNull();
+    expect(status.querySelector(".sr-only")?.textContent).toBe("Loading projects");
+  });
+
   it("renders inline loading as a span so it fits inside phrasing content", () => {
     expect(render({ layout: "inline" }).tagName).toBe("SPAN");
   });

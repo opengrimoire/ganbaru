@@ -65,6 +65,7 @@ export const distractions = {
     usageAccessDescription: "Mide el tiempo en primer plano para límites de apps seleccionadas",
     appBlocking: "Bloqueo de apps",
     appBlockingDescription: "Vuelve al inicio cuando aplica una regla o límite seleccionado",
+    checkingProtection: "Comprobando la protección de apps móviles",
     protectionActive: "La protección de apps móviles está activa",
     protectionInactive: "La protección necesita ambos accesos de Android",
     browserReadOnly: "Las reglas del navegador se aplican en escritorio y son de solo lectura en Android",

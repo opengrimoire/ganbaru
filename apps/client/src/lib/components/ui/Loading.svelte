@@ -20,6 +20,7 @@
     layout = "fill",
     rows = 3,
     delay = REVEAL_DELAY_MS,
+    showLabel = false,
     class: className,
   }: {
     /** What is loading, announced to assistive technology only; defaults to the generic loading text. */
@@ -28,10 +29,17 @@
     /** Number of skeleton rows for the `rows` layout. */
     rows?: number;
     delay?: number;
+    /**
+     * Shows the label beside an `inline` spinner or below a `fill` spinner, for a standalone status line or a pane
+     * where a bare spinner would not say what is happening.
+     */
+    showLabel?: boolean;
     class?: string;
   } = $props();
 
   const { t } = getLocalization();
+  const labelText = $derived(label ?? t("common.loading"));
+  const labelVisible = $derived(showLabel && layout !== "rows");
   let revealed = $state(false);
 
   onMount(() => {
@@ -52,7 +60,7 @@
   aria-busy="true"
   data-loading={layout}
   data-revealed={revealed || undefined}
-><span class="sr-only">{label ?? t("common.loading")}</span>{#if layout === "rows"}{#each { length: Math.max(1, rows) }, index (index)}<span class="loading-row" aria-hidden="true"><span class="loading-bar" style:width={ROW_WIDTHS[index % ROW_WIDTHS.length]}></span></span>{/each}{:else}<span class="loading-spinner" aria-hidden="true"><LoaderCircle strokeWidth={1.8} aria-hidden="true" /></span>{/if}</svelte:element>
+>{#if !labelVisible}<span class="sr-only">{labelText}</span>{/if}{#if layout === "rows"}{#each { length: Math.max(1, rows) }, index (index)}<span class="loading-row" aria-hidden="true"><span class="loading-bar" style:width={ROW_WIDTHS[index % ROW_WIDTHS.length]}></span></span>{/each}{:else}<span class="loading-spinner" aria-hidden="true"><LoaderCircle strokeWidth={1.8} aria-hidden="true" /></span>{/if}{#if labelVisible}<span class="loading-label">{labelText}</span>{/if}</svelte:element>
 
 <style>
   /* The components layer lets utility classes passed through `class` override color, padding, and size. */
@@ -61,8 +69,12 @@
     .loading[data-revealed] { opacity: 1; }
     .loading-fill { display: grid; width: 100%; height: 100%; min-height: inherit; place-items: center; padding: 1rem; }
     .loading-fill .loading-spinner :global(svg) { width: 1.25rem; height: 1.25rem; }
+    .loading-fill:has(.loading-label) { place-content: center; gap: 0.5rem; text-align: center; }
     .loading-inline { display: inline-flex; height: 1lh; vertical-align: top; align-items: center; }
     .loading-inline .loading-spinner :global(svg) { width: 1em; height: 1em; }
+    .loading-inline:has(.loading-label) { height: auto; min-height: 1lh; align-items: flex-start; gap: 0.5em; }
+    .loading-inline:has(.loading-label) .loading-spinner { height: 1lh; align-items: center; }
+    .loading-label { min-width: 0; overflow-wrap: anywhere; }
     .loading-rows { display: flex; width: 100%; flex-direction: column; }
     .loading-row { display: flex; min-height: var(--panel-row-height); align-items: center; padding: 0.25rem 0.5rem; }
     .loading-bar { height: 0.625em; border-radius: 999px; background: color-mix(in srgb, var(--muted-foreground) 12%, transparent); }

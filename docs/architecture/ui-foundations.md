@@ -57,8 +57,9 @@ Panels were restyled one at a time, so radii, shadows, text sizes, input styles,
 
 ## Loading
 
-- Pending content never shows visible "Loading" text. A purpose-built skeleton (such as Notes pages and database views) is preferred where the layout is known; otherwise use `ui/Loading`, which waits briefly before appearing so fast loads never flash, and announces what is loading only to assistive technology.
+- Pending content inside a surface whose purpose is already clear never shows visible "Loading" text. A purpose-built skeleton (such as Notes pages and database views) is preferred where the layout is known; otherwise use `ui/Loading`, which waits briefly before appearing so fast loads never flash, and announces what is loading only to assistive technology.
 - `ui/Loading` uses `rows` inside lists, menus, and pickers, `fill` for a pending view or pane, and `inline` inside a line of text or a value slot.
+- A standalone status line, such as a connection check among settings, uses `inline` with `showLabel` and a specific label ("Checking browser extension"), because a bare spinner there does not say what is happening. A `fill` pane with no heading or content shape to explain it, such as a starting camera view, does the same.
 - A button whose action is pending keeps its label, shows a spinner in place of its icon (or before the label), and sets `aria-busy`.
 
 ## Widths

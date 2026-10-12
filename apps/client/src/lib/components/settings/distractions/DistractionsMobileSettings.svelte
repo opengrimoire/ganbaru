@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import CircleCheck from "@lucide/svelte/icons/circle-check";
   import { cn } from "$lib/utils";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
@@ -205,16 +206,15 @@
         <button type="button" onclick={() => reviewAccess("accessibility")} class="h-7 shrink-0 rounded-md bg-primary px-2.5 text-[0.8rem] font-medium text-primary-foreground hover:bg-primary/90">{t("mobile.focusOnboarding.review")}</button>
       </div>
     </div>
-    <div class={cn("px-1 text-[0.8rem]", protectionActive ? "text-muted-foreground" : "text-destructive")}>
-      {#if loadingStatus}
-        <Loading layout="inline" />
-      {:else}
-        {protectionActive
-          ? t("settings.distractions.mobile.protectionActive")
-          : t("settings.distractions.mobile.protectionInactive")}
-      {/if}
-    </div>
-    {#if statusError}<Notice class="px-1 text-[0.8rem]" message={t("mobile.focusOnboarding.statusError")} onRetry={retryStatus} />{/if}
+    {#if loadingStatus}
+      <div class="px-1 text-[0.8rem] leading-5"><Loading layout="inline" showLabel label={t("settings.distractions.mobile.checkingProtection")} /></div>
+    {:else if statusError}
+      <Notice class="px-1 text-[0.8rem] leading-5" message={t("mobile.focusOnboarding.statusError")} copy={false} onRetry={retryStatus} />
+    {:else if protectionActive}
+      <Notice class="px-1 text-[0.8rem] leading-5" icon={CircleCheck} role="status" copy={false} message={t("settings.distractions.mobile.protectionActive")} />
+    {:else}
+      <Notice class="px-1 text-[0.8rem] leading-5" tone="warning" role="status" copy={false} message={t("settings.distractions.mobile.protectionInactive")} />
+    {/if}
   </section>
 
   <fieldset disabled={!distractions.mobileEnabled} class={cn("m-0 flex min-w-0 flex-col gap-4 border-0 p-0", !distractions.mobileEnabled && "opacity-50")}>

@@ -64,7 +64,7 @@
   <div class="relative mx-auto aspect-square w-full overflow-hidden rounded-md bg-black">
     <video bind:this={video} muted class="h-full w-full object-cover" aria-label={label ?? t("vaultHandoff.scanQr")}></video>
     {#if !ready}
-      <Loading layout="fill" label={t("vaultHandoff.cameraStarting")} class="absolute inset-0 text-white" />
+      <Loading layout="fill" showLabel label={t("vaultHandoff.cameraStarting")} class="absolute inset-0 text-sm text-white" />
     {/if}
     <div class="pointer-events-none absolute inset-[12%] rounded-lg border-2 border-white/80"></div>
   </div>

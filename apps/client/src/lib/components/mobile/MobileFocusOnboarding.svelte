@@ -4,6 +4,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { onboardingPrimaryAction } from "$lib/vault/onboarding-primary-action";
   import {
     mobileDistractionsAccessStatus,
@@ -88,6 +89,12 @@
       unavailable = true;
     }
     loading = false;
+  }
+
+  /** Rereads every access status for the error notice and reports whether all of them are readable now. */
+  async function retryStatus(): Promise<boolean> {
+    await refresh();
+    return !unavailable;
   }
 
   function beginSettingsReview(review: MobileFocusAccessReview): void {
@@ -348,11 +355,9 @@
 
       <div class="pt-4">
         {#if loading}
-          <Loading layout="fill" />
+          <div class="flex justify-center text-sm"><Loading layout="inline" showLabel label={t("mobile.focusOnboarding.checkingAccess")} /></div>
         {:else if unavailable}
-          <p role="alert" class="text-center text-sm text-destructive">
-            {t("mobile.focusOnboarding.statusError")}
-          </p>
+          <Notice class="text-sm" message={t("mobile.focusOnboarding.statusError")} copy={false} onRetry={retryStatus} />
         {/if}
       </div>
     </div>

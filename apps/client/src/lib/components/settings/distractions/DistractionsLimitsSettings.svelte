@@ -1,13 +1,13 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import Check from "@lucide/svelte/icons/check";
-  import CircleAlert from "@lucide/svelte/icons/circle-alert";
   import Pencil from "@lucide/svelte/icons/pencil";
   import Plus from "@lucide/svelte/icons/plus";
   import Power from "@lucide/svelte/icons/power";
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import { getEventColor } from "$lib/calendar/utils";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
     distractionsLimitEntryKey,
@@ -58,14 +58,19 @@
 
   let pendingAction = $state<PendingLimitAction | null>(null);
 
-  const desktopAvailabilityMessage = $derived(
-    __GANBARU_AI_BUILD_PLATFORM__ === "android" || usage.foregroundStatus.available
-      ? null
-      : usage.foregroundStatus.reason?.toLowerCase().includes("wayland")
-        ? null
-        : usage.foregroundStatus.reason
-          ?? t("settings.distractions.limits.desktopUnavailable"),
+  /** Native observation only runs for enabled limits that link a desktop app, so other states have nothing to report. */
+  const tracksDesktopApps = $derived(
+    distractions.limitsEnabled
+      && distractions.usageLimits.some((limit) => limit.enabled && limit.entries.some((entry) => entry.desktopAppName)),
   );
+  /** Wayland sessions without foreground tracking fall back to open-app matching, so they are not reported. */
+  const desktopTrackingUnavailable = $derived(
+    __GANBARU_AI_BUILD_PLATFORM__ !== "android"
+      && tracksDesktopApps
+      && !usage.foregroundStatus.available
+      && !usage.foregroundStatus.reason?.toLowerCase().includes("wayland"),
+  );
+  const desktopUnavailableMessage = $derived(t("settings.distractions.limits.desktopUnavailable"));
 
   function formatMinutes(totalSeconds: number): string {
     const minutes = Math.floor(totalSeconds / 60);
@@ -381,13 +386,14 @@
   >
     <div class="h-px shrink-0 scale-y-50 bg-border" aria-hidden="true"></div>
 
-    {#if desktopAvailabilityMessage}
-      <section class="flex flex-col gap-2">
-        <div class="flex min-h-9 items-center gap-2.5 rounded-md border border-border bg-background/60 px-3 py-1.5 text-muted-foreground dark:bg-transparent">
-          <CircleAlert size={14} strokeWidth={2.25} class="shrink-0" />
-          <div class="min-w-0 text-[0.8rem]">{desktopAvailabilityMessage}</div>
-        </div>
-      </section>
+    {#if desktopTrackingUnavailable}
+      <Notice
+        class="px-1 text-[0.8rem] leading-5"
+        tone="warning"
+        role="status"
+        message={desktopUnavailableMessage}
+        copy={usage.foregroundStatus.reason ? `${desktopUnavailableMessage} (${usage.foregroundStatus.reason})` : false}
+      />
 
       <div class="h-px shrink-0 scale-y-50 bg-border" aria-hidden="true"></div>
     {/if}

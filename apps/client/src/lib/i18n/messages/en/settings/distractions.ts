@@ -62,6 +62,7 @@ export const distractions = {
     usageAccessDescription: "Measure foreground time for selected app limits",
     appBlocking: "App blocking",
     appBlockingDescription: "Return Home when a selected rule or limit applies",
+    checkingProtection: "Checking mobile app protection",
     protectionActive: "Mobile app protection is active",
     protectionInactive: "Mobile app protection needs both Android access settings",
     browserReadOnly: "Browser rules are enforced on desktop and are read-only on Android",

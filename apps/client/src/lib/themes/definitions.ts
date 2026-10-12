@@ -376,8 +376,8 @@ export const APP_TOKEN_KEYS = Object.freeze([
 
 /**
  * Calendar-shell CSS custom properties a user theme is allowed to override.
- * Same hex-only restriction as APP_TOKEN_KEYS; cal-hover (rgba) and
- * cal-header-row-h (px) are excluded.
+ * Same hex-only restriction as APP_TOKEN_KEYS; cal-hover (rgba) is
+ * excluded.
  */
 export const CALENDAR_TOKEN_KEYS = Object.freeze([
   "--cal-bg",

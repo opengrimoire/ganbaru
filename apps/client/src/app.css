@@ -471,7 +471,6 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
   }
   html[data-shell="mobile"] {
     --titlebar-h: var(--mobile-topbar-h);
-    --cal-header-row-h: 56px;
     --toolbar-h: 56px;
     --collection-table-row-height: 2.75rem;
   }
@@ -653,7 +652,6 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
   --cal-timeline-focus: #39965c;
   --cal-scrollbar-thumb: var(--muted);
   --cal-scrollbar-thumb-hover: var(--muted-foreground);
-  --cal-header-row-h: 42px;
 }
 
 .dark {

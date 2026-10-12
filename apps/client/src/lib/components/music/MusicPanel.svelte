@@ -789,7 +789,7 @@
     data-music-player-header
     class={cn(
       "relative flex shrink-0 items-stretch",
-      mobilePresentation ? "py-2" : "h-(--cal-header-row-h)",
+      mobilePresentation ? "py-2" : "h-(--toolbar-h)",
     )}
     style="background-color: var(--cal-bg);"
   >

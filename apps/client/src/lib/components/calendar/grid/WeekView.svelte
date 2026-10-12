@@ -443,7 +443,7 @@
       style="
         grid-column: 1 / -1;
         grid-template-columns: subgrid;
-        height: var(--cal-header-row-h);
+        height: var(--toolbar-h);
         background-color: var(--cal-bg);
       "
     >

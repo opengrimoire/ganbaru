@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import {
     mobileBackgroundExecutionStatus,
     openMobileBackgroundExecutionSettings,
@@ -60,11 +61,13 @@
       </div>
       <button
         type="button"
-        class="h-7 shrink-0 rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-wait disabled:opacity-50 max-[480px]:self-end dark:bg-transparent"
+        class="inline-flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-wait disabled:opacity-50 max-[480px]:self-end dark:bg-transparent"
         disabled={loading || opening !== null}
+        aria-busy={opening === "autostart" || undefined}
         onclick={() => void open("autostart")}
       >
-        {opening === "autostart" ? t("common.loading") : t("mobile.focusOnboarding.review")}
+        {#if opening === "autostart"}<LoaderCircle class="size-3.5 animate-spin" aria-hidden="true" />{/if}
+        {t("mobile.focusOnboarding.review")}
       </button>
     </div>
   {/if}
@@ -80,11 +83,13 @@
     </div>
     <button
       type="button"
-      class="h-7 shrink-0 rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-wait disabled:opacity-50 max-[480px]:self-end dark:bg-transparent"
+      class="inline-flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-wait disabled:opacity-50 max-[480px]:self-end dark:bg-transparent"
       disabled={loading || opening !== null}
+      aria-busy={opening === "battery" || undefined}
       onclick={() => void open("battery")}
     >
-      {opening === "battery" ? t("common.loading") : t("mobile.focusOnboarding.review")}
+      {#if opening === "battery"}<LoaderCircle class="size-3.5 animate-spin" aria-hidden="true" />{/if}
+      {t("mobile.focusOnboarding.review")}
     </button>
   </div>
 

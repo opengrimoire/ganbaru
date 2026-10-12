@@ -1,6 +1,6 @@
 <script lang="ts">
-  import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import { onMount } from "svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { PairingCameraScanner, type QrFrameDecoder } from "$lib/vault/pairing-camera";
 
@@ -64,10 +64,7 @@
   <div class="relative mx-auto aspect-square w-full overflow-hidden rounded-md bg-black">
     <video bind:this={video} muted class="h-full w-full object-cover" aria-label={label ?? t("vaultHandoff.scanQr")}></video>
     {#if !ready}
-      <div class="absolute inset-0 flex items-center justify-center gap-2 text-sm text-white">
-        <LoaderCircle size={16} strokeWidth={2} class="animate-spin" aria-hidden="true" />
-        {t("vaultHandoff.cameraStarting")}
-      </div>
+      <Loading layout="fill" label={t("vaultHandoff.cameraStarting")} class="absolute inset-0 text-white" />
     {/if}
     <div class="pointer-events-none absolute inset-[12%] rounded-lg border-2 border-white/80"></div>
   </div>

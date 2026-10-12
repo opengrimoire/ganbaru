@@ -1,10 +1,10 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import type { StartupMemorySnapshot } from "$lib/diagnostics/memory-report";
-  import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
   import { getThemeEditor } from "$lib/stores/theme-editor.svelte";
   import SettingsModal from "$lib/components/settings/SettingsModal.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import MusicPanel from "$lib/components/music/MusicPanel.svelte";
   import QuickNotesPanel from "$lib/components/quick-notes/QuickNotesPanel.svelte";
   import { preloadQuickNotesInitialSnapshot } from "$lib/quick-notes/initial-snapshot";
@@ -37,7 +37,6 @@
 
   const settingsLauncher = getSettingsLauncher();
   const themeEditor = getThemeEditor();
-  const { t } = getLocalization();
 
   let PerformancePopover = $state<PerformancePopoverComponent | null>(null);
   let FloatingThemeEditor = $state<FloatingThemeEditorComponent | null>(null);
@@ -113,10 +112,10 @@
     />
   {:else}
     <div
-      class="surface-floating fixed z-50 overflow-hidden px-3 py-3 text-muted-foreground"
+      class="surface-floating fixed z-50 overflow-hidden"
       style="top: calc(var(--titlebar-h) + 4px); right: 8px; width: min(18rem, calc(100vw - 16px)); max-height: calc(100dvh - var(--titlebar-h) - 12px);"
     >
-      {t("common.loading")}...
+      <Loading layout="fill" />
     </div>
   {/if}
 {/if}

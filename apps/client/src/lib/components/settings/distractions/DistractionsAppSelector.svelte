@@ -21,6 +21,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
 
   let {
     title,
@@ -44,11 +45,13 @@
 
   const { t } = getLocalization();
 
+  /** Desktop app discovery is usually quick, so the pending list stays blank this long before showing rows. */
+  const APP_LIST_LOADING_DELAY_MS = 1000;
+
   let searchInputEl: HTMLInputElement | undefined = $state();
   let query = $state("");
   let apps = $state<DistractionsDesktopAppCandidate[]>([]);
   let loading = $state(true);
-  let showLoadingState = $state(false);
   let error = $state<string | null>(null);
   let pendingAddApp = $state<DistractionsAppSelection | null>(null);
   let pendingRemoveName = $state<string | null>(null);
@@ -78,20 +81,14 @@
 
   async function loadApps(): Promise<void> {
     loading = true;
-    showLoadingState = false;
     error = null;
-    const loadingTimer = setTimeout(() => {
-      showLoadingState = true;
-    }, 1000);
     try {
       apps = await listDistractionsDesktopApps();
     } catch (err) {
       console.warn("Failed to list desktop apps:", err);
       error = t("settings.distractions.appSelector.loadError");
     } finally {
-      clearTimeout(loadingTimer);
       loading = false;
-      showLoadingState = false;
     }
   }
 
@@ -225,13 +222,8 @@
 
       <div class="min-h-0 flex-1 overflow-hidden rounded-floating-item border border-border">
         <div use:scrollEdgeFadeAction class="h-full overflow-y-auto">
-        {#if loading && showLoadingState}
-          <div class="flex h-full min-h-36 items-center justify-center gap-2 text-[0.866667rem] text-muted-foreground">
-            <LoaderCircle size={15} strokeWidth={2.25} class="animate-spin" />
-            <span>{t("settings.distractions.appSelector.loading")}</span>
-          </div>
-        {:else if loading}
-          <div class="h-full min-h-36" aria-busy="true"></div>
+        {#if loading}
+          <Loading layout="rows" rows={3} delay={APP_LIST_LOADING_DELAY_MS} label={t("settings.distractions.appSelector.loading")} />
         {:else if error}
           <div class="flex h-full min-h-36 items-center justify-center px-4 text-center text-[0.866667rem] text-muted-foreground">
             {error}

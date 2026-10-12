@@ -215,7 +215,7 @@ export const general = {
       "Your current data on this device will be replaced. Create a current backup first if you may need it.",
     restoreConfirmAction: "Choose backup",
     folderHeading: "Folder",
-    loadingFolder: "Loading folder...",
+    loadingFolder: "Loading folder",
     noActiveFolder: "No active folder",
     currentFolder: "Current folder",
     reveal: "Reveal",

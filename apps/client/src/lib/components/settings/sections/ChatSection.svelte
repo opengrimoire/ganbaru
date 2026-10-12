@@ -9,6 +9,7 @@
   import ChatPermissionsSettings from "$lib/components/settings/chat/ChatPermissionsSettings.svelte";
   import ChatProvidersSettings from "$lib/components/settings/chat/ChatProvidersSettings.svelte";
   import ChatTeammatesSettings from "$lib/components/settings/chat/ChatTeammatesSettings.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
 
   let {
@@ -111,7 +112,7 @@
   </div>
 
   {#if initializing}
-    <div class="flex min-h-40 items-center justify-center text-sm text-muted-foreground" role="status">{t("common.loading")}</div>
+    <Loading layout="fill" class="min-h-40" />
   {:else if loadError}
     <div class="min-h-40 text-sm"><Notice layout="fill" message={loadError} onRetry={retryInitialize} /></div>
   {:else if activeTab === "teammates"}

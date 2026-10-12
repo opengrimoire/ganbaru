@@ -8,6 +8,7 @@
   import CollectionMenuSeparator from "$lib/components/collections/CollectionMenuSeparator.svelte";
   import CollectionMenuTextField from "$lib/components/collections/CollectionMenuTextField.svelte";
   import CollectionPropertyIcon from "$lib/components/collections/CollectionPropertyIcon.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { listNotesDataSourceRowPages } from "$lib/api/notes";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -147,7 +148,7 @@
         {#if targetsError}
           <Notice class="px-2 py-1" message={t("notes.databaseRelationLoadFailed", targetsError)} copy={targetsError} onRetry={retryTargets} />
         {:else if targetsLoading && targetRows.length === 0}
-          <p class="px-2 py-1 text-muted-foreground">{t("notes.databaseRelationLoading")}</p>
+          <Loading layout="rows" rows={2} label={t("notes.databaseRelationLoading")} />
         {:else if !column.relationDataSourceId}
           <p class="px-2 py-1 text-muted-foreground">{t("notes.databaseRelationConfigureTarget")}</p>
         {/if}

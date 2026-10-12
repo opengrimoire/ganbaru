@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import Select from "$lib/components/ui/Select.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -76,7 +77,7 @@
       <Tags class="size-3.5 shrink-0" />
       <span class="min-w-0 truncate">
         {#if notes.pageAliasesLoading}
-          {t("notes.loadingPageAliases")}
+          <Loading layout="inline" label={t("notes.loadingPageAliases")} />
         {:else}
           {t("notes.pageAliasesCount", notes.pageAliases.length)}
         {/if}
@@ -95,7 +96,7 @@
       <Link2Off class="size-3.5 shrink-0" />
       <span class="min-w-0 truncate">
         {#if notes.unresolvedLinksLoading}
-          {t("notes.loadingUnresolvedLinks")}
+          <Loading layout="inline" label={t("notes.loadingUnresolvedLinks")} />
         {:else}
           {t("notes.unresolvedLinksCount", notes.unresolvedLinks.length)}
         {/if}
@@ -112,7 +113,7 @@
         <Tags class="size-3.5 shrink-0 text-muted-foreground" />
         <span class="min-w-0 truncate">
           {#if notes.pageAliasesLoading}
-            {t("notes.loadingPageAliases")}
+            <Loading layout="inline" label={t("notes.loadingPageAliases")} />
           {:else}
             {t("notes.pageAliasesCount", notes.pageAliases.length)}
           {/if}
@@ -178,7 +179,7 @@
         <Link2Off class="size-3.5 shrink-0 text-muted-foreground" />
         <span class="min-w-0 truncate">
           {#if notes.unresolvedLinksLoading}
-            {t("notes.loadingUnresolvedLinks")}
+            <Loading layout="inline" label={t("notes.loadingUnresolvedLinks")} />
           {:else}
             {t("notes.unresolvedLinksCount", notes.unresolvedLinks.length)}
           {/if}

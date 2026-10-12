@@ -11,6 +11,7 @@
   import { orderMusicPlaylists, systemMusicPlaylistName } from "$lib/music/playlists/system";
   import { formatNumber } from "$lib/i18n/formatters";
   import MusicPlaylistIcon from "$lib/components/music/builder/MusicPlaylistIcon.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
   import { cn } from "$lib/utils";
   import { portal } from "$lib/utils/portal";
@@ -194,7 +195,7 @@
     )}
   >
     {#if missing}<AlertTriangle size={14} class="shrink-0 text-warning" />{:else if value === null}<VolumeX size={14} strokeWidth={1.5} class="shrink-0 text-muted-foreground" />{:else}<ListMusic size={14} strokeWidth={1.5} class="shrink-0 text-muted-foreground" />{/if}
-    <span class="min-w-0 flex-1 truncate">{loading ? t("music.assignment.loadingPlaylists") : missing ? t("music.assignment.missingPlaylist") : selected ? systemMusicPlaylistName(selected.id, selected.name, t) : noneLabel}</span>
+    <span class="min-w-0 flex-1 truncate">{#if loading}<Loading layout="inline" label={t("music.assignment.loadingPlaylists")} />{:else}{missing ?t("music.assignment.missingPlaylist") : selected ? systemMusicPlaylistName(selected.id, selected.name, t) : noneLabel}{/if}</span>
     <ChevronDown size={13} strokeWidth={2} class={cn("shrink-0 text-muted-foreground transition-transform", open && "rotate-180")} />
   </button>
 </div>

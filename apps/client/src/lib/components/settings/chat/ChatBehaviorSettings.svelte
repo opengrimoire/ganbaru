@@ -6,6 +6,7 @@
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getChat } from "$lib/stores/chat.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import Select from "$lib/components/ui/Select.svelte";
   import SwitchField from "$lib/components/ui/SwitchField.svelte";
@@ -213,7 +214,7 @@
       {/if}
     </div>
   {:else}
-    <p class="text-sm text-muted-foreground">{t("common.loading")}</p>
+    <Loading layout="fill" class="min-h-40" />
   {/if}
 </section>
 

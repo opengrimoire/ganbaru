@@ -72,8 +72,7 @@
     ? { route: notesLabeledRoute(location, t("notes.untitled")), title: database?.title.trim() || fallbackTitle }
     : notesPageLocationHeading(location, t("notes.untitled")));
   const previewStatusText = $derived(hasNavigationError ? t("notes.linkOpenFailed")
-    : previewStatus === "failed" ? t("notes.databaseGalleryPreviewUnavailable")
-      : previewStatus === "loading" ? t("common.loading") : null);
+    : previewStatus === "failed" ? t("notes.databaseGalleryPreviewUnavailable") : null);
 
   $effect(() => {
     void referenceKey;
@@ -228,6 +227,7 @@
   route={heading.route}
   title={heading.title ?? fallbackTitle}
   status={previewStatusText}
+  loading={previewStatus === "loading"}
   icon={previewIcon}
   onKeepOpen={() => preview.keepOpen()}
   onLeave={() => preview.scheduleClose()}

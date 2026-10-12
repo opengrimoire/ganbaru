@@ -5,6 +5,7 @@
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import MusicPlaylistIcon from "$lib/components/music/builder/MusicPlaylistIcon.svelte";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import {
     bulkEditMusicMemberships,
@@ -171,7 +172,7 @@
       {#if error && playlists.length > 0}<Notice class="shrink-0 px-3 text-panel-detail" message={error} />{/if}
       <div use:scrollEdgeFadeAction class="surface-floating-body h-56 min-h-0 shrink overflow-y-auto" data-music-scrollable="true">
         {#if loading}
-          <div class="flex h-full items-center justify-center" aria-label={t("music.itemMenu.loading")}><LoaderCircle class="animate-spin motion-reduce:animate-none" size={17} strokeWidth={2.6} /></div>
+          <Loading layout="rows" rows={3} label={t("music.itemMenu.loading")} />
         {:else if error && playlists.length === 0}
           <Notice layout="fill" class="text-panel-detail" message={error} onRetry={() => (itemId ? loadPlaylists(itemId) : undefined)} />
         {:else if playlists.length === 0}

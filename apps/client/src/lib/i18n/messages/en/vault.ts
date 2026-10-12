@@ -136,7 +136,7 @@ export const vaultHandoff = {
   refreshesIn: (time: string) => `Code refreshes in ${time}`,
   refreshingCode: "Refreshing code...",
   scanQr: "Scan desktop QR code",
-  cameraStarting: "Starting camera...",
+  cameraStarting: "Starting camera",
   notNow: "Not now",
   continue: "Continue",
   deviceLabel: "Phone",

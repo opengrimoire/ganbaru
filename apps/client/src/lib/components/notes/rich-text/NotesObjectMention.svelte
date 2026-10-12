@@ -110,8 +110,7 @@
       details: presentLines([spelled === text ? null : spelled, reminder ? reminderDetail(mention.mention.date) : null]),
     };
   });
-  const previewStatusText = $derived(previewStatus === "failed" ? t("notes.databaseGalleryPreviewUnavailable")
-    : previewStatus === "loading" ? t("common.loading") : null);
+  const previewStatusText = $derived(previewStatus === "failed" ? t("notes.databaseGalleryPreviewUnavailable") : null);
 
   /** The preview line for a date mention's reminder, naming how early it fires when it fires ahead of the date. */
   function reminderDetail(date: NotesDateMentionValue): string {
@@ -310,6 +309,7 @@
   title={previewHeading.title}
   details={previewHeading.details}
   status={previewStatusText}
+  loading={previewStatus === "loading"}
   icon={previewIcon}
   onKeepOpen={() => preview.keepOpen()}
   onLeave={() => preview.scheduleClose()}

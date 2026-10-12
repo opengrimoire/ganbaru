@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { getLocalization } from "$lib/i18n/translator.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
 
   let {
     hasMore,
@@ -11,7 +11,6 @@
     onLoad: () => Promise<void> | void;
   } = $props();
 
-  const { t } = getLocalization();
   let sentinel: HTMLDivElement | null = $state(null);
 
   $effect(() => {
@@ -28,8 +27,6 @@
 {#if hasMore}
   <div bind:this={sentinel} class="h-px" aria-hidden="true"></div>
   {#if loading}
-    <div class="py-2 text-center text-[0.8rem] text-muted-foreground" aria-busy="true">
-      {t("common.loading")}
-    </div>
+    <Loading layout="rows" rows={2} />
   {/if}
 {/if}

@@ -34,6 +34,7 @@
   import NotesProjectSettingsPanel from "$lib/components/notes/NotesProjectSettingsPanel.svelte";
   import NotesWorkspaceHeader from "./NotesWorkspaceHeader.svelte";
   import NotesWorkingMarkdownEditor from "$lib/components/notes/working-markdown/NotesWorkingMarkdownEditor.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
 
   let {
@@ -580,15 +581,15 @@
       />
     {:else}
       <div class="fixed inset-0 z-90 flex items-center justify-center surface-backdrop p-4" role="dialog" aria-modal="true" aria-busy={projectHistoryLoadState?.status !== "failed"}>
-        <div class="surface-dialog p-4 text-sm">
-          {#if projectHistoryLoadState?.status === "failed"}
+        {#if projectHistoryLoadState?.status === "failed"}
+          <div class="surface-dialog p-4 text-sm">
             <Notice message={t("common.viewLoadFailed", t("notes.projectSettingsVersionHistory"))} copy={false} onRetry={() => requestNotesOptionalComponent("project-history", true)}>
               {#snippet actions()}<button type="button" class="notice-action-text" onclick={() => { projectVersionHistoryOpen = false; }}>{t("common.close")}</button>{/snippet}
             </Notice>
-          {:else}
-            {t("common.loading")}
-          {/if}
-        </div>
+          </div>
+        {:else}
+          <Loading layout="fill" label={t("notes.projectSettingsVersionHistory")} />
+        {/if}
       </div>
     {/if}
   {/if}
@@ -613,7 +614,7 @@
       </div>
     {:else}
       <div class="fixed inset-0 z-100 flex items-center justify-center surface-backdrop p-4" role="dialog" aria-modal="true" aria-busy="true">
-        <div class="surface-dialog px-4 py-3 text-sm text-muted-foreground">{t("common.loading")}</div>
+        <Loading layout="fill" />
       </div>
     {/if}
   {/if}
@@ -629,7 +630,7 @@
               {#snippet actions()}<button type="button" class="notice-action-text" onclick={pane.store.databaseDeletion.cancel}>{t("common.cancel")}</button>{/snippet}
             </Notice>
           {:else}
-            <p>{t("common.loading")}</p>
+            <Loading layout="fill" label={t("notes.databaseDelete")} class="p-2" />
             <button type="button" class="mt-3 min-h-9 rounded-floating-item border border-border px-3 hover:bg-accent" onclick={pane.store.databaseDeletion.cancel}>{t("common.cancel")}</button>
           {/if}
         </div>
@@ -676,7 +677,7 @@
               />
             </div>
           {:else}
-            <div class="flex min-w-0 flex-1 items-center justify-center p-4 text-sm text-muted-foreground" aria-busy="true">{t("common.loading")}</div>
+            <Loading layout="fill" label={activeSurfaceKind === "archive" ? t("notes.loadingArchive") : t("notes.loadingTrash")} class="min-w-0 flex-1" />
           {/if}
         {:else}
           {#each notes.editorPanes as pane (pane.id)}

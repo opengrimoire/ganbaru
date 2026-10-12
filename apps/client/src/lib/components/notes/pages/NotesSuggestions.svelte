@@ -12,6 +12,7 @@
   import PencilLine from "@lucide/svelte/icons/pencil-line";
   import X from "@lucide/svelte/icons/x";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
 
   const notes = getNotesEditor();
@@ -110,7 +111,7 @@
       <PencilLine class="size-3.5" />
       <span>
         {#if notes.suggestionsLoading}
-          {t("notes.loadingSuggestions")}
+          <Loading layout="inline" label={t("notes.loadingSuggestions")} />
         {:else}
           {t("notes.suggestionsCount", openSuggestionCount)}
         {/if}
@@ -185,7 +186,7 @@
 
       <div class="mt-3 flex min-w-0 flex-col gap-2">
         {#if notes.suggestionsLoading}
-          <div class="text-[0.8rem] text-muted-foreground">{t("notes.loadingSuggestions")}</div>
+          <Loading layout="rows" rows={2} label={t("notes.loadingSuggestions")} />
         {:else if notes.suggestions.length === 0}
           <div class="text-[0.8rem] text-muted-foreground">{t("notes.noSuggestions")}</div>
         {:else}

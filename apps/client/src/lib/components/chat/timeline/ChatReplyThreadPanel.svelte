@@ -23,6 +23,7 @@
   import ChatExecutionTimeline from "./ChatExecutionTimeline.svelte";
   import ChatMessageComposer from "$lib/components/chat/composer/ChatMessageComposer.svelte";
   import ChatOrganizationalMessage from "./ChatOrganizationalMessage.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import ChatRequestPanel from "./ChatRequestPanel.svelte";
 
@@ -368,7 +369,7 @@
         {/if}
       {/each}
     {:else if chat.replyThreadLoading || page}
-      <p class="thread-loading" role="status">{t("common.loading")}</p>
+      <Loading layout="fill" />
     {/if}
   </div>
 
@@ -407,7 +408,7 @@
   .date-divider::before,.date-divider::after { height:1px; flex:1; background:var(--border); content:""; }
   .thread-request { flex:0 0 auto; border-top:1px solid var(--border); padding:0.5rem; }
   .thread-composer { display:flex; flex:0 0 auto; justify-content:center; padding:0.5rem 0.5rem 0.75rem; }
-  .reply-thread-panel :global(.thread-error),.thread-loading { padding:0.6rem; font-size: calc(0.7rem * var(--type-scale)); }.thread-loading { color:var(--muted-foreground); }
+  .reply-thread-panel :global(.thread-error) { padding:0.6rem; font-size: calc(0.7rem * var(--type-scale)); }
   .thread-failure { height:100%; font-size: calc(0.7rem * var(--type-scale)); }
   .load-older { display:block; margin:0.3rem auto 0.6rem; border-radius:0.4rem; padding:0.3rem 0.5rem; color:var(--muted-foreground); font-size: calc(0.68rem * var(--type-scale)); }.load-older:hover { background:var(--accent); }
   @media (pointer:coarse) { .scratch-inspector { min-width:2.75rem; min-height:2.75rem; } }

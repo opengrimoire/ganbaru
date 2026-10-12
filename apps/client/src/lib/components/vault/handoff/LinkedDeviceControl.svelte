@@ -6,6 +6,7 @@
     type PairingStatus,
   } from "$lib/api/vault-handoff";
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { mobileTopBarPanelGeometry } from "$lib/mobile/layout";
@@ -305,7 +306,8 @@
       role="dialog"
       aria-label={t("vaultHandoff.heading")}
       class={cn(
-        "surface-floating z-50 flex flex-col overflow-hidden",
+        "z-50 flex flex-col overflow-hidden",
+        (HandoffPanel || panelLoadError) && "surface-floating",
         presentation === "desktop"
           ? "absolute right-0 top-9 max-h-[calc(100vh-3rem)] w-floating-sm"
           : "fixed",
@@ -330,9 +332,7 @@
             onRetry={loadPanel}
           />
         {:else}
-          <p class="p-4 text-center text-muted-foreground" aria-busy="true">
-            {t("common.loading")}
-          </p>
+          <Loading layout="fill" />
         {/if}
       </div>
     </div>

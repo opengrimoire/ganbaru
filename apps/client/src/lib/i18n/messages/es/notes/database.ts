@@ -2,7 +2,7 @@ import type { database as enDatabase } from "../../en/notes/database";
 import type { MessageShape } from "../../types";
 
 export const database = {
-  databaseSourcesLoading: "Cargando fuentes de datos…",
+  databaseSourcesLoading: "Cargando fuentes de datos",
   databaseSourcesAttached: "En esta base de datos",
   databaseSourcesUnnamed: "Fuente sin título",
   databaseSourceOwned: "Propia de esta base",
@@ -89,7 +89,7 @@ export const database = {
   databaseLinkedViewCreate: "Crear vista vinculada",
   databaseLinkedViewCreating: "Creando vista vinculada",
   databaseLinkedViewCreateFailed: (message: string) => `No se pudo crear la vista vinculada: ${message}`,
-  databaseSchemaLoading: "Cargando propiedades...",
+  databaseSchemaLoading: "Cargando propiedades",
   databaseSchemaLoadFailed: (message: string) => `No se pudieron cargar las propiedades: ${message}`,
   databaseSchemaSaveFailed: (message: string) => `No se pudieron guardar las propiedades: ${message}`,
   databaseSchemaName: "Nombre",
@@ -168,7 +168,6 @@ export const database = {
     return labels[name] ?? name;
   },
   databaseRowsTitle: "Filas",
-  databaseRowsLoading: "Cargando filas...",
   databaseRowsFailed: (message: string) => `No se pudieron cargar las filas: ${message}`,
   databaseRowsCount: (count: number) => (count === 1 ? "1 fila" : `${count} filas`),
   databaseRowsReload: "Recargar filas",
@@ -220,7 +219,6 @@ export const database = {
   databaseViewTimeline: "Cronograma",
   databaseTableTitle: "Tabla",
   databaseSaving: "Guardando base de datos",
-  databaseTableLoading: "Cargando tabla...",
   databaseTableFailed: (message: string) => `No se pudo cargar la tabla: ${message}`,
   databaseTableReload: "Recargar tabla",
   databaseTableOpenMode: "Abrir filas",
@@ -359,7 +357,6 @@ export const database = {
   databaseCalendarCreateOnDate: (date: string) => `Crear fila el ${date}`,
   databaseCalendarNoVisibleProperties: "Muestra al menos una propiedad en las filas del calendario.",
   databaseTimelineTitle: "Cronograma",
-  databaseTimelineLoading: "Cargando cronograma...",
   databaseTimelineFailed: (message: string) => `No se pudo cargar el cronograma: ${message}`,
   databaseTimelineReload: "Recargar cronograma",
   databaseTimelineRowsCount: (count: number) =>

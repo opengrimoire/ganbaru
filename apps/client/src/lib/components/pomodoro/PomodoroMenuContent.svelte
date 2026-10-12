@@ -6,6 +6,7 @@
   import PlayIcon from "@lucide/svelte/icons/play";
   import SkipBack from "@lucide/svelte/icons/skip-back";
   import SkipForward from "@lucide/svelte/icons/skip-forward";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { PlaybackStatus } from "$lib/music/playback";
   import { getMusicPlayer } from "$lib/stores/music-player.svelte";
@@ -54,6 +55,11 @@
     }
     return t("titleBar.music.noMusicLoaded");
   });
+  /** A loading source with no title yet shows a spinner in the status slot instead of a status word. */
+  const musicStatusLoading = $derived(
+    musicPlayer.snapshot.status === "loading"
+      && !(musicPlayer.currentSource && musicPlayer.loadedTitle.trim()),
+  );
   const canPlayPauseMusic = $derived(Boolean(musicPlayer.currentSource) && !musicPlayer.isBusy);
   const musicPlayPauseLabel = $derived(
     musicPlayer.isPlaying ? t("titleBar.music.pause") : t("titleBar.music.play"),
@@ -194,7 +200,7 @@
     </button>
   {/if}
   <div class="menu-label">
-    <span class="block truncate">{musicStatusText}</span>
+    <span class="block truncate">{#if musicStatusLoading}<Loading layout="inline" label={t("titleBar.music.status.loading")} />{:else}{musicStatusText}{/if}</span>
   </div>
   <button
     type="button"

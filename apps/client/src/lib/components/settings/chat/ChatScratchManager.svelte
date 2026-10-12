@@ -6,6 +6,7 @@
   import File from "@lucide/svelte/icons/file";
   import Folder from "@lucide/svelte/icons/folder";
   import HardDrive from "@lucide/svelte/icons/hard-drive";
+  import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import Search from "@lucide/svelte/icons/search";
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import Upload from "@lucide/svelte/icons/upload";
@@ -27,6 +28,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
 
   let {
@@ -376,7 +378,7 @@
       <aside>
         <label class="scratch-search"><Search size={14} /><input bind:value={search} aria-label={t("settings.chat.teammates.scratchManager.search")} placeholder={t("settings.chat.teammates.scratchManager.search")} /></label>
         <nav aria-label={t("settings.chat.teammates.scratchManager.scopeList")} use:scrollEdgeFadeAction>
-          {#if loading}<p class="empty" role="status">{t("common.loading")}</p>
+          {#if loading}<Loading layout="rows" rows={3} />
           {:else if scopes.length === 0}<p class="empty">{t("settings.chat.teammates.scratchManager.empty")}</p>
           {:else if filteredScopes.length === 0}<p class="empty">{t("settings.chat.teammates.scratchManager.noMatch")}</p>
           {:else}{#each filteredScopes as scope (scope.id)}
@@ -427,7 +429,7 @@
                   </div>
                 {/each}
               </div>
-              {#if directory.nextCursor}<button type="button" class="load-more" disabled={directoryLoading} onclick={() => void loadDirectory(directory?.relativePath ?? "", directory?.nextCursor ?? null)}>{directoryLoading ? t("common.loading") : t("settings.chat.teammates.scratchManager.loadMore")}</button>{/if}
+              {#if directory.nextCursor}<button type="button" class="load-more" disabled={directoryLoading} aria-busy={directoryLoading || undefined} onclick={() => void loadDirectory(directory?.relativePath ?? "", directory?.nextCursor ?? null)}>{#if directoryLoading}<LoaderCircle class="size-3.5 animate-spin" aria-hidden="true" />{/if}{t("settings.chat.teammates.scratchManager.loadMore")}</button>{/if}
             </section>
           {/if}
 
@@ -442,7 +444,7 @@
                   <label class="full"><span>{t("settings.chat.teammates.scratchManager.attachmentName")}</span><input bind:value={promotionDisplayName} maxlength="1000" /></label>
                 {/if}
               </div>
-              <footer><button type="button" onclick={() => { promotionEntry = null; }}>{t("common.cancel")}</button><button type="submit" class="primary" disabled={!canPromote}>{promoting ? t("common.loading") : t("settings.chat.teammates.scratchManager.promote")}</button></footer>
+              <footer><button type="button" onclick={() => { promotionEntry = null; }}>{t("common.cancel")}</button><button type="submit" class="primary" disabled={!canPromote} aria-busy={promoting || undefined}>{#if promoting}<LoaderCircle class="size-3.5 animate-spin" aria-hidden="true" />{/if}{t("settings.chat.teammates.scratchManager.promote")}</button></footer>
             </form>
           {/if}
         {:else if !loading}<p class="empty">{t("settings.chat.teammates.scratchManager.empty")}</p>{/if}

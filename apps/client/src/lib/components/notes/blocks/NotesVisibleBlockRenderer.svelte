@@ -1,5 +1,6 @@
 <script lang="ts">
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import type {
     NotesBlockTreeItem,
@@ -63,7 +64,7 @@
     />
   {:else if columnFailed}
     <Notice class="my-1 text-[0.8rem]" message={t("common.viewLoadFailed", t("notes.blockType.columns"))} copy={false} onRetry={() => retryStructural("column-list")} />
-  {:else}<div class="my-1 min-h-8 text-[0.8rem] text-muted-foreground" aria-busy="true">{t("common.loading")}</div>{/if}
+  {:else}<Loading layout="fill" class="my-1 min-h-8 p-1" />{/if}
 {:else if item.block.type === "tab"}
   {#if tabComponent}
     {@const Component = tabComponent}
@@ -75,7 +76,7 @@
     />
   {:else if tabFailed}
     <Notice class="my-1 text-[0.8rem]" message={t("common.viewLoadFailed", t("notes.blockType.tab"))} copy={false} onRetry={() => retryStructural("tab")} />
-  {:else}<div class="my-1 min-h-8 text-[0.8rem] text-muted-foreground" aria-busy="true">{t("common.loading")}</div>{/if}
+  {:else}<Loading layout="fill" class="my-1 min-h-8 p-1" />{/if}
 {:else}
   <NotesBlockRow
     {item} {...state} {...actions} {tableRows} {previousBlockType} {isOnlyBlock}

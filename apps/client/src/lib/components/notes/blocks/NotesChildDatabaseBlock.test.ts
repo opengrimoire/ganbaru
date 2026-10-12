@@ -346,7 +346,7 @@ describe("Notes database property editor selection", () => {
     await editProperty("Priority");
     await vi.waitFor(() => expect(getNotesDataSourceSchema).toHaveBeenCalledOnce());
     expect(schemaEditor("priority")).toBeNull();
-    expect(propertyEditor()?.querySelector('[role="status"]')?.textContent).toBe("Loading properties...");
+    expect(propertyEditor()?.querySelector('[role="status"]')?.textContent).toBe("Loading properties");
     finishSchema({ data_source: table.data_source, view: table.view });
     await vi.waitFor(() => expect(schemaEditor("priority")).not.toBeNull());
     expect(propertyEditor()!.querySelector('[data-schema-property-id="priority"]')?.contains(schemaEditor("priority"))).toBe(true);

@@ -59,6 +59,7 @@
   import { subscribeChatWorkspaceChanges } from "$lib/chat/workspace/observer-client";
   import { writeTextToClipboard } from "$lib/utils/clipboard";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import Select from "$lib/components/ui/Select.svelte";
   import ChatChangedFileTree from "./ChatChangedFileTree.svelte";
@@ -743,7 +744,7 @@
     <div class="review-main">
       <aside class="review-file-list" aria-label={t("chat.review.changedFiles")}>
         {#if loadingInitial && !snapshot}
-          <p>{t("common.loading")}</p>
+          <Loading layout="rows" rows={3} />
         {:else if changedFiles.length > 0}
           <ChatChangedFileTree files={changedFiles} selectedFile={selectedReviewFile?.relativePath ?? null} onSelect={selectFile} />
         {:else if error && !snapshot}
@@ -819,9 +820,9 @@
         {:else if selectedPatch?.state === "unavailable"}
           <div class="review-notice"><AlertTriangle size={22} /><p>{t("chat.review.patchUnavailable")}</p></div>
         {:else if selectedReviewFile && loadingPatchIds.includes(selectedReviewFile.fileId)}
-          <div class="review-notice"><RefreshCw class="spinning" size={18} /><p>{t("chat.review.loadingPatch")}</p></div>
+          <Loading layout="fill" label={t("chat.review.loadingPatch")} class="min-h-0 flex-1" />
         {:else if loadingInitial}
-          <div class="review-notice"><RefreshCw class="spinning" size={18} /><p>{t("common.loading")}</p></div>
+          <Loading layout="fill" class="min-h-0 flex-1" />
         {:else if error}
           <div class="review-failure"><Notice layout="fill" title={t("chat.review.reviewUnavailable")} message={error} onRetry={retryReview} /></div>
         {:else}

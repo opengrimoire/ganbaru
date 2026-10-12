@@ -3,6 +3,7 @@
   import { onMount } from "svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import { onboardingPrimaryAction } from "$lib/vault/onboarding-primary-action";
   import {
     mobileDistractionsAccessStatus,
@@ -248,11 +249,13 @@
     <div class="flex items-center justify-end">
       <button
         type="button"
-        class="h-9 shrink-0 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition-colors active:bg-primary/90 disabled:cursor-wait disabled:opacity-50"
+        class="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition-colors active:bg-primary/90 disabled:cursor-wait disabled:opacity-50"
         disabled={opening !== null}
+        aria-busy={opening === review || undefined}
         onclick={action}
       >
-        {opening === review ? t("common.loading") : t("mobile.focusOnboarding.review")}
+        {#if opening === review}<LoaderCircle class="size-3.5 animate-spin" aria-hidden="true" />{/if}
+        {t("mobile.focusOnboarding.review")}
       </button>
     </div>
   </div>
@@ -345,10 +348,7 @@
 
       <div class="pt-4">
         {#if loading}
-          <div class="flex items-center justify-center gap-2 text-sm text-muted-foreground">
-            <LoaderCircle size={15} class="animate-spin" aria-hidden="true" />
-            {t("common.loading")}
-          </div>
+          <Loading layout="fill" />
         {:else if unavailable}
           <p role="alert" class="text-center text-sm text-destructive">
             {t("mobile.focusOnboarding.statusError")}

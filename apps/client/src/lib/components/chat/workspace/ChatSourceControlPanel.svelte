@@ -14,6 +14,7 @@
   import type { ChatExecutionEnvironmentRead, GitChangedPathRead, GitStatusRead, HostedChangeRequestRead, HostedSourceControlRead } from "$lib/chat/contracts";
   import { subscribeChatWorkspaceChanges } from "$lib/chat/workspace/observer-client";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getChat } from "$lib/stores/chat.svelte";
@@ -577,7 +578,7 @@
       </form>
     {/if}
     {#if hostedLoading}
-      <p class="empty compact">{t("common.loading")}</p>
+      <Loading layout="rows" rows={2} />
     {:else if hostedProviderKind && hostedRequests.length === 0}
       <p class="empty compact">{t("chat.sourceControl.noChangeRequests")}</p>
     {:else}
@@ -614,7 +615,7 @@
     </section>
   {/if}
   {#if loading && !status}
-    <p class="empty">{t("common.loading")}</p>
+    <Loading layout="fill" />
   {:else if status}
     <div class="changes">
       <section>

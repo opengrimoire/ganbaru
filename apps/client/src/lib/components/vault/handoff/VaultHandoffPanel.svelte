@@ -8,6 +8,7 @@
   import Smartphone from "@lucide/svelte/icons/smartphone";
   import { onMount, untrack } from "svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import {
     cancelDesktopBundleReceive,
@@ -451,10 +452,7 @@
     {#if presentation === "onboarding"}
       {@render onboardingLoader()}
     {:else}
-      <div class="flex items-center gap-2 px-1 text-[0.8rem] text-muted-foreground">
-        <LoaderCircle size={14} strokeWidth={2} class="animate-spin" aria-hidden="true" />
-        {t("settings.data.loadingFolder")}
-      </div>
+      <Loading layout="fill" label={t("settings.data.loadingFolder")} />
     {/if}
   {:else if status}
     <fieldset

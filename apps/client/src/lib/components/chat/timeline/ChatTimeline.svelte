@@ -12,7 +12,6 @@
   import FolderX from "@lucide/svelte/icons/folder-x";
   import Globe from "@lucide/svelte/icons/globe";
   import ImageIcon from "@lucide/svelte/icons/image";
-  import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import ListChecks from "@lucide/svelte/icons/list-checks";
   import Search from "@lucide/svelte/icons/search";
   import Terminal from "@lucide/svelte/icons/terminal";
@@ -33,6 +32,7 @@
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
   import { writeTextToClipboard } from "$lib/utils/clipboard";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import ChatMarkdown from "./ChatMarkdown.svelte";
   import ChatActivityDetail from "./ChatActivityDetail.svelte";
@@ -939,8 +939,8 @@
       class="chat-timeline-content mx-auto flex min-h-full flex-col justify-end"
       style={`padding-top:${embedded ? "var(--chat-conversation-entry-space, 0.45rem)" : `${virtualWindow.paddingTop + TIMELINE_EDGE_PADDING_PX}px`};padding-bottom:${embedded ? "var(--chat-conversation-entry-space, 0.45rem)" : `${bottomPadding}px`}`}
     >
-      {#if loadingOlder}<div class="mb-3 flex justify-center text-xs text-muted-foreground"><LoaderCircle size={14} class="animate-spin" />{t("chat.timeline.loadingOlder")}</div>{/if}
-      {#if initialTimelineLoadingVisible}<div class="py-12 text-center text-sm text-muted-foreground">{t("common.loading")}</div>{/if}
+      {#if loadingOlder}<div class="mb-3 flex justify-center text-sm"><Loading layout="inline" label={t("chat.timeline.loadingOlder")} /></div>{/if}
+      {#if initialTimelineLoadingVisible}<Loading layout="fill" delay={0} class="py-12" />{/if}
       {#each renderedRows as virtual (virtual.row.id)}
         {@const row = virtual.row}
         <div

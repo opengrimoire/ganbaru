@@ -23,6 +23,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getChat } from "$lib/stores/chat.svelte";
   import type { ChatProviderSetupTarget } from "$lib/settings/types";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import SwitchField from "$lib/components/ui/SwitchField.svelte";
 
@@ -502,7 +503,7 @@
       style="padding-left: {contentPaddingX}; padding-right: {contentPaddingX};"
     >
       {#if !initialized}
-        <p class="py-10 text-center text-sm text-muted-foreground">{t("common.loading")}</p>
+        <Loading layout="fill" class="min-h-28" />
       {:else}
         {#if family}
           <section class="setup-section">

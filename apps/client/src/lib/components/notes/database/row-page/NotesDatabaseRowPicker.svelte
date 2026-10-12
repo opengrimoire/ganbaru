@@ -7,6 +7,7 @@
   import { floatPanel } from "$lib/components/contacts/float-panel";
   import NotesPageIcon from "$lib/components/notes/pages/NotesPageIcon.svelte";
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { notesDatabaseRowSearch } from "$lib/notes/database/row-page-properties";
@@ -194,7 +195,7 @@
     aria-label={t("notes.databaseRowPickerIn", sourceName)} aria-busy={loading || pending} use:scrollEdgeFadeAction>
     <div class="menu-label truncate" aria-hidden="true">{t("notes.databaseRowPickerIn", sourceName)}</div>
     {#if loading}
-      <p class="px-2 py-1.5 text-panel-detail text-muted-foreground">{t("notes.databaseRelationLoading")}</p>
+      <Loading layout="rows" rows={3} label={t("notes.databaseRelationLoading")} />
     {:else if loadError}
       <Notice class="px-2 py-1.5 text-panel-detail" message={t("notes.databaseRowPickerLoadFailed", loadError)} copy={loadError} onRetry={retryLoad} />
     {:else if matches.length === 0}

@@ -27,7 +27,7 @@ export const quickNotes = {
     badge: "Conflict",
     cardHint: "This note was edited on two devices. Open it to choose what to keep.",
     title: "This note was edited on two devices",
-    loading: "Loading versions...",
+    loading: "Loading versions",
     loadFailed: "The versions could not be loaded",
     titleField: "Title",
     bodyField: "Body",

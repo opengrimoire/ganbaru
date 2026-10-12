@@ -15,6 +15,7 @@
   import Pencil from "@lucide/svelte/icons/pencil";
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import {
     COMPACT_IDENTITY_ICON_SIZE,
@@ -438,7 +439,7 @@
               {:else if destinationPickerLoadState?.status === "failed"}
                 <Notice class="p-2" message={t("common.viewLoadFailed", t("notes.moveFolderTo"))} copy={false} onRetry={() => requestDestinationPicker(true)} />
               {:else}
-                <div class="p-2 text-muted-foreground" aria-busy="true">{t("common.loading")}</div>
+                <Loading layout="rows" rows={3} label={t("notes.moveFolderTo")} />
               {/if}
             </div>
           {/if}

@@ -72,7 +72,7 @@ describe("ChatReviewPanel", () => {
     expect(api.openReview).toHaveBeenCalledTimes(1);
     expect(api.readPatches).toHaveBeenCalledTimes(1);
     expect(target.querySelector('[role="alert"]')?.textContent).toContain("Patch transport failed");
-    expect(target.querySelector(".review-content")?.textContent).not.toContain("Loading");
+    expect(target.querySelector(".review-content [data-loading]")).toBeNull();
   });
 
   it("opens provider changes against the hidden session that produced them", async () => {

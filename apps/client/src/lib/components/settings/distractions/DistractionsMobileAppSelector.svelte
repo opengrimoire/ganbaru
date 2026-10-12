@@ -12,6 +12,7 @@
   import Search from "@lucide/svelte/icons/search";
   import X from "@lucide/svelte/icons/x";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import {
@@ -137,7 +138,7 @@
       <div class="min-h-0 flex-1 overflow-hidden rounded-floating-item border border-border">
         <div use:scrollEdgeFadeAction class="h-full overflow-y-auto">
         {#if loading}
-          <div class="flex min-h-36 items-center justify-center gap-2 text-[0.866667rem] text-muted-foreground"><LoaderCircle size={15} class="animate-spin" />{t("settings.distractions.appSelector.loading")}</div>
+          <Loading layout="rows" rows={3} label={t("settings.distractions.appSelector.loading")} />
         {:else if error}
           <div class="flex min-h-36 items-center justify-center px-4 text-center text-[0.866667rem] text-muted-foreground">{t("settings.distractions.appSelector.loadError")}</div>
         {:else if filteredApps.length === 0}

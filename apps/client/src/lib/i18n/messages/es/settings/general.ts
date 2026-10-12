@@ -219,7 +219,7 @@ export const general = {
       "Tus datos actuales en este dispositivo serán reemplazados. Crea primero una copia actual si podrías necesitarla.",
     restoreConfirmAction: "Elegir copia",
     folderHeading: "Carpeta",
-    loadingFolder: "Cargando carpeta...",
+    loadingFolder: "Cargando carpeta",
     noActiveFolder: "No hay carpeta activa",
     currentFolder: "Carpeta actual",
     reveal: "Mostrar",

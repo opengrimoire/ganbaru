@@ -5,6 +5,7 @@
   import { readChatProviderFiles, saveChatProviderFile } from "$lib/api/chat";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getChat } from "$lib/stores/chat.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import Select from "$lib/components/ui/Select.svelte";
 
@@ -158,7 +159,7 @@
     {/if}
 
     {#if loading}
-      <div class="rounded-lg border border-border p-8 text-center text-sm text-muted-foreground">{t("common.loading")}</div>
+      <Loading layout="fill" class="min-h-24" />
     {:else if selectedProvider && files.length > 0}
       <div class="flex min-h-0 flex-col gap-3">
         <div class="flex flex-wrap items-end justify-between gap-3 px-1">

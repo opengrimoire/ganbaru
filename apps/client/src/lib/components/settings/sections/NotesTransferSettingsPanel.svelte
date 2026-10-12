@@ -20,6 +20,7 @@
     type LoadedNotesTransferDialog,
   } from "./notes-transfer-dialog-registry";
   import type { NotesTransferOperation } from "$lib/settings/types";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
 
   let {
@@ -275,9 +276,7 @@
         <Notice layout="fill" message={t("common.viewLoadFailed", operationDescription())} onRetry={() => retryDialog(failedOperation)} />
       </div>
     {:else}
-      <div class="flex min-h-40 items-center justify-center text-sm text-muted-foreground" aria-busy="true">
-        {t("common.loading")}
-      </div>
+      <Loading layout="fill" class="min-h-40" />
     {/if}
   </main>
 </div>

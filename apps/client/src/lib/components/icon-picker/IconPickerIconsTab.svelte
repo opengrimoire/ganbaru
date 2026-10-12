@@ -19,6 +19,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { cn } from "$lib/utils";
   import LucideNodeIcon from "./LucideNodeIcon.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import ProjectIcon from "$lib/components/projects/ProjectIcon.svelte";
 
   let {
@@ -175,7 +176,7 @@
   {/if}
 
   {#if lucideLoading}
-    <div class="py-6 text-center text-[0.8rem] text-muted-foreground">{t("common.loading")}</div>
+    <Loading layout="fill" class="min-h-24" />
   {:else}
     <div style={`height: ${lucideGroupVirtual.beforeHeight}px;`} aria-hidden="true"></div>
     {#each lucideGroupVirtual.groups as group (group.category)}

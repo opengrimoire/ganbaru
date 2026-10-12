@@ -2,6 +2,8 @@
   import ArrowRight from "@lucide/svelte/icons/arrow-right";
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
+  import LoaderCircle from "@lucide/svelte/icons/loader-circle";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
@@ -278,11 +280,13 @@
               {/if}
               <button
                 type="button"
-                class="rounded border border-border bg-card px-2 py-1 text-[0.733333rem] font-medium hover:bg-accent disabled:opacity-60"
+                class="inline-flex items-center gap-1 rounded border border-border bg-card px-2 py-1 text-[0.733333rem] font-medium hover:bg-accent disabled:opacity-60"
                 disabled={cascade.loading || cascade.applying || !projects.selectedProjectId}
+                aria-busy={cascade.loading || undefined}
                 onclick={() => { void cascade.review(); }}
               >
-                {cascade.loading ? t("common.loading") : t("projects.gantt.cascadeTitle")}
+                {#if cascade.loading}<LoaderCircle class="size-3 animate-spin" aria-hidden="true" />{/if}
+                {t("projects.gantt.cascadeTitle")}
               </button>
             </div>
 
@@ -307,11 +311,13 @@
                     </button>
                     <button
                       type="button"
-                      class="rounded-md bg-primary px-2 py-1 text-[0.766667rem] font-medium text-primary-foreground disabled:cursor-not-allowed disabled:opacity-60"
+                      class="inline-flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-[0.766667rem] font-medium text-primary-foreground disabled:cursor-not-allowed disabled:opacity-60"
                       disabled={cascade.loading || cascade.applying || !dependencyCascadeProposal?.items.length || (dependencyCascadeProposal?.conflicts.length ?? 0) > 0}
+                      aria-busy={cascade.applying || undefined}
                       onclick={() => { void cascade.apply(); }}
                     >
-                      {cascade.applying ? t("common.loading") : t("projects.gantt.cascadeApply")}
+                      {#if cascade.applying}<LoaderCircle class="size-3 animate-spin" aria-hidden="true" />{/if}
+                      {t("projects.gantt.cascadeApply")}
                     </button>
                   </div>
                 </div>
@@ -341,7 +347,7 @@
                   {/each}
                 </div>
                 {#if cascade.loading}
-                  <p class="text-[0.766667rem] text-muted-foreground">{t("common.loading")}</p>
+                  <Loading layout="rows" rows={2} />
                 {:else if dependencyCascadeProposal && !dependencyCascadeProposal.items.length && !dependencyCascadeProposal.conflicts.length}
                   <p class="text-[0.766667rem] text-muted-foreground">{t("projects.gantt.cascadeNoChanges")}</p>
                 {/if}

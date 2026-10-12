@@ -1,5 +1,6 @@
 <script lang="ts">
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import type { NotesHeadingBlockType } from "$lib/notes/blocks/factory";
@@ -543,7 +544,7 @@
       <Notice message={t("common.viewLoadFailed", t("notes.slashMenu"))} copy={false} onRetry={() => runtime.requestControl("slash-menu", true)} />
     </div>
   {:else}
-    <div class="text-sm text-muted-foreground" role="status">{t("common.loading")}</div>
+    <Loading layout="inline" class="mt-1 text-sm" />
   {/if}
 {/if}
 

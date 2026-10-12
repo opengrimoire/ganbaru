@@ -4,6 +4,7 @@
   import FolderOpen from "@lucide/svelte/icons/folder-open";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import VaultHandoffPanel from "$lib/components/vault/handoff/VaultHandoffPanel.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
@@ -29,11 +30,7 @@
     "inline-flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border px-2.5 text-[0.8rem] font-medium transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-55";
   const secondaryButtonClass = `${actionButtonClass} bg-card text-foreground hover:bg-accent dark:bg-transparent`;
 
-  const currentFolderPath = $derived(
-    !folderStateLoaded
-      ? t("settings.data.loadingFolder")
-      : activeVault?.path ?? t("settings.data.noActiveFolder"),
-  );
+  const currentFolderPath = $derived(activeVault?.path ?? t("settings.data.noActiveFolder"));
 
   async function loadVaultState(): Promise<void> {
     const showLoadingState = !folderStateLoaded;
@@ -106,7 +103,11 @@
         <div class="min-w-0 flex-1">
           <div class="text-[0.866667rem] text-foreground">{t("settings.data.currentFolder")}</div>
           <div class="mt-0.5 wrap-break-word text-[0.8rem] leading-5 text-muted-foreground">
-            {currentFolderPath}
+            {#if folderStateLoaded}
+              {currentFolderPath}
+            {:else}
+              <Loading layout="inline" label={t("settings.data.loadingFolder")} />
+            {/if}
           </div>
         </div>
         <button

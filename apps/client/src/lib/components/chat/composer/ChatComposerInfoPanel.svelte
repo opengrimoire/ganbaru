@@ -1,11 +1,11 @@
 <script lang="ts">
-  import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import type { McpStatusRead, ProviderSessionState } from "$lib/chat/contracts";
   import { composerRateLimitWindows, contextMeter } from "$lib/chat/composer/model";
   import { formatDateTime, formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getChat } from "$lib/stores/chat.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
 
   let {
@@ -147,7 +147,7 @@
         {/each}
       </dl>
     {:else if loading}
-      <p class="panel-state"><LoaderCircle size={14} class="animate-spin" />{t("common.loading")}</p>
+      <Loading layout="fill" class="min-h-18" />
     {:else if error}
       <Notice class="panel-error" message={error} />
     {:else if !mcpStatus || mcpStatus.servers.length === 0}

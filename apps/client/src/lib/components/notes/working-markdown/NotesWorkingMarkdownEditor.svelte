@@ -23,6 +23,7 @@
     workingMarkdownRefreshDecision,
   } from "$lib/notes/working-markdown/editor";
   import { cn } from "$lib/utils";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
 
   let {
@@ -225,7 +226,7 @@
   {/if}
 
   {#if loading && !loadedFile}
-    <div class="flex flex-1 items-center justify-center text-sm text-muted-foreground">{t("common.loading")}</div>
+    <Loading layout="fill" label={file.relativePath} class="flex-1" />
   {:else if mode === "edit"}
     <textarea
       class="min-h-0 flex-1 resize-none bg-background p-4 font-mono text-sm leading-6 text-foreground outline-none"

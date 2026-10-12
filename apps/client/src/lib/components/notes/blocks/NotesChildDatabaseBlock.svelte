@@ -9,6 +9,7 @@
   import CollectionPropertyTypeMenu from "$lib/components/collections/CollectionPropertyTypeMenu.svelte";
   import CollectionSettings from "$lib/components/collections/CollectionSettings.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { tick, untrack } from "svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -598,7 +599,7 @@
         {@render schemaEditor(property)}
       {/each}
     {:else if loading}
-      <p class="px-2 py-1 text-panel-detail text-muted-foreground" role="status">{t("notes.databaseSchemaLoading")}</p>
+      <Loading layout="rows" rows={2} label={t("notes.databaseSchemaLoading")} />
     {/if}
     {@render panelMessages()}
   </div>
@@ -633,7 +634,7 @@
 {#if isLocalDatabase && expanded}
   <CollectionSettings label={t("notes.databaseViewEditProperties")} anchor={schemaAnchor} onClose={() => { expanded = false; }}>
     {#if !schema && loading}
-      <p class="px-2 py-1 text-panel-detail text-muted-foreground" role="status">{t("notes.databaseSchemaLoading")}</p>
+      <Loading layout="rows" rows={3} label={t("notes.databaseSchemaLoading")} />
     {/if}
     {#each properties as property (property.id)}
       <CollectionMenu label={property.name} kind="property" fullWidth row summary={notesPropertyTypeLabel(property.type, t)}>

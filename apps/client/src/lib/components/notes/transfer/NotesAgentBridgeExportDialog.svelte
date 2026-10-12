@@ -14,6 +14,7 @@
     NotesAgentBridgeExportSaveResult,
   } from "$lib/notes/types";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import NotesRoundTripDiagnostics from "$lib/components/notes/NotesRoundTripDiagnostics.svelte";
   import NotesTransferFieldRow from "./NotesTransferFieldRow.svelte";
@@ -280,9 +281,7 @@
         </NotesTransferFieldRow>
 
         {#if projects.loading}
-          <div class="rounded-md border border-border/70 px-3 py-2 text-[0.8rem] text-muted-foreground">
-            {t("notes.agentBridgeExportProjectLoading")}
-          </div>
+          <Loading layout="inline" label={t("notes.agentBridgeExportProjectLoading")} class="text-[0.8rem]" />
         {:else if projects.loadError}
           <Notice class="text-[0.8rem]" message={t("notes.agentBridgeExportProjectLoadFailed", projects.loadError)} copy={projects.loadError} onRetry={() => projects.load()} />
         {/if}

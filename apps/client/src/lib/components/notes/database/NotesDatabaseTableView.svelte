@@ -1,6 +1,7 @@
 <script lang="ts">
   import NotesLoadingSkeleton from "$lib/components/notes/NotesLoadingSkeleton.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import { NOTES_TEXT_COLORS, notesBlockColorStyle } from "$lib/notes/blocks/color";
   import CollectionRow from "$lib/components/collections/CollectionRow.svelte";
   import CollectionCell from "$lib/components/collections/CollectionCell.svelte";
@@ -1523,7 +1524,7 @@
       {#if table.has_more}
         <div bind:this={loadMoreSentinel} class="h-px" aria-hidden="true"></div>
         {#if loadingMore}
-          <div class="py-2 text-center text-[0.8rem] text-muted-foreground" aria-busy="true">{t("common.loading")}</div>
+          <Loading layout="rows" rows={2} />
         {/if}
       {/if}
 

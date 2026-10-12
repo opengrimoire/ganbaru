@@ -7,6 +7,7 @@
   import { getChat } from "$lib/stores/chat.svelte";
   import ChatMessageComposer from "$lib/components/chat/composer/ChatMessageComposer.svelte";
   import ChatOrganizationalMessage from "$lib/components/chat/timeline/ChatOrganizationalMessage.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
 
   let { onThreadOpened = () => undefined }: { onThreadOpened?: (trigger: HTMLElement) => void } = $props();
@@ -147,7 +148,7 @@
         {/if}
         <ChatOrganizationalMessage {message} grouped={shouldGroupWithPrevious(index)} onOpenThread={(trigger) => { if (message.replyThread) void openThread(message.replyThread.id, trigger); }} />
       {/each}
-      {#if chat.channelMessagesLoading && chat.channelMessages.length === 0}<p class="loading" role="status">{t("common.loading")}</p>{/if}
+      {#if chat.channelMessagesLoading && chat.channelMessages.length === 0}<Loading layout="fill" />{/if}
     </div>
   </div>
   {#if channel && !channel.archivedAt}
@@ -171,7 +172,6 @@
   .divider::before,.divider::after { height:1px; flex:1; background:var(--border); content:""; }.divider.unread { color:var(--primary); }.divider.unread::before,.divider.unread::after { background:color-mix(in srgb,var(--primary) 55%,var(--border)); }
   .load-older { display:block; margin:0.6rem auto; border-radius:0.4rem; padding:0.3rem 0.55rem; color:var(--muted-foreground); font-size: calc(0.7rem * var(--type-scale)); }.load-older:hover { background:var(--accent); }
   .channel-composer-dock { display:flex; flex:0 0 auto; justify-content:center; padding:0.5rem var(--chat-conversation-gutter,1rem) 0.75rem; background:linear-gradient(to bottom,transparent,var(--cal-bg) 18%); }
-  .loading { padding:1rem; text-align:center; color:var(--muted-foreground); font-size: calc(0.78rem * var(--type-scale)); }
   .feed-canvas > :global(.feed-error) { width:fit-content; max-width:100%; margin-inline:auto; padding:1rem; font-size: calc(0.78rem * var(--type-scale)); }
   @container chat-shell (max-width:440px) { .channel-surface { --chat-conversation-gutter:0.5rem; } }
 </style>

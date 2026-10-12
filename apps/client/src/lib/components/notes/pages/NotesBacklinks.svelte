@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { notesPageTitle } from "$lib/notes/pages/title";
@@ -62,7 +63,7 @@
       <Link2 class="size-3.5 shrink-0" />
       <span class="min-w-0 truncate">
         {#if notes.backlinksLoading}
-          {t("notes.loadingBacklinks")}
+          <Loading layout="inline" label={t("notes.loadingBacklinks")} />
         {:else}
           {t("notes.backlinksCount", notes.backlinks.length)}
         {/if}

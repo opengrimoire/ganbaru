@@ -146,7 +146,7 @@ describe("Projects table property configuration", () => {
     query.search = "New filter";
     await tick();
     expect(target.textContent).not.toContain("Sum: 9,000");
-    expect(target.textContent).toContain("Loading");
+    expect(target.querySelector("[data-loading='inline'][role='status']")).not.toBeNull();
   });
 
   it("replaces the column menu with the draft and locks the column until the property is saved", async () => {

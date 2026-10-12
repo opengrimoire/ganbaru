@@ -78,6 +78,7 @@
   import ChatSourceControlPanel from "./ChatSourceControlPanel.svelte";
   import ChatTerminalView from "./ChatTerminalView.svelte";
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
 
@@ -918,7 +919,7 @@
     {/if}
     {#if panelState.tab === "terminal"}
       {#if terminalsLoading}
-        <p class="grid h-full place-items-center text-xs text-muted-foreground">{t("common.loading")}</p>
+        <Loading layout="fill" />
       {:else if isTerminalSplit && terminals.length > 1}
         <div class="terminal-split" data-direction={placement === "bottom" ? "horizontal" : "vertical"}>
           {#each terminals as terminal (terminal.id)}

@@ -43,6 +43,7 @@
   import { settingsSectionsForShell } from "./section-catalog";
   import SettingsSectionRenderer from "$lib/components/settings/SettingsSectionRenderer.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
 
   type SettingsDetailView =
@@ -475,12 +476,7 @@
               />
             </div>
           {:else}
-            <div
-              class="flex h-full items-center justify-center p-4 text-sm text-muted-foreground"
-              aria-busy="true"
-            >
-              {t("common.loading")}
-            </div>
+            <Loading layout="fill" class="h-full" />
           {/if}
         {:else}
           <div class="mx-auto w-full max-w-xl">
@@ -730,12 +726,7 @@
               />
             </div>
           {:else}
-            <div
-              class="flex h-full items-center justify-center p-4 text-sm text-muted-foreground"
-              aria-busy="true"
-            >
-              {t("common.loading")}
-            </div>
+            <Loading layout="fill" class="h-full" />
           {/if}
         {:else}
           <SettingsSectionRenderer
@@ -823,7 +814,7 @@
             onDismiss={() => void cancelUnloadedThemeEditor()}
           />
         {:else}
-          <p class="text-sm text-muted-foreground" aria-busy="true">{t("common.loading")}</p>
+          <Loading layout="fill" />
           <button
             type="button"
             class="min-h-12 w-full rounded-xl px-4 text-sm font-medium active:bg-accent"

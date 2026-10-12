@@ -3,6 +3,7 @@
   import Copy from "@lucide/svelte/icons/copy";
   import ExternalLink from "@lucide/svelte/icons/external-link";
   import Eye from "@lucide/svelte/icons/eye";
+  import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import PanelLeftClose from "@lucide/svelte/icons/panel-left-close";
   import PanelLeftOpen from "@lucide/svelte/icons/panel-left-open";
   import Paperclip from "@lucide/svelte/icons/paperclip";
@@ -39,6 +40,7 @@
   import ChatFileIcon from "./ChatFileIcon.svelte";
   import ChatPaneResizeHandle from "./ChatPaneResizeHandle.svelte";
   import ChatWorkspaceFileTree from "./ChatWorkspaceFileTree.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
 
   let {
@@ -606,7 +608,7 @@
         {#if loadingRoot && !loadingRootVisible}
           <span aria-hidden="true"></span>
         {:else if loadingRootVisible}
-          <p class="p-2 text-xs text-muted-foreground">{t("common.loading")}</p>
+          <Loading layout="rows" rows={3} delay={0} />
         {:else if shownRows.length > 0}
           <ChatWorkspaceFileTree
             rows={shownRows}
@@ -647,7 +649,7 @@
           <textarea class="field" id="chat-review-comment" bind:value={editorSession.reviewDraft} maxlength="65536" placeholder={t("chat.review.commentPlaceholder")}></textarea>
           <div>
             <button type="button" onclick={() => editorSession.closeReviewComposer()}>{t("common.cancel")}</button>
-            <button type="submit" class="primary" disabled={!editorSession.reviewDraft.trim() || editorSession.creatingReview}>{editorSession.creatingReview ? t("common.loading") : t("chat.review.add")}</button>
+            <button type="submit" class="primary inline-flex items-center gap-1" disabled={!editorSession.reviewDraft.trim() || editorSession.creatingReview} aria-busy={editorSession.creatingReview || undefined}>{#if editorSession.creatingReview}<LoaderCircle class="size-3 animate-spin" aria-hidden="true" />{/if}{t("chat.review.add")}</button>
           </div>
         </form>
       {/if}
@@ -676,7 +678,7 @@
       {#if editorSession.loading && !editorSession.loadingVisible && !editorSession.preview}
         <span aria-hidden="true"></span>
       {:else if editorSession.loadingVisible && !editorSession.preview}
-        <p class="m-auto text-xs text-muted-foreground">{t("common.loading")}</p>
+        <Loading layout="fill" delay={0} class="min-h-0 flex-1" />
       {:else if editorSession.preview && editorSession.preview.text !== null}
         <ChatCodePreview
           text={editorSession.draftText}

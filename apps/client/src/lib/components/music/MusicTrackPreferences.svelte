@@ -2,7 +2,6 @@
   import { onMount, tick } from "svelte";
   import { formatNumber } from "$lib/i18n/formatters";
   import SlidersHorizontal from "@lucide/svelte/icons/sliders-horizontal";
-  import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import Dice1 from "@lucide/svelte/icons/dice-1";
   import Dice2 from "@lucide/svelte/icons/dice-2";
   import Dice3 from "@lucide/svelte/icons/dice-3";
@@ -19,6 +18,7 @@
     getMusicPlaylistSummaries,
     removeMusicSnooze,
   } from "$lib/api/music-library";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { MusicMembershipMatrixEntry, MusicPlaylistSummary, MusicSnooze, MusicWeight } from "$lib/music/library/contracts";
@@ -297,7 +297,7 @@
   {#if open}
     <div bind:this={panel} role="dialog" tabindex="-1" data-music-track-preferences-open data-app-shortcuts="ignore" aria-label={t("music.preferences.title")} class="surface-floating absolute bottom-[calc(100%+0.5rem)] right-0 z-40 w-floating p-4">
       {#if loading}
-        <div class="flex h-24 items-center justify-center" aria-label={t("music.itemMenu.loading")}><LoaderCircle size={17} strokeWidth={2.6} class="animate-spin motion-reduce:animate-none" /></div>
+        <Loading layout="fill" label={t("music.itemMenu.loading")} class="h-24" />
       {:else}
         {#if error}<Notice class="mb-2 text-panel-detail" message={error} />{/if}
         <div class="flex items-center justify-between gap-3">

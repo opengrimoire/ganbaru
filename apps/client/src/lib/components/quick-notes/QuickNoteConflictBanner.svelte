@@ -5,6 +5,7 @@
     resolveQuickNoteConflict,
   } from "$lib/api/quick-notes";
   import Info from "@lucide/svelte/icons/info";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { quickNotePlainText } from "$lib/quick-notes/rich-text";
@@ -119,7 +120,7 @@
 <div class="mb-2 flex max-h-56 flex-col gap-2 overflow-y-auto rounded-md bg-warning/15 px-2.5 py-2 text-xs" role="region" aria-label={t("quickNotes.conflict.title")}>
   <div class="font-medium">{t("quickNotes.conflict.title")}</div>
   {#if loading && !conflict}
-    <div class="opacity-70" role="status">{t("quickNotes.conflict.loading")}</div>
+    <Loading layout="rows" rows={2} label={t("quickNotes.conflict.loading")} />
   {/if}
   {#each conflict?.groups ?? [] as group (group.field)}
     <div class="flex flex-col gap-1.5">

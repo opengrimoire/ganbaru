@@ -5,7 +5,6 @@
   import CommandIcon from "@lucide/svelte/icons/command";
   import Hammer from "@lucide/svelte/icons/hammer";
   import ListChecks from "@lucide/svelte/icons/list-checks";
-  import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import RotateCcw from "@lucide/svelte/icons/rotate-ccw";
   import ScanSearch from "@lucide/svelte/icons/scan-search";
   import Server from "@lucide/svelte/icons/server";
@@ -18,6 +17,7 @@
   } from "$lib/chat/contracts";
   import { promptEntryDisplayLabel } from "$lib/chat/composer/command-model";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
 
@@ -85,7 +85,7 @@
       <label><Checkbox checked={includeIgnored} onChange={(next) => { includeIgnored = next; onRefreshMentions(); }} />{t("chat.composer.showIgnored")}</label>
     {/if}
     {#if loading}
-      <p><LoaderCircle size={13} class="animate-spin" />{t("common.loading")}</p>
+      <Loading layout="rows" rows={3} />
     {:else if entries.length === 0}
       <p>{t("chat.composer.noMatches")}</p>
     {:else if kind === "mention"}

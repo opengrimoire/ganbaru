@@ -16,6 +16,7 @@
   import NotesPageIcon from "$lib/components/notes/pages/NotesPageIcon.svelte";
   import Select from "$lib/components/ui/Select.svelte";
   import { formatDateTime } from "$lib/i18n/formatters";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { blockPlainText } from "$lib/notes/blocks/factory";
@@ -337,7 +338,7 @@
 
     {#if groups.length === 0}
       {#if notes.commentsLoading}
-        <p class="mt-6 text-center text-panel-detail text-muted-foreground" aria-busy="true">{t("common.loading")}</p>
+        <Loading layout="fill" label={t("notes.commentsHeading")} class="mt-6" />
       {:else if !notes.commentsError && !newBlockId}
         <p class="mt-6 text-center text-panel-detail text-muted-foreground">{emptyLabel(filter)}</p>
       {/if}

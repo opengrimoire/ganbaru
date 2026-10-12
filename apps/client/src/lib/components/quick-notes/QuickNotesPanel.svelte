@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import Archive from "@lucide/svelte/icons/archive";
+  import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import Search from "@lucide/svelte/icons/search";
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import X from "@lucide/svelte/icons/x";
@@ -46,6 +47,7 @@
   import QuickNoteTagManager from "./QuickNoteTagManager.svelte";
   import QuickNotesMasonry from "./QuickNotesMasonry.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
+  import { cn } from "$lib/utils";
 
   let {
     onClose,
@@ -679,7 +681,7 @@
         <QuickNotesMasonry notes={otherNotes} collection={renderedCollection} {animateLayout} {reorderable} theme={theme.current} {tags} {mobileLayout} onOpen={(note) => void openNote(note)} onReorder={(ids, id, position) => reorderNoteGroup(ids, id, position, false)} onPin={pinNote} onColor={colorNote} onTag={tagNote} onArchive={archiveNote} onUnarchive={unarchiveNote} onTrash={trashNote} onRestore={restoreNote} onDelete={(note) => { deleteTarget = note; }} />
       {/if}
       {#if nextCursor}
-        <button use:observeMore type="button" class={mobileLayout ? "mt-4 min-h-12 w-full rounded-xl px-3 text-xs text-muted-foreground active:bg-accent" : "mt-4 w-full rounded-md py-2 text-xs text-muted-foreground hover:bg-accent"} disabled={loadingMore} onclick={() => { animateLayout = true; void load(false); }}>{loadingMore ? t("common.loading") : t("quickNotes.action.loadMore")}</button>
+        <button use:observeMore type="button" class={cn("mt-4 flex w-full items-center justify-center gap-1.5 text-xs text-muted-foreground", mobileLayout ? "min-h-12 rounded-xl px-3 active:bg-accent" : "rounded-md py-2 hover:bg-accent")} disabled={loadingMore} aria-busy={loadingMore || undefined} onclick={() => { animateLayout = true; void load(false); }}>{#if loadingMore}<LoaderCircle class="size-3.5 animate-spin" aria-hidden="true" />{/if}{t("quickNotes.action.loadMore")}</button>
       {/if}
     {/if}
     {#if loadError && notes.length > 0}<Notice class="mt-3 justify-center text-xs" message={loadError} />{/if}

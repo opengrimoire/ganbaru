@@ -7,6 +7,7 @@
   import Eye from "@lucide/svelte/icons/eye";
   import EyeOff from "@lucide/svelte/icons/eye-off";
   import Folder from "@lucide/svelte/icons/folder";
+  import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import ShieldCheck from "@lucide/svelte/icons/shield-check";
   import Plus from "@lucide/svelte/icons/plus";
   import Search from "@lucide/svelte/icons/search";
@@ -48,6 +49,7 @@
   import ChatModelAvatar from "$lib/components/chat/identity/ChatModelAvatar.svelte";
   import ChatModelControls from "$lib/components/chat/composer/ChatModelControls.svelte";
   import ChatParticipantAvatar from "$lib/components/chat/identity/ChatParticipantAvatar.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import ChatChannelAccessPicker from "./ChatChannelAccessPicker.svelte";
   import ChatChannelScopeControls from "./ChatChannelScopeControls.svelte";
@@ -700,7 +702,7 @@
         <button type="button" class="archive-filter" aria-label={archiveFilterLabel} aria-pressed={editor.showArchived} data-app-tooltip={archiveFilterLabel} disabled={editor.creating || editor.dirty || lifecycleBusy} onclick={() => { editor.showArchived = !editor.showArchived; }}><Archive size={14} /><span aria-hidden="true">{#if editor.showArchived}<Eye size={8} />{:else}<EyeOff size={8} />{/if}</span></button>
       {/if}
       <button type="button" class="settings-button" disabled={editor.creating || editor.dirty} onclick={() => editor.beginCreate(null)}><Plus size={13} />{t("settings.chat.teammates.add")}</button>
-      <button type="button" class="settings-button" disabled={editor.dirty || profileManagerLoading} onclick={() => void openProfileManager()}><ShieldCheck size={13} />{profileManagerLoading ? t("common.loading") : t("settings.chat.teammates.profileManager.manage")}</button>
+      <button type="button" class="settings-button" disabled={editor.dirty || profileManagerLoading} aria-busy={profileManagerLoading || undefined} onclick={() => void openProfileManager()}>{#if profileManagerLoading}<LoaderCircle size={13} class="animate-spin" aria-hidden="true" />{:else}<ShieldCheck size={13} />{/if}{t("settings.chat.teammates.profileManager.manage")}</button>
     </div>
   </header>
 
@@ -719,7 +721,7 @@
                 <span class="directory-summary"><strong>{teammate.participant.displayName}</strong><small>{teammate.role}</small></span>
               </button>
             {/each}
-            {#if editor.loadingDirectory}<p class="empty-copy" role="status">{t("common.loading")}</p>{:else if !editor.creating && filteredDirectoryTeammates.length === 0}<p class="empty-copy">{t("settings.chat.teammates.empty")}</p>{/if}
+            {#if editor.loadingDirectory}<Loading layout="rows" rows={3} class="col-span-full" />{:else if !editor.creating && filteredDirectoryTeammates.length === 0}<p class="empty-copy">{t("settings.chat.teammates.empty")}</p>{/if}
           </nav>
         </div>
         <CalendarScrollbar scrollContainer={directoryScrollElement} wheelPassthrough />

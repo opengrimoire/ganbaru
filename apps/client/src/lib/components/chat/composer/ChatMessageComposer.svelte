@@ -57,6 +57,7 @@
   import { requireActiveVaultIdentity } from "$lib/vault/active-vault";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import ChatParticipantAvatar from "$lib/components/chat/identity/ChatParticipantAvatar.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import Select from "$lib/components/ui/Select.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
@@ -1278,7 +1279,7 @@
           {#if ScheduleMenu}
             {@const LoadedScheduledMessagesMenu = ScheduleMenu}
             <LoadedScheduledMessagesMenu mode="manage" align="right" {scheduledMessages} onMessagesChange={updateScheduledMessages} onClose={() => { scheduledMessagesOpen = false; }} />
-          {:else}<div class="composer-menu schedule-loading align-right surface-floating surface-floating-body" role="status">{t("chat.status.working")}</div>{/if}
+          {:else}<div class="composer-menu schedule-loading align-right surface-floating surface-floating-body"><Loading layout="fill" /></div>{/if}
         {/if}
       </div>
     </div>
@@ -1288,7 +1289,7 @@
     <section class="assignment-preview" aria-label={t("chat.organization.assignmentPreview")}>
       <Bot size={13} />
       <div>
-        <strong>{assignmentPreviewLoading ? t("chat.organization.resolvingAssignment") : inferredTarget?.displayName ?? t("chat.organization.privateScratch")}</strong>
+        <strong>{#if assignmentPreviewLoading}<Loading layout="inline" label={t("chat.organization.resolvingAssignment")} />{:else}{inferredTarget?.displayName ?? t("chat.organization.privateScratch")}{/if}</strong>
         <span>{secondaryFolderNames.length ? t("chat.organization.secondaryFolders", secondaryFolderNames.join(", ")) : t("chat.organization.noSecondaryFolders")}</span>
       </div>
       {#if inferredTarget}<span class="approval-pill">{runtimeApprovalLabel(inferredTarget.effectiveRuntimeApproval)}</span>{/if}
@@ -1339,7 +1340,7 @@
     {#if pickerOpen}
       <div bind:this={pickerRoot} id="chat-reference-picker" class="reference-picker surface-floating" role="listbox" aria-label={pickerTrigger?.kind === "channel" ? t("chat.organization.referenceChannel") : t("chat.organization.referencePeopleAndResources")}>
         <div class="reference-picker-scroll surface-floating-body" use:scrollEdgeFadeAction>
-          {#if pickerLoading}<p role="status">{t("chat.status.working")}</p>
+          {#if pickerLoading}<Loading layout="rows" rows={3} />
           {:else if pickerEntries.length === 0}<p>{t("chat.organization.noReferenceResults")}</p>
           {:else}
             {#each pickerGroups as group, groupIndex (group.label)}
@@ -1389,7 +1390,7 @@
             {#if ScheduleMenu}
               {@const LoadedScheduleMenu = ScheduleMenu}
               <LoadedScheduleMenu mode="choose" selectedScheduledFor={scheduledFor} disabled={sending} onSelect={selectSchedule} onClear={clearSchedule} onClose={() => { scheduleMenuOpen = false; }} />
-            {:else}<div class="composer-menu schedule-loading surface-floating surface-floating-body" role="status">{t("chat.status.working")}</div>{/if}
+            {:else}<div class="composer-menu schedule-loading surface-floating surface-floating-body"><Loading layout="fill" /></div>{/if}
           {/if}
         </div>
         {#if threadComposer}<button type="button" class="tool-button" class:active={alsoSendToChannel} aria-label={t("chat.organization.shareReplyToChannel", channelName)} aria-pressed={alsoSendToChannel} title={t("chat.organization.shareReplyToChannel", channelName)} onclick={() => { alsoSendToChannel = !alsoSendToChannel; }}><MessageSquareShare size={15} /></button>{/if}

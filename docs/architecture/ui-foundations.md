@@ -9,7 +9,7 @@ Panels were restyled one at a time, so radii, shadows, text sizes, input styles,
 ## Where it lives
 
 - `apps/client/src/ui-foundations.css` defines the tokens and Tailwind utilities below.
-- `apps/client/src/lib/components/ui/` holds the shared components: `Checkbox`, `Switch`, `SwitchField`, `Select`, `SearchField`, `ConfirmDialog`, `ActionToast`, `Notice`, and the tooltip host.
+- `apps/client/src/lib/components/ui/` holds the shared components: `Checkbox`, `Switch`, `SwitchField`, `Select`, `SearchField`, `ConfirmDialog`, `ActionToast`, `Notice`, `Loading`, and the tooltip host.
 - `apps/client/src/lib/components/ui/floating-width.ts` mirrors the width utilities for positioning code.
 - `apps/client/src/lib/utils/scroll-edge-fade.ts` and `apps/client/src/lib/utils/menu-aim.ts` own scroll fades and hover-submenu behavior.
 
@@ -53,6 +53,12 @@ Panels were restyled one at a time, so radii, shadows, text sizes, input styles,
 - The notice sits where the failed content would have been: `inline` inside the row, panel, or banner that owns it, `fill` centered in a failed view or pane, and `floating` as a small centered surface only when a dialog or panel with no host surface failed to open. A floating notice always offers a close button so the user can back out.
 - Retry turns while the retried work is pending and shows a check when it succeeds; a handler that reports its own errors resolves `false` so a failed attempt never shows the check; copy shows a check when the message reaches the clipboard. Copy is hidden when the message is fixed text with no detail worth sharing.
 - `tone="warning"` tints the icon for conditions that limit a feature without being a failure, such as an unavailable provider.
+
+## Loading
+
+- Pending content never shows visible "Loading" text. A purpose-built skeleton (such as Notes pages and database views) is preferred where the layout is known; otherwise use `ui/Loading`, which waits briefly before appearing so fast loads never flash, and announces what is loading only to assistive technology.
+- `ui/Loading` uses `rows` inside lists, menus, and pickers, `fill` for a pending view or pane, and `inline` inside a line of text or a value slot.
+- A button whose action is pending keeps its label, shows a spinner in place of its icon (or before the label), and sets `aria-busy`.
 
 ## Widths
 

@@ -14,6 +14,7 @@
   import UpdatesSection from "$lib/components/settings/sections/UpdatesSection.svelte";
   import ShortcutsSection from "$lib/components/settings/sections/ShortcutsSection.svelte";
   import AboutSection from "$lib/components/settings/sections/AboutSection.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import {
     getPreloadedDataSection,
@@ -105,9 +106,7 @@
       <Notice layout="fill" message={t("common.viewLoadFailed", t("settings.section.data"))} onRetry={retryDataSection} />
     </div>
   {:else}
-    <div class="flex min-h-36 items-center justify-center text-sm text-muted-foreground" aria-busy="true">
-      {t("common.loading")}
-    </div>
+    <Loading layout="fill" class="min-h-36" />
   {/if}
 {:else if activeBasicSection}
   {@const SectionComponent = activeBasicSection}

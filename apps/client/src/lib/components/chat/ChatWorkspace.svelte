@@ -42,6 +42,7 @@
   import { getProjects } from "$lib/stores/projects.svelte";
   import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import ChatWorkspaceHeader from "./ChatWorkspaceHeader.svelte";
   import ChatFirstUse from "./ChatFirstUse.svelte";
@@ -1004,7 +1005,7 @@
         {:else if !chat.loading && !chat.channelsLoading}
           <ChatFirstUse />
         {:else if initialLoadingVisible || chat.channelsLoading}
-          <div class="m-auto text-sm text-muted-foreground" role="status">{t("common.loading")}</div>
+          <Loading layout="fill" class="min-h-0 flex-1" />
         {/if}
   </main>
 

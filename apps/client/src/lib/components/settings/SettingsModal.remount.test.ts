@@ -70,7 +70,7 @@ describe("SettingsModal remount state", () => {
     await tick();
     expect(target.querySelector("[data-settings-modal-panel]")?.getAttribute("data-settings-section"))
       .toBe("about");
-    expect(target.textContent).not.toContain("Loading");
+    expect(target.querySelector("[data-loading]")).toBeNull();
     await unmount(component);
     component = mount(SettingsModal, {
       target,
@@ -79,7 +79,7 @@ describe("SettingsModal remount state", () => {
     await tick();
     expect(target.querySelector("[data-settings-modal-panel]")?.getAttribute("data-settings-section"))
       .toBe("appearance");
-    expect(target.textContent).not.toContain("Loading");
+    expect(target.querySelector("[data-loading]")).toBeNull();
   });
 
   it("loads Data as one stable section on its first visit", async () => {

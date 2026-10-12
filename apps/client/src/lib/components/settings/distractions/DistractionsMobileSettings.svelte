@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { cn } from "$lib/utils";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getDistractions } from "$lib/stores/distractions.svelte";
@@ -204,13 +205,15 @@
         <button type="button" onclick={() => reviewAccess("accessibility")} class="h-7 shrink-0 rounded-md bg-primary px-2.5 text-[0.8rem] font-medium text-primary-foreground hover:bg-primary/90">{t("mobile.focusOnboarding.review")}</button>
       </div>
     </div>
-    <p class={cn("px-1 text-[0.8rem]", protectionActive ? "text-muted-foreground" : "text-destructive")}>
-      {loadingStatus
-        ? t("common.loading")
-        : protectionActive
+    <div class={cn("px-1 text-[0.8rem]", protectionActive ? "text-muted-foreground" : "text-destructive")}>
+      {#if loadingStatus}
+        <Loading layout="inline" />
+      {:else}
+        {protectionActive
           ? t("settings.distractions.mobile.protectionActive")
           : t("settings.distractions.mobile.protectionInactive")}
-    </p>
+      {/if}
+    </div>
     {#if statusError}<Notice class="px-1 text-[0.8rem]" message={t("mobile.focusOnboarding.statusError")} onRetry={retryStatus} />{/if}
   </section>
 

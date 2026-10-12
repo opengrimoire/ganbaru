@@ -29,6 +29,7 @@
   import type { NotesDatabasePropertyActionRequest, NotesDatabaseSourceEditingScope } from "$lib/notes/database/data-source-schema";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import {
     deleteNotesDatabaseView,
@@ -791,7 +792,7 @@
     <input class="field mb-1 w-full min-w-0" aria-label={t("notes.databaseSourceSearch")} placeholder={t("notes.databaseSourceSearch")}
       bind:value={sourceName} disabled={selectionDisabled} onkeydown={(event) => event.stopPropagation()} />
     {#if sourceError}<Notice class="px-2 py-1" message={sourceError} />{/if}
-    {#if sourcesLoading && dataSources.length === 0}<p class="px-2 py-1 text-muted-foreground" role="status">{t("notes.databaseSourcesLoading")}</p>{/if}
+    {#if sourcesLoading && dataSources.length === 0}<Loading layout="rows" rows={3} label={t("notes.databaseSourcesLoading")} />{/if}
     {#if matchingAttachedSources.length > 0}
       <p class="menu-label">{t("notes.databaseSourcesAttached")}</p>
       {#each matchingAttachedSources as source (source.id)}

@@ -2,6 +2,7 @@
   import type { Snippet } from "svelte";
   import { tick } from "svelte";
   import NotesLocationPath from "$lib/components/notes/NotesLocationPath.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import { notesFloatingPanelContentHeight, notesFloatingPanelPlacement, type NotesFloatingPanelPlacement } from "$lib/notes/editor/floating-panel";
   import { dismissOnOutside } from "$lib/utils/dismiss-on-outside";
   import { portal } from "$lib/utils/portal";
@@ -13,13 +14,15 @@
    * A hover card for an inline mention: the muted route to the object on top, its name below, and optional detail
    * lines, status, and body. The card lives outside editable content and follows its chip while the page scrolls.
    */
-  let { anchor, id, route = [], title, details = [], status = null, icon, children, onKeepOpen, onLeave, onDismiss }: {
+  let { anchor, id, route = [], title, details = [], status = null, loading = false, icon, children, onKeepOpen, onLeave, onDismiss }: {
     anchor: HTMLElement;
     id: string;
     route?: readonly string[];
     title: string;
     details?: readonly string[];
     status?: string | null;
+    /** Shows a quiet pending indicator in the status line while no status text applies. */
+    loading?: boolean;
     icon: Snippet;
     children?: Snippet;
     onKeepOpen: () => void;
@@ -111,7 +114,8 @@
         {#each details as detail, index (index)}<div class="mt-1 wrap-anywhere text-[0.85em] leading-snug text-muted-foreground">{detail}</div>{/each}
       </div>
     </div>
-    {#if status}<div class="px-3.5 pb-3.5 text-[0.9em] text-muted-foreground" role="status">{status}</div>{/if}
+    {#if status}<div class="px-3.5 pb-3.5 text-[0.9em] text-muted-foreground" role="status">{status}</div>
+    {:else if loading}<div class="px-3.5 pb-3.5 text-[0.9em]"><Loading layout="inline" /></div>{/if}
     {@render children?.()}
   </div>
 </div>

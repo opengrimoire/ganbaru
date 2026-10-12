@@ -25,6 +25,7 @@
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getChat } from "$lib/stores/chat.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import Switch from "$lib/components/ui/Switch.svelte";
   import type { ChatProviderSetupTarget } from "$lib/settings/types";
@@ -404,7 +405,7 @@
   </header>
 
   {#if chat.loading}
-    <p class="empty-copy" role="status">{t("common.loading")}</p>
+    <Loading layout="rows" rows={3} />
   {:else if families.length === 0}
     <p class="empty-copy">{t("settings.chat.providers.noIntegrations")}</p>
   {:else}

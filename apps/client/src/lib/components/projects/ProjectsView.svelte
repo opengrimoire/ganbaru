@@ -23,6 +23,7 @@
     type ProjectToolbarPanel,
   } from "$lib/projects/toolbar";
   import CollectionSettings from "$lib/components/collections/CollectionSettings.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import ProjectEmptyState from "./ProjectEmptyState.svelte";
   import ProjectWorkspaceHeader from "./ProjectWorkspaceHeader.svelte";
@@ -499,9 +500,7 @@
                 onRetry={() => { if (selectedProjectId) requestViewData(selectedProjectId, "list"); }}
               />
             {:else}
-              <div class="flex h-full items-center justify-center text-sm text-muted-foreground" aria-busy="true">
-                {t("common.loading")}
-              </div>
+              <Loading layout="fill" />
             {/if}
           {:else if projects.activeView === "kanban" && viewComponents?.kanban}
             {@const ProjectKanbanView = viewComponents.kanban}
@@ -566,9 +565,7 @@
             />
             {/if}
           {:else}
-            <div class="flex h-full items-center justify-center text-sm text-muted-foreground" aria-busy="true">
-              {t("common.loading")}
-            </div>
+            <Loading layout="fill" />
           {/if}
       {:else}
         <ProjectEmptyState
@@ -647,10 +644,8 @@
         />
       </div>
     {:else}
-      <div class="absolute inset-0 z-80 surface-backdrop flex items-center justify-center p-4" aria-busy="true">
-        <div class="surface-dialog px-4 py-3 text-sm text-muted-foreground">
-          {t("common.loading")}
-        </div>
+      <div class="absolute inset-0 z-80 surface-backdrop flex items-center justify-center p-4">
+        <Loading layout="fill" />
       </div>
     {/if}
   {/if}

@@ -51,6 +51,7 @@
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import NotesFolderRow from "$lib/components/notes/navigation/NotesFolderRow.svelte";
   import NotesPageRow from "$lib/components/notes/navigation/NotesPageRow.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import {
     loadNotesOptionalComponent,
@@ -1316,7 +1317,7 @@
     </div>
   {:else}
     <div class="fixed inset-0 z-100 flex items-center justify-center surface-backdrop p-4" role="dialog" aria-modal="true" aria-busy="true">
-      <div class="surface-dialog px-4 py-3 text-sm text-muted-foreground">{t("common.loading")}</div>
+      <Loading layout="fill" />
     </div>
   {/if}
 {/if}

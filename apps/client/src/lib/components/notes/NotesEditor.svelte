@@ -102,6 +102,7 @@
   import NotesBlockList from "$lib/components/notes/blocks/NotesBlockList.svelte";
   import NotesPageIcon from "$lib/components/notes/pages/NotesPageIcon.svelte";
   import NotesPeekModeIcon from "$lib/components/notes/pages/NotesPeekModeIcon.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import {
     loadNotesEditorPanel,
@@ -1391,7 +1392,7 @@
                     {:else if panelLoadStates["destination-picker"]?.status === "failed"}
                       <Notice class="p-2" message={t("common.viewLoadFailed", t("notes.movePageTo"))} copy={false} onRetry={() => requestEditorPanel("destination-picker", true)} />
                     {:else}
-                      <div class="p-2 text-muted-foreground" aria-busy="true">{t("common.loading")}</div>
+                      <Loading layout="rows" rows={3} label={t("notes.movePageTo")} />
                     {/if}
                   </div>
                 {/if}
@@ -1434,7 +1435,7 @@
                       {:else if panelLoadStates["destination-picker"]?.status === "failed"}
                         <Notice class="p-2" message={t("common.viewLoadFailed", t("notes.movePageToFolder"))} copy={false} onRetry={() => requestEditorPanel("destination-picker", true)} />
                       {:else}
-                        <div class="p-2 text-muted-foreground" aria-busy="true">{t("common.loading")}</div>
+                        <Loading layout="rows" rows={3} label={t("notes.movePageToFolder")} />
                       {/if}
                     </div>
                   {/if}

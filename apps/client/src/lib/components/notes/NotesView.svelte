@@ -655,7 +655,7 @@
       />
     {/if}
     {#if showPrimaryContent}
-      <div class="notes-view-canvas flex min-w-0 flex-1 flex-col overflow-hidden">
+      <div class="notes-view-canvas flex min-w-0 flex-1 flex-col overflow-hidden" class:surface-content-inset={!mobileLayout}>
         {#if !mobileLayout}{@render workspaceHeader()}{/if}
         <div class="flex min-h-0 min-w-0 flex-1 overflow-hidden">
           {#if !notes.loaded && notes.loadError}
@@ -786,10 +786,6 @@
   .notes-view-mobile,
   .notes-view-canvas {
     background-color: var(--cal-bg);
-  }
-
-  .notes-view-root:not(.notes-view-mobile) .notes-view-canvas {
-    border-radius: var(--content-radius);
   }
 
   .notes-center-peek-panel {

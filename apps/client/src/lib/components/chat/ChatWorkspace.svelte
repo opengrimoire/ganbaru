@@ -1061,6 +1061,9 @@
       onOpenSettings={() => settings.open("chat")}
     />
   {/if}
+  {#if !mobileShell}
+    <div class="chat-canvas-edge surface-content-inset" aria-hidden="true"></div>
+  {/if}
 </div>
 
 <style>
@@ -1096,8 +1099,9 @@
   .chat-workspace[data-rail-presentation="sheet"] { --chat-rail-column-width: 0px; }
   .chat-workspace[data-reply-thread-presentation="column"] { --chat-reply-thread-column-width: var(--chat-reply-thread-width); }
   .chat-workspace[data-inspector-presentation="column"] { --chat-inspector-column-width: var(--chat-inspector-width); }
-  .chat-canvas { grid-column: 1 / 7; grid-row: 1 / 5; background: var(--cal-bg); pointer-events: none; }
-  .chat-workspace[data-rail-docked="true"] .chat-canvas { grid-column: 2 / 7; border-radius: var(--content-radius); }
+  .chat-canvas, .chat-canvas-edge { grid-column: 1 / 7; grid-row: 1 / 5; pointer-events: none; }
+  .chat-canvas { background: var(--cal-bg); }
+  .chat-workspace[data-rail-docked="true"] :is(.chat-canvas, .chat-canvas-edge) { grid-column: 2 / 7; border-radius: var(--content-radius); }
   .chat-primary-header { grid-column: 1 / 3; grid-row: 1; min-width: 0; }
   .chat-workspace[data-rail-docked="true"] .chat-primary-header { grid-column: 2; }
   .chat-mobile-rail-bar { position: absolute; top: var(--toolbar-h); right: 0; left: 0; z-index: 10; display: flex; height: var(--chat-mobile-rail-bar-height); align-items: center; background: var(--cal-bg); padding-inline: 0.5rem; }

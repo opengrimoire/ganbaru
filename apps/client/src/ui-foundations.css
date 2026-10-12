@@ -22,6 +22,18 @@
   --panel-detail-font-size: calc(var(--panel-font-size) * 0.875);
   /* Row and field height inside panels; touch layouts raise it to a 44px target. */
   --panel-row-height: calc(var(--panel-font-size) * 1.5 + 0.5rem);
+  /* Hairline that separates a tab's content surface from the window frame. */
+  --content-edge: rgb(0 0 20 / 0.07);
+  /* Edge and barely visible lift of a content surface that is not clipped by an ancestor. */
+  --content-shadow: 0 0 0 1px var(--content-edge), 0 1px 2px rgb(0 0 20 / 0.04);
+  /* The active title bar tab reads as a raised chip on the frame. */
+  --tab-active-shadow: 0 0 0 1px rgb(0 0 20 / 0.04), 0 1px 2px rgb(0 0 20 / 0.08);
+}
+
+.dark {
+  --content-edge: rgb(255 255 255 / 0.06);
+  --content-shadow: 0 0 0 1px var(--content-edge);
+  --tab-active-shadow: 0 0 0 1px rgb(255 255 255 / 0.06);
 }
 
 html[data-shell="mobile"] {
@@ -67,6 +79,28 @@ html[data-shell="mobile"] {
   background-color: var(--card);
   color: var(--card-foreground);
   box-shadow: var(--floating-shadow);
+}
+
+/* A tab's content surface whose own box can carry an outer edge and lift. */
+@utility surface-content {
+  border-radius: var(--content-radius);
+  box-shadow: var(--content-shadow);
+}
+
+/* A content surface clipped by an ancestor: the edge is painted inside, above content that reaches the edge. */
+@utility surface-content-inset {
+  position: relative;
+  border-radius: var(--content-radius);
+
+  &::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    border-radius: inherit;
+    box-shadow: inset 0 0 0 1px var(--content-edge);
+    pointer-events: none;
+  }
 }
 
 /* The dimmed layer behind a modal dialog. */

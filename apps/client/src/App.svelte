@@ -95,6 +95,8 @@
   const nav = getNavigation();
   const startupTabView = detachedWindowView ?? nav.current;
   if (nav.current !== startupTabView) nav.navigate(startupTabView);
+  /** Calendar and Projects paint the content panel itself; Notes and Chat paint a surface beside their docked explorer. */
+  const contentPanelPainted = $derived(nav.current === "calendar" || nav.current === "projects");
   const calendar = getCalendar();
   const calendars = getCalendars();
   const distractions = getDistractions();
@@ -913,7 +915,7 @@
 >
   <div class="flex h-full flex-col overflow-hidden bg-sidebar">
     <TitleBar {shellStartupMs} {startupMemorySnapshot} {ensureBenchmarkOverlay} />
-    <main class="content-panel flex-1 min-h-0 overflow-hidden" class:bg-background={nav.current === "calendar" || nav.current === "projects"}>
+    <main class="content-panel flex-1 min-h-0 overflow-hidden" class:bg-background={contentPanelPainted} class:surface-content={contentPanelPainted}>
       {#if nav.current === "calendar"}
         <CalendarView />
       {:else if nav.current === "projects"}

@@ -18,7 +18,7 @@
 <button type="button"
   class={cn(
     "flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50",
-    !hasChildren && !expanded && "[@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/row:opacity-100 [@media(hover:hover)]:group-focus-within/row:opacity-100",
+    !hasChildren && !expanded && "[@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/row:opacity-100 [@media(hover:hover)]:group-has-focus-visible/row:opacity-100",
   )}
   aria-label={label} aria-expanded={expanded} {disabled} onclick={onToggle}>
   <ChevronRight class={cn("size-3.5 transition-transform", expanded && "rotate-90")} strokeWidth={1.75} aria-hidden="true" />

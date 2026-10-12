@@ -4,9 +4,9 @@
 
   /**
    * The leading selection control of a collection row or group header. It stays hidden until its row is hovered or
-   * focused, and shows whenever something is selected, so a selection is never invisible.
+   * holds keyboard focus, so a pointer click does not pin it, and shows whenever something is selected, so a selection is never invisible.
    */
-  let { checked, indeterminate = false, label, disabled = false, revealClass = "[@media(hover:hover)]:group-hover/row:opacity-100 [@media(hover:hover)]:group-focus-within/row:opacity-100", onToggle }: {
+  let { checked, indeterminate = false, label, disabled = false, revealClass = "[@media(hover:hover)]:group-hover/row:opacity-100 [@media(hover:hover)]:group-has-focus-visible/row:opacity-100", onToggle }: {
     checked: boolean;
     /** Shows that only part of a group is selected. */
     indeterminate?: boolean;

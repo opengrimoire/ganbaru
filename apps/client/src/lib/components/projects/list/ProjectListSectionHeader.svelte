@@ -153,7 +153,7 @@
       <button
         type="button"
         class={cn(
-          "flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/section-header:opacity-100 group-focus-within/section-header:opacity-100",
+          "flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/section-header:opacity-100 group-has-focus-visible/section-header:opacity-100",
           menuOpen && "bg-accent text-foreground opacity-100",
         )}
         aria-label={optionsLabel}

@@ -406,6 +406,7 @@
 
     <div
       data-projects-content-frame
+      data-collection-selection-scope
       class="relative min-h-0 flex-1"
       style="background-color: var(--cal-bg);"
     >

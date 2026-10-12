@@ -22,5 +22,5 @@
 
 <CollectionSelectionCheckbox checked={allSelected} indeterminate={partiallySelected} label={ariaLabel} {disabled} {onToggle}
   revealClass={mode === "section"
-    ? "[@media(hover:hover)]:group-hover/section-header:opacity-100 [@media(hover:hover)]:group-focus-within/section-header:opacity-100"
-    : "[@media(hover:hover)]:group-hover/list-group-header:opacity-100 [@media(hover:hover)]:group-focus-within/list-group-header:opacity-100"} />
+    ? "[@media(hover:hover)]:group-hover/section-header:opacity-100 [@media(hover:hover)]:group-has-focus-visible/section-header:opacity-100"
+    : "[@media(hover:hover)]:group-hover/list-group-header:opacity-100 [@media(hover:hover)]:group-has-focus-visible/list-group-header:opacity-100"} />

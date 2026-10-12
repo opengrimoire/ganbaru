@@ -263,7 +263,7 @@
       {/if}
     </div>
     <button type="button" data-collection-hover-reveal=""
-      class="absolute top-1/2 right-1 z-10 flex h-6 -translate-y-1/2 items-center gap-1 rounded-md border border-border bg-background px-1.5 text-[0.75rem] text-muted-foreground opacity-100 hover:bg-accent hover:text-foreground [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/row:opacity-100 [@media(hover:hover)]:group-focus-within/row:opacity-100"
+      class="absolute top-1/2 right-1 z-10 flex h-6 -translate-y-1/2 items-center gap-1 rounded-md border border-border bg-popover px-1.5 text-[0.75rem] text-popover-foreground opacity-100 hover:bg-accent hover:text-accent-foreground [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/row:opacity-100 [@media(hover:hover)]:group-has-focus-visible/row:opacity-100"
       aria-label={t("projects.actions.openTaskDetails", task.title)} onclick={() => onOpenTask(task)}>
       <PanelRight class="size-3.5" aria-hidden="true" /><span>{t("collections.property.open")}</span>
     </button>

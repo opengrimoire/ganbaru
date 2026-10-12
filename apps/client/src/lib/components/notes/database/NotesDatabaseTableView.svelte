@@ -1175,7 +1175,7 @@
 
 <svelte:window onpointermove={moveColumnResize} onpointerup={(event) => finishColumnResize(event, true)} onpointercancel={(event) => finishColumnResize(event, false)} onkeydown={(event) => { if (event.key === "Escape") columnResize = null; trashSelectionKey(event); }} />
 
-<section bind:this={tableSection} class="space-y-3 pt-2" aria-label={t("notes.databaseTableTitle")}>
+<section bind:this={tableSection} data-collection-selection-scope class="space-y-3 pt-2" aria-label={t("notes.databaseTableTitle")}>
 
   <NotesDatabaseQueryBar properties={columns} {filters} {sorts} pending={mutating || editingLocked} onFiltersChange={saveFilters} onSortsChange={saveSorts} />
   {#if table}<span class="sr-only" role="status">{t("notes.databaseRowsCount", visibleRows.length)}</span>{/if}
@@ -1493,7 +1493,7 @@
                       onRunButton={() => { void runButton(row, column); }} />
                     </div>
                     {#if column.type === "title"}
-                      <button type="button" data-collection-hover-reveal="" class="absolute top-1/2 right-1 z-10 flex h-6 -translate-y-1/2 items-center gap-1 rounded-md border border-border bg-background px-1.5 text-[0.75rem] text-muted-foreground opacity-100 hover:bg-accent hover:text-foreground [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/row:opacity-100 [@media(hover:hover)]:group-focus-within/row:opacity-100"
+                      <button type="button" data-collection-hover-reveal="" class="absolute top-1/2 right-1 z-10 flex h-6 -translate-y-1/2 items-center gap-1 rounded-md border border-border bg-popover px-1.5 text-[0.75rem] text-popover-foreground opacity-100 hover:bg-accent hover:text-accent-foreground [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/row:opacity-100 [@media(hover:hover)]:group-has-focus-visible/row:opacity-100"
                         aria-label={t("notes.databaseRowsOpen", title)} disabled={mutating || rowCreation.blocked(row.id)} onclick={() => openRow(row)}>
                         <PanelRight class="size-3.5" aria-hidden="true" /><span>{t("collections.property.open")}</span>
                       </button>

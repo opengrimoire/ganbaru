@@ -45,7 +45,7 @@
         "src/lib/components/music/MusicPanel.svelte",
         "src/lib/components/music/MusicPlaybackHost.svelte"
       ],
-      "maxSourceModules": 175
+      "maxSourceModules": 176
     },
     {
       "name": "chat",

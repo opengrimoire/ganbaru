@@ -26,7 +26,12 @@
   import NotesDatabaseQueryBar from "./NotesDatabaseQueryBar.svelte";
   import NotesDatabasePropertyEditor from "./NotesDatabasePropertyEditor.svelte";
   import NotesDatabaseRowParentControls from "./NotesDatabaseRowParentControls.svelte";
-  import { NOTES_DATABASE_MAX_COLLAPSED_ROWS, NOTES_DATABASE_ROW_MAX_DEPTH, notesDatabaseCollapsedRows, notesDatabaseHierarchyRows } from "$lib/notes/database/row-hierarchy";
+  import CollectionSelectionCheckbox from "$lib/components/collections/CollectionSelectionCheckbox.svelte";
+  import CollectionExpandToggle from "$lib/components/collections/CollectionExpandToggle.svelte";
+  import CollectionSelectionBar from "$lib/components/collections/CollectionSelectionBar.svelte";
+  import CollectionSelectionAction from "$lib/components/collections/CollectionSelectionAction.svelte";
+  import { collectionRowExpanded, collectionRowIndent, toggledCollectionRowExpansion, type CollectionRowExpansion } from "$lib/components/collections/row-expansion";
+  import { NOTES_DATABASE_MAX_COLLAPSED_ROWS, NOTES_DATABASE_ROW_MAX_DEPTH, notesDatabaseCollapsedRows, notesDatabaseHierarchyItems, notesDatabaseTopmostRows } from "$lib/notes/database/row-hierarchy";
   import { NOTES_DATABASE_QUERY_MAX_SORTS, notesDatabaseFilterCount, notesDatabaseFilterConditions, notesDatabaseNewFilter, notesDatabaseRowMatchesFilters, notesDatabaseSortsWithColumn } from "$lib/notes/database/query-controls";
   import { onDestroy, tick, untrack, type Snippet } from "svelte";
   import { databaseResource, notesDatabaseSession, rememberDatabaseScroll } from "$lib/notes/database/session.svelte";
@@ -98,6 +103,7 @@
   import ArrowRight from "@lucide/svelte/icons/arrow-right";
   import ArrowUp from "@lucide/svelte/icons/arrow-up";
   import Copy from "@lucide/svelte/icons/copy";
+  import CornerDownRight from "@lucide/svelte/icons/corner-down-right";
   import ExternalLink from "@lucide/svelte/icons/external-link";
   import EyeOff from "@lucide/svelte/icons/eye-off";
   import FileText from "@lucide/svelte/icons/file-text";
@@ -172,7 +178,6 @@
     BUILD_PLATFORM_PROFILE,
     "notes.file-export",
   );
-  const rowIndentPixels = 12;
   const DATE_FORMATS = [
     { value: "locale", label: "notes.databaseTablePresentation.locale" },
     { value: "iso", label: "notes.databaseTablePresentation.iso" },
@@ -275,12 +280,17 @@
   let pendingFocusRowId = $state<string | null>(null);
   let temporarilyExpandedRowIds = $state<string[]>([]);
   let temporarilyExpandedGroupIds = $state<string[]>([]);
+  /** Rows without sub-items the user opened in this session to add a first one. */
+  let openedRowIds = $state<string[]>([]);
+  let selectedRowIds = $state<string[]>([]);
   $effect(() => {
     dataSourceId;
     databaseId;
     viewId;
     temporarilyExpandedGroupIds = [];
     temporarilyExpandedRowIds = [];
+    openedRowIds = [];
+    selectedRowIds = [];
   });
   let openCsvPanelKind = $state<"database-csv-import" | "database-csv-export" | null>(null);
   let csvPanelLoadState = $state<LazyComponentLoadState<
@@ -339,7 +349,10 @@
   }
   /** Minimum width of the trailing track, which only holds the add property button (`size-9`). */
   const ADD_PROPERTY_TRACK_MIN = "2.25rem";
-  const gridTemplate = $derived(`1.5rem ${renderedColumns.map((column) => `${column.width}px`).join(" ")} minmax(${ADD_PROPERTY_TRACK_MIN}, 1fr)`);
+  /** Leading tracks for the selection checkbox and the expand chevron (`size-7`). */
+  const SELECTION_TRACK = "1.5rem";
+  const EXPAND_TRACK = "1.75rem";
+  const gridTemplate = $derived(`${SELECTION_TRACK} ${EXPAND_TRACK} ${renderedColumns.map((column) => `${column.width}px`).join(" ")} minmax(${ADD_PROPERTY_TRACK_MIN}, 1fr)`);
   const filters = $derived(table ? notesDatabaseTableFiltersFromView(table.view) : []);
   const sorts = $derived(table ? notesDatabaseTableSortsFromView(table.view) : []);
   const rowOpenMode = $derived(
@@ -350,18 +363,27 @@
   }, table?.group_counts ?? {}) : []);
   const rowHierarchy = $derived(rowCreation.hierarchyFor(dataSourceId, table?.row_hierarchy ?? {}));
   const collapsedRowIds = $derived((tableConfiguration?.collapsed_row_ids ?? []).filter((id) => !temporarilyExpandedRowIds.includes(id)));
-  type TableItem = { type: "group"; id: string; group: typeof groups[number] } | { type: "row"; id: string; row: NotesPage; rowIndex: number } | { type: "calculation"; id: string; groupId: string };
+  const rowExpansion = $derived<CollectionRowExpansion>({ collapsedIds: new Set(collapsedRowIds), openedIds: new Set(openedRowIds) });
+  type TableItem = { type: "group"; id: string; group: typeof groups[number] } | { type: "row"; id: string; row: NotesPage; rowIndex: number }
+    | { type: "addSubitem"; id: string; parent: NotesPage } | { type: "calculation"; id: string; groupId: string };
   const tableItems = $derived.by((): TableItem[] => {
     let rowIndex = 0;
     const collapsed = collapsedRowIds;
-    if (!tableConfiguration?.group_property_id) return notesDatabaseHierarchyRows(visibleRows, rowHierarchy, collapsed).map((row) => ({ type: "row", id: row.id, row, rowIndex: rowIndex++ }));
+    const hierarchyItems = (rows: readonly NotesPage[], prefix: string): TableItem[] =>
+      notesDatabaseHierarchyItems(rows, rowHierarchy, collapsed, rowExpanded).map((item): TableItem => item.type === "row"
+        ? { type: "row", id: `${prefix}${item.row.id}`, row: item.row, rowIndex: rowIndex++ }
+        : { type: "addSubitem", id: `${prefix}add:${item.parent.id}`, parent: item.parent });
+    if (!tableConfiguration?.group_property_id) return hierarchyItems(visibleRows, "");
     return groups.flatMap((group): TableItem[] => [
       { type: "group", id: `group:${group.id}`, group },
-      ...(group.collapsed ? [] : notesDatabaseHierarchyRows(group.rows, rowHierarchy, collapsed).map((row): TableItem => ({ type: "row", id: `${group.id}:${row.id}`, row, rowIndex: rowIndex++ }))),
+      ...(group.collapsed ? [] : hierarchyItems(group.rows, `${group.id}:`)),
       ...(group.collapsed ? [] : [{ type: "calculation" as const, id: `calculation:${group.id}`, groupId: group.id }]),
     ]);
   });
   const renderedRows = $derived(tableItems.flatMap((item) => item.type === "row" ? [item.row] : []));
+  const selectedRows = $derived(visibleRows.filter((row) => selectedRowIds.includes(row.id) && !rowCreation.blocked(row.id)));
+  const selectableRows = $derived(renderedRows.filter((row) => !rowCreation.blocked(row.id)));
+  const allRowsSelected = $derived(selectableRows.length > 0 && selectableRows.every((row) => selectedRowIds.includes(row.id)));
   const selectedPanelRow = $derived(
     visibleRows.find((row) => row.id === selectedPanelRowId) ?? null,
   );
@@ -633,15 +655,56 @@
     });
   }
 
-  function toggleSubitems(rowId: string): void {
-    if (mutating || editingLocked || !tableConfiguration) return;
-    if (temporarilyExpandedRowIds.includes(rowId) && tableConfiguration.collapsed_row_ids?.includes(rowId)) {
-      temporarilyExpandedRowIds = temporarilyExpandedRowIds.filter((id) => id !== rowId);
-      return;
+  /** Title inset of a row at the given depth, capped at half the title column so deep rows keep room for text. */
+  function titleIndent(depth: number): string {
+    const titleWidth = renderedColumns.find((column) => column.type === "title")?.width;
+    return titleWidth === undefined ? collectionRowIndent(depth) : `min(${collectionRowIndent(depth)}, ${titleWidth / 2}px)`;
+  }
+
+  function rowHasChildren(row: NotesPage): boolean {
+    return (rowHierarchy[row.id]?.child_count ?? 0) > 0;
+  }
+
+  function rowExpanded(row: NotesPage): boolean {
+    return collectionRowExpanded(row.id, rowHasChildren(row), rowExpansion);
+  }
+
+  /**
+   * Whether the chevron cannot change the row. Collapsing a row with sub-items saves the view, which a locked view or a
+   * full collapse list refuses; a row the saved view collapses can always open for this session.
+   */
+  function rowExpansionLocked(row: NotesPage): boolean {
+    if (mutating) return true;
+    const saved = tableConfiguration?.collapsed_row_ids ?? [];
+    if (!rowHasChildren(row) || saved.includes(row.id)) return false;
+    return editingLocked || saved.length >= NOTES_DATABASE_MAX_COLLAPSED_ROWS;
+  }
+
+  /** Rows with sub-items keep their collapse in the saved view; rows without them open only for this session. */
+  function toggleRowExpanded(row: NotesPage): void {
+    if (rowExpansionLocked(row) || !tableConfiguration) return;
+    const next = toggledCollectionRowExpansion(row.id, rowHasChildren(row), rowExpansion);
+    openedRowIds = [...next.openedIds];
+    if (next.collapsedIds.has(row.id) === rowExpansion.collapsedIds.has(row.id)) return;
+    const saved = tableConfiguration.collapsed_row_ids ?? [];
+    if (saved.includes(row.id) && temporarilyExpandedRowIds.includes(row.id)) {
+      temporarilyExpandedRowIds = temporarilyExpandedRowIds.filter((id) => id !== row.id);
+    } else if (saved.includes(row.id) && editingLocked) {
+      temporarilyExpandedRowIds = [...temporarilyExpandedRowIds, row.id];
+    } else {
+      void persistTable(columns, rowOpenMode, filters, sorts, { ...tableConfiguration,
+        collapsed_row_ids: notesDatabaseCollapsedRows(saved, row.id),
+      });
     }
-    void persistTable(columns, rowOpenMode, filters, sorts, { ...tableConfiguration,
-      collapsed_row_ids: notesDatabaseCollapsedRows(tableConfiguration.collapsed_row_ids ?? [], rowId),
-    });
+  }
+
+  function toggleRowSelected(row: NotesPage): void {
+    selectedRowIds = selectedRowIds.includes(row.id) ? selectedRowIds.filter((id) => id !== row.id) : [...selectedRowIds, row.id];
+  }
+
+  function toggleAllRowsSelected(): void {
+    const ids = new Set(selectableRows.map((row) => row.id));
+    selectedRowIds = allRowsSelected ? selectedRowIds.filter((id) => !ids.has(id)) : [...new Set([...selectedRowIds, ...ids])];
   }
 
   async function createSubitem(parent: NotesPage): Promise<void> {
@@ -663,21 +726,22 @@
     const pageId = rowCreation.begin(dataSourceId, "", initial, parent.id);
     addRowKey = pageId;
     await tick();
-    // Finish the invoking action menu's dismissal before moving focus to the new title.
-    await tick();
     const rowIndex = renderedRows.findIndex((row) => row.id === pageId);
     const titleIndex = visibleColumns.findIndex((column) => column.type === "title");
     if (rowIndex >= 0 && titleIndex >= 0) focusCell(rowIndex, titleIndex);
   }
 
-  async function moveSubitem(row: NotesPage, parentRowId: string | null): Promise<void> {
-    if (mutating || rowCreation.blocked(row.id)) return;
+  async function moveSubitems(rows: readonly NotesPage[], parentRowId: string | null): Promise<void> {
+    const movable = rows.filter((row) => !rowCreation.blocked(row.id));
+    if (mutating || movable.length === 0) return;
     mutating = true;
     error = null;
     try {
-      await updateNotesDataSourceRowParent(dataSourceId, row.id, parentRowId);
-      rowCreation.acceptParent(row.id, parentRowId);
-      pendingFocusRowId = row.id;
+      for (const row of movable) {
+        await updateNotesDataSourceRowParent(dataSourceId, row.id, parentRowId);
+        rowCreation.acceptParent(row.id, parentRowId);
+      }
+      pendingFocusRowId = movable[0].id;
       await loadTable(false);
     } catch (caught) {
       error = caught instanceof Error ? caught.message : String(caught);
@@ -747,12 +811,17 @@
     }
   }
 
-  async function duplicateRow(row: NotesPage): Promise<void> {
+  /** Duplicates each selected subtree once; a row's copy includes its sub-items, so a selected descendant is skipped. */
+  async function duplicateRows(rows: readonly NotesPage[]): Promise<void> {
+    const sources = notesDatabaseTopmostRows(rows, rowHierarchy);
+    if (mutating || sources.length === 0) return;
     mutating = true;
     error = null;
     try {
-      const loaded = await duplicateNotesPage(row.id, {});
-      pendingFocusRowId = loaded.page.id;
+      for (const row of sources) {
+        const loaded = await duplicateNotesPage(row.id, {});
+        pendingFocusRowId = loaded.page.id;
+      }
       await loadTable();
     } catch (caught) {
       error = caught instanceof Error ? caught.message : String(caught);
@@ -761,12 +830,18 @@
     }
   }
 
-  async function trashRow(row: NotesPage): Promise<void> {
+  /** Trashes the given rows; sub-items that are not given stay and move to the top level. */
+  async function trashRows(rows: readonly NotesPage[]): Promise<void> {
+    const targets = rows.filter((row) => !rowCreation.blocked(row.id));
+    if (mutating || targets.length === 0) return;
     mutating = true;
     error = null;
     try {
-      await trashNotesPage(row.id, true);
-      if (selectedPanelRowId === row.id) selectedPanelRowId = null;
+      for (const row of targets) {
+        await trashNotesPage(row.id, true);
+        if (selectedPanelRowId === row.id) selectedPanelRowId = null;
+        selectedRowIds = selectedRowIds.filter((id) => id !== row.id);
+      }
       await loadTable();
     } catch (caught) {
       error = caught instanceof Error ? caught.message : String(caught);
@@ -1001,6 +1076,7 @@
   {#if visibleColumns.some((column) => notesTableColumnPresentation(tableConfiguration?.presentation, column.id).calculation)}
     <CollectionRow template={gridTemplate} role="row" data-table-calculation-group={groupId ?? "__all__"} class="border-t border-(--cal-gridline) bg-muted/20 text-muted-foreground">
       <div role="cell"></div>
+      <div role="cell"></div>
       {#each visibleColumns as column (column.id)}
         {@const calculation = notesTableColumnPresentation(tableConfiguration?.presentation, column.id).calculation}
         <CollectionCell role="cell" class={frozenOffset(column.id) !== null ? "sticky z-20 bg-background" : ""} style={frozenOffset(column.id) !== null ? `left: ${frozenOffset(column.id)}px` : undefined}>
@@ -1144,11 +1220,41 @@
         <button class="min-h-8 rounded-md border border-border px-2 text-[0.8rem] hover:bg-accent" type="button" onclick={retryCsvPanel}>{t("common.retry")}</button>
       {/if}
 
+      {#if selectedRows.length > 0}
+        {@const single = selectedRows.length === 1 ? selectedRows[0] : null}
+        <CollectionSelectionBar count={selectedRows.length} onClear={() => { selectedRowIds = []; }}>
+          <CollectionSelectionAction icon={Trash2} label={t("notes.databaseSelectionTrash")} destructive disabled={mutating} onclick={() => { void trashRows(selectedRows); }} />
+          <CollectionMenu iconOnly kind="actions" label={t("collections.selection.more")} disabled={mutating}>
+            <div class="grid gap-0">
+              {#if single}
+                <CollectionMenuItem icon={rowOpenMode === "side_panel" ? PanelRight : FileText} label={t("collections.property.open")} onclick={() => openRow(single)} />
+              {/if}
+              <CollectionMenuItem icon={Copy} label={t("notes.databaseSelectionDuplicate")} onclick={() => { void duplicateRows(selectedRows); }} />
+              {#if single}
+                <CollectionMenu label={t("notes.databaseSubitemMove")} kind="property" icon={CornerDownRight} fullWidth disabled={mutating}>
+                  <NotesDatabaseRowParentControls rowId={single.id} rows={visibleRows} hierarchy={rowHierarchy} titleFor={rowTitle} pending={mutating} onSave={(parentId) => moveSubitems([single], parentId)} />
+                </CollectionMenu>
+              {/if}
+              {#if selectedRows.some((row) => rowHierarchy[row.id]?.parent_row_page_id)}
+                <CollectionMenuItem icon={ArrowUp} label={t("notes.databaseSubitemMoveToRoot")}
+                  onclick={() => { void moveSubitems(selectedRows.filter((row) => rowHierarchy[row.id]?.parent_row_page_id), null); }} />
+              {/if}
+              <CollectionMenuSeparator />
+              <CollectionMenuItem icon={Trash2} label={t("notes.databaseSelectionTrash")} destructive onclick={() => { void trashRows(selectedRows); }} />
+            </div>
+          </CollectionMenu>
+        </CollectionSelectionBar>
+      {/if}
+
       <!-- The bottom padding keeps the last row border inside the scroll clip when zoom gives rows fractional heights. -->
       <div bind:this={tableRoot} use:rememberDatabaseScroll={databaseResource("table", dataSourceId, viewScope()).key} class="min-w-0 overflow-x-auto overflow-y-hidden pb-px">
         <div role="table" aria-label={t("notes.databaseViewTable")} class="min-w-max">
           <CollectionRow template={gridTemplate} header role="row" class="border-t border-(--cal-gridline)">
-            <div role="columnheader"><span class="sr-only">{t("notes.databaseTableRowActions")}</span></div>
+            <div role="columnheader" class="flex justify-center">
+              <CollectionSelectionCheckbox checked={allRowsSelected} indeterminate={!allRowsSelected && selectedRows.length > 0} disabled={selectableRows.length === 0}
+                label={t(allRowsSelected ? "collections.selection.unselectAll" : "collections.selection.selectAll")} onToggle={toggleAllRowsSelected} />
+            </div>
+            <div role="columnheader"></div>
             {#each visibleColumns as column (column.id)}
               {@const columnIndex = visibleColumns.findIndex((candidate) => candidate.id === column.id)}
               {@const sortUnavailable = mutating || editingLocked || (sorts.length >= NOTES_DATABASE_QUERY_MAX_SORTS && !sorts.some((sort) => sort.property_id === column.id))}
@@ -1255,79 +1361,36 @@
                 </div>
               {:else if item.type === "calculation"}
                 {@render calculationRow(item.groupId)}
+              {:else if item.type === "addSubitem"}
+                <CollectionRow template={gridTemplate} role="row" data-database-subitem-add-row={item.parent.id}>
+                  <CollectionQuickAdd label={t("notes.databaseSubitemCreate")} contentColumn={3}
+                    indent={titleIndent((rowHierarchy[item.parent.id]?.depth ?? 0) + 1)}
+                    disabled={mutating || loading || rowCreation.blocked(item.parent.id)} onCreate={() => { void createSubitem(item.parent); }} />
+                </CollectionRow>
               {:else}
               {@const row = item.row}
               {@const rowIndex = item.rowIndex}
               {@const title = rowTitle(row)}
               {@const hierarchy = rowHierarchy[row.id]}
-              <CollectionRow template={gridTemplate} role="row" data-database-row-id={row.id} data-database-row-depth={hierarchy?.depth ?? 0} style={conditionalColorStyle(row, null)}>
+              {@const selected = selectedRowIds.includes(row.id)}
+              {@const expanded = rowExpanded(row)}
+              <CollectionRow template={gridTemplate} role="row" {selected} data-database-row-id={row.id} data-database-row-depth={hierarchy?.depth ?? 0} style={conditionalColorStyle(row, null)}>
                 <div role="cell" class="flex justify-center">
-                  <CollectionMenu iconOnly kind="actions" label={t("notes.databaseTableRowActions")}>
-                    <div class="grid gap-0">
-                      <button
-                        type="button"
-                        class="flex min-h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[length:inherit] text-muted-foreground hover:bg-accent hover:text-foreground"
-                        aria-label={t("notes.databaseRowsOpen", title)}
-                        title={t("notes.databaseRowsOpen", title)}
-                        disabled={mutating || rowCreation.blocked(row.id)} onclick={() => openRow(row)}
-                      >
-                        <FileText class="size-3.5" aria-hidden="true" />
-                        <span class="truncate">{t("notes.databaseRowsOpen", title)}</span>
-                      </button>
-                      <button type="button" class="flex min-h-8 items-center gap-2 rounded px-2 text-left hover:bg-accent"
-                        disabled={mutating || rowCreation.blocked(row.id) || (hierarchy?.depth ?? 0) >= NOTES_DATABASE_ROW_MAX_DEPTH}
-                        onclick={() => { void createSubitem(row); }}><Plus class="size-3.5" />{t("notes.databaseSubitemCreate")}</button>
-                      <CollectionMenu label={t("notes.databaseSubitemMove")} kind="property" fullWidth disabled={mutating || rowCreation.blocked(row.id)}>
-                        <NotesDatabaseRowParentControls rowId={row.id} rows={visibleRows} hierarchy={rowHierarchy} titleFor={rowTitle} pending={mutating} onSave={(parentId) => moveSubitem(row, parentId)} />
-                      </CollectionMenu>
-                      {#if hierarchy?.parent_row_page_id}
-                        <button type="button" class="flex min-h-8 items-center gap-2 rounded px-2 text-left hover:bg-accent" disabled={mutating || rowCreation.blocked(row.id)}
-                          onclick={() => { void moveSubitem(row, null); }}><ArrowUp class="size-3.5" />{t("notes.databaseSubitemMoveToRoot")}</button>
-                      {/if}
-                      <button
-                        type="button"
-                        class="flex min-h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[length:inherit] text-muted-foreground hover:bg-accent hover:text-foreground"
-                        disabled={mutating || rowCreation.blocked(row.id)}
-                        aria-label={t("notes.databaseRowsDuplicate", title)}
-                        title={t("notes.databaseRowsDuplicate", title)}
-                        onclick={() => {
-                          void duplicateRow(row);
-                        }}
-                      >
-                        <Copy class="size-3.5" aria-hidden="true" />
-                        <span class="truncate">{t("notes.databaseRowsDuplicate", title)}</span>
-                      </button>
-                      <button
-                        type="button"
-                        class="flex min-h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[length:inherit] text-muted-foreground hover:bg-accent hover:text-foreground"
-                        disabled={mutating || rowCreation.blocked(row.id)}
-                        aria-label={t("notes.databaseRowsTrash", title)}
-                        title={t("notes.databaseRowsTrash", title)}
-                        onclick={() => {
-                          void trashRow(row);
-                        }}
-                      >
-                        <Trash2 class="size-3.5" aria-hidden="true" />
-                        <span class="truncate">{t("notes.databaseRowsTrash", title)}</span>
-                      </button>
-                    </div>
-                  </CollectionMenu>
+                  <CollectionSelectionCheckbox checked={selected} disabled={rowCreation.blocked(row.id)}
+                    label={t(selected ? "collections.selection.unselect" : "collections.selection.select", title)} onToggle={() => toggleRowSelected(row)} />
+                </div>
+                <div role="cell" class="flex justify-center">
+                  <CollectionExpandToggle {expanded} hasChildren={rowHasChildren(row)} disabled={rowExpansionLocked(row) || rowCreation.blocked(row.id)}
+                    label={t(expanded ? "collections.selection.collapse" : "collections.selection.expand", title)}
+                    title={rowHasChildren(row) ? t("notes.databaseSubitemCount", formatNumber(localization.locale, hierarchy?.child_count ?? 0)) : undefined}
+                    onToggle={() => toggleRowExpanded(row)} />
                 </div>
                 {#each visibleColumns as column, columnIndex (column.id)}
                   {@const editValue = rowCreation.valueFor(row, column)}
                   <CollectionCell role="cell" class={`${frozenOffset(column.id) !== null ? "sticky z-20 bg-background" : ""} ${notesTableColumnPresentation(tableConfiguration?.presentation, column.id).wrap ? "notes-table-wrap" : ""}`}
                     style={`${frozenOffset(column.id) !== null ? `left: ${frozenOffset(column.id)}px;` : ""} ${conditionalColorStyle(row, column.id)}`}>
                     <div class={column.type === "title" ? "flex w-full min-w-0 items-start gap-0.5" : "contents"}
-                      style={column.type === "title" ? `padding-left: ${Math.min((hierarchy?.depth ?? 0) * rowIndentPixels, column.width / 2)}px;` : ""}>
-                    {#if column.type === "title" && (hierarchy?.child_count ?? 0) > 0}
-                      <button type="button" class="relative z-10 mt-0.5 flex size-7 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent"
-                        aria-label={collapsedRowIds.includes(row.id) ? t("notes.databaseSubitemExpand", title) : t("notes.databaseSubitemCollapse", title)}
-                        aria-expanded={!collapsedRowIds.includes(row.id)}
-                        title={t("notes.databaseSubitemCount", formatNumber(localization.locale, hierarchy?.child_count ?? 0))}
-                        disabled={mutating || editingLocked || (!collapsedRowIds.includes(row.id) && !tableConfiguration?.collapsed_row_ids?.includes(row.id) && (tableConfiguration?.collapsed_row_ids?.length ?? 0) >= NOTES_DATABASE_MAX_COLLAPSED_ROWS)} onclick={() => toggleSubitems(row.id)}>
-                        <ChevronRight class={`size-3.5 ${collapsedRowIds.includes(row.id) ? "" : "rotate-90"}`} />
-                      </button>
-                    {/if}
+                      style={column.type === "title" ? `padding-left: ${titleIndent(hierarchy?.depth ?? 0)};` : ""}>
                     <NotesDatabasePropertyEditor {row} {column} {rowIndex} {columnIndex} value={editValue}
                       disabled={mutating || (column.type !== "title" && rowCreation.blocked(row.id))}
                       onSave={(value) => saveCell(row, column, value)}
@@ -1358,7 +1421,7 @@
 
           {#key addRowKey}
             <CollectionRow template={gridTemplate} data-database-new-row>
-              <CollectionQuickAdd label={t("notes.databaseNewPage")} contentColumn={2} disabled={mutating || loading} onCreate={() => { void createRow(); }} />
+              <CollectionQuickAdd label={t("notes.databaseNewPage")} contentColumn={3} disabled={mutating || loading} onCreate={() => { void createRow(); }} />
             </CollectionRow>
           {/key}
         </div>

@@ -5,7 +5,7 @@ import type { NotesDataSourcePropertyType, NotesDataSourceTableView } from "$lib
 import type { NotesDatabasePropertyActionRequest } from "$lib/notes/database/data-source-schema";
 import {
   createNotesDataSourceRowPage, getNotesDataSourceTableView, listNotesDataSourceTemplates, loadNotesPage,
-  createNotesDataSourceSubitem,
+  createNotesDataSourceSubitem, duplicateNotesPage, trashNotesPage,
   updateNotesDataSourceRowProperty, updateNotesDataSourceTableView,
 } from "$lib/api/notes";
 import { createProvisionalNotesPage } from "$lib/notes/pages/creation";
@@ -18,6 +18,8 @@ vi.mock("$lib/api/notes", () => ({
   updateNotesDataSourceTableView: vi.fn(),
   createNotesDataSourceRowPage: vi.fn(),
   createNotesDataSourceSubitem: vi.fn(),
+  duplicateNotesPage: vi.fn(),
+  trashNotesPage: vi.fn(),
   updateNotesDataSourceRowParent: vi.fn(),
   updateNotesDataSourceRowProperty: vi.fn(),
   applyNotesDataSourceTemplate: vi.fn(),
@@ -195,7 +197,7 @@ describe("Notes table sub-items", () => {
     inputs[2].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true, cancelable: true }));
     expect(document.activeElement).toBe(inputs[1]);
   });
-  it("temporarily reveals a sub-item created under a collapsed locked parent without writing view settings", async () => {
+  it("opens a collapsed parent of a locked view for the session and adds a sub-item without writing view settings", async () => {
     const parentId = "11111111-1111-4111-8111-111111111111";
     const initial = table(240);
     initial.rows = [createProvisionalNotesPage({ id: parentId, first_block_id: "block", title: "Parent", parent: { type: "data_source_id", data_source_id: "source" }, folder_id: null }).page];
@@ -203,10 +205,11 @@ describe("Notes table sub-items", () => {
     initial.view.configuration = { type: "table", table: { ...initial.view.configuration!.table as Record<string, unknown>, collapsed_row_ids: [parentId] } };
     vi.mocked(createNotesDataSourceSubitem).mockImplementation(() => new Promise(() => {}));
     await open(vi.fn(), initial, vi.fn(), true);
-    expect(document.querySelector<HTMLButtonElement>('[aria-label="Expand sub-items of Parent"]')!.disabled).toBe(true);
-    document.querySelector<HTMLButtonElement>(`[data-database-row-id="${parentId}"] button[aria-label="Row actions"]`)!.click();
-    await tick(); await tick();
-    action(document.querySelector('[role="dialog"][aria-label="Row actions"]')!, "Add sub-item").click();
+    expect(document.querySelector(`[data-database-subitem-add-row="${parentId}"]`)).toBeNull();
+    document.querySelector<HTMLButtonElement>('button[aria-label="Expand Parent"]')!.click();
+    await tick();
+    expect(document.querySelector<HTMLButtonElement>('button[aria-label="Collapse Parent"]')!.disabled).toBe(false);
+    document.querySelector<HTMLButtonElement>(`[data-database-subitem-add-row="${parentId}"] button`)!.click();
     await vi.waitFor(() => expect(createNotesDataSourceSubitem).toHaveBeenCalledOnce());
     const id = vi.mocked(createNotesDataSourceSubitem).mock.calls[0][2].id;
     const input = document.querySelector<HTMLInputElement>(`[data-database-row-id="${id}"] input[aria-label="Name"]`);
@@ -237,7 +240,8 @@ describe("Notes table sub-items", () => {
     inputs()[0].focus();
     inputs()[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
     expect(document.activeElement).toBe(inputs()[1]);
-    document.querySelector<HTMLButtonElement>('[aria-label="Collapse sub-items of Parent"]')!.click();
+    expect(document.querySelector<HTMLButtonElement>('button[aria-label="Collapse Child"]')).toBeNull();
+    document.querySelector<HTMLButtonElement>('button[aria-label="Collapse Parent"]')!.click();
     await vi.waitFor(() => expect(inputs().map((input) => input.value)).toEqual(["Parent", "Other"]));
     expect(updateNotesDataSourceTableView).toHaveBeenLastCalledWith("source", expect.objectContaining({
       configuration: expect.objectContaining({ collapsed_row_ids: [parentId] }),
@@ -258,7 +262,7 @@ describe("Notes table sub-items", () => {
     } });
     await vi.waitFor(() => expect(document.querySelector('[data-database-row-id="row"]')).not.toBeNull());
     const row = document.querySelector<HTMLElement>('[data-database-row-id="row"]')!;
-    expect(row.querySelectorAll('[role="cell"]')).toHaveLength(3);
+    expect(row.querySelectorAll('[role="cell"]')).toHaveLength(4);
     const openButton = row.querySelector<HTMLButtonElement>('button[aria-label="Open Plan"]')!;
     expect(openButton.closest('[role="cell"]')?.querySelector('input[aria-label="Name"]')).not.toBeNull();
     expect(openButton.textContent?.trim()).toBe("Open");
@@ -266,22 +270,56 @@ describe("Notes table sub-items", () => {
     expect(onSelectPage).toHaveBeenCalledExactlyOnceWith("row");
   });
 
-  it("adds a real sub-item through the row menu and focuses its optimistic title without creating a root row", async () => {
+  it("adds a real sub-item from an opened row's add row and focuses its optimistic title without creating a root row", async () => {
     const initial = table(240);
     const parent = createProvisionalNotesPage({ id: "parent", first_block_id: "block", title: "Parent", parent: { type: "data_source_id", data_source_id: "source" }, folder_id: null }).page;
     initial.rows = [parent];
     initial.row_hierarchy = { parent: { parent_row_page_id: null, ancestor_row_page_ids: [], depth: 0, child_count: 0 } };
     vi.mocked(createNotesDataSourceSubitem).mockImplementation(() => new Promise(() => {}));
     await open(vi.fn(), initial);
-    document.querySelector<HTMLButtonElement>('[data-database-row-id="parent"] button[aria-label="Row actions"]')!.click();
-    await tick(); await tick();
-    action(document.querySelector('[role="dialog"][aria-label="Row actions"]')!, "Add sub-item").click();
+    expect(document.querySelector('[data-database-subitem-add-row="parent"]')).toBeNull();
+    document.querySelector<HTMLButtonElement>('[data-database-row-id="parent"] button[aria-label="Expand Parent"]')!.click();
+    await tick();
+    const addRow = document.querySelector<HTMLElement>('[data-database-subitem-add-row="parent"]')!;
+    expect(addRow.textContent).toContain("Add sub-item");
+    addRow.querySelector<HTMLButtonElement>("button")!.click();
     await vi.waitFor(() => expect(createNotesDataSourceSubitem).toHaveBeenCalledOnce());
     const request = vi.mocked(createNotesDataSourceSubitem).mock.calls[0][2];
     const child = document.querySelector<HTMLElement>(`[data-database-row-id="${request.id}"]`)!;
     expect(child.dataset.databaseRowDepth).toBe("1");
     await vi.waitFor(() => expect(document.activeElement).toBe(child.querySelector('input[aria-label="Name"]')));
     expect(createNotesDataSourceRowPage).not.toHaveBeenCalled();
+  });
+
+  it("acts on selected rows from the selection bar and copies a selected subtree once", async () => {
+    const page = (id: string, title: string) => createProvisionalNotesPage({ id, first_block_id: `block-${id}`, title, parent: { type: "data_source_id", data_source_id: "source" }, folder_id: null }).page;
+    const initial = table(240);
+    initial.rows = [page("parent", "Parent"), page("child", "Child"), page("other", "Other")];
+    initial.row_hierarchy = {
+      parent: { parent_row_page_id: null, ancestor_row_page_ids: [], depth: 0, child_count: 1 },
+      child: { parent_row_page_id: "parent", ancestor_row_page_ids: ["parent"], depth: 1, child_count: 0 },
+      other: { parent_row_page_id: null, ancestor_row_page_ids: [], depth: 0, child_count: 0 },
+    };
+    vi.mocked(duplicateNotesPage).mockResolvedValue({ page: initial.rows[0] } as Awaited<ReturnType<typeof duplicateNotesPage>>);
+    vi.mocked(trashNotesPage).mockResolvedValue(initial.rows[0]);
+    await open(vi.fn(), initial);
+    expect(document.querySelector('[role="toolbar"]')).toBeNull();
+    document.querySelector<HTMLInputElement>('[aria-label="Select Parent"]')!.click();
+    document.querySelector<HTMLInputElement>('[aria-label="Select Child"]')!.click();
+    await tick();
+    const bar = document.querySelector<HTMLElement>('[role="toolbar"]')!;
+    expect(bar.textContent).toContain("2 selected");
+    bar.querySelector<HTMLButtonElement>('button[aria-label="More actions"]')!.click();
+    await tick(); await tick();
+    const menu = document.querySelector('[role="dialog"][aria-label="More actions"]')!;
+    expect(Array.from(menu.querySelectorAll("button")).some((button) => button.textContent?.trim() === "Open")).toBe(false);
+    action(menu, "Duplicate").click();
+    await vi.waitFor(() => expect(duplicateNotesPage).toHaveBeenCalledExactlyOnceWith("parent", {}));
+    await vi.waitFor(() => expect(Array.from(bar.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Move to trash")!.disabled).toBe(false));
+    Array.from(bar.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Move to trash")!.click();
+    await vi.waitFor(() => expect(trashNotesPage).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(trashNotesPage).mock.calls.map(([id]) => id)).toEqual(["parent", "child"]);
+    await vi.waitFor(() => expect(document.querySelector('[role="toolbar"]')).toBeNull());
   });
 });
 

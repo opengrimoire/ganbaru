@@ -52,6 +52,8 @@ export const collections = {
     clear: "Clear",
     select: (name: string) => `Select ${name}`,
     unselect: (name: string) => `Unselect ${name}`,
+    selectAll: "Select all rows",
+    unselectAll: "Unselect all rows",
     expand: (name: string) => `Expand ${name}`,
     collapse: (name: string) => `Collapse ${name}`,
     more: "More actions",

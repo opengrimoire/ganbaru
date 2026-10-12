@@ -175,6 +175,8 @@ export const database = {
   databaseRowsOpen: (title: string) => `Open ${title}`,
   databaseRowsDuplicate: (title: string) => `Duplicate ${title}`,
   databaseRowsTrash: (title: string) => `Move ${title} to trash`,
+  databaseSelectionDuplicate: "Duplicate",
+  databaseSelectionTrash: "Move to trash",
   databaseRowsEmpty: "No rows yet",
   databaseCsvImportTitle: "CSV import",
   databaseCsvImportFile: "CSV file",

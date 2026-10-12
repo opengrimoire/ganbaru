@@ -178,6 +178,8 @@ export const database = {
   databaseRowsOpen: (title: string) => `Abrir ${title}`,
   databaseRowsDuplicate: (title: string) => `Duplicar ${title}`,
   databaseRowsTrash: (title: string) => `Mover ${title} a la papelera`,
+  databaseSelectionDuplicate: "Duplicar",
+  databaseSelectionTrash: "Mover a la papelera",
   databaseRowsEmpty: "Todavía no hay filas",
   databaseCsvImportTitle: "Importar CSV",
   databaseCsvImportFile: "Archivo CSV",

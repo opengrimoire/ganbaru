@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { notesDatabaseCollapsedRows, notesDatabaseHierarchyRows, parseNotesDatabaseRowHierarchy, type NotesDatabaseRowHierarchy } from "./row-hierarchy";
+import { NOTES_DATABASE_ROW_MAX_DEPTH, notesDatabaseCollapsedRows, notesDatabaseHierarchyItems, notesDatabaseHierarchyRows, notesDatabaseTopmostRows, parseNotesDatabaseRowHierarchy, type NotesDatabaseRowHierarchy } from "./row-hierarchy";
 
 function hierarchy(ancestors: Record<string, string[]>): NotesDatabaseRowHierarchy {
   return Object.fromEntries(Object.entries(ancestors).map(([id, parents]) => [id, {
@@ -14,6 +14,29 @@ describe("database row hierarchy", () => {
     expect(notesDatabaseHierarchyRows(rows, metadata, []).map((row) => row.id)).toEqual(["other", "parent", "child-b", "grandchild", "child-a"]);
     expect(notesDatabaseHierarchyRows(rows, metadata, ["parent"]).map((row) => row.id)).toEqual(["other", "parent"]);
     expect(notesDatabaseHierarchyRows(rows, metadata, ["unloaded"]).map((row) => row.id)).toEqual(["other", "parent", "child-b", "child-a"]);
+  });
+
+  it("closes each expanded row with an add row after its visible sub-items", () => {
+    const rows = ["parent", "child", "grandchild", "other"].map((id) => ({ id }));
+    const metadata = hierarchy({ child: ["parent"], grandchild: ["child", "parent"] });
+    const items = (expanded: string[], collapsed: string[] = []) => notesDatabaseHierarchyItems(rows, metadata, collapsed, (row) => expanded.includes(row.id))
+      .map((item) => item.type === "row" ? item.row.id : `+${item.parent.id}`);
+    expect(items([])).toEqual(["parent", "child", "grandchild", "other"]);
+    expect(items(["parent", "child"])).toEqual(["parent", "child", "grandchild", "+child", "+parent", "other"]);
+    expect(items(["parent", "other"], ["child"])).toEqual(["parent", "child", "+parent", "other", "+other"]);
+  });
+
+  it("omits the add row under rows at the maximum depth", () => {
+    const ancestors = Array.from({ length: NOTES_DATABASE_ROW_MAX_DEPTH }, (_, index) => `ancestor-${index}`);
+    const metadata = hierarchy({ deepest: ancestors, shallower: ancestors.slice(1) });
+    const items = notesDatabaseHierarchyItems([{ id: "shallower" }, { id: "deepest" }], metadata, [], () => true);
+    expect(items.filter((item) => item.type === "addSubitem").map((item) => item.parent.id)).toEqual(["shallower"]);
+  });
+
+  it("keeps only the topmost selected rows of each subtree", () => {
+    const metadata = hierarchy({ child: ["parent"], grandchild: ["child", "parent"], cousin: ["uncle"] });
+    const rows = ["grandchild", "parent", "cousin", "other"].map((id) => ({ id }));
+    expect(notesDatabaseTopmostRows(rows, metadata).map((row) => row.id)).toEqual(["parent", "cousin", "other"]);
   });
 
   it("retains filtered descendants and validates exact ancestry rather than trusting IPC depth", () => {

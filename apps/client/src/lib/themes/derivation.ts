@@ -191,7 +191,6 @@ export function deriveAppTokens(
   const eventPanelContrast = shift(deltas.eventPanelContrastDeltaL);
   return {
     "--background": canvas,
-    "--cal-header-bg": canvas,
     "--card": card,
     "--card-foreground": fg(card),
     "--popover": popover,

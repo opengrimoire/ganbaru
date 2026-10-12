@@ -147,10 +147,6 @@ export const theme = {
         title: "App canvas",
         description: "Most views paint their own surface over it",
       },
-      calendarHeader: {
-        title: "Calendar header",
-        description: "Calendar day and time headers",
-      },
       textColor: {
         title: "Text color",
         description: "Applied to text across the app",

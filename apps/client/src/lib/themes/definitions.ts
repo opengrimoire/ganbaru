@@ -143,9 +143,8 @@ export interface UserTheme {
   /** Engine version stamp; drives the rebake banner. */
   derivationEngineVersion: number;
   /**
-   * Default bundle used for the internal calendar area: calendar surface,
-   * event palette, and calendar details. The header follows app canvas
-   * separately through `--cal-header-bg`.
+   * Default bundle used for the internal calendar area, including its day
+   * and time headers: calendar surface, event palette, and calendar details.
    */
   calendarDefaultMode: CalendarColorDefaultMode;
   /** Custom basis used when `calendarDefaultMode` is "custom". */
@@ -339,7 +338,6 @@ export function getThemeById(
  */
 export const APP_TOKEN_KEYS = Object.freeze([
   "--background",
-  "--cal-header-bg",
   "--card",
   "--card-foreground",
   "--popover",
@@ -477,7 +475,6 @@ export type ThemeTokenRowOrderEntry =
 export const THEME_TOKEN_ROW_ORDER = Object.freeze([
   { kind: "source", key: "canvas" },
   { kind: "app", key: "--background" },
-  { kind: "app", key: "--cal-header-bg" },
   { kind: "app", key: "--card" },
   { kind: "app", key: "--card-foreground" },
   { kind: "app", key: "--popover" },
@@ -539,7 +536,6 @@ export const BASE_APP_TOKENS: Readonly<
 > = Object.freeze({
   light: Object.freeze({
     "--background": "#F4F4F7",
-    "--cal-header-bg": "#F4F4F7",
     "--card": "#FFFFFF",
     "--card-foreground": "#141420",
     "--popover": "#FFFFFF",
@@ -583,7 +579,6 @@ export const BASE_APP_TOKENS: Readonly<
   }),
   dark: Object.freeze({
     "--background": "#27282A",
-    "--cal-header-bg": "#27282A",
     "--card": "#2E2F31",
     "--card-foreground": "#ECECF2",
     "--popover": "#353638",

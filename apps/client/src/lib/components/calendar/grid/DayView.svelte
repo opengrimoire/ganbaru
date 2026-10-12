@@ -359,10 +359,10 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="flex h-full flex-col" style="visibility: {ready ? 'visible' : 'hidden'};">
-<div class="relative min-h-0 flex-1" style="background-color: var(--cal-header-bg);">
+<div class="relative min-h-0 flex-1" style="background-color: var(--cal-bg);">
   <div
     class="absolute left-0 right-0 top-0 z-40 grid"
-    style="grid-template-columns: {gridCols}; background-color: var(--cal-header-bg);"
+    style="grid-template-columns: {gridCols}; background-color: var(--cal-bg);"
   >
     <!-- Header row -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -374,7 +374,7 @@
         grid-column: 1 / -1;
         grid-template-columns: subgrid;
         height: var(--cal-header-row-h);
-        background-color: var(--cal-header-bg);
+        background-color: var(--cal-bg);
       "
     >
       <TimezoneSelector
@@ -431,7 +431,7 @@
       style="
         grid-column: 1 / -1;
         grid-template-columns: subgrid;
-        background-color: var(--cal-header-bg);
+        background-color: var(--cal-bg);
       "
     >
       <div style="grid-column: span {timezoneCount};"></div>

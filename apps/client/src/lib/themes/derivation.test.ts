@@ -170,7 +170,6 @@ describe("deriveAppTokens", () => {
   it("pins the source colors to the tokens they represent", () => {
     const light = deriveAppTokens(LIGHT_SOURCES);
     expect(light["--background"]).toBe(LIGHT_SOURCES.canvas);
-    expect(light["--cal-header-bg"]).toBe(LIGHT_SOURCES.canvas);
     expect(light["--foreground"]).toBe(LIGHT_SOURCES.ink);
     expect(light["--primary"]).toBe(LIGHT_SOURCES.primary);
     expect(light["--destructive"]).toBe(LIGHT_SOURCES.destructive);
@@ -342,7 +341,6 @@ describe("deriveAppTokens", () => {
     const derived = deriveAppTokens(DARK_SOURCES);
     const exactKeys = [
       "--background",
-      "--cal-header-bg",
       "--foreground",
       "--card-foreground",
       "--popover-foreground",
@@ -600,9 +598,6 @@ describe("deriveCalendarColorDefaultBundle", () => {
     expect(bundle.runtimeTokens["--cal-scrollbar-thumb"]).not.toBe(
       deriveAppTokens(LIGHT_SOURCES)["--muted"],
     );
-    expect(
-      Object.hasOwn(bundle.calendarTokens, "--cal-header-bg"),
-    ).toBe(false);
   });
 
   it("uses custom mode to derive from the supplied basis", () => {

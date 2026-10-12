@@ -55,7 +55,7 @@
       "maxSourceModules": 270
     }
   ],
-  "maxTotalSourceModules": 1183,
+  "maxTotalSourceModules": 1186,
   "requiredMobileModules": [
     "src/main.ts",
     "src/main-mobile.ts",

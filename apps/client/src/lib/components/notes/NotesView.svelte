@@ -531,27 +531,29 @@
   bind:this={notesRootElement}
   class="notes-view-root flex h-full min-h-0 flex-col overflow-hidden text-foreground"
   class:notes-view-mobile={mobileLayout}
-  style="background-color: var(--cal-bg);"
   data-first-use-shell="notes"
 >
-  <NotesWorkspaceHeader
-    {mobileLayout}
-    {selectedProject}
-    {selectedGroup}
-    {selectedProjectId}
-    selectedPage={topBarSelectedPage}
-    explorerCollapsed={notes.explorerCollapsed}
-    {creationFolderId}
-    {showInactiveProjects}
-    onShowInactiveProjectsChange={(value) => {
-      showInactiveProjects = value;
-    }}
-    onProjectSelected={handleProjectSelected}
-    onShowHome={showProjectHome}
-    {projectSettingsOpen}
-    onToggleProjectSettings={toggleProjectSettings}
-    bind:pageActionsTarget
-  />
+  {#snippet workspaceHeader()}
+    <NotesWorkspaceHeader
+      {mobileLayout}
+      {selectedProject}
+      {selectedGroup}
+      {selectedProjectId}
+      selectedPage={topBarSelectedPage}
+      explorerCollapsed={notes.explorerCollapsed}
+      {creationFolderId}
+      {showInactiveProjects}
+      onShowInactiveProjectsChange={(value) => {
+        showInactiveProjects = value;
+      }}
+      onProjectSelected={handleProjectSelected}
+      onShowHome={showProjectHome}
+      {projectSettingsOpen}
+      onToggleProjectSettings={toggleProjectSettings}
+      bind:pageActionsTarget
+    />
+  {/snippet}
+  {#if mobileLayout}{@render workspaceHeader()}{/if}
   {#if !mobileLayout && projectSettingsOpen && selectedProjectId}
     <NotesProjectSettingsPanel
         projectId={selectedProjectId}
@@ -637,7 +639,7 @@
       </div>
     {/if}
   {/each}
-  <div class="notes-view-layout relative flex min-h-0 flex-1 overflow-hidden">
+  <div class="notes-view-layout relative flex min-h-0 flex-1 overflow-hidden" class:explorer-chrome={!mobileLayout}>
     {#if showProjectExplorer}
       <NotesProjectHome
         {mobileLayout}
@@ -653,121 +655,124 @@
       />
     {/if}
     {#if showPrimaryContent}
-      <div class="flex min-w-0 flex-1 overflow-hidden">
-        {#if !notes.loaded && notes.loadError}
-          <div class="flex min-w-0 flex-1 text-sm" data-notes-first-use-state>
-            <Notice layout="fill" message={t("notes.loadFailed", notes.loadError)} onRetry={() => notes.load()} />
-          </div>
-        {:else if !mobileLayout && selectedWorkingMarkdownFile}
-          <NotesWorkingMarkdownEditor
-            file={selectedWorkingMarkdownFile}
-            onDirtyChange={(dirty) => { workingMarkdownDirty = dirty; }}
-          />
-        {:else if activeSurfaceKind === "archive" || activeSurfaceKind === "trash"}
-          {#if activeSurfaceLoadState?.status === "ready" && activeSurfaceLoadState.component.kind === activeSurfaceKind}
-            {@const ActiveNotesSurface = activeSurfaceLoadState.component.component}
-            <ActiveNotesSurface />
-          {:else if activeSurfaceLoadState?.status === "failed"}
-            <div class="flex min-w-0 flex-1 text-sm">
-              <Notice
-                layout="fill"
-                message={t("common.viewLoadFailed", activeSurfaceKind === "archive" ? t("notes.archive") : t("notes.trash"))}
-                copy={false}
-                onRetry={() => requestNotesSurface(activeSurfaceKind, true)}
-              />
+      <div class="notes-view-canvas flex min-w-0 flex-1 flex-col overflow-hidden">
+        {#if !mobileLayout}{@render workspaceHeader()}{/if}
+        <div class="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+          {#if !notes.loaded && notes.loadError}
+            <div class="flex min-w-0 flex-1 text-sm" data-notes-first-use-state>
+              <Notice layout="fill" message={t("notes.loadFailed", notes.loadError)} onRetry={() => notes.load()} />
             </div>
-          {:else}
-            <Loading layout="fill" label={activeSurfaceKind === "archive" ? t("notes.loadingArchive") : t("notes.loadingTrash")} class="min-w-0 flex-1" />
-          {/if}
-        {:else}
-          {#each notes.editorPanes as pane (pane.id)}
-            {@const store = pane.store}
-            {@const isContextual = contextualPane?.id === pane.id}
-            {@const center = !showDatabasePage && isContextual && showCenterPeek}
-            {@const side = !showDatabasePage && isContextual && showSidePeek}
-            {@const hidden = showDatabasePage
-              ? notes.activePaneId !== pane.id
-              : !isContextual && peekPromotesToFullPage}
-            {@const selected = store.selectedPageId !== null && !store.isPagePendingRemoval(store.selectedPageId)}
-            <div
-              class={hidden ? "hidden" : center
-                ? "surface-backdrop fixed inset-x-0 bottom-0 z-50 flex items-center justify-center px-3 py-4 sm:px-6 sm:py-8"
-                : side ? "ml-auto flex min-w-0 basis-1/2 overflow-hidden"
-                  : !showDatabasePage && showSidePeek ? "flex min-w-0 basis-1/2 overflow-hidden" : "flex min-w-0 flex-1 overflow-hidden"}
-              style={center ? "top: calc(var(--titlebar-h) + var(--toolbar-h));" : undefined}
-              inert={hidden || (!showDatabasePage && !isContextual && showCenterPeek)}
-              data-notes-pane={pane.id}
-              data-floating-root
-              data-notes-main-page={pane.id === notes.mainPaneId ? store.selectedPageId : undefined}
-              role="presentation"
-              onpointerdowncapture={(event) => {
-                if (event.target !== event.currentTarget || !center) notes.activatePane(pane.id);
-              }}
-              onfocusincapture={() => notes.activatePane(pane.id)}
-              onclick={(event) => { if (center && event.target === event.currentTarget) closePagePeek(); }}
-            >
-              <div
-                class={center
-                  ? "notes-center-peek-panel flex min-w-0 overflow-hidden rounded-floating border border-border shadow-floating"
-                  : side ? "flex min-w-0 flex-1 overflow-hidden border-l border-border" : "flex min-w-0 flex-1 overflow-hidden"}
-                style="background-color: var(--cal-bg);"
-                role={!showDatabasePage && isContextual && showPagePeek ? "dialog" : undefined}
-                aria-modal={!showDatabasePage && isContextual && showPagePeek ? center : undefined}
-                data-notes-page-peek={!showDatabasePage && isContextual && showPagePeek || undefined}
-              >
-                {#if selected}
-                  {#if store.selectedDatabaseBlockId}
-                    {#key store.selectedDatabaseBlockId}
-                      <NotesDatabasePage
-                        editorStore={store}
-                        {mobileLayout}
-                        pageActionsTarget={notes.activePaneId === pane.id ? pageActionsTarget : null}
-                      />
-                    {/key}
-                  {/if}
-                  <div
-                    class={store.selectedDatabaseBlockId ? "hidden" : "flex min-h-0 min-w-0 flex-1 overflow-hidden"}
-                    inert={store.selectedDatabaseBlockId != null}
-                    data-notes-editor-container
-                  >
-                  {#key store.selectedPageId}
-                    <NotesLoadingSkeleton
-                      ready={store.loadedPage?.id === store.selectedPageId && store.primaryContentReady || !!store.loadError}
-                      page={store.allPages.find((page) => page.id === store.selectedPageId) ?? store.linkResolutionPages.find((page) => page.id === store.selectedPageId) ?? null}
-                      openMode={isContextual && showPagePeek ? store.pageOpenMode : "full"}
-                    >
-                      {#snippet children()}
-                        {#if store.loadedPage?.id === store.selectedPageId && store.primaryContentReady
-                          && (!store.selectedDatabaseBlockId || retainedEditorPages[pane.id] === store.selectedPageId)}
-                          <NotesEditor
-                            projectId={selectedProjectId}
-                            editorStore={store}
-                            active={!store.selectedDatabaseBlockId && notes.activePaneId === pane.id}
-                            openMode={isContextual && showPagePeek ? store.pageOpenMode : "full"}
-                            pageActionsTarget={!store.selectedDatabaseBlockId && notes.activePaneId === pane.id ? pageActionsTarget : null}
-                            onClose={() => { void notes.closePane(pane.id).catch((error: unknown) => console.warn("Close Notes pane failed", error)); }}
-                            onOpenModeChange={(mode) => { void notes.showPaneAs(pane.id, mode).catch((error: unknown) => console.warn("Change Notes pane mode failed", error)); }}
-                          />
-                        {:else if store.loadError}
-                          <div class="flex min-w-0 flex-1 text-sm">
-                            <Notice layout="fill" message={t("notes.loadFailed", store.loadError)} onRetry={() => store.selectPageLocally(store.selectedPageId)}>
-                              {#snippet actions()}
-                                {#if isContextual && showPagePeek}
-                                  <button type="button" class="notice-action-text" onclick={() => { void notes.closePane(pane.id).catch((error: unknown) => console.warn("Close Notes pane failed", error)); }}>{t("notes.closePeek")}</button>
-                                {/if}
-                              {/snippet}
-                            </Notice>
-                          </div>
-                        {/if}
-                      {/snippet}
-                    </NotesLoadingSkeleton>
-                  {/key}
-                  </div>
-                {/if}
+          {:else if !mobileLayout && selectedWorkingMarkdownFile}
+            <NotesWorkingMarkdownEditor
+              file={selectedWorkingMarkdownFile}
+              onDirtyChange={(dirty) => { workingMarkdownDirty = dirty; }}
+            />
+          {:else if activeSurfaceKind === "archive" || activeSurfaceKind === "trash"}
+            {#if activeSurfaceLoadState?.status === "ready" && activeSurfaceLoadState.component.kind === activeSurfaceKind}
+              {@const ActiveNotesSurface = activeSurfaceLoadState.component.component}
+              <ActiveNotesSurface />
+            {:else if activeSurfaceLoadState?.status === "failed"}
+              <div class="flex min-w-0 flex-1 text-sm">
+                <Notice
+                  layout="fill"
+                  message={t("common.viewLoadFailed", activeSurfaceKind === "archive" ? t("notes.archive") : t("notes.trash"))}
+                  copy={false}
+                  onRetry={() => requestNotesSurface(activeSurfaceKind, true)}
+                />
               </div>
-            </div>
-          {/each}
-        {/if}
+            {:else}
+              <Loading layout="fill" label={activeSurfaceKind === "archive" ? t("notes.loadingArchive") : t("notes.loadingTrash")} class="min-w-0 flex-1" />
+            {/if}
+          {:else}
+            {#each notes.editorPanes as pane (pane.id)}
+              {@const store = pane.store}
+              {@const isContextual = contextualPane?.id === pane.id}
+              {@const center = !showDatabasePage && isContextual && showCenterPeek}
+              {@const side = !showDatabasePage && isContextual && showSidePeek}
+              {@const hidden = showDatabasePage
+                ? notes.activePaneId !== pane.id
+                : !isContextual && peekPromotesToFullPage}
+              {@const selected = store.selectedPageId !== null && !store.isPagePendingRemoval(store.selectedPageId)}
+              <div
+                class={hidden ? "hidden" : center
+                  ? "surface-backdrop fixed inset-x-0 bottom-0 z-50 flex items-center justify-center px-3 py-4 sm:px-6 sm:py-8"
+                  : side ? "ml-auto flex min-w-0 basis-1/2 overflow-hidden"
+                    : !showDatabasePage && showSidePeek ? "flex min-w-0 basis-1/2 overflow-hidden" : "flex min-w-0 flex-1 overflow-hidden"}
+                style={center ? "top: calc(var(--titlebar-h) + var(--toolbar-h));" : undefined}
+                inert={hidden || (!showDatabasePage && !isContextual && showCenterPeek)}
+                data-notes-pane={pane.id}
+                data-floating-root
+                data-notes-main-page={pane.id === notes.mainPaneId ? store.selectedPageId : undefined}
+                role="presentation"
+                onpointerdowncapture={(event) => {
+                  if (event.target !== event.currentTarget || !center) notes.activatePane(pane.id);
+                }}
+                onfocusincapture={() => notes.activatePane(pane.id)}
+                onclick={(event) => { if (center && event.target === event.currentTarget) closePagePeek(); }}
+              >
+                <div
+                  class={center
+                    ? "notes-center-peek-panel flex min-w-0 overflow-hidden rounded-floating border border-border shadow-floating"
+                    : side ? "flex min-w-0 flex-1 overflow-hidden border-l border-border" : "flex min-w-0 flex-1 overflow-hidden"}
+                  style="background-color: var(--cal-bg);"
+                  role={!showDatabasePage && isContextual && showPagePeek ? "dialog" : undefined}
+                  aria-modal={!showDatabasePage && isContextual && showPagePeek ? center : undefined}
+                  data-notes-page-peek={!showDatabasePage && isContextual && showPagePeek || undefined}
+                >
+                  {#if selected}
+                    {#if store.selectedDatabaseBlockId}
+                      {#key store.selectedDatabaseBlockId}
+                        <NotesDatabasePage
+                          editorStore={store}
+                          {mobileLayout}
+                          pageActionsTarget={notes.activePaneId === pane.id ? pageActionsTarget : null}
+                        />
+                      {/key}
+                    {/if}
+                    <div
+                      class={store.selectedDatabaseBlockId ? "hidden" : "flex min-h-0 min-w-0 flex-1 overflow-hidden"}
+                      inert={store.selectedDatabaseBlockId != null}
+                      data-notes-editor-container
+                    >
+                    {#key store.selectedPageId}
+                      <NotesLoadingSkeleton
+                        ready={store.loadedPage?.id === store.selectedPageId && store.primaryContentReady || !!store.loadError}
+                        page={store.allPages.find((page) => page.id === store.selectedPageId) ?? store.linkResolutionPages.find((page) => page.id === store.selectedPageId) ?? null}
+                        openMode={isContextual && showPagePeek ? store.pageOpenMode : "full"}
+                      >
+                        {#snippet children()}
+                          {#if store.loadedPage?.id === store.selectedPageId && store.primaryContentReady
+                            && (!store.selectedDatabaseBlockId || retainedEditorPages[pane.id] === store.selectedPageId)}
+                            <NotesEditor
+                              projectId={selectedProjectId}
+                              editorStore={store}
+                              active={!store.selectedDatabaseBlockId && notes.activePaneId === pane.id}
+                              openMode={isContextual && showPagePeek ? store.pageOpenMode : "full"}
+                              pageActionsTarget={!store.selectedDatabaseBlockId && notes.activePaneId === pane.id ? pageActionsTarget : null}
+                              onClose={() => { void notes.closePane(pane.id).catch((error: unknown) => console.warn("Close Notes pane failed", error)); }}
+                              onOpenModeChange={(mode) => { void notes.showPaneAs(pane.id, mode).catch((error: unknown) => console.warn("Change Notes pane mode failed", error)); }}
+                            />
+                          {:else if store.loadError}
+                            <div class="flex min-w-0 flex-1 text-sm">
+                              <Notice layout="fill" message={t("notes.loadFailed", store.loadError)} onRetry={() => store.selectPageLocally(store.selectedPageId)}>
+                                {#snippet actions()}
+                                  {#if isContextual && showPagePeek}
+                                    <button type="button" class="notice-action-text" onclick={() => { void notes.closePane(pane.id).catch((error: unknown) => console.warn("Close Notes pane failed", error)); }}>{t("notes.closePeek")}</button>
+                                  {/if}
+                                {/snippet}
+                              </Notice>
+                            </div>
+                          {/if}
+                        {/snippet}
+                      </NotesLoadingSkeleton>
+                    {/key}
+                    </div>
+                  {/if}
+                </div>
+              </div>
+            {/each}
+          {/if}
+        </div>
       </div>
     {/if}
   </div>
@@ -776,6 +781,15 @@
 <style>
   .notes-view-root {
     container: notes-view / inline-size;
+  }
+
+  .notes-view-mobile,
+  .notes-view-canvas {
+    background-color: var(--cal-bg);
+  }
+
+  .notes-view-root:not(.notes-view-mobile) .notes-view-canvas {
+    border-radius: var(--content-radius);
   }
 
   .notes-center-peek-panel {

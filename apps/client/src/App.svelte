@@ -913,7 +913,7 @@
 >
   <div class="flex h-full flex-col overflow-hidden bg-sidebar">
     <TitleBar {shellStartupMs} {startupMemorySnapshot} {ensureBenchmarkOverlay} />
-    <main class="content-panel flex-1 min-h-0 overflow-hidden bg-background">
+    <main class="content-panel flex-1 min-h-0 overflow-hidden" class:bg-background={nav.current === "calendar" || nav.current === "projects"}>
       {#if nav.current === "calendar"}
         <CalendarView />
       {:else if nav.current === "projects"}

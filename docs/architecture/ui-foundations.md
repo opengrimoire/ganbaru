@@ -26,7 +26,7 @@ Panels were restyled one at a time, so radii, shadows, text sizes, input styles,
 - Rows and fields use the concentric item radius (`rounded-floating-item`), so inner corners follow the panel corner.
 - Fullscreen and sheet variants on narrow or mobile layouts may drop the radius and border where they touch the screen edge.
 - Floating surfaces use the `popover` color; dialogs use the `card` color. Do not add `dark:` background overrides; themes own those colors.
-- The window shell has two layers: the `sidebar` color frames the app (title bar and window edge), and each tab paints one `cal-bg` content surface. A tab's toolbar row sits on that surface at `--toolbar-h` with no fill or bottom border of its own, so the header reads as the top of the page rather than a separate band.
+- The window shell has two layers: the `sidebar` color frames the app (title bar and window edge), and each tab paints one `cal-bg` content surface. A tab's toolbar row sits on that surface at `--toolbar-h` with no fill or bottom border of its own, so the header reads as the top of the page rather than a separate band. Docked desktop explorers (Notes and Chat) belong to the frame: they take the `sidebar` color and its accent for rows, run the full height of the tab, and the `cal-bg` surface with its own toolbar sits beside them. Sheet and mobile explorers keep the content surface color.
 - Closing a panel or dialog returns focus through `captureFocusReturn` in `apps/client/src/lib/modal-focus.ts`: to the opener only when the opener had keyboard focus, otherwise to the dialog that contained the opener or nowhere. A pointer-opened panel must not leave a focused trigger, or a focused control inside a hidden panel, that Space or Enter would activate later.
 
 ## Rows and text

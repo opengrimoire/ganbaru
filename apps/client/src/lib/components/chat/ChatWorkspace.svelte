@@ -139,6 +139,7 @@
   const railComponentPresentation = $derived(
     railUsesMobileSurface ? "surface" as const : layout.railPresentation,
   );
+  const railDocked = $derived(layout.railPresentation === "column" && !mobileShell);
   const railIsModal = $derived(
     layout.railPresentation === "sheet" && !railUsesMobileSurface && visibleRailOpen,
   );
@@ -961,8 +962,9 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<div bind:this={rootElement} class="chat-workspace @container/chat-shell relative grid h-full min-h-0 overflow-hidden" class:mobile-rail-surface={railUsesMobileSurface} class:resizing-panels={resizingInspector || resizingBottomPanel} class:panel-transitions-enabled={panelTransitionsEnabled} data-chat-workspace data-layout={layout.variant} data-rail-presentation={layout.railPresentation} data-inspector-presentation={layout.inspectorPresentation} data-reply-thread-presentation={layout.replyThreadPresentation} data-active-surface={layout.activeSurface} data-rail-open={visibleRailOpen} style={`background-color:var(--cal-bg);container-type:inline-size;container-name:chat-shell;--chat-panel-transition-duration:${PANEL_TRANSITION_MS}ms;--chat-bottom-min-height:${MIN_BOTTOM_PANEL_HEIGHT}px;--chat-inspector-width:${displayedInspectorWidth}px;--chat-reply-thread-width:${replyThreadWidth}px;`}>
-  {#if WorkspaceObserver}<WorkspaceObserver />{/if}
+<div bind:this={rootElement} class="chat-workspace @container/chat-shell relative grid h-full min-h-0 overflow-hidden" class:mobile-rail-surface={railUsesMobileSurface} class:resizing-panels={resizingInspector || resizingBottomPanel} class:panel-transitions-enabled={panelTransitionsEnabled} data-chat-workspace data-layout={layout.variant} data-rail-presentation={layout.railPresentation} data-inspector-presentation={layout.inspectorPresentation} data-reply-thread-presentation={layout.replyThreadPresentation} data-active-surface={layout.activeSurface} data-rail-open={visibleRailOpen} data-rail-docked={railDocked} style={`container-type:inline-size;container-name:chat-shell;--chat-panel-transition-duration:${PANEL_TRANSITION_MS}ms;--chat-bottom-min-height:${MIN_BOTTOM_PANEL_HEIGHT}px;--chat-inspector-width:${displayedInspectorWidth}px;--chat-reply-thread-width:${replyThreadWidth}px;`}>
+  <div class="chat-canvas" aria-hidden="true"></div>
+{#if WorkspaceObserver}<WorkspaceObserver />{/if}
   <div class="sr-only" aria-live="polite" aria-atomic="true">{politeAnnouncement}</div>
   <div class="sr-only" aria-live="assertive" aria-atomic="true">{assertiveAnnouncement}</div>
   {#if layoutError}<Notice class="surface-floating absolute inset-x-0 top-2 z-50 mx-auto w-fit max-w-md px-2.5 py-2 text-xs" message={layoutError} />{/if}
@@ -988,7 +990,7 @@
       </button>
     </div>
   {/if}
-  <div bind:this={railShell} class="chat-rail-shell" class:closed={!visibleRailOpen} role={railIsModal ? "dialog" : undefined} aria-modal={railIsModal ? "true" : undefined} aria-label={railIsModal ? t("chat.title") : undefined} onkeydown={(event) => { if (layout.railPresentation === "sheet") handleRailKeydown(event); }}>
+  <div bind:this={railShell} class="chat-rail-shell" class:closed={!visibleRailOpen} class:explorer-chrome={railDocked} role={railIsModal ? "dialog" : undefined} aria-modal={railIsModal ? "true" : undefined} aria-label={railIsModal ? t("chat.title") : undefined} onkeydown={(event) => { if (layout.railPresentation === "sheet") handleRailKeydown(event); }}>
     <ChatChannelRail presentation={railComponentPresentation} expanded={visibleRailOpen} showCollapsedStrip={layout.railPresentation === "column"} onExpand={openRail} onCollapse={closeRail} />
   </div>
   <main class="main-shell relative flex min-w-0 flex-col">
@@ -1094,14 +1096,18 @@
   .chat-workspace[data-rail-presentation="sheet"] { --chat-rail-column-width: 0px; }
   .chat-workspace[data-reply-thread-presentation="column"] { --chat-reply-thread-column-width: var(--chat-reply-thread-width); }
   .chat-workspace[data-inspector-presentation="column"] { --chat-inspector-column-width: var(--chat-inspector-width); }
+  .chat-canvas { grid-column: 1 / 7; grid-row: 1 / 5; background: var(--cal-bg); pointer-events: none; }
+  .chat-workspace[data-rail-docked="true"] .chat-canvas { grid-column: 2 / 7; border-radius: var(--content-radius); }
   .chat-primary-header { grid-column: 1 / 3; grid-row: 1; min-width: 0; }
+  .chat-workspace[data-rail-docked="true"] .chat-primary-header { grid-column: 2; }
   .chat-mobile-rail-bar { position: absolute; top: var(--toolbar-h); right: 0; left: 0; z-index: 10; display: flex; height: var(--chat-mobile-rail-bar-height); align-items: center; background: var(--cal-bg); padding-inline: 0.5rem; }
   .chat-mobile-rail-toggle { display: grid; width: 2.5rem; height: 2.5rem; place-items: center; border-radius: 0.5rem; color: var(--foreground); }
   .chat-mobile-rail-toggle:is(:hover, :focus-visible) { background: var(--accent); }
   .chat-global-actions { position: absolute; top: 0; right: 0; z-index: 5; display: flex; width: max-content; min-width: var(--chat-global-actions-width); height: var(--toolbar-h); align-items: center; justify-content: flex-end; background: var(--cal-bg); padding-right: 0.75rem; }
   .chat-rail-shell { grid-column: 1; grid-row: 2; min-width: 0; overflow: hidden; }
   .chat-workspace[data-rail-presentation="column"][data-rail-open="true"] .chat-rail-shell { grid-row: 2 / 5; }
-  .main-shell { grid-column: 2; grid-row: 2; min-width: min(440px, 100cqw); min-height: 0; background: var(--cal-bg); }
+  .chat-workspace[data-rail-docked="true"] .chat-rail-shell { grid-row: 1 / 5; }
+  .main-shell { grid-column: 2; grid-row: 2; min-width: min(440px, 100cqw); min-height: 0; }
   .chat-workspace[data-reply-thread-presentation="column"] .main-shell { min-width: min(320px, 100cqw); }
   .chat-thread-separator { grid-column: 3; grid-row: 1 / 3; }
   .chat-thread-shell { --chat-icon-stroke-width: var(--chat-compact-icon-stroke-width); grid-column: 4; grid-row: 1 / 3; min-width: 0; overflow: hidden; background: var(--cal-bg); }
@@ -1110,7 +1116,10 @@
   .chat-bottom-separator { grid-column: 1 / 7; grid-row: 3; }
   .chat-bottom-transition-shell { --chat-icon-stroke-width: var(--chat-compact-icon-stroke-width); grid-column: 1 / 7; grid-row: 4; }
   .chat-workspace[data-rail-presentation="column"][data-rail-open="true"] .chat-bottom-separator,
-  .chat-workspace[data-rail-presentation="column"][data-rail-open="true"] .chat-bottom-transition-shell { grid-column-start: 2; }
+  .chat-workspace[data-rail-presentation="column"][data-rail-open="true"] .chat-bottom-transition-shell,
+  .chat-workspace[data-rail-docked="true"] .chat-bottom-separator,
+  .chat-workspace[data-rail-docked="true"] .chat-bottom-transition-shell { grid-column-start: 2; }
+  .chat-workspace[data-rail-docked="true"] .chat-bottom-transition-shell { border-bottom-left-radius: var(--content-radius); }
   .chat-workspace.panel-transitions-enabled { transition: grid-template-columns var(--chat-panel-transition-duration) cubic-bezier(0.22, 1, 0.36, 1); }
   .chat-workspace.panel-transitions-enabled .chat-rail-shell { transition: transform var(--chat-panel-transition-duration) cubic-bezier(0.22, 1, 0.36, 1); }
   .chat-panel-separator { position: relative; z-index: 1; background: transparent; }

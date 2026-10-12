@@ -822,14 +822,14 @@
   .channel-section + .channel-section { margin-top: 0.5rem; }
   .message-results { margin-block:0.3rem 0.45rem; border-bottom:1px solid var(--border); padding-bottom:0.45rem; }
   .message-result { display:grid; width:100%; gap:0.18rem; border-radius:0.4rem; padding:0.42rem 0.5rem; text-align:left; }
-  .message-result:hover,.message-result:focus-visible { background:var(--accent); }
+  .message-result:hover,.message-result:focus-visible { background:var(--explorer-icon-hover, var(--accent)); }
   .message-result > span:first-child { display:flex; min-width:0; align-items:baseline; gap:0.35rem; }
   .message-result strong { flex:0 0 auto; font-size: calc(0.72rem * var(--type-scale)); }
   .message-result small { min-width:0; overflow:hidden; color:var(--muted-foreground); font-size: calc(0.6rem * var(--type-scale)); text-overflow:ellipsis; white-space:nowrap; }
   .message-result > span:last-child { display:-webkit-box; overflow:hidden; color:var(--muted-foreground); font-size: calc(0.68rem * var(--type-scale)); line-height: calc(1rem * var(--type-scale)); -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2; }
   .section-heading { --section-heading-gap: 0.2rem; display: flex; min-height: var(--explorer-row-height); align-items: center; gap: var(--section-heading-gap); padding-inline: 0.5rem; color: var(--muted-foreground); }
   .channel-section > .section-heading { padding-inline-end: 0; }
-  .section-heading.section-renaming { border-radius: 0.375rem; background: color-mix(in oklab, var(--accent) 50%, transparent); }
+  .section-heading.section-renaming { border-radius: 0.375rem; background: var(--explorer-row-hover, color-mix(in oklab, var(--accent) 50%, transparent)); }
   .section-rename-input { min-width: 0; width: 0; flex: 1; min-height: var(--explorer-action-size); border: 0; background: transparent; color: var(--foreground); caret-color: var(--primary); font: inherit; outline: none; }
   .section-rename-control { color: var(--foreground); }
   .section-heading > .section-rename-control:last-child { margin-inline-end: var(--explorer-row-action-end-inset); }
@@ -837,7 +837,7 @@
   .section-heading > .section-create-action { margin-inline-end: calc(-1 * var(--section-heading-gap)); }
   .section-heading > .section-create-action:is(:hover, :focus-visible) { background: transparent; color: var(--foreground); }
   .channel-section > .section-heading > .explorer-row-action { opacity: 1; }
-  .section-heading > :is(.section-toggle, .section-rename-control):hover { background: var(--accent); color: var(--foreground); }
+  .section-heading > :is(.section-toggle, .section-rename-control):hover { background: var(--explorer-icon-hover, var(--accent)); color: var(--foreground); }
   .section-heading > .section-toggle { min-width: 0; flex: 1; justify-content: flex-start; }
   .section-toggle > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .section-toggle :global(.section-chevron) { flex: 0 0 auto; transition: opacity 120ms ease; }

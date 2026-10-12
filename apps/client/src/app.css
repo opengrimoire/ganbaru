@@ -788,6 +788,15 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
   color: var(--foreground);
 }
 
+/* A docked desktop explorer takes the window frame color, so it reads as part of the frame rather than the tab surface. */
+.explorer-chrome .explorer-sidebar {
+  --explorer-background: var(--sidebar);
+  --explorer-row-hover: color-mix(in oklab, var(--sidebar-accent) 60%, transparent);
+  --explorer-row-selected: var(--sidebar-accent);
+  --explorer-icon-hover: var(--sidebar-accent);
+  color: var(--sidebar-foreground);
+}
+
 .explorer-toolbar {
   display: flex;
   height: var(--explorer-toolbar-height);
@@ -813,7 +822,7 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
 .explorer-icon[aria-pressed="true"],
 .explorer-icon.explorer-icon-active,
 .explorer-icon[aria-expanded="true"].explorer-row-action {
-  background: var(--accent);
+  background: var(--explorer-icon-hover, var(--accent));
   color: var(--foreground);
 }
 
@@ -844,7 +853,7 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
 }
 
 .explorer-row {
-  --explorer-row-highlight: color-mix(in oklab, var(--accent) 50%, transparent);
+  --explorer-row-highlight: var(--explorer-row-hover, color-mix(in oklab, var(--accent) 50%, transparent));
   min-height: var(--explorer-row-height, 2rem);
   border-radius: 0.375rem;
 }
@@ -854,7 +863,7 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
 }
 
 .explorer-row.explorer-selected {
-  --explorer-row-highlight: var(--accent);
+  --explorer-row-highlight: var(--explorer-row-selected, var(--accent));
   background: var(--explorer-row-highlight);
 }
 

@@ -123,7 +123,9 @@
   let detailTaskType = $state<ProjectTaskType>("task");
   let detailEstimateMinutes = $state("");
   let detailStartDate = $state("");
+  let detailStartTime = $state("");
   let detailDueDate = $state("");
+  let detailDueTime = $state("");
   let detailTargetEndDate = $state("");
   let detailBlockerReason = $state("");
   let detailChangeReason = $state("");
@@ -346,7 +348,9 @@
       taskType: detailTaskType,
       estimateMinutes: detailEstimateMinutes,
       startDate: detailStartDate,
+      startTime: detailStartTime,
       dueDate: detailDueDate,
+      dueTime: detailDueTime,
       targetEndDate: detailTargetEndDate,
       blockerReason: detailBlockerReason,
       changeReason: detailChangeReason,
@@ -428,7 +432,9 @@
     detailTaskType = detailDraft.taskType;
     detailEstimateMinutes = detailDraft.estimateMinutes;
     detailStartDate = detailDraft.startDate;
+    detailStartTime = detailDraft.startTime;
     detailDueDate = detailDraft.dueDate;
+    detailDueTime = detailDraft.dueTime;
     detailTargetEndDate = detailDraft.targetEndDate;
     detailBlockerReason = detailDraft.blockerReason;
     detailChangeReason = detailDraft.changeReason;
@@ -569,10 +575,12 @@
   function setDetailDateValue(target: DetailDateTarget, value: string): void {
     if (target === "start") {
       detailStartDate = value;
+      if (!value) detailStartTime = "";
       return;
     }
     if (target === "due") {
       detailDueDate = value;
+      if (!value) detailDueTime = "";
       return;
     }
     if (target === "target") {
@@ -1312,7 +1320,9 @@
                     onMilestoneChange={(value) => { detailMilestone = value; }}
                     estimateMinutes={detailEstimateMinutes}
                     startDate={detailStartDate}
+                    startTime={detailStartTime}
                     dueDate={detailDueDate}
+                    dueTime={detailDueTime}
                     targetEndDate={detailTargetEndDate}
                     blockerReason={detailBlockerReason}
                     changeReason={detailChangeReason}
@@ -1330,6 +1340,8 @@
                     onClearDueDate={() => clearDetailDate("due")}
                     onClearTargetEndDate={() => clearDetailDate("target")}
                     onSelectDate={selectDetailDate}
+                    onStartTimeChange={(time) => { detailStartTime = time ?? ""; }}
+                    onDueTimeChange={(time) => { detailDueTime = time ?? ""; }}
                     onCancelDatePicker={() => { datePickerTarget = null; }}
                   />
 

@@ -22,7 +22,11 @@ export interface ProjectTaskDetailDraft {
   taskType: ProjectTask["taskType"];
   estimateMinutes: string;
   startDate: string;
+  /** The `HH:MM` start time, or empty for a whole day. */
+  startTime: string;
   dueDate: string;
+  /** The `HH:MM` due time, or empty for a whole day. */
+  dueTime: string;
   targetEndDate: string;
   blockerReason: string;
   changeReason: string;
@@ -84,7 +88,9 @@ export function projectTaskDetailDraftFromTask(task: ProjectTask): ProjectTaskDe
     taskType: task.taskType,
     estimateMinutes: String(task.estimateMinutes ?? ""),
     startDate: task.startDate ?? "",
+    startTime: task.startTime ?? "",
     dueDate: task.dueDate ?? "",
+    dueTime: task.dueTime ?? "",
     targetEndDate: task.targetEndDate ?? "",
     blockerReason: task.blockerReason ?? "",
     changeReason: "",
@@ -106,7 +112,9 @@ export function projectTaskNewDetailDraft(placement: {
     taskType: "task",
     estimateMinutes: "",
     startDate: "",
+    startTime: "",
     dueDate: "",
+    dueTime: "",
     targetEndDate: "",
     blockerReason: "",
     changeReason: "",
@@ -146,7 +154,9 @@ export function projectTaskDetailDraftDirty(task: ProjectTask, draft: ProjectTas
     || draft.taskType !== task.taskType
     || draft.estimateMinutes !== String(task.estimateMinutes ?? "")
     || draft.startDate !== (task.startDate ?? "")
+    || (draft.startDate ? draft.startTime : "") !== (task.startTime ?? "")
     || draft.dueDate !== (task.dueDate ?? "")
+    || (draft.dueDate ? draft.dueTime : "") !== (task.dueTime ?? "")
     || draft.targetEndDate !== (task.targetEndDate ?? "")
     || draft.blockerReason !== (task.blockerReason ?? "")
     || draft.milestone !== task.milestone;
@@ -183,7 +193,9 @@ export function projectTaskDetailDraftPatch(draft: ProjectTaskDetailDraft): Proj
       taskType: draft.taskType,
       estimateMinutes,
       startDate,
+      startTime: startDate ? draft.startTime || undefined : undefined,
       dueDate,
+      dueTime: dueDate ? draft.dueTime || undefined : undefined,
       targetEndDate,
       blockerReason: draft.blockerReason.trim() || undefined,
       milestone: draft.milestone,

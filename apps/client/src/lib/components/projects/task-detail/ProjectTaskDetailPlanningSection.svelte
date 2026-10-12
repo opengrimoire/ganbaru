@@ -8,7 +8,9 @@
     onMilestoneChange,
     estimateMinutes,
     startDate,
+    startTime,
     dueDate,
+    dueTime,
     targetEndDate,
     blockerReason,
     changeReason,
@@ -26,13 +28,17 @@
     onClearDueDate,
     onClearTargetEndDate,
     onSelectDate,
+    onStartTimeChange,
+    onDueTimeChange,
     onCancelDatePicker,
   }: {
     milestone: boolean;
     onMilestoneChange: (value: boolean) => void;
     estimateMinutes: string;
     startDate: string;
+    startTime: string;
     dueDate: string;
+    dueTime: string;
     targetEndDate: string;
     blockerReason: string;
     changeReason: string;
@@ -50,6 +56,8 @@
     onClearDueDate: () => void;
     onClearTargetEndDate: () => void;
     onSelectDate: (date: string) => void;
+    onStartTimeChange: (time: string | null) => void;
+    onDueTimeChange: (time: string | null) => void;
     onCancelDatePicker: () => void;
   } = $props();
 
@@ -60,6 +68,8 @@
   <ProjectTaskDetailDateField inline
     label={t("projects.detail.startDate")}
     value={startDate}
+    time={startTime}
+    onTimeChange={onStartTimeChange}
     noDateLabel={t("projects.detail.noDate")}
     clearLabel={t("projects.detail.clearDate", t("projects.detail.startDate"))}
     pickerOpen={startPickerOpen}
@@ -76,6 +86,8 @@
   <ProjectTaskDetailDateField inline
     label={t("projects.detail.dueDate")}
     value={dueDate}
+    time={dueTime}
+    onTimeChange={onDueTimeChange}
     noDateLabel={t("projects.detail.noDate")}
     clearLabel={t("projects.detail.clearDate", t("projects.detail.dueDate"))}
     pickerOpen={duePickerOpen}

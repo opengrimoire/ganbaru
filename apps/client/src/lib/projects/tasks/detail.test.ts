@@ -138,13 +138,31 @@ describe("project task detail helpers", () => {
         taskType: "task",
         estimateMinutes: 45,
         startDate: "2026-06-21",
+        startTime: undefined,
         dueDate: "2026-06-22",
+        dueTime: undefined,
         targetEndDate: "2026-06-23",
         blockerReason: undefined,
         milestone: false,
         changeReason: "Scope changed",
       },
     });
+  });
+
+  it("edits start and due times with their dates, dropping a time whose date is cleared", () => {
+    const timed = task({ startTime: "09:00", dueTime: "17:30" });
+    const draft = projectTaskDetailDraftFromTask(timed);
+    expect(draft).toMatchObject({ startTime: "09:00", dueTime: "17:30" });
+    expect(projectTaskDetailDraftDirty(timed, draft)).toBe(false);
+    expect(projectTaskDetailDraftDirty(timed, { ...draft, dueTime: "18:00" })).toBe(true);
+
+    const patch = projectTaskDetailDraftPatch({ ...draft, startTime: "", dueTime: "18:00" });
+    expect(patch.ok && patch.patch).toMatchObject({ startTime: undefined, dueTime: "18:00" });
+    expect(patch.ok && "startTime" in patch.patch).toBe(true);
+
+    const cleared = { ...draft, dueDate: "" };
+    expect(projectTaskDetailDraftPatch(cleared)).toMatchObject({ ok: true, patch: { dueDate: undefined, dueTime: undefined } });
+    expect(projectTaskDetailDraftDirty(task({ startTime: "09:00", dueDate: undefined }), cleared)).toBe(false);
   });
 
   it("reports invalid base task drafts", () => {

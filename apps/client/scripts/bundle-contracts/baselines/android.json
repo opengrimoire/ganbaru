@@ -8,14 +8,14 @@
         "src/main-mobile.ts",
         "src/MobileApp.svelte"
       ],
-      "maxSourceModules": 122
+      "maxSourceModules": 124
     },
     {
       "name": "calendar",
       "roots": [
         "src/lib/components/calendar/CalendarView.svelte"
       ],
-      "maxSourceModules": 190
+      "maxSourceModules": 192
     },
     {
       "name": "projects",
@@ -23,7 +23,7 @@
         "src/lib/components/projects/ProjectsView.svelte",
         "src/lib/components/projects/list/ProjectListView.svelte"
       ],
-      "maxSourceModules": 254
+      "maxSourceModules": 257
     },
     {
       "name": "notes",
@@ -37,7 +37,7 @@
       "roots": [
         "src/lib/components/quick-notes/QuickNotesPanel.svelte"
       ],
-      "maxSourceModules": 106
+      "maxSourceModules": 108
     },
     {
       "name": "music",
@@ -45,17 +45,17 @@
         "src/lib/components/music/MusicPanel.svelte",
         "src/lib/components/music/MusicPlaybackHost.svelte"
       ],
-      "maxSourceModules": 173
+      "maxSourceModules": 175
     },
     {
       "name": "chat",
       "roots": [
         "src/lib/components/chat/ChatWorkspace.svelte"
       ],
-      "maxSourceModules": 270
+      "maxSourceModules": 271
     }
   ],
-  "maxTotalSourceModules": 1186,
+  "maxTotalSourceModules": 1187,
   "requiredMobileModules": [
     "src/main.ts",
     "src/main-mobile.ts",

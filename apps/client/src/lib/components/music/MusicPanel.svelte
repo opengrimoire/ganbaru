@@ -33,6 +33,7 @@
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import { cn } from "$lib/utils";
   import { formatShortcut, hasShortcutModifier } from "$lib/keyboard-shortcuts";
+  import { captureFocusReturn } from "$lib/modal-focus";
   import {
     musicBuilderLoader,
     type MusicBuilderComponent,
@@ -93,7 +94,7 @@
   let mediaTitleMeasuredCenterPx = $state<number | null>(null);
   let panel = $state<HTMLElement | null>(null);
   let fittedPanelHeightPx = $state<number | null>(null);
-  let returnFocus = $state<HTMLElement | null>(null);
+  let returnFocus: ReturnType<typeof captureFocusReturn> | null = null;
   let previouslyVisible = false;
 
   const mediaSurfaceFullscreenEvent = "ganbaru-ai-music-media-surface-fullscreen";
@@ -281,14 +282,13 @@
 
   $effect(() => {
     if (visible && !previouslyVisible) {
-      returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      returnFocus = captureFocusReturn();
       void tick().then(() => {
         if (visible) panel?.focus();
       });
     } else if (!visible && previouslyVisible) {
-      const target = returnFocus;
+      returnFocus?.(panel);
       returnFocus = null;
-      queueMicrotask(() => target?.focus());
     }
     previouslyVisible = visible;
   });

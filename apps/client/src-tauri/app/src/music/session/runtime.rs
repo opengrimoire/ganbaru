@@ -1082,8 +1082,10 @@ impl Owner {
         let reconnect = false;
         #[cfg(not(target_os = "ios"))]
         let mut prepared = if reconnect
-            || (self.state.issue == Some(SessionIssue::Interrupted)
-                && matches!(intent, SessionIntent::Play | SessionIntent::Toggle)
+            || (matches!(
+                self.state.issue,
+                Some(SessionIssue::Interrupted | SessionIssue::Restored)
+            ) && matches!(intent, SessionIntent::Play | SessionIntent::Toggle)
                 && self
                     .state
                     .current_entry()

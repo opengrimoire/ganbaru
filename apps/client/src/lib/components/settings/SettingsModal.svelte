@@ -45,6 +45,7 @@
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { captureFocusReturn } from "$lib/modal-focus";
 
   type SettingsDetailView =
     | { kind: "distractions-limit"; target: DistractionsLimitEditorTarget }
@@ -353,9 +354,7 @@
   }
 
   onMount(() => {
-    const returnFocus = document.activeElement instanceof HTMLElement
-      ? document.activeElement
-      : null;
+    const returnFocus = captureFocusReturn();
     queueMicrotask(() => {
       const first = modalPanel ? focusableElements(modalPanel)[0] : undefined;
       (first ?? modalPanel)?.focus();
@@ -401,9 +400,7 @@
     window.addEventListener("keydown", handleKeydown, true);
     return () => {
       window.removeEventListener("keydown", handleKeydown, true);
-      queueMicrotask(() => {
-        if (returnFocus?.isConnected) returnFocus.focus();
-      });
+      returnFocus(modalPanel);
     };
   });
 </script>

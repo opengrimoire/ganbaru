@@ -5,7 +5,7 @@ import type { MusicActivityPhase, MusicAssignmentBehavior, MusicAssignmentSource
 
 export type NativeMusicBackend = "native-audio" | "browser";
 export type NativeMusicOwner = "manual" | "review" | "calendar-event" | "pomodoro";
-export type NativeMusicIssue = "browser-host-unavailable" | "no-eligible-items" | "source-failure" | "persistence-failure" | "interrupted";
+export type NativeMusicIssue = "browser-host-unavailable" | "no-eligible-items" | "source-failure" | "persistence-failure" | "interrupted" | "restored";
 
 export interface NativeMusicQueueEntry {
   itemId: string | null;
@@ -224,7 +224,7 @@ export function parseNativeMusicSnapshot(value: unknown): NativeMusicSnapshot {
     soundscapeVersion: optional(raw.soundscapeVersion, integer),
     owner: choice(raw.owner, ["manual", "review", "calendar-event", "pomodoro"] as const), context: optional(raw.context, parseContext), playlistId: optional(raw.playlistId, text), queueName: text(raw.queueName),
     canPrevious: boolean(raw.canPrevious), canNext: boolean(raw.canNext),
-    issue: optional(raw.issue, (value) => choice(value, ["browser-host-unavailable", "no-eligible-items", "source-failure", "persistence-failure", "interrupted"] as const)),
+    issue: optional(raw.issue, (value) => choice(value, ["browser-host-unavailable", "no-eligible-items", "source-failure", "persistence-failure", "interrupted", "restored"] as const)),
     error: optional(raw.error, text), reviewCheckpointId: optional(raw.reviewCheckpointId, text), queue,
   };
 }

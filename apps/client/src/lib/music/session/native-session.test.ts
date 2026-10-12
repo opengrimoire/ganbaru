@@ -27,6 +27,7 @@ describe("native Music response validation", () => {
     expect(parsed.queue?.[0]).toMatchObject({ bound: false, source: { path: "", title: "Árbol" } });
     expect(parseNativeMusicSnapshot({ ...snapshot, queue: null }).queue).toBeNull();
     expect(parsed.order).toBe("mix");
+    expect(parseNativeMusicSnapshot({ ...snapshot, issue: "restored" }).issue).toBe("restored");
   });
 
   it("rejects oversized queues and malformed external values before projection", () => {

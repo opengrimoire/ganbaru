@@ -481,7 +481,7 @@
   }
 
   function handleKeydown(event: KeyboardEvent): void {
-    if (viewState.managingPlaylists) return;
+    if (!active || viewState.managingPlaylists) return;
     if (event.isComposing || event.altKey || isMusicReviewEditableTarget(event.target)) return;
     const modified = event.ctrlKey || event.metaKey;
     if (selectionMode) {

@@ -158,7 +158,7 @@ async fn native_music_recovery_is_device_scoped_and_excludes_resolved_paths() {
     assert_eq!(restarted.status, SessionStatus::Paused);
     assert_eq!(restarted.position_ms, 12_345);
     assert!(restarted.generation > state.generation);
-    assert_eq!(restarted.issue, Some(SessionIssue::Interrupted));
+    assert_eq!(restarted.issue, Some(SessionIssue::Restored));
     // A live owner returning from handoff must outrank its previous stop effect as well.
     let mut live = state.clone();
     live.generation = saved.generation + 100;

@@ -47,6 +47,7 @@
   import QuickNoteTagManager from "./QuickNoteTagManager.svelte";
   import QuickNotesMasonry from "./QuickNotesMasonry.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
+  import { captureFocusReturn } from "$lib/modal-focus";
   import { cn } from "$lib/utils";
 
   let {
@@ -510,8 +511,7 @@
   });
 
   onMount(() => {
-    const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const fallbackReturnFocus = document.querySelector<HTMLElement>("[data-mobile-quick-notes-trigger]");
+    const returnFocus = captureFocusReturn();
     window.addEventListener("keydown", handlePanelKeydown, true);
     if (initialSnapshot === null) {
       void preloadQuickNotesInitialSnapshot().then((snapshot) => {
@@ -551,10 +551,7 @@
       stopSync?.();
       if (searchTimer) clearTimeout(searchTimer);
       if (undoTimer) clearTimeout(undoTimer);
-      queueMicrotask(() => {
-        if (returnFocus?.isConnected) returnFocus.focus();
-        else fallbackReturnFocus?.focus();
-      });
+      returnFocus(panel);
     };
   });
 </script>

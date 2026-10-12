@@ -103,6 +103,9 @@ pub enum SessionIssue {
     SourceFailure,
     PersistenceFailure,
     Interrupted,
+    /// The checkpoint was restored paused at startup. This is expected and not shown to the
+    /// user, but the first explicit Play reloads the selection like an interruption.
+    Restored,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

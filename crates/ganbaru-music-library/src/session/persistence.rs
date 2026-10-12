@@ -170,7 +170,7 @@ pub fn restore(state: &mut SessionPolicy, saved: &SessionCheckpoint, now_ms: i64
     } else {
         SessionStatus::Idle
     };
-    state.issue = Some(SessionIssue::Interrupted);
+    state.issue = Some(SessionIssue::Restored);
     transition
 }
 

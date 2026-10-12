@@ -45,7 +45,7 @@ The current-track playlist button edits the track's memberships as a draft appli
 
 Playback position, duration, status, queue context, and source generation persist with monotonic ordering, so a late save from an older source cannot overwrite newer state. Source transitions and listening outcomes commit immediately; position is checkpointed periodically.
 
-Checkpoints are keyed by local device identity and contain only portable item and membership identifiers, bounded navigation history, selection, and playback settings. They never contain resolved file paths, Android content URIs, or decoder handles. A copied vault may carry another device's checkpoint, but it never becomes this device's live session; each device restores its own checkpoint paused. Ad hoc path or URL sources are transient and create no portable checkpoint.
+Checkpoints are keyed by local device identity and contain only portable item and membership identifiers, bounded navigation history, selection, and playback settings. They never contain resolved file paths, Android content URIs, or decoder handles. A copied vault may carry another device's checkpoint, but it never becomes this device's live session; each device restores its own checkpoint paused. A restart is not reported as an interruption, but the first Play reloads the restored selection. Ad hoc path or URL sources are transient and create no portable checkpoint.
 
 Resume respects membership start and end boundaries, never resumes an ended item as paused, and reports changed or unsupported media as recoverable instead of seeking blindly.
 

@@ -233,6 +233,9 @@ pub fn validate_date_mention_format(value: &Value) -> Result<(), String> {
     }
 }
 
+/// The longest a date reminder can fire before its date: four weeks. The SQLite column check matches it.
+pub const MAX_DATE_REMINDER_MINUTES_BEFORE: i64 = 40_320;
+
 pub fn validate_date_mention_reminder(value: &Value) -> Result<(), String> {
     if value.is_null() {
         return Ok(());
@@ -240,10 +243,33 @@ pub fn validate_date_mention_reminder(value: &Value) -> Result<(), String> {
     let reminder = value
         .as_object()
         .ok_or_else(|| "rich text mention.date.ganbaru_reminder must be an object".to_string())?;
-    match reminder.get("enabled") {
-        Some(Value::Bool(_)) => Ok(()),
-        _ => Err("rich text mention.date.ganbaru_reminder.enabled must be a boolean".to_string()),
+    if !matches!(reminder.get("enabled"), Some(Value::Bool(_))) {
+        return Err(
+            "rich text mention.date.ganbaru_reminder.enabled must be a boolean".to_string(),
+        );
     }
+    match reminder.get("minutes_before") {
+        None | Some(Value::Null) => Ok(()),
+        Some(minutes)
+            if minutes.as_i64().is_some_and(|minutes| {
+                (0..=MAX_DATE_REMINDER_MINUTES_BEFORE).contains(&minutes)
+            }) =>
+        {
+            Ok(())
+        }
+        Some(_) => Err(format!(
+            "rich text mention.date.ganbaru_reminder.minutes_before must be null or a whole number from 0 to {MAX_DATE_REMINDER_MINUTES_BEFORE}"
+        )),
+    }
+}
+
+/// The minutes a valid date reminder fires before its date; a missing offset fires at the date.
+pub fn date_mention_reminder_minutes_before(reminder: &serde_json::Map<String, Value>) -> i64 {
+    reminder
+        .get("minutes_before")
+        .and_then(Value::as_i64)
+        .filter(|minutes| (0..=MAX_DATE_REMINDER_MINUTES_BEFORE).contains(minutes))
+        .unwrap_or(0)
 }
 
 pub fn validate_date_mention_boundary(value: &str, field: &str) -> Result<(), String> {

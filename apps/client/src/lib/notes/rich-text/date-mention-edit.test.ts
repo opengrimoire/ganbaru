@@ -3,8 +3,11 @@ import type { NotesDateMentionRichText, NotesDateMentionValue } from "$lib/notes
 import { createDateMentionRichText } from "./core";
 import {
   notesDateMentionEditorValue,
+  notesDateMentionReminderMinutes,
+  notesDateMentionReminderOffsets,
   notesDateMentionText,
   notesDateMentionValueWithDates,
+  notesDateMentionWithReminderMinutes,
   notesDateMentionWithValue,
   type NotesDateMentionTextOptions,
 } from "./date-mention-edit";
@@ -81,5 +84,39 @@ describe("date editor values", () => {
       ganbaru_format: "short",
       ganbaru_reminder: { enabled: true },
     });
+  });
+});
+
+describe("date mention reminder offsets", () => {
+  const timed: NotesDateMentionValue = { start: "2026-10-30T15:00", ganbaru_reminder: { enabled: true } };
+
+  it("offers minute offsets for times and whole days for dates", () => {
+    expect(notesDateMentionReminderOffsets(timed)).toContain(30);
+    expect(notesDateMentionReminderOffsets({ start: "2026-10-30" }).every((minutes) => minutes % 1440 === 0)).toBe(true);
+  });
+
+  it("stores an offset only when it is ahead of the date and leaves mentions without reminders alone", () => {
+    const early = notesDateMentionWithReminderMinutes(timed, 30);
+    expect(early.ganbaru_reminder).toEqual({ enabled: true, minutes_before: 30 });
+    expect(notesDateMentionReminderMinutes(early)).toBe(30);
+    expect(notesDateMentionWithReminderMinutes(early, 0).ganbaru_reminder).toEqual({ enabled: true });
+    expect(notesDateMentionWithReminderMinutes({ start: "2026-10-30" }, 30)).toEqual({ start: "2026-10-30" });
+  });
+
+  it("keeps whole-day offsets when a time is removed but drops minute offsets", () => {
+    const dateOnly = { start: "2026-10-30", end: null, time_zone: null };
+    const halfHour = notesDateMentionWithReminderMinutes(timed, 30);
+    expect(notesDateMentionValueWithDates(halfHour, dateOnly).ganbaru_reminder).toEqual({ enabled: true });
+    const dayBefore = notesDateMentionWithReminderMinutes(timed, 1440);
+    expect(notesDateMentionValueWithDates(dayBefore, dateOnly).ganbaru_reminder).toEqual({ enabled: true, minutes_before: 1440 });
+  });
+
+  it("keeps every date-only offset when a time is added", () => {
+    const dateOnly: NotesDateMentionValue = { start: "2026-10-30", ganbaru_reminder: { enabled: true } };
+    const withTime = { start: "2026-10-30T15:00", end: null, time_zone: null };
+    for (const minutes of notesDateMentionReminderOffsets(dateOnly)) {
+      const value = notesDateMentionWithReminderMinutes(dateOnly, minutes);
+      expect(notesDateMentionReminderMinutes(notesDateMentionValueWithDates(value, withTime))).toBe(minutes);
+    }
   });
 });

@@ -204,6 +204,62 @@ fn mention_notifications_sync_blocks_comments_and_delivery_state() {
 }
 
 #[test]
+fn reminder_offsets_follow_the_mention_without_rearming_delivered_reminders() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        let save = |start: &'static str, minutes_before: Option<i64>| {
+            let pool = pool.clone();
+            async move {
+                let mut mention = date_mention(start, "Remind", true);
+                if let Some(minutes) = minutes_before {
+                    mention["mention"]["date"]["ganbaru_reminder"]["minutes_before"] =
+                        json!(minutes);
+                }
+                writes::update_block(
+                    &pool,
+                    BLOCK_A,
+                    block_update(
+                        "paragraph",
+                        json!({ "rich_text": [mention], "color": "default" }),
+                    ),
+                )
+                .await
+                .unwrap();
+                serde_json::to_value(mention_notifications::list_pending(&pool).await.unwrap())
+                    .unwrap()
+            }
+        };
+
+        let at_date = save("2026-07-05T15:00", None).await;
+        assert_eq!(at_date[0]["remind_minutes_before"], 0);
+        let early = save("2026-07-05T15:00", Some(30)).await;
+        assert_eq!(early.as_array().unwrap().len(), 1);
+        assert_eq!(early[0]["trigger_at"], "2026-07-05T15:00");
+        assert_eq!(early[0]["remind_minutes_before"], 30);
+
+        let id = early[0]["id"].as_str().unwrap().to_string();
+        mention_notifications::mark_delivered(
+            &pool,
+            NoteMentionNotificationDeliveryUpdate { ids: vec![id] },
+        )
+        .await
+        .unwrap();
+        assert!(
+            save("2026-07-05T15:00", Some(60))
+                .await
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+
+        let moved = save("2026-07-06T09:00", Some(60)).await;
+        assert_eq!(moved.as_array().unwrap().len(), 1);
+        assert_eq!(moved[0]["remind_minutes_before"], 60);
+    });
+}
+
+#[test]
 fn page_levels_and_discussion_mutes_suppress_pending_notifications() {
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;

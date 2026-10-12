@@ -71,8 +71,9 @@ export function notesMentionNotificationDueAtMs(
   if (!triggerAt) return null;
   const timeZone = options.timeZone ?? currentTimeZone();
   const dateOnlyHour = options.dateOnlyReminderHour ?? NOTES_DATE_ONLY_REMINDER_HOUR;
-  return dateOnlyReminderMs(triggerAt, timeZone, dateOnlyHour)
+  const triggerMs = dateOnlyReminderMs(triggerAt, timeZone, dateOnlyHour)
     ?? dateTimeReminderMs(triggerAt, timeZone);
+  return triggerMs === null ? null : triggerMs - notification.remind_minutes_before * 60_000;
 }
 
 export function notesMentionNotificationIsDue(

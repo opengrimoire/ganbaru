@@ -17,6 +17,7 @@ describe("notes collaboration-history boundary validation", () => {
         target_type: "user",
         target_id: "12121212-1212-4212-8212-121212121212",
         trigger_at: null,
+        remind_minutes_before: 0,
         plain_text: "Alice",
         source_plain_text: "Hi Alice",
         status: "pending",

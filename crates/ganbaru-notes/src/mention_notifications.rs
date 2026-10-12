@@ -2,7 +2,7 @@ use crate::models::{
     NoteMentionNotificationDeliveryUpdate, NoteMentionNotificationDto, NoteMentionNotificationRow,
     NotePageNotificationSettingsDto,
 };
-use crate::validation::require_uuid;
+use crate::validation::{date_mention_reminder_minutes_before, require_uuid};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::{QueryBuilder, Sqlite, SqlitePool, Transaction};
@@ -19,6 +19,7 @@ struct MentionNotificationCandidate {
     target_type: &'static str,
     target_id: Option<String>,
     trigger_at: Option<String>,
+    remind_minutes_before: i64,
     plain_text: String,
     fingerprint: String,
 }
@@ -341,11 +342,12 @@ async fn replace_source_candidates(
                 target_type,
                 target_id,
                 trigger_at,
+                remind_minutes_before,
                 plain_text,
                 source_plain_text,
                 fingerprint
              )
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(source_type, source_id, fingerprint)
              DO UPDATE SET
                 page_id = excluded.page_id,
@@ -353,6 +355,7 @@ async fn replace_source_candidates(
                 comment_id = excluded.comment_id,
                 target_id = excluded.target_id,
                 trigger_at = excluded.trigger_at,
+                remind_minutes_before = excluded.remind_minutes_before,
                 plain_text = excluded.plain_text,
                 source_plain_text = excluded.source_plain_text,
                 last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
@@ -367,6 +370,7 @@ async fn replace_source_candidates(
         .bind(candidate.target_type)
         .bind(candidate.target_id)
         .bind(candidate.trigger_at)
+        .bind(candidate.remind_minutes_before)
         .bind(candidate.plain_text)
         .bind(&source_plain_text)
         .bind(candidate.fingerprint)
@@ -502,13 +506,8 @@ fn candidate_from_rich_text_item(
     match mention_type {
         "date" => {
             let date = mention.get("date")?.as_object()?;
-            let reminder_enabled = date
-                .get("ganbaru_reminder")
-                .and_then(Value::as_object)
-                .and_then(|reminder| reminder.get("enabled"))
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            if !reminder_enabled {
+            let reminder = date.get("ganbaru_reminder").and_then(Value::as_object)?;
+            if reminder.get("enabled").and_then(Value::as_bool) != Some(true) {
                 return None;
             }
             let start = date.get("start")?.as_str()?.trim();
@@ -520,6 +519,7 @@ fn candidate_from_rich_text_item(
                 target_type: "date",
                 target_id: None,
                 trigger_at: Some(start.to_string()),
+                remind_minutes_before: date_mention_reminder_minutes_before(reminder),
                 plain_text,
                 fingerprint: format!("reminder:{index}:{start}"),
             })
@@ -540,6 +540,7 @@ fn candidate_from_rich_text_item(
                 target_type: "user",
                 target_id: Some(id.clone()),
                 trigger_at: None,
+                remind_minutes_before: 0,
                 plain_text,
                 fingerprint: format!("user:{index}:{id}"),
             })
@@ -558,6 +559,7 @@ fn candidate_from_rich_text_item(
                 target_type: "project_task",
                 target_id: Some(id.clone()),
                 trigger_at: None,
+                remind_minutes_before: 0,
                 plain_text,
                 fingerprint: format!("project_task:{index}:{id}"),
             })

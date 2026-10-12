@@ -179,6 +179,13 @@ describe("rich-text mention previews", () => {
     expect(card.textContent).toContain("Reminder");
   });
 
+  it("names how early a date mention reminds", async () => {
+    const value = { ...createDateMentionValue("2026-10-12T15:00", true), ganbaru_reminder: { enabled: true, minutes_before: 30 } };
+    const root = editableRoot([createDateMentionRichText(value, "Remind Oct 12")]);
+    const card = await hoverPreview(root.querySelector("[data-notes-mention-chip]"));
+    expect(card.textContent).toContain("Reminder, 30 minutes before");
+  });
+
   it("does not open for touch and closes on Escape", async () => {
     const root = editableRoot([createLocalObjectMentionRichText("project", PROJECT_ID, "Eating plan")]);
     const chip = root.querySelector("[data-notes-mention-chip]");

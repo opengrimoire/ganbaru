@@ -178,6 +178,8 @@ pub struct NoteMentionNotificationRow {
     pub target_type: String,
     pub target_id: Option<String>,
     pub trigger_at: Option<String>,
+    /// Minutes a reminder fires before `trigger_at`; 0 for mentions and reminders at their date.
+    pub remind_minutes_before: i64,
     pub plain_text: String,
     pub source_plain_text: String,
     pub status: String,

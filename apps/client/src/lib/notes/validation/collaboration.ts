@@ -1,7 +1,7 @@
 import { NOTES_MENTION_NOTIFICATION_KINDS, NOTES_MENTION_NOTIFICATION_STATUSES, NOTES_MENTION_NOTIFICATION_TARGET_TYPES, NOTES_PAGE_NOTIFICATION_LEVELS } from "../contracts/collaboration";
 import type { NotesComment, NotesCommentAnchor, NotesCommentReaction, NotesCommentDisplayName, NotesCommentParent, NotesCommentThread, NotesCommentThreadStatus, NotesLocalUser, NotesMentionNotification, NotesMentionNotificationKind, NotesMentionNotificationStatus, NotesMentionNotificationTargetType, NotesPageNotificationLevel, NotesPageNotificationSettings, NotesPartialUser, NotesSuggestion, NotesSuggestionStatus } from "../contracts/collaboration";
 import { parseNotesParent } from "./blocks";
-import { readBoolean, readDisplayString, readInteger, readNullableString, readRecord, readString, readStringArray } from "./readers";
+import { readBoolean, readDisplayString, readInteger, readNonNegativeInteger, readNullableString, readRecord, readString, readStringArray } from "./readers";
 import { parseNotesRichTextArray } from "./rich-text";
 
 function parseNotesCommentParent(value: unknown, label: string): NotesCommentParent {
@@ -133,6 +133,10 @@ export function parseNotesMentionNotification(value: unknown): NotesMentionNotif
     target_type: parseNotesMentionNotificationTargetType(record.target_type),
     target_id: readNullableString(record.target_id, "mention notification.target_id"),
     trigger_at: readNullableString(record.trigger_at, "mention notification.trigger_at"),
+    remind_minutes_before: readNonNegativeInteger(
+      record.remind_minutes_before,
+      "mention notification.remind_minutes_before",
+    ),
     plain_text: readString(record.plain_text, "mention notification.plain_text"),
     source_plain_text: readString(
       record.source_plain_text,

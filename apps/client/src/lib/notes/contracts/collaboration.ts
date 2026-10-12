@@ -46,6 +46,8 @@ export interface NotesMentionNotification {
   target_type: NotesMentionNotificationTargetType;
   target_id: string | null;
   trigger_at: string | null;
+  /** Minutes before `trigger_at` that a reminder fires; 0 for mentions. */
+  remind_minutes_before: number;
   plain_text: string;
   source_plain_text: string;
   status: NotesMentionNotificationStatus;

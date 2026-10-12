@@ -508,6 +508,33 @@ fn schema_creates_notes_mention_notifications() {
             .await
             .is_err()
         );
+        sqlx::query(
+            "INSERT INTO notes_blocks (
+                id, page_id, parent_type, parent_page_id, type, payload, plain_text, sort_order
+             )
+             VALUES (
+                'block-a', 'page-a', 'page_id', 'page-a', 'paragraph',
+                json_object('rich_text', json_array()), '', 1
+             )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        for (offset, accepted) in [(0, true), (40_320, true), (-1, false), (40_321, false)] {
+            let inserted = sqlx::query(
+                "INSERT INTO notes_mention_notifications (
+                    id, source_type, source_id, page_id, kind, target_type, fingerprint, block_id, trigger_at,
+                    remind_minutes_before
+                 )
+                 VALUES (?, 'block', 'block-a', 'page-a', 'reminder', 'date', ?, 'block-a', '2026-07-05', ?)",
+            )
+            .bind(format!("offset-{offset}"))
+            .bind(format!("fingerprint-{offset}"))
+            .bind(offset)
+            .execute(&pool)
+            .await;
+            assert_eq!(inserted.is_ok(), accepted, "offset {offset}");
+        }
     });
 }
 

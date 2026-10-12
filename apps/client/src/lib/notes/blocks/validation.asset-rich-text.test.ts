@@ -745,6 +745,40 @@ describe("notes asset-rich-text boundary validation", () => {
       });
     });
 
+  it("bounds how early a date reminder can fire", () => {
+      const reminding = (minutesBefore: unknown) => parseNotesRichTextArray(
+        [
+          {
+            type: "mention",
+            mention: {
+              type: "date",
+              date: { start: "2026-06-30T15:00", ganbaru_reminder: { enabled: true, minutes_before: minutesBefore } },
+            },
+            annotations: {
+              bold: false,
+              italic: false,
+              strikethrough: false,
+              underline: false,
+              code: false,
+              color: "default",
+            },
+            plain_text: "Remind Today",
+            href: null,
+          },
+        ],
+        "rich_text",
+      );
+
+      for (const minutes of [null, 0, 30, 40_320]) {
+        expect(reminding(minutes)[0]).toMatchObject({
+          mention: { date: { ganbaru_reminder: { enabled: true, minutes_before: minutes } } },
+        });
+      }
+      for (const minutes of [-5, 40_321, 2.5, "30"]) {
+        expect(() => reminding(minutes)).toThrow("rich_text[0].mention.date.ganbaru_reminder.minutes_before");
+      }
+    });
+
   it("rejects invalid date mention starts", () => {
       expect(() =>
         parseNotesRichTextArray(

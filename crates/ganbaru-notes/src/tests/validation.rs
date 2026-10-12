@@ -174,6 +174,23 @@ fn notes_validation_rejects_bad_ids_and_payloads() {
         validation::validate_block_payload("paragraph", &formatted(json!("relative"))),
         Err("rich text mention.date.ganbaru_format must be null or one of full, short, numeric, iso".to_string())
     );
+    let offset = |minutes: serde_json::Value| {
+        let mut mention = date_mention("2026-10-30T12:01", "Remind October 30, 2026", true);
+        mention["mention"]["date"]["ganbaru_reminder"]["minutes_before"] = minutes;
+        json!({ "rich_text": [mention], "color": "default" })
+    };
+    for minutes in [json!(null), json!(0), json!(30), json!(40_320)] {
+        assert!(
+            validation::validate_block_payload("paragraph", &offset(minutes.clone())).is_ok(),
+            "{minutes}"
+        );
+    }
+    for minutes in [json!(-5), json!(40_321), json!(2.5), json!("30")] {
+        assert_eq!(
+            validation::validate_block_payload("paragraph", &offset(minutes)),
+            Err("rich text mention.date.ganbaru_reminder.minutes_before must be null or a whole number from 0 to 40320".to_string())
+        );
+    }
     assert_eq!(
         validation::validate_block_payload(
             "paragraph",

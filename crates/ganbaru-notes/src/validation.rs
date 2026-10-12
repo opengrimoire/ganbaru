@@ -38,5 +38,6 @@ pub use requests::{
     validate_page_create, validate_page_update, validate_parent,
 };
 pub use rich_text::{
-    validate_comment_body_rich_text, validate_comment_rich_text, validate_rich_text_url,
+    date_mention_reminder_minutes_before, validate_comment_body_rich_text,
+    validate_comment_rich_text, validate_rich_text_url,
 };

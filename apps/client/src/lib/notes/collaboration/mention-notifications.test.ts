@@ -18,6 +18,7 @@ const baseNotification: NotesMentionNotification = {
   target_type: "date",
   target_id: null,
   trigger_at: "2026-07-04",
+  remind_minutes_before: 0,
   plain_text: "Reminder",
   source_plain_text: "Reminder",
   status: "pending",
@@ -50,6 +51,25 @@ describe("notes mention notifications", () => {
     expect(notesMentionNotificationDueAtMs(notification, { timeZone: "UTC" })).toBe(
       Date.parse("2026-07-04T14:30:00.000Z"),
     );
+  });
+
+  it("moves reminders earlier by their offset for timed and date-only dates", () => {
+    const timed = {
+      ...baseNotification,
+      trigger_at: "2026-07-04T14:30",
+      remind_minutes_before: 30,
+    } satisfies NotesMentionNotification;
+    expect(notesMentionNotificationDueAtMs(timed, { timeZone: "UTC" })).toBe(
+      Date.parse("2026-07-04T14:00:00.000Z"),
+    );
+    const dayBefore = { ...baseNotification, remind_minutes_before: 1440 } satisfies NotesMentionNotification;
+    expect(notesMentionNotificationDueAtMs(dayBefore, { timeZone: "UTC" })).toBe(
+      Date.parse("2026-07-03T09:00:00.000Z"),
+    );
+    expect(notesMentionNotificationIsDue(dayBefore, enabledPreferences, {
+      nowMs: Date.parse("2026-07-03T09:00:00.000Z"),
+      timeZone: "UTC",
+    })).toBe(true);
   });
 
   it("treats user mentions as due at their local notification row creation time", () => {

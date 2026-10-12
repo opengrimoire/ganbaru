@@ -2,7 +2,10 @@
   import { onDestroy } from "svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { NotesExternalMentionRichText } from "$lib/notes/rich-text/core";
+  import type { NotesDateMentionValue } from "$lib/notes/types";
   import { notesCalendarEventPreviewWhen, notesDateMentionPreviewWhen } from "$lib/notes/rich-text/mention-preview";
+  import { formatNotificationOffset } from "$lib/calendar/event-notifications";
+  import { notesDateMentionReminderMinutes } from "$lib/notes/rich-text/date-mention-edit";
   import { getNavigation } from "$lib/stores/navigation.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
@@ -104,11 +107,19 @@
     return {
       route: [],
       title: text,
-      details: presentLines([spelled === text ? null : spelled, reminder ? t("notes.reminderMention") : null]),
+      details: presentLines([spelled === text ? null : spelled, reminder ? reminderDetail(mention.mention.date) : null]),
     };
   });
   const previewStatusText = $derived(previewStatus === "failed" ? t("notes.databaseGalleryPreviewUnavailable")
     : previewStatus === "loading" ? t("common.loading") : null);
+
+  /** The preview line for a date mention's reminder, naming how early it fires when it fires ahead of the date. */
+  function reminderDetail(date: NotesDateMentionValue): string {
+    const minutes = notesDateMentionReminderMinutes(date);
+    return minutes > 0
+      ? t("notes.reminderMentionBefore", formatNotificationOffset(minutes, t))
+      : t("notes.reminderMention");
+  }
 
   /** Drop missing and blank preview lines. */
   function presentLines(values: readonly (string | null | undefined)[]): string[] {

@@ -3,6 +3,7 @@
   import { slide } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
   import { commitIntegerDraft, moveRovingIndex, panelInputKeydown } from "$lib/calendar/event-panel-utils";
+  import { formatNotificationOffset } from "$lib/calendar/event-notifications";
   import Bell from "@lucide/svelte/icons/bell";
   import X from "@lucide/svelte/icons/x";
   import Plus from "@lucide/svelte/icons/plus";
@@ -57,7 +58,7 @@
   const presetOptions = $derived.by(() =>
     PRESET_MINUTES.map((value) => ({
       value,
-      label: formatMinutes(value),
+      label: formatNotificationOffset(value, t),
     })),
   );
   const unitOptions = $derived.by(() =>
@@ -251,24 +252,6 @@
     return { destroy() {} };
   }
 
-  function formatMinutes(minutes: number): string {
-    if (minutes === 0) return t("calendar.notifications.atStart");
-    if (minutes < 60) return t("calendar.notifications.minutesBefore", minutes);
-    const hours = Math.floor(minutes / 60);
-    const remainingMinutes = minutes % 60;
-    if (minutes < 1440) {
-      if (remainingMinutes === 0) return t("calendar.notifications.hoursBefore", hours);
-      return t("calendar.notifications.compactHoursMinutesBefore", hours, remainingMinutes);
-    }
-    const days = Math.floor(minutes / 1440);
-    if (minutes % 10080 === 0) {
-      return t("calendar.notifications.weeksBefore", minutes / 10080);
-    }
-    if (minutes % 1440 === 0) return t("calendar.notifications.daysBefore", days);
-    const remainingHours = Math.floor((minutes % 1440) / 60);
-    return t("calendar.notifications.compactDaysHoursBefore", days, remainingHours);
-  }
-
   function unitLabel(unit: number): string {
     if (unit === 60) return t("calendar.notifications.unitHours");
     if (unit === 1440) return t("calendar.notifications.unitDays");
@@ -284,7 +267,7 @@
     const sorted = [...new Set(all)].sort((a, b) => a - b);
     return formatList(locale, sorted.map((m) => {
       const preset = presetOptions.find((p) => p.value === m);
-      return preset ? preset.label : formatMinutes(m);
+      return preset ? preset.label : formatNotificationOffset(m, t);
     }));
   });
 </script>

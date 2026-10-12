@@ -93,3 +93,20 @@ export function formatEventNotificationBody(
 
   return lines.join("\n");
 }
+
+/** How long before an event or date a notification fires, in words, such as "2 hours before" or "At start". */
+export function formatNotificationOffset(minutes: number, t: Translate): string {
+  if (minutes === 0) return t("calendar.notifications.atStart");
+  if (minutes < 60) return t("calendar.notifications.minutesBefore", minutes);
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  if (minutes < 1440) {
+    if (remainingMinutes === 0) return t("calendar.notifications.hoursBefore", hours);
+    return t("calendar.notifications.compactHoursMinutesBefore", hours, remainingMinutes);
+  }
+  const days = Math.floor(minutes / 1440);
+  if (minutes % 10080 === 0) return t("calendar.notifications.weeksBefore", minutes / 10080);
+  if (minutes % 1440 === 0) return t("calendar.notifications.daysBefore", days);
+  const remainingHours = Math.floor((minutes % 1440) / 60);
+  return t("calendar.notifications.compactDaysHoursBefore", days, remainingHours);
+}

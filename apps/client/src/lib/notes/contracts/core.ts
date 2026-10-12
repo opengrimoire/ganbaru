@@ -147,8 +147,13 @@ export interface NotesLocalObjectMentionRichText {
   href: string | null;
 }
 
+/** The longest a date mention can remind ahead of its date, four weeks. */
+export const NOTES_DATE_MENTION_MAX_REMINDER_MINUTES_BEFORE = 40_320;
+
 export interface NotesDateMentionReminder {
   enabled: boolean;
+  /** How long before the date the reminder fires; absent means at the date itself. */
+  minutes_before?: number | null;
 }
 
 /** How a date mention spells its date once edited. */

@@ -78,10 +78,41 @@ export function notesDateMentionEditorValue(value: NotesDateMentionValue): Notes
   return { start: value.start, end: value.end ?? null, time_zone: value.time_zone ?? null };
 }
 
-/** A mention value with dates from the editor, keeping the mention's reminder and format. */
+/**
+ * A mention value with dates from the editor, keeping the mention's format and reminder. A reminder offset the new
+ * dates do not offer, such as minutes before a date that lost its time, falls back to the date itself.
+ */
 export function notesDateMentionValueWithDates(
   value: NotesDateMentionValue,
   dates: NotesDatabaseDateValue,
 ): NotesDateMentionValue {
-  return { ...value, start: dates.start, end: dates.end, time_zone: dates.time_zone };
+  const next: NotesDateMentionValue = { ...value, start: dates.start, end: dates.end, time_zone: dates.time_zone };
+  const offered = notesDateMentionReminderOffsets(next).includes(notesDateMentionReminderMinutes(next));
+  return offered ? next : notesDateMentionWithReminderMinutes(next, 0);
+}
+
+/** Reminder offsets offered for a mention with a time, in minutes before it. */
+export const NOTES_TIMED_REMINDER_OFFSETS: readonly number[] = [0, 5, 10, 15, 30, 60, 120, 1440, 2880, 10080];
+
+/** Reminder offsets offered for a date without a time, in whole days so the reminder keeps its usual hour. */
+export const NOTES_DATE_ONLY_REMINDER_OFFSETS: readonly number[] = [0, 1440, 2880, 10080];
+
+/** The reminder offsets a mention offers, which depend on whether its start has a time. */
+export function notesDateMentionReminderOffsets(value: NotesDateMentionValue): readonly number[] {
+  return value.start.includes("T") ? NOTES_TIMED_REMINDER_OFFSETS : NOTES_DATE_ONLY_REMINDER_OFFSETS;
+}
+
+/** How many minutes before its date a mention's reminder fires. */
+export function notesDateMentionReminderMinutes(value: NotesDateMentionValue): number {
+  return value.ganbaru_reminder?.minutes_before ?? 0;
+}
+
+/** A mention value whose reminder fires a number of minutes before its date; a mention without a reminder is unchanged. */
+export function notesDateMentionWithReminderMinutes(value: NotesDateMentionValue, minutes: number): NotesDateMentionValue {
+  const reminder = value.ganbaru_reminder;
+  if (!reminder) return value;
+  return {
+    ...value,
+    ganbaru_reminder: minutes > 0 ? { enabled: reminder.enabled, minutes_before: minutes } : { enabled: reminder.enabled },
+  };
 }

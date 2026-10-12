@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   formatEventNotificationBody,
   formatEventNotificationLead,
+  formatNotificationOffset,
 } from "./event-notifications";
+import { translate } from "$lib/i18n/translator.svelte";
 
 describe("formatEventNotificationLead", () => {
   it("formats immediate starts", () => {
@@ -73,5 +75,22 @@ describe("formatEventNotificationBody", () => {
         now,
       ),
     ).toBe("Starts in 10 minutes\n09:10 - 09:20\nRoom 1 Second floor");
+  });
+});
+
+describe("formatNotificationOffset", () => {
+  it("names each offset by its largest whole unit", () => {
+    expect([0, 5, 60, 90, 1440, 1500, 2880, 10080, 20160].map((minutes) => formatNotificationOffset(minutes, translate)))
+      .toEqual([
+        "At start",
+        "5 minutes before",
+        "1 hour before",
+        "1h 30m before",
+        "1 day before",
+        "1d 1h before",
+        "2 days before",
+        "1 week before",
+        "2 weeks before",
+      ]);
   });
 });

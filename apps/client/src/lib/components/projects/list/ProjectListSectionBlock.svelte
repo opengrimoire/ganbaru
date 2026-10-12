@@ -119,6 +119,7 @@
     onClearDueDate,
     onSetDueTime,
     onClearDueTime,
+    onRenameTask,
     onToggleSubtaskDone,
     onTaskDraftChange,
     onTaskAddActiveChange,
@@ -223,6 +224,8 @@
     onClearDueDate: (task: ProjectTask) => void;
     onSetDueTime: (task: ProjectTask, dueTime: string) => void;
     onClearDueTime: (task: ProjectTask) => void;
+    /** Saves a task title edited in its name cell. */
+    onRenameTask: (task: ProjectTask, title: string) => void;
     onToggleSubtaskDone: (task: ProjectTask) => void;
     onTaskDraftChange: (value: string) => void;
     onTaskAddActiveChange: (active: boolean) => void;
@@ -342,6 +345,7 @@
       {onClearDueDate}
       {onSetDueTime}
       {onClearDueTime}
+      {onRenameTask}
       {onToggleSubtaskDone}
     />
     {#if taskSectionDropMarkerVisible}

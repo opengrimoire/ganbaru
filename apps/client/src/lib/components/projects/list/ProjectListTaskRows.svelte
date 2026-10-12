@@ -74,6 +74,7 @@
     onClearDueDate,
     onSetDueTime,
     onClearDueTime,
+    onRenameTask,
     onToggleSubtaskDone,
   }: {
     tasks: ProjectTask[];
@@ -137,6 +138,8 @@
     onClearDueDate: (task: ProjectTask) => void;
     onSetDueTime: (task: ProjectTask, dueTime: string) => void;
     onClearDueTime: (task: ProjectTask) => void;
+    /** Saves a task title edited in its name cell. */
+    onRenameTask: (task: ProjectTask, title: string) => void;
     onToggleSubtaskDone: (task: ProjectTask) => void;
   } = $props();
 </script>
@@ -206,6 +209,7 @@
       onClearDueDate={() => onClearDueDate(task)}
       onSetDueTime={(dueTime) => onSetDueTime(task, dueTime)}
       onClearDueTime={() => onClearDueTime(task)}
+      onRename={(title) => onRenameTask(task, title)}
       onToggleSubtaskDone={onToggleSubtaskDone}
     />
     {#if dropMarkerVisible?.(task, "after")}

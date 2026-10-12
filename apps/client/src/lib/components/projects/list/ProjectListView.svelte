@@ -424,6 +424,12 @@
     await projects.updateTask(task, { dueTime });
   }
 
+  async function renameTaskFromList(task: ProjectTask, title: string): Promise<void> {
+    const nextTitle = title.trim();
+    if (task.archivedAt || !nextTitle || nextTitle === task.title) return;
+    await projects.updateTask(task, { title: nextTitle });
+  }
+
   function sectionNameDraft(section: ProjectSection): string {
     return sectionNameDrafts[section.id] ?? section.name;
   }
@@ -640,6 +646,7 @@
             onClearDueDate={(task) => { void setTaskDueDateFromList(task, undefined); }}
             onSetDueTime={(task, dueTime) => { void setTaskDueTimeFromList(task, dueTime); }}
             onClearDueTime={(task) => { void setTaskDueTimeFromList(task, undefined); }}
+            onRenameTask={(task, title) => { void renameTaskFromList(task, title); }}
             onToggleSubtaskDone={(subtask) => { void projects.toggleTaskDone(subtask); }}
             onTaskDraftChange={(value) => {
                 quickAdd.sectionTaskDrafts = {
@@ -750,6 +757,7 @@
             onClearDueDate={(task) => { void setTaskDueDateFromList(task, undefined); }}
             onSetDueTime={(task, dueTime) => { void setTaskDueTimeFromList(task, dueTime); }}
             onClearDueTime={(task) => { void setTaskDueTimeFromList(task, undefined); }}
+            onRenameTask={(task, title) => { void renameTaskFromList(task, title); }}
             onToggleSubtaskDone={(subtask) => { void projects.toggleTaskDone(subtask); }}
           />
             {#if groupQuickAddPlan.enabled}

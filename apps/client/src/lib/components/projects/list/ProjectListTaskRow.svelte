@@ -3,6 +3,7 @@
   import CollectionCell from "$lib/components/collections/CollectionCell.svelte";
   import Check from "@lucide/svelte/icons/check";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
+  import PanelRight from "@lucide/svelte/icons/panel-right";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
     projectTagColorDotStyle,
@@ -85,6 +86,7 @@
     onClearDueDate,
     onSetDueTime,
     onClearDueTime,
+    onRename,
     onToggleSubtaskDone,
   }: {
     task: ProjectTask;
@@ -148,11 +150,36 @@
     onClearDueDate: () => void;
     onSetDueTime: (dueTime: string) => void;
     onClearDueTime: () => void;
+    /** Saves the title edited in the name cell. */
+    onRename: (title: string) => void;
     onToggleSubtaskDone: (task: ProjectTask) => void;
   } = $props();
 
   const { t } = getLocalization();
   const context = getProjectListTableContext();
+
+  /** Save the edited title; an empty title is not allowed, so the field falls back to the saved one. */
+  function commitTitle(event: FocusEvent & { currentTarget: HTMLInputElement }): void {
+    const title = event.currentTarget.value.trim();
+    if (!title) {
+      event.currentTarget.value = task.title;
+      return;
+    }
+    if (title !== task.title) onRename(title);
+  }
+
+  function handleTitleKeydown(event: KeyboardEvent & { currentTarget: HTMLInputElement }): void {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      event.currentTarget.blur();
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.currentTarget.value = task.title;
+      event.currentTarget.blur();
+    }
+  }
 </script>
 
 <div
@@ -205,14 +232,17 @@
       </button>
     </div>
     <CollectionCell class={context?.cellClass("name")} style={context?.cellStyle("name")}>
-    <button
-      type="button"
-      data-list-row-drag-source="true" data-collection-cell-primary
-      class="flex min-h-7 w-full min-w-0 cursor-pointer flex-col justify-center rounded-sm text-left outline-none focus-visible:bg-accent/40"
-      aria-label={t("projects.actions.openTaskDetails", task.title)}
-      onclick={() => onOpenTask(task)}
-    >
-      <div class="truncate">{task.title}</div>
+    <div class="flex w-full min-w-0 flex-col justify-center">
+      <input
+        data-collection-cell-primary
+        class="h-7 w-full min-w-0 truncate rounded-sm border border-transparent bg-transparent p-0 text-foreground outline-none"
+        value={task.title}
+        aria-label={t("projects.detail.titleLabel")}
+        placeholder={t("projects.detail.titlePlaceholder")}
+        disabled={Boolean(task.archivedAt)}
+        onblur={commitTitle}
+        onkeydown={handleTitleKeydown}
+      />
       {#if sectionName || subtasks.length > 0}
         <div class="mt-0.5 flex min-w-0 flex-wrap items-center gap-1 text-[0.733333rem] text-muted-foreground">
           {#if sectionName}
@@ -246,6 +276,11 @@
           {t("projects.taskLifecycle.archived")}
         </span>
       {/if}
+    </div>
+    <button type="button" data-collection-hover-reveal=""
+      class="absolute top-1/2 right-1 z-10 flex h-6 -translate-y-1/2 items-center gap-1 rounded-md border border-border bg-background px-1.5 text-[0.75rem] text-muted-foreground opacity-100 hover:bg-accent hover:text-foreground [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/row:opacity-100 [@media(hover:hover)]:group-focus-within/row:opacity-100"
+      aria-label={t("projects.actions.openTaskDetails", task.title)} onclick={() => onOpenTask(task)}>
+      <PanelRight class="size-3.5" aria-hidden="true" /><span>{t("collections.property.open")}</span>
     </button>
     </CollectionCell>
     {#each taskListColumns as column (column)}

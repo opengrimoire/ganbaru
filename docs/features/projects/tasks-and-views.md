@@ -22,6 +22,12 @@ Archive is preferred to deletion when a task has history, scheduled blocks, depe
 
 List and Kanban support multi-select with bulk status, priority, scheduling, archive, and restore from the shared selection toolbar. Bulk edits of dates and custom fields are not supported yet. A bulk change commits the complete accepted selection and its history atomically. Missing tasks, mixed projects, or values that changed since selection reject the whole operation rather than silently skipping items. Archive and restore include descendants outside the loaded view, and a failed or uncertain response can be retried with the same operation identity.
 
+## Sidebar and toolbar
+
+On desktop, Projects has one docked sidebar: task actions, a project switcher, the project's places (Overview for the Dashboard and Tasks for the task layouts), and the saved views of the project. Notes and Chat places are planned in the same sidebar, so a project never shows two sidebars. Collapsing it keeps a narrow rail with the same places and moves the group and project breadcrumb into the header; the collapsed state persists per device. Tasks remembers its last layout (List, Kanban, Calendar, or Gantt), and the layout tabs appear only there. Mobile keeps the header view menu.
+
+Toolbar actions follow what the view honors: every view offers filters and project settings, List and Kanban offer sorting, and only List offers grouping and columns. Gantt always orders by date. A configuration panel the new view does not offer closes when the view changes.
+
 ## List
 
 List is the default view. It shows section or computed groups, configurable columns, inline editing, selection, task creation, and horizontal access to wide schemas. It uses the [shared collection components](../collections.md); task property editors, section controls, subtasks, selection, and manual ordering stay project-specific.
@@ -58,7 +64,7 @@ Dashboard summarizes task counts, completion, open estimates, scheduled hours, b
 
 ## Saved views
 
-A saved view captures the selected tab and its search, filters, sorting, visible columns, grouping, collapsed state, and archived visibility. It never snapshots task data, and deleting it does not change tasks.
+A saved view captures the selected tab and its search, filters, sorting, visible columns, grouping, collapsed state, and archived visibility. It never snapshots task data, and deleting it does not change tasks. Saved views live in the desktop sidebar and in the mobile configuration menu.
 
 ## Task detail
 

@@ -3,6 +3,7 @@ import {
   DEFAULT_PROJECT_VIEW_ID,
   isProjectViewId,
   parseStoredProjectId,
+  parseStoredProjectTaskLayoutId,
   parseStoredProjectViewId,
 } from "./ui-preferences";
 
@@ -30,5 +31,11 @@ describe("project ui preferences", () => {
     expect(parseStoredProjectId(" project-a ")).toBe("project-a");
     expect(parseStoredProjectId("   ")).toBeNull();
     expect(parseStoredProjectId(null)).toBeNull();
+  });
+
+  it("falls back to the list layout when the stored task layout is not a task layout", () => {
+    expect(parseStoredProjectTaskLayoutId("gantt")).toBe("gantt");
+    expect(parseStoredProjectTaskLayoutId("dashboard")).toBe("list");
+    expect(parseStoredProjectTaskLayoutId(42)).toBe("list");
   });
 });

@@ -32,8 +32,10 @@
   } from "$lib/projects/display";
   import {
     PROJECT_SETTINGS_PANEL_MAX_HEIGHT,
+    projectCustomizeContent,
     projectToolbarPanelGeometry,
     type ProjectListColumnControl,
+    type ProjectSavedViewsHome,
     type ProjectToolbarPanel,
   } from "$lib/projects/toolbar";
   import {
@@ -60,6 +62,7 @@
     type ProjectTaskSortDirection,
     type ProjectTaskSortMode,
     type ProjectTaskStatusFilter,
+    type ProjectViewId,
   } from "$lib/projects/types";
   import { getProjects } from "$lib/stores/projects.svelte";
   import { getTheme } from "$lib/stores/theme.svelte";
@@ -84,6 +87,8 @@
 
   let {
     panel,
+    view,
+    savedViewsHome,
     projectId,
     sections,
     priorities,
@@ -126,6 +131,9 @@
     taskQuery,
   }: {
     panel: ProjectToolbarPanel | null;
+    /** The view the panels configure, which decides what the customize panel holds. */
+    view: ProjectViewId;
+    savedViewsHome: ProjectSavedViewsHome;
     taskQuery?: ProjectTaskQueryController;
     projectId: string | null;
     sections: ProjectSection[];
@@ -177,13 +185,16 @@
   let panelElement = $state<HTMLDivElement | null>(null);
   let panelStyle = $state("");
   let panelGeometryFrame: number | null = null;
+  const customizeContent = $derived(projectCustomizeContent(view, savedViewsHome));
 
   /** Return the localized heading for a toolbar panel. */
   function panelTitle(currentPanel: ProjectToolbarPanel): string {
     if (currentPanel === "settings") return t("projects.settings.title");
     if (currentPanel === "group") return t("projects.toolbar.group");
     if (currentPanel === "sort") return t("projects.toolbar.sort");
-    if (currentPanel === "customize") return t("projects.toolbar.customize");
+    if (currentPanel === "customize") {
+      return customizeContent?.listColumns === false ? t("projects.savedViews.title") : t("projects.toolbar.customize");
+    }
     return t("projects.filters.title");
   }
 
@@ -610,7 +621,8 @@
           </button>
         {/if}
       {:else if panel === "customize"}
-        {#if taskQuery?.request()?.view === "list"}<ProjectListPresentationControls query={taskQuery} />{/if}
+        {#if customizeContent?.listColumns}
+        {#if taskQuery}<ProjectListPresentationControls query={taskQuery} />{/if}
         <CollectionMenu fullWidth kind="properties" icon={Columns3} label={t("projects.columns.title")} summary={formatNumber(localization.locale, taskListColumnControls.filter((control) => control.visible).length)}>
           {#each taskListColumnControls as control (control.column)}
             {@render optionRow(control.label, control.visible, () => { void onToggleTaskListColumn(control.column); }, listColumnsSaving)}
@@ -619,6 +631,8 @@
             <Notice class="px-2 py-1" message={listColumnsError} />
           {/if}
         </CollectionMenu>
+        {/if}
+        {#if customizeContent?.savedViews}
         <CollectionMenu fullWidth kind="layout" icon={Save} label={t("projects.savedViews.title")} summary={savedTaskViews.length > 0 ? formatNumber(localization.locale, savedTaskViews.length) : t("projects.toolbar.none")}>
           <form
             class="mb-1 flex gap-1 border-b border-border/60 px-1 pb-2"
@@ -671,6 +685,7 @@
             <Notice class="px-2 py-1" message={savedViewError} />
           {/if}
         </CollectionMenu>
+        {/if}
       {/if}
     </CollectionSettings>
   {/key}

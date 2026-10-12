@@ -31,6 +31,17 @@ export const shell = {
     none: "Ninguna",
     visibility: "Visibilidad",
   },
+  sidebar: {
+    label: "Barra lateral del proyecto",
+    places: "Secciones del proyecto",
+    collapse: "Contraer barra lateral",
+    expand: "Expandir barra lateral",
+    switchProject: "Cambiar de proyecto",
+    overview: "Resumen",
+    tasks: "Tareas",
+    saveView: "Guardar vista actual",
+    savedViewsEmpty: "Guarda filtros y un diseño para volver a ellos aquí.",
+  },
   finder: {
     open: "Buscar tareas",
     label: "Buscar tareas del proyecto",

@@ -1,9 +1,48 @@
 import type {
   ProjectCustomFieldFilter,
   ProjectTaskListColumn,
+  ProjectViewId,
 } from "./types";
 
 export type ProjectToolbarPanel = "group" | "filters" | "sort" | "customize" | "settings";
+
+/** Where saved views are managed: the customize panel on mobile, the sidebar on desktop. */
+export type ProjectSavedViewsHome = "panel" | "sidebar";
+
+/** What the customize panel holds for a view, or `null` when the view has nothing to customize. */
+export interface ProjectCustomizeContent {
+  listColumns: boolean;
+  savedViews: boolean;
+}
+
+/**
+ * Returns what the customize panel holds for a view. Columns and list presentation exist only in the list; saved views
+ * live in the panel only when no sidebar holds them, and never on the dashboard, which has no task layout to save.
+ */
+export function projectCustomizeContent(
+  view: ProjectViewId,
+  savedViewsHome: ProjectSavedViewsHome,
+): ProjectCustomizeContent | null {
+  const listColumns = view === "list";
+  const savedViews = savedViewsHome === "panel" && view !== "dashboard";
+  return listColumns || savedViews ? { listColumns, savedViews } : null;
+}
+
+/**
+ * Returns the toolbar panels that apply to a view, in toolbar order. Grouping exists only in the list, and sorting only
+ * where tasks keep the requested order: Gantt orders rows by date and Calendar and the dashboard by time.
+ */
+export function projectToolbarPanelsForView(
+  view: ProjectViewId,
+  savedViewsHome: ProjectSavedViewsHome,
+): readonly ProjectToolbarPanel[] {
+  const panels: ProjectToolbarPanel[] = ["filters"];
+  if (view === "list" || view === "kanban") panels.push("sort");
+  if (projectCustomizeContent(view, savedViewsHome)) panels.push("customize");
+  if (view === "list") panels.push("group");
+  panels.push("settings");
+  return panels;
+}
 export type ProjectNavigatorPanelMode = "groups" | "projects";
 export type ProjectTaskModalLayout = "modal" | "sheet" | "fullscreen";
 

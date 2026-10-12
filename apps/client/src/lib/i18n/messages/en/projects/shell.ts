@@ -28,6 +28,17 @@ export const shell = {
     none: "None",
     visibility: "Visibility",
   },
+  sidebar: {
+    label: "Project sidebar",
+    places: "Project places",
+    collapse: "Collapse sidebar",
+    expand: "Expand sidebar",
+    switchProject: "Switch project",
+    overview: "Overview",
+    tasks: "Tasks",
+    saveView: "Save current view",
+    savedViewsEmpty: "Save filters and a layout to come back to them here.",
+  },
   finder: {
     open: "Search tasks",
     label: "Search project tasks",

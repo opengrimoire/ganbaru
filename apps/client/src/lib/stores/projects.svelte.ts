@@ -14,10 +14,15 @@ import {
   projectViewOptionalDataKinds,
 } from "$lib/projects/snapshot/optional-data";
 import { mergeProjectSnapshot } from "$lib/projects/snapshot/queries";
+import { isProjectTaskLayoutId, type ProjectTaskLayoutId } from "$lib/projects/places";
 import {
   loadSavedActiveProjectId,
+  loadSavedProjectSidebarCollapsed,
+  loadSavedProjectTaskLayoutId,
   loadSavedProjectViewId,
   saveActiveProjectId,
+  saveProjectSidebarCollapsed,
+  saveProjectTaskLayoutId,
   saveProjectViewId,
 } from "$lib/projects/ui-preferences";
 import { createProjectStoreActions } from "$lib/stores/projects/actions";
@@ -73,7 +78,13 @@ let loaded = $state(false);
 let loading = $state(false);
 let loadError = $state<string | null>(null);
 let selectedProjectId = $state<string | null>(loadSavedActiveProjectId());
-let activeView = $state<ProjectViewId>(loadSavedProjectViewId());
+const initialProjectViewId = loadSavedProjectViewId();
+let activeView = $state<ProjectViewId>(initialProjectViewId);
+let lastTaskLayout = $state<ProjectTaskLayoutId>(
+  isProjectTaskLayoutId(initialProjectViewId) ? initialProjectViewId : loadSavedProjectTaskLayoutId(),
+);
+let sidebarCollapsed = $state(loadSavedProjectSidebarCollapsed());
+let showInactiveProjects = $state(false);
 let loadedProjectIds = $state<string[]>([]);
 let loadRequestId = 0;
 let selectProjectRequestId = 0;
@@ -119,6 +130,10 @@ function setActiveView(view: ProjectViewId): void {
   if (activeView === view) return;
   activeView = view;
   saveProjectViewId(view);
+  if (isProjectTaskLayoutId(view) && lastTaskLayout !== view) {
+    lastTaskLayout = view;
+    saveProjectTaskLayoutId(view);
+  }
 }
 
 function applyLoadedSnapshot(incoming: ProjectsSnapshot, projectId: string | null | undefined): void {
@@ -617,6 +632,26 @@ export function getProjects() {
     },
     set activeView(view: ProjectViewId) {
       setActiveView(view);
+    },
+    /** Task layout that the Tasks place reopens. */
+    get lastTaskLayout(): ProjectTaskLayoutId {
+      return lastTaskLayout;
+    },
+    /** Whether the docked desktop Projects sidebar is collapsed to its rail. */
+    get sidebarCollapsed(): boolean {
+      return sidebarCollapsed;
+    },
+    set sidebarCollapsed(collapsed: boolean) {
+      if (sidebarCollapsed === collapsed) return;
+      sidebarCollapsed = collapsed;
+      saveProjectSidebarCollapsed(collapsed);
+    },
+    /** Whether project pickers list hidden and archived projects. */
+    get showInactiveProjects(): boolean {
+      return showInactiveProjects;
+    },
+    set showInactiveProjects(value: boolean) {
+      showInactiveProjects = value;
     },
     get loaded(): boolean {
       return loaded;

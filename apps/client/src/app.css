@@ -769,7 +769,7 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
 .notes-mention-chip[data-notes-selected="true"]::selection,
 .notes-mention-chip[data-notes-selected="true"] *::selection { background-color: transparent; }
 
-/* Notes and Chat share explorer surfaces, controls, and navigation states. */
+/* Projects, Notes, and Chat share explorer surfaces, controls, and navigation states. */
 .explorer-sidebar {
   --explorer-toolbar-height: var(--toolbar-h);
   --explorer-row-icon-size: 14px;

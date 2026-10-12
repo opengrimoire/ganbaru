@@ -53,6 +53,8 @@ afterEach(async () => {
 function toolbarProps(panel: ProjectToolbarPanel, overrides: Partial<ToolbarProps> = {}): ToolbarProps {
   return {
     panel,
+    view: "list",
+    savedViewsHome: "panel",
     projectId: "project-one",
     sections: [],
     priorities: [],
@@ -253,6 +255,27 @@ describe("Project collection configuration", () => {
     expect(visiblePage().querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(true);
     await choose("Weekly work");
     expect(onApplyTaskView).not.toHaveBeenCalled();
+  });
+
+  it("limits the customize panel to what the configured view and saved view home hold", async () => {
+    await open(toolbarProps("customize", {
+      savedViewsHome: "sidebar",
+      taskListColumnControls: [{ column: "status", label: "Status", visible: true }],
+    }));
+    const listPage = visiblePage();
+    expect(listPage.querySelector('[aria-label="Columns"]')).not.toBeNull();
+    expect(listPage.querySelector('[aria-label="Saved views"]')).toBeNull();
+    await unmount(component!);
+    component = undefined;
+    document.body.replaceChildren(trigger, target);
+
+    await open(toolbarProps("customize", {
+      view: "kanban",
+      taskListColumnControls: [{ column: "status", label: "Status", visible: true }],
+    }));
+    const kanbanPage = visiblePage();
+    expect(kanbanPage.querySelector('[aria-label="Columns"]')).toBeNull();
+    expect(kanbanPage.querySelector('[aria-label="Saved views"]')).not.toBeNull();
   });
 
   it("requests guarded project draft closure only after nested floating controls dismiss", async () => {

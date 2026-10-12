@@ -20,13 +20,16 @@
   } from "$lib/projects/scheduling/schedule";
   import {
     pickProjectTaskModalLayout,
+    projectToolbarPanelsForView,
     type ProjectToolbarPanel,
   } from "$lib/projects/toolbar";
+  import { projectPlaceForView, projectViewForPlace, type ProjectPlace } from "$lib/projects/places";
   import CollectionSettings from "$lib/components/collections/CollectionSettings.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import ProjectEmptyState from "./ProjectEmptyState.svelte";
   import ProjectWorkspaceHeader from "./ProjectWorkspaceHeader.svelte";
+  import ProjectsSidebar from "./sidebar/ProjectsSidebar.svelte";
   import ProjectTaskDetailPanel from "./task-detail/ProjectTaskDetailPanel.svelte";
   import type { ProjectViewComponents } from "./view-components";
   import { ProjectTaskQueryController } from "./task-query-controller.svelte";
@@ -49,7 +52,6 @@
   const preferences = getPreferences();
   const viewport = getViewport();
   const { t } = getLocalization();
-  let showInactiveProjects = $state(false);
   let projectCalendarViewMode = $state<CalendarViewMode>("week");
   let projectCalendarViewModeInitialized = false;
 
@@ -72,6 +74,8 @@
   const selectedProject = $derived(projects.selectedProject);
   const selectedGroup = $derived(projects.selectedGroup);
   const selectedProjectId = $derived(selectedProject?.id ?? null);
+  const sidebarDocked = $derived(!mobileLayout && Boolean(selectedProject && selectedGroup));
+  const activePlace = $derived(projectPlaceForView(projects.activeView));
   const toolbarDataReady = $derived.by(() => {
     const projectId = selectedProjectId;
     return Boolean(
@@ -215,6 +219,13 @@
   });
 
   $effect(() => {
+    const panel = routeUi.toolbarPanel;
+    if (!panel) return;
+    const available = projectToolbarPanelsForView(projects.activeView, mobileLayout ? "panel" : "sidebar");
+    if (!available.includes(panel)) routeUi.closeToolbarImmediately();
+  });
+
+  $effect(() => {
     if (routeUi.selectedTaskIds.length > 0) {
       routeLoad.requestOptional("bulk-actions");
     }
@@ -257,6 +268,17 @@
     projectCustomFields;
     taskQuery.repairDisappearingFields();
   });
+
+  function selectPlace(place: ProjectPlace): void {
+    routeUi.runAfterSettingsClose(() => {
+      projects.activeView = projectViewForPlace(place, projects.lastTaskLayout);
+    });
+  }
+
+  function handleProjectSelected(): void {
+    routeUi.closeTaskDetail();
+    routeUi.closeToolbarImmediately();
+  }
 
   function clearTaskFilters(): void {
     taskQuery.reset();
@@ -314,30 +336,44 @@
 <div
   bind:this={routeUi.rootElement}
   class="projects-view-root relative flex h-full min-h-0 overflow-hidden text-foreground"
-  style="background-color: var(--cal-bg);"
+  class:explorer-chrome={sidebarDocked}
+  style:background-color={sidebarDocked ? undefined : "var(--cal-bg)"}
   data-first-use-shell="projects"
 >
-  <section class="flex min-w-0 flex-1 flex-col">
+  {#if sidebarDocked}
+    <ProjectsSidebar
+      {taskQuery}
+      {activePlace}
+      onSelectPlace={selectPlace}
+      onCreateTask={() => { if (selectedProjectId) routeUi.openTaskDraft(selectedProjectId); }}
+      onOpenFinder={() => routeUi.openFinder()}
+      onProjectSelected={handleProjectSelected}
+      onSavedViewApplied={() => routeUi.clearTaskSelection()}
+    />
+  {/if}
+  <section
+    class="flex min-w-0 flex-1 flex-col overflow-hidden"
+    class:surface-content-inset={sidebarDocked}
+    style="background-color: var(--cal-bg);"
+  >
     {#if selectedProject && selectedGroup}
       <header class="flex shrink-0 flex-col" style="background-color: var(--cal-bg);">
         <ProjectWorkspaceHeader
           {selectedProject}
           {selectedGroup}
           {selectedProjectId}
-          {showInactiveProjects}
+          showInactiveProjects={projects.showInactiveProjects}
           projectToolbarPanel={routeUi.toolbarPanel}
           {taskGroupingActive}
           taskFiltersActive={taskFilterControlsActive}
           {taskCustomizeActive}
           {mobileLayout}
           {projectChat}
+          sidebarCollapsed={!sidebarDocked || projects.sidebarCollapsed}
           onShowInactiveProjectsChange={(value) => {
-            showInactiveProjects = value;
+            projects.showInactiveProjects = value;
           }}
-          onProjectSelected={() => {
-            routeUi.closeTaskDetail();
-            routeUi.closeToolbarImmediately();
-          }}
+          onProjectSelected={handleProjectSelected}
           onToggleToolbarPanel={(panel) => routeUi.toggleToolbarPanel(panel)}
           onCreateTask={() => { if (selectedProjectId) routeUi.openTaskDraft(selectedProjectId); }}
         />
@@ -348,6 +384,8 @@
               {taskQuery}
               {mobileLayout}
               panel={routeUi.toolbarPanel}
+              view={projects.activeView}
+              savedViewsHome={mobileLayout ? "panel" : "sidebar"}
               projectId={selectedProjectId}
               {sections}
               {priorities}
@@ -385,7 +423,7 @@
                 routeUi.settingsDirty = dirty;
               }}
               onRevealInactive={() => {
-                showInactiveProjects = true;
+                projects.showInactiveProjects = true;
               }}
               onClearTaskFilters={clearTaskFilters}
               onSaveCurrentTaskView={() => { void taskQuery.saveCurrentView(); }}
@@ -570,12 +608,9 @@
       {:else}
         <ProjectEmptyState
           {selectedProjectId}
-          bind:showInactiveProjects
+          bind:showInactiveProjects={projects.showInactiveProjects}
           {mobileLayout}
-          onProjectSelected={() => {
-            routeUi.closeTaskDetail();
-            routeUi.closeToolbarImmediately();
-          }}
+          onProjectSelected={handleProjectSelected}
         />
       {/if}
     </div>

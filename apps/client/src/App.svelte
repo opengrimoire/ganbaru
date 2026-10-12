@@ -95,8 +95,8 @@
   const nav = getNavigation();
   const startupTabView = detachedWindowView ?? nav.current;
   if (nav.current !== startupTabView) nav.navigate(startupTabView);
-  /** Calendar and Projects paint the content panel itself; Notes and Chat paint a surface beside their docked explorer. */
-  const contentPanelPainted = $derived(nav.current === "calendar" || nav.current === "projects");
+  /** Calendar paints the content panel itself; Projects, Notes, and Chat paint a surface beside their docked explorer. */
+  const contentPanelPainted = $derived(nav.current === "calendar");
   const calendar = getCalendar();
   const calendars = getCalendars();
   const distractions = getDistractions();

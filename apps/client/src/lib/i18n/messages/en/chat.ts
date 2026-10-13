@@ -91,7 +91,6 @@ export const chat = {
     changeFolderDraftWarning: "Changing the working folder removes this draft's attachments and file mentions. Continue?",
     welcomeTitle: (name: string) => `Welcome to #${name}`,
     welcomeDescription: "This is the start of the channel.",
-    directMessagesHint: "Start a conversation with a contact who allows direct messages.",
     startDirectMessage: "Start conversation",
   },
   organization: {

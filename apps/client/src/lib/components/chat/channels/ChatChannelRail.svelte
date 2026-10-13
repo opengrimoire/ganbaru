@@ -716,9 +716,6 @@
               <button bind:this={directMessageButton} type="button" class="section-create-action" aria-label={t("chat.channels.newDirectMessage")} data-app-tooltip={t("chat.channels.newDirectMessage")} aria-haspopup="dialog" aria-expanded={directMessagePickerOpen} onpointerenter={() => { void loadDirectMessagePicker(); }} onfocus={() => { void loadDirectMessagePicker(); }} onclick={openDirectMessagePicker}><Plus size={13} /></button>
               <button type="button" class="explorer-icon explorer-row-action" aria-label={`${t("chat.moreActions")}: ${t("chat.channels.directMessages")}`} data-app-tooltip-disabled="true" aria-haspopup="menu" aria-expanded={sectionContextMenu?.target.kind === "directMessages"} onclick={(event) => void toggleSectionContextMenu(event, { kind: "directMessages" })}><EllipsisVertical size={14} /></button>
             </div>
-            {#if !directMessagesCollapsed}
-              <p class="section-hint" data-chat-direct-messages-hint>{t("chat.channels.directMessagesHint")}</p>
-            {/if}
           </section>
         {/if}
 
@@ -865,7 +862,6 @@
   .channel-row-group { position: relative; display: flex; min-width: 0; align-items: center; }
   .channel-row { display: flex; width: 100%; min-width: 0; min-height: var(--explorer-row-height); align-items: center; gap: 0.375rem; border-radius: 0.35rem; padding: var(--explorer-row-padding) 0.5rem; color: var(--foreground); text-align: left; }
   .channel-row-group .channel-row { flex: 1; }
-  .section-hint { padding: 0.25rem 0.5rem 0.375rem; color: var(--muted-foreground); font-size: var(--panel-detail-font-size); line-height: 1.35; }
   .explorer-touch .section-heading > button { min-width: var(--touch-target-min); min-height: var(--touch-target-min); }
   .explorer-touch .section-heading > .section-toggle { min-width: 0; }
   .channel-loading { padding-right: 0.55rem; opacity: 0.72; }

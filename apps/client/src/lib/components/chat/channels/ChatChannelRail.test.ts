@@ -77,8 +77,6 @@ describe("ChatChannelRail", () => {
       expect(toggle.getAttribute("aria-expanded")).toBe("true");
     }
 
-    expect(target.querySelector("[data-chat-direct-messages-hint]")).not.toBeNull();
-
     toggles[0]?.click();
     toggles[1]?.click();
     toggles[2]?.click();
@@ -91,7 +89,6 @@ describe("ChatChannelRail", () => {
     ]);
     expect(toggles.every((toggle) => toggle.classList.contains("collapsed"))).toBe(true);
     expect(target.querySelectorAll(".channel-row")).toHaveLength(0);
-    expect(target.querySelector("[data-chat-direct-messages-hint]")).toBeNull();
   });
 
   it("keeps search in the toolbar and clears filtering without hiding the field", async () => {

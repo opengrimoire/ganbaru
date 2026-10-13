@@ -94,7 +94,6 @@ export const chat = {
     changeFolderDraftWarning: "Cambiar la carpeta de trabajo elimina los adjuntos y menciones de archivos de este borrador. ¿Continuar?",
     welcomeTitle: (name: string) => `Te damos la bienvenida a #${name}`,
     welcomeDescription: "Este es el inicio del canal.",
-    directMessagesHint: "Empieza una conversación con un contacto que permita mensajes directos.",
     startDirectMessage: "Iniciar conversación",
   },
   organization: {

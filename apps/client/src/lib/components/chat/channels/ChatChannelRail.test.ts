@@ -373,7 +373,7 @@ describe("ChatChannelRail", () => {
     expect(channelNames()).toEqual(["zeta", "general"]);
     const zetaGroup = [...target.querySelectorAll<HTMLElement>(".channel-row-group")]
       .find((row) => row.querySelector(".channel-row")?.textContent?.trim() === "zeta");
-    expect(zetaGroup?.querySelector(".explorer-row-trailing")).not.toBeNull();
+    expect(zetaGroup?.querySelector(".explorer-row-star")).not.toBeNull();
 
     await toggleZetaFavorite("Remove from favorites");
     expect(channelNames()).toEqual(["general", "zeta"]);

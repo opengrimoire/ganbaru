@@ -84,14 +84,8 @@
   import { listUpcomingProjectTaskReminders } from "$lib/api/project-task-reminders";
   import { getProjectTaskReminderSchedule } from "$lib/projects/task-reminder-schedule.svelte";
   import { projectTaskReminderNotificationText } from "$lib/projects/task-reminder-notification";
-  import type { ProjectChatIntegration } from "$lib/projects/types";
-  import {
-    projectHostablePlaces,
-    projectPlaceShortcut,
-    projectSidebarPlaces,
-    resolveProjectPlace,
-    type ProjectHostedPlace,
-  } from "$lib/projects/places";
+  import type { ProjectChatIntegration, ProjectHostedViewType } from "$lib/projects/types";
+  import { projectHostablePlaces, projectPlaceShortcut } from "$lib/projects/places";
   import type { QuickNotesTrashPurgeRuntime } from "$lib/quick-notes/trash-purge-runtime";
 
   perfMark("boot.script-start");
@@ -598,12 +592,15 @@
     return mainTabViews(detachedWindows.views);
   });
   const keyboardViews = $derived(visibleTabViews);
-  const projectHostablePlaceList = $derived(projectHostablePlaces(visibleTabViews));
-  const projectSidebarPlaceList = $derived(projectSidebarPlaces(projectHostablePlaceList));
-  /** Workspace the Projects tab hosts in place of a project view; hosting needs an open project to scope it. */
-  const projectHostedPlace = $derived.by<ProjectHostedPlace | null>(() => {
+  // Runs before the first paint so a remembered Notes or Chat view opens without showing a task view first.
+  $effect.pre(() => {
+    projects.hostableViewTypes = projectHostablePlaces(visibleTabViews);
+  });
+  const projectSidebarViews = $derived(projects.viewsForProject(projects.selectedProjectId));
+  /** Workspace the Projects tab hosts in place of a task view; hosting needs an open project to scope it. */
+  const projectHostedPlace = $derived.by<ProjectHostedViewType | null>(() => {
     const place = projects.hostedPlace;
-    if (nav.current !== "projects" || !place || !projectHostablePlaceList.includes(place)) return null;
+    if (nav.current !== "projects" || !place) return null;
     return projects.selectedProject && projects.selectedGroup ? place : null;
   });
 
@@ -700,18 +697,18 @@
   }
 
   /**
-   * Switches project places from a hosted workspace and holds the shortcut while the app is suspended or idle.
+   * Switches project views from a hosted workspace and holds the shortcut while the app is suspended or idle.
    * ProjectsView handles it otherwise, so its settings close guard applies.
    */
   function handleProjectPlaceShortcut(e: KeyboardEvent): void {
     if (nav.current !== "projects") return;
-    const place = projectPlaceShortcut(e, projectSidebarPlaceList);
-    if (!place) return;
+    const view = projectPlaceShortcut(e, projectSidebarViews);
+    if (!view) return;
     const paused = Boolean(suspendInfo || idleInfo);
     if (!paused && !projectHostedPlace) return;
     e.preventDefault();
     e.stopImmediatePropagation();
-    if (!paused) projects.selectPlace(place);
+    if (!paused) projects.selectView(view);
   }
 
   $effect(() => {
@@ -944,9 +941,9 @@
 
 {#snippet hostedProjectSidebar(onProjectSelected: () => void)}
   <ProjectsSidebar
-    places={projectSidebarPlaceList}
-    activePlace={resolveProjectPlace(projectHostedPlace, projects.activeView)}
-    onSelectPlace={(place) => projects.selectPlace(place)}
+    views={projectSidebarViews}
+    activeViewId={projects.activeViewId}
+    onSelectView={(view) => projects.selectView(view)}
     {onProjectSelected}
   />
 {/snippet}
@@ -966,7 +963,6 @@
         <ProjectsView
           viewComponents={projectViewComponents}
           projectChat={projectChatIntegration}
-          hostablePlaces={projectHostablePlaceList}
         />
       {:else if nav.current === "notes" || projectHostedPlace === "notes"}
         <NotesView projectSidebar={projectHostedPlace === "notes" ? hostedProjectSidebar : undefined} />

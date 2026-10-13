@@ -16,6 +16,7 @@ import {
   createProjectStatus,
   createProjectTask,
   createProjectTaskDependency,
+  createProjectView,
   deleteProjectChecklistItem,
   deleteProjectCustomEmoji,
   deleteProjectCustomField,
@@ -25,8 +26,11 @@ import {
   deleteProjectStatus,
   deleteProjectTag,
   deleteProjectTaskDependency,
+  deleteProjectView,
   linkProjectTaskEvent,
   linkProjectTaskTag,
+  renameProjectView,
+  reorderProjectViews,
   searchProjectLinkableEvents,
   setProjectGroupCollapsed,
   unlinkProjectTaskEvent,
@@ -106,6 +110,7 @@ import {
   type ProjectTaskType,
   type ProjectTemplateId,
   type ProjectUpdate,
+  type ProjectViewType,
 } from "$lib/projects/types";
 import { invalidateProjectTaskReminderSchedule } from "$lib/projects/task-reminder-schedule.svelte";
 import type { ProjectStoreSelectors } from "./selectors";
@@ -1014,40 +1019,79 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
 
 
 
+  /** Persist one preference of one view, serialized per view and key. */
+  async function saveViewPreference(viewId: string, preferenceKey: string, preferenceValue: string): Promise<void> {
+    await commitMutation(`preference:${viewId}:${preferenceKey}`, () =>
+      upsertProjectViewPreference({ viewId, preferenceKey, preferenceValue }));
+  }
+
   async function saveTaskListColumns(
-    projectId: string,
+    viewId: string,
     columns: readonly ProjectTaskListColumn[],
   ): Promise<void> {
-    await commitMutation(`preference:${projectId}:list:${TASK_LIST_COLUMNS_PREFERENCE_KEY}`, () =>
-      upsertProjectViewPreference({
-      projectId,
-      viewId: "list",
-      preferenceKey: TASK_LIST_COLUMNS_PREFERENCE_KEY,
-      preferenceValue: taskListColumnsPreferenceValue(columns),
-    }));
+    await saveViewPreference(viewId, TASK_LIST_COLUMNS_PREFERENCE_KEY, taskListColumnsPreferenceValue(columns));
   }
 
   async function saveTaskListColumnWidths(
-    projectId: string,
+    viewId: string,
     widths: ProjectTaskListColumnWidths,
   ): Promise<void> {
-    await commitMutation(`preference:${projectId}:list:${TASK_LIST_COLUMN_WIDTHS_PREFERENCE_KEY}`, () =>
-      upsertProjectViewPreference({
-      projectId,
-      viewId: "list",
-      preferenceKey: TASK_LIST_COLUMN_WIDTHS_PREFERENCE_KEY,
-      preferenceValue: taskListColumnWidthsPreferenceValue(widths),
-    }));
+    await saveViewPreference(viewId, TASK_LIST_COLUMN_WIDTHS_PREFERENCE_KEY, taskListColumnWidthsPreferenceValue(widths));
   }
 
   /** Persist table presentation independently of task data and manual order. */
-  async function saveTaskListPresentation(projectId: string, presentation: ProjectListPresentation): Promise<void> {
-    await commitMutation(`preference:${projectId}:list:${PROJECT_LIST_PRESENTATION_KEY}`, () => upsertProjectViewPreference({
-      projectId, viewId: "list", preferenceKey: PROJECT_LIST_PRESENTATION_KEY, preferenceValue: JSON.stringify(presentation),
+  async function saveTaskListPresentation(viewId: string, presentation: ProjectListPresentation): Promise<void> {
+    await saveViewPreference(viewId, PROJECT_LIST_PRESENTATION_KEY, JSON.stringify(presentation));
+  }
+
+  /**
+   * Append a view to a project.
+   * @returns The new view id once the backend has stored it.
+   */
+  async function addView(projectId: string, viewType: ProjectViewType, name: string | null = null): Promise<string> {
+    const id = crypto.randomUUID();
+    await commitMutation(`view:${id}`, () =>
+      createProjectView({ id, projectId, viewType, name: name?.trim() || null }));
+    return id;
+  }
+
+  /** Rename a view; a blank name restores the label of its type. */
+  async function renameView(viewId: string, name: string): Promise<void> {
+    await commitMutation(`view:${viewId}:name`, () => renameProjectView(viewId, name.trim() || null));
+  }
+
+  /** Apply a complete view order optimistically and restore the previous order when the backend refuses it. */
+  async function reorderViews(projectId: string, viewIds: readonly string[]): Promise<void> {
+    const previous = readSnapshot().views;
+    const orders = new Map(viewIds.map((id, index) => [id, (index + 1) * 1000]));
+    updateSnapshot((current) => ({
+      ...current,
+      views: current.views.map((view) => {
+        const sortOrder = orders.get(view.id);
+        return view.projectId === projectId && sortOrder !== undefined ? { ...view, sortOrder } : view;
+      }),
     }));
+    try {
+      await commitMutation(`view-order:${projectId}`, () => reorderProjectViews(projectId, viewIds));
+    } catch (error: unknown) {
+      updateSnapshot((current) => ({
+        ...current,
+        views: [...current.views.filter((view) => view.projectId !== projectId), ...previous.filter((view) => view.projectId === projectId)],
+      }));
+      throw error;
+    }
+  }
+
+  /** Remove a view entry and its preferences; Notes pages and Chat channels stay. */
+  async function removeView(viewId: string): Promise<void> {
+    await commitMutation(`view:${viewId}`, () => deleteProjectView(viewId));
   }
 
   return {
+    addView,
+    renameView,
+    reorderViews,
+    removeView,
     addGroup,
     setGroupCollapsed,
     updateGroup,
@@ -1118,6 +1162,7 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     searchLinkableEvents,
     addTaskDependency,
     removeTaskDependency,
+    saveViewPreference,
     saveTaskListColumns,
     saveTaskListColumnWidths,
     saveTaskListPresentation,

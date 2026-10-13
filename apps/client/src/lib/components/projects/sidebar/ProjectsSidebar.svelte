@@ -5,33 +5,32 @@
   import SearchField from "$lib/components/ui/SearchField.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { projectSidebarActions, resolveProjectSidebarGroupId, searchProjectSidebar } from "$lib/projects/sidebar";
-  import type { ProjectPlace } from "$lib/projects/places";
-  import type { Project } from "$lib/projects/types";
+  import type { Project, ProjectView } from "$lib/projects/types";
   import { getProjects } from "$lib/stores/projects.svelte";
   import { suppressHoverOnToggle } from "$lib/utils/hover-suppression";
   import ProjectSidebarRow from "./ProjectSidebarRow.svelte";
   import ProjectPlacesNav from "./ProjectPlacesNav.svelte";
 
   /**
-   * The docked Projects explorer: a project search, the projects of the selected project's group, and the places of the
+   * The docked Projects explorer: a project search, the projects of the selected project's group, and the views of the
    * selected project pinned to the bottom, so they keep their position while the project list scrolls above them. A search lists matching projects from every visible group; picking a project selects it.
-   * Collapsing the sidebar keeps a narrow rail with the places alone. Hosted Notes and Chat render it in place of their
+   * Collapsing the sidebar keeps a narrow rail with the views alone. Hosted Notes and Chat render it in place of their
    * own explorer.
    */
   let {
-    places,
-    activePlace,
-    onSelectPlace,
+    views,
+    activeViewId,
+    onSelectView,
     onProjectSelected,
     onOpenProjectSettings = undefined,
   }: {
-    /** Places to list, in sidebar order. */
-    places: readonly ProjectPlace[];
-    activePlace: ProjectPlace;
-    onSelectPlace: (place: ProjectPlace) => void;
+    /** Views of the selected project, in sidebar order. */
+    views: readonly ProjectView[];
+    activeViewId: string | null;
+    onSelectView: (view: ProjectView) => void;
     /** Runs after a project row selects its project. */
     onProjectSelected: () => void;
-    /** Selects a project and opens its settings; hosted places without a settings panel leave it out. */
+    /** Selects a project and opens its settings; hosted views without a settings panel leave it out. */
     onOpenProjectSettings?: (project: Project) => void;
   } = $props();
 
@@ -113,7 +112,7 @@
       </button>
     </div>
     {#if collapsed}
-      <ProjectPlacesNav variant="rail" {places} {activePlace} {onSelectPlace} />
+      <ProjectPlacesNav variant="rail" {views} {activeViewId} {onSelectView} />
     {/if}
   </div>
 
@@ -161,7 +160,7 @@
           </p>
         {/each}
       </nav>
-      <ProjectPlacesNav variant="list" {places} {activePlace} {onSelectPlace} />
+      <ProjectPlacesNav variant="list" {views} {activeViewId} {onSelectView} />
     {/if}
   </div>
 </aside>

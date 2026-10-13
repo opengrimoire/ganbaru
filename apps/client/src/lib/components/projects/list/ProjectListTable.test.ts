@@ -33,7 +33,7 @@ async function renderTable() {
   const addField = vi.fn<Input["projects"]["addCustomField"]>().mockResolvedValue({...field, id: "created", name: "Budget"});
   const saveColumns = vi.fn<Input["projects"]["saveTaskListColumns"]>().mockResolvedValue(undefined);
   const query = new ProjectTaskQueryController({projects: {
-    selectedProject: {id: "project"}, activeView: "list", customFieldsForProject: () => [field], prioritiesForProject: () => [],
+    selectedProject: {id: "project"}, activeView: "list", activeProjectView: {id: "view-list", projectId: "project", viewType: "list"}, customFieldsForProject: () => [field], prioritiesForProject: () => [],
     saveTaskListPresentation: savePresentation, addCustomField: addField, saveTaskListColumns: saveColumns,
     isProjectDataLoaded: () => true, sectionsForProject: () => [],
     loadTaskView: async () => undefined, taskViewLoading: false, taskViewError: null,
@@ -113,7 +113,7 @@ describe("Projects table property configuration", () => {
     expect(draft.isConnected).toBe(true);
     expect(saveColumns).not.toHaveBeenCalled();
     await createProperty(draft, "Budget", "number");
-    await vi.waitFor(() => expect(saveColumns).toHaveBeenCalledWith("project", ["custom:points", "custom:created", "due"]));
+    await vi.waitFor(() => expect(saveColumns).toHaveBeenCalledWith("view-list", ["custom:points", "custom:created", "due"]));
     expect(query.propertyError).toBeNull();
     await vi.waitFor(() => expect(draft.isConnected).toBe(false));
   });
@@ -121,7 +121,7 @@ describe("Projects table property configuration", () => {
   it("names a blank property after its type and inserts it to the left", async () => {
     const {addField, saveColumns} = await renderTable();
     await createProperty(await openInsert(await openPoints(), "Insert left"), "  ", "text");
-    await vi.waitFor(() => expect(saveColumns).toHaveBeenCalledWith("project", ["custom:created", "custom:points", "due"]));
+    await vi.waitFor(() => expect(saveColumns).toHaveBeenCalledWith("view-list", ["custom:created", "custom:points", "due"]));
     expect(addField).toHaveBeenCalledWith("project", "Text", "text", null);
   });
 
@@ -132,7 +132,7 @@ describe("Projects table property configuration", () => {
     await vi.waitFor(() => expect(document.activeElement).toBe(document.querySelector('[data-collection-property-draft] [aria-label="Property name"]')));
     expect(add.getAttribute("aria-expanded")).toBe("true");
     await createProperty(document.querySelector<HTMLElement>("[data-collection-property-draft]")!, "Budget", "number");
-    await vi.waitFor(() => expect(saveColumns).toHaveBeenCalledWith("project", ["custom:points", "due", "custom:created"]));
+    await vi.waitFor(() => expect(saveColumns).toHaveBeenCalledWith("view-list", ["custom:points", "due", "custom:created"]));
     expect(addField).toHaveBeenCalledWith("project", "Budget", "number", null);
     await vi.waitFor(() => expect(document.querySelector("[data-collection-property-draft]")).toBeNull());
     expect(document.activeElement).toBe(add);
@@ -164,7 +164,7 @@ describe("Projects table property configuration", () => {
     expect(document.querySelector('[data-app-floating-surface][aria-label="Points"]')).toBeNull();
     finishCreation({id: "created", projectId: "project", name: "Budget", fieldType: "number", sortOrder: 100, createdAt: "", updatedAt: "", icon: null});
     await vi.waitFor(() => expect(query.propertySaving).toBe(false));
-    expect(saveColumns).toHaveBeenCalledExactlyOnceWith("project", ["custom:points", "custom:created", "due"]);
+    expect(saveColumns).toHaveBeenCalledExactlyOnceWith("view-list", ["custom:points", "custom:created", "due"]);
     await vi.waitFor(() => expect(draft.isConnected).toBe(false));
     expect(document.activeElement).toBe(button("Points"));
     expect(button("Points").disabled).toBe(false);
@@ -211,7 +211,7 @@ describe("Projects table column dragging", () => {
     pointer(window, "pointerup", 500);
     button("Due date").click();
     await vi.waitFor(() => expect(query.listColumnsSaving).toBe(false));
-    expect(saveColumns).toHaveBeenCalledExactlyOnceWith("project", ["due", "custom:points"]);
+    expect(saveColumns).toHaveBeenCalledExactlyOnceWith("view-list", ["due", "custom:points"]);
     expect(query.listColumns).toEqual(["due", "custom:points"]);
     expect(document.querySelector('[data-app-floating-surface][aria-label="Due date"]')).toBeNull();
   });

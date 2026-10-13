@@ -54,6 +54,7 @@ export const shell = {
     restore: "Restaurar",
     identityLocked: "Los proyectos integrados conservan su nombre y grupo.",
     noOtherGroup: "No hay otro grupo al que moverlo.",
+    noViews: "Este proyecto aún no tiene vistas.",
   },
   finder: {
     label: "Buscar tareas del proyecto",
@@ -145,7 +146,6 @@ export const shell = {
     colorRed: "Rojo",
   },
   tabs: {
-    dashboard: "Dashboard",
     list: "Lista",
     kanban: "Kanban",
     calendar: "Calendario",

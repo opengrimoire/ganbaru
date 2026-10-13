@@ -24,11 +24,10 @@
     type ProjectNavigatorPanelMode,
   } from "$lib/projects/toolbar";
   import {
-    PROJECT_VIEW_IDS,
     type Project,
     type ProjectChatIntegration,
     type ProjectGroup,
-    type ProjectViewId,
+    type ProjectView,
   } from "$lib/projects/types";
   import { getProjects } from "$lib/stores/projects.svelte";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
@@ -36,6 +35,7 @@
   import { cn } from "$lib/utils";
   import { createHoverMenu } from "$lib/utils/menu-aim";
   import ProjectIcon from "./ProjectIcon.svelte";
+  import { projectViewLabel } from "./sidebar/project-view-presentation";
   import WorkspaceBreadcrumbTerminalIcon from "$lib/components/ui/WorkspaceBreadcrumbTerminalIcon.svelte";
   import ProjectNavigator from "./ProjectNavigator.svelte";
   import ProjectPickerMobileDialog from "$lib/components/projects/pickers/ProjectPickerMobileDialog.svelte";
@@ -132,14 +132,10 @@
     bottom: number;
   }
 
-  function viewLabel(view: ProjectViewId): string {
-    if (view === "dashboard") return t("projects.tabs.dashboard");
-    if (view === "list") return t("projects.tabs.list");
-    if (view === "kanban") return t("projects.tabs.kanban");
-    if (view === "calendar") return t("projects.tabs.calendar");
-    if (view === "gantt") return t("projects.tabs.gantt");
-    return t("projects.tabs.list");
-  }
+  const mobileViews = $derived(projects.viewsForProject(projects.selectedProjectId));
+  const activeViewLabel = $derived(projects.activeProjectView
+    ? projectViewLabel(t, projects.activeProjectView)
+    : t("projects.toolbar.views"));
 
   function toolbarIconButtonClass(active: boolean, open = false): string {
     return cn(
@@ -180,9 +176,9 @@
     mobileCustomizationMenuOpen = false;
   }
 
-  function selectMobileView(view: ProjectViewId): void {
+  function selectMobileView(view: ProjectView): void {
     closeMobileMenus();
-    projects.activeView = view;
+    projects.selectView(view);
   }
 
   function selectMobileCustomization(panel: ProjectToolbarPanel): void {
@@ -477,8 +473,8 @@
         <button
           type="button"
           class={cn("flex h-12 items-center rounded-md px-2 text-sm hover:bg-accent", mobileViewMenuOpen && "bg-accent")}
-          aria-label={viewLabel(projects.activeView)}
-          title={viewLabel(projects.activeView)}
+          aria-label={activeViewLabel}
+          title={activeViewLabel}
           aria-haspopup="menu"
           aria-expanded={mobileViewMenuOpen}
           onclick={() => {
@@ -487,7 +483,7 @@
             mobileViewMenuOpen = !mobileViewMenuOpen;
           }}
         >
-          {viewLabel(projects.activeView)}
+          {activeViewLabel}
         </button>
         {#if mobileViewMenuOpen}
           <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -498,17 +494,17 @@
             role="menu"
             aria-label={t("projects.toolbar.views")}
           >
-            {#each PROJECT_VIEW_IDS as view}
-              {@const label = viewLabel(view)}
+            {#each mobileViews as view (view.id)}
+              {@const label = projectViewLabel(t, view)}
               <button
                 type="button"
                 role="menuitemradio"
-                aria-checked={projects.activeView === view}
+                aria-checked={projects.activeViewId === view.id}
                 class="menu-item"
                 onclick={() => selectMobileView(view)}
               >
                 <span class="min-w-0 flex-1 truncate">{label}</span>
-                {#if projects.activeView === view}<Check class="size-3.5 shrink-0" aria-hidden="true" />{/if}
+                {#if projects.activeViewId === view.id}<Check class="size-3.5 shrink-0" aria-hidden="true" />{/if}
               </button>
             {/each}
           </div>

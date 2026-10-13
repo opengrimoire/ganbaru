@@ -119,6 +119,7 @@ function emptySnapshot(): ProjectsSnapshot {
     eventLinks: [],
     taskChangeEvents: [],
     viewPreferences: [],
+    views: [],
     customEmojis: [],
   };
 }
@@ -155,7 +156,6 @@ describe("Projects initial loading", () => {
     expect(backend.workspaceCalls).toBe(1);
     backend.resolveWorkspace({
       resolvedProjectId: "project-1",
-      activeView: "list",
       snapshot: emptySnapshot(),
     } satisfies ProjectsWorkspaceSnapshot);
     await Promise.all([firstLoad, secondLoad]);
@@ -186,7 +186,7 @@ describe("Projects initial loading", () => {
   it("advances query revisions for applied writes but keeps page merges, failed writes, and stale responses neutral", async () => {
     const { getProjects } = await import("./projects.svelte");
     const projects = getProjects();
-    backend.resolveWorkspace({resolvedProjectId: "project-1", activeView: "list", snapshot: emptySnapshot()} satisfies ProjectsWorkspaceSnapshot);
+    backend.resolveWorkspace({resolvedProjectId: "project-1", snapshot: emptySnapshot()} satisfies ProjectsWorkspaceSnapshot);
     await projects.ensureLoaded();
     const task = {...emptySnapshot().tasks[0], detailLoaded: true};
     const page: ProjectTaskViewPage = {

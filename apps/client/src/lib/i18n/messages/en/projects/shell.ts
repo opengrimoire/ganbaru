@@ -51,6 +51,7 @@ export const shell = {
     restore: "Restore",
     identityLocked: "Built-in projects keep their name and group.",
     noOtherGroup: "There is no other group to move to.",
+    noViews: "This project has no views yet.",
   },
   finder: {
     label: "Search project tasks",
@@ -142,7 +143,6 @@ export const shell = {
     colorRed: "Red",
   },
   tabs: {
-    dashboard: "Dashboard",
     list: "List",
     kanban: "Kanban",
     calendar: "Calendar",

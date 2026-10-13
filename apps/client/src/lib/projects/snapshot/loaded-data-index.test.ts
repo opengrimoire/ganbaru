@@ -21,7 +21,7 @@ function emptySnapshot(): ProjectsSnapshot {
     groups: [], projects: [], sections: [], statuses: [], priorities: [], tasks: [],
     checklistItems: [], tags: [], taskTagLinks: [], customFields: [], customFieldOptions: [],
     customFieldValues: [], customFieldOptionValues: [], dependencies: [], eventLinks: [],
-    taskChangeEvents: [], viewPreferences: [], customEmojis: [],
+    taskChangeEvents: [], viewPreferences: [], views: [], customEmojis: [],
   };
 }
 
@@ -108,9 +108,10 @@ function nestedFixture(): ProjectsSnapshot {
       { id: "change-new", taskId: "task-parent", eventType: "updated", occurredAt: updatedAt },
     ],
     viewPreferences: [{
-      projectId: "project-a", viewId: "list", preferenceKey: TASK_LIST_COLUMNS_PREFERENCE_KEY,
+      projectId: "project-a", viewId: "view-a-list", preferenceKey: TASK_LIST_COLUMNS_PREFERENCE_KEY,
       preferenceValue: JSON.stringify(["status", "custom:field-a"]), updatedAt,
     }],
+    views: [{ id: "view-a-list", projectId: "project-a", viewType: "list", sortOrder: 1000, createdAt, updatedAt }],
     customEmojis: [{ id: "emoji-a", name: "Focus", assetPath: "project-icons/a.png", sortOrder: 3000, createdAt, updatedAt }],
   };
 }

@@ -462,6 +462,7 @@ export function mergeProjectSnapshot(
     groups: incoming.groups,
     projects: incoming.projects,
     viewPreferences: incoming.viewPreferences,
+    views: incoming.views,
     customEmojis: incoming.customEmojis,
     sections: [...base.sections, ...incoming.sections],
     statuses: [...base.statuses, ...incoming.statuses],

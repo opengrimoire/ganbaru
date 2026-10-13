@@ -13,6 +13,7 @@
     ProjectChatIntegration,
     ProjectSection,
     ProjectTask,
+    ProjectView,
     ProjectViewId,
   } from "$lib/projects/types";
   import {
@@ -24,13 +25,7 @@
     projectToolbarPanelsForView,
     type ProjectToolbarPanel,
   } from "$lib/projects/toolbar";
-  import {
-    projectPlaceShortcut,
-    projectSidebarPlaces,
-    resolveProjectPlace,
-    type ProjectHostedPlace,
-    type ProjectPlace,
-  } from "$lib/projects/places";
+  import { projectPlaceShortcut } from "$lib/projects/places";
   import CollectionSettings from "$lib/components/collections/CollectionSettings.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
@@ -47,13 +42,10 @@
     mobileLayout = false,
     viewComponents = null,
     projectChat = null,
-    hostablePlaces = [],
   }: {
     mobileLayout?: boolean;
     viewComponents?: ProjectViewComponents | null;
     projectChat?: ProjectChatIntegration | null;
-    /** Places of other features this window can host inside the Projects tab. */
-    hostablePlaces?: readonly ProjectHostedPlace[];
   } = $props();
 
   const projects = getProjects();
@@ -84,14 +76,9 @@
   const selectedGroup = $derived(projects.selectedGroup);
   const selectedProjectId = $derived(selectedProject?.id ?? null);
   const sidebarDocked = $derived(!mobileLayout && Boolean(selectedProject && selectedGroup));
-  const sidebarPlaces = $derived(projectSidebarPlaces(hostablePlaces));
-  /** Chat opens from the sidebar when it is a place, so the header keeps its shortcut only otherwise. */
-  const chatIsPlace = $derived(sidebarDocked && sidebarPlaces.includes("chat"));
-  // A hosted place this window cannot open (its tab is detached) falls back to the view place.
-  const activePlace = $derived(resolveProjectPlace(
-    projects.hostedPlace && hostablePlaces.includes(projects.hostedPlace) ? projects.hostedPlace : null,
-    projects.activeView,
-  ));
+  const sidebarViews = $derived(projects.viewsForProject(selectedProjectId));
+  /** Chat opens from the sidebar when the project has a Chat view, so the header keeps its shortcut only otherwise. */
+  const chatIsPlace = $derived(sidebarDocked && sidebarViews.some((view) => view.viewType === "chat"));
   const toolbarDataReady = $derived.by(() => {
     const projectId = selectedProjectId;
     return Boolean(
@@ -284,20 +271,20 @@
     taskQuery.repairDisappearingFields();
   });
 
-  function selectPlace(place: ProjectPlace): void {
+  function selectView(view: ProjectView): void {
     routeUi.runAfterSettingsClose(() => {
-      projects.selectPlace(place);
+      projects.selectView(view);
     });
   }
 
-  /** Switches project places with the Ctrl and digit shortcut, even while typing; the app shell handles hosted places. */
+  /** Switches project views with the Ctrl and digit shortcut, even while typing; the app shell handles hosted views. */
   function handlePlaceShortcut(event: KeyboardEvent): void {
     if (event.defaultPrevented || !projects.selectedProject) return;
-    const place = projectPlaceShortcut(event, sidebarPlaces);
-    if (!place) return;
+    const view = projectPlaceShortcut(event, sidebarViews);
+    if (!view) return;
     event.preventDefault();
     event.stopImmediatePropagation();
-    selectPlace(place);
+    selectView(view);
   }
 
   function handleProjectSelected(): void {
@@ -386,9 +373,9 @@
 >
   {#if sidebarDocked}
     <ProjectsSidebar
-      places={sidebarPlaces}
-      {activePlace}
-      onSelectPlace={selectPlace}
+      views={sidebarViews}
+      activeViewId={projects.activeViewId}
+      onSelectView={selectView}
       onProjectSelected={handleProjectSelected}
       onOpenProjectSettings={openProjectSettings}
     />
@@ -530,7 +517,7 @@
           {/if}
           </div>
         {/if}
-          {#if projects.activeView === "list"}
+          {#if projects.activeTaskView === "list"}
             {@const ProjectListView = viewComponents?.list ?? null}
             {#if ProjectListView && projects.isProjectViewDataLoaded(selectedProjectId, "list")}
             <ProjectListView
@@ -571,7 +558,7 @@
             {:else}
               <Loading layout="fill" />
             {/if}
-          {:else if projects.activeView === "kanban" && viewComponents?.kanban}
+          {:else if projects.activeTaskView === "kanban" && viewComponents?.kanban}
             {@const ProjectKanbanView = viewComponents.kanban}
             {#if ProjectKanbanView}
             <ProjectKanbanView
@@ -588,7 +575,7 @@
               onNeedMore={() => taskQuery.loadNextKanban(routeUi.selectedTaskIds)}
             />
             {/if}
-          {:else if projects.activeView === "calendar" && viewComponents?.calendar}
+          {:else if projects.activeTaskView === "calendar" && viewComponents?.calendar}
             {@const CalendarView = viewComponents.calendar}
             {#if CalendarView}
             <div class="h-full min-h-112 overflow-hidden">
@@ -604,7 +591,7 @@
               />
             </div>
             {/if}
-          {:else if projects.activeView === "gantt" && viewComponents?.gantt}
+          {:else if projects.activeTaskView === "gantt" && viewComponents?.gantt}
             {@const ProjectGanttView = viewComponents.gantt}
             {#if ProjectGanttView}
             <ProjectGanttView
@@ -618,7 +605,7 @@
               }}
             />
             {/if}
-          {:else if projects.activeView === "dashboard" && viewComponents?.dashboard}
+          {:else if projects.activeTaskView === "dashboard" && viewComponents?.dashboard}
             {@const ProjectDashboardView = viewComponents.dashboard}
             {#if ProjectDashboardView}
             <ProjectDashboardView
@@ -634,6 +621,10 @@
               onOpenTask={(task) => routeUi.openTask(task)}
             />
             {/if}
+          {:else if projects.activeTaskView === null}
+            <p class="flex h-full items-center justify-center p-4 text-center text-sm text-muted-foreground">
+              {t("projects.sidebar.noViews")}
+            </p>
           {:else}
             <Loading layout="fill" />
           {/if}

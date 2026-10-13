@@ -7,7 +7,7 @@ function emptySnapshot(): ProjectsSnapshot {
     groups: [], projects: [], sections: [], statuses: [], priorities: [], tasks: [],
     checklistItems: [], tags: [], taskTagLinks: [], customFields: [], customFieldOptions: [],
     customFieldValues: [], customFieldOptionValues: [], dependencies: [], eventLinks: [],
-    taskChangeEvents: [], viewPreferences: [], customEmojis: [],
+    taskChangeEvents: [], viewPreferences: [], views: [], customEmojis: [],
   };
 }
 
@@ -104,5 +104,23 @@ describe("applyProjectMutation", () => {
 
     expect(result.customFieldValues).toEqual([]);
     expect(result.customFieldOptionValues.map((value) => value.optionId)).toEqual(["option-new"]);
+  });
+
+  it("drops a removed view with its saved preferences and upserts renamed views by id", () => {
+    const view = (id: string, name?: string) => ({ id, projectId: "project-1", viewType: "list" as const,
+      name, sortOrder: 1000, createdAt: "c", updatedAt: "u" });
+    const preference = (viewId: string) => ({ projectId: "project-1", viewId, preferenceKey: "columns",
+      preferenceValue: "[]", updatedAt: "u" });
+    const initial = mutation({
+      views: [view("view-a"), view("view-b")],
+      viewPreferences: [preference("view-a"), preference("view-b")],
+    }).changed;
+    const result = applyProjectMutation(initial, mutation(
+      { views: [view("view-b", "Backlog")] },
+      [{ kind: "view", id: "view-a" }],
+    ));
+
+    expect(result.views).toEqual([view("view-b", "Backlog")]);
+    expect(result.viewPreferences.map((entry) => entry.viewId)).toEqual(["view-b"]);
   });
 });

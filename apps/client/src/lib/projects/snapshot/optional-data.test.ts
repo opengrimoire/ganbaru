@@ -60,6 +60,7 @@ function snapshot(): ProjectsSnapshot {
     ],
     taskChangeEvents: [],
     viewPreferences: [],
+    views: [],
     customEmojis: [],
   };
 }

@@ -34,7 +34,7 @@ function emptySnapshot(): ProjectsSnapshot {
     groups: [], projects: [], sections: [], statuses: [], priorities: [], tasks: [],
     checklistItems: [], tags: [], taskTagLinks: [], customFields: [], customFieldOptions: [],
     customFieldValues: [], customFieldOptionValues: [], dependencies: [], eventLinks: [],
-    taskChangeEvents: [], viewPreferences: [], customEmojis: [],
+    taskChangeEvents: [], viewPreferences: [], views: [], customEmojis: [],
   };
 }
 

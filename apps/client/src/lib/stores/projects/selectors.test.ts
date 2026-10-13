@@ -21,6 +21,7 @@ function emptySnapshot(): ProjectsSnapshot {
     eventLinks: [],
     taskChangeEvents: [],
     viewPreferences: [],
+    views: [],
     customEmojis: [],
   };
 }

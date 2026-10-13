@@ -1,26 +1,33 @@
 import { getConfigKey, setConfigKey } from "$lib/vault/config";
-import { isProjectHostedPlace, type ProjectHostedPlace } from "./places";
-import { PROJECT_VIEW_IDS, type ProjectViewId } from "./types";
-
-export const DEFAULT_PROJECT_VIEW_ID: ProjectViewId = "list";
 
 const ACTIVE_PROJECT_ID_CONFIG_KEY = "projects.activeProjectId";
-const ACTIVE_VIEW_CONFIG_KEY = "projects.activeView";
+const ACTIVE_VIEW_IDS_CONFIG_KEY = "projects.activeViewIds";
 const SIDEBAR_COLLAPSED_CONFIG_KEY = "projects.sidebarCollapsed";
-const HOSTED_PLACE_CONFIG_KEY = "projects.hostedPlace";
-
-export function isProjectViewId(value: unknown): value is ProjectViewId {
-  return typeof value === "string" && PROJECT_VIEW_IDS.includes(value as ProjectViewId);
-}
-
-export function parseStoredProjectViewId(value: unknown): ProjectViewId {
-  return isProjectViewId(value) ? value : DEFAULT_PROJECT_VIEW_ID;
-}
 
 export function parseStoredProjectId(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+/** Restores the last open view of each project, dropping malformed entries. */
+export function parseStoredProjectActiveViewIds(value: unknown): Record<string, string> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
+  const result: Record<string, string> = {};
+  for (const [projectId, viewId] of Object.entries(value)) {
+    const parsedProjectId = parseStoredProjectId(projectId);
+    const parsedViewId = parseStoredProjectId(viewId);
+    if (parsedProjectId && parsedViewId) result[parsedProjectId] = parsedViewId;
+  }
+  return result;
+}
+
+/** Keeps remembered views only for projects that still exist, so deleted projects do not accumulate in config. */
+export function pruneProjectActiveViewIds(
+  activeViewIds: Readonly<Record<string, string>>,
+  projectIds: ReadonlySet<string>,
+): Record<string, string> {
+  return Object.fromEntries(Object.entries(activeViewIds).filter(([projectId]) => projectIds.has(projectId)));
 }
 
 export function loadSavedActiveProjectId(): string | null {
@@ -31,12 +38,12 @@ export function saveActiveProjectId(projectId: string | null): void {
   setConfigKey(ACTIVE_PROJECT_ID_CONFIG_KEY, projectId ?? undefined);
 }
 
-export function loadSavedProjectViewId(): ProjectViewId {
-  return parseStoredProjectViewId(getConfigKey<unknown>(ACTIVE_VIEW_CONFIG_KEY, undefined));
+export function loadSavedProjectActiveViewIds(): Record<string, string> {
+  return parseStoredProjectActiveViewIds(getConfigKey<unknown>(ACTIVE_VIEW_IDS_CONFIG_KEY, undefined));
 }
 
-export function saveProjectViewId(viewId: ProjectViewId): void {
-  setConfigKey(ACTIVE_VIEW_CONFIG_KEY, viewId);
+export function saveProjectActiveViewIds(activeViewIds: Readonly<Record<string, string>>): void {
+  setConfigKey(ACTIVE_VIEW_IDS_CONFIG_KEY, Object.keys(activeViewIds).length > 0 ? activeViewIds : undefined);
 }
 
 export function loadSavedProjectSidebarCollapsed(): boolean {
@@ -45,17 +52,4 @@ export function loadSavedProjectSidebarCollapsed(): boolean {
 
 export function saveProjectSidebarCollapsed(collapsed: boolean): void {
   setConfigKey(SIDEBAR_COLLAPSED_CONFIG_KEY, collapsed || undefined);
-}
-
-export function parseStoredProjectHostedPlace(value: unknown): ProjectHostedPlace | null {
-  return isProjectHostedPlace(value) ? value : null;
-}
-
-/** Loads the hosted workspace the Projects tab reopens, or null for the project view. */
-export function loadSavedProjectHostedPlace(): ProjectHostedPlace | null {
-  return parseStoredProjectHostedPlace(getConfigKey<unknown>(HOSTED_PLACE_CONFIG_KEY, undefined));
-}
-
-export function saveProjectHostedPlace(place: ProjectHostedPlace | null): void {
-  setConfigKey(HOSTED_PLACE_CONFIG_KEY, place ?? undefined);
 }

@@ -14,17 +14,22 @@ import {
   projectViewOptionalDataKinds,
 } from "$lib/projects/snapshot/optional-data";
 import { mergeProjectSnapshot } from "$lib/projects/snapshot/queries";
-import { isProjectHostedPlace, type ProjectHostedPlace, type ProjectPlace } from "$lib/projects/places";
 import {
   loadSavedActiveProjectId,
-  loadSavedProjectHostedPlace,
+  loadSavedProjectActiveViewIds,
   loadSavedProjectSidebarCollapsed,
-  loadSavedProjectViewId,
+  pruneProjectActiveViewIds,
   saveActiveProjectId,
-  saveProjectHostedPlace,
+  saveProjectActiveViewIds,
   saveProjectSidebarCollapsed,
-  saveProjectViewId,
 } from "$lib/projects/ui-preferences";
+import {
+  isProjectHostedViewType,
+  isProjectTaskViewType,
+  projectViewForType,
+  projectViewsFor,
+  resolveActiveProjectView,
+} from "$lib/projects/views";
 import { createProjectStoreActions } from "$lib/stores/projects/actions";
 import { createProjectStoreSelectors } from "$lib/stores/projects/selectors";
 import type {
@@ -52,6 +57,8 @@ import type {
   ProjectTaskTagLink,
   ProjectViewPreference,
   ProjectViewId,
+  ProjectHostedViewType,
+  ProjectView,
 } from "$lib/projects/types";
 
 let snapshot = $state<ProjectsSnapshot>({
@@ -72,15 +79,16 @@ let snapshot = $state<ProjectsSnapshot>({
   eventLinks: [],
   taskChangeEvents: [],
   viewPreferences: [],
+  views: [],
   customEmojis: [],
 });
 let loaded = $state(false);
 let loading = $state(false);
 let loadError = $state<string | null>(null);
 let selectedProjectId = $state<string | null>(loadSavedActiveProjectId());
-let activeView = $state<ProjectViewId>(loadSavedProjectViewId());
+let activeViewIds = $state<Record<string, string>>(loadSavedProjectActiveViewIds());
+let hostableViewTypes = $state<ProjectHostedViewType[]>([]);
 let sidebarCollapsed = $state(loadSavedProjectSidebarCollapsed());
-let hostedPlace = $state<ProjectHostedPlace | null>(loadSavedProjectHostedPlace());
 let showInactiveProjects = $state(false);
 let loadedProjectIds = $state<string[]>([]);
 let loadRequestId = 0;
@@ -123,18 +131,29 @@ function markProjectDataLoaded(projectId: string): void {
   loadedProjectIds = [...loadedProjectIds, projectId];
 }
 
-function setHostedPlace(place: ProjectHostedPlace | null): void {
-  if (hostedPlace === place) return;
-  hostedPlace = place;
-  saveProjectHostedPlace(place);
+/** Returns a project's views in sidebar order, keeping hosted views only where this window can host them. */
+function viewsForProject(projectId: string | null | undefined): ProjectView[] {
+  return projectViewsFor(snapshot.views, projectId, hostableViewTypes);
 }
 
-/** Opens a project view. Every view change returns from a hosted workspace, so a route to a task always shows it. */
-function setActiveView(view: ProjectViewId): void {
-  setHostedPlace(null);
-  if (activeView === view) return;
-  activeView = view;
-  saveProjectViewId(view);
+/** Returns the open view of the selected project: the remembered one while it exists, else its first view. */
+function activeProjectView(): ProjectView | undefined {
+  ensureSelectedProject();
+  return resolveActiveProjectView(viewsForProject(selectedProjectId), selectedProjectId ? activeViewIds[selectedProjectId] : null);
+}
+
+/** Opens one of a project's views and remembers it for the next visit to that project. */
+function selectView(view: ProjectView): void {
+  if (activeViewIds[view.projectId] === view.id) return;
+  const projectIds = new Set(snapshot.projects.map((project) => project.id));
+  activeViewIds = pruneProjectActiveViewIds({ ...activeViewIds, [view.projectId]: view.id }, projectIds);
+  saveProjectActiveViewIds(activeViewIds);
+}
+
+/** Opens the selected project's view of a task type; does nothing when the project has no view of that type. */
+function setActiveView(viewType: ProjectViewId): void {
+  const target = projectViewForType(viewsForProject(selectedProjectId), activeProjectView(), viewType);
+  if (target) selectView(target);
 }
 
 function applyLoadedSnapshot(incoming: ProjectsSnapshot, projectId: string | null | undefined): void {
@@ -144,6 +163,7 @@ function applyLoadedSnapshot(incoming: ProjectsSnapshot, projectId: string | nul
       groups: incoming.groups,
       projects: incoming.projects,
       viewPreferences: incoming.viewPreferences,
+      views: incoming.views,
       customEmojis: incoming.customEmojis,
     };
     return;
@@ -173,14 +193,10 @@ async function reload(projectId: string | null = selectedProjectId): Promise<voi
   loading = true;
   loadError = null;
   try {
-    let response = isInitialLoad
-      ? await loadProjectsWorkspace(projectId, activeView)
-      : await refreshProjectsWorkspace(projectId, activeView);
+    const response = isInitialLoad
+      ? await loadProjectsWorkspace(projectId)
+      : await refreshProjectsWorkspace(projectId);
     if (requestId !== loadRequestId) return;
-    if (response.activeView !== activeView) {
-      response = await refreshProjectsWorkspace(response.resolvedProjectId, activeView);
-      if (requestId !== loadRequestId) return;
-    }
     const resolvedProjectId = response.resolvedProjectId;
     const optionalKindsToRefresh = resolvedProjectId
       ? PROJECT_SCOPED_OPTIONAL_DATA_KINDS.filter((kind) => {
@@ -627,27 +643,54 @@ export function getProjects() {
       const selectedProject = selectors.projectById(selectedProjectId);
       return selectors.groupById(selectedProject?.groupId);
     },
+    /** Every loaded project view, unsorted; use `viewsForProject` for one project's sidebar order. */
+    get views(): ProjectView[] {
+      return snapshot.views;
+    },
+    viewsForProject,
+    /** Hosted view types this window can open, set by the shell from its visible tabs. */
+    get hostableViewTypes(): readonly ProjectHostedViewType[] {
+      return hostableViewTypes;
+    },
+    set hostableViewTypes(types: readonly ProjectHostedViewType[]) {
+      if (types.length === hostableViewTypes.length && types.every((type, index) => hostableViewTypes[index] === type)) return;
+      hostableViewTypes = [...types];
+    },
+    /** The open view of the selected project, or undefined when the project has no views. */
+    get activeProjectView(): ProjectView | undefined {
+      return activeProjectView();
+    },
+    get activeViewId(): string | null {
+      return activeProjectView()?.id ?? null;
+    },
+    /** Task view type rendered in the Projects workspace, or null while a hosted view is open or no view exists. */
+    get activeTaskView(): ProjectViewId | null {
+      const view = activeProjectView();
+      return view && isProjectTaskViewType(view.viewType) ? view.viewType : null;
+    },
+    /**
+     * Task view type that drives task queries; it reads as the list view while no task view is open. Setting it opens
+     * the selected project's view of that type, keeping the active view when it already matches.
+     */
     get activeView(): ProjectViewId {
-      return activeView;
+      const view = activeProjectView();
+      return view && isProjectTaskViewType(view.viewType) ? view.viewType : "list";
     },
-    set activeView(view: ProjectViewId) {
-      setActiveView(view);
+    set activeView(viewType: ProjectViewId) {
+      setActiveView(viewType);
     },
-    /** Hosted workspace open in the Projects tab, or null while a project view is open. */
-    get hostedPlace(): ProjectHostedPlace | null {
-      return hostedPlace;
+    /** Hosted workspace open in the Projects tab, or null while a task view is open. */
+    get hostedPlace(): ProjectHostedViewType | null {
+      const view = activeProjectView();
+      return view && isProjectHostedViewType(view.viewType) ? view.viewType : null;
     },
-    /** Opens a sidebar place: a hosted workspace keeps the project view underneath, a view place opens its view. */
-    selectPlace(place: ProjectPlace): void {
-      if (isProjectHostedPlace(place)) {
-        setHostedPlace(place);
-        return;
-      }
-      setActiveView(place);
-    },
-    /** Returns from a hosted workspace to the project view, for routes that open a project or one of its tasks. */
+    selectView,
+    /** Leaves a hosted workspace for the project's first task view, for routes that open a project or one of its tasks. */
     showProjectView(): void {
-      setHostedPlace(null);
+      const view = activeProjectView();
+      if (!view || !isProjectHostedViewType(view.viewType)) return;
+      const taskView = viewsForProject(view.projectId).find((entry) => isProjectTaskViewType(entry.viewType));
+      if (taskView) selectView(taskView);
     },
     /** Whether the docked desktop Projects sidebar is collapsed to its rail. */
     get sidebarCollapsed(): boolean {

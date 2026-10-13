@@ -18,7 +18,7 @@ import {
   projectTaskListLeadingGridTemplate,
   selectedProjectTaskIdsInView,
   startProjectTaskListColumnResize,
-  taskListColumnWidthsForProject,
+  taskListColumnWidthsForView,
   taskListColumnWidthsPreferenceValue,
   TASK_LIST_COLUMN_WIDTHS_PREFERENCE_KEY,
 } from "./view";
@@ -256,23 +256,23 @@ describe("project list view helpers", () => {
     });
   });
 
-  it("loads list column widths from the matching project preference", () => {
-    expect(taskListColumnWidthsForProject([
+  it("loads list column widths from the matching list view preference", () => {
+    expect(taskListColumnWidthsForView([
       {
         projectId: "project-a",
-        viewId: "list",
+        viewId: "view-a-list",
         preferenceKey: TASK_LIST_COLUMN_WIDTHS_PREFERENCE_KEY,
         preferenceValue: taskListColumnWidthsPreferenceValue({ name: 20, priority: 7 }),
         updatedAt: "2026-06-21T00:00:00.000Z",
       },
       {
         projectId: "project-b",
-        viewId: "list",
+        viewId: "view-b-list",
         preferenceKey: TASK_LIST_COLUMN_WIDTHS_PREFERENCE_KEY,
         preferenceValue: taskListColumnWidthsPreferenceValue({ status: 10 }),
         updatedAt: "2026-06-21T00:00:00.000Z",
       },
-    ], "project-a")).toEqual({ name: 20, priority: 7 });
+    ], "view-a-list")).toEqual({ name: 20, priority: 7 });
   });
 
   it("removes selected tasks that are no longer visible", () => {

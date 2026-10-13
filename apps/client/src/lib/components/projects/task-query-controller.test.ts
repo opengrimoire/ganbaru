@@ -26,6 +26,7 @@ function createController(activeView: "list" | "kanban" = "list") {
     get taskMutationRevision() { return selection.mutationRevision; },
     get taskViewError() { return selection.loadError; },
     activeView,
+    get activeProjectView() { return { id: `view-${selection.projectId}`, projectId: selection.projectId, viewType: activeView }; },
     saveTaskListColumns,
     saveTaskListPresentation,
     addCustomField,
@@ -151,12 +152,12 @@ describe("Project task query controller policy", () => {
     expect(controller.listColumnsError).toBe("projects.columns.saveFailed: Disk is full");
 
     await controller.toggleColumn("status");
-    expect(saveTaskListColumns).toHaveBeenLastCalledWith("project-1", ["due"]);
+    expect(saveTaskListColumns).toHaveBeenLastCalledWith("view-project-1", ["due"]);
     expect(controller.listColumns).toEqual(["due"]);
     expect(controller.listColumnsError).toBeNull();
   });
 
-  it("keeps a newer project's columns and pending write when an earlier project write fails", async () => {
+  it("keeps a newer view's columns and pending write when an earlier view's write fails", async () => {
     const { controller, selection, saveTaskListColumns } = createController();
     let rejectEarlier!: (error: unknown) => void;
     let finishCurrent!: () => void;
@@ -204,7 +205,7 @@ describe("Project task query controller policy", () => {
     saveTaskListColumns.mockRejectedValueOnce(new Error("Preference write failed"));
     await controller.addColumnProperty("Points", "number", "status");
     expect(addCustomField).toHaveBeenCalledWith("project-1", "Points", "number", null);
-    expect(saveTaskListColumns).toHaveBeenCalledWith("project-1", ["status", "custom:created", "due"]);
+    expect(saveTaskListColumns).toHaveBeenCalledWith("view-project-1", ["status", "custom:created", "due"]);
     expect(controller.listColumns).toEqual(["status", "due"]);
     expect(controller.listColumnsError).toBe("projects.columns.saveFailed: Preference write failed");
     expect(controller.propertySaving).toBe(false);
@@ -227,7 +228,7 @@ describe("Project task query controller policy", () => {
     expect(controller.listColumns).toEqual(["status", "due"]);
     finishCreation(createdField);
     await vi.waitFor(() => expect(saveTaskListColumns).toHaveBeenCalledOnce());
-    expect(saveTaskListColumns).toHaveBeenCalledWith("project-1", ["status", "custom:created", "due"]);
+    expect(saveTaskListColumns).toHaveBeenCalledWith("view-project-1", ["status", "custom:created", "due"]);
     expect(controller.propertySaving).toBe(true);
     await controller.toggleColumn("due");
     await controller.moveColumn("due", -1);
@@ -235,14 +236,14 @@ describe("Project task query controller policy", () => {
     finishColumns();
     await creating;
     await controller.moveColumn("due", -1);
-    expect(saveTaskListColumns).toHaveBeenLastCalledWith("project-1", ["status", "due", "custom:created"]);
+    expect(saveTaskListColumns).toHaveBeenLastCalledWith("view-project-1", ["status", "due", "custom:created"]);
   });
 
   it("places a column at any list index and skips writes that keep the order or name hidden columns", async () => {
     const { controller, saveTaskListColumns } = createController();
     controller.listColumns = ["status", "due", "priority", "custom:created"];
     await controller.placeColumn("custom:created", 0);
-    expect(saveTaskListColumns).toHaveBeenLastCalledWith("project-1", ["custom:created", "status", "due", "priority"]);
+    expect(saveTaskListColumns).toHaveBeenLastCalledWith("view-project-1", ["custom:created", "status", "due", "priority"]);
     expect(controller.listColumns).toEqual(["custom:created", "status", "due", "priority"]);
     await controller.placeColumn("custom:created", 99);
     expect(controller.listColumns).toEqual(["status", "due", "priority", "custom:created"]);
@@ -343,7 +344,7 @@ describe("Project task query controller policy", () => {
     expect(controller.columnCalculations?.[0].total).toBe(1000);
   });
 
-  it("preserves the current project's presentation when an earlier project's write fails", async () => {
+  it("preserves the current view's presentation when an earlier view's write fails", async () => {
     const {controller, selection, saveTaskListPresentation} = createController();
     let rejectOld!: (error: unknown) => void;
     let finishCurrent!: () => void;

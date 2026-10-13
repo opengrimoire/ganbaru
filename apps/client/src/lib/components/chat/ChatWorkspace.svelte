@@ -1102,7 +1102,6 @@
     --chat-conversation-max-width: 60rem;
     --chat-conversation-gutter: 1rem;
     --chat-conversation-entry-space: 0.45rem;
-    --chat-rail-column-width: 2.75rem;
     --chat-reply-thread-column-width: 0px;
     --chat-inspector-column-width: 0px;
     --chat-global-actions-width: 6.5rem;

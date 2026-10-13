@@ -15,6 +15,7 @@
   import { projectLifecycleBadgeClass, projectLifecycleLabel } from "$lib/projects/display";
   import { projectNavigatorPanelGeometry, type ProjectNavigatorPanelMode } from "$lib/projects/toolbar";
   import { getChat } from "$lib/stores/chat.svelte";
+  import { getChatSidebarOrder } from "$lib/stores/chat/sidebar-order.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
   import { getViewport } from "$lib/stores/viewport.svelte";
   import { cn } from "$lib/utils";
@@ -49,6 +50,7 @@
   } = $props();
 
   const chat = getChat();
+  const chatSidebarOrder = getChatSidebarOrder();
   const projects = getProjects();
   const viewport = getViewport();
   const { t, locale } = getLocalization();
@@ -92,7 +94,7 @@
   const selectedGroup = $derived(projects.selectedGroup);
   const selectedChannel = $derived(chat.selectedChannel);
   const selectedProjectChannels = $derived(
-    selectedProject ? chat.channelsForProject(selectedProject.id) : [],
+    selectedProject ? chatSidebarOrder.sortChannels(selectedProject.id, chat.channelsForProject(selectedProject.id)) : [],
   );
   const selectedFolder = $derived(chat.selectedWorkingFolder);
   const showChannelBreadcrumb = $derived(!explorerExpanded || (editingTitle && !!selectedChannel && !selectedChannel.isDefault));

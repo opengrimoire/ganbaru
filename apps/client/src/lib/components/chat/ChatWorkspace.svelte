@@ -1066,6 +1066,7 @@
   </div>
   {#if projectSettingsOpen && projectSettingsTrigger && projects.selectedProject}
     <ChatProjectSettingsPanel
+      projectId={projects.selectedProject.id}
       projectName={projects.selectedProject.name}
       triggerElement={projectSettingsTrigger}
       onClose={closeProjectSettings}

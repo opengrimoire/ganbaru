@@ -177,6 +177,5 @@ export class ChatChannelNavigationController {
 }
 
 function compareChannels(left: ChatChannelRead, right: ChatChannelRead): number {
-  if (left.isDefault !== right.isDefault) return left.isDefault ? -1 : 1;
   return left.name.localeCompare(right.name) || left.id.localeCompare(right.id);
 }

@@ -310,13 +310,73 @@ describe("ChatChannelRail", () => {
     trigger?.click();
     await tick();
     const menu = target.querySelector<HTMLElement>(".section-context-menu");
-    expect([...menu?.querySelectorAll('[role="menuitem"]') ?? []].map((item) => item.textContent?.trim())).toEqual(["Rename", "Delete section"]);
-    expect(menu?.querySelectorAll("svg")).toHaveLength(2);
-    menu?.querySelectorAll<HTMLButtonElement>("button")[1]?.click();
+    expect([...menu?.querySelectorAll('[role="menuitem"]') ?? []].map((item) => item.textContent?.trim())).toEqual(["Rename", "Add to favorites", "Delete section"]);
+    expect(menu?.querySelectorAll("svg")).toHaveLength(3);
+    menu?.querySelectorAll<HTMLButtonElement>("button")[2]?.click();
     await tick();
     expect(target.querySelector(".section-context-menu")).toBeNull();
     expect(trigger?.getAttribute("aria-expanded")).toBe("false");
     expect(target.textContent).toContain("Delete section");
+  });
+
+  it("stars a section from its menu, shows the heading star, and keeps it after reload", async () => {
+    component = mount(ChatChannelRail, {
+      target,
+      props: { expanded: true, showCollapsedStrip: true, onExpand: vi.fn(), onCollapse: vi.fn() },
+    });
+    await tick();
+    const trigger = target.querySelectorAll<HTMLButtonElement>(".section-heading .explorer-row-action")[1];
+    trigger?.click();
+    await tick();
+    const favorite = [...target.querySelectorAll<HTMLButtonElement>('.section-context-menu [role="menuitem"]')]
+      .find((item) => item.textContent?.trim() === "Add to favorites");
+    favorite?.click();
+    await tick();
+
+    expect(target.querySelector(".section-context-menu")).toBeNull();
+    expect(readChatSidebarSections("project-1")[0]?.starred).toBe(true);
+    expect(target.querySelectorAll<HTMLElement>(".channel-section")[1]?.querySelector(".section-star")).not.toBeNull();
+
+    trigger?.click();
+    await tick();
+    expect([...target.querySelectorAll('.section-context-menu [role="menuitem"]')].map((item) => item.textContent?.trim()))
+      .toContain("Remove from favorites");
+  });
+
+  it("stars a channel from its menu and lists it before other channels", async () => {
+    getChat().activeChannels = [
+      channel("channel-general", "general"),
+      channel("channel-design", "design"),
+      channel("channel-zeta", "zeta"),
+    ];
+    component = mount(ChatChannelRail, {
+      target,
+      props: { expanded: true, showCollapsedStrip: true, onExpand: vi.fn(), onCollapse: vi.fn() },
+    });
+    await tick();
+    const channelNames = () => [...target.querySelectorAll<HTMLElement>(".channel-section")[0]?.querySelectorAll(".channel-row") ?? []]
+      .map((row) => row.textContent?.trim());
+    expect(channelNames()).toEqual(["general", "zeta"]);
+
+    const toggleZetaFavorite = async (label: string) => {
+      const group = [...target.querySelectorAll<HTMLElement>(".channel-row-group")]
+        .find((row) => row.querySelector(".channel-row")?.textContent?.trim() === "zeta");
+      group?.querySelector<HTMLButtonElement>(".explorer-row-action")?.click();
+      await tick();
+      [...document.querySelectorAll<HTMLButtonElement>('[role="menu"] [role="menuitem"]')]
+        .find((item) => item.textContent?.trim() === label)
+        ?.click();
+      await tick();
+    };
+
+    await toggleZetaFavorite("Add to favorites");
+    expect(channelNames()).toEqual(["zeta", "general"]);
+    const zetaGroup = [...target.querySelectorAll<HTMLElement>(".channel-row-group")]
+      .find((row) => row.querySelector(".channel-row")?.textContent?.trim() === "zeta");
+    expect(zetaGroup?.querySelector(".explorer-row-trailing")).not.toBeNull();
+
+    await toggleZetaFavorite("Remove from favorites");
+    expect(channelNames()).toEqual(["general", "zeta"]);
   });
 
   it("renames a section in its heading and keeps its navigation state", async () => {

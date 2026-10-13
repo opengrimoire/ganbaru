@@ -18,6 +18,7 @@
   import Mail from "@lucide/svelte/icons/mail";
   import Pencil from "@lucide/svelte/icons/pencil";
   import Plus from "@lucide/svelte/icons/plus";
+  import Star from "@lucide/svelte/icons/star";
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import X from "@lucide/svelte/icons/x";
   import type { ChatChannelRead, ChatMessageSearchResultRead } from "$lib/chat/contracts";
@@ -25,12 +26,15 @@
   import {
     moveChatChannelToSection,
     normalizeChatSidebarSections,
+    orderChatSidebarSections,
     readChatSidebarSections,
     saveChatSidebarSections,
+    withChatSidebarSectionStarred,
     type ChatSidebarSection,
   } from "$lib/chat/channel-sections";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getChat } from "$lib/stores/chat.svelte";
+  import { getChatSidebarOrder } from "$lib/stores/chat/sidebar-order.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
   import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
@@ -41,6 +45,7 @@
   import { SUBMENU_CLOSE_DELAY_MS, SUBMENU_OPEN_DELAY_MS } from "$lib/utils/menu-aim";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import ExplorerRowStar from "$lib/components/ui/ExplorerRowStar.svelte";
 
   /** Which header opened the section menu: the default Channels group, a custom section, or Direct messages. */
   type SectionMenuTarget =
@@ -66,6 +71,7 @@
   } = $props();
 
   const chat = getChat();
+  const chatSidebarOrder = getChatSidebarOrder();
   const preferences = getPreferences();
   const projects = getProjects();
   const settings = getSettingsLauncher();
@@ -114,7 +120,10 @@
   let messageSearchRequest = 0;
   const matchingChannels = $derived(chat.activeChannels.filter(matchesQuery));
   const assignedChannelIds = $derived(new Set(sections.flatMap((section) => section.channelIds)));
-  const unsectionedChannels = $derived(matchingChannels.filter((channel) => !assignedChannelIds.has(channel.id)));
+  const unsectionedChannels = $derived(
+    chatSidebarOrder.sortChannels(loadedProjectId, matchingChannels.filter((channel) => !assignedChannelIds.has(channel.id))),
+  );
+  const orderedSections = $derived(orderChatSidebarSections(sections, chatSidebarOrder.orderForProject(loadedProjectId)));
 
   function searchAuthorDisplayName(result: ChatMessageSearchResultRead): string {
     return chatParticipantDisplayName(
@@ -185,7 +194,7 @@
 
   function sectionChannels(section: ChatSidebarSection): ChatChannelRead[] {
     const byId = new Map(matchingChannels.map((channel) => [channel.id, channel]));
-    return section.channelIds.flatMap((id) => byId.get(id) ?? []);
+    return chatSidebarOrder.sortChannels(loadedProjectId, section.channelIds.flatMap((id) => byId.get(id) ?? []));
   }
 
   function persist(next: ChatSidebarSection[]): void {
@@ -329,6 +338,12 @@
     if (section) startSectionRename(section);
   }
 
+  function toggleSectionStarFromContextMenu(): void {
+    const section = contextMenuSection();
+    closeSectionContextMenu();
+    if (section) persist(withChatSidebarSectionStarred(sections, section.id, section.starred !== true));
+  }
+
   function deleteSectionFromContextMenu(): void {
     const section = contextMenuSection();
     closeSectionContextMenu();
@@ -445,6 +460,13 @@
     if (!menu) return;
     closeChannelContextMenu();
     moveChannel(menu.channel.id, sectionId);
+  }
+
+  function toggleChannelStarFromContextMenu(): void {
+    const menu = channelContextMenu;
+    if (!menu) return;
+    closeChannelContextMenu();
+    chatSidebarOrder.setChannelStarred(menu.channel.id, !chatSidebarOrder.isChannelStarred(menu.channel.id));
   }
 
   function archiveChannelFromContextMenu(): void {
@@ -673,7 +695,7 @@
           {/if}
         </section>
 
-        {#each sections as section (section.id)}
+        {#each orderedSections as section (section.id)}
           <section class="channel-section" role="group" ondragover={(event) => event.preventDefault()} ondrop={(event) => handleDrop(event, section.id)}>
             <div
               class="section-heading"
@@ -695,6 +717,7 @@
               {:else}
                 <button type="button" class="section-toggle" class:collapsed={section.collapsed} aria-label={sectionToggleLabel(section.name, section.collapsed)} aria-expanded={!section.collapsed} onclick={() => toggleSection(section.id)}>
                   <span use:overflowTooltip={section.name}>{section.name}</span>
+                  {#if section.starred}<Star class="section-star size-3 shrink-0 fill-current text-primary" aria-hidden="true" />{/if}
                   {#if section.collapsed}<ChevronRight class="section-chevron" size={13} />{:else}<ChevronDown class="section-chevron" size={13} />{/if}
                 </button>
                 <button type="button" class="section-create-action" aria-label={t("chat.channels.createTitle")} data-app-tooltip={t("chat.channels.createTitle")} onclick={() => openCreate(section.id)}><Plus size={13} /></button>
@@ -748,13 +771,16 @@
       <button type="button" role="menuitem" class="menu-item" onclick={() => openContactsFromContextMenu("contacts")}><ContactRound class="size-4" /><span>{t("contacts.tabs.contacts")}</span></button>
       <button type="button" role="menuitem" class="menu-item" data-chat-invitations onclick={() => openContactsFromContextMenu("invitations")}><Mail class="size-4" /><span>{t("contacts.tabs.invitations")}</span></button>
     {:else}
+      {@const sectionStarred = sectionContextMenu.target.section.starred === true}
       <button type="button" role="menuitem" class="menu-item" onclick={renameSectionFromContextMenu}><Pencil class="size-4" /><span>{t("chat.rename")}</span></button>
+      <button type="button" role="menuitem" class="menu-item" onclick={toggleSectionStarFromContextMenu}><Star class={sectionStarred ? "size-4 fill-current text-primary" : "size-4"} /><span>{sectionStarred ? t("common.removeFromFavorites") : t("common.addToFavorites")}</span></button>
       <button type="button" role="menuitem" class="menu-item menu-item-destructive" onclick={deleteSectionFromContextMenu}><Trash2 class="size-4" /><span>{t("chat.channels.deleteSectionConfirm")}</span></button>
     {/if}
   </div>
 {/if}
 
 {#if channelContextMenu}
+  {@const channelStarred = chatSidebarOrder.isChannelStarred(channelContextMenu.channel.id)}
   <div
     bind:this={channelContextMenuElement}
     class="channel-context-menu surface-floating surface-floating-body fixed z-90 w-floating-sm"
@@ -794,11 +820,12 @@
         >
           <div class="surface-floating-body min-h-0 flex-1 overflow-y-auto" use:scrollEdgeFadeAction>
             <button type="button" role="menuitem" class="menu-item" onclick={() => moveChannelFromContextMenu(null)}><Hash class="size-4" /><span class="min-w-0 truncate">{t("chat.channels.defaultSection")}</span></button>
-            {#each sections as section (section.id)}<button type="button" role="menuitem" class="menu-item" onclick={() => moveChannelFromContextMenu(section.id)}><Folder class="size-4" /><span class="min-w-0 truncate">{section.name}</span></button>{/each}
+            {#each orderedSections as section (section.id)}<button type="button" role="menuitem" class="menu-item" onclick={() => moveChannelFromContextMenu(section.id)}><Folder class="size-4" /><span class="min-w-0 truncate">{section.name}</span></button>{/each}
           </div>
         </div>
       {/if}
     </div>
+    <button type="button" role="menuitem" class="menu-item" onclick={toggleChannelStarFromContextMenu}><Star class={channelStarred ? "size-4 fill-current text-primary" : "size-4"} /><span>{channelStarred ? t("common.removeFromFavorites") : t("common.addToFavorites")}</span></button>
     {#if !channelContextMenu.channel.isDefault}<button type="button" role="menuitem" class="menu-item menu-item-destructive" onclick={archiveChannelFromContextMenu}><Archive class="size-4" /><span>{t("chat.archive")}</span></button>{/if}
   </div>
 {/if}
@@ -809,13 +836,16 @@
       <Hash size={COMPACT_IDENTITY_ICON_SIZE} strokeWidth={COMPACT_IDENTITY_ICON_STROKE_WIDTH} class="explorer-row-icon" />
       <span class="min-w-0 flex-1 truncate" use:overflowTooltip={channel.name}>{channel.name}</span>
     </button>
-    <button type="button" class="explorer-icon explorer-row-action" aria-label={`${t("chat.channels.actions")}: ${channel.name}`} data-app-tooltip-disabled="true" aria-haspopup="menu" aria-expanded={channelContextMenu?.channel.id === channel.id} onclick={(event) => void openChannelContextMenu(event, channel)}><EllipsisVertical size={14} /></button>
+    <span class="explorer-row-trailing">
+      {#if chatSidebarOrder.isChannelStarred(channel.id)}<ExplorerRowStar />{/if}
+      <button type="button" class="explorer-icon explorer-row-action" aria-label={`${t("chat.channels.actions")}: ${channel.name}`} data-app-tooltip-disabled="true" aria-haspopup="menu" aria-expanded={channelContextMenu?.channel.id === channel.id} onclick={(event) => void openChannelContextMenu(event, channel)}><EllipsisVertical size={14} /></button>
+    </span>
   </div>
 {/snippet}
 
 {#if setupChannel !== undefined && SetupDialog}
   {@const LoadedSetupDialog = SetupDialog}
-  <LoadedSetupDialog channel={setupChannel} {sections} initialSectionId={setupSectionId} onSaved={savedChannel} onCancel={() => { setupChannel = undefined; setupSectionId = null; }} />
+  <LoadedSetupDialog channel={setupChannel} sections={orderedSections} initialSectionId={setupSectionId} onSaved={savedChannel} onCancel={() => { setupChannel = undefined; setupSectionId = null; }} />
 {/if}
 
 {#if directMessagePickerOpen && DirectMessagePicker}

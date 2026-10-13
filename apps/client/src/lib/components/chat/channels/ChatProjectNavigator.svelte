@@ -18,6 +18,7 @@
   import type { ProjectNavigatorPanelMode } from "$lib/projects/toolbar";
   import type { Project } from "$lib/projects/types";
   import { getChat } from "$lib/stores/chat.svelte";
+  import { getChatSidebarOrder } from "$lib/stores/chat/sidebar-order.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
   import { cn, type MaybePromise } from "$lib/utils";
   import ProjectPickerPanels from "$lib/components/projects/pickers/ProjectPickerPanels.svelte";
@@ -57,6 +58,7 @@
   } = $props();
 
   const chat = getChat();
+  const chatSidebarOrder = getChatSidebarOrder();
   const projects = getProjects();
   const panelGap = 4;
   const panelListPadding = 8;
@@ -77,7 +79,7 @@
   let previousPanelMode = $state<ProjectNavigatorPanelMode | null>(null);
 
   const activeProjectChannels = $derived(
-    activeProjectId ? chat.channelsForProject(activeProjectId) : [],
+    activeProjectId ? chatSidebarOrder.sortChannels(activeProjectId, chat.channelsForProject(activeProjectId)) : [],
   );
 
   function currentBounds() {

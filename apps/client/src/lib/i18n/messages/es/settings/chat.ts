@@ -440,6 +440,8 @@ export const chatSettings = {
     sendKeyDescription: "Elige el atajo que envía un mensaje",
     enter: "Enter envía",
     modEnter: "Ctrl o Cmd + Enter envía",
+    sidebarOrder: "Orden de secciones y canales",
+    sidebarOrderDescription: "Cómo lista secciones y canales la barra lateral de Chat, después de los favoritos. Cada proyecto puede cambiarlo",
     restoreThread: "Restaurar el último chat seleccionado",
     restoreThreadDescription: "Vuelve a la última tarea de Chat abierta cuando inicia la aplicación",
     reasoning: "Mostrar resúmenes de razonamiento del proveedor",

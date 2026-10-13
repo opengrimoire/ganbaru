@@ -6,6 +6,13 @@
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getChat } from "$lib/stores/chat.svelte";
+  import { getPreferences } from "$lib/stores/preferences.svelte";
+  import {
+    DEFAULT_SIDEBAR_SORT_ORDER,
+    isSidebarSortOrder,
+    SIDEBAR_SORT_ORDER_LABEL_KEYS,
+    SIDEBAR_SORT_ORDERS,
+  } from "$lib/utils/sidebar-order";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import Select from "$lib/components/ui/Select.svelte";
@@ -14,6 +21,10 @@
   const localization = getLocalization();
   const { t } = localization;
   const chat = getChat();
+  const preferences = getPreferences();
+  const sidebarOrderOptions = $derived(
+    SIDEBAR_SORT_ORDERS.map((order) => ({ value: order, label: t(SIDEBAR_SORT_ORDER_LABEL_KEYS[order]) })),
+  );
   let saving = $state(false);
   let error = $state<string | null>(null);
   let status = $state<string | null>(null);
@@ -144,6 +155,15 @@
   </div>
   {#if error}<Notice class="text-sm" message={error} onRetry={diagnostics ? undefined : retryDiagnostics} />{/if}
   {#if status}<p role="status" class="text-sm text-action-confirm">{status}</p>{/if}
+  <Select
+    label={t("settings.chat.behavior.sidebarOrder")}
+    description={t("settings.chat.behavior.sidebarOrderDescription")}
+    value={preferences.chatSidebarOrder}
+    options={sidebarOrderOptions}
+    onChange={(value) => { if (isSidebarSortOrder(value)) preferences.setChatSidebarOrder(value); }}
+    canReset={preferences.chatSidebarOrder !== DEFAULT_SIDEBAR_SORT_ORDER}
+    onReset={() => preferences.resetChatSidebarOrder()}
+  />
   {#if behavior}
     <div class="flex flex-col gap-3">
       <Select

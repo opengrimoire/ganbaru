@@ -5,9 +5,12 @@ import {
   isProjectHostedViewType,
   isProjectTaskViewType,
   isProjectViewType,
+  projectViewAddOptions,
+  projectViewIdsMovedByStep,
   projectViewForType,
   projectViewsFor,
   resolveActiveProjectView,
+  reorderedProjectViewIds,
 } from "./views";
 
 function view(id: string, viewType: ProjectViewType, sortOrder: number, projectId = "project-a"): ProjectView {
@@ -72,5 +75,42 @@ describe("project views", () => {
     expect(canAddProjectViewType(projectViews, "notes")).toBe(false);
     expect(canAddProjectViewType(projectViews, "chat")).toBe(false);
     expect(canAddProjectViewType([], "notes")).toBe(true);
+  });
+
+  it("offers every task type and the hosted types this window can host, marking hosted views already present", () => {
+    const projectViews = projectViewsFor(VIEWS, "project-a", ["notes", "chat"]);
+    expect(projectViewAddOptions(projectViews, ["notes", "chat"])).toEqual([
+      { viewType: "dashboard", available: true },
+      { viewType: "list", available: true },
+      { viewType: "kanban", available: true },
+      { viewType: "calendar", available: true },
+      { viewType: "gantt", available: true },
+      { viewType: "notes", available: false },
+      { viewType: "chat", available: false },
+    ]);
+    expect(projectViewAddOptions(projectViews, ["chat"]).map((option) => option.viewType)).not.toContain("notes");
+    expect(projectViewAddOptions([], ["notes"]).filter((option) => !option.available)).toEqual([]);
+  });
+
+  it("places a view before or after another and returns every view of the project", () => {
+    expect(reorderedProjectViewIds(VIEWS, "project-a", "chat", "overview", "before"))
+      .toEqual(["chat", "overview", "list", "notes", "week"]);
+    expect(reorderedProjectViewIds(VIEWS, "project-a", "overview", "week", "after"))
+      .toEqual(["list", "notes", "week", "overview", "chat"]);
+  });
+
+  it("returns no order when a drop changes nothing or names a view outside the project", () => {
+    expect(reorderedProjectViewIds(VIEWS, "project-a", "list", "overview", "after")).toBeNull();
+    expect(reorderedProjectViewIds(VIEWS, "project-a", "list", "list", "before")).toBeNull();
+    expect(reorderedProjectViewIds(VIEWS, "project-a", "other-list", "list", "before")).toBeNull();
+    expect(reorderedProjectViewIds(VIEWS, "project-a", "removed", "list", "before")).toBeNull();
+  });
+
+  it("moves a view past its visible neighbor while hidden hosted views keep their place in the full order", () => {
+    const visible = projectViewsFor(VIEWS, "project-a", []);
+    expect(projectViewIdsMovedByStep(VIEWS, visible, "week", -1)).toEqual(["overview", "week", "list", "notes", "chat"]);
+    expect(projectViewIdsMovedByStep(VIEWS, visible, "list", 1)).toEqual(["overview", "notes", "week", "list", "chat"]);
+    expect(projectViewIdsMovedByStep(VIEWS, visible, "overview", -1)).toBeNull();
+    expect(projectViewIdsMovedByStep(VIEWS, visible, "week", 1)).toBeNull();
   });
 });

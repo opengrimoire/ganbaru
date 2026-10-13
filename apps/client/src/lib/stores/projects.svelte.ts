@@ -16,10 +16,12 @@ import {
 import { mergeProjectSnapshot } from "$lib/projects/snapshot/queries";
 import {
   loadSavedActiveProjectId,
+  loadSavedCollapsedSidebarProjectIds,
   loadSavedProjectActiveViewIds,
   loadSavedProjectSidebarCollapsed,
   pruneProjectActiveViewIds,
   saveActiveProjectId,
+  saveCollapsedSidebarProjectIds,
   saveProjectActiveViewIds,
   saveProjectSidebarCollapsed,
 } from "$lib/projects/ui-preferences";
@@ -89,6 +91,7 @@ let selectedProjectId = $state<string | null>(loadSavedActiveProjectId());
 let activeViewIds = $state<Record<string, string>>(loadSavedProjectActiveViewIds());
 let hostableViewTypes = $state<ProjectHostedViewType[]>([]);
 let sidebarCollapsed = $state(loadSavedProjectSidebarCollapsed());
+let collapsedSidebarProjectIds = $state<string[]>(loadSavedCollapsedSidebarProjectIds());
 let showInactiveProjects = $state(false);
 let loadedProjectIds = $state<string[]>([]);
 let loadRequestId = 0;
@@ -700,6 +703,20 @@ export function getProjects() {
       if (sidebarCollapsed === collapsed) return;
       sidebarCollapsed = collapsed;
       saveProjectSidebarCollapsed(collapsed);
+    },
+    /** Whether a project's section in the Projects sidebar hides its views. Sections start expanded. */
+    isSidebarProjectCollapsed(projectId: string): boolean {
+      return collapsedSidebarProjectIds.includes(projectId);
+    },
+    /** Collapses or expands a project's sidebar section, forgetting sections of projects that no longer exist. */
+    setSidebarProjectCollapsed(projectId: string, collapsed: boolean): void {
+      if (collapsedSidebarProjectIds.includes(projectId) === collapsed) return;
+      const projectIds = new Set(snapshot.projects.map((project) => project.id));
+      collapsedSidebarProjectIds = (collapsed
+        ? [...collapsedSidebarProjectIds, projectId]
+        : collapsedSidebarProjectIds.filter((id) => id !== projectId))
+        .filter((id) => projectIds.has(id));
+      saveCollapsedSidebarProjectIds(collapsedSidebarProjectIds);
     },
     /** Whether project pickers list hidden and archived projects. */
     get showInactiveProjects(): boolean {

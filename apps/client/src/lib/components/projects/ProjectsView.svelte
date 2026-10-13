@@ -377,8 +377,6 @@
 >
   {#if sidebarDocked}
     <ProjectsSidebar
-      views={sidebarViews}
-      activeViewId={projects.activeViewId}
       onSelectView={selectView}
       onProjectSelected={handleProjectSelected}
       onOpenProjectSettings={openProjectSettings}

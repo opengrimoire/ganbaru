@@ -64,3 +64,57 @@ export function projectViewForType(
 export function canAddProjectViewType(projectViews: readonly ProjectView[], viewType: ProjectViewType): boolean {
   return isProjectTaskViewType(viewType) || !projectViews.some((view) => view.viewType === viewType);
 }
+
+/** One entry of the add view menu; an unavailable type is a hosted view the project already has. */
+export interface ProjectViewAddOption {
+  viewType: ProjectViewType;
+  available: boolean;
+}
+
+/**
+ * Lists the view types the add view menu offers for one project, in menu order. Hosted types this window cannot host
+ * are left out, since a view added there would never show in this window's sidebar.
+ * @param projectViews Every view of the project, including hosted views this window cannot open.
+ */
+export function projectViewAddOptions(
+  projectViews: readonly ProjectView[],
+  hostableTypes: readonly ProjectHostedViewType[],
+): ProjectViewAddOption[] {
+  return PROJECT_VIEW_TYPES
+    .filter((viewType) => !isProjectHostedViewType(viewType) || hostableTypes.includes(viewType))
+    .map((viewType) => ({ viewType, available: canAddProjectViewType(projectViews, viewType) }));
+}
+
+/**
+ * Returns the complete view order of a project after placing one view before or after another, or null when nothing
+ * changes. The order lists every view of the project, including hosted views this window hides, because a reorder
+ * must name each of them once.
+ */
+export function reorderedProjectViewIds(
+  views: readonly ProjectView[],
+  projectId: string,
+  viewId: string,
+  targetId: string,
+  placement: "before" | "after",
+): string[] | null {
+  if (viewId === targetId) return null;
+  const current = projectViewsFor(views, projectId, PROJECT_HOSTED_VIEW_TYPES).map((view) => view.id);
+  if (!current.includes(viewId) || !current.includes(targetId)) return null;
+  const remaining = current.filter((id) => id !== viewId);
+  const targetIndex = remaining.indexOf(targetId) + (placement === "after" ? 1 : 0);
+  const next = [...remaining.slice(0, targetIndex), viewId, ...remaining.slice(targetIndex)];
+  return next.every((id, index) => id === current[index]) ? null : next;
+}
+
+/** Returns the full view order after moving a view one step past its visible neighbor, or null at either end. */
+export function projectViewIdsMovedByStep(
+  views: readonly ProjectView[],
+  visibleViews: readonly ProjectView[],
+  viewId: string,
+  step: -1 | 1,
+): string[] | null {
+  const index = visibleViews.findIndex((view) => view.id === viewId);
+  const neighbor = index < 0 ? undefined : visibleViews[index + step];
+  if (!neighbor) return null;
+  return reorderedProjectViewIds(views, neighbor.projectId, viewId, neighbor.id, step < 0 ? "before" : "after");
+}

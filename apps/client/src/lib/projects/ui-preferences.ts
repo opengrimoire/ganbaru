@@ -3,6 +3,7 @@ import { getConfigKey, setConfigKey } from "$lib/vault/config";
 const ACTIVE_PROJECT_ID_CONFIG_KEY = "projects.activeProjectId";
 const ACTIVE_VIEW_IDS_CONFIG_KEY = "projects.activeViewIds";
 const SIDEBAR_COLLAPSED_CONFIG_KEY = "projects.sidebarCollapsed";
+const SIDEBAR_COLLAPSED_PROJECT_IDS_CONFIG_KEY = "projects.sidebarCollapsedProjectIds";
 
 export function parseStoredProjectId(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -52,4 +53,19 @@ export function loadSavedProjectSidebarCollapsed(): boolean {
 
 export function saveProjectSidebarCollapsed(collapsed: boolean): void {
   setConfigKey(SIDEBAR_COLLAPSED_CONFIG_KEY, collapsed || undefined);
+}
+
+/** Restores the ids of projects whose sidebar section is collapsed, trimmed and without duplicates. */
+export function parseStoredProjectIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const ids = value.flatMap((entry) => parseStoredProjectId(entry) ?? []);
+  return [...new Set(ids)];
+}
+
+export function loadSavedCollapsedSidebarProjectIds(): string[] {
+  return parseStoredProjectIds(getConfigKey<unknown>(SIDEBAR_COLLAPSED_PROJECT_IDS_CONFIG_KEY, undefined));
+}
+
+export function saveCollapsedSidebarProjectIds(projectIds: readonly string[]): void {
+  setConfigKey(SIDEBAR_COLLAPSED_PROJECT_IDS_CONFIG_KEY, projectIds.length > 0 ? [...projectIds] : undefined);
 }

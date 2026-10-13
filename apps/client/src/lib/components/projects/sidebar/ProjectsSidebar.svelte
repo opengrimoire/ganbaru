@@ -8,27 +8,24 @@
   import type { Project, ProjectView } from "$lib/projects/types";
   import { getProjects } from "$lib/stores/projects.svelte";
   import { suppressHoverOnToggle } from "$lib/utils/hover-suppression";
-  import ProjectSidebarRow from "./ProjectSidebarRow.svelte";
+  import ProjectSidebarSection from "./ProjectSidebarSection.svelte";
   import ProjectPlacesNav from "./ProjectPlacesNav.svelte";
 
   /**
-   * The docked Projects explorer: a project search, the projects of the selected project's group, and the views of the
-   * selected project pinned to the bottom, so they keep their position while the project list scrolls above them. A search lists matching projects from every visible group; picking a project selects it.
-   * Collapsing the sidebar keeps a narrow rail with the views alone. Hosted Notes and Chat render it in place of their
-   * own explorer.
+   * The docked Projects explorer, laid out like the Chat channel rail: a project search, then one collapsible section
+   * per project of the selected project's group, each listing that project's views the way Chat sections list
+   * channels. A search lists matching projects from every visible group. Opening a view of another project selects that
+   * project. Collapsing the sidebar keeps a narrow rail with the selected project's views. Hosted Notes and Chat render
+   * it in place of their own explorer.
    */
   let {
-    views,
-    activeViewId,
     onSelectView,
     onProjectSelected,
     onOpenProjectSettings = undefined,
   }: {
-    /** Views of the selected project, in sidebar order. */
-    views: readonly ProjectView[];
-    activeViewId: string | null;
+    /** Opens a view of the selected project. */
     onSelectView: (view: ProjectView) => void;
-    /** Runs after a project row selects its project. */
+    /** Runs after opening a view of another project selects that project. */
     onProjectSelected: () => void;
     /** Selects a project and opens its settings; hosted views without a settings panel leave it out. */
     onOpenProjectSettings?: (project: Project) => void;
@@ -60,6 +57,7 @@
   const resultGroupNames = $derived(searching && groups.length > 1
     ? new Map(searchResults.map((result) => [result.project.id, result.groupName]))
     : null);
+  const selectedProjectViews = $derived(projects.viewsForProject(projects.selectedProjectId));
 
   function groupProjects(groupId: string): Project[] {
     return projects.showInactiveProjects
@@ -75,19 +73,24 @@
     void tick().then(() => (value ? expandButton : collapseButton)?.focus());
   }
 
-  /** Selects a listed project and ends any search, so the list returns to the selected project's group. */
-  async function selectProject(project: Project): Promise<void> {
-    if (project.id === projects.selectedProjectId) {
-      query = "";
-      return;
-    }
-    try {
-      await projects.selectProject(project.id);
-      query = "";
+  /**
+   * Opens a view and ends any search, so the list returns to the selected project's group. A view of another project
+   * is remembered first, so selecting that project lands on it directly.
+   */
+  async function openView(view: ProjectView): Promise<void> {
+    projects.setSidebarProjectCollapsed(view.projectId, false);
+    if (view.projectId !== projects.selectedProjectId) {
+      projects.selectView(view);
+      try {
+        await projects.selectProject(view.projectId);
+      } catch (error: unknown) {
+        console.error("Failed to select a project from the sidebar", error);
+        return;
+      }
       onProjectSelected();
-    } catch (error: unknown) {
-      console.error("Failed to select a project from the sidebar", error);
     }
+    query = "";
+    onSelectView(view);
   }
 </script>
 
@@ -112,7 +115,7 @@
       </button>
     </div>
     {#if collapsed}
-      <ProjectPlacesNav variant="rail" {views} {activeViewId} {onSelectView} />
+      <ProjectPlacesNav views={selectedProjectViews} activeViewId={projects.activeViewId} {onSelectView} />
     {/if}
   </div>
 
@@ -139,16 +142,20 @@
     </div>
 
     {#if !collapsed}
-      <nav class="explorer-list flex min-h-0 flex-1 flex-col pb-2" aria-label={t("projects.sidebar.projects")} data-project-list>
+      <nav class="explorer-list flex min-h-0 flex-1 flex-col gap-2 pb-2" aria-label={t("projects.sidebar.projects")} data-project-list>
         {#each listedProjects as project (project.id)}
           {@const actions = projectSidebarActions(project, groupIds)}
-          <ProjectSidebarRow
+          <ProjectSidebarSection
             {project}
             selected={project.id === projects.selectedProjectId}
             groupName={resultGroupNames?.get(project.id) ?? null}
             {actions}
             moveGroups={actions.moveGroupIds.flatMap((groupId) => groups.find((group) => group.id === groupId) ?? [])}
-            onSelect={() => void selectProject(project)}
+            views={projects.viewsForProject(project.id)}
+            activeViewId={projects.activeViewId}
+            collapsed={projects.isSidebarProjectCollapsed(project.id)}
+            onCollapsedChange={(value) => projects.setSidebarProjectCollapsed(project.id, value)}
+            onSelectView={(view) => void openView(view)}
             onRename={(name) => projects.renameProject(project, name)}
             onMoveToGroup={(groupId) => projects.moveProjectToGroup(project, groupId)}
             onSetStatus={(status) => projects.setProjectStatus(project, status)}
@@ -160,7 +167,6 @@
           </p>
         {/each}
       </nav>
-      <ProjectPlacesNav variant="list" {views} {activeViewId} {onSelectView} />
     {/if}
   </div>
 </aside>

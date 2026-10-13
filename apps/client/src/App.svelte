@@ -941,8 +941,6 @@
 
 {#snippet hostedProjectSidebar(onProjectSelected: () => void)}
   <ProjectsSidebar
-    views={projectSidebarViews}
-    activeViewId={projects.activeViewId}
     onSelectView={(view) => projects.selectView(view)}
     {onProjectSelected}
   />

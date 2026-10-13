@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   parseStoredProjectActiveViewIds,
   parseStoredProjectId,
+  parseStoredProjectIds,
   pruneProjectActiveViewIds,
 } from "./ui-preferences";
 
@@ -30,5 +31,11 @@ describe("project ui preferences", () => {
       { "project-a": "view-a", "project-gone": "view-b" },
       new Set(["project-a", "project-c"]),
     )).toEqual({ "project-a": "view-a" });
+  });
+
+  it("restores collapsed sidebar projects once each and ignores malformed values", () => {
+    expect(parseStoredProjectIds([" project-a ", "project-b", "project-a", "", 4, null])).toEqual(["project-a", "project-b"]);
+    expect(parseStoredProjectIds({ "project-a": true })).toEqual([]);
+    expect(parseStoredProjectIds(undefined)).toEqual([]);
   });
 });

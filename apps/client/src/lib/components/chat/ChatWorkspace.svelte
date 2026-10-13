@@ -979,7 +979,7 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<div bind:this={rootElement} class="chat-workspace @container/chat-shell relative grid h-full min-h-0 overflow-hidden" class:mobile-rail-surface={railUsesMobileSurface} class:resizing-panels={resizingInspector || resizingBottomPanel} class:panel-transitions-enabled={panelTransitionsEnabled} data-chat-workspace data-layout={layout.variant} data-rail-presentation={layout.railPresentation} data-inspector-presentation={layout.inspectorPresentation} data-reply-thread-presentation={layout.replyThreadPresentation} data-active-surface={layout.activeSurface} data-rail-open={visibleRailOpen} data-rail-docked={railDocked} data-project-sidebar={projectHosted} style={`container-type:inline-size;container-name:chat-shell;--chat-panel-transition-duration:${PANEL_TRANSITION_MS}ms;--chat-bottom-min-height:${MIN_BOTTOM_PANEL_HEIGHT}px;--chat-inspector-width:${displayedInspectorWidth}px;--chat-reply-thread-width:${replyThreadWidth}px;`}>
+<div bind:this={rootElement} class="chat-workspace @container/chat-shell relative grid h-full min-h-0 overflow-hidden" class:mobile-rail-surface={railUsesMobileSurface} class:resizing-panels={resizingInspector || resizingBottomPanel} class:panel-transitions-enabled={panelTransitionsEnabled} data-chat-workspace data-layout={layout.variant} data-rail-presentation={layout.railPresentation} data-inspector-presentation={layout.inspectorPresentation} data-reply-thread-presentation={layout.replyThreadPresentation} data-active-surface={layout.activeSurface} data-rail-open={visibleRailOpen} data-rail-docked={railDocked} data-canvas-edge={!mobileShell} data-project-sidebar={projectHosted} style={`container-type:inline-size;container-name:chat-shell;--chat-panel-transition-duration:${PANEL_TRANSITION_MS}ms;--chat-bottom-min-height:${MIN_BOTTOM_PANEL_HEIGHT}px;--chat-inspector-width:${displayedInspectorWidth}px;--chat-reply-thread-width:${replyThreadWidth}px;`}>
   <div class="chat-canvas" aria-hidden="true"></div>
 {#if WorkspaceObserver}<WorkspaceObserver />{/if}
   <div class="sr-only" aria-live="polite" aria-atomic="true">{politeAnnouncement}</div>
@@ -1117,7 +1117,10 @@
   .chat-workspace[data-rail-presentation="sheet"] { --chat-rail-column-width: 0px; }
   .chat-workspace[data-reply-thread-presentation="column"] { --chat-reply-thread-column-width: var(--chat-reply-thread-width); }
   .chat-workspace[data-inspector-presentation="column"] { --chat-inspector-column-width: var(--chat-inspector-width); }
-  .chat-canvas, .chat-canvas-edge { grid-column: 1 / 7; grid-row: 1 / 5; pointer-events: none; }
+  /* Content sits inside the canvas edge, as it does in tabs whose content surface carries the edge as its own border; the canvas and the docked rail reach past that inset. */
+  .chat-workspace { --chat-canvas-inset: 0px; padding: var(--chat-canvas-inset); }
+  .chat-workspace[data-canvas-edge="true"] { --chat-canvas-inset: var(--content-edge-width); }
+  .chat-canvas, .chat-canvas-edge { grid-column: 1 / 7; grid-row: 1 / 5; margin: calc(-1 * var(--chat-canvas-inset)); pointer-events: none; }
   .chat-canvas { background: var(--cal-bg); }
   /* Above the toolbar actions and composer dock that paint the canvas color at its edges, below sheet backdrops. */
   .chat-canvas-edge { z-index: 20; }
@@ -1127,14 +1130,15 @@
   .chat-mobile-rail-bar { position: absolute; top: var(--toolbar-h); right: 0; left: 0; z-index: 10; display: flex; height: var(--chat-mobile-rail-bar-height); align-items: center; background: var(--cal-bg); padding-inline: 0.5rem; }
   .chat-mobile-rail-toggle { display: grid; width: 2.5rem; height: 2.5rem; place-items: center; border-radius: 0.5rem; color: var(--foreground); }
   .chat-mobile-rail-toggle:is(:hover, :focus-visible) { background: var(--accent); }
-  .chat-global-actions { position: absolute; top: 0; right: 0; z-index: 5; display: flex; width: max-content; min-width: var(--chat-global-actions-width); height: var(--toolbar-h); align-items: center; justify-content: flex-end; background: var(--cal-bg); padding-right: 0.75rem; }
+  .chat-global-actions { position: absolute; top: var(--chat-canvas-inset); right: var(--chat-canvas-inset); z-index: 5; display: flex; width: max-content; min-width: var(--chat-global-actions-width); height: var(--toolbar-h); align-items: center; justify-content: flex-end; background: var(--cal-bg); padding-right: 0.75rem; }
   .chat-rail-shell { grid-column: 1; grid-row: 2; min-width: 0; overflow: hidden; }
   .chat-workspace[data-rail-presentation="column"][data-rail-open="true"] .chat-rail-shell { grid-row: 2 / 5; }
   .chat-workspace[data-rail-presentation="column"][data-rail-docked="true"] .chat-rail-shell { grid-row: 1 / 5; }
+  .chat-workspace[data-rail-docked="true"] .chat-rail-shell { margin: calc(-1 * var(--chat-canvas-inset)) var(--chat-canvas-inset) calc(-1 * var(--chat-canvas-inset)) calc(-1 * var(--chat-canvas-inset)); }
   .main-shell { grid-column: 2; grid-row: 2; min-width: min(440px, 100cqw); min-height: 0; }
   .chat-workspace[data-reply-thread-presentation="column"] .main-shell { min-width: min(320px, 100cqw); }
   /* Beside a docked rail the main column owns the canvas's bottom-left corner, so its full-bleed fills (composer docks, panels) follow the rounded edge. Only that corner is clipped, so popovers still escape upward and rightward. */
-  .chat-workspace[data-rail-docked="true"]:not(:has(.chat-bottom-transition-shell.open)) .main-shell { clip-path: inset(-100vmax -100vmax 0 0 round 0 0 0 var(--content-radius)); }
+  .chat-workspace[data-rail-docked="true"]:not(:has(.chat-bottom-transition-shell.open)) .main-shell { clip-path: inset(-100vmax -100vmax 0 0 round 0 0 0 max(0px, var(--content-radius) - var(--chat-canvas-inset))); }
   .chat-thread-separator { grid-column: 3; grid-row: 1 / 3; }
   .chat-thread-shell { --chat-icon-stroke-width: var(--chat-compact-icon-stroke-width); grid-column: 4; grid-row: 1 / 3; min-width: 0; overflow: hidden; background: var(--cal-bg); }
   .chat-inspector-separator { grid-column: 5; grid-row: 1 / 3; }
@@ -1145,7 +1149,7 @@
   .chat-workspace[data-rail-presentation="column"][data-rail-open="true"] .chat-bottom-transition-shell,
   .chat-workspace[data-rail-docked="true"] .chat-bottom-separator,
   .chat-workspace[data-rail-docked="true"] .chat-bottom-transition-shell { grid-column-start: 2; }
-  .chat-workspace[data-rail-docked="true"] .chat-bottom-transition-shell { border-bottom-left-radius: var(--content-radius); }
+  .chat-workspace[data-rail-docked="true"] .chat-bottom-transition-shell { border-bottom-left-radius: max(0px, var(--content-radius) - var(--chat-canvas-inset)); }
   .chat-workspace.panel-transitions-enabled { transition: grid-template-columns var(--chat-panel-transition-duration) cubic-bezier(0.22, 1, 0.36, 1); }
   .chat-workspace.panel-transitions-enabled .chat-rail-shell { transition: transform var(--chat-panel-transition-duration) cubic-bezier(0.22, 1, 0.36, 1); }
   .chat-panel-separator { position: relative; z-index: 1; background: transparent; }

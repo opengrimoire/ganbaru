@@ -24,6 +24,8 @@
   --panel-row-height: calc(var(--panel-font-size) * 1.5 + 0.5rem);
   /* Hairline that separates a tab's content surface from the window frame. It is opaque, the frame darkened slightly, so it reads the same over any content it covers. */
   --content-edge: color-mix(in srgb, var(--sidebar) 93%, rgb(0 0 20));
+  /* Its width; content inside a surface starts past it. */
+  --content-edge-width: 1px;
   /* The active title bar tab reads as a raised chip on the frame. */
   --tab-active-shadow: 0 0 0 1px rgb(0 0 20 / 0.04), 0 1px 2px rgb(0 0 20 / 0.08);
 }
@@ -89,14 +91,14 @@ html[data-shell="mobile"] {
  */
 @utility surface-content {
   position: relative;
-  border: 1px solid var(--content-edge);
+  border: var(--content-edge-width) solid var(--content-edge);
   border-radius: var(--content-radius);
   background-color: var(--cal-bg);
 }
 
 /* The edge alone, laid over a content surface whose content is painted by sibling elements. */
 @utility surface-content-edge {
-  border: 1px solid var(--content-edge);
+  border: var(--content-edge-width) solid var(--content-edge);
   border-radius: var(--content-radius);
   pointer-events: none;
 }

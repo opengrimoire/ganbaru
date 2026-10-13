@@ -642,6 +642,11 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
   border-radius: var(--content-radius);
 }
 
+/* A docked explorer is part of the window frame, so its own padding replaces the frame gap on its side. */
+.content-panel:has(.explorer-chrome .explorer-sidebar) {
+  margin-inline-start: 0;
+}
+
 /* Calendar theme variables */
 :root {
   --cal-bg: #FFFFFF;

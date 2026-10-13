@@ -284,7 +284,7 @@
       <button
         bind:this={miniCalendarButton}
         onclick={toggleMiniCalendar}
-        class="relative flex items-center rounded-md px-1.5 text-identity font-medium leading-none text-foreground transition-colors {mobileLayout ? 'h-12 min-w-0 justify-start' : 'h-7'} {showMiniCalendar ? 'bg-accent' : 'hover:bg-accent'}"
+        class="relative flex items-center rounded-md px-1.5 text-identity {embedded ? 'font-normal' : 'font-medium'} leading-none text-foreground transition-colors {mobileLayout ? 'h-12 min-w-0 justify-start' : 'h-7'} {showMiniCalendar ? 'bg-accent' : 'hover:bg-accent'}"
       >
         <span bind:this={monthYearMeasure} aria-hidden="true" class="pointer-events-none absolute invisible whitespace-nowrap">
           {fullMonthYear}

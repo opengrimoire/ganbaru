@@ -73,10 +73,15 @@
     void tick().then(() => (value ? expandButton : collapseButton)?.focus());
   }
 
+  /** Selects a listed project and ends any search, so the list returns to the selected project's group. */
   async function selectProject(project: Project): Promise<void> {
-    if (project.id === projects.selectedProjectId) return;
+    if (project.id === projects.selectedProjectId) {
+      query = "";
+      return;
+    }
     try {
       await projects.selectProject(project.id);
+      query = "";
       onProjectSelected();
     } catch (error: unknown) {
       console.error("Failed to select a project from the sidebar", error);

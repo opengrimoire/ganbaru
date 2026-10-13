@@ -37,7 +37,7 @@ export const shell = {
     expand: "Expandir barra lateral",
     overview: "Resumen",
     search: "Buscar proyectos",
-    clearSearch: "Borrar búsqueda de proyectos",
+    clearSearch: "Limpiar búsqueda de proyectos",
     noResults: "Ningún proyecto coincide con tu búsqueda.",
     projects: "Proyectos",
     notes: "Notas",

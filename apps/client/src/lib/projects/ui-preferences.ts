@@ -1,9 +1,12 @@
 import { getConfigKey, setConfigKey } from "$lib/vault/config";
+import { parseStarredIds } from "$lib/utils/sidebar-order";
 
 const ACTIVE_PROJECT_ID_CONFIG_KEY = "projects.activeProjectId";
 const ACTIVE_VIEW_IDS_CONFIG_KEY = "projects.activeViewIds";
 const SIDEBAR_COLLAPSED_CONFIG_KEY = "projects.sidebarCollapsed";
 const SIDEBAR_COLLAPSED_PROJECT_IDS_CONFIG_KEY = "projects.sidebarCollapsedProjectIds";
+const STARRED_PROJECT_IDS_CONFIG_KEY = "projects.starredProjectIds";
+const STARRED_VIEW_IDS_CONFIG_KEY = "projects.starredViewIds";
 
 export function parseStoredProjectId(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -68,4 +71,20 @@ export function loadSavedCollapsedSidebarProjectIds(): string[] {
 
 export function saveCollapsedSidebarProjectIds(projectIds: readonly string[]): void {
   setConfigKey(SIDEBAR_COLLAPSED_PROJECT_IDS_CONFIG_KEY, projectIds.length > 0 ? [...projectIds] : undefined);
+}
+
+export function loadSavedStarredProjectIds(): string[] {
+  return parseStarredIds(getConfigKey<unknown>(STARRED_PROJECT_IDS_CONFIG_KEY, undefined));
+}
+
+export function saveStarredProjectIds(projectIds: readonly string[]): void {
+  setConfigKey(STARRED_PROJECT_IDS_CONFIG_KEY, projectIds.length > 0 ? [...projectIds] : undefined);
+}
+
+export function loadSavedStarredViewIds(): string[] {
+  return parseStarredIds(getConfigKey<unknown>(STARRED_VIEW_IDS_CONFIG_KEY, undefined));
+}
+
+export function saveStarredViewIds(viewIds: readonly string[]): void {
+  setConfigKey(STARRED_VIEW_IDS_CONFIG_KEY, viewIds.length > 0 ? [...viewIds] : undefined);
 }

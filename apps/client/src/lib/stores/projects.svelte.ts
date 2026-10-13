@@ -19,11 +19,15 @@ import {
   loadSavedCollapsedSidebarProjectIds,
   loadSavedProjectActiveViewIds,
   loadSavedProjectSidebarCollapsed,
+  loadSavedStarredProjectIds,
+  loadSavedStarredViewIds,
   pruneProjectActiveViewIds,
   saveActiveProjectId,
   saveCollapsedSidebarProjectIds,
   saveProjectActiveViewIds,
   saveProjectSidebarCollapsed,
+  saveStarredProjectIds,
+  saveStarredViewIds,
 } from "$lib/projects/ui-preferences";
 import {
   isProjectHostedViewType,
@@ -34,6 +38,8 @@ import {
 } from "$lib/projects/views";
 import { createProjectStoreActions } from "$lib/stores/projects/actions";
 import { createProjectStoreSelectors } from "$lib/stores/projects/selectors";
+import { getPreferences } from "$lib/stores/preferences.svelte";
+import { sortSidebarItems, starredFirst, withStarredId } from "$lib/utils/sidebar-order";
 import type {
   Project,
   ProjectChecklistItem,
@@ -92,6 +98,8 @@ let activeViewIds = $state<Record<string, string>>(loadSavedProjectActiveViewIds
 let hostableViewTypes = $state<ProjectHostedViewType[]>([]);
 let sidebarCollapsed = $state(loadSavedProjectSidebarCollapsed());
 let collapsedSidebarProjectIds = $state<string[]>(loadSavedCollapsedSidebarProjectIds());
+let starredProjectIds = $state<string[]>(loadSavedStarredProjectIds());
+let starredViewIds = $state<string[]>(loadSavedStarredViewIds());
 let showInactiveProjects = $state(false);
 let loadedProjectIds = $state<string[]>([]);
 let loadRequestId = 0;
@@ -114,7 +122,7 @@ function ensureSelectedProject(): void {
   if (selectedProjectId && snapshot.projects.some((project) => project.id === selectedProjectId)) {
     return;
   }
-  setSelectedProjectId(selectors.firstProjectId());
+  setSelectedProjectId(firstSidebarProjectId());
 }
 
 function setSelectedProjectId(projectId: string | null): void {
@@ -136,7 +144,46 @@ function markProjectDataLoaded(projectId: string): void {
 
 /** Returns a project's views in sidebar order, keeping hosted views only where this window can host them. */
 function viewsForProject(projectId: string | null | undefined): ProjectView[] {
-  return projectViewsFor(snapshot.views, projectId, hostableViewTypes);
+  return starredFirst(projectViewsFor(snapshot.views, projectId, hostableViewTypes), isViewStarred);
+}
+
+function isProjectStarred(project: Project): boolean {
+  return starredProjectIds.includes(project.id);
+}
+
+function isViewStarred(view: ProjectView): boolean {
+  return starredViewIds.includes(view.id);
+}
+
+/** Orders groups or projects by the global Projects sidebar order. */
+function sortedForSidebar<T extends Project | ProjectGroup>(items: readonly T[], starred?: (item: T) => boolean): T[] {
+  return sortSidebarItems(
+    items,
+    getPreferences().projectsSidebarOrder,
+    (item) => ({ id: item.id, name: item.name, createdAt: item.createdAt, modifiedAt: item.updatedAt }),
+    starred,
+  );
+}
+
+function sidebarGroups(): ProjectGroup[] {
+  return sortedForSidebar(selectors.visibleGroups());
+}
+
+function sidebarProjectsForGroup(groupId: string): Project[] {
+  return sortedForSidebar(selectors.projectsForGroup(groupId), isProjectStarred);
+}
+
+function sidebarProjectsForGroupIncludingInactive(groupId: string): Project[] {
+  return sortedForSidebar(selectors.projectsForGroupIncludingInactive(groupId), isProjectStarred);
+}
+
+/** The first active project in sidebar order, used when no remembered project exists. */
+function firstSidebarProjectId(): string | null {
+  for (const group of sidebarGroups()) {
+    const project = sidebarProjectsForGroup(group.id)[0];
+    if (project) return project.id;
+  }
+  return selectors.firstProjectId();
 }
 
 /** Returns the open view of the selected project: the remembered one while it exists, else its first view. */
@@ -535,9 +582,6 @@ export function getProjects() {
   const {
     projectById,
     groupById,
-    projectsForGroup,
-    projectsForGroupIncludingInactive,
-    visibleGroups,
     sectionsForProject,
     sectionsForProjectIncludingInactive,
     statusesForProject,
@@ -718,6 +762,28 @@ export function getProjects() {
         .filter((id) => projectIds.has(id));
       saveCollapsedSidebarProjectIds(collapsedSidebarProjectIds);
     },
+    /** Whether a project is starred, which lists it first in its group. */
+    isProjectStarred(projectId: string): boolean {
+      return starredProjectIds.includes(projectId);
+    },
+    /** Stars or unstars a project, forgetting stars of projects that no longer exist. */
+    setProjectStarred(projectId: string, starred: boolean): void {
+      if (starredProjectIds.includes(projectId) === starred) return;
+      const projectIds = new Set(snapshot.projects.map((project) => project.id));
+      starredProjectIds = withStarredId(starredProjectIds, projectId, starred).filter((id) => projectIds.has(id));
+      saveStarredProjectIds(starredProjectIds);
+    },
+    /** Whether a view is starred, which lists it first in its project section. */
+    isViewStarred(viewId: string): boolean {
+      return starredViewIds.includes(viewId);
+    },
+    /** Stars or unstars a view, forgetting stars of views that no longer exist. */
+    setViewStarred(viewId: string, starred: boolean): void {
+      if (starredViewIds.includes(viewId) === starred) return;
+      const viewIds = new Set(snapshot.views.map((view) => view.id));
+      starredViewIds = withStarredId(starredViewIds, viewId, starred).filter((id) => viewIds.has(id));
+      saveStarredViewIds(starredViewIds);
+    },
     /** Whether project pickers list hidden and archived projects. */
     get showInactiveProjects(): boolean {
       return showInactiveProjects;
@@ -760,9 +826,9 @@ export function getProjects() {
     selectProject,
     projectById,
     groupById,
-    projectsForGroup,
-    projectsForGroupIncludingInactive,
-    visibleGroups,
+    projectsForGroup: sidebarProjectsForGroup,
+    projectsForGroupIncludingInactive: sidebarProjectsForGroupIncludingInactive,
+    visibleGroups: sidebarGroups,
     sectionsForProject,
     sectionsForProjectIncludingInactive,
     statusesForProject,

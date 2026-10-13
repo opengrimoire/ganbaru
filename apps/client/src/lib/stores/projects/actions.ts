@@ -290,17 +290,6 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     }
   }
 
-  async function moveGroup(group: ProjectGroup, direction: -1 | 1): Promise<void> {
-    const ordered = selectors.visibleGroups();
-    const index = ordered.findIndex((entry) => entry.id === group.id);
-    const target = ordered[index + direction];
-    if (index < 0 || !target) return;
-    await commitMutation(`group:${group.id}`, () =>
-      updateProjectGroup(groupUpdatePayload(group, { sortOrder: target.sortOrder })));
-    await commitMutation(`group:${target.id}`, () =>
-      updateProjectGroup(groupUpdatePayload(target, { sortOrder: group.sortOrder })));
-  }
-
   async function addProject(groupId: string, name: string, templateId: ProjectTemplateId = "blank"): Promise<void> {
     const displayName = normalizeProjectName(name);
     if (!displayName) return;
@@ -343,19 +332,6 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
   ): Promise<void> {
     await commitMutation(`project:${projectId}`, () =>
       updateProjectNotesSettings(projectId, openMode, historyRetentionDays));
-  }
-
-  async function moveProject(project: Project, direction: -1 | 1, includeInactive = false): Promise<void> {
-    const ordered = includeInactive
-      ? selectors.projectsForGroupIncludingInactive(project.groupId)
-      : selectors.projectsForGroup(project.groupId);
-    const index = ordered.findIndex((entry) => entry.id === project.id);
-    const target = ordered[index + direction];
-    if (index < 0 || !target) return;
-    await commitMutation(`project:${project.id}`, () =>
-      updateProjectBackend(projectUpdatePayload(project, { sortOrder: target.sortOrder })));
-    await commitMutation(`project:${target.id}`, () =>
-      updateProjectBackend(projectUpdatePayload(target, { sortOrder: project.sortOrder })));
   }
 
   /** Renames a project. Built-in projects keep their name, and an empty name is rejected. */
@@ -1102,11 +1078,9 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     setGroupCollapsed,
     updateGroup,
     removeGroup,
-    moveGroup,
     addProject,
     updateProject,
     setNotesSettings,
-    moveProject,
     renameProject,
     moveProjectToGroup,
     setProjectStatus,

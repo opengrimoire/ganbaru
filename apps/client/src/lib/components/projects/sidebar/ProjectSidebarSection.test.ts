@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProjectSidebarActions } from "$lib/projects/sidebar";
 import type { Project, ProjectHostedViewType, ProjectView, ProjectViewType } from "$lib/projects/types";
 import { projectViewsFor } from "$lib/projects/views";
+import { starredFirst } from "$lib/utils/sidebar-order";
 import ProjectSidebarSection from "./ProjectSidebarSection.svelte";
 
 const store = vi.hoisted(() => ({
@@ -14,17 +15,25 @@ const store = vi.hoisted(() => ({
   renameView: vi.fn(),
   reorderViews: vi.fn(),
   removeView: vi.fn(),
+  starredProjectIds: [] as string[],
+  starredViewIds: [] as string[],
+  setProjectStarred: vi.fn(),
+  setViewStarred: vi.fn(),
 }));
 
 vi.mock("$lib/stores/projects.svelte", () => ({
   getProjects: () => ({
     get views() { return store.views; },
     get hostableViewTypes() { return store.hostableViewTypes; },
-    viewsForProject: (projectId: string) => projectViewsFor(store.views, projectId, store.hostableViewTypes),
+    viewsForProject: (projectId: string) => sidebarViews(projectId),
     addView: store.addView,
     renameView: store.renameView,
     reorderViews: store.reorderViews,
     removeView: store.removeView,
+    isProjectStarred: (projectId: string) => store.starredProjectIds.includes(projectId),
+    isViewStarred: (viewId: string) => store.starredViewIds.includes(viewId),
+    setProjectStarred: store.setProjectStarred,
+    setViewStarred: store.setViewStarred,
   }),
 }));
 
@@ -57,6 +66,11 @@ const actions: ProjectSidebarActions = {
   archive: { label: "archive", status: "archived" },
 };
 
+/** Mirrors the store: the project's hostable views in saved order, starred views first. */
+function sidebarViews(projectId: string): ProjectView[] {
+  return starredFirst(projectViewsFor(store.views, projectId, store.hostableViewTypes), (entry) => store.starredViewIds.includes(entry.id));
+}
+
 function view(id: string, viewType: ProjectViewType, sortOrder: number, name?: string): ProjectView {
   return { id, projectId: project.id, viewType, sortOrder, name, createdAt: "", updatedAt: "" };
 }
@@ -72,7 +86,7 @@ function render(overrides: { collapsed?: boolean; onSelectView?: (view: ProjectV
       selected: true,
       actions,
       moveGroups: [],
-      views: projectViewsFor(store.views, project.id, store.hostableViewTypes),
+      views: sidebarViews(project.id),
       activeViewId: "overview",
       collapsed: overrides.collapsed ?? false,
       onCollapsedChange: overrides.onCollapsedChange ?? (() => undefined),
@@ -105,6 +119,10 @@ beforeEach(() => {
   store.renameView.mockReset().mockResolvedValue(undefined);
   store.reorderViews.mockReset().mockResolvedValue(undefined);
   store.removeView.mockReset().mockResolvedValue(undefined);
+  store.starredProjectIds = [];
+  store.starredViewIds = [];
+  store.setProjectStarred.mockReset();
+  store.setViewStarred.mockReset();
 });
 
 afterEach(async () => {
@@ -170,6 +188,43 @@ describe("ProjectSidebarSection", () => {
     flushSync();
     button("Move down").click();
     expect(store.reorderViews).toHaveBeenCalledWith("project-a", ["list", "overview", "notes"]);
+  });
+
+  it("lists starred views first and moves a view only among views with the same starred state", () => {
+    store.starredViewIds = ["notes"];
+    render();
+    expect(viewRowLabels()).toEqual(["Notes", "Overview", "Backlog"]);
+
+    button("View actions: Notes").click();
+    flushSync();
+    expect(button("Move down").getAttribute("aria-disabled")).toBe("true");
+    button("Move down").click();
+    expect(store.reorderViews).not.toHaveBeenCalled();
+    button("View actions: Notes").click();
+    flushSync();
+
+    button("View actions: Backlog").click();
+    flushSync();
+    expect(button("Move up").getAttribute("aria-disabled")).toBeNull();
+    button("Move up").click();
+    expect(store.reorderViews).toHaveBeenCalledWith("project-a", ["list", "overview", "notes"]);
+  });
+
+  it("stars a view and the project from their menus", () => {
+    store.starredProjectIds = ["project-a"];
+    render();
+    expect(target.querySelector(".section-heading .section-star")).not.toBeNull();
+    expect(target.querySelector(".explorer-row-star")).toBeNull();
+
+    button("View actions: Backlog").click();
+    flushSync();
+    button("Add to favorites").click();
+    expect(store.setViewStarred).toHaveBeenCalledWith("list", true);
+
+    button("Project actions: Launch").click();
+    flushSync();
+    button("Remove from favorites").click();
+    expect(store.setProjectStarred).toHaveBeenCalledWith("project-a", false);
   });
 
   it("keeps an unnamed view on its type label when a rename repeats it, and saves a new name", async () => {

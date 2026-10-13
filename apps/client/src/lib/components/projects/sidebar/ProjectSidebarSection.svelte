@@ -11,6 +11,7 @@
   import Pencil from "@lucide/svelte/icons/pencil";
   import Plus from "@lucide/svelte/icons/plus";
   import Settings2 from "@lucide/svelte/icons/settings-2";
+  import Star from "@lucide/svelte/icons/star";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { COMPACT_IDENTITY_EMOJI_SCALE, COMPACT_IDENTITY_ICON_SIZE, COMPACT_IDENTITY_ICON_STROKE_WIDTH } from "$lib/icon-sizing";
@@ -101,6 +102,16 @@
   /** Every view of the project, including hosted views this window hides, so a hosted view already present stays unavailable. */
   const allProjectViews = $derived(projectViewsFor(projects.views, project.id, PROJECT_HOSTED_VIEW_TYPES));
   const addOptions = $derived(projectViewAddOptions(allProjectViews, projects.hostableViewTypes));
+  const starred = $derived(projects.isProjectStarred(project.id));
+  const draggingStarred = $derived(draggingViewId !== null && projects.isViewStarred(draggingViewId));
+
+  /** Starred views stay ahead of the rest, so a view moves only past a neighbor with the same starred state. */
+  function canMoveBy(index: number, step: -1 | 1): boolean {
+    const view = views[index];
+    const neighbor = views[index + step];
+    if (!view || !neighbor) return false;
+    return projects.isViewStarred(view.id) === projects.isViewStarred(neighbor.id);
+  }
 
   function openMenu(): void {
     if (editing) return;
@@ -254,6 +265,7 @@
           emojiScale={COMPACT_IDENTITY_EMOJI_SCALE}
         />
         <span class="section-name">{displayName}</span>
+        {#if starred}<Star class="section-star size-3 shrink-0 fill-current text-primary" aria-hidden="true" />{/if}
         {#if groupName}
           <span class="section-group">{groupName}</span>
         {/if}
@@ -292,10 +304,14 @@
         {view}
         active={selected && activeViewId === view.id}
         tooltip={viewTooltip(view, index)}
-        canMoveUp={index > 0}
-        canMoveDown={index < views.length - 1}
-        dropEnabled={draggingViewId !== null && draggingViewId !== view.id}
+        starred={projects.isViewStarred(view.id)}
+        canMoveUp={canMoveBy(index, -1)}
+        canMoveDown={canMoveBy(index, 1)}
+        dropEnabled={draggingViewId !== null
+          && draggingViewId !== view.id
+          && draggingStarred === projects.isViewStarred(view.id)}
         onSelect={() => onSelectView(view)}
+        onToggleStar={(next) => projects.setViewStarred(view.id, next)}
         onRename={(name) => projects.renameView(view.id, name)}
         onMove={(step) => reorder(projectViewIdsMovedByStep(projects.views, views, view.id, step))}
         onRemove={() => {
@@ -424,6 +440,18 @@
           {/each}
         </div>
       {/if}
+      <button
+        type="button"
+        role="menuitem"
+        class="menu-item"
+        onclick={() => {
+          closeMenu();
+          projects.setProjectStarred(project.id, !starred);
+        }}
+      >
+        <Star class={starred ? "fill-current text-primary" : undefined} />
+        <span>{starred ? t("common.removeFromFavorites") : t("common.addToFavorites")}</span>
+      </button>
       {#if onOpenSettings}
         <button
           type="button"

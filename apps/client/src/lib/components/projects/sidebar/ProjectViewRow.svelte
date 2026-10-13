@@ -4,7 +4,9 @@
   import ArrowUp from "@lucide/svelte/icons/arrow-up";
   import EllipsisVertical from "@lucide/svelte/icons/ellipsis-vertical";
   import Pencil from "@lucide/svelte/icons/pencil";
+  import Star from "@lucide/svelte/icons/star";
   import Trash2 from "@lucide/svelte/icons/trash-2";
+  import ExplorerRowStar from "$lib/components/ui/ExplorerRowStar.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { ProjectView } from "$lib/projects/types";
   import { anchoredPopover } from "$lib/utils/anchored-popover";
@@ -12,18 +14,20 @@
   import { PROJECT_VIEW_TYPE_ICONS, projectViewLabel, projectViewTypeLabel } from "./project-view-presentation";
 
   /**
-   * One view inside a project's sidebar section, like a channel inside a Chat section. Its menu renames, moves, and
+   * One view inside a project's sidebar section, like a channel inside a Chat section. Its menu renames, moves, stars, and
    * removes the view; the icon always follows the view type. Rows of the same project reorder by dragging.
    */
   let {
     view,
     active,
     tooltip = undefined,
+    starred,
     canMoveUp,
     canMoveDown,
     dropEnabled,
     onSelect,
     onRename,
+    onToggleStar,
     onMove,
     onRemove,
     onDragStart,
@@ -34,6 +38,8 @@
     active: boolean;
     /** Hover text, such as the view name with its keyboard shortcut. */
     tooltip?: string;
+    /** Whether the view is starred, which lists it first and shows the star mark. */
+    starred: boolean;
     canMoveUp: boolean;
     canMoveDown: boolean;
     /** Whether the view being dragged may land on this row. */
@@ -41,6 +47,7 @@
     onSelect: () => void;
     /** Saves a new name; a blank name restores the type label. */
     onRename: (name: string) => Promise<void>;
+    onToggleStar: (starred: boolean) => void;
     onMove: (step: -1 | 1) => void;
     onRemove: () => void;
     onDragStart: () => void;
@@ -198,18 +205,23 @@
       <Icon class="explorer-row-icon" aria-hidden="true" />
       <span class="min-w-0 flex-1 truncate">{label}</span>
     </button>
-    <button
-      bind:this={actionButton}
-      type="button"
-      class="explorer-icon explorer-row-action"
-      aria-label={t("projects.sidebar.viewActions", label)}
-      data-app-tooltip-disabled="true"
-      aria-haspopup="menu"
-      aria-expanded={menuOpen}
-      onclick={() => (menuOpen ? closeMenu() : openMenu())}
-    >
-      <EllipsisVertical size={14} />
-    </button>
+    <span class="explorer-row-trailing">
+      {#if starred}
+        <ExplorerRowStar />
+      {/if}
+      <button
+        bind:this={actionButton}
+        type="button"
+        class="explorer-icon explorer-row-action"
+        aria-label={t("projects.sidebar.viewActions", label)}
+        data-app-tooltip-disabled="true"
+        aria-haspopup="menu"
+        aria-expanded={menuOpen}
+        onclick={() => (menuOpen ? closeMenu() : openMenu())}
+      >
+        <EllipsisVertical size={14} />
+      </button>
+    </span>
   {/if}
 </div>
 
@@ -258,6 +270,10 @@
       >
         <ArrowDown />
         <span>{t("projects.sidebar.moveViewDown")}</span>
+      </button>
+      <button type="button" role="menuitem" class="menu-item" onclick={() => runMenuAction(() => onToggleStar(!starred))}>
+        <Star class={starred ? "fill-current text-primary" : undefined} />
+        <span>{starred ? t("common.removeFromFavorites") : t("common.addToFavorites")}</span>
       </button>
       <div class="menu-separator" aria-hidden="true"></div>
       <button type="button" role="menuitem" class="menu-item menu-item-destructive" onclick={() => runMenuAction(onRemove)}>

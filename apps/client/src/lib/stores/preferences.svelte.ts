@@ -104,6 +104,8 @@ const FOCUS_PAUSE_NOTIFICATION_INTERVAL_MINUTES_CONFIG_KEY =
 const MUSIC_PAUSE_ON_POMODORO_PAUSE_CONFIG_KEY = "preferences.musicPauseOnPomodoroPause";
 const NOTES_DEFAULT_OPEN_MODE_CONFIG_KEY = "preferences.notesDefaultOpenMode";
 const NOTES_SIDEBAR_ORDER_CONFIG_KEY = "preferences.notesSidebarOrder";
+const PROJECTS_SIDEBAR_ORDER_CONFIG_KEY = "preferences.projectsSidebarOrder";
+const CHAT_SIDEBAR_ORDER_CONFIG_KEY = "preferences.chatSidebarOrder";
 const NOTES_MENTION_NOTIFICATIONS_ENABLED_CONFIG_KEY =
   "preferences.notesMentionNotificationsEnabled";
 const NOTES_REMINDER_NOTIFICATIONS_ENABLED_CONFIG_KEY =
@@ -312,6 +314,8 @@ let focusPauseNotificationIntervalMinutes = $state<FocusPauseNotificationInterva
 let musicPauseOnPomodoroPause = $state<boolean>(loadSavedMusicPauseOnPomodoroPause());
 let notesDefaultOpenMode = $state<NotesPageOpenMode>(loadSavedNotesDefaultOpenMode());
 let notesSidebarOrder = $state<SidebarSortOrder>(loadSavedSidebarOrder(NOTES_SIDEBAR_ORDER_CONFIG_KEY));
+let projectsSidebarOrder = $state<SidebarSortOrder>(loadSavedSidebarOrder(PROJECTS_SIDEBAR_ORDER_CONFIG_KEY));
+let chatSidebarOrder = $state<SidebarSortOrder>(loadSavedSidebarOrder(CHAT_SIDEBAR_ORDER_CONFIG_KEY));
 let notesMentionNotificationsEnabled = $state<boolean>(
   loadSavedBooleanPreference(
     NOTES_MENTION_NOTIFICATIONS_ENABLED_CONFIG_KEY,
@@ -546,6 +550,18 @@ function setNotesSidebarOrder(value: SidebarSortOrder): void {
   setConfigKey(NOTES_SIDEBAR_ORDER_CONFIG_KEY, value);
 }
 
+function setProjectsSidebarOrder(value: SidebarSortOrder): void {
+  if (!isSidebarSortOrder(value)) return;
+  projectsSidebarOrder = value;
+  setConfigKey(PROJECTS_SIDEBAR_ORDER_CONFIG_KEY, value);
+}
+
+function setChatSidebarOrder(value: SidebarSortOrder): void {
+  if (!isSidebarSortOrder(value)) return;
+  chatSidebarOrder = value;
+  setConfigKey(CHAT_SIDEBAR_ORDER_CONFIG_KEY, value);
+}
+
 function setNotesMentionNotificationsEnabled(value: boolean): void {
   notesMentionNotificationsEnabled = value;
   setConfigKey(NOTES_MENTION_NOTIFICATIONS_ENABLED_CONFIG_KEY, value);
@@ -684,6 +700,14 @@ export function getPreferences() {
     get notesSidebarOrder(): SidebarSortOrder {
       return notesSidebarOrder;
     },
+    /** Order of groups and projects in the Projects sidebar and project pickers, with starred projects first. */
+    get projectsSidebarOrder(): SidebarSortOrder {
+      return projectsSidebarOrder;
+    },
+    /** Default order of Chat sections and channels, which a project can override. */
+    get chatSidebarOrder(): SidebarSortOrder {
+      return chatSidebarOrder;
+    },
     get notesMentionNotificationsEnabled(): boolean {
       return notesMentionNotificationsEnabled;
     },
@@ -741,6 +765,8 @@ export function getPreferences() {
     setMusicPauseOnPomodoroPause,
     setNotesDefaultOpenMode,
     setNotesSidebarOrder,
+    setProjectsSidebarOrder,
+    setChatSidebarOrder,
     setNotesMentionNotificationsEnabled,
     setNotesReminderNotificationsEnabled,
     setNotesUserMentionNotificationsEnabled,
@@ -801,6 +827,12 @@ export function getPreferences() {
     },
     resetNotesSidebarOrder() {
       setNotesSidebarOrder(DEFAULT_SIDEBAR_SORT_ORDER);
+    },
+    resetProjectsSidebarOrder() {
+      setProjectsSidebarOrder(DEFAULT_SIDEBAR_SORT_ORDER);
+    },
+    resetChatSidebarOrder() {
+      setChatSidebarOrder(DEFAULT_SIDEBAR_SORT_ORDER);
     },
     resetNotesMentionNotificationsEnabled() {
       setNotesMentionNotificationsEnabled(DEFAULT_NOTES_MENTION_NOTIFICATIONS_ENABLED);

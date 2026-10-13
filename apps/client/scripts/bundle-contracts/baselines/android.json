@@ -23,7 +23,7 @@
         "src/lib/components/projects/ProjectsView.svelte",
         "src/lib/components/projects/list/ProjectListView.svelte"
       ],
-      "maxSourceModules": 269
+      "maxSourceModules": 270
     },
     {
       "name": "notes",
@@ -45,7 +45,7 @@
         "src/lib/components/music/MusicPanel.svelte",
         "src/lib/components/music/MusicPlaybackHost.svelte"
       ],
-      "maxSourceModules": 178
+      "maxSourceModules": 181
     },
     {
       "name": "chat",

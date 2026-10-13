@@ -79,6 +79,8 @@ export const general = {
     heading: "General",
     showPropertyIcons: "Show property icons",
     showPropertyIconsDescription: "Show each property's type icon beside its column name in List",
+    sidebarOrder: "Group and project order",
+    sidebarOrderDescription: "How the Projects sidebar and project pickers list groups and projects, after favorites",
   },
   notesGeneral: {
     heading: "General",

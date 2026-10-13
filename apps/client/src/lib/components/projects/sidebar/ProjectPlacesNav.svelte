@@ -7,7 +7,7 @@
   import List from "@lucide/svelte/icons/list";
   import MessageSquare from "@lucide/svelte/icons/message-square";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { isProjectHostedPlace, PROJECT_PLACES, type ProjectPlace } from "$lib/projects/places";
+  import { PROJECT_PLACES, type ProjectPlace } from "$lib/projects/places";
 
   /**
    * The places of the selected project: its views, then the hosted Notes and Chat workspaces. Docked explorers render
@@ -28,8 +28,6 @@
   } = $props();
 
   const { t } = getLocalization();
-
-  const firstHostedPlace = $derived(places.find(isProjectHostedPlace));
 
   function placeLabel(place: ProjectPlace): string {
     switch (place) {
@@ -61,7 +59,6 @@
     {@const Icon = placeIcon(place)}
     {@const label = placeLabel(place)}
     {@const active = activePlace === place}
-    {#if place === firstHostedPlace}<div class="project-places-gap" aria-hidden="true"></div>{/if}
     <button
       type="button"
       class={variant === "rail"
@@ -93,14 +90,5 @@
     align-items: center;
     gap: 0.125rem;
     padding: 0.25rem 0;
-  }
-
-  .project-places-gap {
-    height: 0.75rem;
-    flex-shrink: 0;
-  }
-
-  .project-places-rail .project-places-gap {
-    height: 0.5rem;
   }
 </style>

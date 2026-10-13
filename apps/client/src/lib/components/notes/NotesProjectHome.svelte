@@ -1319,11 +1319,20 @@
   }
 
   .notes-navigation-folder-drop-area-valid {
-    background: var(--selection-background);
+    --notes-folder-drop-tint: var(--selection-background);
+    background: var(--notes-folder-drop-tint);
   }
 
   .notes-navigation-folder-drop-area-invalid {
-    background: color-mix(in oklab, var(--accent) 58%, transparent);
+    --notes-folder-drop-tint: color-mix(in oklab, var(--accent) 58%, transparent);
+    background: var(--notes-folder-drop-tint);
+  }
+
+  /* The selected row paints an opaque highlight, so the folder's drop tint is layered over it to keep the area uniform. */
+  .notes-navigation-folder-drop-area :global(.explorer-row.explorer-selected) {
+    background:
+      linear-gradient(var(--notes-folder-drop-tint, transparent), var(--notes-folder-drop-tint, transparent)),
+      var(--explorer-row-highlight);
   }
 
   .notes-navigation-root-drop-valid {

@@ -138,7 +138,7 @@
     </div>
 
     {#if !collapsed}
-      <nav class="flex min-h-0 flex-col overflow-y-auto px-2 pb-2" aria-label={t("projects.sidebar.projects")} data-project-list>
+      <nav class="explorer-list flex min-h-0 flex-col pb-2" aria-label={t("projects.sidebar.projects")} data-project-list>
         {#each listedProjects as project (project.id)}
           {@const selected = project.id === projects.selectedProjectId}
           <button

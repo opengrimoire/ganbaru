@@ -168,6 +168,7 @@
   --selection-background: rgba(37, 99, 235, 0.28);
   --app-scrollbar-thumb: color-mix(in srgb, var(--foreground) 18%, transparent);
   --app-scrollbar-thumb-hover: color-mix(in srgb, var(--foreground) 36%, transparent);
+  --app-scrollbar-size: 8px;
 
   /* Frame / contour (titlebar) */
   --sidebar: #EEEEF1;
@@ -392,8 +393,8 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
     @apply border-border outline-ring/50;
   }
   *::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
+    width: var(--app-scrollbar-size);
+    height: var(--app-scrollbar-size);
     background: transparent;
   }
   *::-webkit-scrollbar-track,
@@ -806,6 +807,13 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
   align-items: center;
   gap: 0.125rem;
   padding-inline: 0.5rem;
+}
+
+/* Explorer lists always reserve the scrollbar gutter, which stands in for their end padding so rows end with the toolbar. */
+.explorer-list {
+  overflow-y: scroll;
+  padding-inline-start: 0.5rem;
+  padding-inline-end: max(0px, 0.5rem - var(--app-scrollbar-size));
 }
 
 .explorer-icon {

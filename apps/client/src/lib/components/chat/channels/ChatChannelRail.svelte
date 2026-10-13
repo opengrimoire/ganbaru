@@ -614,7 +614,7 @@
 
     {#if railError}<Notice class="mx-2 mb-1 px-2 py-1 text-xs" message={railError} />{/if}
 
-    <div class="min-h-0 flex-1 overflow-y-scroll px-2 pb-2">
+    <div class="explorer-list min-h-0 flex-1 pb-2">
       {#if query.trim().length >= 2}
         <section class="message-results" aria-label={t("chat.organization.messageSearchResults")}>
           <div class="section-heading"><span>{t("chat.organization.messages")}</span>{#if messageSearchLoading}<LoaderCircle size={12} class="animate-spin" aria-label={t("common.loading")} />{/if}</div>
@@ -828,9 +828,7 @@
   .message-result small { min-width:0; overflow:hidden; color:var(--muted-foreground); font-size: calc(0.6rem * var(--type-scale)); text-overflow:ellipsis; white-space:nowrap; }
   .message-result > span:last-child { display:-webkit-box; overflow:hidden; color:var(--muted-foreground); font-size: calc(0.68rem * var(--type-scale)); line-height: calc(1rem * var(--type-scale)); -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2; }
   .section-heading { --section-heading-gap: 0.2rem; --section-heading-inset: 0.5rem; display: flex; min-height: var(--explorer-row-height); align-items: center; gap: var(--section-heading-gap); padding-inline: var(--section-heading-inset); color: var(--muted-foreground); }
-  /* Heading actions reach into the list padding so they line up with the toolbar collapse button above. */
   .channel-section > .section-heading { padding-inline-end: 0; }
-  .channel-section > .section-heading:not(.section-renaming) { margin-inline-end: calc(-1 * var(--section-heading-inset)); }
   .section-heading.section-renaming { border-radius: 0.375rem; background: var(--explorer-row-hover, color-mix(in oklab, var(--accent) 50%, transparent)); }
   .section-rename-input { min-width: 0; width: 0; flex: 1; min-height: var(--explorer-action-size); border: 0; background: transparent; color: var(--foreground); caret-color: var(--primary); font: inherit; outline: none; }
   .section-rename-control { color: var(--foreground); }

@@ -21,6 +21,6 @@
 <span class={cn("relative inline-flex shrink-0", className)}>
   {@render children()}
   {#if starred}
-    <Star class="starred-icon-badge absolute -right-1 -bottom-0.5 size-2 fill-current text-primary" aria-hidden="true" />
+    <Star class="starred-icon-badge absolute -right-0.5 -bottom-0.5 size-2 fill-current text-primary" aria-hidden="true" />
   {/if}
 </span>

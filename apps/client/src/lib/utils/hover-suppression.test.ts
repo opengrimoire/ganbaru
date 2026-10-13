@@ -76,6 +76,14 @@ describe("hover suppression after layout changes", () => {
     expect(suppressed(host)).toBe(false);
   });
 
+  it("resumes hover when the wheel turns without moving", () => {
+    const host = start();
+    pointer(host.target, "pointermove", 120, 40);
+    pointer(host.target, "wheel", 120, 40);
+
+    expect(suppressed(host)).toBe(false);
+  });
+
   it("leaves devices without hover untouched", () => {
     const host = start(false);
 

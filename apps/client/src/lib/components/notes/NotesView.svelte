@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, untrack } from "svelte";
+  import { onMount, untrack, type Snippet } from "svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { hasOnlyShortcutModifier } from "$lib/keyboard-shortcuts";
   import {
@@ -39,8 +39,14 @@
 
   let {
     mobileLayout = false,
+    projectSidebar = undefined,
   }: {
     mobileLayout?: boolean;
+    /**
+     * Projects sidebar from a host that opens Notes as one place of a project. It replaces the Notes explorer, so the
+     * header breadcrumb carries page navigation. The snippet receives the handler for a project switch.
+     */
+    projectSidebar?: Snippet<[() => void]>;
   } = $props();
 
   const notes = getNotes();
@@ -540,7 +546,7 @@
       {selectedGroup}
       {selectedProjectId}
       selectedPage={topBarSelectedPage}
-      explorerCollapsed={notes.explorerCollapsed}
+      explorerCollapsed={notes.explorerCollapsed || projectSidebar !== undefined}
       {creationFolderId}
       {showInactiveProjects}
       onShowInactiveProjectsChange={(value) => {
@@ -640,7 +646,9 @@
     {/if}
   {/each}
   <div class="notes-view-layout relative flex min-h-0 flex-1 overflow-hidden" class:explorer-chrome={!mobileLayout}>
-    {#if showProjectExplorer}
+    {#if projectSidebar && !mobileLayout}
+      {@render projectSidebar(handleProjectSelected)}
+    {:else if showProjectExplorer}
       <NotesProjectHome
         {mobileLayout}
         projectId={selectedProjectId}

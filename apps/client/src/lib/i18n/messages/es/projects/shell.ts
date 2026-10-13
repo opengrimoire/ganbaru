@@ -32,11 +32,14 @@ export const shell = {
   },
   sidebar: {
     label: "Barra lateral del proyecto",
+    places: "Secciones del proyecto",
     collapse: "Contraer barra lateral",
     expand: "Expandir barra lateral",
     overview: "Resumen",
     group: "Grupo de proyectos",
     projects: "Proyectos del grupo",
+    notes: "Notas",
+    chat: "Chat",
   },
   finder: {
     label: "Buscar tareas del proyecto",

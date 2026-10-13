@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_PROJECT_VIEW_ID,
   isProjectViewId,
+  parseStoredProjectHostedPlace,
   parseStoredProjectId,
   parseStoredProjectViewId,
 } from "./ui-preferences";
@@ -30,5 +31,13 @@ describe("project ui preferences", () => {
     expect(parseStoredProjectId(" project-a ")).toBe("project-a");
     expect(parseStoredProjectId("   ")).toBeNull();
     expect(parseStoredProjectId(null)).toBeNull();
+  });
+
+  it("restores only known hosted places", () => {
+    expect(parseStoredProjectHostedPlace("notes")).toBe("notes");
+    expect(parseStoredProjectHostedPlace("chat")).toBe("chat");
+    expect(parseStoredProjectHostedPlace("list")).toBeNull();
+    expect(parseStoredProjectHostedPlace("")).toBeNull();
+    expect(parseStoredProjectHostedPlace(true)).toBeNull();
   });
 });

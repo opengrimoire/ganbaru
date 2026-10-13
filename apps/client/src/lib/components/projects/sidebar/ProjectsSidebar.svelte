@@ -6,23 +6,27 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { COMPACT_IDENTITY_EMOJI_SCALE, COMPACT_IDENTITY_ICON_SIZE, COMPACT_IDENTITY_ICON_STROKE_WIDTH } from "$lib/icon-sizing";
   import { resolveProjectSidebarGroupId } from "$lib/projects/sidebar";
-  import type { Project, ProjectViewId } from "$lib/projects/types";
+  import type { ProjectPlace } from "$lib/projects/places";
+  import type { Project } from "$lib/projects/types";
   import { getProjects } from "$lib/stores/projects.svelte";
   import ProjectIcon from "../ProjectIcon.svelte";
-  import ProjectViewsNav from "./ProjectViewsNav.svelte";
+  import ProjectPlacesNav from "./ProjectPlacesNav.svelte";
 
   /**
-   * The docked Projects explorer: a group selector, the projects of that group, and the views of the selected project.
+   * The docked Projects explorer: a group selector, the projects of that group, and the places of the selected project.
    * Browsing another group only changes the listed projects; picking a project selects it. Collapsing the sidebar keeps
-   * a narrow rail with the views alone.
+   * a narrow rail with the places alone. Hosted Notes and Chat render it in place of their own explorer.
    */
   let {
-    activeView,
-    onSelectView,
+    places,
+    activePlace,
+    onSelectPlace,
     onProjectSelected,
   }: {
-    activeView: ProjectViewId;
-    onSelectView: (view: ProjectViewId) => void;
+    /** Places to list, in sidebar order. */
+    places: readonly ProjectPlace[];
+    activePlace: ProjectPlace;
+    onSelectPlace: (place: ProjectPlace) => void;
     /** Runs after a project row selects its project. */
     onProjectSelected: () => void;
   } = $props();
@@ -102,7 +106,7 @@
       </button>
     </div>
     {#if collapsed}
-      <ProjectViewsNav variant="rail" {activeView} {onSelectView} />
+      <ProjectPlacesNav variant="rail" {places} {activePlace} {onSelectPlace} />
     {/if}
   </div>
 
@@ -159,7 +163,7 @@
           <p class="explorer-row-label px-2 py-1 text-muted-foreground">{t("projects.navigator.empty")}</p>
         {/each}
       </nav>
-      <ProjectViewsNav variant="list" {activeView} {onSelectView} />
+      <ProjectPlacesNav variant="list" {places} {activePlace} {onSelectPlace} />
     {/if}
   </div>
 </aside>

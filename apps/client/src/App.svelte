@@ -50,6 +50,7 @@
   import MusicSoundscapeCoordinator from "$lib/components/music/soundscape/MusicSoundscapeCoordinator.svelte";
   import NotesView from "$lib/components/notes/NotesView.svelte";
   import ProjectsView from "$lib/components/projects/ProjectsView.svelte";
+  import ProjectsSidebar from "$lib/components/projects/sidebar/ProjectsSidebar.svelte";
   import ProjectDashboardView from "$lib/components/projects/views/ProjectDashboardView.svelte";
   import ProjectGanttView from "$lib/components/projects/views/ProjectGanttView.svelte";
   import ProjectKanbanView from "$lib/components/projects/views/ProjectKanbanView.svelte";
@@ -84,6 +85,12 @@
   import { getProjectTaskReminderSchedule } from "$lib/projects/task-reminder-schedule.svelte";
   import { projectTaskReminderNotificationText } from "$lib/projects/task-reminder-notification";
   import type { ProjectChatIntegration } from "$lib/projects/types";
+  import {
+    projectHostablePlaces,
+    projectSidebarPlaces,
+    resolveProjectPlace,
+    type ProjectHostedPlace,
+  } from "$lib/projects/places";
   import type { QuickNotesTrashPurgeRuntime } from "$lib/quick-notes/trash-purge-runtime";
 
   perfMark("boot.script-start");
@@ -271,6 +278,7 @@
   async function openProjectTaskNotification(projectId: string): Promise<void> {
     try {
       await projects.selectProject(projectId);
+      projects.showProjectView();
       nav.navigate("projects");
     } catch (error: unknown) {
       console.error("Failed to open the project of a task reminder", error);
@@ -589,6 +597,14 @@
     return mainTabViews(detachedWindows.views);
   });
   const keyboardViews = $derived(visibleTabViews);
+  const projectHostablePlaceList = $derived(projectHostablePlaces(visibleTabViews));
+  const projectSidebarPlaceList = $derived(projectSidebarPlaces(projectHostablePlaceList));
+  /** Workspace the Projects tab hosts in place of a project view; hosting needs an open project to scope it. */
+  const projectHostedPlace = $derived.by<ProjectHostedPlace | null>(() => {
+    const place = projects.hostedPlace;
+    if (nav.current !== "projects" || !place || !projectHostablePlaceList.includes(place)) return null;
+    return projects.selectedProject && projects.selectedGroup ? place : null;
+  });
 
   function navigatePrev() {
     if (keyboardViews.length === 0) return;
@@ -907,6 +923,15 @@
   }
 </script>
 
+{#snippet hostedProjectSidebar(onProjectSelected: () => void)}
+  <ProjectsSidebar
+    places={projectSidebarPlaceList}
+    activePlace={resolveProjectPlace(projectHostedPlace, projects.activeView)}
+    onSelectPlace={(place) => projects.selectPlace(place)}
+    {onProjectSelected}
+  />
+{/snippet}
+
 <svelte:window onkeydowncapture={handleKeydown} />
 
 <div
@@ -918,15 +943,16 @@
     <main class="content-panel flex-1 min-h-0 overflow-hidden" class:surface-content={contentPanelPainted}>
       {#if nav.current === "calendar"}
         <CalendarView />
-      {:else if nav.current === "projects"}
+      {:else if nav.current === "projects" && !projectHostedPlace}
         <ProjectsView
           viewComponents={projectViewComponents}
           projectChat={projectChatIntegration}
+          hostablePlaces={projectHostablePlaceList}
         />
-      {:else if nav.current === "notes"}
-        <NotesView />
+      {:else if nav.current === "notes" || projectHostedPlace === "notes"}
+        <NotesView projectSidebar={projectHostedPlace === "notes" ? hostedProjectSidebar : undefined} />
       {:else}
-        <ChatWorkspace />
+        <ChatWorkspace projectSidebar={projectHostedPlace === "chat" ? hostedProjectSidebar : undefined} />
       {/if}
     </main>
   </div>

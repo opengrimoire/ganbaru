@@ -23,6 +23,12 @@
     projectToolbarPanelsForView,
     type ProjectToolbarPanel,
   } from "$lib/projects/toolbar";
+  import {
+    projectSidebarPlaces,
+    resolveProjectPlace,
+    type ProjectHostedPlace,
+    type ProjectPlace,
+  } from "$lib/projects/places";
   import CollectionSettings from "$lib/components/collections/CollectionSettings.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
@@ -39,10 +45,13 @@
     mobileLayout = false,
     viewComponents = null,
     projectChat = null,
+    hostablePlaces = [],
   }: {
     mobileLayout?: boolean;
     viewComponents?: ProjectViewComponents | null;
     projectChat?: ProjectChatIntegration | null;
+    /** Places of other features this window can host inside the Projects tab. */
+    hostablePlaces?: readonly ProjectHostedPlace[];
   } = $props();
 
   const projects = getProjects();
@@ -74,6 +83,14 @@
   const selectedGroup = $derived(projects.selectedGroup);
   const selectedProjectId = $derived(selectedProject?.id ?? null);
   const sidebarDocked = $derived(!mobileLayout && Boolean(selectedProject && selectedGroup));
+  const sidebarPlaces = $derived(projectSidebarPlaces(hostablePlaces));
+  /** Chat opens from the sidebar when it is a place, so the header keeps its shortcut only otherwise. */
+  const chatIsPlace = $derived(sidebarDocked && sidebarPlaces.includes("chat"));
+  // A hosted place this window cannot open (its tab is detached) falls back to the view place.
+  const activePlace = $derived(resolveProjectPlace(
+    projects.hostedPlace && hostablePlaces.includes(projects.hostedPlace) ? projects.hostedPlace : null,
+    projects.activeView,
+  ));
   const toolbarDataReady = $derived.by(() => {
     const projectId = selectedProjectId;
     return Boolean(
@@ -266,9 +283,9 @@
     taskQuery.repairDisappearingFields();
   });
 
-  function selectView(view: ProjectViewId): void {
+  function selectPlace(place: ProjectPlace): void {
     routeUi.runAfterSettingsClose(() => {
-      projects.activeView = view;
+      projects.selectPlace(place);
     });
   }
 
@@ -338,7 +355,7 @@
   data-first-use-shell="projects"
 >
   {#if sidebarDocked}
-    <ProjectsSidebar activeView={projects.activeView} onSelectView={selectView} onProjectSelected={handleProjectSelected} />
+    <ProjectsSidebar places={sidebarPlaces} {activePlace} onSelectPlace={selectPlace} onProjectSelected={handleProjectSelected} />
   {/if}
   <section
     class="flex min-w-0 flex-1 flex-col overflow-hidden"
@@ -357,7 +374,7 @@
           taskFiltersActive={taskFilterControlsActive}
           {taskCustomizeActive}
           {mobileLayout}
-          {projectChat}
+          projectChat={chatIsPlace ? null : projectChat}
           onShowInactiveProjectsChange={(value) => {
             projects.showInactiveProjects = value;
           }}

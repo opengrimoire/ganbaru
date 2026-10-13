@@ -29,6 +29,7 @@ vi.mock("$lib/stores/projects.svelte", () => ({
     groupById: (id: string | undefined) => (id === GROUP_ID ? { id, name: "Health" } : undefined),
     taskById: () => undefined,
     selectProject: async () => undefined,
+    showProjectView: () => undefined,
   }),
 }));
 

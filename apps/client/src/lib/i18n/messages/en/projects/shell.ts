@@ -29,11 +29,14 @@ export const shell = {
   },
   sidebar: {
     label: "Project sidebar",
+    places: "Project places",
     collapse: "Collapse sidebar",
     expand: "Expand sidebar",
     overview: "Overview",
     group: "Project group",
     projects: "Projects in this group",
+    notes: "Notes",
+    chat: "Chat",
   },
   finder: {
     label: "Search project tasks",

@@ -7,6 +7,7 @@
   import List from "@lucide/svelte/icons/list";
   import MessageSquare from "@lucide/svelte/icons/message-square";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { shortcutModifierLabel } from "$lib/keyboard-shortcuts";
   import { PROJECT_PLACES, type ProjectPlace } from "$lib/projects/places";
 
   /**
@@ -28,6 +29,12 @@
   } = $props();
 
   const { t } = getLocalization();
+  const modifierLabel = shortcutModifierLabel();
+
+  /** Names the place with the Ctrl and digit shortcut that opens it, written like the title bar tab shortcuts. */
+  function placeTooltip(label: string, index: number): string {
+    return index < 9 ? t("projects.sidebar.placeWithShortcut", label, `${modifierLabel}+${index + 1}`) : label;
+  }
 
   function placeLabel(place: ProjectPlace): string {
     switch (place) {
@@ -55,7 +62,7 @@
 </script>
 
 <nav class="project-places" class:project-places-rail={variant === "rail"} aria-label={t("projects.sidebar.places")} data-project-places>
-  {#each places as place (place)}
+  {#each places as place, index (place)}
     {@const Icon = placeIcon(place)}
     {@const label = placeLabel(place)}
     {@const active = activePlace === place}
@@ -68,7 +75,7 @@
       class:explorer-selected={variant === "list" && active}
       aria-label={variant === "rail" ? label : undefined}
       aria-current={active ? "page" : undefined}
-      data-app-tooltip={variant === "rail" ? label : undefined}
+      data-app-tooltip={placeTooltip(label, index)}
       data-project-place={place}
       onclick={() => onSelectPlace(place)}
     >

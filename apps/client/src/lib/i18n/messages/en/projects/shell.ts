@@ -37,6 +37,7 @@ export const shell = {
     projects: "Projects in this group",
     notes: "Notes",
     chat: "Chat",
+    placeWithShortcut: (label: string, shortcut: string) => `${label} (${shortcut})`,
   },
   finder: {
     label: "Search project tasks",

@@ -91,6 +91,7 @@
   let rootElement: HTMLDivElement | undefined = $state();
   let primaryHeaderElement: HTMLDivElement | undefined = $state();
   let globalActionsElement: HTMLDivElement | undefined = $state();
+  let canvasEdgeElement: HTMLDivElement | undefined = $state();
   let mobileRailToggleElement: HTMLButtonElement | undefined = $state();
   let railShell: HTMLDivElement | undefined = $state();
   let composerDockElement: HTMLDivElement | undefined = $state();
@@ -125,6 +126,7 @@
   let shellRight = $state(INITIAL_SHELL_WIDTH);
   let shellBottom = $state(INITIAL_SHELL_HEIGHT);
   let displayPixelRatio = $state(1);
+  let canvasEdgeWidth = $state<number | null>(null);
   const fontScale = $derived(Math.max(INITIAL_FONT_SCALE, preferences.fontScale));
   let layout = $state<ChatLayoutDecision>(chatLayoutDecision({
     containerWidth: INITIAL_SHELL_WIDTH,
@@ -619,6 +621,16 @@
     displayPixelRatio = Number.isFinite(window.devicePixelRatio) && window.devicePixelRatio > 0
       ? window.devicePixelRatio
       : 1;
+    canvasEdgeWidth = canvasEdgeElement ? renderedBorderWidth(canvasEdgeElement) : null;
+  }
+
+  /**
+   * Reads the width an element's top border renders at. Engines snap border widths to whole device pixels, so at a
+   * fractional display scale a 1px border renders narrower than 1px, and an inset that must line up with it uses this.
+   */
+  function renderedBorderWidth(element: HTMLElement): number | null {
+    const width = Number.parseFloat(getComputedStyle(element).borderTopWidth);
+    return Number.isFinite(width) && width > 0 ? width : null;
   }
 
   function enablePanelTransitionsAfterLayout(): void {
@@ -979,7 +991,7 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<div bind:this={rootElement} class="chat-workspace @container/chat-shell relative grid h-full min-h-0 overflow-hidden" class:mobile-rail-surface={railUsesMobileSurface} class:resizing-panels={resizingInspector || resizingBottomPanel} class:panel-transitions-enabled={panelTransitionsEnabled} data-chat-workspace data-layout={layout.variant} data-rail-presentation={layout.railPresentation} data-inspector-presentation={layout.inspectorPresentation} data-reply-thread-presentation={layout.replyThreadPresentation} data-active-surface={layout.activeSurface} data-rail-open={visibleRailOpen} data-rail-docked={railDocked} data-canvas-edge={!mobileShell} data-project-sidebar={projectHosted} style={`container-type:inline-size;container-name:chat-shell;--chat-panel-transition-duration:${PANEL_TRANSITION_MS}ms;--chat-bottom-min-height:${MIN_BOTTOM_PANEL_HEIGHT}px;--chat-inspector-width:${displayedInspectorWidth}px;--chat-reply-thread-width:${replyThreadWidth}px;`}>
+<div bind:this={rootElement} class="chat-workspace @container/chat-shell relative grid h-full min-h-0 overflow-hidden" class:mobile-rail-surface={railUsesMobileSurface} class:resizing-panels={resizingInspector || resizingBottomPanel} class:panel-transitions-enabled={panelTransitionsEnabled} data-chat-workspace data-layout={layout.variant} data-rail-presentation={layout.railPresentation} data-inspector-presentation={layout.inspectorPresentation} data-reply-thread-presentation={layout.replyThreadPresentation} data-active-surface={layout.activeSurface} data-rail-open={visibleRailOpen} data-rail-docked={railDocked} data-canvas-edge={!mobileShell} data-project-sidebar={projectHosted} style={`container-type:inline-size;container-name:chat-shell;--chat-panel-transition-duration:${PANEL_TRANSITION_MS}ms;--chat-bottom-min-height:${MIN_BOTTOM_PANEL_HEIGHT}px;--chat-inspector-width:${displayedInspectorWidth}px;--chat-reply-thread-width:${replyThreadWidth}px;${canvasEdgeWidth === null ? "" : `--chat-canvas-edge-width:${canvasEdgeWidth}px;`}`}>
   <div class="chat-canvas" aria-hidden="true"></div>
 {#if WorkspaceObserver}<WorkspaceObserver />{/if}
   <div class="sr-only" aria-live="polite" aria-atomic="true">{politeAnnouncement}</div>
@@ -1080,7 +1092,7 @@
     />
   {/if}
   {#if !mobileShell}
-    <div class="chat-canvas-edge surface-content-edge" aria-hidden="true"></div>
+    <div bind:this={canvasEdgeElement} class="chat-canvas-edge surface-content-edge" aria-hidden="true"></div>
   {/if}
 </div>
 
@@ -1117,9 +1129,9 @@
   .chat-workspace[data-rail-presentation="sheet"] { --chat-rail-column-width: 0px; }
   .chat-workspace[data-reply-thread-presentation="column"] { --chat-reply-thread-column-width: var(--chat-reply-thread-width); }
   .chat-workspace[data-inspector-presentation="column"] { --chat-inspector-column-width: var(--chat-inspector-width); }
-  /* Content sits inside the canvas edge, as it does in tabs whose content surface carries the edge as its own border; the canvas and the docked rail reach past that inset. */
+  /* Content sits inside the canvas edge, as it does in tabs whose content surface carries the edge as its own border; the canvas and the docked rail reach past that inset. The inset is the width the edge renders at, which is narrower than its specified width at fractional display scales. */
   .chat-workspace { --chat-canvas-inset: 0px; padding: var(--chat-canvas-inset); }
-  .chat-workspace[data-canvas-edge="true"] { --chat-canvas-inset: var(--content-edge-width); }
+  .chat-workspace[data-canvas-edge="true"] { --chat-canvas-inset: var(--chat-canvas-edge-width, var(--content-edge-width)); }
   .chat-canvas, .chat-canvas-edge { grid-column: 1 / 7; grid-row: 1 / 5; margin: calc(-1 * var(--chat-canvas-inset)); pointer-events: none; }
   .chat-canvas { background: var(--cal-bg); }
   /* Above the toolbar actions and composer dock that paint the canvas color at its edges, below sheet backdrops. */

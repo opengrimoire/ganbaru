@@ -1269,14 +1269,14 @@
         {/if}
         <button
           type="button"
-          class={actionButtonClass(pageFavorited)}
+          class={actionButtonClass()}
           aria-label={pageFavorited ? t("common.removeFromFavorites") : t("common.addToFavorites")}
           data-app-tooltip={pageFavorited ? t("common.removeFromFavorites") : t("common.addToFavorites")}
           onclick={() => {
             notes.setPageFavorited(page.id, !pageFavorited);
           }}
         >
-          <Star class={`size-4 ${pageFavorited ? "fill-current" : ""}`} strokeWidth={noteActionIconStrokeWidth} />
+          <Star class={cn("size-4", pageFavorited && "fill-current text-primary")} strokeWidth={noteActionIconStrokeWidth} />
         </button>
         <div
           class="relative"

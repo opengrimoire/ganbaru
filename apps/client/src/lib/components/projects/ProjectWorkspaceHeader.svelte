@@ -1,5 +1,4 @@
 <script lang="ts">
-  import CollectionViewButton from "$lib/components/collections/CollectionViewButton.svelte";
   import ArrowUpDown from "@lucide/svelte/icons/arrow-up-down";
   import Bookmark from "@lucide/svelte/icons/bookmark";
   import Check from "@lucide/svelte/icons/check";
@@ -26,7 +25,6 @@
     type ProjectToolbarPanel,
     type ProjectNavigatorPanelMode,
   } from "$lib/projects/toolbar";
-  import { PROJECT_TASK_LAYOUT_IDS, projectPlaceForView } from "$lib/projects/places";
   import {
     PROJECT_VIEW_IDS,
     type Project,
@@ -126,11 +124,6 @@
     return t("projects.tabs.list");
   }
 
-  function viewShortcutTitle(view: ProjectViewId): string {
-    const shortcut = String(PROJECT_VIEW_IDS.indexOf(view) + 1);
-    return `${viewLabel(view)} (${t("calendar.toolbar.shortcutKey", shortcut)})`;
-  }
-
   function toolbarIconButtonClass(active: boolean, open = false): string {
     return cn(
       "flex shrink-0 items-center justify-center rounded-md text-foreground transition-colors hover:bg-accent",
@@ -143,7 +136,6 @@
   const toolbarPanels = $derived(projectToolbarPanelsForView(projects.activeView, savedViewsHome));
   const customizeContent = $derived(projectCustomizeContent(projects.activeView, savedViewsHome));
   const customizationPanels = $derived(toolbarPanels.filter((panel) => panel !== "settings"));
-  const activePlace = $derived(projectPlaceForView(projects.activeView));
 
   function panelIcon(panel: ProjectToolbarPanel) {
     if (panel === "filters") return ListFilter;
@@ -534,13 +526,6 @@
     </div>
   {:else}
     <div class="flex-1"></div>
-    {#if activePlace === "tasks"}
-      <nav class="flex shrink-0 items-center gap-0.5" aria-label={t("projects.toolbar.views")}>
-        {#each PROJECT_TASK_LAYOUT_IDS as view (view)}
-          <CollectionViewButton class="text-xs" label={viewLabel(view)} title={viewShortcutTitle(view)} active={projects.activeView === view} onclick={() => { projects.activeView = view; }} />
-        {/each}
-      </nav>
-    {/if}
     <div class="flex shrink-0 items-center gap-1">
       {#if projectChat}
         <button

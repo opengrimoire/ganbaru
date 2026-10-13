@@ -14,24 +14,15 @@ import {
   projectViewOptionalDataKinds,
 } from "$lib/projects/snapshot/optional-data";
 import { mergeProjectSnapshot } from "$lib/projects/snapshot/queries";
-import {
-  isProjectHostedPlace,
-  isProjectTaskLayoutId,
-  projectViewForPlace,
-  type ProjectHostedPlace,
-  type ProjectPlace,
-  type ProjectTaskLayoutId,
-} from "$lib/projects/places";
+import { isProjectHostedPlace, type ProjectHostedPlace, type ProjectPlace } from "$lib/projects/places";
 import {
   loadSavedActiveProjectId,
   loadSavedProjectHostedPlace,
   loadSavedProjectSidebarCollapsed,
-  loadSavedProjectTaskLayoutId,
   loadSavedProjectViewId,
   saveActiveProjectId,
   saveProjectHostedPlace,
   saveProjectSidebarCollapsed,
-  saveProjectTaskLayoutId,
   saveProjectViewId,
 } from "$lib/projects/ui-preferences";
 import { createProjectStoreActions } from "$lib/stores/projects/actions";
@@ -87,11 +78,7 @@ let loaded = $state(false);
 let loading = $state(false);
 let loadError = $state<string | null>(null);
 let selectedProjectId = $state<string | null>(loadSavedActiveProjectId());
-const initialProjectViewId = loadSavedProjectViewId();
-let activeView = $state<ProjectViewId>(initialProjectViewId);
-let lastTaskLayout = $state<ProjectTaskLayoutId>(
-  isProjectTaskLayoutId(initialProjectViewId) ? initialProjectViewId : loadSavedProjectTaskLayoutId(),
-);
+let activeView = $state<ProjectViewId>(loadSavedProjectViewId());
 let sidebarCollapsed = $state(loadSavedProjectSidebarCollapsed());
 let hostedPlace = $state<ProjectHostedPlace | null>(loadSavedProjectHostedPlace());
 let showInactiveProjects = $state(false);
@@ -148,10 +135,6 @@ function setActiveView(view: ProjectViewId): void {
   if (activeView === view) return;
   activeView = view;
   saveProjectViewId(view);
-  if (isProjectTaskLayoutId(view) && lastTaskLayout !== view) {
-    lastTaskLayout = view;
-    saveProjectTaskLayoutId(view);
-  }
 }
 
 function applyLoadedSnapshot(incoming: ProjectsSnapshot, projectId: string | null | undefined): void {
@@ -661,15 +644,11 @@ export function getProjects() {
         setHostedPlace(place);
         return;
       }
-      setActiveView(projectViewForPlace(place, lastTaskLayout));
+      setActiveView(place);
     },
     /** Returns from a hosted workspace to the project view, for routes that open a project or one of its tasks. */
     showProjectView(): void {
       setHostedPlace(null);
-    },
-    /** Task layout that the Tasks place reopens. */
-    get lastTaskLayout(): ProjectTaskLayoutId {
-      return lastTaskLayout;
     },
     /** Whether the docked desktop Projects sidebar is collapsed to its rail. */
     get sidebarCollapsed(): boolean {

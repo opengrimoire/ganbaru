@@ -1,32 +1,23 @@
 <script lang="ts">
   import Book from "@lucide/svelte/icons/book";
-  import ChevronsUpDown from "@lucide/svelte/icons/chevrons-up-down";
+  import CalendarDays from "@lucide/svelte/icons/calendar-days";
+  import ChartGantt from "@lucide/svelte/icons/chart-gantt";
+  import Columns3 from "@lucide/svelte/icons/columns-3";
   import LayoutDashboard from "@lucide/svelte/icons/layout-dashboard";
-  import ListChecks from "@lucide/svelte/icons/list-checks";
+  import List from "@lucide/svelte/icons/list";
   import MessageSquare from "@lucide/svelte/icons/message-square";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import {
-    COMPACT_IDENTITY_EMOJI_SCALE,
-    COMPACT_IDENTITY_ICON_SIZE,
-    COMPACT_IDENTITY_ICON_STROKE_WIDTH,
-  } from "$lib/icon-sizing";
-  import { PROJECT_VIEW_PLACES, type ProjectPlace } from "$lib/projects/places";
-  import { projectNavigatorPanelGeometry } from "$lib/projects/toolbar";
-  import { getProjects } from "$lib/stores/projects.svelte";
-  import { getViewport } from "$lib/stores/viewport.svelte";
-  import ProjectIcon from "../ProjectIcon.svelte";
-  import ProjectNavigator from "../ProjectNavigator.svelte";
+  import { isProjectHostedPlace, PROJECT_PLACES, type ProjectPlace } from "$lib/projects/places";
 
   /**
-   * The project switcher and the places of the selected project. Docked explorers render it below their toolbar while
-   * they belong to the Projects tab, so Projects keeps one sidebar whatever place is open.
+   * The places of the selected project: its views, then the hosted Notes and Chat workspaces. Docked explorers render
+   * it below their toolbar while they belong to the Projects tab, so Projects keeps one sidebar whatever place is open.
    */
   let {
     variant,
-    places = PROJECT_VIEW_PLACES,
+    places = PROJECT_PLACES,
     activePlace,
     onSelectPlace,
-    onProjectSelected = undefined,
   }: {
     /** `list` inside an expanded sidebar, `rail` inside a collapsed one. */
     variant: "list" | "rail";
@@ -34,26 +25,19 @@
     places?: readonly ProjectPlace[];
     activePlace: ProjectPlace;
     onSelectPlace: (place: ProjectPlace) => void;
-    onProjectSelected?: () => void;
   } = $props();
 
-  const projects = getProjects();
-  const viewport = getViewport();
   const { t } = getLocalization();
 
-  const selectedProject = $derived(projects.selectedProject);
-  const selectedGroup = $derived(projects.selectedGroup);
-
-  let navigatorOpen = $state(false);
-  let switcherElement = $state<HTMLButtonElement | null>(null);
-  let navigatorPanelElement = $state<HTMLDivElement | null>(null);
-  let navigatorPanelStyle = $state("");
-  let navigatorPanelMaxHeight = $state(0);
+  const firstHostedPlace = $derived(places.find(isProjectHostedPlace));
 
   function placeLabel(place: ProjectPlace): string {
     switch (place) {
-      case "overview": return t("projects.sidebar.overview");
-      case "tasks": return t("projects.sidebar.tasks");
+      case "dashboard": return t("projects.sidebar.overview");
+      case "list": return t("projects.tabs.list");
+      case "kanban": return t("projects.tabs.kanban");
+      case "calendar": return t("projects.tabs.calendar");
+      case "gantt": return t("projects.tabs.gantt");
       case "notes": return t("projects.sidebar.notes");
       case "chat": return t("projects.sidebar.chat");
     }
@@ -61,142 +45,47 @@
 
   function placeIcon(place: ProjectPlace) {
     switch (place) {
-      case "overview": return LayoutDashboard;
-      case "tasks": return ListChecks;
+      case "dashboard": return LayoutDashboard;
+      case "list": return List;
+      case "kanban": return Columns3;
+      case "calendar": return CalendarDays;
+      case "gantt": return ChartGantt;
       case "notes": return Book;
       case "chat": return MessageSquare;
     }
   }
-
-  function refreshNavigatorGeometry(): void {
-    if (!navigatorOpen || !switcherElement) return;
-    const rect = switcherElement.getBoundingClientRect();
-    const geometry = projectNavigatorPanelGeometry({
-      anchorLeft: variant === "rail" ? rect.right : rect.left,
-      anchorBottom: variant === "rail" ? rect.top : rect.bottom,
-      viewportWidth: viewport.width,
-      viewportHeight: viewport.height,
-    });
-    navigatorPanelStyle = [
-      `left: ${Math.round(geometry.left)}px`,
-      `top: ${Math.round(geometry.top)}px`,
-      `width: ${Math.round(geometry.width)}px`,
-    ].join("; ");
-    navigatorPanelMaxHeight = geometry.height;
-  }
-
-  function toggleNavigator(): void {
-    navigatorOpen = !navigatorOpen;
-    refreshNavigatorGeometry();
-  }
-
-  function closeNavigator(): void {
-    navigatorOpen = false;
-  }
-
-  function handleWindowPointerDown(event: PointerEvent): void {
-    if (!navigatorOpen) return;
-    const target = event.target;
-    if (!(target instanceof Node)) return;
-    if (switcherElement?.contains(target) || navigatorPanelElement?.contains(target)) return;
-    navigatorOpen = false;
-  }
-
-  function handleWindowKeydown(event: KeyboardEvent): void {
-    if (!navigatorOpen || event.key !== "Escape" || event.defaultPrevented) return;
-    event.preventDefault();
-    navigatorOpen = false;
-    switcherElement?.focus();
-  }
-
-  $effect(() => {
-    if (!navigatorOpen) return;
-    void viewport.width;
-    void viewport.height;
-    requestAnimationFrame(refreshNavigatorGeometry);
-  });
 </script>
 
-<svelte:window onpointerdown={handleWindowPointerDown} onkeydown={handleWindowKeydown} />
-
-{#if selectedProject && selectedGroup}
-  <nav class="project-places" class:project-places-rail={variant === "rail"} aria-label={t("projects.sidebar.places")} data-project-places>
+<nav class="project-places" class:project-places-rail={variant === "rail"} aria-label={t("projects.sidebar.places")} data-project-places>
+  {#each places as place (place)}
+    {@const Icon = placeIcon(place)}
+    {@const label = placeLabel(place)}
+    {@const active = activePlace === place}
+    {#if place === firstHostedPlace}<div class="project-places-gap" aria-hidden="true"></div>{/if}
     <button
-      bind:this={switcherElement}
       type="button"
-      class={variant === "rail" ? "explorer-icon" : "explorer-row explorer-row-label project-places-row"}
-      class:explorer-icon-active={variant === "rail" && navigatorOpen}
-      class:explorer-selected={variant === "list" && navigatorOpen}
-      aria-label={`${t("projects.sidebar.switchProject")}: ${selectedGroup.name} / ${selectedProject.name}`}
-      aria-haspopup="dialog"
-      aria-expanded={navigatorOpen}
-      data-app-tooltip={variant === "rail" ? selectedProject.name : undefined}
-      data-project-switcher
-      onclick={toggleNavigator}
+      class={variant === "rail"
+        ? "explorer-icon"
+        : "explorer-row explorer-row-label flex w-full min-w-0 items-center gap-1.5 px-2 text-left text-inherit"}
+      class:explorer-icon-active={variant === "rail" && active}
+      class:explorer-selected={variant === "list" && active}
+      aria-label={variant === "rail" ? label : undefined}
+      aria-current={active ? "page" : undefined}
+      data-app-tooltip={variant === "rail" ? label : undefined}
+      data-project-place={place}
+      onclick={() => onSelectPlace(place)}
     >
-      <ProjectIcon
-        name={selectedProject.icon}
-        size={COMPACT_IDENTITY_ICON_SIZE}
-        strokeWidth={COMPACT_IDENTITY_ICON_STROKE_WIDTH}
-        emojiScale={COMPACT_IDENTITY_EMOJI_SCALE}
-        class="shrink-0"
-      />
-      {#if variant === "list"}
-        <span class="min-w-0 flex-1 truncate font-medium">{selectedProject.name}</span>
-        <ChevronsUpDown class="explorer-row-icon text-muted-foreground" aria-hidden="true" />
-      {/if}
+      <Icon class="explorer-row-icon" aria-hidden="true" />
+      {#if variant === "list"}<span class="min-w-0 flex-1 truncate">{label}</span>{/if}
     </button>
-    {#each places as place (place)}
-      {@const Icon = placeIcon(place)}
-      {@const label = placeLabel(place)}
-      {@const active = activePlace === place}
-      <button
-        type="button"
-        class={variant === "rail" ? "explorer-icon" : "explorer-row explorer-row-label project-places-row"}
-        class:explorer-icon-active={variant === "rail" && active}
-        class:explorer-selected={variant === "list" && active}
-        aria-label={variant === "rail" ? label : undefined}
-        aria-current={active ? "page" : undefined}
-        data-app-tooltip={variant === "rail" ? label : undefined}
-        data-project-place={place}
-        onclick={() => onSelectPlace(place)}
-      >
-        <Icon class="explorer-row-icon" aria-hidden="true" />
-        {#if variant === "list"}<span class="min-w-0 flex-1 truncate">{label}</span>{/if}
-      </button>
-    {/each}
-  </nav>
-
-  {#if navigatorOpen}
-    <div
-      bind:this={navigatorPanelElement}
-      class="fixed z-80"
-      style={navigatorPanelStyle}
-      role="dialog"
-      tabindex="-1"
-      aria-label={t("projects.navigator.pickerLabel")}
-    >
-      <ProjectNavigator
-        selectedProjectId={selectedProject.id}
-        selectedGroupId={selectedGroup.id}
-        showInactiveProjects={projects.showInactiveProjects}
-        panelMode="groups"
-        panelMaxHeight={navigatorPanelMaxHeight}
-        onShowInactiveProjectsChange={(value) => { projects.showInactiveProjects = value; }}
-        onProjectSelected={() => {
-          closeNavigator();
-          onProjectSelected?.();
-        }}
-      />
-    </div>
-  {/if}
-{/if}
+  {/each}
+</nav>
 
 <style>
   .project-places {
     display: flex;
     flex-direction: column;
-    gap: 1px;
+    flex-shrink: 0;
     padding: 0 0.5rem 0.5rem;
   }
 
@@ -206,14 +95,12 @@
     padding: 0.25rem 0;
   }
 
-  .project-places-row {
-    display: flex;
-    width: 100%;
-    min-width: 0;
-    align-items: center;
-    gap: 0.5rem;
-    padding-inline: 0.5rem;
-    color: var(--foreground);
-    text-align: start;
+  .project-places-gap {
+    height: 0.75rem;
+    flex-shrink: 0;
+  }
+
+  .project-places-rail .project-places-gap {
+    height: 0.5rem;
   }
 </style>

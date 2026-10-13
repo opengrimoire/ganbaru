@@ -4,7 +4,6 @@ import {
   isProjectViewId,
   parseStoredProjectHostedPlace,
   parseStoredProjectId,
-  parseStoredProjectTaskLayoutId,
   parseStoredProjectViewId,
 } from "./ui-preferences";
 
@@ -34,16 +33,10 @@ describe("project ui preferences", () => {
     expect(parseStoredProjectId(null)).toBeNull();
   });
 
-  it("falls back to the list layout when the stored task layout is not a task layout", () => {
-    expect(parseStoredProjectTaskLayoutId("gantt")).toBe("gantt");
-    expect(parseStoredProjectTaskLayoutId("dashboard")).toBe("list");
-    expect(parseStoredProjectTaskLayoutId(42)).toBe("list");
-  });
-
   it("restores only known hosted places", () => {
     expect(parseStoredProjectHostedPlace("notes")).toBe("notes");
     expect(parseStoredProjectHostedPlace("chat")).toBe("chat");
-    expect(parseStoredProjectHostedPlace("tasks")).toBeNull();
+    expect(parseStoredProjectHostedPlace("list")).toBeNull();
     expect(parseStoredProjectHostedPlace("")).toBeNull();
     expect(parseStoredProjectHostedPlace(true)).toBeNull();
   });

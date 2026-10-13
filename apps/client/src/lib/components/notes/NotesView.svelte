@@ -44,10 +44,9 @@
     mobileLayout?: boolean;
     /**
      * Project places from a host that opens Notes as one place of a project. The explorer then doubles as the host's
-     * sidebar and the header leaves the project to it. The snippet receives the explorer variant and the handler for a
-     * project switch.
+     * sidebar. The snippet receives the explorer variant.
      */
-    projectPlaces?: Snippet<["list" | "rail", () => void]>;
+    projectPlaces?: Snippet<["list" | "rail"]>;
   } = $props();
 
   const notes = getNotes();
@@ -540,9 +539,6 @@
   class:notes-view-mobile={mobileLayout}
   data-first-use-shell="notes"
 >
-  {#snippet hostedProjectPlaces(variant: "list" | "rail")}
-    {@render projectPlaces?.(variant, handleProjectSelected)}
-  {/snippet}
   {#snippet workspaceHeader()}
     <NotesWorkspaceHeader
       {mobileLayout}
@@ -659,7 +655,7 @@
         {selectedWorkingMarkdownFile}
         onSelectWorkingMarkdownFile={selectWorkingMarkdownFile}
         onBeforeDocumentNavigation={beforeDocumentNavigation}
-        projectPlaces={projectPlaces ? hostedProjectPlaces : undefined}
+        {projectPlaces}
         onCreationFolderChange={(folderId) => {
           creationFolderOverride = folderId;
         }}

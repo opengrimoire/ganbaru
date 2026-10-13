@@ -356,16 +356,7 @@
   data-first-use-shell="projects"
 >
   {#if sidebarDocked}
-    <ProjectsSidebar
-      {taskQuery}
-      places={sidebarPlaces}
-      {activePlace}
-      onSelectPlace={selectPlace}
-      onCreateTask={() => { if (selectedProjectId) routeUi.openTaskDraft(selectedProjectId); }}
-      onOpenFinder={() => routeUi.openFinder()}
-      onProjectSelected={handleProjectSelected}
-      onSavedViewApplied={() => routeUi.clearTaskSelection()}
-    />
+    <ProjectsSidebar places={sidebarPlaces} {activePlace} onSelectPlace={selectPlace} />
   {/if}
   <section
     class="flex min-w-0 flex-1 flex-col overflow-hidden"

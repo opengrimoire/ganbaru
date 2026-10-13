@@ -951,18 +951,13 @@
   }
 </script>
 
-{#snippet hostedProjectPlaces(variant: "list" | "rail", onProjectSelected: (() => void) | undefined)}
+{#snippet hostedProjectPlaces(variant: "list" | "rail")}
   <ProjectPlacesNav
     {variant}
     places={projectSidebarPlaceList}
     activePlace={resolveProjectPlace(projectHostedPlace, projects.activeView)}
     onSelectPlace={(place) => projects.selectPlace(place)}
-    {onProjectSelected}
   />
-{/snippet}
-
-{#snippet hostedChatProjectPlaces(variant: "list" | "rail")}
-  {@render hostedProjectPlaces(variant, undefined)}
 {/snippet}
 
 <svelte:window onkeydowncapture={handleKeydown} />
@@ -985,7 +980,7 @@
       {:else if nav.current === "notes" || projectHostedPlace === "notes"}
         <NotesView projectPlaces={projectHostedPlace === "notes" ? hostedProjectPlaces : undefined} />
       {:else}
-        <ChatWorkspace projectPlaces={projectHostedPlace === "chat" ? hostedChatProjectPlaces : undefined} />
+        <ChatWorkspace projectPlaces={projectHostedPlace === "chat" ? hostedProjectPlaces : undefined} />
       {/if}
     </main>
   </div>

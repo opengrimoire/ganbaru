@@ -58,6 +58,7 @@ import {
   type ProjectTaskListColumnWidths,
 } from "$lib/projects/list/view";
 import { normalizeProjectName } from "$lib/projects/text";
+import { projectHasLockedSystemIdentity } from "$lib/projects/system-defaults";
 import { PROJECT_LIST_PRESENTATION_KEY, type ProjectListPresentation } from "$lib/projects/list/presentation";
 import { applyProjectMutation } from "$lib/projects/snapshot/mutations";
 import { parseProjectIcon } from "$lib/projects/icons/values";
@@ -88,6 +89,7 @@ import {
   type ProjectCustomFieldType,
   type ProjectCustomFieldValueUpdate,
   type ProjectGroup,
+  type ProjectLifecycleStatus,
   type ProjectLinkableEvent,
   type ProjectMutation,
   type ProjectMutationRemoval,
@@ -348,6 +350,41 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
       updateProjectBackend(projectUpdatePayload(project, { sortOrder: target.sortOrder })));
     await commitMutation(`project:${target.id}`, () =>
       updateProjectBackend(projectUpdatePayload(target, { sortOrder: project.sortOrder })));
+  }
+
+  /** Renames a project. Built-in projects keep their name, and an empty name is rejected. */
+  async function renameProject(project: Project, name: string): Promise<void> {
+    assertProjectIdentityEditable(project);
+    const normalized = normalizeProjectName(name);
+    if (!normalized) throw new Error("A project name is required");
+    if (normalized === project.name) return;
+    await updateProject(projectUpdatePayload(project, { name: normalized }));
+  }
+
+  /** Moves a project to the end of another visible group. Built-in projects keep their group. */
+  async function moveProjectToGroup(project: Project, groupId: string): Promise<void> {
+    assertProjectIdentityEditable(project);
+    if (groupId === project.groupId) return;
+    if (!selectors.visibleGroups().some((group) => group.id === groupId)) {
+      throw new Error(`Project group ${groupId} is not available`);
+    }
+    const sortOrder = Math.max(
+      0,
+      ...selectors.projectsForGroupIncludingInactive(groupId).map((entry) => entry.sortOrder),
+    ) + 1000;
+    await updateProject(projectUpdatePayload(project, { groupId, sortOrder }));
+  }
+
+  /** Sets whether a project is active, hidden, or archived. */
+  async function setProjectStatus(project: Project, status: ProjectLifecycleStatus): Promise<void> {
+    if (status === project.status) return;
+    await updateProject(projectUpdatePayload(project, { status }));
+  }
+
+  function assertProjectIdentityEditable(project: Project): void {
+    if (projectHasLockedSystemIdentity(project)) {
+      throw new Error(`Built-in project ${project.id} keeps its name and group`);
+    }
   }
 
   async function addSection(projectId: string, name: string): Promise<void> {
@@ -1020,6 +1057,9 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     updateProject,
     setNotesSettings,
     moveProject,
+    renameProject,
+    moveProjectToGroup,
+    setProjectStatus,
     addSection,
     updateSection,
     hideSection,

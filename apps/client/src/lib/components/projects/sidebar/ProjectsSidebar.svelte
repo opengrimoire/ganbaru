@@ -4,13 +4,12 @@
   import ChevronsRight from "@lucide/svelte/icons/chevrons-right";
   import SearchField from "$lib/components/ui/SearchField.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { COMPACT_IDENTITY_EMOJI_SCALE, COMPACT_IDENTITY_ICON_SIZE, COMPACT_IDENTITY_ICON_STROKE_WIDTH } from "$lib/icon-sizing";
-  import { resolveProjectSidebarGroupId, searchProjectSidebar } from "$lib/projects/sidebar";
+  import { projectSidebarActions, resolveProjectSidebarGroupId, searchProjectSidebar } from "$lib/projects/sidebar";
   import type { ProjectPlace } from "$lib/projects/places";
   import type { Project } from "$lib/projects/types";
   import { getProjects } from "$lib/stores/projects.svelte";
   import { suppressHoverOnToggle } from "$lib/utils/hover-suppression";
-  import ProjectIcon from "../ProjectIcon.svelte";
+  import ProjectSidebarRow from "./ProjectSidebarRow.svelte";
   import ProjectPlacesNav from "./ProjectPlacesNav.svelte";
 
   /**
@@ -24,6 +23,7 @@
     activePlace,
     onSelectPlace,
     onProjectSelected,
+    onOpenProjectSettings = undefined,
   }: {
     /** Places to list, in sidebar order. */
     places: readonly ProjectPlace[];
@@ -31,6 +31,8 @@
     onSelectPlace: (place: ProjectPlace) => void;
     /** Runs after a project row selects its project. */
     onProjectSelected: () => void;
+    /** Selects a project and opens its settings; hosted places without a settings panel leave it out. */
+    onOpenProjectSettings?: (project: Project) => void;
   } = $props();
 
   const projects = getProjects();
@@ -43,9 +45,10 @@
   let query = $state("");
 
   const groups = $derived(projects.visibleGroups());
+  const groupIds = $derived(groups.map((group) => group.id));
   const listedGroupId = $derived(resolveProjectSidebarGroupId(
     projects.selectedGroup?.id ?? null,
-    groups.map((group) => group.id),
+    groupIds,
   ));
   const searching = $derived(query.trim().length > 0);
   const searchResults = $derived(searching
@@ -139,28 +142,19 @@
     {#if !collapsed}
       <nav class="explorer-list flex min-h-0 flex-col pb-2" aria-label={t("projects.sidebar.projects")} data-project-list>
         {#each listedProjects as project (project.id)}
-          {@const selected = project.id === projects.selectedProjectId}
-          <button
-            type="button"
-            class="explorer-row explorer-row-label flex w-full min-w-0 items-center gap-1.5 px-2 text-left text-inherit"
-            class:explorer-selected={selected}
-            class:text-muted-foreground={project.status !== "active"}
-            aria-current={selected ? "true" : undefined}
-            data-project-id={project.id}
-            onclick={() => void selectProject(project)}
-          >
-            <ProjectIcon
-              name={project.icon}
-              size={COMPACT_IDENTITY_ICON_SIZE}
-              strokeWidth={COMPACT_IDENTITY_ICON_STROKE_WIDTH}
-              emojiScale={COMPACT_IDENTITY_EMOJI_SCALE}
-              class="explorer-row-icon"
-            />
-            <span class="min-w-0 flex-1 truncate">{project.name}</span>
-            {#if resultGroupNames?.has(project.id)}
-              <span class="max-w-1/2 shrink-0 truncate text-muted-foreground">{resultGroupNames.get(project.id)}</span>
-            {/if}
-          </button>
+          {@const actions = projectSidebarActions(project, groupIds)}
+          <ProjectSidebarRow
+            {project}
+            selected={project.id === projects.selectedProjectId}
+            groupName={resultGroupNames?.get(project.id) ?? null}
+            {actions}
+            moveGroups={actions.moveGroupIds.flatMap((groupId) => groups.find((group) => group.id === groupId) ?? [])}
+            onSelect={() => void selectProject(project)}
+            onRename={(name) => projects.renameProject(project, name)}
+            onMoveToGroup={(groupId) => projects.moveProjectToGroup(project, groupId)}
+            onSetStatus={(status) => projects.setProjectStatus(project, status)}
+            onOpenSettings={onOpenProjectSettings ? () => onOpenProjectSettings?.(project) : undefined}
+          />
         {:else}
           <p class="explorer-row-label px-2 py-1 text-muted-foreground">
             {searching ? t("projects.sidebar.noResults") : t("projects.navigator.empty")}

@@ -1,19 +1,23 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { applyProjectDependencyCascade, type ProjectDependencyCascadePreview } from "$lib/api/project-cascade";
-import { applyProjectTaskBulk, createProjectCustomField, createProjectPriority, createProjectStatus, createProjectTag, deleteProjectCustomField, linkProjectTaskEvent, reorderProjectItem, updateProjectTask } from "$lib/api/projects";
+import { applyProjectTaskBulk, createProjectCustomField, createProjectPriority, createProjectStatus, createProjectTag, deleteProjectCustomField, linkProjectTaskEvent, reorderProjectItem, updateProject, updateProjectTask } from "$lib/api/projects";
 import { createProjectStoreActions } from "./actions";
 import { createProjectStoreSelectors } from "./selectors";
 import actionSource from "./actions.ts?raw";
 import type {
+  Project,
+  ProjectGroup,
   ProjectMutation,
   ProjectsSnapshot,
   ProjectTask,
   ProjectTaskUpdate,
+  ProjectUpdate,
 } from "$lib/projects/types";
 
 vi.mock("$lib/api/projects", async (importOriginal) => ({
   ...await importOriginal<typeof import("$lib/api/projects")>(),
   updateProjectTask: vi.fn(),
+  updateProject: vi.fn(),
   applyProjectTaskBulk: vi.fn(),
   createProjectCustomField: vi.fn(),
   reorderProjectItem: vi.fn(),
@@ -314,5 +318,94 @@ describe("createProjectStoreActions", () => {
       { eventId: "event-1", projectId: "project-1" },
     ]);
     expect(context.reload).not.toHaveBeenCalled();
+  });
+});
+
+describe("project identity and lifecycle actions", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const dates = { createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" };
+
+  function group(id: string, sortOrder: number, hidden = false): ProjectGroup {
+    return { id, name: id, icon: "lucide:folder", sortOrder, collapsed: false, hiddenAt: hidden ? dates.createdAt : undefined, ...dates };
+  }
+
+  function project(overrides: Partial<Project> = {}): Project {
+    return {
+      id: "project-1", groupId: "work", name: "Launch", icon: "lucide:folder", color: 8, sortOrder: 1000,
+      status: "active", defaultEventName: null, defaultEventTimeMode: "timed", defaultEventDurationMinutes: 60,
+      defaultPomodoroMode: "preset", defaultPomodoroPresetKey: "adaptive", defaultIdleSettingsSource: "global",
+      defaultIdlePauseEnabled: true, defaultIdleThresholdMinutes: 5, ...dates, ...overrides,
+    };
+  }
+
+  function setup(projects: Project[]) {
+    let snapshot: ProjectsSnapshot = {
+      ...emptySnapshot(),
+      groups: [group("work", 1000), group("home", 2000), group("archive", 3000, true)],
+      projects,
+    };
+    vi.mocked(updateProject).mockImplementation(async (update: ProjectUpdate) => ({
+      changed: { ...emptySnapshot(), projects: [{
+        ...projects.find((entry) => entry.id === update.id)!,
+        name: update.name, groupId: update.groupId, sortOrder: update.sortOrder, status: update.status,
+      }] },
+      removals: [],
+      calendarEventProjectAssignments: [],
+    }));
+    const actions = createProjectStoreActions({
+      selectors: createProjectStoreSelectors(() => snapshot),
+      readSnapshot: () => snapshot,
+      readLoadGeneration: () => 0,
+      updateSnapshot: (updater) => { snapshot = updater(snapshot); },
+      applyCalendarEventProjectAssignments: vi.fn(async () => undefined),
+      readSelectedProjectId: () => "project-1",
+      setSelectedProjectId: vi.fn(),
+      reload: vi.fn(async () => undefined),
+      ensureProjectData: vi.fn(async () => undefined),
+      ensureTaskDetailData: vi.fn(async () => undefined),
+    });
+    return { actions, readSnapshot: () => snapshot };
+  }
+
+  it("renames a project with a trimmed name and skips an unchanged one", async () => {
+    const launch = project();
+    const { actions, readSnapshot } = setup([launch]);
+    await actions.renameProject(launch, "  Launch  ");
+    expect(updateProject).not.toHaveBeenCalled();
+    await actions.renameProject(launch, "  Relaunch ");
+    expect(vi.mocked(updateProject).mock.calls[0]?.[0]).toMatchObject({ id: "project-1", name: "Relaunch", groupId: "work" });
+    expect(readSnapshot().projects[0]?.name).toBe("Relaunch");
+  });
+
+  it("rejects an empty name", async () => {
+    const launch = project();
+    const { actions } = setup([launch]);
+    await expect(actions.renameProject(launch, "   ")).rejects.toThrow("name is required");
+    expect(updateProject).not.toHaveBeenCalled();
+  });
+
+  it("moves a project to the end of another visible group", async () => {
+    const launch = project();
+    const { actions } = setup([launch, project({ id: "project-2", groupId: "home", sortOrder: 4000, status: "archived" })]);
+    await actions.moveProjectToGroup(launch, "home");
+    expect(vi.mocked(updateProject).mock.calls[0]?.[0]).toMatchObject({ id: "project-1", groupId: "home", sortOrder: 5000 });
+  });
+
+  it("refuses hidden groups", async () => {
+    const launch = project();
+    const { actions } = setup([launch]);
+    await expect(actions.moveProjectToGroup(launch, "archive")).rejects.toThrow("not available");
+    expect(updateProject).not.toHaveBeenCalled();
+  });
+
+  it("keeps the name and group of built-in projects but lets their lifecycle change", async () => {
+    const sleep = project({ id: "project-routine-sleep", name: "Sleep" });
+    const { actions } = setup([sleep]);
+    await expect(actions.renameProject(sleep, "Nap")).rejects.toThrow("keeps its name and group");
+    await expect(actions.moveProjectToGroup(sleep, "home")).rejects.toThrow("keeps its name and group");
+    expect(updateProject).not.toHaveBeenCalled();
+    await actions.setProjectStatus(sleep, "hidden");
+    expect(vi.mocked(updateProject).mock.calls[0]?.[0]).toMatchObject({ id: "project-routine-sleep", status: "hidden", name: "Sleep" });
   });
 });

@@ -9,6 +9,7 @@
   import { getViewport } from "$lib/stores/viewport.svelte";
   import type { CalendarEvent, CalendarViewMode } from "$lib/calendar/types";
   import type {
+    Project,
     ProjectChatIntegration,
     ProjectSection,
     ProjectTask,
@@ -304,6 +305,22 @@
     routeUi.closeToolbarImmediately();
   }
 
+  /** Selects a project from its sidebar menu and opens its settings, asking first when other settings are unsaved. */
+  function openProjectSettings(project: Project): void {
+    if (project.id === projects.selectedProjectId && routeUi.toolbarPanel === "settings") return;
+    routeUi.runAfterSettingsClose(() => {
+      void (async () => {
+        try {
+          if (project.id !== projects.selectedProjectId) await projects.selectProject(project.id);
+          routeUi.closeTaskDetail();
+          routeUi.setToolbarPanel("settings");
+        } catch (error: unknown) {
+          console.error("Failed to open project settings from the sidebar", error);
+        }
+      })();
+    });
+  }
+
   function clearTaskFilters(): void {
     taskQuery.reset();
   }
@@ -368,7 +385,13 @@
   data-first-use-shell="projects"
 >
   {#if sidebarDocked}
-    <ProjectsSidebar places={sidebarPlaces} {activePlace} onSelectPlace={selectPlace} onProjectSelected={handleProjectSelected} />
+    <ProjectsSidebar
+      places={sidebarPlaces}
+      {activePlace}
+      onSelectPlace={selectPlace}
+      onProjectSelected={handleProjectSelected}
+      onOpenProjectSettings={openProjectSettings}
+    />
   {/if}
   <section
     class="flex min-w-0 flex-1 flex-col overflow-hidden"

@@ -14,7 +14,7 @@
 
   /**
    * The docked Projects explorer: a project search, the projects of the selected project's group, and the places of the
-   * selected project. A search lists matching projects from every visible group; picking a project selects it.
+   * selected project pinned to the bottom, so they keep their position while the project list scrolls above them. A search lists matching projects from every visible group; picking a project selects it.
    * Collapsing the sidebar keeps a narrow rail with the places alone. Hosted Notes and Chat render it in place of their
    * own explorer.
    */
@@ -140,7 +140,7 @@
     </div>
 
     {#if !collapsed}
-      <nav class="explorer-list flex min-h-0 flex-col pb-2" aria-label={t("projects.sidebar.projects")} data-project-list>
+      <nav class="explorer-list flex min-h-0 flex-1 flex-col pb-2" aria-label={t("projects.sidebar.projects")} data-project-list>
         {#each listedProjects as project (project.id)}
           {@const actions = projectSidebarActions(project, groupIds)}
           <ProjectSidebarRow

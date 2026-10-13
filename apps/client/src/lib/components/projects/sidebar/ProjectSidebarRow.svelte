@@ -22,7 +22,8 @@
 
   /**
    * One project in the Projects sidebar, with a row menu to rename it, move it to another group, hide or archive it, and
-   * open its settings. Built-in projects show rename and move as unavailable.
+   * open its settings. Built-in projects show rename and move as unavailable. The selected project reads in a heavier
+   * weight without the row fill, which marks the active place below it.
    */
   let {
     project,
@@ -147,7 +148,7 @@
 
 <div
   class="explorer-row flex min-w-0 items-center"
-  class:explorer-selected={selected}
+  class:project-row-selected={selected}
   role="group"
   aria-label={displayName}
   data-project-id={project.id}
@@ -309,3 +310,9 @@
     </div>
   </div>
 {/if}
+
+<style>
+  .project-row-selected {
+    --explorer-text-weight: 600;
+  }
+</style>

@@ -2,10 +2,10 @@
   import { tick } from "svelte";
   import ChevronsLeft from "@lucide/svelte/icons/chevrons-left";
   import ChevronsRight from "@lucide/svelte/icons/chevrons-right";
-  import Select from "$lib/components/ui/Select.svelte";
+  import SearchField from "$lib/components/ui/SearchField.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { COMPACT_IDENTITY_EMOJI_SCALE, COMPACT_IDENTITY_ICON_SIZE, COMPACT_IDENTITY_ICON_STROKE_WIDTH } from "$lib/icon-sizing";
-  import { resolveProjectSidebarGroupId } from "$lib/projects/sidebar";
+  import { resolveProjectSidebarGroupId, searchProjectSidebar } from "$lib/projects/sidebar";
   import type { ProjectPlace } from "$lib/projects/places";
   import type { Project } from "$lib/projects/types";
   import { getProjects } from "$lib/stores/projects.svelte";
@@ -14,9 +14,10 @@
   import ProjectPlacesNav from "./ProjectPlacesNav.svelte";
 
   /**
-   * The docked Projects explorer: a group selector, the projects of that group, and the places of the selected project.
-   * Browsing another group only changes the listed projects; picking a project selects it. Collapsing the sidebar keeps
-   * a narrow rail with the places alone. Hosted Notes and Chat render it in place of their own explorer.
+   * The docked Projects explorer: a project search, the projects of the selected project's group, and the places of the
+   * selected project. A search lists matching projects from every visible group; picking a project selects it.
+   * Collapsing the sidebar keeps a narrow rail with the places alone. Hosted Notes and Chat render it in place of their
+   * own explorer.
    */
   let {
     places,
@@ -39,22 +40,30 @@
   const observeCollapsedForHover = suppressHoverOnToggle();
   $effect(() => observeCollapsedForHover(collapsed));
 
-  /** A browsed group lasts until the selected project changes, so any project switch lists the new project's group. */
-  let browsed = $state<{ groupId: string; fromProjectId: string | null } | null>(null);
+  let query = $state("");
 
   const groups = $derived(projects.visibleGroups());
-  const groupOptions = $derived(groups.map((group) => ({ value: group.id, label: group.name })));
   const listedGroupId = $derived(resolveProjectSidebarGroupId(
-    browsed && browsed.fromProjectId === projects.selectedProjectId ? browsed.groupId : null,
     projects.selectedGroup?.id ?? null,
     groups.map((group) => group.id),
   ));
-  const listedProjects = $derived.by((): Project[] => {
-    if (!listedGroupId) return [];
+  const searching = $derived(query.trim().length > 0);
+  const searchResults = $derived(searching
+    ? searchProjectSidebar(query, groups.map((group) => ({ name: group.name, projects: groupProjects(group.id) })))
+    : []);
+  const listedProjects = $derived(searching
+    ? searchResults.map((result) => result.project)
+    : listedGroupId ? groupProjects(listedGroupId) : []);
+  /** Search results name their group only when more than one group could have matched. */
+  const resultGroupNames = $derived(searching && groups.length > 1
+    ? new Map(searchResults.map((result) => [result.project.id, result.groupName]))
+    : null);
+
+  function groupProjects(groupId: string): Project[] {
     return projects.showInactiveProjects
-      ? projects.projectsForGroupIncludingInactive(listedGroupId)
-      : projects.projectsForGroup(listedGroupId);
-  });
+      ? projects.projectsForGroupIncludingInactive(groupId)
+      : projects.projectsForGroup(groupId);
+  }
 
   let expandButton = $state<HTMLButtonElement | null>(null);
   let collapseButton = $state<HTMLButtonElement | null>(null);
@@ -62,10 +71,6 @@
   function setCollapsed(value: boolean): void {
     projects.sidebarCollapsed = value;
     void tick().then(() => (value ? expandButton : collapseButton)?.focus());
-  }
-
-  function browseGroup(groupId: string): void {
-    browsed = { groupId, fromProjectId: projects.selectedProjectId };
   }
 
   async function selectProject(project: Project): Promise<void> {
@@ -78,15 +83,6 @@
     }
   }
 </script>
-
-{#snippet groupIcon(groupId: string)}
-  <ProjectIcon
-    name={projects.groupById(groupId)?.icon}
-    size={COMPACT_IDENTITY_ICON_SIZE}
-    strokeWidth={COMPACT_IDENTITY_ICON_STROKE_WIDTH}
-    emojiScale={COMPACT_IDENTITY_EMOJI_SCALE}
-  />
-{/snippet}
 
 <aside
   class="explorer-sidebar explorer-dock h-full min-h-0"
@@ -114,23 +110,18 @@
   </div>
 
   <div class="explorer-dock-content flex h-full min-h-0 flex-col" inert={collapsed}>
-    <div class="explorer-toolbar gap-1">
-      {#if listedGroupId}
-        <Select
-          value={listedGroupId}
-          options={groupOptions}
-          onChange={browseGroup}
-          ariaLabel={t("projects.sidebar.group")}
-          appearance="quiet"
-          contentAlign="start"
-          leading={groupIcon}
-          class="w-auto flex-1"
-        />
-      {/if}
+    <div class="explorer-toolbar">
+      <SearchField
+        bind:value={query}
+        label={t("projects.sidebar.search")}
+        clearLabel={t("projects.sidebar.clearSearch")}
+        inline
+        focusOnMount={false}
+      />
       <button
         bind:this={collapseButton}
         type="button"
-        class="explorer-icon ml-auto"
+        class="explorer-icon"
         aria-label={t("projects.sidebar.collapse")}
         aria-expanded="true"
         data-app-tooltip={t("projects.sidebar.collapse")}
@@ -161,9 +152,14 @@
               class="explorer-row-icon"
             />
             <span class="min-w-0 flex-1 truncate">{project.name}</span>
+            {#if resultGroupNames?.has(project.id)}
+              <span class="max-w-1/2 shrink-0 truncate text-muted-foreground">{resultGroupNames.get(project.id)}</span>
+            {/if}
           </button>
         {:else}
-          <p class="explorer-row-label px-2 py-1 text-muted-foreground">{t("projects.navigator.empty")}</p>
+          <p class="explorer-row-label px-2 py-1 text-muted-foreground">
+            {searching ? t("projects.sidebar.noResults") : t("projects.navigator.empty")}
+          </p>
         {/each}
       </nav>
       <ProjectPlacesNav variant="list" {places} {activePlace} {onSelectPlace} />

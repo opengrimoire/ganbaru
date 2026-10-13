@@ -9,6 +9,7 @@
   import type { ProjectPlace } from "$lib/projects/places";
   import type { Project } from "$lib/projects/types";
   import { getProjects } from "$lib/stores/projects.svelte";
+  import { suppressHoverOnToggle } from "$lib/utils/hover-suppression";
   import ProjectIcon from "../ProjectIcon.svelte";
   import ProjectPlacesNav from "./ProjectPlacesNav.svelte";
 
@@ -35,6 +36,8 @@
   const { t } = getLocalization();
 
   const collapsed = $derived(projects.sidebarCollapsed);
+  const observeCollapsedForHover = suppressHoverOnToggle();
+  $effect(() => observeCollapsedForHover(collapsed));
 
   /** A browsed group lasts until the selected project changes, so any project switch lists the new project's group. */
   let browsed = $state<{ groupId: string; fromProjectId: string | null } | null>(null);

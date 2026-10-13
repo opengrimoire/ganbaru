@@ -49,6 +49,7 @@
   import { getNotes } from "$lib/stores/notes.svelte";
   import { cn } from "$lib/utils";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
+  import { suppressHoverOnToggle } from "$lib/utils/hover-suppression";
   import NotesFolderRow from "$lib/components/notes/navigation/NotesFolderRow.svelte";
   import NotesPageRow from "$lib/components/notes/navigation/NotesPageRow.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
@@ -519,6 +520,9 @@
   const shouldExpandExplorer = $derived(
     projectFolders.some((folder) => notes.collapsedFolderIds.includes(folder.id))
   );
+
+  const observeExplorerCollapsedForHover = suppressHoverOnToggle();
+  $effect(() => observeExplorerCollapsedForHover(explorerCollapsed));
 
   async function setExplorerCollapsed(collapsed: boolean): Promise<void> {
     sortMenuOpen = false;

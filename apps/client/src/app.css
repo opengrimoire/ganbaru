@@ -642,6 +642,15 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
   border-radius: var(--content-radius);
 }
 
+/*
+ * After a sidebar toggle moves content under a resting pointer, tab content ignores the pointer until it moves
+ * (lib/utils/hover-suppression.ts). It must win over components that opt back into pointer events, hence !important.
+ */
+html[data-hover-suppressed] .content-panel,
+html[data-hover-suppressed] .content-panel * {
+  pointer-events: none !important;
+}
+
 /* Calendar theme variables */
 :root {
   --cal-bg: #FFFFFF;

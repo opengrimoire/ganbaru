@@ -40,6 +40,7 @@
   import { getChat } from "$lib/stores/chat.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
+  import { suppressHoverOnToggle } from "$lib/utils/hover-suppression";
   import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import Loading from "$lib/components/ui/Loading.svelte";
@@ -144,6 +145,8 @@
   const visibleRailOpen = $derived(
     projectHosted ? false : mobileShell ? mobileRailOpen : auxiliaryPairOpen ? transientRailOpen : chat.railOpen,
   );
+  const observeRailOpenForHover = suppressHoverOnToggle();
+  $effect(() => observeRailOpenForHover(visibleRailOpen));
   const railUsesMobileSurface = $derived(
     mobileShell && layout.railPresentation === "sheet",
   );

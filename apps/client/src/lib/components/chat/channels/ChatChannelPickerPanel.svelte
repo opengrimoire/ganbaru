@@ -6,6 +6,7 @@
   import X from "@lucide/svelte/icons/x";
   import CalendarScrollbar from "$lib/components/calendar/CalendarScrollbar.svelte";
   import type { ChatChannelRead } from "$lib/chat/contracts";
+  import StarredIconBadge from "$lib/components/ui/StarredIconBadge.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { cn, type MaybePromise } from "$lib/utils";
@@ -16,6 +17,7 @@
     rootElement = $bindable<HTMLDivElement | undefined>(),
     channels,
     selectedChannelId = null,
+    isChannelStarred = () => false,
     frameStyle,
     className = "relative",
     zIndexClass = "",
@@ -34,6 +36,8 @@
     rootElement?: HTMLDivElement;
     channels: readonly ChatChannelRead[];
     selectedChannelId?: string | null;
+    /** Whether a channel is a favorite, which shows a small star after its name. */
+    isChannelStarred?: (channelId: string) => boolean;
     frameStyle: string;
     className?: string;
     zIndexClass?: string;
@@ -180,7 +184,7 @@
               data-chat-channel-option={channel.id}
               onclick={() => { void onChannelSelected(channel); }}
             >
-              <Hash size={iconSize} strokeWidth={iconStrokeWidth} class="shrink-0" />
+              <StarredIconBadge starred={isChannelStarred(channel.id)}><Hash size={iconSize} strokeWidth={iconStrokeWidth} /></StarredIconBadge>
               <span class="min-w-0 flex-1 truncate">{channel.name}</span>
             </button>
           {/each}

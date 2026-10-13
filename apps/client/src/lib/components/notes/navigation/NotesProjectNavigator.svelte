@@ -44,6 +44,7 @@
   import type { ProjectNavigatorPanelMode } from "$lib/projects/toolbar";
   import { getNotes } from "$lib/stores/notes.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
+  import StarredIconBadge from "$lib/components/ui/StarredIconBadge.svelte";
   import { cn, type MaybePromise } from "$lib/utils";
   import ProjectIcon from "$lib/components/projects/ProjectIcon.svelte";
   import NotesHierarchyPickerPanel from "./NotesHierarchyPickerPanel.svelte";
@@ -671,7 +672,7 @@
     onfocus={(event) => showNoteSubpanel(project, event.currentTarget, sourcePanelElement)}
     onclick={() => { void selectProject(project); }}
   >
-    <ProjectIcon name={project.icon} size={iconSize} strokeWidth={iconStrokeWidth} emojiScale={emojiScale} class="shrink-0" />
+    <StarredIconBadge starred={projects.isProjectStarred(project.id)}><ProjectIcon name={project.icon} size={iconSize} strokeWidth={iconStrokeWidth} emojiScale={emojiScale} /></StarredIconBadge>
     <span class="min-w-0 truncate">{project.name}</span>
     <span class="flex min-w-0 items-center justify-end gap-1">
       {#if project.status !== "active"}
@@ -758,7 +759,7 @@
                       aria-label={t("projects.actions.selectProject", project.name, resultGroup.group.name)}
                       onclick={() => { void selectProject(project); }}
                     >
-                      <ProjectIcon name={project.icon} size={iconSize} strokeWidth={iconStrokeWidth} emojiScale={emojiScale} class="shrink-0" />
+                      <StarredIconBadge starred={projects.isProjectStarred(project.id)}><ProjectIcon name={project.icon} size={iconSize} strokeWidth={iconStrokeWidth} emojiScale={emojiScale} /></StarredIconBadge>
                       <span class="min-w-0 flex-1 truncate">{project.name}</span>
                       {#if project.status !== "active"}
                         <span class={cn("shrink-0 rounded border px-1.5 py-0.5 text-[0.666667rem]", projectLifecycleBadgeClass(project.status))}>

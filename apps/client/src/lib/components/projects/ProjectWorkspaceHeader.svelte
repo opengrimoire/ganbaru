@@ -39,6 +39,7 @@
   import WorkspaceBreadcrumbTerminalIcon from "$lib/components/ui/WorkspaceBreadcrumbTerminalIcon.svelte";
   import ProjectNavigator from "./ProjectNavigator.svelte";
   import ProjectPickerMobileDialog from "$lib/components/projects/pickers/ProjectPickerMobileDialog.svelte";
+  import MenuItemLabel from "$lib/components/ui/MenuItemLabel.svelte";
   import Select from "$lib/components/ui/Select.svelte";
 
   let {
@@ -503,7 +504,7 @@
                 class="menu-item"
                 onclick={() => selectMobileView(view)}
               >
-                <span class="min-w-0 flex-1 truncate">{label}</span>
+                <MenuItemLabel {label} starred={projects.isViewStarred(view.id)} />
                 {#if projects.activeViewId === view.id}<Check class="size-3.5 shrink-0" aria-hidden="true" />{/if}
               </button>
             {/each}

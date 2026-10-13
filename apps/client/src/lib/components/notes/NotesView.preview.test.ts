@@ -109,6 +109,7 @@ vi.mock("$lib/stores/projects.svelte", async () => {
     visibleGroups: () => groups,
     projectsForGroup: (id: string) => projects.filter((project) => project.groupId === id),
     projectsForGroupIncludingInactive: (id: string) => projects.filter((project) => project.groupId === id),
+    isProjectStarred: () => false,
   };
   return { getProjects: () => store };
 });

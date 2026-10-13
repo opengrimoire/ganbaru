@@ -259,6 +259,7 @@
     bind:rootElement={channelPanelElement}
     channels={activeProjectChannels}
     selectedChannelId={chat.selectedChannelId}
+    isChannelStarred={(channelId) => chatSidebarOrder.isChannelStarred(channelId)}
     showSearch={false}
     frameStyle={channelPanelStyle}
     className="fixed"

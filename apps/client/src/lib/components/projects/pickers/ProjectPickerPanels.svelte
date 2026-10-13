@@ -46,6 +46,7 @@
     type ProjectTemplateId,
   } from "$lib/projects/types";
   import { getProjects } from "$lib/stores/projects.svelte";
+  import StarredIconBadge from "$lib/components/ui/StarredIconBadge.svelte";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { cn, type MaybePromise } from "$lib/utils";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
@@ -867,7 +868,7 @@
                       aria-label={t("projects.actions.selectProject", project.name, resultGroup.group.name)}
                       onclick={() => { void activateProject(project); }}
                     >
-                      <ProjectIcon name={project.icon} size={iconSize} strokeWidth={iconStrokeWidth} emojiScale={EMOJI_SCALE} class="shrink-0" />
+                      <StarredIconBadge starred={projects.isProjectStarred(project.id)}><ProjectIcon name={project.icon} size={iconSize} strokeWidth={iconStrokeWidth} emojiScale={EMOJI_SCALE} /></StarredIconBadge>
                       <span class="min-w-0 flex-1 truncate">{project.name}</span>
                       {#if showLifecycleBadges && project.status !== "active"}
                         <span class={cn("shrink-0 rounded border px-1.5 py-0.5 text-[0.666667rem]", projectLifecycleBadgeClass(project.status))}>
@@ -950,7 +951,7 @@
                   onfocus={(event) => previewProject(project, event.currentTarget)}
                   onclick={() => { void activateProject(project); }}
                 >
-                  <ProjectIcon name={project.icon} size={iconSize} strokeWidth={iconStrokeWidth} emojiScale={EMOJI_SCALE} class="shrink-0" />
+                  <StarredIconBadge starred={projects.isProjectStarred(project.id)}><ProjectIcon name={project.icon} size={iconSize} strokeWidth={iconStrokeWidth} emojiScale={EMOJI_SCALE} /></StarredIconBadge>
                   <span class="min-w-0 flex-1 truncate">{project.name}</span>
                   {#if projectRowsHaveChildren || (showLifecycleBadges && project.status !== "active")}
                     <span class="flex min-w-0 items-center justify-end gap-1">
@@ -1169,7 +1170,7 @@
                   onfocus={(event) => previewProject(project, event.currentTarget)}
                   onclick={() => { void activateProject(project); }}
                 >
-                  <ProjectIcon name={project.icon} size={iconSize} strokeWidth={iconStrokeWidth} emojiScale={EMOJI_SCALE} class="shrink-0" />
+                  <StarredIconBadge starred={projects.isProjectStarred(project.id)}><ProjectIcon name={project.icon} size={iconSize} strokeWidth={iconStrokeWidth} emojiScale={EMOJI_SCALE} /></StarredIconBadge>
                   <span class="min-w-0 flex-1 truncate">{project.name}</span>
                   {#if showProjectChildren || (showLifecycleBadges && project.status !== "active")}
                     <span class="flex min-w-0 items-center justify-end gap-1">

@@ -60,6 +60,7 @@ const projectState = vi.hoisted(() => {
     addGroup: vi.fn(async () => group),
     addProject: vi.fn(async () => project),
     ensureLoaded: vi.fn(async () => undefined),
+    isProjectStarred: () => false,
   };
   return { store };
 });

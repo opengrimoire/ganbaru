@@ -125,6 +125,7 @@ describe("Notes row action menus", () => {
         moveTargets: [],
         onActivate: vi.fn(),
         onToggleCollapsed: vi.fn(),
+        onToggleFavorite: vi.fn(),
         onCreatePage: vi.fn(),
         onCreateFolder: vi.fn(),
         onRename: vi.fn(),
@@ -135,5 +136,42 @@ describe("Notes row action menus", () => {
     await tick();
     expectOverflowTooltip();
     await expectToggle();
+  });
+
+  it("shows a favorite folder star in the actions slot and toggles it from the menu", async () => {
+    const onToggleFavorite = vi.fn();
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(NotesFolderRow, {
+      target,
+      props: {
+        folder,
+        depth: 0,
+        collapsed: false,
+        favorited: true,
+        moveTargets: [],
+        onActivate: vi.fn(),
+        onToggleCollapsed: vi.fn(),
+        onToggleFavorite,
+        onCreatePage: vi.fn(),
+        onCreateFolder: vi.fn(),
+        onRename: vi.fn(),
+        onMove: vi.fn(),
+        onDelete: vi.fn(),
+      },
+    });
+    await tick();
+    const slot = target.querySelector(".explorer-row-trailing");
+    expect([...slot?.children ?? []].map((child) => child.className)).toEqual([
+      "explorer-row-star",
+      "explorer-icon explorer-row-action",
+    ]);
+
+    target.querySelector<HTMLButtonElement>(".explorer-row-action")?.click();
+    await tick();
+    const unfavorite = [...target.querySelectorAll<HTMLButtonElement>(".menu-item")]
+      .find((item) => item.textContent?.includes("Remove from favorites"));
+    unfavorite?.click();
+    expect(onToggleFavorite).toHaveBeenCalledWith(false);
   });
 });

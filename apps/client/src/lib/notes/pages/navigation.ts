@@ -1,12 +1,18 @@
 import type { NotesPage } from "$lib/notes/types";
 
 const FAVORITE_PAGE_IDS_CONFIG_KEY = "notes.favoritePageIds";
+const FAVORITE_FOLDER_IDS_CONFIG_KEY = "notes.favoriteFolderIds";
 const RECENT_PAGE_IDS_CONFIG_KEY = "notes.recentPageIds";
 const DEFAULT_RECENT_PAGE_LIMIT = 8;
 
 /** Return the config key that stores favorited Notes page ids. */
 export function notesFavoritePageIdsConfigKey(): string {
   return FAVORITE_PAGE_IDS_CONFIG_KEY;
+}
+
+/** Return the config key that stores favorited Notes folder ids. */
+export function notesFavoriteFolderIdsConfigKey(): string {
+  return FAVORITE_FOLDER_IDS_CONFIG_KEY;
 }
 
 /** Return the config key that stores recently opened Notes page ids. */

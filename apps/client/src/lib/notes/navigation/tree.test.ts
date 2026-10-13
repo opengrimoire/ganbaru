@@ -136,6 +136,28 @@ describe("notes navigation tree", () => {
     ]);
   });
 
+  it("lists favorite folders and notes first within their kind and level", () => {
+    const pages = [
+      page("page-a", "Alpha"),
+      page("page-z", "Zulu"),
+      page("nested-a", "Nested alpha", { type: "workspace", workspace: true }, "folder-a"),
+      page("nested-z", "Nested zulu", { type: "workspace", workspace: true }, "folder-a"),
+    ];
+    const folders = [folder("folder-a", "Archive"), folder("folder-z", "Zoo")];
+
+    expect(buildNotesNavigationTree(pages, folders, {
+      favoriteFolderIds: ["folder-z"],
+      favoritePageIds: ["page-z", "nested-z"],
+    }).map((item) => item.key)).toEqual([
+      "folder:folder-z",
+      "folder:folder-a",
+      "page:nested-z",
+      "page:nested-a",
+      "page:page-z",
+      "page:page-a",
+    ]);
+  });
+
   it("keeps selected notes open while allowing their folder to close", () => {
     const pages = [
       page("root-note", "Root note", undefined, "research"),

@@ -13,8 +13,10 @@
   import FolderOpen from "@lucide/svelte/icons/folder-open";
   import FolderPlus from "@lucide/svelte/icons/folder-plus";
   import Pencil from "@lucide/svelte/icons/pencil";
+  import Star from "@lucide/svelte/icons/star";
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import ExplorerRowStar from "$lib/components/ui/ExplorerRowStar.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import {
@@ -52,10 +54,12 @@
     folder,
     depth,
     collapsed,
+    favorited = false,
     renameRequestId = 0,
     moveTargets,
     onActivate,
     onToggleCollapsed,
+    onToggleFavorite,
     onCreatePage,
     onCreateFolder,
     onRename,
@@ -72,10 +76,12 @@
     folder: NotesFolder;
     depth: number;
     collapsed: boolean;
+    favorited?: boolean;
     renameRequestId?: number;
     moveTargets: NotesFolderRowMoveTarget[];
     onActivate: () => void;
     onToggleCollapsed: (collapsed: boolean) => void;
+    onToggleFavorite: (favorited: boolean) => void;
     onCreatePage: () => void;
     onCreateFolder: () => void;
     onRename: (name: string) => boolean | Promise<boolean>;
@@ -355,7 +361,12 @@
         {/if}
         <span class="min-w-0 flex-1 truncate" use:overflowTooltip={visibleName}>{visibleName}</span>
       </button>
-      <button type="button" class="explorer-icon explorer-row-action" aria-label={`${t("notes.folderActions")}: ${visibleName}`} data-app-tooltip-disabled="true" aria-haspopup="menu" aria-expanded={menuOpen} onclick={openActionMenu}><EllipsisVertical size={14} /></button>
+      <span class="explorer-row-trailing">
+        {#if favorited}
+          <ExplorerRowStar />
+        {/if}
+        <button type="button" class="explorer-icon explorer-row-action" aria-label={`${t("notes.folderActions")}: ${visibleName}`} data-app-tooltip-disabled="true" aria-haspopup="menu" aria-expanded={menuOpen} onclick={openActionMenu}><EllipsisVertical size={14} /></button>
+      </span>
     </div>
   {/if}
 
@@ -395,6 +406,17 @@
         >
           <FolderPlus />
           <span>{t("notes.newSubfolder")}</span>
+        </button>
+        <button
+          class="menu-item"
+          type="button"
+          onclick={() => {
+            closeMenu();
+            onToggleFavorite(!favorited);
+          }}
+        >
+          <Star class={favorited ? "fill-current text-primary" : undefined} />
+          <span>{favorited ? t("common.removeFromFavorites") : t("common.addToFavorites")}</span>
         </button>
         <button
           class="menu-item"

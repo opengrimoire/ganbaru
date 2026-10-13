@@ -1270,8 +1270,8 @@
         <button
           type="button"
           class={actionButtonClass(pageFavorited)}
-          aria-label={pageFavorited ? t("notes.removeFromFavorites") : t("notes.addToFavorites")}
-          data-app-tooltip={pageFavorited ? t("notes.removeFromFavorites") : t("notes.addToFavorites")}
+          aria-label={pageFavorited ? t("common.removeFromFavorites") : t("common.addToFavorites")}
+          data-app-tooltip={pageFavorited ? t("common.removeFromFavorites") : t("common.addToFavorites")}
           onclick={() => {
             notes.setPageFavorited(page.id, !pageFavorited);
           }}

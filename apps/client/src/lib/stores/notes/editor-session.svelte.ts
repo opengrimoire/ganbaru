@@ -870,6 +870,10 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     sidebarController.setPageFavorited(pageId, favorited);
   }
 
+  function setFolderFavorited(folderId: string, favorited: boolean): void {
+    sidebarController.setFolderFavorited(folderId, favorited);
+  }
+
   async function openArchive(): Promise<void> {
     viewMode = "archive";
     if (!archiveController.archiveLoaded && !archiveController.archiveLoading) {
@@ -1630,6 +1634,9 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     get favoritePageIds(): readonly string[] {
       return sidebarController.favoritePageIds;
     },
+    get favoriteFolderIds(): readonly string[] {
+      return sidebarController.favoriteFolderIds;
+    },
     get recentPageIds(): readonly string[] {
       return sidebarController.recentPageIds;
     },
@@ -2000,6 +2007,7 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     hydrateBlockRange,
     outlineSubtreeIds,
     setPageFavorited,
+    setFolderFavorited,
     setFolderCollapsed,
     loadNavigationChildren,
     updatePageIcon: pageActions.updatePageIcon,

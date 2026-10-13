@@ -37,6 +37,16 @@ export const common = {
   restore: "Restaurar",
   horizontalScrollTooltip: "Mayús + rueda abajo / arriba",
   dismissNotification: "Descartar notificación",
+  addToFavorites: "Agregar a favoritos",
+  removeFromFavorites: "Quitar de favoritos",
+  sortOrder: {
+    nameAscending: "Nombre (A a Z)",
+    nameDescending: "Nombre (Z a A)",
+    modifiedDescending: "Modificación (más reciente primero)",
+    modifiedAscending: "Modificación (más antigua primero)",
+    createdDescending: "Creación (más reciente primero)",
+    createdAscending: "Creación (más antigua primero)",
+  },
   color: {
     edit: "Editar color",
     editNamed: (label: string) => `Editar ${label}`,

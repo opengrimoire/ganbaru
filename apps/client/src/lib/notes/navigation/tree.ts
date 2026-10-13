@@ -7,6 +7,13 @@ import {
   normalizeNotesProjectId,
 } from "$lib/notes/project-membership";
 import type { NotesFolder, NotesPage, NotesParent } from "$lib/notes/types";
+import {
+  compareSidebarItems,
+  compareStarredFirst,
+  DEFAULT_SIDEBAR_SORT_ORDER,
+  type SidebarSortFields,
+  type SidebarSortOrder,
+} from "$lib/utils/sidebar-order";
 
 const SIDEBAR_COLLAPSED_FOLDER_IDS_CONFIG_KEY = "notes.sidebarCollapsedFolderIds";
 const ROOT_KEY = "root";
@@ -35,14 +42,6 @@ export type NotesNavigationTreeItem =
   | NotesNavigationFolderTreeItem
   | NotesNavigationPageTreeItem;
 
-export type NotesNavigationSortOrder =
-  | "name-asc"
-  | "name-desc"
-  | "modified-desc"
-  | "modified-asc"
-  | "created-desc"
-  | "created-asc";
-
 export interface NotesNavigationTreeOptions {
   /** Restrict the sidebar to folders and their workspace-parented notes. */
   rootPagesOnly?: boolean;
@@ -56,7 +55,10 @@ export interface NotesNavigationTreeOptions {
   query?: string;
   untitledTitle?: string;
   titleForPage?: (page: NotesPage) => string;
-  sortOrder?: NotesNavigationSortOrder;
+  sortOrder?: SidebarSortOrder;
+  /** Favorited folders and pages list first among their siblings of the same kind. */
+  favoriteFolderIds?: readonly string[];
+  favoritePageIds?: readonly string[];
 }
 
 export interface NotesPageFolderMoveTarget extends NotesDestinationPickerTarget {
@@ -99,7 +101,8 @@ interface AppendNavigationItemsOptions {
   activeAncestorKeys: ReadonlySet<string>;
   normalizedQuery: string;
   titleForPage: (page: NotesPage) => string;
-  sortOrder: NotesNavigationSortOrder;
+  sortOrder: SidebarSortOrder;
+  favoriteKeys: ReadonlySet<string>;
   matchByNodeKey: Map<string, boolean>;
   result: NotesNavigationTreeItem[];
 }
@@ -188,7 +191,11 @@ export function buildNotesNavigationTree(
     ),
     normalizedQuery: normalizeSearchText(options.query ?? ""),
     titleForPage,
-    sortOrder: options.sortOrder ?? "name-asc",
+    sortOrder: options.sortOrder ?? DEFAULT_SIDEBAR_SORT_ORDER,
+    favoriteKeys: new Set([
+      ...(options.favoriteFolderIds ?? []).map(folderKey),
+      ...(options.favoritePageIds ?? []).map(pageKey),
+    ]),
     matchByNodeKey: new Map(),
     result,
   });
@@ -456,35 +463,38 @@ function appendNavigationItems(options: AppendNavigationItemsOptions): void {
   }
 }
 
+/** Folders list before notes; within each kind favorites come first, then the chosen order. */
 function compareNavigationNodes(
   left: NavigationNode,
   right: NavigationNode,
-  options: Pick<AppendNavigationItemsOptions, "sortOrder" | "titleForPage">,
+  options: Pick<AppendNavigationItemsOptions, "sortOrder" | "titleForPage" | "favoriteKeys">,
 ): number {
   if (left.kind !== right.kind) return left.kind === "folder" ? -1 : 1;
-  const leftTitle = left.kind === "folder" ? left.folder.name : options.titleForPage(left.page);
-  const rightTitle = right.kind === "folder" ? right.folder.name : options.titleForPage(right.page);
-  const nameComparison = leftTitle.localeCompare(rightTitle, undefined, {
-    numeric: true,
-    sensitivity: "base",
-  });
-  if (options.sortOrder === "name-asc") return nameComparison || left.key.localeCompare(right.key);
-  if (options.sortOrder === "name-desc") return -nameComparison || left.key.localeCompare(right.key);
+  return compareStarredFirst(options.favoriteKeys.has(left.key), options.favoriteKeys.has(right.key))
+    || compareSidebarItems(
+      navigationNodeSortFields(left, options.titleForPage),
+      navigationNodeSortFields(right, options.titleForPage),
+      options.sortOrder,
+    );
+}
 
-  const timestampField = options.sortOrder.startsWith("modified")
-    ? "last_edited_time"
-    : "created_time";
-  const leftTimestamp = left.kind === "folder"
-    ? left.folder[timestampField]
-    : left.page[timestampField];
-  const rightTimestamp = right.kind === "folder"
-    ? right.folder[timestampField]
-    : right.page[timestampField];
-  const timestampComparison = leftTimestamp.localeCompare(rightTimestamp);
-  const chronologicalComparison = options.sortOrder.endsWith("asc")
-    ? timestampComparison
-    : -timestampComparison;
-  return chronologicalComparison || nameComparison || left.key.localeCompare(right.key);
+function navigationNodeSortFields(
+  node: NavigationNode,
+  titleForPage: (page: NotesPage) => string,
+): SidebarSortFields {
+  return node.kind === "folder"
+    ? {
+      id: node.key,
+      name: node.folder.name,
+      createdAt: node.folder.created_time,
+      modifiedAt: node.folder.last_edited_time,
+    }
+    : {
+      id: node.key,
+      name: titleForPage(node.page),
+      createdAt: node.page.created_time,
+      modifiedAt: node.page.last_edited_time,
+    };
 }
 
 function navigationNodeMatchesQuery(

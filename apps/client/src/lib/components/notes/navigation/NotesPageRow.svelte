@@ -45,6 +45,7 @@
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
   import NotesPageIcon from "$lib/components/notes/pages/NotesPageIcon.svelte";
+  import ExplorerRowStar from "$lib/components/ui/ExplorerRowStar.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import {
@@ -568,9 +569,9 @@
         {/if}
       </button>
       {#if favorited || !readOnly}
-        <span class="notes-page-row-trailing" class:notes-page-row-trailing-swap={favorited && !readOnly}>
+        <span class="explorer-row-trailing">
           {#if favorited}
-            <span class="notes-page-row-star" aria-hidden="true"><Star class="size-3.5 fill-current text-primary" /></span>
+            <ExplorerRowStar />
           {/if}
           {#if !readOnly}
             <button type="button" class="explorer-icon explorer-row-action" aria-label={`${t("notes.pageActions")}: ${title}`} data-app-tooltip-disabled="true" aria-haspopup="menu" aria-expanded={menuOpen} onclick={openActionMenu}><EllipsisVertical size={14} /></button>
@@ -615,7 +616,7 @@
           }}
         >
           <Star class={favorited ? "fill-current text-primary" : undefined} />
-          <span>{favorited ? t("notes.removeFromFavorites") : t("notes.addToFavorites")}</span>
+          <span>{favorited ? t("common.removeFromFavorites") : t("common.addToFavorites")}</span>
         </button>
         <button
           class="menu-item"
@@ -751,43 +752,6 @@
 <style>
   .notes-page-row-content {
     margin-left: calc(var(--notes-page-depth) * 0.875rem);
-  }
-
-  /* The favorite star sits in the actions slot so it lines up with the actions button on every row. */
-  .notes-page-row-trailing {
-    display: flex;
-    flex-shrink: 0;
-    align-items: center;
-    margin-inline-end: var(--explorer-row-action-end-inset);
-  }
-
-  .notes-page-row-trailing > .explorer-row-action {
-    margin-inline-end: 0;
-  }
-
-  .notes-page-row-star {
-    display: inline-flex;
-    width: var(--explorer-action-size);
-    height: var(--explorer-action-size);
-    align-items: center;
-    justify-content: center;
-    pointer-events: none;
-  }
-
-  /* With a hover pointer the actions button only shows on hover or focus, so the star takes its place otherwise. */
-  @media (hover: hover) and (pointer: fine) {
-    :global(.explorer-sidebar:not(.explorer-touch)) .notes-page-row-trailing-swap {
-      display: grid;
-    }
-
-    :global(.explorer-sidebar:not(.explorer-touch)) .notes-page-row-trailing-swap > * {
-      grid-area: 1 / 1;
-    }
-
-    :global(.explorer-sidebar:not(.explorer-touch)) :global(.explorer-row):is(:hover, :has(:focus-visible)) .notes-page-row-star,
-    :global(.explorer-sidebar:not(.explorer-touch)) .notes-page-row-trailing:has([aria-expanded="true"]) .notes-page-row-star {
-      visibility: hidden;
-    }
   }
 
   .notes-row-context-menu-open .notes-page-row-content {

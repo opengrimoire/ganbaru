@@ -3,9 +3,11 @@ import {
   setNotesPageFavoriteId,
 } from "$lib/notes/pages/navigation";
 import {
+  initialNotesFavoriteFolderIds,
   initialNotesFavoritePageIds,
   initialNotesRecentPageIds,
   initialNotesSidebarCollapsedFolderIds,
+  saveNotesFavoriteFolderIds,
   saveNotesFavoritePageIds,
   saveNotesRecentPageIds,
   saveNotesSidebarCollapsedFolderIds,
@@ -20,6 +22,7 @@ interface NotesSidebarShellMetadata {
 /** Own persisted Notes sidebar navigation state and shell metadata. */
 export function createNotesSidebarController() {
   let favoritePageIds = $state<string[]>(initialNotesFavoritePageIds());
+  let favoriteFolderIds = $state<string[]>(initialNotesFavoriteFolderIds());
   let recentPageIds = $state<string[]>(initialNotesRecentPageIds());
   let collapsedFolderIds = $state<string[]>(initialNotesSidebarCollapsedFolderIds());
   let pageIdsWithChildren = $state<string[]>([]);
@@ -34,6 +37,11 @@ export function createNotesSidebarController() {
   function setPageFavorited(pageId: string, favorited: boolean): void {
     favoritePageIds = setNotesPageFavoriteId(favoritePageIds, pageId, favorited);
     saveNotesFavoritePageIds(favoritePageIds);
+  }
+
+  function setFolderFavorited(folderId: string, favorited: boolean): void {
+    favoriteFolderIds = setNotesPageFavoriteId(favoriteFolderIds, folderId, favorited);
+    saveNotesFavoriteFolderIds(favoriteFolderIds);
   }
 
   function setFolderCollapsed(folderId: string, collapsed: boolean): void {
@@ -71,6 +79,7 @@ export function createNotesSidebarController() {
 
   return {
     get favoritePageIds(): readonly string[] { return favoritePageIds; },
+    get favoriteFolderIds(): readonly string[] { return favoriteFolderIds; },
     get recentPageIds(): readonly string[] { return recentPageIds; },
     get collapsedFolderIds(): readonly string[] { return collapsedFolderIds; },
     get pageIdsWithChildren(): readonly string[] { return pageIdsWithChildren; },
@@ -81,6 +90,7 @@ export function createNotesSidebarController() {
     },
     recordRecentPage,
     setPageFavorited,
+    setFolderFavorited,
     setFolderCollapsed,
     replaceMetadata,
     mergeMetadata,

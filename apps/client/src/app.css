@@ -954,6 +954,28 @@ html[data-hover-suppressed] .content-panel * {
   margin-inline-end: var(--explorer-row-action-end-inset);
 }
 
+/* A favorite star shares the actions slot so it lines up with the actions button on every row. */
+.explorer-row-trailing {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  margin-inline-end: var(--explorer-row-action-end-inset);
+}
+
+.explorer-row-trailing > .explorer-row-action {
+  margin-inline-end: 0;
+}
+
+.explorer-row-star {
+  display: inline-flex;
+  width: var(--explorer-action-size);
+  height: var(--explorer-action-size);
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
 .explorer-sidebar .explorer-row-action:is(:hover, :focus-visible, [aria-expanded="true"]) {
   background: transparent;
   color: var(--foreground);
@@ -968,6 +990,20 @@ html[data-hover-suppressed] .content-panel * {
   :is(.explorer-row, .section-heading):has(:focus-visible) .explorer-row-action,
   .explorer-row-action[aria-expanded="true"] {
     opacity: 1;
+  }
+
+  /* While the actions button is hidden, the star takes its place; touch layouts keep both side by side. */
+  .explorer-sidebar:not(.explorer-touch) .explorer-row-trailing:has(> .explorer-row-star + .explorer-row-action) {
+    display: grid;
+  }
+
+  .explorer-sidebar:not(.explorer-touch) .explorer-row-trailing:has(> .explorer-row-star + .explorer-row-action) > * {
+    grid-area: 1 / 1;
+  }
+
+  .explorer-sidebar:not(.explorer-touch) .explorer-row:is(:hover, :has(:focus-visible)) .explorer-row-star:has(+ .explorer-row-action),
+  .explorer-sidebar:not(.explorer-touch) .explorer-row-star:has(+ .explorer-row-action[aria-expanded="true"]) {
+    visibility: hidden;
   }
 }
 

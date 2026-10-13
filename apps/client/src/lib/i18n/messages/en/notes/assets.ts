@@ -1,6 +1,4 @@
 export const assets = {
-  addToFavorites: "Add to favorites",
-  removeFromFavorites: "Remove from favorites",
   pageIcon: "Note icon",
   pageIconEmoji: "Emoji",
   pageIconNative: "Icons",

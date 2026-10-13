@@ -1,4 +1,5 @@
 import { notesPageTitle } from "$lib/notes/pages/title";
+import { compareSidebarNames } from "$lib/utils/sidebar-order";
 import { NOTES_DATABASE_VIEW_KINDS, type NotesDatabaseView, type NotesDatabaseViewKind, type NotesFolder, type NotesNavigationDatabase, type NotesPage } from "$lib/notes/types";
 
 export const NOTES_HIERARCHY_PANEL_ROW_HEIGHT = 32;
@@ -57,8 +58,9 @@ export function notesHierarchyPickerChildren(
   if (parent.kind !== "page") return items;
   items.push(...databases.filter((database) => database.page_id === parent.id)
     .map((database): NotesHierarchyPickerNode => ({ kind: "database", key: `database:${database.id}`, database, hasChildren: true })));
-  return items.sort((left, right) => notesHierarchyPickerTitle(left, untitledTitle).localeCompare(
-    notesHierarchyPickerTitle(right, untitledTitle), undefined, { numeric: true, sensitivity: "base" },
+  return items.sort((left, right) => compareSidebarNames(
+    notesHierarchyPickerTitle(left, untitledTitle),
+    notesHierarchyPickerTitle(right, untitledTitle),
   ));
 }
 
@@ -125,18 +127,11 @@ export function notesHierarchyChildren(
 
   folderNodes.sort((left, right) => {
     if (left.kind !== "folder" || right.kind !== "folder") return 0;
-    return left.folder.name.localeCompare(right.folder.name, undefined, {
-      numeric: true,
-      sensitivity: "base",
-    });
+    return compareSidebarNames(left.folder.name, right.folder.name);
   });
   pageNodes.sort((left, right) => {
     if (left.kind !== "page" || right.kind !== "page") return 0;
-    return notesPageTitle(left.page, untitledTitle).localeCompare(
-      notesPageTitle(right.page, untitledTitle),
-      undefined,
-      { numeric: true, sensitivity: "base" },
-    );
+    return compareSidebarNames(notesPageTitle(left.page, untitledTitle), notesPageTitle(right.page, untitledTitle));
   });
   return [...folderNodes, ...pageNodes];
 }

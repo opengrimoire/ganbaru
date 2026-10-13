@@ -28,7 +28,6 @@
     notesFolderMoveTargets,
     notesFoldersForProject,
     notesPageFolderMoveTargets,
-    type NotesNavigationSortOrder,
     type NotesNavigationTreeItem,
   } from "$lib/notes/navigation/tree";
   import {
@@ -37,6 +36,12 @@
     type NotesNavigationDropTarget,
   } from "$lib/notes/navigation/drag";
   import { notesPageMoveTargets } from "$lib/notes/pages/move";
+  import {
+    DEFAULT_SIDEBAR_SORT_ORDER,
+    SIDEBAR_SORT_ORDER_LABEL_KEYS,
+    SIDEBAR_SORT_ORDERS,
+    type SidebarSortOrder,
+  } from "$lib/utils/sidebar-order";
   import { notesPageContainingFolderId } from "$lib/notes/navigation/hierarchy-menu";
   import { notesPageTitle } from "$lib/notes/pages/title";
   import { notesPagesForProject } from "$lib/notes/project-membership";
@@ -410,9 +415,9 @@
   let searchOpen = $state(false);
   let searchButton: HTMLButtonElement;
   let sortMenuOpen = $state(false);
-  let sortOrder = $state<NotesNavigationSortOrder>("name-asc");
+  let sortOrder = $state<SidebarSortOrder>(DEFAULT_SIDEBAR_SORT_ORDER);
   let currentFileHighlightRequestId = $state(0);
-  let hoveredSortOrder = $state<NotesNavigationSortOrder | null>(null);
+  let hoveredSortOrder = $state<SidebarSortOrder | null>(null);
   let sortMenuStyle = $state("");
   let sortButtonElement = $state<HTMLButtonElement | null>(null);
   let sortMenuElement = $state<HTMLDivElement | null>(null);
@@ -467,6 +472,8 @@
       trashedParentPageIds: notes.sidebarTrashedParentPageIds,
       query: search,
       sortOrder,
+      favoriteFolderIds: notes.favoriteFolderIds,
+      favoritePageIds: notes.favoritePageIds,
       titleForPage: (page) => notesPageTitle(page, t("notes.untitled")),
     })
   );
@@ -664,19 +671,19 @@
     }
   }
 
-  function selectSortOrder(nextOrder: NotesNavigationSortOrder): void {
+  function selectSortOrder(nextOrder: SidebarSortOrder): void {
     sortOrder = nextOrder;
     sortMenuOpen = false;
   }
 
-  function sortOptionClass(order: NotesNavigationSortOrder): string {
+  function sortOptionClass(order: SidebarSortOrder): string {
     return cn("menu-item grid grid-cols-[max-content_1rem]", hoveredSortOrder === order && "bg-accent");
   }
 
   function highlightNearestSortOption(
     event: MouseEvent,
-    before: NotesNavigationSortOrder,
-    after: NotesNavigationSortOrder,
+    before: SidebarSortOrder,
+    after: SidebarSortOrder,
   ): void {
     const divider = event.currentTarget;
     if (!(divider instanceof HTMLDivElement)) return;
@@ -971,94 +978,28 @@
           }}
         >
           <div class="surface-floating-body flex min-h-0 flex-1 flex-col overflow-y-auto" use:scrollEdgeFadeAction>
-            <button
-              type="button"
-              class={sortOptionClass("name-asc")}
-              role="menuitemradio"
-              aria-checked={sortOrder === "name-asc"}
-              onmouseenter={() => {
-                hoveredSortOrder = "name-asc";
-              }}
-              onclick={() => selectSortOrder("name-asc")}
-            >
-              <span>{t("notes.sortNameAscending")}</span>
-              {#if sortOrder === "name-asc"}<Check class="size-4" />{/if}
-            </button>
-            <button
-              type="button"
-              class={sortOptionClass("name-desc")}
-              role="menuitemradio"
-              aria-checked={sortOrder === "name-desc"}
-              onmouseenter={() => {
-                hoveredSortOrder = "name-desc";
-              }}
-              onclick={() => selectSortOrder("name-desc")}
-            >
-              <span>{t("notes.sortNameDescending")}</span>
-              {#if sortOrder === "name-desc"}<Check class="size-4" />{/if}
-            </button>
-            <div
-              class="menu-separator"
-              role="separator"
-              onmousemove={(event) => highlightNearestSortOption(event, "name-desc", "modified-desc")}
-            ></div>
-            <button
-              type="button"
-              class={sortOptionClass("modified-desc")}
-              role="menuitemradio"
-              aria-checked={sortOrder === "modified-desc"}
-              onmouseenter={() => {
-                hoveredSortOrder = "modified-desc";
-              }}
-              onclick={() => selectSortOrder("modified-desc")}
-            >
-              <span>{t("notes.sortModifiedDescending")}</span>
-              {#if sortOrder === "modified-desc"}<Check class="size-4" />{/if}
-            </button>
-            <button
-              type="button"
-              class={sortOptionClass("modified-asc")}
-              role="menuitemradio"
-              aria-checked={sortOrder === "modified-asc"}
-              onmouseenter={() => {
-                hoveredSortOrder = "modified-asc";
-              }}
-              onclick={() => selectSortOrder("modified-asc")}
-            >
-              <span>{t("notes.sortModifiedAscending")}</span>
-              {#if sortOrder === "modified-asc"}<Check class="size-4" />{/if}
-            </button>
-            <div
-              class="menu-separator"
-              role="separator"
-              onmousemove={(event) => highlightNearestSortOption(event, "modified-asc", "created-desc")}
-            ></div>
-            <button
-              type="button"
-              class={sortOptionClass("created-desc")}
-              role="menuitemradio"
-              aria-checked={sortOrder === "created-desc"}
-              onmouseenter={() => {
-                hoveredSortOrder = "created-desc";
-              }}
-              onclick={() => selectSortOrder("created-desc")}
-            >
-              <span>{t("notes.sortCreatedDescending")}</span>
-              {#if sortOrder === "created-desc"}<Check class="size-4" />{/if}
-            </button>
-            <button
-              type="button"
-              class={sortOptionClass("created-asc")}
-              role="menuitemradio"
-              aria-checked={sortOrder === "created-asc"}
-              onmouseenter={() => {
-                hoveredSortOrder = "created-asc";
-              }}
-              onclick={() => selectSortOrder("created-asc")}
-            >
-              <span>{t("notes.sortCreatedAscending")}</span>
-              {#if sortOrder === "created-asc"}<Check class="size-4" />{/if}
-            </button>
+            {#each SIDEBAR_SORT_ORDERS as order, index (order)}
+              {#if index > 0 && index % 2 === 0}
+                <div
+                  class="menu-separator"
+                  role="separator"
+                  onmousemove={(event) => highlightNearestSortOption(event, SIDEBAR_SORT_ORDERS[index - 1], order)}
+                ></div>
+              {/if}
+              <button
+                type="button"
+                class={sortOptionClass(order)}
+                role="menuitemradio"
+                aria-checked={sortOrder === order}
+                onmouseenter={() => {
+                  hoveredSortOrder = order;
+                }}
+                onclick={() => selectSortOrder(order)}
+              >
+                <span>{t(SIDEBAR_SORT_ORDER_LABEL_KEYS[order])}</span>
+                {#if sortOrder === order}<Check class="size-4" />{/if}
+              </button>
+            {/each}
           </div>
         </div>
       {/if}
@@ -1186,6 +1127,7 @@
         {#if item.kind === "folder"}
           <NotesFolderRow
             folder={item.folder}
+            favorited={notes.favoriteFolderIds.includes(item.folder.id)}
             depth={item.depth}
             collapsed={item.collapsed}
             renameRequestId={folderRenameTargetId === item.folder.id ? folderRenameRequestId : 0}
@@ -1196,6 +1138,9 @@
             }}
             onToggleCollapsed={(collapsed) => {
               notes.setFolderCollapsed(item.folder.id, collapsed);
+            }}
+            onToggleFavorite={(favorited) => {
+              notes.setFolderFavorited(item.folder.id, favorited);
             }}
             onCreatePage={() => createPage(item.folder.id)}
             onCreateFolder={() => {

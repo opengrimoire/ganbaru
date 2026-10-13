@@ -3,6 +3,7 @@ import {
   parseStoredNotesPageId,
 } from "$lib/notes/pages/selection";
 import {
+  notesFavoriteFolderIdsConfigKey,
   notesFavoritePageIdsConfigKey,
   notesRecentPageIdsConfigKey,
   parseStoredNotesPageIdList,
@@ -15,6 +16,7 @@ import { getConfigKey, setConfigKey } from "$lib/vault/config";
 
 export const notesSelectedPageKey = notesSelectedPageConfigKey();
 export const notesFavoritePageIdsKey = notesFavoritePageIdsConfigKey();
+export const notesFavoriteFolderIdsKey = notesFavoriteFolderIdsConfigKey();
 export const notesRecentPageIdsKey = notesRecentPageIdsConfigKey();
 export const notesSidebarCollapsedFolderIdsKey = notesSidebarCollapsedFolderIdsConfigKey();
 
@@ -30,6 +32,13 @@ export function initialNotesSelectedPageId(): string | null {
  */
 export function initialNotesFavoritePageIds(): string[] {
   return parseStoredNotesPageIdList(getConfigKey<unknown>(notesFavoritePageIdsKey, undefined));
+}
+
+/**
+ * Load the persisted favorite Notes folder ids.
+ */
+export function initialNotesFavoriteFolderIds(): string[] {
+  return parseStoredNotesPageIdList(getConfigKey<unknown>(notesFavoriteFolderIdsKey, undefined));
 }
 
 /**
@@ -60,6 +69,13 @@ export function saveNotesSelectedPageId(pageId: string | null): void {
  */
 export function saveNotesFavoritePageIds(pageIds: readonly string[]): void {
   setConfigKey(notesFavoritePageIdsKey, pageIds.length > 0 ? [...pageIds] : undefined);
+}
+
+/**
+ * Persist the favorite Notes folder ids.
+ */
+export function saveNotesFavoriteFolderIds(folderIds: readonly string[]): void {
+  setConfigKey(notesFavoriteFolderIdsKey, folderIds.length > 0 ? [...folderIds] : undefined);
 }
 
 /**

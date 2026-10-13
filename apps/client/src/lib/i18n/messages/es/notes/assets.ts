@@ -2,8 +2,6 @@ import type { assets as enAssets } from "../../en/notes/assets";
 import type { MessageShape } from "../../types";
 
 export const assets = {
-  addToFavorites: "Agregar a favoritos",
-  removeFromFavorites: "Quitar de favoritos",
   pageIcon: "Icono de nota",
   pageIconEmoji: "Emoji",
   pageIconNative: "Iconos",

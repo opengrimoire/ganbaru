@@ -96,7 +96,7 @@
     return Boolean(
       projectId
       && projects.taskViewPage?.projectId === projectId
-      && projects.isProjectOptionalDataLoaded("saved_views", projectId),
+      && projects.isProjectOptionalDataLoaded("view_preferences", projectId),
     );
   });
   const taskDetailDataReady = $derived.by(() => {

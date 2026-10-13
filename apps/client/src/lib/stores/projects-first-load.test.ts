@@ -169,9 +169,9 @@ describe("Projects initial loading", () => {
 
     const list = projects.ensureProjectViewData("project-1", "list");
     const toolbar = projects.ensureProjectToolbarData("project-1");
-    expect(backend.optionalCalls).toEqual(["project-1:saved_views"]);
+    expect(backend.optionalCalls).toEqual(["project-1:view_preferences"]);
     expect(projects.isProjectViewDataLoaded("project-1", "list")).toBe(false);
-    backend.resolveOptional("saved_views", "project-1", optionalData("saved_views"));
+    backend.resolveOptional("view_preferences", "project-1", optionalData("view_preferences"));
     await Promise.all([list, toolbar]);
     expect(projects.isProjectViewDataLoaded("project-1", "list")).toBe(true);
 
@@ -180,7 +180,7 @@ describe("Projects initial loading", () => {
       projects.ensureTaskDetailData("project-1", "task-1"),
     ]);
     expect(backend.detailCalls).toBe(1);
-    expect(backend.optionalCalls).toEqual(["project-1:saved_views"]);
+    expect(backend.optionalCalls).toEqual(["project-1:view_preferences"]);
   });
 
   it("advances query revisions for applied writes but keeps page merges, failed writes, and stale responses neutral", async () => {

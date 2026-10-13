@@ -693,12 +693,6 @@ export type ProjectMutationRemoval =
   | { kind: "custom_field_value"; taskId: string; fieldId: string }
   | { kind: "dependency"; id: string }
   | { kind: "event_link"; taskId: string; eventId: string }
-  | {
-      kind: "view_preference";
-      projectId: string;
-      viewId: string;
-      preferenceKey: string;
-    }
   | { kind: "custom_emoji"; id: string };
 
 export interface ProjectMutation {
@@ -718,7 +712,7 @@ export type ProjectOptionalDataKind =
   | "custom_fields"
   | "history"
   | "checklist"
-  | "saved_views"
+  | "view_preferences"
   | "custom_emojis";
 
 export interface ProjectsOptionalData {

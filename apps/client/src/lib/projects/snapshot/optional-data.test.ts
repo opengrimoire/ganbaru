@@ -91,7 +91,7 @@ function relationships(): ProjectsOptionalData {
 
 describe("project optional data", () => {
   it("loads view preferences only for List, which renders saved columns and widths", () => {
-    expect(projectViewOptionalDataKinds("list")).toEqual(["saved_views"]);
+    expect(projectViewOptionalDataKinds("list")).toEqual(["view_preferences"]);
     for (const view of ["kanban", "calendar", "gantt", "dashboard"] as const) {
       expect(projectViewOptionalDataKinds(view)).toEqual([]);
     }

@@ -226,7 +226,6 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             projects::dependency_cascade::projects_preview_dependency_cascade,
             projects::dependency_cascade::projects_apply_dependency_cascade,
             projects::preferences::projects_upsert_view_preference,
-            projects::preferences::projects_delete_view_preference,
             projects::emojis::projects_create_custom_emoji,
             projects::emojis::projects_delete_custom_emoji,
             notes::notes_load_workspace_shell,

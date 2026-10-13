@@ -29,53 +29,19 @@ pub struct ProjectsMutationRows {
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProjectMutationRemoval {
-    Group {
-        id: String,
-    },
-    Project {
-        id: String,
-    },
-    Status {
-        id: String,
-    },
-    Priority {
-        id: String,
-    },
-    ChecklistItem {
-        id: String,
-    },
-    Tag {
-        id: String,
-    },
-    TaskTagLink {
-        task_id: String,
-        tag_id: String,
-    },
-    CustomField {
-        id: String,
-    },
-    CustomFieldOption {
-        id: String,
-    },
-    CustomFieldValue {
-        task_id: String,
-        field_id: String,
-    },
-    Dependency {
-        id: String,
-    },
-    EventLink {
-        task_id: String,
-        event_id: String,
-    },
-    ViewPreference {
-        project_id: String,
-        view_id: String,
-        preference_key: String,
-    },
-    CustomEmoji {
-        id: String,
-    },
+    Group { id: String },
+    Project { id: String },
+    Status { id: String },
+    Priority { id: String },
+    ChecklistItem { id: String },
+    Tag { id: String },
+    TaskTagLink { task_id: String, tag_id: String },
+    CustomField { id: String },
+    CustomFieldOption { id: String },
+    CustomFieldValue { task_id: String, field_id: String },
+    Dependency { id: String },
+    EventLink { task_id: String, event_id: String },
+    CustomEmoji { id: String },
 }
 
 #[derive(Serialize)]
@@ -791,7 +757,7 @@ pub enum ProjectOptionalDataKind {
     CustomFields,
     History,
     Checklist,
-    SavedViews,
+    ViewPreferences,
     CustomEmojis,
 }
 

@@ -424,12 +424,6 @@ type ProjectMutationRemovalRow =
   | { kind: "custom_field_value"; task_id: string; field_id: string }
   | { kind: "dependency"; id: string }
   | { kind: "event_link"; task_id: string; event_id: string }
-  | {
-      kind: "view_preference";
-      project_id: string;
-      view_id: string;
-      preference_key: string;
-    }
   | { kind: "custom_emoji"; id: string };
 
 interface ProjectsMutationRows extends ProjectsSnapshotRows {
@@ -873,13 +867,6 @@ function mapMutationRemoval(row: ProjectMutationRemovalRow): ProjectMutationRemo
       return { kind: row.kind, taskId: row.task_id, fieldId: row.field_id };
     case "event_link":
       return { kind: row.kind, taskId: row.task_id, eventId: row.event_id };
-    case "view_preference":
-      return {
-        kind: row.kind,
-        projectId: row.project_id,
-        viewId: row.view_id,
-        preferenceKey: row.preference_key,
-      };
     default:
       return row;
   }
@@ -1352,14 +1339,6 @@ export async function upsertProjectViewPreference(
   return invokeProjectMutation("projects_upsert_view_preference", { dbUrl, preference });
 }
 
-export async function deleteProjectViewPreference(
-  projectId: string,
-  viewId: ProjectViewPreference["viewId"],
-  preferenceKey: string,
-): Promise<ProjectMutation> {
-  const dbUrl = await ensureDbUrl();
-  return invokeProjectMutation("projects_delete_view_preference", { dbUrl, projectId, viewId, preferenceKey });
-}
 
 export async function createProjectCustomEmoji(emoji: ProjectCustomEmojiCreate): Promise<ProjectMutation> {
   const dbUrl = await ensureDbUrl();

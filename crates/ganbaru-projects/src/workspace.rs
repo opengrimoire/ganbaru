@@ -292,7 +292,7 @@ pub async fn load_optional_data(
             .await
             .map_err(|e| format!("load project checklist items: {e}"))?;
         }
-        ProjectOptionalDataKind::SavedViews => {
+        ProjectOptionalDataKind::ViewPreferences => {
             let project_id = required_optional_project_id(project_id, kind)?;
             result.view_preferences = sqlx::query_as::<_, ProjectViewPreferenceRow>(
                 "SELECT * FROM project_view_preferences

@@ -303,7 +303,7 @@ async function ensureProjectToolbarData(projectId: string | null | undefined): P
   if (!projectId) return;
   await Promise.all([
     ensureProjectData(projectId),
-    ensureOptionalData("saved_views", projectId),
+    ensureOptionalData("view_preferences", projectId),
   ]);
 }
 

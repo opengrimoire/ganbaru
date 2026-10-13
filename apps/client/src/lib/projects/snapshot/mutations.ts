@@ -150,16 +150,6 @@ function applyRemoval(snapshot: ProjectsSnapshot, removal: ProjectMutationRemova
           (link) => link.taskId !== removal.taskId || link.eventId !== removal.eventId,
         ),
       };
-    case "view_preference":
-      return {
-        ...snapshot,
-        viewPreferences: snapshot.viewPreferences.filter(
-          (preference) =>
-            preference.projectId !== removal.projectId ||
-            preference.viewId !== removal.viewId ||
-            preference.preferenceKey !== removal.preferenceKey,
-        ),
-      };
     case "custom_emoji":
       return {
         ...snapshot,

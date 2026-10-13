@@ -37,6 +37,7 @@
   import { onActiveVaultIdentityChange } from "$lib/vault/active-vault";
   import { overflowTooltip } from "$lib/utils/overflow-tooltip";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
+  import { scrollOverflowAction } from "$lib/utils/scroll-overflow";
   import { SUBMENU_CLOSE_DELAY_MS, SUBMENU_OPEN_DELAY_MS } from "$lib/utils/menu-aim";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
@@ -634,7 +635,7 @@
 
       {#if railError}<Notice class="mx-2 mb-1 px-2 py-1 text-xs" message={railError} />{/if}
 
-      <div class="explorer-list min-h-0 flex-1 pb-2">
+      <div use:scrollOverflowAction class="explorer-list min-h-0 flex-1 pb-2">
         {#if query.trim().length >= 2}
           <section class="message-results" aria-label={t("chat.organization.messageSearchResults")}>
             <div class="section-heading"><span>{t("chat.organization.messages")}</span>{#if messageSearchLoading}<LoaderCircle size={12} class="animate-spin" aria-label={t("common.loading")} />{/if}</div>

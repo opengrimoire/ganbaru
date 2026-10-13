@@ -1,13 +1,15 @@
+import { hasVerticalOverflow, observeScrollContent, SCROLL_OVERFLOW_TOLERANCE } from "./scroll-overflow";
+
 /** Edges of a scroll container that fade because more content lies beyond them. */
 export type ScrollEdgeFade = "none" | "top" | "bottom" | "both";
 
 /** Scroll offsets within this many pixels of an end count as reaching it, absorbing fractional layout. */
-const SCROLL_EDGE_TOLERANCE = 1;
+const SCROLL_EDGE_TOLERANCE = SCROLL_OVERFLOW_TOLERANCE;
 
 /** Resolve which edges fade from a container's vertical scroll metrics. */
 export function scrollEdgeFade(metrics: { scrollTop: number; scrollHeight: number; clientHeight: number }): ScrollEdgeFade {
+  if (!hasVerticalOverflow(metrics)) return "none";
   const maxScrollTop = metrics.scrollHeight - metrics.clientHeight;
-  if (maxScrollTop <= SCROLL_EDGE_TOLERANCE) return "none";
   const up = metrics.scrollTop > SCROLL_EDGE_TOLERANCE;
   const down = metrics.scrollTop < maxScrollTop - SCROLL_EDGE_TOLERANCE;
   if (up && down) return "both";
@@ -25,22 +27,11 @@ export function scrollEdgeFadeAction(node: HTMLElement) {
     if (fade === "none") node.removeAttribute("data-scroll-fade");
     else node.setAttribute("data-scroll-fade", fade);
   };
-  // Resize observations arrive after layout and before paint, so refreshing there shows the fade in the same frame as the size change.
-  const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(refresh);
-  observer?.observe(node);
-  for (const child of node.children) observer?.observe(child);
-  // Children added later, such as rows that load after opening, change the scroll height without resizing the capped container.
-  const mutations = typeof MutationObserver === "undefined" ? null : new MutationObserver((records) => {
-    for (const record of records) for (const added of record.addedNodes) if (added instanceof Element) observer?.observe(added);
-    refresh();
-  });
-  mutations?.observe(node, { childList: true });
+  const stop = observeScrollContent(node, refresh);
   node.addEventListener("scroll", refresh, { passive: true });
-  refresh();
   return {
     destroy() {
-      observer?.disconnect();
-      mutations?.disconnect();
+      stop();
       node.removeEventListener("scroll", refresh);
       node.removeAttribute("data-scroll-fade");
     },

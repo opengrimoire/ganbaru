@@ -49,6 +49,7 @@
   import { getNotes } from "$lib/stores/notes.svelte";
   import { cn } from "$lib/utils";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
+  import { scrollOverflowAction } from "$lib/utils/scroll-overflow";
   import { suppressHoverOnToggle } from "$lib/utils/hover-suppression";
   import NotesFolderRow from "$lib/components/notes/navigation/NotesFolderRow.svelte";
   import NotesPageRow from "$lib/components/notes/navigation/NotesPageRow.svelte";
@@ -1134,6 +1135,7 @@
 
   <div
     bind:this={explorerScrollElement}
+    use:scrollOverflowAction
     class="explorer-list min-h-0 flex-1 overflow-x-auto pb-2"
     class:notes-navigation-root-drop-valid={navigationDropTargetKey === "root" && navigationDropAllowed}
     class:notes-navigation-root-drop-invalid={navigationDropTargetKey === "root" && !navigationDropAllowed}

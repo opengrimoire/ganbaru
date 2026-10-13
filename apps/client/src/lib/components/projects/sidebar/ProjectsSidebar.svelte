@@ -8,6 +8,7 @@
   import type { Project, ProjectView } from "$lib/projects/types";
   import { getProjects } from "$lib/stores/projects.svelte";
   import { suppressHoverOnToggle } from "$lib/utils/hover-suppression";
+  import { scrollOverflowAction } from "$lib/utils/scroll-overflow";
   import ProjectSidebarSection from "./ProjectSidebarSection.svelte";
   import ProjectPlacesNav from "./ProjectPlacesNav.svelte";
 
@@ -142,7 +143,7 @@
     </div>
 
     {#if !collapsed}
-      <nav class="explorer-list flex min-h-0 flex-1 flex-col gap-2 pb-2" aria-label={t("projects.sidebar.projects")} data-project-list>
+      <nav use:scrollOverflowAction class="explorer-list flex min-h-0 flex-1 flex-col gap-2 pb-2" aria-label={t("projects.sidebar.projects")} data-project-list>
         {#each listedProjects as project (project.id)}
           {@const actions = projectSidebarActions(project, groupIds)}
           <ProjectSidebarSection

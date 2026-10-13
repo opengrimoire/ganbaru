@@ -72,6 +72,8 @@ Full-text search, backlinks, unresolved links, sidebar summaries, computed datab
 
 A project owns metadata, lifecycle state, optional grouping, views, statuses, tasks, dependencies, custom fields, templates, history, and scheduling links. Presentation order is explicit and deterministic.
 
+Project views are ordered rows with a type and an optional name. Task view types may repeat; Notes and Chat views appear at most once per project. New projects receive Overview, List, Notes, and Chat. A view owns its preferences (saved query, List columns and presentation), which are deleted with it; deleting a view never deletes tasks, Notes pages, or Chat channels. A reorder must list every view of the project once.
+
 Tasks have stable identity independent of status, view, schedule, or parent. Dependencies validate both endpoints, reject self-dependencies and forbidden cycles, and survive reordering. Calendar links distinguish scheduled work from looser references.
 
 Custom-field definitions and values are separate, and changing a definition validates existing values. Custom-field and Notes data source property icons are optional presentation metadata limited to Lucide icons (a `lucide:` value in Projects, the native icon object in Notes); no icon means the type icon, and emoji or uploaded icons are rejected. Templates create ordinary rows with new identities; template IDs never become privileges or shared mutable state. Project history records meaningful user changes, not derived counts, and restore goes through domain commands so task links, Notes placement, and working folders stay consistent.

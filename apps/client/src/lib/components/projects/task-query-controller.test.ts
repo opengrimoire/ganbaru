@@ -1,8 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Translate } from "$lib/i18n/translator.svelte";
-import type { ProjectCustomField, ProjectSavedTaskView, ProjectTaskViewRequest } from "$lib/projects/types";
+import type { ProjectCustomField, ProjectTaskViewRequest } from "$lib/projects/types";
 import { defaultProjectListPresentation } from "$lib/projects/list/presentation";
-import { PROJECT_TASK_FILTER_DEFAULTS } from "$lib/projects/list/view";
 import {
   ProjectTaskQueryController,
   normalizeProjectFilterDate,
@@ -16,7 +15,6 @@ function createController(activeView: "list" | "kanban" = "list") {
   const requests: Array<{ request: ProjectTaskViewRequest; append: boolean }> = [];
   const selection = { projectId: "project-1", mutationRevision: 0, loadError: null as string | null };
   const saveTaskListColumns = vi.fn<ControllerInput["projects"]["saveTaskListColumns"]>().mockResolvedValue(undefined);
-  const applySectionCollapseState = vi.fn<ControllerInput["projects"]["applySectionCollapseState"]>().mockResolvedValue(undefined);
   const saveTaskListPresentation = vi.fn<ControllerInput["projects"]["saveTaskListPresentation"]>().mockResolvedValue(undefined);
   const fields: ProjectCustomField[] = [];
   const createdField: ProjectCustomField = { id: "created", projectId: "project-1", name: "Points", fieldType: "number", sortOrder: 100, icon: null, createdAt: "", updatedAt: "" };
@@ -29,7 +27,6 @@ function createController(activeView: "list" | "kanban" = "list") {
     get taskViewError() { return selection.loadError; },
     activeView,
     saveTaskListColumns,
-    applySectionCollapseState,
     saveTaskListPresentation,
     addCustomField,
     duplicateCustomField,
@@ -50,23 +47,7 @@ function createController(activeView: "list" | "kanban" = "list") {
     calendar: { sourceEvents: [] } as unknown as ControllerInput["calendar"],
     translate: ((key: string, ...parameters: unknown[]) => parameters.length ? `${key}: ${String(parameters[0])}` : key) as Translate,
   });
-  return { controller, requests, selection, saveTaskListColumns, applySectionCollapseState, saveTaskListPresentation, addCustomField, duplicateCustomField, fields, createdField, loadTaskView };
-}
-
-/** Describe a saved view that changes columns and section collapse state together. */
-function savedView(): ProjectSavedTaskView {
-  return {
-    ...PROJECT_TASK_FILTER_DEFAULTS,
-    customFieldFilters: [],
-    id: "view-1",
-    projectId: "project-1",
-    name: "Weekly work",
-    viewId: "list",
-    collapsedSectionIds: ["section-1"],
-    showArchivedTasks: false,
-    visibleColumns: ["due"],
-    updatedAt: "",
-  };
+  return { controller, requests, selection, saveTaskListColumns, saveTaskListPresentation, addCustomField, duplicateCustomField, fields, createdField, loadTaskView };
 }
 
 describe("Project task query controller policy", () => {
@@ -153,10 +134,9 @@ describe("Project task query controller policy", () => {
     expect(kanban.requests[0].request).not.toHaveProperty("cursor");
   });
 
-  it("restores columns and preserves the view name draft when saving fails, then allows a retry", async () => {
+  it("restores columns when saving fails, then allows a retry", async () => {
     const { controller, saveTaskListColumns } = createController();
     controller.listColumns = ["status", "due"];
-    controller.savedViewNameDraft = "Unsaved view name";
     let rejectWrite!: (error: unknown) => void;
     saveTaskListColumns.mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { rejectWrite = reject; }));
     const saving = controller.toggleColumn("status");
@@ -169,7 +149,6 @@ describe("Project task query controller policy", () => {
     expect(controller.listColumns).toEqual(["status", "due"]);
     expect(controller.listColumnsSaving).toBe(false);
     expect(controller.listColumnsError).toBe("projects.columns.saveFailed: Disk is full");
-    expect(controller.savedViewNameDraft).toBe("Unsaved view name");
 
     await controller.toggleColumn("status");
     expect(saveTaskListColumns).toHaveBeenLastCalledWith("project-1", ["due"]);
@@ -197,34 +176,6 @@ describe("Project task query controller policy", () => {
     await current;
     expect(controller.listColumnsSaving).toBe(false);
     expect(controller.listColumns).toEqual(["due", "priority"]);
-  });
-
-  it("reports a saved view column failure and skips its dependent section changes", async () => {
-    const { controller, saveTaskListColumns, applySectionCollapseState } = createController();
-    controller.listColumns = ["status"];
-    controller.savedViewNameDraft = "Retained draft";
-    saveTaskListColumns.mockRejectedValueOnce(new Error("Preference write failed"));
-    await expect(controller.applySavedView(savedView())).resolves.toBeUndefined();
-    expect(controller.listColumns).toEqual(["status"]);
-    expect(controller.listColumnsError).toBe("projects.columns.saveFailed: Preference write failed");
-    expect(controller.savedViewError).toBe("projects.savedViews.applyFailed: Preference write failed");
-    expect(applySectionCollapseState).not.toHaveBeenCalled();
-    expect(controller.savedViewNameDraft).toBe("Retained draft");
-  });
-
-  it("waits for saved view columns before applying its section collapse state", async () => {
-    const { controller, saveTaskListColumns, applySectionCollapseState } = createController();
-    let finishWrite!: () => void;
-    saveTaskListColumns.mockImplementationOnce(() => new Promise<void>((resolve) => { finishWrite = resolve; }));
-    const applying = controller.applySavedView(savedView());
-    expect(controller.listColumnsSaving).toBe(true);
-    expect(applySectionCollapseState).not.toHaveBeenCalled();
-    finishWrite();
-    await applying;
-    expect(applySectionCollapseState).toHaveBeenCalledWith("project-1", ["section-1"]);
-    expect(controller.listColumns).toEqual(["due"]);
-    expect(controller.listColumnsSaving).toBe(false);
-    expect(controller.savedViewError).toBeNull();
   });
 
   it("rolls back failed presentation writes, blocks competing changes, and permits retry", async () => {
@@ -262,7 +213,7 @@ describe("Project task query controller policy", () => {
   });
 
   it("reserves column writes until property creation and its visibility write finish", async () => {
-    const { controller, addCustomField, createdField, saveTaskListColumns, applySectionCollapseState } = createController();
+    const { controller, addCustomField, createdField, saveTaskListColumns } = createController();
     let finishCreation!: (field: ProjectCustomField) => void;
     let finishColumns!: () => void;
     addCustomField.mockImplementationOnce(() => new Promise<ProjectCustomField>((resolve) => { finishCreation = resolve; }));
@@ -272,9 +223,7 @@ describe("Project task query controller policy", () => {
     expect(controller.propertySaving).toBe(true);
     await controller.toggleColumn("due");
     await controller.moveColumn("due", -1);
-    await controller.applySavedView(savedView());
     expect(saveTaskListColumns).not.toHaveBeenCalled();
-    expect(applySectionCollapseState).not.toHaveBeenCalled();
     expect(controller.listColumns).toEqual(["status", "due"]);
     finishCreation(createdField);
     await vi.waitFor(() => expect(saveTaskListColumns).toHaveBeenCalledOnce());

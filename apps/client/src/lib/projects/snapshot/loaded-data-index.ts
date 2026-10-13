@@ -8,7 +8,6 @@ import type {
   ProjectCustomFieldValue,
   ProjectGroup,
   ProjectPriorityConfig,
-  ProjectSavedTaskView,
   ProjectSection,
   ProjectsSnapshot,
   ProjectStatus,
@@ -20,7 +19,6 @@ import type {
   ProjectTaskTagLink,
   ProjectViewPreference,
 } from "$lib/projects/types";
-import { parseSavedTaskViewPreference } from "$lib/projects/tasks/saved-views";
 
 export type ProjectLoadedDataIndexSource = ProjectsSnapshot | ProjectLoadedDataIndex;
 
@@ -80,7 +78,6 @@ export interface ProjectLoadedDataIndex {
   readonly taskChangeEventById: ReadonlyMap<string, ProjectTaskChangeEvent>;
   readonly viewPreferencesByProject: ReadonlyMap<string, readonly ProjectViewPreference[]>;
   readonly viewPreferenceByKey: ReadonlyMap<string, ProjectViewPreference>;
-  readonly savedTaskViewsByProject: ReadonlyMap<string, readonly ProjectSavedTaskView[]>;
   readonly customEmojis: readonly ProjectCustomEmoji[];
   readonly customEmojiById: ReadonlyMap<string, ProjectCustomEmoji>;
   readonly maxGroupSortOrder: number;
@@ -333,21 +330,6 @@ export function buildProjectLoadedDataIndex(source: ProjectsSnapshot): ProjectLo
     );
     append(viewPreferencesByProject, preference.projectId, preference);
   }
-  const savedTaskViewsByProject = new Map<string, ProjectSavedTaskView[]>();
-  for (const [projectId, preferences] of viewPreferencesByProject) {
-    const fields = customFieldsByProject.get(projectId) ?? [];
-    const fieldIds = new Set(fields.map((field) => field.id));
-    const optionIds = new Set(
-      fields.flatMap((field) =>
-        (customFieldOptionsByField.get(field.id) ?? []).map((option) => option.id)
-      ),
-    );
-    const views = preferences
-      .map((preference) => parseSavedTaskViewPreference(preference, fieldIds, optionIds))
-      .filter((view): view is ProjectSavedTaskView => view !== undefined)
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.name.localeCompare(b.name));
-    savedTaskViewsByProject.set(projectId, views);
-  }
 
   return {
     source,
@@ -405,7 +387,6 @@ export function buildProjectLoadedDataIndex(source: ProjectsSnapshot): ProjectLo
     taskChangeEventById,
     viewPreferencesByProject,
     viewPreferenceByKey,
-    savedTaskViewsByProject,
     customEmojis: source.customEmojis,
     customEmojiById: new Map(source.customEmojis.map((emoji) => [emoji.id, emoji])),
     maxGroupSortOrder: source.groups.reduce((maximum, group) => Math.max(maximum, group.sortOrder), 0),

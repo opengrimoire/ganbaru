@@ -24,7 +24,7 @@ export function projectOptionalDataKey(
 /**
  * Lists optional collections a project view needs before it renders.
  *
- * List reads its visible columns, column widths, and presentation from view preferences, which load with saved views. Rendering it without them shows defaults, and a resize or column change made then would overwrite the saved preference.
+ * List reads its visible columns, column widths, and presentation from view preferences, which load with the `saved_views` optional data. Rendering it without them shows defaults, and a resize or column change made then would overwrite the saved preference.
  */
 export function projectViewOptionalDataKinds(view: ProjectViewId): readonly ProjectOptionalDataKind[] {
   return view === "list" ? ["saved_views"] : [];

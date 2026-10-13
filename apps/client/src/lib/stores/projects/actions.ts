@@ -25,7 +25,6 @@ import {
   deleteProjectStatus,
   deleteProjectTag,
   deleteProjectTaskDependency,
-  deleteProjectViewPreference,
   linkProjectTaskEvent,
   linkProjectTaskTag,
   searchProjectLinkableEvents,
@@ -74,10 +73,6 @@ import {
   type ProjectTaskUpdatePatch,
 } from "$lib/projects/snapshot/update-payloads";
 import {
-  savedTaskViewPreferenceKey,
-  savedTaskViewPreferenceValue,
-} from "$lib/projects/tasks/saved-views";
-import {
   TASK_LIST_COLUMNS_PREFERENCE_KEY,
   taskListColumnsPreferenceValue,
 } from "$lib/projects/tasks/list-columns";
@@ -98,7 +93,6 @@ import {
   type ProjectMutationRemoval,
   type ProjectPriority,
   type ProjectPriorityConfig,
-  type ProjectSavedTaskView,
   type ProjectsSnapshot,
   type ProjectSection,
   type ProjectStatus,
@@ -397,17 +391,6 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
       hiddenAt: undefined,
       archivedAt: undefined,
     });
-  }
-
-  async function applySectionCollapseState(projectId: string, collapsedSectionIds: readonly string[]): Promise<void> {
-    const collapsedIds = new Set(collapsedSectionIds);
-    const updates = selectors.sectionsForProject(projectId)
-      .filter((section) => section.collapsed !== collapsedIds.has(section.id));
-    for (const section of updates) {
-      await commitMutation(`section:${section.id}`, () => updateProjectSection(sectionUpdatePayload(section, {
-        collapsed: collapsedIds.has(section.id),
-      })));
-    }
   }
 
   /** Create a status, optionally retaining an identity allocated by a settings draft. */
@@ -992,28 +975,7 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
       deleteProjectTaskDependency(dependencyId));
   }
 
-  async function saveTaskView(view: ProjectSavedTaskView): Promise<void> {
-    const name = normalizeProjectName(view.name);
-    if (!name) return;
-    const preferenceKey = savedTaskViewPreferenceKey(view.id);
-    await commitMutation(`preference:${view.projectId}:${view.viewId}:${preferenceKey}`, () =>
-      upsertProjectViewPreference({
-      projectId: view.projectId,
-      viewId: view.viewId,
-      preferenceKey,
-      preferenceValue: savedTaskViewPreferenceValue({ ...view, name }),
-    }));
-  }
 
-  async function deleteTaskView(view: ProjectSavedTaskView): Promise<void> {
-    const preferenceKey = savedTaskViewPreferenceKey(view.id);
-    await commitMutation(`preference:${view.projectId}:${view.viewId}:${preferenceKey}`, () =>
-      deleteProjectViewPreference(
-      view.projectId,
-      view.viewId,
-      preferenceKey,
-    ));
-  }
 
   async function saveTaskListColumns(
     projectId: string,
@@ -1063,7 +1025,6 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     hideSection,
     archiveSection,
     restoreSection,
-    applySectionCollapseState,
     addStatus,
     updateStatus,
     moveStatus,
@@ -1117,8 +1078,6 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     searchLinkableEvents,
     addTaskDependency,
     removeTaskDependency,
-    saveTaskView,
-    deleteTaskView,
     saveTaskListColumns,
     saveTaskListColumnWidths,
     saveTaskListPresentation,

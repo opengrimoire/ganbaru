@@ -12,7 +12,6 @@ import type {
   ProjectCustomFieldValue,
   ProjectGroup,
   ProjectPriorityConfig,
-  ProjectSavedTaskView,
   ProjectSection,
   ProjectsSnapshot,
   ProjectStatus,
@@ -356,14 +355,6 @@ export function dependenciesBlockedByTask(
   taskId: string | null | undefined,
 ): ProjectTaskDependency[] {
   return taskId ? copy(projectLoadedDataIndex(source).dependenciesBlockedByTask.get(taskId)) : [];
-}
-
-export function savedTaskViewsForProject(
-  source: ProjectLoadedDataIndexSource,
-  projectId: string | null | undefined,
-): ProjectSavedTaskView[] {
-  if (!projectId) return [];
-  return copy(projectLoadedDataIndex(source).savedTaskViewsByProject.get(projectId));
 }
 
 export function nextGroupSortOrder(source: ProjectLoadedDataIndexSource): number {

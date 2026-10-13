@@ -571,31 +571,6 @@ export interface ProjectCustomEmojiCreate {
   sortOrder: number;
 }
 
-export interface ProjectSavedTaskView {
-  id: string;
-  projectId: string;
-  name: string;
-  viewId: ProjectViewId;
-  search: string;
-  statusFilter: ProjectTaskStatusFilter;
-  sectionFilter: string | "all";
-  priorityFilter: ProjectPriority | "all";
-  dueFilter: ProjectTaskDueFilter;
-  dueRangeStart: string;
-  dueRangeEnd: string;
-  scheduleFilter: ProjectTaskScheduleFilter;
-  dependencyFilter: ProjectTaskDependencyFilter;
-  tagFilter: ProjectTaskTagFilter;
-  customFieldFilters: ProjectCustomFieldFilter[];
-  sortMode: ProjectTaskSortMode;
-  sortDirection: ProjectTaskSortDirection;
-  groupBy: ProjectTaskGroupMode;
-  collapsedSectionIds: string[];
-  showArchivedTasks: boolean;
-  visibleColumns: ProjectTaskListColumn[];
-  updatedAt: string;
-}
-
 export interface ProjectTaskEventLinkCreate {
   taskId: string;
   eventId: string;

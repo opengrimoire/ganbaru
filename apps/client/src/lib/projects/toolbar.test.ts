@@ -3,7 +3,6 @@ import {
   deriveProjectFilterChips,
   deriveProjectListColumnControls,
   pickProjectTaskModalLayout,
-  projectCustomizeContent,
   projectNavigatorPanelGeometry,
   projectToolbarPanelGeometry,
   projectToolbarPanelsForView,
@@ -169,21 +168,10 @@ describe("project toolbar", () => {
   });
 
   it("offers grouping, columns, and sorting only where the view honors them", () => {
-    expect(projectToolbarPanelsForView("list", "sidebar")).toEqual(["filters", "sort", "customize", "group", "settings"]);
-    expect(projectToolbarPanelsForView("kanban", "sidebar")).toEqual(["filters", "sort", "settings"]);
-    expect(projectToolbarPanelsForView("gantt", "sidebar")).toEqual(["filters", "settings"]);
-    expect(projectToolbarPanelsForView("calendar", "sidebar")).toEqual(["filters", "settings"]);
-    expect(projectToolbarPanelsForView("dashboard", "sidebar")).toEqual(["filters", "settings"]);
-  });
-
-  it("keeps saved views in the customize panel when no sidebar holds them", () => {
-    expect(projectToolbarPanelsForView("kanban", "panel")).toEqual(["filters", "sort", "customize", "settings"]);
-    expect(projectToolbarPanelsForView("gantt", "panel")).toEqual(["filters", "customize", "settings"]);
-    expect(projectToolbarPanelsForView("dashboard", "panel")).toEqual(["filters", "settings"]);
-    expect(projectCustomizeContent("list", "panel")).toEqual({ listColumns: true, savedViews: true });
-    expect(projectCustomizeContent("list", "sidebar")).toEqual({ listColumns: true, savedViews: false });
-    expect(projectCustomizeContent("calendar", "panel")).toEqual({ listColumns: false, savedViews: true });
-    expect(projectCustomizeContent("calendar", "sidebar")).toBeNull();
-    expect(projectCustomizeContent("dashboard", "panel")).toBeNull();
+    expect(projectToolbarPanelsForView("list")).toEqual(["filters", "sort", "customize", "group", "settings"]);
+    expect(projectToolbarPanelsForView("kanban")).toEqual(["filters", "sort", "settings"]);
+    expect(projectToolbarPanelsForView("gantt")).toEqual(["filters", "settings"]);
+    expect(projectToolbarPanelsForView("calendar")).toEqual(["filters", "settings"]);
+    expect(projectToolbarPanelsForView("dashboard")).toEqual(["filters", "settings"]);
   });
 });

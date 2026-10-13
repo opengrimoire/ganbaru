@@ -12,11 +12,6 @@ import {
   type ProjectTaskListColumnWidths,
 } from "$lib/projects/list/view";
 import {
-  createProjectSavedTaskViewSnapshot,
-  projectCustomFieldFilterStillExists,
-  projectTaskFilterStateFromSavedTaskView,
-} from "$lib/projects/tasks/saved-views";
-import {
   customFieldIdFromCustomFieldReference,
   customFieldIdFromTaskListColumn,
   customTaskListColumn,
@@ -35,7 +30,6 @@ import {
   PROJECT_TASK_LIST_COLUMNS,
   type ProjectCustomFieldFilter,
   type ProjectPriority,
-  type ProjectSavedTaskView,
   type ProjectTask,
   type ProjectTaskDependencyFilter,
   type ProjectTaskDueFilter,
@@ -100,9 +94,6 @@ export class ProjectTaskQueryController {
   listColumns = $state<ProjectTaskListColumn[]>([...DEFAULT_TASK_LIST_COLUMNS]);
   listColumnWidths = $state<ProjectTaskListColumnWidths>({});
   listPresentation = $state<ProjectListPresentation>(defaultProjectListPresentation());
-  savedViewNameDraft = $state("");
-  savedViewSaving = $state(false);
-  savedViewError = $state<string | null>(null);
   readonly today = Temporal.Now.plainDateISO().toString();
 
   constructor(input: ProjectTaskQueryControllerInput) {
@@ -347,10 +338,6 @@ export class ProjectTaskQueryController {
 
   get dataFiltersActive(): boolean {
     return projectTaskDataFiltersActive(this.filterState);
-  }
-
-  get savedViews(): ProjectSavedTaskView[] {
-    return this.#projects.savedTaskViewsForProject(this.projectId);
   }
 
   get matchedEventIds(): Set<string> {
@@ -666,89 +653,6 @@ export class ProjectTaskQueryController {
       this.listColumnWidths = widths;
     }
   }
-
-  async saveCurrentView(): Promise<void> {
-    if (this.listColumnsSaving || this.propertySaving) return;
-    const name = this.savedViewNameDraft.trim();
-    if (!name) {
-      this.savedViewError = this.#translate("projects.savedViews.nameRequired");
-      return;
-    }
-    const existing = this.savedViews.find((view) => view.name.toLowerCase() === name.toLowerCase());
-    const view = this.snapshot(name, existing?.id ?? crypto.randomUUID());
-    if (!view) return;
-    this.savedViewSaving = true;
-    this.savedViewError = null;
-    try {
-      await this.#projects.saveTaskView(view);
-      this.savedViewNameDraft = "";
-    } catch (error) {
-      this.savedViewError = this.#translate(
-        "projects.savedViews.saveFailed",
-        error instanceof Error ? error.message : String(error),
-      );
-    } finally {
-      this.savedViewSaving = false;
-    }
-  }
-
-  async applySavedView(view: ProjectSavedTaskView): Promise<void> {
-    if (this.listColumnsSaving || this.propertySaving || this.savedViewSaving) return;
-    const projectId = this.projectId;
-    this.#projects.activeView = view.viewId;
-    this.applyFilterState(projectTaskFilterStateFromSavedTaskView(view));
-    this.showArchivedTasks = view.showArchivedTasks;
-    this.savedViewError = null;
-    try {
-      if (projectId) {
-        const columnError = await this.#persistListColumns(projectId, [...view.visibleColumns]);
-        if (columnError !== null) throw new Error(columnError);
-        if (this.projectId !== projectId) return;
-      } else {
-        this.listColumns = [...view.visibleColumns];
-      }
-      if (view.groupBy === "section") {
-        await this.#projects.applySectionCollapseState(view.projectId, view.collapsedSectionIds);
-      }
-    } catch (error) {
-      if (this.projectId === projectId) {
-        this.savedViewError = this.#translate(
-          "projects.savedViews.applyFailed",
-          error instanceof Error ? error.message : String(error),
-        );
-      }
-    }
-  }
-
-  async deleteSavedView(view: ProjectSavedTaskView): Promise<void> {
-    this.savedViewSaving = true;
-    this.savedViewError = null;
-    try {
-      await this.#projects.deleteTaskView(view);
-    } catch (error) {
-      this.savedViewError = this.#translate(
-        "projects.savedViews.deleteFailed",
-        error instanceof Error ? error.message : String(error),
-      );
-    } finally {
-      this.savedViewSaving = false;
-    }
-  }
-
-  snapshot(name: string, id: string): ProjectSavedTaskView | undefined {
-    const projectId = this.projectId;
-    if (!projectId) return undefined;
-    return createProjectSavedTaskViewSnapshot({
-      ...this.filterState,
-      projectId,
-      id,
-      name,
-      viewId: this.#projects.activeView,
-      collapsedSectionIds: this.sections.filter((section) => section.collapsed).map((section) => section.id),
-      showArchivedTasks: this.showArchivedTasks,
-      visibleColumns: this.listColumns,
-    });
-  }
 }
 
 export function normalizeProjectFilterDate(value: string): string | undefined {
@@ -771,6 +675,15 @@ export interface ProjectTaskQueryReferenceInput {
   tagIds: ReadonlySet<string>;
   fieldIds: ReadonlySet<string>;
   optionIds: ReadonlySet<string>;
+}
+
+function projectCustomFieldFilterStillExists(
+  filter: ProjectCustomFieldFilter,
+  fieldIds: ReadonlySet<string>,
+  optionIds: ReadonlySet<string>,
+): boolean {
+  if (!fieldIds.has(filter.fieldId)) return false;
+  return filter.mode !== "option" || optionIds.has(filter.optionId);
 }
 
 /** Repairs query references after project fields or collections disappear. */

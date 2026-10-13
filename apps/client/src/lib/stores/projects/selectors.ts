@@ -12,7 +12,6 @@ import type {
   ProjectGroup,
   ProjectTag,
   ProjectPriorityConfig,
-  ProjectSavedTaskView,
   ProjectSection,
   ProjectsSnapshot,
   ProjectStatus,
@@ -171,9 +170,6 @@ export function createProjectStoreSelectors(
     },
     dependenciesBlockedByTask(taskId: string | null | undefined): ProjectTaskDependency[] {
       return projectSnapshot.dependenciesBlockedByTask(readSnapshot(), taskId);
-    },
-    savedTaskViewsForProject(projectId: string | null | undefined): ProjectSavedTaskView[] {
-      return projectSnapshot.savedTaskViewsForProject(readSnapshot(), projectId);
     },
     nextGroupSortOrder(): number {
       return projectSnapshot.nextGroupSortOrder(readSnapshot());

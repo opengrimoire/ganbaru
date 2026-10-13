@@ -151,7 +151,6 @@
   const taskFilterControlsActive = $derived(taskQuery.filterControlsActive);
   const taskGroupingActive = $derived(taskQuery.groupingActive);
   const taskCustomizeActive = $derived(taskQuery.customizeActive);
-  const savedTaskViews = $derived(taskQuery.savedViews);
   const scheduledThisWeekMinutes = $derived.by(() => thisWeekScheduledMinutes());
   const selectedTask = $derived.by(() =>
     routeUi.selectedTaskId ? allProjectTasks.find((task) => task.id === routeUi.selectedTaskId) : undefined
@@ -236,7 +235,7 @@
   $effect(() => {
     const panel = routeUi.toolbarPanel;
     if (!panel) return;
-    const available = projectToolbarPanelsForView(projects.activeView, mobileLayout ? "panel" : "sidebar");
+    const available = projectToolbarPanelsForView(projects.activeView);
     if (!available.includes(panel)) routeUi.closeToolbarImmediately();
   });
 
@@ -390,20 +389,15 @@
               {taskQuery}
               {mobileLayout}
               panel={routeUi.toolbarPanel}
-              view={projects.activeView}
-              savedViewsHome={mobileLayout ? "panel" : "sidebar"}
               projectId={selectedProjectId}
               {sections}
               {priorities}
               {projectTags}
               {projectCustomFields}
-              {savedTaskViews}
               {taskListColumnControls}
               {archivedProjectTaskCount}
               {inactiveSectionCount}
               {taskFiltersActive}
-              savedViewSaving={taskQuery.savedViewSaving}
-              savedViewError={taskQuery.savedViewError}
               listColumnsSaving={taskQuery.listColumnsSaving || taskQuery.propertySaving}
               listColumnsError={taskQuery.listColumnsError}
               bind:taskStatusFilter={taskQuery.statusFilter}
@@ -421,7 +415,6 @@
               bind:taskSortDirection={taskQuery.sortDirection}
               bind:showArchivedTasks={taskQuery.showArchivedTasks}
               bind:showInactiveSections={taskQuery.showInactiveSections}
-              bind:savedViewNameDraft={taskQuery.savedViewNameDraft}
               onClose={() => {
                 routeUi.requestToolbarClose();
               }}
@@ -432,11 +425,6 @@
                 projects.showInactiveProjects = true;
               }}
               onClearTaskFilters={clearTaskFilters}
-              onSaveCurrentTaskView={() => { void taskQuery.saveCurrentView(); }}
-              onApplyTaskView={(view) => {
-                void taskQuery.applySavedView(view).finally(() => routeUi.clearTaskSelection());
-              }}
-              onDeleteSavedTaskView={(view) => { void taskQuery.deleteSavedView(view); }}
               onToggleTaskListColumn={(column) => { void taskQuery.toggleColumn(column); }}
             />
           {:else if routeLoad.toolbarDataError || toolbarLoadState?.status === "failed"}

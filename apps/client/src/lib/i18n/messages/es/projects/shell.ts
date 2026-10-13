@@ -25,7 +25,6 @@ export const shell = {
     sort: "Ordenar",
     more: "Más acciones del proyecto",
     activeFilters: "Filtros activos",
-    columnsPanelSubtitle: "Vistas guardadas y columnas visibles",
     default: "Predeterminado",
     settingsPanelSubtitle: "Predeterminados, estados de tarea, tags y campos",
     none: "Ninguna",
@@ -205,14 +204,4 @@ export const shell = {
     earlierDue: "Anterior",
     missingStatus: "Estado faltante",
   },
-  savedViews: {
-    title: "Vistas guardadas",
-    namePlaceholder: "Guardar vista actual...",
-    save: "Guardar vista",
-    delete: (name: string) => `Eliminar vista guardada ${name}`,
-    nameRequired: "El nombre de la vista es obligatorio.",
-    saveFailed: (message: string) => `No se pudo guardar la vista: ${message}`,
-    applyFailed: (message: string) => `No se pudo aplicar la vista: ${message}`,
-    deleteFailed: (message: string) => `No se pudo eliminar la vista: ${message}`,
-  }
 } as const satisfies MessageShape<typeof enShell>;

@@ -5,15 +5,10 @@ import {
 } from "./loaded-data-index";
 import * as indexed from "./queries";
 import { applyProjectMutation } from "./mutations";
-import {
-  parseSavedTaskViewPreference,
-  savedTaskViewPreferenceKey,
-  savedTaskViewPreferenceValue,
-} from "$lib/projects/tasks/saved-views";
+import { TASK_LIST_COLUMNS_PREFERENCE_KEY } from "$lib/projects/tasks/list-columns";
 import { createProjectStoreSelectors } from "$lib/stores/projects/selectors";
 import type {
   Project,
-  ProjectSavedTaskView,
   ProjectsSnapshot,
   ProjectTask,
 } from "$lib/projects/types";
@@ -56,14 +51,6 @@ function task(
 }
 
 function nestedFixture(): ProjectsSnapshot {
-  const savedView: ProjectSavedTaskView = {
-    id: "saved-1", projectId: "project-a", name: "Important", viewId: "list", search: "",
-    statusFilter: "all", sectionFilter: "all", priorityFilter: "all", dueFilter: "all",
-    dueRangeStart: "", dueRangeEnd: "", scheduleFilter: "all", dependencyFilter: "all",
-    tagFilter: "tag-a", customFieldFilters: [{ fieldId: "field-a", mode: "option", optionId: "option-a" }],
-    sortMode: "manual", sortDirection: "asc", visibleColumns: ["status", "custom:field-a"],
-    groupBy: "section", collapsedSectionIds: [], showArchivedTasks: false, updatedAt,
-  };
   return {
     groups: [
       { id: "group-b", name: "B", icon: "lucide:folder", sortOrder: 2000, collapsed: false, createdAt, updatedAt },
@@ -121,8 +108,8 @@ function nestedFixture(): ProjectsSnapshot {
       { id: "change-new", taskId: "task-parent", eventType: "updated", occurredAt: updatedAt },
     ],
     viewPreferences: [{
-      projectId: "project-a", viewId: "list", preferenceKey: savedTaskViewPreferenceKey(savedView.id),
-      preferenceValue: savedTaskViewPreferenceValue(savedView), updatedAt,
+      projectId: "project-a", viewId: "list", preferenceKey: TASK_LIST_COLUMNS_PREFERENCE_KEY,
+      preferenceValue: JSON.stringify(["status", "custom:field-a"]), updatedAt,
     }],
     customEmojis: [{ id: "emoji-a", name: "Focus", assetPath: "project-icons/a.png", sortOrder: 3000, createdAt, updatedAt }],
   };
@@ -247,13 +234,6 @@ function compareEverySelector(snapshot: ProjectsSnapshot): void {
   expect(ids(indexed.customFieldOptionValuesForTask(snapshot, taskId, fieldId))).toEqual(ids(options.filter((value) => selectedOptionIds.has(value.id))));
   expect(indexed.dependenciesBlockingTask(snapshot, taskId)).toEqual(snapshot.dependencies.filter((value) => value.blockedTaskId === taskId));
   expect(indexed.dependenciesBlockedByTask(snapshot, "task-child-a")).toEqual(snapshot.dependencies.filter((value) => value.blockingTaskId === "task-child-a"));
-  const customFieldIds = new Set(fields.map((value) => value.id));
-  const customOptionIds = new Set(snapshot.customFieldOptions.filter((value) => customFieldIds.has(value.fieldId)).map((value) => value.id));
-  const expectedViews = snapshot.viewPreferences
-    .filter((value) => value.projectId === projectId)
-    .map((preference) => parseSavedTaskViewPreference(preference, customFieldIds, customOptionIds))
-    .filter((view): view is ProjectSavedTaskView => view !== undefined);
-  expect(indexed.savedTaskViewsForProject(snapshot, projectId)).toEqual(expectedViews.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.name.localeCompare(b.name)));
   expect(indexed.nextGroupSortOrder(snapshot)).toBe(maxOrder(snapshot.groups.map((value) => value.sortOrder)));
   expect(indexed.nextProjectSortOrder(snapshot, groupId)).toBe(maxOrder(projects.map((value) => value.sortOrder)));
   expect(indexed.nextSectionSortOrder(snapshot, projectId)).toBe(maxOrder(activeSections.map((value) => value.sortOrder)));

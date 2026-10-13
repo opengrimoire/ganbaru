@@ -16,7 +16,7 @@
   const statusOptions: ProjectTaskStatusFilter[] = ["all", "open", "blocked", "done"];
   const dueOptions: ProjectTaskDueFilter[] = ["all", "overdue", "today", "week", "none"];
 
-  /** Replace the canonical property's filter so toolbar controls and saved views stay synchronized. */
+  /** Replace the canonical property's filter so toolbar controls stay synchronized. */
   function setCustom(filter?: ProjectCustomFieldFilter): void {
     if (!field) return;
     query.customFieldFilters = [...query.customFieldFilters.filter((entry) => entry.fieldId !== field.id), ...(filter ? [filter] : [])];

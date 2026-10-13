@@ -64,10 +64,6 @@ Gantt renders dated tasks and milestones on a proportional timeline with section
 
 Dashboard summarizes task counts, completion, open estimates, scheduled hours, blockers, deadlines, overdue work, unscheduled due tasks, missing estimates, and recent changes and completions. These are planning signals; they never become productivity scores, rankings, or automatic judgments.
 
-## Saved views
-
-A saved view captures the selected tab and its search, filters, sorting, visible columns, grouping, collapsed state, and archived visibility. It never snapshots task data, and deleting it does not change tasks. Saved views live in the desktop sidebar and in the mobile configuration menu.
-
 ## Task detail
 
 Task detail is a focused editor available from every view. It edits a local draft, shows content (description, checklists, subtasks, dependencies, scheduled blocks, activity) beside an always-visible property column, and stacks them on narrow layouts. Unsaved closure uses the shared discard flow. Links to Calendar, Notes, Chat, files, and dependencies remain explicit and navigable. Start and due dates can each carry a reminder with the same offsets as Notes dates; reminders are delivered on desktop while the app runs, are not replayed after the app was closed, and opening one selects the task's project.

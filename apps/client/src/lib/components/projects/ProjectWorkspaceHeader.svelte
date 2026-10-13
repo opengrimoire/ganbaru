@@ -1,6 +1,5 @@
 <script lang="ts">
   import ArrowUpDown from "@lucide/svelte/icons/arrow-up-down";
-  import Bookmark from "@lucide/svelte/icons/bookmark";
   import Check from "@lucide/svelte/icons/check";
   import Columns3 from "@lucide/svelte/icons/columns-3";
   import Layers from "@lucide/svelte/icons/layers";
@@ -19,7 +18,6 @@
     projectLifecycleLabel,
   } from "$lib/projects/display";
   import {
-    projectCustomizeContent,
     projectNavigatorPanelGeometry,
     projectToolbarPanelsForView,
     type ProjectToolbarPanel,
@@ -132,15 +130,13 @@
     );
   }
 
-  const savedViewsHome = $derived(mobileLayout ? "panel" : "sidebar");
-  const toolbarPanels = $derived(projectToolbarPanelsForView(projects.activeView, savedViewsHome));
-  const customizeContent = $derived(projectCustomizeContent(projects.activeView, savedViewsHome));
+  const toolbarPanels = $derived(projectToolbarPanelsForView(projects.activeView));
   const customizationPanels = $derived(toolbarPanels.filter((panel) => panel !== "settings"));
 
   function panelIcon(panel: ProjectToolbarPanel) {
     if (panel === "filters") return ListFilter;
     if (panel === "sort") return ArrowUpDown;
-    if (panel === "customize") return customizeContent?.listColumns === false ? Bookmark : Columns3;
+    if (panel === "customize") return Columns3;
     if (panel === "group") return Layers;
     return Settings2;
   }
@@ -148,16 +144,14 @@
   function panelLabel(panel: ProjectToolbarPanel): string {
     if (panel === "filters") return t("projects.filters.title");
     if (panel === "sort") return t("projects.toolbar.sort");
-    if (panel === "customize") {
-      return customizeContent?.listColumns === false ? t("projects.savedViews.title") : t("projects.toolbar.customize");
-    }
+    if (panel === "customize") return t("projects.toolbar.customize");
     if (panel === "group") return t("projects.toolbar.group");
     return t("projects.header.projectSettings");
   }
 
   function panelActive(panel: ProjectToolbarPanel): boolean {
     if (panel === "filters") return taskFiltersActive;
-    if (panel === "customize") return taskCustomizeActive && customizeContent?.listColumns === true;
+    if (panel === "customize") return taskCustomizeActive;
     if (panel === "group") return taskGroupingActive;
     return false;
   }

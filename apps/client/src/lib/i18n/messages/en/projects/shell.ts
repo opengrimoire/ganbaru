@@ -22,7 +22,6 @@ export const shell = {
     sort: "Sort",
     more: "More project actions",
     activeFilters: "Active filters",
-    columnsPanelSubtitle: "Saved views and visible columns",
     default: "Default",
     settingsPanelSubtitle: "Defaults, task statuses, tags, and fields",
     none: "None",
@@ -202,14 +201,4 @@ export const shell = {
     earlierDue: "Earlier",
     missingStatus: "Missing status",
   },
-  savedViews: {
-    title: "Saved views",
-    namePlaceholder: "Save current view...",
-    save: "Save view",
-    delete: (name: string) => `Delete saved view ${name}`,
-    nameRequired: "Saved view name is required.",
-    saveFailed: (message: string) => `Could not save view: ${message}`,
-    applyFailed: (message: string) => `Could not apply view: ${message}`,
-    deleteFailed: (message: string) => `Could not delete view: ${message}`,
-  }
 } as const;

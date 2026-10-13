@@ -23,7 +23,7 @@ Groups organize projects. Projects own settings, statuses, priorities, tags, cus
 | --- | --- |
 | Groups, projects, sections, tasks, subtasks, checklists, archive, and restore | Implemented |
 | Dashboard, List, Kanban, Calendar, and Gantt views | Implemented |
-| Filters, sorting, grouping, saved views, selection, bulk actions, and custom columns | Implemented |
+| Filters, sorting, grouping, selection, bulk actions, and custom columns | Implemented |
 | Project defaults, statuses, priorities, tags, custom fields, and icons | Implemented |
 | Built-in project templates | Implemented |
 | User-defined project templates | Planned |

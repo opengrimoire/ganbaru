@@ -552,7 +552,6 @@ export function getProjects() {
     customFieldOptionValuesForTask,
     dependenciesBlockingTask,
     dependenciesBlockedByTask,
-    savedTaskViewsForProject,
   } = selectors;
 
   return {
@@ -737,7 +736,6 @@ export function getProjects() {
     customFieldOptionValuesForTask,
     dependenciesBlockingTask,
     dependenciesBlockedByTask,
-    savedTaskViewsForProject,
     ...actions,
   };
 }

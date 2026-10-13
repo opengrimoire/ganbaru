@@ -80,7 +80,7 @@
       : [...query.listPresentation.wrappedColumns, column] });
   }
 
-  /** Change the canonical query so sorting stays shared with toolbar controls and saved views. */
+  /** Change the canonical query so sorting stays shared with toolbar controls. */
   function sort(direction: "asc" | "desc"): void {
     if (!query || !sortMode) return;
     query.sortMode = sortMode;

@@ -6,12 +6,14 @@ import {
   notesFavoriteFolderIdsConfigKey,
   notesFavoritePageIdsConfigKey,
   notesRecentPageIdsConfigKey,
+  notesSidebarOrderByProjectConfigKey,
   parseStoredNotesPageIdList,
 } from "$lib/notes/pages/navigation";
 import {
   notesSidebarCollapsedFolderIdsConfigKey,
   parseStoredNotesSidebarCollapsedFolderIds,
 } from "$lib/notes/navigation/tree";
+import { parseSidebarSortOrderOverrides, type SidebarSortOrder } from "$lib/utils/sidebar-order";
 import { getConfigKey, setConfigKey } from "$lib/vault/config";
 
 export const notesSelectedPageKey = notesSelectedPageConfigKey();
@@ -19,6 +21,7 @@ export const notesFavoritePageIdsKey = notesFavoritePageIdsConfigKey();
 export const notesFavoriteFolderIdsKey = notesFavoriteFolderIdsConfigKey();
 export const notesRecentPageIdsKey = notesRecentPageIdsConfigKey();
 export const notesSidebarCollapsedFolderIdsKey = notesSidebarCollapsedFolderIdsConfigKey();
+export const notesSidebarOrderByProjectKey = notesSidebarOrderByProjectConfigKey();
 
 /**
  * Load the persisted Notes page selection id.
@@ -93,4 +96,18 @@ export function saveNotesSidebarCollapsedFolderIds(folderIds: readonly string[])
     notesSidebarCollapsedFolderIdsKey,
     folderIds.length > 0 ? [...folderIds] : undefined,
   );
+}
+
+/**
+ * Load the per-project Notes sidebar order overrides.
+ */
+export function initialNotesSidebarOrderOverrides(): Record<string, SidebarSortOrder> {
+  return parseSidebarSortOrderOverrides(getConfigKey<unknown>(notesSidebarOrderByProjectKey, undefined));
+}
+
+/**
+ * Persist the per-project Notes sidebar order overrides.
+ */
+export function saveNotesSidebarOrderOverrides(overrides: Readonly<Record<string, SidebarSortOrder>>): void {
+  setConfigKey(notesSidebarOrderByProjectKey, Object.keys(overrides).length > 0 ? { ...overrides } : undefined);
 }

@@ -71,6 +71,11 @@ import {
   isNotesPageOpenMode,
   type NotesPageOpenMode,
 } from "$lib/notes/pages/open-mode";
+import {
+  DEFAULT_SIDEBAR_SORT_ORDER,
+  isSidebarSortOrder,
+  type SidebarSortOrder,
+} from "$lib/utils/sidebar-order";
 
 const PROFILE_DISPLAY_NAME_CONFIG_KEY = "profile.displayName";
 const PROFILE_FULL_NAME_CONFIG_KEY = "profile.fullName";
@@ -98,6 +103,7 @@ const FOCUS_PAUSE_NOTIFICATION_INTERVAL_MINUTES_CONFIG_KEY =
   "preferences.focusPauseNotificationIntervalMinutes";
 const MUSIC_PAUSE_ON_POMODORO_PAUSE_CONFIG_KEY = "preferences.musicPauseOnPomodoroPause";
 const NOTES_DEFAULT_OPEN_MODE_CONFIG_KEY = "preferences.notesDefaultOpenMode";
+const NOTES_SIDEBAR_ORDER_CONFIG_KEY = "preferences.notesSidebarOrder";
 const NOTES_MENTION_NOTIFICATIONS_ENABLED_CONFIG_KEY =
   "preferences.notesMentionNotificationsEnabled";
 const NOTES_REMINDER_NOTIFICATIONS_ENABLED_CONFIG_KEY =
@@ -253,6 +259,11 @@ function loadSavedBooleanPreference(key: string, fallback: boolean): boolean {
   return fallback;
 }
 
+function loadSavedSidebarOrder(key: string): SidebarSortOrder {
+  const saved = getConfigKey<unknown>(key, undefined);
+  return isSidebarSortOrder(saved) ? saved : DEFAULT_SIDEBAR_SORT_ORDER;
+}
+
 function loadSavedNotesDefaultOpenMode(): NotesPageOpenMode {
   const saved = getConfigKey<unknown>(NOTES_DEFAULT_OPEN_MODE_CONFIG_KEY, undefined);
   if (isNotesPageOpenMode(saved)) return saved;
@@ -300,6 +311,7 @@ let focusPauseNotificationIntervalMinutes = $state<FocusPauseNotificationInterva
 );
 let musicPauseOnPomodoroPause = $state<boolean>(loadSavedMusicPauseOnPomodoroPause());
 let notesDefaultOpenMode = $state<NotesPageOpenMode>(loadSavedNotesDefaultOpenMode());
+let notesSidebarOrder = $state<SidebarSortOrder>(loadSavedSidebarOrder(NOTES_SIDEBAR_ORDER_CONFIG_KEY));
 let notesMentionNotificationsEnabled = $state<boolean>(
   loadSavedBooleanPreference(
     NOTES_MENTION_NOTIFICATIONS_ENABLED_CONFIG_KEY,
@@ -528,6 +540,12 @@ function setNotesDefaultOpenMode(value: NotesPageOpenMode): void {
   setConfigKey(NOTES_DEFAULT_OPEN_MODE_CONFIG_KEY, value);
 }
 
+function setNotesSidebarOrder(value: SidebarSortOrder): void {
+  if (!isSidebarSortOrder(value)) return;
+  notesSidebarOrder = value;
+  setConfigKey(NOTES_SIDEBAR_ORDER_CONFIG_KEY, value);
+}
+
 function setNotesMentionNotificationsEnabled(value: boolean): void {
   notesMentionNotificationsEnabled = value;
   setConfigKey(NOTES_MENTION_NOTIFICATIONS_ENABLED_CONFIG_KEY, value);
@@ -663,6 +681,9 @@ export function getPreferences() {
     get notesDefaultOpenMode(): NotesPageOpenMode {
       return notesDefaultOpenMode;
     },
+    get notesSidebarOrder(): SidebarSortOrder {
+      return notesSidebarOrder;
+    },
     get notesMentionNotificationsEnabled(): boolean {
       return notesMentionNotificationsEnabled;
     },
@@ -719,6 +740,7 @@ export function getPreferences() {
     setFocusPauseNotificationIntervalMinutes,
     setMusicPauseOnPomodoroPause,
     setNotesDefaultOpenMode,
+    setNotesSidebarOrder,
     setNotesMentionNotificationsEnabled,
     setNotesReminderNotificationsEnabled,
     setNotesUserMentionNotificationsEnabled,
@@ -776,6 +798,9 @@ export function getPreferences() {
     },
     resetNotesDefaultOpenMode() {
       setNotesDefaultOpenMode(DEFAULT_NOTES_PAGE_OPEN_MODE);
+    },
+    resetNotesSidebarOrder() {
+      setNotesSidebarOrder(DEFAULT_SIDEBAR_SORT_ORDER);
     },
     resetNotesMentionNotificationsEnabled() {
       setNotesMentionNotificationsEnabled(DEFAULT_NOTES_MENTION_NOTIFICATIONS_ENABLED);

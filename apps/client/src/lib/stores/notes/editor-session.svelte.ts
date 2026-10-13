@@ -62,6 +62,7 @@ import {
 import { createNotesPageHistoryController } from "./page-history.svelte";
 import { createNotesUndoController } from "./undo";
 import { getPreferences } from "$lib/stores/preferences.svelte";
+import { resolveSidebarSortOrder, type SidebarSortOrder } from "$lib/utils/sidebar-order";
 import { getProjects } from "$lib/stores/projects.svelte";
 import {
   flatNotesBlockItems,
@@ -872,6 +873,21 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
 
   function setFolderFavorited(folderId: string, favorited: boolean): void {
     sidebarController.setFolderFavorited(folderId, favorited);
+  }
+
+  /** Sidebar order set for `projectId`, or `null` when it uses the global setting. */
+  function sidebarOrderOverride(projectId: string | null): SidebarSortOrder | null {
+    return sidebarController.sidebarOrderOverride(projectId);
+  }
+
+  /** Sidebar order in effect for `projectId`: its own order, or the global setting. */
+  function sidebarOrderForProject(projectId: string | null): SidebarSortOrder {
+    return resolveSidebarSortOrder(preferences.notesSidebarOrder, sidebarController.sidebarOrderOverride(projectId));
+  }
+
+  /** Set the sidebar order of `projectId`, or return it to the global setting with `null`. */
+  function setProjectSidebarOrder(projectId: string, order: SidebarSortOrder | null): void {
+    sidebarController.setProjectSidebarOrder(projectId, order);
   }
 
   async function openArchive(): Promise<void> {
@@ -2008,6 +2024,9 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     outlineSubtreeIds,
     setPageFavorited,
     setFolderFavorited,
+    sidebarOrderOverride,
+    sidebarOrderForProject,
+    setProjectSidebarOrder,
     setFolderCollapsed,
     loadNavigationChildren,
     updatePageIcon: pageActions.updatePageIcon,

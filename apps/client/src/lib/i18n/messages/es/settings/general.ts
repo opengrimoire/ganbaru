@@ -87,6 +87,8 @@ export const general = {
     heading: "General",
     defaultOpenMode: "Modo de apertura predeterminado",
     defaultOpenModeDescription: "Se usa al abrir una nota cuando no hay otra abierta",
+    sidebarOrder: "Orden de carpetas y notas",
+    sidebarOrderDescription: "Cómo lista carpetas y notas la barra lateral de Notas, después de los favoritos. Cada proyecto puede cambiarlo",
     showPropertyIcons: "Mostrar iconos de propiedades",
     showPropertyIconsDescription: "Muestra el icono del tipo de cada propiedad junto al nombre de su columna en las tablas de bases de datos",
     historyRetention: "Retención predeterminada del historial",

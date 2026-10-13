@@ -7,11 +7,14 @@ import {
   initialNotesFavoritePageIds,
   initialNotesRecentPageIds,
   initialNotesSidebarCollapsedFolderIds,
+  initialNotesSidebarOrderOverrides,
   saveNotesFavoriteFolderIds,
   saveNotesFavoritePageIds,
   saveNotesRecentPageIds,
   saveNotesSidebarCollapsedFolderIds,
+  saveNotesSidebarOrderOverrides,
 } from "./page-state";
+import { withSidebarSortOrderOverride, type SidebarSortOrder } from "$lib/utils/sidebar-order";
 
 interface NotesSidebarShellMetadata {
   pageIdsWithChildren: readonly string[];
@@ -25,6 +28,7 @@ export function createNotesSidebarController() {
   let favoriteFolderIds = $state<string[]>(initialNotesFavoriteFolderIds());
   let recentPageIds = $state<string[]>(initialNotesRecentPageIds());
   let collapsedFolderIds = $state<string[]>(initialNotesSidebarCollapsedFolderIds());
+  let sidebarOrderOverrides = $state<Record<string, SidebarSortOrder>>(initialNotesSidebarOrderOverrides());
   let pageIdsWithChildren = $state<string[]>([]);
   let missingParentPageIds = $state<string[]>([]);
   let trashedParentPageIds = $state<string[]>([]);
@@ -42,6 +46,11 @@ export function createNotesSidebarController() {
   function setFolderFavorited(folderId: string, favorited: boolean): void {
     favoriteFolderIds = setNotesPageFavoriteId(favoriteFolderIds, folderId, favorited);
     saveNotesFavoriteFolderIds(favoriteFolderIds);
+  }
+
+  function setProjectSidebarOrder(projectId: string, order: SidebarSortOrder | null): void {
+    sidebarOrderOverrides = withSidebarSortOrderOverride(sidebarOrderOverrides, projectId, order);
+    saveNotesSidebarOrderOverrides(sidebarOrderOverrides);
   }
 
   function setFolderCollapsed(folderId: string, collapsed: boolean): void {
@@ -82,6 +91,9 @@ export function createNotesSidebarController() {
     get favoriteFolderIds(): readonly string[] { return favoriteFolderIds; },
     get recentPageIds(): readonly string[] { return recentPageIds; },
     get collapsedFolderIds(): readonly string[] { return collapsedFolderIds; },
+    sidebarOrderOverride(projectId: string | null): SidebarSortOrder | null {
+      return projectId ? sidebarOrderOverrides[projectId] ?? null : null;
+    },
     get pageIdsWithChildren(): readonly string[] { return pageIdsWithChildren; },
     get missingParentPageIds(): readonly string[] { return missingParentPageIds; },
     get trashedParentPageIds(): readonly string[] { return trashedParentPageIds; },
@@ -92,6 +104,7 @@ export function createNotesSidebarController() {
     setPageFavorited,
     setFolderFavorited,
     setFolderCollapsed,
+    setProjectSidebarOrder,
     replaceMetadata,
     mergeMetadata,
     removePageIds,

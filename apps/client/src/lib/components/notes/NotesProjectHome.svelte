@@ -37,7 +37,6 @@
   } from "$lib/notes/navigation/drag";
   import { notesPageMoveTargets } from "$lib/notes/pages/move";
   import {
-    DEFAULT_SIDEBAR_SORT_ORDER,
     SIDEBAR_SORT_ORDER_LABEL_KEYS,
     SIDEBAR_SORT_ORDERS,
     type SidebarSortOrder,
@@ -52,6 +51,7 @@
     NotesWorkingMarkdownTreeRead,
   } from "$lib/notes/types";
   import { getNotes } from "$lib/stores/notes.svelte";
+  import { getPreferences } from "$lib/stores/preferences.svelte";
   import { cn } from "$lib/utils";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import { scrollOverflowAction } from "$lib/utils/scroll-overflow";
@@ -87,6 +87,7 @@
   } = $props();
 
   const notes = getNotes();
+  const preferences = getPreferences();
   const { t } = getLocalization();
   const explorerIconStrokeWidth = 1.5;
   const sortMenuViewportGapPx = 8;
@@ -415,9 +416,14 @@
   let searchOpen = $state(false);
   let searchButton: HTMLButtonElement;
   let sortMenuOpen = $state(false);
-  let sortOrder = $state<SidebarSortOrder>(DEFAULT_SIDEBAR_SORT_ORDER);
+  type SortMenuOption = "global" | SidebarSortOrder;
+  const sortOrder = $derived(notes.sidebarOrderForProject(projectId));
+  const sortOrderOverride = $derived(notes.sidebarOrderOverride(projectId));
+  const sortMenuOptions = $derived<readonly SortMenuOption[]>(
+    projectId ? ["global", ...SIDEBAR_SORT_ORDERS] : SIDEBAR_SORT_ORDERS,
+  );
   let currentFileHighlightRequestId = $state(0);
-  let hoveredSortOrder = $state<SidebarSortOrder | null>(null);
+  let hoveredSortOrder = $state<SortMenuOption | null>(null);
   let sortMenuStyle = $state("");
   let sortButtonElement = $state<HTMLButtonElement | null>(null);
   let sortMenuElement = $state<HTMLDivElement | null>(null);
@@ -671,19 +677,36 @@
     }
   }
 
-  function selectSortOrder(nextOrder: SidebarSortOrder): void {
-    sortOrder = nextOrder;
+  /** Write the chosen order to the project, or to the global setting when no project is open. */
+  function selectSortOrder(option: SortMenuOption): void {
+    if (projectId) notes.setProjectSidebarOrder(projectId, option === "global" ? null : option);
+    else if (option !== "global") preferences.setNotesSidebarOrder(option);
     sortMenuOpen = false;
   }
 
-  function sortOptionClass(order: SidebarSortOrder): string {
-    return cn("menu-item grid grid-cols-[max-content_1rem]", hoveredSortOrder === order && "bg-accent");
+  function sortOptionChecked(option: SortMenuOption): boolean {
+    if (option === "global") return sortOrderOverride === null;
+    return projectId ? sortOrderOverride === option : sortOrder === option;
+  }
+
+  function sortOptionLabel(option: SortMenuOption): string {
+    return option === "global" ? t("common.useGlobalSetting") : t(SIDEBAR_SORT_ORDER_LABEL_KEYS[option]);
+  }
+
+  /** Separate the global item from the orders, and the orders into name, modified, and created pairs. */
+  function sortOptionStartsGroup(option: SortMenuOption, index: number): boolean {
+    if (index === 0 || option === "global") return false;
+    return sortMenuOptions[index - 1] === "global" || SIDEBAR_SORT_ORDERS.indexOf(option) % 2 === 0;
+  }
+
+  function sortOptionClass(option: SortMenuOption): string {
+    return cn("menu-item grid grid-cols-[max-content_1rem]", hoveredSortOrder === option && "bg-accent");
   }
 
   function highlightNearestSortOption(
     event: MouseEvent,
-    before: SidebarSortOrder,
-    after: SidebarSortOrder,
+    before: SortMenuOption,
+    after: SortMenuOption,
   ): void {
     const divider = event.currentTarget;
     if (!(divider instanceof HTMLDivElement)) return;
@@ -978,26 +1001,26 @@
           }}
         >
           <div class="surface-floating-body flex min-h-0 flex-1 flex-col overflow-y-auto" use:scrollEdgeFadeAction>
-            {#each SIDEBAR_SORT_ORDERS as order, index (order)}
-              {#if index > 0 && index % 2 === 0}
+            {#each sortMenuOptions as option, index (option)}
+              {#if sortOptionStartsGroup(option, index)}
                 <div
                   class="menu-separator"
                   role="separator"
-                  onmousemove={(event) => highlightNearestSortOption(event, SIDEBAR_SORT_ORDERS[index - 1], order)}
+                  onmousemove={(event) => highlightNearestSortOption(event, sortMenuOptions[index - 1], option)}
                 ></div>
               {/if}
               <button
                 type="button"
-                class={sortOptionClass(order)}
+                class={sortOptionClass(option)}
                 role="menuitemradio"
-                aria-checked={sortOrder === order}
+                aria-checked={sortOptionChecked(option)}
                 onmouseenter={() => {
-                  hoveredSortOrder = order;
+                  hoveredSortOrder = option;
                 }}
-                onclick={() => selectSortOrder(order)}
+                onclick={() => selectSortOrder(option)}
               >
-                <span>{t(SIDEBAR_SORT_ORDER_LABEL_KEYS[order])}</span>
-                {#if sortOrder === order}<Check class="size-4" />{/if}
+                <span>{sortOptionLabel(option)}</span>
+                {#if sortOptionChecked(option)}<Check class="size-4" />{/if}
               </button>
             {/each}
           </div>

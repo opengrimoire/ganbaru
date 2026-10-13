@@ -84,6 +84,8 @@ export const general = {
     heading: "General",
     defaultOpenMode: "Default open mode",
     defaultOpenModeDescription: "Used when opening a note while none is open",
+    sidebarOrder: "Folder and note order",
+    sidebarOrderDescription: "How the Notes sidebar lists folders and notes, after favorites. Projects can override it",
     showPropertyIcons: "Show property icons",
     showPropertyIconsDescription: "Show each property's type icon beside its column name in database tables",
     historyRetention: "Default history retention",

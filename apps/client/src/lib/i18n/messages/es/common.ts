@@ -37,6 +37,7 @@ export const common = {
   restore: "Restaurar",
   horizontalScrollTooltip: "Mayús + rueda abajo / arriba",
   dismissNotification: "Descartar notificación",
+  useGlobalSetting: "Usar ajuste global",
   addToFavorites: "Agregar a favoritos",
   removeFromFavorites: "Quitar de favoritos",
   sortOrder: {

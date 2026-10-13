@@ -34,6 +34,7 @@ export const common = {
   restore: "Restore",
   horizontalScrollTooltip: "Shift + Scroll down / up",
   dismissNotification: "Dismiss notification",
+  useGlobalSetting: "Use global setting",
   addToFavorites: "Add to favorites",
   removeFromFavorites: "Remove from favorites",
   sortOrder: {

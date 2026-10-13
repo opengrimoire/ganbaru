@@ -827,7 +827,7 @@
   .message-result strong { flex:0 0 auto; font-size: calc(0.72rem * var(--type-scale)); }
   .message-result small { min-width:0; overflow:hidden; color:var(--muted-foreground); font-size: calc(0.6rem * var(--type-scale)); text-overflow:ellipsis; white-space:nowrap; }
   .message-result > span:last-child { display:-webkit-box; overflow:hidden; color:var(--muted-foreground); font-size: calc(0.68rem * var(--type-scale)); line-height: calc(1rem * var(--type-scale)); -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2; }
-  .section-heading { --section-heading-gap: 0.2rem; display: flex; min-height: var(--explorer-row-height); align-items: center; gap: var(--section-heading-gap); padding-inline: 0.5rem; color: var(--muted-foreground); }
+  .section-heading { --section-heading-gap: 0.2rem; --section-heading-inset: 0.5rem; display: flex; min-height: var(--explorer-row-height); align-items: center; gap: var(--section-heading-gap); padding-inline: var(--section-heading-inset); color: var(--muted-foreground); }
   .channel-section > .section-heading { padding-inline-end: 0; }
   .section-heading.section-renaming { border-radius: 0.375rem; background: var(--explorer-row-hover, color-mix(in oklab, var(--accent) 50%, transparent)); }
   .section-rename-input { min-width: 0; width: 0; flex: 1; min-height: var(--explorer-action-size); border: 0; background: transparent; color: var(--foreground); caret-color: var(--primary); font: inherit; outline: none; }
@@ -838,7 +838,7 @@
   .section-heading > .section-create-action:is(:hover, :focus-visible) { background: transparent; color: var(--foreground); }
   .channel-section > .section-heading > .explorer-row-action { opacity: 1; }
   .section-heading > :is(.section-toggle, .section-rename-control):hover { background: var(--explorer-icon-hover, var(--accent)); color: var(--foreground); }
-  .section-heading > .section-toggle { min-width: 0; flex: 1; justify-content: flex-start; }
+  .section-heading > .section-toggle { min-width: 0; flex: 1; justify-content: flex-start; margin-inline-start: calc(-1 * var(--section-heading-inset)); padding-inline: var(--section-heading-inset); border-radius: 0.375rem; }
   .section-toggle > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .section-toggle :global(.section-chevron) { flex: 0 0 auto; transition: opacity 120ms ease; }
   .section-context-menu, .channel-context-menu { max-height: min(22rem, calc(100vh - 4rem)); overflow-y: auto; }

@@ -782,6 +782,8 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
   --explorer-row-padding: 0.375rem;
   --explorer-row-height: max(2rem, calc(var(--explorer-line-height) + 2 * var(--explorer-row-padding)));
   --explorer-text-weight: 400;
+  --explorer-heading-size: calc(var(--explorer-text-size) * 0.875);
+  --explorer-heading-weight: 500;
   --explorer-background: color-mix(in oklab, var(--sidebar) 45%, var(--cal-bg));
   background: var(--explorer-background);
   color: var(--foreground);
@@ -842,8 +844,17 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
   outline-offset: -2px;
 }
 
-/* Sidebar search fields take the explorer row height; the `field` utility owns their look. */
+/* Sidebar search fields match the toolbar buttons beside them; the `field` utility owns their look. */
 .explorer-sidebar .explorer-search {
+  min-height: var(--explorer-action-size);
+}
+
+.explorer-sidebar .explorer-search .explorer-icon {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+.explorer-touch .explorer-search {
   min-height: var(--explorer-row-height);
 }
 
@@ -922,14 +933,20 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
 }
 
 .explorer-sidebar .explorer-row-label,
-.explorer-sidebar .section-toggle,
-.explorer-sidebar .section-heading,
-.explorer-sidebar .explorer-section-title,
 .explorer-sidebar .archive-button,
 .explorer-sidebar .explorer-search input {
   font-size: var(--explorer-text-size);
   line-height: var(--explorer-line-height);
   font-weight: var(--explorer-text-weight);
+}
+
+/* Section headings read as labels over their rows, so they sit a step below the row text. */
+.explorer-sidebar .section-toggle,
+.explorer-sidebar .section-heading,
+.explorer-sidebar .explorer-section-title {
+  font-size: var(--explorer-heading-size);
+  line-height: var(--explorer-line-height);
+  font-weight: var(--explorer-heading-weight);
 }
 
 /* Section headings occupy one navigation row, preserving the same baseline rhythm. */

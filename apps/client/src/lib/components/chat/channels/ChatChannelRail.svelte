@@ -828,7 +828,9 @@
   .message-result small { min-width:0; overflow:hidden; color:var(--muted-foreground); font-size: calc(0.6rem * var(--type-scale)); text-overflow:ellipsis; white-space:nowrap; }
   .message-result > span:last-child { display:-webkit-box; overflow:hidden; color:var(--muted-foreground); font-size: calc(0.68rem * var(--type-scale)); line-height: calc(1rem * var(--type-scale)); -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2; }
   .section-heading { --section-heading-gap: 0.2rem; --section-heading-inset: 0.5rem; display: flex; min-height: var(--explorer-row-height); align-items: center; gap: var(--section-heading-gap); padding-inline: var(--section-heading-inset); color: var(--muted-foreground); }
+  /* Heading actions reach into the list padding so they line up with the toolbar collapse button above. */
   .channel-section > .section-heading { padding-inline-end: 0; }
+  .channel-section > .section-heading:not(.section-renaming) { margin-inline-end: calc(-1 * var(--section-heading-inset)); }
   .section-heading.section-renaming { border-radius: 0.375rem; background: var(--explorer-row-hover, color-mix(in oklab, var(--accent) 50%, transparent)); }
   .section-rename-input { min-width: 0; width: 0; flex: 1; min-height: var(--explorer-action-size); border: 0; background: transparent; color: var(--foreground); caret-color: var(--primary); font: inherit; outline: none; }
   .section-rename-control { color: var(--foreground); }
@@ -836,7 +838,7 @@
   .section-heading > button { display: flex; min-width: var(--explorer-action-size); min-height: var(--explorer-action-size); align-items: center; justify-content: center; gap: 0.2rem; border-radius: 0.3rem; }
   .section-heading > .section-create-action { margin-inline-end: calc(-1 * var(--section-heading-gap)); }
   .section-heading > .section-create-action:is(:hover, :focus-visible) { background: transparent; color: var(--foreground); }
-  .channel-section > .section-heading > .explorer-row-action { opacity: 1; }
+  .channel-section > .section-heading > .explorer-row-action { margin-inline-end: 0; opacity: 1; }
   .section-heading > :is(.section-toggle, .section-rename-control):hover { background: var(--explorer-icon-hover, var(--accent)); color: var(--foreground); }
   .section-heading > .section-toggle { min-width: 0; flex: 1; justify-content: flex-start; margin-inline-start: calc(-1 * var(--section-heading-inset)); padding-inline: var(--section-heading-inset); border-radius: 0.375rem; }
   .section-toggle > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

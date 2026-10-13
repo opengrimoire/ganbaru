@@ -216,7 +216,6 @@
 
 <section
   class="project-section"
-  class:project-section-selected={selected}
   class:project-section-inactive={project.status !== "active"}
   aria-label={displayName}
   data-project-id={project.id}
@@ -541,6 +540,11 @@
     color: var(--foreground);
   }
 
+  .section-heading > .explorer-row-action {
+    margin-inline-end: 0;
+    opacity: 1;
+  }
+
   .section-name,
   .section-group {
     min-width: 0;
@@ -558,11 +562,6 @@
   .section-toggle :global(.section-chevron) {
     flex: 0 0 auto;
     margin-inline-start: -0.2rem;
-  }
-
-  .project-section-selected > .section-heading {
-    --explorer-heading-weight: 600;
-    color: var(--foreground);
   }
 
   .project-section-inactive > .section-heading .section-name {

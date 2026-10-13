@@ -74,6 +74,8 @@
   let directMessageButton = $state<HTMLButtonElement | null>(null);
   let directMessagePickerOpen = $state(false);
   let railElement = $state<HTMLElement | null>(null);
+  let expandButton = $state<HTMLButtonElement>();
+  let collapseButton = $state<HTMLButtonElement>();
   let channelMenuTrigger: HTMLElement | null = null;
   const menuViewportGap = 8;
   let sectionInput = $state<HTMLInputElement>();
@@ -470,6 +472,18 @@
     if (presentation === "surface") onCollapse();
   }
 
+  /** Collapse the docked rail and keep focus on the control that reopens it. */
+  function collapseToStrip(): void {
+    onCollapse();
+    if (showCollapsedStrip) void tick().then(() => expandButton?.focus());
+  }
+
+  /** Expand the docked rail and keep focus on the control that collapses it. */
+  function expandFromStrip(): void {
+    onExpand();
+    void tick().then(() => collapseButton?.focus());
+  }
+
   /** Focus the persistent search field after the rail has opened. */
   function openSearch(): void {
     void tick().then(() => railElement?.querySelector<HTMLInputElement>('input[type="search"]')?.focus());
@@ -598,115 +612,119 @@
   });
 </script>
 
-{#if expanded}
-  <aside bind:this={railElement} class="explorer-sidebar flex h-full min-h-0 flex-col" class:explorer-touch={presentation === "surface"} aria-label={t("chat.channels.explorerLabel")}>
-    <div class="explorer-toolbar">
-      <SearchField bind:value={query} label={t("chat.channels.search")} clearLabel={t("chat.channels.clearSearch")} inline focusOnMount={false} />
-      <button type="button" class="explorer-icon" data-chat-rail-close aria-label={t("chat.collapseRail")} aria-expanded="true" data-app-tooltip={t("chat.collapseRail")} onclick={onCollapse}><ChevronsLeft size={16} /></button>
-    </div>
-
-    {#if creatingSection}
-      <form class="mx-2 mb-2 flex gap-1" onsubmit={(event) => { event.preventDefault(); createSection(); }}>
-        <input bind:this={sectionInput} class="field min-w-0 flex-1 text-xs" bind:value={newSectionName} maxlength="80" placeholder={t("chat.channels.sectionName")} aria-label={t("chat.channels.sectionName")} onkeydown={(event) => { if (event.key === "Escape") { event.stopPropagation(); toggleSectionDraft(); } }} />
-        <button type="submit" class="explorer-icon" disabled={!newSectionName.trim()} aria-label={t("chat.channels.add")}><Plus size={16} /></button>
-      </form>
+{#if expanded || showCollapsedStrip}
+  <aside bind:this={railElement} class="explorer-sidebar flex h-full min-h-0 flex-col" class:explorer-dock={showCollapsedStrip} class:explorer-dock-collapsed={showCollapsedStrip && !expanded} class:explorer-touch={presentation === "surface"} aria-label={t("chat.channels.explorerLabel")}>
+    {#if showCollapsedStrip}
+      <div class="explorer-dock-rail" aria-hidden={expanded} inert={expanded}>
+        <div class="explorer-toolbar justify-center"><button bind:this={expandButton} type="button" class="explorer-icon" aria-expanded="false" data-app-tooltip={t("chat.openRail")} aria-label={t("chat.openRail")} onclick={expandFromStrip}><ChevronsRight size={16} /></button></div>
+      </div>
     {/if}
+    <div class="flex h-full min-h-0 flex-col" class:explorer-dock-content={showCollapsedStrip} inert={!expanded}>
+      <div class="explorer-toolbar">
+        <SearchField bind:value={query} label={t("chat.channels.search")} clearLabel={t("chat.channels.clearSearch")} inline focusOnMount={false} />
+        <button bind:this={collapseButton} type="button" class="explorer-icon" data-chat-rail-close aria-label={t("chat.collapseRail")} aria-expanded="true" data-app-tooltip={t("chat.collapseRail")} onclick={collapseToStrip}><ChevronsLeft size={16} /></button>
+      </div>
 
-    {#if railError}<Notice class="mx-2 mb-1 px-2 py-1 text-xs" message={railError} />{/if}
-
-    <div class="explorer-list min-h-0 flex-1 pb-2">
-      {#if query.trim().length >= 2}
-        <section class="message-results" aria-label={t("chat.organization.messageSearchResults")}>
-          <div class="section-heading"><span>{t("chat.organization.messages")}</span>{#if messageSearchLoading}<LoaderCircle size={12} class="animate-spin" aria-label={t("common.loading")} />{/if}</div>
-          {#each messageSearchResults as result (result.messageItemId)}
-            <button type="button" class="message-result" onclick={() => void openMessageResult(result)}>
-              <span><strong>{searchAuthorDisplayName(result)}</strong><small>{projectName(result.projectId)} · #{result.channelName}{#if result.replyThreadId} · {t("chat.organization.thread")}{/if}</small></span>
-              <span>{searchExcerpt(result)}</span>
-            </button>
-          {/each}
-          {#if !messageSearchLoading && messageSearchResults.length === 0}<p class="px-2 py-1 text-xs text-muted-foreground">{t("chat.organization.noMessageSearchResults")}</p>{/if}
-        </section>
+      {#if creatingSection}
+        <form class="mx-2 mb-2 flex gap-1" onsubmit={(event) => { event.preventDefault(); createSection(); }}>
+          <input bind:this={sectionInput} class="field min-w-0 flex-1 text-xs" bind:value={newSectionName} maxlength="80" placeholder={t("chat.channels.sectionName")} aria-label={t("chat.channels.sectionName")} onkeydown={(event) => { if (event.key === "Escape") { event.stopPropagation(); toggleSectionDraft(); } }} />
+          <button type="submit" class="explorer-icon" disabled={!newSectionName.trim()} aria-label={t("chat.channels.add")}><Plus size={16} /></button>
+        </form>
       {/if}
-      <section class="channel-section" role="group" ondragover={(event) => event.preventDefault()} ondrop={(event) => handleDrop(event, null)}>
-        <div class="section-heading">
-          <button type="button" class="section-toggle" class:collapsed={channelsCollapsed} aria-label={sectionToggleLabel(t("chat.channels.defaultSection"), channelsCollapsed)} aria-expanded={!channelsCollapsed} onclick={() => { channelsCollapsed = !channelsCollapsed; }}>
-            <span use:overflowTooltip={t("chat.channels.defaultSection")}>{t("chat.channels.defaultSection")}</span>
-            {#if channelsCollapsed}<ChevronRight class="section-chevron" size={13} />{:else}<ChevronDown class="section-chevron" size={13} />{/if}
-          </button>
-          <button type="button" class="section-create-action" aria-label={t("chat.channels.createTitle")} data-app-tooltip={t("chat.channels.createTitle")} onclick={() => openCreate()}><Plus size={13} /></button>
-          <button bind:this={sectionButton} type="button" class="explorer-icon explorer-row-action" aria-label={t("chat.moreActions")} data-app-tooltip-disabled="true" aria-haspopup="menu" aria-expanded={sectionContextMenu?.target.kind === "channels"} onclick={(event) => void toggleSectionContextMenu(event, { kind: "channels" })}><EllipsisVertical size={14} /></button>
-        </div>
-        {#if !channelsCollapsed}
-          {#if chat.channelsLoading && projects.selectedProjectId}
-            <div class="channel-row explorer-row-label channel-loading" role="status" aria-label={t("common.loading")}>
-              <Hash size={COMPACT_IDENTITY_ICON_SIZE} strokeWidth={COMPACT_IDENTITY_ICON_STROKE_WIDTH} class="explorer-row-icon" />
-              <span class="min-w-0 flex-1 truncate">general</span>
-              <LoaderCircle size={12} class="animate-spin" />
-            </div>
-          {:else}
-            {#each unsectionedChannels as channel (channel.id)}
-              {@render ChannelRow({ channel })}
-            {/each}
-            {#if unsectionedChannels.length === 0 && query}<p class="px-2 py-1 text-xs text-muted-foreground">{t("chat.channels.noResults")}</p>{/if}
-          {/if}
-        {/if}
-      </section>
 
-      {#each sections as section (section.id)}
-        <section class="channel-section" role="group" ondragover={(event) => event.preventDefault()} ondrop={(event) => handleDrop(event, section.id)}>
-          <div
-            class="section-heading"
-            class:section-renaming={renamingSectionId === section.id}
-            onfocusout={(event) => { if (renamingSectionId === section.id) handleSectionRenameFocusOut(event); }}
-          >
-            {#if renamingSectionId === section.id}
-              <input
-                bind:this={renameSectionInput}
-                class="section-rename-input"
-                bind:value={sectionNameDraft}
-                maxlength="80"
-                aria-label={t("chat.channels.sectionName")}
-                data-app-shortcuts="ignore"
-                onkeydown={handleSectionRenameKeydown}
-              />
-              <button type="button" class="explorer-icon section-rename-control" aria-label={t("chat.save")} disabled={!sectionNameDraft.trim() || [...sectionNameDraft.trim()].length > 80} data-app-tooltip-disabled="true" onpointerdown={() => { sectionRenameControlPointerActive = true; }} onpointerup={releaseSectionRenameControlPointer} onpointercancel={() => { sectionRenameControlPointerActive = false; }} onkeydown={handleSectionRenameControlKeydown} onclick={(event) => finishSectionRenameAndFocus(event, true)}><Check size={14} /></button>
-              <button type="button" class="explorer-icon section-rename-control" aria-label={t("chat.cancel")} data-app-tooltip-disabled="true" onpointerdown={() => { sectionRenameControlPointerActive = true; }} onpointerup={releaseSectionRenameControlPointer} onpointercancel={() => { sectionRenameControlPointerActive = false; }} onkeydown={handleSectionRenameControlKeydown} onclick={(event) => finishSectionRenameAndFocus(event, false)}><X size={14} /></button>
-            {:else}
-              <button type="button" class="section-toggle" class:collapsed={section.collapsed} aria-label={sectionToggleLabel(section.name, section.collapsed)} aria-expanded={!section.collapsed} onclick={() => toggleSection(section.id)}>
-                <span use:overflowTooltip={section.name}>{section.name}</span>
-                {#if section.collapsed}<ChevronRight class="section-chevron" size={13} />{:else}<ChevronDown class="section-chevron" size={13} />{/if}
+      {#if railError}<Notice class="mx-2 mb-1 px-2 py-1 text-xs" message={railError} />{/if}
+
+      <div class="explorer-list min-h-0 flex-1 pb-2">
+        {#if query.trim().length >= 2}
+          <section class="message-results" aria-label={t("chat.organization.messageSearchResults")}>
+            <div class="section-heading"><span>{t("chat.organization.messages")}</span>{#if messageSearchLoading}<LoaderCircle size={12} class="animate-spin" aria-label={t("common.loading")} />{/if}</div>
+            {#each messageSearchResults as result (result.messageItemId)}
+              <button type="button" class="message-result" onclick={() => void openMessageResult(result)}>
+                <span><strong>{searchAuthorDisplayName(result)}</strong><small>{projectName(result.projectId)} · #{result.channelName}{#if result.replyThreadId} · {t("chat.organization.thread")}{/if}</small></span>
+                <span>{searchExcerpt(result)}</span>
               </button>
-              <button type="button" class="section-create-action" aria-label={t("chat.channels.createTitle")} data-app-tooltip={t("chat.channels.createTitle")} onclick={() => openCreate(section.id)}><Plus size={13} /></button>
-              <button type="button" class="explorer-icon explorer-row-action" aria-label={`${t("chat.moreActions")}: ${section.name}`} data-app-tooltip-disabled="true" aria-haspopup="menu" aria-expanded={sectionContextMenu?.target.kind === "section" && sectionContextMenu.target.section.id === section.id} onclick={(event) => void toggleSectionContextMenu(event, { kind: "section", section })}><EllipsisVertical size={14} /></button>
-            {/if}
-          </div>
-          {#if !section.collapsed}
-            {#each sectionChannels(section) as channel (channel.id)}{@render ChannelRow({ channel })}{/each}
-          {/if}
-        </section>
-      {/each}
-
-      {#if !query.trim()}
-        <section class="channel-section" role="group" data-chat-direct-messages>
+            {/each}
+            {#if !messageSearchLoading && messageSearchResults.length === 0}<p class="px-2 py-1 text-xs text-muted-foreground">{t("chat.organization.noMessageSearchResults")}</p>{/if}
+          </section>
+        {/if}
+        <section class="channel-section" role="group" ondragover={(event) => event.preventDefault()} ondrop={(event) => handleDrop(event, null)}>
           <div class="section-heading">
-            <button type="button" class="section-toggle" class:collapsed={directMessagesCollapsed} aria-label={sectionToggleLabel(t("chat.channels.directMessages"), directMessagesCollapsed)} aria-expanded={!directMessagesCollapsed} onclick={() => { directMessagesCollapsed = !directMessagesCollapsed; }}>
-              <span use:overflowTooltip={t("chat.channels.directMessages")}>{t("chat.channels.directMessages")}</span>
-              {#if directMessagesCollapsed}<ChevronRight class="section-chevron" size={13} />{:else}<ChevronDown class="section-chevron" size={13} />{/if}
+            <button type="button" class="section-toggle" class:collapsed={channelsCollapsed} aria-label={sectionToggleLabel(t("chat.channels.defaultSection"), channelsCollapsed)} aria-expanded={!channelsCollapsed} onclick={() => { channelsCollapsed = !channelsCollapsed; }}>
+              <span use:overflowTooltip={t("chat.channels.defaultSection")}>{t("chat.channels.defaultSection")}</span>
+              {#if channelsCollapsed}<ChevronRight class="section-chevron" size={13} />{:else}<ChevronDown class="section-chevron" size={13} />{/if}
             </button>
-            <button bind:this={directMessageButton} type="button" class="section-create-action" aria-label={t("chat.channels.newDirectMessage")} data-app-tooltip={t("chat.channels.newDirectMessage")} aria-haspopup="dialog" aria-expanded={directMessagePickerOpen} onpointerenter={() => { void loadDirectMessagePicker(); }} onfocus={() => { void loadDirectMessagePicker(); }} onclick={openDirectMessagePicker}><Plus size={13} /></button>
-            <button type="button" class="explorer-icon explorer-row-action" aria-label={`${t("chat.moreActions")}: ${t("chat.channels.directMessages")}`} data-app-tooltip-disabled="true" aria-haspopup="menu" aria-expanded={sectionContextMenu?.target.kind === "directMessages"} onclick={(event) => void toggleSectionContextMenu(event, { kind: "directMessages" })}><EllipsisVertical size={14} /></button>
+            <button type="button" class="section-create-action" aria-label={t("chat.channels.createTitle")} data-app-tooltip={t("chat.channels.createTitle")} onclick={() => openCreate()}><Plus size={13} /></button>
+            <button bind:this={sectionButton} type="button" class="explorer-icon explorer-row-action" aria-label={t("chat.moreActions")} data-app-tooltip-disabled="true" aria-haspopup="menu" aria-expanded={sectionContextMenu?.target.kind === "channels"} onclick={(event) => void toggleSectionContextMenu(event, { kind: "channels" })}><EllipsisVertical size={14} /></button>
           </div>
-          {#if !directMessagesCollapsed}
-            <p class="section-hint" data-chat-direct-messages-hint>{t("chat.channels.directMessagesHint")}</p>
+          {#if !channelsCollapsed}
+            {#if chat.channelsLoading && projects.selectedProjectId}
+              <div class="channel-row explorer-row-label channel-loading" role="status" aria-label={t("common.loading")}>
+                <Hash size={COMPACT_IDENTITY_ICON_SIZE} strokeWidth={COMPACT_IDENTITY_ICON_STROKE_WIDTH} class="explorer-row-icon" />
+                <span class="min-w-0 flex-1 truncate">general</span>
+                <LoaderCircle size={12} class="animate-spin" />
+              </div>
+            {:else}
+              {#each unsectionedChannels as channel (channel.id)}
+                {@render ChannelRow({ channel })}
+              {/each}
+              {#if unsectionedChannels.length === 0 && query}<p class="px-2 py-1 text-xs text-muted-foreground">{t("chat.channels.noResults")}</p>{/if}
+            {/if}
           {/if}
         </section>
-      {/if}
 
+        {#each sections as section (section.id)}
+          <section class="channel-section" role="group" ondragover={(event) => event.preventDefault()} ondrop={(event) => handleDrop(event, section.id)}>
+            <div
+              class="section-heading"
+              class:section-renaming={renamingSectionId === section.id}
+              onfocusout={(event) => { if (renamingSectionId === section.id) handleSectionRenameFocusOut(event); }}
+            >
+              {#if renamingSectionId === section.id}
+                <input
+                  bind:this={renameSectionInput}
+                  class="section-rename-input"
+                  bind:value={sectionNameDraft}
+                  maxlength="80"
+                  aria-label={t("chat.channels.sectionName")}
+                  data-app-shortcuts="ignore"
+                  onkeydown={handleSectionRenameKeydown}
+                />
+                <button type="button" class="explorer-icon section-rename-control" aria-label={t("chat.save")} disabled={!sectionNameDraft.trim() || [...sectionNameDraft.trim()].length > 80} data-app-tooltip-disabled="true" onpointerdown={() => { sectionRenameControlPointerActive = true; }} onpointerup={releaseSectionRenameControlPointer} onpointercancel={() => { sectionRenameControlPointerActive = false; }} onkeydown={handleSectionRenameControlKeydown} onclick={(event) => finishSectionRenameAndFocus(event, true)}><Check size={14} /></button>
+                <button type="button" class="explorer-icon section-rename-control" aria-label={t("chat.cancel")} data-app-tooltip-disabled="true" onpointerdown={() => { sectionRenameControlPointerActive = true; }} onpointerup={releaseSectionRenameControlPointer} onpointercancel={() => { sectionRenameControlPointerActive = false; }} onkeydown={handleSectionRenameControlKeydown} onclick={(event) => finishSectionRenameAndFocus(event, false)}><X size={14} /></button>
+              {:else}
+                <button type="button" class="section-toggle" class:collapsed={section.collapsed} aria-label={sectionToggleLabel(section.name, section.collapsed)} aria-expanded={!section.collapsed} onclick={() => toggleSection(section.id)}>
+                  <span use:overflowTooltip={section.name}>{section.name}</span>
+                  {#if section.collapsed}<ChevronRight class="section-chevron" size={13} />{:else}<ChevronDown class="section-chevron" size={13} />{/if}
+                </button>
+                <button type="button" class="section-create-action" aria-label={t("chat.channels.createTitle")} data-app-tooltip={t("chat.channels.createTitle")} onclick={() => openCreate(section.id)}><Plus size={13} /></button>
+                <button type="button" class="explorer-icon explorer-row-action" aria-label={`${t("chat.moreActions")}: ${section.name}`} data-app-tooltip-disabled="true" aria-haspopup="menu" aria-expanded={sectionContextMenu?.target.kind === "section" && sectionContextMenu.target.section.id === section.id} onclick={(event) => void toggleSectionContextMenu(event, { kind: "section", section })}><EllipsisVertical size={14} /></button>
+              {/if}
+            </div>
+            {#if !section.collapsed}
+              {#each sectionChannels(section) as channel (channel.id)}{@render ChannelRow({ channel })}{/each}
+            {/if}
+          </section>
+        {/each}
+
+        {#if !query.trim()}
+          <section class="channel-section" role="group" data-chat-direct-messages>
+            <div class="section-heading">
+              <button type="button" class="section-toggle" class:collapsed={directMessagesCollapsed} aria-label={sectionToggleLabel(t("chat.channels.directMessages"), directMessagesCollapsed)} aria-expanded={!directMessagesCollapsed} onclick={() => { directMessagesCollapsed = !directMessagesCollapsed; }}>
+                <span use:overflowTooltip={t("chat.channels.directMessages")}>{t("chat.channels.directMessages")}</span>
+                {#if directMessagesCollapsed}<ChevronRight class="section-chevron" size={13} />{:else}<ChevronDown class="section-chevron" size={13} />{/if}
+              </button>
+              <button bind:this={directMessageButton} type="button" class="section-create-action" aria-label={t("chat.channels.newDirectMessage")} data-app-tooltip={t("chat.channels.newDirectMessage")} aria-haspopup="dialog" aria-expanded={directMessagePickerOpen} onpointerenter={() => { void loadDirectMessagePicker(); }} onfocus={() => { void loadDirectMessagePicker(); }} onclick={openDirectMessagePicker}><Plus size={13} /></button>
+              <button type="button" class="explorer-icon explorer-row-action" aria-label={`${t("chat.moreActions")}: ${t("chat.channels.directMessages")}`} data-app-tooltip-disabled="true" aria-haspopup="menu" aria-expanded={sectionContextMenu?.target.kind === "directMessages"} onclick={(event) => void toggleSectionContextMenu(event, { kind: "directMessages" })}><EllipsisVertical size={14} /></button>
+            </div>
+            {#if !directMessagesCollapsed}
+              <p class="section-hint" data-chat-direct-messages-hint>{t("chat.channels.directMessagesHint")}</p>
+            {/if}
+          </section>
+        {/if}
+
+      </div>
     </div>
-
   </aside>
-{:else if showCollapsedStrip}
-  <aside class="explorer-sidebar flex h-full flex-col items-center" aria-label={t("chat.channels.explorerLabel")}><div class="explorer-toolbar"><button type="button" class="explorer-icon" aria-expanded="false" data-app-tooltip={t("chat.openRail")} aria-label={t("chat.openRail")} onclick={onExpand}><ChevronsRight size={16} /></button></div></aside>
 {/if}
 
 {#if sectionContextMenu}

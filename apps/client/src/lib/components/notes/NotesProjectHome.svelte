@@ -884,7 +884,8 @@
   class="explorer-sidebar notes-project-explorer relative h-full min-h-0 shrink-0 overflow-hidden"
   class:explorer-touch={mobileLayout}
   class:notes-project-explorer-mobile={mobileLayout}
-  class:notes-project-explorer-collapsed={!mobileLayout && explorerCollapsed}
+  class:explorer-dock={!mobileLayout}
+  class:explorer-dock-collapsed={!mobileLayout && explorerCollapsed}
   class:notes-project-explorer-dragging={draggingNavigationItem !== null}
   aria-label={t("notes.explorerLabel")}
   data-notes-explorer
@@ -892,7 +893,7 @@
 >
   {#if !mobileLayout}
     <div
-      class="notes-project-explorer-collapsed-rail absolute inset-y-0 left-0 z-10 w-11"
+      class="explorer-dock-rail"
       aria-hidden={!explorerCollapsed}
       inert={!explorerCollapsed}
     >
@@ -915,7 +916,8 @@
   {/if}
 
   <div
-    class="notes-project-explorer-content flex h-full min-h-0 flex-col"
+    class="flex h-full min-h-0 flex-col"
+    class:explorer-dock-content={!mobileLayout}
     inert={!mobileLayout && explorerCollapsed}
   >
     <div class="explorer-toolbar">
@@ -1327,25 +1329,10 @@
 {/if}
 
 <style>
-  .notes-project-explorer {
-    width: var(--explorer-width);
-    transition: width 180ms cubic-bezier(0.2, 0, 0, 1);
-  }
-
-  .notes-project-explorer-content {
-    width: var(--explorer-width);
-    min-width: var(--explorer-width);
-  }
-
   .notes-project-explorer-mobile {
     width: 100%;
     min-width: 0;
     flex: 1 1 0%;
-  }
-
-  .notes-project-explorer-mobile .notes-project-explorer-content {
-    width: 100%;
-    min-width: 0;
   }
 
   .notes-project-explorer-mobile :global(.notes-page-row-content),
@@ -1355,23 +1342,6 @@
   .notes-project-explorer-mobile :global(.notes-page-action-menu > button),
   .notes-project-explorer-mobile :global(.notes-folder-action-menu > button) {
     min-height: var(--touch-target-min);
-  }
-
-  .notes-project-explorer-collapsed {
-    width: 2.75rem;
-  }
-
-  .notes-project-explorer-collapsed-rail {
-    background-color: var(--explorer-background);
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 60ms linear;
-  }
-
-  .notes-project-explorer-collapsed .notes-project-explorer-collapsed-rail {
-    opacity: 1;
-    pointer-events: auto;
-    transition-delay: 100ms;
   }
 
   .notes-navigation-folder-drop-area {
@@ -1421,12 +1391,5 @@
   .notes-project-explorer-dragging :global(.notes-folder-row-content:hover),
   .notes-project-explorer-dragging :global(.notes-page-row-content:hover) {
     background-color: transparent;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .notes-project-explorer,
-    .notes-project-explorer-collapsed-rail {
-      transition: none;
-    }
   }
 </style>

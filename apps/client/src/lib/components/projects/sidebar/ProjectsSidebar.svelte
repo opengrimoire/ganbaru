@@ -89,12 +89,12 @@
 {/snippet}
 
 <aside
-  class="explorer-sidebar projects-sidebar relative h-full min-h-0 shrink-0 overflow-hidden"
-  class:projects-sidebar-collapsed={collapsed}
+  class="explorer-sidebar explorer-dock h-full min-h-0"
+  class:explorer-dock-collapsed={collapsed}
   aria-label={t("projects.sidebar.label")}
   data-projects-sidebar
 >
-  <div class="projects-sidebar-rail absolute inset-y-0 left-0 z-10 flex w-11 flex-col" aria-hidden={!collapsed} inert={!collapsed}>
+  <div class="explorer-dock-rail flex flex-col" aria-hidden={!collapsed} inert={!collapsed}>
     <div class="explorer-toolbar justify-center">
       <button
         bind:this={expandButton}
@@ -113,7 +113,7 @@
     {/if}
   </div>
 
-  <div class="projects-sidebar-content flex h-full min-h-0 flex-col" inert={collapsed}>
+  <div class="explorer-dock-content flex h-full min-h-0 flex-col" inert={collapsed}>
     <div class="explorer-toolbar gap-1">
       {#if listedGroupId}
         <Select
@@ -170,39 +170,3 @@
     {/if}
   </div>
 </aside>
-
-<style>
-  .projects-sidebar {
-    width: var(--explorer-width);
-    transition: width 180ms cubic-bezier(0.2, 0, 0, 1);
-  }
-
-  .projects-sidebar-content {
-    width: var(--explorer-width);
-    min-width: var(--explorer-width);
-  }
-
-  .projects-sidebar-collapsed {
-    width: 2.75rem;
-  }
-
-  .projects-sidebar-rail {
-    background-color: var(--explorer-background);
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 60ms linear;
-  }
-
-  .projects-sidebar-collapsed .projects-sidebar-rail {
-    opacity: 1;
-    pointer-events: auto;
-    transition-delay: 100ms;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .projects-sidebar,
-    .projects-sidebar-rail {
-      transition: none;
-    }
-  }
-</style>

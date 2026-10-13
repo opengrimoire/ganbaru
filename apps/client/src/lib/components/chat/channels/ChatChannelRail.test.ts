@@ -103,7 +103,7 @@ describe("ChatChannelRail", () => {
     const input = target.querySelector<HTMLInputElement>('.explorer-toolbar input[type="search"]');
     expect(input).not.toBeNull();
     expect(document.activeElement).not.toBe(input);
-    expect(target.querySelectorAll(".explorer-toolbar button")).toHaveLength(1);
+    expect(target.querySelectorAll(".explorer-dock-content > .explorer-toolbar button")).toHaveLength(1);
     window.dispatchEvent(new Event("ganbaru-ai:chat-focus-search"));
     await tick();
     await vi.waitFor(() => expect(document.activeElement).toBe(input));
@@ -124,6 +124,36 @@ describe("ChatChannelRail", () => {
     await tick();
     expect(target.querySelector('input[type="search"]')).toBe(input);
     expect(document.activeElement).toBe(input);
+  });
+
+  it("keeps the docked rail content mounted and inert behind the collapsed strip", async () => {
+    const onExpand = vi.fn();
+    component = mount(ChatChannelRail, {
+      target,
+      props: { expanded: false, showCollapsedStrip: true, onExpand, onCollapse: vi.fn() },
+    });
+    await tick();
+
+    const rail = target.querySelector("aside.explorer-sidebar");
+    const content = target.querySelector<HTMLElement>(".explorer-dock-content");
+    const strip = target.querySelector<HTMLElement>(".explorer-dock-rail");
+    expect(rail?.classList.contains("explorer-dock-collapsed")).toBe(true);
+    expect(content?.inert).toBe(true);
+    expect(content?.querySelector("[data-chat-rail-close]")).not.toBeNull();
+    expect(strip?.inert).toBe(false);
+
+    strip?.querySelector<HTMLButtonElement>("button")?.click();
+    expect(onExpand).toHaveBeenCalledOnce();
+  });
+
+  it("renders nothing when collapsed without a docked strip", async () => {
+    component = mount(ChatChannelRail, {
+      target,
+      props: { expanded: false, showCollapsedStrip: false, onExpand: vi.fn(), onCollapse: vi.fn() },
+    });
+    await tick();
+
+    expect(target.querySelector("aside")).toBeNull();
   });
 
   it("shows a channel name tooltip only while the label is clipped", async () => {

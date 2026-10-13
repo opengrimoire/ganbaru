@@ -1113,7 +1113,8 @@
   .chat-workspace :global(svg.lucide:not(.explorer-sidebar *)) { stroke-width: var(--chat-icon-stroke-width); }
   .chat-workspace :global(svg.lucide[stroke-width="1"]:not(.explorer-sidebar *)) { stroke-width: 1; }
   .chat-workspace :global(svg.lucide[stroke-width="1.5"]:not(.explorer-sidebar *)) { stroke-width: var(--chat-compact-icon-stroke-width); }
-  .chat-workspace[data-rail-presentation="column"][data-rail-open="true"] { --chat-rail-column-width: var(--explorer-width); }
+  /* A column rail sizes its own track, so it shares the docked explorer collapse motion with Projects and Notes. */
+  .chat-workspace[data-rail-presentation="column"] { --chat-rail-column-width: auto; }
   .chat-workspace[data-rail-presentation="sheet"] { --chat-rail-column-width: 0px; }
   .chat-workspace[data-reply-thread-presentation="column"] { --chat-reply-thread-column-width: var(--chat-reply-thread-width); }
   .chat-workspace[data-inspector-presentation="column"] { --chat-inspector-column-width: var(--chat-inspector-width); }

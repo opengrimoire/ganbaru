@@ -808,6 +808,53 @@ html[data-hover-suppressed] .content-panel * {
   color: var(--sidebar-foreground);
 }
 
+/* A docked desktop explorer collapses to a rail by clipping fixed-width content, so its rows never reflow while the width animates. */
+.explorer-dock {
+  --explorer-dock-rail-width: 2.75rem;
+  --explorer-dock-duration: 180ms;
+  --explorer-dock-easing: cubic-bezier(0.2, 0, 0, 1);
+  position: relative;
+  width: var(--explorer-width);
+  flex-shrink: 0;
+  overflow: hidden;
+  transition: width var(--explorer-dock-duration) var(--explorer-dock-easing);
+}
+
+.explorer-dock-collapsed {
+  width: var(--explorer-dock-rail-width);
+}
+
+.explorer-dock-content {
+  width: var(--explorer-width);
+  min-width: var(--explorer-width);
+}
+
+/* The rail fades in once the panel has mostly closed and fades out at once when it reopens. */
+.explorer-dock-rail {
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  z-index: 10;
+  width: var(--explorer-dock-rail-width);
+  background-color: var(--explorer-background);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 60ms linear;
+}
+
+.explorer-dock-collapsed .explorer-dock-rail {
+  opacity: 1;
+  pointer-events: auto;
+  transition-delay: 100ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .explorer-dock,
+  .explorer-dock-rail {
+    transition: none;
+  }
+}
+
 .explorer-toolbar {
   display: flex;
   height: var(--explorer-toolbar-height);

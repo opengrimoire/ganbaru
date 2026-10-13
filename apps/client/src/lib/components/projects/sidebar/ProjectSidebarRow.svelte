@@ -66,10 +66,6 @@
   const lockedReason = $derived(actions.identityLocked ? t("projects.sidebar.identityLocked") : undefined);
   const moveUnavailableReason = $derived(lockedReason ?? (actions.canMoveToGroup ? undefined : t("projects.sidebar.noOtherGroup")));
 
-  $effect(() => {
-    if (pendingName !== null && project.name === pendingName) pendingName = null;
-  });
-
   function openMenu(): void {
     if (editing) return;
     menuOpen = true;
@@ -122,10 +118,13 @@
     const name = normalizeProjectName(nameDraft);
     if (!name || name === project.name) return;
     pendingName = name;
-    void onRename(name).catch((error: unknown) => {
-      pendingName = null;
-      console.error("Failed to rename a project from the Projects sidebar", error);
-    });
+    void onRename(name)
+      .catch((error: unknown) => {
+        console.error("Failed to rename a project from the Projects sidebar", error);
+      })
+      .finally(() => {
+        pendingName = null;
+      });
   }
 
   function cancelRename(): void {

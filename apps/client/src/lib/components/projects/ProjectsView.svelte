@@ -32,6 +32,7 @@
   import ProjectEmptyState from "./ProjectEmptyState.svelte";
   import ProjectWorkspaceHeader from "./ProjectWorkspaceHeader.svelte";
   import ProjectsSidebar from "./sidebar/ProjectsSidebar.svelte";
+  import { projectViewLabel } from "./sidebar/project-view-presentation";
   import ProjectTaskDetailPanel from "./task-detail/ProjectTaskDetailPanel.svelte";
   import type { ProjectViewComponents } from "./view-components";
   import { ProjectTaskQueryController } from "./task-query-controller.svelte";
@@ -54,16 +55,9 @@
   const preferences = getPreferences();
   const viewport = getViewport();
   const { t } = getLocalization();
-  let projectCalendarViewMode = $state<CalendarViewMode>("week");
   let projectViewControlsTarget = $state<HTMLElement | null>(null);
-  let projectCalendarViewModeInitialized = false;
-
-  $effect(() => {
-    if (projectCalendarViewModeInitialized) return;
-    projectCalendarViewModeInitialized = true;
-    projectCalendarViewMode = mobileLayout ? "day" : "week";
-  });
   const taskQuery = new ProjectTaskQueryController({ projects, calendar, translate: t });
+  const projectCalendarViewMode = $derived<CalendarViewMode>(taskQuery.calendarMode ?? (mobileLayout ? "day" : "week"));
   const routeLoad = new ProjectRouteLoadController(projects);
   const routeUi = new ProjectRouteUiController();
 
@@ -182,11 +176,12 @@
     void projects.ensureLoaded().catch((error) => {
       console.error("load projects failed", error);
     });
+    return () => taskQuery.dispose();
   });
 
   let viewDataFailure = $state<{ projectId: string; view: ProjectViewId } | null>(null);
   const viewDataFailed = $derived(
-    viewDataFailure?.projectId === selectedProjectId && viewDataFailure?.view === projects.activeView,
+    viewDataFailure?.projectId === selectedProjectId && viewDataFailure?.view === projects.activeTaskView,
   );
 
   function requestViewData(projectId: string, view: ProjectViewId): void {
@@ -198,13 +193,22 @@
   }
 
   $effect(() => {
-    const view = projects.activeView;
-    if (!selectedProject || !selectedGroup) return;
+    const view = projects.activeTaskView;
+    if (!selectedProject || !selectedGroup || !view) return;
     requestViewData(selectedProject.id, view);
   });
 
   $effect(() => {
-    projects.activeView;
+    taskQuery.syncViewQuery();
+  });
+
+  $effect(() => {
+    taskQuery.persistViewQuery();
+  });
+
+  $effect(() => {
+    projects.activeTaskView;
+    taskQuery.queryReady;
     taskQuery.filterState;
     taskQuery.sections;
     taskQuery.allEvents;
@@ -223,7 +227,8 @@
   $effect(() => {
     const panel = routeUi.toolbarPanel;
     if (!panel) return;
-    const available = projectToolbarPanelsForView(projects.activeView);
+    const view = projects.activeTaskView;
+    const available: readonly ProjectToolbarPanel[] = view ? projectToolbarPanelsForView(view) : ["settings"];
     if (!available.includes(panel)) routeUi.closeToolbarImmediately();
   });
 
@@ -268,6 +273,8 @@
     sections;
     projectTags;
     projectCustomFields;
+    taskQuery.queryReady;
+    projects.taskViewPage;
     taskQuery.repairDisappearingFields();
   });
 
@@ -333,14 +340,11 @@
     ));
   }
 
+  /** Opens a task created from the list without touching the view's saved query, even when its filters hide the task. */
   function revealCreatedTask(task: ProjectTask | undefined): void {
     if (!task) return;
-    projects.activeView = "list";
-    taskQuery.reset();
     routeUi.selectedTaskId = task.id;
     routeUi.clearTaskSelection();
-    taskQuery.showArchivedTasks = false;
-    taskQuery.showInactiveSections = false;
   }
 
 
@@ -517,9 +521,29 @@
           {/if}
           </div>
         {/if}
+          {#if projects.activeTaskView === null}
+            <p class="flex h-full items-center justify-center p-4 text-center text-sm text-muted-foreground">
+              {t("projects.sidebar.noViews")}
+            </p>
+          {:else if !taskQuery.queryReady}
+            {#if viewDataFailed}
+              <Notice
+                layout="fill"
+                class="text-sm"
+                message={t("common.viewLoadFailed", projects.activeProjectView ? projectViewLabel(t, projects.activeProjectView) : "")}
+                copy={false}
+                onRetry={() => {
+                  if (selectedProjectId && projects.activeTaskView) requestViewData(selectedProjectId, projects.activeTaskView);
+                }}
+              />
+            {:else}
+              <Loading layout="fill" />
+            {/if}
+          {:else}
+          {#key projects.activeViewId}
           {#if projects.activeTaskView === "list"}
             {@const ProjectListView = viewComponents?.list ?? null}
-            {#if ProjectListView && projects.isProjectViewDataLoaded(selectedProjectId, "list")}
+            {#if ProjectListView}
             <ProjectListView
               {taskQuery}
               {mobileLayout}
@@ -547,14 +571,6 @@
               onTaskListColumnWidthsChange={(widths, options) => taskQuery.updateColumnWidths(widths, options)}
               onNeedMore={() => taskQuery.loadNextList(routeUi.selectedTaskIds)}
             />
-            {:else if viewDataFailed}
-              <Notice
-                layout="fill"
-                class="text-sm"
-                message={t("common.viewLoadFailed", t("projects.tabs.list"))}
-                copy={false}
-                onRetry={() => { if (selectedProjectId) requestViewData(selectedProjectId, "list"); }}
-              />
             {:else}
               <Loading layout="fill" />
             {/if}
@@ -584,7 +600,7 @@
                 createDefaults={projectCalendarCreateDefaults}
                 initialViewMode={projectCalendarViewMode}
                 onViewModeChange={(mode) => {
-                  projectCalendarViewMode = mode;
+                  taskQuery.calendarMode = mode;
                 }}
                 {mobileLayout}
                 headerTarget={projectViewControlsTarget}
@@ -621,12 +637,10 @@
               onOpenTask={(task) => routeUi.openTask(task)}
             />
             {/if}
-          {:else if projects.activeTaskView === null}
-            <p class="flex h-full items-center justify-center p-4 text-center text-sm text-muted-foreground">
-              {t("projects.sidebar.noViews")}
-            </p>
           {:else}
             <Loading layout="fill" />
+          {/if}
+          {/key}
           {/if}
       {:else}
         <ProjectEmptyState

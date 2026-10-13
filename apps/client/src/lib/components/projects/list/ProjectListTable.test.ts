@@ -33,12 +33,13 @@ async function renderTable() {
   const addField = vi.fn<Input["projects"]["addCustomField"]>().mockResolvedValue({...field, id: "created", name: "Budget"});
   const saveColumns = vi.fn<Input["projects"]["saveTaskListColumns"]>().mockResolvedValue(undefined);
   const query = new ProjectTaskQueryController({projects: {
-    selectedProject: {id: "project"}, activeView: "list", activeProjectView: {id: "view-list", projectId: "project", viewType: "list"}, customFieldsForProject: () => [field], prioritiesForProject: () => [],
+    selectedProject: {id: "project"}, activeView: "list", activeTaskView: "list", isProjectOptionalDataLoaded: () => true, viewPreferences: [], activeProjectView: {id: "view-list", projectId: "project", viewType: "list"}, customFieldsForProject: () => [field], prioritiesForProject: () => [],
     saveTaskListPresentation: savePresentation, addCustomField: addField, saveTaskListColumns: saveColumns,
     isProjectDataLoaded: () => true, sectionsForProject: () => [],
     loadTaskView: async () => undefined, taskViewLoading: false, taskViewError: null,
     taskViewPage: { projectId: "project", view: "list", tasks: [], columnCalculations: [{column: "custom:points", total: 2500, filled: 1200, sum: 9000}] },
   } as unknown as Input["projects"], calendar: {sourceEvents: []} as unknown as Input["calendar"], translate: getLocalization().t});
+  query.syncViewQuery();
   query.listColumns = ["custom:points", "due"];
   component = mount(ProjectListTableHarness, { target, props: {query} });
   await tick();

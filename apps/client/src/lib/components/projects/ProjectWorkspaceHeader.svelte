@@ -145,7 +145,7 @@
     );
   }
 
-  const toolbarPanels = $derived(projectToolbarPanelsForView(projects.activeView));
+  const toolbarPanels = $derived(projects.activeTaskView ? projectToolbarPanelsForView(projects.activeTaskView) : (["settings"] as const));
   const customizationPanels = $derived(toolbarPanels.filter((panel) => panel !== "settings"));
 
   function panelIcon(panel: ProjectToolbarPanel) {

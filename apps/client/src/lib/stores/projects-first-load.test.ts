@@ -163,16 +163,14 @@ describe("Projects initial loading", () => {
     expect(projects.isProjectDataLoaded("project-1")).toBe(true);
     expect(backend.workspaceCalls).toBe(1);
 
-    await projects.ensureProjectViewData("project-1", "kanban");
-    expect(backend.optionalCalls).toEqual([]);
-    expect(projects.isProjectViewDataLoaded("project-1", "kanban")).toBe(true);
-
+    const kanban = projects.ensureProjectViewData("project-1", "kanban");
     const list = projects.ensureProjectViewData("project-1", "list");
     const toolbar = projects.ensureProjectToolbarData("project-1");
     expect(backend.optionalCalls).toEqual(["project-1:view_preferences"]);
     expect(projects.isProjectViewDataLoaded("project-1", "list")).toBe(false);
     backend.resolveOptional("view_preferences", "project-1", optionalData("view_preferences"));
-    await Promise.all([list, toolbar]);
+    await Promise.all([kanban, list, toolbar]);
+    expect(projects.isProjectViewDataLoaded("project-1", "kanban")).toBe(true);
     expect(projects.isProjectViewDataLoaded("project-1", "list")).toBe(true);
 
     await Promise.all([

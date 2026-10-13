@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Translate } from "$lib/i18n/translator.svelte";
-import type { ProjectCustomField, ProjectTaskViewRequest } from "$lib/projects/types";
+import type { ProjectCustomField, ProjectTaskViewRequest, ProjectViewPreference } from "$lib/projects/types";
+import {
+  defaultProjectViewQuery,
+  PROJECT_VIEW_QUERY_PREFERENCE_KEY,
+  serializeProjectViewQuery,
+  type ProjectViewQuery,
+} from "$lib/projects/view-query";
 import { defaultProjectListPresentation } from "$lib/projects/list/presentation";
 import {
   ProjectTaskQueryController,
@@ -13,7 +19,8 @@ type ControllerInput = ConstructorParameters<typeof ProjectTaskQueryController>[
 /** Isolate query preferences and their native write boundary from the rest of the project store. */
 function createController(activeView: "list" | "kanban" = "list") {
   const requests: Array<{ request: ProjectTaskViewRequest; append: boolean }> = [];
-  const selection = { projectId: "project-1", mutationRevision: 0, loadError: null as string | null };
+  const selection = { projectId: "project-1", mutationRevision: 0, loadError: null as string | null, preferencesLoaded: true, viewPreferences: [] as ProjectViewPreference[], viewId: null as string | null };
+  const saveViewQuery = vi.fn<ControllerInput["projects"]["saveViewQuery"]>().mockResolvedValue(undefined);
   const saveTaskListColumns = vi.fn<ControllerInput["projects"]["saveTaskListColumns"]>().mockResolvedValue(undefined);
   const saveTaskListPresentation = vi.fn<ControllerInput["projects"]["saveTaskListPresentation"]>().mockResolvedValue(undefined);
   const fields: ProjectCustomField[] = [];
@@ -26,15 +33,20 @@ function createController(activeView: "list" | "kanban" = "list") {
     get taskMutationRevision() { return selection.mutationRevision; },
     get taskViewError() { return selection.loadError; },
     activeView,
-    get activeProjectView() { return { id: `view-${selection.projectId}`, projectId: selection.projectId, viewType: activeView }; },
+    activeTaskView: activeView,
+    get activeProjectView() { return { id: selection.viewId ?? `view-${selection.projectId}`, projectId: selection.projectId, viewType: activeView }; },
     saveTaskListColumns,
     saveTaskListPresentation,
+    saveViewQuery,
+    isProjectOptionalDataLoaded: () => selection.preferencesLoaded,
     addCustomField,
     duplicateCustomField,
     customFieldsForProject: () => fields,
     prioritiesForProject: () => [],
+    tagsForProject: () => [],
+    customFieldOptionsForField: () => [],
     isProjectDataLoaded: () => true,
-    viewPreferences: [],
+    get viewPreferences() { return selection.viewPreferences; },
     taskViewLoading: false,
     taskViewPage: activeView === "list"
       ? { projectId: "project-1", view: "list", nextCursor: "list-cursor", columnCounts: [], columnCalculations: [{ column: "estimate", total: 1000, filled: 900, sum: 5000 }] }
@@ -47,8 +59,10 @@ function createController(activeView: "list" | "kanban" = "list") {
     projects,
     calendar: { sourceEvents: [] } as unknown as ControllerInput["calendar"],
     translate: ((key: string, ...parameters: unknown[]) => parameters.length ? `${key}: ${String(parameters[0])}` : key) as Translate,
+    querySaveDelayMs: 10,
   });
-  return { controller, requests, selection, saveTaskListColumns, saveTaskListPresentation, addCustomField, duplicateCustomField, fields, createdField, loadTaskView };
+  controller.syncViewQuery();
+  return { controller, requests, selection, saveViewQuery, saveTaskListColumns, saveTaskListPresentation, addCustomField, duplicateCustomField, fields, createdField, loadTaskView };
 }
 
 describe("Project task query controller policy", () => {
@@ -306,6 +320,7 @@ describe("Project task query controller policy", () => {
     controller.loadCurrent(["one", "two"], null);
     await vi.waitFor(() => expect(requests).toHaveLength(2));
     selection.projectId = "project-2";
+    controller.syncViewQuery();
     controller.loadCurrent([], null);
     await vi.waitFor(() => expect(requests).toHaveLength(3));
     expect(requests[2].request.projectId).toBe("project-2");
@@ -363,4 +378,117 @@ describe("Project task query controller policy", () => {
     await current;
     expect(controller.presentationSaving).toBe(false);
   });
+
+  it("restores each view's saved query while the task search stays shared", () => {
+    const { controller, selection } = createController();
+    selection.viewPreferences = [queryPreference("view-b", { statusFilter: "blocked", sortDirection: "desc" }, { showArchivedTasks: true, calendarMode: "month" })];
+    controller.search = "invoice";
+    selection.viewId = "view-b";
+    controller.syncViewQuery();
+    expect(controller.queryReady).toBe(true);
+    expect(controller.statusFilter).toBe("blocked");
+    expect(controller.sortDirection).toBe("desc");
+    expect(controller.showArchivedTasks).toBe(true);
+    expect(controller.calendarMode).toBe("month");
+    expect(controller.search).toBe("invoice");
+
+    selection.viewId = "view-c";
+    controller.syncViewQuery();
+    expect(controller.statusFilter).toBe("all");
+    expect(controller.showArchivedTasks).toBe(false);
+    expect(controller.calendarMode).toBeNull();
+    expect(controller.search).toBe("invoice");
+  });
+
+  it("saves edits once after the quiet period and keeps newer edits when its own write comes back", async () => {
+    const { controller, selection, saveViewQuery } = createController();
+    controller.persistViewQuery();
+    controller.statusFilter = "open";
+    controller.persistViewQuery();
+    controller.sortDirection = "desc";
+    controller.persistViewQuery();
+    await vi.waitFor(() => expect(saveViewQuery).toHaveBeenCalledTimes(1));
+    const [viewId, saved] = saveViewQuery.mock.calls[0];
+    expect(viewId).toBe("view-project-1");
+    expect(saved.filters).toMatchObject({ statusFilter: "open", sortDirection: "desc" });
+
+    controller.statusFilter = "done";
+    controller.persistViewQuery();
+    selection.viewPreferences = [queryPreference("view-project-1", saved.filters)];
+    controller.syncViewQuery();
+    expect(controller.statusFilter).toBe("done");
+    await vi.waitFor(() => expect(saveViewQuery).toHaveBeenCalledTimes(2));
+    expect(saveViewQuery.mock.calls[1][1].filters.statusFilter).toBe("done");
+  });
+
+  it("saves a pending edit to its own view before another view opens and shows it on return", () => {
+    const { controller, selection, saveViewQuery } = createController();
+    controller.statusFilter = "blocked";
+    controller.persistViewQuery();
+    selection.viewId = "view-b";
+    controller.syncViewQuery();
+    expect(saveViewQuery).toHaveBeenCalledTimes(1);
+    expect(saveViewQuery.mock.calls[0][0]).toBe("view-project-1");
+    expect(controller.statusFilter).toBe("all");
+
+    selection.viewId = null;
+    controller.syncViewQuery();
+    expect(controller.statusFilter).toBe("blocked");
+  });
+
+  it("applies a query changed elsewhere and drops the overridden local edit", async () => {
+    const { controller, selection, saveViewQuery } = createController();
+    controller.statusFilter = "open";
+    controller.persistViewQuery();
+    selection.viewPreferences = [queryPreference("view-project-1", { statusFilter: "done" })];
+    controller.syncViewQuery();
+    expect(controller.statusFilter).toBe("done");
+    controller.persistViewQuery();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(saveViewQuery).not.toHaveBeenCalled();
+  });
+
+  it("loads no tasks until the open view's saved query has loaded", async () => {
+    const { controller, selection, requests } = createController();
+    selection.preferencesLoaded = false;
+    selection.viewId = "view-b";
+    controller.syncViewQuery();
+    expect(controller.queryReady).toBe(false);
+    controller.loadCurrent([], null);
+    expect(requests).toHaveLength(0);
+
+    selection.viewPreferences = [queryPreference("view-b", { statusFilter: "blocked" })];
+    selection.preferencesLoaded = true;
+    controller.syncViewQuery();
+    controller.loadCurrent([], null);
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    expect(requests[0].request.statusFilter).toBe("blocked");
+  });
+
+  it("keeps saved field references until the project's fields have loaded", () => {
+    const kanban = createController("kanban").controller;
+    kanban.sortMode = "custom:points";
+    kanban.repairDisappearingFields();
+    expect(kanban.sortMode).toBe("custom:points");
+
+    const list = createController("list").controller;
+    list.sortMode = "custom:points";
+    list.repairDisappearingFields();
+    expect(list.sortMode).toBe("manual");
+  });
 });
+
+function queryPreference(
+  viewId: string,
+  filters: Partial<ProjectViewQuery["filters"]>,
+  rest: Partial<Omit<ProjectViewQuery, "filters">> = {},
+): ProjectViewPreference {
+  const query = defaultProjectViewQuery();
+  return {
+    projectId: "project-1",
+    viewId,
+    preferenceKey: PROJECT_VIEW_QUERY_PREFERENCE_KEY,
+    preferenceValue: serializeProjectViewQuery({ ...query, ...rest, filters: { ...query.filters, ...filters } }),
+    updatedAt: "",
+  };
+}

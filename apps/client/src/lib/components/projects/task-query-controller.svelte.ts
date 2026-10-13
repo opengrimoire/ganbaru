@@ -47,14 +47,33 @@ import type { Translate } from "$lib/i18n/translator.svelte";
 import type { ProjectCustomFieldValue } from "$lib/projects/types";
 import { defaultProjectListPresentation, parseProjectListPresentation, projectListPresentationForView, type ProjectListPresentation } from "$lib/projects/list/presentation";
 import type { ProjectCustomField, ProjectCustomFieldType } from "$lib/projects/types";
+import {
+  parseProjectViewQuery,
+  serializeProjectViewQuery,
+  storedProjectViewQuery,
+  type ProjectViewQuery,
+} from "$lib/projects/view-query";
+import type { CalendarViewMode } from "$lib/calendar/types";
 
 type ProjectsStore = ReturnType<typeof getProjects>;
 type CalendarStore = ReturnType<typeof getCalendar>;
+
+/** Quiet period after the last query edit before a view saves it, so typing a date or toggling filters writes once. */
+export const PROJECT_VIEW_QUERY_SAVE_DELAY_MS = 400;
 
 export interface ProjectTaskQueryControllerInput {
   projects: ProjectsStore;
   calendar: CalendarStore;
   translate: Translate;
+  /** Delay before an edited view query is saved; defaults to `PROJECT_VIEW_QUERY_SAVE_DELAY_MS`. */
+  querySaveDelayMs?: number;
+}
+
+interface PendingViewQuerySave {
+  viewId: string;
+  query: ProjectViewQuery;
+  json: string;
+  timer: ReturnType<typeof setTimeout>;
 }
 
 /** Owns the canonical Projects task query and both backend and local projections. */
@@ -74,6 +93,16 @@ export class ProjectTaskQueryController {
   #listColumnWriteGeneration = 0;
   #listColumnWriteViewId = $state<string | null>(null);
   #listColumnWriteError = $state<{ viewId: string; message: string } | null>(null);
+  readonly #querySaveDelayMs: number;
+  /** The task view whose saved query the state holds; null until that view's preferences have loaded. */
+  #queryViewId = $state<string | null>(null);
+  /** The stored query JSON last seen for `#queryViewId`, used to notice changes made elsewhere. */
+  #storedQueryJson: string | null = null;
+  /** The serialized state as last applied or saved, used to notice local edits. */
+  #appliedQueryJson = "";
+  /** Saved query JSON per view whose write has not yet come back through the store. */
+  readonly #unconfirmedQueryWrites = new Map<string, string>();
+  #pendingQuerySave: PendingViewQuerySave | null = null;
 
   showInactiveSections = $state(false);
   showArchivedTasks = $state(false);
@@ -94,16 +123,40 @@ export class ProjectTaskQueryController {
   listColumns = $state<ProjectTaskListColumn[]>([...DEFAULT_TASK_LIST_COLUMNS]);
   listColumnWidths = $state<ProjectTaskListColumnWidths>({});
   listPresentation = $state<ProjectListPresentation>(defaultProjectListPresentation());
+  /** Saved span of a Calendar view; null keeps the platform default. */
+  calendarMode = $state<CalendarViewMode | null>(null);
   readonly today = Temporal.Now.plainDateISO().toString();
 
   constructor(input: ProjectTaskQueryControllerInput) {
     this.#projects = input.projects;
     this.#calendar = input.calendar;
     this.#translate = input.translate;
+    this.#querySaveDelayMs = input.querySaveDelayMs ?? PROJECT_VIEW_QUERY_SAVE_DELAY_MS;
   }
 
   get projectId(): string | null {
     return this.#projects.selectedProject?.id ?? null;
+  }
+
+  /** The open task view, or null while a Notes or Chat view or no view is open. */
+  get taskViewId(): string | null {
+    return this.#projects.activeTaskView === null ? null : this.#projects.activeProjectView?.id ?? null;
+  }
+
+  /** Whether the open task view's saved query is applied, so its tasks can load and render. */
+  get queryReady(): boolean {
+    return this.#queryViewId !== null && this.#queryViewId === this.taskViewId;
+  }
+
+  /** The query the open task view saves: filters, sort, grouping, toggles, and calendar span, without the search. */
+  get viewQuery(): ProjectViewQuery {
+    const { search: _search, ...filters } = this.filterState;
+    return {
+      filters,
+      showArchivedTasks: this.showArchivedTasks,
+      showInactiveSections: this.showInactiveSections,
+      calendarMode: this.calendarMode,
+    };
   }
 
   /** The open list view, whose columns, widths, and presentation the table reads and writes. */
@@ -347,7 +400,7 @@ export class ProjectTaskQueryController {
   }
 
   get matchedEventIds(): Set<string> {
-    return new Set(this.#projects.activeView === "calendar"
+    return new Set(this.#projects.activeTaskView === "calendar"
       ? this.#projects.taskViewPage?.matchedEventIds ?? []
       : this.#projects.eventLinks
         .filter((link) => this.localView.matchedTaskIds.has(link.taskId))
@@ -388,8 +441,8 @@ export class ProjectTaskQueryController {
 
   request(): ProjectTaskViewRequest | null {
     const projectId = this.projectId;
-    const view = this.#projects.activeView;
-    if (!projectId) return null;
+    const view = this.#projects.activeTaskView;
+    if (!projectId || !view) return null;
     return {
       projectId,
       view,
@@ -424,7 +477,7 @@ export class ProjectTaskQueryController {
   /** Reload changed queries and committed mutations once while keeping selected details retained. */
   loadCurrent(selectedTaskIds: readonly string[], selectedTaskId: string | null): void {
     const request = this.request();
-    if (!request || !this.#projects.isProjectDataLoaded(request.projectId)) return;
+    if (!request || !this.queryReady || !this.#projects.isProjectDataLoaded(request.projectId)) return;
     const retained = selectedTaskId ? [...selectedTaskIds, selectedTaskId] : [...selectedTaskIds];
     const queryKey = this.#taskQueryRevisionKey(request);
     const loadKey = JSON.stringify([queryKey, [...new Set(retained)].sort()]);
@@ -468,7 +521,12 @@ export class ProjectTaskQueryController {
     });
   }
 
+  /**
+   * Drops query references to sections, tags, fields, or options that no longer exist. Tags and fields arrive with
+   * the project's first task page, so repair waits for it; repairing earlier would erase a view's saved filters.
+   */
   repairDisappearingFields(): void {
+    if (!this.queryReady || this.#projects.taskViewPage?.projectId !== this.projectId) return;
     const fieldIds = new Set(this.customFields.map((field) => field.id));
     const optionIds = new Set(this.customFields.flatMap((field) =>
       this.#projects.customFieldOptionsForField(field.id).map((option) => option.id)));
@@ -508,6 +566,90 @@ export class ProjectTaskQueryController {
     if (!projectColumnWidthsMatch(current.widths, widths)) this.listColumnWidths = widths;
     const presentation = projectListPresentationForView(this.#projects.viewPreferences, this.listViewId, this.customFields);
     if (JSON.stringify(untrack(() => this.listPresentation)) !== JSON.stringify(presentation)) this.listPresentation = presentation;
+  }
+
+  /**
+   * Applies the open task view's saved query when the view changes or its stored query changes elsewhere.
+   * A pending edit of the previous view is saved first. Until the view's preferences load, the state is left as is
+   * and `queryReady` stays false, so no task page loads with another view's query.
+   */
+  syncViewQuery(): void {
+    const projectId = this.projectId;
+    const viewId = this.taskViewId;
+    const loadedViewId = projectId && viewId
+      && this.#projects.isProjectOptionalDataLoaded("view_preferences", projectId) ? viewId : null;
+    const stored = loadedViewId ? storedProjectViewQuery(this.#projects.viewPreferences, loadedViewId) : null;
+    untrack(() => {
+      if (loadedViewId !== this.#queryViewId) {
+        this.flushViewQuery();
+        if (loadedViewId) this.#applyStoredViewQuery(loadedViewId, stored);
+        else this.#queryViewId = null;
+        return;
+      }
+      if (!loadedViewId || stored === this.#storedQueryJson) return;
+      this.#storedQueryJson = stored;
+      const unconfirmed = this.#unconfirmedQueryWrites.get(loadedViewId);
+      if (unconfirmed !== undefined) {
+        if (stored === unconfirmed) this.#unconfirmedQueryWrites.delete(loadedViewId);
+        return;
+      }
+      this.#cancelPendingQuerySave();
+      this.#applyStoredViewQuery(loadedViewId, stored);
+    });
+  }
+
+  /** Schedules a save of the open task view's query once the state differs from what was applied or saved. */
+  persistViewQuery(): void {
+    const query = this.viewQuery;
+    const json = serializeProjectViewQuery(query);
+    untrack(() => {
+      const viewId = this.#queryViewId;
+      if (!this.queryReady || !viewId || json === this.#appliedQueryJson) return;
+      this.#appliedQueryJson = json;
+      this.#cancelPendingQuerySave();
+      this.#pendingQuerySave = {
+        viewId,
+        query,
+        json,
+        timer: setTimeout(() => this.flushViewQuery(), this.#querySaveDelayMs),
+      };
+    });
+  }
+
+  /** Saves a pending query edit immediately, for example before another view opens. */
+  flushViewQuery(): void {
+    const pending = this.#pendingQuerySave;
+    if (!pending) return;
+    this.#cancelPendingQuerySave();
+    this.#unconfirmedQueryWrites.set(pending.viewId, pending.json);
+    void this.#projects.saveViewQuery(pending.viewId, pending.query).catch((error: unknown) => {
+      if (this.#unconfirmedQueryWrites.get(pending.viewId) === pending.json) {
+        this.#unconfirmedQueryWrites.delete(pending.viewId);
+      }
+      console.error(`save Project view ${pending.viewId} query failed`, error);
+    });
+  }
+
+  /** Saves any pending query edit when the Projects route closes. */
+  dispose(): void {
+    this.flushViewQuery();
+  }
+
+  #cancelPendingQuerySave(): void {
+    if (this.#pendingQuerySave) clearTimeout(this.#pendingQuerySave.timer);
+    this.#pendingQuerySave = null;
+  }
+
+  /** Applies a view's query, preferring a saved edit that has not yet come back through the store. */
+  #applyStoredViewQuery(viewId: string, stored: string | null): void {
+    const query = parseProjectViewQuery(this.#unconfirmedQueryWrites.get(viewId) ?? stored);
+    this.applyFilterState({ ...query.filters, search: this.search });
+    this.showArchivedTasks = query.showArchivedTasks;
+    this.showInactiveSections = query.showInactiveSections;
+    this.calendarMode = query.calendarMode;
+    this.#queryViewId = viewId;
+    this.#storedQueryJson = stored;
+    this.#appliedQueryJson = serializeProjectViewQuery(this.viewQuery);
   }
 
   applyFilterState(state: ProjectTaskFilterState): void {

@@ -64,6 +64,7 @@ import {
 import { normalizeProjectName } from "$lib/projects/text";
 import { projectHasLockedSystemIdentity } from "$lib/projects/system-defaults";
 import { PROJECT_LIST_PRESENTATION_KEY, type ProjectListPresentation } from "$lib/projects/list/presentation";
+import { PROJECT_VIEW_QUERY_PREFERENCE_KEY, serializeProjectViewQuery, type ProjectViewQuery } from "$lib/projects/view-query";
 import { applyProjectMutation } from "$lib/projects/snapshot/mutations";
 import { parseProjectIcon } from "$lib/projects/icons/values";
 import {
@@ -1044,6 +1045,11 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     await saveViewPreference(viewId, PROJECT_LIST_PRESENTATION_KEY, JSON.stringify(presentation));
   }
 
+  /** Persist a task view's filters, sort, grouping, and calendar span. */
+  async function saveViewQuery(viewId: string, query: ProjectViewQuery): Promise<void> {
+    await saveViewPreference(viewId, PROJECT_VIEW_QUERY_PREFERENCE_KEY, serializeProjectViewQuery(query));
+  }
+
   /**
    * Append a view to a project.
    * @returns The new view id once the backend has stored it.
@@ -1166,5 +1172,6 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     saveTaskListColumns,
     saveTaskListColumnWidths,
     saveTaskListPresentation,
+    saveViewQuery,
   };
 }

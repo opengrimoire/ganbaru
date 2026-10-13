@@ -265,11 +265,11 @@
           emojiScale={COMPACT_IDENTITY_EMOJI_SCALE}
         />
         <span class="section-name">{displayName}</span>
-        {#if starred}<Star class="section-star size-3 shrink-0 fill-current text-primary" aria-hidden="true" />{/if}
         {#if groupName}
           <span class="section-group">{groupName}</span>
         {/if}
         {#if collapsed}<ChevronRight class="section-chevron" />{:else}<ChevronDown class="section-chevron" />{/if}
+        {#if starred}<Star class="section-star size-3 shrink-0 fill-current text-primary" aria-hidden="true" />{/if}
       </button>
       <button
         bind:this={addButton}

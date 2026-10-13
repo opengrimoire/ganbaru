@@ -1080,7 +1080,7 @@
     />
   {/if}
   {#if !mobileShell}
-    <div class="chat-canvas-edge surface-content-inset" aria-hidden="true"></div>
+    <div class="chat-canvas-edge surface-content-edge" aria-hidden="true"></div>
   {/if}
 </div>
 

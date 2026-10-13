@@ -19,8 +19,8 @@ Panels were restyled one at a time, so radii, shadows, text sizes, input styles,
 | --- | --- |
 | `surface-floating` | Menus, popovers, pickers, hover cards, and nonmodal panels |
 | `surface-dialog` | Modal dialogs and large windows such as Settings |
-| `surface-content` | A tab's content surface that is not clipped by an ancestor |
-| `surface-content-inset` | A tab's content surface clipped by an ancestor, with its edge painted inside |
+| `surface-content` | A tab's content surface; with overflow clipping, its content always stays inside the edge |
+| `surface-content-edge` | The edge alone, laid over a content surface whose content is painted by sibling elements (Chat) |
 | `surface-backdrop` | The dimmed layer behind a modal dialog |
 | `surface-floating-body` | The inset between a floating surface and its rows |
 

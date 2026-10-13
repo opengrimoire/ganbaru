@@ -83,27 +83,22 @@ html[data-shell="mobile"] {
  * while a 1px shadow ring at a fractional display scale spreads over one or two pixels depending on its position.
  */
 
-/* A tab's content surface that is not clipped by an ancestor. It paints the content color itself so no other fill bleeds through the rounded clip. */
+/*
+ * A tab's content surface. It paints the content color itself so no other fill bleeds through the rounded clip, and
+ * with overflow clipping its own content stays inside the edge whatever that content's stacking order.
+ */
 @utility surface-content {
+  position: relative;
   border: 1px solid var(--content-edge);
   border-radius: var(--content-radius);
   background-color: var(--cal-bg);
 }
 
-/* A content surface clipped by an ancestor: the edge is painted inside, above content that reaches the edge. */
-@utility surface-content-inset {
-  position: relative;
+/* The edge alone, laid over a content surface whose content is painted by sibling elements. */
+@utility surface-content-edge {
+  border: 1px solid var(--content-edge);
   border-radius: var(--content-radius);
-
-  &::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    z-index: 1;
-    border: 1px solid var(--content-edge);
-    border-radius: inherit;
-    pointer-events: none;
-  }
+  pointer-events: none;
 }
 
 /* The dimmed layer behind a modal dialog. */

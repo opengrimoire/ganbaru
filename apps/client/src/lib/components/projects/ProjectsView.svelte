@@ -359,7 +359,7 @@
   {/if}
   <section
     class="flex min-w-0 flex-1 flex-col overflow-hidden"
-    class:surface-content-inset={sidebarDocked}
+    class:surface-content={sidebarDocked}
     style="background-color: var(--cal-bg);"
   >
     {#if selectedProject && selectedGroup}

@@ -663,7 +663,7 @@
       />
     {/if}
     {#if showPrimaryContent}
-      <div class="notes-view-canvas flex min-w-0 flex-1 flex-col overflow-hidden" class:surface-content-inset={!mobileLayout}>
+      <div class="notes-view-canvas flex min-w-0 flex-1 flex-col overflow-hidden" class:surface-content={!mobileLayout}>
         {#if !mobileLayout}{@render workspaceHeader()}{/if}
         <div class="flex min-h-0 min-w-0 flex-1 overflow-hidden">
           {#if !notes.loaded && notes.loadError}

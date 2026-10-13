@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, untrack, type Snippet } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { hasOnlyShortcutModifier } from "$lib/keyboard-shortcuts";
   import {
@@ -39,14 +39,8 @@
 
   let {
     mobileLayout = false,
-    projectPlaces = undefined,
   }: {
     mobileLayout?: boolean;
-    /**
-     * Project places from a host that opens Notes as one place of a project. The explorer then doubles as the host's
-     * sidebar. The snippet receives the explorer variant.
-     */
-    projectPlaces?: Snippet<["list" | "rail"]>;
   } = $props();
 
   const notes = getNotes();
@@ -655,7 +649,6 @@
         {selectedWorkingMarkdownFile}
         onSelectWorkingMarkdownFile={selectWorkingMarkdownFile}
         onBeforeDocumentNavigation={beforeDocumentNavigation}
-        {projectPlaces}
         onCreationFolderChange={(folderId) => {
           creationFolderOverride = folderId;
         }}

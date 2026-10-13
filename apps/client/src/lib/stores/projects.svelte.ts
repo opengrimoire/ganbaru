@@ -14,14 +14,11 @@ import {
   projectViewOptionalDataKinds,
 } from "$lib/projects/snapshot/optional-data";
 import { mergeProjectSnapshot } from "$lib/projects/snapshot/queries";
-import { isProjectHostedPlace, type ProjectHostedPlace, type ProjectPlace } from "$lib/projects/places";
 import {
   loadSavedActiveProjectId,
-  loadSavedProjectHostedPlace,
   loadSavedProjectSidebarCollapsed,
   loadSavedProjectViewId,
   saveActiveProjectId,
-  saveProjectHostedPlace,
   saveProjectSidebarCollapsed,
   saveProjectViewId,
 } from "$lib/projects/ui-preferences";
@@ -80,7 +77,6 @@ let loadError = $state<string | null>(null);
 let selectedProjectId = $state<string | null>(loadSavedActiveProjectId());
 let activeView = $state<ProjectViewId>(loadSavedProjectViewId());
 let sidebarCollapsed = $state(loadSavedProjectSidebarCollapsed());
-let hostedPlace = $state<ProjectHostedPlace | null>(loadSavedProjectHostedPlace());
 let showInactiveProjects = $state(false);
 let loadedProjectIds = $state<string[]>([]);
 let loadRequestId = 0;
@@ -123,15 +119,7 @@ function markProjectDataLoaded(projectId: string): void {
   loadedProjectIds = [...loadedProjectIds, projectId];
 }
 
-function setHostedPlace(place: ProjectHostedPlace | null): void {
-  if (hostedPlace === place) return;
-  hostedPlace = place;
-  saveProjectHostedPlace(place);
-}
-
-/** Opens a project view. Every view change returns from a hosted workspace, so a route to a task always shows it. */
 function setActiveView(view: ProjectViewId): void {
-  setHostedPlace(null);
   if (activeView === view) return;
   activeView = view;
   saveProjectViewId(view);
@@ -632,22 +620,6 @@ export function getProjects() {
     },
     set activeView(view: ProjectViewId) {
       setActiveView(view);
-    },
-    /** Hosted workspace open in the Projects tab, or null while a project view is open. */
-    get hostedPlace(): ProjectHostedPlace | null {
-      return hostedPlace;
-    },
-    /** Opens a sidebar place: a hosted workspace keeps the project view underneath, a view place opens its view. */
-    selectPlace(place: ProjectPlace): void {
-      if (isProjectHostedPlace(place)) {
-        setHostedPlace(place);
-        return;
-      }
-      setActiveView(place);
-    },
-    /** Returns from a hosted workspace to the project view, for routes that open a project or one of its tasks. */
-    showProjectView(): void {
-      setHostedPlace(null);
     },
     /** Whether the docked desktop Projects sidebar is collapsed to its rail. */
     get sidebarCollapsed(): boolean {

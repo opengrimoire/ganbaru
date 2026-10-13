@@ -50,7 +50,6 @@
   import MusicSoundscapeCoordinator from "$lib/components/music/soundscape/MusicSoundscapeCoordinator.svelte";
   import NotesView from "$lib/components/notes/NotesView.svelte";
   import ProjectsView from "$lib/components/projects/ProjectsView.svelte";
-  import ProjectPlacesNav from "$lib/components/projects/sidebar/ProjectPlacesNav.svelte";
   import ProjectDashboardView from "$lib/components/projects/views/ProjectDashboardView.svelte";
   import ProjectGanttView from "$lib/components/projects/views/ProjectGanttView.svelte";
   import ProjectKanbanView from "$lib/components/projects/views/ProjectKanbanView.svelte";
@@ -77,7 +76,7 @@
     createNotesNotificationScheduler,
     createProjectTaskReminderScheduler,
   } from "$lib/scheduling/notification-schedulers";
-  import { onMount, untrack } from "svelte";
+  import { onMount } from "svelte";
   import { getNotesProjectHistoryScheduler } from "$lib/notes/history/project-history-scheduler";
   import { activeVaultIdentity, onActiveVaultIdentityChange } from "$lib/vault/active-vault";
   import { listenForNotesDatabaseChanges } from "$lib/notes/database/window-sync";
@@ -85,12 +84,6 @@
   import { getProjectTaskReminderSchedule } from "$lib/projects/task-reminder-schedule.svelte";
   import { projectTaskReminderNotificationText } from "$lib/projects/task-reminder-notification";
   import type { ProjectChatIntegration } from "$lib/projects/types";
-  import {
-    projectHostablePlaces,
-    projectSidebarPlaces,
-    resolveProjectPlace,
-    type ProjectHostedPlace,
-  } from "$lib/projects/places";
   import type { QuickNotesTrashPurgeRuntime } from "$lib/quick-notes/trash-purge-runtime";
 
   perfMark("boot.script-start");
@@ -278,7 +271,6 @@
   async function openProjectTaskNotification(projectId: string): Promise<void> {
     try {
       await projects.selectProject(projectId);
-      projects.showProjectView();
       nav.navigate("projects");
     } catch (error: unknown) {
       console.error("Failed to open the project of a task reminder", error);
@@ -597,42 +589,6 @@
     return mainTabViews(detachedWindows.views);
   });
   const keyboardViews = $derived(visibleTabViews);
-  const projectHostablePlaceList = $derived(projectHostablePlaces(visibleTabViews));
-  const projectSidebarPlaceList = $derived(projectSidebarPlaces(projectHostablePlaceList));
-  /** Workspace the Projects tab hosts in place of a project view; hosting needs an open project to scope it. */
-  const projectHostedPlace = $derived.by<ProjectHostedPlace | null>(() => {
-    const place = projects.hostedPlace;
-    if (nav.current !== "projects" || !place || !projectHostablePlaceList.includes(place)) return null;
-    return projects.selectedProject && projects.selectedGroup ? place : null;
-  });
-
-  function hostedExplorerCollapsed(place: ProjectHostedPlace): boolean {
-    return place === "notes" ? notes.explorerCollapsed : !chat.railOpen;
-  }
-
-  function setHostedExplorerCollapsed(place: ProjectHostedPlace, collapsed: boolean): void {
-    if (place === "notes") notes.explorerCollapsed = collapsed;
-    else chat.railOpen = !collapsed;
-  }
-
-  // A hosted explorer is the Projects sidebar, so it opens and closes with it.
-  $effect.pre(() => {
-    const place = projectHostedPlace;
-    if (!place) return;
-    const collapsed = projects.sidebarCollapsed;
-    untrack(() => {
-      setHostedExplorerCollapsed(place, collapsed);
-    });
-  });
-
-  $effect(() => {
-    const place = projectHostedPlace;
-    if (!place) return;
-    const collapsed = hostedExplorerCollapsed(place);
-    untrack(() => {
-      projects.sidebarCollapsed = collapsed;
-    });
-  });
 
   function navigatePrev() {
     if (keyboardViews.length === 0) return;
@@ -951,15 +907,6 @@
   }
 </script>
 
-{#snippet hostedProjectPlaces(variant: "list" | "rail")}
-  <ProjectPlacesNav
-    {variant}
-    places={projectSidebarPlaceList}
-    activePlace={resolveProjectPlace(projectHostedPlace, projects.activeView)}
-    onSelectPlace={(place) => projects.selectPlace(place)}
-  />
-{/snippet}
-
 <svelte:window onkeydowncapture={handleKeydown} />
 
 <div
@@ -971,16 +918,15 @@
     <main class="content-panel flex-1 min-h-0 overflow-hidden" class:surface-content={contentPanelPainted}>
       {#if nav.current === "calendar"}
         <CalendarView />
-      {:else if nav.current === "projects" && !projectHostedPlace}
+      {:else if nav.current === "projects"}
         <ProjectsView
           viewComponents={projectViewComponents}
           projectChat={projectChatIntegration}
-          hostablePlaces={projectHostablePlaceList}
         />
-      {:else if nav.current === "notes" || projectHostedPlace === "notes"}
-        <NotesView projectPlaces={projectHostedPlace === "notes" ? hostedProjectPlaces : undefined} />
+      {:else if nav.current === "notes"}
+        <NotesView />
       {:else}
-        <ChatWorkspace projectPlaces={projectHostedPlace === "chat" ? hostedProjectPlaces : undefined} />
+        <ChatWorkspace />
       {/if}
     </main>
   </div>

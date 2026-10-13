@@ -217,7 +217,6 @@
       }
       const projectId = objectMention.type === "project" ? objectMention.id : (await resolveTask(objectMention.id)).projectId;
       await projects.selectProject(projectId);
-      projects.showProjectView();
       navigation.navigate("projects");
     } catch (error: unknown) {
       console.warn("Notes mention navigation failed", { type: objectMention.type, id: objectMention.id, error });

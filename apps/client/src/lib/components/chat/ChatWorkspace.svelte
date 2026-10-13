@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick, untrack, type Snippet } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import { quintOut } from "svelte/easing";
   import { slide } from "svelte/transition";
   import Menu from "@lucide/svelte/icons/menu";
@@ -52,11 +52,6 @@
   import ChatChannelArchive from "$lib/components/chat/channels/ChatChannelArchive.svelte";
   import ChatChannelFeed from "$lib/components/chat/channels/ChatChannelFeed.svelte";
   import ChatReplyThreadPanel from "$lib/components/chat/timeline/ChatReplyThreadPanel.svelte";
-
-  /**
-   * Project switcher and places that the Projects tab renders inside the channel rail while it hosts project Chat.
-   */
-  let { projectPlaces = undefined }: { projectPlaces?: Snippet<["list" | "rail"]> } = $props();
 
   const localization = getLocalization();
   const { t } = localization;
@@ -996,7 +991,7 @@
     </div>
   {/if}
   <div bind:this={railShell} class="chat-rail-shell" class:closed={!visibleRailOpen} class:explorer-chrome={railDocked} role={railIsModal ? "dialog" : undefined} aria-modal={railIsModal ? "true" : undefined} aria-label={railIsModal ? t("chat.title") : undefined} onkeydown={(event) => { if (layout.railPresentation === "sheet") handleRailKeydown(event); }}>
-    <ChatChannelRail presentation={railComponentPresentation} expanded={visibleRailOpen} showCollapsedStrip={layout.railPresentation === "column"} {projectPlaces} onExpand={openRail} onCollapse={closeRail} />
+    <ChatChannelRail presentation={railComponentPresentation} expanded={visibleRailOpen} showCollapsedStrip={layout.railPresentation === "column"} onExpand={openRail} onCollapse={closeRail} />
   </div>
   <main class="main-shell relative flex min-w-0 flex-col">
         {#if loadError}

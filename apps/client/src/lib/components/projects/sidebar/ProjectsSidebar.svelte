@@ -3,22 +3,20 @@
   import ChevronsLeft from "@lucide/svelte/icons/chevrons-left";
   import ChevronsRight from "@lucide/svelte/icons/chevrons-right";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import type { ProjectPlace } from "$lib/projects/places";
+  import type { ProjectViewId } from "$lib/projects/types";
   import { getProjects } from "$lib/stores/projects.svelte";
-  import ProjectPlacesNav from "./ProjectPlacesNav.svelte";
+  import ProjectViewsNav from "./ProjectViewsNav.svelte";
 
   /**
-   * The docked Projects explorer with the places of the selected project. Collapsing it keeps a narrow rail with the
-   * same places; the toolbar matches the hosted Notes and Chat explorers so the collapse control stays in one spot.
+   * The docked Projects explorer with the views of the selected project. Collapsing it keeps a narrow rail with the
+   * same views.
    */
   let {
-    places,
-    activePlace,
-    onSelectPlace,
+    activeView,
+    onSelectView,
   }: {
-    places: readonly ProjectPlace[];
-    activePlace: ProjectPlace;
-    onSelectPlace: (place: ProjectPlace) => void;
+    activeView: ProjectViewId;
+    onSelectView: (view: ProjectViewId) => void;
   } = $props();
 
   const projects = getProjects();
@@ -56,7 +54,7 @@
       </button>
     </div>
     {#if collapsed}
-      <ProjectPlacesNav variant="rail" {places} {activePlace} {onSelectPlace} />
+      <ProjectViewsNav variant="rail" {activeView} {onSelectView} />
     {/if}
   </div>
 
@@ -76,7 +74,7 @@
     </div>
 
     {#if !collapsed}
-      <ProjectPlacesNav variant="list" {places} {activePlace} {onSelectPlace} />
+      <ProjectViewsNav variant="list" {activeView} {onSelectView} />
     {/if}
   </div>
 </aside>

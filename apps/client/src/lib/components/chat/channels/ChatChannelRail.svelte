@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick, type Snippet } from "svelte";
+  import { onMount, tick } from "svelte";
   import { COMPACT_IDENTITY_ICON_SIZE, COMPACT_IDENTITY_ICON_STROKE_WIDTH } from "$lib/icon-sizing";
   import SearchField from "$lib/components/ui/SearchField.svelte";
   import Archive from "@lucide/svelte/icons/archive";
@@ -56,15 +56,12 @@
     showCollapsedStrip,
     onExpand,
     onCollapse,
-    projectPlaces = undefined,
   }: {
     presentation?: "column" | "sheet" | "surface";
     expanded: boolean;
     showCollapsedStrip: boolean;
     onExpand: () => void;
     onCollapse: () => void;
-    /** Project places rendered by a host that owns this rail as its sidebar, below the toolbar and in the strip. */
-    projectPlaces?: Snippet<["list" | "rail"]>;
   } = $props();
 
   const chat = getChat();
@@ -608,8 +605,6 @@
       <button type="button" class="explorer-icon" data-chat-rail-close aria-label={t("chat.collapseRail")} aria-expanded="true" data-app-tooltip={t("chat.collapseRail")} onclick={onCollapse}><ChevronsLeft size={16} /></button>
     </div>
 
-    {@render projectPlaces?.("list")}
-
     {#if creatingSection}
       <form class="mx-2 mb-2 flex gap-1" onsubmit={(event) => { event.preventDefault(); createSection(); }}>
         <input bind:this={sectionInput} class="field min-w-0 flex-1 text-xs" bind:value={newSectionName} maxlength="80" placeholder={t("chat.channels.sectionName")} aria-label={t("chat.channels.sectionName")} onkeydown={(event) => { if (event.key === "Escape") { event.stopPropagation(); toggleSectionDraft(); } }} />
@@ -691,7 +686,7 @@
         </section>
       {/each}
 
-      {#if !query.trim() && !projectPlaces}
+      {#if !query.trim()}
         <section class="channel-section" role="group" data-chat-direct-messages>
           <div class="section-heading">
             <button type="button" class="section-toggle" class:collapsed={directMessagesCollapsed} aria-label={sectionToggleLabel(t("chat.channels.directMessages"), directMessagesCollapsed)} aria-expanded={!directMessagesCollapsed} onclick={() => { directMessagesCollapsed = !directMessagesCollapsed; }}>
@@ -711,7 +706,7 @@
 
   </aside>
 {:else if showCollapsedStrip}
-  <aside class="explorer-sidebar flex h-full flex-col items-center" aria-label={t("chat.channels.explorerLabel")}><div class="explorer-toolbar"><button type="button" class="explorer-icon" aria-expanded="false" data-app-tooltip={t("chat.openRail")} aria-label={t("chat.openRail")} onclick={onExpand}><ChevronsRight size={16} /></button></div>{@render projectPlaces?.("rail")}</aside>
+  <aside class="explorer-sidebar flex h-full flex-col items-center" aria-label={t("chat.channels.explorerLabel")}><div class="explorer-toolbar"><button type="button" class="explorer-icon" aria-expanded="false" data-app-tooltip={t("chat.openRail")} aria-label={t("chat.openRail")} onclick={onExpand}><ChevronsRight size={16} /></button></div></aside>
 {/if}
 
 {#if sectionContextMenu}

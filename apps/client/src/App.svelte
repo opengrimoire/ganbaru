@@ -681,7 +681,7 @@
 
     const action = appNavigationShortcut(e, visibleTabViews.length);
     if (!action) {
-      handleHostedProjectPlaceShortcut(e);
+      handleProjectPlaceShortcut(e);
       return;
     }
     if (action.type !== "settings" && (suspendInfo || idleInfo)) return;
@@ -699,14 +699,19 @@
     }
   }
 
-  /** Switches project places from a hosted workspace; ProjectsView handles the shortcut while it is mounted. */
-  function handleHostedProjectPlaceShortcut(e: KeyboardEvent): void {
-    if (!projectHostedPlace || suspendInfo || idleInfo) return;
+  /**
+   * Switches project places from a hosted workspace and holds the shortcut while the app is suspended or idle.
+   * ProjectsView handles it otherwise, so its settings close guard applies.
+   */
+  function handleProjectPlaceShortcut(e: KeyboardEvent): void {
+    if (nav.current !== "projects") return;
     const place = projectPlaceShortcut(e, projectSidebarPlaceList);
     if (!place) return;
+    const paused = Boolean(suspendInfo || idleInfo);
+    if (!paused && !projectHostedPlace) return;
     e.preventDefault();
     e.stopImmediatePropagation();
-    projects.selectPlace(place);
+    if (!paused) projects.selectPlace(place);
   }
 
   $effect(() => {

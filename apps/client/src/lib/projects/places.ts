@@ -1,3 +1,4 @@
+import { hasOnlyShortcutModifier, type KeyboardModifierState } from "$lib/keyboard-shortcuts";
 import type { View } from "$lib/navigation";
 import { PROJECT_VIEW_IDS, type ProjectViewId } from "./types";
 
@@ -29,4 +30,19 @@ export function projectHostablePlaces(visibleViews: readonly View[]): ProjectHos
 /** Returns the sidebar places in sidebar order, keeping only the hosted places the window can open. */
 export function projectSidebarPlaces(hostablePlaces: readonly ProjectHostedPlace[]): ProjectPlace[] {
   return PROJECT_PLACES.filter((place) => !isProjectHostedPlace(place) || hostablePlaces.includes(place));
+}
+
+/**
+ * Returns the place a Ctrl (Cmd on Apple) and digit shortcut opens, by position in the sidebar list. It reads the
+ * physical digit key too, so layouts whose top row types symbols without Shift still work.
+ */
+export function projectPlaceShortcut(
+  event: KeyboardModifierState & Pick<KeyboardEvent, "key" | "code" | "isComposing">,
+  places: readonly ProjectPlace[],
+  platform?: string,
+): ProjectPlace | null {
+  if (event.isComposing || !hasOnlyShortcutModifier(event, {}, platform)) return null;
+  const digit = /^[1-9]$/.test(event.key) ? event.key : /^(?:Digit|Numpad)([1-9])$/.exec(event.code)?.[1];
+  if (!digit) return null;
+  return places[Number(digit) - 1] ?? null;
 }

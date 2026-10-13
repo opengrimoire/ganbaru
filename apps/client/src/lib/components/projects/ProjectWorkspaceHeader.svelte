@@ -56,6 +56,7 @@
     onCreateTask,
     mobileLayout = false,
     projectChat = null,
+    viewControlsTarget = $bindable(null),
   }: {
     selectedProject: Project;
     selectedGroup: ProjectGroup;
@@ -71,6 +72,8 @@
     onCreateTask: () => void;
     mobileLayout?: boolean;
     projectChat?: ProjectChatIntegration | null;
+    /** The header slot where the active view may show its own controls, or null while they do not fit. */
+    viewControlsTarget?: HTMLElement | null;
   } = $props();
 
   const projects = getProjects();
@@ -86,6 +89,11 @@
   let mobileCustomizationMenuOpen = $state(false);
   let projectNavigatorMode = $state<ProjectNavigatorPanelMode>("groups");
   let projectHeaderElement = $state<HTMLDivElement | null>(null);
+  let headerSpacerElement = $state<HTMLDivElement | null>(null);
+  let viewControlsSlot = $state<HTMLDivElement | null>(null);
+  let viewControlsFit = $state(true);
+  let viewControlsShown = $state(false);
+  let viewControlsWidth = 0;
   let projectNavigatorAnchorElement = $state<HTMLButtonElement | null>(null);
   let projectGroupTriggerElement = $state<HTMLButtonElement | null>(null);
   let projectTriggerElement = $state<HTMLButtonElement | null>(null);
@@ -285,6 +293,39 @@
     requestAnimationFrame(refreshProjectNavigatorPanelGeometry);
   });
 
+  $effect(() => {
+    viewControlsTarget = !mobileLayout && viewControlsFit ? viewControlsSlot : null;
+  });
+
+  $effect(() => {
+    if (mobileLayout || !projectHeaderElement || !viewControlsSlot || !headerSpacerElement) return;
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(refreshViewControlsFit);
+    observer.observe(projectHeaderElement);
+    observer.observe(viewControlsSlot);
+    observer.observe(headerSpacerElement);
+    return () => observer.disconnect();
+  });
+
+  /**
+   * Keeps view controls in the header row only while the whole row fits. Shown controls leave as soon as the row
+   * overflows, and return once the free space can hold their last measured width.
+   */
+  function refreshViewControlsFit(): void {
+    if (!projectHeaderElement || !viewControlsSlot || !headerSpacerElement) return;
+    const slotWidth = viewControlsSlot.getBoundingClientRect().width;
+    viewControlsShown = slotWidth > 0;
+    if (slotWidth > 0) {
+      viewControlsWidth = slotWidth;
+      if (projectHeaderElement.scrollWidth > projectHeaderElement.clientWidth + 1) viewControlsFit = false;
+      return;
+    }
+    const gap = Number.parseFloat(getComputedStyle(projectHeaderElement).columnGap);
+    const requiredWidth = viewControlsWidth + (Number.isFinite(gap) ? gap : 0) + 1;
+    viewControlsFit = viewControlsWidth === 0
+      || headerSpacerElement.getBoundingClientRect().width >= requiredWidth;
+  }
+
 </script>
 
 <svelte:window onpointerdown={handleProjectWindowPointerDown} />
@@ -293,7 +334,7 @@
   bind:this={projectHeaderElement}
   class={cn(
     "flex shrink-0 items-center gap-1",
-    mobileLayout ? "overflow-visible px-3" : "hide-scrollbar overflow-x-auto px-3",
+    mobileLayout || viewControlsShown ? "overflow-visible px-3" : "hide-scrollbar overflow-x-auto px-3",
   )}
   style="height: var(--toolbar-h); background-color: var(--cal-bg);"
   onscroll={refreshProjectNavigatorPanelGeometry}
@@ -538,8 +579,9 @@
       </button>
     </div>
   {:else}
-    <div class="flex-1"></div>
+    <div bind:this={headerSpacerElement} class="flex-1"></div>
     <div class="flex shrink-0 items-center gap-1">
+      <div bind:this={viewControlsSlot} class="flex shrink-0 items-center empty:hidden"></div>
       {#if projectChat}
         <button
           type="button"

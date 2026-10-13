@@ -87,6 +87,7 @@
   import type { ProjectChatIntegration } from "$lib/projects/types";
   import {
     projectHostablePlaces,
+    projectPlaceShortcut,
     projectSidebarPlaces,
     resolveProjectPlace,
     type ProjectHostedPlace,
@@ -679,7 +680,10 @@
     }
 
     const action = appNavigationShortcut(e, visibleTabViews.length);
-    if (!action) return;
+    if (!action) {
+      handleHostedProjectPlaceShortcut(e);
+      return;
+    }
     if (action.type !== "settings" && (suspendInfo || idleInfo)) return;
     e.preventDefault();
     e.stopImmediatePropagation();
@@ -693,6 +697,16 @@
     } else {
       navigateNext();
     }
+  }
+
+  /** Switches project places from a hosted workspace; ProjectsView handles the shortcut while it is mounted. */
+  function handleHostedProjectPlaceShortcut(e: KeyboardEvent): void {
+    if (!projectHostedPlace || suspendInfo || idleInfo) return;
+    const place = projectPlaceShortcut(e, projectSidebarPlaceList);
+    if (!place) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    projects.selectPlace(place);
   }
 
   $effect(() => {

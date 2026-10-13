@@ -169,21 +169,20 @@ describe("shortcut search", () => {
     expect(matchingActions("9")).not.toContain("Month view");
   });
 
-  it("uses visible project view order for project view shortcuts", () => {
+  it("uses sidebar place order for project place shortcuts", () => {
     const projectItems = SHORTCUT_GROUPS.find((group) => group.title === "Projects")?.items ?? [];
 
     expect(projectItems.map((item) => [item.keys, item.action])).toEqual([
-      [["1"], "Dashboard view"],
-      [["2"], "List view"],
-      [["3"], "Kanban view"],
-      [["4"], "Project calendar view"],
-      [["5"], "Gantt view"],
+      [["Mod + 1"], "Dashboard view"],
+      [["Mod + 2"], "List view"],
+      [["Mod + 3"], "Kanban view"],
+      [["Mod + 4"], "Project calendar view"],
+      [["Mod + 5"], "Gantt view"],
+      [["Mod + 6"], "Project notes"],
+      [["Mod + 7"], "Project Chat"],
     ]);
-    expect(matchingActions("1")).toContain("Dashboard view");
-    expect(matchingActions("2")).toContain("List view");
-    expect(matchingActions("3")).toContain("Kanban view");
-    expect(matchingActions("4")).toContain("Project calendar view");
-    expect(matchingActions("5")).toContain("Gantt view");
+    expect(matchingActions("ctrl 2")).toContain("List view");
+    expect(matchingActions("ctrl 7")).toContain("Project Chat");
   });
 
   it("keeps event editor shortcuts at the end of calendar shortcuts", () => {

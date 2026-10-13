@@ -48,6 +48,7 @@
     onViewChange,
     onDaySelect,
     mobileLayout = false,
+    embedded = false,
   }: {
     anchorDate: Date;
     viewMode: CalendarViewMode;
@@ -55,6 +56,8 @@
     onViewChange: (mode: CalendarViewMode) => void;
     onDaySelect: (date: Date) => void;
     mobileLayout?: boolean;
+    /** Renders the controls alone, without their own toolbar row, for a host toolbar that already provides one. */
+    embedded?: boolean;
   } = $props();
 
   const viewOptions = $derived.by(() => {
@@ -260,8 +263,8 @@
 <div
   bind:this={toolbarElement}
   data-calendar-edit-close-zone
-  class="flex shrink-0 items-center {mobileLayout ? 'gap-0 px-1' : 'gap-1 px-3'}"
-  style="height: var(--toolbar-h); background-color: var(--cal-bg);"
+  class="flex shrink-0 items-center {mobileLayout ? 'gap-0 px-1' : embedded ? 'gap-1' : 'gap-1 px-3'}"
+  style={embedded ? undefined : "height: var(--toolbar-h); background-color: var(--cal-bg);"}
   onwheel={handleToolbarWheel}
 >
   <div class="flex min-w-0 items-center">
@@ -321,8 +324,9 @@
     </button>
   </div>
 
-  <!-- Spacer -->
-  <div class="flex-1"></div>
+  {#if !embedded}
+    <div class="flex-1"></div>
+  {/if}
 
   <!-- View selector -->
   {#if mobileLayout}
@@ -393,7 +397,7 @@
     {/if}
   </div>
   {:else}
-  <div class="flex items-center gap-0.5">
+  <div class="flex items-center gap-0.5 {embedded ? 'ml-2' : ''}">
     <button
       onclick={() => calendarZoom.zoomStep(-1)}
       disabled={!calendarZoom.canZoomOut}

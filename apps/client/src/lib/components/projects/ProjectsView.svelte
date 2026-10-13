@@ -24,6 +24,7 @@
     type ProjectToolbarPanel,
   } from "$lib/projects/toolbar";
   import {
+    projectPlaceShortcut,
     projectSidebarPlaces,
     resolveProjectPlace,
     type ProjectHostedPlace,
@@ -61,6 +62,7 @@
   const viewport = getViewport();
   const { t } = getLocalization();
   let projectCalendarViewMode = $state<CalendarViewMode>("week");
+  let projectViewControlsTarget = $state<HTMLElement | null>(null);
   let projectCalendarViewModeInitialized = false;
 
   $effect(() => {
@@ -70,9 +72,7 @@
   });
   const taskQuery = new ProjectTaskQueryController({ projects, calendar, translate: t });
   const routeLoad = new ProjectRouteLoadController(projects);
-  const routeUi = new ProjectRouteUiController({
-    setActiveView: (view) => { projects.activeView = view; },
-  });
+  const routeUi = new ProjectRouteUiController();
 
 
   const toolbarLoadState = $derived(routeLoad.optionalState("toolbar"));
@@ -289,6 +289,16 @@
     });
   }
 
+  /** Switches project places with the Ctrl and digit shortcut, even while typing; the app shell handles hosted places. */
+  function handlePlaceShortcut(event: KeyboardEvent): void {
+    if (event.defaultPrevented || !projects.selectedProject) return;
+    const place = projectPlaceShortcut(event, sidebarPlaces);
+    if (!place) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    selectPlace(place);
+  }
+
   function handleProjectSelected(): void {
     routeUi.closeTaskDetail();
     routeUi.closeToolbarImmediately();
@@ -340,7 +350,10 @@
 
 </script>
 
-<svelte:window onkeydown={(event) => routeUi.handleWindowKeydown(event)} />
+<svelte:window
+  onkeydowncapture={handlePlaceShortcut}
+  onkeydown={(event) => routeUi.handleWindowKeydown(event)}
+/>
 
 <svelte:document
   onselectstart={(event) => routeUi.handleDocumentSelectStart(event)}
@@ -375,6 +388,7 @@
           {taskCustomizeActive}
           {mobileLayout}
           projectChat={chatIsPlace ? null : projectChat}
+          bind:viewControlsTarget={projectViewControlsTarget}
           onShowInactiveProjectsChange={(value) => {
             projects.showInactiveProjects = value;
           }}
@@ -563,6 +577,7 @@
                   projectCalendarViewMode = mode;
                 }}
                 {mobileLayout}
+                headerTarget={projectViewControlsTarget}
               />
             </div>
             {/if}

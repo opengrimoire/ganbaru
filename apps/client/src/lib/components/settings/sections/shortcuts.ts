@@ -58,11 +58,13 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = Object.freeze([
   {
     title: "Projects",
     items: [
-      { keys: ["1"], action: "Dashboard view" },
-      { keys: ["2"], action: "List view" },
-      { keys: ["3"], action: "Kanban view" },
-      { keys: ["4"], action: "Project calendar view" },
-      { keys: ["5"], action: "Gantt view" },
+      { keys: ["Mod + 1"], action: "Dashboard view" },
+      { keys: ["Mod + 2"], action: "List view" },
+      { keys: ["Mod + 3"], action: "Kanban view" },
+      { keys: ["Mod + 4"], action: "Project calendar view" },
+      { keys: ["Mod + 5"], action: "Gantt view" },
+      { keys: ["Mod + 6"], action: "Project notes" },
+      { keys: ["Mod + 7"], action: "Project Chat" },
     ],
   },
   {
@@ -202,6 +204,10 @@ function localizedAction(action: string, t: Translate): string {
       return t("settings.shortcuts.action.projectCalendarView");
     case "Gantt view":
       return t("settings.shortcuts.action.ganttView");
+    case "Project notes":
+      return t("settings.shortcuts.action.projectNotes");
+    case "Project Chat":
+      return t("settings.shortcuts.action.projectChat");
     case "Play or pause":
       return t("settings.shortcuts.action.playPause");
     case "Show or hide playlist":

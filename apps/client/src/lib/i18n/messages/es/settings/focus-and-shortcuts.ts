@@ -115,6 +115,8 @@ export const focusAndShortcuts = {
       kanbanView: "Vista Kanban",
       projectCalendarView: "Vista de calendario del proyecto",
       ganttView: "Vista Gantt",
+      projectNotes: "Notas del proyecto",
+      projectChat: "Chat del proyecto",
       playPause: "Reproducir o pausar",
       showHidePlaylist: "Mostrar u ocultar playlist",
       muteUnmute: "Silenciar o activar sonido",

@@ -25,6 +25,7 @@
   import CalendarX from "@lucide/svelte/icons/calendar-x";
   import Plus from "@lucide/svelte/icons/plus";
   import CalendarHeader from "./CalendarHeader.svelte";
+  import { portal } from "$lib/utils/portal";
   import WeekView from "$lib/components/calendar/grid/WeekView.svelte";
   import DayView from "$lib/components/calendar/grid/DayView.svelte";
   import MonthView from "$lib/components/calendar/grid/MonthView.svelte";
@@ -130,12 +131,15 @@
     initialViewMode,
     onViewModeChange,
     mobileLayout = false,
+    headerTarget = null,
   }: {
     eventFilter?: (event: CalendarEvent) => boolean;
     createDefaults?: (input: CalendarCreateDefaultsInput) => CalendarCreateDefaults;
     initialViewMode?: CalendarViewMode;
     onViewModeChange?: (mode: CalendarViewMode) => void;
     mobileLayout?: boolean;
+    /** A host toolbar slot that shows the navigation and view controls in place of their own row. */
+    headerTarget?: HTMLElement | null;
   } = $props();
 
   function closeSession() {
@@ -1277,19 +1281,29 @@
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div bind:this={containerEl} use:outsideClose class="relative flex h-full flex-col select-none overflow-hidden">
-  <CalendarHeader
-    {anchorDate}
-    {viewMode}
-    {mobileLayout}
-    onNavigate={navigate}
-    onViewChange={changeView}
-    onDaySelect={(date) => {
-      void targetController.request({ mode: targetController.currentState().mode, date }, {
-        history: false,
-        reason: "programmatic",
-      });
-    }}
-  />
+  {#snippet header(embedded: boolean)}
+    <CalendarHeader
+      {anchorDate}
+      {viewMode}
+      {mobileLayout}
+      {embedded}
+      onNavigate={navigate}
+      onViewChange={changeView}
+      onDaySelect={(date) => {
+        void targetController.request({ mode: targetController.currentState().mode, date }, {
+          history: false,
+          reason: "programmatic",
+        });
+      }}
+    />
+  {/snippet}
+  {#if headerTarget}
+    <div class="flex shrink-0 select-none" use:portal={headerTarget}>
+      {@render header(true)}
+    </div>
+  {:else}
+    {@render header(false)}
+  {/if}
 
   {#if deleteEditor.uncertain || deleteEditor.resultPending}
     <Notice

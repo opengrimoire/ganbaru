@@ -32,6 +32,8 @@ export const shell = {
     collapse: "Collapse sidebar",
     expand: "Expand sidebar",
     overview: "Overview",
+    group: "Project group",
+    projects: "Projects in this group",
   },
   finder: {
     label: "Search project tasks",

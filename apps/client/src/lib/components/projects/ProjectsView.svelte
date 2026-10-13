@@ -338,7 +338,7 @@
   data-first-use-shell="projects"
 >
   {#if sidebarDocked}
-    <ProjectsSidebar activeView={projects.activeView} onSelectView={selectView} />
+    <ProjectsSidebar activeView={projects.activeView} onSelectView={selectView} onProjectSelected={handleProjectSelected} />
   {/if}
   <section
     class="flex min-w-0 flex-1 flex-col overflow-hidden"

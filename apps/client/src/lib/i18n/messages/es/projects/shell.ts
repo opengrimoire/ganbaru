@@ -35,6 +35,8 @@ export const shell = {
     collapse: "Contraer barra lateral",
     expand: "Expandir barra lateral",
     overview: "Resumen",
+    group: "Grupo de proyectos",
+    projects: "Proyectos del grupo",
   },
   finder: {
     label: "Buscar tareas del proyecto",

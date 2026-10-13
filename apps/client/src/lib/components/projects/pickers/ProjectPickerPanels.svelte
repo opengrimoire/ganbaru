@@ -18,8 +18,10 @@
   } from "$lib/projects/display";
   import { verticalBorderWidth } from "$lib/utils/anchored-panel";
   import {
+    createHoverDelay,
     isPointerAimingAtSubmenu,
     SUBMENU_AIM_TOLERANCES,
+    type HoverDelay,
     type MenuAimPoint,
   } from "$lib/utils/menu-aim";
   import {
@@ -84,6 +86,7 @@
     onProjectPreviewClose = undefined,
     projectChildContainsTarget = undefined,
     pointerAimingAtProjectChild = undefined,
+    projectChildHoverDelay = undefined,
     mobileLayout = false,
     initialMobileGroupId = null,
     onProjectDrilldown = undefined,
@@ -120,6 +123,8 @@
     onProjectPreviewClose?: () => void;
     projectChildContainsTarget?: (target: EventTarget | null) => boolean;
     pointerAimingAtProjectChild?: (point: MenuAimPoint) => boolean;
+    /** Pending close or switch of the project child panel, shared so the parent can cancel it when the pointer enters that panel. */
+    projectChildHoverDelay?: HoverDelay;
     mobileLayout?: boolean;
     initialMobileGroupId?: string | null;
     onProjectDrilldown?: (project: Project) => MaybePromise<void>;
@@ -148,6 +153,12 @@
   let projectTemplateDraftByGroup = $state<Record<string, ProjectTemplateId>>({});
   let activeGroupId = $state<string | null>(untrack(() => mobileLayout ? initialMobileGroupId : null));
   let activeGroupAnchorElement = $state<HTMLElement | null>(null);
+  const groupSubpanelDelay = createHoverDelay();
+  const projectPreviewDelay = untrack(() => projectChildHoverDelay) ?? createHoverDelay();
+  $effect(() => () => {
+    groupSubpanelDelay.cancel();
+    projectPreviewDelay.cancel();
+  });
   let panelRootElement = $state<HTMLDivElement | null>(null);
   let panelHeaderElement = $state<HTMLDivElement | undefined>();
   let panelFooterElement = $state<HTMLDivElement | undefined>();
@@ -401,6 +412,7 @@
   }
 
   function closeProjectSubpanel(): void {
+    groupSubpanelDelay.cancel();
     activeGroupId = null;
     activeGroupAnchorElement = null;
     createProjectGroupId = null;
@@ -413,8 +425,10 @@
     group: ProjectGroup,
     target: EventTarget | null,
   ): void {
+    groupSubpanelDelay.cancel();
     if (activeGroupId !== group.id) {
       createProjectGroupId = null;
+      projectPreviewDelay.cancel();
       onProjectPreviewClose?.();
     }
     activeGroupId = group.id;
@@ -427,25 +441,28 @@
     void tick().then(updateProjectSubpanelGeometry);
   }
 
-  function handleGroupPointerEnter(group: ProjectGroup, event: PointerEvent): void {
-    if (mobileLayout) return;
-    const point = projectPickerPointerPoint(event);
-    if (activeGroupId && activeGroupId !== group.id && pointerAimingAtProjectSubpanel(point)) {
+  /** Switches to a hovered group now, or after the grace delay while the pointer is heading into the open subpanel. */
+  function hoverGroup(group: ProjectGroup, event: PointerEvent): void {
+    const target = event.currentTarget;
+    if (activeGroupId && pointerAimingAtProjectSubpanel(projectPickerPointerPoint(event))) {
+      groupSubpanelDelay.schedule(() => showProjectSubpanel(group, target));
       return;
     }
-    showProjectSubpanel(group, event.currentTarget);
+    showProjectSubpanel(group, target);
+  }
+
+  function handleGroupPointerEnter(group: ProjectGroup, event: PointerEvent): void {
+    if (mobileLayout) return;
+    if (activeGroupId === group.id) {
+      groupSubpanelDelay.cancel();
+      return;
+    }
+    hoverGroup(group, event);
   }
 
   function handleGroupPointerMove(group: ProjectGroup, event: PointerEvent): void {
-    if (mobileLayout) return;
-    const point = projectPickerPointerPoint(event);
-    if (activeGroupId === group.id) {
-      return;
-    }
-    if (activeGroupId && pointerAimingAtProjectSubpanel(point)) {
-      return;
-    }
-    showProjectSubpanel(group, event.currentTarget);
+    if (mobileLayout || activeGroupId === group.id) return;
+    hoverGroup(group, event);
   }
 
   function isProjectSubpanelBoundaryTarget(target: EventTarget | null): boolean {
@@ -461,10 +478,11 @@
   function handleProjectSubpanelBoundaryLeave(event: PointerEvent): void {
     if (mobileLayout) return;
     if (isProjectSubpanelBoundaryTarget(event.relatedTarget)) return;
-    if (pointerAimingAtProjectChild?.(projectPickerPointerPoint(event))) return;
-    if (pointerAimingAtProjectSubpanel(projectPickerPointerPoint(event))) return;
-    onProjectPreviewClose?.();
-    closeProjectSubpanel();
+    groupSubpanelDelay.schedule(() => {
+      projectPreviewDelay.cancel();
+      onProjectPreviewClose?.();
+      closeProjectSubpanel();
+    });
   }
 
   function previewProject(project: Project, target: EventTarget | null): void {
@@ -476,25 +494,33 @@
     );
   }
 
+  /** Previews a hovered project now, or after the grace delay while the pointer is heading into the open child panel. */
+  function hoverProject(project: Project, event: PointerEvent): void {
+    const target = event.currentTarget;
+    if (activeProjectId && pointerAimingAtProjectChild?.(projectPickerPointerPoint(event))) {
+      projectPreviewDelay.schedule(() => previewProject(project, target));
+      return;
+    }
+    projectPreviewDelay.cancel();
+    previewProject(project, target);
+  }
+
   function handleProjectPointerEnter(project: Project, event: PointerEvent): void {
-    if (
-      activeProjectId
-      && activeProjectId !== project.id
-      && pointerAimingAtProjectChild?.(projectPickerPointerPoint(event))
-    ) return;
-    previewProject(project, event.currentTarget);
+    if (activeProjectId === project.id) {
+      projectPreviewDelay.cancel();
+      return;
+    }
+    hoverProject(project, event);
   }
 
   function handleProjectPointerMove(project: Project, event: PointerEvent): void {
     if (activeProjectId === project.id) return;
-    if (activeProjectId && pointerAimingAtProjectChild?.(projectPickerPointerPoint(event))) return;
-    previewProject(project, event.currentTarget);
+    hoverProject(project, event);
   }
 
   function handleProjectPointerLeave(event: PointerEvent): void {
     if (projectChildContainsTarget?.(event.relatedTarget)) return;
-    if (pointerAimingAtProjectChild?.(projectPickerPointerPoint(event))) return;
-    onProjectPreviewClose?.();
+    projectPreviewDelay.schedule(() => onProjectPreviewClose?.());
   }
 
   async function activateProject(project: Project): Promise<void> {
@@ -1098,6 +1124,7 @@
     aria-hidden="true"
     class={cn("fixed bg-transparent", zIndexClass)}
     style={projectSubpanelBridgeStyle}
+    onpointerenter={groupSubpanelDelay.cancel}
     onpointerleave={handleProjectSubpanelBoundaryLeave}
   ></div>
   <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -1105,6 +1132,7 @@
     bind:this={projectSubpanelElement}
     class={cn("project-picker-panel surface-floating fixed flex min-h-0 flex-col overflow-hidden", zIndexClass)}
     style={projectSubpanelStyle}
+    onpointerenter={groupSubpanelDelay.cancel}
     onpointerleave={handleProjectSubpanelBoundaryLeave}
   >
     <div class="relative min-h-0 flex-1">

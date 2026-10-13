@@ -77,7 +77,9 @@ Panels were restyled one at a time, so radii, shadows, text sizes, input styles,
 ## Hover submenus
 
 - In a menu, a hovered row opens its submenu after `SUBMENU_OPEN_DELAY_MS` and a hover-opened submenu closes `SUBMENU_CLOSE_DELAY_MS` after the pointer leaves both, unless the pointer is aiming at it within `SUBMENU_AIM_TOLERANCES`.
-- Cascading pickers and settings flyouts, whose side panel stays open until dismissed, switch to a hovered row immediately unless the pointer is aiming at the open panel within `SUBMENU_AIM_TOLERANCES`.
+- Cascading pickers (the Projects, Notes, and Chat navigators) switch to a hovered row immediately, or after `SUBMENU_CLOSE_DELAY_MS` while the pointer is aiming at the open side panel within `SUBMENU_AIM_TOLERANCES`. A side panel closes `SUBMENU_CLOSE_DELAY_MS` after the pointer leaves its row, bridge, and panel, and re-entering any of them cancels the close.
+- Settings flyouts keep their side panel open until dismissed and switch rows with the same aim rule.
+- Breadcrumb triggers that open a navigator on hover wait `SUBMENU_OPEN_DELAY_MS`, switch between sibling triggers at once while open, and close `SUBMENU_CLOSE_DELAY_MS` after the pointer leaves both the triggers and the panel. A click on a trigger, or a press or keystroke inside the panel, pins it until dismissed. Touch pointers never open on hover.
 - The parent row keeps `aria-expanded="true"` and its highlight while the submenu is open. Opening one submenu closes its siblings.
 - ArrowRight or Enter opens a submenu from the keyboard, and ArrowLeft or Escape returns to the parent row.
 

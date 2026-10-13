@@ -23,6 +23,7 @@
     onChannelSelected,
     onCreateChannel,
     onLayoutChange = undefined,
+    onPointerEnter = undefined,
     onPointerLeave = undefined,
     showSearch = true,
     mobileLayout = false,
@@ -40,6 +41,7 @@
     onChannelSelected: (channel: ChatChannelRead) => MaybePromise<void>;
     onCreateChannel: () => MaybePromise<void>;
     onLayoutChange?: () => void;
+    onPointerEnter?: (event: PointerEvent) => void;
     onPointerLeave?: (event: PointerEvent) => void;
     showSearch?: boolean;
     mobileLayout?: boolean;
@@ -97,6 +99,7 @@
   )}
   style={mobileLayout ? frameStyle : `${frameStyle}; height: auto`}
   data-chat-channel-picker
+  onpointerenter={onPointerEnter}
   onpointerleave={onPointerLeave}
 >
   {#if mobileLayout || showSearch}

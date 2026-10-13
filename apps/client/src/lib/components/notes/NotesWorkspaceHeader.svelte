@@ -39,6 +39,7 @@
   import { getProjects } from "$lib/stores/projects.svelte";
   import { getViewport } from "$lib/stores/viewport.svelte";
   import { cn } from "$lib/utils";
+  import { createHoverMenu } from "$lib/utils/menu-aim";
   import ProjectIcon from "$lib/components/projects/ProjectIcon.svelte";
   import WorkspaceBreadcrumbTerminalIcon from "$lib/components/ui/WorkspaceBreadcrumbTerminalIcon.svelte";
   import {
@@ -113,6 +114,16 @@
   let navigatorPanelElement = $state<HTMLDivElement | null>(null);
   let navigatorPanelStyle = $state("");
   let navigatorPanelMaxHeight = $state(0);
+  const navigatorHover = createHoverMenu({
+    isOpen: () => navigatorOpen,
+    close: () => {
+      navigatorOpen = false;
+    },
+  });
+  $effect(() => {
+    if (!navigatorOpen) navigatorHover.cancel();
+  });
+  $effect(() => () => navigatorHover.cancel());
   let mobileProjectPickerLoadState = $state<LazyComponentLoadState<
     "mobile-project-picker",
     LoadedNotesOptionalComponent
@@ -280,9 +291,13 @@
     const id = notes.selectedDatabaseBlockId;
     if (!id) return;
     const key = `database:${id}`;
-    if (toggle && navigatorOpen && navigatorMode === "notes" && notesNavigatorSourceKey === key) {
-      navigatorOpen = false;
-      return;
+    if (toggle) {
+      const triggerPanelOpen = navigatorOpen && navigatorMode === "notes" && notesNavigatorSourceKey === key;
+      if (navigatorHover.claimClick(triggerPanelOpen)) return;
+      if (triggerPanelOpen) {
+        navigatorOpen = false;
+        return;
+      }
     }
     notesNavigatorParent = { kind: "database", id };
     notesNavigatorTitle = selectedDatabaseTitle;
@@ -307,7 +322,9 @@
     node: NotesHierarchyNode,
     anchor: EventTarget | null,
   ): void {
-    if (navigatorOpen && navigatorMode === "notes" && notesNavigatorSourceKey === node.key) {
+    const triggerPanelOpen = navigatorOpen && navigatorMode === "notes" && notesNavigatorSourceKey === node.key;
+    if (navigatorHover.claimClick(triggerPanelOpen)) return;
+    if (triggerPanelOpen) {
       navigatorOpen = false;
       return;
     }
@@ -331,7 +348,9 @@
   }
 
   function toggleNavigator(mode: NotesNavigatorMode): void {
-    if (navigatorOpen && navigatorMode === mode) {
+    const triggerPanelOpen = navigatorOpen && navigatorMode === mode;
+    if (navigatorHover.claimClick(triggerPanelOpen)) return;
+    if (triggerPanelOpen) {
       navigatorOpen = false;
       return;
     }
@@ -436,7 +455,11 @@
     aria-label={selectedDatabaseTitle}
     aria-expanded={navigatorOpen && navigatorMode === "notes" && notesNavigatorSourceKey === `database:${notes.selectedDatabaseBlockId}`}
     data-notes-database-breadcrumb
-    onpointerenter={(event) => { if (!mobileLayout) openDatabaseNavigator(event.currentTarget); }}
+    onpointerenter={(event) => {
+      const anchor = event.currentTarget;
+      if (!mobileLayout) navigatorHover.enterTrigger(event, () => openDatabaseNavigator(anchor));
+    }}
+    onpointerleave={navigatorHover.leave}
     onclick={(event) => openDatabaseNavigator(event.currentTarget, true)}
   >
     <Database size={identityIconSize} strokeWidth={identityIconStrokeWidth} class="shrink-0" />
@@ -467,8 +490,10 @@
       aria-label={pathTitle}
       aria-expanded={navigatorOpen && navigatorMode === "notes" && notesNavigatorSourceKey === node.key}
       onpointerenter={(event) => {
-        if (!mobileLayout) openHierarchyNavigator(node, event.currentTarget);
+        const anchor = event.currentTarget;
+        if (!mobileLayout) navigatorHover.enterTrigger(event, () => openHierarchyNavigator(node, anchor));
       }}
+      onpointerleave={navigatorHover.leave}
       onclick={(event) => openNoteAncestor(node, event.currentTarget)}
     >
       {#if !mobileLayout}
@@ -548,9 +573,10 @@
           )}
           aria-label={t("projects.navigator.open")}
           aria-expanded={navigatorOpen && navigatorMode === "groups"}
-          onpointerenter={() => {
-            if (!mobileLayout) openNavigator("groups");
+          onpointerenter={(event) => {
+            if (!mobileLayout) navigatorHover.enterTrigger(event, () => openNavigator("groups"));
           }}
+          onpointerleave={navigatorHover.leave}
           onclick={() => toggleNavigator("groups")}
         >
           {#if !mobileLayout}
@@ -576,9 +602,10 @@
           )}
           aria-label={selectedPageTitle ? t("notes.showProjectHome") : t("projects.navigator.open")}
           aria-expanded={navigatorOpen && navigatorMode === "projects"}
-          onpointerenter={() => {
-            if (!mobileLayout) openNavigator("projects");
+          onpointerenter={(event) => {
+            if (!mobileLayout) navigatorHover.enterTrigger(event, () => openNavigator("projects"));
           }}
+          onpointerleave={navigatorHover.leave}
           onclick={handleProjectTriggerClick}
         >
           {#if !mobileLayout}
@@ -714,6 +741,10 @@
           role="dialog"
           tabindex="-1"
           aria-label={navigatorMode === "notes" ? t("notes.noteNavigatorLabel") : t("projects.navigator.pickerLabel")}
+          onpointerenter={navigatorHover.enterPanel}
+          onpointerleave={navigatorHover.leave}
+          onpointerdown={navigatorHover.pin}
+          onkeydown={navigatorHover.pin}
         >
           {#if navigatorMode === "notes"}
             <NotesHierarchyPickerPanel

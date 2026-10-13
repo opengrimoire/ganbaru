@@ -41,6 +41,7 @@
   } from "$lib/projects/picker-panels";
   import { getNotesEditor } from "$lib/components/notes/editor-context";
   import { cn, type MaybePromise } from "$lib/utils";
+  import { createHoverDelay } from "$lib/utils/menu-aim";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import NotesHierarchyPickerPanel from "./NotesHierarchyPickerPanel.svelte";
   import NotesPageIcon from "$lib/components/notes/pages/NotesPageIcon.svelte";
@@ -61,6 +62,7 @@
     onPageSelected,
     onLayoutChange = undefined,
     onItemCountChange = undefined,
+    onPointerEnter = undefined,
     onPointerLeave = undefined,
     showSearch = true,
     mobileLayout = false,
@@ -78,6 +80,7 @@
     onPageSelected: () => MaybePromise<void>;
     onLayoutChange?: () => void;
     onItemCountChange?: (count: number) => void;
+    onPointerEnter?: (event: PointerEvent) => void;
     onPointerLeave?: (event: PointerEvent) => void;
     showSearch?: boolean;
     mobileLayout?: boolean;
@@ -106,6 +109,8 @@
   let folderInput = $state<HTMLInputElement | null>(null);
   let activeNodeKey = $state<string | null>(null);
   let activeNodeAnchor = $state<HTMLElement | null>(null);
+  const childDelay = createHoverDelay();
+  $effect(() => () => childDelay.cancel());
   let childPanelElement = $state<HTMLDivElement | undefined>();
   let childBridgeElement = $state<HTMLDivElement | undefined>();
   let childPanelStyle = $state("");
@@ -194,6 +199,7 @@
   }
 
   function activateNode(node: NotesHierarchyPickerNode, target: EventTarget | null): void {
+    childDelay.cancel();
     if (!node.hasChildren) {
       activeNodeKey = null;
       activeNodeAnchor = null;
@@ -275,9 +281,16 @@
 
   function handleBoundaryLeave(event: PointerEvent): void {
     if (boundaryContains(event.relatedTarget)) return;
-    activeNodeKey = null;
-    activeNodeAnchor = null;
+    childDelay.schedule(() => {
+      activeNodeKey = null;
+      activeNodeAnchor = null;
+    });
     onPointerLeave?.(event);
+  }
+
+  function handleBoundaryEnter(event: PointerEvent): void {
+    childDelay.cancel();
+    onPointerEnter?.(event);
   }
 
   async function selectPage(pageId: string): Promise<void> {
@@ -424,6 +437,7 @@
     zIndexClass,
   )}
   style={mobileLayout ? frameStyle : `${frameStyle}; height: auto`}
+  onpointerenter={handleBoundaryEnter}
   onpointerleave={handleBoundaryLeave}
 >
   {#if mobileLayout || showSearch}
@@ -667,6 +681,7 @@
     aria-hidden="true"
     class={cn("fixed bg-transparent", zIndexClass)}
     style={childBridgeStyle}
+    onpointerenter={handleBoundaryEnter}
     onpointerleave={handleBoundaryLeave}
   ></div>
   <NotesHierarchyPickerPanel
@@ -679,6 +694,7 @@
     {onPageSelected}
     onItemCountChange={(count) => { childMeasuredItemCount = count; }}
     onLayoutChange={updateChildGeometry}
+    onPointerEnter={handleBoundaryEnter}
     onPointerLeave={handleBoundaryLeave}
   />
 {/if}

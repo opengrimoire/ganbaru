@@ -34,6 +34,7 @@
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { getViewport } from "$lib/stores/viewport.svelte";
   import { cn } from "$lib/utils";
+  import { createHoverMenu } from "$lib/utils/menu-aim";
   import ProjectIcon from "./ProjectIcon.svelte";
   import WorkspaceBreadcrumbTerminalIcon from "$lib/components/ui/WorkspaceBreadcrumbTerminalIcon.svelte";
   import ProjectNavigator from "./ProjectNavigator.svelte";
@@ -91,6 +92,16 @@
   let projectNavigatorPanelElement = $state<HTMLDivElement | null>(null);
   let projectNavigatorPanelStyle = $state("");
   let projectNavigatorPanelMaxHeight = $state(0);
+  const projectNavigatorHover = createHoverMenu({
+    isOpen: () => projectNavigatorOpen,
+    close: () => {
+      projectNavigatorOpen = false;
+    },
+  });
+  $effect(() => {
+    if (!projectNavigatorOpen) projectNavigatorHover.cancel();
+  });
+  $effect(() => () => projectNavigatorHover.cancel());
   const projectWorkingFolders = $derived(
     projectChat?.listWorkingFolders(selectedProject.id) ?? [],
   );
@@ -231,7 +242,9 @@
   }
 
   function toggleProjectNavigator(mode: ProjectNavigatorPanelMode): void {
-    if (projectNavigatorOpen && projectNavigatorMode === mode) {
+    const triggerPanelOpen = projectNavigatorOpen && projectNavigatorMode === mode;
+    if (projectNavigatorHover.claimClick(triggerPanelOpen)) return;
+    if (triggerPanelOpen) {
       projectNavigatorOpen = false;
       return;
     }
@@ -306,7 +319,8 @@
         aria-label={t("projects.navigator.open")}
         aria-haspopup="dialog"
         aria-expanded={projectNavigatorOpen && projectNavigatorMode === "groups"}
-        onpointerenter={() => { if (!mobileLayout) openProjectNavigator("groups"); }}
+        onpointerenter={(event) => { if (!mobileLayout) projectNavigatorHover.enterTrigger(event, () => openProjectNavigator("groups")); }}
+        onpointerleave={projectNavigatorHover.leave}
         onclick={() => toggleProjectNavigator("groups")}
       >
         {#if !mobileLayout}
@@ -333,7 +347,8 @@
         aria-label={t("projects.navigator.open")}
         aria-haspopup="dialog"
         aria-expanded={projectNavigatorOpen && projectNavigatorMode === "projects"}
-        onpointerenter={() => { if (!mobileLayout) openProjectNavigator("projects"); }}
+        onpointerenter={(event) => { if (!mobileLayout) projectNavigatorHover.enterTrigger(event, () => openProjectNavigator("projects")); }}
+        onpointerleave={projectNavigatorHover.leave}
         onclick={() => toggleProjectNavigator("projects")}
       >
         {#if !mobileLayout}
@@ -394,6 +409,10 @@
           role="dialog"
           tabindex="-1"
           aria-label={t("projects.navigator.pickerLabel")}
+          onpointerenter={projectNavigatorHover.enterPanel}
+          onpointerleave={projectNavigatorHover.leave}
+          onpointerdown={projectNavigatorHover.pin}
+          onkeydown={projectNavigatorHover.pin}
         >
           <ProjectNavigator
             {selectedProjectId}

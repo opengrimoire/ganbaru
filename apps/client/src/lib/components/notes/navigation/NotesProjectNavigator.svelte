@@ -14,6 +14,7 @@
     projectLifecycleLabel,
   } from "$lib/projects/display";
   import {
+    createHoverDelay,
     isPointerAimingAtSubmenu,
     SUBMENU_AIM_TOLERANCES,
     type MenuAimPoint,
@@ -126,6 +127,12 @@
   let noteSubpanelBridgeElement = $state<HTMLDivElement | undefined>();
   let noteSubpanelStyle = $state("");
   let noteSubpanelBridgeStyle = $state("");
+  const projectSubpanelDelay = createHoverDelay();
+  const noteSubpanelDelay = createHoverDelay();
+  $effect(() => () => {
+    projectSubpanelDelay.cancel();
+    noteSubpanelDelay.cancel();
+  });
 
   const selectedProject = $derived(projects.projectById(selectedProjectId));
   const selectedGroup = $derived(projects.groupById(selectedProject?.groupId ?? selectedGroupId));
@@ -382,6 +389,7 @@
   }
 
   function closeNoteSubpanel(): void {
+    noteSubpanelDelay.cancel();
     activeProjectId = null;
     activeProjectAnchorElement = null;
     activeProjectPanelElement = null;
@@ -390,6 +398,7 @@
   }
 
   function closeProjectSubpanel(): void {
+    projectSubpanelDelay.cancel();
     activeGroupId = null;
     activeGroupAnchorElement = null;
     createProjectGroupId = null;
@@ -403,6 +412,7 @@
     group: ProjectGroup,
     target: EventTarget | null,
   ): void {
+    projectSubpanelDelay.cancel();
     if (activeGroupId !== group.id) {
       createProjectGroupId = null;
       closeNoteSubpanel();
@@ -418,6 +428,7 @@
     target: EventTarget | null,
     sourcePanelElement: HTMLDivElement | null | undefined,
   ): void {
+    noteSubpanelDelay.cancel();
     activeProjectId = project.id;
     activeProjectAnchorElement = target instanceof HTMLElement ? target : null;
     activeProjectPanelElement = sourcePanelElement ?? null;
@@ -425,23 +436,47 @@
     void tick().then(updateNoteSubpanelGeometry);
   }
 
-  function handleGroupPointerEnter(group: ProjectGroup, event: PointerEvent): void {
-    const point = projectPickerPointerPoint(event);
-    if (activeGroupId && activeGroupId !== group.id && isPointerAimingAtProjectSubpanel(point)) {
+  /**
+   * Shows a group's project subpanel, deferring the switch while the pointer
+   * travels toward the open subpanel so a diagonal path does not swap it.
+   */
+  function hoverGroup(group: ProjectGroup, event: PointerEvent): void {
+    const target = event.currentTarget;
+    if (activeGroupId && isPointerAimingAtProjectSubpanel(projectPickerPointerPoint(event))) {
+      projectSubpanelDelay.schedule(() => showProjectSubpanel(group, target));
       return;
     }
-    showProjectSubpanel(group, event.currentTarget);
+    showProjectSubpanel(group, target);
+  }
+
+  /**
+   * Shows a project's note subpanel, deferring the switch while the pointer
+   * travels toward the open subpanel so a diagonal path does not swap it.
+   */
+  function hoverProject(
+    project: Project,
+    event: PointerEvent,
+    sourcePanelElement: HTMLDivElement | null | undefined,
+  ): void {
+    const target = event.currentTarget;
+    if (activeProjectId && isPointerAimingAtNoteSubpanel(projectPickerPointerPoint(event))) {
+      noteSubpanelDelay.schedule(() => showNoteSubpanel(project, target, sourcePanelElement));
+      return;
+    }
+    showNoteSubpanel(project, target, sourcePanelElement);
+  }
+
+  function handleGroupPointerEnter(group: ProjectGroup, event: PointerEvent): void {
+    if (activeGroupId === group.id) {
+      projectSubpanelDelay.cancel();
+      return;
+    }
+    hoverGroup(group, event);
   }
 
   function handleGroupPointerMove(group: ProjectGroup, event: PointerEvent): void {
-    const point = projectPickerPointerPoint(event);
-    if (activeGroupId === group.id) {
-      return;
-    }
-    if (activeGroupId && isPointerAimingAtProjectSubpanel(point)) {
-      return;
-    }
-    showProjectSubpanel(group, event.currentTarget);
+    if (activeGroupId === group.id) return;
+    hoverGroup(group, event);
   }
 
   function handleProjectPointerEnter(
@@ -449,11 +484,11 @@
     event: PointerEvent,
     sourcePanelElement: HTMLDivElement | null | undefined,
   ): void {
-    const point = projectPickerPointerPoint(event);
-    if (activeProjectId && activeProjectId !== project.id && isPointerAimingAtNoteSubpanel(point)) {
+    if (activeProjectId === project.id) {
+      noteSubpanelDelay.cancel();
       return;
     }
-    showNoteSubpanel(project, event.currentTarget, sourcePanelElement);
+    hoverProject(project, event, sourcePanelElement);
   }
 
   function handleProjectPointerMove(
@@ -461,14 +496,8 @@
     event: PointerEvent,
     sourcePanelElement: HTMLDivElement | null | undefined,
   ): void {
-    const point = projectPickerPointerPoint(event);
-    if (activeProjectId === project.id) {
-      return;
-    }
-    if (activeProjectId && isPointerAimingAtNoteSubpanel(point)) {
-      return;
-    }
-    showNoteSubpanel(project, event.currentTarget, sourcePanelElement);
+    if (activeProjectId === project.id) return;
+    hoverProject(project, event, sourcePanelElement);
   }
 
   function isProjectSubpanelBoundaryTarget(target: EventTarget | null): boolean {
@@ -494,14 +523,17 @@
 
   function handleProjectSubpanelBoundaryLeave(event: PointerEvent): void {
     if (isProjectSubpanelBoundaryTarget(event.relatedTarget)) return;
-    if (isPointerAimingAtProjectSubpanel(projectPickerPointerPoint(event))) return;
-    closeProjectSubpanel();
+    projectSubpanelDelay.schedule(closeProjectSubpanel);
   }
 
   function handleNoteSubpanelBoundaryLeave(event: PointerEvent): void {
     if (isNoteSubpanelBoundaryTarget(event.relatedTarget)) return;
-    if (isPointerAimingAtNoteSubpanel(projectPickerPointerPoint(event))) return;
-    closeNoteSubpanel();
+    noteSubpanelDelay.schedule(closeNoteSubpanel);
+  }
+
+  function handleNoteSubpanelBoundaryEnter(): void {
+    noteSubpanelDelay.cancel();
+    projectSubpanelDelay.cancel();
   }
 
   async function selectProject(project: Project): Promise<void> {
@@ -884,6 +916,7 @@
     aria-hidden="true"
     class={cn("fixed bg-transparent", zIndexClass)}
     style={projectSubpanelBridgeStyle}
+    onpointerenter={projectSubpanelDelay.cancel}
     onpointerleave={handleProjectSubpanelBoundaryLeave}
   ></div>
   <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -891,6 +924,7 @@
     bind:this={projectSubpanelElement}
     class={cn("project-picker-panel surface-floating fixed flex min-h-0 flex-col overflow-hidden", zIndexClass)}
     style={projectSubpanelStyle}
+    onpointerenter={projectSubpanelDelay.cancel}
     onpointerleave={handleProjectSubpanelBoundaryLeave}
   >
     <div class="relative min-h-0 flex-1">
@@ -993,6 +1027,7 @@
     aria-hidden="true"
     class={cn("fixed bg-transparent", zIndexClass)}
     style={noteSubpanelBridgeStyle}
+    onpointerenter={handleNoteSubpanelBoundaryEnter}
     onpointerleave={handleNoteSubpanelBoundaryLeave}
   ></div>
   <NotesHierarchyPickerPanel
@@ -1004,6 +1039,7 @@
     className="fixed"
     {zIndexClass}
     onLayoutChange={updateNoteSubpanelGeometry}
+    onPointerEnter={handleNoteSubpanelBoundaryEnter}
     onPointerLeave={handleNoteSubpanelBoundaryLeave}
     onPageSelected={async () => {
       closeNoteSubpanel();

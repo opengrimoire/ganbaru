@@ -2,6 +2,7 @@
   import { tick } from "svelte";
   import type { ChatChannelRead } from "$lib/chat/contracts";
   import {
+    createHoverDelay,
     isPointerAimingAtSubmenu,
     SUBMENU_AIM_TOLERANCES,
     type MenuAimPoint,
@@ -10,7 +11,6 @@
     projectPickerBridgeFrameStyle,
     projectPickerMenuAimRect,
     projectPickerPanelFrameStyle,
-    projectPickerPointerPoint,
     projectPickerSubpanelAimOrigin,
     projectPickerSubpanelGeometry,
     projectPickerSubpanelSide,
@@ -72,6 +72,8 @@
   let channelPanelBridgeElement = $state<HTMLDivElement | undefined>();
   let channelPanelStyle = $state("");
   let channelPanelBridgeStyle = $state("");
+  const channelPanelDelay = createHoverDelay();
+  $effect(() => () => channelPanelDelay.cancel());
   let previousPanelMode = $state<ProjectNavigatorPanelMode | null>(null);
 
   const activeProjectChannels = $derived(
@@ -133,6 +135,7 @@
     anchor: HTMLElement,
     sourcePanel: HTMLDivElement | null,
   ): void {
+    channelPanelDelay.cancel();
     activeProjectId = project.id;
     activeProjectAnchorElement = anchor;
     activeProjectPanelElement = sourcePanel;
@@ -141,6 +144,7 @@
   }
 
   function closeChannelPanel(): void {
+    channelPanelDelay.cancel();
     activeProjectId = null;
     activeProjectAnchorElement = null;
     activeProjectPanelElement = null;
@@ -160,8 +164,7 @@
 
   function handleChannelBoundaryLeave(event: PointerEvent): void {
     if (channelBoundaryContains(event.relatedTarget)) return;
-    if (pointerAimingAtChannelPanel(projectPickerPointerPoint(event))) return;
-    closeChannelPanel();
+    channelPanelDelay.schedule(closeChannelPanel);
   }
 
   async function selectProject(project: Project): Promise<void> {
@@ -233,6 +236,7 @@
   onProjectPreviewClose={closeChannelPanel}
   projectChildContainsTarget={channelBoundaryContains}
   pointerAimingAtProjectChild={pointerAimingAtChannelPanel}
+  projectChildHoverDelay={channelPanelDelay}
   {mobileLayout}
   {initialMobileGroupId}
   onProjectDrilldown={mobileLayout ? openMobileProject : undefined}
@@ -246,6 +250,7 @@
     aria-hidden="true"
     class={cn("fixed bg-transparent", zIndexClass)}
     style={channelPanelBridgeStyle}
+    onpointerenter={channelPanelDelay.cancel}
     onpointerleave={handleChannelBoundaryLeave}
   ></div>
   <ChatChannelPickerPanel
@@ -258,6 +263,7 @@
     {zIndexClass}
     {iconStrokeWidth}
     onLayoutChange={updateChannelPanelGeometry}
+    onPointerEnter={channelPanelDelay.cancel}
     onPointerLeave={handleChannelBoundaryLeave}
     onChannelSelected={selectChannel}
     onCreateChannel={createChannel}

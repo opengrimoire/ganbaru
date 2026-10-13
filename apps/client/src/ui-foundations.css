@@ -22,7 +22,7 @@
   --panel-detail-font-size: calc(var(--panel-font-size) * 0.875);
   /* Row and field height inside panels; touch layouts raise it to a 44px target. */
   --panel-row-height: calc(var(--panel-font-size) * 1.5 + 0.5rem);
-  /* Hairline that separates a tab's content surface from the window frame. It is opaque, the frame darkened slightly, so an edge painted inside a clipped surface matches one painted outside on the frame. */
+  /* Hairline that separates a tab's content surface from the window frame. It is opaque, the frame darkened slightly, so it reads the same over any content it covers. */
   --content-edge: color-mix(in srgb, var(--sidebar) 93%, rgb(0 0 20));
   /* The active title bar tab reads as a raised chip on the frame. */
   --tab-active-shadow: 0 0 0 1px rgb(0 0 20 / 0.04), 0 1px 2px rgb(0 0 20 / 0.08);
@@ -78,11 +78,16 @@ html[data-shell="mobile"] {
   box-shadow: var(--floating-shadow);
 }
 
-/* A tab's content surface whose own box can carry an outer edge. It paints the content color itself so no other fill bleeds through the rounded clip. */
+/*
+ * Content surface edges are borders, not shadow rings: engines snap border widths and boxes to whole device pixels,
+ * while a 1px shadow ring at a fractional display scale spreads over one or two pixels depending on its position.
+ */
+
+/* A tab's content surface that is not clipped by an ancestor. It paints the content color itself so no other fill bleeds through the rounded clip. */
 @utility surface-content {
+  border: 1px solid var(--content-edge);
   border-radius: var(--content-radius);
   background-color: var(--cal-bg);
-  box-shadow: 0 0 0 1px var(--content-edge);
 }
 
 /* A content surface clipped by an ancestor: the edge is painted inside, above content that reaches the edge. */
@@ -95,8 +100,8 @@ html[data-shell="mobile"] {
     position: absolute;
     inset: 0;
     z-index: 1;
+    border: 1px solid var(--content-edge);
     border-radius: inherit;
-    box-shadow: inset 0 0 0 1px var(--content-edge);
     pointer-events: none;
   }
 }

@@ -3,23 +3,22 @@ use sqlx::SqlitePool;
 use super::models::*;
 use super::routine::ensure_built_in_routine_defaults;
 pub use super::task_views::{load_task_detail, load_task_view};
+use super::views::load_all_views;
 
 /// Loads the workspace after repairing built-in Routine defaults.
 pub async fn load_workspace(
     pool: &SqlitePool,
     preferred_project_id: Option<&str>,
-    active_view: ProjectViewId,
 ) -> Result<ProjectsWorkspaceSnapshot, String> {
-    load_projects_workspace(pool, preferred_project_id, active_view, true).await
+    load_projects_workspace(pool, preferred_project_id, true).await
 }
 
 /// Reloads the workspace without built-in repair, so refreshes stay read-only.
 pub async fn refresh_workspace(
     pool: &SqlitePool,
     preferred_project_id: Option<&str>,
-    active_view: ProjectViewId,
 ) -> Result<ProjectsWorkspaceSnapshot, String> {
-    load_projects_workspace(pool, preferred_project_id, active_view, false).await
+    load_projects_workspace(pool, preferred_project_id, false).await
 }
 
 fn resolved_project_id(
@@ -49,7 +48,6 @@ fn resolved_project_id(
 async fn load_projects_workspace(
     pool: &sqlx::SqlitePool,
     preferred_project_id: Option<&str>,
-    active_view: ProjectViewId,
     repair_built_ins: bool,
 ) -> Result<ProjectsWorkspaceSnapshot, String> {
     if repair_built_ins {
@@ -71,9 +69,9 @@ async fn load_projects_workspace(
     let mut snapshot = load_projects_core_snapshot(pool, resolved_project_id.as_deref()).await?;
     snapshot.groups = groups;
     snapshot.projects = projects;
+    snapshot.views = load_all_views(pool).await?;
     Ok(ProjectsWorkspaceSnapshot {
         resolved_project_id,
-        active_view,
         snapshot,
     })
 }
@@ -131,6 +129,7 @@ async fn load_projects_core_snapshot(
         event_links: Vec::new(),
         task_change_events: Vec::new(),
         view_preferences: Vec::new(),
+        views: Vec::new(),
         custom_emojis: Vec::new(),
     })
 }
@@ -295,9 +294,11 @@ pub async fn load_optional_data(
         ProjectOptionalDataKind::ViewPreferences => {
             let project_id = required_optional_project_id(project_id, kind)?;
             result.view_preferences = sqlx::query_as::<_, ProjectViewPreferenceRow>(
-                "SELECT * FROM project_view_preferences
-                 WHERE project_id = ?
-                 ORDER BY view_id ASC, updated_at DESC",
+                "SELECT project_views.project_id, project_view_preferences.*
+                 FROM project_view_preferences
+                 JOIN project_views ON project_views.id = project_view_preferences.view_id
+                 WHERE project_views.project_id = ?
+                 ORDER BY project_view_preferences.view_id ASC, project_view_preferences.updated_at DESC",
             )
             .bind(project_id)
             .fetch_all(pool)

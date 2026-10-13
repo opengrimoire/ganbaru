@@ -34,7 +34,13 @@ fn project_creation_persists_and_creates_its_managed_working_folder() {
             default_idle_threshold_minutes: 5,
         };
 
-        create_project(&pool, &vault_root, project).await.unwrap();
+        let mutation = create_project(&pool, &vault_root, project).await.unwrap();
+        let view_types: Vec<&str> = mutation
+            .views
+            .iter()
+            .map(|view| view.view_type.as_str())
+            .collect();
+        assert_eq!(view_types, ["dashboard", "list", "notes", "chat"]);
 
         let folder: (String, String, String, String, Option<String>) = sqlx::query_as(
             "SELECT id, project_id, display_name, kind, managed_relative_path

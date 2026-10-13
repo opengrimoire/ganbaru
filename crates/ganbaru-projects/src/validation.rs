@@ -528,15 +528,37 @@ pub(super) fn validate_task_event_link_create(
 pub(super) fn validate_view_preference(
     preference: &ProjectViewPreferenceUpsert,
 ) -> Result<(), String> {
-    require_non_empty(&preference.project_id, "project_id")?;
-    validate_enum(
-        &preference.view_id,
-        "view_id",
-        &["dashboard", "list", "kanban", "calendar", "gantt"],
-    )?;
+    require_non_empty(&preference.view_id, "view_id")?;
     require_non_empty(&preference.preference_key, "preference_key")?;
     if preference.preference_value.len() > 20_000 {
         return Err("preference_value is too large".to_string());
+    }
+    Ok(())
+}
+
+/// View types a project can list. Notes and Chat open the project's pages and channels, so a project keeps at most one
+/// of each.
+pub(super) const PROJECT_VIEW_TYPES: &[&str] = &[
+    "dashboard",
+    "list",
+    "kanban",
+    "calendar",
+    "gantt",
+    "notes",
+    "chat",
+];
+pub(super) const SINGLE_PROJECT_VIEW_TYPES: &[&str] = &["notes", "chat"];
+
+pub(super) fn validate_view_create(view: &ProjectViewCreate) -> Result<(), String> {
+    require_non_empty(&view.id, "id")?;
+    require_non_empty(&view.project_id, "project_id")?;
+    validate_enum(view.view_type.trim(), "view_type", PROJECT_VIEW_TYPES)
+}
+
+pub(super) fn validate_view_reorder(reorder: &ProjectViewReorder) -> Result<(), String> {
+    require_non_empty(&reorder.project_id, "project_id")?;
+    for view_id in &reorder.view_ids {
+        require_non_empty(view_id, "view_ids")?;
     }
     Ok(())
 }

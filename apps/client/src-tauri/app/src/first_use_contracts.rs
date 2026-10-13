@@ -9,9 +9,9 @@ use ganbaru_db::run_migrations;
 
 const SQLITE_OK: c_int = 0;
 const SQLITE_TRACE_STMT: c_uint = 0x01;
-const EMPTY_PROJECTS_SQL_READS: usize = 6;
+const EMPTY_PROJECTS_SQL_READS: usize = 7;
 const EMPTY_PROJECTS_SQL_WRITES: usize = 0;
-const EMPTY_PROJECTS_RESPONSE_BYTES: usize = 13_142;
+const EMPTY_PROJECTS_RESPONSE_BYTES: usize = 23_355;
 const EMPTY_NOTES_SQL_READS: usize = 7;
 const EMPTY_NOTES_SQL_WRITES: usize = 0;
 const EMPTY_NOTES_RESPONSE_BYTES: usize = 349;
@@ -325,12 +325,7 @@ async fn traced_projects_workspace(
 ) -> (serde_json::Value, FirstUseContractMetrics, Vec<String>) {
     let trace = SqlTrace::start(pool).await;
     let mut metrics = FirstUseContractMetrics::default();
-    let response = ganbaru_projects::workspace::load_workspace(
-        pool,
-        preferred_project_id,
-        ganbaru_projects::ProjectViewId::List,
-    )
-    .await;
+    let response = ganbaru_projects::workspace::load_workspace(pool, preferred_project_id).await;
     let trace = trace.finish().await;
     let response = response.expect("load Projects workspace");
     metrics.record_response(FirstUseIpcCommand::ProjectsLoadWorkspace, &response);
@@ -371,7 +366,6 @@ fn empty_projects_first_use_has_a_fixed_backend_contract() {
 
         let (response, metrics, statements) = traced_projects_workspace(&pool, None).await;
         assert_eq!(response["resolved_project_id"], "project-routine-learning");
-        assert_eq!(response["active_view"], "list");
         assert_eq!(response["snapshot"]["tasks"], serde_json::json!([]));
         assert_no_optional_project_queries(&statements);
         assert_eq!(
@@ -457,11 +451,22 @@ fn projects_first_use_repairs_a_missing_built_in_with_default_graph() {
         .fetch_one(&pool)
         .await
         .expect("count restored priorities");
+        let restored_views: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM project_views WHERE project_id = 'project-routine-reading'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count restored views");
         assert_eq!(
-            (restored_sections, restored_statuses, restored_priorities),
-            (1, 6, 4)
+            (
+                restored_sections,
+                restored_statuses,
+                restored_priorities,
+                restored_views
+            ),
+            (1, 6, 4, 4)
         );
-        assert_eq!(metrics.sql.writes, 19);
+        assert_eq!(metrics.sql.writes, 20);
         assert_no_optional_project_queries(&statements);
     });
 }
@@ -475,12 +480,9 @@ fn project_refresh_does_not_run_built_in_repair() {
             .await
             .expect("remove built-in Reading project");
         let trace = SqlTrace::start(&pool).await;
-        let refresh = ganbaru_projects::workspace::refresh_workspace(
-            &pool,
-            Some("project-routine-learning"),
-            ganbaru_projects::ProjectViewId::List,
-        )
-        .await;
+        let refresh =
+            ganbaru_projects::workspace::refresh_workspace(&pool, Some("project-routine-learning"))
+                .await;
         let trace = trace.finish().await;
         refresh.expect("refresh Projects workspace");
 

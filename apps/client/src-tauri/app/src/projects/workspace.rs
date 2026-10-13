@@ -1,7 +1,7 @@
 use ganbaru_projects::workspace;
 use ganbaru_projects::{
     ProjectOptionalDataKind, ProjectTaskDetailData, ProjectTaskViewPage, ProjectTaskViewRequest,
-    ProjectViewId, ProjectsOptionalData, ProjectsWorkspaceSnapshot,
+    ProjectsOptionalData, ProjectsWorkspaceSnapshot,
 };
 use tauri::{AppHandle, Runtime};
 
@@ -12,10 +12,9 @@ pub async fn projects_load_workspace<R: Runtime>(
     app: AppHandle<R>,
     db_url: String,
     preferred_project_id: Option<String>,
-    active_view: ProjectViewId,
 ) -> Result<ProjectsWorkspaceSnapshot, String> {
     let pool = connect_sqlite(app, db_url).await?;
-    workspace::load_workspace(&pool, preferred_project_id.as_deref(), active_view).await
+    workspace::load_workspace(&pool, preferred_project_id.as_deref()).await
 }
 
 #[tauri::command]
@@ -23,10 +22,9 @@ pub async fn projects_refresh_workspace<R: Runtime>(
     app: AppHandle<R>,
     db_url: String,
     preferred_project_id: Option<String>,
-    active_view: ProjectViewId,
 ) -> Result<ProjectsWorkspaceSnapshot, String> {
     let pool = connect_sqlite(app, db_url).await?;
-    workspace::refresh_workspace(&pool, preferred_project_id.as_deref(), active_view).await
+    workspace::refresh_workspace(&pool, preferred_project_id.as_deref()).await
 }
 
 #[tauri::command]

@@ -108,3 +108,4 @@ mod task_lifecycle;
 mod task_reminders;
 mod task_summaries;
 mod task_views;
+mod views;

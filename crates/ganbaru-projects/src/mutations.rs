@@ -175,15 +175,15 @@ pub(super) async fn event_link_mutation(
 
 pub(super) async fn view_preference_mutation(
     pool: &sqlx::SqlitePool,
-    project_id: &str,
     view_id: &str,
     preference_key: &str,
 ) -> Result<ProjectsMutationRows, String> {
     let preference = sqlx::query_as::<_, ProjectViewPreferenceRow>(
-        "SELECT * FROM project_view_preferences
-         WHERE project_id = ? AND view_id = ? AND preference_key = ?",
+        "SELECT project_views.project_id, project_view_preferences.*
+         FROM project_view_preferences
+         JOIN project_views ON project_views.id = project_view_preferences.view_id
+         WHERE project_view_preferences.view_id = ? AND project_view_preferences.preference_key = ?",
     )
-    .bind(project_id)
     .bind(view_id)
     .bind(preference_key)
     .fetch_one(pool)

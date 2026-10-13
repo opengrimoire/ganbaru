@@ -110,6 +110,7 @@ fn fresh_database_applies_clean_baseline() {
             "project_labels",
             "project_task_label_links",
             "project_view_preferences_new",
+            "project_view_preferences_rebuild",
             "notes_blocks_next",
             "notes_pages_next",
             "notes_page_history_settings_next",

@@ -13,6 +13,7 @@ pub(crate) mod reorder;
 pub(crate) mod structure_commands;
 pub(crate) mod task_bulk;
 pub(crate) mod task_commands;
+pub(crate) mod views;
 #[cfg(desktop)]
 pub(crate) mod working_folders;
 pub(crate) mod workspace;

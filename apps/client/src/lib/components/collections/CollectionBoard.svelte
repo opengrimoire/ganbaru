@@ -101,7 +101,7 @@
 
 <div class={cn("flex min-h-0 min-w-0 flex-col", fill && "h-full")}>
   {#if error}<Notice class="px-3 py-2 text-[0.8rem]" message={error} />{/if}
-  <div data-collection-scroll class={cn("collection-board flex min-h-0 min-w-0 gap-3 overflow-x-auto py-2", fill && "h-full px-3")}>
+  <div data-collection-scroll class={cn("collection-board flex min-h-0 min-w-0 gap-3 overflow-x-auto py-2", fill && "h-full scroll-px-3 px-3")}>
     {#each groups as group (group.id)}
       {@const rows = items(group)}
       {@const cardWindow = visibleWindow(group)}
@@ -134,9 +134,14 @@
 </div>
 
 <style>
-  .collection-board { container-type: inline-size; scroll-snap-type: x proximity; }
-  .collection-column { width: min(18rem, calc(100cqw - 0.5rem)); scroll-snap-align: start; max-height: 36rem; }
+  .collection-board { container-type: inline-size; }
+  .collection-column { width: min(18rem, calc(100cqw - 0.5rem)); max-height: 36rem; }
   .h-full > .collection-board > .collection-column { max-height: none; }
   .collection-cards { scrollbar-gutter: stable; }
-  @media (hover: none) and (pointer: coarse) { .collection-drag { display: none; } }
+  /* Pointer scrolling stays free; touch swipes settle on a column, after the board padding. */
+  @media (hover: none) and (pointer: coarse) {
+    .collection-board { scroll-snap-type: x proximity; }
+    .collection-column { scroll-snap-align: start; }
+    .collection-drag { display: none; }
+  }
 </style>

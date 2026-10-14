@@ -5,6 +5,14 @@ export interface NotesFocusRequest {
   requestId: number;
   selection: NotesTextSelection | null;
   preventScroll?: boolean;
+  /** Scrolls the block into view without focusing it, so no soft keyboard opens. */
+  revealOnly?: boolean;
+}
+
+/** Block a page open targets, and whether it only scrolls to that block instead of focusing it. */
+export interface NotesPageOpenFocusPlan {
+  blockId: string | null;
+  revealOnly: boolean;
 }
 
 export interface NotesDeleteFocusInput {
@@ -54,13 +62,34 @@ export function nextNotesFocusRequest(
   blockId: string | null,
   selection: NotesTextSelection | null = null,
   preventScroll = false,
+  revealOnly = false,
 ): NotesFocusRequest {
   return {
     blockId,
     requestId: current.requestId + 1,
     selection,
     ...(preventScroll ? { preventScroll: true } : {}),
+    ...(revealOnly ? { revealOnly: true } : {}),
   };
+}
+
+/**
+ * Plan focus for opening a page. Where opening may focus text, the requested or first visible block takes focus.
+ * Otherwise a requested block is only revealed and a plain open clears the focus target, so no soft keyboard opens
+ * and no block from an earlier visit refocuses when it mounts again.
+ */
+export function planNotesPageOpenFocus(
+  visibleBlockIds: readonly string[],
+  requestedBlockId: string | null,
+  openingMayFocusText: boolean,
+): NotesPageOpenFocusPlan {
+  if (openingMayFocusText) {
+    return { blockId: planNotesPageLoadFocus(visibleBlockIds, requestedBlockId), revealOnly: false };
+  }
+  if (requestedBlockId && visibleBlockIds.includes(requestedBlockId)) {
+    return { blockId: requestedBlockId, revealOnly: true };
+  }
+  return { blockId: null, revealOnly: false };
 }
 
 /**

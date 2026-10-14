@@ -12,6 +12,7 @@
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
   import GripVertical from "@lucide/svelte/icons/grip-vertical";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
 
   /**
    * Maximum number of timezones (including the device tz) the calendar can
@@ -138,7 +139,7 @@
     computePosition();
     searchHydrated = true;
     open = true;
-    requestAnimationFrame(() => inputEl?.focus());
+    if (OPENING_MAY_FOCUS_TEXT) requestAnimationFrame(() => inputEl?.focus());
   }
 
   function close(source: "keyboard" | "pointer" = "pointer") {
@@ -157,7 +158,7 @@
     if (willHitMax) {
       close(source);
     } else {
-      requestAnimationFrame(() => inputEl?.focus());
+      if (OPENING_MAY_FOCUS_TEXT) requestAnimationFrame(() => inputEl?.focus());
     }
   }
 

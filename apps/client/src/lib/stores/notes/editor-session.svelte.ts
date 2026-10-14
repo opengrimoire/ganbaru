@@ -31,9 +31,10 @@ import {
 } from "$lib/notes/project-membership";
 import {
   nextNotesFocusRequest,
-  planNotesPageLoadFocus,
+  planNotesPageOpenFocus,
   type NotesFocusRequest,
 } from "$lib/notes/editor/focus";
+import { OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
 import type { NotesDocumentSelection, NotesTextSelection } from "$lib/notes/editor/selection";
 import type { NotesUndoSnapshot } from "$lib/notes/history/undo-history";
 import {
@@ -390,16 +391,27 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     treeProjection.mergeOutlines(outlines, pageId);
   }
 
+  /** Focus or reveal the block a page open targets, following {@link planNotesPageOpenFocus}. */
+  function requestPageOpenFocus(blockIds: readonly string[], requestedBlockId: string | null): void {
+    const plan = planNotesPageOpenFocus(blockIds, requestedBlockId, OPENING_MAY_FOCUS_TEXT);
+    if (plan.revealOnly) {
+      focusRequest = nextNotesFocusRequest(focusRequest, plan.blockId, null, false, true);
+      return;
+    }
+    requestBlockFocus(plan.blockId);
+  }
+
+  /** Drop pending block and title focus so remounted editors do not reopen the soft keyboard. */
+  function releaseTextFocus(): void {
+    if (focusRequest.blockId !== null) focusRequest = nextNotesFocusRequest(focusRequest, null);
+    pageSession.clearTitleFocus();
+  }
+
   function requestLoadedPageFocus(
     loaded: NotesLoadedPage,
     focusBlockId: string | null = null,
   ): void {
-    requestBlockFocus(
-      planNotesPageLoadFocus(
-        loaded.blocks.results.map((block) => block.id),
-        focusBlockId,
-      ),
-    );
+    requestPageOpenFocus(loaded.blocks.results.map((block) => block.id), focusBlockId);
   }
 
   async function hydrateBlockRange(
@@ -562,7 +574,7 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     setLoadedPage(loaded);
     replaceBlockOutlines(loaded.outlines, pageId);
     const bodyId = blockActions.ensurePageBody(pageId);
-    if (options.focusOnLoad && loaded.outlines.length === 0) requestBlockFocus(bodyId, { start: 0, end: 0 });
+    if (options.focusOnLoad && OPENING_MAY_FOCUS_TEXT && loaded.outlines.length === 0) requestBlockFocus(bodyId, { start: 0, end: 0 });
     pageSession.applyBreadcrumbsIfCurrent(requestId, pageId, loaded.breadcrumb);
     const outlinePromise = hydrationController.loadOutlineDescendantFrontiers(pageId, requestId);
     pendingPageOutline = { pageId, generation: requestId, promise: outlinePromise };
@@ -958,7 +970,7 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
   }
 
   function requestPageLoadFocus(requestedBlockId: string | null = null): void {
-    requestBlockFocus(planNotesPageLoadFocus(visibleBlockIds(), requestedBlockId));
+    requestPageOpenFocus(visibleBlockIds(), requestedBlockId);
   }
 
   let editorSaveError = $state<string | null>(null);
@@ -1555,7 +1567,7 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     }
     if (!treeProjection.blocksById[target.blockId] || !visibleBlockIds().includes(target.blockId)) return false;
     closeDatabase();
-    requestBlockFocus(planNotesPageLoadFocus(visibleBlockIds(), target.blockId));
+    requestPageLoadFocus(target.blockId);
     return true;
   }
 
@@ -1925,6 +1937,11 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     get focusPreventScroll(): boolean {
       return focusRequest.preventScroll ?? false;
     },
+    /** Whether the current request only scrolls its block into view without focusing it. */
+    get focusRevealOnly(): boolean {
+      return focusRequest.revealOnly ?? false;
+    },
+    releaseTextFocus,
     get focusSelection(): NotesTextSelection | null {
       return focusRequest.selection;
     },

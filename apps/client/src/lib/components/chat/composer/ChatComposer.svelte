@@ -68,6 +68,7 @@
   import ChatImageGallery from "$lib/components/chat/timeline/ChatImageGallery.svelte";
   import ChatModelControls from "./ChatModelControls.svelte";
   import ChatRequestPanel from "$lib/components/chat/timeline/ChatRequestPanel.svelte";
+  import { OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
 
   const { hero = false } = $props<{ hero?: boolean }>();
   const localization = getLocalization();
@@ -144,7 +145,7 @@
       if (document.activeElement === editorRoot) editorController?.handleSelectionChange();
     };
     document.addEventListener("selectionchange", selectionChanged);
-    if (restoreComposerFocus) {
+    if (restoreComposerFocus && OPENING_MAY_FOCUS_TEXT) {
       void tick().then(() => {
         editorController?.focus({ start: restoreSelectionStart, end: restoreSelectionEnd });
       });

@@ -1,3 +1,11 @@
+import { BUILD_PLATFORM_PROFILE } from "$lib/platform";
+
+/**
+ * Whether opening a surface, restoring a caret, or loading data may focus a text field. On a phone shell the soft
+ * keyboard opens only when the user asks to type, so these focus moves are skipped there.
+ */
+export const OPENING_MAY_FOCUS_TEXT = BUILD_PLATFORM_PROFILE.shell !== "mobile";
+
 /** Space kept between a revealed caret and the edge of its visible area, in CSS pixels. */
 export const KEYBOARD_REVEAL_MARGIN_PX = 16;
 

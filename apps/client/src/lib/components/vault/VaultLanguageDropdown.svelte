@@ -18,6 +18,7 @@
   } from "$lib/i18n/pre-vault-language";
   import { cn } from "$lib/utils";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
+  import { OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
 
   const localization = getLocalization();
   const { t } = localization;
@@ -85,7 +86,7 @@
     if (!open) return;
     query = "";
     await tick();
-    searchInputEl?.focus();
+    if (OPENING_MAY_FOCUS_TEXT) searchInputEl?.focus();
   }
 
   async function selectLanguage(next: LanguageOption): Promise<void> {

@@ -15,6 +15,7 @@
   import type { NotesPage } from "$lib/notes/types";
   import { cn } from "$lib/utils";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
+  import { OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
 
   /**
    * Floating "Link or create a page" picker over the rows of one data source. Typing filters by title, the arrow keys
@@ -85,6 +86,7 @@
   });
 
   $effect(() => {
+    if (!OPENING_MAY_FOCUS_TEXT) return;
     void tick().then(() => searchInput?.focus({ preventScroll: true }));
   });
 

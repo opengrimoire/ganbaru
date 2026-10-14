@@ -11,6 +11,7 @@
   import { NOTES_DATA_SOURCE_STATUS_GROUPS, type NotesPage } from "$lib/notes/types";
   import { cn } from "$lib/utils";
   import NotesDatabaseOptionBadge from "../NotesDatabaseOptionBadge.svelte";
+  import { OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
 
   /**
    * A select, status, or multi-select value on a row page: the chosen options show as pills, and a click opens a
@@ -84,7 +85,7 @@
   });
 
   $effect(() => {
-    if (!open || !searchInput) return;
+    if (!open || !searchInput || !OPENING_MAY_FOCUS_TEXT) return;
     const input = searchInput;
     void tick().then(() => input.focus({ preventScroll: true }));
   });

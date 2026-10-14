@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
   import { tick } from "svelte";
   import Check from "@lucide/svelte/icons/check";
   import AlertTriangle from "@lucide/svelte/icons/triangle-alert";
@@ -74,7 +75,7 @@
     await tick();
     if (!open) return;
     position();
-    searchInput?.focus({ preventScroll: true });
+    if (OPENING_MAY_FOCUS_TEXT) searchInput?.focus({ preventScroll: true });
   }
 
   /** Dismiss the chooser and optionally restore focus to its trigger. */

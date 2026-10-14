@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
   import { onMount, tick } from "svelte";
   import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
@@ -290,7 +291,7 @@
     const deactivateKeyboard = activateModalKeyboardLayer(handleKeydown);
     void tick().then(() => {
       updateMainPanelGeometry();
-      searchInputElement?.focus();
+      if (OPENING_MAY_FOCUS_TEXT) searchInputElement?.focus();
     });
     return deactivateKeyboard;
   });

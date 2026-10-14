@@ -22,6 +22,7 @@
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
+  import { OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
 
   let {
     title,
@@ -150,7 +151,7 @@
   onMount(() => {
     void loadApps();
     void tick().then(() => {
-      searchInputEl?.focus();
+      if (OPENING_MAY_FOCUS_TEXT) searchInputEl?.focus();
     });
     window.addEventListener("keydown", handleKeydown, true);
     return () => window.removeEventListener("keydown", handleKeydown, true);

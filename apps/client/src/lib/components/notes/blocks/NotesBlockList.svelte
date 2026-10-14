@@ -224,7 +224,8 @@
     breadcrumbItems,
     tableOfContentsItems,
     listOrdinals,
-    focusBlockId: notes.focusBlockId,
+    // A reveal-only request scrolls to its block without focusing it.
+    focusBlockId: notes.focusRevealOnly ? null : notes.focusBlockId,
     focusRequestId: notes.focusRequestId,
     focusSelection: notes.focusSelection,
     mentionTargets,

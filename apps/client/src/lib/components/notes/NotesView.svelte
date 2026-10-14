@@ -40,6 +40,7 @@
   import NotesWorkingMarkdownEditor from "$lib/components/notes/working-markdown/NotesWorkingMarkdownEditor.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
 
   let {
     mobileLayout = false,
@@ -312,6 +313,8 @@
     window.addEventListener("hashchange", handleHashChange);
     return () => {
       window.removeEventListener("hashchange", handleHashChange);
+      // Returning to Notes on a phone must not reopen the keyboard on the last focused block or title.
+      if (!OPENING_MAY_FOCUS_TEXT) notes.releaseTextFocus();
     };
   });
 

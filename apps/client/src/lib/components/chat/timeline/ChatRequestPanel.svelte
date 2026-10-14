@@ -12,6 +12,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getChat } from "$lib/stores/chat.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
 
   const { pending } = $props<{ pending: ChatPendingRequestRead }>();
   const localization = getLocalization();
@@ -45,7 +46,8 @@
     if (answerSaveTimer !== null) clearTimeout(answerSaveTimer);
     if (pending.requestKind === "user_input") void loadAnswerDraft(pending.id);
     void tick().then(() => {
-      if (pending.requestKind === "user_input") panel?.querySelector<HTMLElement>("input, textarea")?.focus();
+      // On a phone the panel takes focus instead of its first answer field, so a new request does not open the keyboard.
+      if (pending.requestKind === "user_input" && OPENING_MAY_FOCUS_TEXT) panel?.querySelector<HTMLElement>("input, textarea")?.focus();
       else panel?.focus();
     });
   });

@@ -186,6 +186,8 @@
       viewportHeight = entry.contentRect.height;
       viewportWidth = entry.contentRect.width;
       updateTimelineScrollbar();
+      // Keep the latest message in view when the timeline shrinks, such as above an opening soft keyboard.
+      pinToLatest();
     });
     if (!embedded && scroller) observer.observe(scroller);
     const contentObserver = new ResizeObserver(updateTimelineScrollbar);

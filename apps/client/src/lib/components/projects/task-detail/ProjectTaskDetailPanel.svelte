@@ -78,6 +78,7 @@
   import ProjectTaskDetailScheduledBlocksController from "./ProjectTaskDetailScheduledBlocksController.svelte";
   import ProjectTaskDetailSubtasksSection from "./ProjectTaskDetailSubtasksSection.svelte";
   import ProjectTaskDetailTagsSection from "./ProjectTaskDetailTagsSection.svelte";
+  import { OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
 
   let {
     taskId,
@@ -542,7 +543,8 @@
 
   $effect(() => {
     if ((!selectedTask && !draftMode) || !detailDialog || discardCloseConfirmOpen) return;
-    return activateModalFocus(detailDialog);
+    // Opening an existing task on a phone focuses the dialog itself so its title field does not open the keyboard.
+    return activateModalFocus(detailDialog, draftMode || OPENING_MAY_FOCUS_TEXT ? null : detailDialog);
   });
 
   function confirmDiscardTaskDetail(): void {

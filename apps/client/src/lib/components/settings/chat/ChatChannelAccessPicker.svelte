@@ -27,6 +27,7 @@
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
+  import { OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
 
   type CompactStage = "groups" | "projects" | "channels";
 
@@ -372,7 +373,7 @@
     compact = window.innerWidth < 760;
     void tick().then(() => {
       updateMainPanelGeometry();
-      searchInputElement?.focus();
+      if (OPENING_MAY_FOCUS_TEXT) searchInputElement?.focus();
     });
   });
 </script>

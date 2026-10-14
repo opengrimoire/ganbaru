@@ -28,6 +28,7 @@
   } from "$lib/utils/select-popover-position";
   import MusicPlaylistIcon from "$lib/components/music/builder/MusicPlaylistIcon.svelte";
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
+  import { OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
 
   const PLAYLIST_POPOVER_WIDTH_PX = FLOATING_WIDTH.lg;
   const PLAYLIST_POPOVER_MAX_HEIGHT_PX = 520;
@@ -122,7 +123,7 @@
       geometry = null;
       await tick();
       positionPopover();
-      searchInput?.focus();
+      if (OPENING_MAY_FOCUS_TEXT) searchInput?.focus();
     } finally {
       opening = false;
     }

@@ -71,6 +71,7 @@
   import QuickNoteRichText from "./QuickNoteRichText.svelte";
   import QuickNoteTagPicker from "./QuickNoteTagPicker.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
+  import { OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
 
   let {
     note,
@@ -638,7 +639,9 @@
       ? mobileBackStack.activate({ handle: () => { void requestClose(); } })
       : () => undefined;
     window.addEventListener("keydown", handleDialogKeydown, true);
-    void tick().then(() => (titleInput ?? editor ?? dialog)?.focus());
+    // A new note starts typing; opening an existing one on a phone focuses the dialog so the keyboard stays closed.
+    const focusText = note === null || OPENING_MAY_FOCUS_TEXT;
+    void tick().then(() => (focusText ? titleInput ?? editor ?? dialog : dialog)?.focus());
     let mounted = true;
     let stopChanges: (() => void) | null = null;
     void listenForQuickNotesChanges(() => { void refreshFromCanonical(); })

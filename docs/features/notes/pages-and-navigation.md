@@ -50,7 +50,7 @@ Trash applies to the reachable page subtree so active children never remain unde
 
 ## Search and destination reads
 
-Navigation, Archive, Trash, destination, and search surfaces use page summaries and bounded pagination rather than full page content. Search can match titles, aliases, blocks, database properties, comments, links, and managed file metadata according to access. Opening a block or comment result focuses the target when it still exists; a stale or inaccessible target fails safely instead of opening a page with a similar title.
+Navigation, Archive, Trash, destination, and search surfaces use page summaries and bounded pagination rather than full page content. Search can match titles, aliases, blocks, database properties, comments, links, and managed file metadata according to access. Opening a block or comment result focuses the target when it still exists (on a phone it scrolls to the target without opening the keyboard); a stale or inaccessible target fails safely instead of opening a page with a similar title.
 
 ## Working-folder Markdown
 

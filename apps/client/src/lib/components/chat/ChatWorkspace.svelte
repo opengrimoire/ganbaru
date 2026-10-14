@@ -52,6 +52,7 @@
   import ChatChannelArchive from "$lib/components/chat/channels/ChatChannelArchive.svelte";
   import ChatChannelFeed from "$lib/components/chat/channels/ChatChannelFeed.svelte";
   import ChatReplyThreadPanel from "$lib/components/chat/timeline/ChatReplyThreadPanel.svelte";
+  import { isTextEntryElement, OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
 
   let {
     projectSidebar = undefined,
@@ -493,7 +494,8 @@
       queueMicrotask(() => document.querySelector<HTMLElement>("[data-chat-inspector] [role='tab'][aria-selected='true']")?.focus());
     } else if (action === "restore") {
       const target = inspectorReturnFocus;
-      queueMicrotask(() => target?.isConnected && target.focus());
+      // A phone does not reopen the keyboard by returning focus to a text field.
+      if (OPENING_MAY_FOCUS_TEXT || !isTextEntryElement(target)) queueMicrotask(() => target?.isConnected && target.focus());
     }
     inspectorWasOpen = open;
   });

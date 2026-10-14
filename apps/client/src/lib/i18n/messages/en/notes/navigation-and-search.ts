@@ -10,7 +10,7 @@ export const navigationAndSearch = {
   centerPeek: "Center peek",
   fullPage: "Full page",
   projectSettingsTitle: (projectName: string) => `Notes settings for ${projectName}`,
-  projectSettingsDefaultViewMode: "Contextual note opening",
+  projectSettingsDefaultViewMode: "Sub-note opening",
   projectSettingsSidebarOrder: "Folder and note order",
   projectSettingsRestore: "Restore",
   projectSettingsHistoryRetention: "Version history retention",

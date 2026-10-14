@@ -13,7 +13,7 @@ export const navigationAndSearch = {
   centerPeek: "Vista central",
   fullPage: "Página completa",
   projectSettingsTitle: (projectName: string) => `Ajustes de notas de ${projectName}`,
-  projectSettingsDefaultViewMode: "Apertura contextual de notas",
+  projectSettingsDefaultViewMode: "Apertura de subnotas",
   projectSettingsSidebarOrder: "Orden de carpetas y notas",
   projectSettingsRestore: "Restaurar",
   projectSettingsHistoryRetention: "Retención del historial de versiones",

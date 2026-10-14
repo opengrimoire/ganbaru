@@ -247,7 +247,7 @@ describe("Notes page lifecycle", () => {
     ));
     if (!firstBlock) throw new Error("missing first block");
     await notes.updateBlockText(firstBlock.id, "Edited");
-    const nextCreation = notes.createPage("Second");
+    const nextCreation = notes.createPage("Second", { openMode: "center" });
     await vi.waitFor(() => expect(backend.pendingBlockSaves).toHaveLength(1));
     backend.pendingBlockSaves[0]?.resolve(firstBlock);
     await nextCreation;

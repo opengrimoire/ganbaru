@@ -110,6 +110,13 @@ export function createNotesPageActions(context: NotesPageActionsContext) {
     return parentPage ? notesPageProjectId(parentPage) : null;
   }
 
+  /** A sub-note of the open note opens contextually, with the configured mode; any other new note opens full. */
+  function creationOpenMode(parent: NotesParent, projectId: string | null): NotesPageOpenMode {
+    return parent.type === "page_id" && parent.page_id === context.readSelectedPageId()
+      ? context.defaultOpenMode(projectId)
+      : "full";
+  }
+
   async function createPageWithParent(
     title: string,
     parent: NotesParent,
@@ -138,7 +145,7 @@ export function createNotesPageActions(context: NotesPageActionsContext) {
     if (provisional.page.folder_id) context.setFolderCollapsed(provisional.page.folder_id, false);
     await context.activateProvisionalPage(
       provisional,
-      options.openMode ?? context.defaultOpenMode(projectId),
+      options.openMode ?? creationOpenMode(parent, projectId),
     );
     context.requestBlockFocus(null);
     context.requestTitleFocus(provisional.page.id);

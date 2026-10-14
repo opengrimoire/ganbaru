@@ -683,9 +683,6 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     const openMode = notesPageOpenModeForSelection({
       requestedOpenMode: options.openMode,
       currentOpenMode: pageSession.pageOpenMode,
-      defaultOpenMode: pageId
-        ? defaultNotesPageOpenMode(projectIdForPage(pageId))
-        : defaultNotesPageOpenMode(),
       hasOpenPage: pageSession.selectedPageId !== null,
     });
     if (pageId && alreadyLoaded && options.databaseBlockId) {
@@ -856,7 +853,7 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     undoController.reset(page.id);
     pageHistoryController.resetPageState();
     optionalSubsystemController.resetPageScoped();
-    openSelectedPage(page.id, defaultNotesPageOpenMode(notesPageProjectId(page)));
+    openSelectedPage(page.id, "full");
     applyPostMutation({ pages: [page], sidebarImpact: "hierarchy" });
     await loadPageTree(page.id);
     recordRecentPage(page.id);
@@ -1570,7 +1567,6 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
   }
 
   const facade = {
-    defaultOpenMode: defaultNotesPageOpenMode,
     acceptLoadedPage,
     acceptProvisionalPage,
     reconcileCreatedPage,

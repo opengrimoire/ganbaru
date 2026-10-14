@@ -422,7 +422,7 @@
         titleForPage: (page) => notesPageTitle(page, t("notes.untitled")),
       },
     );
-    if (firstPage) await notes.selectPage(firstPage.id);
+    if (firstPage) await notes.selectPage(firstPage.id, { openMode: "full" });
   }
 
   function beforeDocumentNavigation(): boolean {

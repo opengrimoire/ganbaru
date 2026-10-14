@@ -29,6 +29,7 @@ function editor(text = "/Note") {
   const error = vi.fn();
   const focus = vi.fn();
   const resetUndoHistory = vi.fn();
+  const activateProvisionalPage = vi.fn();
   const session = new NotesPageSessionController({
     initialSelectedPageId: pageId, persistSelectedPageId: vi.fn(), recordRecentPage: vi.fn(),
   });
@@ -69,7 +70,7 @@ function editor(text = "/Note") {
       loaded = next;
       blocks = Object.fromEntries(next.blocks.results.map((block) => [block.id, block]));
     },
-    activateProvisionalPage: vi.fn(), beginPageCreation: vi.fn(), awaitPageReady: async () => undefined,
+    activateProvisionalPage, beginPageCreation: vi.fn(), awaitPageReady: async () => undefined,
     awaitPageCreationAttempt: async () => "ready", discardFailedPageCreation: vi.fn(),
     activateRestoredPage: async () => undefined, applyPostMutation: vi.fn(),
     selectPage: async () => undefined, selectPageAfterRemoval: async () => undefined,
@@ -97,7 +98,10 @@ function editor(text = "/Note") {
     localRemoveLeafBlock: () => false, createUndoSnapshot: () => null,
     createUndoSnapshotForBlocks: () => null, recordUndo: vi.fn(),
   });
-  return { actions, persistence, stored, writes, release, session, error, resetUndoHistory, block: () => blocks[blockId] };
+  return {
+    actions, pageActions, activateProvisionalPage, persistence, stored, writes, release, session, error, resetUndoHistory,
+    block: () => blocks[blockId],
+  };
 }
 
 afterEach(() => vi.resetAllMocks());
@@ -179,5 +183,14 @@ describe("child-note creation through the editor queue", () => {
     expect(h.writes).toEqual(["create:child_page"]);
     expect(h.error).toHaveBeenLastCalledWith(null);
     await h.persistence.flushPendingBlockSaves();
+  });
+
+  it("opens a sub-note of the open note with the configured mode and any other new note as a full page", async () => {
+    const h = editor();
+    h.release();
+    await h.pageActions.createSubpage(pageId, "Child");
+    await h.pageActions.createSubpage("00000000-0000-4000-8000-000000000003", "Elsewhere");
+    await h.pageActions.createPage("Root");
+    expect(h.activateProvisionalPage.mock.calls.map(([, openMode]) => openMode)).toEqual(["center", "full", "full"]);
   });
 });

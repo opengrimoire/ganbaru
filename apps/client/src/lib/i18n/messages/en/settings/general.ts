@@ -84,8 +84,8 @@ export const general = {
   },
   notesGeneral: {
     heading: "General",
-    defaultOpenMode: "Default open mode",
-    defaultOpenModeDescription: "Used when opening a note while none is open",
+    defaultOpenMode: "Sub-note open mode",
+    defaultOpenModeDescription: "Used for notes opened from inside a note",
     sidebarOrder: "Folder and note order",
     sidebarOrderDescription: "Favorites first. Projects can override it",
     showPropertyIcons: "Show property icons",

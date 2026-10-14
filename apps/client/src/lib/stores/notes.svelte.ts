@@ -182,7 +182,7 @@ function createNotesWorkspace() {
       if (target.store.selectedDatabaseBlockId === options.databaseBlockId) activatePane(target.id);
       return;
     }
-    const mode = options.openMode ?? (source.store.selectedPageId ? source.store.pageOpenMode : source.store.defaultOpenMode());
+    const mode = options.openMode ?? (source.store.selectedPageId ? source.store.pageOpenMode : "full");
     const target = await destination(sourceId, pageId, mode);
     await target.store.selectPageLocally(pageId, { ...options, openMode: target === main && preview ? "full" : mode });
     activatePane(target.id);

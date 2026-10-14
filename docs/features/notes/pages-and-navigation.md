@@ -28,7 +28,7 @@ The group and project segments open the project navigator, whose search finds no
 
 ## Project scope
 
-Pages created from a project home, project-scoped picker, folder, or top-bar action belong to the selected project. Navigation, search, destination pickers, and flyouts show only content the current project and access policy permit. Opening a note owned by another project switches the active project and group to match, without reopening the note.
+Pages created from a project home, project-scoped picker, folder, or top-bar action belong to the selected project. Navigation, search, destination pickers, and flyouts show only content the current project and access policy permit. Opening a note owned by another project switches the active project and group to match, without reopening the note. On desktop, a project without notes shows a centered empty state that creates its first note.
 
 The sidebar shows folders and workspace-parented notes; child notes do not become nested sidebar rows, and the containing root note stays highlighted when a child is selected. Database row pages stay out of project roots because their database view owns their navigation, but they still participate in search, links, history, and direct opens.
 

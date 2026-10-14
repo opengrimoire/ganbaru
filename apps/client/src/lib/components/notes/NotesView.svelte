@@ -33,6 +33,7 @@
   import NotesEditor from "./NotesEditor.svelte";
   import NotesDatabasePage from "$lib/components/notes/database/NotesDatabasePage.svelte";
   import NotesLoadingSkeleton from "./NotesLoadingSkeleton.svelte";
+  import NotesProjectEmptyState from "./NotesProjectEmptyState.svelte";
   import NotesProjectHome from "./NotesProjectHome.svelte";
   import NotesProjectSettingsPanel from "$lib/components/notes/NotesProjectSettingsPanel.svelte";
   import NotesWorkspaceHeader from "./NotesWorkspaceHeader.svelte";
@@ -140,6 +141,15 @@
   );
   const showProjectExplorer = $derived(!mobileLayout || activeSurfaceKind === "home");
   const showPrimaryContent = $derived(!mobileLayout || activeSurfaceKind !== "home");
+  const showEmptyProjectState = $derived(
+    !mobileLayout
+    && notes.loaded
+    && activeSurfaceKind === "home"
+    && !hasContextualSelection
+    && selectedProjectId !== null
+    && notes.workspaceProjectId === selectedProjectId
+    && notesPagesForProject(notes.navigationPages, selectedProjectId).length === 0,
+  );
   const projectHistoryLoadState = $derived(optionalLoadStates["project-history"] ?? null);
   const confirmDialogLoadState = $derived(optionalLoadStates["confirm-dialog"] ?? null);
   const databaseDeletionPanes = $derived(notes.editorPanes.filter(({ store }) => store.databaseDeletion.prompt));
@@ -771,6 +781,8 @@
             {:else}
               <Loading layout="fill" label={activeSurfaceKind === "archive" ? t("notes.loadingArchive") : t("notes.loadingTrash")} class="min-w-0 flex-1" />
             {/if}
+          {:else if showEmptyProjectState && selectedProject}
+            <NotesProjectEmptyState projectName={selectedProject.name} onCreate={createPage} />
           {:else}
             {#each notes.editorPanes as pane (pane.id)}
               {@const store = pane.store}

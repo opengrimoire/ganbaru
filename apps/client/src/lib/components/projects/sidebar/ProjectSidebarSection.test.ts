@@ -110,6 +110,34 @@ function viewRowLabels(): string[] {
   return [...target.querySelectorAll<HTMLElement>("[data-project-view-id]")].map((row) => row.getAttribute("aria-label") ?? "");
 }
 
+const ROW_HEIGHT = 28;
+
+function rowNamed(label: string): HTMLElement {
+  const row = [...target.querySelectorAll<HTMLElement>("[data-project-view-id]")].find((entry) => entry.getAttribute("aria-label") === label);
+  if (!row) throw new Error(`No view row labeled ${label}`);
+  return row;
+}
+
+function viewLabelButton(label: string): HTMLButtonElement {
+  const match = rowNamed(label).querySelector<HTMLButtonElement>("button.explorer-row-label");
+  if (!match) throw new Error(`No label button in ${label}`);
+  return match;
+}
+
+/** Lays the view rows out in a column of equal rows starting at the top of the section. */
+function stubRowLayout(): void {
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    const rows = [...target.querySelectorAll<HTMLElement>("[data-project-view-id]")];
+    const index = rows.indexOf(this);
+    const top = index < 0 ? 0 : index * ROW_HEIGHT;
+    return DOMRect.fromRect({ x: 0, y: top, width: 200, height: index < 0 ? 0 : ROW_HEIGHT });
+  });
+}
+
+function pointer(element: EventTarget, type: string, clientY: number): void {
+  element.dispatchEvent(new PointerEvent(type, { bubbles: true, button: 0, pointerId: 1, pointerType: "mouse", clientX: 20, clientY }));
+}
+
 beforeEach(() => {
   target = document.createElement("div");
   document.body.append(target);
@@ -126,6 +154,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   if (component) await unmount(component);
   component = undefined;
   document.body.replaceChildren();
@@ -250,5 +279,53 @@ describe("ProjectSidebarSection", () => {
     renamed.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     flushSync();
     expect(store.renameView).toHaveBeenCalledWith("overview", "Status");
+  });
+
+  it("reorders a view by dragging it past other rows and keeps the release from opening it", () => {
+    const onSelectView = vi.fn();
+    render({ onSelectView });
+    stubRowLayout();
+    const label = viewLabelButton("Overview");
+    pointer(label, "pointerdown", 10);
+    pointer(window, "pointermove", 40);
+    flushSync();
+    expect(rowNamed("Overview").classList.contains("invisible")).toBe(true);
+    expect(rowNamed("Backlog").style.translate).toBe("0 -28px");
+    pointer(window, "pointermove", 70);
+    flushSync();
+    expect(rowNamed("Notes").style.translate).toBe("0 -28px");
+    pointer(window, "pointerup", 70);
+    label.click();
+    expect(store.reorderViews).toHaveBeenCalledWith("project-a", ["list", "notes", "overview"]);
+    expect(onSelectView).not.toHaveBeenCalled();
+  });
+
+  it("leaves the order alone when Escape cancels a drag or the press never travels", () => {
+    render();
+    stubRowLayout();
+    const label = viewLabelButton("Overview");
+    pointer(label, "pointerdown", 10);
+    pointer(window, "pointermove", 70);
+    flushSync();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    flushSync();
+    expect(rowNamed("Backlog").style.translate).toBe("");
+    pointer(window, "pointerup", 70);
+    pointer(label, "pointerdown", 10);
+    pointer(window, "pointermove", 12);
+    pointer(window, "pointerup", 12);
+    expect(store.reorderViews).not.toHaveBeenCalled();
+  });
+
+  it("keeps a dragged view among views with the same starred state", () => {
+    store.starredViewIds = ["notes"];
+    render();
+    stubRowLayout();
+    pointer(viewLabelButton("Backlog"), "pointerdown", 66);
+    pointer(window, "pointermove", -200);
+    flushSync();
+    expect(rowNamed("Notes").style.translate).toBe("");
+    pointer(window, "pointerup", -200);
+    expect(store.reorderViews).toHaveBeenCalledWith("project-a", ["list", "overview", "notes"]);
   });
 });

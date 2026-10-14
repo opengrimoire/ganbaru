@@ -27,13 +27,16 @@
     reorderedProjectViewIds,
   } from "$lib/projects/views";
   import { PROJECT_HOSTED_VIEW_TYPES } from "$lib/projects/types";
+  import { PROJECT_VIEW_DRAG_SETTLE_MS } from "$lib/projects/view-drag";
   import { getProjects } from "$lib/stores/projects.svelte";
   import { anchoredPopover } from "$lib/utils/anchored-popover";
   import { portal } from "$lib/utils/portal";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import ProjectIcon from "../ProjectIcon.svelte";
+  import ProjectViewDragCard from "./ProjectViewDragCard.svelte";
   import ProjectViewRow from "./ProjectViewRow.svelte";
   import { PROJECT_VIEW_TYPE_ICONS, projectViewLabel, projectViewTypeLabel } from "./project-view-presentation";
+  import { createProjectViewDragController } from "./view-drag-controller.svelte";
 
   /**
    * One project in the Projects sidebar, shown like a Chat section: its heading collapses the section, adds views from
@@ -88,7 +91,6 @@
   let editing = $state(false);
   let nameDraft = $state("");
   let pendingName = $state<string | null>(null);
-  let draggingViewId = $state<string | null>(null);
   let removeCandidate = $state<ProjectView | null>(null);
   let actionButton = $state<HTMLButtonElement | null>(null);
   let addButton = $state<HTMLButtonElement | null>(null);
@@ -103,7 +105,17 @@
   const allProjectViews = $derived(projectViewsFor(projects.views, project.id, PROJECT_HOSTED_VIEW_TYPES));
   const addOptions = $derived(projectViewAddOptions(allProjectViews, projects.hostableViewTypes));
   const starred = $derived(projects.isProjectStarred(project.id));
-  const draggingStarred = $derived(draggingViewId !== null && projects.isViewStarred(draggingViewId));
+  let sectionElement = $state<HTMLElement | null>(null);
+
+  const viewDrag = createProjectViewDragController({
+    getViews: () => views,
+    isStarred: (viewId) => projects.isViewStarred(viewId),
+    getContainer: () => sectionElement,
+    move: (viewId, targetId, placement) =>
+      reorder(reorderedProjectViewIds(projects.views, project.id, viewId, targetId, placement)),
+  });
+
+  $effect(() => viewDrag.destroy);
 
   /** Starred views stay ahead of the rest, so a view moves only past a neighbor with the same starred state. */
   function canMoveBy(index: number, step: -1 | 1): boolean {
@@ -202,11 +214,13 @@
     }
   }
 
-  function reorder(viewIds: string[] | null): void {
-    if (!viewIds) return;
+  /** Saves a new view order and reports whether there was one to save. */
+  function reorder(viewIds: string[] | null): boolean {
+    if (!viewIds) return false;
     void projects.reorderViews(project.id, viewIds).catch((error: unknown) => {
       console.error("Failed to reorder project views from the Projects sidebar", error);
     });
+    return true;
   }
 
   function confirmRemove(): void {
@@ -226,6 +240,7 @@
 </script>
 
 <section
+  bind:this={sectionElement}
   class="project-section"
   class:project-section-inactive={project.status !== "active"}
   aria-label={displayName}
@@ -307,9 +322,6 @@
         starred={projects.isViewStarred(view.id)}
         canMoveUp={canMoveBy(index, -1)}
         canMoveDown={canMoveBy(index, 1)}
-        dropEnabled={draggingViewId !== null
-          && draggingViewId !== view.id
-          && draggingStarred === projects.isViewStarred(view.id)}
         onSelect={() => onSelectView(view)}
         onToggleStar={(next) => projects.setViewStarred(view.id, next)}
         onRename={(name) => projects.renameView(view.id, name)}
@@ -317,23 +329,27 @@
         onRemove={() => {
           removeCandidate = view;
         }}
-        onDragStart={() => {
-          draggingViewId = view.id;
-        }}
-        onDragEnd={() => {
-          draggingViewId = null;
-        }}
-        onDrop={(placement) => {
-          const dragged = draggingViewId;
-          draggingViewId = null;
-          if (dragged) reorder(reorderedProjectViewIds(projects.views, project.id, dragged, view.id, placement));
-        }}
+        shift={viewDrag.shiftFor(view.id)}
+        shiftAnimated={viewDrag.shiftAnimated}
+        lifted={viewDrag.draggedId === view.id}
+        onPointerDown={(event, row) => viewDrag.pointerDown(event, view, row)}
       />
     {:else}
       <p class="explorer-row-label px-2 py-1 text-muted-foreground">{t("projects.sidebar.noViews")}</p>
     {/each}
   {/if}
 </section>
+
+{#if viewDrag.card}
+  <ProjectViewDragCard
+    view={viewDrag.card.view}
+    active={selected && activeViewId === viewDrag.card.view.id}
+    starred={projects.isViewStarred(viewDrag.card.view.id)}
+    frame={viewDrag.card.frame}
+    phase={viewDrag.card.phase}
+    durationMs={PROJECT_VIEW_DRAG_SETTLE_MS}
+  />
+{/if}
 
 {#if addMenuOpen}
   <div

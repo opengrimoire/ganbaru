@@ -9,13 +9,14 @@
   import ExplorerRowStar from "$lib/components/ui/ExplorerRowStar.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { ProjectView } from "$lib/projects/types";
+  import { PROJECT_VIEW_DRAG_SETTLE_MS } from "$lib/projects/view-drag";
   import { anchoredPopover } from "$lib/utils/anchored-popover";
   import { portal } from "$lib/utils/portal";
   import { PROJECT_VIEW_TYPE_ICONS, projectViewLabel, projectViewTypeLabel } from "./project-view-presentation";
 
   /**
    * One view inside a project's sidebar section, like a channel inside a Chat section. Its menu renames, moves, stars, and
-   * removes the view; the icon always follows the view type. Rows of the same project reorder by dragging.
+   * removes the view; the icon always follows the view type. Pressing a row and dragging it reorders it within its project.
    */
   let {
     view,
@@ -24,15 +25,15 @@
     starred,
     canMoveUp,
     canMoveDown,
-    dropEnabled,
     onSelect,
     onRename,
     onToggleStar,
     onMove,
     onRemove,
-    onDragStart,
-    onDragEnd,
-    onDrop,
+    shift = 0,
+    shiftAnimated = true,
+    lifted = false,
+    onPointerDown,
   }: {
     view: ProjectView;
     active: boolean;
@@ -42,17 +43,20 @@
     starred: boolean;
     canMoveUp: boolean;
     canMoveDown: boolean;
-    /** Whether the view being dragged may land on this row. */
-    dropEnabled: boolean;
     onSelect: () => void;
     /** Saves a new name; a blank name restores the type label. */
     onRename: (name: string) => Promise<void>;
     onToggleStar: (starred: boolean) => void;
     onMove: (step: -1 | 1) => void;
     onRemove: () => void;
-    onDragStart: () => void;
-    onDragEnd: () => void;
-    onDrop: (placement: "before" | "after") => void;
+    /** Vertical offset in pixels while another row is dragged past this one. */
+    shift?: number;
+    /** Whether the offset slides rather than jumps. */
+    shiftAnimated?: boolean;
+    /** Whether this row is lifted out as a drag card, leaving its slot empty. */
+    lifted?: boolean;
+    /** Starts tracking a press that may become a drag. */
+    onPointerDown: (event: PointerEvent, row: HTMLElement) => void;
   } = $props();
 
   const { t } = getLocalization();
@@ -61,7 +65,6 @@
   let editing = $state(false);
   let nameDraft = $state("");
   let pendingName = $state<string | null>(null);
-  let dropPlacement = $state<"before" | "after" | null>(null);
   let actionButton = $state<HTMLButtonElement | null>(null);
   let menuElement = $state<HTMLDivElement | null>(null);
   let renameInput = $state<HTMLInputElement | null>(null);
@@ -130,54 +133,22 @@
       void tick().then(() => actionButton?.focus());
     }
   }
-
-  function handleDragStart(event: DragEvent): void {
-    if (editing) {
-      event.preventDefault();
-      return;
-    }
-    event.dataTransfer?.setData("text/plain", label);
-    if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
-    onDragStart();
-  }
-
-  function handleDragOver(event: DragEvent): void {
-    if (!dropEnabled) return;
-    event.preventDefault();
-    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
-    const bounds = (event.currentTarget as HTMLElement).getBoundingClientRect();
-    dropPlacement = event.clientY < bounds.top + bounds.height / 2 ? "before" : "after";
-  }
-
-  function handleDrop(event: DragEvent): void {
-    const placement = dropPlacement;
-    dropPlacement = null;
-    if (!dropEnabled || !placement) return;
-    event.preventDefault();
-    onDrop(placement);
-  }
 </script>
 
 <div
   class="project-view-row explorer-row flex min-w-0 items-center"
   class:explorer-selected={active}
-  class:drop-before={dropPlacement === "before"}
-  class:drop-after={dropPlacement === "after"}
+  class:shift-animated={shiftAnimated}
+  class:invisible={lifted}
+  style:translate={shift ? `0 ${shift}px` : undefined}
+  style:--project-view-shift-duration={`${PROJECT_VIEW_DRAG_SETTLE_MS}ms`}
   role="group"
   aria-label={label}
-  draggable={!editing}
   data-project-view-id={view.id}
   data-project-place={view.viewType}
-  ondragstart={handleDragStart}
-  ondragend={() => {
-    dropPlacement = null;
-    onDragEnd();
+  onpointerdown={(event) => {
+    if (!editing) onPointerDown(event, event.currentTarget);
   }}
-  ondragover={handleDragOver}
-  ondragleave={() => {
-    dropPlacement = null;
-  }}
-  ondrop={handleDrop}
 >
   {#if editing}
     <div class="flex min-w-0 flex-1 items-center gap-1.5 px-2">
@@ -285,26 +256,23 @@
 {/if}
 
 <style>
-  .project-view-row {
-    position: relative;
+  .project-view-row.shift-animated {
+    transition: translate var(--project-view-shift-duration) cubic-bezier(0.2, 0, 0, 1);
   }
 
-  .project-view-row.drop-before::before,
-  .project-view-row.drop-after::after {
-    position: absolute;
-    inset-inline: 0.5rem;
-    height: 2px;
-    border-radius: 1px;
-    background: var(--primary);
-    content: "";
-    pointer-events: none;
+  :global(html.project-view-dragging) .project-view-row:hover:not(.explorer-selected) {
+    background: transparent;
   }
 
-  .project-view-row.drop-before::before {
-    top: -1px;
+  :global(html.project-view-dragging),
+  :global(html.project-view-dragging *) {
+    cursor: grabbing !important;
+    user-select: none;
   }
 
-  .project-view-row.drop-after::after {
-    bottom: -1px;
+  @media (prefers-reduced-motion: reduce) {
+    .project-view-row.shift-animated {
+      transition: none;
+    }
   }
 </style>

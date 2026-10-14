@@ -145,6 +145,8 @@
     customOrderKeys: notes.customOrderForProject(projectId),
   });
   const normalizedSearch = $derived(showSearch ? search.trim().toLocaleLowerCase() : "");
+  /** Only the panel opened first carries the order button, beside its search; sub-panels have neither. */
+  const showOrderMenu = $derived(showSearch && effectiveParent.kind !== "database");
   const allItems = $derived(notesHierarchyPickerChildren(
     projectPages,
     projectFolders,
@@ -524,6 +526,7 @@
     <div class={cn(
       "field flex items-center gap-1.5",
       mobileLayout && "min-h-12 rounded-xl px-3",
+      showOrderMenu && (mobileLayout ? "pr-0" : "py-0 pr-1"),
     )}>
       <Search size={iconSize} strokeWidth={iconStrokeWidth} class="shrink-0 text-popover-foreground/60" />
       <input
@@ -544,6 +547,23 @@
         >
           <X size={18} strokeWidth={iconStrokeWidth} aria-hidden="true" />
         </button>
+      {/if}
+      {#if showOrderMenu}
+        <SidebarOrderMenu
+          order={notes.sidebarOrderForProject(projectId)}
+          override={notes.sidebarOrderOverride(projectId)}
+          allowGlobal={projectId !== null}
+          label={t("notes.sortExplorer")}
+          buttonClass={cn(
+            "flex shrink-0 items-center justify-center text-popover-foreground/60 hover:bg-accent hover:text-accent-foreground",
+            mobileLayout ? "h-12 w-12 rounded-xl" : "h-6 w-6 rounded",
+          )}
+          activeClass="bg-accent text-accent-foreground"
+          {iconSize}
+          {iconStrokeWidth}
+          menuZIndexClass="z-90"
+          onSelect={selectSortOrder}
+        />
       {/if}
     </div>
     {/if}
@@ -685,24 +705,6 @@
           <SquarePen size={iconSize} strokeWidth={iconStrokeWidth} />
           <span class="truncate">{t("notes.newPage")}</span>
         </button>
-        {#if effectiveParent.kind === "root"}
-          <div class="mx-1 h-5 border-l border-border/70" aria-hidden="true"></div>
-          <SidebarOrderMenu
-            order={notes.sidebarOrderForProject(projectId)}
-            override={notes.sidebarOrderOverride(projectId)}
-            allowGlobal={projectId !== null}
-            label={t("notes.sortExplorer")}
-            buttonClass={cn(
-              "flex shrink-0 items-center justify-center text-popover-foreground/60 transition-colors hover:bg-accent hover:text-accent-foreground",
-              mobileLayout ? "size-12 rounded-xl active:bg-accent" : "size-8 rounded-floating-item",
-            )}
-            activeClass="bg-accent text-accent-foreground"
-            {iconSize}
-            {iconStrokeWidth}
-            menuZIndexClass="z-90"
-            onSelect={selectSortOrder}
-          />
-        {/if}
       </div>
     {/if}
     {#if folderCreationError}

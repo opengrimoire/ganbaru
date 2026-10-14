@@ -39,7 +39,7 @@
   }: {
     rootElement?: HTMLDivElement;
     channels: readonly ChatChannelRead[];
-    /** Project whose channel order the footer button picks; without one the button is hidden. */
+    /** Project whose channel order the panel reorders and, beside the search, picks; without one both are off. */
     orderProjectId?: string | null;
     selectedChannelId?: string | null;
     /** Whether a channel is a favorite, which shows a small star after its name. */
@@ -158,6 +158,7 @@
     <div class={cn(
       "field flex items-center gap-1.5",
       mobileLayout ? "min-h-12 rounded-xl px-3" : "py-0",
+      orderProjectId && (mobileLayout ? "pr-0" : "pr-1"),
     )}>
       <Search size={iconSize} strokeWidth={iconStrokeWidth} class="shrink-0 text-popover-foreground/60" />
       <input
@@ -178,6 +179,24 @@
         >
           <X size={18} strokeWidth={iconStrokeWidth} aria-hidden="true" />
         </button>
+      {/if}
+      {#if orderProjectId}
+        {@const projectId = orderProjectId}
+        <SidebarOrderMenu
+          order={chatSidebarOrder.orderForProject(projectId)}
+          override={chatSidebarOrder.orderOverride(projectId)}
+          allowGlobal
+          label={t("chat.channels.sort")}
+          buttonClass={cn(
+            "flex shrink-0 items-center justify-center text-popover-foreground/60 hover:bg-accent hover:text-accent-foreground",
+            mobileLayout ? "h-12 w-12 rounded-xl" : "h-6 w-6 rounded",
+          )}
+          activeClass="bg-accent text-accent-foreground"
+          {iconSize}
+          {iconStrokeWidth}
+          menuZIndexClass="z-90"
+          onSelect={(order) => chatSidebarOrder.setProjectOrder(projectId, order)}
+        />
       {/if}
     </div>
     {/if}
@@ -220,38 +239,17 @@
 
   <div class={cn("relative z-10 shrink-0 bg-popover", mobileLayout ? "p-2" : "p-1.5")}>
     <div class="pointer-events-none absolute left-1.5 right-1.5 top-0 border-t border-border/70"></div>
-    <div class="flex items-center">
-      <button
-        type="button"
-        class={cn(
-          "menu-item min-w-0 flex-1 justify-center gap-1.5 text-popover-foreground",
-          mobileLayout && "min-h-12 rounded-xl text-sm active:bg-accent",
-        )}
-        onclick={() => { void onCreateChannel(); }}
-      >
-        <Plus size={iconSize} strokeWidth={iconStrokeWidth} />
-        <span>{t("chat.channels.createTitle")}</span>
-      </button>
-      {#if orderProjectId}
-        {@const projectId = orderProjectId}
-        <div class="mx-1 h-5 border-l border-border/70" aria-hidden="true"></div>
-        <SidebarOrderMenu
-          order={chatSidebarOrder.orderForProject(projectId)}
-          override={chatSidebarOrder.orderOverride(projectId)}
-          allowGlobal
-          label={t("chat.channels.sort")}
-          buttonClass={cn(
-            "flex shrink-0 items-center justify-center text-popover-foreground/60 transition-colors hover:bg-accent hover:text-accent-foreground",
-            mobileLayout ? "size-12 rounded-xl active:bg-accent" : "size-(--panel-row-height) rounded-floating-item",
-          )}
-          activeClass="bg-accent text-accent-foreground"
-          {iconSize}
-          {iconStrokeWidth}
-          menuZIndexClass="z-90"
-          onSelect={(order) => chatSidebarOrder.setProjectOrder(projectId, order)}
-        />
-      {/if}
-    </div>
+    <button
+      type="button"
+      class={cn(
+        "menu-item justify-center gap-1.5 text-popover-foreground",
+        mobileLayout && "min-h-12 rounded-xl text-sm active:bg-accent",
+      )}
+      onclick={() => { void onCreateChannel(); }}
+    >
+      <Plus size={iconSize} strokeWidth={iconStrokeWidth} />
+      <span>{t("chat.channels.createTitle")}</span>
+    </button>
   </div>
 </div>
 

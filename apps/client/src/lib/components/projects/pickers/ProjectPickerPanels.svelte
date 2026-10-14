@@ -839,41 +839,44 @@
           mobileLayout && "h-12 text-base",
         )}
       />
-      {#if showOrderMenu}
-        <SidebarOrderMenu
-          order={preferences.projectsSidebarOrder}
-          label={t("projects.navigator.sortGroupsAndProjects")}
-          buttonClass={cn(
-            "flex shrink-0 items-center justify-center text-popover-foreground/60 hover:bg-accent hover:text-accent-foreground",
-            mobileLayout ? "h-12 w-12 rounded-xl" : "h-6 w-6 rounded",
-          )}
-          activeClass="bg-accent text-accent-foreground"
-          iconSize={mobileLayout ? 18 : 13}
-          {iconStrokeWidth}
-          menuZIndexClass="z-90"
-          onSelect={(order) => { if (order) preferences.setProjectsSidebarOrder(order); }}
-        />
-      {/if}
-      {#if showInactiveToggle}
-        <button
-          type="button"
-          class={cn(
-            "flex shrink-0 items-center justify-center text-popover-foreground/60 hover:bg-accent hover:text-accent-foreground",
-            mobileLayout ? "h-12 w-12 rounded-xl" : "h-6 w-6 rounded",
-            showInactiveProjects && "bg-accent text-accent-foreground",
-          )}
-          aria-label={showInactiveProjects ? t("projects.navigator.hideInactive") : t("projects.navigator.showInactive")}
-          title={showInactiveProjects ? t("projects.navigator.hideInactive") : t("projects.navigator.showInactive")}
-          onclick={() => {
-            onShowInactiveProjectsChange?.(!showInactiveProjects);
-          }}
-        >
-          {#if showInactiveProjects}
-            <EyeOff size={mobileLayout ? 18 : 13} strokeWidth={iconStrokeWidth} />
-          {:else}
-            <Eye size={mobileLayout ? 18 : 13} strokeWidth={iconStrokeWidth} />
+      {#if showOrderMenu || showInactiveToggle}
+        <div class="flex shrink-0 items-center">
+          {#if showOrderMenu}
+            <SidebarOrderMenu
+              order={preferences.projectsSidebarOrder}
+              label={t("projects.navigator.sortGroupsAndProjects")}
+              buttonClass={cn(
+                "flex shrink-0 items-center justify-center text-popover-foreground/60 hover:bg-accent hover:text-accent-foreground",
+                mobileLayout ? "h-12 w-12 rounded-xl" : "h-6 w-6 rounded",
+              )}
+              activeClass="bg-accent text-accent-foreground"
+              iconSize={mobileLayout ? 18 : 13}
+              {iconStrokeWidth}
+              menuZIndexClass="z-90"
+              onSelect={(order) => { if (order) preferences.setProjectsSidebarOrder(order); }}
+            />
           {/if}
-        </button>
+          {#if showInactiveToggle}
+            <button
+              type="button"
+              class={cn(
+                "flex shrink-0 items-center justify-center text-popover-foreground/60 hover:bg-accent hover:text-accent-foreground",
+                mobileLayout ? "h-12 w-12 rounded-xl" : "h-6 w-6 rounded",
+              )}
+              aria-label={showInactiveProjects ? t("projects.navigator.hideInactive") : t("projects.navigator.showInactive")}
+              title={showInactiveProjects ? t("projects.navigator.hideInactive") : t("projects.navigator.showInactive")}
+              onclick={() => {
+                onShowInactiveProjectsChange?.(!showInactiveProjects);
+              }}
+            >
+              {#if showInactiveProjects}
+                <EyeOff size={mobileLayout ? 18 : 13} strokeWidth={iconStrokeWidth} />
+              {:else}
+                <Eye size={mobileLayout ? 18 : 13} strokeWidth={iconStrokeWidth} />
+              {/if}
+            </button>
+          {/if}
+        </div>
       {/if}
       {#if mobileLayout && searchActive}
         <button

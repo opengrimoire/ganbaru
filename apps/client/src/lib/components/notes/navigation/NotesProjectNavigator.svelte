@@ -764,34 +764,33 @@
         aria-label={t("notes.searchLabel")}
         class="field-bare text-popover-foreground"
       />
-      <SidebarOrderMenu
-        order={preferences.projectsSidebarOrder}
-        label={t("projects.navigator.sortGroupsAndProjects")}
-        buttonClass="flex size-6 shrink-0 items-center justify-center rounded-floating-item text-popover-foreground/60 hover:bg-accent hover:text-accent-foreground"
-        activeClass="bg-accent text-accent-foreground"
-        iconSize={13}
-        {iconStrokeWidth}
-        menuZIndexClass="z-90"
-        onSelect={(order) => { if (order) preferences.setProjectsSidebarOrder(order); }}
-      />
-      <button
-        type="button"
-        class={cn(
-          "flex size-6 shrink-0 items-center justify-center rounded-floating-item text-popover-foreground/60 hover:bg-accent hover:text-accent-foreground",
-          showInactiveProjects && "bg-accent text-accent-foreground",
-        )}
-        aria-label={showInactiveProjects ? t("projects.navigator.hideInactive") : t("projects.navigator.showInactive")}
-        title={showInactiveProjects ? t("projects.navigator.hideInactive") : t("projects.navigator.showInactive")}
-        onclick={() => {
-          onShowInactiveProjectsChange(!showInactiveProjects);
-        }}
-      >
-        {#if showInactiveProjects}
-          <EyeOff size={13} strokeWidth={iconStrokeWidth} />
-        {:else}
-          <Eye size={13} strokeWidth={iconStrokeWidth} />
-        {/if}
-      </button>
+      <div class="flex shrink-0 items-center">
+        <SidebarOrderMenu
+          order={preferences.projectsSidebarOrder}
+          label={t("projects.navigator.sortGroupsAndProjects")}
+          buttonClass="flex size-6 shrink-0 items-center justify-center rounded-floating-item text-popover-foreground/60 hover:bg-accent hover:text-accent-foreground"
+          activeClass="bg-accent text-accent-foreground"
+          iconSize={13}
+          {iconStrokeWidth}
+          menuZIndexClass="z-90"
+          onSelect={(order) => { if (order) preferences.setProjectsSidebarOrder(order); }}
+        />
+        <button
+          type="button"
+          class="flex size-6 shrink-0 items-center justify-center rounded-floating-item text-popover-foreground/60 hover:bg-accent hover:text-accent-foreground"
+          aria-label={showInactiveProjects ? t("projects.navigator.hideInactive") : t("projects.navigator.showInactive")}
+          title={showInactiveProjects ? t("projects.navigator.hideInactive") : t("projects.navigator.showInactive")}
+          onclick={() => {
+            onShowInactiveProjectsChange(!showInactiveProjects);
+          }}
+        >
+          {#if showInactiveProjects}
+            <EyeOff size={13} strokeWidth={iconStrokeWidth} />
+          {:else}
+            <Eye size={13} strokeWidth={iconStrokeWidth} />
+          {/if}
+        </button>
+      </div>
     </div>
   </div>
 

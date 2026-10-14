@@ -586,39 +586,40 @@
         </button>
       {/if}
       {#if showOrderMenu}
-        <SidebarOrderMenu
-          order={notes.sidebarOrderForProject(projectId)}
-          override={notes.sidebarOrderOverride(projectId)}
-          allowGlobal={projectId !== null}
-          label={t("notes.sortExplorer")}
-          buttonClass={cn(
-            "flex shrink-0 items-center justify-center text-popover-foreground/60 hover:bg-accent hover:text-accent-foreground",
-            mobileLayout ? "h-12 w-12 rounded-xl" : "h-6 w-6 rounded",
-          )}
-          activeClass="bg-accent text-accent-foreground"
-          {iconSize}
-          {iconStrokeWidth}
-          menuZIndexClass="z-90"
-          onSelect={selectSortOrder}
-        />
-        <button
-          type="button"
-          class={cn(
-            "flex shrink-0 items-center justify-center text-popover-foreground/60 hover:bg-accent hover:text-accent-foreground",
-            mobileLayout ? "h-12 w-12 rounded-xl" : "h-6 w-6 rounded",
-            notes.showArchivedInPickers && "bg-accent text-accent-foreground",
-          )}
-          aria-pressed={notes.showArchivedInPickers}
-          aria-label={t(notes.showArchivedInPickers ? "notes.hideArchivedNotes" : "notes.showArchivedNotes")}
-          title={t(notes.showArchivedInPickers ? "notes.hideArchivedNotes" : "notes.showArchivedNotes")}
-          onclick={() => { notes.showArchivedInPickers = !notes.showArchivedInPickers; }}
-        >
-          {#if notes.showArchivedInPickers}
-            <EyeOff size={iconSize} strokeWidth={iconStrokeWidth} aria-hidden="true" />
-          {:else}
-            <Eye size={iconSize} strokeWidth={iconStrokeWidth} aria-hidden="true" />
-          {/if}
-        </button>
+        <div class="flex shrink-0 items-center">
+          <SidebarOrderMenu
+            order={notes.sidebarOrderForProject(projectId)}
+            override={notes.sidebarOrderOverride(projectId)}
+            allowGlobal={projectId !== null}
+            label={t("notes.sortExplorer")}
+            buttonClass={cn(
+              "flex shrink-0 items-center justify-center text-popover-foreground/60 hover:bg-accent hover:text-accent-foreground",
+              mobileLayout ? "h-12 w-12 rounded-xl" : "h-6 w-6 rounded",
+            )}
+            activeClass="bg-accent text-accent-foreground"
+            {iconSize}
+            {iconStrokeWidth}
+            menuZIndexClass="z-90"
+            onSelect={selectSortOrder}
+          />
+          <button
+            type="button"
+            class={cn(
+              "flex shrink-0 items-center justify-center text-popover-foreground/60 hover:bg-accent hover:text-accent-foreground",
+              mobileLayout ? "h-12 w-12 rounded-xl" : "h-6 w-6 rounded",
+            )}
+            aria-pressed={notes.showArchivedInPickers}
+            aria-label={t(notes.showArchivedInPickers ? "notes.hideArchivedNotes" : "notes.showArchivedNotes")}
+            title={t(notes.showArchivedInPickers ? "notes.hideArchivedNotes" : "notes.showArchivedNotes")}
+            onclick={() => { notes.showArchivedInPickers = !notes.showArchivedInPickers; }}
+          >
+            {#if notes.showArchivedInPickers}
+              <EyeOff size={iconSize} strokeWidth={iconStrokeWidth} aria-hidden="true" />
+            {:else}
+              <Eye size={iconSize} strokeWidth={iconStrokeWidth} aria-hidden="true" />
+            {/if}
+          </button>
+        </div>
       {/if}
     </div>
     {/if}

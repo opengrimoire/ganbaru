@@ -205,40 +205,41 @@
       {/if}
       {#if orderProjectId}
         {@const projectId = orderProjectId}
-        <SidebarOrderMenu
-          order={chatSidebarOrder.orderForProject(projectId)}
-          override={chatSidebarOrder.orderOverride(projectId)}
-          allowGlobal
-          label={t("chat.channels.sort")}
-          buttonClass={cn(
-            "flex shrink-0 items-center justify-center text-popover-foreground/60 hover:bg-accent hover:text-accent-foreground",
-            mobileLayout ? "h-12 w-12 rounded-xl" : "h-6 w-6 rounded",
-          )}
-          activeClass="bg-accent text-accent-foreground"
-          {iconSize}
-          {iconStrokeWidth}
-          menuZIndexClass="z-90"
-          onSelect={(order) => chatSidebarOrder.setProjectOrder(projectId, order)}
-        />
-        <button
-          type="button"
-          class={cn(
-            "flex shrink-0 items-center justify-center text-popover-foreground/60 hover:bg-accent hover:text-accent-foreground",
-            mobileLayout ? "h-12 w-12 rounded-xl" : "h-6 w-6 rounded",
-            chat.showArchivedChannelsInPickers && "bg-accent text-accent-foreground",
-          )}
-          aria-label={chat.showArchivedChannelsInPickers ? t("chat.channels.hideArchived") : t("chat.channels.showArchived")}
-          aria-pressed={chat.showArchivedChannelsInPickers}
-          title={chat.showArchivedChannelsInPickers ? t("chat.channels.hideArchived") : t("chat.channels.showArchived")}
-          data-chat-channel-archived-toggle
-          onclick={() => { chat.showArchivedChannelsInPickers = !chat.showArchivedChannelsInPickers; }}
-        >
-          {#if chat.showArchivedChannelsInPickers}
-            <EyeOff size={iconSize} strokeWidth={iconStrokeWidth} />
-          {:else}
-            <Eye size={iconSize} strokeWidth={iconStrokeWidth} />
-          {/if}
-        </button>
+        <div class="flex shrink-0 items-center">
+          <SidebarOrderMenu
+            order={chatSidebarOrder.orderForProject(projectId)}
+            override={chatSidebarOrder.orderOverride(projectId)}
+            allowGlobal
+            label={t("chat.channels.sort")}
+            buttonClass={cn(
+              "flex shrink-0 items-center justify-center text-popover-foreground/60 hover:bg-accent hover:text-accent-foreground",
+              mobileLayout ? "h-12 w-12 rounded-xl" : "h-6 w-6 rounded",
+            )}
+            activeClass="bg-accent text-accent-foreground"
+            {iconSize}
+            {iconStrokeWidth}
+            menuZIndexClass="z-90"
+            onSelect={(order) => chatSidebarOrder.setProjectOrder(projectId, order)}
+          />
+          <button
+            type="button"
+            class={cn(
+              "flex shrink-0 items-center justify-center text-popover-foreground/60 hover:bg-accent hover:text-accent-foreground",
+              mobileLayout ? "h-12 w-12 rounded-xl" : "h-6 w-6 rounded",
+            )}
+            aria-label={chat.showArchivedChannelsInPickers ? t("chat.channels.hideArchived") : t("chat.channels.showArchived")}
+            aria-pressed={chat.showArchivedChannelsInPickers}
+            title={chat.showArchivedChannelsInPickers ? t("chat.channels.hideArchived") : t("chat.channels.showArchived")}
+            data-chat-channel-archived-toggle
+            onclick={() => { chat.showArchivedChannelsInPickers = !chat.showArchivedChannelsInPickers; }}
+          >
+            {#if chat.showArchivedChannelsInPickers}
+              <EyeOff size={iconSize} strokeWidth={iconStrokeWidth} />
+            {:else}
+              <Eye size={iconSize} strokeWidth={iconStrokeWidth} />
+            {/if}
+          </button>
+        </div>
       {/if}
     </div>
     {/if}

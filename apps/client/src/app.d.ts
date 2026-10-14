@@ -10,6 +10,7 @@ import type { Temporal as TemporalPolyfill } from "@js-temporal/polyfill";
 declare global {
   interface GanbaruAndroidInsetsBridge {
     systemBars(): string;
+    keyboard(): string;
   }
 
   interface GanbaruAndroidAppearanceBridge {

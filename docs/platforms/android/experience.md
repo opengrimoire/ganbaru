@@ -38,7 +38,9 @@ Scheduled Calendar alarms and the last accepted distraction rules keep working w
 
 A native bridge publishes system-bar and display-cutout insets, with CSS safe-area values as a fallback. Layout reacts to orientation, navigation mode, cutouts, and window changes without hardcoded device dimensions. Controls stay inside the visible viewport.
 
-Visual viewport tracking keeps focused inputs and editor actions visible while the keyboard opens, resizes, or rotates. Opening navigation does not focus Search automatically, and dismissing the keyboard does not leave the current feature.
+The app draws edge to edge, so the native shell resizes the WebView above the soft keyboard itself and reports that the keyboard is open. The page therefore lays out in the space the keyboard leaves, the way native apps do: bottom-anchored controls such as the Chat composer sit directly above the keyboard, the bottom tab bar hides, and the focused field and its caret stay visible while the keyboard opens, resizes, or rotates. On Android 11 and later the page resizes once the keyboard finishes sliding in, so no empty band shows above the moving keyboard. Dismissing the keyboard does not leave the current feature.
+
+The keyboard opens only when the user asks to type: by selecting a field, or through an action whose purpose is typing, such as creating a page, event, or item, renaming, or Search. Switching destinations, opening a page, note, channel, or task, restoring a previous caret, and loading data never focus a text field on a phone.
 
 ## Android Back
 

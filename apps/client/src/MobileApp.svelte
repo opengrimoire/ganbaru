@@ -22,6 +22,7 @@
     recoverLoadFailure,
     type LoadFailure,
   } from "$lib/module-load-recovery";
+  import { revealFocusedTextEntry } from "$lib/mobile/keyboard";
   import { provideMobileIdentitySlot } from "$lib/mobile/identity-slot";
   import { MobilePersistenceLifecycleController } from "$lib/mobile/persistence-lifecycle";
   import type { View } from "$lib/navigation";
@@ -137,7 +138,7 @@
     mobileNavigationPresentation(viewport.layoutWidth),
   );
   const useNavigationRail = $derived(navigationPresentation === "rail");
-  const bottomNavigationVisible = $derived(!useNavigationRail && viewport.keyboardInset <= 0);
+  const bottomNavigationVisible = $derived(!useNavigationRail && !viewport.keyboardOpen);
   const suspendInfo = $derived(pomodoro.suspendedAway);
   const suspendDecisionOpen = $derived(suspendInfo !== null);
   const modalOpen = $derived(
@@ -684,6 +685,16 @@
       void backListenerController.setEnabled(false);
     }
   }
+
+  // Once the keyboard opens or grows, keep the caret above it after the WebView finishes its own focus scrolling.
+  $effect(() => {
+    if (!viewport.keyboardOpen) return;
+    void viewport.height;
+    let frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(() => revealFocusedTextEntry());
+    });
+    return () => cancelAnimationFrame(frame);
+  });
 
   $effect(() => {
     const root = document.documentElement;

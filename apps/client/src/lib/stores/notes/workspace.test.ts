@@ -54,6 +54,7 @@ describe("Notes workspace reloads", () => {
     const initial = controller.load();
     backend.resolvers[0]?.(shell("project-a-next"));
     await initial;
+    expect(controller.projectId).toBe("project-a");
     const stalePagination = controller.loadMoreWorkspaceWindow();
     projectId = "project-b";
     const refresh = controller.refreshProjectNavigation();
@@ -63,10 +64,12 @@ describe("Notes workspace reloads", () => {
     backend.resolvers[1]?.(shell("stale-next"));
     await stalePagination;
     expect(applyAdditionalShell).not.toHaveBeenCalled();
+    expect(controller.projectId).toBe("project-a");
     const fresh = shell("project-b-next");
     backend.resolvers[2]?.(fresh);
     await refresh;
     expect(mergeReloadedShell).toHaveBeenCalledExactlyOnceWith(fresh);
+    expect(controller.projectId).toBe("project-b");
     expect(prepareLoad).toHaveBeenCalledOnce();
     expect(loadSelectedPage).not.toHaveBeenCalled();
     const more = controller.loadMoreWorkspaceWindow();

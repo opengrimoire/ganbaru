@@ -35,6 +35,7 @@ export function createNotesWorkspaceController(context: NotesWorkspaceController
   let windowLoading = $state(false);
   let nextPageCursor = $state<string | null>(null);
   let nextFolderCursor = $state<string | null>(null);
+  let shellProjectId = $state<string | null>(null);
   let totalPageCount = 0;
   let totalFolderCount = 0;
   let requestId = 0;
@@ -65,6 +66,7 @@ export function createNotesWorkspaceController(context: NotesWorkspaceController
       totalPageCount = shell.total_page_count;
       totalFolderCount = shell.total_folder_count;
       const nextSelected = context.applyInitialShell(shell, requestedSelection);
+      shellProjectId = state.projectId;
       loaded = true;
       if (nextSelected) {
         await context.loadSelectedPage(nextSelected).catch((caught) => {
@@ -148,6 +150,7 @@ export function createNotesWorkspaceController(context: NotesWorkspaceController
       totalPageCount = shell.total_page_count;
       totalFolderCount = shell.total_folder_count;
       context.mergeReloadedShell(shell);
+      shellProjectId = state.projectId;
       return;
     }
   }
@@ -167,6 +170,8 @@ export function createNotesWorkspaceController(context: NotesWorkspaceController
     get loading(): boolean { return loading; },
     get error(): string | null { return error; },
     get windowLoading(): boolean { return windowLoading; },
+    /** Project whose shell was applied last, or `null` for the unscoped workspace. */
+    get projectId(): string | null { return shellProjectId; },
     get totalPageCount(): number { return totalPageCount; },
     get totalFolderCount(): number { return totalFolderCount; },
     load,

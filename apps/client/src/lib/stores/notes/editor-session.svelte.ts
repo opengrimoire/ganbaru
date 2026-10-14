@@ -1831,6 +1831,10 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     get loaded(): boolean {
       return workspaceLoaded;
     },
+    /** Project whose Notes shell is loaded, or `null` for the unscoped workspace. */
+    get workspaceProjectId(): string | null {
+      return workspaceController.projectId;
+    },
     get loading(): boolean {
       return workspaceController.loading;
     },

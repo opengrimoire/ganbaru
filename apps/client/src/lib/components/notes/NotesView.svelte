@@ -12,7 +12,7 @@
   import { notesPageContainingFolderId } from "$lib/notes/navigation/hierarchy-menu";
   import { firstNotesNavigationPage, notesFoldersForProject } from "$lib/notes/navigation/tree";
   import { notesPageTitle } from "$lib/notes/pages/title";
-  import { notesPagesForProject } from "$lib/notes/project-membership";
+  import { notesPageProjectId, notesPagesForProject } from "$lib/notes/project-membership";
   import { notesUndoShortcutAction } from "$lib/notes/history/undo-history";
   import type { NotesWorkingMarkdownFileRef } from "$lib/notes/types";
   import { getNotes } from "$lib/stores/notes.svelte";
@@ -64,6 +64,9 @@
 
   let showInactiveProjects = $state(false);
   let creationFolderOverride = $state<string | null | undefined>(undefined);
+  let projectSelectionInFlight: { projectId: string | null } | null = null;
+  /** Project hosted Notes last tried to align with, so a failed load is not retried in a loop. */
+  let hostedAlignmentProjectId: string | null | undefined;
   let creationContextProjectId = $state<string | null>(null);
   let creationContextPageId = $state<string | null>(null);
   let notesRootElement = $state<HTMLDivElement | null>(null);
@@ -323,11 +326,11 @@
     }
   });
 
-  function showProjectHome(): void {
-    if (!beforeDocumentNavigation()) return;
+  function showProjectHome(): Promise<void> {
+    if (!beforeDocumentNavigation()) return Promise.resolve();
     if (notes.viewMode === "archive") notes.closeArchive();
     if (notes.viewMode === "trash") notes.closeTrash();
-    void notes.selectPage(null);
+    return notes.selectPage(null);
   }
 
   function handleProjectSelected(): void {
@@ -335,19 +338,57 @@
       if (workingMarkdownProjectId) projects.selectedProjectId = workingMarkdownProjectId;
       return;
     }
+    const projectId = projects.selectedProjectId;
+    if (projectSelectionInFlight && projectSelectionInFlight.projectId === projectId) return;
+    const selection = { projectId };
+    projectSelectionInFlight = selection;
+    hostedAlignmentProjectId = projectId;
     pendingProjectSettingsAction = null;
     projectSettingsOpen = false;
     projectSettingsDirty = false;
     projectSettingsDiscardConfirmOpen = false;
     projectVersionHistoryOpen = false;
-    showProjectHome();
-    const projectId = projects.selectedProjectId;
-    void notes.load()
+    // The shell request carries the selected page, so the previous project's page must be cleared before loading.
+    void showProjectHome()
+      .then(() => notes.load())
       .then(() => openFirstProjectNote(projectId))
       .catch((error) => {
         console.error("load selected Notes project failed", error);
+      })
+      .finally(() => {
+        if (projectSelectionInFlight === selection) projectSelectionInFlight = null;
       });
   }
+
+  /**
+   * Whether hosted Notes shows the selected project: the open note belongs to it, or the project home or list is
+   * loaded for it. A note of the selected project counts even before its shell refresh finishes.
+   */
+  function hostedNotesShowProject(projectId: string): boolean | null {
+    if (notes.selectedPageId) {
+      const page = notes.loadedPage;
+      if (page?.id !== notes.selectedPageId) return null;
+      if (notesPageProjectId(page) === projectId) return true;
+    }
+    return !notes.selectedPageId && notes.workspaceProjectId === projectId;
+  }
+
+  // Beside the Projects sidebar the selected project leads, so a note or shell left from another project, such as the
+  // Notes tab's last document, is replaced by the selected project's notes instead of pulling the project back to it.
+  $effect(() => {
+    if (!projectSidebar || !notes.loaded || notes.loading) return;
+    const projectId = projects.selectedProjectId;
+    if (!projectId) return;
+    const aligned = hostedNotesShowProject(projectId);
+    if (aligned === null) return;
+    if (aligned) {
+      hostedAlignmentProjectId = undefined;
+      return;
+    }
+    if (hostedAlignmentProjectId === projectId) return;
+    hostedAlignmentProjectId = projectId;
+    untrack(handleProjectSelected);
+  });
 
   /**
    * Opens the first note of a newly selected project in sidebar order, unless the project changed or the user opened
@@ -744,9 +785,9 @@
                 data-notes-main-page={pane.id === notes.mainPaneId ? store.selectedPageId : undefined}
                 role="presentation"
                 onpointerdowncapture={(event) => {
-                  if (event.target !== event.currentTarget || !center) notes.activatePane(pane.id);
+                  if (event.target !== event.currentTarget || !center) notes.activatePane(pane.id, !projectSidebar);
                 }}
-                onfocusincapture={() => notes.activatePane(pane.id)}
+                onfocusincapture={() => notes.activatePane(pane.id, !projectSidebar)}
                 onclick={(event) => { if (center && event.target === event.currentTarget) closePagePeek(); }}
               >
                 <div

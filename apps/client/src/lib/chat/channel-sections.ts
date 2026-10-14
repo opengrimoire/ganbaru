@@ -1,4 +1,4 @@
-import { compareSidebarNames, starredFirst, type SidebarSortOrder } from "$lib/utils/sidebar-order";
+import { compareSidebarNames, mergeReorderedSubset, starredFirst, type SidebarSortOrder } from "$lib/utils/sidebar-order";
 import { requireActiveVaultIdentity } from "$lib/vault/active-vault";
 
 export interface ChatSidebarSection {
@@ -102,6 +102,15 @@ export function orderChatSidebarSections(
     ordered = order.endsWith("desc") ? [...sections].reverse() : [...sections];
   }
   return starredFirst(ordered, (section) => section.starred === true);
+}
+
+/** Copy of `sections` with the sections of `orderedIds` in that order, keeping every other section in its slot. */
+export function reorderChatSidebarSections(
+  sections: readonly ChatSidebarSection[],
+  orderedIds: readonly string[],
+): ChatSidebarSection[] {
+  const byId = new Map(sections.map((section) => [section.id, section]));
+  return mergeReorderedSubset(sections.map((section) => section.id), orderedIds).flatMap((id) => byId.get(id) ?? []);
 }
 
 /** Star or unstar one custom section. */

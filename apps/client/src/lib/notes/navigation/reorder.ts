@@ -1,4 +1,4 @@
-import { movedToIndex } from "$lib/utils/sidebar-order";
+import { placedNextTo, steppedBy, type SidebarDropPlacement } from "$lib/utils/sidebar-order";
 
 /** One row of the flat Notes navigation list, as custom ordering sees it. */
 export interface NotesNavigationReorderRow {
@@ -10,7 +10,7 @@ export interface NotesNavigationReorderRow {
 }
 
 /** Where a reordered row goes relative to the row it is dropped on. */
-export type NotesNavigationReorderPlacement = "before" | "after";
+export type NotesNavigationReorderPlacement = SidebarDropPlacement;
 
 /** How a drop on a row resolves in the custom order: next to it, or into it as a move to another folder. */
 export type NotesNavigationReorderBand = NotesNavigationReorderPlacement | "into";
@@ -51,10 +51,6 @@ export function notesNavigationReorderBand(kind: "folder" | "page", offsetRatio:
   return offsetRatio > 1 - FOLDER_EDGE_RATIO ? "after" : "into";
 }
 
-function sameOrder(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((key, index) => key === right[index]);
-}
-
 /**
  * Sibling keys after placing `sourceKey` before or after `targetKey`, or `null` when the two rows cannot trade places
  * or the order would not change.
@@ -65,12 +61,7 @@ export function notesNavigationReorderedKeys(
   targetKey: string,
   placement: NotesNavigationReorderPlacement,
 ): string[] | null {
-  if (sourceKey === targetKey) return null;
-  const siblings = groups.get(sourceKey) ?? [];
-  if (!siblings.includes(targetKey)) return null;
-  const targetIndex = siblings.filter((key) => key !== sourceKey).indexOf(targetKey) + (placement === "after" ? 1 : 0);
-  const next = movedToIndex(siblings, sourceKey, targetIndex);
-  return sameOrder(next, siblings) ? null : next;
+  return placedNextTo(groups.get(sourceKey) ?? [], sourceKey, targetKey, placement);
 }
 
 /** Sibling keys after moving `key` one place up (`-1`) or down (`1`), or `null` when it is already at that end. */
@@ -79,8 +70,5 @@ export function notesNavigationSteppedKeys(
   key: string,
   step: -1 | 1,
 ): string[] | null {
-  const siblings = groups.get(key) ?? [];
-  const targetIndex = siblings.indexOf(key) + step;
-  if (targetIndex < 0 || targetIndex >= siblings.length) return null;
-  return movedToIndex(siblings, key, targetIndex);
+  return steppedBy(groups.get(key) ?? [], key, step);
 }

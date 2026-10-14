@@ -13,6 +13,7 @@
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { cn, type MaybePromise } from "$lib/utils";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
+  import { createSidebarOrderDrag } from "$lib/utils/sidebar-order-drag.svelte";
 
 
   let {
@@ -71,6 +72,19 @@
     || channel.name.toLocaleLowerCase().includes(normalizedSearch)
     || channel.topic.toLocaleLowerCase().includes(normalizedSearch)
   )));
+
+  /** Channels drag by their row in the custom order of the project, outside search. */
+  const orderDrag = createSidebarOrderDrag({
+    getIds: () => visibleChannels.map((channel) => channel.id),
+    enabled: () => !mobileLayout && orderProjectId !== null && !normalizedSearch
+      && chatSidebarOrder.orderForProject(orderProjectId) === "custom",
+    isStarred: (channelId) => isChannelStarred(channelId),
+    save: async (orderedIds) => {
+      if (orderProjectId) chatSidebarOrder.setCustomSiblingOrder(orderProjectId, orderedIds);
+    },
+    description: "channels from the channel picker",
+  });
+  $effect(() => orderDrag.reset);
 
   function handleMobileBack(): void {
     if (normalizedSearch) {
@@ -188,6 +202,8 @@
               )}
               aria-current={selectedChannelId === channel.id ? "page" : undefined}
               data-chat-channel-option={channel.id}
+              {@attach orderDrag.item(channel.id)}
+              onpointerdown={(event) => orderDrag.pointerDown(event, channel.id)}
               onclick={() => { void onChannelSelected(channel); }}
             >
               <StarredIconBadge starred={isChannelStarred(channel.id)}><Hash size={iconSize} strokeWidth={iconStrokeWidth} /></StarredIconBadge>

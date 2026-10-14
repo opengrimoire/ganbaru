@@ -8,11 +8,14 @@ import {
   parseCustomOrders,
   parseSidebarSortOrderOverrides,
   parseStarredIds,
+  placedNextTo,
   resolveSidebarSortOrder,
   sameStarredSiblings,
   SIDEBAR_SORT_ORDERS,
   sortSidebarItems,
   starredFirst,
+  starredSiblingGroups,
+  steppedBy,
   withCustomSiblingOrder,
   withSidebarSortOrderOverride,
   withStarredId,
@@ -115,9 +118,33 @@ describe("sidebar order", () => {
     expect(movedToIndex(["a", "b"], "z", 0)).toEqual(["a", "b"]);
   });
 
+  it("places an id next to a sibling and reports drops that change nothing", () => {
+    expect(placedNextTo(["a", "b", "c"], "c", "a", "before")).toEqual(["c", "a", "b"]);
+    expect(placedNextTo(["a", "b", "c"], "a", "b", "after")).toEqual(["b", "a", "c"]);
+    expect(placedNextTo(["a", "b", "c"], "a", "b", "before")).toBeNull();
+    expect(placedNextTo(["a", "b"], "a", "a", "after")).toBeNull();
+    expect(placedNextTo(["a", "b"], "a", "z", "after")).toBeNull();
+  });
+
+  it("steps an id one place and stops at either end", () => {
+    expect(steppedBy(["a", "b", "c"], "b", -1)).toEqual(["b", "a", "c"]);
+    expect(steppedBy(["a", "b", "c"], "b", 1)).toEqual(["a", "c", "b"]);
+    expect(steppedBy(["a", "b"], "a", -1)).toBeNull();
+    expect(steppedBy(["a", "b"], "b", 1)).toBeNull();
+    expect(steppedBy(["a", "b"], "z", 1)).toBeNull();
+  });
+
   it("parses stored custom orders defensively", () => {
     expect(parseCustomOrders({ one: ["a", "a", "b"], two: [], three: "a", " ": ["c"] })).toEqual({ one: ["a", "b"] });
     expect(parseCustomOrders(["a"])).toEqual({});
+  });
+
+  it("groups ids by list and starred state", () => {
+    const groups = starredSiblingGroups([["a", "b", "c"], ["d"]], (id) => id === "b");
+    expect(groups.get("a")).toEqual(["a", "c"]);
+    expect(groups.get("b")).toEqual(["b"]);
+    expect(groups.get("d")).toEqual(["d"]);
+    expect(groups.get("z")).toBeUndefined();
   });
 
   it("lists only the siblings that share an item's starred state", () => {

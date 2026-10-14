@@ -1,10 +1,13 @@
 import type { ChatChannelRead } from "$lib/chat/contracts";
 import { getPreferences } from "$lib/stores/preferences.svelte";
 import {
+  customOrderRanks,
+  parseCustomOrders,
   parseSidebarSortOrderOverrides,
   parseStarredIds,
   resolveSidebarSortOrder,
   sortSidebarItems,
+  withCustomSiblingOrder,
   withSidebarSortOrderOverride,
   withStarredId,
   type SidebarSortOrder,
@@ -13,6 +16,7 @@ import { getConfigKey, setConfigKey } from "$lib/vault/config";
 
 const STARRED_CHANNEL_IDS_CONFIG_KEY = "chatSidebar.starredChannelIds";
 const SIDEBAR_ORDER_BY_PROJECT_CONFIG_KEY = "chatSidebar.orderByProject";
+const CUSTOM_ORDER_BY_PROJECT_CONFIG_KEY = "chatSidebar.customOrderByProject";
 
 /** Starred Chat channels and the Chat sidebar order, global with optional per-project overrides. */
 export interface ChatSidebarOrderStore {
@@ -25,6 +29,10 @@ export interface ChatSidebarOrderStore {
   orderForProject(projectId: string | null): SidebarSortOrder;
   /** Set the project's own order, or follow the global order again with `null`. */
   setProjectOrder(projectId: string, order: SidebarSortOrder | null): void;
+  /** Channel ids of the project in their custom order. */
+  customOrder(projectId: string | null): readonly string[];
+  /** Save the custom order of channels that trade places, such as one section's channels, in the project. */
+  setCustomSiblingOrder(projectId: string, orderedChannelIds: readonly string[]): void;
   /** Sort a copy of one project's channels by its order, starred channels first. */
   sortChannels(projectId: string | null, channels: readonly ChatChannelRead[]): ChatChannelRead[];
 }
@@ -35,6 +43,9 @@ function createChatSidebarOrder(): ChatSidebarOrderStore {
   let orderOverrides = $state<Record<string, SidebarSortOrder>>(
     parseSidebarSortOrderOverrides(getConfigKey<unknown>(SIDEBAR_ORDER_BY_PROJECT_CONFIG_KEY, undefined)),
   );
+  let customOrders = $state<Record<string, string[]>>(
+    parseCustomOrders(getConfigKey<unknown>(CUSTOM_ORDER_BY_PROJECT_CONFIG_KEY, undefined)),
+  );
 
   function orderOverride(projectId: string | null): SidebarSortOrder | null {
     return projectId ? orderOverrides[projectId] ?? null : null;
@@ -42,6 +53,10 @@ function createChatSidebarOrder(): ChatSidebarOrderStore {
 
   function orderForProject(projectId: string | null): SidebarSortOrder {
     return resolveSidebarSortOrder(preferences.chatSidebarOrder, orderOverride(projectId));
+  }
+
+  function customOrder(projectId: string | null): readonly string[] {
+    return projectId ? customOrders[projectId] ?? [] : [];
   }
 
   function isChannelStarred(channelId: string): boolean {
@@ -61,7 +76,13 @@ function createChatSidebarOrder(): ChatSidebarOrderStore {
       orderOverrides = withSidebarSortOrderOverride(orderOverrides, projectId, order);
       setConfigKey(SIDEBAR_ORDER_BY_PROJECT_CONFIG_KEY, Object.keys(orderOverrides).length > 0 ? { ...orderOverrides } : undefined);
     },
+    customOrder,
+    setCustomSiblingOrder(projectId, orderedChannelIds) {
+      customOrders = { ...customOrders, [projectId]: withCustomSiblingOrder(customOrder(projectId), orderedChannelIds) };
+      setConfigKey(CUSTOM_ORDER_BY_PROJECT_CONFIG_KEY, { ...customOrders });
+    },
     sortChannels(projectId, channels) {
+      const ranks = customOrderRanks(customOrder(projectId));
       return sortSidebarItems(
         channels,
         orderForProject(projectId),
@@ -70,6 +91,7 @@ function createChatSidebarOrder(): ChatSidebarOrderStore {
           name: channel.name,
           createdAt: channel.createdAt,
           modifiedAt: channel.lastActivityAt,
+          rank: ranks.get(channel.id),
         }),
         (channel) => isChannelStarred(channel.id),
       );

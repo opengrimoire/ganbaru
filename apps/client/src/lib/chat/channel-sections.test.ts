@@ -8,6 +8,7 @@ import {
   orderChatSidebarSections,
   readLastChatChannelId,
   readChatSidebarSections,
+  reorderChatSidebarSections,
   saveLastChatChannelId,
   saveChatSidebarSections,
   withChatSidebarSectionStarred,
@@ -79,6 +80,15 @@ describe("Chat channel sections", () => {
     expect(names("name-desc")).toEqual(["Design 10", "research", "Design 9", "Admin"]);
     expect(names("created-asc")).toEqual(["Design 10", "research", "Design 9", "Admin"]);
     expect(names("modified-desc")).toEqual(["Design 10", "Admin", "Design 9", "research"]);
+  });
+
+  it("reorders some sections and keeps the others in their slots", () => {
+    const sections = ["a", "b", "c", "d"].map((id) => ({ id, name: id, collapsed: false, channelIds: [] }));
+    const ids = (ordered: string[]) => reorderChatSidebarSections(sections, ordered).map((section) => section.id);
+    expect(ids(["d", "a"])).toEqual(["d", "b", "c", "a"]);
+    expect(ids(["c", "b", "a", "d"])).toEqual(["c", "b", "a", "d"]);
+    expect(orderChatSidebarSections(reorderChatSidebarSections(sections, ["b", "a"]), "custom").map((section) => section.id))
+      .toEqual(["b", "a", "c", "d"]);
   });
 
   it("remembers the last selected channel per project", () => {

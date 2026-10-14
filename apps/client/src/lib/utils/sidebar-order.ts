@@ -182,6 +182,33 @@ export function movedToIndex(ids: readonly string[], id: string, targetIndex: nu
   return next;
 }
 
+/** Where a dropped item goes relative to the item it is dropped on. */
+export type SidebarDropPlacement = "before" | "after";
+
+/**
+ * Copy of `siblings` with `sourceId` placed before or after `targetId`, or `null` when either is missing from
+ * `siblings` or the order would not change.
+ */
+export function placedNextTo(
+  siblings: readonly string[],
+  sourceId: string,
+  targetId: string,
+  placement: SidebarDropPlacement,
+): string[] | null {
+  if (sourceId === targetId || !siblings.includes(sourceId) || !siblings.includes(targetId)) return null;
+  const targetIndex = siblings.filter((id) => id !== sourceId).indexOf(targetId) + (placement === "after" ? 1 : 0);
+  const next = movedToIndex(siblings, sourceId, targetIndex);
+  return next.every((id, index) => id === siblings[index]) ? null : next;
+}
+
+/** Copy of `siblings` with `id` moved one place up (`-1`) or down (`1`), or `null` when it is missing or at that end. */
+export function steppedBy(siblings: readonly string[], id: string, step: -1 | 1): string[] | null {
+  const sourceIndex = siblings.indexOf(id);
+  const targetIndex = sourceIndex + step;
+  if (sourceIndex < 0 || targetIndex < 0 || targetIndex >= siblings.length) return null;
+  return movedToIndex(siblings, id, targetIndex);
+}
+
 /** Read a stored map of scope id to custom id order, dropping invalid scopes and ids. */
 export function parseCustomOrders(value: unknown): Record<string, string[]> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
@@ -191,6 +218,23 @@ export function parseCustomOrders(value: unknown): Record<string, string[]> {
     if (scopeId.trim() && parsed.length > 0) orders[scopeId] = parsed;
   }
   return orders;
+}
+
+/**
+ * Map each id of `lists` to the ids it can trade places with: those in the same list with the same starred state, in
+ * list order.
+ */
+export function starredSiblingGroups(
+  lists: readonly (readonly string[])[],
+  starred: (id: string) => boolean,
+): Map<string, readonly string[]> {
+  const groups = new Map<string, readonly string[]>();
+  for (const list of lists) {
+    for (const part of [list.filter(starred), list.filter((id) => !starred(id))]) {
+      for (const id of part) groups.set(id, part);
+    }
+  }
+  return groups;
 }
 
 /** The ids among `ids` that share the starred state of `id`, since starred items stay ahead and only move among themselves. */

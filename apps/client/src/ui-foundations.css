@@ -223,3 +223,46 @@ html[data-shell="mobile"] {
     box-shadow: none;
   }
 }
+
+/*
+ * Items of a list reordered with `createSortableDrag` (lib/utils/sortable-drag.svelte.ts). Siblings slide aside while one
+ * item is dragged; the dragged item lifts above them with the same look as the Projects sidebar drag card.
+ */
+[data-sortable-item] {
+  position: relative;
+}
+
+[data-sortable-item][data-sortable-animated] {
+  transition: translate var(--sortable-duration) cubic-bezier(0.2, 0, 0, 1);
+}
+
+[data-sortable-item][data-sortable-phase] {
+  z-index: 10;
+  border-radius: var(--radius-md);
+}
+
+[data-sortable-item][data-sortable-phase="lifted"] {
+  background-color: var(--popover);
+  box-shadow: 0 0 0 1px var(--border), 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+  scale: 1.01;
+  transition: scale 150ms ease-out, box-shadow 150ms ease-out;
+}
+
+[data-sortable-item][data-sortable-phase="settling"] {
+  transition-property: translate, scale, box-shadow, background-color;
+  transition-duration: var(--sortable-duration);
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+html.sortable-dragging,
+html.sortable-dragging * {
+  cursor: grabbing !important;
+  user-select: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-sortable-item],
+  [data-sortable-item][data-sortable-phase] {
+    transition: none;
+  }
+}

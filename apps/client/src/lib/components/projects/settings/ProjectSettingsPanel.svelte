@@ -30,7 +30,7 @@
   } from "$lib/projects/types";
   import { createProjectSettingsCustomFieldController } from "$lib/projects/settings/custom-field-controller.svelte";
   import { createProjectSettingsColorAllocator } from "$lib/projects/settings/color-controller";
-  import { createProjectSettingsReorderController } from "$lib/projects/settings/reorder-controller.svelte";
+  import { createProjectSettingsSortableController } from "$lib/projects/settings/sortable-controller.svelte";
   import { createProjectSettingsSession } from "$lib/projects/settings/session.svelte";
   import { createProjectSettingsStructureDraft } from "$lib/projects/settings/structure-draft.svelte";
   import {
@@ -62,7 +62,6 @@
   import ProjectSettingsIdentitySection from "./ProjectSettingsIdentitySection.svelte";
   import ProjectSettingsMembersSection from "./ProjectSettingsMembersSection.svelte";
   import ProjectSettingsWorkingFoldersSection from "$lib/components/projects/settings/ProjectSettingsWorkingFoldersSection.svelte";
-  import { PROJECT_CUSTOM_FIELD_OPTION_DRAG_DATA_TYPE } from "$lib/projects/custom-fields";
   import { projectHasLockedSystemIdentity } from "$lib/projects/system-defaults";
   import ProjectSettingsPanelShell from "./ProjectSettingsPanelShell.svelte";
   import ProjectSettingsPrioritiesSection from "./ProjectSettingsPrioritiesSection.svelte";
@@ -103,10 +102,6 @@
   const NEW_STATUS_FIRST_COLOR: EventColor = 8;
   const NEW_PRIORITY_FIRST_COLOR: EventColor = 13;
   const NEW_TAG_FIRST_COLOR = PROJECT_TAG_DEFAULT_COLOR;
-  const PROJECT_STATUS_DRAG_DATA_TYPE = "application/x-ganbaru-project-status";
-  const PROJECT_PRIORITY_DRAG_DATA_TYPE = "application/x-ganbaru-project-priority";
-  const PROJECT_TAG_DRAG_DATA_TYPE = "application/x-ganbaru-project-tag";
-  const PROJECT_CUSTOM_FIELD_DRAG_DATA_TYPE = "application/x-ganbaru-project-custom-field";
   type SelectOption = { value: string; label: string };
 
   const session = createProjectSettingsSession({
@@ -188,47 +183,41 @@
   const pendingDeleteCustomField = $derived(customFields.pendingDeleteField());
   const pendingDeleteCustomFieldOption = $derived(customFields.pendingDeleteOption());
 
-  const statusReorder = createProjectSettingsReorderController({
-    dataType: PROJECT_STATUS_DRAG_DATA_TYPE,
+  const statusSortable = createProjectSettingsSortableController({
     getEntries: () => statuses,
     moveEntry: structure.moveStatus,
     setError: (error) => { sessionState.projectSettingsError = error; },
     reorderFailedMessage: () => t("projects.settings.statusReorderFailed"),
     saveFailedMessage: (message) => t("projects.settings.statusSaveFailed", message),
   });
-  const priorityReorder = createProjectSettingsReorderController({
-    dataType: PROJECT_PRIORITY_DRAG_DATA_TYPE,
+  const prioritySortable = createProjectSettingsSortableController({
     getEntries: () => priorities,
     moveEntry: structure.movePriority,
     setError: (error) => { sessionState.projectSettingsError = error; },
     reorderFailedMessage: () => t("projects.settings.priorityReorderFailed"),
     saveFailedMessage: (message) => t("projects.settings.prioritySaveFailed", message),
   });
-  const tagReorder = createProjectSettingsReorderController({
-    dataType: PROJECT_TAG_DRAG_DATA_TYPE,
+  const tagSortable = createProjectSettingsSortableController({
     getEntries: () => projectTags,
     moveEntry: structure.moveTag,
     setError: (error) => { sessionState.projectSettingsError = error; },
     reorderFailedMessage: () => t("projects.settings.tagReorderFailed"),
     saveFailedMessage: (message) => t("projects.settings.tagSaveFailed", message),
   });
-  const customFieldReorder = createProjectSettingsReorderController({
-    dataType: PROJECT_CUSTOM_FIELD_DRAG_DATA_TYPE,
+  const customFieldSortable = createProjectSettingsSortableController({
     getEntries: () => projectCustomFields,
     moveEntry: structure.moveCustomField,
     setError: (error) => { sessionState.projectSettingsError = error; },
     reorderFailedMessage: () => t("projects.customFields.reorderFailed"),
     saveFailedMessage: (message) => t("projects.customFields.saveFailed", message),
   });
-  const customFieldOptionReorder = createProjectSettingsReorderController({
-    dataType: PROJECT_CUSTOM_FIELD_OPTION_DRAG_DATA_TYPE,
+  const customFieldOptionSortable = createProjectSettingsSortableController({
     getEntries: () => projectCustomFields.flatMap(customFieldOptions),
     getEntriesForEntry: (option) => structure.optionsForField(option.fieldId),
     moveEntry: structure.moveCustomFieldOption,
     setError: (error) => { sessionState.projectSettingsError = error; },
     reorderFailedMessage: () => t("projects.customFields.optionReorderFailed"),
     saveFailedMessage: (message) => t("projects.customFields.optionSaveFailed", message),
-    canDrop: (dragged, target) => dragged.fieldId === target.fieldId,
   });
 
   $effect(() => {
@@ -252,6 +241,7 @@
 
   onDestroy(() => {
     musicLoadGeneration += 1;
+    resetReorderDrags();
     onDirtyChange(false);
   });
 
@@ -262,8 +252,7 @@
     pendingDeletePriorityId = null;
     pendingDeleteTagId = null;
     customFields.resetTransientState();
-    clearCustomFieldDrag();
-    clearCustomFieldOptionDrag();
+    resetReorderDrags();
     if (musicAssignmentsAvailable) {
       void loadMusicAssignments(project.id);
     } else {
@@ -342,11 +331,7 @@
       pendingDeleteStatusId = null;
       pendingDeletePriorityId = null;
       pendingDeleteTagId = null;
-      statusReorder.clear();
-      priorityReorder.clear();
-      tagReorder.clear();
-      customFieldReorder.clear();
-      customFieldOptionReorder.clear();
+      resetReorderDrags();
     }
   }
 
@@ -475,11 +460,12 @@
     });
   }
 
-  const clearStatusDrag = statusReorder.clear;
-  const clearPriorityDrag = priorityReorder.clear;
-  const clearTagDrag = tagReorder.clear;
-  const clearCustomFieldDrag = customFieldReorder.clear;
-  const clearCustomFieldOptionDrag = customFieldOptionReorder.clear;
+  /** Drop any row drag in progress, for when the draft reloads or the panel closes. */
+  function resetReorderDrags(): void {
+    for (const sortable of [statusSortable, prioritySortable, tagSortable, customFieldSortable, customFieldOptionSortable]) {
+      sortable.reset();
+    }
+  }
 
   function statusNameDraftValue(status: ProjectStatus): string {
     return draftStatusName(status, statusDraftState());
@@ -849,8 +835,8 @@
 
   /** Report whether working-folder operations or row moves are pending, which blocks committing the settings snapshot. */
   function settingsOperationsBusy(): boolean {
-    return workingFoldersBusy || statusReorder.pending || priorityReorder.pending || tagReorder.pending
-      || customFieldReorder.pending || customFieldOptionReorder.pending;
+    return workingFoldersBusy || statusSortable.pending || prioritySortable.pending || tagSortable.pending
+      || customFieldSortable.pending || customFieldOptionSortable.pending;
   }
 
 </script>
@@ -935,16 +921,10 @@
           <ProjectSettingsTagsSection
             theme={theme.current}
             tags={projectTags}
-            draggedTagId={tagReorder.draggedId}
-            tagReorderPending={tagReorder.pending}
+            tagSortable={tagSortable}
             bind:newTagRowElement
             bind:newTagName={sessionState.newTagName}
             bind:newTagColor={sessionState.newTagColor}
-            tagDropMarkerVisible={tagReorder.markerVisible}
-            onTagDragOver={tagReorder.dragOver}
-            onTagDrop={tagReorder.drop}
-            onTagDragStart={tagReorder.start}
-            {clearTagDrag}
             {moveTagByDirection}
             {tagColorDraftValue}
             {setTagColor}
@@ -975,22 +955,10 @@
             bind:newCustomFieldOptionRows={sessionState.newCustomFieldOptionRows}
             bind:newCustomFieldOptionName={sessionState.newCustomFieldOptionName}
             bind:newCustomFieldRowElement
-            draggedCustomFieldId={customFieldReorder.draggedId}
-            draggedCustomFieldOptionId={customFieldOptionReorder.draggedId}
-            customFieldReorderPending={customFieldReorder.pending}
-            customFieldOptionReorderPending={customFieldOptionReorder.pending}
-            customFieldDropMarkerVisible={customFieldReorder.markerVisible}
-            customFieldOptionDropMarkerVisible={customFieldOptionReorder.markerVisible}
-            onCustomFieldDragOver={customFieldReorder.dragOver}
-            onCustomFieldDrop={customFieldReorder.drop}
-            onCustomFieldDragStart={customFieldReorder.start}
-            {clearCustomFieldDrag}
+            customFieldSortable={customFieldSortable}
+            customFieldOptionSortable={customFieldOptionSortable}
             {moveCustomFieldByDirection}
             {requestDeleteCustomField}
-            onCustomFieldOptionDragOver={customFieldOptionReorder.dragOver}
-            onCustomFieldOptionDrop={customFieldOptionReorder.drop}
-            onCustomFieldOptionDragStart={customFieldOptionReorder.start}
-            {clearCustomFieldOptionDrag}
             {moveCustomFieldOptionByDirection}
             {requestDeleteCustomFieldOption}
             {setCustomFieldOptionCreateDraftName}
@@ -1014,17 +982,11 @@
             theme={theme.current}
             {statuses}
             {statusCategoryOptions}
-            draggedStatusId={statusReorder.draggedId}
-            statusReorderPending={statusReorder.pending}
+            statusSortable={statusSortable}
             bind:newStatusRowElement
             bind:newStatusName={sessionState.newStatusName}
             bind:newStatusColor={sessionState.newStatusColor}
             bind:newStatusCategory={sessionState.newStatusCategory}
-            statusDropMarkerVisible={statusReorder.markerVisible}
-            onStatusDragOver={statusReorder.dragOver}
-            onStatusDrop={statusReorder.drop}
-            onStatusDragStart={statusReorder.start}
-            {clearStatusDrag}
             {moveStatusByDirection}
             {statusColorDraftValue}
             {setStatusColor}
@@ -1050,16 +1012,10 @@
           <ProjectSettingsPrioritiesSection
             theme={theme.current}
             {priorities}
-            draggedPriorityId={priorityReorder.draggedId}
-            priorityReorderPending={priorityReorder.pending}
+            prioritySortable={prioritySortable}
             bind:newPriorityRowElement
             bind:newPriorityName={sessionState.newPriorityName}
             bind:newPriorityColor={sessionState.newPriorityColor}
-            priorityDropMarkerVisible={priorityReorder.markerVisible}
-            onPriorityDragOver={priorityReorder.dragOver}
-            onPriorityDrop={priorityReorder.drop}
-            onPriorityDragStart={priorityReorder.start}
-            {clearPriorityDrag}
             {movePriorityByDirection}
             {priorityColorDraftValue}
             {setPriorityColor}

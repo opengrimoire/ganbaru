@@ -83,9 +83,15 @@ Panels were restyled one at a time, so radii, shadows, text sizes, input styles,
 - The parent row keeps `aria-expanded="true"` and its highlight while the submenu is open. Opening one submenu closes its siblings.
 - ArrowRight or Enter opens a submenu from the keyboard, and ArrowLeft or Escape returns to the parent row.
 
+## Sortable lists
+
+- Lists reordered in place (Project settings statuses, priorities, tags, custom fields, and options) use `createSortableDrag` from a grip handle: the dragged row lifts and follows the pointer, its siblings slide aside, and the move commits once the row settles, with no landing flash. Escape or leaving the window returns the row to its slot, and the grip keeps arrow key moves.
+- Lists whose moves wait on an asynchronous store write keep native drag, since a commit after the settle would jump.
+
 ## Deliberate exceptions
 
 - The Calendar event panel family (event panel, recurrence, notifications, and description editor surfaces) keeps its own shape, color, and shadow.
+- A lifted sortable row takes the popover color and a stronger shadow while it follows the pointer, so it reads as picked up above its list.
 - Tooltips use an inverted palette so they read as transient hints rather than panels.
 - Calendar-colored pickers (icon picker, event and quick note color pickers) keep the Calendar background so they match the surface that opens them, while sharing the radius and shadow.
 - The settings panels opened from the Projects, Notes, and Chat toolbars keep their own section order and layout inside shared chrome.

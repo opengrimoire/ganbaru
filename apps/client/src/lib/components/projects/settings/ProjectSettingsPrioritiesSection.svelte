@@ -6,11 +6,11 @@
   import type { EventColor } from "$lib/calendar/types";
   import { moveTextInputCaretToPointer } from "$lib/utils/text-input-caret";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import type { ProjectSettingsDropPosition } from "$lib/projects/settings/reorder";
+  import type { ProjectSettingsSortableController } from "$lib/projects/settings/sortable-controller.svelte";
   import { projectSettingsIconButtonClass } from "$lib/projects/settings/ui";
   import type { MoveDirection, ProjectPriorityConfig } from "$lib/projects/types";
   import type { Theme } from "$lib/themes";
-  import { cn, type MaybePromise } from "$lib/utils";
+  import type { MaybePromise } from "$lib/utils";
   import ProjectSettingsNewRowDragHandle from "./ProjectSettingsNewRowDragHandle.svelte";
   import ProjectSettingsSectionHeading from "./ProjectSettingsSectionHeading.svelte";
 
@@ -18,16 +18,10 @@
   let {
     theme,
     priorities,
-    draggedPriorityId,
-    priorityReorderPending,
+    prioritySortable,
     newPriorityRowElement = $bindable<HTMLDivElement | undefined>(),
     newPriorityName = $bindable<string>(),
     newPriorityColor = $bindable<EventColor>(),
-    priorityDropMarkerVisible,
-    onPriorityDragOver,
-    onPriorityDrop,
-    onPriorityDragStart,
-    clearPriorityDrag,
     movePriorityByDirection,
     priorityColorDraftValue,
     setPriorityColor,
@@ -41,16 +35,11 @@
   }: {
     theme: Theme;
     priorities: ProjectPriorityConfig[];
-    draggedPriorityId: string | null;
-    priorityReorderPending: boolean;
+    /** Pointer reordering of the priority rows. */
+    prioritySortable: ProjectSettingsSortableController;
     newPriorityRowElement: HTMLDivElement | undefined;
     newPriorityName: string;
     newPriorityColor: EventColor;
-    priorityDropMarkerVisible: (priorityId: string, position: ProjectSettingsDropPosition) => boolean;
-    onPriorityDragOver: (event: DragEvent, priority: ProjectPriorityConfig, target: HTMLElement) => void;
-    onPriorityDrop: (event: DragEvent, priority: ProjectPriorityConfig) => MaybePromise;
-    onPriorityDragStart: (event: DragEvent, priority: ProjectPriorityConfig) => void;
-    clearPriorityDrag: () => void;
     movePriorityByDirection: (priority: ProjectPriorityConfig, direction: MoveDirection) => MaybePromise;
     priorityColorDraftValue: (priority: ProjectPriorityConfig) => EventColor;
     setPriorityColor: (priorityId: string, color: EventColor | undefined) => void;
@@ -72,29 +61,17 @@
     {#each priorities as priority (priority.id)}
       {@const deletePriorityTitle = priorityDeleteTitle(priority)}
       <div
-        class={cn(
-          "relative grid min-h-7 grid-cols-[auto_auto_minmax(0,1fr)_auto] items-center gap-1.5 px-1 py-0.5",
-          draggedPriorityId === priority.id && "opacity-50",
-        )}
+        class="grid min-h-7 grid-cols-[auto_auto_minmax(0,1fr)_auto] items-center gap-1.5 px-1 py-0.5"
         role="group"
         aria-label={priority.name}
-        ondragover={(event) => onPriorityDragOver(event, priority, event.currentTarget)}
-        ondrop={(event) => { void onPriorityDrop(event, priority); }}
+        {@attach prioritySortable.item(priority.id)}
       >
-        {#if priorityDropMarkerVisible(priority.id, "before")}
-          <div class="pointer-events-none absolute left-1 right-1 top-0 h-0.5 rounded-full bg-primary"></div>
-        {/if}
-        {#if priorityDropMarkerVisible(priority.id, "after")}
-          <div class="pointer-events-none absolute bottom-0 left-1 right-1 h-0.5 rounded-full bg-primary"></div>
-        {/if}
         <button
           type="button"
-          class="flex h-7 w-7 shrink-0 cursor-grab items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-40"
-          draggable={priorities.length > 1 && !priorityReorderPending}
-          disabled={priorities.length <= 1 || priorityReorderPending}
+          class="flex h-7 w-7 shrink-0 cursor-grab items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-40 touch-none"
+          disabled={priorities.length <= 1 || prioritySortable.pending}
           aria-label={t("projects.actions.dragPriority", priority.name)}
-          ondragstart={(event) => onPriorityDragStart(event, priority)}
-          ondragend={clearPriorityDrag}
+          onpointerdown={(event) => prioritySortable.pointerDown(event, priority.id)}
           onkeydown={(event) => {
             if (event.key === "ArrowUp") {
               event.preventDefault();

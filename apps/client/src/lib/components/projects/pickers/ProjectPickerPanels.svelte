@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick, untrack } from "svelte";
+  import { tick, untrack, type Snippet } from "svelte";
   import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import Eye from "@lucide/svelte/icons/eye";
@@ -83,6 +83,9 @@
     showProjectChildren = false,
     activeProjectId = null,
     projectSearch = $bindable(""),
+    searchPlaceholder = undefined,
+    searchResults = undefined,
+    searchResultCount = 0,
     onShowInactiveProjectsChange = undefined,
     onProjectSelected,
     onProjectCreated = undefined,
@@ -118,6 +121,12 @@
     showProjectChildren?: boolean;
     activeProjectId?: string | null;
     projectSearch?: string;
+    /** Placeholder and mobile search title when the search finds something other than projects. */
+    searchPlaceholder?: string;
+    /** Renders the results of a non-empty search in place of matching projects; the parent reads the bound `projectSearch`. */
+    searchResults?: Snippet;
+    /** Rows `searchResults` renders, used to size the panel before it is measured. */
+    searchResultCount?: number;
     onShowInactiveProjectsChange?: (value: boolean) => void;
     onProjectSelected: (project: Project) => MaybePromise<void>;
     onProjectCreated?: (projectId: string | null) => MaybePromise<void>;
@@ -197,6 +206,9 @@
       .map((group) => ({ group, projects: projectsInGroup(group) }))
       .filter((entry) => entry.projects.length > 0),
   );
+  const searchRowCount = $derived(searchResults
+    ? searchResultCount
+    : searchResultGroups.reduce((count, entry) => count + entry.projects.length, 0));
   const activeGroup = $derived.by(() => groups.find((group) => group.id === activeGroupId));
   const directProjectGroup = $derived.by(() => selectedGroup);
   const directProjects = $derived.by(() => directProjectGroup ? projectsInGroup(directProjectGroup) : []);
@@ -312,7 +324,7 @@
 
   function mainListEstimatedHeight(): number {
     const itemCount = searchActive
-      ? searchResultGroups.reduce((count, entry) => count + entry.projects.length, 0)
+      ? searchRowCount
       : mobileLayout && mobilePane === "projects"
         ? mainProjects.length
         : mode === "projects" && directProjectGroup
@@ -701,7 +713,7 @@
     const activeSearch = searchActive;
     const panelMode = mode;
     const groupCount = visibleGroups.length;
-    const resultCount = searchResultGroups.reduce((count, entry) => count + entry.projects.length, 0);
+    const resultCount = searchRowCount;
     const directProjectCount = directProjectGroup ? projectsInGroup(directProjectGroup).length : 0;
     const mainProjectCount = mainProjects.length;
     const creatingGroup = createGroupOpen;
@@ -799,7 +811,7 @@
         {/if}
         <h2 class="min-w-0 flex-1 truncate px-2 text-base font-semibold">
           {searchActive
-            ? t("calendar.eventPanel.searchProjects")
+            ? searchPlaceholder ?? t("calendar.eventPanel.searchProjects")
             : mainProjectGroup?.name ?? t("projects.navigator.pickerLabel")}
         </h2>
         {#if onClose}
@@ -824,7 +836,7 @@
         type="search"
         value={projectSearch}
         oninput={(event) => updateProjectSearch(event.currentTarget.value)}
-        placeholder={t("calendar.eventPanel.searchProjects")}
+        placeholder={searchPlaceholder ?? t("calendar.eventPanel.searchProjects")}
         class={cn(
           "field-bare text-popover-foreground",
           mobileLayout && "h-12 text-base",
@@ -906,6 +918,8 @@
           <Loading layout="rows" rows={3} label={t("projects.loading")} />
         {:else if projects.loadError}
           <Notice class="px-3 py-2" message={t("projects.loadFailed", projects.loadError)} onRetry={() => projects.load()} />
+        {:else if searchActive && searchResults}
+          {@render searchResults()}
         {:else if searchActive && searchResultGroups.length === 0}
           <div class="px-3 py-2 text-popover-foreground/60">
             {t("calendar.eventPanel.noProjectsFound")}

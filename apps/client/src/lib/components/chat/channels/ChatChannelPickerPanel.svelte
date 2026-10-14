@@ -5,6 +5,7 @@
   import Search from "@lucide/svelte/icons/search";
   import X from "@lucide/svelte/icons/x";
   import CalendarScrollbar from "$lib/components/calendar/CalendarScrollbar.svelte";
+  import { chatChannelMatchesSearch, normalizeChatChannelSearch } from "$lib/chat/channel-search";
   import type { ChatChannelRead } from "$lib/chat/contracts";
   import StarredIconBadge from "$lib/components/ui/StarredIconBadge.svelte";
   import SidebarOrderMenu from "$lib/components/ui/SidebarOrderMenu.svelte";
@@ -66,12 +67,8 @@
   const iconSize = $derived(mobileLayout ? 18 : 13);
   let search = $state("");
   let scrollElement = $state<HTMLElement | undefined>();
-  const normalizedSearch = $derived(showSearch ? search.trim().toLocaleLowerCase() : "");
-  const visibleChannels = $derived(channels.filter((channel) => (
-    !normalizedSearch
-    || channel.name.toLocaleLowerCase().includes(normalizedSearch)
-    || channel.topic.toLocaleLowerCase().includes(normalizedSearch)
-  )));
+  const normalizedSearch = $derived(showSearch ? normalizeChatChannelSearch(search) : "");
+  const visibleChannels = $derived(channels.filter((channel) => chatChannelMatchesSearch(channel, normalizedSearch)));
 
   /** Channels drag by their row in the custom order of the project, outside search. */
   const orderDrag = createSidebarOrderDrag({

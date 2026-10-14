@@ -221,6 +221,7 @@ export const navigationAndSearch = {
   searchResults: "Search results",
   searching: "Searching",
   searchFailed: (message: string) => `Could not search notes: ${message}`,
+  searchNoProject: "Without a project",
   searchResultPage: "Note",
   searchResultBlock: "Block",
   searchResultComment: "Comment",

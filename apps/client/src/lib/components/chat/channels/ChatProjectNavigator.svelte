@@ -1,6 +1,10 @@
 <script lang="ts">
   import { tick } from "svelte";
+  import Hash from "@lucide/svelte/icons/hash";
+  import { chatChannelSearchGroups } from "$lib/chat/channel-search";
   import type { ChatChannelRead } from "$lib/chat/contracts";
+  import { getLocalization } from "$lib/i18n/translator.svelte";
+  import StarredIconBadge from "$lib/components/ui/StarredIconBadge.svelte";
   import {
     createHoverDelay,
     isPointerAimingAtSubmenu,
@@ -58,6 +62,7 @@
   } = $props();
 
   const chat = getChat();
+  const { t } = getLocalization();
   const chatSidebarOrder = getChatSidebarOrder();
   const projects = getProjects();
   const panelGap = 4;
@@ -80,6 +85,17 @@
 
   const activeProjectChannels = $derived(
     activeProjectId ? chatSidebarOrder.sortChannels(activeProjectId, chat.channelsForProject(activeProjectId)) : [],
+  );
+  /** The main panel search finds channels across the listed projects, in sidebar order. */
+  const channelSearchGroups = $derived(chatChannelSearchGroups(
+    projects.visibleGroups().flatMap((group) => showInactiveProjects
+      ? projects.projectsForGroupIncludingInactive(group.id)
+      : projects.projectsForGroup(group.id)),
+    (projectId) => chatSidebarOrder.sortChannels(projectId, chat.channelsForProject(projectId)),
+    projectSearch,
+  ));
+  const channelSearchRowCount = $derived(
+    channelSearchGroups.reduce((count, group) => count + group.channels.length + 1, 0),
   );
 
   function currentBounds() {
@@ -188,6 +204,11 @@
     await onChannelSelected();
   }
 
+  async function selectSearchedChannel(channel: ChatChannelRead): Promise<void> {
+    await selectChannel(channel);
+    projectSearch = "";
+  }
+
   async function createChannel(): Promise<void> {
     const projectId = activeProjectId;
     if (!projectId) return;
@@ -216,6 +237,37 @@
   });
 </script>
 
+{#snippet channelSearchResults()}
+  {#if channelSearchGroups.length === 0}
+    <div class="px-3 py-2 text-popover-foreground/60">{t("chat.channels.noResults")}</div>
+  {:else}
+    <div class="grid px-1">
+      {#each channelSearchGroups as resultGroup (resultGroup.project.id)}
+        <div class="px-1 pb-1">
+          <div class="menu-label">{resultGroup.project.name}</div>
+          <div class="grid">
+            {#each resultGroup.channels as channel (channel.id)}
+              <button
+                type="button"
+                class={cn(
+                  "menu-item gap-2 text-popover-foreground",
+                  mobileLayout && "min-h-12 px-3 text-sm",
+                  chat.selectedChannelId === channel.id && "font-medium",
+                )}
+                aria-current={chat.selectedChannelId === channel.id ? "page" : undefined}
+                onclick={() => { void selectSearchedChannel(channel); }}
+              >
+                <StarredIconBadge starred={chatSidebarOrder.isChannelStarred(channel.id)}><Hash size={mobileLayout ? 18 : 13} strokeWidth={iconStrokeWidth} /></StarredIconBadge>
+                <span class="min-w-0 flex-1 truncate">{channel.name}</span>
+              </button>
+            {/each}
+          </div>
+        </div>
+      {/each}
+    </div>
+  {/if}
+{/snippet}
+
 <ProjectPickerPanels
   {selectedProjectId}
   {selectedGroupId}
@@ -233,6 +285,9 @@
   showProjectChildren
   {activeProjectId}
   bind:projectSearch
+  searchPlaceholder={t("chat.channels.search")}
+  searchResults={channelSearchResults}
+  searchResultCount={channelSearchRowCount}
   onShowInactiveProjectsChange={onShowInactiveProjectsChange}
   onProjectSelected={selectProject}
   onProjectPreview={showChannelPanel}

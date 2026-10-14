@@ -230,6 +230,7 @@ export const navigationAndSearch = {
   searchResults: "Resultados de búsqueda",
   searching: "Buscando",
   searchFailed: (message: string) => `No se pudieron buscar notas: ${message}`,
+  searchNoProject: "Sin proyecto",
   searchResultPage: "Nota",
   searchResultBlock: "Bloque",
   searchResultComment: "Comentario",

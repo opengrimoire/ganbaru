@@ -3,6 +3,7 @@
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import Eye from "@lucide/svelte/icons/eye";
   import EyeOff from "@lucide/svelte/icons/eye-off";
+  import FileText from "@lucide/svelte/icons/file-text";
   import Plus from "@lucide/svelte/icons/plus";
   import Search from "@lucide/svelte/icons/search";
   import CalendarScrollbar from "$lib/components/calendar/CalendarScrollbar.svelte";
@@ -40,9 +41,15 @@
   } from "$lib/projects/types";
   import { notesFoldersForProject } from "$lib/notes/navigation/tree";
   import { notesHierarchyChildren } from "$lib/notes/navigation/hierarchy-menu";
+  import { notesPageSearchGroups, notesPageSearchQueryIsSearchable } from "$lib/notes/navigation/page-search";
+  import { NOTES_PAGE_CHROME_EMOJI_SCALE } from "$lib/notes/pages/icon";
+  import { notesPageTitle } from "$lib/notes/pages/title";
   import { notesPagesForProject } from "$lib/notes/project-membership";
+  import type { NotesPage } from "$lib/notes/types";
   import type { ProjectNavigatorPanelMode } from "$lib/projects/toolbar";
   import { getNotes } from "$lib/stores/notes.svelte";
+  import { createNotesSearchController } from "$lib/stores/notes/search.svelte";
+  import NotesPageIcon from "$lib/components/notes/pages/NotesPageIcon.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import SidebarOrderMenu from "$lib/components/ui/SidebarOrderMenu.svelte";
@@ -52,11 +59,6 @@
   import ProjectIcon from "$lib/components/projects/ProjectIcon.svelte";
   import NotesHierarchyPickerPanel from "./NotesHierarchyPickerPanel.svelte";
 
-
-  interface ProjectSearchResultGroup {
-    group: ProjectGroup;
-    projects: Project[];
-  }
 
   let {
     selectedProjectId = null,
@@ -95,8 +97,11 @@
   const subpanelRowHeightPx = 32;
   const subpanelGapPx = 4;
   const zIndexClass = "z-81";
+  const pageSearchDebounceMs = 200;
+  const pageSearchPageSize = 30;
 
   let projectSearch = $state("");
+  let searchedPageQuery = $state("");
   let groupDraft = $state("");
   let isCreateGroupOpen = $state(false);
   let createProjectGroupId = $state<string | null>(null);
@@ -141,14 +146,21 @@
 
   const selectedProject = $derived(projects.projectById(selectedProjectId));
   const selectedGroup = $derived(projects.groupById(selectedProject?.groupId ?? selectedGroupId));
-  const normalizedSearch = $derived(projectSearch.trim().toLowerCase());
-  const isSearchActive = $derived(normalizedSearch.length > 0);
-  const groups = $derived.by(() => projects.visibleGroups());
-  const visibleGroups = $derived.by(() => groups.filter(isGroupVisible));
-  const searchResultGroups = $derived.by((): ProjectSearchResultGroup[] =>
-    groups
-      .map((group) => ({ group, projects: projectsInGroup(group) }))
-      .filter((entry) => entry.projects.length > 0)
+  const trimmedSearch = $derived(projectSearch.trim());
+  const isSearchActive = $derived(trimmedSearch.length > 0);
+  const visibleGroups = $derived.by(() => projects.visibleGroups());
+  /** The search finds notes by title through the Notes index, grouped by the listed projects in sidebar order. */
+  const pageSearch = createNotesSearchController();
+  const pageSearchQueryIsSearchable = $derived(notesPageSearchQueryIsSearchable(trimmedSearch));
+  const pageSearchPending = $derived(
+    pageSearchQueryIsSearchable && (searchedPageQuery !== trimmedSearch || pageSearch.loading),
+  );
+  const pageSearchGroups = $derived(notesPageSearchGroups(
+    pageSearch.results,
+    visibleGroups.flatMap((group) => projectsInGroup(group)),
+  ));
+  const pageSearchRowCount = $derived(
+    pageSearchGroups.reduce((count, group) => count + group.pages.length + 1, 0),
   );
   const activeGroup = $derived.by(() => visibleGroups.find((group) => group.id === activeGroupId));
   const directProjectGroup = $derived.by(() => selectedGroup);
@@ -201,18 +213,9 @@
   }
 
   function projectsInGroup(group: ProjectGroup): Project[] {
-    const groupProjects = showInactiveProjects
+    return showInactiveProjects
       ? projects.projectsForGroupIncludingInactive(group.id)
       : projects.projectsForGroup(group.id);
-    if (!normalizedSearch) return groupProjects;
-    return groupProjects.filter((project) =>
-      project.name.toLowerCase().includes(normalizedSearch)
-    );
-  }
-
-  function isGroupVisible(group: ProjectGroup): boolean {
-    if (!normalizedSearch) return true;
-    return projectsInGroup(group).length > 0;
   }
 
   function projectTemplateLabel(templateId: ProjectTemplateId): string {
@@ -244,7 +247,7 @@
 
   function mainListEstimatedHeight(): number {
     const itemCount = isSearchActive
-      ? searchResultGroups.reduce((count, entry) => count + entry.projects.length, 0)
+      ? Math.max(1, pageSearchRowCount)
       : panelMode === "projects" && directProjectGroup
         ? projectsInGroup(directProjectGroup).length
         : visibleGroups.length;
@@ -586,6 +589,27 @@
     projectSearch = "";
   }
 
+  async function selectSearchedPage(page: NotesPage): Promise<void> {
+    await notes.selectPage(page.id, { openMode: "full" });
+    await onPageSelected();
+    projectSearch = "";
+  }
+
+  /** Searches after typing pauses; a query the index cannot run clears the results instead. */
+  $effect(() => {
+    const query = trimmedSearch;
+    if (!pageSearchQueryIsSearchable) {
+      searchedPageQuery = "";
+      void pageSearch.search("", pageSearchPageSize, false);
+      return;
+    }
+    const timer = setTimeout(() => {
+      searchedPageQuery = query;
+      void pageSearch.search(query, pageSearchPageSize, false);
+    }, pageSearchDebounceMs);
+    return () => clearTimeout(timer);
+  });
+
   async function submitGroup(): Promise<void> {
     const name = groupDraft.trim();
     if (!name) return;
@@ -632,7 +656,8 @@
     const hasActiveSearch = isSearchActive;
     const mode = panelMode;
     const groupCount = visibleGroups.length;
-    const resultCount = searchResultGroups.reduce((count, entry) => count + entry.projects.length, 0);
+    const resultCount = pageSearchRowCount;
+    const searchPending = pageSearchPending;
     const directProjectCount = directProjectGroup ? projectsInGroup(directProjectGroup).length : 0;
     const noteCount = activeProjectRootItems.length;
     const isCreatingGroup = isCreateGroupOpen;
@@ -642,6 +667,7 @@
     void mode;
     void groupCount;
     void resultCount;
+    void searchPending;
     void directProjectCount;
     void noteCount;
     void isCreatingGroup;
@@ -739,7 +765,8 @@
       <Search size={13} strokeWidth={iconStrokeWidth} class="shrink-0 text-popover-foreground/60" />
       <input
         bind:value={projectSearch}
-        placeholder={t("calendar.eventPanel.searchProjects")}
+        placeholder={t("notes.searchPlaceholder")}
+        aria-label={t("notes.searchLabel")}
         class="field-bare text-popover-foreground"
       />
       <SidebarOrderMenu
@@ -791,40 +818,51 @@
           <Loading layout="rows" rows={3} label={t("projects.loading")} />
         {:else if projects.loadError}
           <Notice class="px-3 py-2" message={t("projects.loadFailed", projects.loadError)} copy={projects.loadError} onRetry={() => projects.load()} />
-        {:else if isSearchActive && searchResultGroups.length === 0}
-          <div class="px-3 py-2 text-popover-foreground/60">
-            {t("calendar.eventPanel.noProjectsFound")}
-          </div>
-        {:else if isSearchActive}
+        {:else if isSearchActive && pageSearch.error}
+          <Notice class="px-3 py-2" message={t("notes.searchFailed", pageSearch.error)} copy={pageSearch.error} />
+        {:else if isSearchActive && pageSearchGroups.length > 0}
           <div class="grid px-1">
-            {#each searchResultGroups as resultGroup (resultGroup.group.id)}
+            {#each pageSearchGroups as resultGroup (resultGroup.project?.id ?? "")}
               <div class="px-1 pb-1">
                 <div class="menu-label">
-                  {resultGroup.group.name}
+                  {resultGroup.project?.name ?? t("notes.searchNoProject")}
                 </div>
                 <div class="grid">
-                  {#each resultGroup.projects as project (project.id)}
+                  {#each resultGroup.pages as page (page.id)}
                     <button
                       type="button"
                       class={cn(
-                        "menu-item",
-                        project.status === "active" ? "text-popover-foreground" : "text-popover-foreground/60",
+                        "menu-item text-popover-foreground",
+                        notes.selectedPageId === page.id && "font-medium",
                       )}
-                      aria-label={t("projects.actions.selectProject", project.name, resultGroup.group.name)}
-                      onclick={() => { void selectProject(project); }}
+                      aria-current={notes.selectedPageId === page.id ? "page" : undefined}
+                      onclick={() => { void selectSearchedPage(page); }}
                     >
-                      <StarredIconBadge starred={projects.isProjectStarred(project.id)}><ProjectIcon name={project.icon} size={iconSize} strokeWidth={iconStrokeWidth} emojiScale={emojiScale} /></StarredIconBadge>
-                      <span class="min-w-0 flex-1 truncate">{project.name}</span>
-                      {#if project.status !== "active"}
-                        <span class={cn("shrink-0 rounded border px-1.5 py-0.5 text-[0.666667rem]", projectLifecycleBadgeClass(project.status))}>
-                          {projectLifecycleLabel(project.status, t)}
-                        </span>
-                      {/if}
+                      <StarredIconBadge starred={notes.favoritePageIds.includes(page.id)}>
+                        {#if page.icon}
+                          <NotesPageIcon
+                            icon={page.icon}
+                            size={iconSize}
+                            strokeWidth={iconStrokeWidth}
+                            emojiScale={NOTES_PAGE_CHROME_EMOJI_SCALE}
+                            class="shrink-0"
+                          />
+                        {:else}
+                          <FileText size={iconSize} strokeWidth={iconStrokeWidth} class="shrink-0" />
+                        {/if}
+                      </StarredIconBadge>
+                      <span class="min-w-0 flex-1 truncate">{notesPageTitle(page, t("notes.untitled"))}</span>
                     </button>
                   {/each}
                 </div>
               </div>
             {/each}
+          </div>
+        {:else if isSearchActive && pageSearchPending}
+          <Loading layout="rows" rows={3} label={t("notes.searching")} />
+        {:else if isSearchActive}
+          <div class="px-3 py-2 text-popover-foreground/60">
+            {t("notes.noSearchResults")}
           </div>
         {:else if panelMode === "groups"}
           {#if visibleGroups.length === 0}

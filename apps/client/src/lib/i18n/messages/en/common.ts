@@ -37,6 +37,8 @@ export const common = {
   useGlobalSetting: "Use global setting",
   addToFavorites: "Add to favorites",
   removeFromFavorites: "Remove from favorites",
+  moveUp: "Move up",
+  moveDown: "Move down",
   sortOrder: {
     nameAscending: "Name (A to Z)",
     nameDescending: "Name (Z to A)",

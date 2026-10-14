@@ -53,6 +53,8 @@ fn mobile_runtime_registers_portable_core_commands() {
         "profile_images::profile_image_asset_data_url",
         "profile_images::profile_image_save_data_url",
         "projects::icons::projects_icon_asset_data_url",
+        "projects::structure_commands::projects_reorder_groups",
+        "projects::structure_commands::projects_reorder_group_projects",
         "vault::vault_pick_and_read_theme_json",
         "vault::vault_pick_and_write_theme_json",
         "vault::backup::vault_backup_to_downloads",

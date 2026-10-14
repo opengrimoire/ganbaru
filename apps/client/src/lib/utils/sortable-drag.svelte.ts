@@ -8,6 +8,7 @@ import {
   sortableDragTarget,
   type SortableSlot,
 } from "./sortable-drag";
+import { suppressClickAfterRelease } from "./click-suppression";
 
 /** Class on the document root while an item is dragged, so the cursor and text selection hold across the page. */
 const DRAGGING_ROOT_CLASS = "sortable-dragging";
@@ -201,7 +202,10 @@ export function createSortableDrag(options: SortableDragOptions) {
 
   function handlePointerUp(event: PointerEvent): void {
     if (active) {
-      if (event.pointerId === active.pointerId) settle(active, target);
+      if (event.pointerId === active.pointerId) {
+        suppressClickAfterRelease();
+        settle(active, target);
+      }
       return;
     }
     if (pending && event.pointerId === pending.pointerId) endPress();

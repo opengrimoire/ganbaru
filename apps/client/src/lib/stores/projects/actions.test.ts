@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { applyProjectDependencyCascade, type ProjectDependencyCascadePreview } from "$lib/api/project-cascade";
-import { applyProjectTaskBulk, createProjectCustomField, createProjectPriority, createProjectStatus, createProjectTag, deleteProjectCustomField, linkProjectTaskEvent, reorderProjectItem, updateProject, updateProjectTask } from "$lib/api/projects";
+import { applyProjectTaskBulk, createProjectCustomField, createProjectPriority, createProjectStatus, createProjectTag, deleteProjectCustomField, linkProjectTaskEvent, reorderGroupProjects, reorderProjectGroups, reorderProjectItem, updateProject, updateProjectTask } from "$lib/api/projects";
 import { createProjectStoreActions } from "./actions";
 import { createProjectStoreSelectors } from "./selectors";
 import actionSource from "./actions.ts?raw";
@@ -21,6 +21,8 @@ vi.mock("$lib/api/projects", async (importOriginal) => ({
   applyProjectTaskBulk: vi.fn(),
   createProjectCustomField: vi.fn(),
   reorderProjectItem: vi.fn(),
+  reorderProjectGroups: vi.fn(),
+  reorderGroupProjects: vi.fn(),
   deleteProjectCustomField: vi.fn(),
   linkProjectTaskEvent: vi.fn(),
   createProjectStatus: vi.fn(),
@@ -407,5 +409,42 @@ describe("project identity and lifecycle actions", () => {
     expect(updateProject).not.toHaveBeenCalled();
     await actions.setProjectStatus(sleep, "hidden");
     expect(vi.mocked(updateProject).mock.calls[0]?.[0]).toMatchObject({ id: "project-routine-sleep", status: "hidden", name: "Sleep" });
+  });
+
+  it("writes a reordered subset of groups into the full custom order before the backend answers", async () => {
+    const { actions, readSnapshot } = setup([]);
+    const answer = deferred<ProjectMutation>();
+    vi.mocked(reorderProjectGroups).mockReturnValue(answer.promise);
+    const pending = actions.reorderGroups(["home", "work"]);
+    expect(reorderProjectGroups).toHaveBeenCalledExactlyOnceWith(["home", "work", "archive"]);
+    expect(readSnapshot().groups.map((entry) => [entry.id, entry.sortOrder])).toEqual([["work", 2000], ["home", 1000], ["archive", 3000]]);
+    expect(readSnapshot().groups[0]?.updatedAt).toBe(dates.updatedAt);
+    answer.resolve({ changed: emptySnapshot(), removals: [], calendarEventProjectAssignments: [] });
+    await pending;
+  });
+
+  it("restores the group order when the backend refuses it", async () => {
+    const { actions, readSnapshot } = setup([]);
+    vi.mocked(reorderProjectGroups).mockRejectedValue(new Error("refused"));
+    await expect(actions.reorderGroups(["home", "work"])).rejects.toThrow("refused");
+    expect(readSnapshot().groups.map((entry) => entry.sortOrder)).toEqual([1000, 2000, 3000]);
+  });
+
+  it("reorders the listed projects of one group around its hidden ones and restores them on failure", async () => {
+    const { actions, readSnapshot } = setup([
+      project({ id: "a", sortOrder: 1000 }),
+      project({ id: "hidden", sortOrder: 2000, status: "hidden" }),
+      project({ id: "b", sortOrder: 3000 }),
+      project({ id: "elsewhere", groupId: "home", sortOrder: 500 }),
+    ]);
+    vi.mocked(reorderGroupProjects).mockResolvedValueOnce({ changed: emptySnapshot(), removals: [], calendarEventProjectAssignments: [] });
+    await actions.reorderProjectsInGroup("work", ["b", "a"]);
+    expect(reorderGroupProjects).toHaveBeenCalledExactlyOnceWith("work", ["b", "hidden", "a"]);
+    const orders = () => Object.fromEntries(readSnapshot().projects.map((entry) => [entry.id, entry.sortOrder]));
+    expect(orders()).toEqual({ a: 3000, hidden: 2000, b: 1000, elsewhere: 500 });
+
+    vi.mocked(reorderGroupProjects).mockRejectedValueOnce(new Error("refused"));
+    await expect(actions.reorderProjectsInGroup("work", ["a", "b"])).rejects.toThrow("refused");
+    expect(orders()).toEqual({ a: 3000, hidden: 2000, b: 1000, elsewhere: 500 });
   });
 });

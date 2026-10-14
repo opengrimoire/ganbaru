@@ -640,6 +640,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             projects::structure_commands::projects_update_group,
             projects::structure_commands::projects_delete_group,
             projects::structure_commands::projects_set_group_collapsed,
+            projects::structure_commands::projects_reorder_groups,
+            projects::structure_commands::projects_reorder_group_projects,
             projects::project_commands::projects_create_project,
             projects::project_commands::projects_update_project,
             projects::project_commands::projects_update_notes_settings,

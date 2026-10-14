@@ -52,6 +52,7 @@
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { cn, type MaybePromise } from "$lib/utils";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
+  import { createSidebarOrderDrag } from "$lib/utils/sidebar-order-drag.svelte";
   import type { ProjectNavigatorPanelMode } from "$lib/projects/toolbar";
   import ProjectIcon from "$lib/components/projects/ProjectIcon.svelte";
 
@@ -220,6 +221,44 @@
   const projectRowsHaveChildren = $derived(
     showProjectChildren || (mobileLayout && onProjectDrilldown !== undefined),
   );
+
+  const customOrder = $derived(preferences.projectsSidebarOrder === "custom");
+  /** Groups drag by their row in the custom order. */
+  const groupDrag = createSidebarOrderDrag({
+    getIds: () => visibleGroups.map((group) => group.id),
+    enabled: () => customOrder && !searchActive,
+    save: (orderedIds) => projects.reorderGroups(orderedIds),
+    description: "project groups from the project picker",
+  });
+  /** Projects drag by their row in the custom order, in the main panel or the open group subpanel. */
+  const projectDrag = createSidebarOrderDrag({
+    getIds: () => projectDragGroup ? projectsInGroup(projectDragGroup).map((project) => project.id) : [],
+    enabled: () => customOrder && !searchActive && projectDragGroup !== undefined,
+    isStarred: (projectId) => projects.isProjectStarred(projectId),
+    save: async (orderedIds) => {
+      if (projectDragGroup) await projects.reorderProjectsInGroup(projectDragGroup.id, orderedIds);
+    },
+    description: "projects from the project picker",
+  });
+  const projectDragGroup = $derived(mode === "groups" && !mobileLayout ? activeGroup : mainProjectGroup);
+  $effect(() => groupDrag.reset);
+  $effect(() => projectDrag.reset);
+
+  /** A lifted group or project closes the panels it would otherwise open while passing over rows. */
+  $effect(() => {
+    const groupLifted = groupDrag.draggedId !== null;
+    const projectLifted = projectDrag.draggedId !== null;
+    if (!groupLifted && !projectLifted) return;
+    untrack(() => {
+      projectPreviewDelay.cancel();
+      onProjectPreviewClose?.();
+      if (groupLifted) closeProjectSubpanel();
+    });
+  });
+
+  function rowDragActive(): boolean {
+    return groupDrag.draggedId !== null || projectDrag.draggedId !== null;
+  }
 
   function projectsInGroup(group: ProjectGroup): Project[] {
     const groupProjects = showInactiveProjects
@@ -459,7 +498,7 @@
   }
 
   function handleGroupPointerEnter(group: ProjectGroup, event: PointerEvent): void {
-    if (mobileLayout) return;
+    if (mobileLayout || rowDragActive()) return;
     if (activeGroupId === group.id) {
       groupSubpanelDelay.cancel();
       return;
@@ -468,7 +507,7 @@
   }
 
   function handleGroupPointerMove(group: ProjectGroup, event: PointerEvent): void {
-    if (mobileLayout || activeGroupId === group.id) return;
+    if (mobileLayout || rowDragActive() || activeGroupId === group.id) return;
     hoverGroup(group, event);
   }
 
@@ -513,6 +552,7 @@
   }
 
   function handleProjectPointerEnter(project: Project, event: PointerEvent): void {
+    if (rowDragActive()) return;
     if (activeProjectId === project.id) {
       projectPreviewDelay.cancel();
       return;
@@ -521,7 +561,7 @@
   }
 
   function handleProjectPointerMove(project: Project, event: PointerEvent): void {
-    if (activeProjectId === project.id) return;
+    if (rowDragActive() || activeProjectId === project.id) return;
     hoverProject(project, event);
   }
 
@@ -913,10 +953,11 @@
           {:else}
             <div class={mobileLayout ? "grid px-1" : "grid pl-1"}>
               {#each visibleGroups as group (group.id)}
-                <div class={mobileLayout ? "px-1" : "pl-1 pr-1"}>
+                <div class={mobileLayout ? "px-1" : "pl-1 pr-1"} {@attach groupDrag.item(group.id)}>
                   <button
                     type="button"
                     data-mobile-project-group-id={mobileLayout ? group.id : undefined}
+                    onpointerdown={(event) => groupDrag.pointerDown(event, group.id)}
                     class={cn(
                       "menu-item grid gap-2",
                       mobileLayout
@@ -951,9 +992,10 @@
         {:else}
           <div class="grid px-1">
             {#each mainProjects as project (project.id)}
-              <div class="px-1">
+              <div class="px-1" {@attach projectDrag.item(project.id)}>
                 <button
                   type="button"
+                  onpointerdown={(event) => projectDrag.pointerDown(event, project.id)}
                   class={cn(
                     "menu-item gap-2",
                     mobileLayout && "min-h-12 px-3 text-sm",
@@ -1176,6 +1218,8 @@
               {#each activeGroupProjects as project (project.id)}
                 <button
                   type="button"
+                  {@attach projectDrag.item(project.id)}
+                  onpointerdown={(event) => projectDrag.pointerDown(event, project.id)}
                   class={cn(
                     "menu-item gap-2",
                     showProjectChildren

@@ -2,6 +2,8 @@
   import { tick } from "svelte";
   import Archive from "@lucide/svelte/icons/archive";
   import ArchiveRestore from "@lucide/svelte/icons/archive-restore";
+  import ArrowDown from "@lucide/svelte/icons/arrow-down";
+  import ArrowUp from "@lucide/svelte/icons/arrow-up";
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import EllipsisVertical from "@lucide/svelte/icons/ellipsis-vertical";
@@ -59,6 +61,10 @@
     onMoveToGroup,
     onSetStatus,
     onOpenSettings = undefined,
+    onHeadingPointerDown = undefined,
+    onMove = undefined,
+    canMoveUp = false,
+    canMoveDown = false,
   }: {
     project: Project;
     selected: boolean;
@@ -80,6 +86,12 @@
     onSetStatus: (status: ProjectLifecycleStatus) => Promise<void>;
     /** Opens the project's settings; the item is left out where no settings panel exists. */
     onOpenSettings?: () => void;
+    /** Starts dragging the section from its heading, while the custom sidebar order is in effect. */
+    onHeadingPointerDown?: (event: PointerEvent) => void;
+    /** Moves the project one place in the custom sidebar order; the menu leaves the move items out without it. */
+    onMove?: (step: -1 | 1) => void;
+    canMoveUp?: boolean;
+    canMoveDown?: boolean;
   } = $props();
 
   const projects = getProjects();
@@ -273,6 +285,7 @@
         aria-expanded={!collapsed}
         onclick={() => onCollapsedChange(!collapsed)}
         oncontextmenu={openContextMenu}
+        onpointerdown={onHeadingPointerDown}
       >
         <StarredIconBadge {starred}>
           <ProjectIcon
@@ -457,6 +470,36 @@
             </button>
           {/each}
         </div>
+      {/if}
+      {#if onMove}
+        <button
+          type="button"
+          role="menuitem"
+          class="menu-item"
+          aria-disabled={canMoveUp ? undefined : "true"}
+          onclick={() => {
+            if (!canMoveUp) return;
+            closeMenu();
+            onMove?.(-1);
+          }}
+        >
+          <ArrowUp />
+          <span>{t("common.moveUp")}</span>
+        </button>
+        <button
+          type="button"
+          role="menuitem"
+          class="menu-item"
+          aria-disabled={canMoveDown ? undefined : "true"}
+          onclick={() => {
+            if (!canMoveDown) return;
+            closeMenu();
+            onMove?.(1);
+          }}
+        >
+          <ArrowDown />
+          <span>{t("common.moveDown")}</span>
+        </button>
       {/if}
       <button
         type="button"

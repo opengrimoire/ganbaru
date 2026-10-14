@@ -1000,6 +1000,18 @@ export async function setProjectGroupCollapsed(
   return invokeProjectMutation("projects_set_group_collapsed", { dbUrl, groupId, collapsed });
 }
 
+/** Replace the custom sidebar order of every project group; `groupIds` must list each group exactly once. */
+export async function reorderProjectGroups(groupIds: readonly string[]): Promise<ProjectMutation> {
+  const dbUrl = await ensureDbUrl();
+  return invokeProjectMutation("projects_reorder_groups", { dbUrl, reorder: { groupIds } });
+}
+
+/** Replace the custom sidebar order of a group's projects; `projectIds` must list each project of the group, including hidden and archived ones, exactly once. */
+export async function reorderGroupProjects(groupId: string, projectIds: readonly string[]): Promise<ProjectMutation> {
+  const dbUrl = await ensureDbUrl();
+  return invokeProjectMutation("projects_reorder_group_projects", { dbUrl, reorder: { groupId, projectIds } });
+}
+
 export async function createProject(project: ProjectCreate): Promise<ProjectMutation> {
   const dbUrl = await ensureDbUrl();
   return invokeProjectMutation("projects_create_project", { dbUrl, project });

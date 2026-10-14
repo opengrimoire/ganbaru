@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { flushSync, mount, tick, unmount } from "svelte";
+import { flushSync, mount, tick, unmount, type ComponentProps } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import SidebarOrderMenu from "./SidebarOrderMenu.svelte";
 
@@ -16,7 +16,7 @@ describe("SidebarOrderMenu", () => {
     vi.restoreAllMocks();
   });
 
-  async function open(props: Record<string, unknown>): Promise<HTMLButtonElement> {
+  async function open(props: Omit<ComponentProps<typeof SidebarOrderMenu>, "label">): Promise<HTMLButtonElement> {
     target = document.createElement("div");
     document.body.append(target);
     component = mount(SidebarOrderMenu, { target, props: { label: "Sort", ...props } });

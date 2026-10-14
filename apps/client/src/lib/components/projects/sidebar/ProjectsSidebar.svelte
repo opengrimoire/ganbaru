@@ -6,7 +6,9 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { projectSidebarActions, resolveProjectSidebarGroupId, searchProjectSidebar } from "$lib/projects/sidebar";
   import type { Project, ProjectView } from "$lib/projects/types";
+  import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
+  import { createSidebarOrderDrag } from "$lib/utils/sidebar-order-drag.svelte";
   import { suppressHoverOnToggle } from "$lib/utils/hover-suppression";
   import { scrollOverflowAction } from "$lib/utils/scroll-overflow";
   import ProjectSidebarSection from "./ProjectSidebarSection.svelte";
@@ -33,6 +35,7 @@
   } = $props();
 
   const projects = getProjects();
+  const preferences = getPreferences();
   const { t } = getLocalization();
 
   const collapsed = $derived(projects.sidebarCollapsed);
@@ -59,6 +62,19 @@
     ? new Map(searchResults.map((result) => [result.project.id, result.groupName]))
     : null);
   const selectedProjectViews = $derived(projects.viewsForProject(projects.selectedProjectId));
+
+  /** Sections drag from their heading in the custom order, except in search results, which span groups. */
+  const sectionDrag = createSidebarOrderDrag({
+    getIds: () => listedProjects.map((project) => project.id),
+    enabled: () => preferences.projectsSidebarOrder === "custom" && !searching && listedGroupId !== null,
+    isStarred: (projectId) => projects.isProjectStarred(projectId),
+    save: async (orderedIds) => {
+      if (listedGroupId) await projects.reorderProjectsInGroup(listedGroupId, orderedIds);
+    },
+    description: "projects from the Projects sidebar",
+  });
+
+  $effect(() => sectionDrag.reset);
 
   function groupProjects(groupId: string): Project[] {
     return projects.showInactiveProjects
@@ -146,22 +162,28 @@
       <nav use:scrollOverflowAction class="explorer-list flex min-h-0 flex-1 flex-col gap-2 pb-2" aria-label={t("projects.sidebar.projects")} data-project-list>
         {#each listedProjects as project (project.id)}
           {@const actions = projectSidebarActions(project, groupIds)}
-          <ProjectSidebarSection
-            {project}
-            selected={project.id === projects.selectedProjectId}
-            groupName={resultGroupNames?.get(project.id) ?? null}
-            {actions}
-            moveGroups={actions.moveGroupIds.flatMap((groupId) => groups.find((group) => group.id === groupId) ?? [])}
-            views={projects.viewsForProject(project.id)}
-            activeViewId={projects.activeViewId}
-            collapsed={projects.isSidebarProjectCollapsed(project.id)}
-            onCollapsedChange={(value) => projects.setSidebarProjectCollapsed(project.id, value)}
-            onSelectView={(view) => void openView(view)}
-            onRename={(name) => projects.renameProject(project, name)}
-            onMoveToGroup={(groupId) => projects.moveProjectToGroup(project, groupId)}
-            onSetStatus={(status) => projects.setProjectStatus(project, status)}
-            onOpenSettings={onOpenProjectSettings ? () => onOpenProjectSettings?.(project) : undefined}
-          />
+          <div {@attach sectionDrag.item(project.id)}>
+            <ProjectSidebarSection
+              {project}
+              selected={project.id === projects.selectedProjectId}
+              groupName={resultGroupNames?.get(project.id) ?? null}
+              {actions}
+              moveGroups={actions.moveGroupIds.flatMap((groupId) => groups.find((group) => group.id === groupId) ?? [])}
+              views={projects.viewsForProject(project.id)}
+              activeViewId={projects.activeViewId}
+              collapsed={projects.isSidebarProjectCollapsed(project.id)}
+              onCollapsedChange={(value) => projects.setSidebarProjectCollapsed(project.id, value)}
+              onSelectView={(view) => void openView(view)}
+              onRename={(name) => projects.renameProject(project, name)}
+              onMoveToGroup={(groupId) => projects.moveProjectToGroup(project, groupId)}
+              onSetStatus={(status) => projects.setProjectStatus(project, status)}
+              onOpenSettings={onOpenProjectSettings ? () => onOpenProjectSettings?.(project) : undefined}
+              onHeadingPointerDown={(event) => sectionDrag.pointerDown(event, project.id)}
+              onMove={sectionDrag.enabled ? (step) => sectionDrag.move(project.id, step) : undefined}
+              canMoveUp={sectionDrag.canMove(project.id, -1)}
+              canMoveDown={sectionDrag.canMove(project.id, 1)}
+            />
+          </div>
         {:else}
           <p class="explorer-row-label px-2 py-1 text-muted-foreground">
             {searching ? t("projects.sidebar.noResults") : t("projects.navigator.empty")}

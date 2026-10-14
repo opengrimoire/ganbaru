@@ -10,6 +10,7 @@ import {
   type ProjectViewDragFrame,
   type ProjectViewDragRange,
 } from "$lib/projects/view-drag";
+import { suppressClickAfterRelease } from "$lib/utils/click-suppression";
 
 /** Class on the document root while a view drag is active, so the cursor and text selection hold across the page. */
 const DRAGGING_ROOT_CLASS = "project-view-dragging";
@@ -59,17 +60,6 @@ function clamp(value: number, min: number, max: number): number {
 
 function prefersReducedMotion(): boolean {
   return typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-}
-
-function swallowClick(event: MouseEvent): void {
-  event.preventDefault();
-  event.stopPropagation();
-}
-
-/** Keep the click that follows a pointer release from opening the view that was just dragged. */
-function suppressClickAfterRelease(): void {
-  window.addEventListener("click", swallowClick, { capture: true, once: true });
-  window.setTimeout(() => window.removeEventListener("click", swallowClick, { capture: true }), 0);
 }
 
 /**

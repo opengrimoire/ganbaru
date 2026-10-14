@@ -160,7 +160,7 @@ function sortedForSidebar<T extends Project | ProjectGroup>(items: readonly T[],
   return sortSidebarItems(
     items,
     getPreferences().projectsSidebarOrder,
-    (item) => ({ id: item.id, name: item.name, createdAt: item.createdAt, modifiedAt: item.updatedAt }),
+    (item) => ({ id: item.id, name: item.name, createdAt: item.createdAt, modifiedAt: item.updatedAt, rank: item.sortOrder }),
     starred,
   );
 }

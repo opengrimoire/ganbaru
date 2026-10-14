@@ -1129,6 +1129,21 @@ pub struct ProjectViewReorder {
     pub(crate) view_ids: Vec<String>,
 }
 
+/// The complete new order of every project group.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectGroupReorder {
+    pub(crate) group_ids: Vec<String>,
+}
+
+/// The complete new order of the projects in one group.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupProjectReorder {
+    pub(crate) group_id: String,
+    pub(crate) project_ids: Vec<String>,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectCustomEmojiCreate {

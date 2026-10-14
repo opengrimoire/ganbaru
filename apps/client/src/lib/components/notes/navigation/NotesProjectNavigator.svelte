@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick } from "svelte";
+  import { tick, untrack } from "svelte";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import Eye from "@lucide/svelte/icons/eye";
   import EyeOff from "@lucide/svelte/icons/eye-off";
@@ -48,6 +48,7 @@
   import SidebarOrderMenu from "$lib/components/ui/SidebarOrderMenu.svelte";
   import StarredIconBadge from "$lib/components/ui/StarredIconBadge.svelte";
   import { cn, type MaybePromise } from "$lib/utils";
+  import { createSidebarOrderDrag } from "$lib/utils/sidebar-order-drag.svelte";
   import ProjectIcon from "$lib/components/projects/ProjectIcon.svelte";
   import NotesHierarchyPickerPanel from "./NotesHierarchyPickerPanel.svelte";
 
@@ -161,6 +162,43 @@
     t("notes.untitled"),
     notes.sidebarPageIdsWithChildren,
   ));
+
+  const customOrder = $derived(preferences.projectsSidebarOrder === "custom");
+  const projectDragGroup = $derived(panelMode === "groups" ? activeGroup : directProjectGroup);
+  /** Groups drag by their row in the custom order. */
+  const groupDrag = createSidebarOrderDrag({
+    getIds: () => visibleGroups.map((group) => group.id),
+    enabled: () => customOrder && !isSearchActive,
+    save: (orderedIds) => projects.reorderGroups(orderedIds),
+    description: "project groups from the Notes project navigator",
+  });
+  /** Projects drag by their row in the custom order, in the main panel or the open group subpanel. */
+  const projectDrag = createSidebarOrderDrag({
+    getIds: () => projectDragGroup ? projectsInGroup(projectDragGroup).map((project) => project.id) : [],
+    enabled: () => customOrder && !isSearchActive && projectDragGroup !== undefined,
+    isStarred: (projectId) => projects.isProjectStarred(projectId),
+    save: async (orderedIds) => {
+      if (projectDragGroup) await projects.reorderProjectsInGroup(projectDragGroup.id, orderedIds);
+    },
+    description: "projects from the Notes project navigator",
+  });
+  $effect(() => groupDrag.reset);
+  $effect(() => projectDrag.reset);
+
+  /** A lifted group or project closes the panels it would otherwise open while passing over rows. */
+  $effect(() => {
+    const groupLifted = groupDrag.draggedId !== null;
+    const projectLifted = projectDrag.draggedId !== null;
+    if (!groupLifted && !projectLifted) return;
+    untrack(() => {
+      if (groupLifted) closeProjectSubpanel();
+      else closeNoteSubpanel();
+    });
+  });
+
+  function rowDragActive(): boolean {
+    return groupDrag.draggedId !== null || projectDrag.draggedId !== null;
+  }
 
   function projectsInGroup(group: ProjectGroup): Project[] {
     const groupProjects = showInactiveProjects
@@ -471,6 +509,7 @@
   }
 
   function handleGroupPointerEnter(group: ProjectGroup, event: PointerEvent): void {
+    if (rowDragActive()) return;
     if (activeGroupId === group.id) {
       projectSubpanelDelay.cancel();
       return;
@@ -479,7 +518,7 @@
   }
 
   function handleGroupPointerMove(group: ProjectGroup, event: PointerEvent): void {
-    if (activeGroupId === group.id) return;
+    if (rowDragActive() || activeGroupId === group.id) return;
     hoverGroup(group, event);
   }
 
@@ -488,6 +527,7 @@
     event: PointerEvent,
     sourcePanelElement: HTMLDivElement | null | undefined,
   ): void {
+    if (rowDragActive()) return;
     if (activeProjectId === project.id) {
       noteSubpanelDelay.cancel();
       return;
@@ -500,7 +540,7 @@
     event: PointerEvent,
     sourcePanelElement: HTMLDivElement | null | undefined,
   ): void {
-    if (activeProjectId === project.id) return;
+    if (rowDragActive() || activeProjectId === project.id) return;
     hoverProject(project, event, sourcePanelElement);
   }
 
@@ -669,6 +709,7 @@
     )}
     aria-expanded={activeProjectId === project.id}
     aria-label={t("projects.actions.selectProject", project.name, group.name)}
+    onpointerdown={(event) => projectDrag.pointerDown(event, project.id)}
     onpointerenter={(event) => handleProjectPointerEnter(project, event, sourcePanelElement)}
     onpointermove={(event) => handleProjectPointerMove(project, event, sourcePanelElement)}
     onpointerleave={handleNoteSubpanelBoundaryLeave}
@@ -793,10 +834,11 @@
           {:else}
             <div class="grid pl-1">
               {#each visibleGroups as group (group.id)}
-                <div class="pl-1 pr-1">
+                <div class="pl-1 pr-1" {@attach groupDrag.item(group.id)}>
                   <button
                     type="button"
                     class="menu-item grid grid-cols-[1.25rem_minmax(0,1fr)_1rem] text-popover-foreground"
+                    onpointerdown={(event) => groupDrag.pointerDown(event, group.id)}
                     aria-expanded={activeGroupId === group.id}
                     onpointerenter={(event) => handleGroupPointerEnter(group, event)}
                     onpointermove={(event) => handleGroupPointerMove(group, event)}
@@ -823,7 +865,7 @@
         {:else}
           <div class="grid px-1">
             {#each directProjects as project (project.id)}
-              <div class="px-1">
+              <div class="px-1" {@attach projectDrag.item(project.id)}>
                 {@render projectRow(project, directProjectGroup, panelRootElement)}
               </div>
             {/each}
@@ -961,7 +1003,9 @@
           {:else}
             <div class="grid">
               {#each activeGroupProjects as project (project.id)}
-                {@render projectRow(project, activeGroup, projectSubpanelElement)}
+                <div {@attach projectDrag.item(project.id)}>
+                  {@render projectRow(project, activeGroup, projectSubpanelElement)}
+                </div>
               {/each}
             </div>
           {/if}

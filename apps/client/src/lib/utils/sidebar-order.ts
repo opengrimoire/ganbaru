@@ -192,3 +192,9 @@ export function parseCustomOrders(value: unknown): Record<string, string[]> {
   }
   return orders;
 }
+
+/** The ids among `ids` that share the starred state of `id`, since starred items stay ahead and only move among themselves. */
+export function sameStarredSiblings(ids: readonly string[], id: string, starred: (id: string) => boolean): string[] {
+  const idStarred = starred(id);
+  return ids.filter((other) => starred(other) === idStarred);
+}

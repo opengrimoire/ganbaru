@@ -40,6 +40,8 @@ export const common = {
   useGlobalSetting: "Usar ajuste global",
   addToFavorites: "Agregar a favoritos",
   removeFromFavorites: "Quitar de favoritos",
+  moveUp: "Mover arriba",
+  moveDown: "Mover abajo",
   sortOrder: {
     nameAscending: "Nombre (A a Z)",
     nameDescending: "Nombre (Z a A)",

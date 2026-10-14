@@ -9,6 +9,7 @@ import {
   parseSidebarSortOrderOverrides,
   parseStarredIds,
   resolveSidebarSortOrder,
+  sameStarredSiblings,
   SIDEBAR_SORT_ORDERS,
   sortSidebarItems,
   starredFirst,
@@ -117,5 +118,12 @@ describe("sidebar order", () => {
   it("parses stored custom orders defensively", () => {
     expect(parseCustomOrders({ one: ["a", "a", "b"], two: [], three: "a", " ": ["c"] })).toEqual({ one: ["a", "b"] });
     expect(parseCustomOrders(["a"])).toEqual({});
+  });
+
+  it("lists only the siblings that share an item's starred state", () => {
+    const starred = (id: string) => id === "a" || id === "c";
+    expect(sameStarredSiblings(["a", "b", "c", "d"], "c", starred)).toEqual(["a", "c"]);
+    expect(sameStarredSiblings(["a", "b", "c", "d"], "d", starred)).toEqual(["b", "d"]);
+    expect(sameStarredSiblings(["a", "b"], "b", () => false)).toEqual(["a", "b"]);
   });
 });

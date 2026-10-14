@@ -32,6 +32,8 @@ import {
   renameProjectView,
   reorderProjectViews,
   searchProjectLinkableEvents,
+  reorderGroupProjects,
+  reorderProjectGroups,
   setProjectGroupCollapsed,
   unlinkProjectTaskEvent,
   unlinkProjectTaskTag,
@@ -62,6 +64,7 @@ import {
   type ProjectTaskListColumnWidths,
 } from "$lib/projects/list/view";
 import { normalizeProjectName } from "$lib/projects/text";
+import { mergeReorderedSubset, sortSidebarItems } from "$lib/utils/sidebar-order";
 import { projectHasLockedSystemIdentity } from "$lib/projects/system-defaults";
 import { PROJECT_LIST_PRESENTATION_KEY, type ProjectListPresentation } from "$lib/projects/list/presentation";
 import { PROJECT_VIEW_QUERY_PREFERENCE_KEY, serializeProjectViewQuery, type ProjectViewQuery } from "$lib/projects/view-query";
@@ -129,6 +132,27 @@ export interface ProjectStoreActionContext {
   reload: (projectId?: string | null) => Promise<void>;
   ensureProjectData: (projectId: string | null | undefined) => Promise<void>;
   ensureTaskDetailData: (projectId: string, taskId: string) => Promise<void>;
+}
+
+/** Spacing between custom sidebar ranks, matching the backend reorder commands. */
+const SIDEBAR_ORDER_SPACING = 1000;
+
+/** Ids of `items` in their current custom sidebar order. */
+function customOrderIds(items: readonly (Project | ProjectGroup)[]): string[] {
+  return sortSidebarItems(
+    items,
+    "custom",
+    (item) => ({ id: item.id, name: item.name, createdAt: item.createdAt, modifiedAt: item.updatedAt, rank: item.sortOrder }),
+  ).map((item) => item.id);
+}
+
+/** The rank the backend stores for each id of a complete custom order. */
+function sidebarSortOrders(ids: readonly string[]): Map<string, number> {
+  return new Map(ids.map((id, index) => [id, (index + 1) * SIDEBAR_ORDER_SPACING]));
+}
+
+function withSortOrder<T extends { sortOrder: number }>(item: T, sortOrder: number | undefined): T {
+  return sortOrder === undefined || sortOrder === item.sortOrder ? item : { ...item, sortOrder };
 }
 
 /**
@@ -268,6 +292,54 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
 
   async function setGroupCollapsed(groupId: string, collapsed: boolean): Promise<void> {
     await commitMutation(`group:${groupId}`, () => setProjectGroupCollapsed(groupId, collapsed));
+  }
+
+  /**
+   * Apply a custom sidebar order to project groups optimistically, restoring the previous order when the backend
+   * refuses it. `orderedIds` may list only some groups, such as the visible ones; the rest keep their slots.
+   */
+  async function reorderGroups(orderedIds: readonly string[]): Promise<void> {
+    const previous = readSnapshot().groups;
+    const groupIds = mergeReorderedSubset(customOrderIds(previous), orderedIds);
+    const orders = sidebarSortOrders(groupIds);
+    updateSnapshot((current) => ({
+      ...current,
+      groups: current.groups.map((group) => withSortOrder(group, orders.get(group.id))),
+    }));
+    try {
+      await commitMutation("group-order", () => reorderProjectGroups(groupIds));
+    } catch (error: unknown) {
+      const restored = new Map(previous.map((group) => [group.id, group.sortOrder]));
+      updateSnapshot((current) => ({
+        ...current,
+        groups: current.groups.map((group) => withSortOrder(group, restored.get(group.id))),
+      }));
+      throw error;
+    }
+  }
+
+  /**
+   * Apply a custom sidebar order to the projects of a group optimistically, restoring the previous order when the
+   * backend refuses it. `orderedIds` may list only some of them, such as the active ones; the rest keep their slots.
+   */
+  async function reorderProjectsInGroup(groupId: string, orderedIds: readonly string[]): Promise<void> {
+    const previous = readSnapshot().projects.filter((project) => project.groupId === groupId);
+    const projectIds = mergeReorderedSubset(customOrderIds(previous), orderedIds);
+    const orders = sidebarSortOrders(projectIds);
+    updateSnapshot((current) => ({
+      ...current,
+      projects: current.projects.map((project) => withSortOrder(project, orders.get(project.id))),
+    }));
+    try {
+      await commitMutation(`project-order:${groupId}`, () => reorderGroupProjects(groupId, projectIds));
+    } catch (error: unknown) {
+      const restored = new Map(previous.map((project) => [project.id, project.sortOrder]));
+      updateSnapshot((current) => ({
+        ...current,
+        projects: current.projects.map((project) => withSortOrder(project, restored.get(project.id))),
+      }));
+      throw error;
+    }
   }
 
   async function updateGroup(
@@ -1076,6 +1148,8 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     removeView,
     addGroup,
     setGroupCollapsed,
+    reorderGroups,
+    reorderProjectsInGroup,
     updateGroup,
     removeGroup,
     addProject,

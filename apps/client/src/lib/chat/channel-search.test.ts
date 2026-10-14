@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ChatChannelRead } from "$lib/chat/contracts";
-import { chatChannelMatchesSearch, chatChannelSearchGroups } from "./channel-search";
+import { chatChannelMatchesSearch, chatChannelPickerRows, chatChannelSearchGroups } from "./channel-search";
 
 function channel(id: string, projectId: string, name: string, topic = ""): ChatChannelRead {
   const timestamp = "2026-10-13T12:00:00.000Z";
@@ -68,5 +68,31 @@ describe("chatChannelMatchesSearch", () => {
 
   it("rejects a channel whose name and topic both miss", () => {
     expect(chatChannelMatchesSearch({ name: "general", topic: "Daily talk" }, "release")).toBe(false);
+  });
+});
+
+describe("chatChannelPickerRows", () => {
+  const active = [channel("a-general", "alpha", "general"), channel("a-release", "alpha", "release")];
+  const archived = [
+    { ...channel("a-old", "alpha", "old release"), archivedAt: "2026-10-01T00:00:00.000Z" },
+    { ...channel("a-release", "alpha", "release"), archivedAt: "2026-10-01T00:00:00.000Z" },
+  ];
+
+  it("leaves archived channels out until they are requested", () => {
+    expect(chatChannelPickerRows(active, archived, false, "")).toEqual({ active, archived: [] });
+  });
+
+  it("lists archived channels apart from active ones without repeating a restored channel", () => {
+    const rows = chatChannelPickerRows(active, archived, true, "");
+
+    expect(rows.active.map((entry) => entry.id)).toEqual(["a-general", "a-release"]);
+    expect(rows.archived.map((entry) => entry.id)).toEqual(["a-old"]);
+  });
+
+  it("applies the search to both lists", () => {
+    const rows = chatChannelPickerRows(active, archived, true, "release");
+
+    expect(rows.active.map((entry) => entry.id)).toEqual(["a-release"]);
+    expect(rows.archived.map((entry) => entry.id)).toEqual(["a-old"]);
   });
 });

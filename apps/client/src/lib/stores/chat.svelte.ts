@@ -196,6 +196,8 @@ class ChatStore {
   set channelsLoading(loading: boolean) { this.channelNavigationController.channelsLoading = loading; }
   get channelArchiveOpen(): boolean { return this.channelNavigationController.archiveOpen; }
   set channelArchiveOpen(open: boolean) { this.channelNavigationController.archiveOpen = open; }
+  get showArchivedChannelsInPickers(): boolean { return this.channelNavigationController.showArchivedInPickers; }
+  set showArchivedChannelsInPickers(show: boolean) { this.channelNavigationController.showArchivedInPickers = show; }
   get activeThreads(): ChatThreadShellRead[] { return this.threadCollectionController.activeThreads; }
   set activeThreads(threads: ChatThreadShellRead[]) { this.threadCollectionController.activeThreads = threads; }
   get archivedThreads(): ChatThreadShellRead[] { return this.threadCollectionController.archivedThreads; }
@@ -317,6 +319,14 @@ class ChatStore {
 
   channelsForProject(projectId: string): ChatChannelRead[] {
     return this.channelNavigationController.channelsForProject(projectId);
+  }
+
+  archivedChannelsForProject(projectId: string): ChatChannelRead[] {
+    return this.channelNavigationController.archivedChannelsForProject(projectId);
+  }
+
+  loadArchivedChannelsForPicker(projectId: string): Promise<void> {
+    return this.channelNavigationController.loadArchivedForPicker(projectId);
   }
 
   get selectedThread(): ChatThreadShellRead | null {
@@ -532,8 +542,7 @@ class ChatStore {
 
   async selectChannel(channelId: ChatChannelId): Promise<void> {
     const request = ++this.channelSelectionRequest;
-    const channel = [...this.activeChannels, ...this.archivedChannels]
-      .find((entry) => entry.id === channelId)
+    const channel = this.channelNavigationController.find(channelId)
       ?? await chatApi.readChatChannel(channelId);
     if (request !== this.channelSelectionRequest) return;
     this.channelNavigationController.upsert(channel);

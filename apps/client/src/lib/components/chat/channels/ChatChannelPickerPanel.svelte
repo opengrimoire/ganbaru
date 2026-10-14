@@ -1,14 +1,19 @@
 <script lang="ts">
+  import Archive from "@lucide/svelte/icons/archive";
   import ChevronLeft from "@lucide/svelte/icons/chevron-left";
+  import Eye from "@lucide/svelte/icons/eye";
+  import EyeOff from "@lucide/svelte/icons/eye-off";
   import Hash from "@lucide/svelte/icons/hash";
   import Plus from "@lucide/svelte/icons/plus";
   import Search from "@lucide/svelte/icons/search";
   import X from "@lucide/svelte/icons/x";
   import CalendarScrollbar from "$lib/components/calendar/CalendarScrollbar.svelte";
-  import { chatChannelMatchesSearch, normalizeChatChannelSearch } from "$lib/chat/channel-search";
+  import { chatChannelPickerRows, normalizeChatChannelSearch } from "$lib/chat/channel-search";
   import type { ChatChannelRead } from "$lib/chat/contracts";
   import StarredIconBadge from "$lib/components/ui/StarredIconBadge.svelte";
   import SidebarOrderMenu from "$lib/components/ui/SidebarOrderMenu.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
+  import { getChat } from "$lib/stores/chat.svelte";
   import { getChatSidebarOrder } from "$lib/stores/chat/sidebar-order.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
@@ -62,17 +67,38 @@
   } = $props();
 
   const { t } = getLocalization();
+  const chat = getChat();
   const mobileBackStack = getMobileBackStack();
   const chatSidebarOrder = getChatSidebarOrder();
   const iconSize = $derived(mobileLayout ? 18 : 13);
   let search = $state("");
   let scrollElement = $state<HTMLElement | undefined>();
   const normalizedSearch = $derived(showSearch ? normalizeChatChannelSearch(search) : "");
-  const visibleChannels = $derived(channels.filter((channel) => chatChannelMatchesSearch(channel, normalizedSearch)));
+  /** Every channel picker follows one eye state, so a hover subpanel lists archived channels like its parent. */
+  const showArchived = $derived(chat.showArchivedChannelsInPickers && orderProjectId !== null);
+  let archivedError = $state<string | null>(null);
+  const rows = $derived(chatChannelPickerRows(
+    channels,
+    orderProjectId ? chat.archivedChannelsForProject(orderProjectId) : [],
+    showArchived,
+    normalizedSearch,
+  ));
+  const rowCount = $derived(rows.active.length + rows.archived.length);
 
-  /** Channels drag by their row in the custom order of the project, outside search. */
+  $effect(() => {
+    const projectId = orderProjectId;
+    archivedError = null;
+    if (!showArchived || !projectId) return;
+    let cancelled = false;
+    chat.loadArchivedChannelsForPicker(projectId).catch((error: unknown) => {
+      if (!cancelled) archivedError = error instanceof Error ? error.message : String(error);
+    });
+    return () => { cancelled = true; };
+  });
+
+  /** Active channels drag by their row in the custom order of the project, outside search; archived ones keep no place. */
   const orderDrag = createSidebarOrderDrag({
-    getIds: () => visibleChannels.map((channel) => channel.id),
+    getIds: () => rows.active.map((channel) => channel.id),
     enabled: () => !mobileLayout && orderProjectId !== null && !normalizedSearch
       && chatSidebarOrder.orderForProject(orderProjectId) === "custom",
     isStarred: (channelId) => isChannelStarred(channelId),
@@ -92,7 +118,7 @@
   }
 
   $effect(() => {
-    void visibleChannels.length;
+    void rowCount;
     requestAnimationFrame(() => onLayoutChange?.());
   });
 
@@ -194,6 +220,25 @@
           menuZIndexClass="z-90"
           onSelect={(order) => chatSidebarOrder.setProjectOrder(projectId, order)}
         />
+        <button
+          type="button"
+          class={cn(
+            "flex shrink-0 items-center justify-center text-popover-foreground/60 hover:bg-accent hover:text-accent-foreground",
+            mobileLayout ? "h-12 w-12 rounded-xl" : "h-6 w-6 rounded",
+            chat.showArchivedChannelsInPickers && "bg-accent text-accent-foreground",
+          )}
+          aria-label={chat.showArchivedChannelsInPickers ? t("chat.channels.hideArchived") : t("chat.channels.showArchived")}
+          aria-pressed={chat.showArchivedChannelsInPickers}
+          title={chat.showArchivedChannelsInPickers ? t("chat.channels.hideArchived") : t("chat.channels.showArchived")}
+          data-chat-channel-archived-toggle
+          onclick={() => { chat.showArchivedChannelsInPickers = !chat.showArchivedChannelsInPickers; }}
+        >
+          {#if chat.showArchivedChannelsInPickers}
+            <EyeOff size={iconSize} strokeWidth={iconStrokeWidth} />
+          {:else}
+            <Eye size={iconSize} strokeWidth={iconStrokeWidth} />
+          {/if}
+        </button>
       {/if}
     </div>
     {/if}
@@ -202,13 +247,16 @@
 
   <div class="relative flex min-h-0 flex-auto flex-col">
     <div bind:this={scrollElement} use:scrollEdgeFadeAction class={cn("hide-scrollbar min-h-0 flex-auto overflow-y-auto", mobileLayout ? "overscroll-contain px-2 py-2" : "surface-floating-body")}>
-      {#if visibleChannels.length === 0}
+      {#if archivedError}
+        <Notice class="px-3 py-2" message={t("chat.channels.archivedLoadFailed", archivedError)} copy={archivedError} />
+      {/if}
+      {#if rowCount === 0}
         <p class="px-3 py-2 text-panel-detail text-popover-foreground/60">
           {normalizedSearch ? t("chat.channels.noResults") : t("chat.channels.empty")}
         </p>
       {:else}
         <div class="grid">
-          {#each visibleChannels as channel (channel.id)}
+          {#each rows.active as channel (channel.id)}
             <button
               type="button"
               class={cn(
@@ -224,6 +272,26 @@
             >
               <StarredIconBadge starred={isChannelStarred(channel.id)}><Hash size={iconSize} strokeWidth={iconStrokeWidth} /></StarredIconBadge>
               <span class="min-w-0 flex-1 truncate">{channel.name}</span>
+            </button>
+          {/each}
+          {#each rows.archived as channel (channel.id)}
+            <button
+              type="button"
+              class={cn(
+                "menu-item gap-2 text-popover-foreground",
+                mobileLayout && "min-h-12 rounded-xl px-3 text-sm active:bg-accent",
+                selectedChannelId === channel.id && "font-medium",
+              )}
+              aria-current={selectedChannelId === channel.id ? "page" : undefined}
+              data-chat-channel-option={channel.id}
+              data-chat-channel-archived
+              onclick={() => { void onChannelSelected(channel); }}
+            >
+              <Hash size={iconSize} strokeWidth={iconStrokeWidth} class="shrink-0" />
+              <span class="min-w-0 flex-1 truncate">{channel.name}</span>
+              <span role="img" aria-label={t("chat.channels.archivedChannel")} title={t("chat.channels.archivedChannel")} class="inline-flex shrink-0 text-popover-foreground/60">
+                <Archive size={iconSize} strokeWidth={iconStrokeWidth} aria-hidden="true" />
+              </span>
             </button>
           {/each}
         </div>

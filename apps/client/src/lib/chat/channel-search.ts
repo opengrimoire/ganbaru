@@ -38,3 +38,28 @@ export function chatChannelSearchGroups<TProject extends { id: string }>(
     return channels.length > 0 ? [{ project, channels }] : [];
   });
 }
+
+/** Channels a picker lists for one project, split so only active channels take part in reordering. */
+export interface ChatChannelPickerRows {
+  active: ChatChannelRead[];
+  archived: ChatChannelRead[];
+}
+
+/**
+ * Filter a picker's channels by an already normalized query, listing archived channels after the active ones only
+ * when requested and never repeating a channel that is also active.
+ */
+export function chatChannelPickerRows(
+  active: readonly ChatChannelRead[],
+  archived: readonly ChatChannelRead[],
+  showArchived: boolean,
+  normalizedQuery: string,
+): ChatChannelPickerRows {
+  const activeRows = active.filter((channel) => chatChannelMatchesSearch(channel, normalizedQuery));
+  if (!showArchived) return { active: activeRows, archived: [] };
+  const activeIds = new Set(active.map((channel) => channel.id));
+  return {
+    active: activeRows,
+    archived: archived.filter((channel) => !activeIds.has(channel.id) && chatChannelMatchesSearch(channel, normalizedQuery)),
+  };
+}

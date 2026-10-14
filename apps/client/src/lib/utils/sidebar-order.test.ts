@@ -1,13 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
   compareSidebarItems,
+  customOrderRanks,
   isSidebarSortOrder,
+  mergeReorderedSubset,
+  movedToIndex,
+  parseCustomOrders,
   parseSidebarSortOrderOverrides,
   parseStarredIds,
   resolveSidebarSortOrder,
   SIDEBAR_SORT_ORDERS,
   sortSidebarItems,
   starredFirst,
+  withCustomSiblingOrder,
   withSidebarSortOrderOverride,
   withStarredId,
   type SidebarSortFields,
@@ -81,5 +86,36 @@ describe("sidebar order", () => {
     expect(parseStarredIds("a")).toEqual([]);
     expect(withStarredId(["a", "b"], "b", true)).toEqual(["b", "a"]);
     expect(withStarredId(["a", "b"], "a", false)).toEqual(["b"]);
+  });
+
+  it("orders by custom rank, putting unranked items after the ranked ones by name", () => {
+    const ranks = customOrderRanks(["b", "a"]);
+    const ranked = (item: SidebarSortFields) => ({ ...item, rank: ranks.get(item.id) });
+    expect(sortSidebarItems(items, "custom", ranked).map((item) => item.id)).toEqual(["b", "a", "c"]);
+    expect(sortSidebarItems(items, "custom", (item) => item).map((item) => item.id)).toEqual(["c", "a", "b"]);
+    expect(sortSidebarItems(items, "custom", ranked, (item) => item.id === "c").map((item) => item.id))
+      .toEqual(["c", "b", "a"]);
+  });
+
+  it("rewrites a custom order for one group of siblings without disturbing the others", () => {
+    expect(withCustomSiblingOrder(["x", "a", "y", "b"], ["b", "a", "c"])).toEqual(["b", "a", "c", "x", "y"]);
+    expect(withCustomSiblingOrder([], ["a"])).toEqual(["a"]);
+  });
+
+  it("writes a reordered subset back into the slots it held", () => {
+    expect(mergeReorderedSubset(["a", "hidden", "b", "c"], ["c", "a", "b"])).toEqual(["c", "hidden", "a", "b"]);
+    expect(mergeReorderedSubset(["a", "b"], [])).toEqual(["a", "b"]);
+  });
+
+  it("moves an id to a clamped index", () => {
+    expect(movedToIndex(["a", "b", "c"], "a", 2)).toEqual(["b", "c", "a"]);
+    expect(movedToIndex(["a", "b", "c"], "c", 0)).toEqual(["c", "a", "b"]);
+    expect(movedToIndex(["a", "b", "c"], "b", 9)).toEqual(["a", "c", "b"]);
+    expect(movedToIndex(["a", "b"], "z", 0)).toEqual(["a", "b"]);
+  });
+
+  it("parses stored custom orders defensively", () => {
+    expect(parseCustomOrders({ one: ["a", "a", "b"], two: [], three: "a", " ": ["c"] })).toEqual({ one: ["a", "b"] });
+    expect(parseCustomOrders(["a"])).toEqual({});
   });
 });

@@ -44,6 +44,7 @@ export const common = {
     modifiedAscending: "Modified time (old to new)",
     createdDescending: "Created time (new to old)",
     createdAscending: "Created time (old to new)",
+    custom: "Custom",
   },
   color: {
     edit: "Edit color",

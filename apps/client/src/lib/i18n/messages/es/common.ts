@@ -47,6 +47,7 @@ export const common = {
     modifiedAscending: "Modificación (más antigua primero)",
     createdDescending: "Creación (más reciente primero)",
     createdAscending: "Creación (más antigua primero)",
+    custom: "Personalizado",
   },
   color: {
     edit: "Editar color",

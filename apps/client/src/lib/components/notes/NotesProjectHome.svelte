@@ -1,8 +1,6 @@
 <script lang="ts">
   import SearchField from "$lib/components/ui/SearchField.svelte";
   import { onMount, tick } from "svelte";
-  import ArrowUpNarrowWide from "@lucide/svelte/icons/arrow-up-narrow-wide";
-  import Check from "@lucide/svelte/icons/check";
   import ChevronsLeft from "@lucide/svelte/icons/chevrons-left";
   import ChevronsRight from "@lucide/svelte/icons/chevrons-right";
   import ChevronsDownUp from "@lucide/svelte/icons/chevrons-down-up";
@@ -46,11 +44,8 @@
     type NotesNavigationRect,
   } from "$lib/notes/navigation/drag-motion";
   import { notesPageMoveTargets } from "$lib/notes/pages/move";
-  import {
-    SIDEBAR_SORT_ORDER_LABEL_KEYS,
-    SIDEBAR_SORT_ORDERS,
-    type SidebarSortOrder,
-  } from "$lib/utils/sidebar-order";
+  import type { SidebarSortOrder } from "$lib/utils/sidebar-order";
+  import SidebarOrderMenu from "$lib/components/ui/SidebarOrderMenu.svelte";
   import { notesPageContainingFolderId } from "$lib/notes/navigation/hierarchy-menu";
   import { notesPageTitle } from "$lib/notes/pages/title";
   import { notesPagesForProject } from "$lib/notes/project-membership";
@@ -64,7 +59,6 @@
   import { getNotes } from "$lib/stores/notes.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { cn } from "$lib/utils";
-  import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import { scrollOverflowAction } from "$lib/utils/scroll-overflow";
   import { suppressHoverOnToggle } from "$lib/utils/hover-suppression";
   import NotesFolderRow from "$lib/components/notes/navigation/NotesFolderRow.svelte";
@@ -102,8 +96,6 @@
   const preferences = getPreferences();
   const { t } = getLocalization();
   const explorerIconStrokeWidth = 1.5;
-  const sortMenuViewportGapPx = 8;
-  const sortMenuTriggerGapPx = 4;
   const navigationFolderOpenDelayMs = 520;
   const navigationAutoScrollEdgePx = 36;
   const navigationAutoScrollStepPx = 12;
@@ -574,17 +566,9 @@
   let searchOpen = $state(false);
   let searchButton: HTMLButtonElement;
   let sortMenuOpen = $state(false);
-  type SortMenuOption = "global" | SidebarSortOrder;
   const sortOrder = $derived(notes.sidebarOrderForProject(projectId));
   const sortOrderOverride = $derived(notes.sidebarOrderOverride(projectId));
-  const sortMenuOptions = $derived<readonly SortMenuOption[]>(
-    projectId ? ["global", ...SIDEBAR_SORT_ORDERS] : SIDEBAR_SORT_ORDERS,
-  );
   let currentFileHighlightRequestId = $state(0);
-  let hoveredSortOrder = $state<SortMenuOption | null>(null);
-  let sortMenuStyle = $state("");
-  let sortButtonElement = $state<HTMLButtonElement | null>(null);
-  let sortMenuElement = $state<HTMLDivElement | null>(null);
   let explorerScrollElement = $state<HTMLDivElement | null>(null);
   let expandExplorerButtonElement = $state<HTMLButtonElement | null>(null);
   let collapseExplorerButtonElement = $state<HTMLButtonElement | null>(null);
@@ -866,64 +850,9 @@
   }
 
   /** Write the chosen order to the project, or to the global setting when no project is open. */
-  function selectSortOrder(option: SortMenuOption): void {
-    if (projectId) notes.setProjectSidebarOrder(projectId, option === "global" ? null : option);
-    else if (option !== "global") preferences.setNotesSidebarOrder(option);
-    sortMenuOpen = false;
-  }
-
-  function sortOptionChecked(option: SortMenuOption): boolean {
-    if (option === "global") return sortOrderOverride === null;
-    return projectId ? sortOrderOverride === option : sortOrder === option;
-  }
-
-  function sortOptionLabel(option: SortMenuOption): string {
-    return option === "global" ? t("common.useGlobalSetting") : t(SIDEBAR_SORT_ORDER_LABEL_KEYS[option]);
-  }
-
-  /** Separate the global item from the orders, and the orders into name, modified, and created pairs. */
-  function sortOptionStartsGroup(option: SortMenuOption, index: number): boolean {
-    if (index === 0 || option === "global") return false;
-    return sortMenuOptions[index - 1] === "global" || SIDEBAR_SORT_ORDERS.indexOf(option) % 2 === 0;
-  }
-
-  function sortOptionClass(option: SortMenuOption): string {
-    return cn("menu-item grid grid-cols-[max-content_1rem]", hoveredSortOrder === option && "bg-accent");
-  }
-
-  function highlightNearestSortOption(
-    event: MouseEvent,
-    before: SortMenuOption,
-    after: SortMenuOption,
-  ): void {
-    const divider = event.currentTarget;
-    if (!(divider instanceof HTMLDivElement)) return;
-    const rect = divider.getBoundingClientRect();
-    hoveredSortOrder = event.clientY < rect.top + rect.height / 2 ? before : after;
-  }
-
-  function positionSortMenu(): void {
-    if (!sortButtonElement) return;
-    const triggerRect = sortButtonElement.getBoundingClientRect();
-    const availableWidth = Math.max(0, window.innerWidth - sortMenuViewportGapPx * 2);
-    const measuredWidth = sortMenuElement?.getBoundingClientRect().width ?? 0;
-    const width = Math.min(measuredWidth, availableWidth);
-    const maxLeft = Math.max(sortMenuViewportGapPx, window.innerWidth - width - sortMenuViewportGapPx);
-    const left = Math.min(Math.max(sortMenuViewportGapPx, triggerRect.left), maxLeft);
-    const top = triggerRect.bottom + sortMenuTriggerGapPx;
-    const maxHeight = Math.max(0, window.innerHeight - top - sortMenuViewportGapPx);
-    sortMenuStyle = `left: ${left}px; top: ${top}px; width: max-content; max-width: ${availableWidth}px; max-height: ${maxHeight}px;`;
-  }
-
-  function toggleSortMenu(): void {
-    if (sortMenuOpen) {
-      sortMenuOpen = false;
-      return;
-    }
-    hoveredSortOrder = null;
-    positionSortMenu();
-    sortMenuOpen = true;
-    void tick().then(positionSortMenu);
+  function selectSortOrder(order: SidebarSortOrder | null): void {
+    if (projectId) notes.setProjectSidebarOrder(projectId, order);
+    else if (order) preferences.setNotesSidebarOrder(order);
   }
 
   async function highlightCurrentFile(): Promise<void> {
@@ -955,25 +884,10 @@
     currentFileHighlightRequestId += 1;
   }
 
-  function handleWindowPointerDown(event: PointerEvent): void {
-    const target = event.target;
-    if (!(target instanceof Node) || !sortMenuOpen) return;
-    if (sortButtonElement?.contains(target) || sortMenuElement?.contains(target)) return;
-    sortMenuOpen = false;
-  }
-
   function handleWindowKeydown(event: KeyboardEvent): void {
-    if (event.key !== "Escape") return;
-    if (draggingNavigationItem) {
-      event.preventDefault();
-      cancelNavigationPointerDrag(true);
-      return;
-    }
-    if (sortMenuOpen) sortMenuOpen = false;
-  }
-
-  function handleWindowResize(): void {
-    if (sortMenuOpen) positionSortMenu();
+    if (event.key !== "Escape" || !draggingNavigationItem) return;
+    event.preventDefault();
+    cancelNavigationPointerDrag(true);
   }
 
   function toggleExplorerExpansion(): void {
@@ -1095,13 +1009,11 @@
 </script>
 
 <svelte:window
-  onpointerdown={handleWindowPointerDown}
   onpointermove={handleNavigationPointerMove}
   onpointerup={handleNavigationPointerUp}
   onpointercancel={() => cancelNavigationPointerDrag()}
   onblur={() => cancelNavigationPointerDrag()}
   onkeydown={handleWindowKeydown}
-  onresize={handleWindowResize}
   onwheel={handleNavigationDragWheel}
 />
 
@@ -1168,59 +1080,18 @@
     >
       <FolderPlus class="size-4" strokeWidth={explorerIconStrokeWidth} />
     </button>
-    <div class="relative">
-      <button
-        bind:this={sortButtonElement}
-        type="button"
-        class="explorer-icon"
-        class:explorer-icon-active={sortMenuOpen}
-        aria-label={t("notes.sortExplorer")}
-        aria-expanded={sortMenuOpen}
-        aria-haspopup="menu"
-        data-app-tooltip={t("notes.sortExplorer")}
-        onclick={toggleSortMenu}
-      >
-        <ArrowUpNarrowWide class="size-4" strokeWidth={explorerIconStrokeWidth} />
-      </button>
-      {#if sortMenuOpen}
-        <div
-          bind:this={sortMenuElement}
-          class="surface-floating fixed z-60 flex flex-col overflow-hidden"
-          style={sortMenuStyle}
-          role="menu"
-          tabindex="-1"
-          aria-label={t("notes.sortExplorer")}
-          onmouseleave={() => {
-            hoveredSortOrder = null;
-          }}
-        >
-          <div class="surface-floating-body flex min-h-0 flex-1 flex-col overflow-y-auto" use:scrollEdgeFadeAction>
-            {#each sortMenuOptions as option, index (option)}
-              {#if sortOptionStartsGroup(option, index)}
-                <div
-                  class="menu-separator"
-                  role="separator"
-                  onmousemove={(event) => highlightNearestSortOption(event, sortMenuOptions[index - 1], option)}
-                ></div>
-              {/if}
-              <button
-                type="button"
-                class={sortOptionClass(option)}
-                role="menuitemradio"
-                aria-checked={sortOptionChecked(option)}
-                onmouseenter={() => {
-                  hoveredSortOrder = option;
-                }}
-                onclick={() => selectSortOrder(option)}
-              >
-                <span>{sortOptionLabel(option)}</span>
-                {#if sortOptionChecked(option)}<Check class="size-4" />{/if}
-              </button>
-            {/each}
-          </div>
-        </div>
-      {/if}
-    </div>
+    <SidebarOrderMenu
+      bind:open={sortMenuOpen}
+      order={sortOrder}
+      override={sortOrderOverride}
+      allowGlobal={projectId !== null}
+      label={t("notes.sortExplorer")}
+      buttonClass="explorer-icon"
+      activeClass="explorer-icon-active"
+      iconClass="size-4"
+      iconStrokeWidth={explorerIconStrokeWidth}
+      onSelect={selectSortOrder}
+    />
     {#if !mobileLayout}
       <button
         type="button"

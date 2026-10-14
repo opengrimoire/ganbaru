@@ -111,6 +111,21 @@ describe("Chat startup", () => {
     expect(chatApi.recoverChatAssignmentDispatchJobs).toHaveBeenCalledOnce();
   });
 
+  it("keeps one draft thread per working folder so a channel's terminal has a scope", async () => {
+    await chat.ensureLoaded();
+    expect(chat.selectedWorkingFolderId).toBe(null);
+    expect(chat.draftThreadId).toBe(null);
+    vi.mocked(chatApi.readChatProjectPrimaryWorkingFolder).mockResolvedValue({
+      projectId: "project", workingFolderId: "folder", revision: 1,
+    });
+    await chat.selectChannel("other");
+    expect(chat.selectedWorkingFolderId).toBe("folder");
+    const draftThreadId = chat.draftThreadId;
+    expect(draftThreadId).toEqual(expect.any(String));
+    await chat.selectChannel("general");
+    expect(chat.draftThreadId).toBe(draftThreadId);
+  });
+
   it("applies later provider settings without resetting a user's channel or draft", async () => {
     await chat.ensureLoaded();
     await chat.selectChannel("other");

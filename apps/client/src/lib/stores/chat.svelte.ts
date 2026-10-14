@@ -572,8 +572,12 @@ class ChatStore {
     this.selectedThreadId = null;
     this.selectedExecutionRunId = null;
     this.selectedExecutionEnvironmentId = null;
-    this.draftWorkingFolderId = null;
-    this.draftThreadId = null;
+    // Workspace tools such as the terminal are scoped to a thread, so a channel without a session keeps a draft one.
+    if (this.selectedWorkingFolderId) {
+      this.composerRuntimeController.ensureDraftThread(this.selectedWorkingFolderId);
+    } else {
+      this.composerRuntimeController.discardDraft();
+    }
     await this.loadChannelMessages(channel.id);
     if (request !== this.channelSelectionRequest) return;
     this.interaction = null;

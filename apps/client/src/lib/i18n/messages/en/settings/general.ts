@@ -84,7 +84,7 @@ export const general = {
   },
   projectsInactive: {
     heading: "Hidden and archived",
-    description: "The sidebar and pickers list them only while the eye button is on",
+    detail: (group: string, status: string) => `${group} · ${status}`,
     empty: "No hidden or archived projects",
     showProject: (name: string) => `Show ${name}`,
     restoreProject: (name: string) => `Restore ${name}`,

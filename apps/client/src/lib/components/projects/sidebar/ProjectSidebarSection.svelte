@@ -35,6 +35,7 @@
   import { portal } from "$lib/utils/portal";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import ProjectIcon from "../ProjectIcon.svelte";
+  import ProjectLifecycleIcon from "../ProjectLifecycleIcon.svelte";
   import ProjectViewDragCard from "./ProjectViewDragCard.svelte";
   import ProjectViewRow from "./ProjectViewRow.svelte";
   import { PROJECT_VIEW_TYPE_ICONS, projectViewLabel, projectViewTypeLabel } from "./project-view-presentation";
@@ -298,6 +299,7 @@
         {#if groupName}
           <span class="section-group">{groupName}</span>
         {/if}
+        <ProjectLifecycleIcon status={project.status} size={12} class="text-current opacity-70" />
         {#if collapsed}<ChevronRight class="section-chevron" />{:else}<ChevronDown class="section-chevron" />{/if}
       </button>
       <button

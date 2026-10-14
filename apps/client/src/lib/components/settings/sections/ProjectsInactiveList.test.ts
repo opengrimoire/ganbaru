@@ -93,7 +93,7 @@ describe("Settings list of hidden and archived projects", () => {
     render();
 
     expect(rowLabels()).toEqual(["Show Draft", "Restore Errands"]);
-    expect(target.querySelector("li [role='img']")?.getAttribute("aria-label")).toBe("Hidden");
+    expect(target.querySelector("li")?.textContent).toContain("Work · Hidden");
     expect([...target.querySelectorAll("li button")].map((button) => button.textContent?.trim())).toEqual(["Show", "Restore"]);
   });
 

@@ -87,7 +87,7 @@ export const general = {
   },
   projectsInactive: {
     heading: "Ocultos y archivados",
-    description: "La barra lateral y los selectores solo los muestran con el botón del ojo activado",
+    detail: (group: string, status: string) => `${group} · ${status}`,
     empty: "No hay proyectos ocultos ni archivados",
     showProject: (name: string) => `Mostrar ${name}`,
     restoreProject: (name: string) => `Restaurar ${name}`,

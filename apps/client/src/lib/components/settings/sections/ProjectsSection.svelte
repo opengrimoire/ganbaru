@@ -46,5 +46,7 @@
     </div>
   </section>
 
+  <div class="h-px shrink-0 scale-y-50 bg-border" aria-hidden="true"></div>
+
   <ProjectsInactiveList />
 </div>

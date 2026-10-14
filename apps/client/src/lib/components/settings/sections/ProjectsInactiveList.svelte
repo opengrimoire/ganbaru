@@ -1,10 +1,9 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import ProjectIcon from "$lib/components/projects/ProjectIcon.svelte";
-  import ProjectLifecycleIcon from "$lib/components/projects/ProjectLifecycleIcon.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { projectLifecycleLabel } from "$lib/projects/display";
   import type { Project, ProjectGroup } from "$lib/projects/types";
   import { getProjects } from "$lib/stores/projects.svelte";
 
@@ -43,10 +42,7 @@
 </script>
 
 <section class="flex flex-col gap-4">
-  <div class="flex flex-col gap-1 px-1">
-    <h2 class="text-[0.866667rem] font-semibold text-foreground">{t("settings.projectsInactive.heading")}</h2>
-    <p class="text-[0.8rem] text-muted-foreground">{t("settings.projectsInactive.description")}</p>
-  </div>
+  <h2 class="px-1 text-[0.866667rem] font-semibold text-foreground">{t("settings.projectsInactive.heading")}</h2>
   {#if actionError}
     <Notice class="px-1 text-[0.8rem]" message={actionError} onDismiss={() => { actionError = null; }} />
   {/if}
@@ -57,16 +53,18 @@
   {:else if rows.length === 0}
     <p class="px-1 text-[0.8rem] text-muted-foreground">{t("settings.projectsInactive.empty")}</p>
   {:else}
-    <ul class="flex flex-col">
+    <ul class="flex flex-col gap-3">
       {#each rows as { project, group } (project.id)}
-        <li class="inactive-project-row">
-          <ProjectIcon name={project.icon} size={15} />
-          <span class="inactive-project-name">{project.name}</span>
-          <span class="inactive-project-group">{group.name}</span>
-          <ProjectLifecycleIcon status={project.status} />
+        <li class="flex items-center justify-between gap-4 px-1 py-1">
+          <div class="min-w-0 flex-1">
+            <div class="truncate text-[0.866667rem] text-foreground">{project.name}</div>
+            <div class="mt-0.5 truncate text-[0.8rem] text-muted-foreground">
+              {t("settings.projectsInactive.detail", group.name, projectLifecycleLabel(project.status, t))}
+            </div>
+          </div>
           <button
             type="button"
-            class="inactive-project-action"
+            class="inline-flex h-7 shrink-0 items-center justify-center rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-wait disabled:opacity-50 dark:bg-transparent"
             disabled={pendingProjectId === project.id}
             aria-label={t(project.status === "hidden" ? "settings.projectsInactive.showProject" : "settings.projectsInactive.restoreProject", project.name)}
             onclick={() => void activate(project)}
@@ -78,12 +76,3 @@
     </ul>
   {/if}
 </section>
-
-<style>
-  .inactive-project-row { display: flex; min-height: 2.25rem; align-items: center; gap: 0.6rem; padding-inline: 0.375rem; }
-  .inactive-project-name { min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .inactive-project-group { min-width: 0; flex: 1; overflow: hidden; color: var(--muted-foreground); font-size: var(--panel-detail-font-size); text-overflow: ellipsis; white-space: nowrap; }
-  .inactive-project-action { display: inline-flex; height: 1.625rem; flex: 0 0 auto; align-items: center; border-radius: 0.375rem; padding-inline: 0.5rem; color: var(--muted-foreground); font-size: calc(0.75rem * var(--type-scale)); font-weight: 500; white-space: nowrap; transition: background-color 120ms ease, color 120ms ease; }
-  .inactive-project-action:hover:not(:disabled) { background: var(--accent); color: var(--foreground); }
-  .inactive-project-action:disabled { opacity: 0.6; }
-</style>

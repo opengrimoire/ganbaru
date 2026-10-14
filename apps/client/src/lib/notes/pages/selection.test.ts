@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   filterNotesPagesByTitle,
   nextSelectedNotesPageId,
+  nextSelectedNotesPageIdInProject,
   notesPageSubtreeIds,
   parseStoredNotesPageId,
   restoredNotesPageSelection,
 } from "./selection";
+import { NOTES_PAGE_PROJECT_ID_PROPERTY } from "$lib/notes/project-membership";
 
 describe("notes page selection", () => {
   it("parses stored page ids defensively", () => {
@@ -19,6 +21,23 @@ describe("notes page selection", () => {
     expect(nextSelectedNotesPageId(pages, "b")).toBe("c");
     expect(nextSelectedNotesPageId(pages, "c")).toBe("b");
     expect(nextSelectedNotesPageId([{ id: "a" }], "a")).toBe(null);
+  });
+
+  it("replaces a removed page only with a page from the same project", () => {
+    const inProject = (id: string, projectId: string | null) => ({
+      id,
+      properties: projectId ? { [NOTES_PAGE_PROJECT_ID_PROPERTY]: projectId } : {},
+    });
+    const pages = [
+      inProject("social-only", "social"),
+      inProject("eating-a", "eating"),
+      inProject("loose", null),
+      inProject("eating-b", "eating"),
+    ];
+    expect(nextSelectedNotesPageIdInProject(pages, "social-only", "social")).toBe(null);
+    expect(nextSelectedNotesPageIdInProject(pages, "eating-a", "eating")).toBe("eating-b");
+    expect(nextSelectedNotesPageIdInProject(pages, "eating-b", "eating")).toBe("eating-a");
+    expect(nextSelectedNotesPageIdInProject(pages, "missing", null)).toBe("loose");
   });
 
   it("includes nested visible pages when a parent goes to Trash", () => {

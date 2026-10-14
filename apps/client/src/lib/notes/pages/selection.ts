@@ -1,4 +1,5 @@
 import type { NotesPage } from "$lib/notes/types";
+import { notesPageProjectId } from "$lib/notes/project-membership";
 
 const SELECTED_PAGE_CONFIG_KEY = "notes.selectedPageId";
 
@@ -32,6 +33,21 @@ export function nextSelectedNotesPageId(
   if (remaining.length === 0) return null;
   if (index < 0) return remaining[0]?.id ?? null;
   return remaining[Math.min(index, remaining.length - 1)]?.id ?? null;
+}
+
+/**
+ * Pick the replacement for a removed page among the pages of its own project, so removing a project's last note
+ * leaves that project empty instead of opening another project's note.
+ */
+export function nextSelectedNotesPageIdInProject(
+  pages: readonly Pick<NotesPage, "id" | "properties">[],
+  removedPageId: string,
+  projectId: string | null,
+): string | null {
+  return nextSelectedNotesPageId(
+    pages.filter((page) => notesPageProjectId(page) === projectId),
+    removedPageId,
+  );
 }
 
 /** Find the visible page subtree that follows a page into Trash. */

@@ -2,6 +2,7 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createBlockWrite } from "$lib/notes/blocks/factory";
+import { NOTES_PAGE_PROJECT_ID_PROPERTY } from "$lib/notes/project-membership";
 import type { NotesBlock, NotesBlockUpdate, NotesLoadedPage, NotesPage, NotesPageCreate, NotesPageOpenResponse, NotesWorkspaceShell } from "$lib/notes/types";
 
 const rootId = "00000000-0000-4000-8000-000000000001";
@@ -482,5 +483,29 @@ describe("Notes page lifecycle", () => {
     expect(notes.previewPane).toBeNull();
     expect(notes.editorPanes[0].store).toBe(main);
     expect(notes.selectedPageId).toBe(removedId === rootId ? otherId : rootId);
+  });
+
+  it("leaves a project empty instead of opening another project's note when its last note goes to Trash", async () => {
+    const inProject = (pageValue: NotesPage, projectId: string): NotesPage => ({
+      ...pageValue,
+      properties: { ...pageValue.properties, [NOTES_PAGE_PROJECT_ID_PROPERTY]: projectId },
+    });
+    backend.pages.delete(childId);
+    backend.pages.set(rootId, inProject(page(rootId), "social"));
+    backend.pages.set(otherId, inProject(page(otherId), "eating"));
+    const { getNotes } = await import("./notes.svelte");
+    const notes = getNotes();
+    await notes.load();
+    await notes.selectPage(rootId, { openMode: "full" });
+
+    const deletion = notes.trashPage(rootId);
+    await vi.waitFor(() => expect(backend.pendingTrashes).toHaveLength(1));
+    const trashed = backend.pages.get(rootId)!;
+    backend.pages.delete(rootId);
+    backend.pendingTrashes[0].resolve({ ...trashed, in_trash: true });
+    await deletion;
+
+    expect(notes.selectedPageId).toBeNull();
+    expect(backend.openCalls).toEqual([rootId]);
   });
 });

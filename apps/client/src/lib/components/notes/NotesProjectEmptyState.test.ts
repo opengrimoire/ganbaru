@@ -24,9 +24,8 @@ describe("Notes project empty state", () => {
   it("names the project and labels the region with its heading", async () => {
     const { section } = await mountEmptyState("Routine");
     const heading = section.querySelector("h2")!;
-    expect(heading.textContent).toBe("No notes yet");
+    expect(heading.textContent).toBe("Routine has no notes yet.");
     expect(section.getAttribute("aria-labelledby")).toBe(heading.id);
-    expect(section.textContent).toContain("Create the first note for Routine");
   });
 
   it("creates a note once per click on its action", async () => {

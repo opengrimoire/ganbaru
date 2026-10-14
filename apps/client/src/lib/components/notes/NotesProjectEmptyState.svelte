@@ -1,5 +1,4 @@
 <script lang="ts">
-  import Book from "@lucide/svelte/icons/book";
   import Plus from "@lucide/svelte/icons/plus";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { shortcutParts } from "$lib/keyboard-shortcuts";
@@ -24,14 +23,10 @@
   data-notes-project-empty
 >
   <div class="m-auto flex max-w-sm flex-col items-center text-center">
-    <div class="mb-4 flex size-12 shrink-0 items-center justify-center rounded-2xl border border-border bg-card text-muted-foreground">
-      <Book size={22} />
-    </div>
-    <h2 id={titleId} class="text-lg font-semibold text-foreground">{t("notes.emptyProjectTitle")}</h2>
-    <p class="mt-2 text-sm text-pretty text-muted-foreground">{t("notes.emptyProjectDescription", projectName)}</p>
+    <h2 id={titleId} class="text-sm text-pretty text-muted-foreground">{t("notes.emptyProjectTitle", projectName)}</h2>
     <button
       type="button"
-      class="mt-5 inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-md bg-primary px-3.5 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90"
+      class="mt-4 inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-md bg-primary px-3.5 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90"
       aria-keyshortcuts="Control+N Meta+N"
       onclick={onCreate}
     >

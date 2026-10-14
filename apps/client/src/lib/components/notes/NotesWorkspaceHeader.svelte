@@ -146,6 +146,8 @@
   const selectedPageId = $derived(selectedPage?.id ?? null);
   const selectedDatabaseBlock = $derived(notes.selectedDatabaseBlock);
   const databaseSelected = $derived(notes.viewMode === "pages" && notes.selectedDatabaseBlockId != null);
+  /** The mobile action row only carries Back and page actions, so it collapses on the project explorer. */
+  const mobileActionRowVisible = $derived(mobileLayout && (selectedPageTitle !== null || databaseSelected));
   const selectedDatabaseTitle = $derived(selectedDatabaseBlock?.child_database.title.trim() || t("notes.untitled"));
   const selectedProjectPages = $derived.by(() => notesPagesForProject(
     selectedPage ? [...notes.navigationPages.filter((page) => page.id !== selectedPage.id), selectedPage] : notes.navigationPages,
@@ -496,15 +498,6 @@
     {/if}
     {#if databaseSelected}
       {@render databaseBreadcrumb()}
-    {:else}
-      <button
-        type="button"
-        class={inlineNewPageButtonClass()}
-        aria-label={t("notes.newPage")}
-        onclick={createPage}
-      >
-        <WorkspaceBreadcrumbTerminalIcon kind="plus" />
-      </button>
     {/if}
   </div>
 {/snippet}
@@ -605,7 +598,8 @@
     "flex shrink-0 items-center gap-1 px-3",
     mobileLayout ? "overflow-hidden" : "overflow-x-auto",
   )}
-  style="height: var(--toolbar-h); background-color: var(--cal-bg);"
+  style={`height: ${mobileLayout && !mobileActionRowVisible ? "0" : "var(--toolbar-h)"}; background-color: var(--cal-bg);`}
+  data-notes-mobile-action-row={mobileLayout ? (mobileActionRowVisible ? "visible" : "collapsed") : undefined}
   onscroll={refreshNavigatorPanelGeometry}
   data-notes-workspace-header
 >

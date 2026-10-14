@@ -33,6 +33,7 @@
     onOpenMusic,
     onOpenSettings,
     identityTarget = $bindable(null),
+    identityLabel = null,
   }: {
     pomodoroTime: string;
     pomodoroActive: boolean;
@@ -55,6 +56,8 @@
     onOpenSettings: () => void;
     /** The leading slot where the active destination places its context switcher. */
     identityTarget?: HTMLElement | null;
+    /** Names a destination that has no context switcher, so the leading slot is not left empty. */
+    identityLabel?: string | null;
   } = $props();
 
   const { t } = getLocalization();
@@ -121,7 +124,11 @@
   class="mobile-top-bar flex h-(--mobile-topbar-h) shrink-0 items-center justify-between gap-1 pr-1 pl-2 text-foreground"
   style="background-color: var(--cal-bg);"
 >
-  <div bind:this={identityTarget} class="flex h-full min-w-0 flex-1 items-center" data-mobile-identity-slot></div>
+  <div bind:this={identityTarget} class="flex h-full min-w-0 flex-1 items-center" data-mobile-identity-slot>
+    {#if identityLabel}
+      <span class="min-w-0 truncate px-2 text-identity font-medium text-foreground" data-mobile-identity-label>{identityLabel}</span>
+    {/if}
+  </div>
   <div class="flex h-full shrink-0 items-center">
     <div bind:this={pomodoroAnchorElement} class="relative flex h-full shrink-0 items-center">
       <button

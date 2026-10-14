@@ -1,6 +1,7 @@
 <script lang="ts">
   import ArrowUpDown from "@lucide/svelte/icons/arrow-up-down";
   import Check from "@lucide/svelte/icons/check";
+  import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import Columns3 from "@lucide/svelte/icons/columns-3";
   import Layers from "@lucide/svelte/icons/layers";
   import ListFilter from "@lucide/svelte/icons/list-filter";
@@ -23,7 +24,6 @@
     type Project,
     type ProjectChatIntegration,
     type ProjectGroup,
-    type ProjectView,
   } from "$lib/projects/types";
   import { getProjects } from "$lib/stores/projects.svelte";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
@@ -31,11 +31,9 @@
   import { cn } from "$lib/utils";
   import { createHoverMenu } from "$lib/utils/menu-aim";
   import ProjectIcon from "./ProjectIcon.svelte";
-  import { projectViewLabel } from "./sidebar/project-view-presentation";
   import WorkspaceBreadcrumbTerminalIcon from "$lib/components/ui/WorkspaceBreadcrumbTerminalIcon.svelte";
   import ProjectNavigator from "./ProjectNavigator.svelte";
   import ProjectPickerMobileDialog from "$lib/components/projects/pickers/ProjectPickerMobileDialog.svelte";
-  import MenuItemLabel from "$lib/components/ui/MenuItemLabel.svelte";
   import Select from "$lib/components/ui/Select.svelte";
   import MobileContextSwitcher from "$lib/components/mobile/MobileContextSwitcher.svelte";
 
@@ -52,6 +50,7 @@
     onProjectSelected,
     onToggleToolbarPanel,
     onCreateTask,
+    onOpenSidebar = undefined,
     mobileLayout = false,
     projectChat = null,
     viewControlsTarget = $bindable(null),
@@ -68,6 +67,8 @@
     onProjectSelected: () => void;
     onToggleToolbarPanel: (panel: ProjectToolbarPanel) => void;
     onCreateTask: () => void;
+    /** Opens the mobile Projects sidebar, where views are chosen and managed. */
+    onOpenSidebar?: () => void;
     mobileLayout?: boolean;
     projectChat?: ProjectChatIntegration | null;
     /** The header slot where the active view may show its own controls, or null while they do not fit. */
@@ -83,7 +84,6 @@
   const projectIdentityEmojiScale = COMPACT_IDENTITY_EMOJI_SCALE;
 
   let projectNavigatorOpen = $state(false);
-  let mobileViewMenuOpen = $state(false);
   let mobileCustomizationMenuOpen = $state(false);
   let projectNavigatorMode = $state<ProjectNavigatorPanelMode>("groups");
   let projectHeaderElement = $state<HTMLDivElement | null>(null);
@@ -130,11 +130,6 @@
     bottom: number;
   }
 
-  const mobileViews = $derived(projects.viewsForProject(projects.selectedProjectId));
-  const activeViewLabel = $derived(projects.activeProjectView
-    ? projectViewLabel(t, projects.activeProjectView)
-    : t("projects.toolbar.views"));
-
   function toolbarIconButtonClass(active: boolean, open = false): string {
     return cn(
       "flex shrink-0 items-center justify-center rounded-md text-foreground transition-colors hover:bg-accent",
@@ -170,13 +165,7 @@
   }
 
   function closeMobileMenus(): void {
-    mobileViewMenuOpen = false;
     mobileCustomizationMenuOpen = false;
-  }
-
-  function selectMobileView(view: ProjectView): void {
-    closeMobileMenus();
-    projects.selectView(view);
   }
 
   function selectMobileCustomization(panel: ProjectToolbarPanel): void {
@@ -258,7 +247,7 @@
   }
 
   $effect(() => {
-    if (!mobileLayout || (!mobileViewMenuOpen && !mobileCustomizationMenuOpen)) return;
+    if (!mobileLayout || !mobileCustomizationMenuOpen) return;
     return mobileBackStack.activate({
       handle: closeMobileMenus,
     });
@@ -371,6 +360,22 @@
         {/snippet}
       </MobileContextSwitcher>
       <div class="flex h-12 items-center">
+        {#if onOpenSidebar}
+          <button
+            type="button"
+            class={toolbarIconButtonClass(false)}
+            aria-label={t("projects.sidebar.expand")}
+            title={t("projects.sidebar.expand")}
+            data-project-mobile-sidebar-button
+            onclick={() => {
+              closeMobileMenus();
+              projectNavigatorOpen = false;
+              onOpenSidebar();
+            }}
+          >
+            <ChevronLeft class="size-5" strokeWidth={projectIdentityIconStrokeWidth} />
+          </button>
+        {/if}
         {@render addTaskButton()}
       </div>
     {:else}
@@ -482,48 +487,6 @@
       <div class="relative shrink-0">
         <button
           type="button"
-          class={cn("flex h-12 items-center rounded-md px-2 text-sm hover:bg-accent", mobileViewMenuOpen && "bg-accent")}
-          aria-label={activeViewLabel}
-          title={activeViewLabel}
-          aria-haspopup="menu"
-          aria-expanded={mobileViewMenuOpen}
-          onclick={() => {
-            projectNavigatorOpen = false;
-            mobileCustomizationMenuOpen = false;
-            mobileViewMenuOpen = !mobileViewMenuOpen;
-          }}
-        >
-          {activeViewLabel}
-        </button>
-        {#if mobileViewMenuOpen}
-          <!-- svelte-ignore a11y_click_events_have_key_events -->
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div class="fixed inset-0 z-40" onclick={closeMobileMenus}></div>
-          <div
-            class="surface-floating surface-floating-body absolute right-0 top-full z-50 mt-1 w-floating-sm"
-            role="menu"
-            aria-label={t("projects.toolbar.views")}
-          >
-            {#each mobileViews as view (view.id)}
-              {@const label = projectViewLabel(t, view)}
-              <button
-                type="button"
-                role="menuitemradio"
-                aria-checked={projects.activeViewId === view.id}
-                class="menu-item"
-                onclick={() => selectMobileView(view)}
-              >
-                <MenuItemLabel {label} starred={projects.isViewStarred(view.id)} />
-                {#if projects.activeViewId === view.id}<Check class="size-3.5 shrink-0" aria-hidden="true" />{/if}
-              </button>
-            {/each}
-          </div>
-        {/if}
-      </div>
-
-      <div class="relative shrink-0">
-        <button
-          type="button"
           class={toolbarIconButtonClass(
             customizationPanels.some(panelActive),
             mobileCustomizationMenuOpen,
@@ -534,7 +497,6 @@
           aria-expanded={mobileCustomizationMenuOpen}
           onclick={() => {
             projectNavigatorOpen = false;
-            mobileViewMenuOpen = false;
             mobileCustomizationMenuOpen = !mobileCustomizationMenuOpen;
           }}
         >

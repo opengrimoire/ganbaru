@@ -380,4 +380,28 @@ describe("ChatWorkspaceHeader", () => {
     expect(target.querySelector("[data-mobile-context-switcher]")?.textContent).toContain("Ganbaru");
   });
 
+  it("opens the mobile channel list from the channel action row", () => {
+    const onOpenRail = vi.fn();
+    const target = document.createElement("div");
+    document.body.append(target);
+    const component = mount(ChatWorkspaceHeader, {
+      target,
+      props: {
+        explorerExpanded: true,
+        showRailButton: true,
+        reserveGlobalActions: false,
+        editingTitle: false,
+        mobilePresentation: true,
+        onOpenRail,
+      },
+    });
+    mounted.push({ target, component });
+
+    const railButton = target.querySelector<HTMLButtonElement>("[data-chat-rail-button]");
+    expect(railButton?.closest("[data-chat-workspace-header]")).not.toBeNull();
+    railButton?.click();
+
+    expect(onOpenRail).toHaveBeenCalledOnce();
+  });
+
 });

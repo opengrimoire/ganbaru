@@ -70,6 +70,9 @@
   const selectedGroup = $derived(projects.selectedGroup);
   const selectedProjectId = $derived(selectedProject?.id ?? null);
   const sidebarDocked = $derived(!mobileLayout && Boolean(selectedProject && selectedGroup));
+  /** The mobile shell shows the sidebar as a full surface that replaces the project while open. */
+  let mobileSidebarRequested = $state(false);
+  const mobileSidebarOpen = $derived(mobileLayout && mobileSidebarRequested && Boolean(selectedProject && selectedGroup));
   const sidebarViews = $derived(projects.viewsForProject(selectedProjectId));
   /** Chat opens from the sidebar when the project has a Chat view, so the header keeps its shortcut only otherwise. */
   const chatIsPlace = $derived(sidebarDocked && sidebarViews.some((view) => view.viewType === "chat"));
@@ -151,6 +154,13 @@
         routeUi.closeTaskDetail();
         routeLoad.invalidateTaskDetailData();
       },
+    });
+  });
+
+  $effect(() => {
+    if (!mobileSidebarOpen) return;
+    return mobileBackStack.activate({
+      handle: closeMobileSidebar,
     });
   });
 
@@ -294,6 +304,10 @@
     selectView(view);
   }
 
+  function closeMobileSidebar(): void {
+    mobileSidebarRequested = false;
+  }
+
   function handleProjectSelected(): void {
     routeUi.closeTaskDetail();
     routeUi.closeToolbarImmediately();
@@ -381,9 +395,24 @@
       onProjectSelected={handleProjectSelected}
       onOpenProjectSettings={openProjectSettings}
     />
+  {:else if mobileSidebarOpen}
+    <ProjectsSidebar
+      presentation="surface"
+      onSelectView={(view) => {
+        closeMobileSidebar();
+        selectView(view);
+      }}
+      onProjectSelected={handleProjectSelected}
+      onOpenProjectSettings={(project) => {
+        closeMobileSidebar();
+        openProjectSettings(project);
+      }}
+      onClose={closeMobileSidebar}
+    />
   {/if}
   <section
     class="flex min-w-0 flex-1 flex-col overflow-hidden"
+    class:hidden={mobileSidebarOpen}
     class:surface-content={sidebarDocked}
     style="background-color: var(--cal-bg);"
   >
@@ -407,6 +436,7 @@
           onProjectSelected={handleProjectSelected}
           onToggleToolbarPanel={(panel) => routeUi.toggleToolbarPanel(panel)}
           onCreateTask={() => { if (selectedProjectId) routeUi.openTaskDraft(selectedProjectId); }}
+          onOpenSidebar={mobileLayout ? () => { mobileSidebarRequested = true; } : undefined}
         />
         {#if routeUi.toolbarPanel}
           {#if toolbarDataReady && toolbarLoadState?.status === "ready" && toolbarLoadState.component.kind === "toolbar"}

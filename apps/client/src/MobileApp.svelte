@@ -900,6 +900,7 @@
       onOpenMusic={openMusic}
       onOpenSettings={openSettings}
       bind:identityTarget={identitySlotElement}
+      identityLabel={nav.current === "calendar" ? currentTitle : null}
     />
     {/if}
 

@@ -74,8 +74,11 @@ const SECTION_HEIGHT = 30;
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | undefined;
 
-function render(): void {
-  component = mount(ProjectsSidebar, { target, props: { onSelectView: () => undefined, onProjectSelected: () => undefined } });
+function render(surfaceProps: { presentation: "surface"; onClose: () => void } | null = null): void {
+  component = mount(ProjectsSidebar, {
+    target,
+    props: { onSelectView: () => undefined, onProjectSelected: () => undefined, ...surfaceProps },
+  });
   flushSync();
 }
 
@@ -120,6 +123,8 @@ afterEach(() => {
   target.remove();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  // A drop arms a one-task click suppression; running it keeps it from swallowing the next test's clicks.
+  vi.runOnlyPendingTimers();
   vi.useRealTimers();
 });
 
@@ -150,5 +155,21 @@ describe("ProjectsSidebar", () => {
     await Promise.resolve();
 
     expect(store.reorderProjectsInGroup).not.toHaveBeenCalled();
+  });
+
+  it("closes the mobile surface instead of collapsing it to a rail", () => {
+    const onClose = vi.fn();
+    render({ presentation: "surface", onClose });
+
+    const sidebar = target.querySelector<HTMLElement>("[data-projects-sidebar]");
+    expect(sidebar?.classList.contains("explorer-touch")).toBe(true);
+    expect(sidebar?.classList.contains("explorer-dock")).toBe(false);
+    expect(target.querySelector('button[aria-label="Expand sidebar"]')).toBeNull();
+
+    target.querySelector<HTMLButtonElement>('button[aria-label="Collapse sidebar"]')?.click();
+    flushSync();
+
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(sectionItems()).toHaveLength(3);
   });
 });

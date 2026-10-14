@@ -19,12 +19,14 @@
    * per project of the selected project's group, each listing that project's views the way Chat sections list
    * channels. A search lists matching projects from every visible group. Opening a view of another project selects that
    * project. Collapsing the sidebar keeps a narrow rail with the selected project's views. Hosted Notes and Chat render
-   * it in place of their own explorer.
+   * it in place of their own explorer. The mobile shell shows it as a full surface that closes instead of collapsing.
    */
   let {
     onSelectView,
     onProjectSelected,
     onOpenProjectSettings = undefined,
+    presentation = "dock",
+    onClose = undefined,
   }: {
     /** Opens a view of the selected project. */
     onSelectView: (view: ProjectView) => void;
@@ -32,13 +34,19 @@
     onProjectSelected: () => void;
     /** Selects a project and opens its settings; hosted views without a settings panel leave it out. */
     onOpenProjectSettings?: (project: Project) => void;
+    /** A dock collapses to a rail; a surface fills the mobile destination and closes through `onClose`. */
+    presentation?: "dock" | "surface";
+    /** Closes the surface presentation. */
+    onClose?: () => void;
   } = $props();
+
+  const surface = $derived(presentation === "surface");
 
   const projects = getProjects();
   const preferences = getPreferences();
   const { t } = getLocalization();
 
-  const collapsed = $derived(projects.sidebarCollapsed);
+  const collapsed = $derived(!surface && projects.sidebarCollapsed);
   const observeCollapsedForHover = suppressHoverOnToggle();
   $effect(() => observeCollapsedForHover(collapsed));
 
@@ -112,31 +120,33 @@
 </script>
 
 <aside
-  class="explorer-sidebar explorer-dock h-full min-h-0"
+  class={surface ? "explorer-sidebar explorer-touch h-full min-h-0 w-full min-w-0 flex-1" : "explorer-sidebar explorer-dock h-full min-h-0"}
   class:explorer-dock-collapsed={collapsed}
   aria-label={t("projects.sidebar.label")}
   data-projects-sidebar
 >
-  <div class="explorer-dock-rail flex flex-col" aria-hidden={!collapsed} inert={!collapsed}>
-    <div class="explorer-toolbar justify-center">
-      <button
-        bind:this={expandButton}
-        type="button"
-        class="explorer-icon"
-        aria-label={t("projects.sidebar.expand")}
-        aria-expanded="false"
-        data-app-tooltip={t("projects.sidebar.expand")}
-        onclick={() => setCollapsed(false)}
-      >
-        <ChevronsRight />
-      </button>
+  {#if !surface}
+    <div class="explorer-dock-rail flex flex-col" aria-hidden={!collapsed} inert={!collapsed}>
+      <div class="explorer-toolbar justify-center">
+        <button
+          bind:this={expandButton}
+          type="button"
+          class="explorer-icon"
+          aria-label={t("projects.sidebar.expand")}
+          aria-expanded="false"
+          data-app-tooltip={t("projects.sidebar.expand")}
+          onclick={() => setCollapsed(false)}
+        >
+          <ChevronsRight />
+        </button>
+      </div>
+      {#if collapsed}
+        <ProjectPlacesNav views={selectedProjectViews} activeViewId={projects.activeViewId} {onSelectView} />
+      {/if}
     </div>
-    {#if collapsed}
-      <ProjectPlacesNav views={selectedProjectViews} activeViewId={projects.activeViewId} {onSelectView} />
-    {/if}
-  </div>
+  {/if}
 
-  <div class="explorer-dock-content flex h-full min-h-0 flex-col" inert={collapsed}>
+  <div class={surface ? "flex h-full min-h-0 flex-col" : "explorer-dock-content flex h-full min-h-0 flex-col"} inert={collapsed}>
     <div class="explorer-toolbar">
       <SearchField
         bind:value={query}
@@ -152,7 +162,7 @@
         aria-label={t("projects.sidebar.collapse")}
         aria-expanded="true"
         data-app-tooltip={t("projects.sidebar.collapse")}
-        onclick={() => setCollapsed(true)}
+        onclick={() => { if (surface) onClose?.(); else setCollapsed(true); }}
       >
         <ChevronsLeft />
       </button>

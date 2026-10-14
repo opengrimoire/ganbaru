@@ -2,7 +2,6 @@
   import { onMount, tick, untrack, type Snippet } from "svelte";
   import { quintOut } from "svelte/easing";
   import { slide } from "svelte/transition";
-  import Menu from "@lucide/svelte/icons/menu";
   import { chatHeaderActionInset, nextThreadIndex } from "$lib/chat/shell-model";
   import {
     CHAT_LOCAL_EXECUTION_COMPONENTS,
@@ -92,7 +91,7 @@
   let primaryHeaderElement: HTMLDivElement | undefined = $state();
   let globalActionsElement: HTMLDivElement | undefined = $state();
   let canvasEdgeElement: HTMLDivElement | undefined = $state();
-  let mobileRailToggleElement: HTMLButtonElement | undefined = $state();
+  let mobileRailToggleElement = $state<HTMLButtonElement | null>(null);
   let railShell: HTMLDivElement | undefined = $state();
   let composerDockElement: HTMLDivElement | undefined = $state();
   let composerDockHeight = $state(0);
@@ -1006,19 +1005,13 @@
     <ChatWorkspaceHeader
       bind:editingTitle={headerEditingTitle}
       explorerExpanded={layout.railPresentation === "column" && visibleRailOpen}
-      showRailButton={!projectHosted && layout.railPresentation === "sheet" && !visibleRailOpen && !railUsesMobileSurface}
+      showRailButton={!projectHosted && layout.railPresentation === "sheet" && !visibleRailOpen}
+      bind:railButtonElement={mobileRailToggleElement}
       reserveGlobalActions={!chat.inspectorOpen && !threadColumnOpen}
       mobilePresentation={mobileShell}
       onOpenRail={openRail}
     />
   </div>
-  {#if railUsesMobileSurface && !visibleRailOpen}
-    <div class="chat-mobile-rail-bar">
-      <button bind:this={mobileRailToggleElement} type="button" class="chat-mobile-rail-toggle" aria-label={visibleRailOpen ? t("chat.collapseRail") : t("chat.openRail")} aria-expanded={visibleRailOpen} onclick={toggleRail}>
-        <Menu size={20} />
-      </button>
-    </div>
-  {/if}
   <div bind:this={railShell} class="chat-rail-shell" class:closed={!visibleRailOpen} class:explorer-chrome={railDocked} role={railIsModal ? "dialog" : undefined} aria-modal={railIsModal ? "true" : undefined} aria-label={railIsModal ? t("chat.title") : undefined} onkeydown={(event) => { if (!projectHosted && layout.railPresentation === "sheet") handleRailKeydown(event); }}>
     {#if projectSidebar && projectHosted}{@render projectSidebar(() => {})}{/if}
     <ChatChannelRail presentation={railComponentPresentation} expanded={visibleRailOpen} showCollapsedStrip={!projectHosted && layout.railPresentation === "column"} onExpand={openRail} onCollapse={closeRail} />
@@ -1118,7 +1111,6 @@
     --chat-reply-thread-column-width: 0px;
     --chat-inspector-column-width: 0px;
     --chat-global-actions-width: 6.5rem;
-    --chat-mobile-rail-bar-height: 3rem;
     grid-template-columns: var(--chat-rail-column-width) minmax(0, 1fr) 0 var(--chat-reply-thread-column-width) 0 var(--chat-inspector-column-width);
     grid-template-rows: var(--toolbar-h) minmax(0, 1fr) auto auto;
   }
@@ -1140,9 +1132,6 @@
   .chat-workspace[data-rail-docked="true"] :is(.chat-canvas, .chat-canvas-edge) { grid-column: 2 / 7; border-radius: var(--content-radius); }
   .chat-primary-header { grid-column: 1 / 3; grid-row: 1; min-width: 0; }
   .chat-workspace[data-rail-docked="true"] .chat-primary-header { grid-column: 2; }
-  .chat-mobile-rail-bar { position: absolute; top: var(--toolbar-h); right: 0; left: 0; z-index: 10; display: flex; height: var(--chat-mobile-rail-bar-height); align-items: center; background: var(--cal-bg); padding-inline: 0.5rem; }
-  .chat-mobile-rail-toggle { display: grid; width: 2.5rem; height: 2.5rem; place-items: center; border-radius: 0.5rem; color: var(--foreground); }
-  .chat-mobile-rail-toggle:is(:hover, :focus-visible) { background: var(--accent); }
   .chat-global-actions { position: absolute; top: var(--chat-canvas-inset); right: var(--chat-canvas-inset); z-index: 5; display: flex; width: max-content; min-width: var(--chat-global-actions-width); height: var(--toolbar-h); align-items: center; justify-content: flex-end; background: var(--cal-bg); padding-right: 0.75rem; }
   .chat-rail-shell { grid-column: 1; grid-row: 2; min-width: 0; overflow: hidden; }
   .chat-workspace[data-rail-presentation="column"][data-rail-open="true"] .chat-rail-shell { grid-row: 2 / 5; }
@@ -1192,7 +1181,9 @@
   .chat-workspace[data-rail-presentation="sheet"] .chat-rail-shell.closed { transform: translateX(-105%); }
   .chat-workspace.mobile-rail-surface .chat-rail-shell { position: relative; inset: auto; z-index: auto; grid-column: 1 / 7; grid-row: 2 / 5; width: 100%; min-width: 0; background: var(--cal-bg); box-shadow: none; transform: none; }
   .chat-workspace.mobile-rail-surface .chat-rail-shell.closed { display: none; transform: none; }
-  .chat-workspace.mobile-rail-surface .main-shell { padding-top: var(--chat-mobile-rail-bar-height); }
+  /* The channel list replaces the channel, so the channel action row gives its space to the list. */
+  .chat-workspace.mobile-rail-surface[data-rail-open="true"] { grid-template-rows: 0 minmax(0, 1fr) auto auto; }
+  .chat-workspace.mobile-rail-surface[data-rail-open="true"] .chat-primary-header { display: none; }
   .chat-workspace.mobile-rail-surface[data-rail-open="true"] .main-shell { display: none; }
   .chat-workspace[data-inspector-presentation="sheet"] .chat-inspector-shell { position: absolute; inset-block: 0; right: 0; z-index: 45; width: 0; box-shadow: var(--floating-shadow); }
   .chat-workspace[data-inspector-presentation="sheet"] .chat-inspector-shell.open { width: min(620px, 94cqw); min-width: min(320px, 94cqw); }

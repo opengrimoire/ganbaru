@@ -256,15 +256,17 @@ describe("NotesWorkspaceHeader", () => {
     expect(switchers[0].getAttribute("aria-expanded")).toBe("false");
   });
 
-  it("returns from a mobile note to project home and hides the back action there", () => {
+  it("returns from a mobile note to project home and collapses the empty action row there", () => {
     const onShowHome = vi.fn();
     const header = setup(page, [page], true, onShowHome);
+    expect(header.querySelector('[data-notes-mobile-action-row="visible"]')).not.toBeNull();
     header.querySelector<HTMLButtonElement>("[data-notes-mobile-back]")!.click();
     expect(onShowHome).toHaveBeenCalledOnce();
 
     const projectHome = setup(null, [], true);
+    expect(projectHome.querySelector('[data-notes-mobile-action-row="collapsed"]')).not.toBeNull();
     expect(projectHome.querySelector("[data-notes-mobile-back]")).toBeNull();
-    expect(projectHome.querySelector('button[aria-label="New note"]')).not.toBeNull();
+    expect(projectHome.querySelector('button[aria-label="New note"]')).toBeNull();
   });
 
   it("returns from a mobile database to its owner note without calling project home", () => {

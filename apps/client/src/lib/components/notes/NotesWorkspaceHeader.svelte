@@ -171,8 +171,8 @@
 
   function toolbarIconButtonClass(active = false, open = false, primary = false): string {
     return cn(
-      "flex shrink-0 items-center justify-center rounded-md transition-colors",
-      mobileLayout ? "h-12 w-(--mobile-chrome-column)" : "h-7 w-7",
+      "flex shrink-0 items-center justify-center transition-colors",
+      mobileLayout ? "mobile-chrome-button w-(--mobile-chrome-column)" : "h-7 w-7 rounded-md",
       primary
         ? "bg-primary text-primary-foreground hover:bg-primary/90"
         : "hover:bg-accent",
@@ -183,8 +183,8 @@
 
   function inlineNewPageButtonClass(): string {
     return cn(
-      "flex shrink-0 items-center justify-center rounded-md text-foreground transition-colors",
-      mobileLayout ? "h-12 w-(--mobile-chrome-column)" : "h-7 w-7",
+      "flex shrink-0 items-center justify-center text-foreground transition-colors",
+      mobileLayout ? "mobile-chrome-button w-(--mobile-chrome-column)" : "h-7 w-7 rounded-md",
       "hover:bg-accent",
     );
   }

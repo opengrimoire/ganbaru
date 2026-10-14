@@ -139,7 +139,7 @@
 {#snippet actions()}
   <button
     type="button"
-    class="flex items-center justify-center rounded-md px-2 hover:bg-accent {mobileLayout ? 'min-h-12 min-w-12' : 'h-7'}"
+    class="flex items-center justify-center hover:bg-accent {mobileLayout ? 'mobile-chrome-button w-(--mobile-chrome-column)' : 'h-7 rounded-md px-2'}"
     aria-label={t("notes.databaseOpenContainingNote")}
     title={t("notes.databaseOpenContainingNote")}
     onclick={() => editorStore.closeDatabase()}
@@ -149,7 +149,7 @@
   <button
     bind:this={shareButton}
     type="button"
-    class="flex items-center justify-center rounded-md px-2 hover:bg-accent {mobileLayout ? 'min-h-12 min-w-12' : 'h-7'} {shareOpen ? 'bg-accent' : ''}"
+    class="flex items-center justify-center hover:bg-accent {mobileLayout ? 'mobile-chrome-button w-(--mobile-chrome-column)' : 'h-7 rounded-md px-2'} {shareOpen ? 'bg-accent' : ''}"
     aria-label={t("notes.share")}
     title={t("notes.share")}
     aria-haspopup="dialog"
@@ -170,7 +170,7 @@
   {/if}
   <button
     type="button"
-    class="flex items-center justify-center rounded-md px-2 text-destructive hover:bg-accent {mobileLayout ? 'min-h-12 min-w-12' : 'h-7'}"
+    class="flex items-center justify-center text-destructive hover:bg-accent {mobileLayout ? 'mobile-chrome-button w-(--mobile-chrome-column)' : 'h-7 rounded-md px-2'}"
     aria-label={t("notes.databaseDelete")}
     title={t("notes.databaseDelete")}
     disabled={deleting}

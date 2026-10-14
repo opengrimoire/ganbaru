@@ -64,6 +64,8 @@
   const { t, locale } = getLocalization();
   const identityIconSize = COMPACT_IDENTITY_ICON_SIZE;
   const identityIconStrokeWidth = COMPACT_IDENTITY_ICON_STROKE_WIDTH;
+  const toolbarIconButtonClass = $derived(cn("chat-toolbar-icon-button", mobilePresentation && "mobile-chrome-button"));
+  const toolbarMembersTriggerClass = $derived(cn("chat-members-trigger", mobilePresentation && "mobile-chrome-button"));
   const identityEmojiScale = COMPACT_IDENTITY_EMOJI_SCALE;
   /** Avatars shown in the header trigger before the count takes over. */
   const MEMBER_STACK_LIMIT = 3;
@@ -237,7 +239,7 @@
 <svelte:window onpointerdown={handleWindowPointerDown} />
 
 <div bind:this={headerElement} class={cn("chat-workspace-header flex min-w-0 items-center", mobilePresentation ? "gap-0 overflow-hidden pl-(--mobile-chrome-inset)" : "gap-1 overflow-x-auto pl-3")} class:mobilePresentation style={`height:var(--toolbar-h);padding-right:${mobilePresentation ? "var(--mobile-chrome-inset)" : `var(--chat-header-action-inset, ${reserveGlobalActions ? "6.5rem" : "0.75rem"})`}`} onscroll={refreshNavigatorGeometry} data-chat-workspace-header>
-  {#if showRailButton}<button bind:this={railButtonElement} type="button" class="chat-toolbar-icon-button" aria-label={t("chat.openRail")} data-chat-rail-button onclick={onOpenRail}>{#if mobilePresentation}<PanelLeft size={16} strokeWidth={1.75} />{:else}<Menu size={14} />{/if}</button>{/if}
+  {#if showRailButton}<button bind:this={railButtonElement} type="button" class={toolbarIconButtonClass} aria-label={t("chat.openRail")} data-chat-rail-button onclick={onOpenRail}>{#if mobilePresentation}<PanelLeft size={16} strokeWidth={1.75} />{:else}<Menu size={14} />{/if}</button>{/if}
   <div bind:this={identityElement} class={cn("relative", mobilePresentation ? "min-w-0 flex-1 overflow-hidden" : "min-w-36 shrink-0 min-[760px]:max-w-3xl")}>
     {#if mobilePresentation}
       <MobileContextSwitcher
@@ -352,9 +354,9 @@
   {#if !mobilePresentation}<div class="flex-1"></div>{/if}
   {#if actionError}<Notice class="header-action-error max-w-48 text-[0.666667rem]" message={actionError} />{/if}
   <div class={cn("flex shrink-0 items-center", mobilePresentation ? "gap-0" : "gap-1")}>
-    {#if selectedFolder?.bindingStatus === "available"}<button type="button" class="chat-toolbar-icon-button" title={t("chat.openFolder")} aria-label={t("chat.openFolder")} onclick={() => run(() => chat.openWorkingFolder(selectedFolder.workingFolder.id))}><FolderOpen size={mobilePresentation ? 16 : 14} strokeWidth={mobilePresentation ? 1.75 : undefined} /></button>{/if}
+    {#if selectedFolder?.bindingStatus === "available"}<button type="button" class={toolbarIconButtonClass} title={t("chat.openFolder")} aria-label={t("chat.openFolder")} onclick={() => run(() => chat.openWorkingFolder(selectedFolder.workingFolder.id))}><FolderOpen size={mobilePresentation ? 16 : 14} strokeWidth={mobilePresentation ? 1.75 : undefined} /></button>{/if}
     {#if selectedChannel}
-      <button bind:this={membersTrigger} type="button" class="chat-members-trigger" class:open={membersOpen} aria-label={t("chat.organization.membersPanel", memberSummary.count)} data-app-tooltip={t("chat.organization.members")} aria-haspopup="dialog" aria-expanded={membersOpen} data-chat-members-trigger onpointerenter={() => { void loadMembersPanel(); }} onfocus={() => { void loadMembersPanel(); }} onclick={toggleChannelMembers}>
+      <button bind:this={membersTrigger} type="button" class={toolbarMembersTriggerClass} class:open={membersOpen} aria-label={t("chat.organization.membersPanel", memberSummary.count)} data-app-tooltip={t("chat.organization.members")} aria-haspopup="dialog" aria-expanded={membersOpen} data-chat-members-trigger onpointerenter={() => { void loadMembersPanel(); }} onfocus={() => { void loadMembersPanel(); }} onclick={toggleChannelMembers}>
         <span class="chat-members-stack" aria-hidden="true">
           <LocalPersonAvatar size={MEMBER_STACK_AVATAR_SIZE} />
           {#each memberStackTeammates as teammate (teammate.participant.id)}<ChatParticipantAvatar participant={teammate.participant} {teammate} size={MEMBER_STACK_AVATAR_SIZE} />{/each}
@@ -379,19 +381,24 @@
   .chat-context-segment { display:flex;height:1.75rem;min-width:0;align-items:center;gap:0.375rem;border-radius:0.375rem;padding-inline:0.375rem;text-align:left; }
   button.chat-context-segment:hover { background:var(--accent);color:var(--accent-foreground); }
   .chat-context-divider { flex:0 0 auto;padding-inline:0.125rem;font-weight:600;color:var(--muted-foreground); }
-  .chat-inline-new-button,.chat-toolbar-icon-button { display:flex;height:1.75rem;width:1.75rem;flex:0 0 auto;align-items:center;justify-content:center;border-radius:0.375rem;color:var(--foreground); }
-  .chat-inline-new-button:hover,.chat-toolbar-icon-button:hover { background:var(--accent); }
-  .chat-members-trigger { display:flex;height:1.75rem;flex:0 0 auto;align-items:center;gap:0.3rem;border-radius:0.375rem;padding-inline:0.3rem 0.5rem;color:var(--foreground); }
-  .chat-members-trigger:hover,.chat-members-trigger.open { background:var(--accent); }
+  .chat-inline-new-button,.chat-toolbar-icon-button { display:flex;flex:0 0 auto;align-items:center;justify-content:center;color:var(--foreground); }
+  .chat-workspace-header:not(.mobilePresentation) :is(.chat-inline-new-button,.chat-toolbar-icon-button) { height:1.75rem;width:1.75rem;border-radius:0.375rem; }
+  .chat-members-trigger { display:flex;flex:0 0 auto;align-items:center;gap:0.3rem;padding-inline:0.3rem 0.5rem;color:var(--foreground); }
+  .chat-workspace-header:not(.mobilePresentation) .chat-members-trigger { height:1.75rem;border-radius:0.375rem; }
+  .chat-members-trigger.open { background-color:var(--accent); }
+  @media (hover: hover) {
+    .chat-inline-new-button:hover,.chat-toolbar-icon-button:hover,.chat-members-trigger:hover { background-color:var(--accent); }
+    .chat-members-trigger:hover .chat-members-stack > :global(span) { box-shadow:0 0 0 1.5px var(--accent); }
+  }
   .chat-members-stack { display:flex;align-items:center; }
   .chat-members-stack > :global(span) { flex:0 0 auto;border-radius:22%;box-shadow:0 0 0 1.5px var(--cal-bg); }
-  .chat-members-trigger:hover .chat-members-stack > :global(span),.chat-members-trigger.open .chat-members-stack > :global(span) { box-shadow:0 0 0 1.5px var(--accent); }
+  .chat-members-trigger.open .chat-members-stack > :global(span) { box-shadow:0 0 0 1.5px var(--accent); }
   .chat-members-stack > :global(span + span) { margin-inline-start:-0.3rem; }
   .chat-members-count { font-size: calc(0.733333rem * var(--type-scale));font-weight:500; }
   .chat-branch { display:none;min-width:0;max-width:9rem;align-items:center;gap:0.3rem;border-radius:0.375rem;padding:0.25rem 0.4rem;color:var(--muted-foreground);font-size: calc(0.666667rem * var(--type-scale)); }
   .chat-branch span { overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
   @container chat-shell (min-width:760px) { .chat-branch { display:inline-flex; } }
-  /* The phone action row uses the same touch targets as the Projects and Notes rows. */
-  .mobilePresentation .chat-toolbar-icon-button { width: var(--mobile-chrome-column); height: 3rem; }
-  .mobilePresentation .chat-members-trigger { height: 3rem; padding-inline: 0.5rem 0.625rem; }
+  /* The phone action row uses the same touch targets and round highlights as the Projects and Notes rows. */
+  .mobilePresentation .chat-toolbar-icon-button { width: var(--mobile-chrome-column); }
+  .mobilePresentation .chat-members-trigger { padding-inline: 0.125rem 0.25rem; }
 </style>

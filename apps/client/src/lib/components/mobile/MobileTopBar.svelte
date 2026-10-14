@@ -66,7 +66,7 @@
 
   const { t } = getLocalization();
   const utilityButtonClass = "group flex h-full w-(--mobile-chrome-column) shrink-0 items-center justify-center text-muted-foreground transition-colors disabled:opacity-40";
-  const utilityIconClass = "grid h-8 w-8 place-items-center rounded-full transition-colors group-active:bg-accent/70";
+  const utilityIconClass = "grid size-(--mobile-chrome-highlight) place-items-center rounded-full transition-colors group-active:bg-accent/70";
   let pomodoroAnchorElement = $state<HTMLDivElement | null>(null);
   let pomodoroTriggerElement = $state<HTMLButtonElement | null>(null);
   let pomodoroMenuStyle = $state("left:50%;width:min(16rem,calc(100vw - 1rem));transform:translateX(-50%)");

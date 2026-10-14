@@ -656,8 +656,8 @@
 
   function actionButtonClass(active = false): string {
     return cn(
-      "relative flex shrink-0 items-center justify-center rounded-md px-1.5 text-foreground transition-colors hover:bg-accent",
-      mobileLayout ? "h-12 min-w-(--mobile-chrome-column)" : "h-7 min-w-7",
+      "relative flex shrink-0 items-center justify-center px-1.5 text-foreground transition-colors hover:bg-accent",
+      mobileLayout ? "mobile-chrome-button" : "h-7 min-w-7 rounded-md",
       active && "bg-accent",
     );
   }

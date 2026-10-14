@@ -230,6 +230,8 @@
   /* Phone chrome icon columns: the top bar and every action row share one button width and edge inset, so icons stack in columns from either edge, and the leading column centers under the top bar pill icon. */
   --mobile-chrome-column: 2.75rem;
   --mobile-chrome-inset: 0.25rem;
+  /* Diameter of the round pressed and open highlight inside a chrome column. */
+  --mobile-chrome-highlight: 2rem;
 }
 
 svg.lucide:not(.app-title-bar *, .explorer-sidebar *) {

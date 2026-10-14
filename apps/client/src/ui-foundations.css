@@ -171,6 +171,24 @@ html[data-shell="mobile"] {
 }
 
 /*
+ * An icon button in a phone action row. The whole chrome column stays the touch target, while its transparent border
+ * insets every fill to a round highlight the size of the top bar one, so both bars highlight alike.
+ */
+@utility mobile-chrome-button {
+  height: 3rem;
+  min-width: var(--mobile-chrome-column);
+  border-style: solid;
+  border-color: transparent;
+  border-block-width: calc((3rem - var(--mobile-chrome-highlight)) / 2);
+  border-inline-width: calc((var(--mobile-chrome-column) - var(--mobile-chrome-highlight)) / 2);
+  border-radius: calc(infinity * 1px);
+  background-clip: padding-box;
+  &:active:not(:disabled) {
+    background-color: color-mix(in oklab, var(--accent) 70%, transparent);
+  }
+}
+
+/*
  * A text field: transparent over its surface with a thin border. Focus never adds a contour, ring, or fill; the caret
  * is enough. Use it on bare inputs, textareas, and on wrappers that hold a borderless input with icons.
  */

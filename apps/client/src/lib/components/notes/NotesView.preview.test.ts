@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { mount, tick, unmount } from "svelte";
+import { createRawSnippet, mount, tick, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { applyBlockUpdate, blockPlainText, createBlockUpdate } from "$lib/notes/blocks/factory";
 import { notesBlockOutlineFromBlock } from "$lib/notes/blocks/outline";
@@ -650,6 +650,42 @@ describe("Notes preview ownership", () => {
     expect(document.querySelector("[data-notes-editor-scroll]")).toBe(mainViewport);
     expect(backend.open.mock.calls.filter(([id]) => id === parent.page.id)).toHaveLength(1);
     expect(backend.open.mock.calls.filter(([id]) => id === other.page.id)).toHaveLength(1);
+  });
+
+  it("opens the selected project's first note beside the Projects sidebar instead of following an earlier project's note", async () => {
+    const { notes, other } = await setup();
+    const { getProjects } = await import("$lib/stores/projects.svelte");
+    await unmount(component!);
+    getProjects().selectedProjectId = "other-project";
+    const { default: NotesView } = await import("./NotesView.svelte");
+    const projectSidebar = createRawSnippet<[() => void]>(() => ({ render: () => "<aside></aside>" }));
+    component = mount(NotesView, { target: document.body, props: { projectSidebar } });
+    await tick();
+    document.querySelector(`[data-notes-pane="${notes.mainPaneId}"]`)?.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    expect(getProjects().selectedProjectId).toBe("other-project");
+    await vi.waitFor(() => expect(notes.selectedPageId).toBe(other.page.id));
+    expect(getProjects().selectedProjectId).toBe("other-project");
+    expect(backend.workspaceRequests).toContainEqual(expect.objectContaining({
+      project_id: "other-project", selected_page_id: null, include_navigation_index: true,
+    }));
+  });
+
+  it("keeps a peek at another project's note open beside the Projects sidebar without changing the project", async () => {
+    const { notes, parent, other } = await setup();
+    const { getProjects } = await import("$lib/stores/projects.svelte");
+    await unmount(component!);
+    const { default: NotesView } = await import("./NotesView.svelte");
+    const projectSidebar = createRawSnippet<[() => void]>(() => ({ render: () => "<aside></aside>" }));
+    component = mount(NotesView, { target: document.body, props: { projectSidebar } });
+    await tick();
+    const shellReads = backend.workspaceRequests.length;
+    await notes.selectPage(other.page.id, { openMode: "side" });
+    notes.activatePane(notes.previewPane!.id);
+    await tick(); await tick();
+    expect(getProjects().selectedProjectId).toBe("project");
+    expect(notes.previewPane?.store.selectedPageId).toBe(other.page.id);
+    expect(notes.editorPanes[0]?.store.selectedPageId).toBe(parent.page.id);
+    expect(backend.workspaceRequests).toHaveLength(shellReads);
   });
 
   it("keeps the current project when opening a note from another project fails", async () => {

@@ -21,6 +21,7 @@ function createNotesWorkspace() {
   let activePaneId = $state(untrack(() => main.id));
   const active = $derived(preview?.id === activePaneId ? preview : main);
   const panes = $derived(preview ? [main, preview] : [main]);
+  let previewsFollowProject = true;
 
   function createPane(restoreSelection = false): NotesEditorPane {
     const id = `notes-pane-${++nextPaneId}`;
@@ -85,6 +86,7 @@ function createNotesWorkspace() {
 
   /** Follow the active document's owning project without reopening its content. */
   async function synchronizeProjectContext(pane: NotesEditorPane): Promise<void> {
+    if (!previewsFollowProject && pane.id !== main.id) return;
     const page = pane.store.loadedPage;
     if (!page || page.id !== pane.store.selectedPageId) return;
     const projectId = notesPageProjectId(page);
@@ -204,6 +206,8 @@ function createNotesWorkspace() {
     get previewPane(): NotesEditorPane | null { return preview; },
     get activePaneId(): string { return activePaneId; },
     activatePane,
+    /** Choose whether opening or focusing a preview moves the project selection to its note, as the Notes tab does. */
+    setPreviewsFollowProject(follow: boolean): void { previewsFollowProject = follow; },
     closePane,
     showPaneAs,
     closeContextualPage: () => preview ? closePreview() : closePane(main.id),

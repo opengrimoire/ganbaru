@@ -362,21 +362,30 @@
 
   /**
    * Whether hosted Notes shows the selected project: the open note belongs to it, or the project home or list is
-   * loaded for it. A note of the selected project counts even before its shell refresh finishes.
+   * loaded for it. A note of the selected project counts even before its shell refresh finishes, and `null` means the
+   * main pane is still loading.
    */
   function hostedNotesShowProject(projectId: string): boolean | null {
-    if (notes.selectedPageId) {
-      const page = notes.loadedPage;
-      if (page?.id !== notes.selectedPageId) return null;
+    const main = notes.editorPanes.find((pane) => pane.id === notes.mainPaneId)?.store;
+    if (!main || !main.loaded || main.loading) return null;
+    if (main.selectedPageId) {
+      const page = main.loadedPage;
+      if (page?.id !== main.selectedPageId) return null;
       if (notesPageProjectId(page) === projectId) return true;
     }
-    return !notes.selectedPageId && notes.workspaceProjectId === projectId;
+    return !main.selectedPageId && main.workspaceProjectId === projectId;
   }
 
   // Beside the Projects sidebar the selected project leads, so a note or shell left from another project, such as the
   // Notes tab's last document, is replaced by the selected project's notes instead of pulling the project back to it.
+  // Only the main pane counts, so a peek at another project's note stays open, and unsaved working Markdown is kept.
   $effect(() => {
-    if (!projectSidebar || !notes.loaded || notes.loading) return;
+    notes.setPreviewsFollowProject(!projectSidebar);
+    return () => notes.setPreviewsFollowProject(true);
+  });
+
+  $effect(() => {
+    if (!projectSidebar || workingMarkdownDirty) return;
     const projectId = projects.selectedProjectId;
     if (!projectId) return;
     const aligned = hostedNotesShowProject(projectId);

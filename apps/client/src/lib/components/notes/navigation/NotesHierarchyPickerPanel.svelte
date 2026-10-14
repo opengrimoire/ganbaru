@@ -1,7 +1,10 @@
 <script lang="ts">
   import { getContext, tick, untrack } from "svelte";
+  import Archive from "@lucide/svelte/icons/archive";
   import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
+  import Eye from "@lucide/svelte/icons/eye";
+  import EyeOff from "@lucide/svelte/icons/eye-off";
   import FileText from "@lucide/svelte/icons/file-text";
   import Folder from "@lucide/svelte/icons/folder";
   import FolderPlus from "@lucide/svelte/icons/folder-plus";
@@ -20,6 +23,7 @@
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import {
+    notesHierarchyArchivedChildren,
     notesHierarchyPickerChildren,
     notesHierarchyPickerTitle,
     notesHierarchyPanelChromeHeight,
@@ -157,11 +161,19 @@
     views,
     hierarchyOrder,
   ));
-  const items = $derived(allItems.filter((item) => {
-    if (!normalizedSearch) return true;
-    const title = notesHierarchyPickerTitle(item, t("notes.untitled"));
-    return title.toLocaleLowerCase().includes(normalizedSearch);
-  }));
+  const items = $derived(allItems.filter(matchesSearch));
+  /** Archived notes of this level follow the active rows while the shared picker eye is on. */
+  const archivedItems = $derived.by((): NotesHierarchyPickerNode[] => {
+    if (!notes.showArchivedInPickers) return [];
+    return notesHierarchyArchivedChildren(
+      notesPagesForProject(notes.pickerArchivedPages, projectId),
+      new Set(notes.allPages.map((page) => page.id)),
+      effectiveParent,
+      t("notes.untitled"),
+      hierarchyOrder,
+    ).filter(matchesSearch);
+  });
+  const rowCount = $derived(items.length + archivedItems.length);
   /** Folders and notes drag by their row in the custom order of an open project, each within its own block. */
   const orderDrag = createSidebarOrderDrag({
     getIds: () => items.filter(isOrderedNode).map((item) => item.key),
@@ -239,6 +251,22 @@
     });
     childPanelStyle = projectPickerPanelFrameStyle(geometry.panel);
     childBridgeStyle = projectPickerBridgeFrameStyle(geometry.bridge);
+  }
+
+  function matchesSearch(node: NotesHierarchyPickerNode): boolean {
+    if (!normalizedSearch) return true;
+    return notesHierarchyPickerTitle(node, t("notes.untitled")).toLocaleLowerCase().includes(normalizedSearch);
+  }
+
+  /** Archived notes cannot open as they are, so selecting one restores it and opens it. */
+  async function restoreArchivedPage(pageId: string): Promise<void> {
+    navigationError = null;
+    try {
+      await notes.unarchivePage(pageId);
+      await onPageSelected();
+    } catch (error: unknown) {
+      navigationError = error instanceof Error ? error.message : String(error);
+    }
   }
 
   function isOrderedNode(node: NotesHierarchyPickerNode): boolean {
@@ -464,7 +492,7 @@
   });
 
   $effect(() => {
-    const itemCount = items.length;
+    const itemCount = rowCount;
     onItemCountChange?.(itemCount);
     childItemCount;
     requestAnimationFrame(() => {
@@ -564,6 +592,24 @@
           menuZIndexClass="z-90"
           onSelect={selectSortOrder}
         />
+        <button
+          type="button"
+          class={cn(
+            "flex shrink-0 items-center justify-center text-popover-foreground/60 hover:bg-accent hover:text-accent-foreground",
+            mobileLayout ? "h-12 w-12 rounded-xl" : "h-6 w-6 rounded",
+            notes.showArchivedInPickers && "bg-accent text-accent-foreground",
+          )}
+          aria-pressed={notes.showArchivedInPickers}
+          aria-label={t(notes.showArchivedInPickers ? "notes.hideArchivedNotes" : "notes.showArchivedNotes")}
+          title={t(notes.showArchivedInPickers ? "notes.hideArchivedNotes" : "notes.showArchivedNotes")}
+          onclick={() => { notes.showArchivedInPickers = !notes.showArchivedInPickers; }}
+        >
+          {#if notes.showArchivedInPickers}
+            <EyeOff size={iconSize} strokeWidth={iconStrokeWidth} aria-hidden="true" />
+          {:else}
+            <Eye size={iconSize} strokeWidth={iconStrokeWidth} aria-hidden="true" />
+          {/if}
+        </button>
       {/if}
     </div>
     {/if}
@@ -577,7 +623,9 @@
         <Loading layout="rows" rows={3} label={t("notes.loading")} />
       {:else if notes.loadError}
         <Notice class="px-3 py-2" message={t("notes.loadFailed", notes.loadError)} copy={notes.loadError} onRetry={() => notes.load()} />
-      {:else if items.length === 0}
+      {:else if notes.showArchivedInPickers && notes.pickerArchiveError}
+        <Notice class="px-3 py-2" message={t("notes.archivedNotesLoadFailed", notes.pickerArchiveError)} copy={notes.pickerArchiveError} onRetry={() => notes.reloadPickerArchivedPages()} />
+      {:else if rowCount === 0}
         <div class="px-3 py-2 text-popover-foreground/60">
           {normalizedSearch ? t("notes.noSearchResults") : t(effectiveParent.kind === "database" ? "notes.databaseNoViews" : "notes.noPages")}
         </div>
@@ -633,6 +681,40 @@
                 {#if item.hasChildren}
                   <ChevronRight size={iconSize} strokeWidth={iconStrokeWidth} class="shrink-0 text-popover-foreground/45" />
                 {/if}
+              </button>
+            {/if}
+          {/each}
+          {#each archivedItems as item (item.key)}
+            {@const title = nodeTitle(item)}
+            {@const restoreLabel = t("notes.archivedNoteRestore", title)}
+            {#if mobileLayout}
+              <button
+                type="button"
+                class="flex min-h-12 min-w-0 items-center gap-2 rounded-floating-item px-3 text-left text-sm text-popover-foreground active:bg-accent"
+                aria-label={restoreLabel}
+                onclick={() => { if (item.kind === "page") void restoreArchivedPage(item.page.id); }}
+              >
+                {@render NodeIcon(item)}
+                <span class="min-w-0 flex-1 truncate">{title}</span>
+                <span role="img" class="shrink-0 text-popover-foreground/60" aria-label={t("notes.archivedNote")}>
+                  <Archive size={iconSize} strokeWidth={iconStrokeWidth} aria-hidden="true" />
+                </span>
+              </button>
+            {:else}
+              <button
+                type="button"
+                class="menu-item text-popover-foreground"
+                aria-label={restoreLabel}
+                title={restoreLabel}
+                onpointerenter={(event) => activateNode(item, event.currentTarget)}
+                onfocus={(event) => activateNode(item, event.currentTarget)}
+                onclick={() => { if (item.kind === "page") void restoreArchivedPage(item.page.id); }}
+              >
+                {@render NodeIcon(item)}
+                <span class="min-w-0 flex-1 truncate">{title}</span>
+                <span role="img" class="shrink-0 text-popover-foreground/60" aria-label={t("notes.archivedNote")}>
+                  <Archive size={iconSize} strokeWidth={iconStrokeWidth} aria-hidden="true" />
+                </span>
               </button>
             {/if}
           {/each}

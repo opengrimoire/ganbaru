@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createRichText } from "$lib/notes/blocks/factory";
 import type { NotesDatabaseView, NotesFolder, NotesNavigationDatabase, NotesPage } from "$lib/notes/types";
 import {
+  notesHierarchyArchivedChildren,
   notesHierarchyChildren,
   notesHierarchyNodeParent,
   notesHierarchyPath,
@@ -199,5 +200,43 @@ describe("notes hierarchy navigation", () => {
     expect(notesPageContainingFolderId(childPage.id, [parentPage, childPage]))
       .toBe("folder-1");
     expect(notesPageContainingFolderId("missing", [parentPage, childPage])).toBeNull();
+  });
+});
+
+describe("archived notes in the hierarchy pickers", () => {
+  function archived(id: string, parent?: NotesPage["parent"], folderId: string | null = null): NotesPage {
+    return { ...page(id, parent, folderId), archived: true };
+  }
+
+  it("places archived notes under their own level in the level order, without further levels", () => {
+    const pages = [
+      archived("zeta"),
+      archived("alpha"),
+      archived("in-folder", undefined, "folder-a"),
+      archived("child", { type: "page_id", page_id: "parent" }),
+    ];
+
+    expect(notesHierarchyArchivedChildren(pages, new Set(), { kind: "root" }, "Untitled").map((item) => item.key))
+      .toEqual(["page:alpha", "page:zeta"]);
+    expect(notesHierarchyArchivedChildren(pages, new Set(), { kind: "folder", id: "folder-a" }, "Untitled"))
+      .toMatchObject([{ key: "page:in-folder", hasChildren: false }]);
+    expect(notesHierarchyArchivedChildren(pages, new Set(), { kind: "page", id: "parent" }, "Untitled").map((item) => item.key))
+      .toEqual(["page:child"]);
+  });
+
+  it("leaves out notes that are active again, trashed, or under a database level", () => {
+    const pages = [archived("restored"), { ...archived("trashed"), in_trash: true }, archived("kept")];
+
+    expect(notesHierarchyArchivedChildren(pages, new Set(["restored"]), { kind: "root" }, "Untitled").map((item) => item.key))
+      .toEqual(["page:kept"]);
+    expect(notesHierarchyArchivedChildren(pages, new Set(), { kind: "database", id: "database" }, "Untitled")).toEqual([]);
+  });
+
+  it("follows the custom order of the level", () => {
+    const pages = [archived("first"), archived("second")];
+    const order = { sortOrder: "custom" as const, favoriteFolderIds: [], favoritePageIds: [], customOrderKeys: ["page:second", "page:first"] };
+
+    expect(notesHierarchyArchivedChildren(pages, new Set(), { kind: "root" }, "Untitled", order).map((item) => item.key))
+      .toEqual(["page:second", "page:first"]);
   });
 });

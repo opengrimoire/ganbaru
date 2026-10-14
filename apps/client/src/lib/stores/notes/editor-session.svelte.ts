@@ -1858,6 +1858,23 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     get trashError(): string | null {
       return archiveController.trashError;
     },
+    /** Whether the hierarchy pickers list archived notes; one state shared by every picker. */
+    get showArchivedInPickers(): boolean {
+      return archiveController.showArchivedInPickers;
+    },
+    set showArchivedInPickers(shown: boolean) {
+      archiveController.showArchivedInPickers = shown;
+    },
+    get pickerArchivedPages(): NotesPage[] {
+      return archiveController.pickerArchivedPages;
+    },
+    get pickerArchiveLoading(): boolean {
+      return archiveController.pickerArchiveLoading;
+    },
+    get pickerArchiveError(): string | null {
+      return archiveController.pickerArchiveError;
+    },
+    reloadPickerArchivedPages: archiveController.reloadPickerArchivedPages,
     get pageTemplatesLoading(): boolean {
       return pageTemplatesController.loading;
     },

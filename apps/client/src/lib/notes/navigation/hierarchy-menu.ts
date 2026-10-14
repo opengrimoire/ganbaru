@@ -183,6 +183,30 @@ export function notesHierarchyChildren(
   return [...folderNodes.sort(compareNodes), ...pageNodes.sort(compareNodes)];
 }
 
+/**
+ * List the archived notes placed directly under a picker level, in the level's sort order without favorites, for
+ * rows that follow the active children. Archived notes never open further levels, and a note that is active again
+ * is left out.
+ */
+export function notesHierarchyArchivedChildren(
+  archivedPages: readonly NotesPage[],
+  activePageIds: ReadonlySet<string>,
+  parent: NotesHierarchyParent,
+  untitledTitle: string,
+  order: NotesHierarchyOrder = NAME_ORDER,
+): NotesHierarchyNode[] {
+  if (parent.kind === "database") return [];
+  const customRanks = customOrderRanks(order.customOrderKeys ?? []);
+  return archivedPages
+    .filter((page) => page.archived && !page.in_trash && !activePageIds.has(page.id) && pageBelongsToParent(page, parent))
+    .map((page): NotesHierarchyNode => ({ kind: "page", key: `page:${page.id}`, page, hasChildren: false }))
+    .sort((left, right) => compareSidebarItems(
+      hierarchyNodeSortFields(left, untitledTitle, customRanks),
+      hierarchyNodeSortFields(right, untitledTitle, customRanks),
+      order.sortOrder,
+    ));
+}
+
 /** Return the valid folder and note ancestry ending at a selected note. */
 export function notesHierarchyPath(
   selectedPageId: string | null,

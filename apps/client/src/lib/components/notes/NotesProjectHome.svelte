@@ -75,6 +75,7 @@
   import NotesPageRow from "$lib/components/notes/navigation/NotesPageRow.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { TouchHoldArbiter } from "$lib/utils/touch-hold";
   import {
     loadNotesOptionalComponent,
     retryNotesOptionalComponent,
@@ -125,6 +126,8 @@
     startY: number;
     item: NotesNavigationDragItem;
     sourceElement: HTMLElement;
+    /** A touch lifts the row only after a stationary hold, so earlier movement keeps scrolling the list. */
+    hold: boolean;
   }
 
   type NavigationPointerPosition = NotesNavigationPoint;
@@ -249,6 +252,7 @@
     pendingNavigationPointerDrag = null;
     navigationPointerPosition = null;
     draggingNavigationItem = null;
+    touchHold.finish();
   }
 
   function prefersReducedMotion(): boolean {
@@ -525,7 +529,7 @@
   }
 
   function handleExplorerNavigationPointerDown(event: PointerEvent): void {
-    if (mobileLayout || event.button !== 0 || event.pointerType === "touch") return;
+    if (event.button !== 0 || !event.isPrimary) return;
     const target = event.target;
     if (!(target instanceof Element)) return;
     if (target.closest("input, textarea, [contenteditable='true'], .explorer-row-action")) return;
@@ -535,13 +539,27 @@
     const id = sourceElement.dataset.notesNavigationDragId;
     if ((kind !== "folder" && kind !== "page") || !id) return;
     navigationClickSuppressedUntilPointerUp = false;
-    pendingNavigationPointerDrag = {
+    const pending: PendingNavigationPointerDrag = {
       pointerId: event.pointerId,
       startX: event.clientX,
       startY: event.clientY,
       item: { kind, id },
       sourceElement,
+      hold: event.pointerType === "touch",
     };
+    pendingNavigationPointerDrag = pending;
+    if (!pending.hold) return;
+    touchHold.begin(event, () => {
+      if (pendingNavigationPointerDrag !== pending || draggingNavigationItem) {
+        touchHold.finish();
+        return;
+      }
+      beginNavigationPointerDrag(pending);
+      const position = { x: pending.startX, y: pending.startY };
+      navigationPointerPosition = position;
+      followNavigationDragCard(position);
+      updateNavigationDropTargetAtPointer();
+    });
   }
 
   function handleNavigationPointerMove(event: PointerEvent): void {
@@ -549,6 +567,7 @@
     if (!pending || pending.pointerId !== event.pointerId) return;
     const position = { x: event.clientX, y: event.clientY };
     if (!draggingNavigationItem) {
+      if (pending.hold) return;
       const distance = Math.hypot(event.clientX - pending.startX, event.clientY - pending.startY);
       if (distance < navigationPointerDragThresholdPx) return;
       beginNavigationPointerDrag(pending);
@@ -674,6 +693,8 @@
   let navigationClickSuppressedUntilPointerUp = false;
   let navigationPointerPosition: NavigationPointerPosition | null = null;
   let pendingNavigationPointerDrag: PendingNavigationPointerDrag | null = null;
+  const touchHold = new TouchHoldArbiter();
+  $effect(() => () => touchHold.finish());
   let suppressNextNavigationClick = false;
   let confirmDialogLoadState = $state<LazyComponentLoadState<
     "confirm-dialog",

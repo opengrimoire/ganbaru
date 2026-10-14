@@ -35,7 +35,7 @@
 <div
   use:portal
   class={cn(
-    "project-view-drag-card explorer-sidebar pointer-events-none fixed top-0 left-0 z-70 rounded-md",
+    "project-view-drag-card explorer-sidebar pointer-events-none fixed top-0 left-0 z-90 rounded-md",
     phase === "lifted"
       ? "scale-[1.02] shadow-xl ring-1 ring-border starting:scale-100 starting:shadow-none"
       : "scale-100 shadow-none",

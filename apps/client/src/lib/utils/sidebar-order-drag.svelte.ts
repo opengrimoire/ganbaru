@@ -18,8 +18,8 @@ export interface SidebarOrderDragOptions {
 
 /**
  * Drag to reorder the items of a sidebar or picker list in its custom order, plus one-step moves for menus. A mouse or
- * pen press on an item's handle lifts it once the pointer travels; touch keeps scrolling the list and uses the moves.
- * A new move waits until the previous order is saved, so a late response never overwrites a newer move.
+ * pen press on an item's handle lifts it once the pointer travels; a touch lifts it after a stationary hold, so a swipe
+ * keeps scrolling the list. A new move waits until the previous order is saved, so a late response never overwrites a newer move.
  */
 export function createSidebarOrderDrag(options: SidebarOrderDragOptions) {
   let saving = false;
@@ -43,13 +43,8 @@ export function createSidebarOrderDrag(options: SidebarOrderDragOptions) {
     getIds: siblingsOf,
     canStart: () => options.enabled() && !saving,
     commit: (id, targetIndex) => save(movedToIndex(siblingsOf(id), id, targetIndex)),
+    touchHold: true,
   });
-
-  /** Starts tracking a press on the handle of `id`, ignoring touch so the list still scrolls. */
-  function pointerDown(event: PointerEvent, id: string): void {
-    if (event.pointerType === "touch") return;
-    drag.pointerDown(event, id);
-  }
 
   /** Whether `id` has a sibling to swap with one place up (`-1`) or down (`1`). */
   function canMove(id: string, step: -1 | 1): boolean {
@@ -69,7 +64,7 @@ export function createSidebarOrderDrag(options: SidebarOrderDragOptions) {
     get draggedId() { return drag.draggedId; },
     get enabled() { return options.enabled(); },
     item: drag.item,
-    pointerDown,
+    pointerDown: drag.pointerDown,
     canMove,
     move,
     reset: drag.reset,

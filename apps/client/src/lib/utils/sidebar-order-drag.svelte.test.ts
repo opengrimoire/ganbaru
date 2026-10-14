@@ -3,6 +3,7 @@
 import { flushSync } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createSidebarOrderDrag, type SidebarOrderDragOptions } from "./sidebar-order-drag.svelte";
+import { TOUCH_LONG_PRESS_MS } from "./touch-hold";
 
 const ROW_HEIGHT = 28;
 
@@ -176,15 +177,41 @@ describe("sidebar order drag", () => {
     expect(sidebarDrag.draggedId).toBeNull();
   });
 
-  it("ignores touch presses and presses outside the custom order", async () => {
+  it("lifts a touch press after a stationary hold and drops it where it is released", async () => {
+    const sidebarDrag = drag();
+    mountList(sidebarDrag);
+
+    pointer(handle("a"), "pointerdown", 10, "touch");
+    await vi.advanceTimersByTimeAsync(TOUCH_LONG_PRESS_MS);
+    flushSync();
+    expect(sidebarDrag.draggedId).toBe("a");
+
+    const touchMove = new Event("touchmove", { cancelable: true });
+    window.dispatchEvent(touchMove);
+    expect(touchMove.defaultPrevented).toBe(true);
+    pointer(window, "pointermove", 40, "touch");
+    pointer(window, "pointerup", 40, "touch");
+    await settle();
+    expect(saves).toEqual([["b", "a", "c", "d"]]);
+  });
+
+  it("leaves a touch that moves before the hold to scroll the list", async () => {
     const sidebarDrag = drag();
     mountList(sidebarDrag);
 
     pointer(handle("a"), "pointerdown", 10, "touch");
     pointer(window, "pointermove", 100, "touch");
+    await vi.advanceTimersByTimeAsync(TOUCH_LONG_PRESS_MS);
     flushSync();
     expect(sidebarDrag.draggedId).toBeNull();
     pointer(window, "pointerup", 100, "touch");
+    await settle();
+    expect(saves).toEqual([]);
+  });
+
+  it("ignores presses outside the custom order", async () => {
+    const sidebarDrag = drag();
+    mountList(sidebarDrag);
 
     enabled = false;
     pointer(handle("a"), "pointerdown", 10);

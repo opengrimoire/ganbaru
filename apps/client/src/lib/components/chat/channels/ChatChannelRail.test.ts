@@ -8,6 +8,7 @@ import { getChat } from "$lib/stores/chat.svelte";
 import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
 import { setActiveVaultIdentity } from "$lib/vault/active-vault";
 import { SUBMENU_CLOSE_DELAY_MS } from "$lib/utils/menu-aim";
+import { TOUCH_LONG_PRESS_MS } from "$lib/utils/touch-hold";
 import ChatChannelRail from "./ChatChannelRail.svelte";
 
 const projectState = vi.hoisted(() => ({
@@ -47,6 +48,7 @@ describe("ChatChannelRail", () => {
   });
 
   afterEach(async () => {
+    vi.useRealTimers();
     if (component) await unmount(component);
     target.remove();
     setActiveVaultIdentity(null);
@@ -645,6 +647,41 @@ describe("ChatChannelRail", () => {
       expect(selectChannel).toHaveBeenCalledWith("channel-design");
       expect(onCollapse).toHaveBeenCalledOnce();
     });
+  });
+
+  it("moves a channel into a section after a touch hold and leaves an early swipe to scroll", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const selectChannel = vi.spyOn(getChat(), "selectChannel").mockResolvedValue();
+    component = mount(ChatChannelRail, {
+      target,
+      props: { expanded: true, showCollapsedStrip: true, onExpand: vi.fn(), onCollapse: vi.fn() },
+    });
+    await tick();
+    const general = [...target.querySelectorAll<HTMLButtonElement>(".channel-row")]
+      .find((button) => button.textContent?.trim() === "general");
+    const designHeading = target.querySelector<HTMLElement>('[data-chat-section-drop="section-design"] .section-heading');
+    if (!general || !designHeading) throw new Error("Rail rows are missing");
+    document.elementFromPoint = vi.fn(() => designHeading);
+    const touch = (element: EventTarget, type: string, clientY: number) => element.dispatchEvent(
+      new PointerEvent(type, { bubbles: true, button: 0, pointerId: 7, isPrimary: true, pointerType: "touch", clientX: 20, clientY }),
+    );
+
+    touch(general, "pointerdown", 10);
+    touch(window, "pointermove", 60);
+    vi.advanceTimersByTime(TOUCH_LONG_PRESS_MS);
+    touch(window, "pointerup", 60);
+    expect(readChatSidebarSections("project-1")[0]?.channelIds).toEqual(["channel-design"]);
+
+    touch(general, "pointerdown", 10);
+    vi.advanceTimersByTime(TOUCH_LONG_PRESS_MS);
+    touch(window, "pointermove", 60);
+    await tick();
+    expect(designHeading.parentElement?.classList.contains("rail-drop-section")).toBe(true);
+    touch(window, "pointerup", 60);
+    general.click();
+    await tick();
+    expect(readChatSidebarSections("project-1")[0]?.channelIds).toEqual(["channel-design", "channel-general"]);
+    expect(selectChannel).not.toHaveBeenCalled();
   });
 });
 

@@ -6,6 +6,7 @@ import type { ProjectSidebarActions } from "$lib/projects/sidebar";
 import type { Project, ProjectHostedViewType, ProjectView, ProjectViewType } from "$lib/projects/types";
 import { projectViewsFor } from "$lib/projects/views";
 import { starredFirst } from "$lib/utils/sidebar-order";
+import { TOUCH_LONG_PRESS_MS } from "$lib/utils/touch-hold";
 import ProjectSidebarSection from "./ProjectSidebarSection.svelte";
 
 const store = vi.hoisted(() => ({
@@ -134,8 +135,10 @@ function stubRowLayout(): void {
   });
 }
 
-function pointer(element: EventTarget, type: string, clientY: number): void {
-  element.dispatchEvent(new PointerEvent(type, { bubbles: true, button: 0, pointerId: 1, pointerType: "mouse", clientX: 20, clientY }));
+function pointer(element: EventTarget, type: string, clientY: number, pointerType = "mouse"): void {
+  element.dispatchEvent(
+    new PointerEvent(type, { bubbles: true, button: 0, pointerId: 1, isPrimary: true, pointerType, clientX: 20, clientY }),
+  );
 }
 
 beforeEach(() => {
@@ -154,6 +157,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   if (component) await unmount(component);
   component = undefined;
@@ -327,5 +331,26 @@ describe("ProjectSidebarSection", () => {
     expect(rowNamed("Notes").style.translate).toBe("");
     pointer(window, "pointerup", -200);
     expect(store.reorderViews).toHaveBeenCalledWith("project-a", ["list", "overview", "notes"]);
+  });
+
+  it("lifts a view after a stationary touch hold and leaves an early swipe to scroll", () => {
+    vi.useFakeTimers();
+    render();
+    stubRowLayout();
+    const label = viewLabelButton("Overview");
+    pointer(label, "pointerdown", 10, "touch");
+    pointer(window, "pointermove", 40, "touch");
+    vi.advanceTimersByTime(TOUCH_LONG_PRESS_MS);
+    flushSync();
+    expect(rowNamed("Backlog").style.translate).toBe("");
+    pointer(window, "pointerup", 40, "touch");
+
+    pointer(label, "pointerdown", 10, "touch");
+    vi.advanceTimersByTime(TOUCH_LONG_PRESS_MS);
+    pointer(window, "pointermove", 70, "touch");
+    flushSync();
+    expect(rowNamed("Notes").style.translate).toBe("0 -28px");
+    pointer(window, "pointerup", 70, "touch");
+    expect(store.reorderViews).toHaveBeenCalledWith("project-a", ["list", "notes", "overview"]);
   });
 });

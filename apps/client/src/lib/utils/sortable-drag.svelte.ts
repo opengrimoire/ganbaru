@@ -9,6 +9,7 @@ import {
   type SortableSlot,
 } from "./sortable-drag";
 import { suppressClickAfterRelease } from "./click-suppression";
+import { TouchHoldArbiter } from "./touch-hold";
 
 /** Class on the document root while an item is dragged, so the cursor and text selection hold across the page. */
 const DRAGGING_ROOT_CLASS = "sortable-dragging";
@@ -23,6 +24,11 @@ export interface SortableDragOptions {
   canStart?: () => boolean;
   /** Moves `id` to `targetIndex` among its siblings once it has settled into its new slot. */
   commit: (id: string, targetIndex: number) => void | Promise<void>;
+  /**
+   * Whether a touch lifts the item only after a stationary hold, so a swipe over the list keeps scrolling it. Without
+   * it, a touch drags as soon as it moves, which suits a handle with `touch-action: none`.
+   */
+  touchHold?: boolean;
 }
 
 interface PendingPress {
@@ -31,6 +37,8 @@ interface PendingPress {
   y: number;
   id: string;
   handle: HTMLElement;
+  /** The press waits for a touch hold instead of a movement threshold. */
+  hold: boolean;
 }
 
 interface ActiveDrag {
@@ -63,7 +71,7 @@ function prefersReducedMotion(): boolean {
  * Escape, a canceled pointer, or leaving the window returns the item to its slot. Items may differ in height.
  *
  * Attach `item(id)` to each item element and call `pointerDown` from its handle. The handle should carry
- * `touch-action: none` so touch drags instead of scrolling.
+ * `touch-action: none` so touch drags instead of scrolling, unless `touchHold` lets a hold take the touch from scrolling.
  */
 export function createSortableDrag(options: SortableDragOptions) {
   const elements = new Map<string, HTMLElement>();
@@ -75,6 +83,7 @@ export function createSortableDrag(options: SortableDragOptions) {
   let pending: PendingPress | null = null;
   let active: ActiveDrag | null = null;
   let settleTimer: ReturnType<typeof setTimeout> | null = null;
+  const touchHold = new TouchHoldArbiter();
 
   function addPressListeners(): void {
     window.addEventListener("pointermove", handlePointerMove);
@@ -89,6 +98,7 @@ export function createSortableDrag(options: SortableDragOptions) {
     window.removeEventListener("keydown", handleKeydown, { capture: true });
     window.removeEventListener("blur", cancel);
     document.documentElement.classList.remove(DRAGGING_ROOT_CLASS);
+    touchHold.finish();
   }
 
   function clearSettleTimer(): void {
@@ -138,11 +148,24 @@ export function createSortableDrag(options: SortableDragOptions) {
     if (event.button !== 0 || pending || active) return;
     if (!(event.currentTarget instanceof HTMLElement)) return;
     if (options.canStart?.() === false || options.getIds(id).length < 2) return;
-    pending = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, id, handle: event.currentTarget };
+    const hold = options.touchHold === true && event.pointerType === "touch";
+    const press: PendingPress = {
+      pointerId: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+      id,
+      handle: event.currentTarget,
+      hold,
+    };
+    pending = press;
     addPressListeners();
+    if (!hold) return;
+    touchHold.begin(event, () => {
+      if (pending === press && !active) lift(press.y, press);
+    });
   }
 
-  function lift(event: PointerEvent, press: PendingPress): void {
+  function lift(clientY: number, press: PendingPress): void {
     const ids = [...options.getIds(press.id)];
     const source = ids.indexOf(press.id);
     const itemElements = ids.map((id) => elements.get(id));
@@ -179,25 +202,27 @@ export function createSortableDrag(options: SortableDragOptions) {
     offset = 0;
     phase = "lifted";
     draggedId = press.id;
-    follow(event);
+    follow(clientY);
   }
 
   /** Move the lifted item with the pointer, held between the first and last slots, and open the gap it hovers. */
-  function follow(event: PointerEvent): void {
+  function follow(clientY: number): void {
     if (!active) return;
     const { list, grabY, bounds, slots, source } = active;
-    offset = clamp(event.clientY - list.getBoundingClientRect().top - grabY, bounds.min, bounds.max);
+    offset = clamp(clientY - list.getBoundingClientRect().top - grabY, bounds.min, bounds.max);
     target = sortableDragTarget(slots, source, offset);
   }
 
   function handlePointerMove(event: PointerEvent): void {
     if (active) {
-      if (event.pointerId === active.pointerId && phase === "lifted") follow(event);
+      if (event.pointerId === active.pointerId && phase === "lifted") follow(event.clientY);
       return;
     }
     if (!pending || event.pointerId !== pending.pointerId) return;
+    // A touch hold lifts from its timer; earlier movement belongs to native scrolling.
+    if (pending.hold) return;
     if (Math.hypot(event.clientX - pending.x, event.clientY - pending.y) < SORTABLE_DRAG_THRESHOLD) return;
-    lift(event, pending);
+    lift(event.clientY, pending);
   }
 
   function handlePointerUp(event: PointerEvent): void {

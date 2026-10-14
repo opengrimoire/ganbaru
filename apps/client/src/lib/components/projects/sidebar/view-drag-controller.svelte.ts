@@ -11,6 +11,7 @@ import {
   type ProjectViewDragRange,
 } from "$lib/projects/view-drag";
 import { suppressClickAfterRelease } from "$lib/utils/click-suppression";
+import { TouchHoldArbiter } from "$lib/utils/touch-hold";
 
 /** Class on the document root while a view drag is active, so the cursor and text selection hold across the page. */
 const DRAGGING_ROOT_CLASS = "project-view-dragging";
@@ -37,6 +38,8 @@ interface PendingPress {
   y: number;
   view: ProjectView;
   row: HTMLElement;
+  /** The press waits for a touch hold instead of a movement threshold. */
+  hold: boolean;
 }
 
 interface ActiveDrag {
@@ -66,7 +69,7 @@ function prefersReducedMotion(): boolean {
  * Pointer-driven reordering for the views of one Projects sidebar section. A mouse or pen press that travels past the
  * threshold lifts a card copy of the row; the rows between its slot and the hovered slot slide aside to open a gap,
  * and release settles the card into that gap. Escape, a canceled pointer, or leaving the window returns the row.
- * Touch keeps the Move up and Move down menu items.
+ * A touch lifts the row after a stationary hold instead, so a swipe keeps scrolling the sidebar.
  */
 export function createProjectViewDragController(options: ProjectViewDragControllerOptions) {
   let card = $state<ProjectViewDragCard | null>(null);
@@ -77,6 +80,7 @@ export function createProjectViewDragController(options: ProjectViewDragControll
   let pending: PendingPress | null = null;
   let active: ActiveDrag | null = null;
   let settleTimer: ReturnType<typeof setTimeout> | null = null;
+  const touchHold = new TouchHoldArbiter();
 
   function containerTop(): number {
     return options.getContainer()?.getBoundingClientRect().top ?? 0;
@@ -95,6 +99,7 @@ export function createProjectViewDragController(options: ProjectViewDragControll
     window.removeEventListener("keydown", handleKeydown, { capture: true });
     window.removeEventListener("blur", cancel);
     document.documentElement.classList.remove(DRAGGING_ROOT_CLASS);
+    touchHold.finish();
   }
 
   function clearSettleTimer(): void {
@@ -103,15 +108,21 @@ export function createProjectViewDragController(options: ProjectViewDragControll
     settleTimer = null;
   }
 
-  /** Track a press on a row; it becomes a drag only once the pointer moves past the threshold. */
+  /** Track a press on a row; it becomes a drag once the pointer moves past the threshold, or a touch holds still. */
   function pointerDown(event: PointerEvent, view: ProjectView, row: HTMLElement): void {
-    if (event.button !== 0 || event.pointerType === "touch" || pending || card) return;
+    if (event.button !== 0 || !event.isPrimary || pending || card) return;
     if (event.target instanceof Element && event.target.closest("input, .explorer-row-action")) return;
-    pending = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, view, row };
+    const hold = event.pointerType === "touch";
+    const press: PendingPress = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, view, row, hold };
+    pending = press;
     addPressListeners();
+    if (!hold) return;
+    touchHold.begin(event, () => {
+      if (pending === press && !active) lift(press.y, press);
+    });
   }
 
-  function lift(event: PointerEvent, press: PendingPress): void {
+  function lift(clientY: number, press: PendingPress): void {
     const container = options.getContainer();
     const ids = options.getViews().map((view) => view.id);
     const source = ids.indexOf(press.view.id);
@@ -157,16 +168,16 @@ export function createProjectViewDragController(options: ProjectViewDragControll
       phase: "lifted",
       frame: { left: sourceRect.left, top: sourceRect.top, width: sourceRect.width, height: sourceRect.height },
     };
-    follow(event);
+    follow(clientY);
   }
 
   /** Move the card with the pointer, held to the slots of its starred run, and open the gap under its center. */
-  function follow(event: PointerEvent): void {
+  function follow(clientY: number): void {
     if (!active || !card) return;
     const top = containerTop();
     const { slotOffsets, range, grabY, height } = active;
     const cardTop = clamp(
-      event.clientY - grabY,
+      clientY - grabY,
       top + (slotOffsets[range.start] ?? 0),
       top + (slotOffsets[range.end] ?? 0),
     );
@@ -176,12 +187,14 @@ export function createProjectViewDragController(options: ProjectViewDragControll
 
   function handlePointerMove(event: PointerEvent): void {
     if (active) {
-      if (event.pointerId === active.pointerId) follow(event);
+      if (event.pointerId === active.pointerId) follow(event.clientY);
       return;
     }
     if (!pending || event.pointerId !== pending.pointerId) return;
+    // A touch hold lifts from its timer; earlier movement belongs to native scrolling.
+    if (pending.hold) return;
     if (Math.hypot(event.clientX - pending.x, event.clientY - pending.y) < PROJECT_VIEW_DRAG_THRESHOLD) return;
-    lift(event, pending);
+    lift(event.clientY, pending);
   }
 
   function handlePointerUp(event: PointerEvent): void {

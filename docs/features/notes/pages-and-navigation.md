@@ -12,7 +12,7 @@ Opening a page uses one native page-open read for breadcrumbs, the initial block
 
 Folders organize workspace-parented pages inside a project. They are navigation containers, not page blocks or Markdown directories, and moving a page into one changes placement only. Moving a folder or page rejects self-parenting, descendant cycles, inactive destinations, and destinations outside the effective project scope.
 
-On desktop, dragging a sidebar row lifts it under the pointer, names the destination folder, and settles it into its new place on drop. Hovering a collapsed folder opens it. Dropping on the item's current location does nothing and is not highlighted, and Escape cancels the drag and returns the row.
+Dragging a sidebar row with a mouse or pen, or after a stationary touch hold, lifts it under the pointer, names the destination folder, and settles it into its new place on drop. Hovering a collapsed folder opens it. Dropping on the item's current location does nothing and is not highlighted, and Escape cancels the drag and returns the row.
 
 ## Child pages and previews
 
@@ -38,7 +38,7 @@ Favorites and recents are navigation metadata in the vault config, outside the c
 
 After favorites, the sidebar orders folders and notes by a custom order, name (A to Z or Z to A), last modified, or creation date (newest or oldest first). Notes settings choose the global order, and each project can follow it or override it from its Notes settings or the sidebar sort menu.
 
-In the custom order, a mouse or pen drags folders and notes among their siblings in the sidebar and the breadcrumb pickers; folders stay ahead of notes and favorites ahead of the rest. On a folder row, the top and bottom edges place the dragged row next to the folder and the middle moves it into the folder. Row menus move an item up or down for touch and keyboard users. Reordering is off while searching. Each project keeps its custom order in the vault config, and items without a saved place follow by name.
+In the custom order, a mouse or pen, or a touch after a stationary hold, drags folders and notes among their siblings in the sidebar and the breadcrumb pickers; folders stay ahead of notes and favorites ahead of the rest. On a folder row, the top and bottom edges place the dragged row next to the folder and the middle moves it into the folder. Row menus move an item up or down for keyboard users. Reordering is off while searching. Each project keeps its custom order in the vault config, and items without a saved place follow by name.
 
 When a page is open, its last-edited detail (with an activity panel), favorite control, and page actions sit in the workspace header; the editor has no separate page header. Previews keep their close and view-mode controls as compact overlays.
 

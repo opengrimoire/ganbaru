@@ -80,6 +80,27 @@ describe("touch hold arbitration", () => {
     expect(arbiter.editingActive).toBe(false);
   });
 
+  it("keeps the long-press context menu closed until the touch ends", () => {
+    vi.useFakeTimers();
+    const eventTarget = installWindowEventTarget();
+    const arbiter = new TouchHoldArbiter();
+
+    arbiter.begin(pointerEvent("pointerdown", 6, 20, 30), vi.fn());
+    const pendingMenu = new Event("contextmenu", { cancelable: true });
+    eventTarget.dispatchEvent(pendingMenu);
+    expect(pendingMenu.defaultPrevented).toBe(true);
+
+    vi.advanceTimersByTime(TOUCH_LONG_PRESS_MS);
+    const activeMenu = new Event("contextmenu", { cancelable: true });
+    eventTarget.dispatchEvent(activeMenu);
+    expect(activeMenu.defaultPrevented).toBe(true);
+
+    arbiter.finish();
+    const laterMenu = new Event("contextmenu", { cancelable: true });
+    eventTarget.dispatchEvent(laterMenu);
+    expect(laterMenu.defaultPrevented).toBe(false);
+  });
+
   it("cancels a pending hold once movement crosses touch slop", () => {
     vi.useFakeTimers();
     const eventTarget = installWindowEventTarget();

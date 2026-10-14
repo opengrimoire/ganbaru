@@ -838,7 +838,7 @@
         oninput={(event) => updateProjectSearch(event.currentTarget.value)}
         placeholder={searchPlaceholder ?? t("calendar.eventPanel.searchProjects")}
         class={cn(
-          "field-bare text-popover-foreground",
+          "project-picker-search field-bare text-popover-foreground",
           mobileLayout && "h-12 text-base",
         )}
       />
@@ -1336,6 +1336,11 @@
 {/if}
 
 <style>
+  /* The search row is short on room beside the order and inactive buttons, so it has no native clear button. */
+  .project-picker-search::-webkit-search-cancel-button {
+    display: none;
+  }
+
   .project-picker-panel {
     --cal-scrollbar-thumb: color-mix(in srgb, var(--popover-foreground) 18%, var(--popover));
     --cal-scrollbar-thumb-hover: color-mix(in srgb, var(--popover-foreground) 36%, var(--popover));

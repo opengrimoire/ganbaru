@@ -72,6 +72,8 @@
   let notesRootElement = $state<HTMLDivElement | null>(null);
   let pageActionsTarget = $state<HTMLElement | null>(null);
   let projectSettingsOpen = $state(false);
+  /** The phone shell opens the explorer as a floating panel over an open note; the landing level shows it in place. */
+  let mobileExplorerPanelOpen = $state(false);
   let projectSettingsDirty = $state(false);
   let projectSettingsDiscardConfirmOpen = $state(false);
   let projectVersionHistoryOpen = $state(false);
@@ -141,6 +143,7 @@
   );
   const showProjectExplorer = $derived(!mobileLayout || activeSurfaceKind === "home");
   const showPrimaryContent = $derived(!mobileLayout || activeSurfaceKind !== "home");
+  const showMobileExplorerPanel = $derived(mobileLayout && mobileExplorerPanelOpen && !showProjectExplorer);
   const showEmptyProjectState = $derived(
     !mobileLayout
     && notes.loaded
@@ -244,6 +247,10 @@
 
   $effect(() => {
     if (databaseDeletionPanes.length) untrack(() => requestDatabaseDeletionDialog());
+  });
+
+  $effect(() => {
+    if (showProjectExplorer) mobileExplorerPanelOpen = false;
   });
 
   $effect(() => {
@@ -644,6 +651,7 @@
       }}
       onProjectSelected={handleProjectSelected}
       onShowHome={showProjectHome}
+      onOpenExplorer={mobileLayout ? () => { mobileExplorerPanelOpen = true; } : undefined}
       {projectSettingsOpen}
       onToggleProjectSettings={toggleProjectSettings}
       bind:pageActionsTarget
@@ -738,9 +746,13 @@
   <div class="notes-view-layout relative flex min-h-0 flex-1 overflow-hidden" class:explorer-chrome={!mobileLayout}>
     {#if projectSidebar && !mobileLayout}
       {@render projectSidebar(handleProjectSelected)}
-    {:else if showProjectExplorer}
+    {:else if showProjectExplorer || showMobileExplorerPanel}
       <NotesProjectHome
         {mobileLayout}
+        panel={showMobileExplorerPanel}
+        onClosePanel={() => {
+          mobileExplorerPanelOpen = false;
+        }}
         projectId={selectedProjectId}
         bind:explorerCollapsed={notes.explorerCollapsed}
         {creationFolderId}

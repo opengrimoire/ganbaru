@@ -157,6 +157,7 @@ describe("NotesWorkspaceHeader", () => {
     pages: NotesPage[] = selectedPage ? [selectedPage] : [],
     mobileLayout = false,
     onShowHome = vi.fn(),
+    onOpenExplorer: (() => void) | undefined = mobileLayout ? vi.fn() : undefined,
   ): HTMLDivElement {
     notesState.store.allPages = pages;
     notesState.store.folders = [folder];
@@ -175,6 +176,7 @@ describe("NotesWorkspaceHeader", () => {
         onShowInactiveProjectsChange: vi.fn(),
         onProjectSelected: vi.fn(),
         onShowHome,
+        onOpenExplorer,
         projectSettingsOpen: false,
         onToggleProjectSettings: vi.fn(),
       },
@@ -256,15 +258,19 @@ describe("NotesWorkspaceHeader", () => {
     expect(switchers[0].getAttribute("aria-expanded")).toBe("false");
   });
 
-  it("returns from a mobile note to project home and collapses the empty action row there", () => {
+  it("opens the explorer panel from a mobile note and collapses the empty action row at project home", () => {
     const onShowHome = vi.fn();
-    const header = setup(page, [page], true, onShowHome);
+    const onOpenExplorer = vi.fn();
+    const header = setup(page, [page], true, onShowHome, onOpenExplorer);
     expect(header.querySelector('[data-notes-mobile-action-row="visible"]')).not.toBeNull();
-    header.querySelector<HTMLButtonElement>("[data-notes-mobile-back]")!.click();
-    expect(onShowHome).toHaveBeenCalledOnce();
+    expect(header.querySelector("[data-notes-mobile-back]")).toBeNull();
+    header.querySelector<HTMLButtonElement>("[data-notes-mobile-sidebar-button]")!.click();
+    expect(onOpenExplorer).toHaveBeenCalledOnce();
+    expect(onShowHome).not.toHaveBeenCalled();
 
     const projectHome = setup(null, [], true);
     expect(projectHome.querySelector('[data-notes-mobile-action-row="collapsed"]')).not.toBeNull();
+    expect(projectHome.querySelector("[data-notes-mobile-sidebar-button]")).toBeNull();
     expect(projectHome.querySelector("[data-notes-mobile-back]")).toBeNull();
     expect(projectHome.querySelector('button[aria-label="New note"]')).toBeNull();
   });

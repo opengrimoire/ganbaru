@@ -1079,7 +1079,7 @@ html[data-hover-suppressed] .content-panel * {
   --explorer-row-height: max(var(--touch-target-min), calc(var(--explorer-line-height) + 2 * var(--explorer-row-padding)));
 }
 
-/* A phone sidebar panel lays the explorer on its floating surface with the picker row shape and icon size. */
+/* Phone explorers, in sidebar panels or the Notes landing list, lie on their surface with the picker row shape and icon size. */
 .explorer-panel {
   --explorer-background: transparent;
   --explorer-row-hover: var(--accent);

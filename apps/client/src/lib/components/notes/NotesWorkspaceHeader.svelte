@@ -2,6 +2,7 @@
   import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import Database from "@lucide/svelte/icons/database";
   import Folder from "@lucide/svelte/icons/folder";
+  import PanelLeft from "@lucide/svelte/icons/panel-left";
   import Settings2 from "@lucide/svelte/icons/settings-2";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
@@ -63,6 +64,7 @@
     onShowInactiveProjectsChange,
     onProjectSelected,
     onShowHome,
+    onOpenExplorer = undefined,
     projectSettingsOpen,
     onToggleProjectSettings,
     pageActionsTarget = $bindable<HTMLElement | null>(null),
@@ -77,6 +79,8 @@
     onShowInactiveProjectsChange: (value: boolean) => void;
     onProjectSelected: () => void;
     onShowHome: () => void;
+    /** Opens the phone explorer panel over an open note. */
+    onOpenExplorer?: () => void;
     projectSettingsOpen: boolean;
     onToggleProjectSettings: () => void;
     pageActionsTarget?: HTMLElement | null;
@@ -369,10 +373,9 @@
     }
   }
 
-  function goBackFromMobilePage(): void {
+  function closeMobileDatabase(): void {
     navigatorOpen = false;
-    if (databaseSelected) notes.closeDatabase();
-    else onShowHome();
+    notes.closeDatabase();
   }
 
   function handleProjectTriggerClick(): void {
@@ -485,13 +488,28 @@
     {/snippet}
   </MobileContextSwitcher>
   <div class="flex h-12 min-w-0 max-w-full items-center gap-0.5 text-identity font-medium">
-    {#if selectedPageTitle || databaseSelected}
+    {#if (selectedPageTitle || databaseSelected) && onOpenExplorer}
       <button
         type="button"
         class={toolbarIconButtonClass()}
-        aria-label={databaseSelected ? t("common.back") : t("notes.showProjectHome")}
+        aria-label={t("notes.expandExplorerSidebar")}
+        title={t("notes.expandExplorerSidebar")}
+        data-notes-mobile-sidebar-button
+        onclick={() => {
+          navigatorOpen = false;
+          onOpenExplorer();
+        }}
+      >
+        <PanelLeft size={16} strokeWidth={1.75} />
+      </button>
+    {/if}
+    {#if databaseSelected}
+      <button
+        type="button"
+        class={toolbarIconButtonClass()}
+        aria-label={t("common.back")}
         data-notes-mobile-back
-        onclick={goBackFromMobilePage}
+        onclick={closeMobileDatabase}
       >
         <ChevronLeft class="size-5" strokeWidth={identityIconStrokeWidth} />
       </button>

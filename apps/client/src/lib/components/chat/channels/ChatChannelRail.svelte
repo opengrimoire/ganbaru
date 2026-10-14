@@ -1050,5 +1050,7 @@
   .channel-row-group .channel-row { flex: 1; }
   .explorer-touch .section-heading > button { min-width: var(--touch-target-min); min-height: var(--touch-target-min); }
   .explorer-touch .section-heading > .section-toggle { min-width: 0; }
+  /* Touch headings keep the row action end inset, so their actions line up with the channel rows below. */
+  .explorer-touch .channel-section > .section-heading > .explorer-row-action { margin-inline-end: var(--explorer-row-action-end-inset); }
   .channel-loading { padding-right: 0.55rem; opacity: 0.72; }
 </style>

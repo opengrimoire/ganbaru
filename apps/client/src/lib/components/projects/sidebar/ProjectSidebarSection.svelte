@@ -608,6 +608,16 @@
     opacity: 1;
   }
 
+  /* Touch headings take the row action size and end inset, so their actions line up with the view rows below. */
+  :global(.explorer-touch) .section-heading > button:not(.section-toggle) {
+    min-width: var(--touch-target-min);
+    min-height: var(--touch-target-min);
+  }
+
+  :global(.explorer-touch) .section-heading > .explorer-row-action {
+    margin-inline-end: var(--explorer-row-action-end-inset);
+  }
+
   .section-name,
   .section-group {
     min-width: 0;

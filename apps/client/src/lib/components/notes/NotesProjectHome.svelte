@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MobileSidebarPanel from "$lib/components/mobile/MobileSidebarPanel.svelte";
   import SearchField from "$lib/components/ui/SearchField.svelte";
   import { onMount, tick } from "svelte";
   import ChevronsLeft from "@lucide/svelte/icons/chevrons-left";
@@ -82,6 +83,8 @@
 
   let {
     mobileLayout = false,
+    panel = false,
+    onClosePanel = undefined,
     projectId = null,
     explorerCollapsed = $bindable(false),
     creationFolderId = null,
@@ -91,6 +94,10 @@
     onBeforeDocumentNavigation,
   }: {
     mobileLayout?: boolean;
+    /** Floats the phone explorer over an open note, closing it after a note opens. */
+    panel?: boolean;
+    /** Closes the panel presentation. */
+    onClosePanel?: () => void;
     projectId?: string | null;
     explorerCollapsed?: boolean;
     creationFolderId?: string | null;
@@ -640,7 +647,7 @@
 
   let search = $state("");
   let searchOpen = $state(false);
-  let searchButton: HTMLButtonElement;
+  let searchButton = $state<HTMLButtonElement | null>(null);
   let sortMenuOpen = $state(false);
   const sortOrder = $derived(notes.sidebarOrderForProject(projectId));
   const sortOrderOverride = $derived(notes.sidebarOrderOverride(projectId));
@@ -866,11 +873,18 @@
     if (notes.viewMode === "archive") notes.closeArchive();
     if (notes.viewMode === "trash") notes.closeTrash();
     void notes.createPage("", { projectId, folderId, openMode: "full" });
+    closePanel();
   }
 
   function createSubpage(parentPageId: string): void {
     if (!onBeforeDocumentNavigation()) return;
     void notes.createSubpage(parentPageId, "", { openMode: "full" });
+    closePanel();
+  }
+
+  /** The panel presentation steps aside once a note opens. */
+  function closePanel(): void {
+    if (panel) onClosePanel?.();
   }
 
   async function renamePage(pageId: string, title: string): Promise<boolean> {
@@ -890,6 +904,7 @@
     void notes.selectPage(pageId, { openMode: "full" }).catch((error) => {
       console.error("open Notes page failed", error);
     });
+    closePanel();
   }
 
   async function refreshWorkingMarkdown(): Promise<void> {
@@ -1119,9 +1134,14 @@
   onwheel={handleNavigationDragWheel}
 />
 
+{#snippet explorer()}
 <aside
-  class="explorer-sidebar notes-project-explorer relative h-full min-h-0 shrink-0 overflow-hidden"
+  class={cn(
+    "explorer-sidebar notes-project-explorer relative min-h-0 overflow-hidden",
+    panel ? "flex flex-1 flex-col" : "h-full shrink-0",
+  )}
   class:explorer-touch={mobileLayout}
+  class:explorer-panel={mobileLayout}
   class:notes-project-explorer-mobile={mobileLayout}
   class:explorer-dock={!mobileLayout}
   class:explorer-dock-collapsed={!mobileLayout && explorerCollapsed}
@@ -1221,18 +1241,20 @@
         <ChevronsDownUp class="size-4" strokeWidth={explorerIconStrokeWidth} />
       {/if}
     </button>
-    <button
-      type="button"
-      class="explorer-icon"
-      class:explorer-icon-active={searchOpen}
-      bind:this={searchButton}
-      aria-label={t("notes.searchLabel")}
-      aria-pressed={searchOpen}
-      data-app-tooltip={t("notes.searchLabel")}
-      onclick={toggleSearch}
-    >
-      <Search class="size-4" strokeWidth={explorerIconStrokeWidth} />
-    </button>
+    {#if !panel}
+      <button
+        type="button"
+        class="explorer-icon"
+        class:explorer-icon-active={searchOpen}
+        bind:this={searchButton}
+        aria-label={t("notes.searchLabel")}
+        aria-pressed={searchOpen}
+        data-app-tooltip={t("notes.searchLabel")}
+        onclick={toggleSearch}
+      >
+        <Search class="size-4" strokeWidth={explorerIconStrokeWidth} />
+      </button>
+    {/if}
     {#if !mobileLayout}
       <button
         bind:this={collapseExplorerButtonElement}
@@ -1250,7 +1272,7 @@
     {/if}
   </div>
 
-  {#if searchOpen}
+  {#if searchOpen && !panel}
     <SearchField bind:value={search} label={t("notes.searchLabel")} placeholder={t("notes.searchPlaceholder")} clearLabel={t("notes.clearSearch")} onClose={toggleSearch} />
   {/if}
 
@@ -1267,7 +1289,10 @@
   <div
     bind:this={explorerScrollElement}
     use:scrollOverflowAction
-    class="explorer-list min-h-0 flex-1 overflow-x-auto pb-2"
+    class={cn(
+      "min-h-0 flex-1 overflow-x-auto pb-2",
+      panel ? "hide-scrollbar overflow-y-auto overscroll-contain px-2" : "explorer-list",
+    )}
     class:notes-navigation-root-drop-valid={navigationDropTarget?.kind === "root" && navigationDropResolution === "move"}
     class:notes-navigation-root-drop-invalid={navigationDropTarget?.kind === "root" && navigationDropResolution === "forbidden"}
     role="region"
@@ -1422,6 +1447,21 @@
   </div>
 
 </aside>
+{/snippet}
+
+{#if panel}
+  <MobileSidebarPanel
+    title={t("notes.explorerLabel")}
+    searchLabel={t("notes.searchLabel")}
+    clearSearchLabel={t("notes.clearSearch")}
+    bind:query={search}
+    onClose={() => onClosePanel?.()}
+  >
+    {@render explorer()}
+  </MobileSidebarPanel>
+{:else}
+  {@render explorer()}
+{/if}
 
 {#if navigationDragCard}
   <NotesNavigationDragCard

@@ -242,8 +242,8 @@
     {#if mobilePresentation}
       <MobileContextSwitcher
         title={selectedProject?.name ?? t("chat.title")}
-        expanded={navigatorOpen && navigatorMode !== "channels"}
-        onclick={() => toggleNavigator("projects")}
+        expanded={navigatorOpen}
+        onclick={() => toggleNavigator(selectedProject ? "channels" : "projects")}
       >
         {#snippet icon()}
           {#if selectedProject}
@@ -253,14 +253,9 @@
           {/if}
         {/snippet}
       </MobileContextSwitcher>
-      {#if selectedChannel}
-        <div class="flex h-12 min-w-0 items-center text-identity font-medium">
-          {#if editingTitle && !selectedChannel.isDefault}
-            <div class="min-w-0 flex-1 px-1"><ChatTitleEditor title={selectedChannel.name} onCommit={commitTitle} onCancel={() => { editingTitle = false; }} /></div>
-          {:else}
-            <button type="button" class={cn("chat-mobile-channel-trigger", navigatorOpen && navigatorMode === "channels" && "bg-accent")} aria-label={t("chat.channels.navigatorLabel")} aria-expanded={navigatorOpen && navigatorMode === "channels"} data-chat-channel-trigger onclick={() => toggleNavigator("channels")}><Hash size={identityIconSize} strokeWidth={identityIconStrokeWidth} class="shrink-0" /><span class="min-w-0 truncate">{selectedChannel.name}</span><WorkspaceBreadcrumbTerminalIcon kind="chevron" context="chat" class="shrink-0 text-muted-foreground" /></button>
-          {/if}
-        </div>
+      <!-- The switcher opens at the project's channels, so the action row names the channel only while renaming it. -->
+      {#if selectedChannel && editingTitle && !selectedChannel.isDefault}
+        <div class="flex h-12 min-w-0 items-center px-1 text-identity font-medium"><div class="min-w-0 flex-1"><ChatTitleEditor title={selectedChannel.name} onCommit={commitTitle} onCancel={() => { editingTitle = false; }} /></div></div>
       {/if}
     {:else}
     <div class="flex h-7 min-w-0 max-w-full items-center gap-0.5 overflow-hidden text-identity font-medium">
@@ -399,6 +394,4 @@
   /* The phone action row uses the same touch targets as the Projects and Notes rows. */
   .mobilePresentation .chat-toolbar-icon-button { width: 3rem; height: 3rem; }
   .mobilePresentation .chat-members-trigger { height: 3rem; padding-inline: 0.5rem 0.625rem; }
-  .chat-mobile-channel-trigger { display:flex;height:3rem;min-width:0;align-items:center;gap:0.375rem;border-radius:0.375rem;padding-inline:0.375rem;text-align:left; }
-  .chat-mobile-channel-trigger:active { background:var(--accent); }
 </style>

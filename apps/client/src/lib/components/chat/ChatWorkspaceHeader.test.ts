@@ -356,27 +356,21 @@ describe("ChatWorkspaceHeader", () => {
     expect(target.querySelector("[data-chat-project-trigger]")).not.toBeNull();
   });
 
-  it("names the mobile switcher after the project and keeps the channel in the action row", async () => {
+  it("names the mobile switcher after the project and opens it at the project's channels", async () => {
     const target = setup(true, false, false, true);
     const switchers = target.querySelectorAll<HTMLButtonElement>("[data-mobile-context-switcher]");
-    const channelTrigger = target.querySelector<HTMLButtonElement>("[data-chat-channel-trigger]");
 
     expect(switchers).toHaveLength(1);
     expect(switchers[0].textContent).toContain("Ganbaru");
     expect(switchers[0].textContent).not.toContain("general");
-    expect(channelTrigger?.textContent).toContain("general");
+    expect(target.querySelector("[data-chat-channel-trigger]")).toBeNull();
     expect(target.querySelector("[data-chat-group-trigger]")).toBeNull();
     expect(target.querySelector("[data-chat-project-trigger]")).toBeNull();
 
     switchers[0].click();
     await tick();
     expect(switchers[0].getAttribute("aria-expanded")).toBe("true");
-    expect(channelTrigger?.getAttribute("aria-expanded")).toBe("false");
-
-    channelTrigger?.click();
-    await tick();
-    expect(channelTrigger?.getAttribute("aria-expanded")).toBe("true");
-    expect(switchers[0].getAttribute("aria-expanded")).toBe("false");
+    expect(document.querySelector("[data-chat-channel-picker]")).not.toBeNull();
   });
 
   it("names the mobile switcher after the project when no channel is selected", () => {

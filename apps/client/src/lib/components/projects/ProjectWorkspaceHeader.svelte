@@ -1,7 +1,7 @@
 <script lang="ts">
   import ArrowUpDown from "@lucide/svelte/icons/arrow-up-down";
   import Check from "@lucide/svelte/icons/check";
-  import ChevronLeft from "@lucide/svelte/icons/chevron-left";
+  import PanelLeft from "@lucide/svelte/icons/panel-left";
   import Columns3 from "@lucide/svelte/icons/columns-3";
   import Layers from "@lucide/svelte/icons/layers";
   import ListFilter from "@lucide/svelte/icons/list-filter";
@@ -360,7 +360,7 @@
               onOpenSidebar();
             }}
           >
-            <ChevronLeft class="size-5" strokeWidth={projectIdentityIconStrokeWidth} />
+            <PanelLeft size={16} strokeWidth={1.75} />
           </button>
         {/if}
       </div>

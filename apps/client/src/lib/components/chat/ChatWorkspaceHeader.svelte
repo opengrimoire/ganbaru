@@ -3,7 +3,7 @@
   import FolderOpen from "@lucide/svelte/icons/folder-open";
   import GitBranch from "@lucide/svelte/icons/git-branch";
   import Hash from "@lucide/svelte/icons/hash";
-  import ChevronLeft from "@lucide/svelte/icons/chevron-left";
+  import PanelLeft from "@lucide/svelte/icons/panel-left";
   import Menu from "@lucide/svelte/icons/menu";
   import MessageSquare from "@lucide/svelte/icons/message-square";
   import { summarizeChannelMembers } from "$lib/chat/teammates/channel-members";
@@ -237,7 +237,7 @@
 <svelte:window onpointerdown={handleWindowPointerDown} />
 
 <div bind:this={headerElement} class={cn("chat-workspace-header flex min-w-0 items-center gap-1", mobilePresentation ? "overflow-hidden pl-3" : "overflow-x-auto pl-3")} class:mobilePresentation style={`height:var(--toolbar-h);padding-right:${mobilePresentation ? "0.75rem" : `var(--chat-header-action-inset, ${reserveGlobalActions ? "6.5rem" : "0.75rem"})`}`} onscroll={refreshNavigatorGeometry} data-chat-workspace-header>
-  {#if showRailButton}<button bind:this={railButtonElement} type="button" class="chat-toolbar-icon-button" aria-label={t("chat.openRail")} data-chat-rail-button onclick={onOpenRail}>{#if mobilePresentation}<ChevronLeft class="size-5" strokeWidth={identityIconStrokeWidth} />{:else}<Menu size={14} />{/if}</button>{/if}
+  {#if showRailButton}<button bind:this={railButtonElement} type="button" class="chat-toolbar-icon-button" aria-label={t("chat.openRail")} data-chat-rail-button onclick={onOpenRail}>{#if mobilePresentation}<PanelLeft size={16} strokeWidth={1.75} />{:else}<Menu size={14} />{/if}</button>{/if}
   <div bind:this={identityElement} class={cn("relative", mobilePresentation ? "min-w-0 flex-1 overflow-hidden" : "min-w-36 shrink-0 min-[760px]:max-w-3xl")}>
     {#if mobilePresentation}
       <MobileContextSwitcher

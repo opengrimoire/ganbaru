@@ -479,14 +479,14 @@ describe("ChatChannelRail", () => {
   it("keeps mobile rename controls tappable without saving before Cancel", async () => {
     component = mount(ChatChannelRail, {
       target,
-      props: { presentation: "surface", expanded: true, showCollapsedStrip: true, onExpand: vi.fn(), onCollapse: vi.fn() },
+      props: { presentation: "panel", expanded: true, showCollapsedStrip: false, onExpand: vi.fn(), onCollapse: vi.fn() },
     });
     await tick();
-    const section = target.querySelectorAll<HTMLElement>(".channel-section")[1];
+    const section = document.querySelectorAll<HTMLElement>(".channel-section")[1];
     async function openRename(): Promise<HTMLInputElement> {
       section?.querySelector<HTMLButtonElement>(".section-heading .explorer-row-action")?.click();
       await tick();
-      target.querySelector<HTMLButtonElement>(".section-context-menu button")?.click();
+      document.querySelector<HTMLButtonElement>(".section-context-menu button")?.click();
       await tick();
       const input = section?.querySelector<HTMLInputElement>(".section-heading input");
       if (!input) throw new Error("Section rename input is missing");
@@ -621,14 +621,14 @@ describe("ChatChannelRail", () => {
     expect(target.querySelector('.archive-button')).toBeNull();
   });
 
-  it("closes the mobile surface after navigating to a channel", async () => {
+  it("closes the mobile panel after navigating to a channel", async () => {
     const chat = getChat();
     const selectChannel = vi.spyOn(chat, "selectChannel").mockResolvedValue();
     const onCollapse = vi.fn();
     component = mount(ChatChannelRail, {
       target,
       props: {
-        presentation: "surface",
+        presentation: "panel",
         expanded: true,
         showCollapsedStrip: false,
         onExpand: vi.fn(),
@@ -637,7 +637,7 @@ describe("ChatChannelRail", () => {
     });
     await tick();
 
-    const designChannel = [...target.querySelectorAll<HTMLButtonElement>(".channel-row")]
+    const designChannel = [...document.querySelectorAll<HTMLButtonElement>(".channel-row")]
       .find((button) => button.textContent?.trim() === "design");
     designChannel?.click();
 

@@ -158,13 +158,6 @@
   });
 
   $effect(() => {
-    if (!mobileSidebarOpen) return;
-    return mobileBackStack.activate({
-      handle: closeMobileSidebar,
-    });
-  });
-
-  $effect(() => {
     if (!mobileLayout || !routeUi.taskFinderOpen) return;
     return mobileBackStack.activate({
       handle: () => {
@@ -397,7 +390,7 @@
     />
   {:else if mobileSidebarOpen}
     <ProjectsSidebar
-      presentation="surface"
+      presentation="panel"
       onSelectView={(view) => {
         closeMobileSidebar();
         selectView(view);
@@ -412,7 +405,6 @@
   {/if}
   <section
     class="flex min-w-0 flex-1 flex-col overflow-hidden"
-    class:hidden={mobileSidebarOpen}
     class:surface-content={sidebarDocked}
     style="background-color: var(--cal-bg);"
   >

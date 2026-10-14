@@ -74,10 +74,10 @@ const SECTION_HEIGHT = 30;
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | undefined;
 
-function render(surfaceProps: { presentation: "surface"; onClose: () => void } | null = null): void {
+function render(panelProps: { presentation: "panel"; onClose: () => void } | null = null): void {
   component = mount(ProjectsSidebar, {
     target,
-    props: { onSelectView: () => undefined, onProjectSelected: () => undefined, ...surfaceProps },
+    props: { onSelectView: () => undefined, onProjectSelected: () => undefined, ...panelProps },
   });
   flushSync();
 }
@@ -157,19 +157,37 @@ describe("ProjectsSidebar", () => {
     expect(store.reorderProjectsInGroup).not.toHaveBeenCalled();
   });
 
-  it("closes the mobile surface instead of collapsing it to a rail", () => {
+  it("opens as a picker panel that closes from its header on the phone", () => {
     const onClose = vi.fn();
-    render({ presentation: "surface", onClose });
+    render({ presentation: "panel", onClose });
 
-    const sidebar = target.querySelector<HTMLElement>("[data-projects-sidebar]");
-    expect(sidebar?.classList.contains("explorer-touch")).toBe(true);
+    const panel = document.querySelector<HTMLElement>("[data-mobile-sidebar-panel]");
+    const sidebar = panel?.querySelector<HTMLElement>("[data-projects-sidebar]");
+    expect(panel?.closest('[role="dialog"]')?.getAttribute("aria-label")).toBe("Projects");
+    expect(sidebar?.classList.contains("explorer-panel")).toBe(true);
     expect(sidebar?.classList.contains("explorer-dock")).toBe(false);
-    expect(target.querySelector('button[aria-label="Expand sidebar"]')).toBeNull();
+    expect(document.querySelector('button[aria-label="Expand sidebar"]')).toBeNull();
+    expect(document.querySelector('button[aria-label="Collapse sidebar"]')).toBeNull();
+    expect(panel?.querySelectorAll("[data-project-list] > [data-sortable-item]")).toHaveLength(3);
 
-    target.querySelector<HTMLButtonElement>('button[aria-label="Collapse sidebar"]')?.click();
+    panel?.querySelector<HTMLButtonElement>("[data-mobile-sidebar-panel-close]")?.click();
     flushSync();
 
     expect(onClose).toHaveBeenCalledOnce();
-    expect(sectionItems()).toHaveLength(3);
+  });
+
+  it("filters the panel list from the panel search field", () => {
+    render({ presentation: "panel", onClose: vi.fn() });
+
+    const panel = document.querySelector<HTMLElement>("[data-mobile-sidebar-panel]");
+    const input = panel?.querySelector<HTMLInputElement>('input[aria-label="Search projects"]');
+    if (!input) throw new Error("Panel search is missing");
+    input.value = "gam";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+
+    const names = [...(panel?.querySelectorAll<HTMLElement>("[data-project-list] section[aria-label]") ?? [])]
+      .map((section) => section.getAttribute("aria-label"));
+    expect(names).toEqual(["Gamma"]);
   });
 });

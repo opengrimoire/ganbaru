@@ -1079,6 +1079,17 @@ html[data-hover-suppressed] .content-panel * {
   --explorer-row-height: max(var(--touch-target-min), calc(var(--explorer-line-height) + 2 * var(--explorer-row-padding)));
 }
 
+/* A phone sidebar panel lays the explorer on its floating surface with the picker row shape and icon size. */
+.explorer-panel {
+  --explorer-background: transparent;
+  --explorer-row-hover: var(--accent);
+  --explorer-row-icon-size: 18px;
+}
+
+.explorer-panel :is(.explorer-row, .section-heading > button, .explorer-icon) {
+  border-radius: 0.75rem;
+}
+
 .explorer-sidebar .explorer-row > button.explorer-row-label,
 .explorer-sidebar button.explorer-row.explorer-row-label {
   padding-block: var(--explorer-row-padding);

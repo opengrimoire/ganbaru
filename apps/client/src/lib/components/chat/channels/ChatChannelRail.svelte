@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import { COMPACT_IDENTITY_ICON_SIZE, COMPACT_IDENTITY_ICON_STROKE_WIDTH } from "$lib/icon-sizing";
+  import MobileSidebarPanel from "$lib/components/mobile/MobileSidebarPanel.svelte";
   import SearchField from "$lib/components/ui/SearchField.svelte";
   import Archive from "@lucide/svelte/icons/archive";
   import Check from "@lucide/svelte/icons/check";
@@ -73,13 +74,15 @@
     onExpand,
     onCollapse,
   }: {
-    presentation?: "column" | "sheet" | "surface";
+    presentation?: "column" | "sheet" | "panel";
     expanded: boolean;
     showCollapsedStrip: boolean;
     onExpand: () => void;
     onCollapse: () => void;
   } = $props();
 
+  /** The phone shell opens the rail as a floating panel that closes after a channel opens. */
+  const panel = $derived(presentation === "panel");
   const chat = getChat();
   const chatSidebarOrder = getChatSidebarOrder();
   const preferences = getPreferences();
@@ -586,7 +589,7 @@
     moveChannel(channel.id, sectionId);
     setupChannel = undefined;
     setupSectionId = null;
-    if (presentation === "surface") onCollapse();
+    if (panel) onCollapse();
   }
 
   /** Collapse the docked rail and keep focus on the control that reopens it. */
@@ -667,7 +670,7 @@
     railError = null;
     try {
       await chat.selectChannel(channelId);
-      if (presentation === "surface") onCollapse();
+      if (panel) onCollapse();
     } catch (cause: unknown) {
       railError = cause instanceof Error ? cause.message : String(cause);
     }
@@ -678,7 +681,7 @@
     try {
       await chat.openMessageSearchResult(result);
       query = "";
-      if (presentation === "surface") onCollapse();
+      if (panel) onCollapse();
     } catch (cause: unknown) {
       railError = cause instanceof Error ? cause.message : String(cause);
     }
@@ -729,19 +732,47 @@
   });
 </script>
 
-{#if expanded || showCollapsedStrip}
-  <aside bind:this={railElement} class="explorer-sidebar flex h-full min-h-0 flex-col" class:explorer-dock={showCollapsedStrip} class:explorer-dock-collapsed={showCollapsedStrip && !expanded} class:explorer-touch={presentation === "surface"} aria-label={t("chat.channels.explorerLabel")}>
-    {#if showCollapsedStrip}
-      <div class="explorer-dock-rail" aria-hidden={expanded} inert={expanded}>
-        <div class="explorer-toolbar justify-center"><button bind:this={expandButton} type="button" class="explorer-icon" aria-expanded="false" data-app-tooltip={t("chat.openRail")} aria-label={t("chat.openRail")} onclick={expandFromStrip}><ChevronsRight size={16} /></button></div>
+{#if panel}
+  {#if expanded}
+    <MobileSidebarPanel
+      title={t("chat.channels.explorerLabel")}
+      searchLabel={t("chat.channels.search")}
+      clearSearchLabel={t("chat.channels.clearSearch")}
+      bind:query
+      onClose={onCollapse}
+    >
+      <div bind:this={railElement} class="explorer-sidebar explorer-touch explorer-panel flex min-h-0 flex-1 flex-col pt-2" role="group" aria-label={t("chat.channels.explorerLabel")}>
+        {@render railBody("hide-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 pb-2")}
       </div>
-    {/if}
-    <div class="flex h-full min-h-0 flex-col" class:explorer-dock-content={showCollapsedStrip} inert={!expanded}>
-      <div class="explorer-toolbar">
-        <SearchField bind:value={query} label={t("chat.channels.search")} clearLabel={t("chat.channels.clearSearch")} inline focusOnMount={false} />
-        <button bind:this={collapseButton} type="button" class="explorer-icon" data-chat-rail-close aria-label={t("chat.collapseRail")} aria-expanded="true" data-app-tooltip={t("chat.collapseRail")} onclick={collapseToStrip}><ChevronsLeft size={16} /></button>
+      {@render railMenus()}
+      {@render railDialogs()}
+    </MobileSidebarPanel>
+  {:else}
+    {@render railMenus()}
+    {@render railDialogs()}
+  {/if}
+{:else}
+  {#if expanded || showCollapsedStrip}
+    <aside bind:this={railElement} class="explorer-sidebar flex h-full min-h-0 flex-col" class:explorer-dock={showCollapsedStrip} class:explorer-dock-collapsed={showCollapsedStrip && !expanded} aria-label={t("chat.channels.explorerLabel")}>
+      {#if showCollapsedStrip}
+        <div class="explorer-dock-rail" aria-hidden={expanded} inert={expanded}>
+          <div class="explorer-toolbar justify-center"><button bind:this={expandButton} type="button" class="explorer-icon" aria-expanded="false" data-app-tooltip={t("chat.openRail")} aria-label={t("chat.openRail")} onclick={expandFromStrip}><ChevronsRight size={16} /></button></div>
+        </div>
+      {/if}
+      <div class="flex h-full min-h-0 flex-col" class:explorer-dock-content={showCollapsedStrip} inert={!expanded}>
+        <div class="explorer-toolbar">
+          <SearchField bind:value={query} label={t("chat.channels.search")} clearLabel={t("chat.channels.clearSearch")} inline focusOnMount={false} />
+          <button bind:this={collapseButton} type="button" class="explorer-icon" data-chat-rail-close aria-label={t("chat.collapseRail")} aria-expanded="true" data-app-tooltip={t("chat.collapseRail")} onclick={collapseToStrip}><ChevronsLeft size={16} /></button>
+        </div>
+        {@render railBody("explorer-list min-h-0 flex-1 pb-2")}
       </div>
+    </aside>
+  {/if}
+  {@render railMenus()}
+  {@render railDialogs()}
+{/if}
 
+{#snippet railBody(listClass: string)}
       {#if creatingSection}
         <form class="mx-2 mb-2 flex gap-1" onsubmit={(event) => { event.preventDefault(); createSection(); }}>
           <input bind:this={sectionInput} class="field min-w-0 flex-1 text-xs" bind:value={newSectionName} maxlength="80" placeholder={t("chat.channels.sectionName")} aria-label={t("chat.channels.sectionName")} onkeydown={(event) => { if (event.key === "Escape") { event.stopPropagation(); toggleSectionDraft(); } }} />
@@ -751,7 +782,7 @@
 
       {#if railError}<Notice class="mx-2 mb-1 px-2 py-1 text-xs" message={railError} />{/if}
 
-      <div use:scrollOverflowAction class="explorer-list min-h-0 flex-1 pb-2">
+      <div use:scrollOverflowAction class={listClass}>
         {#if query.trim().length >= 2}
           <section class="message-results" aria-label={t("chat.organization.messageSearchResults")}>
             <div class="section-heading"><span>{t("chat.organization.messages")}</span>{#if messageSearchLoading}<LoaderCircle size={12} class="animate-spin" aria-label={t("common.loading")} />{/if}</div>
@@ -845,15 +876,14 @@
         {/if}
 
       </div>
-    </div>
-  </aside>
-{/if}
+{/snippet}
 
+{#snippet railMenus()}
 {#if sectionContextMenu}
   <div
     bind:this={sectionContextMenuElement}
     class="section-context-menu surface-floating surface-floating-body fixed z-90 w-floating-sm"
-    class:explorer-touch={presentation === "surface"}
+    class:explorer-touch={panel}
     role="menu"
     tabindex="-1"
     style={`left:${sectionContextMenu.x}px;top:${sectionContextMenu.y}px`}
@@ -894,7 +924,7 @@
   <div
     bind:this={channelContextMenuElement}
     class="channel-context-menu surface-floating surface-floating-body fixed z-90 w-floating-sm"
-    class:explorer-touch={presentation === "surface"}
+    class:explorer-touch={panel}
     role="menu"
     tabindex="-1"
     style={`left:${channelContextMenu.x}px;top:${channelContextMenu.y}px`}
@@ -948,6 +978,7 @@
     {#if !channelContextMenu.channel.isDefault}<button type="button" role="menuitem" class="menu-item menu-item-destructive" onclick={archiveChannelFromContextMenu}><Archive class="size-4" /><span>{t("chat.archive")}</span></button>{/if}
   </div>
 {/if}
+{/snippet}
 
 {#snippet ChannelRow({ channel }: { channel: ChatChannelRead })}
   <div class="channel-row-group explorer-row" class:explorer-selected={chat.selectedChannelId === channel.id && !chat.channelArchiveOpen} role="group" aria-label={channel.name} class:rail-reorder-before={reorderLine(channel.id, "before")} class:rail-reorder-after={reorderLine(channel.id, "after")} draggable="true" ondragstart={(event) => beginDrag(event, channel.id)} ondragend={clearRailDrag} ondragover={(event) => handleChannelDragOver(event, channel.id)} ondrop={(event) => handleChannelDrop(event, channel.id)}>
@@ -962,6 +993,7 @@
   </div>
 {/snippet}
 
+{#snippet railDialogs()}
 {#if setupChannel !== undefined && SetupDialog}
   {@const LoadedSetupDialog = SetupDialog}
   <LoadedSetupDialog channel={setupChannel} sections={orderedSections} initialSectionId={setupSectionId} onSaved={savedChannel} onCancel={() => { setupChannel = undefined; setupSectionId = null; }} />
@@ -982,6 +1014,7 @@
 
 {#if archiveCandidate}<ConfirmDialog title={t("chat.channels.archiveConfirmTitle", archiveCandidate.name)} message={t("chat.channels.archiveConfirmMessage")} confirmLabel={t("chat.archive")} cancelLabel={t("chat.cancel")} onConfirm={() => void confirmArchive()} onCancel={() => { archiveCandidate = null; }} />{/if}
 {#if deleteSectionCandidate}<ConfirmDialog title={t("chat.channels.deleteSectionTitle", deleteSectionCandidate.name)} message={t("chat.channels.deleteSectionMessage")} confirmLabel={t("chat.channels.deleteSectionConfirm")} cancelLabel={t("chat.cancel")} onConfirm={confirmDeleteSection} onCancel={() => { deleteSectionCandidate = null; }} />{/if}
+{/snippet}
 
 <style>
   .channel-section + .channel-section { margin-top: 0.5rem; }

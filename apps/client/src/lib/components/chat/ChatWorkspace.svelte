@@ -91,7 +91,6 @@
   let primaryHeaderElement: HTMLDivElement | undefined = $state();
   let globalActionsElement: HTMLDivElement | undefined = $state();
   let canvasEdgeElement: HTMLDivElement | undefined = $state();
-  let mobileRailToggleElement = $state<HTMLButtonElement | null>(null);
   let railShell: HTMLDivElement | undefined = $state();
   let composerDockElement: HTMLDivElement | undefined = $state();
   let composerDockHeight = $state(0);
@@ -148,15 +147,13 @@
   );
   const observeRailOpenForHover = suppressHoverOnToggle();
   $effect(() => observeRailOpenForHover(visibleRailOpen));
-  const railUsesMobileSurface = $derived(
+  /** The phone shell opens the channel rail as a floating panel over the channel instead of a sheet. */
+  const railUsesMobilePanel = $derived(
     mobileShell && layout.railPresentation === "sheet",
-  );
-  const railComponentPresentation = $derived(
-    railUsesMobileSurface ? "surface" as const : layout.railPresentation,
   );
   const railDocked = $derived(projectHosted || (layout.railPresentation === "column" && !mobileShell));
   const railIsModal = $derived(
-    layout.railPresentation === "sheet" && !railUsesMobileSurface && visibleRailOpen,
+    layout.railPresentation === "sheet" && !railUsesMobilePanel && visibleRailOpen,
   );
   const replyThreadWidth = $derived(CHAT_REPLY_THREAD_WIDTH_PX * fontScale);
   const displayedInspectorWidth = $derived.by(() => {
@@ -510,20 +507,14 @@
   });
 
   $effect(() => {
-    const open = layout.railPresentation === "sheet" && visibleRailOpen;
+    const open = layout.railPresentation === "sheet" && !railUsesMobilePanel && visibleRailOpen;
     if (open && !railModalWasOpen) {
       railReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-      queueMicrotask(() => {
-        const target = railUsesMobileSurface
-          ? railShell?.querySelector<HTMLElement>("[data-chat-rail-close]")
-          : firstFocusable(railShell);
-        target?.focus();
-      });
+      queueMicrotask(() => firstFocusable(railShell)?.focus());
     } else if (!open && railModalWasOpen) {
       const target = railReturnFocus;
       queueMicrotask(() => {
         if (target?.isConnected) target.focus();
-        else if (railUsesMobileSurface) mobileRailToggleElement?.focus();
       });
     }
     railModalWasOpen = open;
@@ -1000,7 +991,7 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<div bind:this={rootElement} class="chat-workspace @container/chat-shell relative grid h-full min-h-0 overflow-hidden" class:mobile-rail-surface={railUsesMobileSurface} class:resizing-panels={resizingInspector || resizingBottomPanel} class:panel-transitions-enabled={panelTransitionsEnabled} data-chat-workspace data-layout={layout.variant} data-rail-presentation={layout.railPresentation} data-inspector-presentation={layout.inspectorPresentation} data-reply-thread-presentation={layout.replyThreadPresentation} data-active-surface={layout.activeSurface} data-rail-open={visibleRailOpen} data-rail-docked={railDocked} data-canvas-edge={!mobileShell} data-project-sidebar={projectHosted} style={`container-type:inline-size;container-name:chat-shell;--chat-panel-transition-duration:${PANEL_TRANSITION_MS}ms;--chat-bottom-min-height:${MIN_BOTTOM_PANEL_HEIGHT}px;--chat-inspector-width:${displayedInspectorWidth}px;--chat-reply-thread-width:${replyThreadWidth}px;${canvasEdgeWidth === null ? "" : `--chat-canvas-edge-width:${canvasEdgeWidth}px;`}`}>
+<div bind:this={rootElement} class="chat-workspace @container/chat-shell relative grid h-full min-h-0 overflow-hidden" class:resizing-panels={resizingInspector || resizingBottomPanel} class:panel-transitions-enabled={panelTransitionsEnabled} data-chat-workspace data-layout={layout.variant} data-rail-presentation={layout.railPresentation} data-inspector-presentation={layout.inspectorPresentation} data-reply-thread-presentation={layout.replyThreadPresentation} data-active-surface={layout.activeSurface} data-rail-open={visibleRailOpen} data-rail-docked={railDocked} data-canvas-edge={!mobileShell} data-project-sidebar={projectHosted} style={`container-type:inline-size;container-name:chat-shell;--chat-panel-transition-duration:${PANEL_TRANSITION_MS}ms;--chat-bottom-min-height:${MIN_BOTTOM_PANEL_HEIGHT}px;--chat-inspector-width:${displayedInspectorWidth}px;--chat-reply-thread-width:${replyThreadWidth}px;${canvasEdgeWidth === null ? "" : `--chat-canvas-edge-width:${canvasEdgeWidth}px;`}`}>
   <div class="chat-canvas" aria-hidden="true"></div>
 {#if WorkspaceObserver}<WorkspaceObserver />{/if}
   <div class="sr-only" aria-live="polite" aria-atomic="true">{politeAnnouncement}</div>
@@ -1015,18 +1006,21 @@
     <ChatWorkspaceHeader
       bind:editingTitle={headerEditingTitle}
       explorerExpanded={layout.railPresentation === "column" && visibleRailOpen}
-      showRailButton={!projectHosted && layout.railPresentation === "sheet" && !visibleRailOpen}
-      bind:railButtonElement={mobileRailToggleElement}
+      showRailButton={!projectHosted && layout.railPresentation === "sheet" && (railUsesMobilePanel || !visibleRailOpen)}
       reserveGlobalActions={!chat.inspectorOpen && !threadColumnOpen}
       mobilePresentation={mobileShell}
       onOpenRail={openRail}
       trailingActions={mobileShell ? headerActions : undefined}
     />
   </div>
-  <div bind:this={railShell} class="chat-rail-shell" class:closed={!visibleRailOpen} class:explorer-chrome={railDocked} role={railIsModal ? "dialog" : undefined} aria-modal={railIsModal ? "true" : undefined} aria-label={railIsModal ? t("chat.title") : undefined} onkeydown={(event) => { if (!projectHosted && layout.railPresentation === "sheet") handleRailKeydown(event); }}>
-    {#if projectSidebar && projectHosted}{@render projectSidebar(() => {})}{/if}
-    <ChatChannelRail presentation={railComponentPresentation} expanded={visibleRailOpen} showCollapsedStrip={!projectHosted && layout.railPresentation === "column"} onExpand={openRail} onCollapse={closeRail} />
-  </div>
+  {#if railUsesMobilePanel}
+    <ChatChannelRail presentation="panel" expanded={visibleRailOpen} showCollapsedStrip={false} onExpand={openRail} onCollapse={closeRail} />
+  {:else}
+    <div bind:this={railShell} class="chat-rail-shell" class:closed={!visibleRailOpen} class:explorer-chrome={railDocked} role={railIsModal ? "dialog" : undefined} aria-modal={railIsModal ? "true" : undefined} aria-label={railIsModal ? t("chat.title") : undefined} onkeydown={(event) => { if (!projectHosted && layout.railPresentation === "sheet") handleRailKeydown(event); }}>
+      {#if projectSidebar && projectHosted}{@render projectSidebar(() => {})}{/if}
+      <ChatChannelRail presentation={layout.railPresentation} expanded={visibleRailOpen} showCollapsedStrip={!projectHosted && layout.railPresentation === "column"} onExpand={openRail} onCollapse={closeRail} />
+    </div>
+  {/if}
   <main class="main-shell relative flex min-w-0 flex-col">
         {#if loadError}
           <div class="min-h-0 flex-1 text-sm"><Notice layout="fill" message={loadError} onRetry={retryWorkspaceLoad} /></div>
@@ -1185,12 +1179,6 @@
   .chat-rail-backdrop { top: var(--toolbar-h); }
   .chat-workspace[data-rail-presentation="sheet"] .chat-rail-shell { position: absolute; top: var(--toolbar-h); bottom: 0; left: 0; z-index: 40; width: min(var(--explorer-width), 88cqw); min-width: min(var(--explorer-width), 88cqw); box-shadow: var(--floating-shadow); }
   .chat-workspace[data-rail-presentation="sheet"] .chat-rail-shell.closed { transform: translateX(-105%); }
-  .chat-workspace.mobile-rail-surface .chat-rail-shell { position: relative; inset: auto; z-index: auto; grid-column: 1 / 7; grid-row: 2 / 5; width: 100%; min-width: 0; background: var(--cal-bg); box-shadow: none; transform: none; }
-  .chat-workspace.mobile-rail-surface .chat-rail-shell.closed { display: none; transform: none; }
-  /* The channel list replaces the channel, so the channel action row gives its space to the list. */
-  .chat-workspace.mobile-rail-surface[data-rail-open="true"] { grid-template-rows: 0 minmax(0, 1fr) auto auto; }
-  .chat-workspace.mobile-rail-surface[data-rail-open="true"] .chat-primary-header { display: none; }
-  .chat-workspace.mobile-rail-surface[data-rail-open="true"] .main-shell { display: none; }
   .chat-workspace[data-inspector-presentation="sheet"] .chat-inspector-shell { position: absolute; inset-block: 0; right: 0; z-index: 45; width: 0; box-shadow: var(--floating-shadow); }
   .chat-workspace[data-inspector-presentation="sheet"] .chat-inspector-shell.open { width: min(620px, 94cqw); min-width: min(320px, 94cqw); }
   .chat-workspace[data-inspector-presentation="sheet"] .chat-inspector-content-shell { width: min(620px, 94cqw); }

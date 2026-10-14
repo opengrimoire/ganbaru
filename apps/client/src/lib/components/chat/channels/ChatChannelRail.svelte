@@ -1035,7 +1035,8 @@
   .section-heading > .section-create-action { margin-inline-end: calc(-1 * var(--section-heading-gap)); }
   .section-heading > .section-create-action:is(:hover, :focus-visible) { background: transparent; color: var(--foreground); }
   .channel-section > .section-heading > .explorer-row-action { margin-inline-end: 0; opacity: 1; }
-  .section-heading > :is(.section-toggle, .section-rename-control):hover { background: var(--explorer-icon-hover, var(--accent)); color: var(--foreground); }
+  .section-heading > :is(.section-toggle, .section-rename-control):active { background: var(--explorer-icon-hover, var(--accent)); color: var(--foreground); }
+  @media (hover: hover) { .section-heading > :is(.section-toggle, .section-rename-control):hover { background: var(--explorer-icon-hover, var(--accent)); color: var(--foreground); } }
   .section-heading > .section-toggle { min-width: 0; flex: 1; justify-content: flex-start; margin-inline-start: calc(-1 * var(--section-heading-inset)); padding-inline: var(--section-heading-inset); border-radius: 0.375rem; }
   .section-toggle > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .section-toggle :global(.section-chevron) { flex: 0 0 auto; transition: opacity 120ms ease; }

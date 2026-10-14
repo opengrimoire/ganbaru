@@ -892,7 +892,7 @@ html[data-hover-suppressed] .content-panel * {
   color: var(--muted-foreground);
 }
 
-.explorer-icon:hover,
+.explorer-icon:active,
 .explorer-icon[aria-pressed="true"],
 .explorer-icon.explorer-icon-active,
 .explorer-icon[aria-expanded="true"].explorer-row-action {
@@ -941,8 +941,20 @@ html[data-hover-suppressed] .content-panel * {
   border-radius: 0.375rem;
 }
 
-.explorer-row:hover {
+/* Touch shows press feedback only while pressed; a tap would otherwise leave a sticky hover highlight. */
+.explorer-row:active {
   background: var(--explorer-row-highlight);
+}
+
+@media (hover: hover) {
+  .explorer-icon:hover {
+    background: var(--explorer-icon-hover, var(--accent));
+    color: var(--foreground);
+  }
+
+  .explorer-row:hover {
+    background: var(--explorer-row-highlight);
+  }
 }
 
 .explorer-row.explorer-selected {

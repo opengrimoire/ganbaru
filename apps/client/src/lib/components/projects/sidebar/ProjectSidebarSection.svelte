@@ -589,9 +589,16 @@
     border-radius: 0.375rem;
   }
 
-  .section-heading > .section-toggle:hover {
+  .section-heading > .section-toggle:active {
     background: var(--explorer-icon-hover, var(--accent));
     color: var(--foreground);
+  }
+
+  @media (hover: hover) {
+    .section-heading > .section-toggle:hover {
+      background: var(--explorer-icon-hover, var(--accent));
+      color: var(--foreground);
+    }
   }
 
   .section-heading > .section-create-action {

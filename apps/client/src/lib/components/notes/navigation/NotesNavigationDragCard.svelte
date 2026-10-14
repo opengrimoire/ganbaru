@@ -35,6 +35,12 @@
     hint?: string | null;
     durationMs: number;
   } = $props();
+
+  let shownHint = $state<string | null>(null);
+
+  $effect.pre(() => {
+    if (hint) shownHint = hint;
+  });
 </script>
 
 <div
@@ -68,15 +74,15 @@
     {/if}
     <span class="min-w-0 flex-1 truncate explorer-row-label">{title}</span>
   </div>
-  {#if hint}
+  {#if shownHint}
     <span
       class={cn(
         "notes-navigation-drag-hint absolute top-full left-2 mt-1 flex max-w-full items-center gap-1 rounded-md bg-primary px-1.5 py-0.5 text-xs text-primary-foreground shadow-md starting:opacity-0",
-        phase !== "lifted" && "opacity-0",
+        (phase !== "lifted" || !hint) && "opacity-0",
       )}
     >
       <FolderInput class="size-3 shrink-0" />
-      <span class="truncate">{hint}</span>
+      <span class="truncate">{shownHint}</span>
     </span>
   {/if}
 </div>
@@ -98,6 +104,8 @@
   }
 
   .notes-navigation-drag-card[data-phase="vanishing"] {
+    transition-property: translate, scale, box-shadow, opacity;
+    transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
     transition-duration: var(--notes-drag-card-duration);
   }
 

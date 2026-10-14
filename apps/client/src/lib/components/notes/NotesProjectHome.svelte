@@ -296,18 +296,27 @@
     }, navigationLandedFlashMs);
   }
 
-  /** Glide the card onto `frame` (or fade it in place without one), then hand the row back to the list. */
-  function finishNavigationDragCard(cardId: number, frame: NotesNavigationRect | null, landed: boolean): void {
+  /**
+   * End the card's flight, then hand the row back to the list and flash `landedItem` when given. `settle` glides the
+   * card onto `frame` and takes its size; `absorb` drifts it toward `frame` while fading, for a row that went into a
+   * collapsed folder; `fade` fades it where it was released.
+   */
+  function finishNavigationDragCard(
+    cardId: number,
+    landing: { kind: "settle" | "absorb"; frame: NotesNavigationRect } | { kind: "fade" },
+    landedItem: NotesNavigationDragItem | null,
+  ): void {
     const card = navigationDragCard;
     if (!card || card.id !== cardId) return;
-    if (frame) card.frame = frame;
-    card.phase = frame ? "settling" : "vanishing";
+    if (landing.kind === "settle") card.frame = landing.frame;
+    if (landing.kind === "absorb") card.frame = { ...card.frame, left: landing.frame.left, top: landing.frame.top };
+    card.phase = landing.kind === "settle" ? "settling" : "vanishing";
     clearNavigationDragCardTimer();
     navigationDragCardTimer = window.setTimeout(() => {
       navigationDragCardTimer = null;
       if (navigationDragCard?.id !== cardId) return;
       navigationDragCard = null;
-      if (landed) flashLandedNavigationRow(card.item);
+      if (landedItem) flashLandedNavigationRow(landedItem);
     }, prefersReducedMotion() ? 0 : navigationDragSettleMs);
   }
 
@@ -315,7 +324,24 @@
     const card = navigationDragCard;
     if (!card) return;
     const source = navigationRowContent(card.item);
-    finishNavigationDragCard(card.id, source ? viewportRect(source) : null, false);
+    finishNavigationDragCard(card.id, source ? { kind: "settle", frame: viewportRect(source) } : { kind: "fade" }, null);
+  }
+
+  /** Land the card on the moved row, or on the folder that now hides it. */
+  function landNavigationDragCard(cardId: number, source: NotesNavigationDragItem, target: NotesNavigationDropTarget): void {
+    const destination = navigationRowContent(source);
+    if (destination) {
+      destination.scrollIntoView({ block: "nearest" });
+      finishNavigationDragCard(cardId, { kind: "settle", frame: viewportRect(destination) }, source);
+      return;
+    }
+    const folder: NotesNavigationDragItem | null = target.kind === "folder" ? { kind: "folder", id: target.id } : null;
+    const folderRow = folder ? navigationRowContent(folder) : null;
+    finishNavigationDragCard(
+      cardId,
+      folderRow ? { kind: "absorb", frame: viewportRect(folderRow) } : { kind: "fade" },
+      folderRow ? folder : null,
+    );
   }
 
   function navigationRowTops(): Map<string, number> {
@@ -369,10 +395,7 @@
     await tick();
     const destinationKey = explorerItems.find((item) => explorerItemMatches(item, source))?.key ?? null;
     shiftNavigationRows(previousTops, destinationKey);
-    if (cardId === null) return;
-    const destination = navigationRowContent(source);
-    destination?.scrollIntoView({ block: "nearest" });
-    finishNavigationDragCard(cardId, destination ? viewportRect(destination) : null, destination !== null);
+    if (cardId !== null) landNavigationDragCard(cardId, source, target);
   }
 
   function updateNavigationDropTarget(target: NotesNavigationDropTarget | null): void {

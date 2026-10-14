@@ -43,6 +43,7 @@
   import { getNotesEditor } from "$lib/components/notes/editor-context";
   import { cn, type MaybePromise } from "$lib/utils";
   import { createHoverDelay } from "$lib/utils/menu-aim";
+  import { createSidebarOrderDrag } from "$lib/utils/sidebar-order-drag.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import NotesHierarchyPickerPanel from "./NotesHierarchyPickerPanel.svelte";
   import NotesPageIcon from "$lib/components/notes/pages/NotesPageIcon.svelte";
@@ -141,6 +142,7 @@
     sortOrder: notes.sidebarOrderForProject(projectId),
     favoriteFolderIds: notes.favoriteFolderIds,
     favoritePageIds: notes.favoritePageIds,
+    customOrderKeys: notes.customOrderForProject(projectId),
   });
   const normalizedSearch = $derived(showSearch ? search.trim().toLocaleLowerCase() : "");
   const allItems = $derived(notesHierarchyPickerChildren(
@@ -158,6 +160,33 @@
     const title = notesHierarchyPickerTitle(item, t("notes.untitled"));
     return title.toLocaleLowerCase().includes(normalizedSearch);
   }));
+  /** Folders and notes drag by their row in the custom order of an open project, each within its own block. */
+  const orderDrag = createSidebarOrderDrag({
+    getIds: () => items.filter(isOrderedNode).map((item) => item.key),
+    enabled: () => !mobileLayout && projectId !== null && hierarchyOrder.sortOrder === "custom" && !normalizedSearch,
+    isStarred: (key) => favoriteKeys.has(key),
+    kindOf: (key) => key.slice(0, key.indexOf(":")),
+    save: async (orderedKeys) => {
+      if (projectId) notes.setCustomSiblingOrder(projectId, orderedKeys);
+    },
+    description: "notes from the notes picker",
+  });
+  const favoriteKeys = $derived(new Set([
+    ...notes.favoriteFolderIds.map((id) => `folder:${id}`),
+    ...notes.favoritePageIds.map((id) => `page:${id}`),
+  ]));
+  $effect(() => orderDrag.reset);
+
+  /** A lifted row closes the subpanel it would otherwise open while passing over rows. */
+  $effect(() => {
+    if (orderDrag.draggedId === null) return;
+    untrack(() => {
+      childDelay.cancel();
+      activeNodeKey = null;
+      activeNodeAnchor = null;
+    });
+  });
+
   const activeNode = $derived(items.find((item) => item.key === activeNodeKey) ?? null);
   const childParent = $derived.by((): NotesHierarchyParent | null => {
     if (!activeNode?.hasChildren) return null;
@@ -210,7 +239,12 @@
     childBridgeStyle = projectPickerBridgeFrameStyle(geometry.bridge);
   }
 
+  function isOrderedNode(node: NotesHierarchyPickerNode): boolean {
+    return node.kind === "folder" || node.kind === "page";
+  }
+
   function activateNode(node: NotesHierarchyPickerNode, target: EventTarget | null): void {
+    if (orderDrag.draggedId !== null) return;
     childDelay.cancel();
     if (!node.hasChildren) {
       activeNodeKey = null;
@@ -565,6 +599,8 @@
                 class="menu-item text-popover-foreground"
                 aria-expanded={item.hasChildren ? activeNodeKey === item.key : undefined}
                 aria-label={title}
+                {@attach orderDrag.item(item.key)}
+                onpointerdown={(event) => { if (isOrderedNode(item)) orderDrag.pointerDown(event, item.key); }}
                 onpointerenter={(event) => activateNode(item, event.currentTarget)}
                 onfocus={(event) => activateNode(item, event.currentTarget)}
                 onclick={(event) => {

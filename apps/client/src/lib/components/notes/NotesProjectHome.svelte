@@ -43,6 +43,14 @@
     type NotesNavigationPoint,
     type NotesNavigationRect,
   } from "$lib/notes/navigation/drag-motion";
+  import {
+    notesNavigationReorderBand,
+    notesNavigationReorderedKeys,
+    notesNavigationSiblingGroups,
+    notesNavigationSteppedKeys,
+    type NotesNavigationReorderPlacement,
+    type NotesNavigationReorderRow,
+  } from "$lib/notes/navigation/reorder";
   import { notesPageMoveTargets } from "$lib/notes/pages/move";
   import type { SidebarSortOrder } from "$lib/utils/sidebar-order";
   import SidebarOrderMenu from "$lib/components/ui/SidebarOrderMenu.svelte";
@@ -114,6 +122,13 @@
 
   type NavigationPointerPosition = NotesNavigationPoint;
 
+  /** A drop that places the dragged row next to a sibling in the custom order, with the sibling order it saves. */
+  interface NavigationReorder {
+    targetKey: string;
+    placement: NotesNavigationReorderPlacement;
+    orderedKeys: string[];
+  }
+
   /** The lifted row while it follows the pointer and while it settles after release. */
   interface NavigationDragCardState {
     id: number;
@@ -176,6 +191,31 @@
     return folderId ? { kind: "folder", id: folderId } : { kind: "root" };
   }
 
+  /**
+   * In the custom order, the edges of a sibling's row place the dragged row next to it. A drop elsewhere, on a row
+   * from another level, or one that changes nothing is left to the move-into-folder resolution.
+   */
+  function explorerReorderAtPoint(x: number, y: number): NavigationReorder | null {
+    const source = draggingNavigationItem;
+    const explorer = explorerScrollElement;
+    if (!source || !explorer || !customOrderActive) return null;
+    const row = document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-notes-navigation-item-key]");
+    const targetKey = row?.dataset.notesNavigationItemKey;
+    const targetKind = row?.dataset.notesNavigationDragKind;
+    if (!row || !targetKey || !explorer.contains(row) || (targetKind !== "folder" && targetKind !== "page")) return null;
+    const bounds = row.getBoundingClientRect();
+    if (bounds.height <= 0) return null;
+    const band = notesNavigationReorderBand(targetKind, (y - bounds.top) / bounds.height);
+    if (band === "into") return null;
+    const orderedKeys = notesNavigationReorderedKeys(navigationSiblingGroups, `${source.kind}:${source.id}`, targetKey, band);
+    return orderedKeys ? { targetKey, placement: band, orderedKeys } : null;
+  }
+
+  function setNavigationReorder(reorder: NavigationReorder | null): void {
+    if (reorder?.targetKey === navigationReorder?.targetKey && reorder?.placement === navigationReorder?.placement) return;
+    navigationReorder = reorder;
+  }
+
   function clearNavigationFolderOpenTimer(): void {
     if (navigationFolderOpenTimer === null) return;
     window.clearTimeout(navigationFolderOpenTimer);
@@ -198,6 +238,7 @@
   function stopNavigationPointerTracking(): void {
     clearNavigationAutoScrollFrame();
     clearNavigationDropTarget();
+    navigationReorder = null;
     pendingNavigationPointerDrag = null;
     navigationPointerPosition = null;
     draggingNavigationItem = null;
@@ -373,6 +414,32 @@
     if (cardId !== null) landNavigationDragCard(cardId, source, target);
   }
 
+  /** Save the sibling order a drop lands in, then slide the rows aside and settle the card onto its new slot. */
+  async function dropNavigationReorder(source: NotesNavigationDragItem, orderedKeys: readonly string[]): Promise<void> {
+    if (!projectId) {
+      returnNavigationDragCard();
+      return;
+    }
+    const cardId = navigationDragCard?.id ?? null;
+    const previousTops = navigationRowTops();
+    const sourceKey = `${source.kind}:${source.id}`;
+    notes.setCustomSiblingOrder(projectId, orderedKeys);
+    await tick();
+    shiftNavigationRows(previousTops, sourceKey);
+    if (cardId !== null) landNavigationDragCard(cardId, source, { kind: "root" });
+  }
+
+  /** Move a row one place among its siblings from its menu, the path for touch and keyboard. */
+  function moveNavigationRow(key: string, step: -1 | 1): void {
+    const orderedKeys = notesNavigationSteppedKeys(navigationSiblingGroups, key, step);
+    if (!projectId || !customOrderActive || !orderedKeys) return;
+    notes.setCustomSiblingOrder(projectId, orderedKeys);
+  }
+
+  function canMoveNavigationRow(key: string, step: -1 | 1): boolean {
+    return customOrderActive && notesNavigationSteppedKeys(navigationSiblingGroups, key, step) !== null;
+  }
+
   function updateNavigationDropTarget(target: NotesNavigationDropTarget | null): void {
     const source = draggingNavigationItem;
     if (!source || !target) {
@@ -390,7 +457,9 @@
   function updateNavigationDropTargetAtPointer(): void {
     const position = navigationPointerPosition;
     if (!position) return;
-    updateNavigationDropTarget(explorerDropTargetAtPoint(position.x, position.y));
+    const reorder = explorerReorderAtPoint(position.x, position.y);
+    setNavigationReorder(reorder);
+    updateNavigationDropTarget(reorder ? null : explorerDropTargetAtPoint(position.x, position.y));
   }
 
   function navigationAutoScrollDelta(position: NavigationPointerPosition): number {
@@ -511,6 +580,13 @@
     pendingNavigationPointerDrag = null;
     if (!source) return;
     event.preventDefault();
+    const reorder = explorerReorderAtPoint(event.clientX, event.clientY);
+    if (reorder) {
+      stopNavigationPointerTracking();
+      suppressClickAfterPointerUp();
+      void dropNavigationReorder(source, reorder.orderedKeys);
+      return;
+    }
     const target = explorerDropTargetAtPoint(event.clientX, event.clientY);
     const resolution = target
       ? resolveNotesNavigationDrop(source, target, projectPages, projectFolders)
@@ -582,6 +658,7 @@
   let draggingNavigationItem = $state<NotesNavigationDragItem | null>(null);
   let navigationDropTarget = $state.raw<NotesNavigationDropTarget | null>(null);
   let navigationDropResolution = $state<NotesNavigationDropResolution | null>(null);
+  let navigationReorder = $state.raw<NavigationReorder | null>(null);
   let navigationFolderOpenTimer: number | null = null;
   let navigationAutoScrollFrame: number | null = null;
   let navigationDragCard = $state<NavigationDragCardState | null>(null);
@@ -624,6 +701,7 @@
       sortOrder,
       favoriteFolderIds: notes.favoriteFolderIds,
       favoritePageIds: notes.favoritePageIds,
+      customOrderKeys: notes.customOrderForProject(projectId),
       titleForPage: (page) => notesPageTitle(page, t("notes.untitled")),
     })
   );
@@ -632,6 +710,30 @@
     buildWorkingMarkdownTreeItems(workingMarkdownTree.roots, new Set(), search).length > 0,
   );
   const explorerItemDepths = $derived(explorerItems.map((item) => item.depth));
+  /** Rows reorder in the custom order of an open project, except in search results, which hide siblings. */
+  const customOrderActive = $derived(sortOrder === "custom" && projectId !== null && !search.trim());
+  const navigationReorderRows = $derived<NotesNavigationReorderRow[]>(explorerItems.map((item) => ({
+    key: item.key,
+    kind: item.kind,
+    depth: item.depth,
+    favorite: item.kind === "folder"
+      ? notes.favoriteFolderIds.includes(item.folder.id)
+      : notes.favoritePageIds.includes(item.page.id),
+  })));
+  const navigationSiblingGroups = $derived(notesNavigationSiblingGroups(navigationReorderRows));
+  /**
+   * The insertion line of a reorder drop: above the sibling it goes before, or below the last row of the sibling it goes
+   * after, so an open folder keeps its contents above the line. It is indented to the sibling's level.
+   */
+  const navigationReorderLine = $derived.by(() => {
+    const reorder = navigationReorder;
+    if (!reorder) return null;
+    const index = explorerItems.findIndex((item) => item.key === reorder.targetKey);
+    const depth = explorerItems[index]?.depth ?? 0;
+    if (reorder.placement === "before") return { key: reorder.targetKey, edge: "before" as const, depth };
+    const endKey = explorerItems[notesNavigationSubtreeEnd(explorerItemDepths, index)]?.key ?? reorder.targetKey;
+    return { key: endKey, edge: "after" as const, depth };
+  });
   const navigationFolderDropArea = $derived.by(() => {
     const result = new Map<string, {
       state: "valid" | "invalid";
@@ -1214,6 +1316,9 @@
           class:notes-navigation-folder-drop-area-end={folderDropArea?.position === "end"}
           class:notes-navigation-drag-source={navigationDragRowState(item.key) === "source"}
           class:notes-navigation-drag-placeholder={navigationDragRowState(item.key) === "placeholder"}
+          class:notes-navigation-reorder-before={navigationReorderLine?.key === item.key && navigationReorderLine.edge === "before"}
+          class:notes-navigation-reorder-after={navigationReorderLine?.key === item.key && navigationReorderLine.edge === "after"}
+          style:--notes-reorder-depth={navigationReorderLine?.key === item.key ? Math.min(navigationReorderLine.depth, 10) : undefined}
         >
         {#if item.kind === "folder"}
           <NotesFolderRow
@@ -1246,6 +1351,9 @@
             onDelete={() => {
               pendingDeleteFolder = item.folder;
             }}
+            onReorder={customOrderActive ? (step) => moveNavigationRow(item.key, step) : undefined}
+            canMoveUp={canMoveNavigationRow(item.key, -1)}
+            canMoveDown={canMoveNavigationRow(item.key, 1)}
           />
         {:else}
           <NotesPageRow
@@ -1291,6 +1399,9 @@
             onTrash={() => {
               pendingTrashPage = item.page;
             }}
+            onReorder={customOrderActive ? (step) => moveNavigationRow(item.key, step) : undefined}
+            canMoveUp={canMoveNavigationRow(item.key, -1)}
+            canMoveDown={canMoveNavigationRow(item.key, 1)}
           />
         {/if}
         </div>
@@ -1434,6 +1545,32 @@
 
   .notes-navigation-folder-drop-area-end {
     border-radius: 0 0 0.375rem 0.375rem;
+  }
+
+  .notes-navigation-reorder-before,
+  .notes-navigation-reorder-after {
+    position: relative;
+  }
+
+  .notes-navigation-reorder-before::before,
+  .notes-navigation-reorder-after::after {
+    position: absolute;
+    left: calc(var(--notes-reorder-depth, 0) * 0.875rem);
+    right: 0;
+    z-index: 5;
+    height: 2px;
+    border-radius: 999px;
+    background: var(--primary);
+    content: "";
+    pointer-events: none;
+  }
+
+  .notes-navigation-reorder-before::before {
+    top: -1px;
+  }
+
+  .notes-navigation-reorder-after::after {
+    bottom: -1px;
   }
 
   .notes-navigation-drag-source :global(.explorer-row) {

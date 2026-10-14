@@ -101,6 +101,20 @@ describe("sidebar order drag", () => {
     expect(saves).toHaveLength(1);
   });
 
+  it("keeps each kind in its own block when the list mixes kinds", async () => {
+    ids = ["folder:a", "folder:b", "page:c", "page:d"];
+    starred = new Set(["page:c"]);
+    const sidebarDrag = drag({ kindOf: (id) => id.split(":")[0] ?? "" });
+
+    expect(sidebarDrag.canMove("folder:b", 1)).toBe(false);
+    expect(sidebarDrag.canMove("page:d", -1)).toBe(false);
+    expect(sidebarDrag.canMove("folder:b", -1)).toBe(true);
+
+    sidebarDrag.move("folder:b", -1);
+    await Promise.resolve();
+    expect(saves).toEqual([["folder:b", "folder:a"]]);
+  });
+
   it("moves nothing outside the custom order and waits for a save in flight", async () => {
     enabled = false;
     const resolvers: (() => void)[] = [];

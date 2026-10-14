@@ -3,6 +3,7 @@ import {
   compareSidebarItems,
   compareSidebarNames,
   compareStarredFirst,
+  customOrderRanks,
   DEFAULT_SIDEBAR_SORT_ORDER,
   type SidebarSortFields,
   type SidebarSortOrder,
@@ -29,6 +30,8 @@ export interface NotesHierarchyOrder {
   sortOrder: SidebarSortOrder;
   favoriteFolderIds: readonly string[];
   favoritePageIds: readonly string[];
+  /** Navigation keys in their custom order, which ranks siblings when `sortOrder` is `custom`. */
+  customOrderKeys?: readonly string[];
 }
 
 const NAME_ORDER: NotesHierarchyOrder = { sortOrder: DEFAULT_SIDEBAR_SORT_ORDER, favoriteFolderIds: [], favoritePageIds: [] };
@@ -86,14 +89,20 @@ export function notesHierarchyPickerChildren(
   return [...items, ...databaseNodes];
 }
 
-function hierarchyNodeSortFields(node: NotesHierarchyNode, untitledTitle: string): SidebarSortFields {
+function hierarchyNodeSortFields(
+  node: NotesHierarchyNode,
+  untitledTitle: string,
+  customRanks: ReadonlyMap<string, number>,
+): SidebarSortFields {
+  const rank = customRanks.get(node.key);
   return node.kind === "folder"
-    ? { id: node.key, name: node.folder.name, createdAt: node.folder.created_time, modifiedAt: node.folder.last_edited_time }
+    ? { id: node.key, name: node.folder.name, createdAt: node.folder.created_time, modifiedAt: node.folder.last_edited_time, rank }
     : {
       id: node.key,
       name: notesPageTitle(node.page, untitledTitle),
       createdAt: node.page.created_time,
       modifiedAt: node.page.last_edited_time,
+      rank,
     };
 }
 
@@ -161,13 +170,14 @@ export function notesHierarchyChildren(
 
   const favoriteFolderIds = new Set(order.favoriteFolderIds);
   const favoritePageIds = new Set(order.favoritePageIds);
+  const customRanks = customOrderRanks(order.customOrderKeys ?? []);
   const isFavorite = (node: NotesHierarchyNode): boolean =>
     node.kind === "folder" ? favoriteFolderIds.has(node.folder.id) : favoritePageIds.has(node.page.id);
   const compareNodes = (left: NotesHierarchyNode, right: NotesHierarchyNode): number =>
     compareStarredFirst(isFavorite(left), isFavorite(right))
       || compareSidebarItems(
-        hierarchyNodeSortFields(left, untitledTitle),
-        hierarchyNodeSortFields(right, untitledTitle),
+        hierarchyNodeSortFields(left, untitledTitle, customRanks),
+        hierarchyNodeSortFields(right, untitledTitle, customRanks),
         order.sortOrder,
       );
   return [...folderNodes.sort(compareNodes), ...pageNodes.sort(compareNodes)];

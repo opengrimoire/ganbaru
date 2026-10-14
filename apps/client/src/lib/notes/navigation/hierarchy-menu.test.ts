@@ -105,6 +105,20 @@ describe("notes hierarchy navigation", () => {
       .toEqual(["folder:Alpha", "folder:Beta", "page:Newer", "page:Older", "page:Starred"]);
   });
 
+  it("ranks each level by the custom order, with unranked items after by name", () => {
+    const folders = [folder("Alpha"), folder("Beta")];
+    const pages = [page("One"), page("Two"), page("Three"), page("Starred")];
+    const order = {
+      sortOrder: "custom" as const,
+      favoriteFolderIds: [],
+      favoritePageIds: ["Starred"],
+      customOrderKeys: ["page:Three", "folder:Beta", "page:Starred", "page:One"],
+    };
+
+    expect(notesHierarchyChildren(pages, folders, { kind: "root" }, "Untitled", [], order).map((item) => item.key))
+      .toEqual(["folder:Beta", "folder:Alpha", "page:Starred", "page:Three", "page:One", "page:Two"]);
+  });
+
   it("lists a note's databases after its child notes", () => {
     const notes = [page("parent"), page("Zed", { type: "page_id", page_id: "parent" })];
     const databases: NotesNavigationDatabase[] = [

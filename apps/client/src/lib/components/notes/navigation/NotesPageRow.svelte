@@ -47,6 +47,7 @@
   import NotesPageIcon from "$lib/components/notes/pages/NotesPageIcon.svelte";
   import ExplorerRowStar from "$lib/components/ui/ExplorerRowStar.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
+  import MoveStepMenuItems from "$lib/components/ui/MoveStepMenuItems.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import {
     loadNotesOptionalComponent,
@@ -75,6 +76,9 @@
     onMoveToFolder = undefined,
     onArchive,
     onTrash,
+    onReorder = undefined,
+    canMoveUp = false,
+    canMoveDown = false,
     blockDropActive = false,
     onBlockDragOver,
     onBlockDragLeave,
@@ -111,6 +115,10 @@
     onMoveToFolder?: (folderId: string | null) => void;
     onArchive: () => void;
     onTrash: () => void;
+    /** Moves the note one place among its siblings in the custom order; left out in other orders. */
+    onReorder?: (step: -1 | 1) => void;
+    canMoveUp?: boolean;
+    canMoveDown?: boolean;
     blockDropActive?: boolean;
     onBlockDragOver?: (pageId: string, event: DragEvent) => void;
     onBlockDragLeave?: (pageId: string, event: DragEvent) => void;
@@ -721,6 +729,9 @@
               {/if}
             </div>
           {/if}
+        {/if}
+        {#if onReorder}
+          <MoveStepMenuItems {canMoveUp} {canMoveDown} onMove={(step) => onReorder?.(step)} onClose={() => (menuOpen = false)} />
         {/if}
         <button
           class="menu-item"

@@ -2,8 +2,6 @@
   import { tick } from "svelte";
   import Archive from "@lucide/svelte/icons/archive";
   import ArchiveRestore from "@lucide/svelte/icons/archive-restore";
-  import ArrowDown from "@lucide/svelte/icons/arrow-down";
-  import ArrowUp from "@lucide/svelte/icons/arrow-up";
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import EllipsisVertical from "@lucide/svelte/icons/ellipsis-vertical";
@@ -15,6 +13,7 @@
   import Settings2 from "@lucide/svelte/icons/settings-2";
   import Star from "@lucide/svelte/icons/star";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import MoveStepMenuItems from "$lib/components/ui/MoveStepMenuItems.svelte";
   import StarredIconBadge from "$lib/components/ui/StarredIconBadge.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { COMPACT_IDENTITY_EMOJI_SCALE, COMPACT_IDENTITY_ICON_SIZE, COMPACT_IDENTITY_ICON_STROKE_WIDTH } from "$lib/icon-sizing";
@@ -472,34 +471,7 @@
         </div>
       {/if}
       {#if onMove}
-        <button
-          type="button"
-          role="menuitem"
-          class="menu-item"
-          aria-disabled={canMoveUp ? undefined : "true"}
-          onclick={() => {
-            if (!canMoveUp) return;
-            closeMenu();
-            onMove?.(-1);
-          }}
-        >
-          <ArrowUp />
-          <span>{t("common.moveUp")}</span>
-        </button>
-        <button
-          type="button"
-          role="menuitem"
-          class="menu-item"
-          aria-disabled={canMoveDown ? undefined : "true"}
-          onclick={() => {
-            if (!canMoveDown) return;
-            closeMenu();
-            onMove?.(1);
-          }}
-        >
-          <ArrowDown />
-          <span>{t("common.moveDown")}</span>
-        </button>
+        <MoveStepMenuItems {canMoveUp} {canMoveDown} onMove={(step) => onMove?.(step)} onClose={closeMenu} />
       {/if}
       <button
         type="button"

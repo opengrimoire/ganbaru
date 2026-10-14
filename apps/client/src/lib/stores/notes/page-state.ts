@@ -3,6 +3,7 @@ import {
   parseStoredNotesPageId,
 } from "$lib/notes/pages/selection";
 import {
+  notesCustomOrderByProjectConfigKey,
   notesFavoriteFolderIdsConfigKey,
   notesFavoritePageIdsConfigKey,
   notesRecentPageIdsConfigKey,
@@ -13,7 +14,7 @@ import {
   notesSidebarCollapsedFolderIdsConfigKey,
   parseStoredNotesSidebarCollapsedFolderIds,
 } from "$lib/notes/navigation/tree";
-import { parseSidebarSortOrderOverrides, type SidebarSortOrder } from "$lib/utils/sidebar-order";
+import { parseCustomOrders, parseSidebarSortOrderOverrides, type SidebarSortOrder } from "$lib/utils/sidebar-order";
 import { getConfigKey, setConfigKey } from "$lib/vault/config";
 
 export const notesSelectedPageKey = notesSelectedPageConfigKey();
@@ -22,6 +23,7 @@ export const notesFavoriteFolderIdsKey = notesFavoriteFolderIdsConfigKey();
 export const notesRecentPageIdsKey = notesRecentPageIdsConfigKey();
 export const notesSidebarCollapsedFolderIdsKey = notesSidebarCollapsedFolderIdsConfigKey();
 export const notesSidebarOrderByProjectKey = notesSidebarOrderByProjectConfigKey();
+export const notesCustomOrderByProjectKey = notesCustomOrderByProjectConfigKey();
 
 /**
  * Load the persisted Notes page selection id.
@@ -110,4 +112,18 @@ export function initialNotesSidebarOrderOverrides(): Record<string, SidebarSortO
  */
 export function saveNotesSidebarOrderOverrides(overrides: Readonly<Record<string, SidebarSortOrder>>): void {
   setConfigKey(notesSidebarOrderByProjectKey, Object.keys(overrides).length > 0 ? { ...overrides } : undefined);
+}
+
+/**
+ * Load the custom order of each project's Notes folders and notes.
+ */
+export function initialNotesCustomOrders(): Record<string, string[]> {
+  return parseCustomOrders(getConfigKey<unknown>(notesCustomOrderByProjectKey, undefined));
+}
+
+/**
+ * Persist the custom order of each project's Notes folders and notes.
+ */
+export function saveNotesCustomOrders(orders: Readonly<Record<string, readonly string[]>>): void {
+  setConfigKey(notesCustomOrderByProjectKey, Object.keys(orders).length > 0 ? { ...orders } : undefined);
 }

@@ -890,6 +890,16 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     sidebarController.setProjectSidebarOrder(projectId, order);
   }
 
+  /** Navigation keys of the folders and notes of `projectId` in their custom order. */
+  function customOrderForProject(projectId: string | null): readonly string[] {
+    return sidebarController.customOrder(projectId);
+  }
+
+  /** Save the custom order of one level's siblings in `projectId`, given as navigation keys. */
+  function setCustomSiblingOrder(projectId: string, orderedSiblingKeys: readonly string[]): void {
+    sidebarController.setCustomSiblingOrder(projectId, orderedSiblingKeys);
+  }
+
   async function openArchive(): Promise<void> {
     viewMode = "archive";
     if (!archiveController.archiveLoaded && !archiveController.archiveLoading) {
@@ -2027,6 +2037,8 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     sidebarOrderOverride,
     sidebarOrderForProject,
     setProjectSidebarOrder,
+    customOrderForProject,
+    setCustomSiblingOrder,
     setFolderCollapsed,
     loadNavigationChildren,
     updatePageIcon: pageActions.updatePageIcon,

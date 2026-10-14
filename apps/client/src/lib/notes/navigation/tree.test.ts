@@ -158,6 +158,45 @@ describe("notes navigation tree", () => {
     ]);
   });
 
+  it("ranks siblings by the custom order while folders and favorites stay first", () => {
+    const pages = [
+      page("page-a", "Alpha"),
+      page("page-b", "Bravo"),
+      page("page-c", "Charlie"),
+      page("starred", "Starred"),
+      page("nested-a", "Nested alpha", { type: "workspace", workspace: true }, "folder-a"),
+      page("nested-b", "Nested bravo", { type: "workspace", workspace: true }, "folder-a"),
+    ];
+    const folders = [folder("folder-a", "Archive"), folder("folder-z", "Zoo")];
+    const options = {
+      sortOrder: "custom" as const,
+      favoritePageIds: ["starred"],
+      customOrderKeys: ["page:page-c", "page:starred", "page:nested-b", "folder:folder-z", "page:page-a"],
+    };
+
+    expect(buildNotesNavigationTree(pages, folders, options).map((item) => item.key)).toEqual([
+      "folder:folder-z",
+      "folder:folder-a",
+      "page:nested-b",
+      "page:nested-a",
+      "page:starred",
+      "page:page-c",
+      "page:page-a",
+      "page:page-b",
+    ]);
+    expect(buildNotesNavigationTree(pages, folders, { ...options, sortOrder: "name-asc" }).map((item) => item.key))
+      .toEqual([
+        "folder:folder-a",
+        "page:nested-a",
+        "page:nested-b",
+        "folder:folder-z",
+        "page:starred",
+        "page:page-a",
+        "page:page-b",
+        "page:page-c",
+      ]);
+  });
+
   it("keeps selected notes open while allowing their folder to close", () => {
     const pages = [
       page("root-note", "Root note", undefined, "research"),

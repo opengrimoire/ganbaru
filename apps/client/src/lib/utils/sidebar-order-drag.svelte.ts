@@ -8,6 +8,8 @@ export interface SidebarOrderDragOptions {
   enabled: () => boolean;
   /** Whether an item is starred; starred items stay ahead of the rest and move only among themselves. */
   isStarred?: (id: string) => boolean;
+  /** Kind of an item when a list mixes kinds that keep separate blocks, such as folders before notes; items move only within their kind. */
+  kindOf?: (id: string) => string;
   /** Saves the listed ids in their new order. */
   save: (orderedIds: string[]) => Promise<void>;
   /** Describes the list in the error logged when a save fails. */
@@ -22,7 +24,9 @@ export interface SidebarOrderDragOptions {
 export function createSidebarOrderDrag(options: SidebarOrderDragOptions) {
   let saving = false;
   const isStarred = (id: string): boolean => options.isStarred?.(id) ?? false;
-  const siblingsOf = (id: string): string[] => sameStarredSiblings(options.getIds(), id, isStarred);
+  const kindOf = (id: string): string => options.kindOf?.(id) ?? "";
+  const siblingsOf = (id: string): string[] =>
+    sameStarredSiblings(options.getIds(), id, isStarred).filter((other) => kindOf(other) === kindOf(id));
 
   async function save(orderedIds: string[]): Promise<void> {
     saving = true;

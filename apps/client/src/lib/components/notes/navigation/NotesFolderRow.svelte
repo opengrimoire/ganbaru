@@ -18,6 +18,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import ExplorerRowStar from "$lib/components/ui/ExplorerRowStar.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
+  import MoveStepMenuItems from "$lib/components/ui/MoveStepMenuItems.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import {
     COMPACT_IDENTITY_ICON_SIZE,
@@ -65,6 +66,9 @@
     onRename,
     onMove,
     onDelete,
+    onReorder = undefined,
+    canMoveUp = false,
+    canMoveDown = false,
     navigationDragging = false,
     navigationDropState = "none",
     onNavigationDragStart = undefined,
@@ -87,6 +91,10 @@
     onRename: (name: string) => boolean | Promise<boolean>;
     onMove: (parentFolderId: string | null) => void;
     onDelete: () => void;
+    /** Moves the folder one place among its siblings in the custom order; left out in other orders. */
+    onReorder?: (step: -1 | 1) => void;
+    canMoveUp?: boolean;
+    canMoveDown?: boolean;
     navigationDragging?: boolean;
     navigationDropState?: "none" | "valid" | "invalid";
     onNavigationDragStart?: (event: DragEvent) => void;
@@ -465,6 +473,9 @@
               {/if}
             </div>
           {/if}
+        {/if}
+        {#if onReorder}
+          <MoveStepMenuItems {canMoveUp} {canMoveDown} onMove={(step) => onReorder?.(step)} onClose={closeMenu} />
         {/if}
         <button
           class="menu-item menu-item-destructive"

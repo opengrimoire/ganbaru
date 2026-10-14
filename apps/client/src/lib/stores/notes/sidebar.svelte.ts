@@ -3,18 +3,20 @@ import {
   setNotesPageFavoriteId,
 } from "$lib/notes/pages/navigation";
 import {
+  initialNotesCustomOrders,
   initialNotesFavoriteFolderIds,
   initialNotesFavoritePageIds,
   initialNotesRecentPageIds,
   initialNotesSidebarCollapsedFolderIds,
   initialNotesSidebarOrderOverrides,
+  saveNotesCustomOrders,
   saveNotesFavoriteFolderIds,
   saveNotesFavoritePageIds,
   saveNotesRecentPageIds,
   saveNotesSidebarCollapsedFolderIds,
   saveNotesSidebarOrderOverrides,
 } from "./page-state";
-import { withSidebarSortOrderOverride, type SidebarSortOrder } from "$lib/utils/sidebar-order";
+import { withCustomSiblingOrder, withSidebarSortOrderOverride, type SidebarSortOrder } from "$lib/utils/sidebar-order";
 
 interface NotesSidebarShellMetadata {
   pageIdsWithChildren: readonly string[];
@@ -29,6 +31,7 @@ export function createNotesSidebarController() {
   let recentPageIds = $state<string[]>(initialNotesRecentPageIds());
   let collapsedFolderIds = $state<string[]>(initialNotesSidebarCollapsedFolderIds());
   let sidebarOrderOverrides = $state<Record<string, SidebarSortOrder>>(initialNotesSidebarOrderOverrides());
+  let customOrders = $state<Record<string, string[]>>(initialNotesCustomOrders());
   let pageIdsWithChildren = $state<string[]>([]);
   let missingParentPageIds = $state<string[]>([]);
   let trashedParentPageIds = $state<string[]>([]);
@@ -51,6 +54,12 @@ export function createNotesSidebarController() {
   function setProjectSidebarOrder(projectId: string, order: SidebarSortOrder | null): void {
     sidebarOrderOverrides = withSidebarSortOrderOverride(sidebarOrderOverrides, projectId, order);
     saveNotesSidebarOrderOverrides(sidebarOrderOverrides);
+  }
+
+  /** Save `orderedSiblingKeys`, the navigation keys of one level's siblings, as their custom order in a project. */
+  function setCustomSiblingOrder(projectId: string, orderedSiblingKeys: readonly string[]): void {
+    customOrders = { ...customOrders, [projectId]: withCustomSiblingOrder(customOrders[projectId] ?? [], orderedSiblingKeys) };
+    saveNotesCustomOrders(customOrders);
   }
 
   function setFolderCollapsed(folderId: string, collapsed: boolean): void {
@@ -94,6 +103,10 @@ export function createNotesSidebarController() {
     sidebarOrderOverride(projectId: string | null): SidebarSortOrder | null {
       return projectId ? sidebarOrderOverrides[projectId] ?? null : null;
     },
+    /** Navigation keys of a project's folders and notes in their custom order. */
+    customOrder(projectId: string | null): readonly string[] {
+      return projectId ? customOrders[projectId] ?? [] : [];
+    },
     get pageIdsWithChildren(): readonly string[] { return pageIdsWithChildren; },
     get missingParentPageIds(): readonly string[] { return missingParentPageIds; },
     get trashedParentPageIds(): readonly string[] { return trashedParentPageIds; },
@@ -105,6 +118,7 @@ export function createNotesSidebarController() {
     setFolderFavorited,
     setFolderCollapsed,
     setProjectSidebarOrder,
+    setCustomSiblingOrder,
     replaceMetadata,
     mergeMetadata,
     removePageIds,

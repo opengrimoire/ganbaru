@@ -87,7 +87,7 @@ Panels were restyled one at a time, so radii, shadows, text sizes, input styles,
 
 - Lists reordered in place (Project settings statuses, priorities, tags, custom fields, and options) use `createSortableDrag` from a grip handle: the dragged row lifts and follows the pointer, its siblings slide aside, and the move commits once the row settles, with no landing flash. Escape or leaving the window returns the row to its slot, and the grip keeps arrow key moves.
 - Lists whose moves wait on an asynchronous store write keep native drag, since a commit after the settle would jump.
-- Sidebar and picker custom orders use the same drag through `createSidebarOrderDrag`, which drags the whole row with a mouse or pen, leaves touch to scroll, and updates the store synchronously before the save so the settle never jumps. A new move waits for the previous save.
+- Sidebar and picker custom orders use the same drag through `createSidebarOrderDrag`, which drags the whole row with a mouse or pen, leaves touch to scroll, and updates the store synchronously before the save so the settle never jumps. A new move waits for the previous save. Row menus offer the touch and keyboard alternative through `MoveStepMenuItems`.
 - The click that follows a drop is swallowed, so releasing a lifted row never also opens it.
 
 ## Deliberate exceptions

@@ -10,6 +10,7 @@ import type { NotesFolder, NotesPage, NotesParent } from "$lib/notes/types";
 import {
   compareSidebarItems,
   compareStarredFirst,
+  customOrderRanks,
   DEFAULT_SIDEBAR_SORT_ORDER,
   type SidebarSortFields,
   type SidebarSortOrder,
@@ -59,6 +60,8 @@ export interface NotesNavigationTreeOptions {
   /** Favorited folders and pages list first among their siblings of the same kind. */
   favoriteFolderIds?: readonly string[];
   favoritePageIds?: readonly string[];
+  /** Navigation keys in their custom order, which ranks siblings when `sortOrder` is `custom`. */
+  customOrderKeys?: readonly string[];
 }
 
 export interface NotesPageFolderMoveTarget extends NotesDestinationPickerTarget {
@@ -103,6 +106,7 @@ interface AppendNavigationItemsOptions {
   titleForPage: (page: NotesPage) => string;
   sortOrder: SidebarSortOrder;
   favoriteKeys: ReadonlySet<string>;
+  customRanks: ReadonlyMap<string, number>;
   matchByNodeKey: Map<string, boolean>;
   result: NotesNavigationTreeItem[];
 }
@@ -196,6 +200,7 @@ export function buildNotesNavigationTree(
       ...(options.favoriteFolderIds ?? []).map(folderKey),
       ...(options.favoritePageIds ?? []).map(pageKey),
     ]),
+    customRanks: customOrderRanks(options.customOrderKeys ?? []),
     matchByNodeKey: new Map(),
     result,
   });
@@ -467,13 +472,13 @@ function appendNavigationItems(options: AppendNavigationItemsOptions): void {
 function compareNavigationNodes(
   left: NavigationNode,
   right: NavigationNode,
-  options: Pick<AppendNavigationItemsOptions, "sortOrder" | "titleForPage" | "favoriteKeys">,
+  options: Pick<AppendNavigationItemsOptions, "sortOrder" | "titleForPage" | "favoriteKeys" | "customRanks">,
 ): number {
   if (left.kind !== right.kind) return left.kind === "folder" ? -1 : 1;
   return compareStarredFirst(options.favoriteKeys.has(left.key), options.favoriteKeys.has(right.key))
     || compareSidebarItems(
-      navigationNodeSortFields(left, options.titleForPage),
-      navigationNodeSortFields(right, options.titleForPage),
+      navigationNodeSortFields(left, options.titleForPage, options.customRanks),
+      navigationNodeSortFields(right, options.titleForPage, options.customRanks),
       options.sortOrder,
     );
 }
@@ -481,6 +486,7 @@ function compareNavigationNodes(
 function navigationNodeSortFields(
   node: NavigationNode,
   titleForPage: (page: NotesPage) => string,
+  customRanks: ReadonlyMap<string, number>,
 ): SidebarSortFields {
   return node.kind === "folder"
     ? {
@@ -488,12 +494,14 @@ function navigationNodeSortFields(
       name: node.folder.name,
       createdAt: node.folder.created_time,
       modifiedAt: node.folder.last_edited_time,
+      rank: customRanks.get(node.key),
     }
     : {
       id: node.key,
       name: titleForPage(node.page),
       createdAt: node.page.created_time,
       modifiedAt: node.page.last_edited_time,
+      rank: customRanks.get(node.key),
     };
 }
 

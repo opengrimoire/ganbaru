@@ -4,6 +4,7 @@ const FAVORITE_PAGE_IDS_CONFIG_KEY = "notes.favoritePageIds";
 const FAVORITE_FOLDER_IDS_CONFIG_KEY = "notes.favoriteFolderIds";
 const RECENT_PAGE_IDS_CONFIG_KEY = "notes.recentPageIds";
 const SIDEBAR_ORDER_BY_PROJECT_CONFIG_KEY = "notes.sidebarOrderByProject";
+const CUSTOM_ORDER_BY_PROJECT_CONFIG_KEY = "notes.customOrderByProject";
 const DEFAULT_RECENT_PAGE_LIMIT = 8;
 
 /** Return the config key that stores favorited Notes page ids. */
@@ -19,6 +20,11 @@ export function notesFavoriteFolderIdsConfigKey(): string {
 /** Return the config key that stores per-project Notes sidebar order overrides. */
 export function notesSidebarOrderByProjectConfigKey(): string {
   return SIDEBAR_ORDER_BY_PROJECT_CONFIG_KEY;
+}
+
+/** Return the config key that stores the custom order of each project's folders and notes, as navigation keys. */
+export function notesCustomOrderByProjectConfigKey(): string {
+  return CUSTOM_ORDER_BY_PROJECT_CONFIG_KEY;
 }
 
 /** Return the config key that stores recently opened Notes page ids. */

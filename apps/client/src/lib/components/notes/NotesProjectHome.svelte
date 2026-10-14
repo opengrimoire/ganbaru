@@ -110,7 +110,6 @@
   const navigationPointerDragThresholdPx = 5;
   const navigationDragSettleMs = 200;
   const navigationLayoutShiftMs = 180;
-  const navigationLandedFlashMs = 700;
   const navigationRowContentSelector = ".notes-folder-row-content, .notes-page-row-content";
 
   interface PendingNavigationPointerDrag {
@@ -287,24 +286,14 @@
     card.frame.top = origin.y;
   }
 
-  function flashLandedNavigationRow(item: NotesNavigationDragItem): void {
-    if (navigationLandedTimer !== null) window.clearTimeout(navigationLandedTimer);
-    navigationLandedItem = item;
-    navigationLandedTimer = window.setTimeout(() => {
-      navigationLandedTimer = null;
-      navigationLandedItem = null;
-    }, navigationLandedFlashMs);
-  }
-
   /**
-   * End the card's flight, then hand the row back to the list and flash `landedItem` when given. `settle` glides the
+   * End the card's flight, then hand the row back to the list. `settle` glides the
    * card onto `frame` and takes its size; `absorb` drifts it toward `frame` while fading, for a row that went into a
    * collapsed folder; `fade` fades it where it was released.
    */
   function finishNavigationDragCard(
     cardId: number,
     landing: { kind: "settle" | "absorb"; frame: NotesNavigationRect } | { kind: "fade" },
-    landedItem: NotesNavigationDragItem | null,
   ): void {
     const card = navigationDragCard;
     if (!card || card.id !== cardId) return;
@@ -316,7 +305,6 @@
       navigationDragCardTimer = null;
       if (navigationDragCard?.id !== cardId) return;
       navigationDragCard = null;
-      if (landedItem) flashLandedNavigationRow(landedItem);
     }, prefersReducedMotion() ? 0 : navigationDragSettleMs);
   }
 
@@ -324,7 +312,7 @@
     const card = navigationDragCard;
     if (!card) return;
     const source = navigationRowContent(card.item);
-    finishNavigationDragCard(card.id, source ? { kind: "settle", frame: viewportRect(source) } : { kind: "fade" }, null);
+    finishNavigationDragCard(card.id, source ? { kind: "settle", frame: viewportRect(source) } : { kind: "fade" });
   }
 
   /** Land the card on the moved row, or on the folder that now hides it. */
@@ -332,16 +320,11 @@
     const destination = navigationRowContent(source);
     if (destination) {
       destination.scrollIntoView({ block: "nearest" });
-      finishNavigationDragCard(cardId, { kind: "settle", frame: viewportRect(destination) }, source);
+      finishNavigationDragCard(cardId, { kind: "settle", frame: viewportRect(destination) });
       return;
     }
-    const folder: NotesNavigationDragItem | null = target.kind === "folder" ? { kind: "folder", id: target.id } : null;
-    const folderRow = folder ? navigationRowContent(folder) : null;
-    finishNavigationDragCard(
-      cardId,
-      folderRow ? { kind: "absorb", frame: viewportRect(folderRow) } : { kind: "fade" },
-      folderRow ? folder : null,
-    );
+    const folderRow = target.kind === "folder" ? navigationRowContent({ kind: "folder", id: target.id }) : null;
+    finishNavigationDragCard(cardId, folderRow ? { kind: "absorb", frame: viewportRect(folderRow) } : { kind: "fade" });
   }
 
   function navigationRowTops(): Map<string, number> {
@@ -620,8 +603,6 @@
   let navigationDragCard = $state<NavigationDragCardState | null>(null);
   let navigationDragCardSequence = 0;
   let navigationDragCardTimer: number | null = null;
-  let navigationLandedItem = $state.raw<NotesNavigationDragItem | null>(null);
-  let navigationLandedTimer: number | null = null;
   let navigationClickSuppressedUntilPointerUp = false;
   let navigationPointerPosition: NavigationPointerPosition | null = null;
   let pendingNavigationPointerDrag: PendingNavigationPointerDrag | null = null;
@@ -718,11 +699,6 @@
     const folder = projectFolders.find((candidate) => candidate.id === target.id);
     return folder ? t("notes.navigationDragMoveTo", folder.name) : null;
   });
-  const navigationLandedKey = $derived.by(() => {
-    const landed = navigationLandedItem;
-    return landed ? explorerItems.find((item) => explorerItemMatches(item, landed))?.key ?? null : null;
-  });
-
   /**
    * The held row dims to mark where it came from while lifted and hides while the card settles onto it. Rows nested
    * under a dragged folder stay dimmed throughout.
@@ -733,10 +709,7 @@
     return role === "held" && navigationDragCard?.phase !== "lifted" ? "placeholder" : "source";
   }
 
-  $effect(() => () => {
-    clearNavigationDragCardTimer();
-    if (navigationLandedTimer !== null) window.clearTimeout(navigationLandedTimer);
-  });
+  $effect(() => clearNavigationDragCardTimer);
 
   $effect(() => {
     if (!draggingNavigationItem) return;
@@ -1370,7 +1343,6 @@
           class:notes-navigation-folder-drop-area-end={folderDropArea?.position === "end"}
           class:notes-navigation-drag-source={navigationDragRowState(item.key) === "source"}
           class:notes-navigation-drag-placeholder={navigationDragRowState(item.key) === "placeholder"}
-          class:notes-navigation-drag-landed={navigationLandedKey === item.key}
         >
         {#if item.kind === "folder"}
           <NotesFolderRow
@@ -1600,16 +1572,6 @@
 
   .notes-navigation-drag-placeholder :global(.explorer-row) {
     opacity: 0;
-  }
-
-  .notes-navigation-drag-landed :global(.explorer-row) {
-    animation: notes-navigation-drag-landed 700ms ease-out;
-  }
-
-  @keyframes notes-navigation-drag-landed {
-    from {
-      background-color: var(--selection-background);
-    }
   }
 
   @media (prefers-reduced-motion: reduce) {

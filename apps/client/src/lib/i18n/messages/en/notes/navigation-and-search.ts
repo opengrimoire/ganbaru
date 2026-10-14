@@ -64,7 +64,6 @@ export const navigationAndSearch = {
   archivedNoteRestore: (title: string) => `Restore and open ${title}`,
   archivedNote: "Archived note",
   archivedNotesLoadFailed: (message: string) => `Archived notes could not be loaded: ${message}`,
-  emptyProjectTitle: (project: string) => `${project} has no notes yet.`,
   emptyProjectShortcutHint: "or press",
   navigationDragMoveTo: (destination: string) => `Move to ${destination}`,
   defaultFolderName: "New folder",

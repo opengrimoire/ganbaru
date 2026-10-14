@@ -781,8 +781,8 @@
             {:else}
               <Loading layout="fill" label={activeSurfaceKind === "archive" ? t("notes.loadingArchive") : t("notes.loadingTrash")} class="min-w-0 flex-1" />
             {/if}
-          {:else if showEmptyProjectState && selectedProject}
-            <NotesProjectEmptyState projectName={selectedProject.name} onCreate={createPage} />
+          {:else if showEmptyProjectState}
+            <NotesProjectEmptyState onCreate={createPage} />
           {:else}
             {#each notes.editorPanes as pane (pane.id)}
               {@const store = pane.store}

@@ -13,6 +13,7 @@
   import Settings2 from "@lucide/svelte/icons/settings-2";
   import Star from "@lucide/svelte/icons/star";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import StarredIconBadge from "$lib/components/ui/StarredIconBadge.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { COMPACT_IDENTITY_EMOJI_SCALE, COMPACT_IDENTITY_ICON_SIZE, COMPACT_IDENTITY_ICON_STROKE_WIDTH } from "$lib/icon-sizing";
   import { shortcutModifierLabel } from "$lib/keyboard-shortcuts";
@@ -273,18 +274,19 @@
         onclick={() => onCollapsedChange(!collapsed)}
         oncontextmenu={openContextMenu}
       >
-        <ProjectIcon
-          name={project.icon}
-          size={COMPACT_IDENTITY_ICON_SIZE}
-          strokeWidth={COMPACT_IDENTITY_ICON_STROKE_WIDTH}
-          emojiScale={COMPACT_IDENTITY_EMOJI_SCALE}
-        />
+        <StarredIconBadge {starred}>
+          <ProjectIcon
+            name={project.icon}
+            size={COMPACT_IDENTITY_ICON_SIZE}
+            strokeWidth={COMPACT_IDENTITY_ICON_STROKE_WIDTH}
+            emojiScale={COMPACT_IDENTITY_EMOJI_SCALE}
+          />
+        </StarredIconBadge>
         <span class="section-name">{displayName}</span>
         {#if groupName}
           <span class="section-group">{groupName}</span>
         {/if}
         {#if collapsed}<ChevronRight class="section-chevron" />{:else}<ChevronDown class="section-chevron" />{/if}
-        {#if starred}<Star class="section-star size-3 shrink-0 fill-current text-primary" aria-hidden="true" />{/if}
       </button>
       <button
         bind:this={addButton}

@@ -242,7 +242,7 @@ describe("ProjectSidebarSection", () => {
   it("stars a view and the project from their menus", () => {
     store.starredProjectIds = ["project-a"];
     render();
-    expect(target.querySelector(".section-heading .section-star")?.previousElementSibling?.classList.contains("section-chevron")).toBe(true);
+    expect(target.querySelector(".section-heading .starred-icon-badge")).not.toBeNull();
     expect(target.querySelector(".explorer-row-star")).toBeNull();
 
     button("View actions: Backlog").click();

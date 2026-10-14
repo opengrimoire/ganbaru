@@ -71,7 +71,6 @@
 
   .project-view-drag-card[data-phase="settling"] {
     background: transparent;
-    color: inherit;
     transition-property: translate, scale, box-shadow, background-color;
     transition-duration: var(--project-view-drag-card-duration);
     transition-timing-function: cubic-bezier(0.2, 0, 0, 1);

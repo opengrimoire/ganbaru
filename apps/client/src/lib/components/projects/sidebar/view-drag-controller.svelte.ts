@@ -272,6 +272,7 @@ export function createProjectViewDragController(options: ProjectViewDragControll
   /** Drop any drag in progress without moving the view, for when the section unmounts. */
   function destroy(): void {
     pending = null;
+    window.removeEventListener("pointerup", suppressClickAfterRelease, { capture: true });
     removeListeners();
     finish();
   }

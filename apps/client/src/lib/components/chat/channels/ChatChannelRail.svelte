@@ -49,6 +49,7 @@
   import ExplorerRowStar from "$lib/components/ui/ExplorerRowStar.svelte";
   import MoveStepMenuItems from "$lib/components/ui/MoveStepMenuItems.svelte";
   import { placedNextTo, starredSiblingGroups, steppedBy, type SidebarDropPlacement } from "$lib/utils/sidebar-order";
+  import { createSidebarOrderDrag } from "$lib/utils/sidebar-order-drag.svelte";
 
   /** Which header opened the section menu: the default Channels group, a custom section, or Direct messages. */
   type SectionMenuTarget =
@@ -58,9 +59,8 @@
   type ChatChannelSetupDialogComponent = typeof import("./ChatChannelSetupDialog.svelte").default;
   type ParticipantPickerComponent =
     typeof import("$lib/components/contacts/ParticipantPicker.svelte").default;
-  /** A pending custom order drop: the dragged channel or section lands before or after `targetId`. */
+  /** A pending custom order drop: the dragged channel lands before or after `targetId`. */
   interface RailReorder {
-    kind: "channel" | "section";
     targetId: string;
     placement: SidebarDropPlacement;
     orderedIds: string[];
@@ -143,13 +143,17 @@
     [unsectionedChannels, ...orderedSections.map(sectionChannels)].map((list) => list.map((channel) => channel.id)),
     (channelId) => chatSidebarOrder.isChannelStarred(channelId),
   ));
-  const sectionSiblings = $derived(starredSiblingGroups(
-    [orderedSections.map((section) => section.id)],
-    (sectionId) => sections.some((section) => section.id === sectionId && section.starred === true),
-  ));
   let draggedChannelId = $state<string | null>(null);
-  let draggedSectionId = $state<string | null>(null);
   let railReorder = $state.raw<RailReorder | null>(null);
+  /** Sections drag from their heading in the custom order, outside search and renaming, like Projects sidebar sections. */
+  const sectionDrag = createSidebarOrderDrag({
+    getIds: () => orderedSections.map((section) => section.id),
+    enabled: () => customOrderActive && renamingSectionId === null,
+    isStarred: (sectionId) => sections.some((section) => section.id === sectionId && section.starred === true),
+    save: async (orderedIds) => persist(reorderChatSidebarSections(sections, orderedIds)),
+    description: "chat sidebar sections",
+  });
+  $effect(() => sectionDrag.reset);
 
   function searchAuthorDisplayName(result: ChatMessageSearchResultRead): string {
     return chatParticipantDisplayName(
@@ -385,15 +389,10 @@
     persist(moveChatChannelToSection(sections, channelId, sectionId));
   }
 
-  /** Drop on a section: a dragged section lands at the pending reorder, and a channel moves into the section. */
+  /** Drop on a section moves the dragged channel into it. */
   function handleDrop(event: DragEvent, sectionId: string | null): void {
     event.preventDefault();
-    const reorder = railReorder;
     clearRailDrag();
-    if (reorder?.kind === "section") {
-      persist(reorderChatSidebarSections(sections, reorder.orderedIds));
-      return;
-    }
     const channelId = event.dataTransfer?.getData("application/x-ganbaru-chat-channel") ?? "";
     if (channelId) moveChannel(channelId, sectionId);
   }
@@ -404,16 +403,8 @@
     draggedChannelId = channelId;
   }
 
-  function beginSectionDrag(event: DragEvent, sectionId: string): void {
-    if (!customOrderActive) return;
-    event.dataTransfer?.setData("application/x-ganbaru-chat-section", sectionId);
-    if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
-    draggedSectionId = sectionId;
-  }
-
   function clearRailDrag(): void {
     draggedChannelId = null;
-    draggedSectionId = null;
     railReorder = null;
   }
 
@@ -425,7 +416,7 @@
 
   function setRailReorder(next: RailReorder | null): void {
     const current = railReorder;
-    if (current?.kind === next?.kind && current?.targetId === next?.targetId && current?.placement === next?.placement) return;
+    if (current?.targetId === next?.targetId && current?.placement === next?.placement) return;
     railReorder = next;
   }
 
@@ -446,43 +437,31 @@
     }
     event.preventDefault();
     event.stopPropagation();
-    setRailReorder({ kind: "channel", targetId: channelId, placement, orderedIds });
+    setRailReorder({ targetId: channelId, placement, orderedIds });
   }
 
   function handleChannelDrop(event: DragEvent, channelId: string): void {
     const reorder = railReorder;
-    if (reorder?.kind !== "channel" || reorder.targetId !== channelId || !loadedProjectId) return;
+    if (!reorder || reorder.targetId !== channelId || !loadedProjectId) return;
     event.preventDefault();
     event.stopPropagation();
     clearRailDrag();
     chatSidebarOrder.setCustomSiblingOrder(loadedProjectId, reorder.orderedIds);
   }
 
-  /** A dragged section claims a reorder next to a sibling section; channel drags only clear a stale reorder line. */
-  function handleSectionDragOver(event: DragEvent, sectionId: string | null): void {
+  /** A channel dragged over a section, outside its rows, drops into the section and clears a stale reorder line. */
+  function handleSectionDragOver(event: DragEvent): void {
     event.preventDefault();
-    const sourceId = draggedSectionId;
-    if (!sourceId) {
-      if (railReorder?.kind === "channel") setRailReorder(null);
-      return;
-    }
-    const placement = dropPlacement(event);
-    const orderedIds = sectionId ? placedNextTo(sectionSiblings.get(sourceId) ?? [], sourceId, sectionId, placement) : null;
-    setRailReorder(sectionId && orderedIds ? { kind: "section", targetId: sectionId, placement, orderedIds } : null);
+    setRailReorder(null);
   }
 
-  function reorderLine(kind: RailReorder["kind"], id: string, placement: SidebarDropPlacement): boolean {
-    return railReorder?.kind === kind && railReorder.targetId === id && railReorder.placement === placement;
+  function reorderLine(id: string, placement: SidebarDropPlacement): boolean {
+    return railReorder?.targetId === id && railReorder.placement === placement;
   }
 
   function moveChannelStep(channelId: string, step: -1 | 1): void {
     const orderedIds = steppedBy(channelSiblings.get(channelId) ?? [], channelId, step);
     if (orderedIds && loadedProjectId) chatSidebarOrder.setCustomSiblingOrder(loadedProjectId, orderedIds);
-  }
-
-  function moveSectionStep(sectionId: string, step: -1 | 1): void {
-    const orderedIds = steppedBy(sectionSiblings.get(sectionId) ?? [], sectionId, step);
-    if (orderedIds) persist(reorderChatSidebarSections(sections, orderedIds));
   }
 
   async function openChannelContextMenu(event: MouseEvent, channel: ChatChannelRead): Promise<void> {
@@ -785,7 +764,7 @@
             {#if !messageSearchLoading && messageSearchResults.length === 0}<p class="px-2 py-1 text-xs text-muted-foreground">{t("chat.organization.noMessageSearchResults")}</p>{/if}
           </section>
         {/if}
-        <section class="channel-section" role="group" ondragover={(event) => handleSectionDragOver(event, null)} ondrop={(event) => handleDrop(event, null)}>
+        <section class="channel-section" role="group" ondragover={handleSectionDragOver} ondrop={(event) => handleDrop(event, null)}>
           <div class="section-heading">
             <button type="button" class="section-toggle" class:collapsed={channelsCollapsed} aria-label={sectionToggleLabel(t("chat.channels.defaultSection"), channelsCollapsed)} aria-expanded={!channelsCollapsed} onclick={() => { channelsCollapsed = !channelsCollapsed; }}>
               <span use:overflowTooltip={t("chat.channels.defaultSection")}>{t("chat.channels.defaultSection")}</span>
@@ -813,18 +792,14 @@
         {#each orderedSections as section (section.id)}
           <section
             class="channel-section"
-            class:rail-reorder-before={reorderLine("section", section.id, "before")}
-            class:rail-reorder-after={reorderLine("section", section.id, "after")}
             role="group"
-            ondragover={(event) => handleSectionDragOver(event, section.id)}
+            {@attach sectionDrag.item(section.id)}
+            ondragover={handleSectionDragOver}
             ondrop={(event) => handleDrop(event, section.id)}
           >
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
               class="section-heading"
-              draggable={customOrderActive && renamingSectionId !== section.id}
-              ondragstart={(event) => beginSectionDrag(event, section.id)}
-              ondragend={clearRailDrag}
               class:section-renaming={renamingSectionId === section.id}
               onfocusout={(event) => { if (renamingSectionId === section.id) handleSectionRenameFocusOut(event); }}
             >
@@ -841,7 +816,7 @@
                 <button type="button" class="explorer-icon section-rename-control" aria-label={t("chat.save")} disabled={!sectionNameDraft.trim() || [...sectionNameDraft.trim()].length > 80} data-app-tooltip-disabled="true" onpointerdown={() => { sectionRenameControlPointerActive = true; }} onpointerup={releaseSectionRenameControlPointer} onpointercancel={() => { sectionRenameControlPointerActive = false; }} onkeydown={handleSectionRenameControlKeydown} onclick={(event) => finishSectionRenameAndFocus(event, true)}><Check size={14} /></button>
                 <button type="button" class="explorer-icon section-rename-control" aria-label={t("chat.cancel")} data-app-tooltip-disabled="true" onpointerdown={() => { sectionRenameControlPointerActive = true; }} onpointerup={releaseSectionRenameControlPointer} onpointercancel={() => { sectionRenameControlPointerActive = false; }} onkeydown={handleSectionRenameControlKeydown} onclick={(event) => finishSectionRenameAndFocus(event, false)}><X size={14} /></button>
               {:else}
-                <button type="button" class="section-toggle" class:collapsed={section.collapsed} aria-label={sectionToggleLabel(section.name, section.collapsed)} aria-expanded={!section.collapsed} onclick={() => toggleSection(section.id)}>
+                <button type="button" class="section-toggle" class:collapsed={section.collapsed} aria-label={sectionToggleLabel(section.name, section.collapsed)} aria-expanded={!section.collapsed} onpointerdown={(event) => sectionDrag.pointerDown(event, section.id)} onclick={() => toggleSection(section.id)}>
                   {#if section.starred}<Star class="section-star size-2.5 shrink-0 translate-y-[-0.05em] fill-current text-primary" aria-hidden="true" />{/if}
                   <span use:overflowTooltip={section.name}>{section.name}</span>
                   {#if section.collapsed}<ChevronRight class="section-chevron" size={13} />{:else}<ChevronDown class="section-chevron" size={13} />{/if}
@@ -903,9 +878,9 @@
       {#if customOrderActive}
         {@const sectionId = sectionContextMenu.target.section.id}
         <MoveStepMenuItems
-          canMoveUp={steppedBy(sectionSiblings.get(sectionId) ?? [], sectionId, -1) !== null}
-          canMoveDown={steppedBy(sectionSiblings.get(sectionId) ?? [], sectionId, 1) !== null}
-          onMove={(step) => moveSectionStep(sectionId, step)}
+          canMoveUp={sectionDrag.canMove(sectionId, -1)}
+          canMoveDown={sectionDrag.canMove(sectionId, 1)}
+          onMove={(step) => sectionDrag.move(sectionId, step)}
           onClose={closeSectionContextMenu}
         />
       {/if}
@@ -975,7 +950,7 @@
 {/if}
 
 {#snippet ChannelRow({ channel }: { channel: ChatChannelRead })}
-  <div class="channel-row-group explorer-row" class:explorer-selected={chat.selectedChannelId === channel.id && !chat.channelArchiveOpen} role="group" aria-label={channel.name} class:rail-reorder-before={reorderLine("channel", channel.id, "before")} class:rail-reorder-after={reorderLine("channel", channel.id, "after")} draggable="true" ondragstart={(event) => beginDrag(event, channel.id)} ondragend={clearRailDrag} ondragover={(event) => handleChannelDragOver(event, channel.id)} ondrop={(event) => handleChannelDrop(event, channel.id)}>
+  <div class="channel-row-group explorer-row" class:explorer-selected={chat.selectedChannelId === channel.id && !chat.channelArchiveOpen} role="group" aria-label={channel.name} class:rail-reorder-before={reorderLine(channel.id, "before")} class:rail-reorder-after={reorderLine(channel.id, "after")} draggable="true" ondragstart={(event) => beginDrag(event, channel.id)} ondragend={clearRailDrag} ondragover={(event) => handleChannelDragOver(event, channel.id)} ondrop={(event) => handleChannelDrop(event, channel.id)}>
     <button type="button" class="channel-row explorer-row-label" class:selected={chat.selectedChannelId === channel.id && !chat.channelArchiveOpen} aria-current={chat.selectedChannelId === channel.id && !chat.channelArchiveOpen ? "page" : undefined} onclick={() => void selectChannel(channel.id)} oncontextmenu={(event) => void openChannelContextMenu(event, channel)}>
       <Hash size={COMPACT_IDENTITY_ICON_SIZE} strokeWidth={COMPACT_IDENTITY_ICON_STROKE_WIDTH} class="explorer-row-icon" />
       <span class="min-w-0 flex-1 truncate" use:overflowTooltip={channel.name}>{channel.name}</span>
@@ -1038,10 +1013,7 @@
   .channel-section { position: relative; }
   .rail-reorder-before::before, .rail-reorder-after::after { position: absolute; right: 0.5rem; left: 0.5rem; z-index: 1; height: 2px; border-radius: 1px; background: var(--primary); content: ""; pointer-events: none; }
   .channel-row-group.rail-reorder-before::before { top: -1px; }
-  .channel-row-group.rail-reorder-after::after { bottom: -1px; }
-  .channel-section.rail-reorder-before::before { top: calc(-0.25rem - 1px); }
-  .channel-section.rail-reorder-after::after { bottom: calc(-0.25rem - 1px); }
-  .channel-row { display: flex; width: 100%; min-width: 0; min-height: var(--explorer-row-height); align-items: center; gap: 0.375rem; border-radius: 0.35rem; padding: var(--explorer-row-padding) 0.5rem; color: var(--foreground); text-align: left; }
+  .channel-row-group.rail-reorder-after::after { bottom: -1px; }  .channel-row { display: flex; width: 100%; min-width: 0; min-height: var(--explorer-row-height); align-items: center; gap: 0.375rem; border-radius: 0.35rem; padding: var(--explorer-row-padding) 0.5rem; color: var(--foreground); text-align: left; }
   .channel-row-group .channel-row { flex: 1; }
   .explorer-touch .section-heading > button { min-width: var(--touch-target-min); min-height: var(--touch-target-min); }
   .explorer-touch .section-heading > .section-toggle { min-width: 0; }

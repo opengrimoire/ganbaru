@@ -31,6 +31,8 @@
     "chat.local-execution",
   );
   const mobilePresentation = BUILD_PLATFORM_PROFILE.shell === "mobile";
+  /** Phone action rows share 16 pixel icons in 48 pixel targets across Projects, Notes, and Chat. */
+  const actionIconSize = mobilePresentation ? 16 : 14;
   const selectedThread = $derived(chat.selectedThread);
   let actionError = $state<string | null>(null);
 
@@ -46,15 +48,15 @@
   {#if actionError}<Notice class="header-action-error max-w-48 text-[0.666667rem]" message={actionError} />{/if}
   {#if localExecutionAvailable}
     <button type="button" class={cn("chat-header-icon-button", bottomPanelOpen && "bg-accent text-foreground")} aria-label={bottomPanelOpen ? t("chat.closeBottomPanel") : t("chat.openBottomPanel")} aria-pressed={bottomPanelOpen} data-chat-bottom-panel-action onclick={onToggleBottomPanel}>
-      <PanelBottom size={14} strokeWidth={1.75} />
+      <PanelBottom size={actionIconSize} strokeWidth={1.75} />
     </button>
     <button type="button" class={cn("chat-header-icon-button", chat.inspectorOpen && "bg-accent text-foreground")} aria-label={chat.inspectorOpen ? t("chat.closeInspector") : t("chat.openInspector")} aria-pressed={chat.inspectorOpen} data-chat-inspector-action onclick={() => { chat.inspectorOpen = !chat.inspectorOpen; }}>
-      <PanelRight size={14} strokeWidth={1.75} />
+      <PanelRight size={actionIconSize} strokeWidth={1.75} />
     </button>
   {/if}
   {#if localExecutionAvailable && selectedThread}
     <button type="button" class="chat-header-icon-button" aria-label={t("chat.detach")} title={t("chat.detach")} onclick={detachThread}>
-      <SquareArrowOutUpRight size={14} strokeWidth={1.75} />
+      <SquareArrowOutUpRight size={actionIconSize} strokeWidth={1.75} />
     </button>
   {/if}
   {#if projectName}
@@ -68,7 +70,7 @@
       data-chat-project-settings-trigger
       onclick={(event) => onToggleProjectSettings(event.currentTarget)}
     >
-      <Settings2 size={14} strokeWidth={1.75} />
+      <Settings2 size={actionIconSize} strokeWidth={1.75} />
     </button>
   {/if}
 </div>

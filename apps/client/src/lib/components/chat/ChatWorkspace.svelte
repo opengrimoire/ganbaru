@@ -988,6 +988,16 @@
   }
 </script>
 
+{#snippet headerActions()}
+  <ChatHeaderActions
+    {bottomPanelOpen}
+    projectName={projects.selectedProject?.name ?? null}
+    {projectSettingsOpen}
+    onToggleBottomPanel={toggleBottomPanel}
+    onToggleProjectSettings={toggleProjectSettings}
+  />
+{/snippet}
+
 <svelte:window onkeydown={handleKeydown} />
 
 <div bind:this={rootElement} class="chat-workspace @container/chat-shell relative grid h-full min-h-0 overflow-hidden" class:mobile-rail-surface={railUsesMobileSurface} class:resizing-panels={resizingInspector || resizingBottomPanel} class:panel-transitions-enabled={panelTransitionsEnabled} data-chat-workspace data-layout={layout.variant} data-rail-presentation={layout.railPresentation} data-inspector-presentation={layout.inspectorPresentation} data-reply-thread-presentation={layout.replyThreadPresentation} data-active-surface={layout.activeSurface} data-rail-open={visibleRailOpen} data-rail-docked={railDocked} data-canvas-edge={!mobileShell} data-project-sidebar={projectHosted} style={`container-type:inline-size;container-name:chat-shell;--chat-panel-transition-duration:${PANEL_TRANSITION_MS}ms;--chat-bottom-min-height:${MIN_BOTTOM_PANEL_HEIGHT}px;--chat-inspector-width:${displayedInspectorWidth}px;--chat-reply-thread-width:${replyThreadWidth}px;${canvasEdgeWidth === null ? "" : `--chat-canvas-edge-width:${canvasEdgeWidth}px;`}`}>
@@ -1010,6 +1020,7 @@
       reserveGlobalActions={!chat.inspectorOpen && !threadColumnOpen}
       mobilePresentation={mobileShell}
       onOpenRail={openRail}
+      trailingActions={mobileShell ? headerActions : undefined}
     />
   </div>
   <div bind:this={railShell} class="chat-rail-shell" class:closed={!visibleRailOpen} class:explorer-chrome={railDocked} role={railIsModal ? "dialog" : undefined} aria-modal={railIsModal ? "true" : undefined} aria-label={railIsModal ? t("chat.title") : undefined} onkeydown={(event) => { if (!projectHosted && layout.railPresentation === "sheet") handleRailKeydown(event); }}>
@@ -1048,15 +1059,10 @@
     </div>
   </aside>
 
-  <div bind:this={globalActionsElement} class="chat-global-actions">
-    <ChatHeaderActions
-      {bottomPanelOpen}
-      projectName={projects.selectedProject?.name ?? null}
-      {projectSettingsOpen}
-      onToggleBottomPanel={toggleBottomPanel}
-      onToggleProjectSettings={toggleProjectSettings}
-    />
-  </div>
+  {#if !mobileShell}
+    <!-- Desktop overlays the actions on whichever panel owns the top edge; the phone row carries them inline. -->
+    <div bind:this={globalActionsElement} class="chat-global-actions">{@render headerActions()}</div>
+  {/if}
   {#if projectSettingsOpen && projectSettingsTrigger && projects.selectedProject}
     <ChatProjectSettingsPanel
       projectId={projects.selectedProject.id}

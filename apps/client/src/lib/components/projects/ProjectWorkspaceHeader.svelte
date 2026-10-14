@@ -311,19 +311,6 @@
 
 </script>
 
-{#snippet addTaskButton()}
-  <button
-    type="button"
-    class={toolbarIconButtonClass(false)}
-    aria-label={t("projects.header.addTask")}
-    title={t("projects.header.addTask")}
-    data-project-new-task-button
-    onclick={onCreateTask}
-  >
-    <WorkspaceBreadcrumbTerminalIcon kind="plus" />
-  </button>
-{/snippet}
-
 <svelte:window onpointerdown={handleProjectWindowPointerDown} />
 
 <div
@@ -376,7 +363,6 @@
             <ChevronLeft class="size-5" strokeWidth={projectIdentityIconStrokeWidth} />
           </button>
         {/if}
-        {@render addTaskButton()}
       </div>
     {:else}
     <div class="flex h-7 min-w-0 max-w-full items-center gap-0.5 text-identity font-medium">
@@ -428,7 +414,16 @@
         <span class="min-w-0 truncate text-foreground">{selectedProject.name}</span>
         <WorkspaceBreadcrumbTerminalIcon kind="chevron" class="shrink-0 text-muted-foreground" />
       </button>
-      {@render addTaskButton()}
+      <button
+        type="button"
+        class={toolbarIconButtonClass(false)}
+        aria-label={t("projects.header.addTask")}
+        title={t("projects.header.addTask")}
+        data-project-new-task-button
+        onclick={onCreateTask}
+      >
+        <WorkspaceBreadcrumbTerminalIcon kind="plus" />
+      </button>
     </div>
     {/if}
     {#if projectNavigatorOpen}
@@ -483,7 +478,7 @@
     {/if}
   </div>
   {#if mobileLayout}
-    <div class="flex shrink-0 items-center gap-0">
+    <div class="flex shrink-0 items-center gap-1">
       <div class="relative shrink-0">
         <button
           type="button"

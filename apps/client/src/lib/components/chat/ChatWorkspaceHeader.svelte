@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Snippet } from "svelte";
   import FolderOpen from "@lucide/svelte/icons/folder-open";
   import GitBranch from "@lucide/svelte/icons/git-branch";
   import Hash from "@lucide/svelte/icons/hash";
@@ -42,6 +43,7 @@
     mobilePresentation = false,
     editingTitle = $bindable(false),
     railButtonElement = $bindable(null),
+    trailingActions = undefined,
   }: {
     explorerExpanded: boolean;
     showRailButton: boolean;
@@ -51,6 +53,8 @@
     editingTitle?: boolean;
     /** The rail button, kept for returning focus after the mobile channel list closes. */
     railButtonElement?: HTMLButtonElement | null;
+    /** Workspace actions placed at the end of the row, used where they are not overlaid on the header. */
+    trailingActions?: Snippet;
   } = $props();
 
   const chat = getChat();
@@ -237,22 +241,26 @@
   <div bind:this={identityElement} class={cn("relative", mobilePresentation ? "min-w-0 flex-1 overflow-hidden" : "min-w-36 shrink-0 min-[760px]:max-w-3xl")}>
     {#if mobilePresentation}
       <MobileContextSwitcher
-        title={selectedChannel?.name ?? selectedProject?.name ?? t("chat.title")}
-        expanded={navigatorOpen}
-        onclick={() => toggleNavigator(selectedChannel ? "channels" : "projects")}
+        title={selectedProject?.name ?? t("chat.title")}
+        expanded={navigatorOpen && navigatorMode !== "channels"}
+        onclick={() => toggleNavigator("projects")}
       >
         {#snippet icon()}
-          {#if selectedChannel}
-            <Hash size={identityIconSize} strokeWidth={identityIconStrokeWidth} />
-          {:else if selectedProject}
+          {#if selectedProject}
             <ProjectIcon name={selectedProject.icon} size={identityIconSize} strokeWidth={identityIconStrokeWidth} emojiScale={identityEmojiScale} />
           {:else}
             <MessageSquare size={identityIconSize} strokeWidth={identityIconStrokeWidth} />
           {/if}
         {/snippet}
       </MobileContextSwitcher>
-      {#if selectedChannel && editingTitle && !selectedChannel.isDefault}
-        <div class="flex h-12 min-w-0 items-center px-1"><ChatTitleEditor title={selectedChannel.name} onCommit={commitTitle} onCancel={() => { editingTitle = false; }} /></div>
+      {#if selectedChannel}
+        <div class="flex h-12 min-w-0 items-center text-identity font-medium">
+          {#if editingTitle && !selectedChannel.isDefault}
+            <div class="min-w-0 flex-1 px-1"><ChatTitleEditor title={selectedChannel.name} onCommit={commitTitle} onCancel={() => { editingTitle = false; }} /></div>
+          {:else}
+            <button type="button" class={cn("chat-mobile-channel-trigger", navigatorOpen && navigatorMode === "channels" && "bg-accent")} aria-label={t("chat.channels.navigatorLabel")} aria-expanded={navigatorOpen && navigatorMode === "channels"} data-chat-channel-trigger onclick={() => toggleNavigator("channels")}><Hash size={identityIconSize} strokeWidth={identityIconStrokeWidth} class="shrink-0" /><span class="min-w-0 truncate">{selectedChannel.name}</span><WorkspaceBreadcrumbTerminalIcon kind="chevron" context="chat" class="shrink-0 text-muted-foreground" /></button>
+          {/if}
+        </div>
       {/if}
     {:else}
     <div class="flex h-7 min-w-0 max-w-full items-center gap-0.5 overflow-hidden text-identity font-medium">
@@ -349,7 +357,7 @@
   {#if !mobilePresentation}<div class="flex-1"></div>{/if}
   {#if actionError}<Notice class="header-action-error max-w-48 text-[0.666667rem]" message={actionError} />{/if}
   <div class="flex shrink-0 items-center gap-1">
-    {#if selectedFolder?.bindingStatus === "available"}<button type="button" class="chat-toolbar-icon-button" title={t("chat.openFolder")} aria-label={t("chat.openFolder")} onclick={() => run(() => chat.openWorkingFolder(selectedFolder.workingFolder.id))}><FolderOpen size={14} /></button>{/if}
+    {#if selectedFolder?.bindingStatus === "available"}<button type="button" class="chat-toolbar-icon-button" title={t("chat.openFolder")} aria-label={t("chat.openFolder")} onclick={() => run(() => chat.openWorkingFolder(selectedFolder.workingFolder.id))}><FolderOpen size={mobilePresentation ? 16 : 14} strokeWidth={mobilePresentation ? 1.75 : undefined} /></button>{/if}
     {#if selectedChannel}
       <button bind:this={membersTrigger} type="button" class="chat-members-trigger" class:open={membersOpen} aria-label={t("chat.organization.membersPanel", memberSummary.count)} data-app-tooltip={t("chat.organization.members")} aria-haspopup="dialog" aria-expanded={membersOpen} data-chat-members-trigger onpointerenter={() => { void loadMembersPanel(); }} onfocus={() => { void loadMembersPanel(); }} onclick={toggleChannelMembers}>
         <span class="chat-members-stack" aria-hidden="true">
@@ -360,6 +368,7 @@
       </button>
     {/if}
     {#if selectedFolder?.currentBranch}<span class="chat-branch" title={t("chat.header.branch", selectedFolder.currentBranch)}><GitBranch size={13} /><span>{selectedFolder.currentBranch}</span></span>{/if}
+    {#if trailingActions}{@render trailingActions()}{/if}
   </div>
 </div>
 
@@ -387,10 +396,9 @@
   .chat-branch { display:none;min-width:0;max-width:9rem;align-items:center;gap:0.3rem;border-radius:0.375rem;padding:0.25rem 0.4rem;color:var(--muted-foreground);font-size: calc(0.666667rem * var(--type-scale)); }
   .chat-branch span { overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
   @container chat-shell (min-width:760px) { .chat-branch { display:inline-flex; } }
-  @container chat-shell (max-width: 560px) {
-    .chat-workspace-header.mobilePresentation { gap: 0; }
-    .chat-workspace-header.mobilePresentation > .relative { min-width: 0; flex: 1 1 auto; }
-    .mobilePresentation .chat-toolbar-icon-button { width: 2.5rem; height: 2.5rem; }
-    .mobilePresentation .chat-members-trigger { height: 2.5rem; padding-inline: 0.5rem 0.625rem; }
-  }
+  /* The phone action row uses the same touch targets as the Projects and Notes rows. */
+  .mobilePresentation .chat-toolbar-icon-button { width: 3rem; height: 3rem; }
+  .mobilePresentation .chat-members-trigger { height: 3rem; padding-inline: 0.5rem 0.625rem; }
+  .chat-mobile-channel-trigger { display:flex;height:3rem;min-width:0;align-items:center;gap:0.375rem;border-radius:0.375rem;padding-inline:0.375rem;text-align:left; }
+  .chat-mobile-channel-trigger:active { background:var(--accent); }
 </style>

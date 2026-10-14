@@ -6,7 +6,7 @@
   import { anchoredPanelContentHeight, anchoredPanelStyle, anchoredPanelWidth, anchoredSidePanelStyle, anchoredSubmenuWidth } from "$lib/utils/anchored-panel";
   import SlidersHorizontal from "@lucide/svelte/icons/sliders-horizontal";
   import ListFilter from "@lucide/svelte/icons/list-filter";
-  import ArrowDownUp from "@lucide/svelte/icons/arrow-down-up";
+  import ArrowUpDown from "@lucide/svelte/icons/arrow-up-down";
   import Columns3 from "@lucide/svelte/icons/columns-3";
   import Ellipsis from "@lucide/svelte/icons/ellipsis";
   import Plus from "@lucide/svelte/icons/plus";
@@ -76,7 +76,7 @@
   const SUBMENU_OPEN_EVENT = "collection-submenu-open";
   /** Parent menu controls whose hover takes the highlight from an open submenu's row; padding, dividers, and labels do not. */
   const HOVER_TARGET_SELECTOR = "button, a[href], input, select, textarea, [role^='menuitem']";
-  const icons = { layout: SlidersHorizontal, filter: ListFilter, sort: ArrowDownUp, properties: Columns3, property: Columns3, group: Group, actions: Ellipsis, new: Plus, "new-options": ChevronDown };
+  const icons = { layout: SlidersHorizontal, filter: ListFilter, sort: ArrowUpDown, properties: Columns3, property: Columns3, group: Group, actions: Ellipsis, new: Plus, "new-options": ChevronDown };
   const Icon = $derived(icon ?? icons[kind]);
   const dismisses = $derived(kind === "actions" || dismissOnAction);
   let open = $state(false);

@@ -4,7 +4,7 @@
    * reports it as `null`, so a project can drop its own order.
    */
   import { tick } from "svelte";
-  import ArrowUpNarrowWide from "@lucide/svelte/icons/arrow-up-narrow-wide";
+  import ArrowUpDown from "@lucide/svelte/icons/arrow-up-down";
   import Check from "@lucide/svelte/icons/check";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { cn } from "$lib/utils";
@@ -156,7 +156,7 @@
     data-app-tooltip={label}
     onclick={toggle}
   >
-    <ArrowUpNarrowWide class={iconClass} size={iconSize} strokeWidth={iconStrokeWidth} aria-hidden="true" />
+    <ArrowUpDown class={iconClass} size={iconSize} strokeWidth={iconStrokeWidth} aria-hidden="true" />
   </button>
   {#if open}
     <div

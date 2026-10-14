@@ -19,6 +19,7 @@ import {
   loadSavedCollapsedSidebarProjectIds,
   loadSavedProjectActiveViewIds,
   loadSavedProjectSidebarCollapsed,
+  loadSavedShowInactiveProjects,
   loadSavedStarredProjectIds,
   loadSavedStarredViewIds,
   pruneProjectActiveViewIds,
@@ -26,6 +27,7 @@ import {
   saveCollapsedSidebarProjectIds,
   saveProjectActiveViewIds,
   saveProjectSidebarCollapsed,
+  saveShowInactiveProjects,
   saveStarredProjectIds,
   saveStarredViewIds,
 } from "$lib/projects/ui-preferences";
@@ -100,7 +102,7 @@ let sidebarCollapsed = $state(loadSavedProjectSidebarCollapsed());
 let collapsedSidebarProjectIds = $state<string[]>(loadSavedCollapsedSidebarProjectIds());
 let starredProjectIds = $state<string[]>(loadSavedStarredProjectIds());
 let starredViewIds = $state<string[]>(loadSavedStarredViewIds());
-let showInactiveProjects = $state(false);
+let showInactiveProjects = $state(loadSavedShowInactiveProjects());
 let loadedProjectIds = $state<string[]>([]);
 let loadRequestId = 0;
 let selectProjectRequestId = 0;
@@ -784,12 +786,14 @@ export function getProjects() {
       starredViewIds = withStarredId(starredViewIds, viewId, starred).filter((id) => viewIds.has(id));
       saveStarredViewIds(starredViewIds);
     },
-    /** Whether project pickers list hidden and archived projects. */
+    /** Whether project pickers list hidden and archived projects, kept until the user turns it off. */
     get showInactiveProjects(): boolean {
       return showInactiveProjects;
     },
     set showInactiveProjects(value: boolean) {
+      if (showInactiveProjects === value) return;
       showInactiveProjects = value;
+      saveShowInactiveProjects(value);
     },
     get loaded(): boolean {
       return loaded;

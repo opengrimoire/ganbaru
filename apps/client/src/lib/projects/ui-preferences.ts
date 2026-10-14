@@ -5,6 +5,7 @@ const ACTIVE_PROJECT_ID_CONFIG_KEY = "projects.activeProjectId";
 const ACTIVE_VIEW_IDS_CONFIG_KEY = "projects.activeViewIds";
 const SIDEBAR_COLLAPSED_CONFIG_KEY = "projects.sidebarCollapsed";
 const SIDEBAR_COLLAPSED_PROJECT_IDS_CONFIG_KEY = "projects.sidebarCollapsedProjectIds";
+const SHOW_INACTIVE_PROJECTS_CONFIG_KEY = "projects.showInactiveProjects";
 const STARRED_PROJECT_IDS_CONFIG_KEY = "projects.starredProjectIds";
 const STARRED_VIEW_IDS_CONFIG_KEY = "projects.starredViewIds";
 
@@ -87,4 +88,13 @@ export function loadSavedStarredViewIds(): string[] {
 
 export function saveStarredViewIds(viewIds: readonly string[]): void {
   setConfigKey(STARRED_VIEW_IDS_CONFIG_KEY, viewIds.length > 0 ? [...viewIds] : undefined);
+}
+
+/** Whether the project eye button was left on, listing hidden and archived projects in the sidebar and pickers. */
+export function loadSavedShowInactiveProjects(): boolean {
+  return getConfigKey<unknown>(SHOW_INACTIVE_PROJECTS_CONFIG_KEY, undefined) === true;
+}
+
+export function saveShowInactiveProjects(show: boolean): void {
+  setConfigKey(SHOW_INACTIVE_PROJECTS_CONFIG_KEY, show || undefined);
 }

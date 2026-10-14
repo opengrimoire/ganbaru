@@ -28,7 +28,7 @@ On desktop, Projects has one docked sidebar laid out like the Chat channel rail:
 
 Groups and projects follow one global order, chosen in Projects settings or from the order button of the group and project picker: custom, name (A to Z or Z to A), last modified, or creation date (newest or oldest first). Starred projects list first within their group. The order is a group-wide choice, so project settings do not override it. In the custom order, a mouse or pen drags groups and projects in the picker and project sections in the sidebar; a drag stays among projects with the same starred state, and the project heading menu moves a section up or down for touch and keyboard users. The custom order is stored in the vault and reordering does not change a project's last modified time.
 
-Hidden and archived projects leave the sidebar and project pickers. One eye button, shared by the Projects sidebar and every group and project picker in Projects, Notes, and Chat, lists them again with a muted hidden or archived icon. Projects settings list every hidden and archived project with Show or Restore, so they stay recoverable without the eye button.
+Hidden and archived projects leave the sidebar and project pickers. One eye button, shared by the Projects sidebar and every group and project picker in Projects, Notes, and Chat, lists them again with a muted hidden or archived icon. This eye, and the archived-note and archived-channel eyes in the Notes and Chat pickers, stay on in the vault config until the user turns them off. Projects settings list every hidden and archived project with Show or Restore, so they stay recoverable without the eye button.
 
 ## Project views
 

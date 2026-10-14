@@ -180,6 +180,9 @@
     hierarchyOrder,
   ).filter(matchesSearch));
   const rowCount = $derived(items.length + archivedItems.length);
+  $effect(() => {
+    if (notes.showArchivedInPickers) untrack(() => notes.ensurePickerArchivedPages());
+  });
   /** Folders and notes drag by their row in the custom order of an open project, each within its own block. */
   const orderDrag = createSidebarOrderDrag({
     getIds: () => items.filter(isOrderedNode).map((item) => item.key),

@@ -1875,6 +1875,7 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
       return archiveController.pickerArchiveError;
     },
     reloadPickerArchivedPages: archiveController.reloadPickerArchivedPages,
+    ensurePickerArchivedPages: archiveController.ensurePickerArchivedPages,
     get pageTemplatesLoading(): boolean {
       return pageTemplatesController.loading;
     },

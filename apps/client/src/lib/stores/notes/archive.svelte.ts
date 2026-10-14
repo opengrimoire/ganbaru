@@ -3,6 +3,9 @@ import {
   listTrashedNotesPages,
 } from "$lib/api/notes";
 import type { NotesPage } from "$lib/notes/types";
+import { getConfigKey, setConfigKey } from "$lib/vault/config";
+
+const SHOW_ARCHIVED_IN_PICKERS_CONFIG_KEY = "notes.showArchivedInPickers";
 
 type NotesArchiveKind = "archive" | "trash";
 
@@ -55,7 +58,7 @@ export function createNotesArchiveController() {
   });
 
   let pickerArchive = $state<NotesPickerArchiveState>({
-    shown: false,
+    shown: getConfigKey<unknown>(SHOW_ARCHIVED_IN_PICKERS_CONFIG_KEY, undefined) === true,
     pages: [],
     loaded: false,
     loading: false,
@@ -202,10 +205,18 @@ export function createNotesArchiveController() {
     reloadTrashedPages: (query = "") => reload("trash", query),
     loadMoreTrashedPages: () => loadMore("trash"),
     get showArchivedInPickers(): boolean { return pickerArchive.shown; },
-    /** Turning the picker eye on reads the archive again so pickers never list a stale archive. */
+    /** Turning the picker eye on reads the archive again so pickers never list a stale archive; the choice is kept until turned off. */
     set showArchivedInPickers(shown: boolean) {
+      if (pickerArchive.shown === shown) return;
       pickerArchive = { ...pickerArchive, shown };
+      setConfigKey(SHOW_ARCHIVED_IN_PICKERS_CONFIG_KEY, shown || undefined);
       if (shown) void reloadPickerArchive();
+    },
+    /** Read the archive for pickers once when the eye was left on from an earlier session. */
+    ensurePickerArchivedPages: () => {
+      if (pickerArchive.shown && !pickerArchive.loaded && !pickerArchive.loading && pickerArchive.error === null) {
+        void reloadPickerArchive();
+      }
     },
     get pickerArchivedPages(): NotesPage[] { return pickerArchive.pages; },
     get pickerArchiveLoading(): boolean { return pickerArchive.loading; },

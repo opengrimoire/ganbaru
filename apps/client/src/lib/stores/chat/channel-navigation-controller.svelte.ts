@@ -5,6 +5,9 @@ import type {
   CreateChatChannelRequest,
 } from "$lib/chat/contracts";
 import { chatErrorMessage } from "$lib/chat/error-presentation";
+import { getConfigKey, setConfigKey } from "$lib/vault/config";
+
+const SHOW_ARCHIVED_IN_PICKERS_CONFIG_KEY = "chatSidebar.showArchivedInPickers";
 
 export interface ChatChannelNavigationControllerOptions {
   currentProjectId: () => string | null;
@@ -20,8 +23,8 @@ export class ChatChannelNavigationController {
   archivedChannelsError = $state<string | null>(null);
   channelsLoading = $state(true);
   archiveOpen = $state(false);
-  /** Whether channel pickers list archived channels after the active ones. */
-  showArchivedInPickers = $state(false);
+  /** The picker eye choice once set this session; until then the saved choice applies. */
+  private showArchivedInPickersChoice = $state<boolean | null>(null);
 
   private navigationChannels: ChatChannelRead[] = [];
   /** Archived channels per project for pickers, independent of the current project archive view. */
@@ -31,6 +34,18 @@ export class ChatChannelNavigationController {
   private archivedProjectId: string | null = null;
 
   constructor(private readonly options: ChatChannelNavigationControllerOptions) {}
+
+  /** Whether channel pickers list archived channels after the active ones, kept until the user turns it off. */
+  get showArchivedInPickers(): boolean {
+    return this.showArchivedInPickersChoice
+      ?? getConfigKey<unknown>(SHOW_ARCHIVED_IN_PICKERS_CONFIG_KEY, undefined) === true;
+  }
+
+  set showArchivedInPickers(show: boolean) {
+    if (this.showArchivedInPickers === show) return;
+    this.showArchivedInPickersChoice = show;
+    setConfigKey(SHOW_ARCHIVED_IN_PICKERS_CONFIG_KEY, show || undefined);
+  }
 
   reset(): void {
     this.loadRequest += 1;

@@ -60,6 +60,7 @@
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import Select from "$lib/components/ui/Select.svelte";
+  import { cloneData } from "$lib/utils/clone";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
 
   type ScheduleMenuComponent = typeof import("./ChatMessageScheduleMenu.svelte").default;
@@ -348,7 +349,7 @@
       richContent: chatComposerDocumentVersioned(editorDocument),
       attachmentIds: [...attachmentIds],
       references,
-      executionTarget: executionTarget ? structuredClone(executionTarget) : null,
+      executionTarget: executionTarget ? cloneData(executionTarget) : null,
       selectionStart,
       selectionEnd,
       scheduledFor,
@@ -1302,7 +1303,7 @@
           options={executionTargetOptions}
           onChange={(value) => {
             const selected = assignmentTargets.find((target) => target.executionTarget?.executionEnvironmentId === value);
-            executionTarget = selected?.executionTarget ? structuredClone(selected.executionTarget) : null;
+            executionTarget = selected?.executionTarget ? cloneData(selected.executionTarget) : null;
             persist();
           }}
         />

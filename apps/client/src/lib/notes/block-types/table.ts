@@ -13,6 +13,7 @@ import type {
   NotesTableBlock,
   NotesTableRowBlock,
 } from "$lib/notes/types";
+import { cloneData } from "$lib/utils/clone";
 
 export const NOTES_TABLE_MIN_WIDTH = 1;
 export const NOTES_TABLE_MAX_WIDTH = 100;
@@ -47,7 +48,7 @@ export type NotesTableCellNavigationPlan =
   };
 
 function cloneRichTextArray(richText: readonly NotesRichText[]): NotesRichText[] {
-  return richText.map((item) => structuredClone(item));
+  return richText.map((item) => cloneData(item));
 }
 
 function normalizeNotesTableWidth(width: number): number {

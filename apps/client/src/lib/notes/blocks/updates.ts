@@ -51,6 +51,7 @@ import {
   blockIndent,
   blockEditableRichText,
 } from "./queries";
+import { cloneData } from "$lib/utils/clone";
 
 function createMediaPayloadFromExistingSource(
   existing: NotesMediaBlockPayload,
@@ -659,79 +660,79 @@ function createBlockUpdateFromRichText(
 export function blockUpdateFromBlock(block: NotesBlock): NotesBlockUpdate {
   switch (block.type) {
     case "paragraph":
-      return { type: block.type, paragraph: structuredClone(block.paragraph) };
+      return { type: block.type, paragraph: cloneData(block.paragraph) };
     case "heading_1":
-      return { type: block.type, heading_1: structuredClone(block.heading_1) };
+      return { type: block.type, heading_1: cloneData(block.heading_1) };
     case "heading_2":
-      return { type: block.type, heading_2: structuredClone(block.heading_2) };
+      return { type: block.type, heading_2: cloneData(block.heading_2) };
     case "heading_3":
-      return { type: block.type, heading_3: structuredClone(block.heading_3) };
+      return { type: block.type, heading_3: cloneData(block.heading_3) };
     case "heading_4":
-      return { type: block.type, heading_4: structuredClone(block.heading_4) };
+      return { type: block.type, heading_4: cloneData(block.heading_4) };
     case "heading_5":
-      return { type: block.type, heading_5: structuredClone(block.heading_5) };
+      return { type: block.type, heading_5: cloneData(block.heading_5) };
     case "heading_6":
-      return { type: block.type, heading_6: structuredClone(block.heading_6) };
+      return { type: block.type, heading_6: cloneData(block.heading_6) };
     case "bulleted_list_item":
-      return { type: block.type, bulleted_list_item: structuredClone(block.bulleted_list_item) };
+      return { type: block.type, bulleted_list_item: cloneData(block.bulleted_list_item) };
     case "numbered_list_item":
-      return { type: block.type, numbered_list_item: structuredClone(block.numbered_list_item) };
+      return { type: block.type, numbered_list_item: cloneData(block.numbered_list_item) };
     case "to_do":
-      return { type: block.type, to_do: structuredClone(block.to_do) };
+      return { type: block.type, to_do: cloneData(block.to_do) };
     case "toggle":
-      return { type: block.type, toggle: structuredClone(block.toggle) };
+      return { type: block.type, toggle: cloneData(block.toggle) };
     case "callout":
-      return { type: block.type, callout: structuredClone(block.callout) };
+      return { type: block.type, callout: cloneData(block.callout) };
     case "quote":
-      return { type: block.type, quote: structuredClone(block.quote) };
+      return { type: block.type, quote: cloneData(block.quote) };
     case "child_page":
-      return { type: block.type, child_page: structuredClone(block.child_page) };
+      return { type: block.type, child_page: cloneData(block.child_page) };
     case "child_database":
-      return { type: block.type, child_database: structuredClone(block.child_database) };
+      return { type: block.type, child_database: cloneData(block.child_database) };
     case "breadcrumb":
-      return { type: block.type, breadcrumb: structuredClone(block.breadcrumb) };
+      return { type: block.type, breadcrumb: cloneData(block.breadcrumb) };
     case "table_of_contents":
-      return { type: block.type, table_of_contents: structuredClone(block.table_of_contents) };
+      return { type: block.type, table_of_contents: cloneData(block.table_of_contents) };
     case "column_list":
-      return { type: block.type, column_list: structuredClone(block.column_list) };
+      return { type: block.type, column_list: cloneData(block.column_list) };
     case "column":
-      return { type: block.type, column: structuredClone(block.column) };
+      return { type: block.type, column: cloneData(block.column) };
     case "table":
-      return { type: block.type, table: structuredClone(block.table) };
+      return { type: block.type, table: cloneData(block.table) };
     case "table_row":
-      return { type: block.type, table_row: structuredClone(block.table_row) };
+      return { type: block.type, table_row: cloneData(block.table_row) };
     case "tab":
-      return { type: block.type, tab: structuredClone(block.tab) };
+      return { type: block.type, tab: cloneData(block.tab) };
     case "image":
-      return { type: block.type, image: structuredClone(block.image) };
+      return { type: block.type, image: cloneData(block.image) };
     case "video":
-      return { type: block.type, video: structuredClone(block.video) };
+      return { type: block.type, video: cloneData(block.video) };
     case "audio":
-      return { type: block.type, audio: structuredClone(block.audio) };
+      return { type: block.type, audio: cloneData(block.audio) };
     case "file":
-      return { type: block.type, file: structuredClone(block.file) };
+      return { type: block.type, file: cloneData(block.file) };
     case "pdf":
-      return { type: block.type, pdf: structuredClone(block.pdf) };
+      return { type: block.type, pdf: cloneData(block.pdf) };
     case "bookmark":
-      return { type: block.type, bookmark: structuredClone(block.bookmark) };
+      return { type: block.type, bookmark: cloneData(block.bookmark) };
     case "link_preview":
-      return { type: block.type, link_preview: structuredClone(block.link_preview) };
+      return { type: block.type, link_preview: cloneData(block.link_preview) };
     case "synced_block":
-      return { type: block.type, synced_block: structuredClone(block.synced_block) };
+      return { type: block.type, synced_block: cloneData(block.synced_block) };
     case "template":
-      return { type: block.type, template: structuredClone(block.template) };
+      return { type: block.type, template: cloneData(block.template) };
     case "button":
-      return { type: block.type, button: structuredClone(block.button) };
+      return { type: block.type, button: cloneData(block.button) };
     case "embed":
-      return { type: block.type, embed: structuredClone(block.embed) };
+      return { type: block.type, embed: cloneData(block.embed) };
     case "equation":
-      return { type: block.type, equation: structuredClone(block.equation) };
+      return { type: block.type, equation: cloneData(block.equation) };
     case "divider":
-      return { type: block.type, divider: structuredClone(block.divider) };
+      return { type: block.type, divider: cloneData(block.divider) };
     case "code":
-      return { type: block.type, code: structuredClone(block.code) };
+      return { type: block.type, code: cloneData(block.code) };
     case "unsupported":
-      return { type: block.type, unsupported: structuredClone(block.unsupported) };
+      return { type: block.type, unsupported: cloneData(block.unsupported) };
   }
 }
 

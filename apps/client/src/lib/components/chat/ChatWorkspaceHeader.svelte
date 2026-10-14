@@ -29,6 +29,7 @@
   import { createHoverMenu } from "$lib/utils/menu-aim";
   import { CHAT_OPEN_MEMBERS_EVENT, readChatOpenMembersDetail } from "$lib/components/chat/channels/members-panel-events";
   import ChatTitleEditor from "./ChatTitleEditor.svelte";
+  import MobileContextSwitcher from "$lib/components/mobile/MobileContextSwitcher.svelte";
 
   type ChatNavigatorMode = ProjectNavigatorPanelMode | "channels";
 
@@ -230,17 +231,37 @@
 <div bind:this={headerElement} class={cn("chat-workspace-header flex min-w-0 items-center gap-1", mobilePresentation ? "overflow-hidden pl-3" : "overflow-x-auto pl-3")} class:mobilePresentation style={`height:var(--toolbar-h);padding-right:${mobilePresentation ? "0.75rem" : `var(--chat-header-action-inset, ${reserveGlobalActions ? "6.5rem" : "0.75rem"})`}`} onscroll={refreshNavigatorGeometry} data-chat-workspace-header>
   {#if showRailButton}<button type="button" class="chat-toolbar-icon-button" aria-label={t("chat.openRail")} onclick={onOpenRail}><Menu size={14} /></button>{/if}
   <div bind:this={identityElement} class={cn("relative", mobilePresentation ? "min-w-0 flex-1 overflow-hidden" : "min-w-36 shrink-0 min-[760px]:max-w-3xl")}>
-    <div class={cn("flex min-w-0 max-w-full items-center gap-0.5 overflow-hidden text-identity font-medium", mobilePresentation ? "h-12" : "h-7")}>
+    {#if mobilePresentation}
+      <MobileContextSwitcher
+        title={selectedChannel?.name ?? selectedProject?.name ?? t("chat.title")}
+        expanded={navigatorOpen}
+        onclick={() => toggleNavigator(selectedChannel ? "channels" : "projects")}
+      >
+        {#snippet icon()}
+          {#if selectedChannel}
+            <Hash size={identityIconSize} strokeWidth={identityIconStrokeWidth} />
+          {:else if selectedProject}
+            <ProjectIcon name={selectedProject.icon} size={identityIconSize} strokeWidth={identityIconStrokeWidth} emojiScale={identityEmojiScale} />
+          {:else}
+            <MessageSquare size={identityIconSize} strokeWidth={identityIconStrokeWidth} />
+          {/if}
+        {/snippet}
+      </MobileContextSwitcher>
+      {#if selectedChannel && editingTitle && !selectedChannel.isDefault}
+        <div class="flex h-12 min-w-0 items-center px-1"><ChatTitleEditor title={selectedChannel.name} onCommit={commitTitle} onCancel={() => { editingTitle = false; }} /></div>
+      {/if}
+    {:else}
+    <div class="flex h-7 min-w-0 max-w-full items-center gap-0.5 overflow-hidden text-identity font-medium">
       {#if selectedProject && selectedGroup}
-        <button bind:this={groupTriggerElement} type="button" class={cn("chat-context-segment", navigatorOpen && navigatorMode === "groups" && "bg-accent")} aria-label={t("projects.navigator.open")} aria-expanded={navigatorOpen && navigatorMode === "groups"} data-chat-group-trigger onpointerenter={(event) => { if (!mobilePresentation) navigatorHover.enterTrigger(event, () => openNavigator("groups")); }} onpointerleave={navigatorHover.leave} onclick={() => toggleNavigator("groups")}>{#if !mobilePresentation}<ProjectIcon name={selectedGroup.icon} size={identityIconSize} strokeWidth={identityIconStrokeWidth} emojiScale={identityEmojiScale} />{/if}<span class="truncate">{selectedGroup.name}</span></button>
+        <button bind:this={groupTriggerElement} type="button" class={cn("chat-context-segment", navigatorOpen && navigatorMode === "groups" && "bg-accent")} aria-label={t("projects.navigator.open")} aria-expanded={navigatorOpen && navigatorMode === "groups"} data-chat-group-trigger onpointerenter={(event) => { navigatorHover.enterTrigger(event, () => openNavigator("groups")); }} onpointerleave={navigatorHover.leave} onclick={() => toggleNavigator("groups")}><ProjectIcon name={selectedGroup.icon} size={identityIconSize} strokeWidth={identityIconStrokeWidth} emojiScale={identityEmojiScale} /><span class="truncate">{selectedGroup.name}</span></button>
         <span class="chat-context-divider">/</span>
-        <button bind:this={projectTriggerElement} type="button" class={cn("chat-context-segment", navigatorOpen && navigatorMode === "projects" && "bg-accent")} aria-label={t("projects.navigator.open")} aria-expanded={navigatorOpen && navigatorMode === "projects"} data-chat-project-trigger onpointerenter={(event) => { if (!mobilePresentation) navigatorHover.enterTrigger(event, () => openNavigator("projects")); }} onpointerleave={navigatorHover.leave} onclick={() => toggleNavigator("projects")}>{#if !mobilePresentation}<ProjectIcon name={selectedProject.icon} size={identityIconSize} strokeWidth={identityIconStrokeWidth} emojiScale={identityEmojiScale} />{/if}<span class="truncate">{selectedProject.name}</span>{#if !selectedChannel}<WorkspaceBreadcrumbTerminalIcon kind="chevron" context="chat" class="shrink-0 text-muted-foreground" />{/if}</button>
+        <button bind:this={projectTriggerElement} type="button" class={cn("chat-context-segment", navigatorOpen && navigatorMode === "projects" && "bg-accent")} aria-label={t("projects.navigator.open")} aria-expanded={navigatorOpen && navigatorMode === "projects"} data-chat-project-trigger onpointerenter={(event) => { navigatorHover.enterTrigger(event, () => openNavigator("projects")); }} onpointerleave={navigatorHover.leave} onclick={() => toggleNavigator("projects")}><ProjectIcon name={selectedProject.icon} size={identityIconSize} strokeWidth={identityIconStrokeWidth} emojiScale={identityEmojiScale} /><span class="truncate">{selectedProject.name}</span>{#if !selectedChannel}<WorkspaceBreadcrumbTerminalIcon kind="chevron" context="chat" class="shrink-0 text-muted-foreground" />{/if}</button>
         {#if selectedChannel}
           <span class="chat-context-divider">/</span>
           {#if editingTitle && !selectedChannel.isDefault}
             <div class="min-w-36 max-w-64 px-1"><ChatTitleEditor title={selectedChannel.name} onCommit={commitTitle} onCancel={() => { editingTitle = false; }} /></div>
           {:else}
-            <button bind:this={channelTriggerElement} type="button" class={cn("chat-context-segment", navigatorOpen && navigatorMode === "channels" && "bg-accent")} aria-label={t("chat.channels.navigatorLabel")} aria-expanded={navigatorOpen && navigatorMode === "channels"} data-chat-channel-trigger onpointerenter={(event) => { if (!mobilePresentation) navigatorHover.enterTrigger(event, () => openNavigator("channels")); }} onpointerleave={navigatorHover.leave} onclick={() => toggleNavigator("channels")}>{#if !mobilePresentation}<Hash size={identityIconSize} strokeWidth={identityIconStrokeWidth} class="shrink-0" />{/if}<span class="truncate">{selectedChannel.name}</span><WorkspaceBreadcrumbTerminalIcon kind="chevron" context="chat" class="shrink-0 text-muted-foreground" /></button>
+            <button bind:this={channelTriggerElement} type="button" class={cn("chat-context-segment", navigatorOpen && navigatorMode === "channels" && "bg-accent")} aria-label={t("chat.channels.navigatorLabel")} aria-expanded={navigatorOpen && navigatorMode === "channels"} data-chat-channel-trigger onpointerenter={(event) => { navigatorHover.enterTrigger(event, () => openNavigator("channels")); }} onpointerleave={navigatorHover.leave} onclick={() => toggleNavigator("channels")}><Hash size={identityIconSize} strokeWidth={identityIconStrokeWidth} class="shrink-0" /><span class="truncate">{selectedChannel.name}</span><WorkspaceBreadcrumbTerminalIcon kind="chevron" context="chat" class="shrink-0 text-muted-foreground" /></button>
           {/if}
           {#if selectedChannel.topic && !explorerExpanded}<span class="hidden max-w-80 truncate px-1 text-xs text-muted-foreground @min-[760px]:inline" data-chat-channel-topic>{selectedChannel.topic}</span>{/if}
         {/if}
@@ -249,6 +270,7 @@
         <div class="chat-context-segment"><MessageSquare size={identityIconSize} /><span>{t("chat.title")}</span></div>
       {/if}
     </div>
+    {/if}
     {#if navigatorOpen}
       {#if mobilePresentation}
         <ProjectPickerMobileDialog
@@ -364,8 +386,6 @@
   @container chat-shell (max-width: 560px) {
     .chat-workspace-header.mobilePresentation { gap: 0; }
     .chat-workspace-header.mobilePresentation > .relative { min-width: 0; flex: 1 1 auto; }
-    .mobilePresentation [data-chat-group-trigger], .mobilePresentation [data-chat-project-trigger], .mobilePresentation [data-chat-channel-trigger] { height: 3rem; min-width: 0; flex: 0 1 auto; font-size: calc(0.9rem * var(--type-scale)); }
-    .mobilePresentation .chat-inline-new-button { display: none; }
     .mobilePresentation .chat-toolbar-icon-button { width: 2.5rem; height: 2.5rem; }
     .mobilePresentation .chat-members-trigger { height: 2.5rem; padding-inline: 0.5rem 0.625rem; }
   }

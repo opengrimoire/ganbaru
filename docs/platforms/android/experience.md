@@ -2,7 +2,7 @@
 
 ## Adaptive shell
 
-Phones use a labeled bottom tab bar for the primary destinations (Calendar, Projects, Notes, and Chat), within thumb reach, and a slim top bar for utilities: a Pomodoro chip that shows the remaining time while a session runs, plus linked devices, Quick notes, Music, and Settings. The bottom bar hides while the keyboard is open so editing keeps the space. Larger windows use a navigation rail instead of the bottom bar. Both bars share the content surface color, so a screen reads as one page rather than stacked bands.
+Phones use a labeled bottom tab bar for the primary destinations (Calendar, Projects, Notes, and Chat), within thumb reach, and a slim top bar. Its leading side holds the active destination's context switcher; its trailing side holds the utilities: a Pomodoro ring that adds the remaining time while a session runs, then linked devices, Quick notes, Music, and Settings. The bottom bar hides while the keyboard is open so editing keeps the space. Larger windows use a navigation rail instead of the bottom bar. Both bars share the content surface color, so a screen reads as one page rather than stacked bands.
 
 The shell uses touch-sized controls, visible selection, localized accessible names, system safe areas, and the current theme. It does not spend scarce phone width repeating the active destination label.
 
@@ -10,7 +10,7 @@ Startup shows a single loading indicator until the database, Calendar, Pomodoro 
 
 ## Hierarchical navigation
 
-Projects, Notes, and Chat share one compact identity row. On phones, selecting a breadcrumb level opens a full-height touch selector for that level instead of reproducing adjacent desktop sidebars. Only one hierarchy level is visible at a time, and Back moves toward the group root before dismissing the selector. Opening navigation or switching a channel does not summon the keyboard until the user selects Search or the composer.
+Projects, Notes, and Chat share one context model. On phones, the top bar shows a single switcher with the current project (Projects and Notes) or channel (Chat), its icon, and an open affordance, because a full group, project, and note path cannot stay legible at phone width. Selecting it opens a full-height touch selector at the current level: the open note's siblings in Notes, the channels in Chat, or the group's projects otherwise. Only one hierarchy level is visible at a time, and Back moves toward the group root before dismissing the selector. The row below the top bar holds only actions for the current view, such as Back from an open note, the open database, creation, and page or view actions. Opening navigation or switching a channel does not summon the keyboard until the user selects Search or the composer.
 
 ## Feature surfaces
 

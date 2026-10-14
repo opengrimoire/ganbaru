@@ -32,6 +32,7 @@
     onOpenQuickNotes,
     onOpenMusic,
     onOpenSettings,
+    identityTarget = $bindable(null),
   }: {
     pomodoroTime: string;
     pomodoroActive: boolean;
@@ -52,6 +53,8 @@
     onOpenQuickNotes: () => void;
     onOpenMusic: () => void;
     onOpenSettings: () => void;
+    /** The leading slot where the active destination places its context switcher. */
+    identityTarget?: HTMLElement | null;
   } = $props();
 
   const { t } = getLocalization();
@@ -115,61 +118,65 @@
 </script>
 
 <header
-  class="mobile-top-bar flex h-(--mobile-topbar-h) shrink-0 items-center justify-between gap-2 pr-1 pl-3 text-foreground"
+  class="mobile-top-bar flex h-(--mobile-topbar-h) shrink-0 items-center justify-between gap-1 pr-1 pl-2 text-foreground"
   style="background-color: var(--cal-bg);"
 >
-  <div bind:this={pomodoroAnchorElement} class="relative flex h-full min-w-0 items-center">
-    <button
-      bind:this={pomodoroTriggerElement}
-      type="button"
-      data-mobile-pomodoro-trigger
-      onclick={togglePomodoro}
-      aria-label={pomodoroActive
-        ? t("titleBar.pomodoro.remaining", pomodoroTime)
-        : t("titleBar.control.pomodoro")}
-      aria-haspopup="menu"
-      aria-expanded={pomodoroOpen}
-      class={cn(
-        "flex h-9 min-w-0 items-center gap-2 rounded-full pr-3.5 pl-2 text-sm font-medium tabular-nums transition-colors active:bg-accent",
-        pomodoroOpen || pomodoroActive ? "bg-accent text-foreground" : "bg-accent/55 text-muted-foreground",
-      )}
-    >
-      <PomodoroProgressRing
-        active={pomodoroActive}
-        remainingSeconds={pomodoroRemainingSeconds}
-        totalSeconds={pomodoroTotalSeconds}
-        paused={pomodoroPaused}
-        pausedPulseAmount={pomodoroPausedPulseAmount}
-        size={20}
-        trackClass="stroke-muted-foreground/25"
-        progressClass="text-foreground/76 stroke-foreground/76"
-      />
-      <span class="truncate" aria-hidden="true">{pomodoroActive ? pomodoroTime : t("titleBar.control.pomodoro")}</span>
-    </button>
-    {#if pomodoroOpen}
-      <button
-        type="button"
-        class="fixed inset-0 z-40 h-full w-full bg-transparent"
-        aria-label={t("common.close")}
-        onclick={onClosePomodoro}
-      ></button>
-      <div
-        role="menu"
-        class="surface-floating absolute top-[calc(100%+0.25rem)] z-50 flex max-h-[calc(var(--visual-viewport-height)-var(--safe-area-top)-var(--mobile-topbar-h)-0.75rem)] flex-col overflow-hidden"
-        style={pomodoroMenuStyle}
-      >
-        <div use:scrollEdgeFadeAction class="surface-floating-body min-h-0 overflow-y-auto">
-          <PomodoroMenuSurface
-            includeMusic={musicVisible}
-            touch
-            onDismiss={onClosePomodoro}
-            onOpenMusic={onOpenMusic}
-          />
-        </div>
-      </div>
-    {/if}
-  </div>
+  <div bind:this={identityTarget} class="flex h-full min-w-0 flex-1 items-center" data-mobile-identity-slot></div>
   <div class="flex h-full shrink-0 items-center">
+    <div bind:this={pomodoroAnchorElement} class="relative flex h-full shrink-0 items-center">
+      <button
+        bind:this={pomodoroTriggerElement}
+        type="button"
+        data-mobile-pomodoro-trigger
+        onclick={togglePomodoro}
+        aria-label={pomodoroActive
+          ? t("titleBar.pomodoro.remaining", pomodoroTime)
+          : t("titleBar.control.pomodoro")}
+        aria-haspopup="menu"
+        aria-expanded={pomodoroOpen}
+        class={cn(utilityButtonClass, pomodoroActive && "w-auto px-1", (pomodoroOpen || pomodoroActive) && "text-foreground")}
+      >
+        <span class={cn(
+          utilityIconClass,
+          pomodoroActive && "w-auto gap-1.5 pr-2.5 pl-1.5 text-sm font-medium tabular-nums",
+          (pomodoroOpen || pomodoroActive) && "bg-accent/70",
+        )}>
+          <PomodoroProgressRing
+            active={pomodoroActive}
+            remainingSeconds={pomodoroRemainingSeconds}
+            totalSeconds={pomodoroTotalSeconds}
+            paused={pomodoroPaused}
+            pausedPulseAmount={pomodoroPausedPulseAmount}
+            size={20}
+            trackClass="stroke-muted-foreground/35"
+            progressClass="text-foreground/76 stroke-foreground/76"
+          />
+          {#if pomodoroActive}<span aria-hidden="true">{pomodoroTime}</span>{/if}
+        </span>
+      </button>
+      {#if pomodoroOpen}
+        <button
+          type="button"
+          class="fixed inset-0 z-40 h-full w-full bg-transparent"
+          aria-label={t("common.close")}
+          onclick={onClosePomodoro}
+        ></button>
+        <div
+          role="menu"
+          class="surface-floating absolute top-[calc(100%+0.25rem)] z-50 flex max-h-[calc(var(--visual-viewport-height)-var(--safe-area-top)-var(--mobile-topbar-h)-0.75rem)] flex-col overflow-hidden"
+          style={pomodoroMenuStyle}
+        >
+          <div use:scrollEdgeFadeAction class="surface-floating-body min-h-0 overflow-y-auto">
+            <PomodoroMenuSurface
+              includeMusic={musicVisible}
+              touch
+              onDismiss={onClosePomodoro}
+              onOpenMusic={onOpenMusic}
+            />
+          </div>
+        </div>
+      {/if}
+    </div>
     <div class="flex h-full w-11 justify-center *:w-full">
       <LinkedDeviceControlSurface platform="android" presentation="mobile" onOpened={onClosePomodoro} />
     </div>

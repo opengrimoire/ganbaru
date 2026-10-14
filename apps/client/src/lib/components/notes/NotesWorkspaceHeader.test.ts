@@ -152,7 +152,12 @@ describe("NotesWorkspaceHeader", () => {
     vi.unstubAllGlobals();
   });
 
-  function setup(selectedPage: NotesPage | null = page, pages: NotesPage[] = selectedPage ? [selectedPage] : [], mobileLayout = false): HTMLDivElement {
+  function setup(
+    selectedPage: NotesPage | null = page,
+    pages: NotesPage[] = selectedPage ? [selectedPage] : [],
+    mobileLayout = false,
+    onShowHome = vi.fn(),
+  ): HTMLDivElement {
     notesState.store.allPages = pages;
     notesState.store.folders = [folder];
     const target = document.createElement("div");
@@ -169,7 +174,7 @@ describe("NotesWorkspaceHeader", () => {
         showInactiveProjects: false,
         onShowInactiveProjectsChange: vi.fn(),
         onProjectSelected: vi.fn(),
-        onShowHome: vi.fn(),
+        onShowHome,
         projectSettingsOpen: false,
         onToggleProjectSettings: vi.fn(),
       },
@@ -203,7 +208,7 @@ describe("NotesWorkspaceHeader", () => {
       .toEqual(["Routine", "Learning", "Main note", "Sub-note"]);
   });
 
-  it.each([false, true])("shows the entire database owner path with mobile layout %s", (mobileLayout) => {
+  it("shows the entire database owner path", () => {
     const loaded = createProvisionalNotesPage({
       id: "owner", title: "Reading", first_block_id: "database", folder_id: folder.id,
       parent: { type: "workspace", workspace: true }, properties: { __ganbaru_project_id: project.id },
@@ -214,7 +219,7 @@ describe("NotesWorkspaceHeader", () => {
     if (database.type !== "child_database") throw new Error("Expected a database fixture");
     notesState.store.selectedDatabaseBlockId = database.id;
     notesState.store.selectedDatabaseBlock = database;
-    const header = setup(loaded.page, [loaded.page], mobileLayout);
+    const header = setup(loaded.page, [loaded.page]);
     const text = header.textContent ?? "";
     const labels = ["Routine", "Learning", "Lessons", "Reading", "Book list"];
     const indices = labels.map((label) => text.indexOf(label));
@@ -224,6 +229,61 @@ describe("NotesWorkspaceHeader", () => {
     header.querySelector<HTMLButtonElement>('button[aria-label="Reading"]')!.click();
     expect(notesState.store.closeDatabase).toHaveBeenCalledOnce();
     expect(notesState.store.selectPage).not.toHaveBeenCalled();
+  });
+
+  it("shows only the project in the mobile switcher and keeps the note path out of the header", () => {
+    const parent = createProvisionalNotesPage({
+      id: "main", title: "Main note", first_block_id: "main-body", folder_id: null,
+      parent: { type: "workspace", workspace: true }, properties: { __ganbaru_project_id: project.id },
+    }).page;
+    const child = createProvisionalNotesPage({
+      id: "child", title: "Sub-note", first_block_id: "child-body", folder_id: null,
+      parent: { type: "page_id", page_id: parent.id }, properties: parent.properties,
+    }).page;
+    const header = setup(child, [parent, child], true);
+    const switchers = header.querySelectorAll<HTMLButtonElement>("[data-mobile-context-switcher]");
+    expect(switchers).toHaveLength(1);
+    expect(switchers[0].textContent?.trim()).toBe("Learning");
+    expect(switchers[0].getAttribute("aria-label")).toContain("Learning");
+    expect(header.textContent).not.toContain("Routine");
+    expect(header.textContent).not.toContain("Main note");
+
+    switchers[0].click();
+    flushSync();
+    expect(switchers[0].getAttribute("aria-expanded")).toBe("true");
+    switchers[0].click();
+    flushSync();
+    expect(switchers[0].getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("returns from a mobile note to project home and hides the back action there", () => {
+    const onShowHome = vi.fn();
+    const header = setup(page, [page], true, onShowHome);
+    header.querySelector<HTMLButtonElement>("[data-notes-mobile-back]")!.click();
+    expect(onShowHome).toHaveBeenCalledOnce();
+
+    const projectHome = setup(null, [], true);
+    expect(projectHome.querySelector("[data-notes-mobile-back]")).toBeNull();
+    expect(projectHome.querySelector('button[aria-label="New note"]')).not.toBeNull();
+  });
+
+  it("returns from a mobile database to its owner note without calling project home", () => {
+    const loaded = createProvisionalNotesPage({
+      id: "owner", title: "Reading", first_block_id: "database", folder_id: folder.id,
+      parent: { type: "workspace", workspace: true }, properties: { __ganbaru_project_id: project.id },
+    });
+    const database = applyBlockUpdate(loaded.blocks.results[0], {
+      type: "child_database", child_database: { title: "Book list", database_id: "database" },
+    });
+    if (database.type !== "child_database") throw new Error("Expected a database fixture");
+    notesState.store.selectedDatabaseBlockId = database.id;
+    notesState.store.selectedDatabaseBlock = database;
+    const onShowHome = vi.fn();
+    const header = setup(loaded.page, [loaded.page], true, onShowHome);
+    expect(header.querySelector("[aria-current='page']")?.textContent?.trim()).toBe("Book list");
+    header.querySelector<HTMLButtonElement>("[data-notes-mobile-back]")!.click();
+    expect(notesState.store.closeDatabase).toHaveBeenCalledOnce();
+    expect(onShowHome).not.toHaveBeenCalled();
   });
 
   it("updates the existing breadcrumb from an acknowledged database rename", () => {

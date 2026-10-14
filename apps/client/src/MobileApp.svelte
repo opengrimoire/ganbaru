@@ -20,6 +20,7 @@
     recoverLoadFailure,
     type LoadFailure,
   } from "$lib/module-load-recovery";
+  import { provideMobileIdentitySlot } from "$lib/mobile/identity-slot";
   import { MobilePersistenceLifecycleController } from "$lib/mobile/persistence-lifecycle";
   import type { View } from "$lib/navigation";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
@@ -85,6 +86,8 @@
   const mobileMusicStackedMediaShare = 0.65;
 
   let showPomodoro = $state(false);
+  let identitySlotElement = $state<HTMLElement | null>(null);
+  provideMobileIdentitySlot({ get target() { return identitySlotElement; } });
   let showSettings = $state(false);
   let showQuickNotes = $state(false);
   let showMusic = $state(false);
@@ -896,6 +899,7 @@
       onOpenQuickNotes={openQuickNotes}
       onOpenMusic={openMusic}
       onOpenSettings={openSettings}
+      bind:identityTarget={identitySlotElement}
     />
     {/if}
 

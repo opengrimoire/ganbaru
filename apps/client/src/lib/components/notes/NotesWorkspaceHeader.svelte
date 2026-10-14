@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import Database from "@lucide/svelte/icons/database";
   import Folder from "@lucide/svelte/icons/folder";
   import Settings2 from "@lucide/svelte/icons/settings-2";
@@ -47,6 +48,7 @@
   import NotesPageIcon from "$lib/components/notes/pages/NotesPageIcon.svelte";
   import NotesProjectNavigator from "$lib/components/notes/navigation/NotesProjectNavigator.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import MobileContextSwitcher from "$lib/components/mobile/MobileContextSwitcher.svelte";
 
   type NotesNavigatorMode = ProjectNavigatorPanelMode | "notes";
 
@@ -105,6 +107,7 @@
   let groupTriggerElement = $state<HTMLButtonElement | null>(null);
   let projectTriggerElement = $state<HTMLButtonElement | null>(null);
   let noteTriggerElement = $state<HTMLButtonElement | null>(null);
+  let contextSwitcherElement = $state<HTMLButtonElement | null>(null);
   let navigatorPanelElement = $state<HTMLDivElement | null>(null);
   let navigatorPanelStyle = $state("");
   let navigatorPanelMaxHeight = $state(0);
@@ -158,11 +161,6 @@
     selectedProjectFolders,
     notes.sidebarPageIdsWithChildren,
   ));
-  const visibleSelectedPagePath = $derived(
-    mobileLayout && !databaseSelected && selectedPagePath.length > 1
-      ? selectedPagePath.slice(-1)
-      : selectedPagePath,
-  );
   const showSelectedPagePath = $derived(selectedPagePath.length > 0);
 
   function toolbarIconButtonClass(active = false, open = false, primary = false): string {
@@ -349,11 +347,33 @@
     openNavigator(mode);
   }
 
-  function handleProjectTriggerClick(): void {
-    if (mobileLayout) {
-      toggleNavigator("projects");
+  /** Opens the phone navigator where the user is: the open note's siblings, or the project list from project home. */
+  function toggleMobileContextNavigator(): void {
+    if (navigatorOpen) {
+      navigatorOpen = false;
       return;
     }
+    const currentNode = selectedPagePath.at(-1);
+    if (currentNode) {
+      openHierarchyNavigator(currentNode, contextSwitcherElement);
+    } else if (selectedProject) {
+      openNavigator("projects", contextSwitcherElement);
+    } else {
+      notesNavigatorParent = { kind: "root" };
+      notesNavigatorTitle = t("notes.noteNavigatorLabel");
+      notesNavigatorAncestors = [];
+      notesNavigatorSourceKey = "root";
+      openNavigator("notes", contextSwitcherElement);
+    }
+  }
+
+  function goBackFromMobilePage(): void {
+    navigatorOpen = false;
+    if (databaseSelected) notes.closeDatabase();
+    else onShowHome();
+  }
+
+  function handleProjectTriggerClick(): void {
     if (selectedPageTitle) {
       navigatorOpen = false;
       onShowHome();
@@ -437,11 +457,63 @@
   });
 </script>
 
+{#snippet mobileHeader()}
+  <MobileContextSwitcher
+    bind:triggerElement={contextSwitcherElement}
+    title={selectedProject?.name ?? t("notes.title")}
+    expanded={navigatorOpen}
+    onclick={toggleMobileContextNavigator}
+  >
+    {#snippet icon()}
+      {#if selectedProject}
+        <ProjectIcon
+          name={selectedProject.icon}
+          size={identityIconSize}
+          strokeWidth={identityIconStrokeWidth}
+          emojiScale={projectIdentityEmojiScale}
+        />
+      {:else}
+        <NotesPageIcon
+          icon={null}
+          size={identityIconSize}
+          strokeWidth={identityIconStrokeWidth}
+          emojiScale={NOTES_PAGE_CHROME_EMOJI_SCALE}
+        />
+      {/if}
+    {/snippet}
+  </MobileContextSwitcher>
+  <div class="flex h-12 min-w-0 max-w-full items-center gap-0.5 text-identity font-medium">
+    {#if selectedPageTitle || databaseSelected}
+      <button
+        type="button"
+        class={toolbarIconButtonClass()}
+        aria-label={databaseSelected ? t("common.back") : t("notes.showProjectHome")}
+        data-notes-mobile-back
+        onclick={goBackFromMobilePage}
+      >
+        <ChevronLeft class="size-5" strokeWidth={identityIconStrokeWidth} />
+      </button>
+    {/if}
+    {#if databaseSelected}
+      {@render databaseBreadcrumb()}
+    {:else}
+      <button
+        type="button"
+        class={inlineNewPageButtonClass()}
+        aria-label={t("notes.newPage")}
+        onclick={createPage}
+      >
+        <WorkspaceBreadcrumbTerminalIcon kind="plus" />
+      </button>
+    {/if}
+  </div>
+{/snippet}
+
 {#snippet databaseBreadcrumb()}
-  <span class="shrink-0 px-0.5 font-semibold text-muted-foreground">/</span>
+  {#if !mobileLayout}<span class="shrink-0 px-0.5 font-semibold text-muted-foreground">/</span>{/if}
   <button
     type="button"
-    class={cn("flex min-w-0 shrink-0 items-center gap-1.5 rounded-md px-1.5 text-left hover:bg-accent", mobileLayout ? "h-12" : "h-7",
+    class={cn("flex min-w-0 items-center gap-1.5 rounded-md px-1.5 text-left hover:bg-accent", mobileLayout ? "h-12" : "h-7 shrink-0",
       navigatorOpen && navigatorMode === "notes" && notesNavigatorSourceKey === `database:${notes.selectedDatabaseBlockId}` && "bg-accent")}
     aria-current="page"
     aria-label={selectedDatabaseTitle}
@@ -455,13 +527,13 @@
     onclick={(event) => openDatabaseNavigator(event.currentTarget, true)}
   >
     <Database size={identityIconSize} strokeWidth={identityIconStrokeWidth} class="shrink-0" />
-    <span class="max-w-48 truncate text-foreground">{selectedDatabaseTitle}</span>
+    <span class={cn("truncate text-foreground", mobileLayout ? "min-w-0" : "max-w-48")}>{selectedDatabaseTitle}</span>
     <WorkspaceBreadcrumbTerminalIcon kind="chevron" context="notes" class="shrink-0 text-muted-foreground" />
   </button>
 {/snippet}
 
 {#snippet selectedPagePathBreadcrumb()}
-  {#each visibleSelectedPagePath as node, nodeIndex (node.key)}
+  {#each selectedPagePath as node, nodeIndex (node.key)}
     {@const pathTitle = node.kind === "folder"
       ? node.folder.name
       : node.page.id === selectedPageId && selectedPageTitle
@@ -473,7 +545,7 @@
       class={cn(
         "flex min-w-0 items-center gap-1.5 rounded-md px-1.5 text-left hover:bg-accent",
         databaseSelected && "shrink-0",
-        mobileLayout ? "h-12" : "h-7",
+        "h-7",
         navigatorOpen
           && navigatorMode === "notes"
           && notesNavigatorSourceKey === node.key
@@ -483,30 +555,28 @@
       aria-expanded={navigatorOpen && navigatorMode === "notes" && notesNavigatorSourceKey === node.key}
       onpointerenter={(event) => {
         const anchor = event.currentTarget;
-        if (!mobileLayout) navigatorHover.enterTrigger(event, () => openHierarchyNavigator(node, anchor));
+        navigatorHover.enterTrigger(event, () => openHierarchyNavigator(node, anchor));
       }}
       onpointerleave={navigatorHover.leave}
       onclick={(event) => openNoteAncestor(node, event.currentTarget)}
     >
-      {#if !mobileLayout}
-        {#if node.kind === "folder"}
-          <Folder
-            size={identityIconSize}
-            strokeWidth={identityIconStrokeWidth}
-            class="shrink-0"
-          />
-        {:else}
-          <NotesPageIcon
-            icon={node.page.icon}
-            size={identityIconSize}
-            strokeWidth={identityIconStrokeWidth}
-            emojiScale={NOTES_PAGE_CHROME_EMOJI_SCALE}
-            class="shrink-0"
-          />
-        {/if}
+      {#if node.kind === "folder"}
+        <Folder
+          size={identityIconSize}
+          strokeWidth={identityIconStrokeWidth}
+          class="shrink-0"
+        />
+      {:else}
+        <NotesPageIcon
+          icon={node.page.icon}
+          size={identityIconSize}
+          strokeWidth={identityIconStrokeWidth}
+          emojiScale={NOTES_PAGE_CHROME_EMOJI_SCALE}
+          class="shrink-0"
+        />
       {/if}
       <span class="min-w-0 truncate text-foreground">{pathTitle}</span>
-      {#if !databaseSelected && nodeIndex === visibleSelectedPagePath.length - 1}
+      {#if !databaseSelected && nodeIndex === selectedPagePath.length - 1}
         <WorkspaceBreadcrumbTerminalIcon kind="chevron" context="notes" class="shrink-0 text-muted-foreground" />
       {/if}
     </button>
@@ -548,10 +618,12 @@
         : "min-w-36 min-[760px]:max-w-xl",
     )}
   >
+    {#if mobileLayout}
+      {@render mobileHeader()}
+    {:else}
     <div class={cn(
-      "flex min-w-0 max-w-full items-center gap-0.5 text-identity font-medium",
+      "flex h-7 min-w-0 max-w-full items-center gap-0.5 text-identity font-medium",
       databaseSelected ? "overflow-x-auto" : "overflow-hidden",
-      mobileLayout ? "h-12" : "h-7",
     )}>
       {#if selectedProject && selectedGroup}
         <button
@@ -560,26 +632,24 @@
           class={cn(
             "flex min-w-0 items-center gap-1.5 rounded-md px-1.5 text-left hover:bg-accent",
             databaseSelected && "shrink-0",
-            mobileLayout ? "h-12" : "h-7",
+            "h-7",
             navigatorOpen && navigatorMode === "groups" && "bg-accent",
           )}
           aria-label={t("projects.navigator.open")}
           aria-expanded={navigatorOpen && navigatorMode === "groups"}
           onpointerenter={(event) => {
-            if (!mobileLayout) navigatorHover.enterTrigger(event, () => openNavigator("groups"));
+            navigatorHover.enterTrigger(event, () => openNavigator("groups"));
           }}
           onpointerleave={navigatorHover.leave}
           onclick={() => toggleNavigator("groups")}
         >
-          {#if !mobileLayout}
-            <ProjectIcon
-              name={selectedGroup.icon}
-              size={identityIconSize}
-              strokeWidth={identityIconStrokeWidth}
-              emojiScale={projectIdentityEmojiScale}
-              class="shrink-0"
-            />
-          {/if}
+          <ProjectIcon
+            name={selectedGroup.icon}
+            size={identityIconSize}
+            strokeWidth={identityIconStrokeWidth}
+            emojiScale={projectIdentityEmojiScale}
+            class="shrink-0"
+          />
           <span class="min-w-0 truncate text-foreground">{selectedGroup.name}</span>
         </button>
         <span class="shrink-0 px-0.5 font-semibold text-muted-foreground">/</span>
@@ -589,26 +659,24 @@
           class={cn(
             "flex min-w-0 items-center gap-1.5 rounded-md px-1.5 text-left hover:bg-accent",
             databaseSelected && "shrink-0",
-            mobileLayout ? "h-12" : "h-7",
+            "h-7",
             navigatorOpen && navigatorMode === "projects" && "bg-accent",
           )}
           aria-label={selectedPageTitle ? t("notes.showProjectHome") : t("projects.navigator.open")}
           aria-expanded={navigatorOpen && navigatorMode === "projects"}
           onpointerenter={(event) => {
-            if (!mobileLayout) navigatorHover.enterTrigger(event, () => openNavigator("projects"));
+            navigatorHover.enterTrigger(event, () => openNavigator("projects"));
           }}
           onpointerleave={navigatorHover.leave}
           onclick={handleProjectTriggerClick}
         >
-          {#if !mobileLayout}
-            <ProjectIcon
-              name={selectedProject.icon}
-              size={identityIconSize}
-              strokeWidth={identityIconStrokeWidth}
-              emojiScale={projectIdentityEmojiScale}
-              class="shrink-0"
-            />
-          {/if}
+          <ProjectIcon
+            name={selectedProject.icon}
+            size={identityIconSize}
+            strokeWidth={identityIconStrokeWidth}
+            emojiScale={projectIdentityEmojiScale}
+            class="shrink-0"
+          />
           <span class="min-w-0 truncate text-foreground">{selectedProject.name}</span>
           {#if !showSelectedPagePath}
             <WorkspaceBreadcrumbTerminalIcon kind="chevron" context="notes" class="shrink-0 text-muted-foreground" />
@@ -635,22 +703,20 @@
           type="button"
           class={cn(
             "flex min-w-0 items-center gap-1.5 rounded-md px-1.5 text-left hover:bg-accent",
-            mobileLayout ? "h-12" : "h-7",
+            "h-7",
             navigatorOpen && navigatorMode === "notes" && "bg-accent",
           )}
           aria-label={t("notes.openNoteNavigator")}
           aria-expanded={navigatorOpen && navigatorMode === "notes"}
           onclick={() => toggleNavigator("notes")}
         >
-          {#if !mobileLayout}
-            <NotesPageIcon
-              icon={selectedPage?.icon ?? null}
-              size={identityIconSize}
-              strokeWidth={identityIconStrokeWidth}
-              emojiScale={NOTES_PAGE_CHROME_EMOJI_SCALE}
-              class="shrink-0"
-            />
-          {/if}
+          <NotesPageIcon
+            icon={selectedPage?.icon ?? null}
+            size={identityIconSize}
+            strokeWidth={identityIconStrokeWidth}
+            emojiScale={NOTES_PAGE_CHROME_EMOJI_SCALE}
+            class="shrink-0"
+          />
           <span class="min-w-0 truncate text-foreground">{selectedPageTitle ?? t("notes.title")}</span>
           <WorkspaceBreadcrumbTerminalIcon kind="chevron" class="shrink-0 text-muted-foreground" />
         </button>
@@ -670,6 +736,7 @@
         {/if}
       {/if}
     </div>
+    {/if}
     {#if navigatorOpen}
       {#if mobileLayout}
         {#if mobileProjectPickerLoadState?.status === "ready" && mobileProjectPickerLoadState.component.kind === "mobile-project-picker"}

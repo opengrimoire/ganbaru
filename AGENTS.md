@@ -60,7 +60,7 @@ apps/
         scheduling/: lifecycle and notification schedulers
         settings/: Settings section identifiers shared by launchers and the Settings modal
         sync/: sync status presentation helpers
-        mobile/: Android shell back handling, layout, and persistence lifecycle helpers
+        mobile/: Android shell back handling, layout, top bar context slot, and persistence lifecycle helpers
         stores/: Svelte rune stores and domain controllers for runtime state; large stores keep private modules in a same-named subfolder (calendar/, chat/, music-player/, notes/, projects/)
         themes/: theme definitions, derivation, serialization, operations, editor session, and theme JSON file access
         utils/, vault/, windows/: shared helpers, vault state, and detached window and cross-window sync helpers

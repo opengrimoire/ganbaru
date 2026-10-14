@@ -8,7 +8,6 @@
     type LazyComponentLoadState,
   } from "$lib/lazy-component-loader";
   import Archive from "@lucide/svelte/icons/archive";
-  import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import Copy from "@lucide/svelte/icons/copy";
   import Download from "@lucide/svelte/icons/download";
   import FolderInput from "@lucide/svelte/icons/folder-input";
@@ -1187,16 +1186,6 @@
           if (reason === "escape") pageMenuButton?.focus({ preventScroll: true });
         } }}
       >
-        {#if mobileLayout && openMode === "full"}
-          <button
-            type="button"
-            class={actionButtonClass()}
-            aria-label={t("notes.showProjectHome")}
-            onclick={() => onClose?.()}
-          >
-            <ChevronLeft class="size-5" strokeWidth={noteActionIconStrokeWidth} />
-          </button>
-        {/if}
         <div
           class="relative hidden shrink-0 min-[560px]:block"
           role="group"

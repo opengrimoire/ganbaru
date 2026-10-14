@@ -37,6 +37,7 @@
   import ProjectPickerMobileDialog from "$lib/components/projects/pickers/ProjectPickerMobileDialog.svelte";
   import MenuItemLabel from "$lib/components/ui/MenuItemLabel.svelte";
   import Select from "$lib/components/ui/Select.svelte";
+  import MobileContextSwitcher from "$lib/components/mobile/MobileContextSwitcher.svelte";
 
   let {
     selectedProject,
@@ -321,6 +322,19 @@
 
 </script>
 
+{#snippet addTaskButton()}
+  <button
+    type="button"
+    class={toolbarIconButtonClass(false)}
+    aria-label={t("projects.header.addTask")}
+    title={t("projects.header.addTask")}
+    data-project-new-task-button
+    onclick={onCreateTask}
+  >
+    <WorkspaceBreadcrumbTerminalIcon kind="plus" />
+  </button>
+{/snippet}
+
 <svelte:window onpointerdown={handleProjectWindowPointerDown} />
 
 <div
@@ -340,32 +354,48 @@
         : "min-w-36 shrink-0 min-[760px]:max-w-md",
     )}
   >
-    <div class="flex min-w-0 max-w-full items-center gap-0.5 text-identity font-medium {mobileLayout ? 'h-12' : 'h-7'}">
+    {#if mobileLayout}
+      <MobileContextSwitcher
+        bind:triggerElement={projectTriggerElement}
+        title={selectedProject.name}
+        expanded={projectNavigatorOpen}
+        onclick={() => toggleProjectNavigator("projects")}
+      >
+        {#snippet icon()}
+          <ProjectIcon
+            name={selectedProject.icon}
+            size={projectIdentityIconSize}
+            strokeWidth={projectIdentityIconStrokeWidth}
+            emojiScale={projectIdentityEmojiScale}
+          />
+        {/snippet}
+      </MobileContextSwitcher>
+      <div class="flex h-12 items-center">
+        {@render addTaskButton()}
+      </div>
+    {:else}
+    <div class="flex h-7 min-w-0 max-w-full items-center gap-0.5 text-identity font-medium">
       <button
         bind:this={projectGroupTriggerElement}
         type="button"
         class={cn(
-          "flex min-w-0 items-center gap-1.5 rounded-md px-1.5 text-left hover:bg-accent",
-          mobileLayout && "shrink-0",
-          mobileLayout ? "h-12" : "h-7",
+          "flex h-7 min-w-0 items-center gap-1.5 rounded-md px-1.5 text-left hover:bg-accent",
           projectNavigatorOpen && projectNavigatorMode === "groups" && "bg-accent",
         )}
         aria-label={t("projects.navigator.open")}
         aria-haspopup="dialog"
         aria-expanded={projectNavigatorOpen && projectNavigatorMode === "groups"}
-        onpointerenter={(event) => { if (!mobileLayout) projectNavigatorHover.enterTrigger(event, () => openProjectNavigator("groups")); }}
+        onpointerenter={(event) => { projectNavigatorHover.enterTrigger(event, () => openProjectNavigator("groups")); }}
         onpointerleave={projectNavigatorHover.leave}
         onclick={() => toggleProjectNavigator("groups")}
       >
-        {#if !mobileLayout}
-          <ProjectIcon
-            name={selectedGroup.icon}
-            size={projectIdentityIconSize}
-            strokeWidth={projectIdentityIconStrokeWidth}
-            emojiScale={projectIdentityEmojiScale}
-            class="shrink-0"
-          />
-        {/if}
+        <ProjectIcon
+          name={selectedGroup.icon}
+          size={projectIdentityIconSize}
+          strokeWidth={projectIdentityIconStrokeWidth}
+          emojiScale={projectIdentityEmojiScale}
+          class="shrink-0"
+        />
         <span class="min-w-0 truncate text-foreground">{selectedGroup.name}</span>
       </button>
       <span class="shrink-0 px-0.5 font-semibold text-muted-foreground">/</span>
@@ -373,41 +403,29 @@
         bind:this={projectTriggerElement}
         type="button"
         class={cn(
-          "flex min-w-0 items-center gap-1.5 rounded-md px-1.5 text-left hover:bg-accent",
-          mobileLayout && "flex-1",
-          mobileLayout ? "h-12" : "h-7",
+          "flex h-7 min-w-0 items-center gap-1.5 rounded-md px-1.5 text-left hover:bg-accent",
           projectNavigatorOpen && projectNavigatorMode === "projects" && "bg-accent",
         )}
         aria-label={t("projects.navigator.open")}
         aria-haspopup="dialog"
         aria-expanded={projectNavigatorOpen && projectNavigatorMode === "projects"}
-        onpointerenter={(event) => { if (!mobileLayout) projectNavigatorHover.enterTrigger(event, () => openProjectNavigator("projects")); }}
+        onpointerenter={(event) => { projectNavigatorHover.enterTrigger(event, () => openProjectNavigator("projects")); }}
         onpointerleave={projectNavigatorHover.leave}
         onclick={() => toggleProjectNavigator("projects")}
       >
-        {#if !mobileLayout}
-          <ProjectIcon
-            name={selectedProject.icon}
-            size={projectIdentityIconSize}
-            strokeWidth={projectIdentityIconStrokeWidth}
-            emojiScale={projectIdentityEmojiScale}
-            class="shrink-0"
-          />
-        {/if}
+        <ProjectIcon
+          name={selectedProject.icon}
+          size={projectIdentityIconSize}
+          strokeWidth={projectIdentityIconStrokeWidth}
+          emojiScale={projectIdentityEmojiScale}
+          class="shrink-0"
+        />
         <span class="min-w-0 truncate text-foreground">{selectedProject.name}</span>
         <WorkspaceBreadcrumbTerminalIcon kind="chevron" class="shrink-0 text-muted-foreground" />
       </button>
-      <button
-        type="button"
-        class={toolbarIconButtonClass(false)}
-        aria-label={t("projects.header.addTask")}
-        title={t("projects.header.addTask")}
-        data-project-new-task-button
-        onclick={onCreateTask}
-      >
-        <WorkspaceBreadcrumbTerminalIcon kind="plus" />
-      </button>
+      {@render addTaskButton()}
     </div>
+    {/if}
     {#if projectNavigatorOpen}
       {#if mobileLayout}
         <ProjectPickerMobileDialog

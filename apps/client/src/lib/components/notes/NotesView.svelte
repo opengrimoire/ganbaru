@@ -10,6 +10,9 @@
   } from "$lib/lazy-component-loader";
   import { parseNotesLinkHash } from "$lib/notes/links/block-link";
   import { notesPageContainingFolderId } from "$lib/notes/navigation/hierarchy-menu";
+  import { firstNotesNavigationPage, notesFoldersForProject } from "$lib/notes/navigation/tree";
+  import { notesPageTitle } from "$lib/notes/pages/title";
+  import { notesPagesForProject } from "$lib/notes/project-membership";
   import { notesUndoShortcutAction } from "$lib/notes/history/undo-history";
   import type { NotesWorkingMarkdownFileRef } from "$lib/notes/types";
   import { getNotes } from "$lib/stores/notes.svelte";
@@ -338,9 +341,38 @@
     projectSettingsDiscardConfirmOpen = false;
     projectVersionHistoryOpen = false;
     showProjectHome();
-    void notes.load().catch((error) => {
-      console.error("load selected Notes project failed", error);
-    });
+    const projectId = projects.selectedProjectId;
+    void notes.load()
+      .then(() => openFirstProjectNote(projectId))
+      .catch((error) => {
+        console.error("load selected Notes project failed", error);
+      });
+  }
+
+  /**
+   * Opens the first note of a newly selected project in sidebar order, unless the project changed or the user opened
+   * something else while it loaded. Mobile keeps the project's note list, which is its navigation surface.
+   */
+  async function openFirstProjectNote(projectId: string | null): Promise<void> {
+    if (mobileLayout || !projectId || projects.selectedProjectId !== projectId) return;
+    if (notes.viewMode !== "pages" || notes.selectedPageId !== null || selectedWorkingMarkdownFile) return;
+    const firstPage = firstNotesNavigationPage(
+      notesPagesForProject(notes.navigationPages, projectId),
+      notesFoldersForProject(notes.folders, projectId),
+      {
+        rootPagesOnly: true,
+        collapsedFolderIds: notes.collapsedFolderIds,
+        pageIdsWithChildren: notes.sidebarPageIdsWithChildren,
+        missingParentPageIds: notes.sidebarMissingParentPageIds,
+        trashedParentPageIds: notes.sidebarTrashedParentPageIds,
+        sortOrder: notes.sidebarOrderForProject(projectId),
+        favoriteFolderIds: notes.favoriteFolderIds,
+        favoritePageIds: notes.favoritePageIds,
+        customOrderKeys: notes.customOrderForProject(projectId),
+        titleForPage: (page) => notesPageTitle(page, t("notes.untitled")),
+      },
+    );
+    if (firstPage) await notes.selectPage(firstPage.id);
   }
 
   function beforeDocumentNavigation(): boolean {
@@ -546,7 +578,6 @@
       {selectedGroup}
       {selectedProjectId}
       selectedPage={topBarSelectedPage}
-      explorerCollapsed={notes.explorerCollapsed || projectSidebar !== undefined}
       {creationFolderId}
       {showInactiveProjects}
       onShowInactiveProjectsChange={(value) => {

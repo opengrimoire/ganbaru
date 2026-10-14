@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createRichText } from "$lib/notes/blocks/factory";
 import {
   buildNotesNavigationTree,
+  firstNotesNavigationPage,
   notesFolderMoveTargets,
   notesFoldersForProject,
   notesPageFolderMoveTargets,
@@ -195,6 +196,34 @@ describe("notes navigation tree", () => {
         "page:page-b",
         "page:page-c",
       ]);
+  });
+
+  it("finds the first note from the top of the sidebar, skipping collapsed folders", () => {
+    const pages = [
+      page("page-b", "Bravo"),
+      page("page-a", "Alpha"),
+      page("nested", "Nested", { type: "workspace", workspace: true }, "folder-a"),
+      page("child", "Child", { type: "page_id", page_id: "page-a" }),
+    ];
+    const folders = [folder("folder-a", "Archive")];
+
+    expect(firstNotesNavigationPage(pages, folders, { rootPagesOnly: true })?.id).toBe("nested");
+    expect(firstNotesNavigationPage(pages, folders, { rootPagesOnly: true, collapsedFolderIds: ["folder-a"] })?.id)
+      .toBe("page-a");
+    expect(firstNotesNavigationPage(pages, folders, {
+      rootPagesOnly: true,
+      collapsedFolderIds: ["folder-a"],
+      sortOrder: "custom",
+      customOrderKeys: ["page:page-b", "page:page-a"],
+    })?.id).toBe("page-b");
+  });
+
+  it("falls back to a note inside a collapsed folder and returns null without notes", () => {
+    const folders = [folder("folder-a", "Archive")];
+    const nested = page("nested", "Nested", { type: "workspace", workspace: true }, "folder-a");
+
+    expect(firstNotesNavigationPage([nested], folders, { collapsedFolderIds: ["folder-a"] })?.id).toBe("nested");
+    expect(firstNotesNavigationPage([], folders, { collapsedFolderIds: ["folder-a"] })).toBeNull();
   });
 
   it("keeps selected notes open while allowing their folder to close", () => {

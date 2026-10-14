@@ -60,7 +60,6 @@
     selectedGroup,
     selectedProjectId,
     selectedPage,
-    explorerCollapsed,
     creationFolderId,
     showInactiveProjects,
     onShowInactiveProjectsChange,
@@ -75,7 +74,6 @@
     selectedGroup: ProjectGroup | undefined;
     selectedProjectId: string | null;
     selectedPage: NotesPage | null;
-    explorerCollapsed: boolean;
     creationFolderId: string | null;
     showInactiveProjects: boolean;
     onShowInactiveProjectsChange: (value: boolean) => void;
@@ -169,9 +167,7 @@
       ? selectedPagePath.slice(-1)
       : selectedPagePath,
   );
-  const showSelectedPagePath = $derived(
-    (databaseSelected || mobileLayout || explorerCollapsed) && selectedPagePath.length > 0,
-  );
+  const showSelectedPagePath = $derived(selectedPagePath.length > 0);
 
   function toolbarIconButtonClass(active = false, open = false, primary = false): string {
     return cn(

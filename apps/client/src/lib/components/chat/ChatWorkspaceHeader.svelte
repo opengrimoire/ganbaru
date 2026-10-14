@@ -97,7 +97,6 @@
     selectedProject ? chatSidebarOrder.sortChannels(selectedProject.id, chat.channelsForProject(selectedProject.id)) : [],
   );
   const selectedFolder = $derived(chat.selectedWorkingFolder);
-  const showChannelBreadcrumb = $derived(!explorerExpanded || (editingTitle && !!selectedChannel && !selectedChannel.isDefault));
   const memberSummary = $derived(summarizeChannelMembers(selectedChannel?.memberships ?? []));
   const memberStackTeammates = $derived(chat.teammates
     .filter((teammate) => memberSummary.teammateIds.has(teammate.participant.id))
@@ -226,10 +225,6 @@
     requestAnimationFrame(refreshNavigatorGeometry);
   });
 
-  $effect(() => {
-    if (explorerExpanded && navigatorOpen && navigatorMode === "channels") navigatorOpen = false;
-  });
-
 </script>
 
 <svelte:window onpointerdown={handleWindowPointerDown} />
@@ -241,8 +236,8 @@
       {#if selectedProject && selectedGroup}
         <button bind:this={groupTriggerElement} type="button" class={cn("chat-context-segment", navigatorOpen && navigatorMode === "groups" && "bg-accent")} aria-label={t("projects.navigator.open")} aria-expanded={navigatorOpen && navigatorMode === "groups"} data-chat-group-trigger onpointerenter={(event) => { if (!mobilePresentation) navigatorHover.enterTrigger(event, () => openNavigator("groups")); }} onpointerleave={navigatorHover.leave} onclick={() => toggleNavigator("groups")}>{#if !mobilePresentation}<ProjectIcon name={selectedGroup.icon} size={identityIconSize} strokeWidth={identityIconStrokeWidth} emojiScale={identityEmojiScale} />{/if}<span class="truncate">{selectedGroup.name}</span></button>
         <span class="chat-context-divider">/</span>
-        <button bind:this={projectTriggerElement} type="button" class={cn("chat-context-segment", navigatorOpen && navigatorMode === "projects" && "bg-accent")} aria-label={t("projects.navigator.open")} aria-expanded={navigatorOpen && navigatorMode === "projects"} data-chat-project-trigger onpointerenter={(event) => { if (!mobilePresentation) navigatorHover.enterTrigger(event, () => openNavigator("projects")); }} onpointerleave={navigatorHover.leave} onclick={() => toggleNavigator("projects")}>{#if !mobilePresentation}<ProjectIcon name={selectedProject.icon} size={identityIconSize} strokeWidth={identityIconStrokeWidth} emojiScale={identityEmojiScale} />{/if}<span class="truncate">{selectedProject.name}</span>{#if selectedProject.status !== "active"}<span class={cn("rounded border px-1.5 py-0.5 text-[0.666667rem]", projectLifecycleBadgeClass(selectedProject.status))}>{projectLifecycleLabel(selectedProject.status, t)}</span>{/if}{#if !selectedChannel || !showChannelBreadcrumb}<WorkspaceBreadcrumbTerminalIcon kind="chevron" context="chat" class="shrink-0 text-muted-foreground" />{/if}</button>
-        {#if selectedChannel && showChannelBreadcrumb}
+        <button bind:this={projectTriggerElement} type="button" class={cn("chat-context-segment", navigatorOpen && navigatorMode === "projects" && "bg-accent")} aria-label={t("projects.navigator.open")} aria-expanded={navigatorOpen && navigatorMode === "projects"} data-chat-project-trigger onpointerenter={(event) => { if (!mobilePresentation) navigatorHover.enterTrigger(event, () => openNavigator("projects")); }} onpointerleave={navigatorHover.leave} onclick={() => toggleNavigator("projects")}>{#if !mobilePresentation}<ProjectIcon name={selectedProject.icon} size={identityIconSize} strokeWidth={identityIconStrokeWidth} emojiScale={identityEmojiScale} />{/if}<span class="truncate">{selectedProject.name}</span>{#if selectedProject.status !== "active"}<span class={cn("rounded border px-1.5 py-0.5 text-[0.666667rem]", projectLifecycleBadgeClass(selectedProject.status))}>{projectLifecycleLabel(selectedProject.status, t)}</span>{/if}{#if !selectedChannel}<WorkspaceBreadcrumbTerminalIcon kind="chevron" context="chat" class="shrink-0 text-muted-foreground" />{/if}</button>
+        {#if selectedChannel}
           <span class="chat-context-divider">/</span>
           {#if editingTitle && !selectedChannel.isDefault}
             <div class="min-w-36 max-w-64 px-1"><ChatTitleEditor title={selectedChannel.name} onCommit={commitTitle} onCancel={() => { editingTitle = false; }} /></div>

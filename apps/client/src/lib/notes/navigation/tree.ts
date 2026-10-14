@@ -207,6 +207,22 @@ export function buildNotesNavigationTree(
   return result;
 }
 
+/**
+ * Return the first note of the navigation tree in sidebar order. Notes outside collapsed folders come first; when every
+ * note is inside a collapsed folder, the first one in the expanded tree is returned.
+ */
+export function firstNotesNavigationPage(
+  pages: readonly NotesPage[],
+  folders: readonly NotesFolder[],
+  options: NotesNavigationTreeOptions = {},
+): NotesPage | null {
+  const firstPage = (items: readonly NotesNavigationTreeItem[]): NotesPage | null =>
+    items.find((item): item is NotesNavigationPageTreeItem => item.kind === "page")?.page ?? null;
+  const visible = firstPage(buildNotesNavigationTree(pages, folders, options));
+  if (visible || !options.collapsedFolderIds?.length) return visible;
+  return firstPage(buildNotesNavigationTree(pages, folders, { ...options, collapsedFolderIds: [] }));
+}
+
 /** Return valid folder and page destinations for moving a page. */
 export function notesPageFolderMoveTargets(
   pages: readonly NotesPage[],

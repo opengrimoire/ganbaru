@@ -22,9 +22,9 @@ Child notes open in a side or center preview with its own editor session (docume
 
 ## Breadcrumbs and hierarchy
 
-With the sidebar collapsed, the workspace header shows the active note's ancestry: group, project, folders, and the path to the note. Sibling notes never appear as path segments, and in side view the path follows the focused pane. Opening a database extends the path through its containing note, and that segment returns to the retained editor and scroll position.
+Whether or not the sidebar is open, the workspace header shows the active note's ancestry: group, project, folders, and the path to the note. Sibling notes never appear as path segments, and in side view the path follows the focused pane. Opening a database extends the path through its containing note, and that segment returns to the retained editor and scroll position.
 
-The group and project segments open the project navigator, whose search finds notes by title across the listed projects, grouped by project with notes outside any project last; matches inside note content belong to Notes search. Breadcrumb segments open hierarchy pickers that list child notes and databases, including databases inside nested blocks. Database rows in these pickers expose saved views, which are presentation choices rather than navigation levels; selecting one opens the database with that view. Only the panel opened directly from a segment has a search field. Touch navigation uses equivalent drilldown controls.
+The group and project segments open the project navigator, whose search finds notes by title across the listed projects, grouped by project with notes outside any project last; matches inside note content belong to Notes search. Selecting a project there opens its first note in sidebar order on desktop, or its project home when it has no notes; touch layouts open the project's note list. Breadcrumb segments open hierarchy pickers that list child notes and databases, including databases inside nested blocks. Database rows in these pickers expose saved views, which are presentation choices rather than navigation levels; selecting one opens the database with that view. Only the panel opened directly from a segment has a search field. Touch navigation uses equivalent drilldown controls.
 
 ## Project scope
 

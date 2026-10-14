@@ -205,7 +205,7 @@ describe("ChatWorkspaceHeader", () => {
     groupTrigger?.click();
     await tick();
     expect(document.querySelector(".project-picker-panel")).not.toBeNull();
-    expect(document.querySelector<HTMLInputElement>('.project-picker-panel input')?.placeholder).toBe("Search projects...");
+    expect(document.querySelector<HTMLInputElement>('.project-picker-panel input')?.placeholder).toBe("Search channels");
 
     projectTrigger?.click();
     await tick();
@@ -229,13 +229,13 @@ describe("ChatWorkspaceHeader", () => {
     expect(syncProjectSelection).not.toHaveBeenCalled();
   });
 
-  it("shows the channel breadcrumb only when the explorer is collapsed", () => {
+  it("shows the channel breadcrumb whether the explorer is expanded or collapsed", () => {
     const expanded = setup(true);
     expect(expanded.querySelector("[data-chat-group-trigger]")?.textContent).toContain("Work");
     expect(expanded.querySelector("[data-chat-project-trigger]")?.textContent).toContain("Ganbaru");
-    expect(expanded.querySelector("[data-chat-channel-trigger]")).toBeNull();
+    expect(expanded.querySelector("[data-chat-channel-trigger]")?.textContent).toContain("general");
     expect(expanded.querySelector("[data-chat-channel-topic]")).toBeNull();
-    expect(expanded.querySelector("[data-chat-context-chevron]")?.closest("button")).toBe(expanded.querySelector("[data-chat-project-trigger]"));
+    expect(expanded.querySelector("[data-chat-context-chevron]")?.closest("button")).toBe(expanded.querySelector("[data-chat-channel-trigger]"));
     expect(expanded.querySelectorAll("[data-chat-context-chevron]")).toHaveLength(1);
     expect(expanded.querySelector("[data-chat-new-channel-button]")).not.toBeNull();
 

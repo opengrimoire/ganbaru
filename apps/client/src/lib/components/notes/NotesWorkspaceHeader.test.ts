@@ -152,7 +152,7 @@ describe("NotesWorkspaceHeader", () => {
     vi.unstubAllGlobals();
   });
 
-  function setup(explorerCollapsed: boolean, selectedPage = page, pages = [selectedPage], mobileLayout = false): HTMLDivElement {
+  function setup(selectedPage: NotesPage | null = page, pages: NotesPage[] = selectedPage ? [selectedPage] : [], mobileLayout = false): HTMLDivElement {
     notesState.store.allPages = pages;
     notesState.store.folders = [folder];
     const target = document.createElement("div");
@@ -165,7 +165,6 @@ describe("NotesWorkspaceHeader", () => {
         selectedGroup: group,
         selectedProjectId: project.id,
         selectedPage,
-        explorerCollapsed,
         creationFolderId: folder.id,
         showInactiveProjects: false,
         onShowInactiveProjectsChange: vi.fn(),
@@ -180,16 +179,16 @@ describe("NotesWorkspaceHeader", () => {
   }
 
   it("places one navigator chevron after the final visible breadcrumb segment", () => {
-    const expanded = setup(false);
-    expect(expanded.querySelectorAll("[data-notes-context-chevron]")).toHaveLength(1);
-    expect(expanded.querySelector("[data-notes-context-chevron]")?.closest("button")?.textContent).toContain("Learning");
+    const projectHome = setup(null, []);
+    expect(projectHome.querySelectorAll("[data-notes-context-chevron]")).toHaveLength(1);
+    expect(projectHome.querySelector("[data-notes-context-chevron]")?.closest("button")?.textContent).toContain("Learning");
 
-    const collapsed = setup(true);
-    expect(collapsed.querySelectorAll("[data-notes-context-chevron]")).toHaveLength(1);
-    expect(collapsed.querySelector("[data-notes-context-chevron]")?.closest("button")?.textContent).toContain("Untitled");
+    const selected = setup();
+    expect(selected.querySelectorAll("[data-notes-context-chevron]")).toHaveLength(1);
+    expect(selected.querySelector("[data-notes-context-chevron]")?.closest("button")?.textContent).toContain("Untitled");
   });
 
-  it("shows group, project, main note, and sub-note in order with the sidebar collapsed", () => {
+  it("shows group, project, main note, and sub-note in order", () => {
     const parent = createProvisionalNotesPage({
       id: "main", title: "Main note", first_block_id: "main-body", folder_id: null,
       parent: { type: "workspace", workspace: true }, properties: { __ganbaru_project_id: project.id },
@@ -198,13 +197,13 @@ describe("NotesWorkspaceHeader", () => {
       id: "child", title: "Sub-note", first_block_id: "child-body", folder_id: null,
       parent: { type: "page_id", page_id: parent.id }, properties: parent.properties,
     }).page;
-    const header = setup(true, child, [parent, child]);
+    const header = setup(child, [parent, child]);
     const labels = Array.from(header.querySelectorAll("button")).map((button) => button.textContent?.trim());
     expect(labels.filter((label) => ["Routine", "Learning", "Main note", "Sub-note"].includes(label ?? "")))
       .toEqual(["Routine", "Learning", "Main note", "Sub-note"]);
   });
 
-  it.each([false, true])("shows the entire database owner path with an expanded explorer and mobile layout %s", (mobileLayout) => {
+  it.each([false, true])("shows the entire database owner path with mobile layout %s", (mobileLayout) => {
     const loaded = createProvisionalNotesPage({
       id: "owner", title: "Reading", first_block_id: "database", folder_id: folder.id,
       parent: { type: "workspace", workspace: true }, properties: { __ganbaru_project_id: project.id },
@@ -215,7 +214,7 @@ describe("NotesWorkspaceHeader", () => {
     if (database.type !== "child_database") throw new Error("Expected a database fixture");
     notesState.store.selectedDatabaseBlockId = database.id;
     notesState.store.selectedDatabaseBlock = database;
-    const header = setup(false, loaded.page, [loaded.page], mobileLayout);
+    const header = setup(loaded.page, [loaded.page], mobileLayout);
     const text = header.textContent ?? "";
     const labels = ["Routine", "Learning", "Lessons", "Reading", "Book list"];
     const indices = labels.map((label) => text.indexOf(label));
@@ -238,7 +237,7 @@ describe("NotesWorkspaceHeader", () => {
     if (database.type !== "child_database") throw new Error("Expected a database fixture");
     notesState.store.selectedDatabaseBlockId = database.id;
     notesState.store.selectedDatabaseBlock = database;
-    const header = setup(false, loaded.page, [loaded.page]);
+    const header = setup(loaded.page, [loaded.page]);
     const renamed = { ...database, child_database: { ...database.child_database, title: "Reading queue" } };
     flushSync(() => { notesState.store.selectedDatabaseBlock = renamed; });
     expect(header.querySelector("[data-notes-database-breadcrumb]")?.textContent?.trim()).toBe("Reading queue");
@@ -257,7 +256,7 @@ describe("NotesWorkspaceHeader", () => {
       created_time: "2026-09-30T00:00:00Z", last_edited_time: "2026-09-30T00:00:00Z",
       source_provider: null, source_object_id: null, source_workspace_id: null, source_last_edited_time: null,
     }]);
-    const header = setup(true, owner);
+    const header = setup(owner);
     await tick();
     header.querySelector<HTMLButtonElement>('button[aria-label="Reading"]')!.dispatchEvent(new Event("pointerenter"));
     await vi.waitFor(() => expect(header.querySelector('[role="dialog"] button[aria-label="Reading"]')).not.toBeNull());
@@ -283,7 +282,7 @@ describe("NotesWorkspaceHeader", () => {
       id: page.id, title: "Reading", first_block_id: "body", folder_id: null,
       parent: page.parent, properties: page.properties,
     }).page;
-    const header = setup(true, owner);
+    const header = setup(owner);
     await tick();
     const projectTrigger = Array.from(header.querySelectorAll<HTMLButtonElement>("button"))
       .find((button) => button.textContent?.trim() === "Learning");
@@ -317,7 +316,7 @@ describe("NotesWorkspaceHeader", () => {
       created_time: "2026-09-30T00:00:00Z", last_edited_time: "2026-09-30T00:00:00Z",
       source_provider: null, source_object_id: null, source_workspace_id: null, source_last_edited_time: null,
     }]);
-    const header = setup(false, loaded.page, [loaded.page]);
+    const header = setup(loaded.page, [loaded.page]);
     await tick();
     header.querySelector<HTMLButtonElement>("[data-notes-database-breadcrumb]")!.dispatchEvent(new Event("pointerenter"));
     await vi.waitFor(() => expect(databaseViews).toHaveBeenCalledWith("database"));

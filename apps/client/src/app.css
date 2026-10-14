@@ -1036,7 +1036,8 @@ html[data-hover-suppressed] .content-panel * {
   height: var(--explorer-toolbar-icon-size);
 }
 
-.explorer-sidebar :is(.explorer-row, .section-heading, .explorer-section-title, .explorer-search) svg.lucide {
+/* The starred badge keeps its own small size on top of a row icon. */
+.explorer-sidebar :is(.explorer-row, .section-heading, .explorer-section-title, .explorer-search) svg.lucide:not(.starred-icon-badge) {
   width: var(--explorer-row-icon-size);
   height: var(--explorer-row-icon-size);
 }

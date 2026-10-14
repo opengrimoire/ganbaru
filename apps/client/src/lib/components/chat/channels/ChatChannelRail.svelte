@@ -716,8 +716,8 @@
                 <button type="button" class="explorer-icon section-rename-control" aria-label={t("chat.cancel")} data-app-tooltip-disabled="true" onpointerdown={() => { sectionRenameControlPointerActive = true; }} onpointerup={releaseSectionRenameControlPointer} onpointercancel={() => { sectionRenameControlPointerActive = false; }} onkeydown={handleSectionRenameControlKeydown} onclick={(event) => finishSectionRenameAndFocus(event, false)}><X size={14} /></button>
               {:else}
                 <button type="button" class="section-toggle" class:collapsed={section.collapsed} aria-label={sectionToggleLabel(section.name, section.collapsed)} aria-expanded={!section.collapsed} onclick={() => toggleSection(section.id)}>
-                  <span use:overflowTooltip={section.name}>{section.name}</span>
                   {#if section.starred}<Star class="section-star size-3 shrink-0 fill-current text-primary" aria-hidden="true" />{/if}
+                  <span use:overflowTooltip={section.name}>{section.name}</span>
                   {#if section.collapsed}<ChevronRight class="section-chevron" size={13} />{:else}<ChevronDown class="section-chevron" size={13} />{/if}
                 </button>
                 <button type="button" class="section-create-action" aria-label={t("chat.channels.createTitle")} data-app-tooltip={t("chat.channels.createTitle")} onclick={() => openCreate(section.id)}><Plus size={13} /></button>

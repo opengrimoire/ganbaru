@@ -335,7 +335,7 @@ describe("ChatChannelRail", () => {
 
     expect(target.querySelector(".section-context-menu")).toBeNull();
     expect(readChatSidebarSections("project-1")[0]?.starred).toBe(true);
-    expect(target.querySelectorAll<HTMLElement>(".channel-section")[1]?.querySelector(".section-star")).not.toBeNull();
+    expect(target.querySelectorAll<HTMLElement>(".channel-section")[1]?.querySelector(".section-star")?.nextElementSibling?.textContent).toBe(readChatSidebarSections("project-1")[0]?.name);
 
     trigger?.click();
     await tick();

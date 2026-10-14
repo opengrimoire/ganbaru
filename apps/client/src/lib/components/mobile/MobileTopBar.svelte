@@ -138,7 +138,7 @@
       >
         <span class={cn(
           utilityIconClass,
-          pomodoroActive && "w-auto gap-1.5 pr-2.5 pl-1.5 text-sm font-medium tabular-nums",
+          pomodoroActive && "w-auto grid-flow-col gap-1.5 pr-2.5 pl-1.5 text-sm font-medium tabular-nums",
           (pomodoroOpen || pomodoroActive) && "bg-accent/70",
         )}>
           <PomodoroProgressRing

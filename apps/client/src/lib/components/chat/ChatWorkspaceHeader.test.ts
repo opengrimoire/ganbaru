@@ -179,6 +179,7 @@ describe("ChatWorkspaceHeader", () => {
     explorerExpanded: boolean,
     reserveGlobalActions = true,
     editingTitle = false,
+    mobilePresentation = false,
   ): HTMLDivElement {
     const target = document.createElement("div");
     target.className = "chat-workspace";
@@ -190,6 +191,7 @@ describe("ChatWorkspaceHeader", () => {
         showRailButton: false,
         reserveGlobalActions,
         editingTitle,
+        mobilePresentation,
         onOpenRail: vi.fn(),
       },
     });
@@ -352,6 +354,30 @@ describe("ChatWorkspaceHeader", () => {
 
     expect(target.querySelector("[data-chat-title-editor]")).not.toBeNull();
     expect(target.querySelector("[data-chat-project-trigger]")).not.toBeNull();
+  });
+
+  it("shows one mobile switcher with the channel name and no group or project path", async () => {
+    const target = setup(true, false, false, true);
+    const switchers = target.querySelectorAll<HTMLButtonElement>("[data-mobile-context-switcher]");
+
+    expect(switchers).toHaveLength(1);
+    expect(switchers[0].textContent).toContain("general");
+    expect(switchers[0].textContent).not.toContain("Ganbaru");
+    expect(target.querySelector("[data-chat-group-trigger]")).toBeNull();
+    expect(target.querySelector("[data-chat-project-trigger]")).toBeNull();
+    expect(switchers[0].getAttribute("aria-expanded")).toBe("false");
+
+    switchers[0].click();
+    await tick();
+
+    expect(switchers[0].getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("names the mobile switcher after the project when no channel is selected", () => {
+    getChat().selectedChannelId = null;
+    const target = setup(true, false, false, true);
+
+    expect(target.querySelector("[data-mobile-context-switcher]")?.textContent).toContain("Ganbaru");
   });
 
 });

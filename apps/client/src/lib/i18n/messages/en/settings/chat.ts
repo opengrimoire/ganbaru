@@ -438,7 +438,7 @@ export const chatSettings = {
     enter: "Enter sends",
     modEnter: "Ctrl or Cmd + Enter sends",
     sidebarOrder: "Section and channel order",
-    sidebarOrderDescription: "How the Chat sidebar lists sections and channels, after favorites. Projects can override it",
+    sidebarOrderDescription: "Favorites first. Projects can override it",
     restoreThread: "Restore last selected Chat thread",
     restoreThreadDescription: "Return to the last open Chat task when the app starts",
     reasoning: "Show provider reasoning summaries",

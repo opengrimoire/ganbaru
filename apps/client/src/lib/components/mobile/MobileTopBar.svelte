@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Snippet } from "svelte";
   import Settings from "@lucide/svelte/icons/settings";
   import Music from "@lucide/svelte/icons/music";
   import StickyNote from "@lucide/svelte/icons/sticky-note";
@@ -34,6 +35,7 @@
     onOpenSettings,
     identityTarget = $bindable(null),
     identityLabel = null,
+    identityIcon,
   }: {
     pomodoroTime: string;
     pomodoroActive: boolean;
@@ -58,6 +60,8 @@
     identityTarget?: HTMLElement | null;
     /** Names a destination that has no context switcher, so the leading slot is not left empty. */
     identityLabel?: string | null;
+    /** Icon shown before `identityLabel`. */
+    identityIcon?: Snippet;
   } = $props();
 
   const { t } = getLocalization();
@@ -126,7 +130,11 @@
 >
   <div bind:this={identityTarget} class="flex h-full min-w-0 flex-1 items-center" data-mobile-identity-slot>
     {#if identityLabel}
-      <span class="min-w-0 truncate px-2 text-identity font-medium text-foreground" data-mobile-identity-label>{identityLabel}</span>
+      <!-- Shaped like the context switcher pill, without its open affordance, since there is no context to switch. -->
+      <span class="flex h-9 min-w-0 max-w-full items-center gap-2 rounded-full bg-accent/55 pr-2.5 pl-2 text-identity font-medium text-foreground" data-mobile-identity-label>
+        {#if identityIcon}<span class="grid size-5 shrink-0 place-items-center" aria-hidden="true">{@render identityIcon()}</span>{/if}
+        <span class="min-w-0 truncate">{identityLabel}</span>
+      </span>
     {/if}
   </div>
   <div class="flex h-full shrink-0 items-center">

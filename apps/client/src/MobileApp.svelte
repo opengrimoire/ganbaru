@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onBackButtonPress } from "@tauri-apps/api/app";
   import { onMount } from "svelte";
+  import CalendarDays from "@lucide/svelte/icons/calendar-days";
+  import { COMPACT_IDENTITY_ICON_SIZE, COMPACT_IDENTITY_ICON_STROKE_WIDTH } from "$lib/icon-sizing";
   import MobileNavigation from "$lib/components/mobile/MobileNavigation.svelte";
   import MobileTopBar from "$lib/components/mobile/MobileTopBar.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
@@ -807,6 +809,10 @@
   });
 </script>
 
+{#snippet calendarIdentityIcon()}
+  <CalendarDays size={COMPACT_IDENTITY_ICON_SIZE} strokeWidth={COMPACT_IDENTITY_ICON_STROKE_WIDTH} />
+{/snippet}
+
 {#snippet loadingRing()}
   <svg
     viewBox="0 0 48 48"
@@ -901,6 +907,7 @@
       onOpenSettings={openSettings}
       bind:identityTarget={identitySlotElement}
       identityLabel={nav.current === "calendar" ? currentTitle : null}
+      identityIcon={nav.current === "calendar" ? calendarIdentityIcon : undefined}
     />
     {/if}
 

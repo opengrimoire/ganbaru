@@ -2,7 +2,7 @@
 
 ## Adaptive shell
 
-Phones use a labeled bottom tab bar for the primary destinations (Calendar, Projects, Notes, and Chat), within thumb reach, and a slim top bar. Its leading side holds the active destination's context switcher, or the destination name where there is no context to switch (Calendar); its trailing side holds the utilities: a Pomodoro ring that adds the remaining time while a session runs, then linked devices, Quick notes, Music, and Settings. The bottom bar hides while the keyboard is open so editing keeps the space. Larger windows use a navigation rail instead of the bottom bar. Both bars share the content surface color, so a screen reads as one page rather than stacked bands.
+Phones use a labeled bottom tab bar for the primary destinations (Calendar, Projects, Notes, and Chat), within thumb reach, and a slim top bar. Its leading side holds the active destination's context switcher, or, where there is no context to switch (Calendar), the destination icon and name in the same pill without the open affordance; its trailing side holds the utilities: a Pomodoro ring that adds the remaining time while a session runs, then linked devices, Quick notes, Music, and Settings. The bottom bar hides while the keyboard is open so editing keeps the space. Larger windows use a navigation rail instead of the bottom bar. Both bars share the content surface color, so a screen reads as one page rather than stacked bands.
 
 The shell uses touch-sized controls, visible selection, localized accessible names, system safe areas, and the current theme. It does not spend scarce phone width repeating the active destination label.
 

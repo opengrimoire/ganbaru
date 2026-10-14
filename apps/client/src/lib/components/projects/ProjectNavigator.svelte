@@ -52,6 +52,7 @@
   zIndexClass="z-81"
   showInactiveProjects={showInactiveProjects}
   showInactiveToggle
+  showOrderMenu
   showLifecycleBadges
   bind:projectSearch
   onShowInactiveProjectsChange={onShowInactiveProjectsChange}

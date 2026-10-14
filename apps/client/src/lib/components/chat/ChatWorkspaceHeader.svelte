@@ -266,6 +266,7 @@
           {#if navigatorMode === "channels"}
             <ChatChannelPickerPanel
               channels={selectedProjectChannels}
+              orderProjectId={selectedProject?.id ?? null}
               selectedChannelId={selectedChannel?.id ?? null}
               isChannelStarred={(channelId) => chatSidebarOrder.isChannelStarred(channelId)}
               frameStyle="height:100%;max-height:100%"
@@ -300,6 +301,7 @@
           {#if navigatorMode === "channels"}
             <ChatChannelPickerPanel
               channels={selectedProjectChannels}
+              orderProjectId={selectedProject?.id ?? null}
               selectedChannelId={selectedChannel?.id ?? null}
               isChannelStarred={(channelId) => chatSidebarOrder.isChannelStarred(channelId)}
               frameStyle={`width:100%;max-height:${navigatorPanelMaxHeight}px`}

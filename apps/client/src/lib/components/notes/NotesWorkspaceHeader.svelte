@@ -714,6 +714,7 @@
                 mode="groups"
                 {showInactiveProjects}
                 showInactiveToggle
+                showOrderMenu
                 showLifecycleBadges
                 {onShowInactiveProjectsChange}
                 onProjectSelected={openMobileProject}

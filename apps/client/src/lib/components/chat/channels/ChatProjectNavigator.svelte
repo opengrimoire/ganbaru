@@ -228,6 +228,7 @@
   zIndexClass="z-81"
   {showInactiveProjects}
   showInactiveToggle
+  showOrderMenu
   showLifecycleBadges
   showProjectChildren
   {activeProjectId}
@@ -258,6 +259,7 @@
   <ChatChannelPickerPanel
     bind:rootElement={channelPanelElement}
     channels={activeProjectChannels}
+    orderProjectId={activeProjectId}
     selectedChannelId={chat.selectedChannelId}
     isChannelStarred={(channelId) => chatSidebarOrder.isChannelStarred(channelId)}
     showSearch={false}

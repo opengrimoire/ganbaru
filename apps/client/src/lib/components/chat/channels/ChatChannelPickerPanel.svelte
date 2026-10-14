@@ -7,6 +7,8 @@
   import CalendarScrollbar from "$lib/components/calendar/CalendarScrollbar.svelte";
   import type { ChatChannelRead } from "$lib/chat/contracts";
   import StarredIconBadge from "$lib/components/ui/StarredIconBadge.svelte";
+  import SidebarOrderMenu from "$lib/components/ui/SidebarOrderMenu.svelte";
+  import { getChatSidebarOrder } from "$lib/stores/chat/sidebar-order.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { cn, type MaybePromise } from "$lib/utils";
@@ -16,6 +18,7 @@
   let {
     rootElement = $bindable<HTMLDivElement | undefined>(),
     channels,
+    orderProjectId = null,
     selectedChannelId = null,
     isChannelStarred = () => false,
     frameStyle,
@@ -35,6 +38,8 @@
   }: {
     rootElement?: HTMLDivElement;
     channels: readonly ChatChannelRead[];
+    /** Project whose channel order the footer button picks; without one the button is hidden. */
+    orderProjectId?: string | null;
     selectedChannelId?: string | null;
     /** Whether a channel is a favorite, which shows a small star after its name. */
     isChannelStarred?: (channelId: string) => boolean;
@@ -56,6 +61,7 @@
 
   const { t } = getLocalization();
   const mobileBackStack = getMobileBackStack();
+  const chatSidebarOrder = getChatSidebarOrder();
   const iconSize = $derived(mobileLayout ? 18 : 13);
   let search = $state("");
   let scrollElement = $state<HTMLElement | undefined>();
@@ -198,17 +204,38 @@
 
   <div class={cn("relative z-10 shrink-0 bg-popover", mobileLayout ? "p-2" : "p-1.5")}>
     <div class="pointer-events-none absolute left-1.5 right-1.5 top-0 border-t border-border/70"></div>
-    <button
-      type="button"
-      class={cn(
-        "menu-item justify-center gap-1.5 text-popover-foreground",
-        mobileLayout && "min-h-12 rounded-xl text-sm active:bg-accent",
-      )}
-      onclick={() => { void onCreateChannel(); }}
-    >
-      <Plus size={iconSize} strokeWidth={iconStrokeWidth} />
-      <span>{t("chat.channels.createTitle")}</span>
-    </button>
+    <div class="flex items-center">
+      <button
+        type="button"
+        class={cn(
+          "menu-item min-w-0 flex-1 justify-center gap-1.5 text-popover-foreground",
+          mobileLayout && "min-h-12 rounded-xl text-sm active:bg-accent",
+        )}
+        onclick={() => { void onCreateChannel(); }}
+      >
+        <Plus size={iconSize} strokeWidth={iconStrokeWidth} />
+        <span>{t("chat.channels.createTitle")}</span>
+      </button>
+      {#if orderProjectId}
+        {@const projectId = orderProjectId}
+        <div class="mx-1 h-5 border-l border-border/70" aria-hidden="true"></div>
+        <SidebarOrderMenu
+          order={chatSidebarOrder.orderForProject(projectId)}
+          override={chatSidebarOrder.orderOverride(projectId)}
+          allowGlobal
+          label={t("chat.channels.sort")}
+          buttonClass={cn(
+            "flex shrink-0 items-center justify-center text-popover-foreground/60 transition-colors hover:bg-accent hover:text-accent-foreground",
+            mobileLayout ? "size-12 rounded-xl active:bg-accent" : "size-(--panel-row-height) rounded-floating-item",
+          )}
+          activeClass="bg-accent text-accent-foreground"
+          {iconSize}
+          {iconStrokeWidth}
+          menuZIndexClass="z-90"
+          onSelect={(order) => chatSidebarOrder.setProjectOrder(projectId, order)}
+        />
+      {/if}
+    </div>
   </div>
 </div>
 

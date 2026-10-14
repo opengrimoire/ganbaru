@@ -44,6 +44,8 @@
   import type { ProjectNavigatorPanelMode } from "$lib/projects/toolbar";
   import { getNotes } from "$lib/stores/notes.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
+  import { getPreferences } from "$lib/stores/preferences.svelte";
+  import SidebarOrderMenu from "$lib/components/ui/SidebarOrderMenu.svelte";
   import StarredIconBadge from "$lib/components/ui/StarredIconBadge.svelte";
   import { cn, type MaybePromise } from "$lib/utils";
   import ProjectIcon from "$lib/components/projects/ProjectIcon.svelte";
@@ -76,6 +78,7 @@
   } = $props();
 
   const projects = getProjects();
+  const preferences = getPreferences();
   const notes = getNotes();
   const { t } = getLocalization();
   const iconStrokeWidth = 1.6;
@@ -697,6 +700,16 @@
         bind:value={projectSearch}
         placeholder={t("calendar.eventPanel.searchProjects")}
         class="field-bare text-popover-foreground"
+      />
+      <SidebarOrderMenu
+        order={preferences.projectsSidebarOrder}
+        label={t("projects.navigator.sortGroupsAndProjects")}
+        buttonClass="flex size-6 shrink-0 items-center justify-center rounded-floating-item text-popover-foreground/60 hover:bg-accent hover:text-accent-foreground"
+        activeClass="bg-accent text-accent-foreground"
+        iconSize={13}
+        {iconStrokeWidth}
+        menuZIndexClass="z-90"
+        onSelect={(order) => { if (order) preferences.setProjectsSidebarOrder(order); }}
       />
       <button
         type="button"

@@ -59,6 +59,7 @@ export const chat = {
     empty: "No channels in this project.",
     navigatorLabel: "Channel navigator",
     createTitle: "New channel",
+    sort: "Sort channels",
     name: "Name",
     topic: "Topic",
     topicPlaceholder: "Optional",

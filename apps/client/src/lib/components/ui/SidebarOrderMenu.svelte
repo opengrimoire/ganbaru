@@ -31,6 +31,7 @@
     iconClass,
     iconSize,
     iconStrokeWidth,
+    menuZIndexClass = "z-60",
     onSelect,
   }: {
     /** Order in effect. */
@@ -47,6 +48,8 @@
     iconClass?: string;
     iconSize?: number;
     iconStrokeWidth?: number;
+    /** Stacking class of the menu, raised above the panel that holds the button. */
+    menuZIndexClass?: string;
     /** Receives the chosen order, or `null` for the global setting. */
     onSelect: (order: SidebarSortOrder | null) => void;
   } = $props();
@@ -86,16 +89,23 @@
     hovered = event.clientY < rect.top + rect.height / 2 ? before : after;
   }
 
+  /** Place the menu below the button, or above it when the menu fits there and not below, as in a panel footer. */
   function position(): void {
     if (!buttonElement) return;
     const triggerRect = buttonElement.getBoundingClientRect();
     const availableWidth = Math.max(0, window.innerWidth - VIEWPORT_GAP_PX * 2);
-    const width = Math.min(menuElement?.getBoundingClientRect().width ?? 0, availableWidth);
+    const menuRect = menuElement?.getBoundingClientRect();
+    const width = Math.min(menuRect?.width ?? 0, availableWidth);
     const maxLeft = Math.max(VIEWPORT_GAP_PX, window.innerWidth - width - VIEWPORT_GAP_PX);
     const left = Math.min(Math.max(VIEWPORT_GAP_PX, triggerRect.left), maxLeft);
-    const top = triggerRect.bottom + TRIGGER_GAP_PX;
-    const maxHeight = Math.max(0, window.innerHeight - top - VIEWPORT_GAP_PX);
-    menuStyle = `left: ${left}px; top: ${top}px; width: max-content; max-width: ${availableWidth}px; max-height: ${maxHeight}px;`;
+    const spaceBelow = Math.max(0, window.innerHeight - triggerRect.bottom - TRIGGER_GAP_PX - VIEWPORT_GAP_PX);
+    const spaceAbove = Math.max(0, triggerRect.top - TRIGGER_GAP_PX - VIEWPORT_GAP_PX);
+    const height = menuElement?.scrollHeight ?? 0;
+    const above = height > spaceBelow && spaceAbove > spaceBelow;
+    const vertical = above
+      ? `bottom: ${window.innerHeight - triggerRect.top + TRIGGER_GAP_PX}px; max-height: ${spaceAbove}px;`
+      : `top: ${triggerRect.bottom + TRIGGER_GAP_PX}px; max-height: ${spaceBelow}px;`;
+    menuStyle = `left: ${left}px; ${vertical} width: max-content; max-width: ${availableWidth}px;`;
   }
 
   function toggle(): void {
@@ -151,7 +161,7 @@
   {#if open}
     <div
       bind:this={menuElement}
-      class="surface-floating fixed z-60 flex flex-col overflow-hidden"
+      class={cn("surface-floating fixed flex flex-col overflow-hidden", menuZIndexClass)}
       style={menuStyle}
       role="menu"
       tabindex="-1"

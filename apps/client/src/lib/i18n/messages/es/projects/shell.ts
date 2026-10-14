@@ -88,6 +88,7 @@ export const shell = {
     createProject: "Crear proyecto",
     editGroup: "Editar grupo",
     showInactive: "Mostrar proyectos ocultos y archivados",
+    sortGroupsAndProjects: "Ordenar grupos y proyectos",
     hideInactive: "Ocultar proyectos ocultos y archivados",
     groupName: "Nombre del grupo",
     groupNamePlaceholder: "Nombre del grupo",

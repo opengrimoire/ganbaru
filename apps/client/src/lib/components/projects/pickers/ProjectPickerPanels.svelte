@@ -46,6 +46,8 @@
     type ProjectTemplateId,
   } from "$lib/projects/types";
   import { getProjects } from "$lib/stores/projects.svelte";
+  import { getPreferences } from "$lib/stores/preferences.svelte";
+  import SidebarOrderMenu from "$lib/components/ui/SidebarOrderMenu.svelte";
   import StarredIconBadge from "$lib/components/ui/StarredIconBadge.svelte";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { cn, type MaybePromise } from "$lib/utils";
@@ -73,6 +75,7 @@
     zIndexClass = "z-61",
     showInactiveProjects = false,
     showInactiveToggle = false,
+    showOrderMenu = false,
     showClearProject = false,
     showLifecycleBadges = false,
     closeOnProjectCreate = false,
@@ -106,6 +109,8 @@
     zIndexClass?: string;
     showInactiveProjects?: boolean;
     showInactiveToggle?: boolean;
+    /** Show the button that picks the order of groups and projects, shared with the Projects sidebar. */
+    showOrderMenu?: boolean;
     showClearProject?: boolean;
     showLifecycleBadges?: boolean;
     closeOnProjectCreate?: boolean;
@@ -133,6 +138,7 @@
   } = $props();
 
   const projects = getProjects();
+  const preferences = getPreferences();
   const mobileBackStack = getMobileBackStack();
   const { t } = getLocalization();
   const iconSize = $derived(mobileLayout ? 18 : 13);
@@ -784,6 +790,21 @@
           mobileLayout && "h-12 text-base",
         )}
       />
+      {#if showOrderMenu}
+        <SidebarOrderMenu
+          order={preferences.projectsSidebarOrder}
+          label={t("projects.navigator.sortGroupsAndProjects")}
+          buttonClass={cn(
+            "flex shrink-0 items-center justify-center text-popover-foreground/60 hover:bg-accent hover:text-accent-foreground",
+            mobileLayout ? "h-12 w-12 rounded-xl" : "h-6 w-6 rounded",
+          )}
+          activeClass="bg-accent text-accent-foreground"
+          iconSize={mobileLayout ? 18 : 13}
+          {iconStrokeWidth}
+          menuZIndexClass="z-90"
+          onSelect={(order) => { if (order) preferences.setProjectsSidebarOrder(order); }}
+        />
+      {/if}
       {#if showInactiveToggle}
         <button
           type="button"

@@ -47,6 +47,9 @@
   import NotesHierarchyPickerPanel from "./NotesHierarchyPickerPanel.svelte";
   import NotesPageIcon from "$lib/components/notes/pages/NotesPageIcon.svelte";
   import StarredIconBadge from "$lib/components/ui/StarredIconBadge.svelte";
+  import SidebarOrderMenu from "$lib/components/ui/SidebarOrderMenu.svelte";
+  import { getPreferences } from "$lib/stores/preferences.svelte";
+  import type { SidebarSortOrder } from "$lib/utils/sidebar-order";
 
 
   interface NotesMobileHierarchyLevel {
@@ -93,6 +96,7 @@
   } = $props();
 
   const notes = getNotesEditor();
+  const preferences = getPreferences();
   const { t } = getLocalization();
   const activateNestedMobileBack = getContext<((handle: () => void) => () => void) | undefined>(
     "ganbaru-mobile-nested-back",
@@ -350,6 +354,12 @@
     let suffix = 2;
     while (siblingNames.has(`${baseName} ${suffix}`.toLocaleLowerCase())) suffix += 1;
     return `${baseName} ${suffix}`;
+  }
+
+  /** Write the chosen order to the project, or to the global setting when no project is open. */
+  function selectSortOrder(order: SidebarSortOrder | null): void {
+    if (projectId) notes.setProjectSidebarOrder(projectId, order);
+    else if (order) preferences.setNotesSidebarOrder(order);
   }
 
   function beginFolderCreation(): void {
@@ -639,6 +649,24 @@
           <SquarePen size={iconSize} strokeWidth={iconStrokeWidth} />
           <span class="truncate">{t("notes.newPage")}</span>
         </button>
+        {#if effectiveParent.kind === "root"}
+          <div class="mx-1 h-5 border-l border-border/70" aria-hidden="true"></div>
+          <SidebarOrderMenu
+            order={notes.sidebarOrderForProject(projectId)}
+            override={notes.sidebarOrderOverride(projectId)}
+            allowGlobal={projectId !== null}
+            label={t("notes.sortExplorer")}
+            buttonClass={cn(
+              "flex shrink-0 items-center justify-center text-popover-foreground/60 transition-colors hover:bg-accent hover:text-accent-foreground",
+              mobileLayout ? "size-12 rounded-xl active:bg-accent" : "size-8 rounded-floating-item",
+            )}
+            activeClass="bg-accent text-accent-foreground"
+            {iconSize}
+            {iconStrokeWidth}
+            menuZIndexClass="z-90"
+            onSelect={selectSortOrder}
+          />
+        {/if}
       </div>
     {/if}
     {#if folderCreationError}

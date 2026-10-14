@@ -20,6 +20,8 @@ const notesState = vi.hoisted(() => ({
     favoriteFolderIds: [] as string[],
     favoritePageIds: [] as string[],
     sidebarOrderForProject: vi.fn((_projectId: string | null): SidebarSortOrder => "name-asc"),
+    sidebarOrderOverride: vi.fn((_projectId: string | null): SidebarSortOrder | null => null),
+    setProjectSidebarOrder: vi.fn(),
     selectedDatabaseBlockId: null as string | null,
     selectedDatabaseBlock: null as NotesChildDatabaseBlock | null,
     closeDatabase: vi.fn(),

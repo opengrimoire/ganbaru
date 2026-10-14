@@ -236,7 +236,7 @@
 
 <svelte:window onpointerdown={handleWindowPointerDown} />
 
-<div bind:this={headerElement} class={cn("chat-workspace-header flex min-w-0 items-center gap-1", mobilePresentation ? "overflow-hidden pl-3" : "overflow-x-auto pl-3")} class:mobilePresentation style={`height:var(--toolbar-h);padding-right:${mobilePresentation ? "0.75rem" : `var(--chat-header-action-inset, ${reserveGlobalActions ? "6.5rem" : "0.75rem"})`}`} onscroll={refreshNavigatorGeometry} data-chat-workspace-header>
+<div bind:this={headerElement} class={cn("chat-workspace-header flex min-w-0 items-center", mobilePresentation ? "gap-0 overflow-hidden pl-(--mobile-chrome-inset)" : "gap-1 overflow-x-auto pl-3")} class:mobilePresentation style={`height:var(--toolbar-h);padding-right:${mobilePresentation ? "var(--mobile-chrome-inset)" : `var(--chat-header-action-inset, ${reserveGlobalActions ? "6.5rem" : "0.75rem"})`}`} onscroll={refreshNavigatorGeometry} data-chat-workspace-header>
   {#if showRailButton}<button bind:this={railButtonElement} type="button" class="chat-toolbar-icon-button" aria-label={t("chat.openRail")} data-chat-rail-button onclick={onOpenRail}>{#if mobilePresentation}<PanelLeft size={16} strokeWidth={1.75} />{:else}<Menu size={14} />{/if}</button>{/if}
   <div bind:this={identityElement} class={cn("relative", mobilePresentation ? "min-w-0 flex-1 overflow-hidden" : "min-w-36 shrink-0 min-[760px]:max-w-3xl")}>
     {#if mobilePresentation}
@@ -351,7 +351,7 @@
   </div>
   {#if !mobilePresentation}<div class="flex-1"></div>{/if}
   {#if actionError}<Notice class="header-action-error max-w-48 text-[0.666667rem]" message={actionError} />{/if}
-  <div class="flex shrink-0 items-center gap-1">
+  <div class={cn("flex shrink-0 items-center", mobilePresentation ? "gap-0" : "gap-1")}>
     {#if selectedFolder?.bindingStatus === "available"}<button type="button" class="chat-toolbar-icon-button" title={t("chat.openFolder")} aria-label={t("chat.openFolder")} onclick={() => run(() => chat.openWorkingFolder(selectedFolder.workingFolder.id))}><FolderOpen size={mobilePresentation ? 16 : 14} strokeWidth={mobilePresentation ? 1.75 : undefined} /></button>{/if}
     {#if selectedChannel}
       <button bind:this={membersTrigger} type="button" class="chat-members-trigger" class:open={membersOpen} aria-label={t("chat.organization.membersPanel", memberSummary.count)} data-app-tooltip={t("chat.organization.members")} aria-haspopup="dialog" aria-expanded={membersOpen} data-chat-members-trigger onpointerenter={() => { void loadMembersPanel(); }} onfocus={() => { void loadMembersPanel(); }} onclick={toggleChannelMembers}>
@@ -392,6 +392,6 @@
   .chat-branch span { overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
   @container chat-shell (min-width:760px) { .chat-branch { display:inline-flex; } }
   /* The phone action row uses the same touch targets as the Projects and Notes rows. */
-  .mobilePresentation .chat-toolbar-icon-button { width: 3rem; height: 3rem; }
+  .mobilePresentation .chat-toolbar-icon-button { width: var(--mobile-chrome-column); height: 3rem; }
   .mobilePresentation .chat-members-trigger { height: 3rem; padding-inline: 0.5rem 0.625rem; }
 </style>

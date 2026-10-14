@@ -654,7 +654,7 @@
   function actionButtonClass(active = false): string {
     return cn(
       "relative flex shrink-0 items-center justify-center rounded-md px-1.5 text-foreground transition-colors hover:bg-accent",
-      mobileLayout ? "h-12 min-w-12" : "h-7 min-w-7",
+      mobileLayout ? "h-12 min-w-(--mobile-chrome-column)" : "h-7 min-w-7",
       active && "bg-accent",
     );
   }
@@ -1178,7 +1178,7 @@
     {/if}
     {#if pageActionsTarget}
       <div
-        class="relative z-30 flex shrink-0 items-center gap-1"
+        class={cn("relative z-30 flex shrink-0 items-center", mobileLayout ? "gap-0" : "gap-1")}
         data-notes-page-actions
         use:portal={pageActionsTarget}
         use:dismissOnOutside={{ enabled: !!activePanel, onDismiss: (reason) => {

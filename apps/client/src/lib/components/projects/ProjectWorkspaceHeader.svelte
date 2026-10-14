@@ -133,7 +133,7 @@
   function toolbarIconButtonClass(active: boolean, open = false): string {
     return cn(
       "flex shrink-0 items-center justify-center rounded-md text-foreground transition-colors hover:bg-accent",
-      mobileLayout ? "h-12 w-12" : "h-7 w-7",
+      mobileLayout ? "h-12 w-(--mobile-chrome-column)" : "h-7 w-7",
       (active || open) && "bg-accent",
     );
   }
@@ -316,8 +316,10 @@
 <div
   bind:this={projectHeaderElement}
   class={cn(
-    "flex shrink-0 items-center gap-1",
-    mobileLayout || viewControlsShown ? "overflow-visible px-3" : "hide-scrollbar overflow-x-auto px-3",
+    "flex shrink-0 items-center",
+    mobileLayout
+      ? "gap-0 overflow-visible px-(--mobile-chrome-inset)"
+      : viewControlsShown ? "gap-1 overflow-visible px-3" : "hide-scrollbar gap-1 overflow-x-auto px-3",
   )}
   style="height: var(--toolbar-h); background-color: var(--cal-bg);"
   onscroll={refreshProjectNavigatorPanelGeometry}
@@ -478,7 +480,7 @@
     {/if}
   </div>
   {#if mobileLayout}
-    <div class="flex shrink-0 items-center gap-1">
+    <div class="flex shrink-0 items-center gap-0">
       <div class="relative shrink-0">
         <button
           type="button"

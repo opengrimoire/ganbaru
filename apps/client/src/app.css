@@ -227,6 +227,9 @@
   --mobile-bottom-chrome-h: 0px;
   --mobile-nav-rail-w: 72px;
   --touch-target-min: 48px;
+  /* Phone chrome icon columns: the top bar and every action row share one button width and edge inset, so icons stack in columns from either edge, and the leading column centers under the top bar pill icon. */
+  --mobile-chrome-column: 2.75rem;
+  --mobile-chrome-inset: 0.25rem;
 }
 
 svg.lucide:not(.app-title-bar *, .explorer-sidebar *) {

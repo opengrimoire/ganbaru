@@ -172,7 +172,7 @@
   function toolbarIconButtonClass(active = false, open = false, primary = false): string {
     return cn(
       "flex shrink-0 items-center justify-center rounded-md transition-colors",
-      mobileLayout ? "h-12 w-12" : "h-7 w-7",
+      mobileLayout ? "h-12 w-(--mobile-chrome-column)" : "h-7 w-7",
       primary
         ? "bg-primary text-primary-foreground hover:bg-primary/90"
         : "hover:bg-accent",
@@ -184,7 +184,7 @@
   function inlineNewPageButtonClass(): string {
     return cn(
       "flex shrink-0 items-center justify-center rounded-md text-foreground transition-colors",
-      mobileLayout ? "h-12 w-12" : "h-7 w-7",
+      mobileLayout ? "h-12 w-(--mobile-chrome-column)" : "h-7 w-7",
       "hover:bg-accent",
     );
   }
@@ -487,7 +487,7 @@
       {/if}
     {/snippet}
   </MobileContextSwitcher>
-  <div class="flex h-12 min-w-0 max-w-full items-center gap-0.5 text-identity font-medium">
+  <div class="flex h-12 min-w-0 max-w-full items-center gap-0 text-identity font-medium">
     {#if (selectedPageTitle || databaseSelected) && onOpenExplorer}
       <button
         type="button"
@@ -613,8 +613,8 @@
 <div
   bind:this={notesHeaderElement}
   class={cn(
-    "flex shrink-0 items-center gap-1 px-3",
-    mobileLayout ? "overflow-hidden" : "overflow-x-auto",
+    "flex shrink-0 items-center",
+    mobileLayout ? "gap-0 overflow-hidden px-(--mobile-chrome-inset)" : "gap-1 overflow-x-auto px-3",
   )}
   style={`height: ${mobileLayout && !mobileActionRowVisible ? "0" : "var(--toolbar-h)"}; background-color: var(--cal-bg);`}
   data-notes-mobile-action-row={mobileLayout ? (mobileActionRowVisible ? "visible" : "collapsed") : undefined}
@@ -846,8 +846,8 @@
     {/if}
   </div>
   {#if !mobileLayout}<div class="flex-1"></div>{/if}
-  <div class="flex shrink-0 items-center gap-1">
-    <div bind:this={pageActionsTarget} class="flex shrink-0 items-center gap-1" data-notes-page-actions-slot></div>
+  <div class={cn("flex shrink-0 items-center", mobileLayout ? "gap-0" : "gap-1")}>
+    <div bind:this={pageActionsTarget} class={cn("flex shrink-0 items-center", mobileLayout ? "gap-0" : "gap-1")} data-notes-page-actions-slot></div>
     {#if selectedProject && !mobileLayout}
       <button
         type="button"

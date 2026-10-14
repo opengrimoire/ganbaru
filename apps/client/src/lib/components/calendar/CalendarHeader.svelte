@@ -263,7 +263,7 @@
 <div
   bind:this={toolbarElement}
   data-calendar-edit-close-zone
-  class="flex shrink-0 items-center {mobileLayout ? 'gap-0 px-1' : embedded ? 'gap-1' : 'gap-1 px-3'}"
+  class="flex shrink-0 items-center {mobileLayout ? 'gap-0 px-(--mobile-chrome-inset)' : embedded ? 'gap-1' : 'gap-1 px-3'}"
   style={embedded ? undefined : "height: var(--toolbar-h); background-color: var(--cal-bg);"}
   onwheel={handleToolbarWheel}
 >
@@ -272,7 +272,7 @@
     <button
       data-calendar-mobile-fixed={mobileLayout || undefined}
       onclick={() => onNavigate("back")}
-      class="flex shrink-0 items-center justify-center rounded-md text-foreground transition-colors hover:bg-accent {mobileLayout ? 'h-12 w-10' : 'h-7 w-6'}"
+      class="flex shrink-0 items-center justify-center rounded-md text-foreground transition-colors hover:bg-accent {mobileLayout ? 'h-12 w-(--mobile-chrome-column)' : 'h-7 w-6'}"
       title={t("calendar.toolbar.previousTitle", shortcutTitle(["←"]))}
       aria-label={t("calendar.toolbar.previous")}
     >
@@ -316,7 +316,7 @@
     <button
       data-calendar-mobile-fixed={mobileLayout || undefined}
       onclick={() => onNavigate("forward")}
-      class="flex shrink-0 items-center justify-center rounded-md text-foreground transition-colors hover:bg-accent {mobileLayout ? 'h-12 w-10' : 'h-7 w-6'}"
+      class="flex shrink-0 items-center justify-center rounded-md text-foreground transition-colors hover:bg-accent {mobileLayout ? 'h-12 w-(--mobile-chrome-column)' : 'h-7 w-6'}"
       title={t("calendar.toolbar.nextTitle", shortcutTitle(["→"]))}
       aria-label={t("calendar.toolbar.next")}
     >
@@ -333,7 +333,7 @@
   <div data-calendar-mobile-fixed class="relative shrink-0">
     <button
       type="button"
-      class="flex h-12 w-12 items-center justify-center gap-0.5 rounded-md text-xs font-medium text-foreground transition-colors hover:bg-accent {showViewPicker ? 'bg-accent' : ''}"
+      class="flex h-12 w-(--mobile-chrome-column) items-center justify-center gap-0.5 rounded-md text-xs font-medium text-foreground transition-colors hover:bg-accent {showViewPicker ? 'bg-accent' : ''}"
       aria-label={activeViewOption.title}
       title={activeViewOption.title}
       aria-haspopup="menu"
@@ -439,7 +439,7 @@
     data-calendar-mobile-fixed={mobileLayout || undefined}
     onclick={() => onNavigate("today")}
     disabled={isOnToday}
-    class="flex shrink-0 items-center justify-center rounded-md transition-colors {mobileLayout ? 'h-12 w-12' : 'ml-1 h-7 w-7'} {isOnToday
+    class="flex shrink-0 items-center justify-center rounded-md transition-colors {mobileLayout ? 'h-12 w-(--mobile-chrome-column)' : 'ml-1 h-7 w-7'} {isOnToday
       ? 'text-muted-foreground/30 cursor-default'
       : 'text-foreground hover:bg-accent'}"
     title={t("calendar.toolbar.goToToday", shortcutTitle(todayShortcuts))}
@@ -455,7 +455,7 @@
         showViewPicker = false;
         showAccountPicker = !showAccountPicker;
       }}
-      class="flex items-center justify-center rounded-md text-foreground transition-colors hover:bg-accent {mobileLayout ? 'h-12 w-12' : 'h-7 w-7'}"
+      class="flex items-center justify-center rounded-md text-foreground transition-colors hover:bg-accent {mobileLayout ? 'h-12 w-(--mobile-chrome-column)' : 'h-7 w-7'}"
       title={t("calendar.toolbar.calendars")}
       aria-label={t("calendar.toolbar.calendars")}
     >

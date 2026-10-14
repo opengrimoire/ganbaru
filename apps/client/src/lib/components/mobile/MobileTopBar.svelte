@@ -65,7 +65,7 @@
   } = $props();
 
   const { t } = getLocalization();
-  const utilityButtonClass = "group flex h-full w-11 shrink-0 items-center justify-center text-muted-foreground transition-colors disabled:opacity-40";
+  const utilityButtonClass = "group flex h-full w-(--mobile-chrome-column) shrink-0 items-center justify-center text-muted-foreground transition-colors disabled:opacity-40";
   const utilityIconClass = "grid h-8 w-8 place-items-center rounded-full transition-colors group-active:bg-accent/70";
   let pomodoroAnchorElement = $state<HTMLDivElement | null>(null);
   let pomodoroTriggerElement = $state<HTMLButtonElement | null>(null);
@@ -125,7 +125,7 @@
 </script>
 
 <header
-  class="mobile-top-bar flex h-(--mobile-topbar-h) shrink-0 items-center justify-between gap-1 pr-1 pl-2 text-foreground"
+  class="mobile-top-bar flex h-(--mobile-topbar-h) shrink-0 items-center justify-between gap-1 pr-(--mobile-chrome-inset) pl-2 text-foreground"
   style="background-color: var(--cal-bg);"
 >
   <div bind:this={identityTarget} class="flex h-full min-w-0 flex-1 items-center" data-mobile-identity-slot>
@@ -192,7 +192,7 @@
         </div>
       {/if}
     </div>
-    <div class="flex h-full w-11 justify-center *:w-full">
+    <div class="flex h-full w-(--mobile-chrome-column) justify-center *:w-full">
       <LinkedDeviceControlSurface platform="android" presentation="mobile" onOpened={onClosePomodoro} />
     </div>
     <button

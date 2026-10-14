@@ -623,13 +623,13 @@
         <Loading layout="rows" rows={3} label={t("notes.loading")} />
       {:else if notes.loadError}
         <Notice class="px-3 py-2" message={t("notes.loadFailed", notes.loadError)} copy={notes.loadError} onRetry={() => notes.load()} />
-      {:else if notes.showArchivedInPickers && notes.pickerArchiveError}
-        <Notice class="px-3 py-2" message={t("notes.archivedNotesLoadFailed", notes.pickerArchiveError)} copy={notes.pickerArchiveError} onRetry={() => notes.reloadPickerArchivedPages()} />
       {:else if rowCount === 0}
+        {@render ArchiveErrorNotice()}
         <div class="px-3 py-2 text-popover-foreground/60">
           {normalizedSearch ? t("notes.noSearchResults") : t(effectiveParent.kind === "database" ? "notes.databaseNoViews" : "notes.noPages")}
         </div>
       {:else}
+        {@render ArchiveErrorNotice()}
         <div class="grid">
           {#each items as item (item.key)}
             {@const title = nodeTitle(item)}
@@ -820,6 +820,12 @@
     onPointerLeave={handleBoundaryLeave}
   />
 {/if}
+
+{#snippet ArchiveErrorNotice()}
+  {#if notes.showArchivedInPickers && notes.pickerArchiveError}
+    <Notice class="px-3 py-2" message={t("notes.archivedNotesLoadFailed", notes.pickerArchiveError)} copy={notes.pickerArchiveError} onRetry={() => notes.reloadPickerArchivedPages()} />
+  {/if}
+{/snippet}
 
 {#snippet NodeIcon(item: NotesHierarchyPickerNode)}
   <StarredIconBadge starred={item.kind === "folder"

@@ -38,6 +38,8 @@ Components do not duplicate command contracts or parse unknown backend values ad
 
 Svelte runes provide in-memory presentation state. Durable user data is loaded from native services and persisted through typed commands. A store can cache, coordinate, or optimistically present data, but it never becomes a second source of truth.
 
+Deep `$state` values are proxies, which the Android WebView's `structuredClone` rejects although desktop WebKitGTK accepts them. Copy data that may come from state with the shared `cloneData` helper (or `$state.snapshot` in rune files), never `structuredClone` directly.
+
 State is scoped to the smallest useful owner:
 
 - Component-local state for transient interaction.

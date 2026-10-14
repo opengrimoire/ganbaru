@@ -62,7 +62,6 @@
   const CENTER_PEEK_FULL_PAGE_MIN_HEIGHT_PX = 520;
   type ActiveNotesSurfaceKind = NotesSurfaceKind | "home" | "editor";
 
-  let showInactiveProjects = $state(false);
   let creationFolderOverride = $state<string | null | undefined>(undefined);
   let projectSelectionInFlight: { projectId: string | null } | null = null;
   /** Project hosted Notes last tried to align with, so a failed load is not retried in a loop. */
@@ -629,9 +628,9 @@
       {selectedProjectId}
       selectedPage={topBarSelectedPage}
       {creationFolderId}
-      {showInactiveProjects}
+      showInactiveProjects={projects.showInactiveProjects}
       onShowInactiveProjectsChange={(value) => {
-        showInactiveProjects = value;
+        projects.showInactiveProjects = value;
       }}
       onProjectSelected={handleProjectSelected}
       onShowHome={showProjectHome}

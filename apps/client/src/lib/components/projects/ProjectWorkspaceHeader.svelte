@@ -13,10 +13,7 @@
     COMPACT_IDENTITY_ICON_SIZE,
     COMPACT_IDENTITY_ICON_STROKE_WIDTH,
   } from "$lib/icon-sizing";
-  import {
-    projectLifecycleBadgeClass,
-    projectLifecycleLabel,
-  } from "$lib/projects/display";
+  import ProjectLifecycleIcon from "$lib/components/projects/ProjectLifecycleIcon.svelte";
   import {
     projectNavigatorPanelGeometry,
     projectToolbarPanelsForView,
@@ -399,11 +396,7 @@
           />
         {/if}
         <span class="min-w-0 truncate text-foreground">{selectedProject.name}</span>
-        {#if selectedProject.status !== "active"}
-          <span class={cn("shrink-0 rounded border px-1.5 py-0.5 text-[0.666667rem]", projectLifecycleBadgeClass(selectedProject.status))}>
-            {projectLifecycleLabel(selectedProject.status, t)}
-          </span>
-        {/if}
+        <ProjectLifecycleIcon status={selectedProject.status} />
         <WorkspaceBreadcrumbTerminalIcon kind="chevron" class="shrink-0 text-muted-foreground" />
       </button>
       <button

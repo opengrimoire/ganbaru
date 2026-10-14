@@ -9,7 +9,6 @@ import { translateFromPartialCatalog, type Translate } from "$lib/i18n/translato
 import {
   projectTagColorDotStyle,
   projectTagColorSwatchClass,
-  projectLifecycleBadgeClass,
   projectPriorityBadgeClass,
   projectPriorityLabel,
   projectStatusBadgeClass,
@@ -31,9 +30,7 @@ describe("project display helpers", () => {
     expect(projectPriorityLabel("normal", t)).toBe("Normal");
   });
 
-  it("returns lifecycle and task badge classes", () => {
-    expect(projectLifecycleBadgeClass("hidden")).toContain("amber");
-    expect(projectLifecycleBadgeClass("archived")).toContain("muted");
+  it("returns task archive badge classes", () => {
     expect(projectTaskArchivedBadgeClass({ archivedAt: "2026-06-21T00:00:00.000Z" })).toContain("muted");
     expect(projectTaskArchivedBadgeClass({ archivedAt: undefined })).toContain("emerald");
   });

@@ -12,7 +12,7 @@
   } from "$lib/icon-sizing";
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { projectLifecycleBadgeClass, projectLifecycleLabel } from "$lib/projects/display";
+  import ProjectLifecycleIcon from "$lib/components/projects/ProjectLifecycleIcon.svelte";
   import { projectNavigatorPanelGeometry, type ProjectNavigatorPanelMode } from "$lib/projects/toolbar";
   import { getChat } from "$lib/stores/chat.svelte";
   import { getChatSidebarOrder } from "$lib/stores/chat/sidebar-order.svelte";
@@ -88,7 +88,6 @@
     if (!navigatorOpen) navigatorHover.cancel();
   });
   $effect(() => () => navigatorHover.cancel());
-  let showInactiveProjects = $state(false);
   let actionError = $state<string | null>(null);
   const selectedProject = $derived(projects.selectedProject);
   const selectedGroup = $derived(projects.selectedGroup);
@@ -236,7 +235,7 @@
       {#if selectedProject && selectedGroup}
         <button bind:this={groupTriggerElement} type="button" class={cn("chat-context-segment", navigatorOpen && navigatorMode === "groups" && "bg-accent")} aria-label={t("projects.navigator.open")} aria-expanded={navigatorOpen && navigatorMode === "groups"} data-chat-group-trigger onpointerenter={(event) => { if (!mobilePresentation) navigatorHover.enterTrigger(event, () => openNavigator("groups")); }} onpointerleave={navigatorHover.leave} onclick={() => toggleNavigator("groups")}>{#if !mobilePresentation}<ProjectIcon name={selectedGroup.icon} size={identityIconSize} strokeWidth={identityIconStrokeWidth} emojiScale={identityEmojiScale} />{/if}<span class="truncate">{selectedGroup.name}</span></button>
         <span class="chat-context-divider">/</span>
-        <button bind:this={projectTriggerElement} type="button" class={cn("chat-context-segment", navigatorOpen && navigatorMode === "projects" && "bg-accent")} aria-label={t("projects.navigator.open")} aria-expanded={navigatorOpen && navigatorMode === "projects"} data-chat-project-trigger onpointerenter={(event) => { if (!mobilePresentation) navigatorHover.enterTrigger(event, () => openNavigator("projects")); }} onpointerleave={navigatorHover.leave} onclick={() => toggleNavigator("projects")}>{#if !mobilePresentation}<ProjectIcon name={selectedProject.icon} size={identityIconSize} strokeWidth={identityIconStrokeWidth} emojiScale={identityEmojiScale} />{/if}<span class="truncate">{selectedProject.name}</span>{#if selectedProject.status !== "active"}<span class={cn("rounded border px-1.5 py-0.5 text-[0.666667rem]", projectLifecycleBadgeClass(selectedProject.status))}>{projectLifecycleLabel(selectedProject.status, t)}</span>{/if}{#if !selectedChannel}<WorkspaceBreadcrumbTerminalIcon kind="chevron" context="chat" class="shrink-0 text-muted-foreground" />{/if}</button>
+        <button bind:this={projectTriggerElement} type="button" class={cn("chat-context-segment", navigatorOpen && navigatorMode === "projects" && "bg-accent")} aria-label={t("projects.navigator.open")} aria-expanded={navigatorOpen && navigatorMode === "projects"} data-chat-project-trigger onpointerenter={(event) => { if (!mobilePresentation) navigatorHover.enterTrigger(event, () => openNavigator("projects")); }} onpointerleave={navigatorHover.leave} onclick={() => toggleNavigator("projects")}>{#if !mobilePresentation}<ProjectIcon name={selectedProject.icon} size={identityIconSize} strokeWidth={identityIconStrokeWidth} emojiScale={identityEmojiScale} />{/if}<span class="truncate">{selectedProject.name}</span><ProjectLifecycleIcon status={selectedProject.status} />{#if !selectedChannel}<WorkspaceBreadcrumbTerminalIcon kind="chevron" context="chat" class="shrink-0 text-muted-foreground" />{/if}</button>
         {#if selectedChannel}
           <span class="chat-context-divider">/</span>
           {#if editingTitle && !selectedChannel.isDefault}
@@ -278,9 +277,9 @@
               selectedProjectId={projects.selectedProjectId}
               selectedGroupId={selectedGroup?.id ?? null}
               iconStrokeWidth={identityIconStrokeWidth}
-              {showInactiveProjects}
+              showInactiveProjects={projects.showInactiveProjects}
               panelMode="groups"
-              onShowInactiveProjectsChange={(value) => { showInactiveProjects = value; }}
+              onShowInactiveProjectsChange={(value) => { projects.showInactiveProjects = value; }}
               onProjectSelected={selectProject}
               onChannelSelected={() => { navigatorOpen = false; }}
               onCreateChannel={() => { createChannel(); }}
@@ -309,10 +308,10 @@
               selectedProjectId={projects.selectedProjectId}
               selectedGroupId={selectedGroup?.id ?? null}
               iconStrokeWidth={identityIconStrokeWidth}
-              {showInactiveProjects}
+              showInactiveProjects={projects.showInactiveProjects}
               panelMode={navigatorMode}
               panelMaxHeight={navigatorPanelMaxHeight}
-              onShowInactiveProjectsChange={(value) => { showInactiveProjects = value; }}
+              onShowInactiveProjectsChange={(value) => { projects.showInactiveProjects = value; }}
               onProjectSelected={selectProject}
               onChannelSelected={() => { navigatorOpen = false; }}
               onCreateChannel={() => { createChannel(); }}

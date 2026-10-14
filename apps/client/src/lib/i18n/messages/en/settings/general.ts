@@ -82,6 +82,14 @@ export const general = {
     sidebarOrder: "Group and project order",
     sidebarOrderDescription: "Favorites always come first",
   },
+  projectsInactive: {
+    heading: "Hidden and archived",
+    description: "The sidebar and pickers list them only while the eye button is on",
+    empty: "No hidden or archived projects",
+    showProject: (name: string) => `Show ${name}`,
+    restoreProject: (name: string) => `Restore ${name}`,
+    activateFailed: (name: string, message: string) => `Could not update ${name}: ${message}`,
+  },
   notesGeneral: {
     heading: "General",
     defaultOpenMode: "Sub-note open mode",

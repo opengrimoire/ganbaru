@@ -12,10 +12,7 @@
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import {
-    projectLifecycleBadgeClass,
-    projectLifecycleLabel,
-  } from "$lib/projects/display";
+  import ProjectLifecycleIcon from "$lib/components/projects/ProjectLifecycleIcon.svelte";
   import { verticalBorderWidth } from "$lib/utils/anchored-panel";
   import {
     createHoverDelay,
@@ -946,9 +943,7 @@
                       <StarredIconBadge starred={projects.isProjectStarred(project.id)}><ProjectIcon name={project.icon} size={iconSize} strokeWidth={iconStrokeWidth} emojiScale={EMOJI_SCALE} /></StarredIconBadge>
                       <span class="min-w-0 flex-1 truncate">{project.name}</span>
                       {#if showLifecycleBadges && project.status !== "active"}
-                        <span class={cn("shrink-0 rounded border px-1.5 py-0.5 text-[0.666667rem]", projectLifecycleBadgeClass(project.status))}>
-                          {projectLifecycleLabel(project.status, t)}
-                        </span>
+                        <ProjectLifecycleIcon status={project.status} size={iconSize} strokeWidth={iconStrokeWidth} class="text-popover-foreground/60" />
                       {/if}
                       {#if projectRowsHaveChildren}
                         <ChevronRight size={mobileLayout ? 18 : 13} strokeWidth={iconStrokeWidth} class="shrink-0 text-popover-foreground/60" />
@@ -1033,9 +1028,7 @@
                   {#if projectRowsHaveChildren || (showLifecycleBadges && project.status !== "active")}
                     <span class="flex min-w-0 items-center justify-end gap-1">
                       {#if showLifecycleBadges && project.status !== "active"}
-                        <span class={cn("shrink-0 rounded border px-1.5 py-0.5 text-[0.666667rem]", projectLifecycleBadgeClass(project.status))}>
-                          {projectLifecycleLabel(project.status, t)}
-                        </span>
+                        <ProjectLifecycleIcon status={project.status} size={iconSize} strokeWidth={iconStrokeWidth} class="text-popover-foreground/60" />
                       {/if}
                       {#if projectRowsHaveChildren}<ChevronRight size={mobileLayout ? 18 : 13} strokeWidth={iconStrokeWidth} class="shrink-0 text-popover-foreground/60" />{/if}
                     </span>
@@ -1254,9 +1247,7 @@
                   {#if showProjectChildren || (showLifecycleBadges && project.status !== "active")}
                     <span class="flex min-w-0 items-center justify-end gap-1">
                       {#if showLifecycleBadges && project.status !== "active"}
-                        <span class={cn("shrink-0 rounded border px-1.5 py-0.5 text-[0.666667rem]", projectLifecycleBadgeClass(project.status))}>
-                          {projectLifecycleLabel(project.status, t)}
-                        </span>
+                        <ProjectLifecycleIcon status={project.status} size={iconSize} strokeWidth={iconStrokeWidth} class="text-popover-foreground/60" />
                       {/if}
                       {#if showProjectChildren}<ChevronRight size={13} strokeWidth={iconStrokeWidth} class="shrink-0 text-popover-foreground/60" />{/if}
                     </span>

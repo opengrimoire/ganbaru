@@ -26,10 +26,7 @@
   import { notesPageTitle } from "$lib/notes/pages/title";
   import { notesPagesForProject } from "$lib/notes/project-membership";
   import type { NotesPage } from "$lib/notes/types";
-  import {
-    projectLifecycleBadgeClass,
-    projectLifecycleLabel,
-  } from "$lib/projects/display";
+  import ProjectLifecycleIcon from "$lib/components/projects/ProjectLifecycleIcon.svelte";
   import {
     projectNavigatorPanelGeometry,
     type ProjectNavigatorPanelMode,
@@ -614,11 +611,7 @@
             />
           {/if}
           <span class="min-w-0 truncate text-foreground">{selectedProject.name}</span>
-          {#if selectedProject.status !== "active"}
-            <span class={cn("shrink-0 rounded border px-1.5 py-0.5 text-[0.666667rem]", projectLifecycleBadgeClass(selectedProject.status))}>
-              {projectLifecycleLabel(selectedProject.status, t)}
-            </span>
-          {/if}
+          <ProjectLifecycleIcon status={selectedProject.status} />
           {#if !showSelectedPagePath}
             <WorkspaceBreadcrumbTerminalIcon kind="chevron" context="notes" class="shrink-0 text-muted-foreground" />
           {/if}

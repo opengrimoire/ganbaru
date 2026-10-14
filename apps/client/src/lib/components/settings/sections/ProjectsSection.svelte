@@ -9,6 +9,7 @@
   } from "$lib/utils/sidebar-order";
   import Select from "$lib/components/ui/Select.svelte";
   import SwitchField from "$lib/components/ui/SwitchField.svelte";
+  import ProjectsInactiveList from "./ProjectsInactiveList.svelte";
 
   const preferences = getPreferences();
   const { t } = getLocalization();
@@ -44,4 +45,6 @@
       />
     </div>
   </section>
+
+  <ProjectsInactiveList />
 </div>

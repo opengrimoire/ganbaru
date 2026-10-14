@@ -909,7 +909,7 @@
         <MobileNavigation current={nav.current} presentation="rail" onNavigate={navigate} />
       {/if}
 
-      <main class="relative min-h-0 min-w-0 flex-1 overflow-hidden bg-background">
+      <main class="relative min-h-0 min-w-0 flex-1 overflow-hidden" style="background-color: var(--cal-bg);">
         {#if loadError}
           <div class="flex h-full p-6">
             <Notice
@@ -961,10 +961,10 @@
     </div>
   {:else if showMusic}
     <div
-      class="fixed z-50 bg-background"
+      class="fixed z-50"
       inert={suspendDecisionOpen}
       aria-hidden={suspendDecisionOpen ? "true" : undefined}
-      style="left: var(--visual-viewport-offset-left); top: var(--visual-viewport-offset-top); width: var(--visual-viewport-width); height: var(--visual-viewport-height); padding: var(--safe-area-top) var(--safe-area-right) var(--safe-area-bottom) var(--safe-area-left);"
+      style="background-color: var(--cal-bg); left: var(--visual-viewport-offset-left); top: var(--visual-viewport-offset-top); width: var(--visual-viewport-width); height: var(--visual-viewport-height); padding: var(--safe-area-top) var(--safe-area-right) var(--safe-area-bottom) var(--safe-area-left);"
     >
       {@render deferredSurfacePlaceholder("music", t("music.title"), closeMusic)}
     </div>
@@ -1001,10 +1001,10 @@
     </div>
   {:else if showQuickNotes}
     <div
-      class="fixed z-50 bg-background"
+      class="fixed z-50"
       inert={suspendDecisionOpen}
       aria-hidden={suspendDecisionOpen ? "true" : undefined}
-      style="left: var(--visual-viewport-offset-left); top: var(--visual-viewport-offset-top); width: var(--visual-viewport-width); height: var(--visual-viewport-height); padding: var(--safe-area-top) var(--safe-area-right) var(--safe-area-bottom) var(--safe-area-left);"
+      style="background-color: var(--cal-bg); left: var(--visual-viewport-offset-left); top: var(--visual-viewport-offset-top); width: var(--visual-viewport-width); height: var(--visual-viewport-height); padding: var(--safe-area-top) var(--safe-area-right) var(--safe-area-bottom) var(--safe-area-left);"
     >
       {@render deferredSurfacePlaceholder("quickNotes", t("quickNotes.title"), closeQuickNotes)}
     </div>

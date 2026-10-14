@@ -23,6 +23,7 @@
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import {
+    notesArchivedParentPageIds,
     notesHierarchyArchivedChildren,
     notesHierarchyPickerChildren,
     notesHierarchyPickerTitle,
@@ -151,28 +152,33 @@
   const normalizedSearch = $derived(showSearch ? search.trim().toLocaleLowerCase() : "");
   /** Only the panel opened first carries the order button, beside its search; sub-panels have neither. */
   const showOrderMenu = $derived(showSearch && effectiveParent.kind !== "database");
+  /** The project's archived notes, listed only while the shared picker eye is on. */
+  const archivedProjectPages = $derived(notes.showArchivedInPickers ? notesPagesForProject(notes.pickerArchivedPages, projectId) : []);
+  const activePageIds = $derived(new Set(notes.allPages.map((page) => page.id)));
+  /** Notes holding only archived children still open a level while archived notes are listed. */
+  const pageIdsWithChildren = $derived([
+    ...notes.sidebarPageIdsWithChildren,
+    ...notesArchivedParentPageIds(archivedProjectPages, activePageIds),
+  ]);
   const allItems = $derived(notesHierarchyPickerChildren(
     projectPages,
     projectFolders,
     notes.navigationDatabases,
     effectiveParent,
     t("notes.untitled"),
-    notes.sidebarPageIdsWithChildren,
+    pageIdsWithChildren,
     views,
     hierarchyOrder,
   ));
   const items = $derived(allItems.filter(matchesSearch));
   /** Archived notes of this level follow the active rows while the shared picker eye is on. */
-  const archivedItems = $derived.by((): NotesHierarchyPickerNode[] => {
-    if (!notes.showArchivedInPickers) return [];
-    return notesHierarchyArchivedChildren(
-      notesPagesForProject(notes.pickerArchivedPages, projectId),
-      new Set(notes.allPages.map((page) => page.id)),
-      effectiveParent,
-      t("notes.untitled"),
-      hierarchyOrder,
-    ).filter(matchesSearch);
-  });
+  const archivedItems = $derived(notesHierarchyArchivedChildren(
+    archivedProjectPages,
+    activePageIds,
+    effectiveParent,
+    t("notes.untitled"),
+    hierarchyOrder,
+  ).filter(matchesSearch));
   const rowCount = $derived(items.length + archivedItems.length);
   /** Folders and notes drag by their row in the custom order of an open project, each within its own block. */
   const orderDrag = createSidebarOrderDrag({
@@ -213,7 +219,7 @@
         notes.navigationDatabases,
         childParent,
         t("notes.untitled"),
-        notes.sidebarPageIdsWithChildren,
+        pageIdsWithChildren,
       ).length
     : 0));
 

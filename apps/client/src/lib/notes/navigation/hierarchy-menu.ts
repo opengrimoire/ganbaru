@@ -207,6 +207,19 @@ export function notesHierarchyArchivedChildren(
     ));
 }
 
+/** Return the notes that hold an archived child, so their picker rows open a level while archived notes are listed. */
+export function notesArchivedParentPageIds(
+  archivedPages: readonly NotesPage[],
+  activePageIds: ReadonlySet<string>,
+): string[] {
+  const parentIds = new Set<string>();
+  for (const page of archivedPages) {
+    if (!page.archived || page.in_trash || activePageIds.has(page.id) || page.parent.type !== "page_id") continue;
+    parentIds.add(page.parent.page_id);
+  }
+  return [...parentIds];
+}
+
 /** Return the valid folder and note ancestry ending at a selected note. */
 export function notesHierarchyPath(
   selectedPageId: string | null,

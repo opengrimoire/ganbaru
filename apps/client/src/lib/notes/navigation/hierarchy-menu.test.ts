@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createRichText } from "$lib/notes/blocks/factory";
 import type { NotesDatabaseView, NotesFolder, NotesNavigationDatabase, NotesPage } from "$lib/notes/types";
 import {
+  notesArchivedParentPageIds,
   notesHierarchyArchivedChildren,
   notesHierarchyChildren,
   notesHierarchyNodeParent,
@@ -238,5 +239,24 @@ describe("archived notes in the hierarchy pickers", () => {
 
     expect(notesHierarchyArchivedChildren(pages, new Set(), { kind: "root" }, "Untitled", order).map((item) => item.key))
       .toEqual(["page:second", "page:first"]);
+  });
+
+  it("opens a level for notes whose only children are archived", () => {
+    const pages = [
+      archived("child-a", { type: "page_id", page_id: "parent" }),
+      archived("child-b", { type: "page_id", page_id: "parent" }),
+      archived("root-note"),
+      archived("restored", { type: "page_id", page_id: "other" }),
+      { ...archived("trashed", { type: "page_id", page_id: "trash-parent" }), in_trash: true },
+    ];
+
+    expect(notesArchivedParentPageIds(pages, new Set(["restored"]))).toEqual(["parent"]);
+    expect(notesHierarchyChildren(
+      [page("parent")],
+      [],
+      { kind: "root" },
+      "Untitled",
+      notesArchivedParentPageIds(pages, new Set()),
+    )).toMatchObject([{ key: "page:parent", hasChildren: true }]);
   });
 });

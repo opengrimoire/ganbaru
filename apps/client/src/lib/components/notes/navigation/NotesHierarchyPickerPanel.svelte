@@ -25,6 +25,7 @@
     notesHierarchyPanelChromeHeight,
     NOTES_HIERARCHY_PANEL_LIST_PADDING,
     NOTES_HIERARCHY_PANEL_ROW_HEIGHT,
+    type NotesHierarchyOrder,
     type NotesHierarchyPickerNode,
     type NotesHierarchyParent,
   } from "$lib/notes/navigation/hierarchy-menu";
@@ -45,6 +46,7 @@
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import NotesHierarchyPickerPanel from "./NotesHierarchyPickerPanel.svelte";
   import NotesPageIcon from "$lib/components/notes/pages/NotesPageIcon.svelte";
+  import StarredIconBadge from "$lib/components/ui/StarredIconBadge.svelte";
 
 
   interface NotesMobileHierarchyLevel {
@@ -131,6 +133,11 @@
 
   const projectPages = $derived.by(() => notesPagesForProject(notes.allPages, projectId));
   const projectFolders = $derived.by(() => notesFoldersForProject(notes.folders, projectId));
+  const hierarchyOrder = $derived<NotesHierarchyOrder>({
+    sortOrder: notes.sidebarOrderForProject(projectId),
+    favoriteFolderIds: notes.favoriteFolderIds,
+    favoritePageIds: notes.favoritePageIds,
+  });
   const normalizedSearch = $derived(showSearch ? search.trim().toLocaleLowerCase() : "");
   const allItems = $derived(notesHierarchyPickerChildren(
     projectPages,
@@ -140,6 +147,7 @@
     t("notes.untitled"),
     notes.sidebarPageIdsWithChildren,
     views,
+    hierarchyOrder,
   ));
   const items = $derived(allItems.filter((item) => {
     if (!normalizedSearch) return true;
@@ -524,24 +532,7 @@
                     else void selectNode(item);
                   }}
                 >
-                  {#if item.kind === "folder"}
-                    <Folder size={iconSize} strokeWidth={iconStrokeWidth} class="shrink-0" />
-                  {:else if item.kind === "database"}
-                    <Database size={iconSize} strokeWidth={iconStrokeWidth} class="shrink-0" />
-                  {:else if item.kind === "view"}
-                    {@const Icon = viewIcons[item.view.type as NotesDatabaseViewKind]}
-                    <Icon size={iconSize} strokeWidth={iconStrokeWidth} class="shrink-0" />
-                  {:else if item.page.icon}
-                    <NotesPageIcon
-                      icon={item.page.icon}
-                      size={iconSize}
-                      strokeWidth={iconStrokeWidth}
-                      emojiScale={NOTES_PAGE_CHROME_EMOJI_SCALE}
-                      class="shrink-0"
-                    />
-                  {:else}
-                    <FileText size={iconSize} strokeWidth={iconStrokeWidth} class="shrink-0" />
-                  {/if}
+                  {@render NodeIcon(item)}
                   <span class="min-w-0 flex-1 truncate">{title}</span>
                   {#if item.kind === "folder"}
                     <ChevronRight size={iconSize} strokeWidth={iconStrokeWidth} class="shrink-0 text-popover-foreground/45" />
@@ -571,24 +562,7 @@
                   else void selectNode(item);
                 }}
               >
-                {#if item.kind === "folder"}
-                  <Folder size={iconSize} strokeWidth={iconStrokeWidth} class="shrink-0" />
-                {:else if item.kind === "database"}
-                  <Database size={iconSize} strokeWidth={iconStrokeWidth} class="shrink-0" />
-                {:else if item.kind === "view"}
-                  {@const Icon = viewIcons[item.view.type as NotesDatabaseViewKind]}
-                  <Icon size={iconSize} strokeWidth={iconStrokeWidth} class="shrink-0" />
-                {:else if item.page.icon}
-                  <NotesPageIcon
-                    icon={item.page.icon}
-                    size={iconSize}
-                    strokeWidth={iconStrokeWidth}
-                    emojiScale={NOTES_PAGE_CHROME_EMOJI_SCALE}
-                    class="shrink-0"
-                  />
-                {:else}
-                  <FileText size={iconSize} strokeWidth={iconStrokeWidth} class="shrink-0" />
-                {/if}
+                {@render NodeIcon(item)}
                 <span class="min-w-0 flex-1 truncate">{title}</span>
                 {#if item.hasChildren}
                   <ChevronRight size={iconSize} strokeWidth={iconStrokeWidth} class="shrink-0 text-popover-foreground/45" />
@@ -698,6 +672,31 @@
     onPointerLeave={handleBoundaryLeave}
   />
 {/if}
+
+{#snippet NodeIcon(item: NotesHierarchyPickerNode)}
+  <StarredIconBadge starred={item.kind === "folder"
+    ? notes.favoriteFolderIds.includes(item.folder.id)
+    : item.kind === "page" && notes.favoritePageIds.includes(item.page.id)}>
+    {#if item.kind === "folder"}
+      <Folder size={iconSize} strokeWidth={iconStrokeWidth} class="shrink-0" />
+    {:else if item.kind === "database"}
+      <Database size={iconSize} strokeWidth={iconStrokeWidth} class="shrink-0" />
+    {:else if item.kind === "view"}
+      {@const Icon = viewIcons[item.view.type as NotesDatabaseViewKind]}
+      <Icon size={iconSize} strokeWidth={iconStrokeWidth} class="shrink-0" />
+    {:else if item.page.icon}
+      <NotesPageIcon
+        icon={item.page.icon}
+        size={iconSize}
+        strokeWidth={iconStrokeWidth}
+        emojiScale={NOTES_PAGE_CHROME_EMOJI_SCALE}
+        class="shrink-0"
+      />
+    {:else}
+      <FileText size={iconSize} strokeWidth={iconStrokeWidth} class="shrink-0" />
+    {/if}
+  </StarredIconBadge>
+{/snippet}
 
 <style>
   .project-picker-panel {

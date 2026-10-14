@@ -34,7 +34,7 @@ The sidebar shows folders and workspace-parented notes; child notes do not becom
 
 ## Favorites and recents
 
-Favorites and recents are navigation metadata in the vault config, outside the canonical page graph. Pages and folders can be starred; starred items list first among their siblings. Opening or creating a page updates recents. Neither changes parent, project, order, content, or history.
+Favorites and recents are navigation metadata in the vault config, outside the canonical page graph. Pages and folders can be starred; starred items list first among their siblings, in the sidebar and in the breadcrumb pickers, which follow the sidebar order and mark favorites with a star badge. Opening or creating a page updates recents. Neither changes parent, project, order, content, or history.
 
 After favorites, the sidebar orders folders and notes by name (A to Z or Z to A), last modified, or creation date (newest or oldest first). Notes settings choose the global order, and each project can follow it or override it from its Notes settings or the sidebar sort menu.
 

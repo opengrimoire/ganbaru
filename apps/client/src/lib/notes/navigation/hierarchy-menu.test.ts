@@ -91,6 +91,31 @@ describe("notes hierarchy navigation", () => {
       .toEqual(["page:child-note"]);
   });
 
+  it("orders each level like the sidebar: folders first, favorites first, then the chosen order", () => {
+    const folders = [folder("Alpha"), folder("Beta")];
+    const older = { ...page("Older"), created_time: "2026-01-01T00:00:00Z" };
+    const newer = { ...page("Newer"), created_time: "2026-03-01T00:00:00Z" };
+    const starred = { ...page("Starred"), created_time: "2025-01-01T00:00:00Z" };
+    const order = { sortOrder: "created-desc" as const, favoriteFolderIds: ["Beta"], favoritePageIds: ["Starred"] };
+
+    expect(notesHierarchyChildren([older, newer, starred], folders, { kind: "root" }, "Untitled", [], order)
+      .map((item) => item.key))
+      .toEqual(["folder:Beta", "folder:Alpha", "page:Starred", "page:Newer", "page:Older"]);
+    expect(notesHierarchyChildren([older, newer, starred], folders, { kind: "root" }).map((item) => item.key))
+      .toEqual(["folder:Alpha", "folder:Beta", "page:Newer", "page:Older", "page:Starred"]);
+  });
+
+  it("lists a note's databases after its child notes", () => {
+    const notes = [page("parent"), page("Zed", { type: "page_id", page_id: "parent" })];
+    const databases: NotesNavigationDatabase[] = [
+      { id: "tasks", page_id: "parent", title: "Tasks", data_source_id: "source" },
+      { id: "archive", page_id: "parent", title: "Archive", data_source_id: "source" },
+    ];
+    expect(notesHierarchyPickerChildren(notes, [], databases, { kind: "page", id: "parent" }, "Untitled")
+      .map((item) => item.key))
+      .toEqual(["page:Zed", "database:archive", "database:tasks"]);
+  });
+
   it("keeps unloaded note branches available from shell metadata", () => {
     const rootPage = page("root-note");
 

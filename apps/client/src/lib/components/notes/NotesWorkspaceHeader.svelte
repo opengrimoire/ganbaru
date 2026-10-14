@@ -26,7 +26,6 @@
   import { notesPageTitle } from "$lib/notes/pages/title";
   import { notesPagesForProject } from "$lib/notes/project-membership";
   import type { NotesPage } from "$lib/notes/types";
-  import ProjectLifecycleIcon from "$lib/components/projects/ProjectLifecycleIcon.svelte";
   import {
     projectNavigatorPanelGeometry,
     type ProjectNavigatorPanelMode,
@@ -611,7 +610,6 @@
             />
           {/if}
           <span class="min-w-0 truncate text-foreground">{selectedProject.name}</span>
-          <ProjectLifecycleIcon status={selectedProject.status} />
           {#if !showSelectedPagePath}
             <WorkspaceBreadcrumbTerminalIcon kind="chevron" context="notes" class="shrink-0 text-muted-foreground" />
           {/if}

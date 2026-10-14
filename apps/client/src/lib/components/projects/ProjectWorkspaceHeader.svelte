@@ -13,7 +13,6 @@
     COMPACT_IDENTITY_ICON_SIZE,
     COMPACT_IDENTITY_ICON_STROKE_WIDTH,
   } from "$lib/icon-sizing";
-  import ProjectLifecycleIcon from "$lib/components/projects/ProjectLifecycleIcon.svelte";
   import {
     projectNavigatorPanelGeometry,
     projectToolbarPanelsForView,
@@ -396,7 +395,6 @@
           />
         {/if}
         <span class="min-w-0 truncate text-foreground">{selectedProject.name}</span>
-        <ProjectLifecycleIcon status={selectedProject.status} />
         <WorkspaceBreadcrumbTerminalIcon kind="chevron" class="shrink-0 text-muted-foreground" />
       </button>
       <button

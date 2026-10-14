@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
   import { onMount, tick } from "svelte";
   import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
@@ -7,6 +6,7 @@
   import CalendarScrollbar from "$lib/components/calendar/CalendarScrollbar.svelte";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
+  import { OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { activateModalKeyboardLayer, trapModalTabKey } from "$lib/modal-focus";
   import {

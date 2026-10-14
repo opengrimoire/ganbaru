@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
   import { tick } from "svelte";
   import Check from "@lucide/svelte/icons/check";
   import AlertTriangle from "@lucide/svelte/icons/triangle-alert";
@@ -10,6 +9,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { MusicPlaylistSummary } from "$lib/music/library/contracts";
   import { orderMusicPlaylists, systemMusicPlaylistName } from "$lib/music/playlists/system";
+  import { OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
   import { formatNumber } from "$lib/i18n/formatters";
   import MusicPlaylistIcon from "$lib/components/music/builder/MusicPlaylistIcon.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";

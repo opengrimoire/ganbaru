@@ -103,6 +103,7 @@
   import NotesPeekModeIcon from "$lib/components/notes/pages/NotesPeekModeIcon.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
   import {
     loadNotesEditorPanel,
     readNotesEditorPanel,
@@ -618,6 +619,8 @@
     if (activePanel) notes.setPagePanelSubsystemOpen(activePanel, false);
     if (pageHistoryModalOpen) notes.setPagePanelSubsystemOpen("page-history", false);
     if (lastTitlePageId) notes.clearPageTitleDraft(lastTitlePageId);
+    // Reopening this page on a phone, after Back, a database, or another tab, must not reopen the keyboard.
+    if (!OPENING_MAY_FOCUS_TEXT && page) notes.releaseTextFocusForPage(page.id);
   });
 
   async function saveTitle(): Promise<void> {

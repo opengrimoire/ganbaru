@@ -401,10 +401,16 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     requestBlockFocus(plan.blockId);
   }
 
-  /** Drop pending block and title focus so remounted editors do not reopen the soft keyboard. */
-  function releaseTextFocus(): void {
-    if (focusRequest.blockId !== null) focusRequest = nextNotesFocusRequest(focusRequest, null);
-    pageSession.clearTitleFocus();
+  /**
+   * Drop block and title focus aimed at a page whose editor is closing, so a remounted editor does not reopen the
+   * soft keyboard. Focus already aimed at another selected page, such as a page just created, stays pending.
+   */
+  function releaseTextFocusForPage(pageId: string): void {
+    const selectedPageId = pageSession.selectedPageId;
+    if (focusRequest.blockId !== null && (selectedPageId === null || selectedPageId === pageId)) {
+      focusRequest = nextNotesFocusRequest(focusRequest, null);
+    }
+    pageSession.clearTitleFocus(pageId);
   }
 
   function requestLoadedPageFocus(
@@ -1941,7 +1947,7 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     get focusRevealOnly(): boolean {
       return focusRequest.revealOnly ?? false;
     },
-    releaseTextFocus,
+    releaseTextFocusForPage,
     get focusSelection(): NotesTextSelection | null {
       return focusRequest.selection;
     },

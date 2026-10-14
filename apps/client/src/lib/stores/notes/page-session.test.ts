@@ -49,4 +49,15 @@ describe("notes page session", () => {
 
     expect(session.titleFocus).toEqual({ pageId: pageB, requestId: 2 });
   });
+
+  it("clears title focus only for the page whose editor closes", () => {
+    const session = controller();
+    session.requestTitleFocus(pageB);
+
+    session.clearTitleFocus(pageA);
+    expect(session.titleFocus).toEqual({ pageId: pageB, requestId: 1 });
+
+    session.clearTitleFocus(pageB);
+    expect(session.titleFocus).toEqual({ pageId: null, requestId: 1 });
+  });
 });

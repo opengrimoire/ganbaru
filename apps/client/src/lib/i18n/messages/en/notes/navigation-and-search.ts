@@ -59,6 +59,7 @@ export const navigationAndSearch = {
   highlightCurrentFile: "Highlight current file",
   navigationMoveFailed: (message: string) => `Could not move this item: ${message}`,
   sortExplorer: "Sort folders and notes",
+  navigationDragMoveTo: (destination: string) => `Move to ${destination}`,
   defaultFolderName: "New folder",
   folderNamePlaceholder: "Folder name",
   htmlImportOpen: "Import HTML",

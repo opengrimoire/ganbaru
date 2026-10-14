@@ -31,10 +31,20 @@
     type NotesNavigationTreeItem,
   } from "$lib/notes/navigation/tree";
   import {
-    canDropNotesNavigationItem,
+    resolveNotesNavigationDrop,
     type NotesNavigationDragItem,
+    type NotesNavigationDropResolution,
     type NotesNavigationDropTarget,
   } from "$lib/notes/navigation/drag";
+  import {
+    notesNavigationDragCard,
+    notesNavigationDragCardOrigin,
+    notesNavigationSubtreeEnd,
+    type NotesNavigationDragCardGeometry,
+    type NotesNavigationDragCardPhase,
+    type NotesNavigationPoint,
+    type NotesNavigationRect,
+  } from "$lib/notes/navigation/drag-motion";
   import { notesPageMoveTargets } from "$lib/notes/pages/move";
   import {
     SIDEBAR_SORT_ORDER_LABEL_KEYS,
@@ -47,6 +57,7 @@
   import type {
     NotesFolder,
     NotesPage,
+    NotesPageIcon,
     NotesWorkingMarkdownFileRef,
     NotesWorkingMarkdownTreeRead,
   } from "$lib/notes/types";
@@ -57,6 +68,7 @@
   import { scrollOverflowAction } from "$lib/utils/scroll-overflow";
   import { suppressHoverOnToggle } from "$lib/utils/hover-suppression";
   import NotesFolderRow from "$lib/components/notes/navigation/NotesFolderRow.svelte";
+  import NotesNavigationDragCard from "$lib/components/notes/navigation/NotesNavigationDragCard.svelte";
   import NotesPageRow from "$lib/components/notes/navigation/NotesPageRow.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
@@ -96,6 +108,10 @@
   const navigationAutoScrollEdgePx = 36;
   const navigationAutoScrollStepPx = 12;
   const navigationPointerDragThresholdPx = 5;
+  const navigationDragSettleMs = 200;
+  const navigationLayoutShiftMs = 180;
+  const navigationLandedFlashMs = 700;
+  const navigationRowContentSelector = ".notes-folder-row-content, .notes-page-row-content";
 
   interface PendingNavigationPointerDrag {
     pointerId: number;
@@ -105,9 +121,17 @@
     sourceElement: HTMLElement;
   }
 
-  interface NavigationPointerPosition {
-    x: number;
-    y: number;
+  type NavigationPointerPosition = NotesNavigationPoint;
+
+  /** The lifted row while it follows the pointer and while it settles after release. */
+  interface NavigationDragCardState {
+    id: number;
+    item: NotesNavigationDragItem;
+    title: string;
+    icon: NotesPageIcon | null;
+    geometry: NotesNavigationDragCardGeometry;
+    frame: NotesNavigationRect;
+    phase: NotesNavigationDragCardPhase;
   }
 
   function handleWorkspaceScroll(event: Event): void {
@@ -169,8 +193,8 @@
 
   function clearNavigationDropTarget(): void {
     clearNavigationFolderOpenTimer();
-    navigationDropTargetKey = null;
-    navigationDropAllowed = false;
+    navigationDropTarget = null;
+    navigationDropResolution = null;
   }
 
   function clearNavigationAutoScrollFrame(): void {
@@ -179,85 +203,196 @@
     navigationAutoScrollFrame = null;
   }
 
-  function removeNavigationDragPreview(): void {
-    navigationDragPreview?.remove();
-    navigationDragPreview = null;
-    navigationDragPreviewAnchor = null;
-  }
-
-  function clearNavigationDrag(): void {
+  /** Stop following the pointer. The lifted card stays until it settles. */
+  function stopNavigationPointerTracking(): void {
     clearNavigationAutoScrollFrame();
     clearNavigationDropTarget();
-    removeNavigationDragPreview();
     pendingNavigationPointerDrag = null;
     navigationPointerPosition = null;
     draggingNavigationItem = null;
   }
 
-  function createNavigationDragPreview(
-    source: HTMLElement,
-    pointer: NavigationPointerPosition,
-  ): void {
-    const content = source.querySelector<HTMLElement>(
-      ".notes-folder-row-content, .notes-page-row-content",
+  function prefersReducedMotion(): boolean {
+    return typeof window.matchMedia === "function"
+      && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }
+
+  function viewportRect(element: Element): NotesNavigationRect {
+    const bounds = element.getBoundingClientRect();
+    return { left: bounds.left, top: bounds.top, width: bounds.width, height: bounds.height };
+  }
+
+  function explorerItemMatches(item: NotesNavigationTreeItem, dragItem: NotesNavigationDragItem): boolean {
+    if (item.kind !== dragItem.kind) return false;
+    return (item.kind === "folder" ? item.folder.id : item.page.id) === dragItem.id;
+  }
+
+  function navigationRowContent(item: NotesNavigationDragItem): HTMLElement | null {
+    const wrapper = explorerScrollElement?.querySelector<HTMLElement>(
+      `[data-notes-navigation-drag-kind="${item.kind}"][data-notes-navigation-drag-id="${CSS.escape(item.id)}"]`,
     );
-    if (!content) return;
-    const preview = content.cloneNode(true);
-    if (!(preview instanceof HTMLElement)) return;
-    const sourceBounds = content.getBoundingClientRect();
-    const width = Math.min(sourceBounds.width, 224);
-    navigationDragPreviewAnchor = {
-      x: Math.min(Math.max(pointer.x - sourceBounds.left, 0), width),
-      y: Math.min(Math.max(pointer.y - sourceBounds.top, 0), sourceBounds.height),
+    return wrapper?.querySelector<HTMLElement>(navigationRowContentSelector) ?? null;
+  }
+
+  function navigationDragCardDetails(
+    item: NotesNavigationDragItem,
+  ): { title: string; icon: NotesPageIcon | null } | null {
+    if (item.kind === "folder") {
+      const folder = projectFolders.find((candidate) => candidate.id === item.id);
+      return folder ? { title: folder.name, icon: null } : null;
+    }
+    const page = projectPages.find((candidate) => candidate.id === item.id);
+    if (!page) return null;
+    return {
+      title: notes.pageTitleDraftForPage(page.id) ?? notesPageTitle(page, t("notes.untitled")),
+      icon: page.icon,
     };
-    Object.assign(preview.style, {
-      position: "fixed",
-      left: "0",
-      top: "0",
-      zIndex: "9999",
-      width: `${Math.max(width, 144)}px`,
-      margin: "0",
-      background: "transparent",
-      color: "hsl(var(--foreground))",
-      border: "0",
-      borderRadius: "0",
-      boxShadow: "none",
-      opacity: "0.96",
-      pointerEvents: "none",
-    });
-    document.body.append(preview);
-    navigationDragPreview = preview;
   }
 
-  function positionNavigationDragPreview(position: NavigationPointerPosition): void {
-    if (!navigationDragPreview || !navigationDragPreviewAnchor) return;
-    const x = position.x - navigationDragPreviewAnchor.x;
-    const y = position.y - navigationDragPreviewAnchor.y;
-    navigationDragPreview.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+  function clearNavigationDragCardTimer(): void {
+    if (navigationDragCardTimer === null) return;
+    window.clearTimeout(navigationDragCardTimer);
+    navigationDragCardTimer = null;
   }
 
-  function updateNavigationDropTarget(target: NotesNavigationDropTarget | null): boolean {
+  function liftNavigationDragCard(pending: PendingNavigationPointerDrag): void {
+    const content = pending.sourceElement.querySelector<HTMLElement>(navigationRowContentSelector);
+    const details = navigationDragCardDetails(pending.item);
+    if (!content || !details) return;
+    const pointer = { x: pending.startX, y: pending.startY };
+    const source = viewportRect(content);
+    const geometry = notesNavigationDragCard(
+      source,
+      pointer,
+      explorerScrollElement?.clientWidth ?? source.width,
+    );
+    const origin = notesNavigationDragCardOrigin(geometry, pointer);
+    clearNavigationDragCardTimer();
+    navigationDragCardSequence += 1;
+    navigationDragCard = {
+      id: navigationDragCardSequence,
+      item: pending.item,
+      ...details,
+      geometry,
+      frame: { left: origin.x, top: origin.y, width: geometry.width, height: geometry.height },
+      phase: "lifted",
+    };
+  }
+
+  function followNavigationDragCard(position: NavigationPointerPosition): void {
+    const card = navigationDragCard;
+    if (!card || card.phase !== "lifted") return;
+    const origin = notesNavigationDragCardOrigin(card.geometry, position);
+    card.frame.left = origin.x;
+    card.frame.top = origin.y;
+  }
+
+  function flashLandedNavigationRow(item: NotesNavigationDragItem): void {
+    if (navigationLandedTimer !== null) window.clearTimeout(navigationLandedTimer);
+    navigationLandedItem = item;
+    navigationLandedTimer = window.setTimeout(() => {
+      navigationLandedTimer = null;
+      navigationLandedItem = null;
+    }, navigationLandedFlashMs);
+  }
+
+  /** Glide the card onto `frame` (or fade it in place without one), then hand the row back to the list. */
+  function finishNavigationDragCard(cardId: number, frame: NotesNavigationRect | null, landed: boolean): void {
+    const card = navigationDragCard;
+    if (!card || card.id !== cardId) return;
+    if (frame) card.frame = frame;
+    card.phase = frame ? "settling" : "vanishing";
+    clearNavigationDragCardTimer();
+    navigationDragCardTimer = window.setTimeout(() => {
+      navigationDragCardTimer = null;
+      if (navigationDragCard?.id !== cardId) return;
+      navigationDragCard = null;
+      if (landed) flashLandedNavigationRow(card.item);
+    }, prefersReducedMotion() ? 0 : navigationDragSettleMs);
+  }
+
+  function returnNavigationDragCard(): void {
+    const card = navigationDragCard;
+    if (!card) return;
+    const source = navigationRowContent(card.item);
+    finishNavigationDragCard(card.id, source ? viewportRect(source) : null, false);
+  }
+
+  function navigationRowTops(): Map<string, number> {
+    const tops = new Map<string, number>();
+    for (const row of explorerScrollElement?.querySelectorAll<HTMLElement>("[data-notes-navigation-item-key]") ?? []) {
+      const key = row.dataset.notesNavigationItemKey;
+      if (key) tops.set(key, row.getBoundingClientRect().top);
+    }
+    return tops;
+  }
+
+  /**
+   * Slide rows from where they were to where the list now puts them, so opening a folder or landing a drop makes room
+   * instead of jumping. `skipKey` names the row the card is gliding onto.
+   */
+  function shiftNavigationRows(previousTops: ReadonlyMap<string, number>, skipKey: string | null = null): void {
+    if (prefersReducedMotion()) return;
+    for (const row of explorerScrollElement?.querySelectorAll<HTMLElement>("[data-notes-navigation-item-key]") ?? []) {
+      const key = row.dataset.notesNavigationItemKey;
+      const previousTop = key ? previousTops.get(key) : undefined;
+      if (previousTop === undefined || key === skipKey || typeof row.animate !== "function") continue;
+      const offset = previousTop - row.getBoundingClientRect().top;
+      if (Math.abs(offset) < 1) continue;
+      row.animate(
+        [{ transform: `translateY(${offset}px)` }, { transform: "none" }],
+        { duration: navigationLayoutShiftMs, easing: "cubic-bezier(0.2, 0, 0, 1)" },
+      );
+    }
+  }
+
+  async function openNavigationFolderDuringDrag(folderId: string): Promise<void> {
+    const previousTops = navigationRowTops();
+    notes.setFolderCollapsed(folderId, false);
+    await tick();
+    shiftNavigationRows(previousTops);
+  }
+
+  async function dropNavigationItem(
+    source: NotesNavigationDragItem,
+    target: NotesNavigationDropTarget,
+  ): Promise<void> {
+    const cardId = navigationDragCard?.id ?? null;
+    const previousTops = navigationRowTops();
+    try {
+      await moveNavigationItem(source, target);
+    } catch (error: unknown) {
+      navigationDragError = error instanceof Error ? error.message : String(error);
+      returnNavigationDragCard();
+      return;
+    }
+    await tick();
+    const destinationKey = explorerItems.find((item) => explorerItemMatches(item, source))?.key ?? null;
+    shiftNavigationRows(previousTops, destinationKey);
+    if (cardId === null) return;
+    const destination = navigationRowContent(source);
+    destination?.scrollIntoView({ block: "nearest" });
+    finishNavigationDragCard(cardId, destination ? viewportRect(destination) : null, destination !== null);
+  }
+
+  function updateNavigationDropTarget(target: NotesNavigationDropTarget | null): void {
     const source = draggingNavigationItem;
     if (!source || !target) {
       clearNavigationDropTarget();
-      return false;
+      return;
     }
-    const allowed = canDropNotesNavigationItem(source, target, projectPages, projectFolders);
-    const targetKey = navigationTargetKey(target);
-    if (targetKey !== navigationDropTargetKey || allowed !== navigationDropAllowed) {
-      navigationDropTargetKey = targetKey;
-      navigationDropAllowed = allowed;
-      scheduleFolderOpen(target, allowed);
-    }
-    return allowed;
+    const resolution = resolveNotesNavigationDrop(source, target, projectPages, projectFolders);
+    const previousKey = navigationDropTarget ? navigationTargetKey(navigationDropTarget) : null;
+    if (navigationTargetKey(target) === previousKey && resolution === navigationDropResolution) return;
+    navigationDropTarget = target;
+    navigationDropResolution = resolution;
+    scheduleFolderOpen(target, resolution === "move");
   }
 
-  function updateNavigationDropTargetAtPointer(): NotesNavigationDropTarget | null {
+  function updateNavigationDropTargetAtPointer(): void {
     const position = navigationPointerPosition;
-    if (!position) return null;
-    const target = explorerDropTargetAtPoint(position.x, position.y);
-    updateNavigationDropTarget(target);
-    return target;
+    if (!position) return;
+    updateNavigationDropTarget(explorerDropTargetAtPoint(position.x, position.y));
   }
 
   function navigationAutoScrollDelta(position: NavigationPointerPosition): number {
@@ -293,10 +428,7 @@
     draggingNavigationItem = pending.item;
     navigationDragError = null;
     sortMenuOpen = false;
-    createNavigationDragPreview(pending.sourceElement, {
-      x: pending.startX,
-      y: pending.startY,
-    });
+    liftNavigationDragCard(pending);
   }
 
   function handleNavigationDragWheel(event: WheelEvent): void {
@@ -314,7 +446,7 @@
     if (!notes.collapsedFolderIds.includes(target.id)) return;
     navigationFolderOpenTimer = window.setTimeout(() => {
       navigationFolderOpenTimer = null;
-      notes.setFolderCollapsed(target.id, false);
+      void openNavigationFolderDuringDrag(target.id);
     }, navigationFolderOpenDelayMs);
   }
 
@@ -328,6 +460,7 @@
     const kind = sourceElement.dataset.notesNavigationDragKind;
     const id = sourceElement.dataset.notesNavigationDragId;
     if ((kind !== "folder" && kind !== "page") || !id) return;
+    navigationClickSuppressedUntilPointerUp = false;
     pendingNavigationPointerDrag = {
       pointerId: event.pointerId,
       startX: event.clientX,
@@ -348,7 +481,7 @@
     }
     event.preventDefault();
     navigationPointerPosition = position;
-    positionNavigationDragPreview(position);
+    followNavigationDragCard(position);
     updateNavigationDropTargetAtPointer();
     syncNavigationAutoScroll();
   }
@@ -360,31 +493,50 @@
     event.stopPropagation();
   }
 
+  /** Swallow the click that follows the release of a drag, so dropping a row never also opens it. */
+  function suppressClickAfterPointerUp(): void {
+    suppressNextNavigationClick = true;
+    window.setTimeout(() => {
+      suppressNextNavigationClick = false;
+    }, 0);
+  }
+
   function handleNavigationPointerUp(event: PointerEvent): void {
+    if (navigationClickSuppressedUntilPointerUp) {
+      navigationClickSuppressedUntilPointerUp = false;
+      suppressClickAfterPointerUp();
+      return;
+    }
     const pending = pendingNavigationPointerDrag;
     if (!pending || pending.pointerId !== event.pointerId) return;
     const source = draggingNavigationItem;
     pendingNavigationPointerDrag = null;
     if (!source) return;
     event.preventDefault();
-    navigationPointerPosition = { x: event.clientX, y: event.clientY };
     const target = explorerDropTargetAtPoint(event.clientX, event.clientY);
-    const allowed = target !== null
-      && canDropNotesNavigationItem(source, target, projectPages, projectFolders);
-    clearNavigationDrag();
-    suppressNextNavigationClick = true;
-    window.setTimeout(() => {
-      suppressNextNavigationClick = false;
-    }, 0);
-    if (!target || !allowed) return;
-    void moveNavigationItem(source, target).catch((error: unknown) => {
-      navigationDragError = error instanceof Error ? error.message : String(error);
-    });
+    const resolution = target
+      ? resolveNotesNavigationDrop(source, target, projectPages, projectFolders)
+      : null;
+    stopNavigationPointerTracking();
+    suppressClickAfterPointerUp();
+    if (!target || resolution !== "move") {
+      returnNavigationDragCard();
+      return;
+    }
+    void dropNavigationItem(source, target);
   }
 
-  function cancelNavigationPointerDrag(): void {
+  /**
+   * Put the lifted row back. Escape keeps swallowing the click of the release that is still to come; a lost pointer
+   * or window has no release to wait for.
+   */
+  function cancelNavigationPointerDrag(awaitPointerUp = false): void {
     if (!pendingNavigationPointerDrag && !draggingNavigationItem) return;
-    clearNavigationDrag();
+    const wasDragging = draggingNavigationItem !== null;
+    stopNavigationPointerTracking();
+    if (!wasDragging) return;
+    navigationClickSuppressedUntilPointerUp = awaitPointerUp;
+    returnNavigationDragCard();
   }
 
   async function moveNavigationItem(
@@ -438,12 +590,16 @@
   let folderActionError = $state<string | null>(null);
   let navigationDragError = $state<string | null>(null);
   let draggingNavigationItem = $state<NotesNavigationDragItem | null>(null);
-  let navigationDropTargetKey = $state<string | null>(null);
-  let navigationDropAllowed = $state(false);
+  let navigationDropTarget = $state.raw<NotesNavigationDropTarget | null>(null);
+  let navigationDropResolution = $state<NotesNavigationDropResolution | null>(null);
   let navigationFolderOpenTimer: number | null = null;
   let navigationAutoScrollFrame: number | null = null;
-  let navigationDragPreview: HTMLElement | null = null;
-  let navigationDragPreviewAnchor: NavigationPointerPosition | null = null;
+  let navigationDragCard = $state<NavigationDragCardState | null>(null);
+  let navigationDragCardSequence = 0;
+  let navigationDragCardTimer: number | null = null;
+  let navigationLandedItem = $state.raw<NotesNavigationDragItem | null>(null);
+  let navigationLandedTimer: number | null = null;
+  let navigationClickSuppressedUntilPointerUp = false;
   let navigationPointerPosition: NavigationPointerPosition | null = null;
   let pendingNavigationPointerDrag: PendingNavigationPointerDrag | null = null;
   let suppressNextNavigationClick = false;
@@ -487,27 +643,21 @@
   const workingMarkdownHasMatches = $derived(
     buildWorkingMarkdownTreeItems(workingMarkdownTree.roots, new Set(), search).length > 0,
   );
+  const explorerItemDepths = $derived(explorerItems.map((item) => item.depth));
   const navigationFolderDropArea = $derived.by(() => {
     const result = new Map<string, {
       state: "valid" | "invalid";
       position: "single" | "start" | "middle" | "end";
     }>();
-    if (!draggingNavigationItem || !navigationDropTargetKey?.startsWith("folder:")) return result;
-    const folderId = navigationDropTargetKey.slice("folder:".length);
+    const target = navigationDropTarget;
+    if (!draggingNavigationItem || target?.kind !== "folder") return result;
+    if (navigationDropResolution === null || navigationDropResolution === "current") return result;
     const startIndex = explorerItems.findIndex(
-      (item) => item.kind === "folder" && item.folder.id === folderId,
+      (item) => item.kind === "folder" && item.folder.id === target.id,
     );
     if (startIndex < 0) return result;
-    const folderDepth = explorerItems[startIndex]?.depth;
-    if (folderDepth === undefined) return result;
-    let endIndex = startIndex;
-    while (
-      endIndex + 1 < explorerItems.length
-      && (explorerItems[endIndex + 1]?.depth ?? 0) > folderDepth
-    ) {
-      endIndex += 1;
-    }
-    const state = navigationDropAllowed ? "valid" : "invalid";
+    const endIndex = notesNavigationSubtreeEnd(explorerItemDepths, startIndex);
+    const state = navigationDropResolution === "move" ? "valid" : "invalid";
     for (let index = startIndex; index <= endIndex; index += 1) {
       const item = explorerItems[index];
       if (!item) continue;
@@ -521,6 +671,48 @@
       result.set(item.key, { state, position });
     }
     return result;
+  });
+  /** Rows carried by the lifted card: the dragged row is `held`, and rows nested under a dragged folder ride along. */
+  const navigationDragRows = $derived.by(() => {
+    const result = new Map<string, "held" | "carried">();
+    const card = navigationDragCard;
+    if (!card) return result;
+    const dragItem = card.item;
+    const startIndex = explorerItems.findIndex((item) => explorerItemMatches(item, dragItem));
+    if (startIndex < 0) return result;
+    const endIndex = notesNavigationSubtreeEnd(explorerItemDepths, startIndex);
+    for (let index = startIndex; index <= endIndex; index += 1) {
+      const item = explorerItems[index];
+      if (item) result.set(item.key, index === startIndex ? "held" : "carried");
+    }
+    return result;
+  });
+  const navigationDragHint = $derived.by(() => {
+    const target = navigationDropTarget;
+    if (!target || navigationDropResolution !== "move") return null;
+    if (target.kind === "root") return t("notes.navigationDragMoveTo", t("notes.projectRoot"));
+    if (target.kind !== "folder") return null;
+    const folder = projectFolders.find((candidate) => candidate.id === target.id);
+    return folder ? t("notes.navigationDragMoveTo", folder.name) : null;
+  });
+  const navigationLandedKey = $derived.by(() => {
+    const landed = navigationLandedItem;
+    return landed ? explorerItems.find((item) => explorerItemMatches(item, landed))?.key ?? null : null;
+  });
+
+  /**
+   * The held row dims to mark where it came from while lifted and hides while the card settles onto it. Rows nested
+   * under a dragged folder stay dimmed throughout.
+   */
+  function navigationDragRowState(key: string): "source" | "placeholder" | null {
+    const role = navigationDragRows.get(key);
+    if (!role) return null;
+    return role === "held" && navigationDragCard?.phase !== "lifted" ? "placeholder" : "source";
+  }
+
+  $effect(() => () => {
+    clearNavigationDragCardTimer();
+    if (navigationLandedTimer !== null) window.clearTimeout(navigationLandedTimer);
   });
 
   $effect(() => {
@@ -775,7 +967,13 @@
   }
 
   function handleWindowKeydown(event: KeyboardEvent): void {
-    if (event.key === "Escape" && sortMenuOpen) sortMenuOpen = false;
+    if (event.key !== "Escape") return;
+    if (draggingNavigationItem) {
+      event.preventDefault();
+      cancelNavigationPointerDrag(true);
+      return;
+    }
+    if (sortMenuOpen) sortMenuOpen = false;
   }
 
   function handleWindowResize(): void {
@@ -904,8 +1102,8 @@
   onpointerdown={handleWindowPointerDown}
   onpointermove={handleNavigationPointerMove}
   onpointerup={handleNavigationPointerUp}
-  onpointercancel={cancelNavigationPointerDrag}
-  onblur={cancelNavigationPointerDrag}
+  onpointercancel={() => cancelNavigationPointerDrag()}
+  onblur={() => cancelNavigationPointerDrag()}
   onkeydown={handleWindowKeydown}
   onresize={handleWindowResize}
   onwheel={handleNavigationDragWheel}
@@ -1101,8 +1299,8 @@
     bind:this={explorerScrollElement}
     use:scrollOverflowAction
     class="explorer-list min-h-0 flex-1 overflow-x-auto pb-2"
-    class:notes-navigation-root-drop-valid={navigationDropTargetKey === "root" && navigationDropAllowed}
-    class:notes-navigation-root-drop-invalid={navigationDropTargetKey === "root" && !navigationDropAllowed}
+    class:notes-navigation-root-drop-valid={navigationDropTarget?.kind === "root" && navigationDropResolution === "move"}
+    class:notes-navigation-root-drop-invalid={navigationDropTarget?.kind === "root" && navigationDropResolution === "forbidden"}
     role="region"
     aria-label={t("notes.explorerLabel")}
     data-notes-explorer-scroll
@@ -1140,12 +1338,16 @@
           data-notes-navigation-drop-id={itemDropTarget.kind === "folder" ? itemDropTarget.id : undefined}
           data-notes-navigation-drag-kind={item.kind}
           data-notes-navigation-drag-id={item.kind === "folder" ? item.folder.id : item.page.id}
+          data-notes-navigation-item-key={item.key}
           class:notes-navigation-folder-drop-area={Boolean(folderDropArea)}
           class:notes-navigation-folder-drop-area-valid={folderDropArea?.state === "valid"}
           class:notes-navigation-folder-drop-area-invalid={folderDropArea?.state === "invalid"}
           class:notes-navigation-folder-drop-area-single={folderDropArea?.position === "single"}
           class:notes-navigation-folder-drop-area-start={folderDropArea?.position === "start"}
           class:notes-navigation-folder-drop-area-end={folderDropArea?.position === "end"}
+          class:notes-navigation-drag-source={navigationDragRowState(item.key) === "source"}
+          class:notes-navigation-drag-placeholder={navigationDragRowState(item.key) === "placeholder"}
+          class:notes-navigation-drag-landed={navigationLandedKey === item.key}
         >
         {#if item.kind === "folder"}
           <NotesFolderRow
@@ -1243,6 +1445,19 @@
   </div>
 
 </aside>
+
+{#if navigationDragCard}
+  <NotesNavigationDragCard
+    kind={navigationDragCard.item.kind}
+    title={navigationDragCard.title}
+    icon={navigationDragCard.icon}
+    frame={navigationDragCard.frame}
+    phase={navigationDragCard.phase}
+    forbidden={navigationDropResolution === "forbidden"}
+    hint={navigationDragHint}
+    durationMs={navigationDragSettleMs}
+  />
+{/if}
 
 {#if pendingArchivePage || pendingTrashPage || pendingDeleteFolder}
   {#if confirmDialogLoadState?.status === "ready" && confirmDialogLoadState.component.kind === "confirm-dialog"}
@@ -1353,6 +1568,31 @@
 
   .notes-navigation-folder-drop-area-end {
     border-radius: 0 0 0.375rem 0.375rem;
+  }
+
+  .notes-navigation-drag-source :global(.explorer-row) {
+    opacity: 0.4;
+    transition: opacity 150ms ease-out;
+  }
+
+  .notes-navigation-drag-placeholder :global(.explorer-row) {
+    opacity: 0;
+  }
+
+  .notes-navigation-drag-landed :global(.explorer-row) {
+    animation: notes-navigation-drag-landed 700ms ease-out;
+  }
+
+  @keyframes notes-navigation-drag-landed {
+    from {
+      background-color: var(--selection-background);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .notes-navigation-drag-source :global(.explorer-row) {
+      transition: none;
+    }
   }
 
   .notes-project-explorer-dragging,

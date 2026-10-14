@@ -65,6 +65,7 @@ export const navigationAndSearch = {
   highlightCurrentFile: "Resaltar archivo actual",
   navigationMoveFailed: (message: string) => `No se pudo mover este elemento: ${message}`,
   sortExplorer: "Ordenar carpetas y notas",
+  navigationDragMoveTo: (destination: string) => `Mover a ${destination}`,
   defaultFolderName: "Nueva carpeta",
   folderNamePlaceholder: "Nombre de la carpeta",
   htmlImportOpen: "Importar HTML",

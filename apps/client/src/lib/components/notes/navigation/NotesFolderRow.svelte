@@ -495,10 +495,6 @@
     background: var(--explorer-row-highlight);
   }
 
-  .notes-navigation-dragging .notes-folder-row-content {
-    opacity: 0.42;
-  }
-
   .notes-navigation-draggable .notes-folder-row-content {
     cursor: grab;
   }

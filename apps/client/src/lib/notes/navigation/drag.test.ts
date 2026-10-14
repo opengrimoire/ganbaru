@@ -4,6 +4,7 @@ import type { NotesFolder, NotesPage } from "$lib/notes/types";
 import {
   canDropNotesNavigationItem,
   parseNotesNavigationDragItem,
+  resolveNotesNavigationDrop,
   serializeNotesNavigationDragItem,
 } from "./drag";
 
@@ -126,5 +127,28 @@ describe("Notes navigation drag", () => {
       [page("page-1")],
       folders,
     )).toBe(false);
+  });
+
+  it("leaves a note's current location unmarked while still forbidding other projects", () => {
+    const folders = [folder("folder-1"), folder("folder-2"), { ...folder("other"), project_id: "project-2" }];
+    const pages = [page("loose"), page("filed", { type: "workspace", workspace: true }, "folder-1")];
+    const loose = { kind: "page", id: "loose" } as const;
+    const filed = { kind: "page", id: "filed" } as const;
+    expect(resolveNotesNavigationDrop(loose, { kind: "root" }, pages, folders)).toBe("current");
+    expect(resolveNotesNavigationDrop(loose, { kind: "folder", id: "folder-1" }, pages, folders)).toBe("move");
+    expect(resolveNotesNavigationDrop(filed, { kind: "folder", id: "folder-1" }, pages, folders)).toBe("current");
+    expect(resolveNotesNavigationDrop(filed, { kind: "root" }, pages, folders)).toBe("move");
+    expect(resolveNotesNavigationDrop(filed, { kind: "folder", id: "other" }, pages, folders)).toBe("forbidden");
+  });
+
+  it("treats a folder's own row and parent as current but its descendants as forbidden", () => {
+    const folders = [folder("parent"), folder("child", "parent"), folder("grandchild", "child"), folder("sibling")];
+    const child = { kind: "folder", id: "child" } as const;
+    expect(resolveNotesNavigationDrop(child, { kind: "folder", id: "child" }, [], folders)).toBe("current");
+    expect(resolveNotesNavigationDrop(child, { kind: "folder", id: "parent" }, [], folders)).toBe("current");
+    expect(resolveNotesNavigationDrop(child, { kind: "folder", id: "grandchild" }, [], folders)).toBe("forbidden");
+    expect(resolveNotesNavigationDrop(child, { kind: "folder", id: "sibling" }, [], folders)).toBe("move");
+    expect(resolveNotesNavigationDrop(child, { kind: "root" }, [], folders)).toBe("move");
+    expect(resolveNotesNavigationDrop({ kind: "folder", id: "parent" }, { kind: "root" }, [], folders)).toBe("current");
   });
 });

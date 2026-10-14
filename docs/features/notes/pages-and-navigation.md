@@ -12,6 +12,8 @@ Opening a page uses one native page-open read for breadcrumbs, the initial block
 
 Folders organize workspace-parented pages inside a project. They are navigation containers, not page blocks or Markdown directories, and moving a page into one changes placement only. Moving a folder or page rejects self-parenting, descendant cycles, inactive destinations, and destinations outside the effective project scope.
 
+On desktop, dragging a sidebar row lifts it under the pointer, names the destination folder, and settles it into its new place on drop. Hovering a collapsed folder opens it. Dropping on the item's current location does nothing and is not highlighted, and Escape cancels the drag and returns the row.
+
 ## Child pages and previews
 
 A child page has both a normal page row and a paired `child_page` block in its parent document, sharing stable identity. Creation, rename, move, Trash, restore, and permanent deletion keep the pair synchronized. Moving a page under another page creates or restores the paired block at the destination; moving it back to the workspace hides the old block rather than leaving a broken reference. If a restored page's parent is missing, archived, or trashed, the page moves to a safe project root and the UI explains the placement.

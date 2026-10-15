@@ -276,20 +276,6 @@ export function takeWorkspaceTab(state: WorkspaceTabsState, id: string): Workspa
   return { ...state, tabs, activeTabId };
 }
 
-/** Close every tab except one. */
-export function closeOtherWorkspaceTabs(state: WorkspaceTabsState, id: string): WorkspaceTabsState {
-  if (!state.tabs.some((tab) => tab.id === id)) return state;
-  let closed = state.closed;
-  state.tabs.forEach((tab, index) => {
-    if (tab.id !== id) closed = rememberClosed(closed, tab, index);
-  });
-  return {
-    tabs: state.tabs.filter((tab) => tab.id === id),
-    activeTabId: id,
-    closed,
-  };
-}
-
 /** Move a tab before or after another one. */
 export function moveWorkspaceTab(
   state: WorkspaceTabsState,

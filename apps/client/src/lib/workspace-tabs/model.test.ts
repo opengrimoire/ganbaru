@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import type { View } from "$lib/navigation";
 import {
   activeWorkspaceTab,
-  closeOtherWorkspaceTabs,
   closeWorkspaceTab,
   createWorkspaceTab,
   defaultWorkspaceTabsState,
@@ -46,6 +45,11 @@ function tab(id: string, kind: View, overrides: Partial<WorkspaceTab> = {}): Wor
 
 function state(tabs: WorkspaceTab[], activeTabId = tabs[0].id): WorkspaceTabsState {
   return { tabs, activeTabId, closed: [] };
+}
+
+/** A closed kind tab remembered at a strip position, most recent first when listed. */
+function closedAt(kind: View, index: number): ClosedWorkspaceTab {
+  return { level: "kind", locked: false, location: kindLocation(kind), title: null, projectTitle: null, index };
 }
 
 function ids(value: WorkspaceTabsState): string[] {
@@ -190,19 +194,11 @@ describe("closing workspace tabs", () => {
     expect(current.closed[0].index).toBe(0);
   });
 
-  it("closes every other tab", () => {
-    const current = state([tab("a", "calendar"), tab("b", "projects"), tab("c", "notes")]);
-    const next = closeOtherWorkspaceTabs(current, "b");
-    expect(ids(next)).toEqual(["b"]);
-    expect(next.activeTabId).toBe("b");
-    expect(next.closed.map((entry) => entry.location.kind)).toEqual(["notes", "calendar"]);
-  });
-
   it("reopens closed tabs at their original positions, clamped to the current strip", () => {
-    const current = closeOtherWorkspaceTabs(
-      state([tab("a", "calendar"), tab("b", "projects"), tab("c", "notes"), tab("d", "chat")]),
-      "a",
-    );
+    const current = {
+      ...state([tab("a", "calendar")]),
+      closed: [closedAt("chat", 3), closedAt("notes", 2), closedAt("projects", 1)],
+    };
     const createId = idFactory();
     const first = reopenWorkspaceTab(current, createId);
     expect(first?.tab.location.kind).toBe("chat");
@@ -214,7 +210,7 @@ describe("closing workspace tabs", () => {
   });
 
   it("reopens a chosen history entry and reports when nothing is left", () => {
-    const current = closeOtherWorkspaceTabs(state([tab("a", "calendar"), tab("b", "projects"), tab("c", "notes")]), "a");
+    const current = { ...state([tab("a", "calendar")]), closed: [closedAt("notes", 2), closedAt("projects", 1)] };
     expect(reopenWorkspaceTab(current, idFactory(), 1)?.tab.location.kind).toBe("projects");
     expect(reopenWorkspaceTab(state([tab("a", "calendar")]), idFactory())).toBeNull();
   });

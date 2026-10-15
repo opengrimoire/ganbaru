@@ -539,7 +539,6 @@
   bind:tabContextId
   {tabContextMenuStyle}
   moveToNewWindowBlockReason={contextDetachBlockReason}
-  canCloseOtherTabs={tabs.tabs.length > 1}
   canReopenTab={tabs.closed.length > 0}
   lockAction={contextLockAction}
   bind:showTitleBarMenu
@@ -550,7 +549,6 @@
   }))}
   onMoveToNewWindow={tabWindowController.moveToNewWindow}
   onCloseTab={() => runTabContextAction((id) => tabs.close(id))}
-  onCloseOtherTabs={() => runTabContextAction((id) => tabs.closeOthers(id))}
   onReopenTab={() => runTabContextAction(() => tabs.reopen())}
   onToggleLock={() => {
     const lock = contextLockAction === "lock";

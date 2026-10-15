@@ -30,7 +30,7 @@ The + after the last tab opens a launcher with the kinds, each opened by its num
 
 Tabs size like browser tabs: each has the same fixed width and all of them shrink evenly only when the bar runs out of room, dropping the inactive close button, then the label, as they narrow. Only when they no longer fit at their narrowest does the strip show just the active tab, with the launcher keeping every tab reachable. The compact tabs setting shows icons only at any size, and a strip of empty title bar stays free for moving the window.
 
-A tab's context menu closes it, closes the other tabs, reopens a closed tab, locks or unlocks it, and moves it into a new window. A locked tab shows a lock after its label.
+A tab's context menu closes it, reopens a closed tab, locks or unlocks it, and moves it into a new window. A locked tab shows a lock after its label.
 
 ## Windows
 

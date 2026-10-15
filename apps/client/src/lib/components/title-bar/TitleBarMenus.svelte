@@ -1,12 +1,12 @@
 <script lang="ts">
   import Check from "@lucide/svelte/icons/check";
-  import ListX from "@lucide/svelte/icons/list-x";
   import Lock from "@lucide/svelte/icons/lock";
   import LockOpen from "@lucide/svelte/icons/lock-open";
   import RotateCcw from "@lucide/svelte/icons/rotate-ccw";
   import X from "@lucide/svelte/icons/x";
   import SquareArrowUpRight from "@lucide/svelte/icons/square-arrow-up-right";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { formatShortcut } from "$lib/keyboard-shortcuts";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import type { TitleBarControlId } from "$lib/stores/preference-options";
 
@@ -15,7 +15,6 @@
     tabContextId = $bindable(),
     tabContextMenuStyle,
     moveToNewWindowBlockReason,
-    canCloseOtherTabs,
     canReopenTab,
     lockAction,
     showTitleBarMenu = $bindable(),
@@ -23,7 +22,6 @@
     controls,
     onMoveToNewWindow,
     onCloseTab,
-    onCloseOtherTabs,
     onReopenTab,
     onToggleLock,
     onToggleControl,
@@ -34,7 +32,6 @@
     /** Whether this window is not the main one, so its tabs can move there. */
     /** Why the tab cannot move to a new window, or null when it can. */
     moveToNewWindowBlockReason: string | null;
-    canCloseOtherTabs: boolean;
     canReopenTab: boolean;
     /** Whether the tab can be locked or unlocked, or null when it shows nothing to lock to. */
     lockAction: "lock" | "unlock" | null;
@@ -43,7 +40,6 @@
     controls: Array<{ id: TitleBarControlId; label: string }>;
     onMoveToNewWindow: () => void;
     onCloseTab: () => void;
-    onCloseOtherTabs: () => void;
     onReopenTab: () => void;
     onToggleLock: () => void;
     onToggleControl: (id: TitleBarControlId) => void;
@@ -71,13 +67,9 @@
         <X size={15} strokeWidth={2.2} />
         <span class="shrink-0 whitespace-nowrap">{t("titleBar.tab.closeTab")}</span>
       </button>
-      <button role="menuitem" disabled={!canCloseOtherTabs} onclick={onCloseOtherTabs} class="menu-item">
-        <ListX size={15} strokeWidth={2.2} />
-        <span class="shrink-0 whitespace-nowrap">{t("titleBar.tab.closeOtherTabs")}</span>
-      </button>
       <button role="menuitem" disabled={!canReopenTab} onclick={onReopenTab} class="menu-item">
         <RotateCcw size={15} strokeWidth={2.2} />
-        <span class="shrink-0 whitespace-nowrap">{t("titleBar.tab.reopenClosedTab")}</span>
+        <span class="shrink-0 whitespace-nowrap">{t("titleBar.tab.withShortcut", t("titleBar.tab.reopenClosedTab"), formatShortcut("Mod + Shift + T"))}</span>
       </button>
       {#if lockAction}
         <button role="menuitem" onclick={onToggleLock} class="menu-item">

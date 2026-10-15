@@ -17,7 +17,6 @@ import {
   activateWorkspaceTab,
   activeWorkspaceTab,
   canAddWorkspaceTab,
-  closeOtherWorkspaceTabs,
   closeWorkspaceTab,
   createWorkspaceTab,
   defaultWorkspaceTabsState,
@@ -919,10 +918,6 @@ export function getWorkspaceTabs() {
     openKind,
     openLocation,
     close,
-    closeOthers(id: string): void {
-      syncClosed();
-      commitState(closeOtherWorkspaceTabs(tabsState, id));
-    },
     reopen,
     setLocked,
     move(id: string, targetId: string, placement: WorkspaceTabPlacement): void {

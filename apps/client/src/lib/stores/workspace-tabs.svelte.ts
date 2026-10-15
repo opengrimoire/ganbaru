@@ -41,7 +41,8 @@ import {
 
 /** Reads and restores the singleton view stores that a tab location describes. */
 export interface WorkspaceLocationAdapter {
-  read(kind: View): WorkspaceTabLocation;
+  /** Where the stores behind a kind are now, or null while they are not loaded, so nothing is recorded yet. */
+  read(kind: View): WorkspaceTabLocation | null;
   /** Name of what a tab at this level points at, or null when it has none or it is not loaded. */
   title(level: WorkspaceTabLevel, location: WorkspaceTabLocation): string | null;
   /** Restore a location, stopping between steps once `isCurrent` turns false. */
@@ -156,7 +157,8 @@ async function restoreActive(): Promise<void> {
     console.error("Failed to restore workspace tab:", error);
   } finally {
     if (sequence === restoreSequence) {
-      unlockIfUnreachable(tab.id, host.adapter.read(tab.location.kind));
+      const shown = host.adapter.read(tab.location.kind);
+      if (shown) unlockIfUnreachable(tab.id, shown);
       restoring = false;
     }
   }
@@ -228,11 +230,11 @@ function routeNavigation(kind: View): boolean {
   if (!host) return false;
   if (host.mode.type === "detached") return kind === host.mode.view && (navigation?.commit(kind) ?? false);
   if (isKindDetached(kind)) {
-    host.windows?.showLocation(kind, meaningfulLocation(host.adapter.read(kind)));
+    host.windows?.showLocation(kind, meaningfulLocation(host.adapter.read(kind) ?? kindLocation(kind)));
     return false;
   }
   if (currentTab().location.kind === kind) return navigation?.commit(kind) ?? false;
-  const location = host.adapter.read(kind);
+  const location = host.adapter.read(kind) ?? kindLocation(kind);
   const target = tabForLocation(location);
   const next = target
     ? activateWorkspaceTab(tabsState, target.id)
@@ -321,7 +323,7 @@ function connect(host: WorkspaceTabsConnection): void {
     const tab = currentTab();
     if (tab.detached) return;
     const location = host.adapter.read(tab.location.kind);
-    untrack(() => recordLocation(tab, location));
+    if (location) untrack(() => recordLocation(tab, location));
   });
 
   // Keep cached titles current, including renames of what inactive tabs point at. A name that is not
@@ -367,7 +369,7 @@ function openKind(kind: View): void {
     activate(existing.id);
     return;
   }
-  commitState(insertWorkspaceTab(tabsState, createWorkspaceTab(createTabId(), host.adapter.read(kind)), "end"));
+  commitState(insertWorkspaceTab(tabsState, createWorkspaceTab(createTabId(), host.adapter.read(kind) ?? kindLocation(kind)), "end"));
 }
 
 export interface OpenWorkspaceLocationOptions {
@@ -454,7 +456,7 @@ async function detach(id: string): Promise<void> {
   const host = connection;
   const tab = tabsState.tabs.find((candidate) => candidate.id === id);
   if (!host?.windows || !tab || detachBlock(id)) return;
-  const location = id === tabsState.activeTabId ? host.adapter.read(tab.location.kind) : tab.location;
+  const location = id === tabsState.activeTabId ? (host.adapter.read(tab.location.kind) ?? tab.location) : tab.location;
   setState(updateWorkspaceTab(tabsState, id, { location }));
   await host.windows.open(tab.location.kind, { tabId: id, location });
 }
@@ -464,7 +466,7 @@ function detachedDetails(): DetachedViewWindowTab | null {
   const host = connection;
   if (host?.mode.type !== "detached") return null;
   const tab = currentTab();
-  return { tabId: tab.id, location: restoring ? tab.location : host.adapter.read(tab.location.kind) };
+  return { tabId: tab.id, location: restoring ? tab.location : host.adapter.read(tab.location.kind) ?? tab.location };
 }
 
 /** Bring back the most recent tab of a kind after its window returns, restoring where it was. */

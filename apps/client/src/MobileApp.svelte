@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onBackButtonPress } from "@tauri-apps/api/app";
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import CalendarDays from "@lucide/svelte/icons/calendar-days";
   import { COMPACT_IDENTITY_ICON_SIZE, COMPACT_IDENTITY_ICON_STROKE_WIDTH } from "$lib/icon-sizing";
   import MobileNavigation from "$lib/components/mobile/MobileNavigation.svelte";
@@ -15,6 +15,7 @@
   } from "$lib/mobile/back";
   import {
     mobileNavigationPresentation,
+    type MobileNavigationPresentation,
     mobileTopBarPanelGeometry,
   } from "$lib/mobile/layout";
   import {
@@ -23,6 +24,7 @@
     type LoadFailure,
   } from "$lib/module-load-recovery";
   import { revealFocusedTextEntry } from "$lib/mobile/keyboard";
+  import { createDeferredWorkspaceLocationAdapter } from "$lib/mobile/workspace-location.svelte";
   import { provideMobileIdentitySlot } from "$lib/mobile/identity-slot";
   import { MobilePersistenceLifecycleController } from "$lib/mobile/persistence-lifecycle";
   import { mobileWorkspaceSurface, type MobileProjectHostingState } from "$lib/mobile/project-hosting";
@@ -35,6 +37,7 @@
   import { getPomodoro } from "$lib/stores/pomodoro.svelte";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { getViewport } from "$lib/stores/viewport.svelte";
+  import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
   import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
   import { mark as perfMark } from "$lib/stores/perf-log.svelte";
   import { getZoom } from "$lib/stores/zoom.svelte";
@@ -58,6 +61,7 @@
   type LinkedDeviceControlComponent = typeof import("$lib/components/vault/handoff/LinkedDeviceControl.svelte").default;
   type ProjectViewComponents = import("$lib/components/projects/view-components").ProjectViewComponents;
   type ProjectViewSwitcherComponent = typeof import("$lib/components/projects/ProjectMobileViewSwitcher.svelte").default;
+  type WorkspaceLocationAdapter = import("$lib/stores/workspace-tabs.svelte").WorkspaceLocationAdapter;
   type ProjectsStore = ReturnType<typeof import("$lib/stores/projects.svelte").getProjects>;
   type NotesStore = ReturnType<typeof import("$lib/stores/notes.svelte").getNotes>;
   type QuickNotesTrashPurgeRuntime = import("$lib/quick-notes/trash-purge-runtime").QuickNotesTrashPurgeRuntime;
@@ -138,6 +142,20 @@
   let pomodoroScheduleScheduler = $state.raw<PomodoroScheduleScheduler | null>(null);
   let quickNotesTrashPurge = $state.raw<QuickNotesTrashPurgeRuntime | null>(null);
   let quickNotesTrashPurgeLoad: Promise<void> | null = null;
+  let showTabs = $state(false);
+  let markBackendReady = (): void => undefined;
+  /** Settles once the database is ready, so restoring a tab never loads a store before it. */
+  const backendReadyOnce = new Promise<void>((resolve) => {
+    markBackendReady = resolve;
+  });
+
+  const workspaceTabs = getWorkspaceTabs();
+  workspaceTabs.connect({
+    adapter: createDeferredWorkspaceLocationAdapter(loadWorkspaceLocationAdapter),
+    mode: { type: "main" },
+    // The sheet offers no close on the only tab, and Back from the first tab leaves the app.
+    requestWindowClose: () => undefined,
+  });
 
   const navigationPresentation = $derived(
     mobileNavigationPresentation(viewport.layoutWidth),
@@ -156,10 +174,11 @@
   const currentDeferredSurface = $derived(
     workspaceSurface === "calendar" ? null : workspaceSurface,
   );
+  const firstTabActive = $derived(workspaceTabs.activeTabId === workspaceTabs.tabs[0]?.id);
   const shouldInterceptSystemBack = $derived(
     androidSystemBackAvailable && (nestedRouteOpen
       || mobileBackStack.hasActiveLayer
-      || nav.current !== "calendar"),
+      || !firstTabActive),
   );
   const backListenerController = new MobileBackListenerController(
     (handler) => onBackButtonPress(handler),
@@ -188,6 +207,23 @@
       hostedPlace: projectsStore.hostedPlace,
       projectSelected: Boolean(projectsStore.selectedProject && projectsStore.selectedGroup),
     };
+  }
+
+  /** Loads the Projects, Notes, and Chat stores that tab locations describe, once the database is ready. */
+  async function loadWorkspaceLocationAdapter(): Promise<WorkspaceLocationAdapter> {
+    await backendReadyOnce;
+    await prepareDeferredSurface("projects");
+    const projects = projectsStore;
+    if (!projects) throw new Error("The Projects store did not load, so tab locations cannot be restored");
+    const [adapterModule, notesModule, chatModule] = await Promise.all([
+      import("$lib/workspace-tabs/app-location-adapter"),
+      import("$lib/stores/notes.svelte"),
+      import("$lib/stores/chat.svelte"),
+    ]);
+    return adapterModule.createAppWorkspaceLocationAdapter(
+      { projects, notes: notesModule.getNotes(), chat: chatModule.getChat() },
+      t,
+    );
   }
 
   function flushMountedNotes(): Promise<void> {
@@ -280,7 +316,7 @@
         pomodoroScheduleScheduler.reconcile(),
       ]);
       const eventId = await calendarNotificationScheduler.takeAction();
-      if (eventId) navigate("calendar");
+      if (eventId) nav.navigate("calendar");
     })().catch((error: unknown) => {
       console.error("Failed to initialize Android Calendar notifications", error);
     }).finally(() => {
@@ -539,6 +575,7 @@
       ]);
       perfMark("boot.mobile-calendar-data-ready");
       backendReady = true;
+      markBackendReady();
       perfMark("boot.mobile-shell-ready");
       void prepareDeferredSurfacesAfterPaint();
     } catch (error) {
@@ -602,12 +639,6 @@
       oldURL: previousUrl,
       newURL: nextUrl.href,
     }));
-  }
-
-  function navigate(view: View): void {
-    if (mobileWorkspaceSurface(view, projectHostingState(view)) !== "notes") clearNestedRoute();
-    if (!nav.navigate(view)) return;
-    if (view !== "calendar") void prepareDeferredSurface(view);
   }
 
   function formatAwayDuration(totalSeconds: number): string {
@@ -700,14 +731,15 @@
     const action = resolveMobileBackAction({
       featureLayerOpen: mobileBackStack.hasActiveLayer,
       nestedRouteOpen,
-      currentView: nav.current,
+      firstTabActive,
     });
     if (action === "consume-feature-layer") {
       mobileBackStack.consume();
     } else if (action === "close-nested-route") {
       clearNestedRoute();
-    } else if (action === "navigate-calendar") {
-      navigate("calendar");
+    } else if (action === "activate-first-tab") {
+      const firstTab = workspaceTabs.tabs[0];
+      if (firstTab) workspaceTabs.activate(firstTab.id);
     } else {
       void backListenerController.setEnabled(false);
     }
@@ -740,7 +772,7 @@
       if (!(event instanceof CustomEvent) || event.detail?.ready === true || nav.current === "calendar") return;
       const eventId = typeof event.detail?.eventId === "string" ? event.detail.eventId : null;
       if (!eventId) return;
-      navigate("calendar");
+      nav.navigate("calendar");
       window.setTimeout(() => {
         window.dispatchEvent(new CustomEvent("ganbaru-ai:inspect-music-assignment", {
           detail: { eventId, ready: true },
@@ -759,7 +791,7 @@
           synchronizeMobileDistractions(),
         ]);
         const eventId = await calendarNotificationScheduler?.takeAction();
-        if (eventId) navigate("calendar");
+        if (eventId) nav.navigate("calendar");
       })().catch((error) => {
         console.error("Failed to resume mobile focus schedulers", error);
       }).finally(() => {
@@ -827,10 +859,15 @@
     void pomodoroScheduleScheduler?.reconcile();
   });
 
-  // A hosted Notes or Chat view can open from the Projects tab before its own tab was ever visited.
+  // Prepare whatever the active tab shows, including a Notes or Chat view hosted in a project tab.
   $effect(() => {
-    if (!projectHostingActive || !currentDeferredSurface) return;
+    if (!backendReady || !currentDeferredSurface) return;
     void prepareDeferredSurface(currentDeferredSurface);
+  });
+
+  // A Notes link route belongs to the Notes surface, so leaving it for another tab or view drops the route.
+  $effect(() => {
+    if (workspaceSurface !== "notes") untrack(clearNestedRoute);
   });
 
   $effect(() => {
@@ -860,6 +897,17 @@
       onSelectView={(view) => projectsStore?.selectView(view)}
     />
   {/if}
+{/snippet}
+
+{#snippet tabBar(presentation: MobileNavigationPresentation)}
+  <MobileNavigation
+    tabs={workspaceTabs.tabs}
+    activeTabId={workspaceTabs.activeTabId}
+    tabsOpen={showTabs}
+    {presentation}
+    onSelect={(tabId) => workspaceTabs.activate(tabId)}
+    onOpenTabs={() => { showTabs = true; }}
+  />
 {/snippet}
 
 {#snippet calendarIdentityIcon()}
@@ -966,7 +1014,7 @@
 
     <div class="flex min-h-0 flex-1 overflow-hidden">
       {#if useNavigationRail}
-        <MobileNavigation current={nav.current} presentation="rail" onNavigate={navigate} />
+        {@render tabBar("rail")}
       {/if}
 
       <main class="relative min-h-0 min-w-0 flex-1 overflow-hidden" style="background-color: var(--cal-bg);">
@@ -1001,9 +1049,16 @@
       </main>
     </div>
     {#if bottomNavigationVisible}
-      <MobileNavigation current={nav.current} presentation="bottom" onNavigate={navigate} />
+      {@render tabBar("bottom")}
     {/if}
   </div>
+
+  {#if showTabs}
+    {#await import("$lib/components/mobile/MobileTabsSheet.svelte") then module}
+      {@const MobileTabsSheet = module.default}
+      <MobileTabsSheet tabs={workspaceTabs} onClose={() => { showTabs = false; }} />
+    {/await}
+  {/if}
 
   {#if MusicPlaybackHostSurface}
     <MusicPlaybackHostSurface />

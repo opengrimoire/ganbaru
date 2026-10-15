@@ -6,32 +6,32 @@ import {
 } from "./back";
 
 describe("resolveMobileBackAction", () => {
-  it("closes the active visual layer before routes and destinations", () => {
+  it("closes the active visual layer before routes and tabs", () => {
     expect(resolveMobileBackAction({
       featureLayerOpen: true,
       nestedRouteOpen: true,
-      currentView: "notes",
+      firstTabActive: false,
     })).toBe("consume-feature-layer");
   });
 
-  it("closes nested routes before changing destination", () => {
+  it("closes nested routes before changing tabs", () => {
     expect(resolveMobileBackAction({
       featureLayerOpen: false,
       nestedRouteOpen: true,
-      currentView: "projects",
+      firstTabActive: false,
     })).toBe("close-nested-route");
   });
 
-  it("returns to Calendar before releasing Back to Android at the root", () => {
+  it("returns to the first tab before releasing Back to Android from it", () => {
     expect(resolveMobileBackAction({
       featureLayerOpen: false,
       nestedRouteOpen: false,
-      currentView: "notes",
-    })).toBe("navigate-calendar");
+      firstTabActive: false,
+    })).toBe("activate-first-tab");
     expect(resolveMobileBackAction({
       featureLayerOpen: false,
       nestedRouteOpen: false,
-      currentView: "calendar",
+      firstTabActive: true,
     })).toBe("release-to-system");
   });
 });

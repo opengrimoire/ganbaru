@@ -21,6 +21,9 @@ export const titleBar = {
     unlockTab: "Desbloquear pestaña",
     lockedTab: (label: string) => `${label} (bloqueada)`,
     openInNewTab: "Abrir en una pestaña nueva",
+    tabs: "Pestañas",
+    showTabs: (count: number) => (count === 1 ? "Pestañas, 1 abierta" : `Pestañas, ${count} abiertas`),
+    tabActions: (label: string) => `Acciones de la pestaña: ${label}`,
   },
   control: {
     pomodoro: "Pomodoro",

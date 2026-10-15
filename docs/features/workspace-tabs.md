@@ -1,6 +1,6 @@
 # Workspace tabs
 
-Status: Partial. Desktop kind, project, and item tabs, with reordering, persistence, shortcuts, closed-tab history, opening projects and items in a new tab, locking, and moving a tab into its own window, are implemented. Notes folder tabs are planned, and the mobile tab bar is in progress.
+Status: Partial. Kind, project, and item tabs, with reordering, persistence, shortcuts, closed-tab history, opening projects and items in a new tab, locking, and moving a tab into its own window, are implemented on desktop, and phones show the same tabs in their bottom bar. Notes folder tabs are planned, and opening projects and items in a new tab is desktop only for now.
 
 ## Model
 
@@ -29,6 +29,10 @@ A locked tab stays on its project or item. Navigating somewhere outside it insid
 The + after the last tab opens a launcher with the kinds, the recently closed tabs, and the open tabs when the strip cannot show them all. Tabs can be dragged to reorder. When space runs short the strip drops labels first, then shows only the active tab; the launcher keeps every tab reachable.
 
 A tab's context menu closes it, closes the other tabs, reopens a closed tab, locks or unlocks it, and moves it into its own window. A locked tab shows a lock after its label. A tab can move to its own window only while it is the sole tab of its kind and another tab stays in the main window, because each kind owns one window. Closing that window closes the tab, which then appears in the recently closed list.
+
+## Phone
+
+The bottom bar, or the rail on larger windows, shows the first four tabs and a tabs button with the open count. When the active tab sits past them it takes the last slot, so the bar always shows where the user is. The tabs button opens a sheet that switches, reorders, locks, and closes tabs, opens a new tab of any kind, and reopens recently closed tabs. The only tab has no close there, because a phone app is left with Back, not closed. Android Back first returns to the first tab, then leaves the app from it.
 
 ## Shortcuts
 

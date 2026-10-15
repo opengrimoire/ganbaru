@@ -18,6 +18,9 @@ export const titleBar = {
     unlockTab: "Unlock tab",
     lockedTab: (label: string) => `${label} (locked)`,
     openInNewTab: "Open in new tab",
+    tabs: "Tabs",
+    showTabs: (count: number) => (count === 1 ? "Tabs, 1 open" : `Tabs, ${count} open`),
+    tabActions: (label: string) => `Tab actions: ${label}`,
   },
   control: {
     pomodoro: "Pomodoro",

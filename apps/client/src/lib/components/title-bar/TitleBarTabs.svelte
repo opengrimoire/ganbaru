@@ -183,8 +183,12 @@
   const hoverQuiet = $derived(stripDragActive || hoverHeld);
   const hoveredTabId = $derived(hoverQuiet ? null : pointerTabId);
   const addHovered = $derived(!hoverQuiet && pointerOnAdd);
-  /** Tabs are dragged or still settling, so each draws its own background instead of the sliding indicator. */
+  /** Tabs are dragged or still settling, so they may be drawn outside the strip. */
   const stripInMotion = $derived(stripDragActive || settlingId !== null);
+  /** Tabs still slide into the places {@link slideLayout} gave them. */
+  let slidingLayout = $state(false);
+  /** Tabs are moving, so the active tab draws its own background and it moves with the tab, instead of the indicator. */
+  const tabsDrawHighlight = $derived(stripInMotion || slidingLayout);
   /** The copy of a dragged tab that floats under the pointer once it is off the bar. */
   const floating = $derived.by((): { tab: WorkspaceTab; style: string } | null => {
     const at = pointer;
@@ -277,7 +281,7 @@
     void activeOnly;
     void departingId;
     // The indicator comes back once tabs stop moving, already under the active tab.
-    if (!stripInMotion) updateIndicator();
+    if (!tabsDrawHighlight) updateIndicator();
     scheduleIndicatorUpdate();
     return () => {
       if (indicatorFrame) cancelAnimationFrame(indicatorFrame);
@@ -377,7 +381,8 @@
 
   function acceptDrag(event: DragEvent): void {
     event.preventDefault();
-    event.stopPropagation();
+    // The document counts `dragenter` to tell when the drag leaves the window.
+    if (event.type !== "dragenter") event.stopPropagation();
     if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
   }
 
@@ -465,6 +470,16 @@
       );
       animation.id = SLIDE_ANIMATION_ID;
     }
+    watchSlides();
+  }
+
+  /** Keep {@link slidingLayout} on until every slide in the strip has finished or been cancelled. */
+  function watchSlides(): void {
+    const running = slidingElements(null).flatMap((element) =>
+      element.getAnimations().filter((animation) => animation.id === SLIDE_ANIMATION_ID),
+    );
+    slidingLayout = running.length > 0;
+    if (running.length > 0) void Promise.allSettled(running.map((animation) => animation.finished)).then(watchSlides);
   }
 
   /**
@@ -502,7 +517,7 @@
   /** Slide the dragged tab along the bar under the pointer, and lift it off once pulled away from the bar. */
   function dragOwnTab(event: DragEvent, current: HeldTabDrag): void {
     acceptDrag(event);
-    outsideWindow = false;
+    if (outsideWindow) liftHeldTab(() => { outsideWindow = false; }, current.id);
     pointer = { x: event.clientX, y: event.clientY };
     const leaving = current.canTearOff
       && (pulledOffBar(event.clientY) || passedTrack(event.clientX, current.grabX, current.width));
@@ -609,7 +624,9 @@
 
   /**
    * Tab drags are handled for the whole window before any other drop target sees them, so a tab can be dropped
-   * anywhere on the title bar and pulled off it over content that accepts other drags.
+   * anywhere on the title bar and pulled off it over content that accepts other drags. `dragenter` is handled
+   * like `dragover`, because WebKit takes the drop effect from `dragenter` whenever the pointer crosses into
+   * another element, and would refuse a drop made right after the crossing.
    */
   function handleWindowDragOver(event: DragEvent): void {
     const kind = dragKind(event);
@@ -821,9 +838,11 @@
 
   $effect(() => {
     const options = { capture: true };
+    window.addEventListener("dragenter", handleWindowDragOver, options);
     window.addEventListener("dragover", handleWindowDragOver, options);
     window.addEventListener("drop", handleWindowDrop, options);
     return () => {
+      window.removeEventListener("dragenter", handleWindowDragOver, options);
       window.removeEventListener("dragover", handleWindowDragOver, options);
       window.removeEventListener("drop", handleWindowDrop, options);
     };
@@ -910,7 +929,7 @@
     role="tablist"
     aria-orientation="horizontal"
   >
-    {#if indicatorStyle && !stripInMotion}
+    {#if indicatorStyle && !tabsDrawHighlight}
       <div
         class="tab-indicator absolute top-0 h-full rounded-md bg-card shadow-(--tab-active-shadow)"
         style={indicatorStyle}
@@ -937,7 +956,7 @@
           active || moving
             ? "text-foreground dark:text-white"
             : cn("transition-colors", hovered ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-sidebar-foreground/70"),
-          (active || moving) && stripInMotion && "bg-card shadow-(--tab-active-shadow)",
+          (active || moving) && tabsDrawHighlight && "bg-card shadow-(--tab-active-shadow)",
           moving && "titlebar-tab-moving",
           lifted && "titlebar-tab-lifted",
           settling && "titlebar-tab-settling",

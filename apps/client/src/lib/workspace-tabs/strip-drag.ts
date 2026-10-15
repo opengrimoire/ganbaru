@@ -56,10 +56,15 @@ export function tabDragLeftBar(y: number, band: TabStripBand, margin: number): b
 
 /**
  * Left edge, in strip coordinates, that a dragged tab takes under the pointer: the pointer minus where the tab
- * was grabbed, kept within the strip's tabs so the tab never slides past either end.
+ * was grabbed, kept between the strip's start and `right` so the tab never slides past either end.
  */
-export function tabStripVisualLeft(pointerX: number, grabX: number, width: number, stripRight: number): number {
-  return Math.min(Math.max(pointerX - grabX, 0), Math.max(stripRight - width, 0));
+export function tabStripVisualLeft(pointerX: number, grabX: number, width: number, right: number): number {
+  return Math.min(Math.max(pointerX - grabX, 0), Math.max(right - width, 0));
+}
+
+/** Whether a tab grabbed at `grabX` and dragged to `pointerX` would pass `right`, the end of its track. */
+export function tabDragPassedTrack(pointerX: number, grabX: number, width: number, right: number): boolean {
+  return pointerX - grabX + width > right;
 }
 
 /** Right edge of the shown tabs, or zero for an empty strip. */

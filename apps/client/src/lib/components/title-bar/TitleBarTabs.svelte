@@ -32,6 +32,7 @@
   } from "$lib/workspace-tabs/presentation";
   import {
     tabDragLeftBar,
+    tabDragPassedTrack,
     tabStripDropIndex,
     tabStripInsertIndex,
     tabStripInsertPosition,
@@ -56,10 +57,13 @@
     pomodoroMenuOpen,
     onVolumeWheel,
     onOpenContextMenu,
+    trackEnd,
   }: {
     pomodoroMenuOpen: boolean;
     onVolumeWheel: (event: WheelEvent) => void;
     onOpenContextMenu: (event: MouseEvent, tabId: string) => void;
+    /** Empty title bar space after the strip; a tab dragged past its end leaves the bar. */
+    trackEnd: HTMLElement | undefined;
   } = $props();
 
   interface OwnTabDrag extends TabDragGrab {
@@ -71,8 +75,10 @@
   }
 
   const TAB_REORDER_MIME = "application/x-ganbaru-ai-workspace-tab";
-  /** How long tabs take to slide into their new slots while one is dragged across them. */
-  const TAB_SLIDE_MS = 150;
+  /** How long tabs take to slide into their new slots while one is dragged across them, and to settle when dropped. */
+  const TAB_SLIDE_MS = 220;
+  /** Ease-out curve of those slides, matching the cubic ease-out of the strip's reorder animation. */
+  const TAB_EASE = "cubic-bezier(0.33, 1, 0.68, 1)";
   const ICON_SIZE = 14;
   const ICON_STROKE_WIDTH = 1.5;
 
@@ -106,6 +112,13 @@
   let pointer = $state<{ x: number; y: number } | null>(null);
   /** How far the dragged tab is drawn from its slot so it stays under the pointer. */
   let movingOffset = $state(0);
+  /** How far the new tab button is pushed right by a tab dragged past the last slot. */
+  let addOffset = $state(0);
+  /** This window's tab just dropped on the bar, easing from where it was drawn into its slot. */
+  let settlingId = $state<string | null>(null);
+  let settleTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Hover highlights stay off from a drag's start until the pointer moves after it, so tabs a drag slides under the pointer do not light up. */
+  let hoverHeld = $state(false);
   /** The dragged tab no longer holds a slot in the strip. */
   const draggedTabLifted = $derived(draggingId !== null && (offBar || (outsideWindow && drag?.canTearOff === true)));
   /** The drag this window told the others about, until it ends. */
@@ -129,6 +142,9 @@
   });
   /** A tab is dragged along this strip, so the others slide out of its way. */
   const stripDragActive = $derived(draggingId !== null || incomingTab !== null);
+  const hoverQuiet = $derived(stripDragActive || hoverHeld);
+  /** Tabs are dragged or still settling, so each draws its own background instead of the sliding indicator. */
+  const stripInMotion = $derived(stripDragActive || settlingId !== null);
   /** The copy of a dragged tab that floats under the pointer once it is off the bar. */
   const floating = $derived.by((): { tab: WorkspaceTab; style: string } | null => {
     const at = pointer;
@@ -220,6 +236,7 @@
     void tabs.tabs;
     void activeOnly;
     void draggingId;
+    void settlingId;
     scheduleIndicatorUpdate();
     return () => {
       if (indicatorFrame) cancelAnimationFrame(indicatorFrame);
@@ -259,8 +276,11 @@
     tabs.close(tab.id);
   }
 
-  function handleMouseDown(event: MouseEvent): void {
+  /** A tab opens as soon as it is pressed, as in a browser, so a tab dragged away is the one shown. */
+  function handleMouseDown(event: MouseEvent, tab: WorkspaceTab): void {
     if (event.button === 1) event.preventDefault();
+    const onClose = event.target instanceof Element && event.target.closest(".titlebar-tab-close") !== null;
+    if (event.button === 0 && !onClose) tabs.activate(tab.id);
   }
 
   function closeFromButton(event: MouseEvent, tab: WorkspaceTab): void {
@@ -340,12 +360,34 @@
   }
 
   /**
+   * Right end, in strip coordinates, of the track a dragged tab slides along: past the last slot through the
+   * empty title bar, up to the buttons at its end, keeping room for the new tab button that the tab pushes along.
+   */
+  function trackRight(): number {
+    if (!strip || !trackEnd) return tabStripRight(shownSlots());
+    const button = addButton
+      ? addButton.offsetLeft + addButton.offsetWidth - strip.offsetLeft - strip.offsetWidth
+      : 0;
+    return stripX(trackEnd.getBoundingClientRect().right) - button;
+  }
+
+  /** Whether a tab dragged to `clientX` would reach the buttons at the end of the bar, which takes it off the bar. */
+  function passedTrack(clientX: number, grabX: number, width: number): boolean {
+    return tabDragPassedTrack(stripX(clientX), grabX, width, trackRight());
+  }
+
+  /** Push the new tab button along with a tab dragged past the last slot, whose right edge is at `right`. */
+  function pushAddButton(right: number): void {
+    addOffset = Math.max(0, right - tabStripRight(shownSlots()));
+  }
+
+  /**
    * Keep the dragged tab under the pointer along the strip. The tabs it passes trade places with it as soon as
    * it covers half of them, and it is then drawn shifted from its new slot so it never jumps.
    */
   function slideAlongStrip(current: OwnTabDrag, clientX: number): void {
     const slots = shownSlots();
-    const left = tabStripVisualLeft(stripX(clientX), current.grabX, current.width, tabStripRight(slots));
+    const left = tabStripVisualLeft(stripX(clientX), current.grabX, current.width, trackRight());
     const target = tabStripMoveTarget(
       slots.map((slot) => slot.id),
       current.id,
@@ -357,6 +399,7 @@
     }
     const element = tabElements[current.id];
     movingOffset = element ? left - element.offsetLeft : 0;
+    pushAddButton(left + current.width);
   }
 
   /** Slide the dragged tab along the bar under the pointer, and lift it off once pulled away from the bar. */
@@ -364,9 +407,11 @@
     acceptDrag(event);
     outsideWindow = false;
     pointer = { x: event.clientX, y: event.clientY };
-    const leaving = current.canTearOff && pulledOffBar(event.clientY);
+    const leaving = current.canTearOff
+      && (pulledOffBar(event.clientY) || passedTrack(event.clientX, current.grabX, current.width));
     if (leaving !== offBar) offBar = leaving;
-    if (!leaving) slideAlongStrip(current, event.clientX);
+    if (leaving) addOffset = 0;
+    else slideAlongStrip(current, event.clientX);
   }
 
   /** Position among this window's tabs that a tab entering the strip at `clientX` takes. */
@@ -389,7 +434,7 @@
     if (!element) return;
     const width = element.offsetWidth;
     const slots = shownSlots();
-    const left = tabStripVisualLeft(stripX(clientX), Math.min(current.grabX, width), width, tabStripRight(slots));
+    const left = tabStripVisualLeft(stripX(clientX), Math.min(current.grabX, width), width, trackRight());
     const target = tabStripMoveTarget(
       slots.map((slot) => slot.id),
       current.tab.id,
@@ -400,14 +445,24 @@
       flushSync();
     }
     incomingOffset = left - element.offsetLeft;
+    pushAddButton(left + width);
   }
 
-  /** Draw another window's tab in the strip while it is over the bar, and floating under the pointer below it. */
+  /** Whether another window's tab dragged to the pointer of `event` is off this window's bar. */
+  function foreignOffBar(event: DragEvent): boolean {
+    if (pulledOffBar(event.clientY)) return true;
+    if (!incoming) return false;
+    const width = (incomingIndex === null ? undefined : tabElements[incoming.tab.id]?.offsetWidth) ?? incoming.width;
+    return passedTrack(event.clientX, Math.min(incoming.grabX, width), width);
+  }
+
+  /** Draw another window's tab in the strip while it is over the bar, and floating under the pointer off it. */
   function dragForeignTab(event: DragEvent): void {
     if (incomingDropped) return;
     pointer = { x: event.clientX, y: event.clientY };
-    if (pulledOffBar(event.clientY)) {
+    if (foreignOffBar(event)) {
       incomingIndex = null;
+      addOffset = 0;
       return;
     }
     acceptDrag(event);
@@ -419,7 +474,7 @@
    * slot under the pointer. It keeps that slot until it arrives.
    */
   function dropForeignTab(event: DragEvent): void {
-    if (pulledOffBar(event.clientY)) {
+    if (foreignOffBar(event)) {
       resetIncoming();
       return;
     }
@@ -433,6 +488,7 @@
     }
     incomingDropped = true;
     incomingOffset = 0;
+    addOffset = 0;
     pointer = null;
     dragDepth = 0;
   }
@@ -443,6 +499,7 @@
     incomingOffset = 0;
     incomingDropped = false;
     if (drag) return;
+    addOffset = 0;
     pointer = null;
     dragDepth = 0;
   }
@@ -471,8 +528,16 @@
     if (kind !== "reorder" || !current) return;
     acceptDrag(event);
     const leaving = offBar;
+    if (!leaving) settle(current.id);
     endDrag();
     if (leaving) reportFailedMove(tabs.detach(current.id, tearOffWindowPosition(event.screenX, event.screenY)));
+  }
+
+  /** Ease a tab dropped on the bar from where it was drawn into its slot. */
+  function settle(id: string): void {
+    clearTimeout(settleTimer);
+    settlingId = id;
+    settleTimer = setTimeout(() => { settlingId = null; }, TAB_SLIDE_MS);
   }
 
   function reportFailedMove(move: Promise<void>): void {
@@ -506,8 +571,10 @@
     dragDepth += change;
     if (drag) {
       outsideWindow = dragDepth <= 0;
+      if (outsideWindow) addOffset = 0;
     } else if (dragDepth <= 0 && !incomingDropped) {
       incomingIndex = null;
+      addOffset = 0;
       pointer = null;
     }
   }
@@ -519,8 +586,23 @@
     outsideWindow = false;
     pointer = null;
     movingOffset = 0;
+    addOffset = 0;
     dragDepth = 0;
   }
+
+  $effect(() => () => clearTimeout(settleTimer));
+
+  $effect(() => {
+    if (stripDragActive) hoverHeld = true;
+  });
+
+  $effect(() => {
+    // The platform sends no pointer moves during a drag, so the first one after it means the pointer moved again.
+    if (!hoverHeld || stripDragActive) return;
+    const release = () => { hoverHeld = false; };
+    window.addEventListener("pointermove", release, { once: true });
+    return () => window.removeEventListener("pointermove", release);
+  });
 
   $effect(() => {
     const options = { capture: true };
@@ -566,14 +648,22 @@
   {/if}
 {/snippet}
 
-<div class="flex min-w-0 shrink items-center gap-0.5 pl-1.5">
+<div
+  class="flex min-w-0 shrink items-center gap-0.5 pl-1.5"
+  style:--tab-slide={`${TAB_SLIDE_MS}ms`}
+  style:--tab-ease={TAB_EASE}
+>
   <div
     bind:this={strip}
-    class="relative flex min-w-0 items-center gap-0.5 overflow-hidden"
+    class={cn(
+      "relative flex min-w-0 items-center gap-0.5",
+      // A dragged tab may slide past the last slot, and stays drawn there until it settles.
+      stripInMotion ? "overflow-visible" : "overflow-hidden",
+    )}
     role="tablist"
     aria-orientation="horizontal"
   >
-    {#if indicatorStyle && !stripDragActive}
+    {#if indicatorStyle && !stripInMotion}
       <div
         class="tab-indicator absolute top-0 h-full rounded-md bg-card shadow-(--tab-active-shadow)"
         style={indicatorStyle}
@@ -585,6 +675,7 @@
       {@const fullLabel = workspaceTabFullLabel(tab, t)}
       {@const moving = arriving || draggingId === tab.id}
       {@const lifted = !arriving && moving && draggedTabLifted}
+      {@const settling = arriving ? incomingDropped : settlingId === tab.id}
       <div
         bind:this={tabElements[tab.id]}
         animate:flip={{ duration: !stripDragActive || moving || reducedMotion ? 0 : TAB_SLIDE_MS }}
@@ -595,11 +686,11 @@
           activeOnly && !active && !moving ? "hidden" : "",
           active || moving
             ? "text-foreground dark:text-white"
-            : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-          (active || moving) && stripDragActive && "bg-card shadow-(--tab-active-shadow)",
+            : cn("text-sidebar-foreground/70", !hoverQuiet && "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"),
+          (active || moving) && stripInMotion && "bg-card shadow-(--tab-active-shadow)",
           moving && "titlebar-tab-moving",
           lifted && "titlebar-tab-lifted",
-          arriving && incomingDropped && "titlebar-tab-settling",
+          settling && "titlebar-tab-settling",
         )}
         style:translate={moving && !lifted ? `${arriving ? incomingOffset : movingOffset}px 0` : undefined}
         draggable={!arriving}
@@ -608,7 +699,7 @@
         ondragstart={(event) => handleDragStart(event, tab)}
         ondragend={handleDragEnd}
         oncontextmenu={(event) => onOpenContextMenu(event, tab.id)}
-        onmousedown={handleMouseDown}
+        onmousedown={(event) => handleMouseDown(event, tab)}
         onauxclick={(event) => handleAuxClick(event, tab)}
       >
         <button
@@ -631,8 +722,9 @@
             type="button"
             tabindex="-1"
             class={cn(
-              "titlebar-tab-close mr-1 flex shrink-0 items-center justify-center rounded-sm transition-opacity hover:bg-sidebar-accent",
-              active ? "opacity-70 hover:opacity-100" : "opacity-0 group-hover:opacity-70 hover:opacity-100",
+              "titlebar-tab-close mr-1 flex shrink-0 items-center justify-center rounded-sm transition-opacity",
+              !hoverQuiet && "hover:bg-sidebar-accent hover:opacity-100",
+              active ? "opacity-70" : cn("opacity-0", !hoverQuiet && "group-hover:opacity-70"),
             )}
             aria-label={t("titleBar.tab.closeTab")}
             title={t("titleBar.tab.withShortcut", t("titleBar.tab.closeTab"), formatShortcut("Mod + W"))}
@@ -650,9 +742,12 @@
       bind:this={addButton}
       type="button"
       class={cn(
-        "titlebar-add flex shrink-0 items-center justify-center rounded-md text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+        "titlebar-add flex shrink-0 items-center justify-center rounded-md text-sidebar-foreground/70",
+        !hoverQuiet && "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+        addOffset > 0 && "titlebar-add-pushed",
         launcherOpen && "bg-sidebar-accent text-sidebar-accent-foreground",
       )}
+      style:translate={addOffset > 0 ? `${addOffset}px 0` : undefined}
       aria-label={t("titleBar.tab.launcher")}
       aria-haspopup="menu"
       aria-expanded={launcherOpen}
@@ -736,9 +831,15 @@
     height: 18px;
   }
 
+  /* The new tab button eases back to its place once a tab dragged past the last slot stops pushing it. */
   .titlebar-add {
     width: 28px;
     height: 28px;
+    transition: color 150ms ease, background-color 150ms ease, translate var(--tab-slide) var(--tab-ease);
+  }
+
+  .titlebar-add.titlebar-add-pushed {
+    transition: color 150ms ease, background-color 150ms ease;
   }
 
   .tab-indicator {
@@ -748,16 +849,21 @@
   /* The dragged tab rides above its neighbors, following the pointer without easing. */
   .titlebar-tab.titlebar-tab-moving {
     z-index: 2;
-    transition: width 150ms ease, min-width 150ms ease, margin 150ms ease, opacity 150ms ease;
+    transition:
+      width var(--tab-slide) var(--tab-ease),
+      min-width var(--tab-slide) var(--tab-ease),
+      margin var(--tab-slide) var(--tab-ease),
+      opacity var(--tab-slide) var(--tab-ease);
   }
 
   .titlebar-tab-moving .titlebar-tab-close {
     visibility: hidden;
   }
 
-  /* Dropped here from another window, the tab eases into its slot while it arrives. */
-  .titlebar-tab.titlebar-tab-moving.titlebar-tab-settling {
-    transition: translate 150ms ease;
+  /* Dropped on the bar, the tab eases from where it was drawn into its slot. */
+  .titlebar-tab.titlebar-tab-settling {
+    z-index: 2;
+    transition: translate var(--tab-slide) var(--tab-ease);
   }
 
   /* Pulled off the bar, the tab gives its slot back and the strip closes around it. */
@@ -770,8 +876,9 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
+    .titlebar-add,
     .titlebar-tab.titlebar-tab-moving,
-    .titlebar-tab.titlebar-tab-moving.titlebar-tab-settling {
+    .titlebar-tab.titlebar-tab-settling {
       transition: none;
     }
   }

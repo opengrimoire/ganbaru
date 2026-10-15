@@ -76,6 +76,8 @@
   let tabContextId = $state<string | null>(null);
   let titleBarTabs: { handleWheel: (event: WheelEvent) => void } | undefined;
   let mediaControls: { handleVolumeWheel: (event: WheelEvent) => void } | undefined;
+  /** Empty title bar space after the tabs, whose end is as far right as a dragged tab may slide. */
+  let tabTrackEnd: HTMLDivElement | undefined = $state();
   const settingsLauncher = getSettingsLauncher();
   const themeEditor = getThemeEditor();
   let perfPinned = $state(false);
@@ -459,10 +461,11 @@
     pomodoroMenuOpen={showPomodoroMenu}
     onVolumeWheel={(event) => mediaControls?.handleVolumeWheel(event)}
     onOpenContextMenu={openTabContextMenu}
+    trackEnd={tabTrackEnd}
   />
 
   <!-- Draggable spacer, kept wide enough to grab the window when tabs fill the bar -->
-  <div data-tauri-drag-region class="min-w-8 flex-1 self-stretch"></div>
+  <div bind:this={tabTrackEnd} data-tauri-drag-region class="min-w-8 flex-1 self-stretch"></div>
 
   <!-- Utility buttons -->
   <div class="flex shrink-0 items-center gap-0.5">

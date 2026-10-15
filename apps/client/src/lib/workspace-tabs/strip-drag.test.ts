@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   tabDragLeftBar,
+  tabDragPassedTrack,
   tabStripDropIndex,
   tabStripInsertIndex,
   tabStripInsertPosition,
@@ -94,6 +95,11 @@ describe("dragged tab position", () => {
 
   it("stays at the start when the strip is narrower than the tab", () => {
     expect(tabStripVisualLeft(900, 40, 100, 60)).toBe(0);
+  });
+
+  it("passes the end of its track only once its right edge would", () => {
+    expect(tabDragPassedTrack(340, 40, 100, 400)).toBe(false);
+    expect(tabDragPassedTrack(341, 40, 100, 400)).toBe(true);
   });
 
   it("measures the strip by its rightmost tab", () => {

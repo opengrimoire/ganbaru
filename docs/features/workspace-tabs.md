@@ -26,7 +26,7 @@ A locked tab stays on its project or item. Navigating somewhere outside it insid
 
 ## Title bar
 
-The + after the last tab opens a launcher with the kinds, each opened by its number key while the launcher is open, and the open tabs when the strip cannot show them all. Closed tabs come back with Ctrl+Shift+T or the tab menu. The dragged tab itself follows the pointer along the bar and the others slide aside as it passes them; pulled off the bar, it floats under the pointer until dropped. Cancelling the drag puts it back.
+The + after the last tab opens a launcher with the kinds, each opened by its number key while the launcher is open, and the open tabs when the strip cannot show them all. Closed tabs come back with Ctrl+Shift+T or the tab menu. Pressing a tab opens it, so a dragged tab is the one shown. The dragged tab itself follows the pointer along the bar and the others slide aside as it passes them; past the last tab it pushes the + ahead of it through the empty bar. Pulled off the bar, or up to the controls at its end, it floats under the pointer until dropped. Cancelling the drag puts it back.
 
 Tabs size like browser tabs: each has the same fixed width and all of them shrink evenly only when the bar runs out of room, dropping the inactive close button, then the label, as they narrow. Only when they no longer fit at their narrowest does the strip show just the active tab, with the launcher keeping every tab reachable. The compact tabs setting shows icons only at any size, and a strip of empty title bar stays free for moving the window.
 

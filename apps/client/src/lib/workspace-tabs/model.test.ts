@@ -4,27 +4,37 @@ import {
   activeWorkspaceTab,
   closeWorkspaceTab,
   createWorkspaceTab,
+  DEFAULT_SPLIT_RATIO,
   defaultWorkspaceTabsState,
   insertWorkspaceTab,
   isWithinTabScope,
   kindLocation,
   MAX_CLOSED_WORKSPACE_TABS,
   MAX_WORKSPACE_TABS,
+  MIN_SPLIT_RATIO,
   moveWorkspaceTab,
+  normalizeWorkspaceSplits,
   parseClosedWorkspaceTabs,
   parseWorkspaceTabLocation,
   parseWorkspaceTabsState,
   relativeWorkspaceTabId,
   rememberClosedWorkspaceTabs,
   reopenWorkspaceTab,
+  resizeWorkspaceSplit,
   savedWindowLabels,
   serializeClosedWorkspaceTabs,
   serializeWorkspaceTabsState,
+  setWorkspaceSplitOrientation,
   showWorkspaceTabNeighbor,
+  splitWorkspaceTabs,
+  swapWorkspaceSplit,
   tabMatchesTarget,
   takeWorkspaceTab,
+  unsplitWorkspaceTab,
   updateWorkspaceTab,
   workspaceTabIdAtPosition,
+  workspaceSplitBlock,
+  workspaceSplitPartnerId,
   workspaceTabLockLevel,
   type ClosedWorkspaceTab,
   type WorkspaceTab,
@@ -44,7 +54,7 @@ function tab(id: string, kind: View, overrides: Partial<WorkspaceTab> = {}): Wor
 }
 
 function state(tabs: WorkspaceTab[], activeTabId = tabs[0].id): WorkspaceTabsState {
-  return { tabs, activeTabId, closed: [] };
+  return { tabs, activeTabId, closed: [], splits: [] };
 }
 
 /** A closed kind tab remembered at a strip position, most recent first when listed. */
@@ -272,7 +282,173 @@ describe("tabs leaving for another window", () => {
   });
 });
 
+describe("workspace split blocks", () => {
+  const hostedNotes: WorkspaceTabLocation = { kind: "projects", projectId: "a", item: { type: "project-view", id: "notes-view" } };
+  const paneView = (location: WorkspaceTabLocation): View => (
+    location.item?.type === "project-view" && location.item.id === "notes-view" ? "notes" : location.kind
+  );
+
+  it("refuses a tab beside itself and two tabs of one kind, even on different views", () => {
+    const tasks = tab("tasks", "projects", { location: projectA });
+    const hosted = tab("hosted", "projects", { location: hostedNotes });
+    expect(workspaceSplitBlock(tasks, tasks, paneView)).toBe("same-tab");
+    expect(workspaceSplitBlock(tasks, hosted, paneView)).toBe("same-view");
+  });
+
+  it("refuses a project view hosting Notes beside a Notes tab", () => {
+    const hosted = tab("hosted", "projects", { location: hostedNotes });
+    expect(workspaceSplitBlock(hosted, tab("notes", "notes", { location: pageOne }), paneView)).toBe("same-view");
+    expect(workspaceSplitBlock(hosted, tab("chat", "chat"), paneView)).toBeNull();
+  });
+
+  it("lets Calendar sit beside any project, locked or not", () => {
+    const locked = tab("b", "projects", { location: projectB, level: "project", locked: true });
+    expect(workspaceSplitBlock(tab("cal", "calendar"), locked, paneView)).toBeNull();
+    expect(workspaceSplitBlock(locked, tab("cal", "calendar"), paneView)).toBeNull();
+  });
+
+  it("refuses a tab locked to another project, but lets an unlocked one follow the current project", () => {
+    const current = tab("a", "projects", { location: projectA, level: "project", locked: true });
+    const lockedPage = tab("page", "notes", {
+      location: { ...pageOne, projectId: "b" },
+      level: "item",
+      locked: true,
+    });
+    expect(workspaceSplitBlock(current, lockedPage, paneView)).toBe("locked-project");
+    expect(workspaceSplitBlock(current, { ...lockedPage, locked: false, level: "kind" }, paneView)).toBeNull();
+    expect(workspaceSplitBlock(current, { ...lockedPage, location: pageOne }, paneView)).toBeNull();
+  });
+
+  it("lets a locked tab join a current tab that shows no project", () => {
+    const empty = tab("chat", "chat");
+    const locked = tab("b", "projects", { location: projectB, level: "project", locked: true });
+    expect(workspaceSplitBlock(empty, locked, paneView)).toBeNull();
+  });
+});
+
+describe("workspace split views", () => {
+  const strip = () => state([tab("a", "calendar"), tab("b", "projects"), tab("c", "notes"), tab("d", "chat")], "a");
+
+  it("shows the added tab beside the current one, next to it in the strip, keeping the current tab active", () => {
+    const next = splitWorkspaceTabs(strip(), "a", "c");
+    expect(ids(next)).toEqual(["a", "c", "b", "d"]);
+    expect(next.activeTabId).toBe("a");
+    expect(next.splits).toEqual([{ tabIds: ["a", "c"], orientation: "side-by-side", ratio: DEFAULT_SPLIT_RATIO }]);
+    expect(workspaceSplitPartnerId(next, "c")).toBe("a");
+  });
+
+  it("replaces the partner of a tab already split, keeping its side and layout", () => {
+    const stacked = setWorkspaceSplitOrientation(resizeWorkspaceSplit(splitWorkspaceTabs(strip(), "b", "a"), "a", 0.3), "a", "stacked");
+    expect(ids(stacked)).toEqual(["b", "a", "c", "d"]);
+    const next = splitWorkspaceTabs(stacked, "a", "d");
+    expect(ids(next)).toEqual(["b", "d", "a", "c"]);
+    expect(next.splits).toEqual([{ tabIds: ["d", "a"], orientation: "stacked", ratio: 0.3 }]);
+  });
+
+  it("takes an added tab out of the split it was in", () => {
+    const first = splitWorkspaceTabs(strip(), "a", "b");
+    const next = splitWorkspaceTabs({ ...first, activeTabId: "c" }, "c", "b");
+    expect(next.splits.map((split) => split.tabIds)).toEqual([["c", "b"]]);
+    expect(ids(next)).toEqual(["a", "c", "b", "d"]);
+  });
+
+  it("refuses a tab paired with itself or a missing tab", () => {
+    const current = strip();
+    expect(splitWorkspaceTabs(current, "a", "a")).toBe(current);
+    expect(splitWorkspaceTabs(current, "a", "missing")).toBe(current);
+  });
+
+  it("swaps the sides and the strip order, mirroring the ratio", () => {
+    const split = resizeWorkspaceSplit(splitWorkspaceTabs(strip(), "a", "b"), "b", 0.3);
+    const next = swapWorkspaceSplit(split, "a");
+    expect(ids(next)).toEqual(["b", "a", "c", "d"]);
+    expect(next.splits[0]).toMatchObject({ tabIds: ["b", "a"], ratio: 0.7 });
+  });
+
+  it("keeps the ratio within bounds and ignores tabs outside a split", () => {
+    const split = splitWorkspaceTabs(strip(), "a", "b");
+    expect(resizeWorkspaceSplit(split, "a", 0.01).splits[0].ratio).toBe(MIN_SPLIT_RATIO);
+    expect(resizeWorkspaceSplit(split, "a", 0.99).splits[0].ratio).toBe(1 - MIN_SPLIT_RATIO);
+    expect(resizeWorkspaceSplit(split, "a", Number.NaN).splits[0].ratio).toBe(DEFAULT_SPLIT_RATIO);
+    expect(resizeWorkspaceSplit(split, "c", 0.3)).toBe(split);
+    expect(swapWorkspaceSplit(split, "d")).toBe(split);
+    expect(setWorkspaceSplitOrientation(split, "a", "side-by-side")).toBe(split);
+  });
+
+  it("ends a split without moving its tabs", () => {
+    const next = unsplitWorkspaceTab(splitWorkspaceTabs(strip(), "a", "c"), "c");
+    expect(next.splits).toEqual([]);
+    expect(ids(next)).toEqual(["a", "c", "b", "d"]);
+  });
+
+  it("moves a split as one block and never drops a tab between its two tabs", () => {
+    const split = splitWorkspaceTabs(strip(), "a", "b");
+    expect(ids(moveWorkspaceTab(split, "b", "d", "after"))).toEqual(["c", "d", "a", "b"]);
+    expect(ids(moveWorkspaceTab(split, "d", "a", "after"))).toEqual(["a", "b", "d", "c"]);
+    expect(ids(moveWorkspaceTab(split, "d", "b", "before"))).toEqual(["d", "a", "b", "c"]);
+    expect(moveWorkspaceTab(split, "a", "b", "after")).toBe(split);
+  });
+
+  it("opens new tabs after the whole split", () => {
+    const split = splitWorkspaceTabs(strip(), "a", "b");
+    expect(ids(insertWorkspaceTab(split, tab("e", "notes"), "after-active"))).toEqual(["a", "b", "e", "c", "d"]);
+    expect(ids(insertWorkspaceTab(split, tab("e", "notes"), { afterId: "a" }))).toEqual(["a", "b", "e", "c", "d"]);
+  });
+
+  it("ends the split when one of its tabs closes, focusing the other one", () => {
+    const split = splitWorkspaceTabs(strip(), "a", "b");
+    const next = closeWorkspaceTab({ ...split, activeTabId: "b" }, "b");
+    expect(next?.splits).toEqual([]);
+    expect(next?.activeTabId).toBe("a");
+    expect(next?.closed[0].location.kind).toBe("projects");
+  });
+
+  it("reopens a tab after a split instead of between its tabs", () => {
+    const split = splitWorkspaceTabs(state([tab("a", "calendar"), tab("b", "projects")]), "a", "b");
+    const reopened = reopenWorkspaceTab({ ...split, closed: [closedAt("notes", 1)] }, idFactory());
+    expect(reopened && ids(reopened.state)).toEqual(["a", "b", "new-1"]);
+    expect(reopened?.state.splits).toHaveLength(1);
+  });
+
+  it("drops splits that point at missing tabs or claim a tab twice, and rejoins separated ones", () => {
+    const current = state([tab("a", "calendar"), tab("b", "projects"), tab("c", "notes")]);
+    const normalized = normalizeWorkspaceSplits({
+      ...current,
+      splits: [
+        { tabIds: ["a", "c"], orientation: "side-by-side", ratio: 0.5 },
+        { tabIds: ["c", "b"], orientation: "side-by-side", ratio: 0.5 },
+        { tabIds: ["b", "missing"], orientation: "side-by-side", ratio: 0.5 },
+        { tabIds: ["b", "b"], orientation: "side-by-side", ratio: 0.5 },
+      ],
+    });
+    expect(normalized.splits.map((split) => split.tabIds)).toEqual([["a", "c"]]);
+    expect(ids(normalized)).toEqual(["a", "c", "b"]);
+    expect(normalizeWorkspaceSplits(normalized)).toBe(normalized);
+  });
+});
+
 describe("workspace tab persistence", () => {
+  it("round-trips split views and drops malformed ones", () => {
+    const split = setWorkspaceSplitOrientation(
+      splitWorkspaceTabs(state([tab("a", "calendar"), tab("b", "projects"), tab("c", "notes")]), "a", "c"),
+      "a",
+      "stacked",
+    );
+    const raw = JSON.parse(serializeWorkspaceTabsState(split)) as Record<string, unknown>;
+    expect(parseWorkspaceTabsState(raw, ALL_KINDS)?.splits).toEqual(split.splits);
+    const malformed = parseWorkspaceTabsState({
+      ...raw,
+      splits: [
+        { tabIds: ["a"], orientation: "stacked", ratio: 0.5 },
+        { tabIds: ["a", "b"], orientation: "diagonal", ratio: 0.5 },
+        { tabIds: ["b", "missing"], orientation: "stacked", ratio: 0.5 },
+        { tabIds: ["b", "c"], orientation: "stacked", ratio: 3 },
+      ],
+    }, ALL_KINDS);
+    expect(malformed?.splits).toEqual([{ tabIds: ["b", "c"], orientation: "stacked", ratio: 1 - MIN_SPLIT_RATIO }]);
+    expect(parseWorkspaceTabsState({ ...raw, splits: "split" }, ALL_KINDS)?.splits).toEqual([]);
+  });
+
   it("round-trips a window's tabs and active tab, leaving the shared reopen history out", () => {
     const current: WorkspaceTabsState = {
       tabs: [
@@ -281,6 +457,7 @@ describe("workspace tab persistence", () => {
       ],
       activeTabId: "b",
       closed: [{ level: "project", locked: false, location: projectA, title: "A", projectTitle: "Alpha", index: 1 }],
+      splits: [],
     };
     const parsed = parseWorkspaceTabsState(JSON.parse(serializeWorkspaceTabsState(current)), ALL_KINDS);
     expect(parsed?.tabs).toEqual(current.tabs);

@@ -37,6 +37,9 @@ export function createDeferredWorkspaceLocationAdapter(
     projectName(projectId) {
       return loaded?.projectName(projectId) ?? null;
     },
+    paneView(location) {
+      return loaded?.paneView(location) ?? location.kind;
+    },
     async apply(location, isCurrent) {
       if (location.kind === "calendar") return;
       const adapter = await ensureLoaded();

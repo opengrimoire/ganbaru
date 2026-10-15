@@ -41,11 +41,27 @@ export interface ClosedWorkspaceTab {
   index: number;
 }
 
+/** How a split view lays out its two tabs: beside each other, or one above the other. */
+export type WorkspaceSplitOrientation = "side-by-side" | "stacked";
+
+/**
+ * Two tabs shown together while either is active. They sit next to each other in the strip, in the order the view
+ * shows them: the first on the left or on top.
+ */
+export interface WorkspaceTabSplit {
+  tabIds: readonly [string, string];
+  orientation: WorkspaceSplitOrientation;
+  /** Share of the space the first tab takes. */
+  ratio: number;
+}
+
 export interface WorkspaceTabsState {
   tabs: WorkspaceTab[];
   activeTabId: string;
   /** Most recently closed first. */
   closed: ClosedWorkspaceTab[];
+  /** Split views; a tab belongs to at most one. */
+  splits: readonly WorkspaceTabSplit[];
 }
 
 export type WorkspaceTabPlacement = "before" | "after";
@@ -53,6 +69,10 @@ export type WorkspaceTabIdFactory = () => string;
 
 export const MAX_WORKSPACE_TABS = 32;
 export const MAX_CLOSED_WORKSPACE_TABS = 10;
+export const DEFAULT_SPLIT_RATIO = 0.5;
+/** Smallest share either tab of a split keeps, so neither can be dragged out of sight. */
+export const MIN_SPLIT_RATIO = 0.15;
+const SPLIT_ORIENTATIONS: readonly WorkspaceSplitOrientation[] = ["side-by-side", "stacked"];
 const MAX_ID_LENGTH = 1_024;
 const MAX_TITLE_LENGTH = 200;
 /** Kinds opened when a vault has no saved tabs yet. */
@@ -142,7 +162,58 @@ export function defaultWorkspaceTabsState(
   const kinds = defaults.length > 0 ? defaults : availableKinds.slice(0, 1);
   const tabs = (kinds.length > 0 ? kinds : ["calendar" as const])
     .map((kind) => createWorkspaceTab(createId(), kindLocation(kind)));
-  return { tabs, activeTabId: tabs[0].id, closed: [] };
+  return { tabs, activeTabId: tabs[0].id, closed: [], splits: [] };
+}
+
+/** Return the split a tab belongs to, or null. */
+export function workspaceTabSplit(state: WorkspaceTabsState, id: string): WorkspaceTabSplit | null {
+  return state.splits.find((split) => split.tabIds.includes(id)) ?? null;
+}
+
+/** Return the tab shown beside `id` in its split, or null. */
+export function workspaceSplitPartnerId(state: WorkspaceTabsState, id: string): string | null {
+  const split = workspaceTabSplit(state, id);
+  if (!split) return null;
+  return split.tabIds[0] === id ? split.tabIds[1] : split.tabIds[0];
+}
+
+/** The tabs that move together with `id`: its split, or the tab alone. */
+function tabBlockIds(state: WorkspaceTabsState, id: string): readonly string[] {
+  return workspaceTabSplit(state, id)?.tabIds ?? [id];
+}
+
+export function clampSplitRatio(ratio: number): number {
+  if (!Number.isFinite(ratio)) return DEFAULT_SPLIT_RATIO;
+  return Math.min(1 - MIN_SPLIT_RATIO, Math.max(MIN_SPLIT_RATIO, ratio));
+}
+
+/**
+ * Keep splits consistent with the strip: drop splits whose tabs are gone or claimed twice, and pull each split's
+ * second tab right after its first. Returns the same state when nothing changed.
+ */
+export function normalizeWorkspaceSplits(state: WorkspaceTabsState): WorkspaceTabsState {
+  const ids = new Set(state.tabs.map((tab) => tab.id));
+  const claimed = new Set<string>();
+  const splits = state.splits.filter(({ tabIds: [first, second] }) => {
+    if (first === second || !ids.has(first) || !ids.has(second) || claimed.has(first) || claimed.has(second)) {
+      return false;
+    }
+    claimed.add(first);
+    claimed.add(second);
+    return true;
+  });
+  let tabs = state.tabs;
+  for (const { tabIds: [first, second] } of splits) {
+    const firstIndex = tabs.findIndex((tab) => tab.id === first);
+    const secondIndex = tabs.findIndex((tab) => tab.id === second);
+    if (secondIndex === firstIndex + 1) continue;
+    const moving = tabs[secondIndex];
+    const without = tabs.filter((tab) => tab.id !== second);
+    without.splice(without.findIndex((tab) => tab.id === first) + 1, 0, moving);
+    tabs = without;
+  }
+  if (tabs === state.tabs && splits.length === state.splits.length) return state;
+  return { ...state, tabs, splits };
 }
 
 export function activeWorkspaceTab(state: WorkspaceTabsState): WorkspaceTab {
@@ -164,7 +235,8 @@ export type WorkspaceTabInsertPosition = "end" | "after-active" | { afterId: str
 
 /**
  * Insert a tab, activating it unless `activate` is false. A position after a tab that no longer exists
- * falls back to after the active tab. Returns the same state when the tab limit is reached.
+ * falls back to after the active tab, and a position after a tab in a split lands after the whole split.
+ * Returns the same state when the tab limit is reached.
  */
 export function insertWorkspaceTab(
   state: WorkspaceTabsState,
@@ -174,9 +246,10 @@ export function insertWorkspaceTab(
 ): WorkspaceTabsState {
   if (!canAddWorkspaceTab(state)) return state;
   const tabs = [...state.tabs];
-  const anchorId = typeof position === "object" ? position.afterId : state.activeTabId;
+  const anchorId = tabBlockIds(state, typeof position === "object" ? position.afterId : state.activeTabId).at(-1);
   const anchorIndex = tabs.findIndex((candidate) => candidate.id === anchorId);
-  const activeIndex = tabs.findIndex((candidate) => candidate.id === state.activeTabId);
+  const activeBlockEnd = tabBlockIds(state, state.activeTabId).at(-1);
+  const activeIndex = tabs.findIndex((candidate) => candidate.id === activeBlockEnd);
   const afterIndex = anchorIndex >= 0 ? anchorIndex : activeIndex;
   const index = position !== "end" && afterIndex >= 0 ? afterIndex + 1 : tabs.length;
   tabs.splice(index, 0, tab);
@@ -234,10 +307,15 @@ export function rememberClosedWorkspaceTabs(
   return { ...state, closed };
 }
 
-/** Pick the tab that takes focus when one closes or leaves: its right neighbor, else its left one. */
-function neighborTabId(tabs: readonly WorkspaceTab[], id: string): string | null {
-  const index = tabs.findIndex((tab) => tab.id === id);
-  const neighbor = tabs[index + 1] ?? tabs[index - 1];
+/**
+ * Pick the tab that takes focus when one closes or leaves: the other tab of its split, else its right neighbor,
+ * else its left one.
+ */
+function neighborTabId(state: WorkspaceTabsState, id: string): string | null {
+  const partner = workspaceSplitPartnerId(state, id);
+  if (partner) return partner;
+  const index = state.tabs.findIndex((tab) => tab.id === id);
+  const neighbor = state.tabs[index + 1] ?? state.tabs[index - 1];
   return neighbor && neighbor.id !== id ? neighbor.id : null;
 }
 
@@ -247,7 +325,7 @@ function neighborTabId(tabs: readonly WorkspaceTab[], id: string): string | null
  */
 export function showWorkspaceTabNeighbor(state: WorkspaceTabsState, id: string): WorkspaceTabsState {
   if (state.activeTabId !== id) return state;
-  const neighbor = neighborTabId(state.tabs, id);
+  const neighbor = neighborTabId(state, id);
   return neighbor ? activateWorkspaceTab(state, neighbor) : state;
 }
 
@@ -265,33 +343,136 @@ export function closeWorkspaceTab(state: WorkspaceTabsState, id: string): Worksp
 }
 
 /**
- * Remove a tab without remembering it, as when it moves to another window. Returns null when it is the
- * window's last tab, so the window has nothing left to show.
+ * Remove a tab without remembering it, as when it moves to another window, ending its split. Returns null when
+ * it is the window's last tab, so the window has nothing left to show.
  */
 export function takeWorkspaceTab(state: WorkspaceTabsState, id: string): WorkspaceTabsState | null {
   if (!state.tabs.some((tab) => tab.id === id)) return state;
   const tabs = state.tabs.filter((candidate) => candidate.id !== id);
   if (tabs.length === 0) return null;
-  const activeTabId = state.activeTabId === id ? neighborTabId(state.tabs, id) ?? tabs[0].id : state.activeTabId;
-  return { ...state, tabs, activeTabId };
+  const activeTabId = state.activeTabId === id ? neighborTabId(state, id) ?? tabs[0].id : state.activeTabId;
+  const splits = state.splits.filter((split) => !split.tabIds.includes(id));
+  return { ...state, tabs, activeTabId, splits };
 }
 
-/** Move a tab before or after another one. */
+/**
+ * Move a tab before or after another one. A tab in a split moves together with its partner, and a target in a
+ * split stands for the whole split, so nothing lands between the two.
+ */
 export function moveWorkspaceTab(
   state: WorkspaceTabsState,
   id: string,
   targetId: string,
   placement: WorkspaceTabPlacement,
 ): WorkspaceTabsState {
-  if (id === targetId) return state;
-  const moving = state.tabs.find((tab) => tab.id === id);
-  if (!moving) return state;
-  const tabs = state.tabs.filter((tab) => tab.id !== id);
-  const targetIndex = tabs.findIndex((tab) => tab.id === targetId);
+  const block = tabBlockIds(state, id);
+  if (block.includes(targetId)) return state;
+  const moving = state.tabs.filter((tab) => block.includes(tab.id));
+  if (moving.length === 0) return state;
+  const targetBlock = tabBlockIds(state, targetId);
+  const anchorId = placement === "before" ? targetBlock[0] : targetBlock[targetBlock.length - 1];
+  const tabs = state.tabs.filter((tab) => !block.includes(tab.id));
+  const targetIndex = tabs.findIndex((tab) => tab.id === anchorId);
   if (targetIndex < 0) return state;
-  tabs.splice(placement === "before" ? targetIndex : targetIndex + 1, 0, moving);
+  tabs.splice(placement === "before" ? targetIndex : targetIndex + 1, 0, ...moving);
   if (tabs.every((tab, index) => tab === state.tabs[index])) return state;
   return { ...state, tabs };
+}
+
+/**
+ * Show `addedId` beside `currentId` and keep `currentId` active. A tab already in a split leaves it first. When
+ * `currentId` is in a split, `addedId` takes its partner's side, keeping the layout, and the partner stays in the
+ * strip right after the new split.
+ */
+export function splitWorkspaceTabs(state: WorkspaceTabsState, currentId: string, addedId: string): WorkspaceTabsState {
+  if (currentId === addedId) return state;
+  if (!state.tabs.some((tab) => tab.id === currentId) || !state.tabs.some((tab) => tab.id === addedId)) return state;
+  const existing = workspaceTabSplit(state, currentId);
+  const currentFirst = existing ? existing.tabIds[0] === currentId : true;
+  const unsplit = {
+    ...state,
+    splits: state.splits.filter((split) => !split.tabIds.includes(currentId) && !split.tabIds.includes(addedId)),
+  };
+  const placed = moveWorkspaceTab(unsplit, addedId, currentId, currentFirst ? "after" : "before");
+  const split: WorkspaceTabSplit = {
+    tabIds: currentFirst ? [currentId, addedId] : [addedId, currentId],
+    orientation: existing?.orientation ?? "side-by-side",
+    ratio: existing?.ratio ?? DEFAULT_SPLIT_RATIO,
+  };
+  return { ...placed, activeTabId: currentId, splits: [...placed.splits, split] };
+}
+
+/**
+ * Why a tab cannot show beside another: the same tab, the same view (two views of one kind share their stores,
+ * and two tabs that show the same view would show it twice), or a tab locked to a project other than the one the
+ * current tab shows. The added tab follows the current tab's project otherwise, because the views share it.
+ */
+export type WorkspaceSplitBlock = "same-tab" | "same-view" | "locked-project";
+
+/** Whether `added` can show beside `current`, given the view each location shows. */
+export function workspaceSplitBlock(
+  current: WorkspaceTab,
+  added: WorkspaceTab,
+  paneView: (location: WorkspaceTabLocation) => View,
+): WorkspaceSplitBlock | null {
+  if (current.id === added.id) return "same-tab";
+  const [a, b] = [current.location, added.location];
+  if (a.kind === b.kind || paneView(a) === paneView(b)) return "same-view";
+  const shareProject = a.kind === "calendar" || b.kind === "calendar" || a.projectId === null
+    || b.projectId === a.projectId;
+  return added.locked && !shareProject ? "locked-project" : null;
+}
+
+/** End the split `id` belongs to, keeping both tabs where they are. */
+export function unsplitWorkspaceTab(state: WorkspaceTabsState, id: string): WorkspaceTabsState {
+  const split = workspaceTabSplit(state, id);
+  return split ? { ...state, splits: state.splits.filter((candidate) => candidate !== split) } : state;
+}
+
+function replaceSplit(
+  state: WorkspaceTabsState,
+  id: string,
+  change: (split: WorkspaceTabSplit) => WorkspaceTabSplit,
+): WorkspaceTabsState {
+  const split = workspaceTabSplit(state, id);
+  if (!split) return state;
+  const next = change(split);
+  if (
+    next.tabIds[0] === split.tabIds[0]
+    && next.orientation === split.orientation
+    && next.ratio === split.ratio
+  ) return state;
+  return { ...state, splits: state.splits.map((candidate) => candidate === split ? next : candidate) };
+}
+
+/** Swap which side of its split each tab shows on, along with their order in the strip. */
+export function swapWorkspaceSplit(state: WorkspaceTabsState, id: string): WorkspaceTabsState {
+  const split = workspaceTabSplit(state, id);
+  if (!split) return state;
+  const [first, second] = split.tabIds;
+  const tabs = [...state.tabs];
+  const firstIndex = tabs.findIndex((tab) => tab.id === first);
+  const secondIndex = tabs.findIndex((tab) => tab.id === second);
+  [tabs[firstIndex], tabs[secondIndex]] = [tabs[secondIndex], tabs[firstIndex]];
+  const swapped = replaceSplit(state, id, (current) => ({
+    ...current,
+    tabIds: [second, first],
+    ratio: clampSplitRatio(1 - current.ratio),
+  }));
+  return { ...swapped, tabs };
+}
+
+export function setWorkspaceSplitOrientation(
+  state: WorkspaceTabsState,
+  id: string,
+  orientation: WorkspaceSplitOrientation,
+): WorkspaceTabsState {
+  return replaceSplit(state, id, (split) => ({ ...split, orientation }));
+}
+
+/** Set the share of the space the first tab of a split takes, kept within the bounds either tab needs. */
+export function resizeWorkspaceSplit(state: WorkspaceTabsState, id: string, ratio: number): WorkspaceTabsState {
+  return replaceSplit(state, id, (split) => ({ ...split, ratio: clampSplitRatio(ratio) }));
 }
 
 /** Reopen a remembered tab at its former position, the most recent one by default. */
@@ -311,7 +492,7 @@ export function reopenWorkspaceTab(
   const tabs = [...state.tabs];
   tabs.splice(Math.min(entry.index, tabs.length), 0, tab);
   const closed = state.closed.filter((_, index) => index !== closedIndex);
-  return { state: { tabs, activeTabId: tab.id, closed }, tab };
+  return { state: normalizeWorkspaceSplits({ ...state, tabs, activeTabId: tab.id, closed }), tab };
 }
 
 /** Return the tab next to the active one, wrapping around the ends. */
@@ -435,7 +616,17 @@ export function parseWorkspaceTabsState(
   });
   if (tabs.length === 0) return null;
   const activeTabId = tabs.find((tab) => tab.id === value.activeTabId)?.id ?? tabs[0].id;
-  return { tabs, activeTabId, closed: [] };
+  const splits = Array.isArray(value.splits) ? value.splits.flatMap((entry) => parseSplit(entry) ?? []) : [];
+  return normalizeWorkspaceSplits({ tabs, activeTabId, closed: [], splits });
+}
+
+function parseSplit(value: unknown): WorkspaceTabSplit | null {
+  if (!isRecord(value) || !Array.isArray(value.tabIds) || value.tabIds.length !== 2) return null;
+  const first = boundedId(value.tabIds[0]);
+  const second = boundedId(value.tabIds[1]);
+  const orientation = SPLIT_ORIENTATIONS.find((candidate) => candidate === value.orientation);
+  if (!first || !second || !orientation || typeof value.ratio !== "number") return null;
+  return { tabIds: [first, second], orientation, ratio: clampSplitRatio(value.ratio) };
 }
 
 /** Return the persisted shape of a window's tabs, without the shared reopen history. */
@@ -443,6 +634,7 @@ export function serializeWorkspaceTabsState(state: WorkspaceTabsState): string {
   return JSON.stringify({
     tabs: state.tabs,
     activeTabId: state.activeTabId,
+    splits: state.splits,
   });
 }
 

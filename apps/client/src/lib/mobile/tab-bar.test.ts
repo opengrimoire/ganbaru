@@ -51,6 +51,7 @@ describe("mobileTabBarDropMoves", () => {
       tabs: order.map((id) => createWorkspaceTab(id, kindLocation("calendar"))),
       activeTabId,
       closed: [],
+      splits: [],
     };
   }
 

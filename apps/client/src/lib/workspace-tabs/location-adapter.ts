@@ -12,6 +12,8 @@ export interface WorkspaceLocationProjects<TView extends { id: string }> {
   /** Display name of a project view, or null when it is not loaded. */
   viewName(projectId: string, viewId: string): string | null;
   viewsForProject(projectId: string): readonly TView[];
+  /** The other kind a project view hosts, such as Notes, or null for a task view or one not loaded. */
+  hostedView(projectId: string, viewId: string): View | null;
   selectProject(projectId: string): Promise<void>;
   selectView(view: TView): void;
 }
@@ -105,6 +107,11 @@ export function createWorkspaceLocationAdapter<TView extends { id: string }>(
     },
     projectName(projectId) {
       return stores.projects.projectName(projectId);
+    },
+    paneView(location) {
+      const { kind, projectId, item } = location;
+      if (kind !== "projects" || !projectId || item?.type !== "project-view") return kind;
+      return stores.projects.hostedView(projectId, item.id) ?? kind;
     },
     async apply(location, isCurrent) {
       if (location.kind === "calendar") return;

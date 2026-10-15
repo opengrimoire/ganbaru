@@ -4,6 +4,7 @@ import { createWorkspaceLocationAdapter, type WorkspaceLocationStores } from "./
 interface FakeView {
   id: string;
   projectId: string;
+  hosted?: "notes" | "chat";
 }
 
 function fakeStores(options: {
@@ -32,6 +33,9 @@ function fakeStores(options: {
         views.some((view) => view.projectId === projectId && view.id === viewId) ? `View ${viewId}` : null
       ),
       viewsForProject: (id: string) => views.filter((view) => view.projectId === id),
+      hostedView: (projectId: string, viewId: string) => (
+        views.find((view) => view.projectId === projectId && view.id === viewId)?.hosted ?? null
+      ),
       selectProject: vi.fn(async (id: string) => { state.projectId = id; }),
       selectView: vi.fn((view: FakeView) => { state.viewIds[view.projectId] = view.id; }),
     },
@@ -157,5 +161,21 @@ describe("workspace location adapter", () => {
     await adapter.apply({ kind: "notes", projectId: null, item: { type: "notes-page", id: "page" } }, () => true);
 
     expect(state.pageId).toBe("page");
+  });
+});
+
+describe("workspace pane views", () => {
+  it("renders project views that host another kind as that kind", () => {
+    const { stores } = fakeStores({
+      views: [{ id: "board", projectId: "p1" }, { id: "docs", projectId: "p1", hosted: "notes" }],
+    });
+    const adapter = createWorkspaceLocationAdapter(stores);
+    const projectView = (id: string) => ({ kind: "projects" as const, projectId: "p1", item: { type: "project-view" as const, id } });
+
+    expect(adapter.paneView(projectView("docs"))).toBe("notes");
+    expect(adapter.paneView(projectView("board"))).toBe("projects");
+    expect(adapter.paneView(projectView("missing"))).toBe("projects");
+    expect(adapter.paneView({ kind: "projects", projectId: null, item: null })).toBe("projects");
+    expect(adapter.paneView({ kind: "chat", projectId: "p1", item: null })).toBe("chat");
   });
 });

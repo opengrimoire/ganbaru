@@ -55,6 +55,8 @@ export interface WorkspaceLocationAdapter {
   itemTitle(location: WorkspaceTabLocation): string | null;
   /** Name of a project, or null when it is not loaded. */
   projectName(projectId: string): string | null;
+  /** The view that shows a location, such as Notes for a project view that hosts Notes. */
+  paneView(location: WorkspaceTabLocation): View;
   /** Restore a location, stopping between steps once `isCurrent` turns false. */
   apply(location: WorkspaceTabLocation, isCurrent: () => boolean): Promise<void>;
 }
@@ -443,7 +445,7 @@ function adoptSavedWindow(vaultId: string | null): WorkspaceTabsState | null {
 
 function loadForVault(vaultId: string | null, initialTab: WorkspaceTab | null, adoptSaved = false): void {
   storageVaultId = vaultId;
-  const initial = initialTab ? { tabs: [initialTab], activeTabId: initialTab.id, closed: [] } : null;
+  const initial = initialTab ? { tabs: [initialTab], activeTabId: initialTab.id, closed: [], splits: [] } : null;
   const loaded = readStoredState(vaultId)
     ?? (adoptSaved ? adoptSavedWindow(vaultId) : null)
     ?? initial

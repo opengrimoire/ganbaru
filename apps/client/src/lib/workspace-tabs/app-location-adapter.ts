@@ -1,6 +1,7 @@
 import { projectViewLabel } from "$lib/components/projects/sidebar/project-view-presentation";
 import type { Translate } from "$lib/i18n/translator.svelte";
 import { notesPageTitle } from "$lib/notes/pages/title";
+import { isProjectHostedViewType } from "$lib/projects/views";
 import type { WorkspaceLocationAdapter } from "$lib/stores/workspace-tabs.svelte";
 import type { getChat } from "$lib/stores/chat.svelte";
 import type { getNotes } from "$lib/stores/notes.svelte";
@@ -35,6 +36,10 @@ export function createAppWorkspaceLocationAdapter(
         return view ? projectViewLabel(t, view) : null;
       },
       viewsForProject: (projectId) => projects.viewsForProject(projectId),
+      hostedView: (projectId, viewId) => {
+        const view = projects.viewsForProject(projectId).find((candidate) => candidate.id === viewId);
+        return view && isProjectHostedViewType(view.viewType) ? view.viewType : null;
+      },
       selectProject: (projectId) => projects.selectProject(projectId),
       selectView: (view) => projects.selectView(view),
     },

@@ -10,6 +10,7 @@ function loadedAdapter(): WorkspaceLocationAdapter {
     read: (kind) => ({ kind, projectId: "project-1", item: null }),
     itemTitle: () => "Roadmap",
     projectName: () => "Alpha",
+    paneView: (location) => location.kind,
     apply: vi.fn(() => Promise.resolve()),
   };
 }

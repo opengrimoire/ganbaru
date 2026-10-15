@@ -1,5 +1,6 @@
 export const editor = {
   editorSaveFailed: (message: string) => `Could not save edits. Your draft is still open. Keep this window open and retry: ${message}`,
+  editorChangedElsewhere: "This note changed in another window, so the latest saved version replaced your last edit.",
   blockList: "Note blocks",
   richTextEditorLabel: "Rich text block editor",
   emptyPagePlaceholder: "Write, or press '/' for commands and '@' to mention",

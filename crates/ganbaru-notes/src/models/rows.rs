@@ -245,6 +245,15 @@ impl NoteBlockRow {
             .map_err(|error| format!("encode Notes block revision: {error}"))?;
         Ok(format!("{:x}", Sha256::digest(bytes)))
     }
+
+    /// Fingerprint only the block's own type and payload, so moves and sibling edits never invalidate a content
+    /// write that was based on it.
+    pub fn content_revision(&self) -> Result<String, String> {
+        use sha2::{Digest, Sha256};
+        let bytes = serde_json::to_vec(&(&self.block_type, &self.payload))
+            .map_err(|error| format!("encode Notes block content revision: {error}"))?;
+        Ok(format!("{:x}", Sha256::digest(bytes)))
+    }
 }
 
 #[derive(Clone, Serialize, sqlx::FromRow)]

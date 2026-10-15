@@ -2,12 +2,14 @@ import {
   getNotesBlockFrontier,
   getNotesBlockOutlineFrontier,
   hydrateNotesBlocks,
+  openNotesPage,
 } from "$lib/api/notes";
 import { buildNotesChildIdsByParent } from "$lib/notes/blocks/tree";
 import type { NotesFocusRequest } from "$lib/notes/editor/focus";
 import type {
   NotesBlock,
   NotesBlockOutline,
+  NotesPage,
 } from "$lib/notes/types";
 import type { NotesBlockOutlineItem } from "$lib/notes/blocks/outline";
 
@@ -23,6 +25,7 @@ interface NotesHydrationControllerContext {
   hasLocalChanges: (blockId: string) => boolean;
   readFocusRequest: () => NotesFocusRequest;
   mergeBlockOutlines: (outlines: readonly NotesBlockOutline[], pageId: string) => void;
+  replaceBlockOutlines: (outlines: readonly NotesBlockOutline[], pageId: string) => void;
   replaceHydratedBlocks: (
     blocksById: Record<string, NotesBlock>,
     childIdsByParentId: Record<string, string[]>,
@@ -162,6 +165,58 @@ export function createNotesHydrationController(context: NotesHydrationController
     }
   }
 
+  /**
+   * Re-read the open page's outline and its loaded blocks from the database and replace every block without local
+   * changes, keeping blocks the user is still editing. Callers run it between queued writes so no local write commits
+   * meanwhile. Returns the canonical page, or null when the page, generation, or local outline changed while reading.
+   */
+  async function refreshFromCanonical(
+    pageId: string,
+    generation = context.readPageGeneration(),
+  ): Promise<NotesPage | null> {
+    const baseline = context.readBlockOutlines();
+    const isCurrent = () => generation === context.readPageGeneration() && pageId === context.readSelectedPageId();
+    const opened = await openNotesPage(pageId);
+    if (!isCurrent()) return null;
+    const outlines = [...opened.outlines];
+    let frontier = outlines.filter((outline) => outline.has_children && outline.type !== "child_page").map((outline) => outline.id);
+    const visited = new Set<string>();
+    while (frontier.length > 0) {
+      const parentIds = frontier.filter((id) => !visited.has(id));
+      if (parentIds.length === 0) break;
+      parentIds.forEach((id) => visited.add(id));
+      const children = await getNotesBlockOutlineFrontier(pageId, parentIds);
+      if (!isCurrent()) return null;
+      outlines.push(...children);
+      frontier = children.filter((outline) => outline.has_children && outline.type !== "child_page").map((outline) => outline.id);
+    }
+    if (context.readBlockOutlines() !== baseline) return null;
+    const known = new Set(outlines.map((outline) => outline.id));
+    const editing = context.readBlockOutlines().filter((outline) => !known.has(outline.id) && context.hasLocalChanges(outline.id));
+    context.replaceBlockOutlines([...outlines, ...editing], pageId);
+    const flat = context.readFlatBlockOutlines();
+    const refreshIds = new Set(Object.keys(context.readBlocksById()).filter((id) => known.has(id)));
+    if (flat.length < BLOCK_VIRTUALIZATION_THRESHOLD) for (const item of flat) refreshIds.add(item.outline.id);
+    const ids = [...refreshIds].filter((id) => !context.hasLocalChanges(id));
+    const fresh: NotesBlock[] = [];
+    for (let offset = 0; offset < ids.length; offset += BLOCK_HYDRATION_LIMIT) {
+      fresh.push(...await hydrateNotesBlocks({ page_id: pageId, block_ids: ids.slice(offset, offset + BLOCK_HYDRATION_LIMIT) }));
+      if (!isCurrent()) return null;
+    }
+    const nextBlocks = Object.fromEntries(Object.entries(context.readBlocksById())
+      .filter(([id]) => known.has(id) || context.hasLocalChanges(id)));
+    for (const block of fresh) {
+      if (!context.hasLocalChanges(block.id)) nextBlocks[block.id] = block;
+    }
+    const ordered = context.readFlatBlockOutlines()
+      .map((item) => nextBlocks[item.outline.id])
+      .filter((block): block is NotesBlock => block !== undefined);
+    const orderedIds = new Set(ordered.map((block) => block.id));
+    ordered.push(...Object.values(nextBlocks).filter((block) => !orderedIds.has(block.id)));
+    context.replaceHydratedBlocks(nextBlocks, buildNotesChildIdsByParent(ordered));
+    return opened.page;
+  }
+
   function queueDescendantHydration(
     pageId = context.readSelectedPageId(),
     generation = context.readPageGeneration(),
@@ -179,6 +234,7 @@ export function createNotesHydrationController(context: NotesHydrationController
     hydrateBlockRange,
     loadOutlineDescendantFrontiers,
     loadDescendantFrontiers,
+    refreshFromCanonical,
     queueDescendantHydration,
   };
 }

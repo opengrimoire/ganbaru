@@ -1,4 +1,5 @@
 import { updateNotesBlock } from "$lib/api/notes";
+import { isNotesEditConflict } from "$lib/api/notes/mutation";
 import { applyBlockUpdate } from "$lib/notes/blocks/factory";
 import type { NotesBlock, NotesBlockUpdate } from "$lib/notes/types";
 
@@ -14,6 +15,10 @@ export interface NotesBlockPersistenceContext {
   beforeSave: (blockId: string) => Promise<void>;
   replaceBlock: (block: NotesBlock) => void;
   setLoadError: (message: string | null) => void;
+  /** Called after each queued write commits, so other windows can refresh the page. */
+  onCommitted?: () => void;
+  /** Called when a queued write was refused because another window changed its base first. */
+  onConflict?: () => void;
   debounceMs: number;
 }
 
@@ -30,6 +35,7 @@ export interface NotesBlockPersistence {
   flushPendingBlockSaves: () => Promise<void>;
   discardPendingEditorWrites: () => void;
   enqueueEditorMutation: (mutation: () => Promise<void>) => Promise<void>;
+  runBetweenWrites: <T>(read: () => Promise<T>) => Promise<T>;
 }
 
 /**
@@ -40,6 +46,7 @@ export function createNotesBlockPersistence(
 ): NotesBlockPersistence {
   const pendingBlockSaves = new Map<string, PendingBlockSave>();
   const canonicalRevisions = new Map<string, string>();
+  const canonicalContentRevisions = new Map<string, string>();
   const blockRevisions = new Map<string, number>();
   let mutationChain = Promise.resolve();
   let queueGeneration = 0;
@@ -52,8 +59,23 @@ export function createNotesBlockPersistence(
     return context.readBlock(blockId)?.edit_revision ?? canonicalRevisions.get(blockId);
   }
 
+  function readCanonicalContentRevision(blockId: string): string | undefined {
+    return context.readBlock(blockId)?.content_revision ?? canonicalContentRevisions.get(blockId);
+  }
+
   function acknowledgeCanonicalBlocks(blocks: readonly NotesBlock[]): void {
-    for (const block of blocks) if (block.edit_revision) canonicalRevisions.set(block.id, block.edit_revision);
+    for (const block of blocks) {
+      if (block.edit_revision) canonicalRevisions.set(block.id, block.edit_revision);
+      if (block.content_revision) canonicalContentRevisions.set(block.id, block.content_revision);
+    }
+  }
+
+  /** Drop local typing for a block whose base changed elsewhere, so the canonical reload can replace it. */
+  function abandonConflictedBlock(blockId: string): void {
+    const pending = pendingBlockSaves.get(blockId);
+    if (pending) clearTimeout(pending.timer);
+    pendingBlockSaves.delete(blockId);
+    dirtyBlocks.delete(blockId);
   }
 
   function markBlockLocallyChanged(blockId: string): void {
@@ -77,7 +99,13 @@ export function createNotesBlockPersistence(
     const save = enqueue(async () => {
       await context.beforeSave(blockId);
       if (saveGeneration !== queueGeneration) return;
-      const saved = await updateNotesBlock(blockId, update);
+      let saved: NotesBlock;
+      try {
+        saved = await updateNotesBlock(blockId, update, readCanonicalContentRevision(blockId));
+      } catch (error) {
+        if (isNotesEditConflict(error)) abandonConflictedBlock(blockId);
+        throw error;
+      }
       if (saveGeneration !== queueGeneration) return;
       acknowledgeCanonicalBlocks([saved]);
       context.reconcileCanonicalBlocks?.([saved]);
@@ -86,7 +114,9 @@ export function createNotesBlockPersistence(
         if (context.readBlock(blockId)) context.replaceBlock(saved);
       } else {
         const current = context.readBlock(blockId);
-        if (current) context.replaceBlock({ ...current, edit_revision: saved.edit_revision });
+        if (current) {
+          context.replaceBlock({ ...current, edit_revision: saved.edit_revision, content_revision: saved.content_revision });
+        }
       }
     });
     saveChains.set(blockId, save);
@@ -133,10 +163,19 @@ export function createNotesBlockPersistence(
     const operationGeneration = queueGeneration;
     const operation = mutationChain.then(async () => {
       if (operationGeneration !== queueGeneration) return;
-      await mutation();
+      let conflicted = false;
+      try {
+        await mutation();
+      } catch (error) {
+        // A refused base cannot succeed on retry, so the page reloads instead of holding the queue.
+        if (!isNotesEditConflict(error)) throw error;
+        conflicted = true;
+      }
       if (operationGeneration !== queueGeneration) return;
       const index = queuedMutations.indexOf(mutation);
       if (index >= 0) queuedMutations.splice(index, 1);
+      if (conflicted) context.onConflict?.();
+      else context.onCommitted?.();
     });
     mutationChain = operation;
     void operation.catch((error: unknown) => {
@@ -145,6 +184,17 @@ export function createNotesBlockPersistence(
       context.setLoadError(error instanceof Error ? error.message : String(error));
     });
     return operation;
+  }
+
+  /**
+   * Run a canonical read after the writes queued so far and before later ones, without retaining it for retry or
+   * reporting it as a commit. A failed read leaves the queue as it was.
+   */
+  function runBetweenWrites<T>(read: () => Promise<T>): Promise<T> {
+    const previous = mutationChain;
+    const result = previous.then(read);
+    mutationChain = result.then(() => undefined, () => previous);
+    return result;
   }
 
   /** Retries retained writes in order without replacing the user's local draft. */
@@ -173,6 +223,7 @@ export function createNotesBlockPersistence(
     dirtyBlocks.clear();
     blockRevisions.clear();
     canonicalRevisions.clear();
+    canonicalContentRevisions.clear();
     saveChains.clear();
     mutationChain = Promise.resolve();
     failed = false;
@@ -184,7 +235,12 @@ export function createNotesBlockPersistence(
     void flushPendingBlockSaves().catch(() => undefined);
     const revisions = [...dirtyBlocks].map((id) => [id, blockRevisions.get(id)] as const);
     return enqueue(async () => {
-      await mutation();
+      try {
+        await mutation();
+      } catch (error) {
+        if (isNotesEditConflict(error)) for (const [id] of revisions) abandonConflictedBlock(id);
+        throw error;
+      }
       for (const [id, revision] of revisions) {
         if (blockRevisions.get(id) === revision) dirtyBlocks.delete(id);
       }
@@ -196,6 +252,7 @@ export function createNotesBlockPersistence(
     acknowledgeCanonicalBlocks,
     retryEditorMutations,
     enqueueEditorMutation,
+    runBetweenWrites,
     hasLocalChanges,
     localApplyBlockUpdate,
     markBlockLocallyChanged,

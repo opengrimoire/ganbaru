@@ -291,10 +291,15 @@ function parseNotesBlockContent(value: unknown): NotesBlock {
   if (revision !== undefined && (typeof revision !== "string" || !/^[a-f0-9]{64}$/u.test(revision))) {
     throw new Error("block.edit_revision must be a canonical revision");
   }
+  const contentRevision = record.content_revision;
+  if (contentRevision !== undefined && (typeof contentRevision !== "string" || !/^[a-f0-9]{64}$/u.test(contentRevision))) {
+    throw new Error("block.content_revision must be a canonical revision");
+  }
   const base = {
     object: "block" as const,
     id: readString(record.id, "block.id"),
     edit_revision: revision as string | undefined,
+    content_revision: contentRevision as string | undefined,
     parent: parseNotesParent(record.parent),
     created_time: readString(record.created_time, "block.created_time"),
     last_edited_time: readString(record.last_edited_time, "block.last_edited_time"),

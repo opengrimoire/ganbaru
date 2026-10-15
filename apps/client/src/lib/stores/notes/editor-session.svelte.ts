@@ -42,6 +42,7 @@ import {
   type NotesSidebarMetadataImpact,
 } from "$lib/notes/post-mutation";
 import { createNotesSidebarRefreshCoordinator } from "$lib/notes/navigation/sidebar-refresh-coordinator";
+import { publishNotesPageChanges } from "$lib/notes/pages/window-sync";
 import { createNotesBlockActions } from "./block-actions";
 import { createNotesDatabaseDeletionController } from "./database-deletion.svelte";
 import { createNotesArchiveController } from "./archive.svelte";
@@ -572,6 +573,7 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
   async function loadPageTree(pageId: string, options: NotesLoadPageTreeOptions = {}): Promise<boolean> {
     const requestId = pageSession.invalidate();
     treeProjection.primaryContentReady = false;
+    editorConflict = false;
     const loaded = await openNotesPage(pageId);
     if (!pageSession.isCurrent(requestId, pageId)) return false;
     if (options.focusOnLoad) {
@@ -986,6 +988,7 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     acknowledgeCanonicalBlocks,
     retryEditorMutations,
     enqueueEditorMutation: queueEditorMutation,
+    runBetweenWrites,
     hasLocalChanges,
     localApplyBlockUpdate: applyBlockUpdateLocally,
     markBlockLocallyChanged,
@@ -1002,8 +1005,68 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     setLoadError: (message) => {
       editorSaveError = message;
     },
+    onCommitted: publishSelectedPageChange,
+    onConflict: () => {
+      editorConflict = true;
+      void refreshCanonicalPage().catch((error: unknown) => {
+        editorSaveError = error instanceof Error ? error.message : String(error);
+      });
+    },
     debounceMs: BLOCK_SAVE_DEBOUNCE_MS,
   });
+
+  let editorConflict = $state(false);
+  let changedPageIds = new Set<string>();
+
+  /** Coalesce the commits of one task into a single refresh of other panes and windows showing the page. */
+  function publishSelectedPageChange(): void {
+    const pageId = pageSession.selectedPageId;
+    if (!pageId) return;
+    if (changedPageIds.size === 0) {
+      queueMicrotask(() => {
+        const pageIds = changedPageIds;
+        changedPageIds = new Set();
+        publishNotesPageChanges(pageIds);
+        for (const session of sessions) {
+          if (session === facade || !session.selectedPageId || !pageIds.has(session.selectedPageId)) continue;
+          void session.refreshCanonicalPage()
+            .catch((error: unknown) => console.warn("Notes refresh from another pane failed", error));
+        }
+      });
+    }
+    changedPageIds.add(pageId);
+  }
+
+  let canonicalRefresh: Promise<void> | null = null;
+  let canonicalRefreshAgain = false;
+
+  /**
+   * Replace the open page with its saved state after another window changed it or refused a local write, keeping
+   * blocks with unsaved local typing. Concurrent requests coalesce into one more pass.
+   */
+  function refreshCanonicalPage(): Promise<void> {
+    if (canonicalRefresh) {
+      canonicalRefreshAgain = true;
+      return canonicalRefresh;
+    }
+    const refresh = (async () => {
+      let attempts = 0;
+      do {
+        canonicalRefreshAgain = false;
+        const pageId = pageSession.selectedPageId;
+        const generation = pageSession.generation;
+        if (!pageId || treeProjection.loadedPage?.id !== pageId || !treeProjection.primaryContentReady) return;
+        const page = await runBetweenWrites(() => hydrationController.refreshFromCanonical(pageId, generation));
+        if (page && treeProjection.loadedPage?.id === page.id) treeProjection.loadedPage = page;
+        else if (!page && pageSession.isCurrent(generation, pageId) && attempts === 0) canonicalRefreshAgain = true;
+        attempts += 1;
+      } while (canonicalRefreshAgain);
+    })();
+    canonicalRefresh = refresh;
+    const clear = () => { if (canonicalRefresh === refresh) canonicalRefresh = null; };
+    void refresh.then(clear, clear);
+    return refresh;
+  }
 
   function enqueueEditorMutation(mutation: () => Promise<void>): Promise<void> {
     pageCreationController.markChanged(pageSession.selectedPageId);
@@ -1333,6 +1396,7 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
       ? { ...focusRequest, blockId: selectedDatabaseBlockId }
       : focusRequest,
     mergeBlockOutlines,
+    replaceBlockOutlines,
     replaceHydratedBlocks: (nextBlocksById, nextChildIdsByParentId) => {
       treeProjection.replaceHydratedBlocks(nextBlocksById, nextChildIdsByParentId);
     },
@@ -1629,6 +1693,10 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
       explorerCollapsed = collapsed;
     },
     get editorSaveError() { return editorSaveError; },
+    /** Whether a local edit was dropped because another window changed the same content first. */
+    get editorConflict(): boolean { return editorConflict; },
+    dismissEditorConflict: (): void => { editorConflict = false; },
+    refreshCanonicalPage,
     get trashActionError(): string | null { return trashActionError; },
     retryEditorMutations: async () => {
       await retryEditorMutations();

@@ -6,6 +6,7 @@ import { notesPageProjectId } from "$lib/notes/project-membership";
 import type { NotesPageOpenMode } from "$lib/notes/pages/open-mode";
 import type { NotesLoadedPage } from "$lib/notes/types";
 import type { NotesSidebarMetadataImpact } from "$lib/notes/post-mutation";
+import { listenForNotesPageChanges } from "$lib/notes/pages/window-sync";
 
 export interface NotesEditorPane {
   id: string;
@@ -200,6 +201,24 @@ function createNotesWorkspace() {
     activatePane(target.id);
   }
 
+  let pageChangeListener: Promise<() => void> | null = null;
+
+  /** Refresh every pane showing a page another window changed; started once the workspace loads. */
+  function listenForOtherWindows(): void {
+    pageChangeListener ??= listenForNotesPageChanges((pageIds) => {
+      for (const pane of panes) {
+        const pageId = pane.store.selectedPageId;
+        if (!pageId || !pageIds.has(pageId)) continue;
+        void pane.store.refreshCanonicalPage()
+          .catch((error: unknown) => console.warn("Notes refresh from another window failed", error));
+      }
+    }).catch((error: unknown) => {
+      pageChangeListener = null;
+      console.warn("Notes window sync listener failed", error);
+      return () => undefined;
+    });
+  }
+
   const workspace = {
     get editorPanes(): readonly NotesEditorPane[] { return panes; },
     get mainPaneId(): string { return main.id; },
@@ -213,8 +232,14 @@ function createNotesWorkspace() {
     closeContextualPage: () => preview ? closePreview() : closePane(main.id),
     // Workspace navigation always acts on the pane currently receiving user input.
     selectPage: (pageId: string | null, options?: NotesSelectPageOptions) => selectFrom(active.id, pageId, options),
-    load: () => preview ? closePreview(false).then(() => main.store.load()) : main.store.load(),
-    ensureLoaded: () => main.store.ensureLoaded(),
+    load: () => {
+      listenForOtherWindows();
+      return preview ? closePreview(false).then(() => main.store.load()) : main.store.load();
+    },
+    ensureLoaded: () => {
+      listenForOtherWindows();
+      return main.store.ensureLoaded();
+    },
     loadMoreWorkspaceWindow: () => active.store.loadMoreWorkspaceWindow(),
     flushPendingWrites: async () => {
       for (const pane of panes) await pane.store.flushPendingWrites();

@@ -3,6 +3,7 @@ import type { MessageShape } from "../../types";
 
 export const editor = {
   editorSaveFailed: (message: string) => `No se pudieron guardar los cambios. El borrador sigue abierto. Mantén esta ventana abierta e inténtalo de nuevo: ${message}`,
+  editorChangedElsewhere: "Esta nota cambió en otra ventana, así que la última versión guardada reemplazó tu última edición.",
   blockList: "Bloques de la nota",
   richTextEditorLabel: "Editor de bloque con texto enriquecido",
   emptyPagePlaceholder: "Escribe, o presiona '/' para comandos y '@' para mencionar",

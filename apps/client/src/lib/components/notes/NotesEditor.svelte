@@ -1104,6 +1104,14 @@
         message={t("notes.editorSaveFailed", notes.editorSaveError)}
         onRetry={() => notes.retryEditorMutations()}
       />
+    {:else if notes.editorConflict}
+      <Notice
+        class="shrink-0 border-b border-border px-4 py-2 text-sm"
+        role="status"
+        message={t("notes.editorChangedElsewhere")}
+        copy={false}
+        onDismiss={() => notes.dismissEditorConflict()}
+      />
     {/if}
     {#snippet discussionsTrigger()}
       <button

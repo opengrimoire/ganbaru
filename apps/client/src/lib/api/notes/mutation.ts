@@ -23,3 +23,9 @@ export async function invokeNotesMutation(
   applyNotesProjectHistoryMutationDeadline(deadline);
   return record.value;
 }
+
+/** Whether a Notes write was refused because its canonical base changed after the caller read it. */
+export function isNotesEditConflict(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  return message.startsWith("Notes edit conflict:");
+}

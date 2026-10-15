@@ -183,13 +183,23 @@ export async function appendNotesBlockChildren(
   return blocks;
 }
 
+/**
+ * Save one block's content. With `expectedContentRevision`, the write is refused as a Notes edit conflict when the
+ * stored type and payload no longer match that revision, so a stale window cannot overwrite newer content.
+ */
 export async function updateNotesBlock(
   blockId: string,
   update: NotesBlockUpdate,
+  expectedContentRevision?: string,
 ): Promise<NotesBlock> {
   const dbUrl = await ensureDbUrl();
   const block = mapNotesBlockDto(
-    await invokeNotesMutation("notes_update_block", { dbUrl, blockId, update }),
+    await invokeNotesMutation("notes_update_block", {
+      dbUrl,
+      blockId,
+      update,
+      expectedContentRevision: expectedContentRevision ?? null,
+    }),
   );
   invalidateNotesNotificationSchedule();
   return block;

@@ -76,17 +76,54 @@ pub async fn update_block(
     block_id: &str,
     update: NoteBlockUpdate,
 ) -> Result<NoteBlockDto, String> {
-    let current = reads::get_block_row(pool, block_id, false).await?;
+    update_block_if_unchanged(pool, block_id, update, None).await
+}
+
+/// Update one block, refusing when `expected_content_revision` no longer matches its stored type and payload.
+///
+/// The precondition covers content only, so a write based on a block that was since moved or gained children still
+/// succeeds, while a write based on content another window has since replaced or trashed fails with the shared
+/// Notes edit conflict error.
+pub async fn update_block_if_unchanged(
+    pool: &SqlitePool,
+    block_id: &str,
+    update: NoteBlockUpdate,
+    expected_content_revision: Option<&str>,
+) -> Result<NoteBlockDto, String> {
+    let current = reads::get_block_row(pool, block_id, expected_content_revision.is_some()).await?;
+    if expected_content_revision.is_some() && current.in_trash != 0 {
+        return Err(content_conflict(block_id));
+    }
     project_history::ensure_page_baseline_for_mutation(pool, &current.page_id).await?;
     let mut tx = pool
         .begin()
         .await
         .map_err(|e| format!("begin update notes block: {e}"))?;
+    if let Some(expected) = expected_content_revision {
+        require_block_content_revision(&mut tx, block_id, expected).await?;
+    }
     update_block_tx(&mut tx, block_id, update, true).await?;
     tx.commit()
         .await
         .map_err(|e| format!("commit update notes block: {e}"))?;
     reads::get_block(pool, block_id, false).await
+}
+
+async fn require_block_content_revision(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    block_id: &str,
+    expected: &str,
+) -> Result<(), String> {
+    require_uuid(block_id, "block_id")?;
+    let current = load_block_row_tx(tx, block_id, true).await?;
+    if current.in_trash != 0 || current.content_revision()? != expected {
+        return Err(content_conflict(block_id));
+    }
+    Ok(())
+}
+
+fn content_conflict(block_id: &str) -> String {
+    format!("Notes edit conflict: block {block_id} changed; reload before retrying")
 }
 
 /// Validate and update one block using the transaction's current graph.

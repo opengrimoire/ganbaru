@@ -17,7 +17,9 @@ mod parents;
 mod payloads;
 mod sort;
 
-pub use block_commands::{append_block_children, trash_block, trash_blocks, update_block};
+pub use block_commands::{
+    append_block_children, trash_block, trash_blocks, update_block, update_block_if_unchanged,
+};
 pub use block_duplicates::{duplicate_block, duplicate_blocks};
 pub use block_moves::{move_block, move_blocks};
 pub use ids::new_note_id;

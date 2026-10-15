@@ -740,6 +740,7 @@ export function applyBlockUpdate(block: NotesBlock, update: NotesBlockUpdate): N
   const base = {
     object: "block" as const,
     edit_revision: block.edit_revision,
+    content_revision: block.content_revision,
     id: block.id,
     parent: block.parent,
     created_time: block.created_time,

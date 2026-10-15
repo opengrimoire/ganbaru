@@ -88,7 +88,7 @@ apps/
         src/contacts.rs, contacts/: person identity storage, contact card assembly, contact and request persistence, and LAN request delivery
         src/sync.rs, sync/: sync service lifecycle, paired transport, recovery listing, status, and sync commands
         src/quick_notes.rs: Quick notes command adapters
-        src/tray.rs, themes.rs, updates.rs, profile_images.rs: tray, theme command adapters, updates, and profile images
+        src/tray.rs, app_windows.rs, themes.rs, updates.rs, profile_images.rs: tray, window raising, theme command adapters, updates, and profile images
         src/benchmark.rs, benchmark/, first_use_contracts.rs: benchmark state, seed data, memory reports, and first-use query contracts
       capabilities/: permission declarations (desktop and mobile)
       gen/android/: generated Android project and native platform integration

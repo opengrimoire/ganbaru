@@ -2,6 +2,8 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 #[cfg(desktop)]
+mod app_windows;
+#[cfg(desktop)]
 mod benchmark;
 mod calendar;
 mod chat;

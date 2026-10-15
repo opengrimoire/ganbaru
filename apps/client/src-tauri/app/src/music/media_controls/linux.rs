@@ -10,7 +10,6 @@ use gtk::glib;
 use gtk::glib::prelude::*;
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
-use tauri::Manager;
 
 const BUS_NAME: &str = "org.mpris.MediaPlayer2.ganbaru-ai";
 const OBJECT_PATH: &str = "/org/mpris/MediaPlayer2";
@@ -310,11 +309,7 @@ fn handle_root_method(app: &tauri::AppHandle, method_name: &str) {
     if method_name != "Raise" {
         return;
     }
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
-    }
+    crate::app_windows::raise_app_window(app);
 }
 
 fn handle_player_method(app: &tauri::AppHandle, method_name: &str, parameters: &glib::Variant) {

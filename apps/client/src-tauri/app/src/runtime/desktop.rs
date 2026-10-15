@@ -28,15 +28,11 @@ impl Drop for DeferredExitCompletion {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-fn focus_main_window_for_second_launch(app: &tauri::AppHandle) {
+fn raise_window_for_second_launch(app: &tauri::AppHandle) {
     if !MAIN_WINDOW_FRONTEND_READY.load(std::sync::atomic::Ordering::Acquire) {
         return;
     }
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
-    }
+    crate::app_windows::raise_app_window(app);
 }
 
 #[tauri::command]
@@ -227,7 +223,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            focus_main_window_for_second_launch(app);
+            raise_window_for_second_launch(app);
         }))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())

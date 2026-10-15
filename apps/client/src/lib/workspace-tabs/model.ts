@@ -422,7 +422,8 @@ export function savedWindowLabels(keys: Iterable<string>, prefix: string): strin
 }
 
 /**
- * Validate persisted tabs. Returns null when nothing usable remains.
+ * Validate a window's persisted tabs. Returns null when nothing usable remains. The reopen history is saved
+ * apart, shared by every window, so the state comes back without it.
  */
 export function parseWorkspaceTabsState(
   value: unknown,
@@ -437,21 +438,28 @@ export function parseWorkspaceTabsState(
     return [tab];
   });
   if (tabs.length === 0) return null;
-  const closed = Array.isArray(value.closed)
-    ? value.closed.slice(0, MAX_CLOSED_WORKSPACE_TABS).flatMap((entry) => {
-      const parsed = parseClosedTab(entry, availableKinds);
-      return parsed ? [parsed] : [];
-    })
-    : [];
   const activeTabId = tabs.find((tab) => tab.id === value.activeTabId)?.id ?? tabs[0].id;
-  return { tabs, activeTabId, closed };
+  return { tabs, activeTabId, closed: [] };
 }
 
-/** Return the persisted shape. */
+/** Return the persisted shape of a window's tabs, without the shared reopen history. */
 export function serializeWorkspaceTabsState(state: WorkspaceTabsState): string {
   return JSON.stringify({
     tabs: state.tabs,
     activeTabId: state.activeTabId,
-    closed: state.closed,
   });
+}
+
+/** Validate the persisted reopen history that every window shares, keeping only valid entries. */
+export function parseClosedWorkspaceTabs(value: unknown, availableKinds: readonly View[]): ClosedWorkspaceTab[] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, MAX_CLOSED_WORKSPACE_TABS).flatMap((entry) => {
+    const parsed = parseClosedTab(entry, availableKinds);
+    return parsed ? [parsed] : [];
+  });
+}
+
+/** Return the persisted shape of the shared reopen history. */
+export function serializeClosedWorkspaceTabs(closed: readonly ClosedWorkspaceTab[]): string {
+  return JSON.stringify(closed.slice(0, MAX_CLOSED_WORKSPACE_TABS));
 }

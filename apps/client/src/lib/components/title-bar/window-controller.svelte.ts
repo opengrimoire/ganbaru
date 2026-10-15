@@ -5,10 +5,12 @@ type CurrentWindow = ReturnType<typeof getCurrentWindow>;
 
 export interface TitleBarWindowControllerContext {
   window: CurrentWindow;
-  /** Whether this is the main window, whose close asks to quit the app. */
-  isMainWindow: boolean;
-  /** Stop saving this window's tabs and hand them to the main window's reopen history before it closes. */
-  releaseWindow: () => Promise<void>;
+  /** Count the other app windows on screen, so closing the last one asks to quit the app instead. */
+  otherOpenWindows: () => Promise<number>;
+  /** Remember this window's tabs in the shared reopen history and stop saving them, right before it goes. */
+  releaseWindow: () => void;
+  /** Take this window off the screen: the host window hides so its app-wide work keeps running, others close. */
+  dismissWindow: () => Promise<void>;
   benchmarkLocked: () => boolean;
   resetConfirmationOpen: () => boolean;
   requestCloseConfirmation: () => void;
@@ -35,20 +37,31 @@ export function createTitleBarWindowController(
     }
   }
 
+  async function otherWindowsOpen(): Promise<boolean> {
+    try {
+      return (await context.otherOpenWindows()) > 0;
+    } catch (error) {
+      context.reportError("Failed to list open windows:", error);
+      return false;
+    }
+  }
+
+  /** Close this window while others stay open, saving its pending edits first. */
+  async function closeWindow(): Promise<void> {
+    try {
+      await context.beforeClose();
+    } catch (error) {
+      context.reportError("Failed to save pending edits before closing:", error);
+      return;
+    }
+    context.releaseWindow();
+    await context.dismissWindow();
+  }
+
+  /** Close this window, or ask to quit the app when it is the last one open. */
   async function requestClose(): Promise<void> {
-    if (!context.isMainWindow) {
-      try {
-        await context.beforeClose();
-      } catch (error) {
-        context.reportError("Failed to save pending edits before closing:", error);
-        return;
-      }
-      try {
-        await context.releaseWindow();
-      } catch (error) {
-        context.reportError("Failed to report closed tabs to the main window:", error);
-      }
-      await context.window.destroy();
+    if (await otherWindowsOpen()) {
+      await closeWindow();
       return;
     }
     if (context.resetConfirmationOpen()) return;

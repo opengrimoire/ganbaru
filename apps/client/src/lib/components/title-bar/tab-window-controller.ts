@@ -25,8 +25,5 @@ export function createTitleBarTabWindowController(context: TitleBarTabWindowCont
     moveToNewWindow(): Promise<void> {
       return moveContextTab((tabId) => context.tabs.detach(tabId), "Failed to move tab to a new window:");
     },
-    moveToMainWindow(): Promise<void> {
-      return moveContextTab((tabId) => context.tabs.moveToMainWindow(tabId), "Failed to move tab to the main window:");
-    },
   };
 }

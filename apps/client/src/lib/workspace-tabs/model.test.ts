@@ -12,18 +12,21 @@ import {
   MAX_CLOSED_WORKSPACE_TABS,
   MAX_WORKSPACE_TABS,
   moveWorkspaceTab,
+  parseClosedWorkspaceTabs,
   parseWorkspaceTabLocation,
   parseWorkspaceTabsState,
   relativeWorkspaceTabId,
   rememberClosedWorkspaceTabs,
   reopenWorkspaceTab,
   savedWindowLabels,
+  serializeClosedWorkspaceTabs,
   serializeWorkspaceTabsState,
   tabMatchesTarget,
   takeWorkspaceTab,
   updateWorkspaceTab,
   workspaceTabIdAtPosition,
   workspaceTabLockLevel,
+  type ClosedWorkspaceTab,
   type WorkspaceTab,
   type WorkspaceTabLocation,
   type WorkspaceTabsState,
@@ -258,7 +261,7 @@ describe("tabs leaving for another window", () => {
 });
 
 describe("workspace tab persistence", () => {
-  it("round-trips tabs, the active tab, and the reopen history", () => {
+  it("round-trips a window's tabs and active tab, leaving the shared reopen history out", () => {
     const current: WorkspaceTabsState = {
       tabs: [
         tab("a", "calendar"),
@@ -270,7 +273,28 @@ describe("workspace tab persistence", () => {
     const parsed = parseWorkspaceTabsState(JSON.parse(serializeWorkspaceTabsState(current)), ALL_KINDS);
     expect(parsed?.tabs).toEqual(current.tabs);
     expect(parsed?.activeTabId).toBe("b");
-    expect(parsed?.closed).toEqual(current.closed);
+    expect(parsed?.closed).toEqual([]);
+  });
+
+  it("round-trips the shared reopen history", () => {
+    const closed: ClosedWorkspaceTab[] = [
+      { level: "project", locked: true, location: projectA, title: "A", projectTitle: "Alpha", index: 1 },
+      { level: "kind", locked: false, location: kindLocation("calendar"), title: null, projectTitle: null, index: 0 },
+    ];
+    expect(parseClosedWorkspaceTabs(JSON.parse(serializeClosedWorkspaceTabs(closed)), ALL_KINDS)).toEqual(closed);
+  });
+
+  it("keeps only valid, available entries of the reopen history, up to its limit", () => {
+    const valid = { level: "kind", locked: false, location: kindLocation("calendar"), index: 0 };
+    expect(parseClosedWorkspaceTabs([
+      valid,
+      { level: "kind", locked: false, location: kindLocation("chat"), index: 0 },
+      { level: "kind", locked: false, location: kindLocation("notes"), index: -1 },
+      "closed",
+    ], ["calendar", "notes"])).toHaveLength(1);
+    expect(parseClosedWorkspaceTabs(Array.from({ length: 20 }, () => valid), ALL_KINDS))
+      .toHaveLength(MAX_CLOSED_WORKSPACE_TABS);
+    expect(parseClosedWorkspaceTabs({ closed: [valid] }, ALL_KINDS)).toEqual([]);
   });
 
   it("drops duplicate, unavailable, and malformed tabs", () => {

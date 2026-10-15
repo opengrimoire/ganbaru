@@ -21,12 +21,14 @@ import {
   isWithinTabScope,
   kindLocation,
   moveWorkspaceTab,
+  parseClosedWorkspaceTabs,
   parseWorkspaceTabsState,
   relativeWorkspaceTabId,
   rememberClosedWorkspaceTabs,
   reopenWorkspaceTab,
   savedWindowLabels,
   sameTabLocation,
+  serializeClosedWorkspaceTabs,
   serializeWorkspaceTabsState,
   tabMatchesTarget,
   takeWorkspaceTab,
@@ -61,13 +63,15 @@ export interface WorkspaceTabsConnection {
   initialTab?: WorkspaceTab | null;
   /** Save edits that are still pending, so a tab that moves shows them in its new window. */
   flushPendingEdits?(): Promise<void>;
-  /** Ask to close the app from the main window, or this window from any other. */
+  /** Ask to close this window, which closes the app when it is the last one open. */
   requestWindowClose(): void;
 }
 
 export type WorkspaceTabDetachBlock = "unsupported" | "last-tab";
 
 const STORAGE_PREFIX = "ganbaru.workspace-tabs.v1";
+/** Reopen history of a vault, shared by every window so a tab closed in one can be reopened in any. */
+const CLOSED_STORAGE_PREFIX = "ganbaru.workspace-tabs-closed.v1";
 /**
  * How long a tab dropped outside its window waits before it opens a window of its own. A drop on another
  * window asks for the tab within this time, and that move wins.
@@ -88,9 +92,9 @@ let connection: WorkspaceTabsConnection | null = null;
 let lastBackgroundOpen: { fromId: string; tabId: string } | null = null;
 let navigation: NavigationRouterRegistration | null = null;
 let storageVaultId: string | null = null;
-/** Set once this window is closing, so it stops saving tabs it has handed off or reported as closed. */
+/** Set once this window closes or hides, so it stops saving tabs it has handed off or remembered as closed. */
 let windowReleased = false;
-/** Tabs that moved to another window, which a closing window must not report as closed. */
+/** Tabs that moved to another window, which a closing window must not remember as closed. */
 const departedTabIds = new Set<string>();
 /** Tabs on their way to another window, so a second move of the same tab cannot start meanwhile. */
 const departingTabIds = new Set<string>();
@@ -99,19 +103,14 @@ const requestedTabIds = new Set<string>();
 /** Where a tab dropped from another window goes once it arrives, or null to keep it at the end. */
 let pendingDrop: { tabId: string; target: { id: string; placement: WorkspaceTabPlacement } | null } | null = null;
 
-/** Whether this is the main window. A window without window operations is the only one, so it is main. */
-function isMainWindow(): boolean {
-  return connection !== null && (connection.windows?.isMain ?? true);
-}
-
 /**
- * Every window saves its tabs under its own key per vault. The main window's key has no label so the
- * tabs of a single-window setup keep one stable place.
+ * Every window saves its tabs under its own key per vault. The host window's key has no label so the tabs
+ * of a single-window setup keep one stable place.
  */
 function storageKey(vaultId: string): string | null {
   if (!connection) return null;
   const windows = connection.windows;
-  return windows && !windows.isMain
+  return windows && !windows.isHost
     ? `${STORAGE_PREFIX}:${vaultId}:${windows.label}`
     : `${STORAGE_PREFIX}:${vaultId}`;
 }
@@ -154,10 +153,43 @@ function forgetStoredState(): void {
   if (key && typeof localStorage !== "undefined") forgetKey(key);
 }
 
+function closedStorageKey(vaultId: string): string {
+  return `${CLOSED_STORAGE_PREFIX}:${vaultId}`;
+}
+
+function readSharedClosed(vaultId: string | null): ClosedWorkspaceTab[] {
+  if (!vaultId || typeof localStorage === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(closedStorageKey(vaultId));
+    return raw ? parseClosedWorkspaceTabs(JSON.parse(raw) as unknown, availableAppViews()) : [];
+  } catch (error) {
+    console.warn("Failed to read closed workspace tabs:", error);
+    return [];
+  }
+}
+
+function persistClosed(closed: readonly ClosedWorkspaceTab[]): void {
+  if (!storageVaultId || typeof localStorage === "undefined") return;
+  try {
+    localStorage.setItem(closedStorageKey(storageVaultId), serializeClosedWorkspaceTabs(closed));
+  } catch (error) {
+    console.warn("Failed to save closed workspace tabs:", error);
+  }
+}
+
+/** Take up the reopen history other windows saved, so the next change to it builds on theirs. */
+function syncClosed(): void {
+  const closed = readSharedClosed(storageVaultId);
+  if (serializeClosedWorkspaceTabs(closed) !== serializeClosedWorkspaceTabs(tabsState.closed)) {
+    tabsState = { ...tabsState, closed };
+  }
+}
+
 function setState(next: WorkspaceTabsState): boolean {
   if (next === tabsState) return false;
   const ids = new Set(next.tabs.map((tab) => tab.id));
   activationOrder = [next.activeTabId, ...activationOrder.filter((id) => id !== next.activeTabId && ids.has(id))];
+  if (next.closed !== tabsState.closed) persistClosed(next.closed);
   tabsState = next;
   persist(next);
   return true;
@@ -322,17 +354,60 @@ function releaseTab(tabId: string, vaultId: string): void {
   else host.requestWindowClose();
 }
 
-function loadForVault(vaultId: string | null, initialTab: WorkspaceTab | null): void {
+/**
+ * Take over the tabs another window saved, forgetting them there. The host window does this at launch when
+ * it saved no tabs of its own, because it was hidden when the app quit, so the app reopens as it was left.
+ */
+function adoptSavedWindow(vaultId: string | null): WorkspaceTabsState | null {
+  if (!vaultId || !connection?.windows?.isHost || typeof localStorage === "undefined") return null;
+  const prefix = `${STORAGE_PREFIX}:${vaultId}:`;
+  for (const label of savedWindowLabels(storageKeys(), prefix)) {
+    const key = `${prefix}${label}`;
+    const saved = readStoredKey(key);
+    forgetKey(key);
+    if (saved) return saved;
+  }
+  return null;
+}
+
+function loadForVault(vaultId: string | null, initialTab: WorkspaceTab | null, adoptSaved = false): void {
   storageVaultId = vaultId;
   const initial = initialTab ? { tabs: [initialTab], activeTabId: initialTab.id, closed: [] } : null;
-  const loaded = readStoredState(vaultId) ?? initial ?? defaultWorkspaceTabsState(availableAppViews(), createTabId);
+  const loaded = readStoredState(vaultId)
+    ?? (adoptSaved ? adoptSavedWindow(vaultId) : null)
+    ?? initial
+    ?? defaultWorkspaceTabsState(availableAppViews(), createTabId);
   activationOrder = [];
-  setState(loaded);
+  setState({ ...loaded, closed: readSharedClosed(vaultId) });
+}
+
+/**
+ * Start saving a hidden host window's tabs again once it is back on screen. It hid when the user closed it
+ * while other windows stayed open, and shows again when the app needs it, for example on a second launch.
+ */
+function reviveHostWindow(): void {
+  if (!windowReleased || !connection?.windows?.isHost) return;
+  windowReleased = false;
+  persist(tabsState);
 }
 
 function connectWindows(host: WorkspaceTabsConnection): () => void {
-  if (!host.windows) return () => undefined;
-  return host.windows.listen({
+  const windows = host.windows;
+  if (!windows) return () => undefined;
+  const onFocus = () => {
+    syncClosed();
+    reviveHostWindow();
+  };
+  const onVisibilityChange = () => {
+    if (document.visibilityState === "visible") reviveHostWindow();
+  };
+  const onStorage = (event: StorageEvent) => {
+    if (storageVaultId && event.key === closedStorageKey(storageVaultId)) syncClosed();
+  };
+  window.addEventListener("focus", onFocus);
+  window.addEventListener("storage", onStorage);
+  document.addEventListener("visibilitychange", onVisibilityChange);
+  const unlisten = windows.listen({
     transfer: adoptTransfer,
     release: (release) => releaseTab(release.tabId, release.vaultId),
     request: (request) => {
@@ -340,10 +415,13 @@ function connectWindows(host: WorkspaceTabsConnection): () => void {
         console.error("Failed to move a dragged tab:", error);
       });
     },
-    closed: (closed) => {
-      if (closed.vaultId === storageVaultId) setState(rememberClosedWorkspaceTabs(tabsState, closed.tabs));
-    },
   });
+  return () => {
+    window.removeEventListener("focus", onFocus);
+    window.removeEventListener("storage", onStorage);
+    document.removeEventListener("visibilitychange", onVisibilityChange);
+    unlisten();
+  };
 }
 
 /**
@@ -355,7 +433,7 @@ function connect(host: WorkspaceTabsConnection): void {
   windowReleased = false;
   departedTabIds.clear();
   navigation = registerNavigationRouter(routeNavigation);
-  loadForVault(activeVaultIdentity(), host.initialTab ?? null);
+  loadForVault(activeVaultIdentity(), host.initialTab ?? null, true);
   const cleanups = [connectWindows(host)];
   cleanups.push(onActiveVaultIdentityChange((_previous, next) => {
     if (next === storageVaultId) return;
@@ -434,16 +512,18 @@ function openLocation(
   commitState(insertWorkspaceTab(tabsState, tab, "after-active"));
 }
 
-/** Close a tab. Closing the last one asks to close the app, or this window when it is not the main one. */
+/** Close a tab. Closing the last one asks to close this window, which closes the app when it is the last. */
 function close(id: string): void {
   const host = connection;
   if (!host) return;
+  syncClosed();
   const next = closeWorkspaceTab(tabsState, id);
   if (next === null) host.requestWindowClose();
   else commitState(next);
 }
 
 function reopen(closedIndex = 0): void {
+  syncClosed();
   const reopened = connection && reopenWorkspaceTab(tabsState, createTabId, closedIndex);
   if (reopened) commitState(reopened.state);
 }
@@ -544,31 +624,37 @@ function offerRequestedTab(request: TabWindowRequest): Promise<void> {
   });
 }
 
-/** Offer a tab to the main window, which adopts it and then releases it from this one. */
-async function moveToMainWindow(id: string): Promise<void> {
-  const windows = connection?.windows;
-  if (!windows || windows.isMain || !storageVaultId) return;
-  const vaultId = storageVaultId;
-  const tab = await prepareDeparture(id);
-  if (!tab) return;
-  await windows.offer(windows.mainLabel, vaultId, tab);
-  await windows.focusMain();
-}
-
 /**
- * Stop saving this window's tabs and report the ones the user closed with it to the main window, so they
- * can be reopened there. Call right before a window other than the main one closes.
+ * Remember the tabs the user closes with this window in the shared reopen history and stop saving its tabs.
+ * Call right before the window closes or hides.
  */
-async function releaseWindow(): Promise<void> {
-  const windows = connection?.windows;
-  if (!windows || windows.isMain || windowReleased) return;
-  windowReleased = true;
-  forgetStoredState();
+function releaseWindow(): void {
+  if (!connection?.windows || windowReleased) return;
+  syncClosed();
   const tabs = tabsState.tabs
     .filter((tab) => !departedTabIds.has(tab.id))
     .map((tab) => ({ ...tab, location: liveLocation(tab) }));
-  if (!storageVaultId || tabs.length === 0) return;
-  await windows.reportClosed(storageVaultId, tabs);
+  setState(rememberClosedWorkspaceTabs(tabsState, tabs));
+  windowReleased = true;
+  forgetStoredState();
+  if (connection.windows.isHost) resetHiddenHostWindow();
+}
+
+/**
+ * Give the host window fresh tabs as it hides, so it comes back as if newly opened, ready for whatever brings
+ * it back, such as a notification that opens an item.
+ */
+function resetHiddenHostWindow(): void {
+  departedTabIds.clear();
+  activationOrder = [];
+  cancelRestore();
+  setState({ ...defaultWorkspaceTabsState(availableAppViews(), createTabId), closed: tabsState.closed });
+  void restoreActive();
+}
+
+/** Count the other app windows on screen, or zero when this is the only window the tabs know of. */
+async function otherOpenWindows(): Promise<number> {
+  return (await connection?.windows?.otherOpenWindows()) ?? 0;
 }
 
 function storageKeys(): string[] {
@@ -582,11 +668,11 @@ function storageKeys(): string[] {
 
 /**
  * Reopen the other windows that were open when the app last quit, each with the tabs it saved. Saved
- * tabs that are no longer usable are forgotten instead of opening an empty window. Main window only.
+ * tabs that are no longer usable are forgotten instead of opening an empty window. Host window only.
  */
 async function restoreWindows(): Promise<void> {
   const windows = connection?.windows;
-  if (!windows?.isMain || !storageVaultId || typeof localStorage === "undefined") return;
+  if (!windows?.isHost || !storageVaultId || typeof localStorage === "undefined") return;
   const prefix = `${STORAGE_PREFIX}:${storageVaultId}:`;
   for (const label of savedWindowLabels(storageKeys(), prefix)) {
     const key = `${prefix}${label}`;
@@ -620,10 +706,6 @@ export function getWorkspaceTabs() {
     get canOpenTabs(): boolean {
       return connection !== null;
     },
-    /** Whether this window is the main one, which owns the app and outlives the others. */
-    get isMainWindow(): boolean {
-      return isMainWindow();
-    },
     get launcherRequests(): number {
       return launcherRequests;
     },
@@ -633,6 +715,7 @@ export function getWorkspaceTabs() {
     openLocation,
     close,
     closeOthers(id: string): void {
+      syncClosed();
       commitState(closeOtherWorkspaceTabs(tabsState, id));
     },
     reopen,
@@ -653,8 +736,8 @@ export function getWorkspaceTabs() {
     tearOff,
     dragPayload,
     receiveDrop,
-    moveToMainWindow,
     releaseWindow,
+    otherOpenWindows,
     restoreWindows,
     requestLauncher(): void {
       launcherRequests += 1;

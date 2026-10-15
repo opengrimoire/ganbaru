@@ -16,7 +16,7 @@ On a project, project view, note, or Chat channel row, a middle click or Ctrl+cl
 
 Each tab shows its kind icon and one name: an item tab shows the view, note, or channel name followed by its project in parentheses, shortened when long; a kind or project tab inside a project shows just the project name; and Calendar and tabs outside a project show the kind name. The icon tells kinds apart, so the strip skips the kind name; tooltips, the launcher, and screen readers still name it. Names stay current across renames. Any kind, Calendar included, can have several tabs, so the same place can be open twice when the user asks for it.
 
-A fresh vault opens with Calendar and Projects. Closing the last tab of the main window asks to close the app, the same confirmation as closing the window, so the app is never left without a tab. Closing the last tab of any other window closes that window.
+A fresh vault opens with Calendar and Projects. Closing the last tab of a window closes that window, and in the last window open it asks to close the app, the same confirmation as closing the window, so the app is never left without a tab.
 
 Tabs, their order, the active tab, and the recently closed list persist per device, per vault, and per window. They are device-local interface state, not vault data, because another device may have a different window size and different working context.
 
@@ -34,7 +34,9 @@ A tab's context menu closes it, closes the other tabs, reopens a closed tab, loc
 
 ## Windows
 
-On desktop, every window holds its own tabs of any kind, opens new ones, and can move a tab into a new window while it has another tab left. Tabs in other windows also offer moving back to the main window. Like browser tabs, a tab dragged onto another window's tab strip moves there, and one pulled down off the title bar, or dropped outside every window, opens in a new window at that point where the window manager allows it. A tab carries its place and lock when it moves, and pending edits are saved first so the new window shows them. Closing a window other than the main one hands its tabs to the main window's recently closed list, while windows still open when the app quits reopen with their tabs on the next launch. The main window owns app-wide work such as the tray, and closing it closes the app.
+On desktop, windows are equal, as in a browser: each holds its own tabs of any kind, opens new ones, and can move a tab into a new window while it has another tab left. Like browser tabs, a tab dragged onto another window's tab strip moves there, and one pulled down off the title bar, or dropped outside every window, opens in a new window at that point where the window manager allows it. A tab carries its place and lock when it moves, and pending edits are saved first so the new window shows them. Every window of a vault shares one recently closed list, which also takes the tabs of a closed window. Closing a window while others stay open closes just that window, and closing the last one asks to close the app; windows still open when the app quits reopen with their tabs on the next launch. Raising the app, for example with a second launch, brings forward a window already on screen.
+
+The window the app starts with also hosts app-wide work such as schedulers, update checks, and Music playback. Closing it while other windows stay open hides it so that work keeps running, and it returns with fresh tabs when the app needs it again, for example to open a notification. Currently the Music panel and title bar Music controls appear only in that window.
 
 ## Phone
 

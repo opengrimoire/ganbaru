@@ -6,7 +6,6 @@ import {
   createTabWindowLabel,
   dragEndedOutsideWindow,
   isTabWindowLabel,
-  parseTabWindowClosed,
   parseTabWindowDrag,
   parseTabWindowRelease,
   parseTabWindowRequest,
@@ -92,13 +91,6 @@ describe("tab window messages", () => {
     expect(parseTabWindowRelease({ ...route, tabId: "tab-1" })).toEqual({ ...route, tabId: "tab-1" });
     expect(parseTabWindowRelease({ ...route, tabId: "" })).toBeNull();
     expect(parseTabWindowRelease({ ...route })).toBeNull();
-  });
-
-  it("keeps only the valid tabs of a closed window", () => {
-    const notes = tab("tab-1", "notes");
-    const closed = parseTabWindowClosed({ ...route, tabs: [notes, { id: "broken" }, tab("tab-2", "chat")] }, ["notes"]);
-    expect(closed).toEqual({ ...route, tabs: [notes] });
-    expect(parseTabWindowClosed({ ...route, tabs: "tab-1" }, KINDS)).toBeNull();
   });
 });
 

@@ -5,7 +5,6 @@
   import LockOpen from "@lucide/svelte/icons/lock-open";
   import RotateCcw from "@lucide/svelte/icons/rotate-ccw";
   import X from "@lucide/svelte/icons/x";
-  import SquareArrowLeft from "@lucide/svelte/icons/square-arrow-left";
   import SquareArrowUpRight from "@lucide/svelte/icons/square-arrow-up-right";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
@@ -15,7 +14,6 @@
     showTabContextMenu = $bindable(),
     tabContextId = $bindable(),
     tabContextMenuStyle,
-    canMoveToMainWindow,
     moveToNewWindowBlockReason,
     canCloseOtherTabs,
     canReopenTab,
@@ -24,7 +22,6 @@
     titleBarMenuStyle,
     controls,
     onMoveToNewWindow,
-    onMoveToMainWindow,
     onCloseTab,
     onCloseOtherTabs,
     onReopenTab,
@@ -35,7 +32,6 @@
     tabContextId: string | null;
     tabContextMenuStyle: string;
     /** Whether this window is not the main one, so its tabs can move there. */
-    canMoveToMainWindow: boolean;
     /** Why the tab cannot move to a new window, or null when it can. */
     moveToNewWindowBlockReason: string | null;
     canCloseOtherTabs: boolean;
@@ -46,7 +42,6 @@
     titleBarMenuStyle: string;
     controls: Array<{ id: TitleBarControlId; label: string }>;
     onMoveToNewWindow: () => void;
-    onMoveToMainWindow: () => void;
     onCloseTab: () => void;
     onCloseOtherTabs: () => void;
     onReopenTab: () => void;
@@ -106,12 +101,6 @@
         <SquareArrowUpRight size={15} strokeWidth={2.2} />
         <span class="shrink-0 whitespace-nowrap">{t("titleBar.moveToNewWindow")}</span>
       </button>
-      {#if canMoveToMainWindow}
-        <button role="menuitem" onclick={onMoveToMainWindow} class="menu-item">
-          <SquareArrowLeft size={15} strokeWidth={2.2} />
-          <span class="shrink-0 whitespace-nowrap">{t("titleBar.moveBackToMainWindow")}</span>
-        </button>
-      {/if}
     </div>
   </div>
 {/if}

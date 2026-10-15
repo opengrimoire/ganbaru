@@ -49,7 +49,8 @@
   } = $props();
 
   const appWindow = getCurrentWindow();
-  const isMainWindow = appWindow.label === MAIN_WINDOW_LABEL;
+  /** Whether this window hosts app-wide work such as Music playback; it hides instead of closing while others stay open. */
+  const isHostWindow = appWindow.label === MAIN_WINDOW_LABEL;
   const tabs = getWorkspaceTabs();
   const pomodoro = getPomodoro();
   const theme = getTheme();
@@ -124,7 +125,7 @@
   }
 
   function openMusicPanel(): void {
-    if (!isMainWindow) return;
+    if (!isHostWindow) return;
     showMusicPanel = true;
     showQuickNotes = false;
     showPomodoroMenu = false;
@@ -150,12 +151,12 @@
       await appWindow.unminimize();
       await appWindow.setFocus();
     } catch (error) {
-      console.error("Failed to focus the main window for Music:", error);
+      console.error("Failed to focus the window for Music:", error);
     }
   }
 
   onMount(() => {
-    if (!isMainWindow) return;
+    if (!isHostWindow) return;
     let unlisten: UnlistenFn | undefined;
     let disposed = false;
     void listen("tray-music-open", () => {
@@ -235,8 +236,9 @@
 
   const windowController = createTitleBarWindowController({
     window: appWindow,
-    isMainWindow,
+    otherOpenWindows: () => tabs.otherOpenWindows(),
     releaseWindow: () => tabs.releaseWindow(),
+    dismissWindow: () => (isHostWindow ? appWindow.hide() : appWindow.destroy()),
     benchmarkLocked: () => lockedByBenchmark,
     resetConfirmationOpen: () => showResetSequenceConfirm || showResetConfirm,
     requestCloseConfirmation: () => {
@@ -272,7 +274,7 @@
     zoomIn: () => zoom.zoomIn(),
     zoomOut: () => zoom.zoomOut(),
     resetZoom: () => zoom.reset(),
-    toggleMusic: () => { if (isMainWindow) toggleMusicPanel(); },
+    toggleMusic: () => { if (isHostWindow) toggleMusicPanel(); },
     toggleDiagnostics: togglePerfMenu,
     openShortcutHelp: () => { if (!lockedByThemeEditor) openSettings("shortcuts"); },
   });
@@ -471,7 +473,7 @@
       quickNotesOpen={showQuickNotes}
       musicPanelOpen={showMusicPanel}
       bind:showMenu={showPomodoroMenu}
-      {isMainWindow}
+      hostsMusic={isHostWindow}
       onMenuOpened={() => {
         showPerfMenu = false;
         showTitleBarMenu = false;
@@ -512,7 +514,6 @@
   <TitleBarWindowControls
     isMaximized={windowController.isMaximized}
     {lockedByBenchmark}
-    {isMainWindow}
     onMinimize={() => { void appWindow.minimize(); }}
     onToggleMaximize={() => { void appWindow.toggleMaximize(); }}
     onClose={() => { void handleClose(); }}
@@ -534,7 +535,6 @@
   bind:showTabContextMenu
   bind:tabContextId
   {tabContextMenuStyle}
-  canMoveToMainWindow={!isMainWindow}
   moveToNewWindowBlockReason={contextDetachBlockReason}
   canCloseOtherTabs={tabs.tabs.length > 1}
   canReopenTab={tabs.closed.length > 0}
@@ -546,7 +546,6 @@
     label: control.label(),
   }))}
   onMoveToNewWindow={tabWindowController.moveToNewWindow}
-  onMoveToMainWindow={tabWindowController.moveToMainWindow}
   onCloseTab={() => runTabContextAction((id) => tabs.close(id))}
   onCloseOtherTabs={() => runTabContextAction((id) => tabs.closeOthers(id))}
   onReopenTab={() => runTabContextAction(() => tabs.reopen())}

@@ -1,17 +1,16 @@
 import { emit, listen } from "@tauri-apps/api/event";
-import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { getAllWebviewWindows, WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import type { View } from "$lib/navigation";
 import { readNativeBackground } from "$lib/themes/native-background";
 import { parseWorkspaceTab, type WorkspaceTab } from "$lib/workspace-tabs/model";
 
-/** Label of the window the app starts with. It owns app-wide work and outlives the other windows. */
+/** Label of the window the app starts with. It hosts app-wide work and hides instead of closing while other windows stay open. */
 export const MAIN_WINDOW_LABEL = "main";
-/** Prefix of the windows that hold workspace tabs besides the main one; the desktop capability grants it. */
+/** Prefix of the windows opened for workspace tabs besides the first one; the desktop capability grants it. */
 const TAB_WINDOW_LABEL_PREFIX = "view-";
 const TAB_WINDOW_LABEL_PATTERN = /^view-[A-Za-z0-9-]{1,64}$/;
 const TAB_WINDOW_TRANSFER_EVENT = "tab-window-transfer";
 const TAB_WINDOW_RELEASE_EVENT = "tab-window-release";
-const TAB_WINDOW_CLOSED_EVENT = "tab-window-closed";
 const TAB_WINDOW_REQUEST_EVENT = "tab-window-request";
 /** Drag data naming a tab another window can ask for. Only ids travel, so the tab leaves with its live location. */
 export const TAB_WINDOW_DRAG_MIME = "application/x-ganbaru-ai-window-tab";
@@ -43,11 +42,6 @@ export interface TabWindowRequest extends TabWindowMessage {
   tabId: string;
 }
 
-/** The tabs of a window the user closed, so the main window can offer them for reopening. */
-export interface TabWindowClosed extends TabWindowMessage {
-  tabs: WorkspaceTab[];
-}
-
 /** A tab dragged out of its window, as another window reads it on drop. */
 export interface TabWindowDrag {
   sourceLabel: string;
@@ -66,7 +60,7 @@ export function createTabWindowLabel(createId: () => string = () => crypto.rando
   return `${TAB_WINDOW_LABEL_PREFIX}${createId()}`;
 }
 
-/** Return whether a window label names a tab window other than the main one. */
+/** Return whether a window label names a tab window other than the first one. */
 export function isTabWindowLabel(label: unknown): label is string {
   return typeof label === "string" && TAB_WINDOW_LABEL_PATTERN.test(label);
 }
@@ -177,25 +171,13 @@ export function tearOffWindowPosition(screenX: number, screenY: number): ScreenP
   return { x: Math.round(screenX - TEAR_OFF_GRAB_OFFSET.x), y: Math.round(screenY - TEAR_OFF_GRAB_OFFSET.y) };
 }
 
-/** Validate a closed-window report, keeping only valid tabs. */
-export function parseTabWindowClosed(value: unknown, availableKinds: readonly View[]): TabWindowClosed | null {
-  const message = parseMessage(value);
-  if (!message || !isRecord(value) || !Array.isArray(value.tabs)) return null;
-  const tabs = value.tabs.flatMap((entry) => {
-    const tab = parseWorkspaceTab(entry, availableKinds);
-    return tab ? [tab] : [];
-  });
-  return { ...message, tabs };
-}
-
 /** Send a tab-window message. Every window receives it and only its target acts on it. */
 async function sendTabWindowMessage(
   event:
     | typeof TAB_WINDOW_TRANSFER_EVENT
     | typeof TAB_WINDOW_RELEASE_EVENT
-    | typeof TAB_WINDOW_REQUEST_EVENT
-    | typeof TAB_WINDOW_CLOSED_EVENT,
-  message: TabWindowTransfer | TabWindowRelease | TabWindowRequest | TabWindowClosed,
+    | typeof TAB_WINDOW_REQUEST_EVENT,
+  message: TabWindowTransfer | TabWindowRelease | TabWindowRequest,
 ): Promise<void> {
   await emit(event, message);
 }
@@ -233,10 +215,14 @@ async function focusExistingWindow(window: WebviewWindow): Promise<void> {
   await window.setFocus();
 }
 
-/** Bring the main window forward. */
-async function focusMainWindow(): Promise<void> {
-  const mainWindow = await WebviewWindow.getByLabel(MAIN_WINDOW_LABEL);
-  if (mainWindow) await focusExistingWindow(mainWindow);
+/**
+ * Count the other app windows on screen. Hidden windows do not count, so the window that hosts app-wide work
+ * stays out of the count while it is hidden.
+ */
+async function countOtherOpenWindows(ownLabel: string): Promise<number> {
+  const others = (await getAllWebviewWindows()).filter((window) => isWindowLabel(window.label) && window.label !== ownLabel);
+  const visible = await Promise.all(others.map((window) => window.isVisible()));
+  return visible.filter(Boolean).length;
 }
 
 /**
@@ -283,16 +269,16 @@ export interface TabWindowHandlers {
   transfer(message: TabWindowTransfer): void;
   release(message: TabWindowRelease): void;
   request(message: TabWindowRequest): void;
-  /** Only the main window receives closed-window reports. */
-  closed(message: TabWindowClosed): void;
 }
 
 /** Desktop window operations that let workspace tabs move between this window and the others. */
 export interface WorkspaceTabWindows {
   readonly label: string;
-  readonly mainLabel: string;
-  /** Whether this is the main window, which keeps the tabs of a single-window setup and the reopen history. */
-  readonly isMain: boolean;
+  /**
+   * Whether this window hosts app-wide work. It keeps the tabs of a single-window setup, reopens the other
+   * saved windows at launch, and hides instead of closing while other windows stay open.
+   */
+  readonly isHost: boolean;
   /** Open a new window that starts with `tab`, at `position` when given and centered otherwise. */
   open(tab: WorkspaceTab, position?: ScreenPoint | null): Promise<void>;
   /** Reopen a window with the tabs it saved, behind the current one. Labels that name no tab window are ignored. */
@@ -305,20 +291,17 @@ export interface WorkspaceTabWindows {
   request(sourceLabel: string, vaultId: string, tabId: string): Promise<void>;
   /** Read a tab dragged in from another window, or null for drags from this one or malformed data. */
   readDrag(raw: string): TabWindowDrag | null;
-  /** Hand the tabs of this closing window to the main window's reopen history. */
-  reportClosed(vaultId: string, tabs: WorkspaceTab[]): Promise<void>;
-  focusMain(): Promise<void>;
+  /** Count the other app windows on screen, so closing this one can tell whether it is the last. */
+  otherOpenWindows(): Promise<number>;
   /** Listen for messages addressed to this window. Returns a cleanup. */
   listen(handlers: TabWindowHandlers): () => void;
 }
 
 /** Create the window operations of the window labelled `label`, accepting tabs of the available kinds. */
 export function createWorkspaceTabWindows(label: string, availableKinds: readonly View[]): WorkspaceTabWindows {
-  const isMain = label === MAIN_WINDOW_LABEL;
   return {
     label,
-    isMain,
-    mainLabel: MAIN_WINDOW_LABEL,
+    isHost: label === MAIN_WINDOW_LABEL,
     open: (tab, position = null) => openTabWindow(createTabWindowLabel(), tab, { position }),
     reopen: async (savedLabel) => {
       if (isTabWindowLabel(savedLabel)) await openTabWindow(savedLabel, null, { focus: false });
@@ -330,9 +313,7 @@ export function createWorkspaceTabWindows(label: string, availableKinds: readonl
     request: (sourceLabel, vaultId, tabId) =>
       sendTabWindowMessage(TAB_WINDOW_REQUEST_EVENT, { targetLabel: sourceLabel, sourceLabel: label, vaultId, tabId }),
     readDrag: (raw) => parseTabWindowDrag(raw, label),
-    reportClosed: (vaultId, tabs) =>
-      sendTabWindowMessage(TAB_WINDOW_CLOSED_EVENT, { targetLabel: MAIN_WINDOW_LABEL, sourceLabel: label, vaultId, tabs }),
-    focusMain: focusMainWindow,
+    otherOpenWindows: () => countOtherOpenWindows(label),
     listen(handlers) {
       const cleanups = [
         listenTabWindowMessages(
@@ -344,14 +325,6 @@ export function createWorkspaceTabWindows(label: string, availableKinds: readonl
         listenTabWindowMessages(TAB_WINDOW_RELEASE_EVENT, label, parseTabWindowRelease, handlers.release),
         listenTabWindowMessages(TAB_WINDOW_REQUEST_EVENT, label, parseTabWindowRequest, handlers.request),
       ];
-      if (isMain) {
-        cleanups.push(listenTabWindowMessages(
-          TAB_WINDOW_CLOSED_EVENT,
-          label,
-          (value) => parseTabWindowClosed(value, availableKinds),
-          handlers.closed,
-        ));
-      }
       return () => {
         for (const cleanup of cleanups) cleanup();
       };

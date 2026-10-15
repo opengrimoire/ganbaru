@@ -73,7 +73,6 @@ export const titleBar = {
   diagnosticsWithShortcut: (shortcut: string) => `Diagnostics (${shortcut})`,
   settingsWithShortcut: (shortcut: string) => `Settings (${shortcut})`,
   disabledBenchmark: "Disabled while a benchmark is active",
-  moveBackToMainWindow: "Move to main window",
   moveToNewWindow: "Move to new window",
   moveToNewWindowUnavailable: "This tab cannot move to its own window",
   onlyTabInWindow: "This is the only tab in this window",

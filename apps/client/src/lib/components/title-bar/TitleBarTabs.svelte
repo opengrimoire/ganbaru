@@ -70,8 +70,17 @@
   let dropTarget = $state<{ id: string; placement: WorkspaceTabPlacement } | null>(null);
   let measureSequence = 0;
 
+  /**
+   * Whether the tabs are wider than the strip. Only tabs count: the active indicator is absolutely positioned and
+   * can still sit where a closed tab was until the next frame, which would read as overflow on a short strip.
+   */
   function stripOverflows(): boolean {
-    return strip ? strip.scrollWidth > strip.clientWidth + 1 : false;
+    if (!strip) return false;
+    let contentRight = 0;
+    for (const element of strip.querySelectorAll<HTMLElement>(".titlebar-tab")) {
+      contentRight = Math.max(contentRight, element.offsetLeft + element.offsetWidth);
+    }
+    return contentRight > strip.clientWidth + 1;
   }
 
   /** Find the lightest density at which every tab fits, measuring each step before the browser paints. */

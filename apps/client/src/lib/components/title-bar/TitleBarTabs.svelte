@@ -972,11 +972,13 @@
           // A split's tabs join into one piece, closing the strip's gap and squaring their inner corners.
           side === 0 && "rounded-r-none",
           side === 1 && cn("rounded-l-none", !lifted && "-ml-0.5"),
-          // The highlight passes between the indicator and the tab itself at once, so it never fades in or out.
+          // The highlight passes between the indicator and the tab itself at once, so it never fades in or out. A
+          // split partner keeps its own highlight unanimated, since the tab focus leaves takes it the moment the
+          // indicator moves away.
           active || moving
             ? "text-foreground dark:text-white"
             : partner
-              ? cn("text-foreground transition-colors dark:text-white", hovered ? "bg-card/75" : "bg-card/50")
+              ? cn("text-foreground dark:text-white", hovered ? "bg-card/75" : "bg-card/50")
               : cn(
                 "transition-colors",
                 hovered

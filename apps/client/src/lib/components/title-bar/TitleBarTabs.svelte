@@ -18,7 +18,12 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { formatShortcut } from "$lib/keyboard-shortcuts";
   import { getPreferences } from "$lib/stores/preferences.svelte";
-  import { TAB_ARRIVAL_TIMEOUT_MS, getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
+  import {
+    TAB_ARRIVAL_TIMEOUT_MS,
+    getWorkspaceTabs,
+    type LiveTabDrag,
+    type TabDragEnd,
+  } from "$lib/stores/workspace-tabs.svelte";
   import { cn } from "$lib/utils";
   import type { WorkspaceTab, WorkspaceTabPlacement } from "$lib/workspace-tabs/model";
   import {
@@ -47,9 +52,8 @@
     dragEndedOutsideWindow,
     tabWindowDragData,
     tearOffWindowPosition,
+    type ScreenPoint,
     type TabDragGrab,
-    type TabWindowDrag,
-    type TabWindowDragStarted,
   } from "$lib/windows/tab-windows";
 
   let {
@@ -65,12 +69,20 @@
     trackEnd: HTMLElement | undefined;
   } = $props();
 
-  interface OwnTabDrag extends TabDragGrab {
+  type TabOrigin = { id: string; placement: WorkspaceTabPlacement };
+
+  /** The dragged tab while this window holds it, measured in this strip. */
+  interface HeldTabDrag extends TabDragGrab {
     id: string;
     /** Whether the tab may open in a new window of its own, which a window's last tab may not. */
     canTearOff: boolean;
+  }
+
+  /** A drag that started on one of this window's tabs, whose element must stay in the page until the drag ends. */
+  interface NativeTabDrag {
+    tab: WorkspaceTab;
     /** Neighbor that puts the tab back where it started when the drag is cancelled. */
-    origin: { id: string; placement: WorkspaceTabPlacement } | null;
+    origin: TabOrigin | null;
   }
 
   const TAB_REORDER_MIME = "application/x-ganbaru-ai-workspace-tab";
@@ -102,9 +114,16 @@
   let indicatorFrame = 0;
   let wheelCooldown = false;
   let launcherOpen = $state(false);
-  /** One of this window's tabs while it is dragged. */
-  let drag = $state.raw<OwnTabDrag | null>(null);
-  let draggingId = $state<string | null>(null);
+  /** The tab drag under way in this vault, from this window or another. */
+  const live = $derived(tabs.liveDrag);
+  /**
+   * The dragged tab while this window holds it. A tab moves to the window whose strip it is dragged over before
+   * it is dropped, so the window holding it changes during the drag.
+   */
+  const heldId = $derived(live && tabs.holds(live.tab.id) ? live.tab.id : null);
+  const canTearOffHeld = $derived(heldId !== null && tabs.detachBlock(heldId) === null);
+  /** The drag started on one of this window's tabs, until it ends. */
+  let nativeDrag = $state.raw<NativeTabDrag | null>(null);
   /** The dragged tab has been pulled off the title bar and floats under the pointer, leaving the window when dropped. */
   let offBar = $state(false);
   /** The drag has left this window, so nothing here draws the tab. */
@@ -124,43 +143,47 @@
   /** Hover highlights stay off from a drag's start until the pointer moves after it, so tabs a drag slides under the pointer do not light up. */
   let hoverHeld = $state(false);
   /** The dragged tab no longer holds a slot in the strip. */
-  const draggedTabLifted = $derived(draggingId !== null && (offBar || (outsideWindow && drag?.canTearOff === true)));
-  /** The drag this window told the others about, until it ends. */
-  let announcedDrag: TabWindowDrag | null = null;
-  /** Another window's tab being dragged, drawn in this strip while over the bar and floating below it. */
-  const incoming = $derived(tabs.incomingDrag);
-  /** Slot another window's tab takes in this strip, or null while it is off the bar or outside this window. */
+  const draggedTabLifted = $derived(heldId !== null && (offBar || (outsideWindow && canTearOffHeld)));
+  /** Slot another window's tab takes in this strip while it is on its way here, or null while it is not on the bar. */
   let incomingIndex = $state<number | null>(null);
   /** How far another window's tab is drawn from its slot so it stays under the pointer. */
   let incomingOffset = $state(0);
-  /** Another window's tab was dropped here and keeps its slot until it arrives. */
-  let incomingDropped = $state(false);
+  /** Another window's tab dropped here, which keeps its slot until it arrives. */
+  let droppedTab = $state.raw<WorkspaceTab | null>(null);
   /** Another window's tab while it holds a slot in this strip. */
-  const incomingTab = $derived(incoming && incomingIndex !== null ? incoming.tab : null);
-  /** The tabs the strip draws: this window's, with another window's dragged tab in the slot it would take. */
+  const incomingTab = $derived(
+    incomingIndex === null ? null : (droppedTab ?? (live && heldId === null ? live.tab : null)),
+  );
+  /**
+   * The tabs the strip draws: this window's, with another window's dragged tab in the slot it would take. A tab
+   * dragged from here keeps its element, out of sight, after it moves to another window, because the drag
+   * ends on that element.
+   */
   const shownTabs = $derived.by((): readonly WorkspaceTab[] => {
-    if (!incomingTab || incomingIndex === null || tabs.tabs.some((tab) => tab.id === incomingTab.id)) return tabs.tabs;
     const shown = [...tabs.tabs];
-    shown.splice(Math.min(incomingIndex, shown.length), 0, incomingTab);
+    if (incomingTab && incomingIndex !== null && !shown.some((tab) => tab.id === incomingTab.id)) {
+      shown.splice(Math.min(incomingIndex, shown.length), 0, incomingTab);
+    }
+    const source = nativeDrag?.tab;
+    if (source && !shown.some((tab) => tab.id === source.id)) shown.push(source);
     return shown;
   });
   /** A tab is dragged along this strip, so the others slide out of its way. */
-  const stripDragActive = $derived(draggingId !== null || incomingTab !== null);
+  const stripDragActive = $derived(heldId !== null || incomingTab !== null);
   const hoverQuiet = $derived(stripDragActive || hoverHeld);
   /** Tabs are dragged or still settling, so each draws its own background instead of the sliding indicator. */
   const stripInMotion = $derived(stripDragActive || settlingId !== null);
   /** The copy of a dragged tab that floats under the pointer once it is off the bar. */
   const floating = $derived.by((): { tab: WorkspaceTab; style: string } | null => {
     const at = pointer;
-    const current = drag;
-    if (!at || outsideWindow) return null;
-    const placed = (grab: TabDragGrab) =>
-      `left: ${at.x - grab.grabX}px; top: ${at.y - grab.grabY}px; width: ${grab.width}px;`;
-    if (current) {
-      const tab = offBar ? tabs.tabs.find((candidate) => candidate.id === current.id) : undefined;
-      return tab ? { tab, style: placed(current) } : null;
+    const current = live;
+    if (!at || outsideWindow || !current) return null;
+    const style = `left: ${at.x - current.grabX}px; top: ${at.y - current.grabY}px; width: ${current.width}px;`;
+    if (heldId !== null) {
+      const tab = offBar ? tabs.tabs.find((candidate) => candidate.id === heldId) : undefined;
+      return tab ? { tab, style } : null;
     }
-    return incoming && incomingIndex === null && !incomingDropped ? { tab: incoming.tab, style: placed(incoming) } : null;
+    return incomingIndex === null && !droppedTab ? { tab: current.tab, style } : null;
   });
   /** Document drag entries minus exits while a tab is dragged, which reaches zero once the drag leaves the window. */
   let dragDepth = 0;
@@ -218,8 +241,9 @@
   function updateIndicator(): void {
     const element = tabElements[tabs.activeTabId];
     const parent = element?.parentElement;
-    // A tab kept off the strip on its way to another window has no slot to mark.
-    if (!element || !parent || element.offsetParent === null || tabs.activeTabId === departingId) {
+    // A tab kept off the strip on its way to another window, or already gone there, has no slot to mark.
+    const away = tabs.activeTabId === departingId || !tabs.holds(tabs.activeTabId);
+    if (!element || !parent || element.offsetParent === null || away) {
       indicatorStyle = "";
       return;
     }
@@ -294,7 +318,7 @@
   }
 
   /** Neighbor that puts a tab back where it was, or null for a tab alone in its window. */
-  function originOf(id: string): { id: string; placement: WorkspaceTabPlacement } | null {
+  function originOf(id: string): TabOrigin | null {
     const index = tabs.tabs.findIndex((tab) => tab.id === id);
     const next = tabs.tabs[index + 1];
     const previous = tabs.tabs[index - 1];
@@ -310,18 +334,11 @@
     const grab = { grabX: event.clientX - rect.left, grabY: event.clientY - rect.top, width: rect.width };
     transfer.effectAllowed = "move";
     transfer.setData(TAB_REORDER_MIME, tab.id);
+    nativeDrag = { tab, origin: originOf(tab.id) };
     const payload = tabs.beginDrag(tab.id, grab);
     if (payload) transfer.setData(TAB_WINDOW_DRAG_MIME, tabWindowDragData(payload));
-    announcedDrag = payload;
     // The tab itself is drawn under the pointer while it is over a window, so the platform drags an empty image.
     transfer.setDragImage(EMPTY_DRAG_IMAGE, 0, 0);
-    drag = {
-      id: tab.id,
-      ...grab,
-      canTearOff: payload !== null && tabs.detachBlock(tab.id) === null,
-      origin: originOf(tab.id),
-    };
-    draggingId = tab.id;
     offBar = false;
     outsideWindow = false;
     pointer = { x: event.clientX, y: event.clientY };
@@ -329,11 +346,19 @@
     dragDepth = 0;
   }
 
-  /** A drag of one of this window's tabs, or of another window's tab that may move here. */
-  function dragKind(event: DragEvent): "reorder" | "window" | null {
-    const types = Array.from(event.dataTransfer?.types ?? []);
-    if (drag) return types.includes(TAB_REORDER_MIME) ? "reorder" : null;
-    return types.includes(TAB_WINDOW_DRAG_MIME) ? "window" : null;
+  /** A tab drag over this window: of the tab this window holds, or of a tab another window holds that may move here. */
+  function dragKind(event: DragEvent): "held" | "foreign" | null {
+    const types = event.dataTransfer?.types ?? [];
+    if (!live || !(types.includes(TAB_REORDER_MIME) || types.includes(TAB_WINDOW_DRAG_MIME))) return null;
+    return heldId === null ? "foreign" : "held";
+  }
+
+  /** The tab this window holds while it is dragged, measured in this strip. */
+  function heldDrag(): HeldTabDrag | null {
+    const current = live;
+    if (!current || heldId === null) return null;
+    const width = tabElements[heldId]?.offsetWidth || current.width;
+    return { id: heldId, grabX: Math.min(current.grabX, width), grabY: current.grabY, width, canTearOff: canTearOffHeld };
   }
 
   function acceptDrag(event: DragEvent): void {
@@ -432,7 +457,7 @@
    * Keep the dragged tab under the pointer along the strip. The tabs it passes trade places with it as soon as
    * it covers half of them, and it is then drawn shifted from its new slot so it never jumps.
    */
-  function slideAlongStrip(current: OwnTabDrag, clientX: number): void {
+  function slideAlongStrip(current: HeldTabDrag, clientX: number): void {
     const slots = shownSlots();
     const left = tabStripVisualLeft(stripX(clientX), current.grabX, current.width, trackRight());
     const target = tabStripMoveTarget(
@@ -447,7 +472,7 @@
   }
 
   /** Slide the dragged tab along the bar under the pointer, and lift it off once pulled away from the bar. */
-  function dragOwnTab(event: DragEvent, current: OwnTabDrag): void {
+  function dragOwnTab(event: DragEvent, current: HeldTabDrag): void {
     acceptDrag(event);
     outsideWindow = false;
     pointer = { x: event.clientX, y: event.clientY };
@@ -470,7 +495,7 @@
    * Draw another window's tab under the pointer in this strip, taking a slot as it enters and then trading
    * places with the tabs it passes, just like a tab of this window.
    */
-  function slideIncoming(current: TabWindowDragStarted, clientX: number): void {
+  function slideIncoming(current: LiveTabDrag, clientX: number): void {
     if (incomingIndex === null) {
       const entry = entryIndex(clientX);
       slideLayout(() => { incomingIndex = entry; }, current.tab.id);
@@ -494,53 +519,56 @@
   }
 
   /** Whether another window's tab dragged to the pointer of `event` is off this window's bar. */
-  function foreignOffBar(event: DragEvent): boolean {
+  function foreignOffBar(event: DragEvent, current: LiveTabDrag): boolean {
     if (pulledOffBar(event.clientY)) return true;
-    if (!incoming) return false;
-    const width = (incomingIndex === null ? undefined : tabElements[incoming.tab.id]?.offsetWidth) ?? incoming.width;
-    return passedTrack(event.clientX, Math.min(incoming.grabX, width), width);
+    const width = (incomingIndex === null ? undefined : tabElements[current.tab.id]?.offsetWidth) ?? current.width;
+    return passedTrack(event.clientX, Math.min(current.grabX, width), width);
   }
 
-  /** Draw another window's tab in the strip while it is over the bar, and floating under the pointer off it. */
-  function dragForeignTab(event: DragEvent): void {
-    if (incomingDropped) return;
-    pointer = { x: event.clientX, y: event.clientY };
-    if (foreignOffBar(event)) {
-      leaveStrip();
-      return;
-    }
-    acceptDrag(event);
-    if (incoming) slideIncoming(incoming, event.clientX);
+  /** Neighbor next to which another window's tab joins this strip, from the slot it is drawn in or the pointer. */
+  function incomingTarget(clientX: number): TabOrigin | null {
+    return tabStripInsertTarget(tabs.tabs.map((tab) => tab.id), incomingIndex ?? entryIndex(clientX));
   }
 
   /**
-   * Take another window's tab dropped on the bar into the slot it is drawn in, or, without a drawing, the
-   * slot under the pointer. It keeps that slot until it arrives.
+   * Draw another window's tab in the strip while it is over the bar, and ask for it, so it moves here and opens
+   * before it is dropped. Off the bar, or over a full strip, it only floats under the pointer.
    */
-  function dropForeignTab(event: DragEvent): void {
-    if (foreignOffBar(event)) {
-      resetIncoming();
+  function dragForeignTab(event: DragEvent, current: LiveTabDrag): void {
+    if (droppedTab) return;
+    pointer = { x: event.clientX, y: event.clientY };
+    if (!tabs.canReceiveTab || foreignOffBar(event, current)) {
+      leaveStrip(current.tab.id);
       return;
     }
     acceptDrag(event);
-    const ids = tabs.tabs.map((tab) => tab.id);
-    const target = tabStripInsertTarget(ids, incomingIndex ?? entryIndex(event.clientX));
-    const taken = tabs.receiveDrop(event.dataTransfer?.getData(TAB_WINDOW_DRAG_MIME) ?? "", target);
-    if (!taken || !incomingTab) {
-      resetIncoming();
+    slideIncoming(current, event.clientX);
+    tabs.claim(current.tab.id, incomingTarget(event.clientX));
+  }
+
+  /**
+   * Take another window's tab dropped on the bar into the slot it is drawn in, or, without a drawing, the slot
+   * under the pointer. It keeps that slot until it arrives.
+   */
+  function dropForeignTab(event: DragEvent, current: LiveTabDrag): void {
+    const id = current.tab.id;
+    if (!tabs.canReceiveTab || foreignOffBar(event, current) || !tabs.claim(id, incomingTarget(event.clientX), { dropped: true })) {
+      leaveStrip(id);
       return;
     }
-    incomingDropped = true;
-    settle(incomingTab.id);
+    acceptDrag(event);
+    if (incomingIndex !== null) {
+      droppedTab = current.tab;
+      settle(id);
+    }
+    tabs.finishDrag(id, { accepted: true, screen: tearOffWindowPosition(event.screenX, event.screenY) });
     incomingOffset = 0;
-    addOffset = 0;
-    pointer = null;
-    dragDepth = 0;
+    endDrag();
   }
 
   /** Take another window's tab out of the strip once it is off the bar or outside the window, sliding the rest back. */
-  function leaveStrip(): void {
-    if (incomingIndex !== null) slideLayout(() => { incomingIndex = null; }, incoming?.tab.id ?? null);
+  function leaveStrip(id: string | null): void {
+    if (incomingIndex !== null) slideLayout(() => { incomingIndex = null; }, id);
     addOffset = 0;
   }
 
@@ -548,11 +576,7 @@
   function resetIncoming(): void {
     incomingIndex = null;
     incomingOffset = 0;
-    incomingDropped = false;
-    if (drag) return;
-    addOffset = 0;
-    pointer = null;
-    dragDepth = 0;
+    droppedTab = null;
   }
 
   /**
@@ -561,25 +585,29 @@
    */
   function handleWindowDragOver(event: DragEvent): void {
     const kind = dragKind(event);
-    if (kind === "reorder" && drag) dragOwnTab(event, drag);
-    if (kind === "window") dragForeignTab(event);
+    const held = kind === "held" ? heldDrag() : null;
+    if (held) dragOwnTab(event, held);
+    else if (kind === "foreign" && live) dragForeignTab(event, live);
   }
 
   /**
    * A drop on this window ends the drag here. Another window's tab moves in unless it was pulled off the bar,
-   * and this window's tab, already in its slot, opens in a new window right away when it was pulled off.
+   * and the tab this window holds, already in its slot, opens in a new window right away when it was pulled off.
    */
   function handleWindowDrop(event: DragEvent): void {
     const kind = dragKind(event);
-    if (kind === "window") {
-      dropForeignTab(event);
+    if (kind === "foreign" && live) {
+      dropForeignTab(event, live);
       return;
     }
-    const current = drag;
-    if (kind !== "reorder" || !current) return;
+    const held = kind === "held" ? heldDrag() : null;
+    if (!held) return;
     acceptDrag(event);
-    if (offBar) holdDeparture(current.id, tabs.detach(current.id, tearOffWindowPosition(event.screenX, event.screenY)));
-    else settle(current.id);
+    const screen = tearOffWindowPosition(event.screenX, event.screenY);
+    const lifted = offBar;
+    tabs.finishDrag(held.id, { accepted: true, screen });
+    if (lifted) holdDeparture(held.id, tabs.detach(held.id, screen));
+    else settle(held.id);
     endDrag();
   }
 
@@ -608,34 +636,40 @@
     });
   }
 
-  /**
-   * End a drag of this window's tab. A drag no window took opens the tab in a new window when it ended outside
-   * this one, and otherwise, as when cancelled, puts the tab back where it started.
-   */
+  /** End a drag that started on one of this window's tabs, as the platform reports it on that tab. */
   function handleDragEnd(event: DragEvent): void {
-    const current = drag;
+    const native = nativeDrag;
+    if (!native) return;
     const leftWindow = dragEndedOutsideWindow(event, { width: window.innerWidth, height: window.innerHeight }, dragDepth);
-    if (announcedDrag) tabs.finishDrag(announcedDrag);
-    announcedDrag = null;
-    if (!current) {
+    const end = tabs.finishDrag(native.tab.id, {
+      accepted: event.dataTransfer?.dropEffect !== "none",
+      screen: tearOffWindowPosition(event.screenX, event.screenY),
+    });
+    if (end) concludeDrag(end, leftWindow, native.origin);
+    else endDrag();
+  }
+
+  /**
+   * Act on the end of a drag that no drop on this window ended. When this window still holds the tab, a drop
+   * another window took moves the tab there, a drag that ended away from this window's bar opens the tab in a
+   * new window, and otherwise, as when cancelled, the tab goes back where it started.
+   */
+  function concludeDrag(end: TabDragEnd, leftWindow: boolean, origin: TabOrigin | null): void {
+    const id = end.tabId;
+    if (!tabs.holds(id)) {
       endDrag();
       return;
     }
-    // A tab another window took is already off this strip, and stays off until it has moved there.
-    if (event.dataTransfer?.dropEffect !== "none") {
-      if (current.canTearOff) holdDeparture(current.id, null);
+    const canTearOff = tabs.detachBlock(id) === null;
+    const away = outsideWindow || leftWindow;
+    if (end.accepted || (away && canTearOff)) {
+      if (canTearOff) holdDeparture(id, end.accepted ? null : tabs.tearOff(id, end.screen));
       endDrag();
       return;
     }
-    if (leftWindow && current.canTearOff) {
-      holdDeparture(current.id, tabs.tearOff(current.id, tearOffWindowPosition(event.screenX, event.screenY)));
-      endDrag();
-      return;
-    }
-    const origin = current.origin;
     slideLayout(() => {
       endDrag();
-      if (origin && tabs.tabs.some((tab) => tab.id === origin.id)) tabs.move(current.id, origin.id, origin.placement);
+      if (origin && tabs.tabs.some((tab) => tab.id === origin.id)) tabs.move(id, origin.id, origin.placement);
     }, null);
   }
 
@@ -643,26 +677,29 @@
   function trackDragDepth(event: DragEvent, change: 1 | -1): void {
     if (!dragKind(event)) return;
     dragDepth += change;
-    const current = drag;
-    if (current) {
+    if (heldId !== null) {
       const outside = dragDepth <= 0;
-      if (outside !== outsideWindow) slideLayout(() => { outsideWindow = outside; }, current.id);
+      if (outside !== outsideWindow) slideLayout(() => { outsideWindow = outside; }, heldId);
       if (outside) addOffset = 0;
-    } else if (dragDepth <= 0 && !incomingDropped) {
-      leaveStrip();
+    } else if (dragDepth <= 0 && !droppedTab) {
+      leaveStrip(live?.tab.id ?? null);
       pointer = null;
     }
   }
 
+  /** Forget the drag in this strip, keeping only another window's tab dropped here until it arrives. */
   function endDrag(): void {
-    drag = null;
-    draggingId = null;
+    nativeDrag = null;
     offBar = false;
     outsideWindow = false;
     pointer = null;
     movingOffset = 0;
     addOffset = 0;
     dragDepth = 0;
+    if (!droppedTab) {
+      incomingIndex = null;
+      incomingOffset = 0;
+    }
   }
 
   $effect(() => () => {
@@ -702,21 +739,52 @@
     };
   });
 
-  $effect(() => {
-    // A tab another window took may disappear before its drag ends.
-    if (draggingId !== null && !tabs.tabs.some((tab) => tab.id === draggingId)) untrack(endDrag);
+  // Another window saw the drag end, so no drag end reaches this one.
+  $effect(() => tabs.onDragEnd((end) => concludeDrag(end, false, null)));
+
+  let previousHeldId: string | null = null;
+  $effect.pre(() => {
+    const id = heldId;
+    untrack(() => {
+      const previous = previousHeldId;
+      previousHeldId = id;
+      if (id === previous || !live) return;
+      if (id !== null && incomingIndex !== null) {
+        // The tab drawn on its way here arrived, and goes on from where it was drawn.
+        movingOffset = incomingOffset;
+        incomingIndex = null;
+        incomingOffset = 0;
+      } else if (id === null) {
+        // The tab moved to another window while still dragged.
+        offBar = false;
+        outsideWindow = false;
+        movingOffset = 0;
+        addOffset = 0;
+      }
+    });
   });
 
   $effect(() => {
-    // The drag ended, or its tab arrived and now holds the slot it was drawn in.
-    if (!incoming) {
+    // Another drag started over this window, which must not keep the previous one's slot.
+    void live;
+    untrack(() => {
+      if (!droppedTab && nativeDrag === null) {
+        incomingIndex = null;
+        incomingOffset = 0;
+      }
+    });
+  });
+
+  $effect(() => {
+    // A tab dropped here holds the slot it was drawn in once it arrives, or gives it back when it does not.
+    const dropped = droppedTab;
+    if (!dropped) return;
+    if (tabs.holds(dropped.id)) {
       untrack(resetIncoming);
       return;
     }
-    // Another drag started over this window, which must not keep the previous one's slot.
-    untrack(() => {
-      if (!incomingDropped) incomingIndex = null;
-    });
+    const timer = setTimeout(() => slideLayout(resetIncoming, dropped.id), TAB_ARRIVAL_TIMEOUT_MS);
+    return () => clearTimeout(timer);
   });
 </script>
 
@@ -761,8 +829,9 @@
       {@const arriving = tab.id === incomingTab?.id}
       {@const active = !arriving && tab.id === tabs.activeTabId}
       {@const fullLabel = workspaceTabFullLabel(tab, t)}
-      {@const moving = arriving || draggingId === tab.id}
-      {@const lifted = !arriving && ((moving && draggedTabLifted) || departingId === tab.id)}
+      {@const source = nativeDrag?.tab.id === tab.id}
+      {@const moving = arriving || heldId === tab.id}
+      {@const lifted = !arriving && (!tabs.holds(tab.id) || (moving && draggedTabLifted) || departingId === tab.id)}
       {@const settling = settlingId === tab.id}
       <div
         bind:this={tabElements[tab.id]}
@@ -781,8 +850,8 @@
           settling && "titlebar-tab-settling",
         )}
         style:translate={moving && !lifted ? `${arriving ? incomingOffset : movingOffset}px 0` : undefined}
-        draggable={!arriving}
-        inert={arriving}
+        draggable={!arriving || source}
+        inert={arriving && !source}
         role="presentation"
         title={tabTitle(tab, index)}
         ondragstart={(event) => handleDragStart(event, tab)}

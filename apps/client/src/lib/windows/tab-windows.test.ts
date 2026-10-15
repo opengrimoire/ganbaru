@@ -6,14 +6,12 @@ import {
   createTabWindowLabel,
   dragEndedOutsideWindow,
   isTabWindowLabel,
-  parseTabWindowDrag,
+  parseTabWindowClaim,
   parseTabWindowDragEnded,
   parseTabWindowDragStarted,
   parseTabWindowRelease,
-  parseTabWindowRequest,
   parseTabWindowSearch,
   parseTabWindowTransfer,
-  tabWindowDragData,
   tabWindowUrl,
   tearOffWindowPosition,
 } from "./tab-windows";
@@ -96,33 +94,17 @@ describe("tab window messages", () => {
   });
 });
 
-describe("tab window requests", () => {
-  const route = { targetLabel: SECONDARY, sourceLabel: MAIN_WINDOW_LABEL, vaultId: "vault-1" };
+describe("tab window claims", () => {
+  const claim = { sourceLabel: MAIN_WINDOW_LABEL, vaultId: "vault-1", tabId: "tab-1" };
 
-  it("asks for a dragged tab by id", () => {
-    expect(parseTabWindowRequest({ ...route, tabId: "tab-1" })).toEqual({ ...route, tabId: "tab-1" });
-    expect(parseTabWindowRequest({ ...route, tabId: 1 })).toBeNull();
-    expect(parseTabWindowRequest({ ...route, targetLabel: MAIN_WINDOW_LABEL, tabId: "tab-1" })).toBeNull();
-  });
-});
-
-describe("tab window drags", () => {
-  const drag = { sourceLabel: SECONDARY, vaultId: "vault-1", tabId: "tab-1" };
-
-  it("reads a tab dragged in from another window", () => {
-    expect(parseTabWindowDrag(tabWindowDragData(drag), MAIN_WINDOW_LABEL)).toEqual(drag);
+  it("asks every other window for a dragged tab by id", () => {
+    expect(parseTabWindowClaim(claim, SECONDARY)).toEqual(claim);
+    expect(parseTabWindowClaim({ ...claim, tabId: 1 }, SECONDARY)).toBeNull();
+    expect(parseTabWindowClaim({ ...claim, vaultId: "" }, SECONDARY)).toBeNull();
   });
 
-  it("ignores drags from the same window", () => {
-    expect(parseTabWindowDrag(tabWindowDragData(drag), SECONDARY)).toBeNull();
-  });
-
-  it("rejects malformed drag data", () => {
-    expect(parseTabWindowDrag("", MAIN_WINDOW_LABEL)).toBeNull();
-    expect(parseTabWindowDrag("{", MAIN_WINDOW_LABEL)).toBeNull();
-    expect(parseTabWindowDrag(tabWindowDragData({ ...drag, sourceLabel: "settings" }), MAIN_WINDOW_LABEL)).toBeNull();
-    expect(parseTabWindowDrag(tabWindowDragData({ ...drag, vaultId: "" }), MAIN_WINDOW_LABEL)).toBeNull();
-    expect(parseTabWindowDrag(tabWindowDragData({ ...drag, tabId: "" }), MAIN_WINDOW_LABEL)).toBeNull();
+  it("ignores a window's own claims", () => {
+    expect(parseTabWindowClaim(claim, MAIN_WINDOW_LABEL)).toBeNull();
   });
 });
 
@@ -135,7 +117,8 @@ describe("tab window drag announcements", () => {
 
   it("ignores announcements from the same window", () => {
     expect(parseTabWindowDragStarted(started, KINDS, SECONDARY)).toBeNull();
-    expect(parseTabWindowDragEnded({ sourceLabel: SECONDARY, vaultId: "vault-1", tabId: "tab-1" }, SECONDARY)).toBeNull();
+    const ended = { sourceLabel: SECONDARY, vaultId: "vault-1", tabId: "tab-1", accepted: false, screen: null };
+    expect(parseTabWindowDragEnded(ended, SECONDARY)).toBeNull();
   });
 
   it("rejects tabs of unavailable kinds and invalid grab points", () => {
@@ -147,10 +130,20 @@ describe("tab window drag announcements", () => {
     expect(parseTabWindowDragStarted(null, KINDS, MAIN_WINDOW_LABEL)).toBeNull();
   });
 
-  it("reads the end of a drag another window started", () => {
-    const ended = { sourceLabel: SECONDARY, vaultId: "vault-1", tabId: "tab-1" };
+  it("reads how a drag ended and where, when the window that saw it end knows", () => {
+    const ended = { sourceLabel: SECONDARY, vaultId: "vault-1", tabId: "tab-1", accepted: false, screen: { x: 320, y: 48 } };
     expect(parseTabWindowDragEnded(ended, MAIN_WINDOW_LABEL)).toEqual(ended);
+    expect(parseTabWindowDragEnded({ ...ended, accepted: true, screen: null }, MAIN_WINDOW_LABEL))
+      .toEqual({ ...ended, accepted: true, screen: null });
+  });
+
+  it("rejects drag ends without an outcome or with a malformed position", () => {
+    const ended = { sourceLabel: SECONDARY, vaultId: "vault-1", tabId: "tab-1", accepted: true, screen: null };
     expect(parseTabWindowDragEnded({ ...ended, tabId: 4 }, MAIN_WINDOW_LABEL)).toBeNull();
+    expect(parseTabWindowDragEnded({ ...ended, accepted: "yes" }, MAIN_WINDOW_LABEL)).toBeNull();
+    expect(parseTabWindowDragEnded({ ...ended, screen: undefined }, MAIN_WINDOW_LABEL)).toBeNull();
+    expect(parseTabWindowDragEnded({ ...ended, screen: { x: Number.NaN, y: 0 } }, MAIN_WINDOW_LABEL)).toBeNull();
+    expect(parseTabWindowDragEnded({ ...ended, screen: { x: 1 } }, MAIN_WINDOW_LABEL)).toBeNull();
   });
 });
 

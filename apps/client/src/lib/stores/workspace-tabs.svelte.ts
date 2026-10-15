@@ -1,13 +1,15 @@
 import { untrack } from "svelte";
+import { SvelteSet } from "svelte/reactivity";
 import { availableAppViews, type View } from "$lib/navigation";
 import { registerNavigationRouter, type NavigationRouterRegistration } from "$lib/stores/navigation.svelte";
 import { activeVaultIdentity, onActiveVaultIdentityChange } from "$lib/vault/active-vault";
 import type {
   ScreenPoint,
   TabDragGrab,
+  TabDragOutcome,
+  TabWindowClaim,
   TabWindowDrag,
-  TabWindowDragStarted,
-  TabWindowRequest,
+  TabWindowDragEnded,
   TabWindowTransfer,
   WorkspaceTabWindows,
 } from "$lib/windows/tab-windows";
@@ -71,6 +73,21 @@ export interface WorkspaceTabsConnection {
 
 export type WorkspaceTabDetachBlock = "unsupported" | "last-tab";
 
+/**
+ * A tab drag under way in this vault, started in this window or another. Every window draws the tab while the
+ * drag passes over it, and whichever window holds the tab moves it along its strip.
+ */
+export interface LiveTabDrag extends TabDragGrab {
+  /** Window the drag started in, or null when this window cannot share tabs with others. */
+  sourceLabel: string | null;
+  tab: WorkspaceTab;
+}
+
+/** How a tab drag ended, as each window hears of it once. */
+export interface TabDragEnd extends TabDragOutcome {
+  tabId: string;
+}
+
 const STORAGE_PREFIX = "ganbaru.workspace-tabs.v1";
 /** Reopen history of a vault, shared by every window so a tab closed in one can be reopened in any. */
 const CLOSED_STORAGE_PREFIX = "ganbaru.workspace-tabs-closed.v1";
@@ -84,6 +101,8 @@ const TEAR_OFF_SETTLE_MS = 250;
  * the window it left while it has not gone.
  */
 export const TAB_ARRIVAL_TIMEOUT_MS = 3000;
+/** How often a window asks again for a tab dragged over its strip, until the window holding it lets it go. */
+const CLAIM_INTERVAL_MS = 150;
 
 function createTabId(): string {
   return crypto.randomUUID();
@@ -101,17 +120,35 @@ let navigation: NavigationRouterRegistration | null = null;
 let storageVaultId: string | null = null;
 /** Set once this window closes or hides, so it stops saving tabs it has handed off or remembered as closed. */
 let windowReleased = false;
-/** Tabs that moved to another window, which a closing window must not remember as closed. */
-const departedTabIds = new Set<string>();
+/**
+ * Tabs that moved to another window, which a closing window must not remember as closed. A window's last tab
+ * stays in its state when it leaves, so this also tells that the window no longer holds it.
+ */
+const departedTabIds = new SvelteSet<string>();
 /** Tabs on their way to another window, so a second move of the same tab cannot start meanwhile. */
 const departingTabIds = new Set<string>();
 /** Tabs another window asked for, so a tear-off of the same drag leaves them to that window. */
 const requestedTabIds = new Set<string>();
-/** Where a tab dropped from another window goes once it arrives, or null to keep it at the end. */
-let pendingDrop: { tabId: string; target: { id: string; placement: WorkspaceTabPlacement } | null } | null = null;
-/** Another window's tab being dragged, which this window draws in its strip while the drag passes over it. */
-let incomingDrag = $state.raw<TabWindowDragStarted | null>(null);
+/**
+ * Where a tab this window asked for goes once it arrives, or null to keep it at the end, and whether it was
+ * dropped here, so it is still expected after its drag ends.
+ */
+let pendingDrop: {
+  tabId: string;
+  target: { id: string; placement: WorkspaceTabPlacement } | null;
+  dropped: boolean;
+} | null = null;
+/** The tab drag under way in this vault, from this window or another, until it ends. */
+let liveDrag = $state.raw<LiveTabDrag | null>(null);
+/** Tab whose drag started in this window, whose drag source must stay on screen until the drag ends. */
+let nativeDragTabId: string | null = null;
+/** This window's last tab left during a drag it started, so it closes once that drag ends. */
+let closeAfterDrag = false;
+/** When this window last asked for a dragged tab, so it asks again only now and then. */
+let lastClaim: { tabId: string; at: number } | null = null;
 let arrivalTimer: ReturnType<typeof setTimeout> | null = null;
+/** What this window does when a drag ends elsewhere. */
+let dragEndListener: ((end: TabDragEnd) => void) | null = null;
 
 /**
  * Every window saves its tabs under its own key per vault. The host window's key has no label so the tabs
@@ -331,39 +368,61 @@ function liveLocation(tab: WorkspaceTab): WorkspaceTabLocation {
   return connection?.adapter.read(tab.location.kind) ?? tab.location;
 }
 
+/** Whether this window holds a tab: it is in its strip and has not moved to another window. */
+function holds(tabId: string): boolean {
+  return tabsState.tabs.some((tab) => tab.id === tabId) && !departedTabIds.has(tabId);
+}
+
 /**
- * Adopt a tab another window offers, then tell that window to drop its copy. A full strip leaves the tab
- * where it is. A tab this window already holds is only confirmed, so a repeated offer cannot duplicate it.
+ * Adopt a tab another window offers, shown at once, then tell that window to drop its copy. A full strip
+ * leaves the tab where it is. A tab this window already holds is only confirmed, so a repeated offer cannot
+ * duplicate it.
  */
 function adoptTransfer(transfer: TabWindowTransfer): void {
   const windows = connection?.windows;
+  const id = transfer.tab.id;
   if (!windows || transfer.vaultId !== storageVaultId) return;
-  // Stop drawing the tab before it is added, so it never appears twice; the real tab takes the same slot.
-  clearIncomingDrag(transfer.tab.id);
-  const existing = tabsState.tabs.find((tab) => tab.id === transfer.tab.id);
+  const existing = tabsState.tabs.find((tab) => tab.id === id);
+  const target = pendingDrop?.tabId === id ? pendingDrop.target : null;
   if (existing) {
+    departedTabIds.delete(id);
     commitState(activateWorkspaceTab(tabsState, existing.id));
   } else if (canAddWorkspaceTab(tabsState)) {
-    const target = pendingDrop?.tabId === transfer.tab.id ? pendingDrop.target : null;
-    pendingDrop = null;
+    departedTabIds.delete(id);
     const inserted = insertWorkspaceTab(tabsState, transfer.tab, "end");
-    commitState(target ? moveWorkspaceTab(inserted, transfer.tab.id, target.id, target.placement) : inserted);
+    commitState(target ? moveWorkspaceTab(inserted, id, target.id, target.placement) : inserted);
   } else {
     return;
   }
-  void windows.release(transfer.sourceLabel, transfer.vaultId, transfer.tab.id).catch((error: unknown) => {
+  requestedTabIds.delete(id);
+  if (pendingDrop?.tabId === id) pendingDrop = null;
+  if (lastClaim?.tabId === id) lastClaim = null;
+  stopAwaitingArrival();
+  void windows.release(transfer.sourceLabel, transfer.vaultId, id).catch((error: unknown) => {
     console.error("Failed to confirm a moved tab:", error);
   });
 }
 
-/** Drop a tab that now lives in another window, closing this window when it was the last one. */
+/**
+ * Drop a tab that now lives in another window, closing this window when it was the last one. A window whose
+ * last tab leaves during a drag it started only leaves the screen until the drag ends, because closing it
+ * would end the drag.
+ */
 function releaseTab(tabId: string, vaultId: string): void {
   const host = connection;
-  if (!host || vaultId !== storageVaultId || !tabsState.tabs.some((tab) => tab.id === tabId)) return;
+  if (!host || vaultId !== storageVaultId || !holds(tabId)) return;
   departedTabIds.add(tabId);
   const next = takeWorkspaceTab(tabsState, tabId);
-  if (next) commitState(next);
-  else host.requestWindowClose();
+  if (next) {
+    commitState(next);
+  } else if (nativeDragTabId !== null && host.windows) {
+    closeAfterDrag = true;
+    void host.windows.minimize().catch((error: unknown) => {
+      console.error("Failed to minimize a window whose last tab left:", error);
+    });
+  } else {
+    host.requestWindowClose();
+  }
 }
 
 /**
@@ -422,19 +481,18 @@ function connectWindows(host: WorkspaceTabsConnection): () => void {
   const unlisten = windows.listen({
     transfer: adoptTransfer,
     release: (release) => releaseTab(release.tabId, release.vaultId),
-    request: (request) => {
-      void offerRequestedTab(request).catch((error: unknown) => {
+    claim: (claim) => {
+      void offerClaimedTab(claim).catch((error: unknown) => {
         console.error("Failed to move a dragged tab:", error);
       });
     },
     dragStarted: (started) => {
-      if (started.vaultId === storageVaultId) showIncomingDrag(started);
+      if (started.vaultId !== storageVaultId) return;
+      requestedTabIds.delete(started.tab.id);
+      liveDrag = started;
     },
     dragEnded: (ended) => {
-      // A tab dropped here keeps its slot until it arrives.
-      if (incomingDrag?.sourceLabel === ended.sourceLabel && pendingDrop?.tabId !== ended.tabId) {
-        clearIncomingDrag(ended.tabId);
-      }
+      if (ended.vaultId === storageVaultId) concludeDrag(ended);
     },
     raised: reviveHostWindow,
   });
@@ -459,8 +517,7 @@ function connect(host: WorkspaceTabsConnection): void {
   const cleanups = [connectWindows(host)];
   cleanups.push(onActiveVaultIdentityChange((_previous, next) => {
     if (next === storageVaultId) return;
-    pendingDrop = null;
-    clearIncomingDrag();
+    resetDrag();
     loadForVault(next, null);
     void restoreActive();
   }));
@@ -486,7 +543,7 @@ function connect(host: WorkspaceTabsConnection): void {
 
   $effect(() => () => {
     cleanups.forEach((cleanup) => cleanup());
-    clearIncomingDrag();
+    resetDrag();
     navigation?.unregister();
     navigation = null;
     if (connection === host) connection = null;
@@ -620,79 +677,133 @@ async function tearOff(id: string, position: ScreenPoint | null): Promise<void> 
 
 /**
  * Start dragging a tab held at `grab`, telling the other windows so they can draw it as it passes over them.
- * Returns what the drag carries so the window it is dropped on can ask for the tab, or null when tabs
- * cannot leave this window.
+ * Returns what the drag carries, or null when tabs cannot leave this window.
  */
 function beginDrag(id: string, grab: TabDragGrab): TabWindowDrag | null {
   const windows = connection?.windows;
-  const tab = tabsState.tabs.find((candidate) => candidate.id === id);
+  const found = tabsState.tabs.find((candidate) => candidate.id === id);
   const vaultId = storageVaultId;
-  if (!windows || !vaultId || !tab) return null;
+  if (!found) return null;
+  const tab = { ...found, location: liveLocation(found) };
   requestedTabIds.delete(id);
+  nativeDragTabId = id;
+  lastClaim = null;
+  liveDrag = { sourceLabel: windows?.label ?? null, tab, ...grab };
+  if (!windows || !vaultId) return null;
   void connection?.flushPendingEdits?.().catch((error: unknown) => {
     console.error("Failed to save pending edits before a tab drag:", error);
   });
-  void windows.announceDrag(vaultId, { ...tab, location: liveLocation(tab) }, grab).catch((error: unknown) => {
+  void windows.announceDrag(vaultId, tab, grab).catch((error: unknown) => {
     console.error("Failed to announce a tab drag:", error);
   });
   return { sourceLabel: windows.label, vaultId, tabId: id };
 }
 
-/** Tell the other windows that the drag of a tab started with {@link beginDrag} has ended. */
-function finishDrag(drag: TabWindowDrag): void {
-  void connection?.windows?.announceDragEnd(drag.vaultId, drag.tabId).catch((error: unknown) => {
-    console.error("Failed to announce the end of a tab drag:", error);
-  });
+/**
+ * End the drag of `tabId` as this window saw it end, on its drag source or by a drop on it, and tell the other
+ * windows how it ended. Returns that end, or null when this window already heard of it, so each window acts on
+ * a drag's end once.
+ */
+function finishDrag(tabId: string, outcome: TabDragOutcome): TabDragEnd | null {
+  if (nativeDragTabId === tabId) nativeDragTabId = null;
+  if (liveDrag?.tab.id !== tabId) {
+    closeIfLeftEmpty();
+    return null;
+  }
+  const windows = connection?.windows;
+  const vaultId = storageVaultId;
+  if (windows && vaultId) {
+    void windows.announceDragEnd(vaultId, tabId, outcome).catch((error: unknown) => {
+      console.error("Failed to announce the end of a tab drag:", error);
+    });
+  }
+  const end = { tabId, ...outcome };
+  settleDrag(end);
+  return end;
 }
 
-/** Draw another window's dragged tab here, unless the strip is full or already holds it. */
-function showIncomingDrag(started: TabWindowDragStarted): void {
-  if (pendingDrop) return;
-  clearIncomingDrag();
-  if (canAddWorkspaceTab(tabsState) && !tabsState.tabs.some((tab) => tab.id === started.tab.id)) incomingDrag = started;
+/** Act on the end of a drag another window saw end, unless this window already heard of it. */
+function concludeDrag(ended: TabWindowDragEnded): void {
+  if (liveDrag?.tab.id !== ended.tabId) return;
+  const end = { tabId: ended.tabId, accepted: ended.accepted, screen: ended.screen };
+  settleDrag(end);
+  dragEndListener?.(end);
 }
 
-/** Stop drawing another window's dragged tab, only when it is `tabId` if given. */
-function clearIncomingDrag(tabId?: string): void {
-  if (tabId !== undefined && incomingDrag?.tab.id !== tabId) return;
-  incomingDrag = null;
+/** Forget a drag that ended. A tab dropped here that has not arrived keeps its place until it does. */
+function settleDrag(end: TabDragEnd): void {
+  liveDrag = null;
+  lastClaim = null;
+  if (nativeDragTabId === end.tabId) nativeDragTabId = null;
+  if (pendingDrop?.tabId === end.tabId && !pendingDrop.dropped) pendingDrop = null;
+  closeIfLeftEmpty();
+}
+
+/** Close this window once the drag it started ended, when its last tab left during that drag. */
+function closeIfLeftEmpty(): void {
+  if (!closeAfterDrag || nativeDragTabId !== null) return;
+  closeAfterDrag = false;
+  connection?.requestWindowClose();
+}
+
+/** Forget any drag under way, as when this window changes vault or disconnects. */
+function resetDrag(): void {
+  liveDrag = null;
+  nativeDragTabId = null;
+  pendingDrop = null;
+  lastClaim = null;
+  stopAwaitingArrival();
+}
+
+function stopAwaitingArrival(): void {
   if (arrivalTimer !== null) clearTimeout(arrivalTimer);
   arrivalTimer = null;
 }
 
-/** Give up on a tab dropped here that has not arrived in time, freeing the slot it was drawn in. */
+/** Give up on a tab dropped here that has not arrived in time. */
 function awaitArrival(tabId: string): void {
-  if (arrivalTimer !== null) clearTimeout(arrivalTimer);
+  stopAwaitingArrival();
   arrivalTimer = setTimeout(() => {
     arrivalTimer = null;
     if (pendingDrop?.tabId === tabId) pendingDrop = null;
-    clearIncomingDrag(tabId);
   }, TAB_ARRIVAL_TIMEOUT_MS);
 }
 
 /**
- * Ask the window a tab was dragged from to move it here, next to `target` or at the end. Returns whether
- * the drop was taken: a drag from this window, another vault, or onto a full strip is not.
+ * Ask for the dragged tab `tabId`, to show it next to `target` or at the end as soon as it arrives. While the
+ * drag goes on the request repeats only now and then, until the window holding the tab lets it go; a drop
+ * always asks. Returns whether this window can take the tab: it cannot without other windows or with a full
+ * strip.
  */
-function receiveDrop(raw: string, target: { id: string; placement: WorkspaceTabPlacement } | null): boolean {
+function claim(
+  tabId: string,
+  target: { id: string; placement: WorkspaceTabPlacement } | null,
+  { dropped = false }: { dropped?: boolean } = {},
+): boolean {
   const windows = connection?.windows;
-  const drag = windows?.readDrag(raw) ?? null;
-  if (!windows || !drag || drag.vaultId !== storageVaultId || !canAddWorkspaceTab(tabsState)) return false;
-  pendingDrop = { tabId: drag.tabId, target };
-  awaitArrival(drag.tabId);
-  void windows.request(drag.sourceLabel, drag.vaultId, drag.tabId).catch((error: unknown) => {
+  const vaultId = storageVaultId;
+  if (!windows || !vaultId) return false;
+  if (holds(tabId)) return true;
+  if (!canAddWorkspaceTab(tabsState)) return false;
+  pendingDrop = { tabId, target, dropped };
+  if (dropped) awaitArrival(tabId);
+  const now = performance.now();
+  if (!dropped && lastClaim?.tabId === tabId && now - lastClaim.at < CLAIM_INTERVAL_MS) return true;
+  lastClaim = { tabId, at: now };
+  void windows.claim(vaultId, tabId).catch((error: unknown) => {
     console.error("Failed to ask for a dragged tab:", error);
   });
   return true;
 }
 
-/** Offer a dragged tab to the window it was dropped on, with its live location and saved edits. */
-function offerRequestedTab(request: TabWindowRequest): Promise<void> {
-  if (request.vaultId !== storageVaultId) return Promise.resolve();
-  requestedTabIds.add(request.tabId);
+/** Offer a dragged tab this window holds to the window that claimed it, with its live location and saved edits. */
+function offerClaimedTab(request: TabWindowClaim): Promise<void> {
+  if (request.vaultId !== storageVaultId || !holds(request.tabId)) return Promise.resolve();
   return depart(request.tabId, async (windows) => {
     const tab = await prepareDeparture(request.tabId);
-    if (tab) await windows.offer(request.sourceLabel, request.vaultId, tab);
+    if (!tab || !holds(tab.id)) return;
+    requestedTabIds.add(tab.id);
+    await windows.offer(request.sourceLabel, request.vaultId, tab);
   });
 }
 
@@ -781,10 +892,15 @@ export function getWorkspaceTabs() {
     get launcherRequests(): number {
       return launcherRequests;
     },
-    /** Another window's tab dragged over this vault's windows, for this strip to draw while the drag passes over it. */
-    get incomingDrag(): TabWindowDragStarted | null {
-      return incomingDrag;
+    /** The tab drag under way in this vault, from this window or another, for this strip to draw as it passes over. */
+    get liveDrag(): LiveTabDrag | null {
+      return liveDrag;
     },
+    /** Whether this window's strip has room for a tab from another window. */
+    get canReceiveTab(): boolean {
+      return canAddWorkspaceTab(tabsState);
+    },
+    holds,
     connect,
     activate,
     openKind,
@@ -812,7 +928,14 @@ export function getWorkspaceTabs() {
     tearOff,
     beginDrag,
     finishDrag,
-    receiveDrop,
+    claim,
+    /** Act on the ends of drags this window hears of from another window. Returns a cleanup. */
+    onDragEnd(listener: (end: TabDragEnd) => void): () => void {
+      dragEndListener = listener;
+      return () => {
+        if (dragEndListener === listener) dragEndListener = null;
+      };
+    },
     releaseWindow,
     otherOpenWindows,
     restoreWindows,

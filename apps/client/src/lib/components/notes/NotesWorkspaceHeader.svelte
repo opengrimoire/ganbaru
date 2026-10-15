@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Snippet } from "svelte";
   import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import Database from "@lucide/svelte/icons/database";
   import Folder from "@lucide/svelte/icons/folder";
@@ -65,6 +66,7 @@
     onProjectSelected,
     onShowHome,
     onOpenExplorer = undefined,
+    projectViewSwitcher = undefined,
     projectSettingsOpen,
     onToggleProjectSettings,
     pageActionsTarget = $bindable<HTMLElement | null>(null),
@@ -81,6 +83,8 @@
     onShowHome: () => void;
     /** Opens the phone explorer panel over an open note. */
     onOpenExplorer?: () => void;
+    /** Phone switcher between the views of the project that hosts Notes, kept in the action row on every surface. */
+    projectViewSwitcher?: Snippet;
     projectSettingsOpen: boolean;
     onToggleProjectSettings: () => void;
     pageActionsTarget?: HTMLElement | null;
@@ -150,8 +154,13 @@
   const selectedPageId = $derived(selectedPage?.id ?? null);
   const selectedDatabaseBlock = $derived(notes.selectedDatabaseBlock);
   const databaseSelected = $derived(notes.viewMode === "pages" && notes.selectedDatabaseBlockId != null);
-  /** The mobile action row only carries Back and page actions, so it collapses on the project explorer. */
-  const mobileActionRowVisible = $derived(mobileLayout && (selectedPageTitle !== null || databaseSelected));
+  /**
+   * The mobile action row carries Back, page actions, and the hosting project's view switcher, so it collapses on the
+   * project explorer only when Notes is not hosted.
+   */
+  const mobileActionRowVisible = $derived(
+    mobileLayout && (selectedPageTitle !== null || databaseSelected || projectViewSwitcher !== undefined),
+  );
   const selectedDatabaseTitle = $derived(selectedDatabaseBlock?.child_database.title.trim() || t("notes.untitled"));
   const selectedProjectPages = $derived.by(() => notesPagesForProject(
     selectedPage ? [...notes.navigationPages.filter((page) => page.id !== selectedPage.id), selectedPage] : notes.navigationPages,
@@ -502,6 +511,9 @@
       >
         <PanelLeft size={16} strokeWidth={1.75} />
       </button>
+    {/if}
+    {#if projectViewSwitcher && !databaseSelected}
+      {@render projectViewSwitcher()}
     {/if}
     {#if databaseSelected}
       <button

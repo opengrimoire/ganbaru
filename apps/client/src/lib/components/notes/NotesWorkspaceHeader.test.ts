@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { flushSync, mount, tick, unmount } from "svelte";
+import { createRawSnippet, flushSync, mount, tick, unmount, type Snippet } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { NotesChildDatabaseBlock, NotesDatabaseView, NotesFolder, NotesNavigationDatabase, NotesPage } from "$lib/notes/types";
 import { applyBlockUpdate } from "$lib/notes/blocks/factory";
@@ -158,6 +158,7 @@ describe("NotesWorkspaceHeader", () => {
     mobileLayout = false,
     onShowHome = vi.fn(),
     onOpenExplorer: (() => void) | undefined = mobileLayout ? vi.fn() : undefined,
+    projectViewSwitcher: Snippet | undefined = undefined,
   ): HTMLDivElement {
     notesState.store.allPages = pages;
     notesState.store.folders = [folder];
@@ -177,6 +178,7 @@ describe("NotesWorkspaceHeader", () => {
         onProjectSelected: vi.fn(),
         onShowHome,
         onOpenExplorer,
+        projectViewSwitcher,
         projectSettingsOpen: false,
         onToggleProjectSettings: vi.fn(),
       },
@@ -273,6 +275,18 @@ describe("NotesWorkspaceHeader", () => {
     expect(projectHome.querySelector("[data-notes-mobile-sidebar-button]")).toBeNull();
     expect(projectHome.querySelector("[data-notes-mobile-back]")).toBeNull();
     expect(projectHome.querySelector('button[aria-label="New note"]')).toBeNull();
+  });
+
+  it("keeps the mobile action row at project home while Projects hosts Notes, for the project view switcher", () => {
+    const switcher = createRawSnippet(() => ({ render: () => "<button data-test-view-switcher>Views</button>" }));
+    const projectHome = setup(null, [], true, vi.fn(), vi.fn(), switcher);
+    expect(projectHome.querySelector('[data-notes-mobile-action-row="visible"]')).not.toBeNull();
+    expect(projectHome.querySelector("[data-test-view-switcher]")).not.toBeNull();
+    expect(projectHome.querySelector("[data-notes-mobile-sidebar-button]")).toBeNull();
+
+    const note = setup(page, [page], true, vi.fn(), vi.fn(), switcher);
+    expect(note.querySelector("[data-notes-mobile-sidebar-button]")).not.toBeNull();
+    expect(note.querySelector("[data-test-view-switcher]")).not.toBeNull();
   });
 
   it("returns from a mobile database to its owner note without calling project home", () => {

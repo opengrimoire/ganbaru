@@ -25,7 +25,8 @@
   import { revealFocusedTextEntry } from "$lib/mobile/keyboard";
   import { provideMobileIdentitySlot } from "$lib/mobile/identity-slot";
   import { MobilePersistenceLifecycleController } from "$lib/mobile/persistence-lifecycle";
-  import type { View } from "$lib/navigation";
+  import { mobileWorkspaceSurface, type MobileProjectHostingState } from "$lib/mobile/project-hosting";
+  import { availableAppViews, type View } from "$lib/navigation";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import { flushQuickNoteEditors } from "$lib/quick-notes/persistence";
   import { getCalendar } from "$lib/stores/calendar.svelte";
@@ -56,6 +57,8 @@
   type PomodoroMenuComponent = typeof import("$lib/components/pomodoro/PomodoroMenuContent.svelte").default;
   type LinkedDeviceControlComponent = typeof import("$lib/components/vault/handoff/LinkedDeviceControl.svelte").default;
   type ProjectViewComponents = import("$lib/components/projects/view-components").ProjectViewComponents;
+  type ProjectViewSwitcherComponent = typeof import("$lib/components/projects/ProjectMobileViewSwitcher.svelte").default;
+  type ProjectsStore = ReturnType<typeof import("$lib/stores/projects.svelte").getProjects>;
   type NotesStore = ReturnType<typeof import("$lib/stores/notes.svelte").getNotes>;
   type QuickNotesTrashPurgeRuntime = import("$lib/quick-notes/trash-purge-runtime").QuickNotesTrashPurgeRuntime;
   type DeferredSurface = Exclude<View, "calendar"> | "settings" | "quickNotes" | "music";
@@ -105,6 +108,8 @@
   let ProjectsSurface = $state<ProjectsComponent | null>(null);
   let NotesSurface = $state<NotesComponent | null>(null);
   let ChatSurface = $state<ChatComponent | null>(null);
+  let ProjectViewSwitcherSurface = $state<ProjectViewSwitcherComponent | null>(null);
+  let projectsStore = $state<ProjectsStore | null>(null);
   let QuickNotesSurface = $state<QuickNotesComponent | null>(null);
   let SettingsSurface = $state<SettingsComponent | null>(null);
   let MusicSurface = $state<MusicComponent | null>(null);
@@ -145,8 +150,11 @@
     showSettings || showQuickNotes || showMusic || suspendDecisionOpen,
   );
   const currentTitle = $derived(t(`titleBar.tab.${nav.current}`));
+  /** Workspace shown for the current tab; the Projects tab can host the selected project's Notes or Chat. */
+  const workspaceSurface = $derived(mobileWorkspaceSurface(nav.current, projectHostingState(nav.current)));
+  const projectHostingActive = $derived(workspaceSurface !== nav.current);
   const currentDeferredSurface = $derived(
-    nav.current === "calendar" ? null : nav.current,
+    workspaceSurface === "calendar" ? null : workspaceSurface,
   );
   const shouldInterceptSystemBack = $derived(
     androidSystemBackAvailable && (nestedRouteOpen
@@ -172,6 +180,15 @@
       console.error(`Failed to flush mobile ${label} persistence`, error);
     },
   });
+
+  /** Reads the Projects state that decides hosting, only for the Projects tab and once the store has loaded. */
+  function projectHostingState(view: View): MobileProjectHostingState | null {
+    if (view !== "projects" || !projectsStore) return null;
+    return {
+      hostedPlace: projectsStore.hostedPlace,
+      projectSelected: Boolean(projectsStore.selectedProject && projectsStore.selectedGroup),
+    };
+  }
 
   function flushMountedNotes(): Promise<void> {
     if (!notesSurfaceMounted || !notesStore) return Promise.resolve();
@@ -326,7 +343,9 @@
   }
 
   function deferredSurfaceReady(surface: DeferredSurface): boolean {
-    if (surface === "projects") return ProjectsSurface !== null && projectViewComponents !== null;
+    if (surface === "projects") {
+      return ProjectsSurface !== null && projectViewComponents !== null && ProjectViewSwitcherSurface !== null;
+    }
     if (surface === "notes") return NotesSurface !== null;
     if (surface === "chat") return ChatSurface !== null;
     if (surface === "settings") return SettingsSurface !== null;
@@ -348,6 +367,8 @@
         kanbanModule,
         ganttModule,
         calendarModule,
+        switcherModule,
+        placesModule,
       ] = await Promise.all([
         import("$lib/stores/projects.svelte"),
         import("$lib/components/projects/ProjectsView.svelte"),
@@ -356,9 +377,12 @@
         import("$lib/components/projects/views/ProjectKanbanView.svelte"),
         import("$lib/components/projects/views/ProjectGanttView.svelte"),
         import("$lib/components/calendar/CalendarView.svelte"),
+        import("$lib/components/projects/ProjectMobileViewSwitcher.svelte"),
+        import("$lib/projects/places"),
       ]);
       if (mobileAppDisposed) return;
       ProjectsSurface = projectsModule.default;
+      ProjectViewSwitcherSurface = switcherModule.default;
       projectViewComponents = {
         list: listModule.default,
         dashboard: dashboardModule.default,
@@ -366,7 +390,10 @@
         calendar: calendarModule.default,
         gantt: ganttModule.default,
       };
-      void storeModule.getProjects().ensureLoaded().catch((error) => {
+      const store = storeModule.getProjects();
+      store.hostableViewTypes = placesModule.projectHostablePlaces(availableAppViews());
+      projectsStore = store;
+      void store.ensureLoaded().catch((error) => {
         console.warn("Mobile Projects preload failed", error);
       });
       return;
@@ -578,7 +605,7 @@
   }
 
   function navigate(view: View): void {
-    if (view !== "notes") clearNestedRoute();
+    if (mobileWorkspaceSurface(view, projectHostingState(view)) !== "notes") clearNestedRoute();
     if (!nav.navigate(view)) return;
     if (view !== "calendar") void prepareDeferredSurface(view);
   }
@@ -800,8 +827,14 @@
     void pomodoroScheduleScheduler?.reconcile();
   });
 
+  // A hosted Notes or Chat view can open from the Projects tab before its own tab was ever visited.
   $effect(() => {
-    if (nav.current !== "notes" || !NotesSurface || !notesStore) return;
+    if (!projectHostingActive || !currentDeferredSurface) return;
+    void prepareDeferredSurface(currentDeferredSurface);
+  });
+
+  $effect(() => {
+    if (workspaceSurface !== "notes" || !NotesSurface || !notesStore) return;
     notesSurfaceMounted = true;
   });
 
@@ -819,6 +852,15 @@
     };
   });
 </script>
+
+{#snippet hostedProjectViews()}
+  {#if ProjectViewSwitcherSurface && projectsStore?.selectedProjectId}
+    <ProjectViewSwitcherSurface
+      projectId={projectsStore.selectedProjectId}
+      onSelectView={(view) => projectsStore?.selectView(view)}
+    />
+  {/if}
+{/snippet}
 
 {#snippet calendarIdentityIcon()}
   <CalendarDays size={COMPACT_IDENTITY_ICON_SIZE} strokeWidth={COMPACT_IDENTITY_ICON_STROKE_WIDTH} />
@@ -940,15 +982,15 @@
           </div>
         {:else if nav.current === "calendar" && CalendarSurface}
           <CalendarSurface initialViewMode="day" mobileLayout />
-        {:else if nav.current === "projects" && ProjectsSurface && projectViewComponents}
+        {:else if workspaceSurface === "projects" && ProjectsSurface && projectViewComponents}
           <ProjectsSurface
             mobileLayout
             viewComponents={projectViewComponents}
           />
-        {:else if nav.current === "notes" && NotesSurface}
-          <NotesSurface mobileLayout />
-        {:else if nav.current === "chat" && ChatSurface}
-          <ChatSurface />
+        {:else if workspaceSurface === "notes" && NotesSurface}
+          <NotesSurface mobileLayout projectViewSwitcher={projectHostingActive ? hostedProjectViews : undefined} />
+        {:else if workspaceSurface === "chat" && ChatSurface}
+          <ChatSurface projectViewSwitcher={projectHostingActive ? hostedProjectViews : undefined} />
         {:else if currentDeferredSurface}
           {@render deferredSurfacePlaceholder(currentDeferredSurface, currentTitle)}
         {:else}

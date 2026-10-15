@@ -44,6 +44,7 @@
   let {
     mobileLayout = false,
     projectSidebar = undefined,
+    projectViewSwitcher = undefined,
   }: {
     mobileLayout?: boolean;
     /**
@@ -51,7 +52,12 @@
      * header breadcrumb carries page navigation. The snippet receives the handler for a project switch.
      */
     projectSidebar?: Snippet<[() => void]>;
+    /** Phone switcher between the views of the project that hosts Notes, shown in the mobile action row. */
+    projectViewSwitcher?: Snippet;
   } = $props();
+
+  /** Whether Notes opens as one view of the selected project, so the selected project leads what it shows. */
+  const projectHosted = $derived(projectSidebar !== undefined || projectViewSwitcher !== undefined);
 
   const notes = getNotes();
   const projects = getProjects();
@@ -392,16 +398,16 @@
     return !main.selectedPageId && main.workspaceProjectId === projectId;
   }
 
-  // Beside the Projects sidebar the selected project leads, so a note or shell left from another project, such as the
+  // Hosted by Projects, the selected project leads, so a note or shell left from another project, such as the
   // Notes tab's last document, is replaced by the selected project's notes instead of pulling the project back to it.
   // Only the main pane counts, so a peek at another project's note stays open, and unsaved working Markdown is kept.
   $effect(() => {
-    notes.setPreviewsFollowProject(!projectSidebar);
+    notes.setPreviewsFollowProject(!projectHosted);
     return () => notes.setPreviewsFollowProject(true);
   });
 
   $effect(() => {
-    if (!projectSidebar || workingMarkdownDirty) return;
+    if (!projectHosted || workingMarkdownDirty) return;
     const projectId = projects.selectedProjectId;
     if (!projectId) return;
     const aligned = hostedNotesShowProject(projectId);
@@ -652,6 +658,7 @@
       onProjectSelected={handleProjectSelected}
       onShowHome={showProjectHome}
       onOpenExplorer={mobileLayout ? () => { mobileExplorerPanelOpen = true; } : undefined}
+      projectViewSwitcher={mobileLayout ? projectViewSwitcher : undefined}
       {projectSettingsOpen}
       onToggleProjectSettings={toggleProjectSettings}
       bind:pageActionsTarget
@@ -817,9 +824,9 @@
                 data-notes-main-page={pane.id === notes.mainPaneId ? store.selectedPageId : undefined}
                 role="presentation"
                 onpointerdowncapture={(event) => {
-                  if (event.target !== event.currentTarget || !center) notes.activatePane(pane.id, !projectSidebar);
+                  if (event.target !== event.currentTarget || !center) notes.activatePane(pane.id, !projectHosted);
                 }}
-                onfocusincapture={() => notes.activatePane(pane.id, !projectSidebar)}
+                onfocusincapture={() => notes.activatePane(pane.id, !projectHosted)}
                 onclick={(event) => { if (center && event.target === event.currentTarget) closePagePeek(); }}
               >
                 <div

@@ -44,6 +44,7 @@
     editingTitle = $bindable(false),
     railButtonElement = $bindable(null),
     trailingActions = undefined,
+    projectViewSwitcher = undefined,
   }: {
     explorerExpanded: boolean;
     showRailButton: boolean;
@@ -55,6 +56,8 @@
     railButtonElement?: HTMLButtonElement | null;
     /** Workspace actions placed at the end of the row, used where they are not overlaid on the header. */
     trailingActions?: Snippet;
+    /** Phone switcher between the views of the project that hosts Chat, shown in the mobile action row. */
+    projectViewSwitcher?: Snippet;
   } = $props();
 
   const chat = getChat();
@@ -258,6 +261,8 @@
       <!-- The switcher opens at the project's channels, so the action row names the channel only while renaming it. -->
       {#if selectedChannel && editingTitle && !selectedChannel.isDefault}
         <div class="flex h-12 min-w-0 items-center px-1 text-identity font-medium"><div class="min-w-0 flex-1"><ChatTitleEditor title={selectedChannel.name} onCommit={commitTitle} onCancel={() => { editingTitle = false; }} /></div></div>
+      {:else if projectViewSwitcher}
+        <div class="flex h-12 min-w-0 items-center">{@render projectViewSwitcher()}</div>
       {/if}
     {:else}
     <div class="flex h-7 min-w-0 max-w-full items-center gap-0.5 overflow-hidden text-identity font-medium">

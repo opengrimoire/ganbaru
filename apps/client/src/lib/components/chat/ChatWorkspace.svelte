@@ -56,12 +56,18 @@
 
   let {
     projectSidebar = undefined,
+    projectViewSwitcher = undefined,
   }: {
     /**
      * Projects sidebar from a host that opens Chat as one place of a project. It replaces the channel rail, so the
      * header breadcrumb carries channel navigation. The snippet receives the handler for a project switch.
      */
     projectSidebar?: Snippet<[() => void]>;
+    /**
+     * Phone switcher between the views of the project that hosts Chat. The phone keeps the channel sheet, so hosting
+     * there only adds the switcher to the action row.
+     */
+    projectViewSwitcher?: Snippet;
   } = $props();
 
   const localization = getLocalization();
@@ -1013,6 +1019,7 @@
       mobilePresentation={mobileShell}
       onOpenRail={openRail}
       trailingActions={mobileShell ? headerActions : undefined}
+      projectViewSwitcher={mobileShell ? projectViewSwitcher : undefined}
     />
   </div>
   {#if railUsesMobilePanel}

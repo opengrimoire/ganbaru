@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { mount, tick, unmount } from "svelte";
+import { createRawSnippet, mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getChat } from "$lib/stores/chat.svelte";
 import ChatWorkspaceHeader from "./ChatWorkspaceHeader.svelte";
@@ -402,6 +402,27 @@ describe("ChatWorkspaceHeader", () => {
     railButton?.click();
 
     expect(onOpenRail).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the channel list button beside the project view switcher while Projects hosts Chat", () => {
+    const target = document.createElement("div");
+    document.body.append(target);
+    const component = mount(ChatWorkspaceHeader, {
+      target,
+      props: {
+        explorerExpanded: false,
+        showRailButton: true,
+        reserveGlobalActions: false,
+        mobilePresentation: true,
+        onOpenRail: vi.fn(),
+        projectViewSwitcher: createRawSnippet(() => ({ render: () => "<button data-test-view-switcher>Views</button>" })),
+      },
+    });
+    mounted.push({ target, component });
+
+    const header = target.querySelector("[data-chat-workspace-header]");
+    expect(header?.querySelector("[data-chat-rail-button]")).not.toBeNull();
+    expect(header?.querySelector("[data-test-view-switcher]")).not.toBeNull();
   });
 
 });

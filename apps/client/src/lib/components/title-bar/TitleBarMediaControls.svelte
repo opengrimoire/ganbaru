@@ -165,9 +165,7 @@
         onwheel={handleVolumeWheel}
         class={cn(
           "titlebar-icon-button relative flex items-center justify-center rounded-lg transition-colors",
-          musicPanelOpen
-            ? "bg-background text-foreground dark:bg-accent dark:text-white"
-            : `${TITLE_BAR_ICON_COLOR_CLASS} hover:bg-sidebar-accent`,
+          musicPanelOpen ? "bg-sidebar-accent text-foreground" : `${TITLE_BAR_ICON_COLOR_CLASS} hover:bg-sidebar-accent`,
         )}
         title={musicButtonTooltip}
         aria-label={t("titleBar.control.music")}

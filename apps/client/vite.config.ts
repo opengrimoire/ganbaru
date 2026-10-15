@@ -5,6 +5,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "path";
 import { fileURLToPath } from "node:url";
+import { touchHoverPostcss } from "./src/lib/build/touch-hover";
 
 const host = process.env.TAURI_DEV_HOST;
 const TAURI_DEV_READY_PATH = "/__ganbaru-ai_dev_ready";
@@ -314,6 +315,10 @@ export default defineConfig({
     compileSvelteStyleOwners(),
     svelte(),
   ],
+  css: {
+    // Touch screens keep :hover on the last tapped element, so hand-written hover styles apply only where hovering is possible.
+    postcss: { plugins: [touchHoverPostcss()] },
+  },
   define: {
     __GANBARU_AI_BUILD_REF__: JSON.stringify(buildRef),
     __GANBARU_AI_GITHUB_REPOSITORY__: JSON.stringify(githubRepository),

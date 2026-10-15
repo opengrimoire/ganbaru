@@ -46,6 +46,7 @@ apps/
         api/: typed wrappers around Tauri commands, split by domain (Chat and Notes have several clients)
         components/: Svelte components grouped by feature (calendar, chat, collections, diagnostics, icon-picker, mobile, music, notes, pomodoro, projects, quick-notes, settings, sync, themes, title-bar, vault, and others), with subfolders that mirror lib/ domains (for example calendar/grid/, chat/timeline/, notes/blocks/, projects/list/); ui/ holds handwritten shared primitives
         benchmark/: benchmark runner, samplers, output, and scenarios
+        build/: build-time CSS transforms used by the Vite config
         calendar/: shared Calendar logic, types, recurrence rules, navigation helpers, and iCalendar parser/serializer
         chat/: Chat contracts, runtime validation of untrusted responses, and interaction models and controllers
         color/: color math and display helpers

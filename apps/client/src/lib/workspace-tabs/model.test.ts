@@ -17,6 +17,7 @@ import {
   relativeWorkspaceTabId,
   rememberClosedWorkspaceTabs,
   reopenWorkspaceTab,
+  savedWindowLabels,
   serializeWorkspaceTabsState,
   tabMatchesTarget,
   takeWorkspaceTab,
@@ -315,5 +316,21 @@ describe("workspace tab locations", () => {
     expect(parseWorkspaceTabLocation({ kind: "diary" })).toBeNull();
     expect(parseWorkspaceTabLocation({ kind: "notes", projectId: 4 })).toBeNull();
     expect(parseWorkspaceTabLocation({ kind: "notes", projectId: "x".repeat(2_000) })).toBeNull();
+  });
+});
+
+describe("saved windows", () => {
+  it("lists the windows a vault saved tabs for, without the main window or other vaults", () => {
+    const keys = [
+      "ganbaru.workspace-tabs.v1:vault-a",
+      "ganbaru.workspace-tabs.v1:vault-a:view-1",
+      "ganbaru.workspace-tabs.v1:vault-a:view-2",
+      "ganbaru.workspace-tabs.v1:vault-ab:view-3",
+      "ganbaru.workspace-tabs.v1:vault-b:view-4",
+      "ganbaru.workspace-tabs.v1:vault-a:view-5:extra",
+      "ganbaru.workspace-tabs.v1:vault-a:",
+      "other-key",
+    ];
+    expect(savedWindowLabels(keys, "ganbaru.workspace-tabs.v1:vault-a:")).toEqual(["view-1", "view-2"]);
   });
 });

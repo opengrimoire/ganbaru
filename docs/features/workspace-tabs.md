@@ -34,7 +34,7 @@ A tab's context menu closes it, closes the other tabs, reopens a closed tab, loc
 
 ## Windows
 
-On desktop, every window holds its own tabs of any kind, opens new ones, and can move a tab into a new window while it has another tab left. Tabs in other windows also offer moving back to the main window. A tab carries its place and lock when it moves, and pending edits are saved first so the new window shows them. Closing a window other than the main one hands its tabs to the main window's recently closed list. The main window owns app-wide work such as the tray, and closing it closes the app.
+On desktop, every window holds its own tabs of any kind, opens new ones, and can move a tab into a new window while it has another tab left. Tabs in other windows also offer moving back to the main window. A tab carries its place and lock when it moves, and pending edits are saved first so the new window shows them. Closing a window other than the main one hands its tabs to the main window's recently closed list, while windows still open when the app quits reopen with their tabs on the next launch. The main window owns app-wide work such as the tray, and closing it closes the app.
 
 ## Phone
 

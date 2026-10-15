@@ -19,6 +19,7 @@ import {
   relativeWorkspaceTabId,
   rememberClosedWorkspaceTabs,
   reopenWorkspaceTab,
+  savedWindowLabels,
   sameTabLocation,
   serializeWorkspaceTabsState,
   tabMatchesTarget,
@@ -98,9 +99,7 @@ function storageKey(vaultId: string): string | null {
     : `${STORAGE_PREFIX}:${vaultId}`;
 }
 
-function readStoredState(vaultId: string | null): WorkspaceTabsState | null {
-  const key = vaultId ? storageKey(vaultId) : null;
-  if (!key || typeof localStorage === "undefined") return null;
+function readStoredKey(key: string): WorkspaceTabsState | null {
   try {
     const raw = localStorage.getItem(key);
     return raw ? parseWorkspaceTabsState(JSON.parse(raw) as unknown, availableAppViews()) : null;
@@ -108,6 +107,11 @@ function readStoredState(vaultId: string | null): WorkspaceTabsState | null {
     console.warn("Failed to read workspace tabs:", error);
     return null;
   }
+}
+
+function readStoredState(vaultId: string | null): WorkspaceTabsState | null {
+  const key = vaultId ? storageKey(vaultId) : null;
+  return key && typeof localStorage !== "undefined" ? readStoredKey(key) : null;
 }
 
 function persist(state: WorkspaceTabsState): void {
@@ -120,14 +124,17 @@ function persist(state: WorkspaceTabsState): void {
   }
 }
 
-function forgetStoredState(): void {
-  const key = storageVaultId ? storageKey(storageVaultId) : null;
-  if (!key || typeof localStorage === "undefined") return;
+function forgetKey(key: string): void {
   try {
     localStorage.removeItem(key);
   } catch (error) {
     console.warn("Failed to forget workspace tabs:", error);
   }
+}
+
+function forgetStoredState(): void {
+  const key = storageVaultId ? storageKey(storageVaultId) : null;
+  if (key && typeof localStorage !== "undefined") forgetKey(key);
 }
 
 function setState(next: WorkspaceTabsState): boolean {
@@ -481,6 +488,37 @@ async function releaseWindow(): Promise<void> {
   await windows.reportClosed(storageVaultId, tabs);
 }
 
+function storageKeys(): string[] {
+  const keys: string[] = [];
+  for (let index = 0; index < localStorage.length; index += 1) {
+    const key = localStorage.key(index);
+    if (key !== null) keys.push(key);
+  }
+  return keys;
+}
+
+/**
+ * Reopen the other windows that were open when the app last quit, each with the tabs it saved. Saved
+ * tabs that are no longer usable are forgotten instead of opening an empty window. Main window only.
+ */
+async function restoreWindows(): Promise<void> {
+  const windows = connection?.windows;
+  if (!windows?.isMain || !storageVaultId || typeof localStorage === "undefined") return;
+  const prefix = `${STORAGE_PREFIX}:${storageVaultId}:`;
+  for (const label of savedWindowLabels(storageKeys(), prefix)) {
+    const key = `${prefix}${label}`;
+    if (!readStoredKey(key)) {
+      forgetKey(key);
+      continue;
+    }
+    try {
+      await windows.reopen(label);
+    } catch (error) {
+      console.error(`Failed to reopen window ${label}:`, error);
+    }
+  }
+}
+
 export function getWorkspaceTabs() {
   return {
     get tabs(): readonly WorkspaceTab[] {
@@ -531,6 +569,7 @@ export function getWorkspaceTabs() {
     detach,
     moveToMainWindow,
     releaseWindow,
+    restoreWindows,
     requestLauncher(): void {
       launcherRequests += 1;
     },

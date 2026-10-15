@@ -408,6 +408,20 @@ function parseClosedTab(value: unknown, availableKinds: readonly View[]): Closed
 }
 
 /**
+ * Labels of the windows besides the main one that saved tabs, read from the storage keys under `prefix`.
+ * The main window's key and keys nested deeper than one label are left out.
+ */
+export function savedWindowLabels(keys: Iterable<string>, prefix: string): string[] {
+  const labels: string[] = [];
+  for (const key of keys) {
+    if (!key.startsWith(prefix)) continue;
+    const label = key.slice(prefix.length);
+    if (label.length > 0 && !label.includes(":")) labels.push(label);
+  }
+  return labels;
+}
+
+/**
  * Validate persisted tabs. Returns null when nothing usable remains.
  */
 export function parseWorkspaceTabsState(

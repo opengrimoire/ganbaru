@@ -159,12 +159,12 @@ async function focusMainWindow(): Promise<void> {
 
 /**
  * Open a tab window, or focus it when it is already open. A new window starts with `tab`, or with the
- * tabs it saved when it has none.
+ * tabs it saved when it has none. A window opened without focus leaves the current one in front.
  */
-async function openTabWindow(label: string, tab: WorkspaceTab | null): Promise<void> {
+async function openTabWindow(label: string, tab: WorkspaceTab | null, focus = true): Promise<void> {
   const existing = await WebviewWindow.getByLabel(label);
   if (existing) {
-    await focusExistingWindow(existing);
+    if (focus) await focusExistingWindow(existing);
     return;
   }
 
@@ -180,7 +180,7 @@ async function openTabWindow(label: string, tab: WorkspaceTab | null): Promise<v
     center: true,
     decorations: false,
     visible: true,
-    focus: true,
+    focus,
   });
 
   await new Promise<void>((resolve, reject) => {
@@ -207,6 +207,8 @@ export interface WorkspaceTabWindows {
   readonly isMain: boolean;
   /** Open a new window that starts with `tab`. */
   open(tab: WorkspaceTab): Promise<void>;
+  /** Reopen a window with the tabs it saved, behind the current one. Labels that name no tab window are ignored. */
+  reopen(label: string): Promise<void>;
   /** Offer a tab to another window, which adopts it and then releases it from this one. */
   offer(targetLabel: string, vaultId: string, tab: WorkspaceTab): Promise<void>;
   /** Confirm to the window that offered a tab that it now lives here. */
@@ -226,6 +228,9 @@ export function createWorkspaceTabWindows(label: string, availableKinds: readonl
     isMain,
     mainLabel: MAIN_WINDOW_LABEL,
     open: (tab) => openTabWindow(createTabWindowLabel(), tab),
+    reopen: async (savedLabel) => {
+      if (isTabWindowLabel(savedLabel)) await openTabWindow(savedLabel, null, false);
+    },
     offer: (targetLabel, vaultId, tab) =>
       sendTabWindowMessage(TAB_WINDOW_TRANSFER_EVENT, { targetLabel, sourceLabel: label, vaultId, tab }),
     release: (targetLabel, vaultId, tabId) =>

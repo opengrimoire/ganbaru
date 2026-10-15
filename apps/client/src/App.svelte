@@ -223,6 +223,8 @@
     } finally {
       if (!benchmarkClaimedBoot) {
         await startNormalCalendarBoot();
+        // Benchmark relaunches skip this so restored windows do not run beside every sample.
+        if (isMainWindow) void workspaceTabs.restoreWindows();
       }
     }
   }

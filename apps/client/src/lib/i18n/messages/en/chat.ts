@@ -483,6 +483,7 @@ export const chat = {
     editQueued: "Edit queued follow-up",
     cancelQueued: "Cancel queued follow-up",
     retained: "This provider cannot safely steer or queue. Your draft will remain ready after the turn.",
+    changedElsewhere: "This draft changed in another window, so that version replaced your recent edits here.",
     launchFailed: "The message was saved, but the provider could not start.",
     editDraft: "Edit into new draft",
     changeProvider: "Change provider",

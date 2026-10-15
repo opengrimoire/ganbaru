@@ -486,6 +486,7 @@ export const chat = {
     editQueued: "Editar seguimiento en cola",
     cancelQueued: "Cancelar seguimiento en cola",
     retained: "Este proveedor no puede redirigir ni poner en cola con seguridad. Tu borrador estará listo después del turno.",
+    changedElsewhere: "Este borrador cambió en otra ventana, así que esa versión reemplazó tus cambios recientes aquí.",
     launchFailed: "El mensaje se guardó, pero no se pudo iniciar el proveedor.",
     editDraft: "Editar como borrador nuevo",
     changeProvider: "Cambiar proveedor",

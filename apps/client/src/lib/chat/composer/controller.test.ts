@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ChatDraftRead } from "$lib/chat/contracts";
 import { ChatComposerController, chatDraftId, type ChatDraftApi } from "./controller";
+import type { ChatDraftWindowSync } from "./window-sync";
+
+vi.mock("./window-sync", () => ({
+  chatDraftWindowSync: { publish: vi.fn(), listen: vi.fn(async () => () => undefined) },
+}));
 
 const timestamp = "2026-07-21T12:00:00Z";
 
@@ -22,6 +27,22 @@ function draft(overrides: Partial<ChatDraftRead> = {}): ChatDraftRead {
     ...overrides,
   };
 }
+
+function fakeSync(): { sync: ChatDraftWindowSync; changeElsewhere: (draftId: string) => void } {
+  let onChange: ((draftIds: ReadonlySet<string>) => void) | null = null;
+  return {
+    sync: {
+      publish: vi.fn(),
+      listen: vi.fn(async (listener: (draftIds: ReadonlySet<string>) => void) => {
+        onChange = listener;
+        return () => { onChange = null; };
+      }),
+    },
+    changeElsewhere: (draftId) => onChange?.(new Set([draftId])),
+  };
+}
+
+const staleDraft = { code: "stale_revision", message: "Chat draft changed in another window", recoverable: true };
 
 function fakeApi(overrides: Partial<ChatDraftApi> = {}): ChatDraftApi {
   return {
@@ -211,11 +232,132 @@ describe("ChatComposerController", () => {
 
     const stale = controller.bind("workspace-1", "thread-2");
     const current = controller.bind("workspace-2", null);
-    await Promise.resolve();
+    await vi.waitFor(() => expect(api.save).toHaveBeenCalled());
     resolveSave?.(draft({ text: "Unsaved" }));
     await Promise.all([stale, current]);
 
     expect(controller.snapshot()).toMatchObject({ workingFolderId: "workspace-2", text: "Current" });
     expect(api.read).toHaveBeenLastCalledWith(chatDraftId("workspace-2", null));
+  });
+
+  it("bases each save on the version this window last read or stored", async () => {
+    const { sync } = fakeSync();
+    const api = fakeApi({
+      save: vi.fn()
+        .mockImplementationOnce(async (value) => draft({ ...value, updatedAt: "2026-07-21T12:00:01.000Z" }))
+        .mockImplementationOnce(async (value) => draft({ ...value, updatedAt: "2026-07-21T12:00:02.000Z" })),
+    });
+    const controller = new ChatComposerController(api, 0, sync);
+    await controller.bind("workspace-1", null);
+
+    controller.setText("First");
+    await controller.flush();
+    controller.setText("Second");
+    await controller.flush();
+
+    expect(vi.mocked(api.save).mock.calls.map(([saved]) => saved.base)).toEqual([
+      { kind: "none" },
+      { kind: "saved", updatedAt: "2026-07-21T12:00:01.000Z" },
+    ]);
+    expect(sync.publish).toHaveBeenCalledWith(chatDraftId("workspace-1", null));
+  });
+
+  it("stores a send whatever another window saved", async () => {
+    const api = fakeApi({ read: vi.fn(async () => draft()) });
+    const controller = new ChatComposerController(api, 0, fakeSync().sync);
+    await controller.bind("workspace-1", null);
+
+    controller.markSent();
+    await controller.flush();
+    controller.setText("Next");
+    await controller.flush();
+
+    expect(vi.mocked(api.save).mock.calls.map(([saved]) => saved.base)).toEqual([
+      { kind: "any" },
+      { kind: "saved", updatedAt: timestamp },
+    ]);
+  });
+
+  it("replaces local edits with the stored draft when another window saved first", async () => {
+    const elsewhere = draft({ text: "From the other window", updatedAt: "2026-07-21T12:00:05.000Z" });
+    const api = fakeApi({
+      read: vi.fn().mockResolvedValueOnce(draft()).mockResolvedValueOnce(elsewhere),
+      save: vi.fn()
+        .mockRejectedValueOnce(staleDraft)
+        .mockImplementationOnce(async (value) => draft({ ...value, updatedAt: "2026-07-21T12:00:06.000Z" })),
+    });
+    const controller = new ChatComposerController(api, 0, fakeSync().sync);
+    await controller.bind("workspace-1", null);
+
+    controller.setText("Local edit");
+    await expect(controller.flush()).resolves.toBeUndefined();
+
+    expect(controller.snapshot()).toMatchObject({
+      text: "From the other window",
+      dirty: false,
+      saving: false,
+      changedElsewhere: true,
+      error: null,
+    });
+    controller.setText("Building on it");
+    expect(controller.snapshot().changedElsewhere).toBe(false);
+    await controller.flush();
+    expect(vi.mocked(api.save).mock.calls.at(-1)?.[0].base).toEqual({
+      kind: "saved",
+      updatedAt: "2026-07-21T12:00:05.000Z",
+    });
+  });
+
+  it("drops a save queued before a conflict replaced the draft", async () => {
+    let rejectFirst: ((reason: unknown) => void) | undefined;
+    const api = fakeApi({
+      read: vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce(draft({ text: "From the other window" })),
+      save: vi.fn(() => new Promise<ChatDraftRead>((_resolve, reject) => { rejectFirst = reject; })),
+    });
+    const controller = new ChatComposerController(api, 0, fakeSync().sync);
+    await controller.bind("workspace-1", null);
+
+    controller.setText("First");
+    const first = controller.flush();
+    controller.setText("Second");
+    const second = controller.flush();
+    await vi.waitFor(() => expect(api.save).toHaveBeenCalledTimes(1));
+    rejectFirst?.(staleDraft);
+    await Promise.all([first, second]);
+
+    expect(api.save).toHaveBeenCalledTimes(1);
+    expect(controller.snapshot()).toMatchObject({ text: "From the other window", dirty: false, saving: false });
+  });
+
+  it("shows another window's save while this composer has no unsaved edits", async () => {
+    const { sync, changeElsewhere } = fakeSync();
+    const api = fakeApi({
+      read: vi.fn().mockResolvedValueOnce(draft()).mockResolvedValueOnce(draft({ text: "Typed elsewhere" })),
+    });
+    const controller = new ChatComposerController(api, 0, sync);
+    await controller.bind("workspace-1", null);
+
+    changeElsewhere(chatDraftId("workspace-1", "thread-9"));
+    changeElsewhere(chatDraftId("workspace-1", null));
+
+    await vi.waitFor(() => expect(controller.snapshot().text).toBe("Typed elsewhere"));
+    expect(api.read).toHaveBeenCalledTimes(2);
+    expect(controller.snapshot()).toMatchObject({ dirty: false, changedElsewhere: false });
+  });
+
+  it("keeps unsaved edits when another window saves the same draft", async () => {
+    vi.useFakeTimers();
+    const { sync, changeElsewhere } = fakeSync();
+    const api = fakeApi({ read: vi.fn(async () => draft()) });
+    const controller = new ChatComposerController(api, 100, sync);
+    await controller.bind("workspace-1", null);
+
+    controller.setText("Still typing");
+    changeElsewhere(chatDraftId("workspace-1", null));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(api.read).toHaveBeenCalledTimes(1);
+    expect(controller.snapshot()).toMatchObject({ text: "Still typing", dirty: true });
+    vi.useRealTimers();
   });
 });

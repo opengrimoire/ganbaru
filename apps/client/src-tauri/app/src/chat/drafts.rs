@@ -2,7 +2,7 @@
 
 use crate::db;
 use chrono::{SecondsFormat, Utc};
-use ganbaru_chat::repository::drafts::{self, ChatDraftRead, ChatDraftWrite};
+use ganbaru_chat::repository::drafts::{self, ChatDraftBase, ChatDraftRead, ChatDraftWrite};
 use ganbaru_chat_contracts::models::{
     ChatAttachmentId, ChatError, ChatErrorCode, ChatResult, ChatThreadId, InteractionMode,
     ProjectWorkingFolderId, ProviderInstanceId, SafetyMode, UtcTimestamp, VersionedJson,
@@ -25,6 +25,7 @@ pub struct SaveChatDraftRequest {
     safety_mode: Option<SafetyMode>,
     interaction_mode: Option<InteractionMode>,
     sent_snapshot: Option<VersionedJson>,
+    base: ChatDraftBase,
 }
 
 #[tauri::command]
@@ -33,6 +34,7 @@ pub async fn chat_save_draft(
     db_url: String,
     draft: SaveChatDraftRequest,
 ) -> ChatResult<ChatDraftRead> {
+    let base = draft.base;
     let draft = ChatDraftWrite {
         id: draft.id,
         working_folder_id: draft.working_folder_id,
@@ -48,7 +50,7 @@ pub async fn chat_save_draft(
         sent_snapshot: draft.sent_snapshot,
         updated_at: now_timestamp()?,
     };
-    drafts::save_draft(&chat_pool(app, db_url).await?, &draft).await
+    drafts::save_draft(&chat_pool(app, db_url).await?, &draft, &base).await
 }
 
 #[tauri::command]

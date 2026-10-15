@@ -174,6 +174,7 @@ export function composer(): ChatComposerSnapshot {
     loading: false,
     saving: false,
     dirty: false,
+    changedElsewhere: false,
     error: null,
   };
 }

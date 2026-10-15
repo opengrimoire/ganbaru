@@ -981,6 +981,7 @@ class ChatStore {
   setComposerModel(selection: VersionedJson | null): void { this.composerRuntimeController.setModel(selection); }
   setComposerModes(safety: SafetyMode | null, interaction: InteractionMode | null): void { this.composerRuntimeController.setModes(safety, interaction); }
   markComposerSent(): void { this.composerRuntimeController.markSent(); }
+  dismissComposerChangedElsewhere(): void { this.composerRuntimeController.dismissChangedElsewhere(); }
   flushComposer(): Promise<void> { return this.composerRuntimeController.flush(); }
   refreshInteraction(threadId = this.selectedThreadId): Promise<void> { return this.composerRuntimeController.refreshInteraction(threadId); }
   sendComposer(options: ChatComposerSendOptions = {}): Promise<void> { return this.composerRuntimeController.send(options); }

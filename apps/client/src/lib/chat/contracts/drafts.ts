@@ -31,4 +31,10 @@ export interface ChatDraftRead {
   updatedAt: UtcTimestamp;
 }
 
-export type SaveChatDraftRequest = Omit<ChatDraftRead, "updatedAt">;
+/** The stored draft a save was based on, so a save cannot silently replace edits from another window. */
+export type ChatDraftBase =
+  | { kind: "any" }
+  | { kind: "none" }
+  | { kind: "saved"; updatedAt: UtcTimestamp };
+
+export type SaveChatDraftRequest = Omit<ChatDraftRead, "updatedAt"> & { base: ChatDraftBase };

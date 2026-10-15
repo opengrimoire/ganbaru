@@ -942,6 +942,7 @@
     </div>
   </div>
   {#if pending}<div class="request-panel-shell"><ChatRequestPanel {pending} /></div>{/if}
+  {#if chat.composer.changedElsewhere}<Notice class="composer-notice composer-notice-end" role="status" tone="warning" message={t("chat.composer.changedElsewhere")} copy={false} onDismiss={() => chat.dismissComposerChangedElsewhere()} />{/if}
   {#if operationError || chat.composer.error}<Notice class="composer-notice composer-notice-end" message={operationError ?? chat.composer.error ?? ""} />{/if}
 </section>
 

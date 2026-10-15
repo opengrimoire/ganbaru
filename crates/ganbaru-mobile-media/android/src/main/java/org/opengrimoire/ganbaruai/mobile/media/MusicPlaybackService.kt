@@ -13,10 +13,14 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import app.tauri.plugin.JSObject
 import org.json.JSONObject
+
+/** Notification channel for the Music media notification and lock-screen controls. */
+private const val NOTIFICATION_CHANNEL_ID = "ganbaru_music_playback"
 
 class MusicPlaybackService : MediaSessionService() {
   private var mediaSession: MediaSession? = null
@@ -74,7 +78,18 @@ class MusicPlaybackService : MediaSessionService() {
         ),
       )
     }
-    mediaSession = sessionBuilder.build()
+    val session = sessionBuilder.build()
+    mediaSession = session
+    setMediaNotificationProvider(
+      DefaultMediaNotificationProvider.Builder(this)
+        .setChannelId(NOTIFICATION_CHANNEL_ID)
+        .setChannelName(R.string.ganbaru_music_notification_channel)
+        .build()
+        .apply { setSmallIcon(R.drawable.ic_notification_music) },
+    )
+    // The app starts this service directly rather than binding a controller, so the session is added here for
+    // Media3 to post its media notification and run the service in the foreground during playback.
+    addSession(session)
     NativeMusicSession.created(this)
     main.post(observer)
   }

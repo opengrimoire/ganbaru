@@ -136,25 +136,25 @@ describe("tab tear-off", () => {
   const viewport = { width: 800, height: 600 };
   const inside = { clientX: 120, clientY: 14, screenX: 420, screenY: 214 };
 
-  it("uses the reported end point to tell whether a drag left the window", () => {
-    expect(dragEndedOutsideWindow(inside, viewport, 0)).toBe(false);
+  it("treats a drag whose end point lies outside the viewport as having left the window", () => {
+    expect(dragEndedOutsideWindow(inside, viewport, 1)).toBe(false);
     expect(dragEndedOutsideWindow({ ...inside, clientY: 640, screenY: 840 }, viewport, 1)).toBe(true);
     expect(dragEndedOutsideWindow({ ...inside, clientX: -30, screenX: 270 }, viewport, 1)).toBe(true);
     expect(dragEndedOutsideWindow({ ...inside, clientX: 800 }, viewport, 1)).toBe(true);
   });
 
-  it("falls back to the drag entry count when the engine reports no end point", () => {
+  it("trusts the drag entry count even when the end point looks inside", () => {
+    expect(dragEndedOutsideWindow(inside, viewport, 0)).toBe(true);
+  });
+
+  it("uses the drag entry count alone when the engine reports no end point", () => {
     const unreported = { clientX: 0, clientY: 0, screenX: 0, screenY: 0 };
     expect(dragEndedOutsideWindow(unreported, viewport, 0)).toBe(true);
     expect(dragEndedOutsideWindow(unreported, viewport, 2)).toBe(false);
   });
 
   it("places a torn-off window so the pointer sits over its tab strip", () => {
-    const position = tearOffWindowPosition(500.4, 300.6);
-    expect(position).not.toBeNull();
-    expect(position!.x).toBeLessThan(500);
-    expect(position!.y).toBeLessThan(301);
-    expect(Number.isInteger(position!.x) && Number.isInteger(position!.y)).toBe(true);
+    expect(tearOffWindowPosition(500.4, 300.6)).toEqual({ x: 404, y: 285 });
   });
 
   it("opens centered when the drag end has no screen position", () => {

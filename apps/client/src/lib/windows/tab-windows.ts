@@ -156,13 +156,16 @@ export interface DragEndPoint {
 }
 
 /**
- * Whether a tab drag ended outside its window. The end point decides when the engine reports one; engines
- * that report zeros fall back to `depth`, the count of document drag entries minus exits during the drag.
+ * Whether a tab drag ended outside its window: either `depth`, the count of document drag entries minus
+ * exits during the drag, says it left, or the reported end point lies outside the viewport. Either signal
+ * suffices because engines differ in which one they report reliably; some report the end point relative to
+ * the window under the pointer, and some report zeros.
  */
 export function dragEndedOutsideWindow(end: DragEndPoint, viewport: { width: number; height: number }, depth: number): boolean {
+  if (depth <= 0) return true;
   const reported = [end.clientX, end.clientY, end.screenX, end.screenY].some((value) => Number.isFinite(value) && value !== 0);
-  if (!reported) return depth <= 0;
-  return end.clientX < 0 || end.clientY < 0 || end.clientX >= viewport.width || end.clientY >= viewport.height;
+  return reported
+    && (end.clientX < 0 || end.clientY < 0 || end.clientX >= viewport.width || end.clientY >= viewport.height);
 }
 
 /**

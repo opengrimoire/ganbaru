@@ -159,6 +159,7 @@
         get activeViewId() { return projects.activeViewId; },
         ensureLoaded: () => projects.ensureLoaded(),
         hasProject: (projectId) => Boolean(projects.projectById(projectId)),
+        projectName: (projectId) => projects.projectById(projectId)?.name ?? null,
         viewsForProject: (projectId) => projects.viewsForProject(projectId),
         selectProject: (projectId) => projects.selectProject(projectId),
         selectView: (view) => projects.selectView(view),

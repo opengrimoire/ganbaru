@@ -48,6 +48,8 @@
   import { createNotesSearchController } from "$lib/stores/notes/search.svelte";
   import NotesPageIcon from "$lib/components/notes/pages/NotesPageIcon.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
+  import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
+  import { openInNewTabIntent, preventMiddleClickAutoscroll } from "$lib/workspace-tabs/gestures";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import SidebarOrderMenu from "$lib/components/ui/SidebarOrderMenu.svelte";
   import StarredIconBadge from "$lib/components/ui/StarredIconBadge.svelte";
@@ -66,6 +68,7 @@
     onShowInactiveProjectsChange,
     onProjectSelected,
     onPageSelected,
+    onClose = undefined,
   }: {
     selectedProjectId?: string | null;
     selectedGroupId?: string | null;
@@ -75,9 +78,11 @@
     onShowInactiveProjectsChange: (value: boolean) => void;
     onProjectSelected: () => MaybePromise<void>;
     onPageSelected: () => MaybePromise<void>;
+    onClose?: () => void;
   } = $props();
 
   const projects = getProjects();
+  const tabs = getWorkspaceTabs();
   const preferences = getPreferences();
   const notes = getNotes();
   const { t } = getLocalization();
@@ -586,6 +591,18 @@
     projectSearch = "";
   }
 
+  function handleProjectRowClick(event: MouseEvent, project: Project): void {
+    const intent = tabs.canOpenTabs ? openInNewTabIntent(event) : null;
+    if (intent) {
+      event.preventDefault();
+      closeNoteSubpanel();
+      tabs.openLocation("project", { kind: "notes", projectId: project.id, item: null }, intent);
+      if (!intent.background) onClose?.();
+      return;
+    }
+    if (event.type === "click") void selectProject(project);
+  }
+
   async function selectSearchedPage(page: NotesPage): Promise<void> {
     await notes.selectPage(page.id, { openMode: "full" });
     await onPageSelected();
@@ -737,7 +754,9 @@
     onpointermove={(event) => handleProjectPointerMove(project, event, sourcePanelElement)}
     onpointerleave={handleNoteSubpanelBoundaryLeave}
     onfocus={(event) => showNoteSubpanel(project, event.currentTarget, sourcePanelElement)}
-    onclick={() => { void selectProject(project); }}
+    onmousedown={preventMiddleClickAutoscroll}
+    onclick={(event) => handleProjectRowClick(event, project)}
+    onauxclick={(event) => handleProjectRowClick(event, project)}
   >
     <StarredIconBadge starred={projects.isProjectStarred(project.id)}><ProjectIcon name={project.icon} size={iconSize} strokeWidth={iconStrokeWidth} emojiScale={emojiScale} /></StarredIconBadge>
     <span class="min-w-0 truncate">{project.name}</span>

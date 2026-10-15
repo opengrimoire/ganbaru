@@ -835,6 +835,7 @@
               onPageSelected={() => {
                 navigatorOpen = false;
               }}
+              onClose={() => { navigatorOpen = false; }}
             />
           {:else}
             <NotesProjectNavigator

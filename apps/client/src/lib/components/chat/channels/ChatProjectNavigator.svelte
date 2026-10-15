@@ -24,6 +24,8 @@
   import { getChat } from "$lib/stores/chat.svelte";
   import { getChatSidebarOrder } from "$lib/stores/chat/sidebar-order.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
+  import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
+  import type { OpenInNewTabIntent } from "$lib/workspace-tabs/gestures";
   import { cn, type MaybePromise } from "$lib/utils";
   import ProjectPickerPanels from "$lib/components/projects/pickers/ProjectPickerPanels.svelte";
   import ChatChannelPickerPanel from "./ChatChannelPickerPanel.svelte";
@@ -65,6 +67,7 @@
   const { t } = getLocalization();
   const chatSidebarOrder = getChatSidebarOrder();
   const projects = getProjects();
+  const tabs = getWorkspaceTabs();
   const panelGap = 4;
   const panelListPadding = 8;
   const panelRowHeight = 32;
@@ -191,6 +194,12 @@
     await onProjectSelected();
   }
 
+  function openProjectInNewTab(project: Project, intent: OpenInNewTabIntent): void {
+    closeChannelPanel();
+    tabs.openLocation("project", { kind: "chat", projectId: project.id, item: null }, intent);
+    if (!intent.background) onClose?.();
+  }
+
   async function openMobileProject(project: Project): Promise<void> {
     await projects.selectProject(project.id);
     await chat.syncProjectSelection(project.id);
@@ -290,6 +299,7 @@
   searchResultCount={channelSearchRowCount}
   onShowInactiveProjectsChange={onShowInactiveProjectsChange}
   onProjectSelected={selectProject}
+  onProjectOpenInNewTab={tabs.canOpenTabs && !mobileLayout ? openProjectInNewTab : undefined}
   onProjectPreview={showChannelPanel}
   onProjectPreviewClose={closeChannelPanel}
   projectChildContainsTarget={channelBoundaryContains}

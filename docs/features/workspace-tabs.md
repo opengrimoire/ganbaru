@@ -1,6 +1,6 @@
 # Workspace tabs
 
-Status: Partial. Desktop tabs at the kind level, with reordering, persistence, shortcuts, closed-tab history, and moving a tab into its own window, are implemented. Project and item tabs, opening in a new tab, locking, and the mobile tab bar are in progress.
+Status: Partial. Desktop kind and project tabs, with reordering, persistence, shortcuts, closed-tab history, opening projects in a new tab, and moving a tab into its own window, are implemented. Item tabs, locking, and the mobile tab bar are in progress.
 
 ## Model
 
@@ -11,6 +11,8 @@ A tab is a location, not a fixed app section. Its level says how specific it is:
 - Item: one project view, note, Notes folder, or Chat channel.
 
 Tabs follow navigation: moving around inside a tab updates where it points, and the tab restores that place when it is selected again. Opening something that already has a tab focuses that tab instead of adding a duplicate. A new tab opens only on explicit intent (the + launcher, Ctrl+T, or an "Open in new tab" gesture), so ordinary navigation never multiplies tabs. Calendar has no projects or items, so it holds at most one tab.
+
+In a project navigator, a middle click or Ctrl+click opens the project in a new tab behind the current one, and adding Shift brings the new tab to the front. Several background opens from the same tab line up in the order they were opened, as in a browser.
 
 A fresh vault opens with Calendar and Projects. Closing the last tab asks to close the app, the same confirmation as closing the window, so the app is never left without a tab.
 

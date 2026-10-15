@@ -15,6 +15,11 @@
   import ProjectLifecycleIcon from "$lib/components/projects/ProjectLifecycleIcon.svelte";
   import { verticalBorderWidth } from "$lib/utils/anchored-panel";
   import {
+    openInNewTabIntent,
+    preventMiddleClickAutoscroll,
+    type OpenInNewTabIntent,
+  } from "$lib/workspace-tabs/gestures";
+  import {
     createHoverDelay,
     isPointerAimingAtSubmenu,
     SUBMENU_AIM_TOLERANCES,
@@ -85,6 +90,7 @@
     searchResultCount = 0,
     onShowInactiveProjectsChange = undefined,
     onProjectSelected,
+    onProjectOpenInNewTab = undefined,
     onProjectCreated = undefined,
     onClearProject = undefined,
     onProjectPreview = undefined,
@@ -126,6 +132,8 @@
     searchResultCount?: number;
     onShowInactiveProjectsChange?: (value: boolean) => void;
     onProjectSelected: (project: Project) => MaybePromise<void>;
+    /** Open a project in a tab of its own on a middle click or Ctrl+click; rows ignore those gestures without it. */
+    onProjectOpenInNewTab?: (project: Project, intent: OpenInNewTabIntent) => void;
     onProjectCreated?: (projectId: string | null) => MaybePromise<void>;
     onClearProject?: () => MaybePromise<void>;
     onProjectPreview?: (
@@ -579,6 +587,17 @@
     projectPreviewDelay.schedule(() => onProjectPreviewClose?.());
   }
 
+  /** Route a row click to a new tab when the gesture asks for one, else select the project. */
+  function handleProjectRowClick(event: MouseEvent, project: Project): void {
+    const intent = onProjectOpenInNewTab ? openInNewTabIntent(event) : null;
+    if (intent) {
+      event.preventDefault();
+      onProjectOpenInNewTab?.(project, intent);
+      return;
+    }
+    if (event.type === "click") void activateProject(project);
+  }
+
   async function activateProject(project: Project): Promise<void> {
     if (mobileLayout && onProjectDrilldown) {
       await onProjectDrilldown(project);
@@ -941,7 +960,9 @@
                         project.status === "active" ? "text-popover-foreground" : "text-popover-foreground/60",
                       )}
                       aria-label={t("projects.actions.selectProject", project.name, resultGroup.group.name)}
-                      onclick={() => { void activateProject(project); }}
+                      onmousedown={preventMiddleClickAutoscroll}
+                  onclick={(event) => handleProjectRowClick(event, project)}
+                  onauxclick={(event) => handleProjectRowClick(event, project)}
                     >
                       <StarredIconBadge starred={projects.isProjectStarred(project.id)}><ProjectIcon name={project.icon} size={iconSize} strokeWidth={iconStrokeWidth} emojiScale={EMOJI_SCALE} /></StarredIconBadge>
                       <span class="min-w-0 flex-1 truncate">{project.name}</span>
@@ -1024,7 +1045,9 @@
                   onpointermove={(event) => handleProjectPointerMove(project, event)}
                   onpointerleave={handleProjectPointerLeave}
                   onfocus={(event) => previewProject(project, event.currentTarget)}
-                  onclick={() => { void activateProject(project); }}
+                  onmousedown={preventMiddleClickAutoscroll}
+                  onclick={(event) => handleProjectRowClick(event, project)}
+                  onauxclick={(event) => handleProjectRowClick(event, project)}
                 >
                   <StarredIconBadge starred={projects.isProjectStarred(project.id)}><ProjectIcon name={project.icon} size={iconSize} strokeWidth={iconStrokeWidth} emojiScale={EMOJI_SCALE} /></StarredIconBadge>
                   <span class="min-w-0 flex-1 truncate">{project.name}</span>
@@ -1243,7 +1266,9 @@
                   onpointermove={(event) => handleProjectPointerMove(project, event)}
                   onpointerleave={handleProjectPointerLeave}
                   onfocus={(event) => previewProject(project, event.currentTarget)}
-                  onclick={() => { void activateProject(project); }}
+                  onmousedown={preventMiddleClickAutoscroll}
+                  onclick={(event) => handleProjectRowClick(event, project)}
+                  onauxclick={(event) => handleProjectRowClick(event, project)}
                 >
                   <StarredIconBadge starred={projects.isProjectStarred(project.id)}><ProjectIcon name={project.icon} size={iconSize} strokeWidth={iconStrokeWidth} emojiScale={EMOJI_SCALE} /></StarredIconBadge>
                   <span class="min-w-0 flex-1 truncate">{project.name}</span>

@@ -111,6 +111,21 @@ describe("opening and updating workspace tabs", () => {
     expect(ids(insertWorkspaceTab(current, tab("c", "notes"), "end"))).toEqual(["a", "b", "c"]);
   });
 
+  it("inserts in the background after a given tab without changing the active tab", () => {
+    const current = state([tab("a", "calendar"), tab("b", "projects"), tab("c", "notes")]);
+    const first = insertWorkspaceTab(current, tab("x", "chat"), "after-active", false);
+    expect(ids(first)).toEqual(["a", "x", "b", "c"]);
+    expect(first.activeTabId).toBe("a");
+    const second = insertWorkspaceTab(first, tab("y", "chat"), { afterId: "x" }, false);
+    expect(ids(second)).toEqual(["a", "x", "y", "b", "c"]);
+    expect(second.activeTabId).toBe("a");
+  });
+
+  it("falls back to after the active tab when the anchor tab is gone", () => {
+    const current = state([tab("a", "calendar"), tab("b", "projects")]);
+    expect(ids(insertWorkspaceTab(current, tab("x", "chat"), { afterId: "missing" }))).toEqual(["a", "x", "b"]);
+  });
+
   it("refuses new tabs at the tab limit", () => {
     const full = state(Array.from({ length: MAX_WORKSPACE_TABS }, (_, index) => tab(`t${index}`, "notes")));
     expect(insertWorkspaceTab(full, tab("extra", "chat"), "end")).toBe(full);

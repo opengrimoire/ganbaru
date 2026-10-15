@@ -16,6 +16,7 @@ import {
   defaultWorkspaceTabsState,
   detachWorkspaceTab,
   insertWorkspaceTab,
+  isWithinTabScope,
   kindHasLocations,
   kindLocation,
   moveWorkspaceTab,
@@ -25,11 +26,13 @@ import {
   reopenWorkspaceTab,
   sameTabLocation,
   serializeWorkspaceTabsState,
+  tabMatchesTarget,
   updateWorkspaceTab,
   visibleWorkspaceTabs,
   workspaceTabIdAtPosition,
   type ClosedWorkspaceTab,
   type WorkspaceTab,
+  type WorkspaceTabLevel,
   type WorkspaceTabLocation,
   type WorkspaceTabPlacement,
   type WorkspaceTabsState,
@@ -38,6 +41,8 @@ import {
 /** Reads and restores the singleton view stores that a tab location describes. */
 export interface WorkspaceLocationAdapter {
   read(kind: View): WorkspaceTabLocation;
+  /** Name of what a tab at this level points at, or null when it has none or it is not loaded. */
+  title(level: WorkspaceTabLevel, location: WorkspaceTabLocation): string | null;
   /** Restore a location, stopping between steps once `isCurrent` turns false. */
   apply(location: WorkspaceTabLocation, isCurrent: () => boolean): Promise<void>;
 }
@@ -80,6 +85,8 @@ let launcherRequests = $state(0);
 let restoreSequence = 0;
 let activationOrder: string[] = [];
 let connection: WorkspaceTabsConnection | null = null;
+/** The last tab opened in the background and the tab it was opened from, so a run of them keeps its order. */
+let lastBackgroundOpen: { fromId: string; tabId: string } | null = null;
 let navigation: NavigationRouterRegistration | null = null;
 let storageVaultId: string | null = null;
 
@@ -161,12 +168,23 @@ function recordLocation(tabId: string, location: WorkspaceTabLocation): void {
 }
 
 function mostRecentTabOfKind(kind: View): WorkspaceTab | null {
-  const visible = visibleWorkspaceTabs(tabsState).filter((tab) => tab.location.kind === kind);
+  return mostRecent(visibleWorkspaceTabs(tabsState).filter((tab) => tab.location.kind === kind && !tab.locked));
+}
+
+function mostRecent(candidates: readonly WorkspaceTab[]): WorkspaceTab | null {
   for (const id of activationOrder) {
-    const tab = visible.find((candidate) => candidate.id === id && !candidate.locked);
+    const tab = candidates.find((candidate) => candidate.id === id);
     if (tab) return tab;
   }
-  return visible.find((tab) => !tab.locked) ?? null;
+  return candidates[0] ?? null;
+}
+
+/** Pick the tab a location should land in: an exact match, else one on the same project, else the most recent. */
+function tabForLocation(location: WorkspaceTabLocation): WorkspaceTab | null {
+  const candidates = visibleWorkspaceTabs(tabsState).filter((tab) => isWithinTabScope(tab, location));
+  return candidates.find((tab) => sameTabLocation(tab.location, location))
+    ?? mostRecent(candidates.filter((tab) => location.projectId !== null && tab.location.projectId === location.projectId))
+    ?? mostRecent(candidates);
 }
 
 function meaningfulLocation(location: WorkspaceTabLocation): WorkspaceTabLocation | null {
@@ -174,8 +192,8 @@ function meaningfulLocation(location: WorkspaceTabLocation): WorkspaceTabLocatio
 }
 
 /**
- * Land a navigation request in a tab: the active tab when it already shows the kind, else a tab showing
- * the same location, else the most recent tab of the kind, else a new tab. The views already changed
+ * Land a navigation request in a tab: the active tab when it already shows the kind, else a tab whose scope
+ * holds the location (an exact match first, then the same project, then the most recent), else a new tab. The views already changed
  * the stores, so the chosen tab adopts them instead of restoring its own location.
  */
 function routeNavigation(kind: View): boolean {
@@ -188,9 +206,7 @@ function routeNavigation(kind: View): boolean {
   }
   if (currentTab().location.kind === kind) return navigation?.commit(kind) ?? false;
   const location = host.adapter.read(kind);
-  const target = visibleWorkspaceTabs(tabsState)
-    .find((tab) => tab.location.kind === kind && sameTabLocation(tab.location, location))
-    ?? mostRecentTabOfKind(kind);
+  const target = tabForLocation(location);
   const next = target
     ? activateWorkspaceTab(tabsState, target.id)
     : insertWorkspaceTab(tabsState, createWorkspaceTab(createTabId(), location), "after-active");
@@ -281,6 +297,18 @@ function connect(host: WorkspaceTabsConnection): void {
     untrack(() => recordLocation(tab.id, location));
   });
 
+  // Keep cached titles current, including renames of what inactive tabs point at.
+  $effect(() => {
+    const titles = visibleWorkspaceTabs(tabsState)
+      .map((tab) => ({ id: tab.id, title: host.adapter.title(tab.level, tab.location) }))
+      .filter((entry): entry is { id: string; title: string } => entry.title !== null);
+    untrack(() => {
+      let next = tabsState;
+      for (const entry of titles) next = updateWorkspaceTab(next, entry.id, { title: entry.title });
+      setState(next);
+    });
+  });
+
   $effect(() => () => {
     disconnectMode();
     navigation?.unregister();
@@ -310,6 +338,42 @@ function openKind(kind: View): void {
     return;
   }
   commitState(insertWorkspaceTab(tabsState, createWorkspaceTab(createTabId(), host.adapter.read(kind)), "end"));
+}
+
+export interface OpenWorkspaceLocationOptions {
+  /** Leave the current tab in front. */
+  background?: boolean;
+}
+
+/**
+ * Open a project or item in a tab of its own. A tab that already shows it at that level is focused
+ * instead, and a kind shown in another window receives the location there.
+ */
+function openLocation(
+  level: WorkspaceTabLevel,
+  location: WorkspaceTabLocation,
+  options: OpenWorkspaceLocationOptions = {},
+): void {
+  const host = connection;
+  if (!host || !isMainMode()) return;
+  if (isKindDetached(location.kind)) {
+    host.windows?.showLocation(location.kind, location);
+    return;
+  }
+  const tab = createWorkspaceTab(createTabId(), location, { level, title: host.adapter.title(level, location) });
+  const existing = visibleWorkspaceTabs(tabsState).find((candidate) => tabMatchesTarget(candidate, tab.level, location));
+  if (existing) {
+    activate(existing.id);
+    return;
+  }
+  const activeId = tabsState.activeTabId;
+  if (options.background) {
+    const position = lastBackgroundOpen?.fromId === activeId ? { afterId: lastBackgroundOpen.tabId } : "after-active";
+    const next = insertWorkspaceTab(tabsState, tab, position, false);
+    if (setState(next)) lastBackgroundOpen = { fromId: activeId, tabId: tab.id };
+    return;
+  }
+  commitState(insertWorkspaceTab(tabsState, tab, "after-active"));
 }
 
 function close(id: string): void {
@@ -388,12 +452,17 @@ export function getWorkspaceTabs() {
     get closed(): readonly ClosedWorkspaceTab[] {
       return tabsState.closed;
     },
+    /** Whether this window can open more tabs; a detached window holds exactly one. */
+    get canOpenTabs(): boolean {
+      return connection !== null && isMainMode();
+    },
     get launcherRequests(): number {
       return launcherRequests;
     },
     connect,
     activate,
     openKind,
+    openLocation,
     close,
     closeOthers(id: string): void {
       commitState(closeOtherWorkspaceTabs(tabsState, id));

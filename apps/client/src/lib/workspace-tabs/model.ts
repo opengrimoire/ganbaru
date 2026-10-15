@@ -159,21 +159,28 @@ export function canAddWorkspaceTab(state: WorkspaceTabsState): boolean {
   return state.tabs.length < MAX_WORKSPACE_TABS;
 }
 
+/** Where a new tab goes: the end, right after the active tab, or right after a given tab. */
+export type WorkspaceTabInsertPosition = "end" | "after-active" | { afterId: string };
+
 /**
- * Insert a tab and activate it, at the end or right after the active tab. Returns the same state when
- * the tab limit is reached.
+ * Insert a tab, activating it unless `activate` is false. A position after a tab that no longer exists
+ * falls back to after the active tab. Returns the same state when the tab limit is reached.
  */
 export function insertWorkspaceTab(
   state: WorkspaceTabsState,
   tab: WorkspaceTab,
-  position: "end" | "after-active",
+  position: WorkspaceTabInsertPosition,
+  activate = true,
 ): WorkspaceTabsState {
   if (!canAddWorkspaceTab(state)) return state;
   const tabs = [...state.tabs];
+  const anchorId = typeof position === "object" ? position.afterId : state.activeTabId;
+  const anchorIndex = tabs.findIndex((candidate) => candidate.id === anchorId);
   const activeIndex = tabs.findIndex((candidate) => candidate.id === state.activeTabId);
-  const index = position === "after-active" && activeIndex >= 0 ? activeIndex + 1 : tabs.length;
+  const afterIndex = anchorIndex >= 0 ? anchorIndex : activeIndex;
+  const index = position !== "end" && afterIndex >= 0 ? afterIndex + 1 : tabs.length;
   tabs.splice(index, 0, tab);
-  return { ...state, tabs, activeTabId: tab.id };
+  return { ...state, tabs, activeTabId: activate ? tab.id : state.activeTabId };
 }
 
 /** Replace one tab, returning the same state when nothing changed. */

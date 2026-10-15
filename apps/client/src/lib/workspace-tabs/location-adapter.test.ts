@@ -27,6 +27,7 @@ function fakeStores(options: {
       get activeViewId() { return state.projectId ? state.viewIds[state.projectId] ?? null : null; },
       ensureLoaded: vi.fn(async () => undefined),
       hasProject: (id: string) => knownProjects.has(id),
+      projectName: (id: string) => (knownProjects.has(id) ? `Project ${id}` : null),
       viewsForProject: (id: string) => views.filter((view) => view.projectId === id),
       selectProject: vi.fn(async (id: string) => { state.projectId = id; }),
       selectView: vi.fn((view: FakeView) => { state.viewIds[view.projectId] = view.id; }),
@@ -53,6 +54,16 @@ describe("workspace location adapter", () => {
     expect(adapter.read("projects")).toEqual({ kind: "projects", projectId: "p1", item: { type: "project-view", id: "v1" } });
     expect(adapter.read("notes")).toEqual({ kind: "notes", projectId: "p1", item: { type: "notes-page", id: "page" } });
     expect(adapter.read("chat")).toEqual({ kind: "chat", projectId: "p1", item: { type: "chat-channel", id: "channel" } });
+  });
+
+  it("titles project and item tabs with their project name, and kind tabs with none", () => {
+    const { stores } = fakeStores({ projects: ["p1"] });
+    const adapter = createWorkspaceLocationAdapter(stores);
+    const location = { kind: "chat" as const, projectId: "p1", item: null };
+
+    expect(adapter.title("project", location)).toBe("Project p1");
+    expect(adapter.title("kind", location)).toBeNull();
+    expect(adapter.title("project", { ...location, projectId: "gone" })).toBeNull();
   });
 
   it("reads no item while nothing is selected", () => {

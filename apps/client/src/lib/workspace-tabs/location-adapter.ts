@@ -8,6 +8,7 @@ export interface WorkspaceLocationProjects<TView extends { id: string }> {
   readonly activeViewId: string | null;
   ensureLoaded(): Promise<void>;
   hasProject(projectId: string): boolean;
+  projectName(projectId: string): string | null;
   viewsForProject(projectId: string): readonly TView[];
   selectProject(projectId: string): Promise<void>;
   selectView(view: TView): void;
@@ -79,6 +80,10 @@ export function createWorkspaceLocationAdapter<TView extends { id: string }>(
     read(kind) {
       if (kind === "calendar") return kindLocation(kind);
       return { kind, projectId: stores.projects.selectedProjectId, item: readItem(kind, stores) };
+    },
+    title(level, location) {
+      if (level === "kind" || !location.projectId) return null;
+      return stores.projects.projectName(location.projectId);
     },
     async apply(location, isCurrent) {
       if (location.kind === "calendar") return;

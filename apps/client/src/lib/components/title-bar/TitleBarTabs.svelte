@@ -25,7 +25,7 @@
     type TabDragEnd,
   } from "$lib/stores/workspace-tabs.svelte";
   import { cn } from "$lib/utils";
-  import { waitForPointerTravel } from "$lib/utils/hover-suppression";
+  import { createSteadyPointerFilter, waitForPointerTravel } from "$lib/utils/hover-suppression";
   import type { WorkspaceTab, WorkspaceTabPlacement } from "$lib/workspace-tabs/model";
   import {
     shortWorkspaceTabProject,
@@ -96,7 +96,7 @@
   const ICON_SIZE = 14;
   const ICON_STROKE_WIDTH = 1.5;
   /** Events whose target tells where the pointer is. */
-  const pointerTrackingEvents = ["pointerover", "pointermove", "pointerdown", "wheel"] as const;
+  const pointerTrackingEvents = ["pointermove", "pointerdown", "wheel"] as const;
 
   const tabs = getWorkspaceTabs();
   const preferences = getPreferences();
@@ -756,8 +756,13 @@
     return waitForPointerTravel(window, () => { hoverHeld = false; });
   });
 
-  /** Records which tab, or the new tab button, the event's target sits in. */
+  const steadyPointer = createSteadyPointerFilter();
+
+  /** Records which tab, or the new tab button, the event's target sits in, skipping moves that jump like a replay. */
   function trackPointer(event: Event): void {
+    const { clientX, clientY } = event as PointerEvent;
+    const steady = steadyPointer(clientX, clientY);
+    if (event.type === "pointermove" && !steady) return;
     const target = event.target instanceof Element ? event.target : null;
     const tab = target?.closest<HTMLElement>(".titlebar-tab");
     pointerTabId = tab && strip?.contains(tab) ? (tab.dataset.tabId ?? null) : null;

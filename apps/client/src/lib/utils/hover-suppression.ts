@@ -76,6 +76,20 @@ export function waitForPointerTravel(events: PointerTravelEvents, onTravel: () =
 }
 
 /**
+ * Returns a filter for pointer positions that answers whether each one continues the movement before it, within
+ * {@link POINTER_STEP_MAX_PX}. A replay of where a drag started jumps away from the real pointer, so it never passes,
+ * and neither does the first position, which has nothing to continue.
+ */
+export function createSteadyPointerFilter(): (x: number, y: number) => boolean {
+  let previous: { x: number; y: number } | null = null;
+  return (x, y) => {
+    const step = previous ? Math.hypot(x - previous.x, y - previous.y) : Number.POSITIVE_INFINITY;
+    previous = { x, y };
+    return step <= POINTER_STEP_MAX_PX;
+  };
+}
+
+/**
  * Suppresses hover until the pointer deliberately moves. Touch-only devices are left alone, so a tap is never swallowed.
  * Calling it again while active restarts the wait from the pointer's next reported position.
  */

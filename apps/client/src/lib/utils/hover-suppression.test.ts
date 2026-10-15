@@ -3,6 +3,7 @@ import {
   HOVER_RESUME_DISTANCE_PX,
   HOVER_SUPPRESSED_ATTRIBUTE,
   POINTER_STEP_MAX_PX,
+  createSteadyPointerFilter,
   suppressHoverOnToggle,
   suppressHoverUntilPointerMoves,
   waitForPointerTravel,
@@ -115,6 +116,29 @@ describe("hover suppression after layout changes", () => {
     expect(suppressed(second)).toBe(true);
     pointer(second.target, "pointermove", 200, 200 + HOVER_RESUME_DISTANCE_PX);
     expect(suppressed(second)).toBe(false);
+  });
+});
+
+describe("following steady pointer positions", () => {
+  it("accepts a position only when it continues the one before", () => {
+    const steady = createSteadyPointerFilter();
+    expect(steady(400, 14)).toBe(false);
+    expect(steady(401, 14)).toBe(true);
+    expect(steady(401 + POINTER_STEP_MAX_PX, 14)).toBe(true);
+  });
+
+  it("rejects replays of where a drag started, alternating with the real pointer position", () => {
+    const steady = createSteadyPointerFilter();
+    const accepted = [[400, 14], [180, 14], [400, 14], [180, 14], [402, 14]].map(([x, y]) => steady(x, y));
+    expect(accepted).toEqual([false, false, false, false, false]);
+  });
+
+  it("follows the pointer again once it moves on from a jump", () => {
+    const steady = createSteadyPointerFilter();
+    steady(400, 14);
+    expect(steady(180, 14)).toBe(false);
+    expect(steady(400, 14)).toBe(false);
+    expect(steady(403, 15)).toBe(true);
   });
 });
 

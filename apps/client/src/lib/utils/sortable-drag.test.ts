@@ -9,16 +9,16 @@ import {
 
 /** Three items with an 8px gap: a short row, a tall block, and another short row. */
 const UNEVEN: SortableSlot[] = [
-  { top: 0, height: 28 },
-  { top: 36, height: 100 },
-  { top: 144, height: 28 },
+  { start: 0, size: 28 },
+  { start: 36, size: 100 },
+  { start: 144, size: 28 },
 ];
 
 const EVEN: SortableSlot[] = [
-  { top: 0, height: 28 },
-  { top: 36, height: 28 },
-  { top: 72, height: 28 },
-  { top: 108, height: 28 },
+  { start: 0, size: 28 },
+  { start: 36, size: 28 },
+  { start: 72, size: 28 },
+  { start: 108, size: 28 },
 ];
 
 describe("sortable drag", () => {
@@ -39,18 +39,18 @@ describe("sortable drag", () => {
     expect(sortableDragTarget(EVEN, 3, -500)).toBe(0);
   });
 
-  it("measures crossings against each item's own height", () => {
+  it("measures crossings against each item's own size", () => {
     // The short first row reaches the tall block's center only after traveling past half of it.
     expect(sortableDragTarget(UNEVEN, 0, 57)).toBe(0);
     expect(sortableDragTarget(UNEVEN, 0, 59)).toBe(1);
-    // The tall block passes the last row as soon as its bottom edge crosses that row's center.
+    // The tall block passes the last row as soon as its trailing edge crosses that row's center.
     expect(sortableDragTarget(UNEVEN, 1, 22)).toBe(1);
     expect(sortableDragTarget(UNEVEN, 1, 23)).toBe(2);
     expect(sortableDragTarget(UNEVEN, 1, -21)).toBe(1);
     expect(sortableDragTarget(UNEVEN, 1, -23)).toBe(0);
   });
 
-  it("slides the items between source and target by the dragged item's height and the gap", () => {
+  it("slides the items between source and target by the dragged item's size and the gap", () => {
     expect([0, 1, 2, 3].map((index) => sortableDragShift(EVEN, index, 0, 2))).toEqual([0, -36, -36, 0]);
     expect([0, 1, 2, 3].map((index) => sortableDragShift(EVEN, index, 3, 1))).toEqual([0, 36, 36, 0]);
     expect([0, 1, 2, 3].map((index) => sortableDragShift(EVEN, index, 1, 1))).toEqual([0, 0, 0, 0]);
@@ -62,7 +62,7 @@ describe("sortable drag", () => {
     expect(sortableDragLanding(EVEN, 0, 2)).toBe(72);
     expect(sortableDragLanding(EVEN, 3, 1)).toBe(-72);
     expect(sortableDragLanding(EVEN, 2, 2)).toBe(0);
-    // The tall block lands flush with the bottom of the list when moved past the last row.
+    // The tall block lands flush with the end of the list when moved past the last row.
     expect(sortableDragLanding(UNEVEN, 1, 2)).toBe(36);
     expect(sortableDragLanding(UNEVEN, 2, 0)).toBe(-144);
     expect(sortableDragLanding(UNEVEN, 0, 2)).toBe(144);

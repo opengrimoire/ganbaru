@@ -4,15 +4,16 @@
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { MobileNavigationPresentation } from "$lib/mobile/layout";
-  import { mobileTabBarSlots, mobileTabsButtonBadge } from "$lib/mobile/tab-bar";
+  import { mobileTabBarDropMoves, mobileTabBarSlots, mobileTabsButtonBadge } from "$lib/mobile/tab-bar";
   import { cn } from "$lib/utils";
-  import type { WorkspaceTab } from "$lib/workspace-tabs/model";
+  import { createSortableDrag } from "$lib/utils/sortable-drag.svelte";
+  import type { WorkspaceTab, WorkspaceTabPlacement } from "$lib/workspace-tabs/model";
   import { workspaceTabFullLabel, workspaceTabKindIcon, workspaceTabLabel } from "$lib/workspace-tabs/presentation";
 
   /**
    * The phone shell's workspace tab bar: the first open tabs that fit, the active one always among them, and a
    * tabs button that opens the full list, marked with an add sign while the bar shows every tab or with the count of
-   * tabs past the bar.
+   * tabs past the bar. Holding a tab lifts it to reorder the bar by dragging.
    */
   let {
     tabs,
@@ -20,6 +21,7 @@
     tabsOpen = false,
     presentation,
     onSelect,
+    onMove,
     onOpenTabs,
   }: {
     tabs: readonly WorkspaceTab[];
@@ -28,6 +30,8 @@
     tabsOpen?: boolean;
     presentation: MobileNavigationPresentation;
     onSelect: (tabId: string) => void;
+    /** Moves a tab next to another, as the workspace tab `move` does. */
+    onMove: (tabId: string, targetId: string, placement: WorkspaceTabPlacement) => void;
     onOpenTabs: () => void;
   } = $props();
 
@@ -36,6 +40,16 @@
   const slots = $derived(mobileTabBarSlots(tabs, activeTabId));
   const badge = $derived(mobileTabsButtonBadge(tabs.length, slots.length, (value) => formatNumber(localization.locale, value)));
   const iconSize = $derived(presentation === "rail" ? 21 : 20);
+  const drag = createSortableDrag({
+    getIds: () => slots.map((tab) => tab.id),
+    commit: (id, targetIndex) => {
+      for (const move of mobileTabBarDropMoves(tabs, slots, id, targetIndex)) onMove(move.id, move.targetId, move.placement);
+    },
+    touchHold: true,
+    get axis() { return presentation === "rail" ? "y" as const : "x" as const; },
+  });
+
+  $effect(() => () => drag.reset());
 </script>
 
 {#snippet itemContent(selected: boolean, icon: import("svelte").Snippet, label: string)}
@@ -77,6 +91,8 @@
       type="button"
       aria-current={selected ? "page" : undefined}
       aria-label={tab.locked ? t("titleBar.tab.lockedTab", fullLabel) : fullLabel}
+      {@attach drag.item(tab.id)}
+      onpointerdown={(event) => drag.pointerDown(event, tab.id)}
       onclick={() => onSelect(tab.id)}
       class={cn(
         "group relative flex min-w-0 flex-col items-center justify-center gap-1 text-xs font-medium transition-colors",

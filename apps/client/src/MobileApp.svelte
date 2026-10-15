@@ -932,6 +932,7 @@
     tabsOpen={showTabs}
     {presentation}
     onSelect={(tabId) => workspaceTabs.activate(tabId)}
+    onMove={(tabId, targetId, placement) => workspaceTabs.move(tabId, targetId, placement)}
     onOpenTabs={toggleTabs}
   />
 {/snippet}

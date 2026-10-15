@@ -26,7 +26,7 @@ describe("MobileNavigation", () => {
   });
 
   async function render(props: Partial<ComponentProps<typeof MobileNavigation>> = {}) {
-    const handlers = { onSelect: vi.fn(), onOpenTabs: vi.fn() };
+    const handlers = { onSelect: vi.fn(), onMove: vi.fn(), onOpenTabs: vi.fn() };
     target = document.createElement("div");
     document.body.append(target);
     component = mount(MobileNavigation, {

@@ -13,9 +13,9 @@
   import { portal } from "$lib/utils/portal";
 
   const { t } = getLocalization();
-  /** Palette grid metrics, matching the panel and swatch classes of each layout. */
+  /** Palette grid metrics, matching the panel and swatch classes of each layout; both layouts share one column count so the palette keeps its shape. */
   const DESKTOP_PALETTE = { columns: 4, swatchRem: 1.375, gapRem: 0.5, paddingRem: 0.625 };
-  const TOUCH_PALETTE = { columns: 6, swatchRem: 2.5, gapRem: 0.25, paddingRem: 0.5 };
+  const TOUCH_PALETTE = { columns: 4, swatchRem: 2.5, gapRem: 0.25, paddingRem: 0.5 };
   const PALETTE_EDGE_PX = 8;
   /** Border width on each side of the floating surface. */
   const PALETTE_BORDER_PX = 1;

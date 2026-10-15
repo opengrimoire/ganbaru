@@ -144,7 +144,6 @@
     <WorkspacePane
       {focused}
       scope={pane.scope}
-      outlined={focused && layout !== "single"}
       hidden={layout === "single" && panes.length > 1 && !focused}
       painted={pane.view === "calendar"}
       order={index * 2}

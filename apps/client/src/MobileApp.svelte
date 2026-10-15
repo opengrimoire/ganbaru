@@ -59,7 +59,7 @@
   type MusicPlaybackHostComponent = typeof import("$lib/components/music/MusicPlaybackHost.svelte").default;
   type PomodoroMenuComponent = typeof import("$lib/components/pomodoro/PomodoroMenuContent.svelte").default;
   type LinkedDeviceControlComponent = typeof import("$lib/components/vault/handoff/LinkedDeviceControl.svelte").default;
-  type TabsSheetComponent = typeof import("$lib/components/mobile/MobileTabsSheet.svelte").default;
+  type TabsPanelComponent = typeof import("$lib/components/mobile/MobileTabsPanel.svelte").default;
   type ProjectViewComponents = import("$lib/components/projects/view-components").ProjectViewComponents;
   type ProjectViewSwitcherComponent = typeof import("$lib/components/projects/ProjectMobileViewSwitcher.svelte").default;
   type WorkspaceLocationAdapter = import("$lib/stores/workspace-tabs.svelte").WorkspaceLocationAdapter;
@@ -144,7 +144,7 @@
   let quickNotesTrashPurge = $state.raw<QuickNotesTrashPurgeRuntime | null>(null);
   let quickNotesTrashPurgeLoad: Promise<void> | null = null;
   let showTabs = $state(false);
-  let TabsSheetSurface = $state<TabsSheetComponent | null>(null);
+  let TabsPanelSurface = $state<TabsPanelComponent | null>(null);
   let markBackendReady = (): void => undefined;
   /** Settles once the database is ready, so restoring a tab never loads a store before it. */
   const backendReadyOnce = new Promise<void>((resolve) => {
@@ -154,7 +154,7 @@
   const workspaceTabs = getWorkspaceTabs();
   workspaceTabs.connect({
     adapter: createDeferredWorkspaceLocationAdapter(loadWorkspaceLocationAdapter),
-    // The sheet offers no close on the only tab, and Back from the first tab leaves the app.
+    // The tabs panel offers no close on the only tab, and Back from the first tab leaves the app.
     requestWindowClose: () => undefined,
   });
 
@@ -228,21 +228,27 @@
     );
   }
 
-  /** Opens the tabs sheet once its chunk loads; a failed load leaves the bar as it was, so a tap retries. */
-  function openTabs(): void {
-    if (showTabs) return;
-    if (TabsSheetSurface) {
+  /**
+   * Opens the tabs panel once its chunk loads, or closes it when it is open; a failed load leaves the bar as it was,
+   * so a tap retries.
+   */
+  function toggleTabs(): void {
+    if (showTabs) {
+      showTabs = false;
+      return;
+    }
+    if (TabsPanelSurface) {
       showTabs = true;
       return;
     }
-    import("$lib/components/mobile/MobileTabsSheet.svelte")
+    import("$lib/components/mobile/MobileTabsPanel.svelte")
       .then((module) => {
         if (mobileAppDisposed) return;
-        TabsSheetSurface = module.default;
+        TabsPanelSurface = module.default;
         showTabs = true;
       })
       .catch((error: unknown) => {
-        console.error("Failed to load the tabs sheet", error);
+        console.error("Failed to load the tabs panel", error);
       });
   }
 
@@ -926,7 +932,7 @@
     tabsOpen={showTabs}
     {presentation}
     onSelect={(tabId) => workspaceTabs.activate(tabId)}
-    onOpenTabs={openTabs}
+    onOpenTabs={toggleTabs}
   />
 {/snippet}
 
@@ -1066,16 +1072,15 @@
             {@render loadingRing()}
           </div>
         {/if}
+        {#if showTabs && TabsPanelSurface}
+          <TabsPanelSurface tabs={workspaceTabs} onClose={() => { showTabs = false; }} />
+        {/if}
       </main>
     </div>
     {#if bottomNavigationVisible}
       {@render tabBar("bottom")}
     {/if}
   </div>
-
-  {#if showTabs && TabsSheetSurface}
-    <TabsSheetSurface tabs={workspaceTabs} onClose={() => { showTabs = false; }} />
-  {/if}
 
   {#if MusicPlaybackHostSurface}
     <MusicPlaybackHostSurface />

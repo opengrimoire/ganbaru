@@ -24,7 +24,7 @@
   }: {
     tabs: readonly WorkspaceTab[];
     activeTabId: string;
-    /** Whether the tabs sheet is showing. */
+    /** Whether the tabs panel is showing. */
     tabsOpen?: boolean;
     presentation: MobileNavigationPresentation;
     onSelect: (tabId: string) => void;

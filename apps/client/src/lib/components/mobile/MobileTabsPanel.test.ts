@@ -2,19 +2,18 @@
 
 import { flushSync, mount, tick, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createWorkspaceTab, kindLocation, type ClosedWorkspaceTab, type WorkspaceTab } from "$lib/workspace-tabs/model";
-import MobileTabsSheet, { type MobileTabsSheetTabs } from "./MobileTabsSheet.svelte";
+import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
+import { createWorkspaceTab, kindLocation, type WorkspaceTab } from "$lib/workspace-tabs/model";
+import MobileTabsPanel, { type MobileTabsPanelTabs } from "./MobileTabsPanel.svelte";
 
-function fakeTabs(tabs: WorkspaceTab[], closed: ClosedWorkspaceTab[] = []): MobileTabsSheetTabs {
+function fakeTabs(tabs: WorkspaceTab[]): MobileTabsPanelTabs {
   return {
     tabs,
     activeTabId: tabs[0]?.id ?? "",
-    closed,
     activate: vi.fn(),
     openKind: vi.fn(),
     close: vi.fn(),
     closeOthers: vi.fn(),
-    reopen: vi.fn(),
     setLocked: vi.fn(),
     move: vi.fn(),
   };
@@ -28,7 +27,7 @@ const roadmapTab = createWorkspaceTab(
 );
 const chatTab = createWorkspaceTab("chat-tab", kindLocation("chat"));
 
-describe("MobileTabsSheet", () => {
+describe("MobileTabsPanel", () => {
   let target: HTMLDivElement | null = null;
   let component: ReturnType<typeof mount> | null = null;
 
@@ -40,11 +39,11 @@ describe("MobileTabsSheet", () => {
     target = null;
   });
 
-  async function render(tabs: MobileTabsSheetTabs) {
+  async function render(tabs: MobileTabsPanelTabs) {
     const onClose = vi.fn();
     target = document.createElement("div");
     document.body.append(target);
-    component = mount(MobileTabsSheet, { target, props: { tabs, onClose } });
+    component = mount(MobileTabsPanel, { target, props: { tabs, onClose } });
     await tick();
     return { onClose };
   }
@@ -67,7 +66,11 @@ describe("MobileTabsSheet", () => {
     flushSync();
   }
 
-  it("activates a tab and closes the sheet", async () => {
+  function press(element: Element): void {
+    element.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+  }
+
+  it("activates a tab and closes the panel", async () => {
     const tabs = fakeTabs([calendarTab, roadmapTab]);
     const { onClose } = await render(tabs);
 
@@ -78,6 +81,15 @@ describe("MobileTabsSheet", () => {
 
     expect(tabs.activate).toHaveBeenCalledWith("roadmap-tab");
     expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("is a panel over the content rather than a modal", async () => {
+    await render(fakeTabs([calendarTab]));
+
+    const panel = document.querySelector("[data-mobile-tabs-panel]");
+    expect(panel?.getAttribute("role")).toBe("dialog");
+    expect(panel?.hasAttribute("aria-modal")).toBe(false);
+    expect(document.querySelector(".surface-backdrop")).toBeNull();
   });
 
   it("closes a tab in place but offers no close on the only tab", async () => {
@@ -127,18 +139,50 @@ describe("MobileTabsSheet", () => {
     expect(tabs.closeOthers).toHaveBeenCalledWith("roadmap-tab");
   });
 
-  it("opens a new tab of any kind and reopens a closed tab", async () => {
-    const closed: ClosedWorkspaceTab[] = [{ level: "kind", locked: false, location: kindLocation("notes"), title: null, projectTitle: null, index: 1 }];
-    const tabs = fakeTabs([calendarTab], closed);
+  it("lists only open tabs and keeps new tab kinds behind their own level", async () => {
+    const tabs = fakeTabs([calendarTab]);
     const { onClose } = await render(tabs);
+
+    expect(document.querySelector("[data-mobile-new-tab]")).toBeNull();
+    expect(document.body.textContent).not.toContain("Recently closed");
+
+    document.querySelector<HTMLButtonElement>("[data-mobile-new-tab-level]")?.click();
+    flushSync();
+    expect(document.querySelector("[data-mobile-tab-row]")).toBeNull();
 
     document.querySelector<HTMLButtonElement>("[data-mobile-new-tab=chat]")?.click();
     expect(tabs.openKind).toHaveBeenCalledWith("chat");
+    expect(onClose).toHaveBeenCalledOnce();
+  });
 
-    const closedButtons = document.querySelectorAll<HTMLButtonElement>("[data-mobile-closed-tab]");
-    expect([...closedButtons].map((button) => button.textContent?.trim())).toEqual(["Notes"]);
-    closedButtons[0]?.click();
-    expect(tabs.reopen).toHaveBeenCalledWith(0);
-    expect(onClose).toHaveBeenCalledTimes(2);
+  it("returns from the new tab level with Back before closing", async () => {
+    const { onClose } = await render(fakeTabs([calendarTab]));
+    const backStack = getMobileBackStack();
+
+    document.querySelector<HTMLButtonElement>("[data-mobile-new-tab-level]")?.click();
+    flushSync();
+    expect(backStack.consume()).toBe(true);
+    flushSync();
+    expect(document.querySelector("[data-mobile-tab-row]")).not.toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+
+    expect(backStack.consume()).toBe(true);
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("closes on a press outside the panel but leaves the tabs button to toggle it", async () => {
+    const { onClose } = await render(fakeTabs([calendarTab]));
+    const tabsButton = document.createElement("button");
+    tabsButton.dataset.mobileTabsButton = "";
+    const icon = document.createElement("span");
+    tabsButton.append(icon);
+    document.body.append(tabsButton);
+
+    press(row("calendar-tab"));
+    press(icon);
+    expect(onClose).not.toHaveBeenCalled();
+
+    press(document.body);
+    expect(onClose).toHaveBeenCalledOnce();
   });
 });

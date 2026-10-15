@@ -109,7 +109,7 @@
   let NotesSurface = $state<NotesComponent | null>(null);
   let ChatSurface = $state<ChatComponent | null>(null);
   let ProjectViewSwitcherSurface = $state<ProjectViewSwitcherComponent | null>(null);
-  let projectsStore = $state<ProjectsStore | null>(null);
+  let projectsStore = $state.raw<ProjectsStore | null>(null);
   let QuickNotesSurface = $state<QuickNotesComponent | null>(null);
   let SettingsSurface = $state<SettingsComponent | null>(null);
   let MusicSurface = $state<MusicComponent | null>(null);
@@ -992,7 +992,7 @@
         {:else if workspaceSurface === "chat" && ChatSurface}
           <ChatSurface projectViewSwitcher={projectHostingActive ? hostedProjectViews : undefined} />
         {:else if currentDeferredSurface}
-          {@render deferredSurfacePlaceholder(currentDeferredSurface, currentTitle)}
+          {@render deferredSurfacePlaceholder(currentDeferredSurface, t(`titleBar.tab.${workspaceSurface}`))}
         {:else}
           <div class="flex h-full items-center justify-center">
             {@render loadingRing()}

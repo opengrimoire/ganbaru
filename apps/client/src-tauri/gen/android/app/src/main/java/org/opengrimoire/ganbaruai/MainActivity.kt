@@ -1,7 +1,10 @@
 package org.opengrimoire.ganbaruai
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.os.Bundle
 import android.view.ViewGroup
@@ -24,6 +27,11 @@ private const val ANDROID_TRANSITION_BRIDGE_NAME = "GanbaruAndroidTransition"
 private const val ANDROID_INSETS_EVENT_NAME = "ganbaru:android-insets"
 private const val ANDROID_TRANSITION_FRAME_HELD_EVENT_NAME =
   "ganbaru:android-transition-frame-held"
+private const val APPEARANCE_PREFERENCES_NAME = "ganbaru_appearance"
+private const val WINDOW_BACKGROUND_KEY = "window_background"
+
+/** Content background of the default dark theme, painted until the page reports the active theme. */
+private const val DEFAULT_WINDOW_BACKGROUND = 0xFF27282A.toInt()
 
 private class AndroidInsetsBridge(displayDensity: Float) {
   private val density = displayDensity.takeIf { it.isFinite() && it > 0f } ?: 1f
@@ -128,6 +136,17 @@ private class AndroidAppearanceBridge(private val activity: MainActivity) {
       }
     }
   }
+
+  /** Paints [color], a `#rrggbb` theme surface, behind the WebView now and on the next cold start. */
+  @JavascriptInterface
+  fun setWindowBackground(color: String) {
+    val parsed = try {
+      Color.parseColor(color)
+    } catch (_: IllegalArgumentException) {
+      return
+    }
+    activity.runOnUiThread { activity.applyWindowBackground(parsed) }
+  }
 }
 
 private class AndroidTransitionBridge(
@@ -190,14 +209,36 @@ class MainActivity : TauriActivity() {
     AndroidInsetsBridge(resources.displayMetrics.density)
   }
   private val androidAppearanceBridge by lazy { AndroidAppearanceBridge(this) }
+  private val appearancePreferences by lazy {
+    getSharedPreferences(APPEARANCE_PREFERENCES_NAME, Context.MODE_PRIVATE)
+  }
+  private var appWebView: WebView? = null
 
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
+    window.setBackgroundDrawable(ColorDrawable(storedWindowBackground()))
+  }
+
+  /**
+   * The page is transparent until the app shell mounts, so the window and WebView show this color instead of
+   * their white defaults. The last theme surface is kept so the next launch opens on it.
+   */
+  private fun storedWindowBackground(): Int =
+    appearancePreferences.getInt(WINDOW_BACKGROUND_KEY, DEFAULT_WINDOW_BACKGROUND)
+
+  internal fun applyWindowBackground(color: Int) {
+    window.setBackgroundDrawable(ColorDrawable(color))
+    appWebView?.setBackgroundColor(color)
+    if (storedWindowBackground() != color) {
+      appearancePreferences.edit().putInt(WINDOW_BACKGROUND_KEY, color).apply()
+    }
   }
 
   override fun onWebViewCreate(webView: WebView) {
     super.onWebViewCreate(webView)
+    appWebView = webView
+    webView.setBackgroundColor(storedWindowBackground())
     if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
       WebSettingsCompat.setAlgorithmicDarkeningAllowed(webView.settings, false)
     }

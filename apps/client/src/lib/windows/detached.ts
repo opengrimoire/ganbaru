@@ -2,11 +2,14 @@ import { emit } from "@tauri-apps/api/event";
 import { WebviewWindow, getAllWebviewWindows } from "@tauri-apps/api/webviewWindow";
 import type { DetachableTabView } from "$lib/navigation";
 import { isDetachableTabView, viewLabel } from "$lib/navigation";
+import { readNativeBackground } from "$lib/themes/native-background";
 
 export const DETACHED_VIEW_WINDOW_PREFIX = "view";
 export const DETACHED_VIEW_WINDOW_CHANGED_EVENT = "detached-view-window-changed";
 export const DETACHED_VIEW_REATTACH_REQUESTED_EVENT = "detached-view-reattach-requested";
 export const DETACHED_VIEW_DRAG_MIME = "application/x-ganbaru-ai-detached-view";
+/** Surface the desktop shell paints first, used as the native background of a new detached window. */
+const DETACHED_WINDOW_BACKGROUND_TOKEN = "--sidebar";
 
 export interface DetachedViewWindowChange {
   view: DetachableTabView;
@@ -117,7 +120,12 @@ export async function openDetachedViewWindow(view: DetachableTabView): Promise<v
     return;
   }
 
+  const background = readNativeBackground(document.documentElement, DETACHED_WINDOW_BACKGROUND_TOKEN);
+  const backgroundColor: [number, number, number] | undefined = background
+    ? [background.r, background.g, background.b]
+    : undefined;
   const created = new WebviewWindow(label, {
+    ...(backgroundColor ? { backgroundColor } : {}),
     url: detachedViewWindowUrl(view),
     title: detachedViewWindowTitle(view),
     width: 960,

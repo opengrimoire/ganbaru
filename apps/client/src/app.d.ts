@@ -15,6 +15,8 @@ declare global {
 
   interface GanbaruAndroidAppearanceBridge {
     setLightTheme(lightTheme: boolean): void;
+    /** Persists the `#rrggbb` surface color painted behind the WebView, including on the next cold start. */
+    setWindowBackground(color: string): void;
   }
 
   interface GanbaruAndroidTransitionBridge {

@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onBackButtonPress } from "@tauri-apps/api/app";
   import { onMount, untrack } from "svelte";
-  import CalendarDays from "@lucide/svelte/icons/calendar-days";
   import { COMPACT_IDENTITY_ICON_SIZE, COMPACT_IDENTITY_ICON_STROKE_WIDTH } from "$lib/icon-sizing";
   import MobileNavigation from "$lib/components/mobile/MobileNavigation.svelte";
   import MobileTopBar from "$lib/components/mobile/MobileTopBar.svelte";
@@ -24,6 +23,7 @@
     type LoadFailure,
   } from "$lib/module-load-recovery";
   import { revealFocusedTextEntry } from "$lib/mobile/keyboard";
+  import { workspaceTabKindIcon } from "$lib/workspace-tabs/presentation";
   import { createDeferredWorkspaceLocationAdapter } from "$lib/mobile/workspace-location.svelte";
   import { provideMobileIdentitySlot } from "$lib/mobile/identity-slot";
   import { MobilePersistenceLifecycleController } from "$lib/mobile/persistence-lifecycle";
@@ -59,6 +59,7 @@
   type MusicPlaybackHostComponent = typeof import("$lib/components/music/MusicPlaybackHost.svelte").default;
   type PomodoroMenuComponent = typeof import("$lib/components/pomodoro/PomodoroMenuContent.svelte").default;
   type LinkedDeviceControlComponent = typeof import("$lib/components/vault/handoff/LinkedDeviceControl.svelte").default;
+  type TabsSheetComponent = typeof import("$lib/components/mobile/MobileTabsSheet.svelte").default;
   type ProjectViewComponents = import("$lib/components/projects/view-components").ProjectViewComponents;
   type ProjectViewSwitcherComponent = typeof import("$lib/components/projects/ProjectMobileViewSwitcher.svelte").default;
   type WorkspaceLocationAdapter = import("$lib/stores/workspace-tabs.svelte").WorkspaceLocationAdapter;
@@ -143,6 +144,7 @@
   let quickNotesTrashPurge = $state.raw<QuickNotesTrashPurgeRuntime | null>(null);
   let quickNotesTrashPurgeLoad: Promise<void> | null = null;
   let showTabs = $state(false);
+  let TabsSheetSurface = $state<TabsSheetComponent | null>(null);
   let markBackendReady = (): void => undefined;
   /** Settles once the database is ready, so restoring a tab never loads a store before it. */
   const backendReadyOnce = new Promise<void>((resolve) => {
@@ -167,6 +169,7 @@
   const modalOpen = $derived(
     showSettings || showQuickNotes || showMusic || suspendDecisionOpen,
   );
+  const CalendarIcon = workspaceTabKindIcon("calendar");
   const currentTitle = $derived(t(`titleBar.tab.${nav.current}`));
   /** Workspace shown for the current tab; the Projects tab can host the selected project's Notes or Chat. */
   const workspaceSurface = $derived(mobileWorkspaceSurface(nav.current, projectHostingState(nav.current)));
@@ -224,6 +227,24 @@
       { projects, notes: notesModule.getNotes(), chat: chatModule.getChat() },
       t,
     );
+  }
+
+  /** Opens the tabs sheet once its chunk loads; a failed load leaves the bar as it was, so a tap retries. */
+  function openTabs(): void {
+    if (showTabs) return;
+    if (TabsSheetSurface) {
+      showTabs = true;
+      return;
+    }
+    import("$lib/components/mobile/MobileTabsSheet.svelte")
+      .then((module) => {
+        if (mobileAppDisposed) return;
+        TabsSheetSurface = module.default;
+        showTabs = true;
+      })
+      .catch((error: unknown) => {
+        console.error("Failed to load the tabs sheet", error);
+      });
   }
 
   function flushMountedNotes(): Promise<void> {
@@ -906,12 +927,12 @@
     tabsOpen={showTabs}
     {presentation}
     onSelect={(tabId) => workspaceTabs.activate(tabId)}
-    onOpenTabs={() => { showTabs = true; }}
+    onOpenTabs={openTabs}
   />
 {/snippet}
 
 {#snippet calendarIdentityIcon()}
-  <CalendarDays size={COMPACT_IDENTITY_ICON_SIZE} strokeWidth={COMPACT_IDENTITY_ICON_STROKE_WIDTH} />
+  <CalendarIcon size={COMPACT_IDENTITY_ICON_SIZE} strokeWidth={COMPACT_IDENTITY_ICON_STROKE_WIDTH} />
 {/snippet}
 
 {#snippet loadingRing()}
@@ -1053,11 +1074,8 @@
     {/if}
   </div>
 
-  {#if showTabs}
-    {#await import("$lib/components/mobile/MobileTabsSheet.svelte") then module}
-      {@const MobileTabsSheet = module.default}
-      <MobileTabsSheet tabs={workspaceTabs} onClose={() => { showTabs = false; }} />
-    {/await}
+  {#if showTabs && TabsSheetSurface}
+    <TabsSheetSurface tabs={workspaceTabs} onClose={() => { showTabs = false; }} />
   {/if}
 
   {#if MusicPlaybackHostSurface}

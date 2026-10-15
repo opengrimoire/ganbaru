@@ -12,7 +12,8 @@
   import { getPomodoro } from "$lib/stores/pomodoro.svelte";
   import { buildDesktopFocusNotificationCopy, type DesktopFocusNotificationCopy } from "$lib/api/focus";
   import { getNotes, getNotesWorkspace } from "$lib/stores/notes.svelte";
-  import { getProjects, getProjectsStore } from "$lib/stores/projects.svelte";
+  import { getProjects, getProjectsStore, type ProjectsStore } from "$lib/stores/projects.svelte";
+  import type { WorkspacePaneScope } from "$lib/workspace-tabs/model";
   import { getChat, getChatStore, resetChatForVault } from "$lib/stores/chat.svelte";
   import { getZoom } from "$lib/stores/zoom.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
@@ -55,7 +56,8 @@
   import ProjectListView from "$lib/components/projects/list/ProjectListView.svelte";
   import type { ProjectViewComponents } from "$lib/components/projects/view-components";
   import ChatWorkspace from "$lib/components/chat/ChatWorkspace.svelte";
-  import WorkspaceSplitView, { type WorkspaceShownPane } from "$lib/components/workspace-tabs/WorkspaceSplitView.svelte";
+  import WorkspaceSplitView from "$lib/components/workspace-tabs/WorkspaceSplitView.svelte";
+  import { workspaceShownPanes } from "$lib/workspace-tabs/shown-panes";
   import type { WorkspaceSplitArea } from "$lib/workspace-tabs/split-layout";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import TooltipHost from "$lib/components/ui/TooltipHost.svelte";
@@ -610,45 +612,31 @@
   $effect.pre(() => {
     projects.hostableViewTypes = projectHostablePlaces(availableAppViews());
   });
-  const projectSidebarViews = $derived(projects.viewsForProject(projects.selectedProjectId));
-  /** Workspace the Projects tab hosts in place of a task view; hosting needs an open project to scope it. */
-  const projectHostedPlace = $derived.by<ProjectHostedViewType | null>(() => {
-    const place = projects.hostedPlace;
-    if (!shownKinds.includes("projects") || !place) return null;
-    return projects.selectedProject && projects.selectedGroup ? place : null;
-  });
+  /** The Projects store a pane scope shows through. */
+  function projectsIn(scope: WorkspacePaneScope): ProjectsStore {
+    return scope === "secondary" ? secondaryProjects : projects;
+  }
+  /** Workspace a Projects pane hosts in place of a task view; hosting needs an open project to scope it. */
+  function projectHostedPlace(scope: WorkspacePaneScope): ProjectHostedViewType | null {
+    const store = projectsIn(scope);
+    const place = store.hostedPlace;
+    return place && store.selectedProject && store.selectedGroup ? place : null;
+  }
   /** The area the split view shows in, which decides how the tab menu offers to arrange a split. */
   let splitArea = $state<WorkspaceSplitArea>({ width: 0, height: 0 });
   /** The kinds of the active tab and the tab shown beside it, if any. */
   const shownKinds = $derived<readonly View[]>(
     workspaceTabs.partnerTab ? [nav.current, workspaceTabs.partnerTab.location.kind] : [nav.current],
   );
-  /**
-   * The tabs the content area shows in split order, each with the view and stores that show it. One view shows
-   * twice only through two sets of stores.
-   */
-  const shownPanes = $derived.by<WorkspaceShownPane[]>(() => {
-    const activeId = workspaceTabs.activeTabId;
-    const active: WorkspaceShownPane = {
-      tabId: activeId,
-      view: paneView(nav.current),
-      scope: workspaceTabs.paneScope(activeId),
-    };
+  const shownPanes = $derived.by(() => {
     const partner = workspaceTabs.partnerTab;
-    if (!partner) return [active];
-    const beside: WorkspaceShownPane = {
-      tabId: partner.id,
-      view: paneView(partner.location.kind),
-      scope: workspaceTabs.paneScope(partner.id),
-    };
-    if (beside.view === active.view && beside.scope === active.scope) return [active];
-    return workspaceTabs.split?.tabIds[0] === partner.id ? [beside, active] : [active, beside];
+    return workspaceShownPanes(
+      { id: workspaceTabs.activeTabId, kind: nav.current },
+      partner ? { id: partner.id, kind: partner.location.kind } : null,
+      partner !== null && workspaceTabs.split?.tabIds[0] === partner.id,
+      { scopeOf: workspaceTabs.paneScope, hostedViewIn: projectHostedPlace },
+    );
   });
-
-  /** The view that shows a tab of `kind`, which for Projects is the workspace it hosts. */
-  function paneView(kind: View): View {
-    return kind === "projects" ? projectHostedPlace ?? "projects" : kind;
-  }
 
   const suspendInfo = $derived(pomodoro.suspendedAway);
   const idleInfo = $derived(pomodoro.idlePaused);
@@ -740,13 +728,15 @@
    */
   function handleProjectPlaceShortcut(e: KeyboardEvent): void {
     if (nav.current !== "projects") return;
-    const view = projectPlaceShortcut(e, projectSidebarViews);
+    const scope = workspaceTabs.paneScope(workspaceTabs.activeTabId);
+    const store = projectsIn(scope);
+    const view = projectPlaceShortcut(e, store.viewsForProject(store.selectedProjectId));
     if (!view) return;
     const paused = Boolean(suspendInfo || idleInfo);
-    if (!paused && !projectHostedPlace) return;
+    if (!paused && !projectHostedPlace(scope)) return;
     e.preventDefault();
     e.stopImmediatePropagation();
-    if (!paused) projects.selectView(view);
+    if (!paused) store.selectView(view);
   }
 
   // Notes mention notifications
@@ -963,13 +953,6 @@
   }
 </script>
 
-{#snippet hostedProjectSidebar(onProjectSelected: () => void)}
-  <ProjectsSidebar
-    onSelectView={(view) => projects.selectView(view)}
-    {onProjectSelected}
-  />
-{/snippet}
-
 <svelte:window onkeydowncapture={handleKeydown} />
 
 <div
@@ -988,6 +971,12 @@
         bind:area={splitArea}
       >
         {#snippet content(pane)}
+          {#snippet hostedProjectSidebar(onProjectSelected: () => void)}
+            <ProjectsSidebar
+              onSelectView={(view) => projectsIn(pane.scope).selectView(view)}
+              {onProjectSelected}
+            />
+          {/snippet}
           {#if pane.view === "calendar"}
             <CalendarView />
           {:else if pane.view === "projects"}
@@ -996,9 +985,9 @@
               projectChat={projectChatIntegration}
             />
           {:else if pane.view === "notes"}
-            <NotesView projectSidebar={projectHostedPlace === "notes" ? hostedProjectSidebar : undefined} />
+            <NotesView projectSidebar={pane.hosted ? hostedProjectSidebar : undefined} />
           {:else}
-            <ChatWorkspace projectSidebar={projectHostedPlace === "chat" ? hostedProjectSidebar : undefined} />
+            <ChatWorkspace projectSidebar={pane.hosted ? hostedProjectSidebar : undefined} />
           {/if}
         {/snippet}
       </WorkspaceSplitView>

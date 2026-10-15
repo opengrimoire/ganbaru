@@ -1,17 +1,5 @@
-<script lang="ts" module>
-  import type { View } from "$lib/navigation";
-  import type { WorkspacePaneScope } from "$lib/workspace-tabs/model";
-
-  /** A tab shown in the content area and the view that shows it. */
-  export interface WorkspaceShownPane {
-    tabId: string;
-    view: View;
-    /** The set of view stores the view shows through, which tells apart two panes of one view. */
-    scope: WorkspacePaneScope;
-  }
-</script>
-
 <script lang="ts">
+  import type { WorkspaceShownPane } from "$lib/workspace-tabs/shown-panes";
   import type { Snippet } from "svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { DEFAULT_SPLIT_RATIO, MIN_SPLIT_RATIO, type WorkspaceTabSplit } from "$lib/workspace-tabs/model";

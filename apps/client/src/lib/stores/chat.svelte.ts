@@ -43,6 +43,7 @@ import type {
 import type { ChatComposerSnapshot } from "$lib/chat/composer/controller";
 import { chatErrorCode, chatErrorMessage } from "$lib/chat/error-presentation";
 import { listenForChatChanges, publishChatChanges, type ChatWindowChanges } from "$lib/chat/window-sync";
+import { registerWindowCloseFlusher } from "$lib/windows/close-flush";
 import { AsyncFrameCoalescer } from "$lib/chat/timeline/frame-coalescer";
 import {
   toggleChatMessageReactionParticipant,
@@ -116,6 +117,7 @@ class ChatStore {
   private otherWindowListening = false;
 
   constructor() {
+    registerWindowCloseFlusher(() => this.flushComposer());
     this.composerDefaultsCoordinator = new ChatComposerDefaultsCoordinator({
       settings: () => this.settings,
       composer: () => this.composer,

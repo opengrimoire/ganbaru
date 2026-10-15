@@ -37,6 +37,7 @@
   } from "./shortcut-controller.svelte";
   import TitleBarWindowControls from "./TitleBarWindowControls.svelte";
   import { flushQuickNoteEditors } from "$lib/quick-notes/persistence";
+  import { flushBeforeWindowClose } from "$lib/windows/close-flush";
   import { preloadQuickNotesInitialSnapshot } from "$lib/quick-notes/initial-snapshot";
 
   let {
@@ -249,7 +250,7 @@
     },
     closeConfirmation: cancelClose,
     ensureBenchmarkOverlay: () => ensureBenchmarkOverlay(),
-    beforeClose: flushQuickNoteEditors,
+    beforeClose: async () => { await Promise.all([flushQuickNoteEditors(), flushBeforeWindowClose()]); },
     themeEditOpen: () => !!themeEditor.editingId,
     cancelThemeEdit: () => themeEditor.cancel(),
     reportError: (message, error) => { console.error(message, error); },

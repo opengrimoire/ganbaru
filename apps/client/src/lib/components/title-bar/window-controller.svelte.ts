@@ -42,7 +42,7 @@ export function createTitleBarWindowController(
       try {
         await context.beforeClose();
       } catch (error) {
-        context.reportError("Failed to save Quick notes before closing:", error);
+        context.reportError("Failed to save pending edits before closing:", error);
         return;
       }
       context.markDetachedViewAttached(context.detachedWindowView);
@@ -77,7 +77,7 @@ export function createTitleBarWindowController(
     try {
       await context.beforeClose();
     } catch (error) {
-      context.reportError("Failed to save Quick notes before closing:", error);
+      context.reportError("Failed to save pending edits before closing:", error);
       return;
     }
     context.closeConfirmation();

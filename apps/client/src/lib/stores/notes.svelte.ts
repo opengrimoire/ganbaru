@@ -7,6 +7,7 @@ import type { NotesPageOpenMode } from "$lib/notes/pages/open-mode";
 import type { NotesLoadedPage } from "$lib/notes/types";
 import type { NotesSidebarMetadataImpact } from "$lib/notes/post-mutation";
 import { listenForNotesPageChanges } from "$lib/notes/pages/window-sync";
+import { registerWindowCloseFlusher } from "$lib/windows/close-flush";
 
 export interface NotesEditorPane {
   id: string;
@@ -256,6 +257,7 @@ function createNotesWorkspace() {
 }
 
 const notes = createNotesWorkspace();
+registerWindowCloseFlusher(() => notes.flushPendingWrites());
 
 /** Shared workspace controls and the live editor that currently owns input focus. */
 export function getNotes() { return notes; }

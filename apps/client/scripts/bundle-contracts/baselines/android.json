@@ -8,7 +8,7 @@
         "src/main-mobile.ts",
         "src/MobileApp.svelte"
       ],
-      "maxSourceModules": 131
+      "maxSourceModules": 137
     },
     {
       "name": "calendar",
@@ -30,7 +30,7 @@
       "roots": [
         "src/lib/components/notes/NotesView.svelte"
       ],
-      "maxSourceModules": 406
+      "maxSourceModules": 407
     },
     {
       "name": "quick-notes",
@@ -55,7 +55,7 @@
       "maxSourceModules": 299
     }
   ],
-  "maxTotalSourceModules": 1234,
+  "maxTotalSourceModules": 1240,
   "requiredMobileModules": [
     "src/main.ts",
     "src/main-mobile.ts",

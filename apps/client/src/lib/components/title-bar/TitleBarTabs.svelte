@@ -51,8 +51,6 @@
     canLeave: boolean;
     /** Neighbor that puts the tab back where it started when the drag is cancelled. */
     origin: { id: string; placement: WorkspaceTabPlacement } | null;
-    /** A drop in this window handled the drag. */
-    dropped: boolean;
   }
 
   const TAB_REORDER_MIME = "application/x-ganbaru-ai-workspace-tab";
@@ -247,7 +245,7 @@
     const payload = tabs.dragPayload(tab.id);
     if (payload) transfer.setData(TAB_WINDOW_DRAG_MIME, tabWindowDragData(payload));
     setTabDragImage(transfer, element, grabX, event.clientY - rect.top);
-    drag = { id: tab.id, grabX, width: rect.width, canLeave: payload !== null, origin: originOf(tab.id), dropped: false };
+    drag = { id: tab.id, grabX, width: rect.width, canLeave: payload !== null, origin: originOf(tab.id) };
     draggingId = tab.id;
     leavingBar = false;
     dropTarget = null;
@@ -324,23 +322,27 @@
     if (kind === "window") dragForeignTab(event);
   }
 
+  /**
+   * A drop on this window ends the drag here. Another window's tab moves in unless it was pulled off the bar,
+   * and this window's tab, already in its slot, opens in a new window right away when it was pulled off.
+   */
   function handleWindowDrop(event: DragEvent): void {
     const kind = dragKind(event);
-    if (!kind) return;
-    acceptDrag(event);
-    const current = drag;
-    if (kind === "window") {
+    if (kind === "window" && !pulledOffBar(event.clientY)) {
+      acceptDrag(event);
       tabs.receiveDrop(event.dataTransfer?.getData(TAB_WINDOW_DRAG_MIME) ?? "", dropTarget);
       endDrag();
-      return;
     }
-    if (!current) return;
-    current.dropped = true;
-    if (leavingBar) tearOff(current.id, event.screenX, event.screenY);
+    const current = drag;
+    if (kind !== "reorder" || !current) return;
+    acceptDrag(event);
+    const leaving = leavingBar;
+    endDrag();
+    if (leaving) reportFailedMove(tabs.detach(current.id, tearOffWindowPosition(event.screenX, event.screenY)));
   }
 
-  function tearOff(id: string, screenX: number, screenY: number): void {
-    void tabs.tearOff(id, tearOffWindowPosition(screenX, screenY)).catch((error: unknown) => {
+  function reportFailedMove(move: Promise<void>): void {
+    void move.catch((error: unknown) => {
       console.error("Failed to move tab to a new window:", error);
     });
   }
@@ -353,9 +355,9 @@
     const current = drag;
     const leftWindow = dragEndedOutsideWindow(event, { width: window.innerWidth, height: window.innerHeight }, dragDepth);
     endDrag();
-    if (!current || current.dropped || event.dataTransfer?.dropEffect !== "none") return;
+    if (!current || event.dataTransfer?.dropEffect !== "none") return;
     if (leftWindow && current.canLeave) {
-      tearOff(current.id, event.screenX, event.screenY);
+      reportFailedMove(tabs.tearOff(current.id, tearOffWindowPosition(event.screenX, event.screenY)));
       return;
     }
     const origin = current.origin;

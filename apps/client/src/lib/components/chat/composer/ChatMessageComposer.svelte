@@ -60,6 +60,7 @@
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import Select from "$lib/components/ui/Select.svelte";
+  import { isAppFloatingSurfaceTarget } from "$lib/utils";
   import { cloneData } from "$lib/utils/clone";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
 
@@ -332,7 +333,7 @@
     if (!addMenuOpen && !scheduleMenuOpen && !scheduledMessagesOpen && !pickerOpen) return;
     const closeMenusFromOutside = (event: PointerEvent) => {
       const target = event.target;
-      if (!(target instanceof Node)) return;
+      if (!(target instanceof Node) || isAppFloatingSurfaceTarget(target)) return;
       if (addMenuOpen && !addMenuAnchor?.contains(target)) addMenuOpen = false;
       if (scheduleMenuOpen && !scheduleMenuAnchor?.contains(target)) scheduleMenuOpen = false;
       if (scheduledMessagesOpen && !scheduledMessagesAnchor?.contains(target)) scheduledMessagesOpen = false;

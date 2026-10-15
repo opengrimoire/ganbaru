@@ -784,6 +784,7 @@
         draggable={!arriving}
         inert={arriving}
         role="presentation"
+        title={tabTitle(tab, index)}
         ondragstart={(event) => handleDragStart(event, tab)}
         ondragend={handleDragEnd}
         oncontextmenu={(event) => onOpenContextMenu(event, tab.id)}
@@ -794,14 +795,15 @@
           type="button"
           role="tab"
           aria-selected={active}
-          aria-label={tab.locked ? t("titleBar.tab.lockedTab", fullLabel) : fullLabel}
+          aria-labelledby={`titlebar-tab-name-${tab.id}`}
           class={cn(
             "titlebar-tab-button flex h-full min-w-0 flex-1 items-center rounded-md",
             compact ? "justify-center" : "gap-1.5 pl-3 pr-1",
           )}
-          title={tabTitle(tab, index)}
           onclick={() => tabs.activate(tab.id)}
         >
+          <!-- Named by a label rather than aria-label, so the tooltip centers on the whole tab, close button included. -->
+          <span id={`titlebar-tab-name-${tab.id}`} class="sr-only">{tab.locked ? t("titleBar.tab.lockedTab", fullLabel) : fullLabel}</span>
           {@render tabFace(tab, compact)}
           {#if !compact && tab.locked}<Lock class="titlebar-tab-lock shrink-0 opacity-60" size={11} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />{/if}
         </button>

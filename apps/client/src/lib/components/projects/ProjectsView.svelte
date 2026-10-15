@@ -429,6 +429,7 @@
           onToggleToolbarPanel={(panel) => routeUi.toggleToolbarPanel(panel)}
           onCreateTask={() => { if (selectedProjectId) routeUi.openTaskDraft(selectedProjectId); }}
           onOpenSidebar={mobileLayout ? () => { mobileSidebarRequested = true; } : undefined}
+          onSelectView={mobileLayout ? selectView : undefined}
         />
         {#if routeUi.toolbarPanel}
           {#if toolbarDataReady && toolbarLoadState?.status === "ready" && toolbarLoadState.component.kind === "toolbar"}

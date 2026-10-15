@@ -24,6 +24,7 @@
     type Project,
     type ProjectChatIntegration,
     type ProjectGroup,
+    type ProjectView,
   } from "$lib/projects/types";
   import { getProjects } from "$lib/stores/projects.svelte";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
@@ -36,6 +37,7 @@
   import ProjectPickerMobileDialog from "$lib/components/projects/pickers/ProjectPickerMobileDialog.svelte";
   import Select from "$lib/components/ui/Select.svelte";
   import MobileContextSwitcher from "$lib/components/mobile/MobileContextSwitcher.svelte";
+  import ProjectMobileViewSwitcher from "./ProjectMobileViewSwitcher.svelte";
 
   let {
     selectedProject,
@@ -51,6 +53,7 @@
     onToggleToolbarPanel,
     onCreateTask,
     onOpenSidebar = undefined,
+    onSelectView = undefined,
     mobileLayout = false,
     projectChat = null,
     viewControlsTarget = $bindable(null),
@@ -69,6 +72,8 @@
     onCreateTask: () => void;
     /** Opens the mobile Projects sidebar, where views are chosen and managed. */
     onOpenSidebar?: () => void;
+    /** Opens a view of the selected project from the phone toolbar view switcher. */
+    onSelectView?: (view: ProjectView) => void;
     mobileLayout?: boolean;
     projectChat?: ProjectChatIntegration | null;
     /** The header slot where the active view may show its own controls, or null while they do not fit. */
@@ -348,7 +353,7 @@
           />
         {/snippet}
       </MobileContextSwitcher>
-      <div class="flex h-12 items-center">
+      <div class="flex h-12 min-w-0 items-center">
         {#if onOpenSidebar}
           <button
             type="button"
@@ -364,6 +369,9 @@
           >
             <PanelLeft size={16} strokeWidth={1.75} />
           </button>
+        {/if}
+        {#if onSelectView}
+          <ProjectMobileViewSwitcher projectId={selectedProject.id} {onSelectView} />
         {/if}
       </div>
     {:else}

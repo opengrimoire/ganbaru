@@ -12,7 +12,7 @@
   import type { WorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
   import { cn } from "$lib/utils";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
-  import { workspaceTabKindIcon, workspaceTabKindLabel, workspaceTabLabel } from "$lib/workspace-tabs/presentation";
+  import { workspaceTabFullLabel, workspaceTabKindIcon, workspaceTabKindLabel } from "$lib/workspace-tabs/presentation";
 
   /** The workspace tab operations the sheet uses. */
   export type MobileTabsSheetTabs = Pick<
@@ -91,7 +91,7 @@
         {#each tabs.tabs as tab, index (tab.id)}
           {@const Icon = workspaceTabKindIcon(tab.location.kind)}
           {@const active = tab.id === tabs.activeTabId}
-          {@const label = workspaceTabLabel(tab, t)}
+          {@const label = workspaceTabFullLabel(tab, t)}
           {@const menuOpen = menuTabId === tab.id}
           <li data-mobile-tab-row={tab.id}>
             <div class={cn("flex min-h-12 items-center rounded-xl", active && "bg-accent text-accent-foreground")}>
@@ -194,7 +194,7 @@
                 onclick={() => reopen(index)}
               >
                 <Icon class="shrink-0 text-muted-foreground" size={20} strokeWidth={iconStrokeWidth} aria-hidden="true" />
-                <span class="min-w-0 flex-1 truncate">{workspaceTabLabel(entry, t)}</span>
+                <span class="min-w-0 flex-1 truncate">{workspaceTabFullLabel(entry, t)}</span>
                 <RotateCcw class="shrink-0 text-muted-foreground" size={18} strokeWidth={iconStrokeWidth} aria-hidden="true" />
               </button>
             </li>

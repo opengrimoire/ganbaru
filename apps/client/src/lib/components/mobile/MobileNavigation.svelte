@@ -6,7 +6,7 @@
   import { mobileTabBarSlots, mobileTabCountLabel } from "$lib/mobile/tab-bar";
   import { cn } from "$lib/utils";
   import type { WorkspaceTab } from "$lib/workspace-tabs/model";
-  import { workspaceTabKindIcon, workspaceTabLabel } from "$lib/workspace-tabs/presentation";
+  import { workspaceTabFullLabel, workspaceTabKindIcon, workspaceTabLabel } from "$lib/workspace-tabs/presentation";
 
   /**
    * The phone shell's workspace tab bar: the first open tabs that fit, the active one always among them, and a
@@ -64,6 +64,7 @@
     {@const Icon = workspaceTabKindIcon(tab.location.kind)}
     {@const selected = tab.id === activeTabId}
     {@const label = workspaceTabLabel(tab, t)}
+    {@const fullLabel = workspaceTabFullLabel(tab, t)}
     {#snippet icon()}
       <Icon size={iconSize} strokeWidth={selected ? 2 : 1.7} aria-hidden="true" />
       {#if tab.locked}
@@ -73,7 +74,7 @@
     <button
       type="button"
       aria-current={selected ? "page" : undefined}
-      aria-label={tab.locked ? t("titleBar.tab.lockedTab", label) : label}
+      aria-label={tab.locked ? t("titleBar.tab.lockedTab", fullLabel) : fullLabel}
       onclick={() => onSelect(tab.id)}
       class={cn(
         "group relative flex min-w-0 flex-col items-center justify-center gap-1 text-xs font-medium transition-colors",

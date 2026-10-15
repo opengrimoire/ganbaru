@@ -8,7 +8,8 @@ const notesPage: WorkspaceTabLocation = { kind: "notes", projectId: "project-1",
 function loadedAdapter(): WorkspaceLocationAdapter {
   return {
     read: (kind) => ({ kind, projectId: "project-1", item: null }),
-    title: () => "Roadmap",
+    itemTitle: () => "Roadmap",
+    projectName: () => "Alpha",
     apply: vi.fn(() => Promise.resolve()),
   };
 }
@@ -20,13 +21,15 @@ describe("createDeferredWorkspaceLocationAdapter", () => {
 
     expect(adapter.read("calendar")).toEqual({ kind: "calendar", projectId: null, item: null });
     expect(adapter.read("projects")).toBeNull();
-    expect(adapter.title("project", notesPage)).toBeNull();
+    expect(adapter.itemTitle(notesPage)).toBeNull();
+    expect(adapter.projectName("project-1")).toBeNull();
 
     await adapter.apply(notesPage, () => true);
 
     expect(inner.apply).toHaveBeenCalledWith(notesPage, expect.any(Function));
     expect(adapter.read("projects")).toEqual({ kind: "projects", projectId: "project-1", item: null });
-    expect(adapter.title("project", notesPage)).toBe("Roadmap");
+    expect(adapter.itemTitle(notesPage)).toBe("Roadmap");
+    expect(adapter.projectName("project-1")).toBe("Alpha");
   });
 
   it("restores Calendar without loading the stores", async () => {

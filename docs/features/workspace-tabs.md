@@ -10,11 +10,11 @@ A tab is a location, not a fixed app section. Its level says how specific it is:
 - Project: one project inside a kind.
 - Item: one project view, note, or Chat channel. Notes folder items are planned.
 
-Tabs follow navigation: moving around inside a tab updates where it points, and the tab restores that place when it is selected again. Opening something that already has a tab focuses that tab instead of adding a duplicate. A new tab opens only on explicit intent (the + launcher, Ctrl+T, or an "Open in new tab" gesture), so ordinary navigation never multiplies tabs. Calendar has no projects or items, so it holds at most one tab.
+Tabs follow navigation: moving around inside a tab updates where it points, and the tab restores that place when it is selected again. Opening something that already has a tab focuses that tab instead of adding a duplicate. A new tab opens only on explicit intent (the + launcher, Ctrl+T, or an "Open in new tab" gesture), so ordinary navigation never multiplies tabs.
 
 On a project, project view, note, or Chat channel row, a middle click or Ctrl+click opens it in a new tab behind the current one, and adding Shift brings the new tab to the front. Row menus that have one also offer "Open in new tab". Several background opens from the same tab line up in the order they were opened, as in a browser.
 
-A kind tab shows the kind's name. Project tabs show the project name, and item tabs show the view, note, or channel name, kept current across renames.
+A kind or project tab shows the kind's name, and an item tab shows the view, note, or channel name. Every tab except Calendar adds its project in parentheses, shortened when long. Names stay current across renames. Any kind, Calendar included, can have several tabs, so the same place can be open twice when the user asks for it.
 
 A fresh vault opens with Calendar and Projects. Closing the last tab asks to close the app, the same confirmation as closing the window, so the app is never left without a tab.
 
@@ -26,7 +26,9 @@ A locked tab stays on its project or item. Navigating somewhere outside it insid
 
 ## Title bar
 
-The + after the last tab opens a launcher with the kinds, the recently closed tabs, and the open tabs when the strip cannot show them all. Tabs can be dragged to reorder. When space runs short the strip drops labels first, then shows only the active tab; the launcher keeps every tab reachable.
+The + after the last tab opens a launcher with the kinds, each opened by its number key while the launcher is open, and the open tabs when the strip cannot show them all. Closed tabs come back with Ctrl+Shift+T or the tab menu. Tabs can be dragged to reorder.
+
+Tabs size like browser tabs: each has the same fixed width and all of them shrink evenly only when the bar runs out of room, dropping the inactive close button, then the label, as they narrow. Only when they no longer fit at their narrowest does the strip show just the active tab, with the launcher keeping every tab reachable. The compact tabs setting shows icons only at any size, and a strip of empty title bar stays free for moving the window.
 
 A tab's context menu closes it, closes the other tabs, reopens a closed tab, locks or unlocks it, and moves it into its own window. A locked tab shows a lock after its label. A tab can move to its own window only while it is the sole tab of its kind and another tab stays in the main window, because each kind owns one window. Closing that window closes the tab, which then appears in the recently closed list.
 

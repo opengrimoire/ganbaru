@@ -128,7 +128,7 @@ describe("MobileTabsSheet", () => {
   });
 
   it("opens a new tab of any kind and reopens a closed tab", async () => {
-    const closed: ClosedWorkspaceTab[] = [{ level: "kind", locked: false, location: kindLocation("notes"), title: null, index: 1 }];
+    const closed: ClosedWorkspaceTab[] = [{ level: "kind", locked: false, location: kindLocation("notes"), title: null, projectTitle: null, index: 1 }];
     const tabs = fakeTabs([calendarTab], closed);
     const { onClose } = await render(tabs);
 

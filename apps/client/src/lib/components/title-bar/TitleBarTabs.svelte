@@ -7,7 +7,6 @@
   import { formatShortcut } from "$lib/keyboard-shortcuts";
   import type { DetachableTabView } from "$lib/navigation";
   import { getPreferences } from "$lib/stores/preferences.svelte";
-  import { getViewport } from "$lib/stores/viewport.svelte";
   import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
   import { cn } from "$lib/utils";
   import {
@@ -16,9 +15,12 @@
   } from "$lib/windows/detached";
   import type { WorkspaceTab, WorkspaceTabPlacement } from "$lib/workspace-tabs/model";
   import {
+    shortWorkspaceTabProject,
+    workspaceTabFullLabel,
     workspaceTabKindIcon,
     workspaceTabLabel,
     workspaceTabPositionShortcut,
+    workspaceTabProject,
   } from "$lib/workspace-tabs/presentation";
   import TitleBarTabLauncher from "./TitleBarTabLauncher.svelte";
 
@@ -36,27 +38,18 @@
     onOpenContextMenu: (event: MouseEvent, tabId: string) => void;
   } = $props();
 
-  /** Overflow steps: full tabs, icon-only tabs, then only the active tab with the rest in the launcher. */
-  type StripDensity = 0 | 1 | 2;
-
   const TAB_REORDER_MIME = "application/x-ganbaru-ai-workspace-tab";
   const ICON_SIZE = 14;
   const ICON_STROKE_WIDTH = 1.5;
 
   const tabs = getWorkspaceTabs();
   const preferences = getPreferences();
-  const viewport = getViewport();
   const { t } = getLocalization();
 
-  const baseDensity = $derived<StripDensity>(
-    viewport.below("narrow")
-      ? 2
-      : preferences.titleBarVisibility.compactTabs || viewport.below("regular") ? 1 : 0,
-  );
-  let measuredDensity = $state<StripDensity>(0);
-  const density = $derived<StripDensity>(Math.max(baseDensity, measuredDensity) as StripDensity);
-  const compact = $derived(density >= 1);
-  const activeOnly = $derived(density === 2);
+  /** Icon-only tabs, chosen in the title bar settings. */
+  const compact = $derived(preferences.titleBarVisibility.compactTabs);
+  /** Tabs shrink like browser tabs; only when they no longer fit at their narrowest does the strip keep just the active one. */
+  let activeOnly = $state(false);
   const canOpenTabs = $derived(!detachedWindowView);
 
   let strip: HTMLDivElement | undefined = $state();
@@ -83,21 +76,22 @@
     return contentRight > strip.clientWidth + 1;
   }
 
-  /** Find the lightest density at which every tab fits, measuring each step before the browser paints. */
+  /** Show every tab unless they overflow at their minimum width, measuring before the browser paints. */
   async function measureDensity(): Promise<void> {
     const sequence = ++measureSequence;
-    measuredDensity = 0;
+    activeOnly = false;
     await tick();
-    while (sequence === measureSequence && measuredDensity < 2 && stripOverflows()) {
-      measuredDensity = (measuredDensity + 1) as StripDensity;
+    if (sequence !== measureSequence) return;
+    if (stripOverflows()) {
+      activeOnly = true;
       await tick();
     }
     if (sequence === measureSequence) scheduleIndicatorUpdate();
   }
 
   $effect(() => {
-    void tabs.tabs.map((tab) => workspaceTabLabel(tab, t)).join("\n");
-    void baseDensity;
+    void tabs.tabs.length;
+    void compact;
     void preferences.fontFamilyId;
     void preferences.fontScale;
     untrack(() => { void measureDensity(); });
@@ -141,7 +135,7 @@
   $effect(() => {
     void tabs.activeTabId;
     void tabs.tabs;
-    void density;
+    void activeOnly;
     scheduleIndicatorUpdate();
     return () => {
       if (indicatorFrame) cancelAnimationFrame(indicatorFrame);
@@ -169,7 +163,7 @@
   }
 
   function tabTitle(tab: WorkspaceTab, index: number): string {
-    const name = workspaceTabLabel(tab, t);
+    const name = workspaceTabFullLabel(tab, t);
     const label = tab.locked ? t("titleBar.tab.lockedTab", name) : name;
     const shortcut = workspaceTabPositionShortcut(index, tabs.tabs.length);
     return shortcut ? t("titleBar.tab.withShortcut", label, shortcut) : label;
@@ -254,10 +248,14 @@
       {@const Icon = workspaceTabKindIcon(tab.location.kind)}
       {@const active = tab.id === tabs.activeTabId}
       {@const label = workspaceTabLabel(tab, t)}
+      {@const project = workspaceTabProject(tab)}
+      {@const fullLabel = workspaceTabFullLabel(tab, t)}
       <div
         bind:this={tabElements[tab.id]}
+        data-active={active ? "" : undefined}
         class={cn(
-          "titlebar-tab group relative z-1 flex shrink-0 items-center rounded-md text-sm font-medium transition-colors",
+          "titlebar-tab group relative z-1 flex items-center rounded-md text-sm font-medium transition-colors",
+          compact && "titlebar-tab-compact",
           activeOnly && !active ? "hidden" : "",
           active
             ? "text-foreground dark:text-white"
@@ -279,17 +277,21 @@
           type="button"
           role="tab"
           aria-selected={active}
-          aria-label={tab.locked ? t("titleBar.tab.lockedTab", label) : label}
+          aria-label={tab.locked ? t("titleBar.tab.lockedTab", fullLabel) : fullLabel}
           class={cn(
-            "titlebar-tab-button flex h-full min-w-0 items-center rounded-md",
-            compact ? "titlebar-tab-compact justify-center" : "max-w-48 gap-1.5 pl-3 pr-1",
+            "titlebar-tab-button flex h-full min-w-0 flex-1 items-center rounded-md",
+            compact ? "justify-center" : "gap-1.5 pl-3 pr-1",
           )}
           title={tabTitle(tab, index)}
           onclick={() => tabs.activate(tab.id)}
         >
           <Icon class="shrink-0" size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} />
-          {#if !compact}<span class="min-w-0 truncate">{label}</span>{/if}
-          {#if !compact && tab.locked}<Lock class="shrink-0 opacity-60" size={11} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />{/if}
+          {#if !compact}
+            <span class="titlebar-tab-label min-w-0 flex-1 truncate">
+              {label}{#if project}<span class="opacity-60"> {t("titleBar.tab.projectHint", shortWorkspaceTabProject(project))}</span>{/if}
+            </span>
+          {/if}
+          {#if !compact && tab.locked}<Lock class="titlebar-tab-lock shrink-0 opacity-60" size={11} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />{/if}
         </button>
         {#if !compact}
           <button
@@ -338,12 +340,49 @@
 {/if}
 
 <style>
+  /*
+   * Browser-like sizing: every tab starts at the same width and all of them shrink evenly when the bar runs out
+   * of room. Each tab is a size container, so its own width decides what it can still show.
+   */
   .titlebar-tab {
+    container-type: inline-size;
+    flex: 0 1 auto;
+    width: 12.5rem;
+    min-width: 2.25rem;
     height: 28px;
   }
 
-  .titlebar-tab-compact {
+  .titlebar-tab.titlebar-tab-compact {
     width: 28px;
+    min-width: 28px;
+  }
+
+  @container (width < 6rem) {
+    .titlebar-tab:not([data-active]) .titlebar-tab-close {
+      display: none;
+    }
+  }
+
+  @container (width < 4.5rem) {
+    .titlebar-tab-label,
+    .titlebar-tab :global(.titlebar-tab-lock) {
+      display: none;
+    }
+
+    .titlebar-tab-button {
+      justify-content: center;
+      padding-left: 0;
+    }
+  }
+
+  @container (width < 3.5rem) {
+    .titlebar-tab-close {
+      display: none;
+    }
+
+    .titlebar-tab-button {
+      padding-right: 0;
+    }
   }
 
   .titlebar-tab-close {

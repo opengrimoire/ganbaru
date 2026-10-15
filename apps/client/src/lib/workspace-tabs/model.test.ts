@@ -262,10 +262,10 @@ describe("workspace tab persistence", () => {
     const current: WorkspaceTabsState = {
       tabs: [
         tab("a", "calendar"),
-        createWorkspaceTab("b", pageOne, { level: "item", locked: true, title: "Page" }),
+        createWorkspaceTab("b", pageOne, { level: "item", locked: true, title: "Page", projectTitle: "Alpha" }),
       ],
       activeTabId: "b",
-      closed: [{ level: "project", locked: false, location: projectA, title: "A", index: 1 }],
+      closed: [{ level: "project", locked: false, location: projectA, title: "A", projectTitle: "Alpha", index: 1 }],
     };
     current.tabs[1] = { ...current.tabs[1], detached: true };
     const parsed = parseWorkspaceTabsState(JSON.parse(serializeWorkspaceTabsState(current)), ALL_KINDS);

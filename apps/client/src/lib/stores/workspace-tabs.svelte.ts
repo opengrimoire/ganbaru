@@ -17,7 +17,6 @@ import {
   detachWorkspaceTab,
   insertWorkspaceTab,
   isWithinTabScope,
-  kindHasLocations,
   kindLocation,
   moveWorkspaceTab,
   parseWorkspaceTabsState,
@@ -43,8 +42,10 @@ import {
 export interface WorkspaceLocationAdapter {
   /** Where the stores behind a kind are now, or null while they are not loaded, so nothing is recorded yet. */
   read(kind: View): WorkspaceTabLocation | null;
-  /** Name of what a tab at this level points at, or null when it has none or it is not loaded. */
-  title(level: WorkspaceTabLevel, location: WorkspaceTabLocation): string | null;
+  /** Name of the item a location points at, or null when it has none or it is not loaded. */
+  itemTitle(location: WorkspaceTabLocation): string | null;
+  /** Name of a project, or null when it is not loaded. */
+  projectName(projectId: string): string | null;
   /** Restore a location, stopping between steps once `isCurrent` turns false. */
   apply(location: WorkspaceTabLocation, isCurrent: () => boolean): Promise<void>;
 }
@@ -131,6 +132,23 @@ function setState(next: WorkspaceTabsState): boolean {
 
 function currentTab(): WorkspaceTab {
   return activeWorkspaceTab(tabsState);
+}
+
+/**
+ * Current names for a tab's item and project. Only item tabs carry an item name, and Calendar and tabs
+ * without a project carry no project name. A name that is not loaded is left out so the cached one stays.
+ */
+function tabNames(
+  adapter: WorkspaceLocationAdapter,
+  tab: WorkspaceTab,
+): Partial<Pick<WorkspaceTab, "title" | "projectTitle">> {
+  const names: Partial<Pick<WorkspaceTab, "title" | "projectTitle">> = {};
+  const title = tab.level === "item" ? adapter.itemTitle(tab.location) : null;
+  if (tab.level !== "item" || title !== null) names.title = title;
+  const projectId = tab.location.kind === "calendar" ? null : tab.location.projectId;
+  const projectTitle = projectId ? adapter.projectName(projectId) : null;
+  if (!projectId || projectTitle !== null) names.projectTitle = projectTitle;
+  return names;
 }
 
 function isKindDetached(kind: View): boolean {
@@ -326,17 +344,13 @@ function connect(host: WorkspaceTabsConnection): void {
     if (location) untrack(() => recordLocation(tab, location));
   });
 
-  // Keep cached titles current, including renames of what inactive tabs point at. A name that is not
-  // loaded keeps the cached one; a kind tab has none and shows its kind.
+  // Keep cached names current, including renames of what inactive tabs point at. A name that is not
+  // loaded keeps the cached one.
   $effect(() => {
-    const titles = visibleWorkspaceTabs(tabsState).flatMap((tab): { id: string; title: string | null }[] => {
-      if (tab.level === "kind") return [{ id: tab.id, title: null }];
-      const title = host.adapter.title(tab.level, tab.location);
-      return title === null ? [] : [{ id: tab.id, title }];
-    });
+    const names = visibleWorkspaceTabs(tabsState).map((tab) => ({ id: tab.id, ...tabNames(host.adapter, tab) }));
     untrack(() => {
       let next = tabsState;
-      for (const entry of titles) next = updateWorkspaceTab(next, entry.id, { title: entry.title });
+      for (const { id, ...patch } of names) next = updateWorkspaceTab(next, id, patch);
       setState(next);
     });
   });
@@ -354,7 +368,7 @@ function activate(id: string): void {
   commitState(activateWorkspaceTab(tabsState, id));
 }
 
-/** Open a new tab of a kind from the launcher. A kind without locations focuses its existing tab. */
+/** Open a new tab of a kind from the launcher. */
 function openKind(kind: View): void {
   const host = connection;
   if (!host) return;
@@ -362,14 +376,9 @@ function openKind(kind: View): void {
     host.windows?.showLocation(kind, null);
     return;
   }
-  const existing = kindHasLocations(kind)
-    ? null
-    : visibleWorkspaceTabs(tabsState).find((tab) => tab.location.kind === kind);
-  if (existing) {
-    activate(existing.id);
-    return;
-  }
-  commitState(insertWorkspaceTab(tabsState, createWorkspaceTab(createTabId(), host.adapter.read(kind) ?? kindLocation(kind)), "end"));
+  const location = host.adapter.read(kind) ?? kindLocation(kind);
+  const tab = createWorkspaceTab(createTabId(), location);
+  commitState(insertWorkspaceTab(tabsState, { ...tab, ...tabNames(host.adapter, tab) }, "end"));
 }
 
 export interface OpenWorkspaceLocationOptions {
@@ -392,7 +401,8 @@ function openLocation(
     host.windows?.showLocation(location.kind, location);
     return;
   }
-  const tab = createWorkspaceTab(createTabId(), location, { level, title: host.adapter.title(level, location) });
+  const created = createWorkspaceTab(createTabId(), location, { level });
+  const tab = { ...created, ...tabNames(host.adapter, created) };
   const existing = visibleWorkspaceTabs(tabsState).find((candidate) => tabMatchesTarget(candidate, tab.level, location));
   if (existing) {
     activate(existing.id);

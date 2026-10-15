@@ -100,10 +100,11 @@ export function createWorkspaceLocationAdapter<TView extends { id: string }>(
       if (kind === "calendar") return kindLocation(kind);
       return { kind, projectId: stores.projects.selectedProjectId, item: readItem(kind, stores) };
     },
-    title(level, location) {
-      if (level === "item") return itemTitle(location, stores);
-      if (level === "kind" || !location.projectId) return null;
-      return stores.projects.projectName(location.projectId);
+    itemTitle(location) {
+      return itemTitle(location, stores);
+    },
+    projectName(projectId) {
+      return stores.projects.projectName(projectId);
     },
     async apply(location, isCurrent) {
       if (location.kind === "calendar") return;

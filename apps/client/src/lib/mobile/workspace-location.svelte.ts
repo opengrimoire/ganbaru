@@ -31,8 +31,11 @@ export function createDeferredWorkspaceLocationAdapter(
       if (kind === "calendar") return kindLocation(kind);
       return loaded?.read(kind) ?? null;
     },
-    title(level, location) {
-      return loaded?.title(level, location) ?? null;
+    itemTitle(location) {
+      return loaded?.itemTitle(location) ?? null;
+    },
+    projectName(projectId) {
+      return loaded?.projectName(projectId) ?? null;
     },
     async apply(location, isCurrent) {
       if (location.kind === "calendar") return;

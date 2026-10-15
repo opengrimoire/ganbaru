@@ -25,8 +25,10 @@ export interface WorkspaceTab {
   /** A locked tab keeps its scope; navigating outside it opens another tab. */
   locked: boolean;
   location: WorkspaceTabLocation;
-  /** Last known project or item name, rendered while the tab is inactive. */
+  /** Last known item name, rendered while the tab is inactive. Kind and project tabs have none and show their kind. */
   title: string | null;
+  /** Last known name of the project the tab shows, rendered beside its label. */
+  projectTitle: string | null;
   /** Shown in its own window; the main window keeps its place so a quit never loses it. */
   detached: boolean;
 }
@@ -37,6 +39,7 @@ export interface ClosedWorkspaceTab {
   locked: boolean;
   location: WorkspaceTabLocation;
   title: string | null;
+  projectTitle: string | null;
   index: number;
 }
 
@@ -64,11 +67,6 @@ const ITEM_TYPES_BY_KIND: Readonly<Record<View, readonly WorkspaceTabItemType[]>
   chat: ["chat-channel"],
 };
 const LEVELS: readonly WorkspaceTabLevel[] = ["kind", "project", "item"];
-
-/** Return whether a kind has projects or items to point at; a kind without them needs only one tab. */
-export function kindHasLocations(kind: View): boolean {
-  return ITEM_TYPES_BY_KIND[kind].length > 0;
-}
 
 /** Return the location a kind opens at before any project or item is chosen. */
 export function kindLocation(kind: View): WorkspaceTabLocation {
@@ -124,7 +122,7 @@ export function workspaceTabLockLevel(tab: Pick<WorkspaceTab, "level" | "locatio
 export function createWorkspaceTab(
   id: string,
   location: WorkspaceTabLocation,
-  options: { level?: WorkspaceTabLevel; locked?: boolean; title?: string | null } = {},
+  options: { level?: WorkspaceTabLevel; locked?: boolean; title?: string | null; projectTitle?: string | null } = {},
 ): WorkspaceTab {
   const level = supportedTabLevel(options.level ?? "kind", location);
   return {
@@ -133,6 +131,7 @@ export function createWorkspaceTab(
     locked: level !== "kind" && options.locked === true,
     location,
     title: options.title ?? null,
+    projectTitle: options.projectTitle ?? null,
     detached: false,
   };
 }
@@ -209,6 +208,7 @@ export function updateWorkspaceTab(
     next.level === current.level
     && next.locked === current.locked
     && next.title === current.title
+    && next.projectTitle === current.projectTitle
     && next.detached === current.detached
     && sameTabLocation(next.location, current.location)
   ) return state;
@@ -227,6 +227,7 @@ function rememberClosed(
     locked: tab.locked,
     location: tab.location,
     title: tab.title,
+    projectTitle: tab.projectTitle,
     index,
   };
   return [entry, ...closed].slice(0, MAX_CLOSED_WORKSPACE_TABS);
@@ -313,6 +314,7 @@ export function reopenWorkspaceTab(
     level: entry.level,
     locked: entry.locked,
     title: entry.title,
+    projectTitle: entry.projectTitle,
   });
   const tabs = [...state.tabs];
   tabs.splice(Math.min(entry.index, tabs.length), 0, tab);
@@ -406,6 +408,7 @@ function parseTab(value: unknown, availableKinds: readonly View[]): WorkspaceTab
     level,
     locked: value.locked === true,
     title: parseTitle(value.title),
+    projectTitle: parseTitle(value.projectTitle),
   });
 }
 
@@ -423,6 +426,7 @@ function parseClosedTab(value: unknown, availableKinds: readonly View[]): Closed
     locked: supported !== "kind" && value.locked === true,
     location,
     title: parseTitle(value.title),
+    projectTitle: parseTitle(value.projectTitle),
     index,
   };
 }

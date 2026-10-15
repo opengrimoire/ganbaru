@@ -10,9 +10,9 @@
   import { portal } from "$lib/utils/portal";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import {
+    workspaceTabFullLabel,
     workspaceTabKindIcon,
     workspaceTabKindLabel,
-    workspaceTabLabel,
   } from "$lib/workspace-tabs/presentation";
 
   let {
@@ -71,17 +71,27 @@
     } else if (event.key === "End") {
       event.preventDefault();
       moveFocus("last");
+    } else {
+      const kind = kindForDigit(event);
+      if (!kind) return;
+      event.preventDefault();
+      openKind(kind);
     }
+  }
+
+  /**
+   * The kind a digit key opens, numbered from 1 in launcher order. The physical key counts too, so layouts that
+   * type digits with Shift still work.
+   */
+  function kindForDigit(event: KeyboardEvent): View | null {
+    if (event.ctrlKey || event.altKey || event.metaKey) return null;
+    const digit = /^[1-9]$/.test(event.key) ? event.key : /^(?:Digit|Numpad)([1-9])$/.exec(event.code)?.[1];
+    return digit ? kinds[Number(digit) - 1] ?? null : null;
   }
 
   function openKind(kind: View): void {
     onClose();
     tabs.openKind(kind);
-  }
-
-  function reopen(index: number): void {
-    onClose();
-    tabs.reopen(index);
   }
 
   function activate(id: string): void {
@@ -107,12 +117,22 @@
 >
   <div class="surface-floating-body flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden" use:scrollEdgeFadeAction>
     <p class="menu-label">{t("titleBar.tab.newTab")}</p>
-    {#each kinds as kind (kind)}
+    {#each kinds as kind, index (kind)}
       {@const Icon = workspaceTabKindIcon(kind)}
       {@const detached = detachedWindows.views.has(kind)}
-      <button type="button" role="menuitem" class="menu-item" data-launcher-item onclick={() => openKind(kind)}>
+      {@const key = index < 9 ? String(index + 1) : null}
+      <button
+        type="button"
+        role="menuitem"
+        class="menu-item"
+        data-launcher-item
+        aria-keyshortcuts={key ?? undefined}
+        onclick={() => openKind(kind)}
+      >
         <Icon class="text-muted-foreground" />
-        <span class="min-w-0 flex-1 truncate">{workspaceTabKindLabel(kind, t)}</span>
+        <span class="min-w-0 truncate">{workspaceTabKindLabel(kind, t)}</span>
+        {#if key}<span class="shrink-0 text-panel-detail text-muted-foreground">{t("titleBar.tab.pressKey", key)}</span>{/if}
+        <span class="flex-1"></span>
         {#if detached}
           <ExternalLink class="size-3.5 shrink-0 text-muted-foreground" aria-label={t("titleBar.tab.inAnotherWindow")} />
         {/if}
@@ -134,20 +154,8 @@
           onclick={() => activate(tab.id)}
         >
           <Icon class="text-muted-foreground" />
-          <span class="min-w-0 flex-1 truncate">{workspaceTabLabel(tab, t)}</span>
+          <span class="min-w-0 flex-1 truncate">{workspaceTabFullLabel(tab, t)}</span>
           {#if active}<Check class="size-3.5 shrink-0" aria-hidden="true" />{/if}
-        </button>
-      {/each}
-    {/if}
-
-    {#if tabs.closed.length > 0}
-      <div role="separator" class="menu-separator"></div>
-      <p class="menu-label">{t("titleBar.tab.recentlyClosed")}</p>
-      {#each tabs.closed as entry, index (index)}
-        {@const Icon = workspaceTabKindIcon(entry.location.kind)}
-        <button type="button" role="menuitem" class="menu-item" data-launcher-item onclick={() => reopen(index)}>
-          <Icon class="text-muted-foreground" />
-          <span class="min-w-0 flex-1 truncate">{workspaceTabLabel(entry, t)}</span>
         </button>
       {/each}
     {/if}

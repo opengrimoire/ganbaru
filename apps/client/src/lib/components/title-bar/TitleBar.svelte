@@ -480,8 +480,8 @@
     onOpenContextMenu={openTabContextMenu}
   />
 
-  <!-- Draggable spacer -->
-  <div class="flex-1"></div>
+  <!-- Draggable spacer, kept wide enough to grab the window when tabs fill the bar -->
+  <div data-tauri-drag-region class="min-w-8 flex-1 self-stretch"></div>
 
   <!-- Utility buttons -->
   <div class="flex shrink-0 items-center gap-0.5">

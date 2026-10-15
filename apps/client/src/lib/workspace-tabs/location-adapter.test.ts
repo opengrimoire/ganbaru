@@ -28,6 +28,9 @@ function fakeStores(options: {
       ensureLoaded: vi.fn(async () => undefined),
       hasProject: (id: string) => knownProjects.has(id),
       projectName: (id: string) => (knownProjects.has(id) ? `Project ${id}` : null),
+      viewName: (projectId: string, viewId: string) => (
+        views.some((view) => view.projectId === projectId && view.id === viewId) ? `View ${viewId}` : null
+      ),
       viewsForProject: (id: string) => views.filter((view) => view.projectId === id),
       selectProject: vi.fn(async (id: string) => { state.projectId = id; }),
       selectView: vi.fn((view: FakeView) => { state.viewIds[view.projectId] = view.id; }),
@@ -35,10 +38,12 @@ function fakeStores(options: {
     notes: {
       get selectedPageId() { return state.pageId; },
       selectPage: vi.fn(async (id: string) => { state.pageId = id; }),
+      pageTitle: (id: string) => (id === "page" ? "Page title" : null),
     },
     chat: {
       get selectedChannelId() { return state.channelId; },
       selectChannel: vi.fn(async (id: string) => { state.channelId = id; }),
+      channelName: (projectId: string, id: string) => (projectId === "p1" && id === "channel" ? "general" : null),
     },
   } satisfies WorkspaceLocationStores<FakeView>;
   return { state, stores };
@@ -64,6 +69,22 @@ describe("workspace location adapter", () => {
     expect(adapter.title("project", location)).toBe("Project p1");
     expect(adapter.title("kind", location)).toBeNull();
     expect(adapter.title("project", { ...location, projectId: "gone" })).toBeNull();
+  });
+
+  it("titles item tabs with the view, page, or channel name, and nothing for unknown items", () => {
+    const { stores } = fakeStores({ projects: ["p1"], views: [{ id: "v1", projectId: "p1" }] });
+    const adapter = createWorkspaceLocationAdapter(stores);
+
+    expect(adapter.title("item", { kind: "projects", projectId: "p1", item: { type: "project-view", id: "v1" } }))
+      .toBe("View v1");
+    expect(adapter.title("item", { kind: "notes", projectId: null, item: { type: "notes-page", id: "page" } }))
+      .toBe("Page title");
+    expect(adapter.title("item", { kind: "chat", projectId: "p1", item: { type: "chat-channel", id: "channel" } }))
+      .toBe("general");
+    expect(adapter.title("item", { kind: "projects", projectId: "p2", item: { type: "project-view", id: "v1" } }))
+      .toBeNull();
+    expect(adapter.title("item", { kind: "notes", projectId: "p1", item: { type: "notes-folder", id: "f" } }))
+      .toBeNull();
   });
 
   it("reads no item while nothing is selected", () => {

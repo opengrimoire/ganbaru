@@ -34,6 +34,7 @@
   import { anchoredPopover } from "$lib/utils/anchored-popover";
   import { portal } from "$lib/utils/portal";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
+  import type { OpenInNewTabIntent } from "$lib/workspace-tabs/gestures";
   import ProjectIcon from "../ProjectIcon.svelte";
   import ProjectLifecycleIcon from "../ProjectLifecycleIcon.svelte";
   import ProjectViewDragCard from "./ProjectViewDragCard.svelte";
@@ -57,6 +58,7 @@
     collapsed,
     onCollapsedChange,
     onSelectView,
+    onOpenViewInNewTab = undefined,
     onRename,
     onMoveToGroup,
     onSetStatus,
@@ -81,6 +83,8 @@
     onCollapsedChange: (collapsed: boolean) => void;
     /** Opens a view, selecting its project first when needed. */
     onSelectView: (view: ProjectView) => void;
+    /** Opens a view in a new workspace tab; rows leave out the gesture and menu entry without it. */
+    onOpenViewInNewTab?: (view: ProjectView, intent: OpenInNewTabIntent) => void;
     onRename: (name: string) => Promise<void>;
     onMoveToGroup: (groupId: string) => Promise<void>;
     onSetStatus: (status: ProjectLifecycleStatus) => Promise<void>;
@@ -339,6 +343,7 @@
         canMoveUp={canMoveBy(index, -1)}
         canMoveDown={canMoveBy(index, 1)}
         onSelect={() => onSelectView(view)}
+        onOpenInNewTab={onOpenViewInNewTab ? (intent) => onOpenViewInNewTab(view, intent) : undefined}
         onToggleStar={(next) => projects.setViewStarred(view.id, next)}
         onRename={(name) => projects.renameView(view.id, name)}
         onMove={(step) => reorder(projectViewIdsMovedByStep(projects.views, views, view.id, step))}

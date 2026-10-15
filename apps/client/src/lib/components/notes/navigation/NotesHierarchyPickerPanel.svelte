@@ -50,6 +50,7 @@
   import { createHoverDelay } from "$lib/utils/menu-aim";
   import { createSidebarOrderDrag } from "$lib/utils/sidebar-order-drag.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
+  import { openInNewTabIntent, preventMiddleClickAutoscroll, type OpenInNewTabIntent } from "$lib/workspace-tabs/gestures";
   import NotesHierarchyPickerPanel from "./NotesHierarchyPickerPanel.svelte";
   import NotesPageIcon from "$lib/components/notes/pages/NotesPageIcon.svelte";
   import StarredIconBadge from "$lib/components/ui/StarredIconBadge.svelte";
@@ -71,6 +72,7 @@
     zIndexClass = "z-81",
     rootElement = $bindable<HTMLDivElement | undefined>(),
     onPageSelected,
+    onPageOpenInNewTab = undefined,
     onLayoutChange = undefined,
     onItemCountChange = undefined,
     onPointerEnter = undefined,
@@ -89,6 +91,8 @@
     zIndexClass?: string;
     rootElement?: HTMLDivElement | undefined;
     onPageSelected: () => MaybePromise<void>;
+    /** Opens a page in a new workspace tab; rows leave out the gesture without it. */
+    onPageOpenInNewTab?: (pageId: string, intent: OpenInNewTabIntent) => void;
     onLayoutChange?: () => void;
     onItemCountChange?: (count: number) => void;
     onPointerEnter?: (event: PointerEvent) => void;
@@ -401,6 +405,19 @@
     }
   }
 
+  /** Route a page click to a new tab when the gesture asks for one; folders expand and other nodes open here. */
+  function handleNodeClick(event: MouseEvent, node: NotesHierarchyPickerNode): void {
+    const intent = node.kind === "page" && onPageOpenInNewTab ? openInNewTabIntent(event) : null;
+    if (intent && node.kind === "page") {
+      event.preventDefault();
+      onPageOpenInNewTab?.(node.page.id, intent);
+      return;
+    }
+    if (event.type !== "click") return;
+    if (node.kind === "folder") activateNode(node, event.currentTarget);
+    else void selectNode(node);
+  }
+
   async function createPage(): Promise<void> {
     if (effectiveParent.kind === "database") return;
     if (effectiveParent.kind === "page") {
@@ -681,10 +698,9 @@
                 onpointerdown={(event) => { if (isOrderedNode(item)) orderDrag.pointerDown(event, item.key); }}
                 onpointerenter={(event) => activateNode(item, event.currentTarget)}
                 onfocus={(event) => activateNode(item, event.currentTarget)}
-                onclick={(event) => {
-                  if (item.kind === "folder") activateNode(item, event.currentTarget);
-                  else void selectNode(item);
-                }}
+                onmousedown={preventMiddleClickAutoscroll}
+                onclick={(event) => handleNodeClick(event, item)}
+                onauxclick={(event) => handleNodeClick(event, item)}
               >
                 {@render NodeIcon(item)}
                 <span class="min-w-0 flex-1 truncate">{title}</span>
@@ -824,6 +840,7 @@
     frameStyle={childPanelStyle}
     {zIndexClass}
     {onPageSelected}
+    {onPageOpenInNewTab}
     onItemCountChange={(count) => { childMeasuredItemCount = count; }}
     onLayoutChange={updateChildGeometry}
     onPointerEnter={handleBoundaryEnter}

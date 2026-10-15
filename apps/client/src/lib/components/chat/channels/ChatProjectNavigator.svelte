@@ -25,7 +25,7 @@
   import { getChatSidebarOrder } from "$lib/stores/chat/sidebar-order.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
   import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
-  import type { OpenInNewTabIntent } from "$lib/workspace-tabs/gestures";
+  import { openInNewTabIntent, preventMiddleClickAutoscroll, type OpenInNewTabIntent } from "$lib/workspace-tabs/gestures";
   import { cn, type MaybePromise } from "$lib/utils";
   import ProjectPickerPanels from "$lib/components/projects/pickers/ProjectPickerPanels.svelte";
   import ChatChannelPickerPanel from "./ChatChannelPickerPanel.svelte";
@@ -68,6 +68,7 @@
   const chatSidebarOrder = getChatSidebarOrder();
   const projects = getProjects();
   const tabs = getWorkspaceTabs();
+  const canOpenChannelTabs = $derived(tabs.canOpenTabs && !mobileLayout);
   const panelGap = 4;
   const panelListPadding = 8;
   const panelRowHeight = 32;
@@ -218,6 +219,28 @@
     projectSearch = "";
   }
 
+  function openChannelInNewTab(channel: ChatChannelRead, intent: OpenInNewTabIntent): void {
+    tabs.openLocation("item", {
+      kind: "chat",
+      projectId: channel.projectId,
+      item: { type: "chat-channel", id: channel.id },
+    }, intent);
+    if (intent.background) return;
+    closeChannelPanel();
+    onClose?.();
+  }
+
+  /** Route a search result click to a new tab when the gesture asks for one, else select the channel. */
+  function handleSearchedChannelClick(event: MouseEvent, channel: ChatChannelRead): void {
+    const intent = canOpenChannelTabs ? openInNewTabIntent(event) : null;
+    if (intent) {
+      event.preventDefault();
+      openChannelInNewTab(channel, intent);
+      return;
+    }
+    if (event.type === "click") void selectSearchedChannel(channel);
+  }
+
   async function createChannel(): Promise<void> {
     const projectId = activeProjectId;
     if (!projectId) return;
@@ -264,7 +287,9 @@
                   chat.selectedChannelId === channel.id && "font-medium",
                 )}
                 aria-current={chat.selectedChannelId === channel.id ? "page" : undefined}
-                onclick={() => { void selectSearchedChannel(channel); }}
+                onmousedown={preventMiddleClickAutoscroll}
+                onclick={(event) => handleSearchedChannelClick(event, channel)}
+                onauxclick={(event) => handleSearchedChannelClick(event, channel)}
               >
                 <StarredIconBadge starred={chatSidebarOrder.isChannelStarred(channel.id)}><Hash size={mobileLayout ? 18 : 13} strokeWidth={iconStrokeWidth} /></StarredIconBadge>
                 <span class="min-w-0 flex-1 truncate">{channel.name}</span>
@@ -336,6 +361,7 @@
     onPointerEnter={channelPanelDelay.cancel}
     onPointerLeave={handleChannelBoundaryLeave}
     onChannelSelected={selectChannel}
+    onChannelOpenInNewTab={canOpenChannelTabs ? openChannelInNewTab : undefined}
     onCreateChannel={createChannel}
   />
 {/if}

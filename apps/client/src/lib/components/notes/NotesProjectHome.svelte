@@ -67,6 +67,7 @@
   } from "$lib/notes/types";
   import { getNotes } from "$lib/stores/notes.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
+  import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
   import { cn } from "$lib/utils";
   import { scrollOverflowAction } from "$lib/utils/scroll-overflow";
   import { suppressHoverOnToggle } from "$lib/utils/hover-suppression";
@@ -76,6 +77,7 @@
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { TouchHoldArbiter } from "$lib/utils/touch-hold";
+  import type { OpenInNewTabIntent } from "$lib/workspace-tabs/gestures";
   import {
     loadNotesOptionalComponent,
     retryNotesOptionalComponent,
@@ -110,6 +112,9 @@
 
   const notes = getNotes();
   const preferences = getPreferences();
+  const tabs = getWorkspaceTabs();
+  /** The docked explorer opens pages in new tabs; the phone panel leaves the gesture out. */
+  const canOpenPageTabs = $derived(tabs.canOpenTabs && !mobileLayout);
   const { t } = getLocalization();
   const explorerIconStrokeWidth = 1.5;
   const navigationFolderOpenDelayMs = 520;
@@ -928,6 +933,10 @@
     closePanel();
   }
 
+  function openPageInNewTab(pageId: string, intent: OpenInNewTabIntent): void {
+    tabs.openLocation("item", { kind: "notes", projectId, item: { type: "notes-page", id: pageId } }, intent);
+  }
+
   async function refreshWorkingMarkdown(): Promise<void> {
     if (mobileLayout) {
       workingMarkdownGeneration += 1;
@@ -1418,6 +1427,7 @@
               onCreationFolderChange(notesPageContainingFolderId(item.page.id, projectPages));
               selectPrimaryPage(item.page.id);
             }}
+            onOpenInNewTab={canOpenPageTabs ? (intent) => openPageInNewTab(item.page.id, intent) : undefined}
             onRename={(title) => {
               return renamePage(item.page.id, title);
             }}

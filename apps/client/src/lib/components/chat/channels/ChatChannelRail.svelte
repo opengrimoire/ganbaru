@@ -3,6 +3,7 @@
   import { COMPACT_IDENTITY_ICON_SIZE, COMPACT_IDENTITY_ICON_STROKE_WIDTH } from "$lib/icon-sizing";
   import MobileSidebarPanel from "$lib/components/mobile/MobileSidebarPanel.svelte";
   import SearchField from "$lib/components/ui/SearchField.svelte";
+  import AppWindow from "@lucide/svelte/icons/app-window";
   import Archive from "@lucide/svelte/icons/archive";
   import Check from "@lucide/svelte/icons/check";
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
@@ -40,7 +41,9 @@
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
   import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
+  import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
   import { onActiveVaultIdentityChange } from "$lib/vault/active-vault";
+  import { openInNewTabIntent, preventMiddleClickAutoscroll, type OpenInNewTabIntent } from "$lib/workspace-tabs/gestures";
   import { overflowTooltip } from "$lib/utils/overflow-tooltip";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import { scrollOverflowAction } from "$lib/utils/scroll-overflow";
@@ -95,6 +98,9 @@
   const preferences = getPreferences();
   const projects = getProjects();
   const settings = getSettingsLauncher();
+  const tabs = getWorkspaceTabs();
+  /** The phone panel leaves out new tabs; the docked rail opens channels in them. */
+  const canOpenChannelTabs = $derived(tabs.canOpenTabs && !panel);
   const { t } = getLocalization();
   let query = $state("");
   let directMessagesCollapsed = $state(false);
@@ -768,6 +774,31 @@
     }
   }
 
+  function openChannelInNewTab(channel: ChatChannelRead, intent: OpenInNewTabIntent): void {
+    tabs.openLocation("item", {
+      kind: "chat",
+      projectId: channel.projectId,
+      item: { type: "chat-channel", id: channel.id },
+    }, intent);
+  }
+
+  /** Route a row click to a new tab when the gesture asks for one, else open the channel here. */
+  function handleChannelRowClick(event: MouseEvent, channel: ChatChannelRead): void {
+    const intent = canOpenChannelTabs ? openInNewTabIntent(event) : null;
+    if (intent) {
+      event.preventDefault();
+      openChannelInNewTab(channel, intent);
+      return;
+    }
+    if (event.type === "click") void selectChannel(channel.id);
+  }
+
+  function openChannelInNewTabFromContextMenu(): void {
+    const channel = channelContextMenu?.channel;
+    closeChannelContextMenu();
+    if (channel) openChannelInNewTab(channel, { background: false });
+  }
+
   async function openMessageResult(result: ChatMessageSearchResultRead): Promise<void> {
     railError = null;
     try {
@@ -1032,6 +1063,7 @@
     }}
     onscroll={hideMoveMenu}
   >
+    {#if canOpenChannelTabs}<button type="button" role="menuitem" class="menu-item" onclick={openChannelInNewTabFromContextMenu}><AppWindow class="size-4" /><span>{t("titleBar.tab.openInNewTab")}</span></button>{/if}
     <button type="button" role="menuitem" class="menu-item" onclick={editChannelFromContextMenu}><Pencil class="size-4" /><span>{t("chat.channels.edit")}</span></button>
     <div
       role="group"
@@ -1076,7 +1108,7 @@
 
 {#snippet ChannelRow({ channel }: { channel: ChatChannelRead })}
   <div class="channel-row-group explorer-row" class:explorer-selected={chat.selectedChannelId === channel.id && !chat.channelArchiveOpen} role="group" aria-label={channel.name} data-chat-channel-id={channel.id} class:rail-touch-dragged={draggedChannelId === channel.id && channelTouchPress !== null} onpointerdown={(event) => handleChannelPointerDown(event, channel.id)} class:rail-reorder-before={reorderLine(channel.id, "before")} class:rail-reorder-after={reorderLine(channel.id, "after")} draggable="true" ondragstart={(event) => beginDrag(event, channel.id)} ondragend={clearRailDrag} ondragover={(event) => handleChannelDragOver(event, channel.id)} ondrop={(event) => handleChannelDrop(event, channel.id)}>
-    <button type="button" class="channel-row explorer-row-label" class:selected={chat.selectedChannelId === channel.id && !chat.channelArchiveOpen} aria-current={chat.selectedChannelId === channel.id && !chat.channelArchiveOpen ? "page" : undefined} onclick={() => void selectChannel(channel.id)} oncontextmenu={(event) => void openChannelContextMenu(event, channel)}>
+    <button type="button" class="channel-row explorer-row-label" class:selected={chat.selectedChannelId === channel.id && !chat.channelArchiveOpen} aria-current={chat.selectedChannelId === channel.id && !chat.channelArchiveOpen ? "page" : undefined} onmousedown={preventMiddleClickAutoscroll} onclick={(event) => handleChannelRowClick(event, channel)} onauxclick={(event) => handleChannelRowClick(event, channel)} oncontextmenu={(event) => void openChannelContextMenu(event, channel)}>
       <Hash size={COMPACT_IDENTITY_ICON_SIZE} strokeWidth={COMPACT_IDENTITY_ICON_STROKE_WIDTH} class="explorer-row-icon" />
       <span class="min-w-0 flex-1 truncate" use:overflowTooltip={channel.name}>{channel.name}</span>
     </button>

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tick } from "svelte";
+  import AppWindow from "@lucide/svelte/icons/app-window";
   import ArrowDown from "@lucide/svelte/icons/arrow-down";
   import ArrowUp from "@lucide/svelte/icons/arrow-up";
   import EllipsisVertical from "@lucide/svelte/icons/ellipsis-vertical";
@@ -12,6 +13,7 @@
   import { PROJECT_VIEW_DRAG_SETTLE_MS } from "$lib/projects/view-drag";
   import { anchoredPopover } from "$lib/utils/anchored-popover";
   import { portal } from "$lib/utils/portal";
+  import { openInNewTabIntent, preventMiddleClickAutoscroll, type OpenInNewTabIntent } from "$lib/workspace-tabs/gestures";
   import { PROJECT_VIEW_TYPE_ICONS, projectViewLabel, projectViewTypeLabel } from "./project-view-presentation";
 
   /**
@@ -34,6 +36,7 @@
     shiftAnimated = true,
     lifted = false,
     onPointerDown,
+    onOpenInNewTab = undefined,
   }: {
     view: ProjectView;
     active: boolean;
@@ -57,6 +60,8 @@
     lifted?: boolean;
     /** Starts tracking a press that may become a drag. */
     onPointerDown: (event: PointerEvent, row: HTMLElement) => void;
+    /** Opens the view in a new workspace tab; leaving it out hides the gesture and the menu entry. */
+    onOpenInNewTab?: (intent: OpenInNewTabIntent) => void;
   } = $props();
 
   const { t } = getLocalization();
@@ -90,6 +95,17 @@
   function runMenuAction(action: () => void): void {
     closeMenu();
     action();
+  }
+
+  /** Route a click to a new tab when the gesture asks for one, else select the view. */
+  function handleLabelClick(event: MouseEvent): void {
+    const intent = onOpenInNewTab ? openInNewTabIntent(event) : null;
+    if (intent) {
+      event.preventDefault();
+      onOpenInNewTab?.(intent);
+      return;
+    }
+    if (event.type === "click") onSelect();
   }
 
   function beginRename(): void {
@@ -170,7 +186,9 @@
       class="explorer-row-label flex min-w-0 flex-1 items-center gap-1.5 self-stretch px-2 text-left text-inherit"
       aria-current={active ? "page" : undefined}
       data-app-tooltip={tooltip}
-      onclick={onSelect}
+      onmousedown={preventMiddleClickAutoscroll}
+      onclick={handleLabelClick}
+      onauxclick={handleLabelClick}
       oncontextmenu={openContextMenu}
     >
       <Icon class="explorer-row-icon" aria-hidden="true" />
@@ -214,6 +232,12 @@
     }}
   >
     <div class="surface-floating-body flex flex-col">
+      {#if onOpenInNewTab}
+        <button type="button" role="menuitem" class="menu-item" onclick={() => runMenuAction(() => onOpenInNewTab?.({ background: false }))}>
+          <AppWindow />
+          <span>{t("titleBar.tab.openInNewTab")}</span>
+        </button>
+      {/if}
       <button type="button" role="menuitem" class="menu-item" onclick={beginRename}>
         <Pencil />
         <span>{t("projects.sidebar.renameView")}</span>

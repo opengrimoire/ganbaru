@@ -7,6 +7,7 @@ import type { Project, ProjectHostedViewType, ProjectView, ProjectViewType } fro
 import { projectViewsFor } from "$lib/projects/views";
 import { starredFirst } from "$lib/utils/sidebar-order";
 import { TOUCH_LONG_PRESS_MS } from "$lib/utils/touch-hold";
+import type { OpenInNewTabIntent } from "$lib/workspace-tabs/gestures";
 import ProjectSidebarSection from "./ProjectSidebarSection.svelte";
 
 const store = vi.hoisted(() => ({
@@ -79,7 +80,12 @@ function view(id: string, viewType: ProjectViewType, sortOrder: number, name?: s
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | undefined;
 
-function render(overrides: { collapsed?: boolean; onSelectView?: (view: ProjectView) => void; onCollapsedChange?: (value: boolean) => void } = {}) {
+function render(overrides: {
+  collapsed?: boolean;
+  onSelectView?: (view: ProjectView) => void;
+  onOpenViewInNewTab?: (view: ProjectView, intent: OpenInNewTabIntent) => void;
+  onCollapsedChange?: (value: boolean) => void;
+} = {}) {
   component = mount(ProjectSidebarSection, {
     target,
     props: {
@@ -92,6 +98,7 @@ function render(overrides: { collapsed?: boolean; onSelectView?: (view: ProjectV
       collapsed: overrides.collapsed ?? false,
       onCollapsedChange: overrides.onCollapsedChange ?? (() => undefined),
       onSelectView: overrides.onSelectView ?? (() => undefined),
+      onOpenViewInNewTab: overrides.onOpenViewInNewTab,
       onRename: () => Promise.resolve(),
       onMoveToGroup: () => Promise.resolve(),
       onSetStatus: () => Promise.resolve(),
@@ -258,6 +265,41 @@ describe("ProjectSidebarSection", () => {
     flushSync();
     button("Remove from favorites").click();
     expect(store.setProjectStarred).toHaveBeenCalledWith("project-a", false);
+  });
+
+  it("opens a view in a new tab from a middle click, Ctrl+click, or its menu, and selects it on a plain click", () => {
+    const onSelectView = vi.fn();
+    const onOpenViewInNewTab = vi.fn();
+    render({ onSelectView, onOpenViewInNewTab });
+    const backlog = viewLabelButton("Backlog");
+
+    backlog.dispatchEvent(new MouseEvent("auxclick", { bubbles: true, cancelable: true, button: 1 }));
+    backlog.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, button: 0, ctrlKey: true, shiftKey: true }));
+    button("View actions: Backlog").click();
+    flushSync();
+    button("Open in new tab").click();
+
+    expect(onOpenViewInNewTab.mock.calls.map(([entry, intent]) => [entry.id, intent])).toEqual([
+      ["list", { background: true }],
+      ["list", { background: false }],
+      ["list", { background: false }],
+    ]);
+    expect(onSelectView).not.toHaveBeenCalled();
+
+    backlog.click();
+    expect(onSelectView).toHaveBeenCalledWith(expect.objectContaining({ id: "list" }));
+  });
+
+  it("leaves out the new tab gesture and menu entry without a tab opener", () => {
+    const onSelectView = vi.fn();
+    render({ onSelectView });
+
+    viewLabelButton("Backlog").dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, button: 0, ctrlKey: true }));
+    button("View actions: Backlog").click();
+    flushSync();
+
+    expect(onSelectView).toHaveBeenCalledWith(expect.objectContaining({ id: "list" }));
+    expect(() => button("Open in new tab")).toThrow();
   });
 
   it("keeps an unnamed view on its type label when a rename repeats it, and saves a new name", async () => {

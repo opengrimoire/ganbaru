@@ -20,6 +20,7 @@
   import { cn, type MaybePromise } from "$lib/utils";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import { createSidebarOrderDrag } from "$lib/utils/sidebar-order-drag.svelte";
+  import { openInNewTabIntent, preventMiddleClickAutoscroll, type OpenInNewTabIntent } from "$lib/workspace-tabs/gestures";
 
 
   let {
@@ -33,6 +34,7 @@
     zIndexClass = "",
     iconStrokeWidth = 1.6,
     onChannelSelected,
+    onChannelOpenInNewTab = undefined,
     onCreateChannel,
     onLayoutChange = undefined,
     onPointerEnter = undefined,
@@ -55,6 +57,8 @@
     zIndexClass?: string;
     iconStrokeWidth?: number;
     onChannelSelected: (channel: ChatChannelRead) => MaybePromise<void>;
+    /** Opens an active channel in a new workspace tab; rows leave out the gesture without it. */
+    onChannelOpenInNewTab?: (channel: ChatChannelRead, intent: OpenInNewTabIntent) => void;
     onCreateChannel: () => MaybePromise<void>;
     onLayoutChange?: () => void;
     onPointerEnter?: (event: PointerEvent) => void;
@@ -108,6 +112,17 @@
     description: "channels from the channel picker",
   });
   $effect(() => orderDrag.reset);
+
+  /** Route an active channel click to a new tab when the gesture asks for one, else select the channel. */
+  function handleActiveChannelClick(event: MouseEvent, channel: ChatChannelRead): void {
+    const intent = onChannelOpenInNewTab ? openInNewTabIntent(event) : null;
+    if (intent) {
+      event.preventDefault();
+      onChannelOpenInNewTab?.(channel, intent);
+      return;
+    }
+    if (event.type === "click") void onChannelSelected(channel);
+  }
 
   function handleMobileBack(): void {
     if (normalizedSearch) {
@@ -269,7 +284,9 @@
               data-chat-channel-option={channel.id}
               {@attach orderDrag.item(channel.id)}
               onpointerdown={(event) => orderDrag.pointerDown(event, channel.id)}
-              onclick={() => { void onChannelSelected(channel); }}
+              onmousedown={preventMiddleClickAutoscroll}
+              onclick={(event) => handleActiveChannelClick(event, channel)}
+              onauxclick={(event) => handleActiveChannelClick(event, channel)}
             >
               <StarredIconBadge starred={isChannelStarred(channel.id)}><Hash size={iconSize} strokeWidth={iconStrokeWidth} /></StarredIconBadge>
               <span class="min-w-0 flex-1 truncate">{channel.name}</span>

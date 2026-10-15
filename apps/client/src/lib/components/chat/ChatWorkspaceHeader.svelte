@@ -6,6 +6,7 @@
   import PanelLeft from "@lucide/svelte/icons/panel-left";
   import Menu from "@lucide/svelte/icons/menu";
   import MessageSquare from "@lucide/svelte/icons/message-square";
+  import type { ChatChannelRead } from "$lib/chat/contracts";
   import { summarizeChannelMembers } from "$lib/chat/teammates/channel-members";
   import {
     COMPACT_IDENTITY_EMOJI_SCALE,
@@ -18,8 +19,10 @@
   import { getChat } from "$lib/stores/chat.svelte";
   import { getChatSidebarOrder } from "$lib/stores/chat/sidebar-order.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
+  import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
   import { getViewport } from "$lib/stores/viewport.svelte";
   import { cn } from "$lib/utils";
+  import type { OpenInNewTabIntent } from "$lib/workspace-tabs/gestures";
   import ChatParticipantAvatar from "$lib/components/chat/identity/ChatParticipantAvatar.svelte";
   import LocalPersonAvatar from "$lib/components/contacts/LocalPersonAvatar.svelte";
   import ProjectIcon from "$lib/components/projects/ProjectIcon.svelte";
@@ -63,6 +66,7 @@
   const chat = getChat();
   const chatSidebarOrder = getChatSidebarOrder();
   const projects = getProjects();
+  const tabs = getWorkspaceTabs();
   const viewport = getViewport();
   const { t, locale } = getLocalization();
   const identityIconSize = COMPACT_IDENTITY_ICON_SIZE;
@@ -172,6 +176,15 @@
   async function selectChannel(channelId: string): Promise<void> {
     await chat.selectChannel(channelId);
     navigatorOpen = false;
+  }
+
+  function openChannelInNewTab(channel: ChatChannelRead, intent: OpenInNewTabIntent): void {
+    tabs.openLocation("item", {
+      kind: "chat",
+      projectId: channel.projectId,
+      item: { type: "chat-channel", id: channel.id },
+    }, intent);
+    if (!intent.background) navigatorOpen = false;
   }
 
   function createChannel(): void {
@@ -336,6 +349,7 @@
               frameStyle={`width:100%;max-height:${navigatorPanelMaxHeight}px`}
               iconStrokeWidth={identityIconStrokeWidth}
               onChannelSelected={(channel) => selectChannel(channel.id)}
+              onChannelOpenInNewTab={tabs.canOpenTabs ? openChannelInNewTab : undefined}
               onCreateChannel={createChannel}
             />
           {:else}
@@ -350,6 +364,7 @@
               onProjectSelected={selectProject}
               onChannelSelected={() => { navigatorOpen = false; }}
               onCreateChannel={() => { createChannel(); }}
+              onClose={() => { navigatorOpen = false; }}
             />
           {/if}
         </div>

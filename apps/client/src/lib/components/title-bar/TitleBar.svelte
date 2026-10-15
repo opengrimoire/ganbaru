@@ -13,6 +13,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getDetachedWindows } from "$lib/stores/detached-windows.svelte";
   import { getWorkspaceTabs, type WorkspaceTabDetachBlock } from "$lib/stores/workspace-tabs.svelte";
+  import { workspaceTabLockLevel } from "$lib/workspace-tabs/model";
   import { workspaceTabKindLabel } from "$lib/workspace-tabs/presentation";
   import { detachableTabViewFromWindowLabel } from "$lib/windows/detached";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
@@ -443,6 +444,13 @@
     tabContextId ? detachBlockReason(tabs.detachBlock(tabContextId), tabContextId) : null,
   );
 
+  const contextLockAction = $derived.by((): "lock" | "unlock" | null => {
+    const tab = tabs.tabs.find((candidate) => candidate.id === tabContextId);
+    if (!tab) return null;
+    if (tab.locked) return "unlock";
+    return workspaceTabLockLevel(tab) ? "lock" : null;
+  });
+
   function toggleTitleBarControl(id: TitleBarControlId) {
     preferences.toggleTitleBarControl(id);
     showTitleBarMenu = false;
@@ -551,6 +559,7 @@
   detachBlockReason={contextDetachBlockReason}
   canCloseOtherTabs={tabs.tabs.length > 1}
   canReopenTab={tabs.closed.length > 0}
+  lockAction={detachedWindowView ? null : contextLockAction}
   bind:showTitleBarMenu
   {titleBarMenuStyle}
   controls={titleBarControls.map((control) => ({
@@ -561,6 +570,10 @@
   onCloseTab={() => runTabContextAction((id) => tabs.close(id))}
   onCloseOtherTabs={() => runTabContextAction((id) => tabs.closeOthers(id))}
   onReopenTab={() => runTabContextAction(() => tabs.reopen())}
+  onToggleLock={() => {
+    const lock = contextLockAction === "lock";
+    runTabContextAction((id) => tabs.setLocked(id, lock));
+  }}
   onToggleControl={toggleTitleBarControl}
 />
 

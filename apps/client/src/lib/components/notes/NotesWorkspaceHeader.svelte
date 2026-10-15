@@ -37,8 +37,10 @@
   import { getNotes } from "$lib/stores/notes.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
   import { getViewport } from "$lib/stores/viewport.svelte";
+  import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
   import { cn } from "$lib/utils";
   import { createHoverMenu } from "$lib/utils/menu-aim";
+  import type { OpenInNewTabIntent } from "$lib/workspace-tabs/gestures";
   import ProjectIcon from "$lib/components/projects/ProjectIcon.svelte";
   import WorkspaceBreadcrumbTerminalIcon from "$lib/components/ui/WorkspaceBreadcrumbTerminalIcon.svelte";
   import {
@@ -93,6 +95,7 @@
   const notes = getNotes();
   const projects = getProjects();
   const viewport = getViewport();
+  const tabs = getWorkspaceTabs();
   const { t } = getLocalization();
   const identityIconSize = COMPACT_IDENTITY_ICON_SIZE;
   const identityIconStrokeWidth = COMPACT_IDENTITY_ICON_STROKE_WIDTH;
@@ -177,6 +180,15 @@
     notes.sidebarPageIdsWithChildren,
   ));
   const showSelectedPagePath = $derived(selectedPagePath.length > 0);
+
+  function openPageInNewTab(pageId: string, intent: OpenInNewTabIntent): void {
+    tabs.openLocation("item", {
+      kind: "notes",
+      projectId: selectedProjectId,
+      item: { type: "notes-page", id: pageId },
+    }, intent);
+    if (!intent.background) navigatorOpen = false;
+  }
 
   function toolbarIconButtonClass(active = false, open = false, primary = false): string {
     return cn(
@@ -835,6 +847,7 @@
               onPageSelected={() => {
                 navigatorOpen = false;
               }}
+              onPageOpenInNewTab={tabs.canOpenTabs ? openPageInNewTab : undefined}
               onClose={() => { navigatorOpen = false; }}
             />
           {:else}

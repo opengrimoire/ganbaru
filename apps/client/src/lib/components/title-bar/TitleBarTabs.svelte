@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tick, untrack } from "svelte";
+  import Lock from "@lucide/svelte/icons/lock";
   import Plus from "@lucide/svelte/icons/plus";
   import X from "@lucide/svelte/icons/x";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -159,7 +160,8 @@
   }
 
   function tabTitle(tab: WorkspaceTab, index: number): string {
-    const label = workspaceTabLabel(tab, t);
+    const name = workspaceTabLabel(tab, t);
+    const label = tab.locked ? t("titleBar.tab.lockedTab", name) : name;
     const shortcut = workspaceTabPositionShortcut(index, tabs.tabs.length);
     return shortcut ? t("titleBar.tab.withShortcut", label, shortcut) : label;
   }
@@ -268,7 +270,7 @@
           type="button"
           role="tab"
           aria-selected={active}
-          aria-label={label}
+          aria-label={tab.locked ? t("titleBar.tab.lockedTab", label) : label}
           class={cn(
             "titlebar-tab-button flex h-full min-w-0 items-center rounded-md",
             compact ? "titlebar-tab-compact justify-center" : "max-w-48 gap-1.5 pl-3 pr-1",
@@ -278,6 +280,7 @@
         >
           <Icon class="shrink-0" size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} />
           {#if !compact}<span class="min-w-0 truncate">{label}</span>{/if}
+          {#if !compact && tab.locked}<Lock class="shrink-0 opacity-60" size={11} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />{/if}
         </button>
         {#if !compact}
           <button

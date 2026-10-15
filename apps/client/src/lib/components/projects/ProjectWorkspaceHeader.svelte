@@ -482,6 +482,7 @@
               closeProjectNavigator();
               onProjectSelected();
             }}
+            onClose={closeProjectNavigator}
           />
         </div>
       {/if}

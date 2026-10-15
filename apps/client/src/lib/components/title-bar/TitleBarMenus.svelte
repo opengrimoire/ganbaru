@@ -1,6 +1,8 @@
 <script lang="ts">
   import Check from "@lucide/svelte/icons/check";
   import ListX from "@lucide/svelte/icons/list-x";
+  import Lock from "@lucide/svelte/icons/lock";
+  import LockOpen from "@lucide/svelte/icons/lock-open";
   import RotateCcw from "@lucide/svelte/icons/rotate-ccw";
   import X from "@lucide/svelte/icons/x";
   import SquareArrowLeft from "@lucide/svelte/icons/square-arrow-left";
@@ -17,6 +19,7 @@
     detachBlockReason,
     canCloseOtherTabs,
     canReopenTab,
+    lockAction,
     showTitleBarMenu = $bindable(),
     titleBarMenuStyle,
     controls,
@@ -24,6 +27,7 @@
     onCloseTab,
     onCloseOtherTabs,
     onReopenTab,
+    onToggleLock,
     onToggleControl,
   }: {
     showTabContextMenu: boolean;
@@ -34,6 +38,8 @@
     detachBlockReason: string | null;
     canCloseOtherTabs: boolean;
     canReopenTab: boolean;
+    /** Whether the tab can be locked or unlocked, or null when it shows nothing to lock to. */
+    lockAction: "lock" | "unlock" | null;
     showTitleBarMenu: boolean;
     titleBarMenuStyle: string;
     controls: Array<{ id: TitleBarControlId; label: string }>;
@@ -41,6 +47,7 @@
     onCloseTab: () => void;
     onCloseOtherTabs: () => void;
     onReopenTab: () => void;
+    onToggleLock: () => void;
     onToggleControl: (id: TitleBarControlId) => void;
   } = $props();
 
@@ -75,6 +82,17 @@
           <RotateCcw size={15} strokeWidth={2.2} />
           <span class="shrink-0 whitespace-nowrap">{t("titleBar.tab.reopenClosedTab")}</span>
         </button>
+        {#if lockAction}
+          <button role="menuitem" onclick={onToggleLock} class="menu-item">
+            {#if lockAction === "lock"}
+              <Lock size={15} strokeWidth={2.2} />
+              <span class="shrink-0 whitespace-nowrap">{t("titleBar.tab.lockTab")}</span>
+            {:else}
+              <LockOpen size={15} strokeWidth={2.2} />
+              <span class="shrink-0 whitespace-nowrap">{t("titleBar.tab.unlockTab")}</span>
+            {/if}
+          </button>
+        {/if}
       {/if}
       <div role="separator" class="menu-separator"></div>
       <button

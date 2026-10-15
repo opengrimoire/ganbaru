@@ -9,6 +9,8 @@ export interface WorkspaceLocationProjects<TView extends { id: string }> {
   ensureLoaded(): Promise<void>;
   hasProject(projectId: string): boolean;
   projectName(projectId: string): string | null;
+  /** Display name of a project view, or null when it is not loaded. */
+  viewName(projectId: string, viewId: string): string | null;
   viewsForProject(projectId: string): readonly TView[];
   selectProject(projectId: string): Promise<void>;
   selectView(view: TView): void;
@@ -18,12 +20,16 @@ export interface WorkspaceLocationProjects<TView extends { id: string }> {
 export interface WorkspaceLocationNotes {
   readonly selectedPageId: string | null;
   selectPage(pageId: string): Promise<void>;
+  /** Title of a loaded page, or null when it is not loaded. */
+  pageTitle(pageId: string): string | null;
 }
 
 /** The Chat store surface a tab location reads and restores. */
 export interface WorkspaceLocationChat {
   readonly selectedChannelId: string | null;
   selectChannel(channelId: string): Promise<void>;
+  /** Name of a loaded channel, or null when it is not loaded. */
+  channelName(projectId: string, channelId: string): string | null;
 }
 
 export interface WorkspaceLocationStores<TView extends { id: string }> {
@@ -48,6 +54,19 @@ function readItem<TView extends { id: string }>(
     const id = stores.chat.selectedChannelId;
     return id ? { type: "chat-channel", id } : null;
   }
+  return null;
+}
+
+function itemTitle<TView extends { id: string }>(
+  location: WorkspaceTabLocation,
+  stores: WorkspaceLocationStores<TView>,
+): string | null {
+  const { item, projectId } = location;
+  if (!item) return null;
+  if (item.type === "notes-page") return stores.notes.pageTitle(item.id);
+  if (!projectId) return null;
+  if (item.type === "project-view") return stores.projects.viewName(projectId, item.id);
+  if (item.type === "chat-channel") return stores.chat.channelName(projectId, item.id);
   return null;
 }
 
@@ -82,6 +101,7 @@ export function createWorkspaceLocationAdapter<TView extends { id: string }>(
       return { kind, projectId: stores.projects.selectedProjectId, item: readItem(kind, stores) };
     },
     title(level, location) {
+      if (level === "item") return itemTitle(location, stores);
       if (level === "kind" || !location.projectId) return null;
       return stores.projects.projectName(location.projectId);
     },

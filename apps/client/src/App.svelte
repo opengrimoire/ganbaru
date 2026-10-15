@@ -4,6 +4,8 @@
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import { getWorkspaceTabs, type WorkspaceTabWindowHost } from "$lib/stores/workspace-tabs.svelte";
   import { createWorkspaceLocationAdapter } from "$lib/workspace-tabs/location-adapter";
+  import { projectViewLabel } from "$lib/components/projects/sidebar/project-view-presentation";
+  import { notesPageTitle } from "$lib/notes/pages/title";
   import { getCalendar } from "$lib/stores/calendar.svelte";
   import { getCalendars } from "$lib/stores/calendars.svelte";
   import { getDistractions } from "$lib/stores/distractions.svelte";
@@ -121,6 +123,10 @@
   const locale = $derived(localization.locale);
   const detachedWindows = getDetachedWindows();
   const workspaceTabs = getWorkspaceTabs();
+  /** The Notes store behind the main editor pane, which tab locations describe. */
+  function notesMainPaneStore() {
+    return notes.editorPanes.find((pane) => pane.id === notes.mainPaneId)?.store ?? null;
+  }
   const workspaceTabWindows: WorkspaceTabWindowHost = {
     canDetach: platformHasCapability(BUILD_PLATFORM_PROFILE, "window.detached-views"),
     detachedKinds: () => detachedWindows.views,
@@ -160,19 +166,30 @@
         ensureLoaded: () => projects.ensureLoaded(),
         hasProject: (projectId) => Boolean(projects.projectById(projectId)),
         projectName: (projectId) => projects.projectById(projectId)?.name ?? null,
+        viewName: (projectId, viewId) => {
+          const view = projects.viewsForProject(projectId).find((candidate) => candidate.id === viewId);
+          return view ? projectViewLabel(t, view) : null;
+        },
         viewsForProject: (projectId) => projects.viewsForProject(projectId),
         selectProject: (projectId) => projects.selectProject(projectId),
         selectView: (view) => projects.selectView(view),
       },
       notes: {
         get selectedPageId() {
-          return notes.editorPanes.find((pane) => pane.id === notes.mainPaneId)?.store.selectedPageId ?? null;
+          return notesMainPaneStore()?.selectedPageId ?? null;
         },
         selectPage: (pageId) => notes.selectPage(pageId, { openMode: "full" }),
+        pageTitle: (pageId) => {
+          const page = notesMainPaneStore()?.navigationPages.find((candidate) => candidate.id === pageId);
+          return page ? notesPageTitle(page, t("notes.untitled")) : null;
+        },
       },
       chat: {
         get selectedChannelId() { return chat.selectedChannelId; },
         selectChannel: (channelId) => chat.selectChannel(channelId),
+        channelName: (projectId, channelId) => (
+          chat.channelsForProject(projectId).find((channel) => channel.id === channelId)?.name ?? null
+        ),
       },
     }),
     mode: detachedWindowView

@@ -14,6 +14,10 @@ export const titleBar = {
     recentlyClosed: "Recently closed",
     inAnotherWindow: "In another window",
     kindHasOtherTabs: (label: string) => `Close the other ${label} tabs to move this one to its own window`,
+    lockTab: "Lock tab",
+    unlockTab: "Unlock tab",
+    lockedTab: (label: string) => `${label} (locked)`,
+    openInNewTab: "Open in new tab",
   },
   control: {
     pomodoro: "Pomodoro",

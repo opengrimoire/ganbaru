@@ -30,6 +30,7 @@ import {
   updateWorkspaceTab,
   visibleWorkspaceTabs,
   workspaceTabIdAtPosition,
+  workspaceTabLockLevel,
   type ClosedWorkspaceTab,
   type WorkspaceTab,
   type WorkspaceTabLevel,
@@ -154,8 +155,20 @@ async function restoreActive(): Promise<void> {
   } catch (error) {
     console.error("Failed to restore workspace tab:", error);
   } finally {
-    if (sequence === restoreSequence) restoring = false;
+    if (sequence === restoreSequence) {
+      unlockIfUnreachable(tab.id, host.adapter.read(tab.location.kind));
+      restoring = false;
+    }
   }
+}
+
+/**
+ * Drop the lock of a tab whose project or item could not be shown, for example because it was deleted, so
+ * the tab follows the stores again instead of opening a new tab every time it is selected.
+ */
+function unlockIfUnreachable(tabId: string, shown: WorkspaceTabLocation): void {
+  const tab = tabsState.tabs.find((candidate) => candidate.id === tabId);
+  if (tab?.locked && !isWithinTabScope(tab, shown)) setState(updateWorkspaceTab(tabsState, tabId, { locked: false }));
 }
 
 function commitState(next: WorkspaceTabsState): void {
@@ -163,8 +176,22 @@ function commitState(next: WorkspaceTabsState): void {
   if (setState(next) && next.activeTabId !== previousActive) void restoreActive();
 }
 
-function recordLocation(tabId: string, location: WorkspaceTabLocation): void {
-  setState(updateWorkspaceTab(tabsState, tabId, { location }));
+/**
+ * Adopt what the stores show into the active tab. A locked tab keeps its scope: leaving it lands the new
+ * location in another tab whose scope holds it, or in a new tab right after the locked one. A location with
+ * neither project nor item is a passing reset, not a destination, so it never leaves a locked tab.
+ */
+function recordLocation(tab: WorkspaceTab, location: WorkspaceTabLocation): void {
+  if (isWithinTabScope(tab, location)) {
+    setState(updateWorkspaceTab(tabsState, tab.id, { location }));
+    return;
+  }
+  if (!meaningfulLocation(location)) return;
+  const target = tabForLocation(location);
+  cancelRestore();
+  setState(target
+    ? activateWorkspaceTab(tabsState, target.id)
+    : insertWorkspaceTab(tabsState, createWorkspaceTab(createTabId(), location), "after-active"));
 }
 
 function mostRecentTabOfKind(kind: View): WorkspaceTab | null {
@@ -294,14 +321,17 @@ function connect(host: WorkspaceTabsConnection): void {
     const tab = currentTab();
     if (tab.detached) return;
     const location = host.adapter.read(tab.location.kind);
-    untrack(() => recordLocation(tab.id, location));
+    untrack(() => recordLocation(tab, location));
   });
 
-  // Keep cached titles current, including renames of what inactive tabs point at.
+  // Keep cached titles current, including renames of what inactive tabs point at. A name that is not
+  // loaded keeps the cached one; a kind tab has none and shows its kind.
   $effect(() => {
-    const titles = visibleWorkspaceTabs(tabsState)
-      .map((tab) => ({ id: tab.id, title: host.adapter.title(tab.level, tab.location) }))
-      .filter((entry): entry is { id: string; title: string } => entry.title !== null);
+    const titles = visibleWorkspaceTabs(tabsState).flatMap((tab): { id: string; title: string | null }[] => {
+      if (tab.level === "kind") return [{ id: tab.id, title: null }];
+      const title = host.adapter.title(tab.level, tab.location);
+      return title === null ? [] : [{ id: tab.id, title }];
+    });
     untrack(() => {
       let next = tabsState;
       for (const entry of titles) next = updateWorkspaceTab(next, entry.id, { title: entry.title });
@@ -401,6 +431,14 @@ function reopen(closedIndex = 0): void {
   if (reopened) commitState(reopened.state);
 }
 
+/** Lock a tab to the project or item it shows now, or let it follow navigation again. */
+function setLocked(id: string, locked: boolean): void {
+  const tab = tabsState.tabs.find((candidate) => candidate.id === id);
+  if (!tab) return;
+  const level = locked ? workspaceTabLockLevel(tab) : tab.level;
+  if (level) setState(updateWorkspaceTab(tabsState, id, { level, locked }));
+}
+
 function detachBlock(id: string): WorkspaceTabDetachBlock | null {
   const tab = tabsState.tabs.find((candidate) => candidate.id === id);
   if (!connection?.windows?.canDetach || !isMainMode() || !tab || tab.detached) return "unsupported";
@@ -468,6 +506,7 @@ export function getWorkspaceTabs() {
       commitState(closeOtherWorkspaceTabs(tabsState, id));
     },
     reopen,
+    setLocked,
     move(id: string, targetId: string, placement: WorkspaceTabPlacement): void {
       setState(moveWorkspaceTab(tabsState, id, targetId, placement));
     },

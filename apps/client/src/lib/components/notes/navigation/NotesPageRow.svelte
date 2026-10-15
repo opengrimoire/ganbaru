@@ -1,4 +1,5 @@
 <script lang="ts">
+  import AppWindow from "@lucide/svelte/icons/app-window";
   import EllipsisVertical from "@lucide/svelte/icons/ellipsis-vertical";
   import { onDestroy, tick } from "svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -16,6 +17,7 @@
   import { dismissOnOutside } from "$lib/utils/dismiss-on-outside";
   import { overflowTooltip } from "$lib/utils/overflow-tooltip";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
+  import { openInNewTabIntent, preventMiddleClickAutoscroll, type OpenInNewTabIntent } from "$lib/workspace-tabs/gestures";
   import {
     createInlineRenameHistory,
     inlineRenameHistoryAction,
@@ -64,6 +66,7 @@
     favorited,
     selected,
     onSelect,
+    onOpenInNewTab = undefined,
     onRename,
     onToggleCollapsed,
     onToggleFavorite,
@@ -103,6 +106,8 @@
     favorited: boolean;
     selected: boolean;
     onSelect: () => void;
+    /** Opens the page in a new workspace tab; leaving it out hides the gesture and the menu entry. */
+    onOpenInNewTab?: (intent: OpenInNewTabIntent) => void;
     onRename: (title: string) => boolean | void | Promise<boolean | void>;
     onToggleCollapsed?: (collapsed: boolean) => void;
     onToggleFavorite: (favorited: boolean) => void;
@@ -174,12 +179,19 @@
     }, 0);
   }
 
-  function handleSelect(): void {
+  /** Route a click to a new tab when the gesture asks for one, else select the page. */
+  function handleSelect(event: MouseEvent): void {
     if (shouldSuppressNavigationSelect) {
       shouldSuppressNavigationSelect = false;
       return;
     }
-    onSelect();
+    const intent = onOpenInNewTab ? openInNewTabIntent(event) : null;
+    if (intent) {
+      event.preventDefault();
+      onOpenInNewTab?.(intent);
+      return;
+    }
+    if (event.type === "click") onSelect();
   }
   const storedTitle = $derived(
     displayTitle === undefined
@@ -548,7 +560,9 @@
         class="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 pr-1 text-left explorer-row-label text-[0.866667rem] text-inherit"
         type="button"
         aria-current={selected ? "page" : undefined}
+        onmousedown={preventMiddleClickAutoscroll}
         onclick={handleSelect}
+        onauxclick={handleSelect}
       >
         {#if page.icon}
           <NotesPageIcon
@@ -604,6 +618,19 @@
       data-app-floating-surface
     >
       <div class="surface-floating-body flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden" use:scrollEdgeFadeAction>
+        {#if onOpenInNewTab}
+          <button
+            class="menu-item"
+            type="button"
+            onclick={() => {
+              closeMenu();
+              onOpenInNewTab?.({ background: false });
+            }}
+          >
+            <AppWindow />
+            <span>{t("titleBar.tab.openInNewTab")}</span>
+          </button>
+        {/if}
         <button
           class="menu-item"
           type="button"

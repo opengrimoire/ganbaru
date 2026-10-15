@@ -23,6 +23,7 @@ import {
   updateWorkspaceTab,
   visibleWorkspaceTabs,
   workspaceTabIdAtPosition,
+  workspaceTabLockLevel,
   type WorkspaceTab,
   type WorkspaceTabLocation,
   type WorkspaceTabsState,
@@ -99,6 +100,13 @@ describe("workspace tab levels", () => {
       .toBe(true);
     expect(tabMatchesTarget(projectTab, "project", projectB)).toBe(false);
     expect(tabMatchesTarget(projectTab, "kind", projectA)).toBe(false);
+  });
+
+  it("locks a kind tab to its project, else its item, and keeps narrower levels", () => {
+    expect(workspaceTabLockLevel(createWorkspaceTab("t", { ...pageOne, projectId: "a" }))).toBe("project");
+    expect(workspaceTabLockLevel(createWorkspaceTab("t", { ...pageOne, projectId: null }))).toBe("item");
+    expect(workspaceTabLockLevel(createWorkspaceTab("t", kindLocation("notes")))).toBeNull();
+    expect(workspaceTabLockLevel(createWorkspaceTab("t", pageOne, { level: "item" }))).toBe("item");
   });
 });
 

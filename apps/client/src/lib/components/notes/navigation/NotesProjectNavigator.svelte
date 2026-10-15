@@ -49,7 +49,7 @@
   import NotesPageIcon from "$lib/components/notes/pages/NotesPageIcon.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
   import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
-  import { openInNewTabIntent, preventMiddleClickAutoscroll } from "$lib/workspace-tabs/gestures";
+  import { openInNewTabIntent, preventMiddleClickAutoscroll, type OpenInNewTabIntent } from "$lib/workspace-tabs/gestures";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import SidebarOrderMenu from "$lib/components/ui/SidebarOrderMenu.svelte";
   import StarredIconBadge from "$lib/components/ui/StarredIconBadge.svelte";
@@ -609,6 +609,24 @@
     projectSearch = "";
   }
 
+  function openPageInNewTab(pageId: string, projectId: string | null, intent: OpenInNewTabIntent): void {
+    tabs.openLocation("item", { kind: "notes", projectId, item: { type: "notes-page", id: pageId } }, intent);
+    if (intent.background) return;
+    closeNoteSubpanel();
+    onClose?.();
+  }
+
+  /** Route a search result click to a new tab when the gesture asks for one, else open the page here. */
+  function handleSearchedPageClick(event: MouseEvent, page: NotesPage, projectId: string | null): void {
+    const intent = tabs.canOpenTabs ? openInNewTabIntent(event) : null;
+    if (intent) {
+      event.preventDefault();
+      openPageInNewTab(page.id, projectId, intent);
+      return;
+    }
+    if (event.type === "click") void selectSearchedPage(page);
+  }
+
   /** Searches after typing pauses; a query the index cannot run clears the results instead. */
   $effect(() => {
     const query = trimmedSearch;
@@ -849,7 +867,9 @@
                         notes.selectedPageId === page.id && "font-medium",
                       )}
                       aria-current={notes.selectedPageId === page.id ? "page" : undefined}
-                      onclick={() => { void selectSearchedPage(page); }}
+                      onmousedown={preventMiddleClickAutoscroll}
+                      onclick={(event) => handleSearchedPageClick(event, page, resultGroup.project?.id ?? null)}
+                      onauxclick={(event) => handleSearchedPageClick(event, page, resultGroup.project?.id ?? null)}
                     >
                       <StarredIconBadge starred={notes.favoritePageIds.includes(page.id)}>
                         {#if page.icon}
@@ -1154,6 +1174,7 @@
       closeNoteSubpanel();
       await onPageSelected();
     }}
+    onPageOpenInNewTab={tabs.canOpenTabs ? (pageId, intent) => openPageInNewTab(pageId, activeProjectId, intent) : undefined}
   />
 {/if}
 

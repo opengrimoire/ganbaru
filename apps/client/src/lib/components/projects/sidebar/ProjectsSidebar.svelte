@@ -9,9 +9,11 @@
   import type { Project, ProjectView } from "$lib/projects/types";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
+  import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
   import { createSidebarOrderDrag } from "$lib/utils/sidebar-order-drag.svelte";
   import { suppressHoverOnToggle } from "$lib/utils/hover-suppression";
   import { scrollOverflowAction } from "$lib/utils/scroll-overflow";
+  import type { OpenInNewTabIntent } from "$lib/workspace-tabs/gestures";
   import ProjectSidebarSection from "./ProjectSidebarSection.svelte";
   import ProjectPlacesNav from "./ProjectPlacesNav.svelte";
 
@@ -45,6 +47,7 @@
 
   const projects = getProjects();
   const preferences = getPreferences();
+  const tabs = getWorkspaceTabs();
   const { t } = getLocalization();
 
   const collapsed = $derived(!panel && projects.sidebarCollapsed);
@@ -118,6 +121,14 @@
     query = "";
     onSelectView(view);
   }
+
+  function openViewInNewTab(view: ProjectView, intent: OpenInNewTabIntent): void {
+    tabs.openLocation("item", {
+      kind: "projects",
+      projectId: view.projectId,
+      item: { type: "project-view", id: view.id },
+    }, intent);
+  }
 </script>
 
 {#snippet projectList(listClass: string)}
@@ -136,6 +147,7 @@
           collapsed={projects.isSidebarProjectCollapsed(project.id)}
           onCollapsedChange={(value) => projects.setSidebarProjectCollapsed(project.id, value)}
           onSelectView={(view) => void openView(view)}
+          onOpenViewInNewTab={tabs.canOpenTabs && !panel ? openViewInNewTab : undefined}
           onRename={(name) => projects.renameProject(project, name)}
           onMoveToGroup={(groupId) => projects.moveProjectToGroup(project, groupId)}
           onSetStatus={(status) => projects.setProjectStatus(project, status)}

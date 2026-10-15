@@ -111,6 +111,16 @@ export function supportedTabLevel(level: WorkspaceTabLevel, location: WorkspaceT
   return "kind";
 }
 
+/**
+ * Return the level a tab keeps once locked, or null when it shows nothing to lock to. A kind tab narrows to
+ * its project, or to its item when it has no project, so locking always pins what the tab shows now.
+ */
+export function workspaceTabLockLevel(tab: Pick<WorkspaceTab, "level" | "location">): WorkspaceTabLevel | null {
+  if (tab.level !== "kind") return tab.level;
+  if (tab.location.projectId) return "project";
+  return tab.location.item ? "item" : null;
+}
+
 export function createWorkspaceTab(
   id: string,
   location: WorkspaceTabLocation,

@@ -2,12 +2,17 @@ package org.opengrimoire.ganbaruai
 
 import android.app.UiModeManager
 import android.content.Context
+import android.database.ContentObserver
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
+import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.provider.Settings
 import android.view.ViewGroup
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
@@ -25,7 +30,9 @@ import kotlin.math.roundToInt
 private const val ANDROID_INSETS_BRIDGE_NAME = "GanbaruAndroidInsets"
 private const val ANDROID_APPEARANCE_BRIDGE_NAME = "GanbaruAndroidAppearance"
 private const val ANDROID_TRANSITION_BRIDGE_NAME = "GanbaruAndroidTransition"
+private const val ANDROID_MEDIA_VOLUME_BRIDGE_NAME = "GanbaruAndroidMediaVolume"
 private const val ANDROID_INSETS_EVENT_NAME = "ganbaru:android-insets"
+private const val ANDROID_MEDIA_VOLUME_EVENT_NAME = "ganbaru:android-media-volume"
 private const val ANDROID_TRANSITION_FRAME_HELD_EVENT_NAME =
   "ganbaru:android-transition-frame-held"
 private const val APPEARANCE_PREFERENCES_NAME = "ganbaru_appearance"
@@ -152,6 +159,51 @@ private class AndroidAppearanceBridge(private val activity: MainActivity) {
   }
 }
 
+/**
+ * Exposes the device media volume, which is the Music volume on Android, and reports changes from hardware
+ * buttons, the system panel, and other apps while the activity is in the foreground.
+ */
+private class AndroidMediaVolumeBridge(private val audioManager: AudioManager) {
+  private var published: String? = null
+
+  /** Current media volume as `index,max`, or empty when the device does not let apps change it. */
+  @JavascriptInterface
+  fun state(): String {
+    if (audioManager.isVolumeFixed) return ""
+    val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+    if (max <= 0) return ""
+    return "${audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)},$max"
+  }
+
+  /** Sets the media volume to the nearest device step for [level], from 0 to 1, and returns the new [state]. */
+  @JavascriptInterface
+  fun setLevel(level: Double): String {
+    if (!level.isFinite() || audioManager.isVolumeFixed) return state()
+    val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+    if (max <= 0) return ""
+    val index = (level.coerceIn(0.0, 1.0) * max).roundToInt()
+    try {
+      audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, index, 0)
+    } catch (_: SecurityException) {
+      // Do Not Disturb can forbid volume changes; the returned state shows the volume that stayed.
+    }
+    return state().also { markPublished(it) }
+  }
+
+  /** Records [current] as the state the page knows, and reports whether it differed. */
+  @Synchronized
+  fun markPublished(current: String): Boolean {
+    if (current == published) return false
+    published = current
+    return true
+  }
+
+  @Synchronized
+  fun forgetPublished() {
+    published = null
+  }
+}
+
 private class AndroidTransitionBridge(
   private val activity: MainActivity,
   private val webView: WebView,
@@ -215,12 +267,39 @@ class MainActivity : TauriActivity() {
   private val appearancePreferences by lazy {
     getSharedPreferences(APPEARANCE_PREFERENCES_NAME, Context.MODE_PRIVATE)
   }
+  private val androidMediaVolumeBridge by lazy {
+    AndroidMediaVolumeBridge(getSystemService(AudioManager::class.java))
+  }
+  private val mediaVolumeObserver by lazy {
+    object : ContentObserver(Handler(Looper.getMainLooper())) {
+      override fun onChange(selfChange: Boolean) = publishMediaVolume()
+    }
+  }
   private var appWebView: WebView? = null
 
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
     window.setBackgroundDrawable(ColorDrawable(storedWindowBackground()))
+  }
+
+  override fun onResume() {
+    super.onResume()
+    contentResolver.registerContentObserver(Settings.System.CONTENT_URI, true, mediaVolumeObserver)
+    androidMediaVolumeBridge.forgetPublished()
+    publishMediaVolume()
+  }
+
+  override fun onPause() {
+    contentResolver.unregisterContentObserver(mediaVolumeObserver)
+    super.onPause()
+  }
+
+  /** The system stores stream volumes as settings, so a settings change may be a media volume change. */
+  private fun publishMediaVolume() {
+    val webView = appWebView ?: return
+    if (!androidMediaVolumeBridge.markPublished(androidMediaVolumeBridge.state())) return
+    webView.evaluateJavascript("window.dispatchEvent(new Event('$ANDROID_MEDIA_VOLUME_EVENT_NAME'))", null)
   }
 
   /**
@@ -259,6 +338,7 @@ class MainActivity : TauriActivity() {
     }
     webView.addJavascriptInterface(androidInsetsBridge, ANDROID_INSETS_BRIDGE_NAME)
     webView.addJavascriptInterface(androidAppearanceBridge, ANDROID_APPEARANCE_BRIDGE_NAME)
+    webView.addJavascriptInterface(androidMediaVolumeBridge, ANDROID_MEDIA_VOLUME_BRIDGE_NAME)
     webView.addJavascriptInterface(
       AndroidTransitionBridge(this, webView),
       ANDROID_TRANSITION_BRIDGE_NAME,

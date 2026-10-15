@@ -470,6 +470,12 @@ export default defineConfig({
           ? "src/lib/stores/music-player/external-controls.mobile.ts"
           : "src/lib/stores/music-player/external-controls.ts",
       ),
+      "$lib/stores/music-player/device-volume": path.resolve(
+        configDir,
+        isMobileBuild
+          ? "src/lib/stores/music-player/device-volume.mobile.ts"
+          : "src/lib/stores/music-player/device-volume.ts",
+      ),
       "$lib/components/music/builder/MusicItemRepairDialog.svelte": path.resolve(
         configDir,
         isMobileBuild

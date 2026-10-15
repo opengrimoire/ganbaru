@@ -139,6 +139,7 @@
     "src/lib/music/platform-library.mobile.ts",
     "src/lib/music/platform-paths.mobile.ts",
     "src/lib/stores/music-player/external-controls.mobile.ts",
+    "src/lib/stores/music-player/device-volume.mobile.ts",
     "src/lib/stores/soundscape.mobile.svelte.ts",
     "src/lib/components/quick-notes/QuickNotesPanel.svelte"
   ],
@@ -150,6 +151,7 @@
     "src/lib/music/platform-library.ts",
     "src/lib/music/platform-paths.ts",
     "src/lib/stores/music-player/external-controls.ts",
+    "src/lib/stores/music-player/device-volume.ts",
     "src/lib/stores/soundscape.svelte.ts",
     "src/lib/windows/sync-transport.ts",
     "src/lib/stores/mobile-back-stack.desktop.ts",

@@ -19,6 +19,13 @@ declare global {
     setWindowBackground(color: string): void;
   }
 
+  interface GanbaruAndroidMediaVolumeBridge {
+    /** Device media volume as `index,max`, or empty when apps cannot change it. */
+    state(): string;
+    /** Sets the media volume to the nearest device step for a level from 0 to 1 and returns the new state. */
+    setLevel(level: number): string;
+  }
+
   interface GanbaruAndroidTransitionBridge {
     holdCurrentFrame(): void;
     releaseHeldFrame(): void;
@@ -27,6 +34,7 @@ declare global {
   interface Window {
     GanbaruAndroidInsets?: GanbaruAndroidInsetsBridge;
     GanbaruAndroidAppearance?: GanbaruAndroidAppearanceBridge;
+    GanbaruAndroidMediaVolume?: GanbaruAndroidMediaVolumeBridge;
     GanbaruAndroidTransition?: GanbaruAndroidTransitionBridge;
   }
 

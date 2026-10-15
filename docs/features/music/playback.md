@@ -25,6 +25,8 @@ Vault changes revoke new playback admission immediately and wait a bounded time 
 
 The player supports play, pause, previous, next, seek where the backend supports it, volume, mute, one playback-order control, and playlist repeat. Queue identity stays stable across source transitions so controls never briefly target the previous item. The main player does not expose a speed control; playlist membership rate overrides still apply.
 
+On desktop, the Music volume is an app volume apart from the system volume. On Android, the volume control is the phone's media volume, so it follows the hardware buttons and system controls, and Music plays at full app volume beneath it; mute stays an app control. Devices whose volume apps cannot change keep the app volume.
+
 Playback order has three exclusive modes:
 
 - **In order** follows stored playlist membership order.

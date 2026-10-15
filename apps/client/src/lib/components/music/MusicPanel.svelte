@@ -739,14 +739,16 @@
 
 <svelte:window onkeydowncapture={handleKeydown} onpointerdown={handleWindowPointerDown} />
 
-<!-- svelte-ignore a11y_click_events_have_key_events -->
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div
-  hidden={!visible}
-  class={cn("fixed z-40", mobileBuilderPresentation ? "bg-background" : !mobilePresentation && "inset-0")}
-  style={mobilePresentation ? "left: var(--visual-viewport-offset-left); top: var(--visual-viewport-offset-top); width: var(--visual-viewport-width); height: var(--visual-viewport-height);" : undefined}
-  onclick={(event) => { if (!mobileBuilderPresentation && event.target === event.currentTarget) onClose(); }}
-></div>
+<!-- The backdrop covers the title bar, so it unmounts on close, which lets the webview restore the trigger's hover at once; merely hiding it leaves hover stale until the pointer moves. -->
+{#if visible}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class={cn("fixed z-40", mobileBuilderPresentation ? "bg-background" : !mobilePresentation && "inset-0")}
+    style={mobilePresentation ? "left: var(--visual-viewport-offset-left); top: var(--visual-viewport-offset-top); width: var(--visual-viewport-width); height: var(--visual-viewport-height);" : undefined}
+    onclick={(event) => { if (!mobileBuilderPresentation && event.target === event.currentTarget) onClose(); }}
+  ></div>
+{/if}
 {#if !mobilePresentation}
   <div
     hidden={!visible}

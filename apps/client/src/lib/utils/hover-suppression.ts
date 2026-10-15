@@ -7,6 +7,13 @@
 /** Pointer travel, in CSS pixels, that counts as deliberate movement rather than a resting pointer. */
 export const HOVER_RESUME_DISTANCE_PX = 3;
 
+/**
+ * Largest distance, in CSS pixels, between two pointer moves that still reads as one movement. It stays below half
+ * the narrowest tab, the least a dragged tab travels to trade places, so a replay of where a drag started never
+ * reads as a step.
+ */
+export const POINTER_STEP_MAX_PX = 10;
+
 /** Root attribute that the app stylesheet reads while hover is suppressed. */
 export const HOVER_SUPPRESSED_ATTRIBUTE = "data-hover-suppressed";
 
@@ -32,13 +39,15 @@ function documentHost(): HoverSuppressionHost | null {
 }
 
 /**
- * Calls `onTravel` once when the pointer deliberately moves. The first pointer move only records where the pointer
- * rests, because engines may replay it after layout or a drag; the wait ends once the pointer travels
- * {@link HOVER_RESUME_DISTANCE_PX} from there, a button is pressed, or the wheel turns. Returns a function that stops
+ * Calls `onTravel` once when the pointer deliberately moves: when consecutive pointer moves, each at most
+ * {@link POINTER_STEP_MAX_PX} from the one before, add up to {@link HOVER_RESUME_DISTANCE_PX}, or when a button is
+ * pressed or the wheel turns. Engines replay where the pointer rests after layout, and after a drag even where the
+ * drag started, so a move that jumps farther than a step only starts a new count. Returns a function that stops
  * waiting without calling `onTravel`.
  */
 export function waitForPointerTravel(events: PointerTravelEvents, onTravel: () => void): () => void {
-  let origin: { x: number; y: number } | null = null;
+  let previous: { x: number; y: number } | null = null;
+  let travelled = 0;
   const options: AddEventListenerOptions = { capture: true, passive: true };
 
   const stop = (): void => {
@@ -54,11 +63,10 @@ export function waitForPointerTravel(events: PointerTravelEvents, onTravel: () =
 
   function handleMove(event: Event): void {
     const { clientX, clientY } = event as PointerEvent;
-    if (!origin) {
-      origin = { x: clientX, y: clientY };
-      return;
-    }
-    if (Math.hypot(clientX - origin.x, clientY - origin.y) >= HOVER_RESUME_DISTANCE_PX) travel();
+    const step = previous ? Math.hypot(clientX - previous.x, clientY - previous.y) : Number.POSITIVE_INFINITY;
+    previous = { x: clientX, y: clientY };
+    travelled = step > POINTER_STEP_MAX_PX ? 0 : travelled + step;
+    if (travelled >= HOVER_RESUME_DISTANCE_PX) travel();
   }
 
   events.addEventListener("pointermove", handleMove, options);

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   HOVER_RESUME_DISTANCE_PX,
   HOVER_SUPPRESSED_ATTRIBUTE,
+  POINTER_STEP_MAX_PX,
   suppressHoverOnToggle,
   suppressHoverUntilPointerMoves,
   waitForPointerTravel,
@@ -131,6 +132,37 @@ describe("waiting for deliberate pointer travel", () => {
     pointer(target, "pointermove", 401, 300);
     expect(travelled()).toBe(0);
     pointer(target, "pointermove", 400, 300 + HOVER_RESUME_DISTANCE_PX);
+    expect(travelled()).toBe(1);
+  });
+
+  it("ignores replays of where a drag started, alternating with the real pointer position", () => {
+    const { target, travelled } = wait();
+    pointer(target, "pointermove", 400, 14);
+    pointer(target, "pointermove", 180, 14);
+    pointer(target, "pointermove", 400, 14);
+    pointer(target, "pointermove", 180, 14);
+    pointer(target, "pointermove", 180, 14);
+    expect(travelled()).toBe(0);
+  });
+
+  it("counts movement again from the first move after a jump", () => {
+    const { target, travelled } = wait();
+    pointer(target, "pointermove", 180, 14);
+    pointer(target, "pointermove", 400, 14);
+    pointer(target, "pointermove", 401, 14);
+    pointer(target, "pointermove", 402, 15);
+    expect(travelled()).toBe(0);
+    pointer(target, "pointermove", 403, 16);
+    expect(travelled()).toBe(1);
+  });
+
+  it("waits for a fast sweep to slow down to steps it can follow", () => {
+    const { target, travelled } = wait();
+    pointer(target, "pointermove", 0, 0);
+    pointer(target, "pointermove", POINTER_STEP_MAX_PX + 1, 0);
+    pointer(target, "pointermove", 2 * (POINTER_STEP_MAX_PX + 1), 0);
+    expect(travelled()).toBe(0);
+    pointer(target, "pointermove", 2 * (POINTER_STEP_MAX_PX + 1) + HOVER_RESUME_DISTANCE_PX, 0);
     expect(travelled()).toBe(1);
   });
 

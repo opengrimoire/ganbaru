@@ -26,7 +26,7 @@ A locked tab stays on its project or item. Navigating somewhere outside it insid
 
 ## Title bar
 
-The + after the last tab opens a launcher with the kinds, each opened by its number key while the launcher is open, and the open tabs when the strip cannot show them all. Closed tabs come back with Ctrl+Shift+T or the tab menu. Tabs can be dragged to reorder.
+The + after the last tab opens a launcher with the kinds, each opened by its number key while the launcher is open, and the open tabs when the strip cannot show them all. Closed tabs come back with Ctrl+Shift+T or the tab menu. Dragging a tab along the bar slides the others aside as it passes them, and cancelling the drag puts it back.
 
 Tabs size like browser tabs: each has the same fixed width and all of them shrink evenly only when the bar runs out of room, dropping the inactive close button, then the label, as they narrow. Only when they no longer fit at their narrowest does the strip show just the active tab, with the launcher keeping every tab reachable. The compact tabs setting shows icons only at any size, and a strip of empty title bar stays free for moving the window.
 
@@ -34,7 +34,7 @@ A tab's context menu closes it, closes the other tabs, reopens a closed tab, loc
 
 ## Windows
 
-On desktop, every window holds its own tabs of any kind, opens new ones, and can move a tab into a new window while it has another tab left. Tabs in other windows also offer moving back to the main window. Like browser tabs, a tab dragged onto another window's tab strip moves there, and one dropped outside every window opens a new window at that point where the window manager allows it. A tab carries its place and lock when it moves, and pending edits are saved first so the new window shows them. Closing a window other than the main one hands its tabs to the main window's recently closed list, while windows still open when the app quits reopen with their tabs on the next launch. The main window owns app-wide work such as the tray, and closing it closes the app.
+On desktop, every window holds its own tabs of any kind, opens new ones, and can move a tab into a new window while it has another tab left. Tabs in other windows also offer moving back to the main window. Like browser tabs, a tab dragged onto another window's tab strip moves there, and one pulled down off the title bar, or dropped outside every window, opens in a new window at that point where the window manager allows it. A tab carries its place and lock when it moves, and pending edits are saved first so the new window shows them. Closing a window other than the main one hands its tabs to the main window's recently closed list, while windows still open when the app quits reopen with their tabs on the next launch. The main window owns app-wide work such as the tray, and closing it closes the app.
 
 ## Phone
 

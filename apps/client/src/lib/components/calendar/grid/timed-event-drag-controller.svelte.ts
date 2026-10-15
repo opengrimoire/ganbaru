@@ -10,7 +10,7 @@ import {
   minuteOffsetToDateStr,
   parseCalendarDate,
 } from "$lib/calendar/utils";
-import { getCalendarZoom } from "$lib/stores/calendar-zoom.svelte";
+import { useCalendarZoom } from "$lib/stores/calendar-zoom.svelte";
 import { isPendingCreateEventId } from "$lib/components/calendar/display-events";
 import { TouchHoldArbiter } from "$lib/utils/touch-hold";
 
@@ -61,7 +61,7 @@ export interface TimedEventDragControllerConfig {
 }
 
 export function createTimedEventDragController(config: TimedEventDragControllerConfig) {
-  const calendarZoom = getCalendarZoom();
+  const calendarZoom = useCalendarZoom();
   let dragState = $state<DragState | null>(null);
   let dragPreviewDate = $state<string | null>(null);
   let dragPreview = $state<PositionedEvent | null>(null);

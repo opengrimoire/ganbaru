@@ -1,3 +1,6 @@
+import type { WorkspacePaneScope } from "$lib/workspace-tabs/model";
+import { getWorkspacePaneScope } from "$lib/workspace-tabs/pane-scope";
+
 const STORAGE_KEY = "ganbaru-ai-calendar-zoom";
 export const CALENDAR_ZOOM_FRAME_EVENT = "ganbaru-ai-calendar-zoom-frame";
 const DEFAULT_HOUR_HEIGHT = 50;
@@ -45,142 +48,147 @@ function easeOutCubic(t: number): number {
   return 1 - Math.pow(1 - t, 3);
 }
 
-let levelIndex = findClosestIndex(loadSaved());
-let hourHeight = $state(ZOOM_LEVELS[levelIndex]);
-
-let scrollRef: HTMLElement | null = null;
-let stickyHeaderHeight = 0;
-let zoomRaf = 0;
-let gestureActive = $state(false);
-let commitTimer = 0;
-
-// Animation state
-let animating = $state(false);
-let animStartTime = 0;
-let animFromHeight = 0;
-let animToHeight = 0;
-let animFromScroll = 0;
-let animToScroll = 0;
-
-function computeScrollForHeight(
-  height: number,
-  centerMinute: number,
-  viewportHeight: number,
-): number {
-  const centerOffset = (viewportHeight - stickyHeaderHeight) / 2;
-  const targetScrollTop = (centerMinute / 60) * height - centerOffset;
-  const maxScroll = Math.max(0, 24 * height - viewportHeight);
-  return Math.max(0, Math.min(targetScrollTop, maxScroll));
+interface CalendarZoomOptions {
+  /** Whether level changes are remembered for the next launch. */
+  persists: boolean;
 }
 
-function animateTick() {
-  const scrollContainer = scrollRef;
-  if (!scrollContainer) {
-    zoomRaf = 0;
-    animating = false;
-    return;
+function createCalendarZoom({ persists }: CalendarZoomOptions) {
+  let levelIndex = findClosestIndex(loadSaved());
+  let hourHeight = $state(ZOOM_LEVELS[levelIndex]);
+
+  let scrollRef: HTMLElement | null = null;
+  let stickyHeaderHeight = 0;
+  let zoomRaf = 0;
+  let gestureActive = $state(false);
+  let commitTimer = 0;
+
+  // Animation state
+  let animating = $state(false);
+  let animStartTime = 0;
+  let animFromHeight = 0;
+  let animToHeight = 0;
+  let animFromScroll = 0;
+  let animToScroll = 0;
+
+  function computeScrollForHeight(
+    height: number,
+    centerMinute: number,
+    viewportHeight: number,
+  ): number {
+    const centerOffset = (viewportHeight - stickyHeaderHeight) / 2;
+    const targetScrollTop = (centerMinute / 60) * height - centerOffset;
+    const maxScroll = Math.max(0, 24 * height - viewportHeight);
+    return Math.max(0, Math.min(targetScrollTop, maxScroll));
   }
 
-  const elapsed = performance.now() - animStartTime;
-  const t = Math.min(1, elapsed / ANIMATION_DURATION_MS);
-  const eased = easeOutCubic(t);
+  function animateTick() {
+    const scrollContainer = scrollRef;
+    if (!scrollContainer) {
+      zoomRaf = 0;
+      animating = false;
+      return;
+    }
 
-  const currentHeight = animFromHeight + (animToHeight - animFromHeight) * eased;
-  const currentScroll = animFromScroll + (animToScroll - animFromScroll) * eased;
+    const elapsed = performance.now() - animStartTime;
+    const t = Math.min(1, elapsed / ANIMATION_DURATION_MS);
+    const eased = easeOutCubic(t);
 
-  scrollContainer.style.setProperty("--hour-h", String(currentHeight));
-  scrollContainer.scrollTop = currentScroll;
-  scrollContainer.dispatchEvent(new CustomEvent(CALENDAR_ZOOM_FRAME_EVENT));
+    const currentHeight = animFromHeight + (animToHeight - animFromHeight) * eased;
+    const currentScroll = animFromScroll + (animToScroll - animFromScroll) * eased;
 
-  if (t < 1) {
-    zoomRaf = requestAnimationFrame(animateTick);
-  } else {
-    zoomRaf = 0;
-    animating = false;
-  }
-}
-
-function startOrRetargetAnimation(toHeight: number) {
-  const scrollContainer = scrollRef;
-  if (!scrollContainer) return;
-
-  const viewportHeight = scrollContainer.clientHeight;
-  const centerOffset = (viewportHeight - stickyHeaderHeight) / 2;
-
-  // Start from the rendered height, which may be mid-animation.
-  const fromHeight = getRenderedHourHeight(scrollContainer);
-  const fromScroll = scrollContainer.scrollTop;
-
-  // Keep the minute at the viewport center fixed across the zoom.
-  const centerMinute = (fromScroll + centerOffset) / fromHeight * 60;
-  const toScroll = computeScrollForHeight(toHeight, centerMinute, viewportHeight);
-
-  animFromHeight = fromHeight;
-  animToHeight = toHeight;
-  animFromScroll = fromScroll;
-  animToScroll = toScroll;
-  animStartTime = performance.now();
-  animating = true;
-
-  if (!zoomRaf) {
-    zoomRaf = requestAnimationFrame(animateTick);
-  }
-}
-
-function commitZoom() {
-  commitTimer = 0;
-
-  if (animating) {
-    commitTimer = window.setTimeout(commitZoom, 30);
-    return;
-  }
-
-  gestureActive = false;
-  const scrollContainer = scrollRef;
-  const finalHeight = ZOOM_LEVELS[levelIndex];
-
-  // Snap to the exact level in case the last frame landed short of it.
-  if (scrollContainer) {
-    scrollContainer.style.setProperty("--hour-h", String(finalHeight));
+    scrollContainer.style.setProperty("--hour-h", String(currentHeight));
+    scrollContainer.scrollTop = currentScroll;
     scrollContainer.dispatchEvent(new CustomEvent(CALENDAR_ZOOM_FRAME_EVENT));
+
+    if (t < 1) {
+      zoomRaf = requestAnimationFrame(animateTick);
+    } else {
+      zoomRaf = 0;
+      animating = false;
+    }
   }
 
-  hourHeight = finalHeight;
+  function startOrRetargetAnimation(toHeight: number) {
+    const scrollContainer = scrollRef;
+    if (!scrollContainer) return;
 
-  // Notify components that update only after a zoom settles.
-  if (scrollContainer) {
-    scrollContainer.dispatchEvent(new CustomEvent("zoomcommit", { bubbles: true }));
+    const viewportHeight = scrollContainer.clientHeight;
+    const centerOffset = (viewportHeight - stickyHeaderHeight) / 2;
+
+    // Start from the rendered height, which may be mid-animation.
+    const fromHeight = getRenderedHourHeight(scrollContainer);
+    const fromScroll = scrollContainer.scrollTop;
+
+    // Keep the minute at the viewport center fixed across the zoom.
+    const centerMinute = (fromScroll + centerOffset) / fromHeight * 60;
+    const toScroll = computeScrollForHeight(toHeight, centerMinute, viewportHeight);
+
+    animFromHeight = fromHeight;
+    animToHeight = toHeight;
+    animFromScroll = fromScroll;
+    animToScroll = toScroll;
+    animStartTime = performance.now();
+    animating = true;
+
+    if (!zoomRaf) {
+      zoomRaf = requestAnimationFrame(animateTick);
+    }
   }
-}
 
-function persist(height: number) {
-  localStorage.setItem(STORAGE_KEY, String(height));
-}
+  function commitZoom() {
+    commitTimer = 0;
 
-function getRenderedHourHeight(scrollContainer: HTMLElement): number {
-  const currentHeightValue = scrollContainer.style.getPropertyValue("--hour-h");
-  const currentHeight = currentHeightValue ? parseFloat(currentHeightValue) : Number.NaN;
-  return Number.isFinite(currentHeight) && currentHeight > 0 ? currentHeight : hourHeight;
-}
+    if (animating) {
+      commitTimer = window.setTimeout(commitZoom, 30);
+      return;
+    }
 
-function setZoomIndex(targetIndex: number): void {
-  if (targetIndex === levelIndex) return;
+    gestureActive = false;
+    const scrollContainer = scrollRef;
+    const finalHeight = ZOOM_LEVELS[levelIndex];
 
-  levelIndex = targetIndex;
-  const nextHeight = ZOOM_LEVELS[targetIndex];
-  persist(nextHeight);
+    // Snap to the exact level in case the last frame landed short of it.
+    if (scrollContainer) {
+      scrollContainer.style.setProperty("--hour-h", String(finalHeight));
+      scrollContainer.dispatchEvent(new CustomEvent(CALENDAR_ZOOM_FRAME_EVENT));
+    }
 
-  if (scrollRef) {
-    gestureActive = true;
-    startOrRetargetAnimation(nextHeight);
-    clearTimeout(commitTimer);
-    commitTimer = window.setTimeout(commitZoom, ANIMATION_DURATION_MS + 50);
-  } else {
-    hourHeight = nextHeight;
+    hourHeight = finalHeight;
+
+    // Notify components that update only after a zoom settles.
+    if (scrollContainer) {
+      scrollContainer.dispatchEvent(new CustomEvent("zoomcommit", { bubbles: true }));
+    }
   }
-}
 
-export function getCalendarZoom() {
+  function persist(height: number) {
+    if (persists) localStorage.setItem(STORAGE_KEY, String(height));
+  }
+
+  function getRenderedHourHeight(scrollContainer: HTMLElement): number {
+    const currentHeightValue = scrollContainer.style.getPropertyValue("--hour-h");
+    const currentHeight = currentHeightValue ? parseFloat(currentHeightValue) : Number.NaN;
+    return Number.isFinite(currentHeight) && currentHeight > 0 ? currentHeight : hourHeight;
+  }
+
+  function setZoomIndex(targetIndex: number): void {
+    if (targetIndex === levelIndex) return;
+
+    levelIndex = targetIndex;
+    const nextHeight = ZOOM_LEVELS[targetIndex];
+    persist(nextHeight);
+
+    if (scrollRef) {
+      gestureActive = true;
+      startOrRetargetAnimation(nextHeight);
+      clearTimeout(commitTimer);
+      commitTimer = window.setTimeout(commitZoom, ANIMATION_DURATION_MS + 50);
+    } else {
+      hourHeight = nextHeight;
+    }
+  }
+
   return {
     get hourHeight() {
       return hourHeight;
@@ -246,4 +254,22 @@ export function getCalendarZoom() {
       setZoomIndex(targetIndex);
     },
   };
+}
+
+export type CalendarZoom = ReturnType<typeof createCalendarZoom>;
+
+// The primary pane's zoom is the remembered one; a split's secondary pane starts from it and zooms on its own.
+const zooms: Record<WorkspacePaneScope, CalendarZoom> = {
+  primary: createCalendarZoom({ persists: true }),
+  secondary: createCalendarZoom({ persists: false }),
+};
+
+/** The primary Calendar zoom, the one outside a split view and the one remembered for the next launch. */
+export function getCalendarZoom(): CalendarZoom {
+  return zooms.primary;
+}
+
+/** The Calendar zoom of the calling view's split pane. Call during component initialization. */
+export function useCalendarZoom(): CalendarZoom {
+  return zooms[getWorkspacePaneScope()];
 }

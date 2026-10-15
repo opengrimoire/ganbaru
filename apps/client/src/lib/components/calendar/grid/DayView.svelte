@@ -19,7 +19,7 @@
   import { eventMatchesActiveOccurrence } from "$lib/components/calendar/occurrence-protection";
   import { hasCalendarEventStarted } from "$lib/components/calendar/event-edit-permissions";
   import type { PanelAnchor } from "$lib/components/calendar/edit-session.svelte";
-  import { getCalendarZoom } from "$lib/stores/calendar-zoom.svelte";
+  import { useCalendarZoom } from "$lib/stores/calendar-zoom.svelte";
   import { getPomodoro } from "$lib/stores/pomodoro.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { formatNumber } from "$lib/i18n/formatters";
@@ -93,7 +93,7 @@
   let stickyHeaderHeight = $state(0);
   let visibleStartMinute = $state(0);
   let visibleEndMinute = $state(1440);
-  const calendarZoom = getCalendarZoom();
+  const calendarZoom = useCalendarZoom();
   const timelineWheelScroll = createTimelineWheelScroll(() => scrollContainer);
   const localization = getLocalization();
   const { t } = localization;

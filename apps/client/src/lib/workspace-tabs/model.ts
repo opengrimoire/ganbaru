@@ -409,7 +409,7 @@ export function splitWorkspaceTabs(state: WorkspaceTabsState, currentId: string,
 export type WorkspacePaneScope = "primary" | "secondary";
 
 /** Kinds whose views can run a secondary set of stores, so two tabs of them can show side by side. */
-export const PANE_SCOPED_KINDS: ReadonlySet<View> = new Set<View>(["notes"]);
+export const PANE_SCOPED_KINDS: ReadonlySet<View> = new Set<View>(["notes", "calendar"]);
 
 /** Whether two locations show through the same stores: tabs of one kind, or the same view, such as Notes hosted in Projects. */
 export function sharesViewStores(

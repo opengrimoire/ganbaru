@@ -17,7 +17,7 @@
   import Settings from "@lucide/svelte/icons/settings";
   import Layers from "@lucide/svelte/icons/layers";
   import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
-  import { getCalendarZoom } from "$lib/stores/calendar-zoom.svelte";
+  import { useCalendarZoom } from "$lib/stores/calendar-zoom.svelte";
   import { calendarDisplayName } from "$lib/calendar/display";
   import { formatList } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -28,7 +28,7 @@
 
   const calendarsStore = getCalendars();
   const settingsLauncher = getSettingsLauncher();
-  const calendarZoom = getCalendarZoom();
+  const calendarZoom = useCalendarZoom();
   const mobileBackStack = getMobileBackStack();
   const localization = getLocalization();
   const { t } = localization;

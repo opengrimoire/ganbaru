@@ -7,18 +7,23 @@
     getWeekDays, getWorkCycleDays,
     getLocalTimezone,
   } from "$lib/calendar/utils";
-  import { getCalendar } from "$lib/stores/calendar.svelte";
+  import { useCalendar } from "$lib/stores/calendar.svelte";
   import { getCalendars } from "$lib/stores/calendars.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
   import { calendarIdentityEmail } from "$lib/calendar/display";
   import { getPomodoro } from "$lib/stores/pomodoro.svelte";
   import { getTheme } from "$lib/stores/theme.svelte";
-  import { getCalendarZoom } from "$lib/stores/calendar-zoom.svelte";
+  import { useCalendarZoom } from "$lib/stores/calendar-zoom.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { onDestroy, onMount, tick, untrack } from "svelte";
   import { getWorkspacePaneFocus } from "$lib/workspace-tabs/pane-focus";
+  import { getWorkspacePaneScope } from "$lib/workspace-tabs/pane-scope";
+  import {
+    handlesCalendarMusicInspection,
+    registerCalendarMusicInspectionTarget,
+  } from "$lib/components/calendar/view/music-inspection";
   import { getNativeCalendarEditController } from "$lib/components/calendar/view/native-edit-controller.svelte";
   import type { CalendarEditDraft } from "$lib/components/calendar/view/native-edit-controller.svelte";
   import type { CalendarDeleteOutcome } from "$lib/api/calendar-edit";
@@ -91,15 +96,16 @@
     type CalendarSwipeAxis,
   } from "./mobile-gestures";
 
-  const calendarStore = getCalendar();
+  const paneScope = getWorkspacePaneScope();
+  const calendarStore = useCalendar();
   const calendarsStore = getCalendars();
   const projects = getProjects();
   const pomodoro = getPomodoro();
-  const nativeEditor = getNativeCalendarEditController(() => pomodoro.vaultContext);
-  const directEditor = getNativeCalendarEditController(() => pomodoro.vaultContext, "direct");
-  const deleteEditor = getNativeCalendarEditController(() => pomodoro.vaultContext, "delete");
+  const nativeEditor = getNativeCalendarEditController(() => pomodoro.vaultContext, "panel", paneScope);
+  const directEditor = getNativeCalendarEditController(() => pomodoro.vaultContext, "direct", paneScope);
+  const deleteEditor = getNativeCalendarEditController(() => pomodoro.vaultContext, "delete", paneScope);
   let viewAlive = true;
-  const calendarZoom = getCalendarZoom();
+  const calendarZoom = useCalendarZoom();
   const theme = getTheme();
   const preferences = getPreferences();
   const mobileBackStack = getMobileBackStack();
@@ -213,9 +219,9 @@
   });
 
   // Keep the headless handle's cached view mode in sync so external drivers
-  // (the benchmark harness) read the current value without polling.
+  // (the benchmark harness) read the current value without polling. Only the primary pane drives the handle.
   $effect(() => {
-    getCalendarNavHandle().reportViewMode(viewMode);
+    if (paneScope === "primary") getCalendarNavHandle().reportViewMode(viewMode);
   });
 
   function visibleStoreEventsForWindow(window: typeof viewWindow): CalendarEvent[] {
@@ -325,7 +331,7 @@
     },
     setPreferredViewMode: (mode) => {
       if (onViewModeChange) onViewModeChange(mode);
-      else preferences.setCalendarViewMode(mode);
+      else if (paneScope === "primary") preferences.setCalendarViewMode(mode);
     },
     setViewMode: (mode) => {
       viewMode = mode;
@@ -859,9 +865,17 @@
 
   onMount(() => {
     const removeNavigationListeners = navigationController.installWindowListeners();
-    // The Calendar tab inspects music assignments; a calendar scoped to a project leaves them to it.
+    void calendarStore.loadInitialWindow(viewWindow.start, viewWindow.end).catch((error: unknown) => {
+      console.error("[calendar] initial window load failed", error);
+    });
+    // A Calendar tab inspects music assignments, one per split; a calendar scoped to a project leaves them to it.
+    const musicInspectionTarget = { scope: paneScope, isFocused: paneFocused };
+    const unregisterMusicInspection = eventFilter
+      ? () => {}
+      : registerCalendarMusicInspectionTarget(musicInspectionTarget);
     const inspectMusicAssignment = (event: Event) => {
-      if (eventFilter || !(event instanceof CustomEvent) || typeof event.detail?.eventId !== "string") return;
+      if (eventFilter || !handlesCalendarMusicInspection(musicInspectionTarget)) return;
+      if (!(event instanceof CustomEvent) || typeof event.detail?.eventId !== "string") return;
       const eventId = event.detail.eventId;
       const selected = currentVisibleStoreEvents().find((candidate) => candidate.id === eventId)
         ?? calendarStore.sourceEvents.find((candidate) => candidate.id === eventId);
@@ -879,8 +893,8 @@
 
     // Expose navigate / view-mode setters through the headless handle so the
     // benchmark harness (and any future scripted driver) can drive the
-    // calendar without reaching into component internals.
-    const unregisterNav = navigationController.registerBenchmark({
+    // calendar without reaching into component internals. Only the primary pane registers it.
+    const unregisterNav = paneScope !== "primary" ? () => {} : navigationController.registerBenchmark({
       navigate,
       setViewMode: (mode) => changeView(mode),
       setAnchorDate: (date) => {
@@ -899,6 +913,7 @@
 
     return () => {
       unregisterNav();
+      unregisterMusicInspection();
       removeNavigationListeners();
       window.removeEventListener("ganbaru-ai:inspect-music-assignment", inspectMusicAssignment);
       targetController.clearPending();

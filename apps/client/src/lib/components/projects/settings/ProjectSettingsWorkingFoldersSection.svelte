@@ -14,7 +14,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { ProjectWorkingFolderRead } from "$lib/chat/contracts";
   import { onDestroy } from "svelte";
-  import { getChat } from "$lib/stores/chat.svelte";
+  import { adoptChatProjectPrimaryWorkingFolder, getChat } from "$lib/stores/chat.svelte";
   import * as chatApi from "$lib/api/chat";
   import * as folderApi from "$lib/api/project-working-folders";
   import { createProjectSettingsWorkingFoldersDraft } from "$lib/projects/settings/working-folders-draft.svelte";
@@ -59,10 +59,7 @@
     provider: (id, value) => chat.setWorkingFolderProviderPreference(id, value),
     primary: async (id, folderId, revision) => {
       const primary = await chatApi.setChatProjectPrimaryWorkingFolder(id, folderId, revision);
-      if (chat.selectedChannel?.projectId === id) {
-        chat.primaryWorkingFolder = primary;
-        chat.selectedWorkingFolderId = folderId;
-      }
+      adoptChatProjectPrimaryWorkingFolder(primary);
       return primary;
     },
   });

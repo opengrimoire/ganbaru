@@ -111,7 +111,7 @@ vi.mock("$lib/stores/projects.svelte", async () => {
     projectsForGroupIncludingInactive: (id: string) => projects.filter((project) => project.groupId === id),
     isProjectStarred: () => false,
   };
-  return { getProjects: () => store, useProjects: () => store };
+  return { getProjects: () => store, useProjects: () => store, getProjectsStore: () => store };
 });
 vi.mock("$lib/stores/calendar.svelte", () => ({ getCalendar: () => ({ loaded: true, sourceEvents: [] }) }));
 vi.mock("$lib/stores/pomodoro.svelte", () => ({ getPomodoro: () => ({ activeRunId: null, formattedTime: "00:00" }) }));

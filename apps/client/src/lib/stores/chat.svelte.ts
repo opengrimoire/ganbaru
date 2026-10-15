@@ -53,7 +53,7 @@ import {
   type ChatMessageReaction,
 } from "$lib/chat/timeline/organizational-message-model";
 import { LOCAL_CHAT_PARTICIPANT_ID } from "$lib/chat/teammates/participant-display";
-import { getProjects } from "$lib/stores/projects.svelte";
+import { getProjectsStore, type ProjectsStore } from "$lib/stores/projects.svelte";
 import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
 import { preferredProjectWorkingFolder } from "$lib/chat/workspace/working-folder-selection";
 import { readLastChatChannelId, saveLastChatChannelId } from "$lib/chat/channel-sections";
@@ -75,7 +75,6 @@ import {
 
 export type { ChatOrganizationalDraft } from "$lib/stores/chat/organizational-controller.svelte";
 
-const projects = getProjects();
 const localExecutionAvailable = platformHasCapability(
   BUILD_PLATFORM_PROFILE,
   "chat.local-execution",
@@ -120,6 +119,8 @@ export class ChatStore {
   loading = $state(false);
   error = $state<string | null>(null);
   selectedWorkingFolderId = $state<ProjectWorkingFolderId | null>(null);
+  /** The primary working folder of the selected channel's project. */
+  primaryWorkingFolder = $state<ChatProjectPrimaryWorkingFolderRead | null>(null);
   selectedThreadId = $state<ChatThreadId | null>(null);
   selectedExecutionEnvironmentId = $state<string | null>(null);
   railOpen = $state(true);
@@ -139,9 +140,12 @@ export class ChatStore {
   private otherWindowListening = false;
   /** Whether this is the primary pane's store, which loads shared state and persists its selection. */
   private readonly owner: boolean;
+  /** The Projects store of this pane's scope, whose selection the pane follows. */
+  private readonly projects: ProjectsStore;
 
   constructor(scope: WorkspacePaneScope) {
     this.owner = scope === "primary";
+    this.projects = getProjectsStore(scope);
     this.configurationController = shared.configuration;
     registerWindowCloseFlusher(() => this.flushComposer());
     this.composerDefaultsCoordinator = new ChatComposerDefaultsCoordinator({
@@ -155,7 +159,7 @@ export class ChatStore {
       flush: () => this.flushComposer(),
     });
     this.channelNavigationController = new ChatChannelNavigationController({
-      currentProjectId: () => projects.selectedProjectId,
+      currentProjectId: () => this.projects.selectedProjectId,
       selectedChannelId: () => this.selectedChannelId,
       selectChannel: (channelId) => this.selectChannel(channelId),
       onChanged: (channelId) => this.publishChanges({ channelIds: [channelId] }),
@@ -223,8 +227,6 @@ export class ChatStore {
 
   get workingFolders(): ProjectWorkingFolderRead[] { return this.configurationController.workingFolders; }
   set workingFolders(workingFolders: ProjectWorkingFolderRead[]) { this.configurationController.workingFolders = workingFolders; }
-  get primaryWorkingFolder(): ChatProjectPrimaryWorkingFolderRead | null { return this.configurationController.primaryWorkingFolder; }
-  set primaryWorkingFolder(primary: ChatProjectPrimaryWorkingFolderRead | null) { this.configurationController.primaryWorkingFolder = primary; }
   get providerDiscoveryLoading(): boolean { return this.configurationController.providerDiscoveryLoading; }
   set providerDiscoveryLoading(loading: boolean) { this.configurationController.providerDiscoveryLoading = loading; }
   get activeChannels(): ChatChannelRead[] { return this.channelNavigationController.activeChannels; }
@@ -423,6 +425,7 @@ export class ChatStore {
     this.selectedExecutionRunId = null;
     this.messageAnchorId = null;
     this.selectedWorkingFolderId = null;
+    this.primaryWorkingFolder = null;
     this.selectedThreadId = null;
     this.error = null;
     this.loading = false;
@@ -447,9 +450,9 @@ export class ChatStore {
           console.error("Chat assignment recovery failed", error);
         });
       }
-      await projects.ensureLoaded();
+      await this.projects.ensureLoaded();
       if (request !== this.loadRequest || vaultGeneration !== this.vaultGeneration) return;
-      const projectId = projects.selectedProjectId;
+      const projectId = this.projects.selectedProjectId;
       if (projectId) {
         await this.loadProjectChannels(projectId);
         const rememberedChannelId = readLastChatChannelId(projectId);
@@ -536,7 +539,7 @@ export class ChatStore {
     selectedProjectId: string | null,
     vaultGeneration: number,
   ): Promise<void> {
-    for (const project of projects.projects) {
+    for (const project of this.projects.projects) {
       if (project.id === selectedProjectId || project.status !== "active") continue;
       const rememberedChannelId = readLastChatChannelId(project.id);
       const projectChannels = this.channelNavigationController.channelsForProject(project.id);
@@ -584,7 +587,7 @@ export class ChatStore {
 
   private async performProjectSelection(projectId: string): Promise<void> {
     if (!await this.loadProjectChannels(projectId)) return;
-    if (projects.selectedProjectId !== projectId) return;
+    if (this.projects.selectedProjectId !== projectId) return;
     const rememberedChannelId = readLastChatChannelId(projectId);
     const selected = this.activeChannels.find((channel) => channel.id === rememberedChannelId)
       ?? this.activeChannels.find((channel) => channel.isDefault)
@@ -607,16 +610,12 @@ export class ChatStore {
     this.selectedChannelId = channelId;
     if (this.owner) saveLastChatChannelId(channel.projectId, channelId);
     this.channelArchiveOpen = false;
-    await projects.selectProject(channel.projectId);
+    await this.projects.selectProject(channel.projectId);
     if (request !== this.channelSelectionRequest) return;
     if (changedChannel) this.closeReplyThread();
-    if (localExecutionAvailable) {
-      try {
-        await this.configurationController.readPrimaryWorkingFolder(channel.projectId);
-      } catch {
-        this.primaryWorkingFolder = null;
-      }
-    } else {
+    try {
+      this.primaryWorkingFolder = await this.configurationController.readPrimaryWorkingFolder(channel.projectId);
+    } catch {
       this.primaryWorkingFolder = null;
     }
     const rememberedFolderId = localExecutionAvailable
@@ -773,7 +772,7 @@ export class ChatStore {
 
   async openMessageSearchResult(result: ChatMessageSearchResultRead): Promise<void> {
     this.messageAnchorId = null;
-    await projects.selectProject(result.projectId);
+    await this.projects.selectProject(result.projectId);
     await this.loadProjectChannels(result.projectId);
     await this.selectChannel(result.channelId);
     const anchorCursor = String(result.ordinal + 1);
@@ -848,7 +847,7 @@ export class ChatStore {
   }
 
   openChannelArchive(): void {
-    this.channelNavigationController.openArchive(projects.selectedProjectId);
+    this.channelNavigationController.openArchive(this.projects.selectedProjectId);
   }
 
   closeChannelArchive(): void {
@@ -940,7 +939,7 @@ export class ChatStore {
     await this.configurationController.removeWorkingFolder(workingFolderId);
     if (this.selectedWorkingFolderId === workingFolderId) {
       this.selectedWorkingFolderId = null;
-      await this.syncProjectSelection(projects.selectedProjectId);
+      await this.syncProjectSelection(this.projects.selectedProjectId);
     }
   }
 
@@ -951,11 +950,11 @@ export class ChatStore {
     );
   }
 
-  async setProjectPrimaryWorkingFolder(workingFolderId: ProjectWorkingFolderId): Promise<void> {
-    const projectId = this.selectedChannel?.projectId ?? projects.selectedProjectId;
-    if (!projectId) throw new Error("Project primary working folder was not loaded");
-    await this.configurationController.setProjectPrimaryWorkingFolder(projectId, workingFolderId);
-    this.selectedWorkingFolderId = workingFolderId;
+  /** Show a project's newly saved primary working folder when this pane's channel belongs to that project. */
+  adoptProjectPrimaryWorkingFolder(primary: ChatProjectPrimaryWorkingFolderRead): void {
+    if (this.selectedChannel?.projectId !== primary.projectId) return;
+    this.primaryWorkingFolder = primary;
+    this.selectedWorkingFolderId = primary.workingFolderId;
   }
 
   selectWorkingFolder(workingFolderId: ProjectWorkingFolderId): void {
@@ -963,7 +962,7 @@ export class ChatStore {
     this.selectedExecutionEnvironmentId = null;
     const projectId = this.selectedWorkingFolder?.workingFolder.projectId;
     if (projectId) {
-      void projects.selectProject(projectId);
+      void this.projects.selectProject(projectId);
       if (this.owner) void workingFolderApi.rememberProjectWorkingFolder(projectId, workingFolderId);
     }
     this.selectThread(null);
@@ -990,7 +989,7 @@ export class ChatStore {
         throw new Error("Private scratch threads cannot be opened as direct agent threads");
       }
       this.selectedWorkingFolderId = thread.workingFolderId;
-      void projects.selectProject(thread.projectId);
+      void this.projects.selectProject(thread.projectId);
       if (this.owner) void workingFolderApi.rememberProjectWorkingFolder(thread.projectId, thread.workingFolderId);
     }
     if (this.selectedWorkingFolderId) {
@@ -1200,16 +1199,16 @@ export class ChatStore {
       this.selectedThreadId = remembered;
       this.selectedWorkingFolderId = this.selectedThread?.workingFolderId ?? null;
       const selectedThread = this.selectedThread;
-      if (selectedThread) await projects.selectProject(selectedThread.projectId);
+      if (selectedThread) await this.projects.selectProject(selectedThread.projectId);
       void this.loadTimeline(remembered).catch(() => undefined);
       return;
     }
     if (this.selectedWorkingFolderId && this.workingFolders.some((entry) => (
       entry.workingFolder.id === this.selectedWorkingFolderId
-        && entry.workingFolder.projectId === projects.selectedProjectId
+        && entry.workingFolder.projectId === this.projects.selectedProjectId
     ))) return;
     this.selectedThreadId = null;
-    const projectId = projects.selectedProjectId;
+    const projectId = this.projects.selectedProjectId;
     const rememberedFolderId = projectId && localExecutionAvailable
       ? await workingFolderApi.lastProjectWorkingFolder(projectId)
       : null;
@@ -1273,4 +1272,9 @@ export function resetChatForVault(): void {
   shared.teammates = [];
   shared.archivedTeammates = [];
   shared.configuration.reset();
+}
+
+/** Show a project's newly saved primary working folder in every pane whose channel belongs to that project. */
+export function adoptChatProjectPrimaryWorkingFolder(primary: ChatProjectPrimaryWorkingFolderRead): void {
+  for (const store of paneStores.all()) store.adoptProjectPrimaryWorkingFolder(primary);
 }

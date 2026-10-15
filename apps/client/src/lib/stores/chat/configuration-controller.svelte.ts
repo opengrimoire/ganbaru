@@ -31,7 +31,6 @@ export interface ChatConfigurationControllerOptions {
 export class ChatConfigurationController {
   settings = $state<ChatSettingsRead | null>(null);
   workingFolders = $state<ProjectWorkingFolderRead[]>([]);
-  primaryWorkingFolder = $state<ChatProjectPrimaryWorkingFolderRead | null>(null);
   providerDiscoveryLoading = $state(false);
 
   private generation = 0;
@@ -45,7 +44,6 @@ export class ChatConfigurationController {
     this.generation += 1;
     this.settings = null;
     this.workingFolders = [];
-    this.primaryWorkingFolder = null;
     this.providerDiscoveryPromise = null;
     this.workingFolderRefreshPromise = null;
     this.providerDiscoveryLoading = false;
@@ -110,12 +108,10 @@ export class ChatConfigurationController {
     return refresh;
   }
 
-  async readPrimaryWorkingFolder(projectId: string): Promise<void> {
-    if (!localExecutionAvailable) {
-      this.primaryWorkingFolder = null;
-      return;
-    }
-    this.primaryWorkingFolder = await chatApi.readChatProjectPrimaryWorkingFolder(projectId);
+  /** Read a project's primary working folder, or `null` where local execution is unavailable. */
+  async readPrimaryWorkingFolder(projectId: string): Promise<ChatProjectPrimaryWorkingFolderRead | null> {
+    if (!localExecutionAvailable) return null;
+    return chatApi.readChatProjectPrimaryWorkingFolder(projectId);
   }
 
   async saveProvider(configuration: ProviderInstanceConfig): Promise<ProviderInstanceRead> {
@@ -261,19 +257,6 @@ export class ChatConfigurationController {
     await this.refreshSettings();
   }
 
-  async setProjectPrimaryWorkingFolder(
-    projectId: string,
-    workingFolderId: ProjectWorkingFolderId,
-  ): Promise<void> {
-    if (!this.primaryWorkingFolder) {
-      throw new Error("Project primary working folder was not loaded");
-    }
-    this.primaryWorkingFolder = await chatApi.setChatProjectPrimaryWorkingFolder(
-      projectId,
-      workingFolderId,
-      this.primaryWorkingFolder.revision,
-    );
-  }
 
   findWorkingFolder(workingFolderId: ProjectWorkingFolderId): ProjectWorkingFolderRead {
     const workingFolder = this.workingFolders.find(

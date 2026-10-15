@@ -6,7 +6,7 @@ import {
   type NotesSelectPageOptions,
 } from "$lib/stores/notes/editor-session.svelte";
 import { initialNotesSelectedPageId, saveNotesSelectedPageId } from "$lib/stores/notes/page-state";
-import { getProjects } from "./projects.svelte";
+import { getProjectsStore } from "./projects.svelte";
 import { notesPageProjectId } from "$lib/notes/project-membership";
 import type { NotesPageOpenMode } from "$lib/notes/pages/open-mode";
 import type { NotesLoadedPage } from "$lib/notes/types";
@@ -22,6 +22,8 @@ export interface NotesEditorPane {
 }
 
 interface NotesWorkspaceOptions {
+  /** The split pane scope whose Projects selection the workspace follows. */
+  scope: WorkspacePaneScope;
   /** Whether the workspace opens on, and remembers, the window's last selected page. */
   remembersSelection: boolean;
 }
@@ -30,8 +32,8 @@ interface NotesWorkspaceOptions {
 let nextPaneId = 0;
 
 /** Coordinate live panes without replacing the main editor when a preview opens. */
-function createNotesWorkspace({ remembersSelection }: NotesWorkspaceOptions) {
-  const projects = getProjects();
+function createNotesWorkspace({ scope, remembersSelection }: NotesWorkspaceOptions) {
+  const projects = getProjectsStore(scope);
   const ui = createNotesWorkspaceUi();
   const persistSelectedPageId = remembersSelection ? saveNotesSelectedPageId : () => undefined;
   let main = $state.raw<NotesEditorPane>(createPane(remembersSelection));
@@ -78,6 +80,7 @@ function createNotesWorkspace({ remembersSelection }: NotesWorkspaceOptions) {
       editors: () => panes.map((pane) => pane.store),
     }, {
       ui,
+      projects,
       initialSelectedPageId: restoreSelection ? initialNotesSelectedPageId() : null,
       persistSelectedPageId,
     });
@@ -281,8 +284,8 @@ export type NotesWorkspace = ReturnType<typeof createNotesWorkspace>;
 
 // Both exist from the start, so neither is created inside, and owned by, a reactive effect that reads it.
 const workspaces: Record<WorkspacePaneScope, NotesWorkspace> = {
-  primary: createNotesWorkspace({ remembersSelection: true }),
-  secondary: createNotesWorkspace({ remembersSelection: false }),
+  primary: createNotesWorkspace({ scope: "primary", remembersSelection: true }),
+  secondary: createNotesWorkspace({ scope: "secondary", remembersSelection: false }),
 };
 for (const workspace of Object.values(workspaces)) registerWindowCloseFlusher(() => workspace.flushPendingWrites());
 

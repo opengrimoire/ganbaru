@@ -408,13 +408,17 @@ export function splitWorkspaceTabs(state: WorkspaceTabsState, currentId: string,
  */
 export type WorkspacePaneScope = "primary" | "secondary";
 
-/** Whether two locations show through the same stores: tabs of one kind, or the same view, such as Notes hosted in Projects. */
+/**
+ * Whether two locations show through the same stores: tabs of one kind, the same view, such as Notes hosted in
+ * Projects, or two views that follow the selected project, which every view except Calendar does.
+ */
 export function sharesViewStores(
   a: WorkspaceTabLocation,
   b: WorkspaceTabLocation,
   paneView: (location: WorkspaceTabLocation) => View,
 ): boolean {
-  return a.kind === b.kind || paneView(a) === paneView(b);
+  if (a.kind === b.kind || paneView(a) === paneView(b)) return true;
+  return a.kind !== "calendar" && b.kind !== "calendar";
 }
 
 /**
@@ -430,21 +434,6 @@ export function secondaryScopeTabId(
 ): string | null {
   if (!partner || !sharesViewStores(active.location, partner.location, paneView)) return null;
   return current === active.id || current === partner.id ? current : partner.id;
-}
-
-/**
- * Why a tab cannot show beside another: the same tab, or a tab locked to a project other than the one the
- * current tab shows. The added tab follows the current tab's project otherwise, because the views share it.
- */
-export type WorkspaceSplitBlock = "same-tab" | "locked-project";
-
-/** Whether `added` can show beside `current`. */
-export function workspaceSplitBlock(current: WorkspaceTab, added: WorkspaceTab): WorkspaceSplitBlock | null {
-  if (current.id === added.id) return "same-tab";
-  const [a, b] = [current.location, added.location];
-  const shareProject = a.kind === "calendar" || b.kind === "calendar" || a.projectId === null
-    || b.projectId === a.projectId;
-  return added.locked && !shareProject ? "locked-project" : null;
 }
 
 /** End the split `id` belongs to, keeping both tabs where they are. */

@@ -65,7 +65,7 @@ import { createNotesPageHistoryController } from "./page-history.svelte";
 import { createNotesUndoController } from "./undo";
 import { getPreferences } from "$lib/stores/preferences.svelte";
 import { resolveSidebarSortOrder, type SidebarSortOrder } from "$lib/utils/sidebar-order";
-import { getProjects } from "$lib/stores/projects.svelte";
+import type { ProjectsStore } from "$lib/stores/projects.svelte";
 import {
   flatNotesBlockItems,
   flatNotesBlockItemsForContext,
@@ -108,11 +108,13 @@ export interface NotesWorkspaceUi {
   viewMode: NotesViewMode;
   /** Whether the desktop Notes explorer is collapsed. */
   explorerCollapsed: boolean;
+  /** Project whose shell the workspace last loaded, or `null` for the unscoped workspace. */
+  shellProjectId: string | null;
 }
 
 /** Create the shared view state for a new Notes workspace. */
 export function createNotesWorkspaceUi(): NotesWorkspaceUi {
-  const ui = $state<NotesWorkspaceUi>({ viewMode: "pages", explorerCollapsed: false });
+  const ui = $state<NotesWorkspaceUi>({ viewMode: "pages", explorerCollapsed: false, shellProjectId: null });
   return ui;
 }
 
@@ -153,10 +155,7 @@ const pendingPageRemovalIds = $derived(new Set(Object.values(pendingPageRemovals
 let trashActionError = $state<string | null>(null);
 let navigationMutationRevision = 0;
 let workspaceLoaded = $state(false);
-/** Project whose shell the window's page lists hold, or `null` for the unscoped workspace. */
-let shellProjectId = $state<string | null>(null);
 const preferences = getPreferences();
-const projects = getProjects();
 const sidebarController = createNotesSidebarController();
 const archiveController = createNotesArchiveController();
 const searchController = createNotesSearchController();
@@ -193,6 +192,8 @@ export interface NotesEditorNavigation {
 
 export interface NotesEditorStoreOptions {
   ui: NotesWorkspaceUi;
+  /** The Projects store of the pane scope the editor shows through. */
+  projects: ProjectsStore;
   initialSelectedPageId: string | null;
   persistSelectedPageId: (pageId: string | null) => void;
 }
@@ -200,7 +201,7 @@ export interface NotesEditorStoreOptions {
 /** Own one live editor's document, history, hydration, drafts, and ordered save queue. */
 export function createNotesEditorStore(
   navigation: NotesEditorNavigation,
-  { ui, initialSelectedPageId, persistSelectedPageId }: NotesEditorStoreOptions,
+  { ui, projects, initialSelectedPageId, persistSelectedPageId }: NotesEditorStoreOptions,
 ) {
   let editorScrollTop = 0;
   let selectedDatabaseBlockId = $state<string | null>(null);
@@ -474,7 +475,7 @@ export function createNotesEditorStore(
   }
 
   function mergeReloadedWorkspaceShell(shell: NotesWorkspaceShell, projectId: string | null): void {
-    shellProjectId = projectId;
+    ui.shellProjectId = projectId;
     mergeNavigationDatabases(shell);
     const mergedPages = [...new Map([...allPages, ...shell.pages].map((page) => [page.id, page])).values()];
     replacePages(mergedPages);
@@ -505,7 +506,7 @@ export function createNotesEditorStore(
     projectId: string | null,
   ): string | null {
     workspaceLoaded = true;
-    shellProjectId = projectId;
+    ui.shellProjectId = projectId;
     navigationDatabases = shell.navigation_databases;
     replacePages(shell.pages);
     replaceAllPages([...new Map(
@@ -1940,7 +1941,7 @@ export function createNotesEditorStore(
     },
     /** Project whose Notes shell is loaded, or `null` for the unscoped workspace. */
     get workspaceProjectId(): string | null {
-      return shellProjectId;
+      return ui.shellProjectId;
     },
     get loading(): boolean {
       return workspaceController.loading;

@@ -12,7 +12,7 @@
   import type { TitleBarControlId } from "$lib/stores/preference-options";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getWorkspaceTabs, type WorkspaceTabDetachBlock } from "$lib/stores/workspace-tabs.svelte";
-  import { workspaceTabLockLevel, type WorkspaceSplitBlock } from "$lib/workspace-tabs/model";
+  import { workspaceTabLockLevel } from "$lib/workspace-tabs/model";
   import { SPLIT_DIVIDER_SIZE, oppositeSplitOrientation, workspaceSplitArrangement, type WorkspaceSplitArea } from "$lib/workspace-tabs/split-layout";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
@@ -442,10 +442,6 @@
     return workspaceTabLockLevel(tab) ? "lock" : null;
   });
 
-  function splitBlockReason(block: WorkspaceSplitBlock): string {
-    return block === "locked-project" ? t("titleBar.split.lockedProjectBlocked") : t("titleBar.split.sameViewBlocked");
-  }
-
   /**
    * A tab in a split arranges that split. The active tab opens a new tab beside it, and any other tab can show
    * beside the active one.
@@ -464,14 +460,10 @@
     }
     if (id === tabs.activeTabId) {
       const kinds = tabs.splitKinds();
-      const blockReason = kinds.length > 0
-        ? null
-        : t(tabs.canReceiveTab ? "titleBar.split.sameViewBlocked" : "titleBar.split.tabLimitBlocked");
+      const blockReason = kinds.length > 0 ? null : t("titleBar.split.tabLimitBlocked");
       return { kind: "open-new", kinds, blockReason };
     }
-    const block = tabs.splitBlock(id);
-    if (block === "unavailable") return null;
-    return { kind: "open", blockReason: block ? splitBlockReason(block) : null };
+    return tabs.canOpenInSplit(id) ? { kind: "open" } : null;
   });
 
   function toggleTitleBarControl(id: TitleBarControlId) {

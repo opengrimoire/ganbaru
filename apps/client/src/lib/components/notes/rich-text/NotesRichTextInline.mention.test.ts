@@ -31,7 +31,7 @@ vi.mock("$lib/stores/projects.svelte", () => {
     selectProject: async () => undefined,
     showProjectView: () => undefined,
   });
-  return { getProjects, useProjects: getProjects };
+  return { getProjects, useProjects: getProjects, getProjectsStore: getProjects };
 });
 
 const { loadTask } = vi.hoisted(() => ({

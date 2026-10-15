@@ -38,7 +38,14 @@ const api = vi.hoisted(() => ({
   readChatProjectPrimaryWorkingFolder: vi.fn<() => Promise<ChatProjectPrimaryWorkingFolderRead>>(),
   setChatProjectPrimaryWorkingFolder: vi.fn<() => Promise<ChatProjectPrimaryWorkingFolderRead>>(),
 }));
-vi.mock("$lib/stores/chat.svelte", () => ({ getChat: () => chat }));
+vi.mock("$lib/stores/chat.svelte", () => ({
+  getChat: () => chat,
+  adoptChatProjectPrimaryWorkingFolder: (primary: ChatProjectPrimaryWorkingFolderRead) => {
+    if (chat.selectedChannel?.projectId !== primary.projectId) return;
+    chat.primaryWorkingFolder = primary;
+    chat.selectedWorkingFolderId = primary.workingFolderId;
+  },
+}));
 vi.mock("$lib/api/chat", () => api);
 const folderApi = vi.hoisted(() => ({
   pickProjectWorkingFolder: vi.fn<(projectId: string, title: string, id?: string) => Promise<WorkingFolderSelection | null>>(),

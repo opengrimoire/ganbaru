@@ -35,8 +35,6 @@ export const titleBar = {
     showSideBySide: "Show side by side",
     swap: "Swap tab positions",
     resize: "Resize split view",
-    sameViewBlocked: "A split view shows two different views",
-    lockedProjectBlocked: "This tab is locked to another project",
     tabLimitBlocked: "This window has as many tabs as it can hold",
     noRoomBlocked: "This window has no room to show the views that way",
     inSplit: (label: string) => `${label}, in split view`,

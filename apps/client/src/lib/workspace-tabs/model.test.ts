@@ -34,7 +34,6 @@ import {
   updateWorkspaceTab,
   workspaceTabIdAtPosition,
   secondaryScopeTabId,
-  workspaceSplitBlock,
   workspaceSplitPartnerId,
   workspaceTabLockLevel,
   type ClosedWorkspaceTab,
@@ -283,40 +282,6 @@ describe("tabs leaving for another window", () => {
   });
 });
 
-describe("workspace split blocks", () => {
-  it("refuses a tab beside itself and lets two tabs of one kind show side by side", () => {
-    const tasks = tab("tasks", "projects", { location: projectA });
-    expect(workspaceSplitBlock(tasks, tasks)).toBe("same-tab");
-    expect(workspaceSplitBlock(tasks, tab("other", "projects", { location: projectB }))).toBeNull();
-    expect(workspaceSplitBlock(tab("one", "notes", { location: pageOne }), tab("two", "notes", { location: pageOne })))
-      .toBeNull();
-  });
-
-  it("lets Calendar sit beside any project, locked or not", () => {
-    const locked = tab("b", "projects", { location: projectB, level: "project", locked: true });
-    expect(workspaceSplitBlock(tab("cal", "calendar"), locked)).toBeNull();
-    expect(workspaceSplitBlock(locked, tab("cal", "calendar"))).toBeNull();
-  });
-
-  it("refuses a tab locked to another project, but lets an unlocked one follow the current project", () => {
-    const current = tab("a", "projects", { location: projectA, level: "project", locked: true });
-    const lockedPage = tab("page", "notes", {
-      location: { ...pageOne, projectId: "b" },
-      level: "item",
-      locked: true,
-    });
-    expect(workspaceSplitBlock(current, lockedPage)).toBe("locked-project");
-    expect(workspaceSplitBlock(current, { ...lockedPage, locked: false, level: "kind" })).toBeNull();
-    expect(workspaceSplitBlock(current, { ...lockedPage, location: pageOne })).toBeNull();
-  });
-
-  it("lets a locked tab join a current tab that shows no project", () => {
-    const empty = tab("chat", "chat");
-    const locked = tab("b", "projects", { location: projectB, level: "project", locked: true });
-    expect(workspaceSplitBlock(empty, locked)).toBeNull();
-  });
-});
-
 describe("workspace pane scopes", () => {
   const hostedNotes: WorkspaceTabLocation = { kind: "projects", projectId: "a", item: { type: "project-view", id: "notes-view" } };
   const paneView = (location: WorkspaceTabLocation): View => (
@@ -342,7 +307,11 @@ describe("workspace pane scopes", () => {
   it("gives secondary stores to a project view hosting the view of the tab beside it", () => {
     const hosted = tab("hosted", "projects", { location: hostedNotes });
     expect(secondaryScopeTabId(first, hosted, null, paneView)).toBe("hosted");
-    expect(secondaryScopeTabId(first, tab("tasks", "projects", { location: projectA }), null, paneView)).toBeNull();
+  });
+
+  it("gives the partner secondary stores when both views follow the selected project", () => {
+    expect(secondaryScopeTabId(first, tab("tasks", "projects", { location: projectA }), null, paneView)).toBe("tasks");
+    expect(secondaryScopeTabId(tab("talk", "chat"), first, null, paneView)).toBe("one");
   });
 });
 

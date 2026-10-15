@@ -7,7 +7,7 @@
    * the active tab, or arranging the split the tab belongs to as it shows now.
    */
   export type TabSplitMenu =
-    | { kind: "open"; blockReason: string | null }
+    | { kind: "open" }
     | { kind: "open-new"; kinds: readonly View[]; blockReason: string | null }
     | { kind: "arrange"; orientation: WorkspaceSplitOrientation; turnBlockReason: string | null };
 </script>
@@ -127,8 +127,6 @@
       {#if splitMenu?.kind === "open"}
         <button
           role="menuitem"
-          disabled={splitMenu.blockReason !== null}
-          title={splitMenu.blockReason ?? undefined}
           onclick={onOpenInSplit}
           class="menu-item"
         >

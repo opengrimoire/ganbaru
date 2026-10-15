@@ -15,7 +15,7 @@ const projects = vi.hoisted(() => ({
   ensureLoaded: vi.fn(async () => undefined),
   selectProject: vi.fn(async () => undefined),
 }));
-vi.mock("$lib/stores/projects.svelte", () => ({ getProjects: () => projects }));
+vi.mock("$lib/stores/projects.svelte", () => ({ getProjects: () => projects, getProjectsStore: () => projects }));
 vi.mock("$lib/chat/window-sync", () => ({
   listenForChatChanges: vi.fn(async () => () => undefined),
   publishChatChanges: vi.fn(),

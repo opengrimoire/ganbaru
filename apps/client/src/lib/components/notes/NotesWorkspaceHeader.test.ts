@@ -62,7 +62,7 @@ vi.mock("$lib/stores/projects.svelte", () => {
     projectById: (id: string | null) => id === project.id ? project : undefined,
     groupById: (id: string | null) => id === group.id ? group : undefined,
   });
-  return { getProjects, useProjects: getProjects };
+  return { getProjects, useProjects: getProjects, getProjectsStore: getProjects };
 });
 
 const group = {

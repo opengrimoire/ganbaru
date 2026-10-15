@@ -958,7 +958,7 @@
       {@const lifted = !arriving && (!tabs.holds(tab.id) || (moving && draggedTabLifted) || departingId === tab.id)}
       {@const settling = settlingId === tab.id}
       {@const hovered = hoveredTabId === tab.id}
-      {@const side = moving ? null : splitSide(tab.id)}
+      {@const side = splitSide(tab.id)}
       {@const partner = !moving && tab.id === partnerId}
       {@const name = tab.locked ? t("titleBar.tab.lockedTab", fullLabel) : fullLabel}
       <div
@@ -969,9 +969,9 @@
           "titlebar-tab relative z-1 flex items-center rounded-md text-sm font-medium",
           compact && "titlebar-tab-compact",
           activeOnly && !active && !moving && !partner ? "hidden" : "",
-          // A split's tabs join into one piece, each with its inner corners squared.
+          // A split's tabs join into one piece, closing the strip's gap and squaring their inner corners.
           side === 0 && "rounded-r-none",
-          side === 1 && "rounded-l-none",
+          side === 1 && cn("rounded-l-none", !lifted && "-ml-0.5"),
           // The highlight passes between the indicator and the tab itself at once, so it never fades in or out.
           active || moving
             ? "text-foreground dark:text-white"

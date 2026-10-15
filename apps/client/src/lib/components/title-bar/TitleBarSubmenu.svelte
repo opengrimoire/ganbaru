@@ -69,19 +69,24 @@
     return Array.from(panel?.querySelectorAll<HTMLElement>(ITEM_SELECTOR) ?? []);
   }
 
+  /**
+   * Open the submenu. Focus moves into it either way, onto its first row for the keyboard or onto the panel for the
+   * pointer, so Escape returns to the parent row instead of closing the whole menu.
+   */
   function show(focusFirst: boolean): void {
     if (disabled) return;
     delay.cancel();
     open = true;
-    if (focusFirst) void tick().then(() => items()[0]?.focus());
+    void tick().then(() => (focusFirst ? items()[0] : panel)?.focus());
   }
 
   function hide(refocus: boolean): void {
     delay.cancel();
     aimOrigin = null;
+    const focusInside = panel?.contains(document.activeElement) ?? false;
     open = false;
     panelStyle = MEASURE_STYLE;
-    if (refocus) trigger?.focus();
+    if (refocus || focusInside) trigger?.focus();
   }
 
   function scheduleClose(event: PointerEvent): void {
@@ -156,7 +161,7 @@
   <div
     bind:this={panel}
     use:portal
-    class="surface-floating z-60 overflow-hidden"
+    class="surface-floating z-60 overflow-hidden outline-none"
     style={panelStyle}
     role="menu"
     tabindex="-1"

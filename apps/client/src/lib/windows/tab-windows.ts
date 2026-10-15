@@ -12,6 +12,11 @@ const TAB_WINDOW_LABEL_PATTERN = /^view-[A-Za-z0-9-]{1,64}$/;
 const TAB_WINDOW_TRANSFER_EVENT = "tab-window-transfer";
 const TAB_WINDOW_RELEASE_EVENT = "tab-window-release";
 const TAB_WINDOW_CLOSED_EVENT = "tab-window-closed";
+const TAB_WINDOW_REQUEST_EVENT = "tab-window-request";
+/** Drag data naming a tab another window can ask for. Only ids travel, so the tab leaves with its live location. */
+export const TAB_WINDOW_DRAG_MIME = "application/x-ganbaru-ai-window-tab";
+/** Where the pointer sits on a torn-off window, so it lands over that window's tab strip. */
+const TEAR_OFF_GRAB_OFFSET = { x: 96, y: 16 } as const;
 /** Surface the desktop shell paints first, used as the native background of a new window. */
 const TAB_WINDOW_BACKGROUND_TOKEN = "--sidebar";
 
@@ -33,9 +38,27 @@ export interface TabWindowRelease extends TabWindowMessage {
   tabId: string;
 }
 
+/** Asks the window holding a dragged tab to offer it to the window it was dropped on. */
+export interface TabWindowRequest extends TabWindowMessage {
+  tabId: string;
+}
+
 /** The tabs of a window the user closed, so the main window can offer them for reopening. */
 export interface TabWindowClosed extends TabWindowMessage {
   tabs: WorkspaceTab[];
+}
+
+/** A tab dragged out of its window, as another window reads it on drop. */
+export interface TabWindowDrag {
+  sourceLabel: string;
+  vaultId: string;
+  tabId: string;
+}
+
+/** A point on the screen in logical pixels. */
+export interface ScreenPoint {
+  x: number;
+  y: number;
 }
 
 /** Create a unique label for a new tab window. */
@@ -92,11 +115,63 @@ export function parseTabWindowTransfer(value: unknown, availableKinds: readonly 
   return message && tab ? { ...message, tab } : null;
 }
 
-/** Validate a release from another window. */
-export function parseTabWindowRelease(value: unknown): TabWindowRelease | null {
+function parseTabIdMessage(value: unknown): TabWindowRelease | null {
   const message = parseMessage(value);
   if (!message || !isRecord(value) || typeof value.tabId !== "string" || value.tabId.length === 0) return null;
   return { ...message, tabId: value.tabId };
+}
+
+/** Validate a release from another window. */
+export function parseTabWindowRelease(value: unknown): TabWindowRelease | null {
+  return parseTabIdMessage(value);
+}
+
+/** Validate a request for a dragged tab from another window. */
+export function parseTabWindowRequest(value: unknown): TabWindowRequest | null {
+  return parseTabIdMessage(value);
+}
+
+/** Serialize a dragged tab for the drag data. */
+export function tabWindowDragData(drag: TabWindowDrag): string {
+  return JSON.stringify(drag);
+}
+
+/** Read a tab dragged in from another window. Drags from `ownLabel` itself are not cross-window drags. */
+export function parseTabWindowDrag(raw: string, ownLabel: string): TabWindowDrag | null {
+  const value = parseJson(raw);
+  if (!isRecord(value)) return null;
+  const { sourceLabel, vaultId, tabId } = value;
+  if (!isWindowLabel(sourceLabel) || sourceLabel === ownLabel) return null;
+  if (typeof vaultId !== "string" || vaultId.length === 0) return null;
+  if (typeof tabId !== "string" || tabId.length === 0) return null;
+  return { sourceLabel, vaultId, tabId };
+}
+
+/** Where a drag ended, as its `dragend` event reports it. */
+export interface DragEndPoint {
+  clientX: number;
+  clientY: number;
+  screenX: number;
+  screenY: number;
+}
+
+/**
+ * Whether a tab drag ended outside its window. The end point decides when the engine reports one; engines
+ * that report zeros fall back to `depth`, the count of document drag entries minus exits during the drag.
+ */
+export function dragEndedOutsideWindow(end: DragEndPoint, viewport: { width: number; height: number }, depth: number): boolean {
+  const reported = [end.clientX, end.clientY, end.screenX, end.screenY].some((value) => Number.isFinite(value) && value !== 0);
+  if (!reported) return depth <= 0;
+  return end.clientX < 0 || end.clientY < 0 || end.clientX >= viewport.width || end.clientY >= viewport.height;
+}
+
+/**
+ * Where a window torn off at a drag's end point opens, so the pointer lands over its tab strip. Engines
+ * that report no position give zero for both coordinates; the window then opens centered.
+ */
+export function tearOffWindowPosition(screenX: number, screenY: number): ScreenPoint | null {
+  if (!Number.isFinite(screenX) || !Number.isFinite(screenY) || (screenX === 0 && screenY === 0)) return null;
+  return { x: Math.round(screenX - TEAR_OFF_GRAB_OFFSET.x), y: Math.round(screenY - TEAR_OFF_GRAB_OFFSET.y) };
 }
 
 /** Validate a closed-window report, keeping only valid tabs. */
@@ -112,8 +187,12 @@ export function parseTabWindowClosed(value: unknown, availableKinds: readonly Vi
 
 /** Send a tab-window message. Every window receives it and only its target acts on it. */
 async function sendTabWindowMessage(
-  event: typeof TAB_WINDOW_TRANSFER_EVENT | typeof TAB_WINDOW_RELEASE_EVENT | typeof TAB_WINDOW_CLOSED_EVENT,
-  message: TabWindowTransfer | TabWindowRelease | TabWindowClosed,
+  event:
+    | typeof TAB_WINDOW_TRANSFER_EVENT
+    | typeof TAB_WINDOW_RELEASE_EVENT
+    | typeof TAB_WINDOW_REQUEST_EVENT
+    | typeof TAB_WINDOW_CLOSED_EVENT,
+  message: TabWindowTransfer | TabWindowRelease | TabWindowRequest | TabWindowClosed,
 ): Promise<void> {
   await emit(event, message);
 }
@@ -159,9 +238,14 @@ async function focusMainWindow(): Promise<void> {
 
 /**
  * Open a tab window, or focus it when it is already open. A new window starts with `tab`, or with the
- * tabs it saved when it has none. A window opened without focus leaves the current one in front.
+ * tabs it saved when it has none. A window opened without focus leaves the current one in front. It opens
+ * at `position` when given, which window managers may ignore, and centered otherwise.
  */
-async function openTabWindow(label: string, tab: WorkspaceTab | null, focus = true): Promise<void> {
+async function openTabWindow(
+  label: string,
+  tab: WorkspaceTab | null,
+  { focus = true, position = null }: { focus?: boolean; position?: ScreenPoint | null } = {},
+): Promise<void> {
   const existing = await WebviewWindow.getByLabel(label);
   if (existing) {
     if (focus) await focusExistingWindow(existing);
@@ -177,7 +261,7 @@ async function openTabWindow(label: string, tab: WorkspaceTab | null, focus = tr
     height: 720,
     minWidth: 280,
     minHeight: 180,
-    center: true,
+    ...(position ? { x: position.x, y: position.y } : { center: true }),
     decorations: false,
     visible: true,
     focus,
@@ -195,6 +279,7 @@ async function openTabWindow(label: string, tab: WorkspaceTab | null, focus = tr
 export interface TabWindowHandlers {
   transfer(message: TabWindowTransfer): void;
   release(message: TabWindowRelease): void;
+  request(message: TabWindowRequest): void;
   /** Only the main window receives closed-window reports. */
   closed(message: TabWindowClosed): void;
 }
@@ -205,14 +290,18 @@ export interface WorkspaceTabWindows {
   readonly mainLabel: string;
   /** Whether this is the main window, which keeps the tabs of a single-window setup and the reopen history. */
   readonly isMain: boolean;
-  /** Open a new window that starts with `tab`. */
-  open(tab: WorkspaceTab): Promise<void>;
+  /** Open a new window that starts with `tab`, at `position` when given and centered otherwise. */
+  open(tab: WorkspaceTab, position?: ScreenPoint | null): Promise<void>;
   /** Reopen a window with the tabs it saved, behind the current one. Labels that name no tab window are ignored. */
   reopen(label: string): Promise<void>;
   /** Offer a tab to another window, which adopts it and then releases it from this one. */
   offer(targetLabel: string, vaultId: string, tab: WorkspaceTab): Promise<void>;
   /** Confirm to the window that offered a tab that it now lives here. */
   release(targetLabel: string, vaultId: string, tabId: string): Promise<void>;
+  /** Ask the window holding a tab dropped here to offer it to this one. */
+  request(sourceLabel: string, vaultId: string, tabId: string): Promise<void>;
+  /** Read a tab dragged in from another window, or null for drags from this one or malformed data. */
+  readDrag(raw: string): TabWindowDrag | null;
   /** Hand the tabs of this closing window to the main window's reopen history. */
   reportClosed(vaultId: string, tabs: WorkspaceTab[]): Promise<void>;
   focusMain(): Promise<void>;
@@ -227,14 +316,17 @@ export function createWorkspaceTabWindows(label: string, availableKinds: readonl
     label,
     isMain,
     mainLabel: MAIN_WINDOW_LABEL,
-    open: (tab) => openTabWindow(createTabWindowLabel(), tab),
+    open: (tab, position = null) => openTabWindow(createTabWindowLabel(), tab, { position }),
     reopen: async (savedLabel) => {
-      if (isTabWindowLabel(savedLabel)) await openTabWindow(savedLabel, null, false);
+      if (isTabWindowLabel(savedLabel)) await openTabWindow(savedLabel, null, { focus: false });
     },
     offer: (targetLabel, vaultId, tab) =>
       sendTabWindowMessage(TAB_WINDOW_TRANSFER_EVENT, { targetLabel, sourceLabel: label, vaultId, tab }),
     release: (targetLabel, vaultId, tabId) =>
       sendTabWindowMessage(TAB_WINDOW_RELEASE_EVENT, { targetLabel, sourceLabel: label, vaultId, tabId }),
+    request: (sourceLabel, vaultId, tabId) =>
+      sendTabWindowMessage(TAB_WINDOW_REQUEST_EVENT, { targetLabel: sourceLabel, sourceLabel: label, vaultId, tabId }),
+    readDrag: (raw) => parseTabWindowDrag(raw, label),
     reportClosed: (vaultId, tabs) =>
       sendTabWindowMessage(TAB_WINDOW_CLOSED_EVENT, { targetLabel: MAIN_WINDOW_LABEL, sourceLabel: label, vaultId, tabs }),
     focusMain: focusMainWindow,
@@ -247,6 +339,7 @@ export function createWorkspaceTabWindows(label: string, availableKinds: readonl
           handlers.transfer,
         ),
         listenTabWindowMessages(TAB_WINDOW_RELEASE_EVENT, label, parseTabWindowRelease, handlers.release),
+        listenTabWindowMessages(TAB_WINDOW_REQUEST_EVENT, label, parseTabWindowRequest, handlers.request),
       ];
       if (isMain) {
         cleanups.push(listenTabWindowMessages(

@@ -18,6 +18,12 @@
     workspaceTabProject,
   } from "$lib/workspace-tabs/presentation";
   import TitleBarTabLauncher from "./TitleBarTabLauncher.svelte";
+  import {
+    TAB_WINDOW_DRAG_MIME,
+    dragEndedOutsideWindow,
+    tabWindowDragData,
+    tearOffWindowPosition,
+  } from "$lib/windows/tab-windows";
 
   let {
     pomodoroMenuOpen,
@@ -52,6 +58,8 @@
   let launcherOpen = $state(false);
   let draggingId = $state<string | null>(null);
   let dropTarget = $state<{ id: string; placement: WorkspaceTabPlacement } | null>(null);
+  /** Document drag entries minus exits while one of this window's tabs is dragged. */
+  let dragDepth = 0;
   let measureSequence = 0;
 
   /**
@@ -179,19 +187,30 @@
     const transfer = event.dataTransfer;
     if (!transfer) return;
     draggingId = tab.id;
+    dragDepth = 0;
     transfer.effectAllowed = "move";
     transfer.setData(TAB_REORDER_MIME, tab.id);
+    const drag = tabs.dragPayload(tab.id);
+    if (drag) transfer.setData(TAB_WINDOW_DRAG_MIME, tabWindowDragData(drag));
   }
 
-  function isReorderDrag(event: DragEvent): boolean {
-    return draggingId !== null && Array.from(event.dataTransfer?.types ?? []).includes(TAB_REORDER_MIME);
+  /** A drag of one of this window's tabs, or of another window's tab that may move here. */
+  function dragKind(event: DragEvent): "reorder" | "window" | null {
+    const types = Array.from(event.dataTransfer?.types ?? []);
+    if (draggingId !== null) return types.includes(TAB_REORDER_MIME) ? "reorder" : null;
+    return types.includes(TAB_WINDOW_DRAG_MIME) ? "window" : null;
   }
 
-  function handleDragOver(event: DragEvent, tab: WorkspaceTab): void {
-    if (!isReorderDrag(event)) return;
+  function acceptDrag(event: DragEvent): boolean {
+    if (!dragKind(event)) return false;
     event.preventDefault();
     event.stopPropagation();
     if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    return true;
+  }
+
+  function handleDragOver(event: DragEvent, tab: WorkspaceTab): void {
+    if (!acceptDrag(event)) return;
     if (tab.id === draggingId) {
       dropTarget = null;
       return;
@@ -201,21 +220,66 @@
     dropTarget = { id: tab.id, placement };
   }
 
+  /** A tab from another window can also land on the strip around the tabs, at the end. */
+  function handleStripDragOver(event: DragEvent): void {
+    if (dragKind(event) !== "window" || !acceptDrag(event)) return;
+    dropTarget = null;
+  }
+
+  function handleStripDragLeave(event: DragEvent): void {
+    const next = event.relatedTarget;
+    if (draggingId === null && !(next instanceof Node && event.currentTarget instanceof Node && event.currentTarget.contains(next))) {
+      dropTarget = null;
+    }
+  }
+
   function handleDrop(event: DragEvent): void {
-    if (!isReorderDrag(event)) return;
+    const kind = dragKind(event);
+    if (!kind) return;
     event.preventDefault();
     event.stopPropagation();
-    if (draggingId && dropTarget) tabs.move(draggingId, dropTarget.id, dropTarget.placement);
+    if (kind === "reorder" && draggingId && dropTarget) tabs.move(draggingId, dropTarget.id, dropTarget.placement);
+    if (kind === "window") tabs.receiveDrop(event.dataTransfer?.getData(TAB_WINDOW_DRAG_MIME) ?? "", dropTarget);
     endDrag();
+  }
+
+  /** A drag that no window took and that ended outside this one opens the tab in a new window there. */
+  function handleDragEnd(event: DragEvent): void {
+    const id = draggingId;
+    const leftWindow = dragEndedOutsideWindow(event, { width: window.innerWidth, height: window.innerHeight }, dragDepth);
+    endDrag();
+    if (!id || !leftWindow || event.dataTransfer?.dropEffect !== "none") return;
+    void tabs.tearOff(id, tearOffWindowPosition(event.screenX, event.screenY)).catch((error: unknown) => {
+      console.error("Failed to move tab to a new window:", error);
+    });
+  }
+
+  /** Count drag entries and exits across the document while dragging a tab, to tell when it left the window. */
+  function trackDragDepth(change: 1 | -1): void {
+    if (draggingId !== null) dragDepth += change;
   }
 
   function endDrag(): void {
     draggingId = null;
     dropTarget = null;
+    dragDepth = 0;
   }
+
+  $effect(() => {
+    // A tab another window took may disappear before its drag ends.
+    if (draggingId !== null && !tabs.tabs.some((tab) => tab.id === draggingId)) untrack(endDrag);
+  });
 </script>
 
-<div class="flex min-w-0 shrink items-center gap-0.5 pl-1.5">
+<svelte:document ondragenter={() => trackDragDepth(1)} ondragleave={() => trackDragDepth(-1)} />
+
+<div
+  class="flex min-w-0 shrink items-center gap-0.5 pl-1.5"
+  role="presentation"
+  ondragover={handleStripDragOver}
+  ondragleave={handleStripDragLeave}
+  ondrop={handleDrop}
+>
   <div
     bind:this={strip}
     class="relative flex min-w-0 items-center gap-0.5 overflow-hidden"
@@ -252,7 +316,7 @@
         ondragstart={(event) => handleDragStart(event, tab)}
         ondragover={(event) => handleDragOver(event, tab)}
         ondrop={handleDrop}
-        ondragend={endDrag}
+        ondragend={handleDragEnd}
         oncontextmenu={(event) => onOpenContextMenu(event, tab.id)}
         onmousedown={handleMouseDown}
         onauxclick={(event) => handleAuxClick(event, tab)}

@@ -79,8 +79,11 @@ const CLOSED_STORAGE_PREFIX = "ganbaru.workspace-tabs-closed.v1";
  * window asks for the tab within this time, and that move wins.
  */
 const TEAR_OFF_SETTLE_MS = 250;
-/** How long a tab dropped here from another window keeps its slot in the strip while it has not arrived. */
-const TAB_ARRIVAL_TIMEOUT_MS = 3000;
+/**
+ * How long a tab dropped on another window keeps its slot there while it has not arrived, and stays hidden in
+ * the window it left while it has not gone.
+ */
+export const TAB_ARRIVAL_TIMEOUT_MS = 3000;
 
 function createTabId(): string {
   return crypto.randomUUID();

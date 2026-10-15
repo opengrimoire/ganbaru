@@ -12,14 +12,13 @@
 
 <script lang="ts">
   import { flushSync, tick, untrack } from "svelte";
-  import { flip } from "svelte/animate";
   import Lock from "@lucide/svelte/icons/lock";
   import Plus from "@lucide/svelte/icons/plus";
   import X from "@lucide/svelte/icons/x";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { formatShortcut } from "$lib/keyboard-shortcuts";
   import { getPreferences } from "$lib/stores/preferences.svelte";
-  import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
+  import { TAB_ARRIVAL_TIMEOUT_MS, getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
   import { cn } from "$lib/utils";
   import type { WorkspaceTab, WorkspaceTabPlacement } from "$lib/workspace-tabs/model";
   import {
@@ -79,6 +78,8 @@
   const TAB_SLIDE_MS = 220;
   /** Ease-out curve of those slides, matching the cubic ease-out of the strip's reorder animation. */
   const TAB_EASE = "cubic-bezier(0.33, 1, 0.68, 1)";
+  /** Marks the animations that slide tabs and the new tab button into place, apart from the page's other animations. */
+  const SLIDE_ANIMATION_ID = "titlebar-tab-slide";
   const ICON_SIZE = 14;
   const ICON_STROKE_WIDTH = 1.5;
 
@@ -117,6 +118,9 @@
   /** This window's tab just dropped on the bar, easing from where it was drawn into its slot. */
   let settlingId = $state<string | null>(null);
   let settleTimer: ReturnType<typeof setTimeout> | undefined;
+  /** This window's tab dropped elsewhere, kept out of the strip while it moves to its new window. */
+  let departingId = $state<string | null>(null);
+  let departureTimer: ReturnType<typeof setTimeout> | undefined;
   /** Hover highlights stay off from a drag's start until the pointer moves after it, so tabs a drag slides under the pointer do not light up. */
   let hoverHeld = $state(false);
   /** The dragged tab no longer holds a slot in the strip. */
@@ -235,8 +239,8 @@
     void tabs.activeTabId;
     void tabs.tabs;
     void activeOnly;
-    void draggingId;
-    void settlingId;
+    // The indicator comes back once tabs stop moving, already under the active tab.
+    if (!stripInMotion) updateIndicator();
     scheduleIndicatorUpdate();
     return () => {
       if (indicatorFrame) cancelAnimationFrame(indicatorFrame);
@@ -379,6 +383,48 @@
   /** Push the new tab button along with a tab dragged past the last slot, whose right edge is at `right`. */
   function pushAddButton(right: number): void {
     addOffset = Math.max(0, right - tabStripRight(shownSlots()));
+    // A pushed button rides with the tab instead of sliding into place.
+    if (addOffset > 0 && addButton) stopSliding(addButton);
+  }
+
+  function stopSliding(element: HTMLElement): void {
+    for (const animation of element.getAnimations()) {
+      if (animation.id === SLIDE_ANIMATION_ID) animation.cancel();
+    }
+  }
+
+  /** Shown tabs other than `skip`, and the new tab button: everything that moves when the strip changes. */
+  function slidingElements(skip: string | null): HTMLElement[] {
+    const elements = shownTabs.flatMap((tab) => {
+      const element = tabElements[tab.id];
+      return tab.id !== skip && element && element.offsetParent !== null ? [element] : [];
+    });
+    return addButton ? [...elements, addButton] : elements;
+  }
+
+  /**
+   * Apply `change` to the strip, then slide the tabs and the new tab button from where they were drawn into their
+   * new places, so nothing jumps when a tab is passed, lifted off the bar, or brought onto it. Only sideways
+   * movement is animated, so a tab's text never stretches. `skip` is the dragged tab, which follows the pointer.
+   */
+  function slideLayout(change: () => void, skip: string | null): void {
+    const before = reducedMotion
+      ? new Map<HTMLElement, number>()
+      : new Map(slidingElements(skip).map((element) => [element, element.getBoundingClientRect().left]));
+    change();
+    flushSync();
+    for (const element of slidingElements(skip)) {
+      const from = before.get(element);
+      if (from === undefined) continue;
+      stopSliding(element);
+      const offset = from - element.getBoundingClientRect().left;
+      if (Math.abs(offset) < 0.5) continue;
+      const animation = element.animate(
+        [{ transform: `translateX(${offset}px)` }, { transform: "none" }],
+        { duration: TAB_SLIDE_MS, easing: TAB_EASE },
+      );
+      animation.id = SLIDE_ANIMATION_ID;
+    }
   }
 
   /**
@@ -393,10 +439,7 @@
       current.id,
       tabStripDropIndex(slots, left + current.width / 2),
     );
-    if (target) {
-      tabs.move(current.id, target.id, target.placement);
-      flushSync();
-    }
+    if (target) slideLayout(() => tabs.move(current.id, target.id, target.placement), current.id);
     const element = tabElements[current.id];
     movingOffset = element ? left - element.offsetLeft : 0;
     pushAddButton(left + current.width);
@@ -409,7 +452,8 @@
     pointer = { x: event.clientX, y: event.clientY };
     const leaving = current.canTearOff
       && (pulledOffBar(event.clientY) || passedTrack(event.clientX, current.grabX, current.width));
-    if (leaving !== offBar) offBar = leaving;
+    // The strip copy goes or comes at once, at full width, while the tabs around it slide.
+    if (leaving !== offBar) slideLayout(() => { offBar = leaving; }, current.id);
     if (leaving) addOffset = 0;
     else slideAlongStrip(current, event.clientX);
   }
@@ -427,8 +471,8 @@
    */
   function slideIncoming(current: TabWindowDragStarted, clientX: number): void {
     if (incomingIndex === null) {
-      incomingIndex = entryIndex(clientX);
-      flushSync();
+      const entry = entryIndex(clientX);
+      slideLayout(() => { incomingIndex = entry; }, current.tab.id);
     }
     const element = tabElements[current.tab.id];
     if (!element) return;
@@ -441,8 +485,8 @@
       tabStripDropIndex(slots, left + width / 2),
     );
     if (target) {
-      incomingIndex = tabStripInsertPosition(tabs.tabs.map((tab) => tab.id), target);
-      flushSync();
+      const next = tabStripInsertPosition(tabs.tabs.map((tab) => tab.id), target);
+      slideLayout(() => { incomingIndex = next; }, current.tab.id);
     }
     incomingOffset = left - element.offsetLeft;
     pushAddButton(left + width);
@@ -461,8 +505,7 @@
     if (incomingDropped) return;
     pointer = { x: event.clientX, y: event.clientY };
     if (foreignOffBar(event)) {
-      incomingIndex = null;
-      addOffset = 0;
+      leaveStrip();
       return;
     }
     acceptDrag(event);
@@ -487,10 +530,17 @@
       return;
     }
     incomingDropped = true;
+    settle(incomingTab.id);
     incomingOffset = 0;
     addOffset = 0;
     pointer = null;
     dragDepth = 0;
+  }
+
+  /** Take another window's tab out of the strip once it is off the bar or outside the window, sliding the rest back. */
+  function leaveStrip(): void {
+    if (incomingIndex !== null) slideLayout(() => { incomingIndex = null; }, incoming?.tab.id ?? null);
+    addOffset = 0;
   }
 
   /** Stop drawing another window's tab, once its drag ended or it arrived. */
@@ -527,10 +577,9 @@
     const current = drag;
     if (kind !== "reorder" || !current) return;
     acceptDrag(event);
-    const leaving = offBar;
-    if (!leaving) settle(current.id);
+    if (offBar) holdDeparture(current.id, tabs.detach(current.id, tearOffWindowPosition(event.screenX, event.screenY)));
+    else settle(current.id);
     endDrag();
-    if (leaving) reportFailedMove(tabs.detach(current.id, tearOffWindowPosition(event.screenX, event.screenY)));
   }
 
   /** Ease a tab dropped on the bar from where it was drawn into its slot. */
@@ -540,9 +589,21 @@
     settleTimer = setTimeout(() => { settlingId = null; }, TAB_SLIDE_MS);
   }
 
-  function reportFailedMove(move: Promise<void>): void {
-    void move.catch((error: unknown) => {
+  /**
+   * Keep a tab that left by drag out of the strip until it is gone, so it never shows here again on its way
+   * out. It comes back when its `move` fails, or when it has not gone in time.
+   */
+  function holdDeparture(id: string, move: Promise<void> | null): void {
+    clearTimeout(departureTimer);
+    departingId = id;
+    const release = () => {
+      clearTimeout(departureTimer);
+      if (departingId === id) slideLayout(() => { departingId = null; }, null);
+    };
+    departureTimer = setTimeout(release, TAB_ARRIVAL_TIMEOUT_MS);
+    void move?.catch((error: unknown) => {
       console.error("Failed to move tab to a new window:", error);
+      release();
     });
   }
 
@@ -553,28 +614,41 @@
   function handleDragEnd(event: DragEvent): void {
     const current = drag;
     const leftWindow = dragEndedOutsideWindow(event, { width: window.innerWidth, height: window.innerHeight }, dragDepth);
-    endDrag();
     if (announcedDrag) tabs.finishDrag(announcedDrag);
     announcedDrag = null;
-    if (!current || event.dataTransfer?.dropEffect !== "none") return;
+    if (!current) {
+      endDrag();
+      return;
+    }
+    // A tab another window took is already off this strip, and stays off until it has moved there.
+    if (event.dataTransfer?.dropEffect !== "none") {
+      if (current.canTearOff) holdDeparture(current.id, null);
+      endDrag();
+      return;
+    }
     if (leftWindow && current.canTearOff) {
-      reportFailedMove(tabs.tearOff(current.id, tearOffWindowPosition(event.screenX, event.screenY)));
+      holdDeparture(current.id, tabs.tearOff(current.id, tearOffWindowPosition(event.screenX, event.screenY)));
+      endDrag();
       return;
     }
     const origin = current.origin;
-    if (origin && tabs.tabs.some((tab) => tab.id === origin.id)) tabs.move(current.id, origin.id, origin.placement);
+    slideLayout(() => {
+      endDrag();
+      if (origin && tabs.tabs.some((tab) => tab.id === origin.id)) tabs.move(current.id, origin.id, origin.placement);
+    }, null);
   }
 
   /** Count tab drag entries and exits across the document, to tell when a drag left the window. */
   function trackDragDepth(event: DragEvent, change: 1 | -1): void {
     if (!dragKind(event)) return;
     dragDepth += change;
-    if (drag) {
-      outsideWindow = dragDepth <= 0;
-      if (outsideWindow) addOffset = 0;
+    const current = drag;
+    if (current) {
+      const outside = dragDepth <= 0;
+      if (outside !== outsideWindow) slideLayout(() => { outsideWindow = outside; }, current.id);
+      if (outside) addOffset = 0;
     } else if (dragDepth <= 0 && !incomingDropped) {
-      incomingIndex = null;
-      addOffset = 0;
+      leaveStrip();
       pointer = null;
     }
   }
@@ -590,7 +664,20 @@
     dragDepth = 0;
   }
 
-  $effect(() => () => clearTimeout(settleTimer));
+  $effect(() => () => {
+    clearTimeout(settleTimer);
+    clearTimeout(departureTimer);
+  });
+
+  $effect(() => {
+    // The departing tab has gone to its new window.
+    if (departingId !== null && !tabs.tabs.some((tab) => tab.id === departingId)) {
+      untrack(() => {
+        clearTimeout(departureTimer);
+        departingId = null;
+      });
+    }
+  });
 
   $effect(() => {
     if (stripDragActive) hoverHeld = true;
@@ -674,11 +761,10 @@
       {@const active = !arriving && tab.id === tabs.activeTabId}
       {@const fullLabel = workspaceTabFullLabel(tab, t)}
       {@const moving = arriving || draggingId === tab.id}
-      {@const lifted = !arriving && moving && draggedTabLifted}
-      {@const settling = arriving ? incomingDropped : settlingId === tab.id}
+      {@const lifted = !arriving && ((moving && draggedTabLifted) || departingId === tab.id)}
+      {@const settling = settlingId === tab.id}
       <div
         bind:this={tabElements[tab.id]}
-        animate:flip={{ duration: !stripDragActive || moving || reducedMotion ? 0 : TAB_SLIDE_MS }}
         data-active={active ? "" : undefined}
         class={cn(
           "titlebar-tab group relative z-1 flex items-center rounded-md text-sm font-medium transition-colors",
@@ -849,11 +935,6 @@
   /* The dragged tab rides above its neighbors, following the pointer without easing. */
   .titlebar-tab.titlebar-tab-moving {
     z-index: 2;
-    transition:
-      width var(--tab-slide) var(--tab-ease),
-      min-width var(--tab-slide) var(--tab-ease),
-      margin var(--tab-slide) var(--tab-ease),
-      opacity var(--tab-slide) var(--tab-ease);
   }
 
   .titlebar-tab-moving .titlebar-tab-close {
@@ -872,12 +953,11 @@
     min-width: 0;
     margin-right: -0.125rem;
     overflow: hidden;
-    opacity: 0;
+    visibility: hidden;
   }
 
   @media (prefers-reduced-motion: reduce) {
     .titlebar-add,
-    .titlebar-tab.titlebar-tab-moving,
     .titlebar-tab.titlebar-tab-settling {
       transition: none;
     }

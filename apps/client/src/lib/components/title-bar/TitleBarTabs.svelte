@@ -95,6 +95,8 @@
   const SLIDE_ANIMATION_ID = "titlebar-tab-slide";
   const ICON_SIZE = 14;
   const ICON_STROKE_WIDTH = 1.5;
+  /** Events whose target tells where the pointer is. */
+  const pointerTrackingEvents = ["pointerover", "pointermove", "pointerdown", "wheel"] as const;
 
   const tabs = getWorkspaceTabs();
   const preferences = getPreferences();
@@ -143,6 +145,13 @@
   let departureTimer: ReturnType<typeof setTimeout> | undefined;
   /** Hover highlights stay off from a drag's start until the pointer moves after it, so tabs a drag slides under the pointer do not light up. */
   let hoverHeld = $state(false);
+  /**
+   * Tab under the pointer as its latest event placed it. The strip tracks hover itself because WebKitGTK keeps
+   * `:hover` where a native drag started, which lights up whichever tab takes that slot after the drop.
+   */
+  let pointerTabId = $state<string | null>(null);
+  /** The pointer is on the new tab button, tracked like {@link pointerTabId}. */
+  let pointerOnAdd = $state(false);
   /** The dragged tab no longer holds a slot in the strip. */
   const draggedTabLifted = $derived(heldId !== null && (offBar || (outsideWindow && canTearOffHeld)));
   /** Slot another window's tab takes in this strip while it is on its way here, or null while it is not on the bar. */
@@ -172,6 +181,8 @@
   /** A tab is dragged along this strip, so the others slide out of its way. */
   const stripDragActive = $derived(heldId !== null || incomingTab !== null);
   const hoverQuiet = $derived(stripDragActive || hoverHeld);
+  const hoveredTabId = $derived(hoverQuiet ? null : pointerTabId);
+  const addHovered = $derived(!hoverQuiet && pointerOnAdd);
   /** Tabs are dragged or still settling, so each draws its own background instead of the sliding indicator. */
   const stripInMotion = $derived(stripDragActive || settlingId !== null);
   /** The copy of a dragged tab that floats under the pointer once it is off the bar. */
@@ -745,6 +756,30 @@
     return waitForPointerTravel(window, () => { hoverHeld = false; });
   });
 
+  /** Records which tab, or the new tab button, the event's target sits in. */
+  function trackPointer(event: Event): void {
+    const target = event.target instanceof Element ? event.target : null;
+    const tab = target?.closest<HTMLElement>(".titlebar-tab");
+    pointerTabId = tab && strip?.contains(tab) ? (tab.dataset.tabId ?? null) : null;
+    pointerOnAdd = target !== null && addButton?.contains(target) === true;
+  }
+
+  function forgetPointer(event: PointerEvent): void {
+    if (event.relatedTarget !== null) return;
+    pointerTabId = null;
+    pointerOnAdd = false;
+  }
+
+  $effect(() => {
+    const options = { capture: true, passive: true };
+    for (const type of pointerTrackingEvents) window.addEventListener(type, trackPointer, options);
+    window.addEventListener("pointerout", forgetPointer, options);
+    return () => {
+      for (const type of pointerTrackingEvents) window.removeEventListener(type, trackPointer, options);
+      window.removeEventListener("pointerout", forgetPointer, options);
+    };
+  });
+
   $effect(() => {
     const options = { capture: true };
     window.addEventListener("dragover", handleWindowDragOver, options);
@@ -850,17 +885,19 @@
       {@const moving = arriving || heldId === tab.id}
       {@const lifted = !arriving && (!tabs.holds(tab.id) || (moving && draggedTabLifted) || departingId === tab.id)}
       {@const settling = settlingId === tab.id}
+      {@const hovered = hoveredTabId === tab.id}
       <div
         bind:this={tabElements[tab.id]}
+        data-tab-id={tab.id}
         data-active={active ? "" : undefined}
         class={cn(
-          "titlebar-tab group relative z-1 flex items-center rounded-md text-sm font-medium",
+          "titlebar-tab relative z-1 flex items-center rounded-md text-sm font-medium",
           compact && "titlebar-tab-compact",
           activeOnly && !active && !moving ? "hidden" : "",
           // The highlight passes between the indicator and the tab itself at once, so it never fades in or out.
           active || moving
             ? "text-foreground dark:text-white"
-            : cn("text-sidebar-foreground/70 transition-colors", !hoverQuiet && "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"),
+            : cn("transition-colors", hovered ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-sidebar-foreground/70"),
           (active || moving) && stripInMotion && "bg-card shadow-(--tab-active-shadow)",
           moving && "titlebar-tab-moving",
           lifted && "titlebar-tab-lifted",
@@ -899,8 +936,8 @@
             tabindex="-1"
             class={cn(
               "titlebar-tab-close mr-1 flex shrink-0 items-center justify-center rounded-sm transition-opacity",
-              !hoverQuiet && "hover:bg-sidebar-accent hover:opacity-100",
-              active ? "opacity-70" : cn("opacity-0", !hoverQuiet && "group-hover:opacity-70"),
+              hovered && "hover:bg-sidebar-accent hover:opacity-100",
+              active || hovered ? "opacity-70" : "opacity-0",
             )}
             aria-label={t("titleBar.tab.closeTab")}
             title={t("titleBar.tab.withShortcut", t("titleBar.tab.closeTab"), formatShortcut("Mod + W"))}
@@ -919,9 +956,8 @@
       type="button"
       class={cn(
         "titlebar-add flex shrink-0 items-center justify-center rounded-md text-sidebar-foreground/70",
-        !hoverQuiet && "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
         addOffset > 0 && "titlebar-add-pushed",
-        launcherOpen && "bg-sidebar-accent text-sidebar-accent-foreground",
+        (addHovered || launcherOpen) && "bg-sidebar-accent text-sidebar-accent-foreground",
       )}
       style:translate={addOffset > 0 ? `${addOffset}px 0` : undefined}
       aria-label={t("titleBar.tab.launcher")}

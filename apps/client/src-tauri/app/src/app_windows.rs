@@ -3,10 +3,13 @@
 //! Every tab window is equal to the user. The host window, labelled `main`, also runs app-wide work and
 //! hides instead of closing while other windows stay open, so a raise prefers a window already on screen.
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 const HOST_WINDOW_LABEL: &str = "main";
 const TAB_WINDOW_LABEL_PREFIX: &str = "view-";
+/// Tells a window, named by the label in the payload, that the app brought it on screen. A hidden host
+/// window resumes saving its tabs on it, without waiting for focus the window manager may deny.
+const WINDOW_RAISED_EVENT: &str = "app-window-raised";
 
 /// Label of the window to raise among `(label, visible)` pairs: the host window when it is on screen, else
 /// the first tab window on screen in label order, else the host window, which then shows again.
@@ -29,6 +32,13 @@ fn window_to_raise<'a>(windows: impl IntoIterator<Item = (&'a str, bool)>) -> &'
         .unwrap_or(HOST_WINDOW_LABEL)
 }
 
+/// Tell the window labelled `label` that the app brought it on screen.
+pub(crate) fn announce_window_raised(app: &tauri::AppHandle, label: &str) {
+    if let Err(error) = app.emit(WINDOW_RAISED_EVENT, label) {
+        eprintln!("failed to announce raised window {label}: {error}");
+    }
+}
+
 /// Show, restore, and focus the app window the user most likely expects, per [`window_to_raise`].
 pub(crate) fn raise_app_window(app: &tauri::AppHandle) {
     let windows = app.webview_windows();
@@ -49,6 +59,7 @@ pub(crate) fn raise_app_window(app: &tauri::AppHandle) {
     if let Err(error) = window.set_focus() {
         eprintln!("failed to focus window {label}: {error}");
     }
+    announce_window_raised(app, label);
 }
 
 #[cfg(test)]

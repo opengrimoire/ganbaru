@@ -415,6 +415,7 @@ function connectWindows(host: WorkspaceTabsConnection): () => void {
         console.error("Failed to move a dragged tab:", error);
       });
     },
+    raised: reviveHostWindow,
   });
   return () => {
     window.removeEventListener("focus", onFocus);

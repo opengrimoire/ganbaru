@@ -12,6 +12,8 @@ const TAB_WINDOW_LABEL_PATTERN = /^view-[A-Za-z0-9-]{1,64}$/;
 const TAB_WINDOW_TRANSFER_EVENT = "tab-window-transfer";
 const TAB_WINDOW_RELEASE_EVENT = "tab-window-release";
 const TAB_WINDOW_REQUEST_EVENT = "tab-window-request";
+/** Sent by the native side with the label of a window it brought on screen. */
+const WINDOW_RAISED_EVENT = "app-window-raised";
 /** Drag data naming a tab another window can ask for. Only ids travel, so the tab leaves with its live location. */
 export const TAB_WINDOW_DRAG_MIME = "application/x-ganbaru-ai-window-tab";
 /** Where the pointer sits on a torn-off window, so it lands over that window's tab strip. */
@@ -182,21 +184,12 @@ async function sendTabWindowMessage(
   await emit(event, message);
 }
 
-/**
- * Listen for one kind of tab-window message addressed to a window. Invalid payloads and messages for other
- * windows are dropped. Returns a cleanup that also works before the listener finished registering.
- */
-function listenTabWindowMessages<T extends TabWindowMessage>(
-  event: string,
-  label: string,
-  parse: (value: unknown) => T | null,
-  listener: (message: T) => void,
-): () => void {
+/** Listen for an app event. Returns a cleanup that also works before the listener finished registering. */
+function listenEvent(event: string, listener: (payload: unknown) => void): () => void {
   let disposed = false;
   let cleanup: (() => void) | undefined;
   listen<unknown>(event, (received) => {
-    const message = parse(received.payload);
-    if (message && message.targetLabel === label) listener(message);
+    listener(received.payload);
   }).then((unlisten) => {
     if (disposed) unlisten();
     else cleanup = unlisten;
@@ -207,6 +200,22 @@ function listenTabWindowMessages<T extends TabWindowMessage>(
     disposed = true;
     cleanup?.();
   };
+}
+
+/**
+ * Listen for one kind of tab-window message addressed to a window. Invalid payloads and messages for other
+ * windows are dropped.
+ */
+function listenTabWindowMessages<T extends TabWindowMessage>(
+  event: string,
+  label: string,
+  parse: (value: unknown) => T | null,
+  listener: (message: T) => void,
+): () => void {
+  return listenEvent(event, (payload) => {
+    const message = parse(payload);
+    if (message && message.targetLabel === label) listener(message);
+  });
 }
 
 async function focusExistingWindow(window: WebviewWindow): Promise<void> {
@@ -269,6 +278,8 @@ export interface TabWindowHandlers {
   transfer(message: TabWindowTransfer): void;
   release(message: TabWindowRelease): void;
   request(message: TabWindowRequest): void;
+  /** The app brought this window on screen, for example on a second launch or to open a notification. */
+  raised(): void;
 }
 
 /** Desktop window operations that let workspace tabs move between this window and the others. */
@@ -324,6 +335,9 @@ export function createWorkspaceTabWindows(label: string, availableKinds: readonl
         ),
         listenTabWindowMessages(TAB_WINDOW_RELEASE_EVENT, label, parseTabWindowRelease, handlers.release),
         listenTabWindowMessages(TAB_WINDOW_REQUEST_EVENT, label, parseTabWindowRequest, handlers.request),
+        listenEvent(WINDOW_RAISED_EVENT, (raisedLabel) => {
+          if (raisedLabel === label) handlers.raised();
+        }),
       ];
       return () => {
         for (const cleanup of cleanups) cleanup();

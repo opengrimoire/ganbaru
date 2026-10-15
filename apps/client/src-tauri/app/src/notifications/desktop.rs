@@ -89,6 +89,7 @@ fn focus_main_window(app: tauri::AppHandle) {
             if let Err(e) = window.set_always_on_top(true) {
                 eprintln!("Failed to raise main window from notification: {e}");
             }
+            crate::app_windows::announce_window_raised(&app_for_lookup, window.label());
             let reset_app = app_for_lookup.clone();
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_millis(250));

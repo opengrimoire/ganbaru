@@ -1,11 +1,9 @@
 <script lang="ts">
   import { getNavigation } from "$lib/stores/navigation.svelte";
-  import {
-    firstMainView,
-    isDetachableTabView,
-    mainTabViews,
-    type DetachableTabView,
-  } from "$lib/navigation";
+  import { mainTabViews, type DetachableTabView } from "$lib/navigation";
+  import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
+  import { getWorkspaceTabs, type WorkspaceTabWindowHost } from "$lib/stores/workspace-tabs.svelte";
+  import { createWorkspaceLocationAdapter } from "$lib/workspace-tabs/location-adapter";
   import { getCalendar } from "$lib/stores/calendar.svelte";
   import { getCalendars } from "$lib/stores/calendars.svelte";
   import { getDistractions } from "$lib/stores/distractions.svelte";
@@ -33,7 +31,14 @@
     NotesMentionNotification,
     NotesMentionNotificationKind,
   } from "$lib/notes/types";
-  import { detachableTabViewFromWindowLabel } from "$lib/windows/detached";
+  import {
+    DETACHED_VIEW_OPEN_LOCATION_EVENT,
+    detachableTabViewFromWindowLabel,
+    openDetachedViewWindow,
+    openLocationInDetachedViewWindow,
+    parseDetachedViewOpenLocationRequest,
+    parseDetachedViewWindowTab,
+  } from "$lib/windows/detached";
   import { ensureDbUrl } from "$lib/api/db";
   import { prepareDesktopWorkspace } from "$lib/windows/desktop-workspace-readiness";
   import "$lib/stores/app-session";
@@ -95,8 +100,6 @@
   const isMainWindow = appWindow.label === "main";
   const detachedWindowView = detachableTabViewFromWindowLabel(appWindow.label);
   const nav = getNavigation();
-  const startupTabView = detachedWindowView ?? nav.current;
-  if (nav.current !== startupTabView) nav.navigate(startupTabView);
   /** Calendar paints the content panel itself; Projects, Notes, and Chat paint a surface beside their docked explorer. */
   const contentPanelPainted = $derived(nav.current === "calendar");
   const calendar = getCalendar();
@@ -117,6 +120,66 @@
   const { t } = localization;
   const locale = $derived(localization.locale);
   const detachedWindows = getDetachedWindows();
+  const workspaceTabs = getWorkspaceTabs();
+  const workspaceTabWindows: WorkspaceTabWindowHost = {
+    canDetach: platformHasCapability(BUILD_PLATFORM_PROFILE, "window.detached-views"),
+    detachedKinds: () => detachedWindows.views,
+    async open(kind, tab) {
+      await openDetachedViewWindow(kind, tab);
+      detachedWindows.markDetached(kind, tab.tabId);
+    },
+    showLocation(kind, location) {
+      void openLocationInDetachedViewWindow(kind, location).catch((error: unknown) => {
+        console.error("Failed to show a location in its window:", error);
+      });
+    },
+    onChange: (listener) => detachedWindows.onChange(listener),
+    onOpenLocation(listener) {
+      let disposed = false;
+      let cleanup: UnlistenFn | undefined;
+      void listen<unknown>(DETACHED_VIEW_OPEN_LOCATION_EVENT, (event) => {
+        const request = parseDetachedViewOpenLocationRequest(event.payload);
+        if (request && request.view === detachedWindowView) listener(request.location);
+      }).then((unlisten) => {
+        if (disposed) unlisten();
+        else cleanup = unlisten;
+      }).catch((error: unknown) => {
+        console.error("Failed to listen for tab locations:", error);
+      });
+      return () => {
+        disposed = true;
+        cleanup?.();
+      };
+    },
+  };
+  workspaceTabs.connect({
+    adapter: createWorkspaceLocationAdapter({
+      projects: {
+        get selectedProjectId() { return projects.selectedProjectId; },
+        get activeViewId() { return projects.activeViewId; },
+        ensureLoaded: () => projects.ensureLoaded(),
+        hasProject: (projectId) => Boolean(projects.projectById(projectId)),
+        viewsForProject: (projectId) => projects.viewsForProject(projectId),
+        selectProject: (projectId) => projects.selectProject(projectId),
+        selectView: (view) => projects.selectView(view),
+      },
+      notes: {
+        get selectedPageId() {
+          return notes.editorPanes.find((pane) => pane.id === notes.mainPaneId)?.store.selectedPageId ?? null;
+        },
+        selectPage: (pageId) => notes.selectPage(pageId, { openMode: "full" }),
+      },
+      chat: {
+        get selectedChannelId() { return chat.selectedChannelId; },
+        selectChannel: (channelId) => chat.selectChannel(channelId),
+      },
+    }),
+    mode: detachedWindowView
+      ? { type: "detached", view: detachedWindowView, tab: parseDetachedViewWindowTab(window.location.search, detachedWindowView) }
+      : { type: "main" },
+    requestWindowClose: () => appClose.request(),
+    windows: workspaceTabWindows,
+  });
   const notesNotificationSchedule = getNotesNotificationSchedule();
   const projectTaskReminderSchedule = getProjectTaskReminderSchedule();
   const notesProjectHistoryScheduler = getNotesProjectHistoryScheduler();
@@ -591,7 +654,6 @@
     if (detachedWindowView) return [detachedWindowView];
     return mainTabViews(detachedWindows.views);
   });
-  const keyboardViews = $derived(visibleTabViews);
   // Runs before the first paint so a remembered Notes or Chat view opens without showing a task view first.
   $effect.pre(() => {
     projects.hostableViewTypes = projectHostablePlaces(visibleTabViews);
@@ -603,18 +665,6 @@
     if (nav.current !== "projects" || !place) return null;
     return projects.selectedProject && projects.selectedGroup ? place : null;
   });
-
-  function navigatePrev() {
-    if (keyboardViews.length === 0) return;
-    const i = Math.max(0, keyboardViews.indexOf(nav.current));
-    nav.navigate(keyboardViews[(i - 1 + keyboardViews.length) % keyboardViews.length]);
-  }
-
-  function navigateNext() {
-    if (keyboardViews.length === 0) return;
-    const i = Math.max(0, keyboardViews.indexOf(nav.current));
-    nav.navigate(keyboardViews[(i + 1) % keyboardViews.length]);
-  }
 
   const suspendInfo = $derived(pomodoro.suspendedAway);
   const idleInfo = $derived(pomodoro.idlePaused);
@@ -676,7 +726,7 @@
       return;
     }
 
-    const action = appNavigationShortcut(e, visibleTabViews.length);
+    const action = appNavigationShortcut(e);
     if (!action) {
       handleProjectPlaceShortcut(e);
       return;
@@ -687,12 +737,16 @@
     if (action.type === "settings") {
       if (settingsLauncher.isOpen) settingsLauncher.close();
       else settingsLauncher.open();
-    } else if (action.type === "view") {
-      nav.navigate(visibleTabViews[action.index]);
-    } else if (action.direction === -1) {
-      navigatePrev();
+    } else if (action.type === "tab") {
+      workspaceTabs.activateAt(action.index);
+    } else if (action.type === "relative-tab") {
+      workspaceTabs.activateRelative(action.direction);
+    } else if (action.type === "new-tab") {
+      workspaceTabs.requestLauncher();
+    } else if (action.type === "reopen-tab") {
+      workspaceTabs.reopen();
     } else {
-      navigateNext();
+      workspaceTabs.close(workspaceTabs.activeTabId);
     }
   }
 
@@ -710,20 +764,6 @@
     e.stopImmediatePropagation();
     if (!paused) projects.selectView(view);
   }
-
-  $effect(() => {
-    if (detachedWindowView) {
-      if (nav.current !== detachedWindowView) {
-        nav.navigate(detachedWindowView);
-        return;
-      }
-      return;
-    }
-    if (isDetachableTabView(nav.current) && !visibleTabViews.includes(nav.current)) {
-      nav.navigate(firstMainView(detachedWindows.views));
-      return;
-    }
-  });
 
   // Notes mention notifications
   function notesMentionNotificationSchedulerEnabled(): boolean {

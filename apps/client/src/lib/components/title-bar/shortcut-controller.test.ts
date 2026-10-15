@@ -26,7 +26,7 @@ describe("shell shortcuts during editing", () => {
     const commands = [
       { key: "m", ctrlKey: true, action: context.toggleMusic },
       { key: "l", ctrlKey: true, shiftKey: true, action: context.toggleTheme },
-      { key: "t", ctrlKey: true, shiftKey: true, action: context.openThemeSwitcher },
+      { key: "o", ctrlKey: true, shiftKey: true, action: context.openThemeSwitcher },
       { key: "d", ctrlKey: true, shiftKey: true, action: context.toggleDiagnostics },
       { key: "=", ctrlKey: true, action: context.zoomIn },
       { key: "F1", action: context.openShortcutHelp },

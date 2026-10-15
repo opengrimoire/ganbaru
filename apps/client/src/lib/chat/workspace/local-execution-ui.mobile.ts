@@ -25,11 +25,6 @@ export function listenForChatChanges(
   return Promise.resolve(() => {});
 }
 
-/** Detached windows are unavailable on mobile. */
-export function openDetachedChatWindow(): Promise<void> {
-  return Promise.reject(new Error("Detached Chat windows are unavailable on mobile"));
-}
-
 /** Private local scratch inspection is unavailable on mobile. */
 export function loadChatScratchManager(): Promise<ChatScratchManagerComponent> {
   return Promise.reject(new Error("Private Chat scratch inspection is unavailable on mobile"));

@@ -18,6 +18,7 @@ Source paths, schema inventories, cache tuning, device test matrices, and delive
 | Music | Partial | [Music](music/README.md) |
 | Themes | Implemented | [Themes](themes/README.md) |
 | Localization | Partial | [Localization](localization.md) |
+| Workspace tabs | Partial | [Workspace tabs](workspace-tabs.md) |
 | Quick notes | Implemented | [Quick notes](quick-notes.md) |
 | Profile | Implemented | [Profile](profile.md) |
 | Contacts and invitations | Partial | [Contacts and invitations](collaboration/README.md) |

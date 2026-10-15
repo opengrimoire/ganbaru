@@ -25,15 +25,16 @@ describe("shortcut search", () => {
     expect(matchingActions("=")).toEqual([]);
   });
 
-  it("orders general shortcuts by navigation, opening, zooming, then other actions", () => {
+  it("orders general shortcuts by tabs, panels, zooming, then other actions", () => {
     expect(SHORTCUT_GROUPS[0]?.title).toBe("General");
     expect(SHORTCUT_GROUPS[0]?.items.map((item) => item.action)).toEqual([
-      "Next view",
-      "Previous view",
-      "Open calendar",
-      "Open projects",
-      "Open notes",
-      "Open Chat",
+      "New tab",
+      "Close tab",
+      "Reopen closed tab",
+      "Next tab",
+      "Previous tab",
+      "Go to tab by position",
+      "Go to last tab",
       "Toggle music panel",
       "Open or close settings",
       "Zoom in",
@@ -57,9 +58,7 @@ describe("shortcut search", () => {
     const openActions = matchingActions("op");
     expect(openActions).toEqual(
       expect.arrayContaining([
-        "Open calendar",
-        "Open projects",
-        "Open notes",
+        "Open or close settings",
         "Open shortcuts",
         "Open theme picker",
       ]),
@@ -69,8 +68,9 @@ describe("shortcut search", () => {
   });
 
   it("matches shortcut combinations written with spaces or plus signs", () => {
-    expect(matchingActions("ctrl shift t")).toContain("Open theme picker");
-    expect(matchingActions("ctrl+shift+t")).toContain("Open theme picker");
+    expect(matchingActions("ctrl shift t")).toContain("Reopen closed tab");
+    expect(matchingActions("ctrl+shift+t")).toContain("Reopen closed tab");
+    expect(matchingActions("ctrl shift o")).toContain("Open theme picker");
     expect(matchingActions("ctrlshiftt")).toEqual([]);
   });
 
@@ -84,7 +84,7 @@ describe("shortcut search", () => {
       "Toggle light/dark mode",
       "Open theme picker",
       "Toggle diagnostics panel",
-      "Previous view",
+      "Previous tab",
       "Close app",
     ]);
     expect(matchingActions("ctrl sh")).toEqual(ctrlShiftActions);
@@ -224,7 +224,7 @@ describe("shortcut search", () => {
         "Open theme picker",
         "Toggle diagnostics panel",
         "Toggle DevTools (dev only)",
-        "Previous view",
+        "Previous tab",
       ]),
     );
     expect(matchingActions("ctrl + shift +")).toEqual(
@@ -233,7 +233,7 @@ describe("shortcut search", () => {
         "Open theme picker",
         "Toggle diagnostics panel",
         "Toggle DevTools (dev only)",
-        "Previous view",
+        "Previous tab",
       ]),
     );
   });

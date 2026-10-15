@@ -1,14 +1,18 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { isDetachableTabView, type DetachableTabView } from "$lib/navigation";
+import type { DetachableTabView } from "$lib/navigation";
 import {
   DETACHED_VIEW_WINDOW_CHANGED_EVENT,
   listDetachedViews,
+  parseDetachedViewWindowChange,
   type DetachedViewWindowChange,
 } from "$lib/windows/detached";
+
+export type DetachedViewWindowChangeListener = (change: DetachedViewWindowChange) => void;
 
 let initialized = false;
 let eventUnlisten: UnlistenFn | undefined;
 let detachedViews = $state<ReadonlySet<DetachableTabView>>(new Set());
+const changeListeners = new Set<DetachedViewWindowChangeListener>();
 
 function setDetachedViews(nextViews: ReadonlySet<DetachableTabView>): void {
   detachedViews = new Set(nextViews);
@@ -22,6 +26,7 @@ async function refresh(): Promise<void> {
   }
 }
 
+/** Update the detached kinds, then tell listeners in the same task so they never observe a stale set. */
 function applyChange(change: DetachedViewWindowChange): void {
   const nextViews = new Set(detachedViews);
   if (change.detached) {
@@ -30,13 +35,7 @@ function applyChange(change: DetachedViewWindowChange): void {
     nextViews.delete(change.view);
   }
   detachedViews = nextViews;
-}
-
-function isDetachedViewWindowChange(value: unknown): value is DetachedViewWindowChange {
-  if (typeof value !== "object" || value === null) return false;
-  const record = value as Record<string, unknown>;
-  return isDetachableTabView(record.view)
-    && typeof record.detached === "boolean";
+  for (const listener of changeListeners) listener(change);
 }
 
 function init(): void {
@@ -44,8 +43,9 @@ function init(): void {
   initialized = true;
   void refresh();
   listen<unknown>(DETACHED_VIEW_WINDOW_CHANGED_EVENT, (event) => {
-    if (isDetachedViewWindowChange(event.payload)) {
-      applyChange(event.payload);
+    const change = parseDetachedViewWindowChange(event.payload);
+    if (change) {
+      applyChange(change);
     } else {
       void refresh();
     }
@@ -68,11 +68,16 @@ export function getDetachedWindows() {
     get views(): ReadonlySet<DetachableTabView> {
       return detachedViews;
     },
-    markDetached(view: DetachableTabView): void {
-      applyChange({ view, detached: true });
+    markDetached(view: DetachableTabView, tabId?: string): void {
+      applyChange({ view, detached: true, ...(tabId ? { tabId } : {}) });
     },
     markAttached(view: DetachableTabView): void {
       applyChange({ view, detached: false });
+    },
+    /** Observe every window change, local or from another window. */
+    onChange(listener: DetachedViewWindowChangeListener): () => void {
+      changeListeners.add(listener);
+      return () => changeListeners.delete(listener);
     },
     refresh,
     destroy(): void {

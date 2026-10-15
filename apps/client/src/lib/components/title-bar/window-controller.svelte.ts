@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { DetachableTabView } from "$lib/navigation";
-import { notifyDetachedViewWindowChanged } from "$lib/windows/detached";
+import { notifyDetachedViewWindowChanged, type DetachedViewWindowTab } from "$lib/windows/detached";
 
 type CurrentWindow = ReturnType<typeof getCurrentWindow>;
 
@@ -9,6 +9,8 @@ export interface TitleBarWindowControllerContext {
   window: CurrentWindow;
   detachedWindowView: DetachableTabView | undefined;
   markDetachedViewAttached: (view: DetachableTabView) => void;
+  /** The tab a detached window shows, so closing the window closes that tab in the main window. */
+  detachedTab: () => DetachedViewWindowTab | null;
   benchmarkLocked: () => boolean;
   resetConfirmationOpen: () => boolean;
   requestCloseConfirmation: () => void;
@@ -48,6 +50,8 @@ export function createTitleBarWindowController(
         await notifyDetachedViewWindowChanged({
           view: context.detachedWindowView,
           detached: false,
+          ...(context.detachedTab() ?? {}),
+          closed: true,
         });
       } catch (error) {
         context.reportError("Failed to publish detached window close:", error);

@@ -1,33 +1,46 @@
 <script lang="ts">
   import Check from "@lucide/svelte/icons/check";
+  import ListX from "@lucide/svelte/icons/list-x";
+  import RotateCcw from "@lucide/svelte/icons/rotate-ccw";
+  import X from "@lucide/svelte/icons/x";
   import SquareArrowLeft from "@lucide/svelte/icons/square-arrow-left";
   import SquareArrowUpRight from "@lucide/svelte/icons/square-arrow-up-right";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import type { DetachableTabView } from "$lib/navigation";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import type { TitleBarControlId } from "$lib/stores/preference-options";
 
   let {
     showTabContextMenu = $bindable(),
-    tabContextView = $bindable(),
+    tabContextId = $bindable(),
     tabContextMenuStyle,
     detachedWindow,
-    canDetachTab,
+    detachBlockReason,
+    canCloseOtherTabs,
+    canReopenTab,
     showTitleBarMenu = $bindable(),
     titleBarMenuStyle,
     controls,
     onTabContextAction,
+    onCloseTab,
+    onCloseOtherTabs,
+    onReopenTab,
     onToggleControl,
   }: {
     showTabContextMenu: boolean;
-    tabContextView: DetachableTabView | null;
+    tabContextId: string | null;
     tabContextMenuStyle: string;
     detachedWindow: boolean;
-    canDetachTab: boolean;
+    /** Why the tab cannot move to its own window, or null when it can. */
+    detachBlockReason: string | null;
+    canCloseOtherTabs: boolean;
+    canReopenTab: boolean;
     showTitleBarMenu: boolean;
     titleBarMenuStyle: string;
     controls: Array<{ id: TitleBarControlId; label: string }>;
     onTabContextAction: () => void;
+    onCloseTab: () => void;
+    onCloseOtherTabs: () => void;
+    onReopenTab: () => void;
     onToggleControl: (id: TitleBarControlId) => void;
   } = $props();
 
@@ -35,13 +48,13 @@
   const { t } = getLocalization();
 </script>
 
-{#if showTabContextMenu && tabContextView}
+{#if showTabContextMenu && tabContextId}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="fixed inset-0 z-40"
-    onclick={() => { showTabContextMenu = false; tabContextView = null; }}
-    oncontextmenu={(e) => { e.preventDefault(); showTabContextMenu = false; tabContextView = null; }}
+    onclick={() => { showTabContextMenu = false; tabContextId = null; }}
+    oncontextmenu={(e) => { e.preventDefault(); showTabContextMenu = false; tabContextId = null; }}
   ></div>
   <div
     class="surface-floating fixed z-50 overflow-hidden"
@@ -49,10 +62,25 @@
     role="menu"
   >
     <div class="surface-floating-body">
+      <button role="menuitem" onclick={onCloseTab} class="menu-item">
+        <X size={15} strokeWidth={2.2} />
+        <span class="shrink-0 whitespace-nowrap">{t("titleBar.tab.closeTab")}</span>
+      </button>
+      {#if !detachedWindow}
+        <button role="menuitem" disabled={!canCloseOtherTabs} onclick={onCloseOtherTabs} class="menu-item">
+          <ListX size={15} strokeWidth={2.2} />
+          <span class="shrink-0 whitespace-nowrap">{t("titleBar.tab.closeOtherTabs")}</span>
+        </button>
+        <button role="menuitem" disabled={!canReopenTab} onclick={onReopenTab} class="menu-item">
+          <RotateCcw size={15} strokeWidth={2.2} />
+          <span class="shrink-0 whitespace-nowrap">{t("titleBar.tab.reopenClosedTab")}</span>
+        </button>
+      {/if}
+      <div role="separator" class="menu-separator"></div>
       <button
         role="menuitem"
-        disabled={!detachedWindow && !canDetachTab}
-        title={!detachedWindow && !canDetachTab ? t("titleBar.keepOneTabInMainWindow") : undefined}
+        disabled={!detachedWindow && detachBlockReason !== null}
+        title={!detachedWindow && detachBlockReason !== null ? detachBlockReason : undefined}
         onclick={onTabContextAction}
         class="menu-item"
       >

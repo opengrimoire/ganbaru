@@ -4,7 +4,6 @@
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { onMount } from "svelte";
   import { clearAssetUrlCache } from "$lib/api/asset-url-cache";
-  import { getNavigation } from "$lib/stores/navigation.svelte";
   import { getPomodoro } from "$lib/stores/pomodoro.svelte";
   import { getTheme } from "$lib/stores/theme.svelte";
   import { getZoom } from "$lib/stores/zoom.svelte";
@@ -12,8 +11,9 @@
   import { getViewport } from "$lib/stores/viewport.svelte";
   import type { TitleBarControlId } from "$lib/stores/preference-options";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import type { DetachableTabView } from "$lib/navigation";
   import { getDetachedWindows } from "$lib/stores/detached-windows.svelte";
+  import { getWorkspaceTabs, type WorkspaceTabDetachBlock } from "$lib/stores/workspace-tabs.svelte";
+  import { workspaceTabKindLabel } from "$lib/workspace-tabs/presentation";
   import { detachableTabViewFromWindowLabel } from "$lib/windows/detached";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
@@ -51,7 +51,7 @@
   const appWindow = getCurrentWindow();
   const isMainWindow = appWindow.label === "main";
   const detachedWindowView = detachableTabViewFromWindowLabel(appWindow.label);
-  const nav = getNavigation();
+  const tabs = getWorkspaceTabs();
   const pomodoro = getPomodoro();
   const theme = getTheme();
   const zoom = getZoom();
@@ -74,7 +74,7 @@
   let showUtilityOverflowMenu = $state(false);
   let titleBarMenuStyle = $state("");
   let tabContextMenuStyle = $state("");
-  let tabContextView = $state<DetachableTabView | null>(null);
+  let tabContextId = $state<string | null>(null);
   let titleBarTabs: { handleWheel: (event: WheelEvent) => void } | undefined;
   let mediaControls: { handleVolumeWheel: (event: WheelEvent) => void } | undefined;
   const settingsLauncher = getSettingsLauncher();
@@ -239,6 +239,7 @@
     window: appWindow,
     detachedWindowView,
     markDetachedViewAttached: (view) => detachedWindows.markAttached(view),
+    detachedTab: () => tabs.detachedDetails(),
     benchmarkLocked: () => lockedByBenchmark,
     resetConfirmationOpen: () => showResetSequenceConfirm || showResetConfirm,
     requestCloseConfirmation: () => {
@@ -283,16 +284,13 @@
     window: appWindow,
     isMainWindow,
     detachedWindowView,
-    contextView: () => tabContextView,
+    contextTabId: () => tabContextId,
     closeContextMenu: () => {
       showTabContextMenu = false;
-      tabContextView = null;
+      tabContextId = null;
     },
-    currentView: () => nav.current,
-    navigate: (view) => nav.navigate(view),
-    detachedViews: () => detachedWindows.views,
+    tabs,
     markAttached: (view) => detachedWindows.markAttached(view),
-    markDetached: (view) => detachedWindows.markDetached(view),
     reportError: (message, error) => { console.error(message, error); },
   });
 
@@ -356,7 +354,7 @@
 
     if (showTabContextMenu && e.key === "Escape") {
       showTabContextMenu = false;
-      tabContextView = null;
+      tabContextId = null;
       return;
     }
 
@@ -381,7 +379,7 @@
     showQuickNotes = false;
     showMusicPanel = false;
     showTabContextMenu = false;
-    tabContextView = null;
+    tabContextId = null;
 
     const left = Math.min(
       Math.max(MENU_EDGE_GAP, e.clientX),
@@ -397,7 +395,7 @@
     showTitleBarMenu = true;
   }
 
-  function openTabContextMenu(e: MouseEvent, view: DetachableTabView) {
+  function openTabContextMenu(e: MouseEvent, tabId: string) {
     e.preventDefault();
     e.stopPropagation();
     showPomodoroMenu = false;
@@ -406,7 +404,7 @@
     showTitleBarMenu = false;
     showUtilityOverflowMenu = false;
     showTabContextMenu = true;
-    tabContextView = view;
+    tabContextId = tabId;
 
     const left = Math.min(
       Math.max(MENU_EDGE_GAP, e.clientX),
@@ -423,6 +421,27 @@
     ].join("; ");
   }
 
+
+  function runTabContextAction(action: (tabId: string) => void): void {
+    const tabId = tabContextId;
+    showTabContextMenu = false;
+    tabContextId = null;
+    if (tabId) action(tabId);
+  }
+
+  function detachBlockReason(block: WorkspaceTabDetachBlock | null, tabId: string): string | null {
+    if (block === null) return null;
+    if (block === "last-tab") return t("titleBar.keepOneTabInMainWindow");
+    if (block === "kind-has-other-tabs") {
+      const tab = tabs.tabs.find((candidate) => candidate.id === tabId);
+      return tab ? t("titleBar.tab.kindHasOtherTabs", workspaceTabKindLabel(tab.location.kind, t)) : null;
+    }
+    return t("titleBar.moveToNewWindowUnavailable");
+  }
+
+  const contextDetachBlockReason = $derived(
+    tabContextId ? detachBlockReason(tabs.detachBlock(tabContextId), tabContextId) : null,
+  );
 
   function toggleTitleBarControl(id: TitleBarControlId) {
     preferences.toggleTitleBarControl(id);
@@ -526,10 +545,12 @@
 
 <TitleBarMenus
   bind:showTabContextMenu
-  bind:tabContextView
+  bind:tabContextId
   {tabContextMenuStyle}
   detachedWindow={!!detachedWindowView}
-  canDetachTab={detachedWindowView ? true : detachedController.canDetachContextView()}
+  detachBlockReason={contextDetachBlockReason}
+  canCloseOtherTabs={tabs.tabs.length > 1}
+  canReopenTab={tabs.closed.length > 0}
   bind:showTitleBarMenu
   {titleBarMenuStyle}
   controls={titleBarControls.map((control) => ({
@@ -537,6 +558,9 @@
     label: control.label(),
   }))}
   onTabContextAction={detachedController.activateContextAction}
+  onCloseTab={() => runTabContextAction((id) => tabs.close(id))}
+  onCloseOtherTabs={() => runTabContextAction((id) => tabs.closeOthers(id))}
+  onReopenTab={() => runTabContextAction(() => tabs.reopen())}
   onToggleControl={toggleTitleBarControl}
 />
 

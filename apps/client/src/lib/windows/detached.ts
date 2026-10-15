@@ -3,17 +3,34 @@ import { WebviewWindow, getAllWebviewWindows } from "@tauri-apps/api/webviewWind
 import type { DetachableTabView } from "$lib/navigation";
 import { isDetachableTabView, viewLabel } from "$lib/navigation";
 import { readNativeBackground } from "$lib/themes/native-background";
+import { parseWorkspaceTabLocation, type WorkspaceTabLocation } from "$lib/workspace-tabs/model";
 
 export const DETACHED_VIEW_WINDOW_PREFIX = "view";
 export const DETACHED_VIEW_WINDOW_CHANGED_EVENT = "detached-view-window-changed";
 export const DETACHED_VIEW_REATTACH_REQUESTED_EVENT = "detached-view-reattach-requested";
+export const DETACHED_VIEW_OPEN_LOCATION_EVENT = "detached-view-open-location";
 export const DETACHED_VIEW_DRAG_MIME = "application/x-ganbaru-ai-detached-view";
 /** Surface the desktop shell paints first, used as the native background of a new detached window. */
 const DETACHED_WINDOW_BACKGROUND_TOKEN = "--sidebar";
 
+/** The workspace tab a detached window shows, so the main window can take it back where it was. */
+export interface DetachedViewWindowTab {
+  tabId: string;
+  location: WorkspaceTabLocation;
+}
+
 export interface DetachedViewWindowChange {
   view: DetachableTabView;
   detached: boolean;
+  tabId?: string;
+  location?: WorkspaceTabLocation;
+  /** The window closed its tab instead of moving it back. */
+  closed?: boolean;
+}
+
+export interface DetachedViewOpenLocationRequest {
+  view: DetachableTabView;
+  location: WorkspaceTabLocation;
 }
 
 export interface DetachedViewReattachRequest {
@@ -40,8 +57,55 @@ export function detachedViewWindowTitle(view: DetachableTabView): string {
   return `Ganbaru AI: ${viewLabel(view)}`;
 }
 
-export function detachedViewWindowUrl(view: DetachableTabView): string {
-  return `/?view=${encodeURIComponent(view)}`;
+export function detachedViewWindowUrl(view: DetachableTabView, tab?: DetachedViewWindowTab): string {
+  const params = new URLSearchParams({ view });
+  if (tab) {
+    params.set("tab", tab.tabId);
+    params.set("location", JSON.stringify(tab.location));
+  }
+  return `/?${params.toString()}`;
+}
+
+/** Read the tab a detached window was opened with, when it matches the window's kind. */
+export function parseDetachedViewWindowTab(
+  search: string,
+  view: DetachableTabView,
+): DetachedViewWindowTab | null {
+  const params = new URLSearchParams(search);
+  const tabId = params.get("tab");
+  const rawLocation = params.get("location");
+  if (!tabId || !rawLocation) return null;
+  const location = parseWorkspaceTabLocation(parseJson(rawLocation));
+  return location && location.kind === view ? { tabId, location } : null;
+}
+
+function parseJson(value: string): unknown {
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+/** Validate a window change event, dropping tab details that do not belong to its kind. */
+export function parseDetachedViewWindowChange(value: unknown): DetachedViewWindowChange | null {
+  if (!isRecord(value) || !isDetachableTabView(value.view) || typeof value.detached !== "boolean") return null;
+  const change: DetachedViewWindowChange = { view: value.view, detached: value.detached };
+  if (typeof value.tabId === "string" && value.tabId.length > 0) change.tabId = value.tabId;
+  const location = value.location === undefined ? null : parseWorkspaceTabLocation(value.location);
+  if (location && location.kind === value.view) change.location = location;
+  if (value.closed === true) change.closed = true;
+  return change;
+}
+
+export function parseDetachedViewOpenLocationRequest(value: unknown): DetachedViewOpenLocationRequest | null {
+  if (!isRecord(value) || !isDetachableTabView(value.view)) return null;
+  const location = parseWorkspaceTabLocation(value.location);
+  return location && location.kind === value.view ? { view: value.view, location } : null;
 }
 
 export function serializeDetachedViewDragPayload(
@@ -73,9 +137,7 @@ export function parseDetachedViewDragPayload(
 export function isDetachedViewReattachRequest(
   value: unknown,
 ): value is DetachedViewReattachRequest {
-  if (typeof value !== "object" || value === null) return false;
-  const record = value as Record<string, unknown>;
-  return isDetachableTabView(record.view);
+  return isRecord(value) && isDetachableTabView(value.view);
 }
 
 async function focusExistingWindow(window: WebviewWindow): Promise<void> {
@@ -112,7 +174,25 @@ export async function notifyDetachedViewReattachRequested(
   await emit(DETACHED_VIEW_REATTACH_REQUESTED_EVENT, request);
 }
 
-export async function openDetachedViewWindow(view: DetachableTabView): Promise<void> {
+/** Show a location in the window that holds its kind, and bring that window forward. */
+export async function openLocationInDetachedViewWindow(
+  view: DetachableTabView,
+  location: WorkspaceTabLocation | null,
+): Promise<void> {
+  const existing = await WebviewWindow.getByLabel(detachedViewWindowLabel(view));
+  if (!existing) return;
+  if (location) {
+    const request: DetachedViewOpenLocationRequest = { view, location };
+    await emit(DETACHED_VIEW_OPEN_LOCATION_EVENT, request);
+  }
+  await focusExistingWindow(existing);
+}
+
+/** Open a kind in its own window, carrying the moved tab's identity and location when there is one. */
+export async function openDetachedViewWindow(
+  view: DetachableTabView,
+  tab?: DetachedViewWindowTab,
+): Promise<void> {
   const label = detachedViewWindowLabel(view);
   const existing = await WebviewWindow.getByLabel(label);
   if (existing) {
@@ -126,7 +206,7 @@ export async function openDetachedViewWindow(view: DetachableTabView): Promise<v
     : undefined;
   const created = new WebviewWindow(label, {
     ...(backgroundColor ? { backgroundColor } : {}),
-    url: detachedViewWindowUrl(view),
+    url: detachedViewWindowUrl(view, tab),
     title: detachedViewWindowTitle(view),
     width: 960,
     height: 720,
@@ -146,7 +226,7 @@ export async function openDetachedViewWindow(view: DetachableTabView): Promise<v
   });
 
   try {
-    await notifyDetachedViewWindowChanged({ view, detached: true });
+    await notifyDetachedViewWindowChanged({ view, detached: true, ...(tab ? { tabId: tab.tabId } : {}) });
   } catch (error) {
     console.error("Failed to publish detached window open:", error);
   }

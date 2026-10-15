@@ -68,18 +68,3 @@ export function mainTabViews(
     (view) => isViewAvailable(view, profile) && !detachedViews.has(view),
   );
 }
-
-export function firstMainView(
-  detachedViews: ReadonlySet<DetachableTabView>,
-  profile: PlatformProfile = BUILD_PLATFORM_PROFILE,
-): View {
-  return mainTabViews(detachedViews, profile)[0] ?? availableAppViews(profile)[0] ?? "calendar";
-}
-
-export function canDetachMainView(
-  detachedViews: ReadonlySet<DetachableTabView>,
-  profile: PlatformProfile = BUILD_PLATFORM_PROFILE,
-): boolean {
-  return platformHasCapability(profile, "window.detached-views")
-    && mainTabViews(detachedViews, profile).length > 1;
-}

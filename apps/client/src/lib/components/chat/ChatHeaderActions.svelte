@@ -3,10 +3,10 @@
   import PanelRight from "@lucide/svelte/icons/panel-right";
   import Settings2 from "@lucide/svelte/icons/settings-2";
   import SquareArrowOutUpRight from "@lucide/svelte/icons/square-arrow-out-up-right";
-  import { openDetachedChatWindow } from "$lib/chat/workspace/local-execution-ui";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import { getChat } from "$lib/stores/chat.svelte";
+  import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
   import { cn } from "$lib/utils";
   import Notice from "$lib/components/ui/Notice.svelte";
 
@@ -34,12 +34,21 @@
   /** Phone action rows share 16 pixel icons in 3rem tall targets on the top bar icon columns across Projects, Notes, and Chat. */
   const actionIconSize = mobilePresentation ? 16 : 14;
   const iconButtonClass = cn("chat-header-icon-button", mobilePresentation && "mobile-chrome-button");
+  const tabs = getWorkspaceTabs();
   const selectedThread = $derived(chat.selectedThread);
+  const detachBlock = $derived(tabs.detachBlock(tabs.activeTabId));
+  const detachTitle = $derived(
+    detachBlock === "last-tab"
+      ? t("titleBar.keepOneTabInMainWindow")
+      : detachBlock === "kind-has-other-tabs"
+        ? t("titleBar.tab.kindHasOtherTabs", t("titleBar.tab.chat"))
+        : t("chat.detach"),
+  );
   let actionError = $state<string | null>(null);
 
   function detachThread(): void {
     actionError = null;
-    void openDetachedChatWindow().catch((error: unknown) => {
+    void tabs.detach(tabs.activeTabId).catch((error: unknown) => {
       actionError = error instanceof Error ? error.message : String(error);
     });
   }
@@ -55,8 +64,8 @@
       <PanelRight size={actionIconSize} strokeWidth={1.75} />
     </button>
   {/if}
-  {#if localExecutionAvailable && selectedThread}
-    <button type="button" class={iconButtonClass} aria-label={t("chat.detach")} title={t("chat.detach")} onclick={detachThread}>
+  {#if localExecutionAvailable && selectedThread && detachBlock !== "unsupported"}
+    <button type="button" class={cn(iconButtonClass, detachBlock !== null && "cursor-not-allowed opacity-40")} aria-label={t("chat.detach")} aria-disabled={detachBlock !== null} title={detachTitle} onclick={() => { if (detachBlock === null) detachThread(); }}>
       <SquareArrowOutUpRight size={actionIconSize} strokeWidth={1.75} />
     </button>
   {/if}

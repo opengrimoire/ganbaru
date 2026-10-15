@@ -1,11 +1,7 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import {
-  canDetachMainView,
-  firstMainView,
-  type DetachableTabView,
-  type View,
-} from "$lib/navigation";
+import type { DetachableTabView } from "$lib/navigation";
+import type { WorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
 import {
   DETACHED_VIEW_DRAG_MIME,
   DETACHED_VIEW_REATTACH_REQUESTED_EVENT,
@@ -13,7 +9,6 @@ import {
   isDetachedViewReattachRequest,
   notifyDetachedViewReattachRequested,
   notifyDetachedViewWindowChanged,
-  openDetachedViewWindow,
   parseDetachedViewDragPayload,
 } from "$lib/windows/detached";
 
@@ -23,17 +18,14 @@ export interface TitleBarDetachedControllerContext {
   window: CurrentWindow;
   isMainWindow: boolean;
   detachedWindowView: DetachableTabView | undefined;
-  contextView: () => DetachableTabView | null;
+  contextTabId: () => string | null;
   closeContextMenu: () => void;
-  currentView: () => View;
-  navigate: (view: View) => void;
-  detachedViews: () => ReadonlySet<DetachableTabView>;
+  tabs: WorkspaceTabs;
   markAttached: (view: DetachableTabView) => void;
-  markDetached: (view: DetachableTabView) => void;
   reportError: (message: string, error: unknown) => void;
 }
 
-/** Own detached-tab transfers, reattach events, and window switching. */
+/** Own moves of workspace tabs between windows, reattach events, and window switching. */
 export function createTitleBarDetachedController(
   context: TitleBarDetachedControllerContext,
 ) {
@@ -66,15 +58,11 @@ export function createTitleBarDetachedController(
   }
 
   async function moveToNewWindow(): Promise<void> {
-    const view = context.contextView();
-    if (!view || !canDetachContextView()) return;
+    const tabId = context.contextTabId();
+    if (!tabId || !canDetachContextTab()) return;
     context.closeContextMenu();
     try {
-      await openDetachedViewWindow(view);
-      context.markDetached(view);
-      if (context.currentView() === view) {
-        context.navigate(firstMainView(context.detachedViews()));
-      }
+      await context.tabs.detach(tabId);
     } catch (error) {
       context.reportError("Failed to move tab to a new window:", error);
     }
@@ -82,7 +70,7 @@ export function createTitleBarDetachedController(
 
   async function requestReattach(view: DetachableTabView): Promise<void> {
     context.markAttached(view);
-    context.navigate(view);
+    context.tabs.focusKind(view);
     try {
       await notifyDetachedViewWindowChanged({ view, detached: false });
     } catch (error) {
@@ -98,9 +86,10 @@ export function createTitleBarDetachedController(
   async function reattachCurrentWindow(): Promise<void> {
     const view = context.detachedWindowView;
     if (!view) return;
+    const tab = context.tabs.detachedDetails();
     context.markAttached(view);
     try {
-      await notifyDetachedViewWindowChanged({ view, detached: false });
+      await notifyDetachedViewWindowChanged({ view, detached: false, ...(tab ?? {}) });
     } catch (error) {
       context.reportError("Failed to publish detached window restore:", error);
     }
@@ -121,12 +110,9 @@ export function createTitleBarDetachedController(
     }
   }
 
-  function canDetachContextView(): boolean {
-    return Boolean(
-      context.isMainWindow
-      && context.contextView()
-      && canDetachMainView(context.detachedViews()),
-    );
+  function canDetachContextTab(): boolean {
+    const tabId = context.contextTabId();
+    return Boolean(context.isMainWindow && tabId && context.tabs.detachBlock(tabId) === null);
   }
 
   $effect(() => {
@@ -145,5 +131,5 @@ export function createTitleBarDetachedController(
     return () => cleanup?.();
   });
 
-  return { activateContextAction, canDetachContextView, handleDragOver, handleDrop };
+  return { activateContextAction, canDetachContextTab, handleDragOver, handleDrop };
 }

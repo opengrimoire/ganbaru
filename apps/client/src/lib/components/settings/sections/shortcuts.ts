@@ -16,19 +16,20 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = Object.freeze([
   {
     title: "General",
     items: [
-      { keys: ["Mod + Tab"], action: "Next view" },
-      { keys: ["Mod + Shift + Tab"], action: "Previous view" },
-      { keys: ["Alt + 1"], action: "Open calendar" },
-      { keys: ["Alt + 2"], action: "Open projects" },
-      { keys: ["Alt + 3"], action: "Open notes" },
-      { keys: ["Alt + 4"], action: "Open Chat" },
+      { keys: ["Mod + T"], action: "New tab" },
+      { keys: ["Mod + W"], action: "Close tab" },
+      { keys: ["Mod + Shift + T"], action: "Reopen closed tab" },
+      { keys: ["Mod + Tab", "Mod + Page down"], action: "Next tab" },
+      { keys: ["Mod + Shift + Tab", "Mod + Page up"], action: "Previous tab" },
+      { keys: ["Alt + 1-8"], action: "Go to tab by position" },
+      { keys: ["Alt + 9"], action: "Go to last tab" },
       { keys: ["Mod + M"], action: "Toggle music panel" },
       { keys: ["Mod + ,"], action: "Open or close settings" },
       { keys: ["Mod + +"], action: "Zoom in" },
       { keys: ["Mod + -"], action: "Zoom out" },
       { keys: ["Mod + 0"], action: "Reset zoom" },
       { keys: ["Mod + Shift + L"], action: "Toggle light/dark mode" },
-      { keys: ["Mod + Shift + T"], action: "Open theme picker" },
+      { keys: ["Mod + Shift + O"], action: "Open theme picker" },
       { keys: ["Mod + Shift + D"], action: "Toggle diagnostics panel" },
       { keys: ["F12", "Ctrl + Shift + I"], action: "Toggle DevTools (dev only)" },
       { keys: ["Mod + Shift + W"], action: "Close app" },
@@ -116,18 +117,20 @@ function localizedGroupTitle(title: string, t: Translate): string {
 
 function localizedAction(action: string, t: Translate): string {
   switch (action) {
-    case "Next view":
+    case "New tab":
+      return t("settings.shortcuts.action.newTab");
+    case "Close tab":
+      return t("settings.shortcuts.action.closeTab");
+    case "Reopen closed tab":
+      return t("settings.shortcuts.action.reopenClosedTab");
+    case "Next tab":
       return t("settings.shortcuts.action.nextView");
-    case "Previous view":
+    case "Previous tab":
       return t("settings.shortcuts.action.previousView");
-    case "Open calendar":
-      return t("settings.shortcuts.action.openCalendar");
-    case "Open projects":
-      return t("settings.shortcuts.action.openProjects");
-    case "Open notes":
-      return t("settings.shortcuts.action.openNotes");
-    case "Open Chat":
-      return t("settings.shortcuts.action.openChat");
+    case "Go to tab by position":
+      return t("settings.shortcuts.action.goToTab");
+    case "Go to last tab":
+      return t("settings.shortcuts.action.goToLastTab");
     case "New channel":
       return t("settings.shortcuts.action.newChat");
     case "Focus channel search":

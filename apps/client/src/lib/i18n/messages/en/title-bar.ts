@@ -5,6 +5,15 @@ export const titleBar = {
     notes: "Notes",
     chat: "Chat",
     withShortcut: (label: string, shortcut: string) => `${label} (${shortcut})`,
+    newTab: "New tab",
+    closeTab: "Close tab",
+    closeOtherTabs: "Close other tabs",
+    reopenClosedTab: "Reopen closed tab",
+    launcher: "Open a tab",
+    openTabs: "Open tabs",
+    recentlyClosed: "Recently closed",
+    inAnotherWindow: "In another window",
+    kindHasOtherTabs: (label: string) => `Close the other ${label} tabs to move this one to its own window`,
   },
   control: {
     pomodoro: "Pomodoro",
@@ -58,6 +67,7 @@ export const titleBar = {
   disabledBenchmark: "Disabled while a benchmark is active",
   moveBackToMainWindow: "Move back to main window",
   moveToNewWindow: "Move to new window",
+  moveToNewWindowUnavailable: "This tab cannot move to its own window",
   keepOneTabInMainWindow: "At least one tab must remain in the main window",
   resetSequenceTitle: "Open reset confirmation?",
   resetSequenceMessage:

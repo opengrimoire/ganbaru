@@ -8,6 +8,15 @@ export const titleBar = {
     notes: "Notas",
     chat: "Chat",
     withShortcut: (label: string, shortcut: string) => `${label} (${shortcut})`,
+    newTab: "Nueva pestaña",
+    closeTab: "Cerrar pestaña",
+    closeOtherTabs: "Cerrar las demás pestañas",
+    reopenClosedTab: "Reabrir pestaña cerrada",
+    launcher: "Abrir una pestaña",
+    openTabs: "Pestañas abiertas",
+    recentlyClosed: "Cerradas recientemente",
+    inAnotherWindow: "En otra ventana",
+    kindHasOtherTabs: (label: string) => `Cierra las demás pestañas de ${label} para mover esta a su propia ventana`,
   },
   control: {
     pomodoro: "Pomodoro",
@@ -61,6 +70,7 @@ export const titleBar = {
   disabledBenchmark: "Desactivado mientras hay un benchmark activo",
   moveBackToMainWindow: "Mover de vuelta a la ventana principal",
   moveToNewWindow: "Mover a una ventana nueva",
+  moveToNewWindowUnavailable: "Esta pestaña no se puede mover a su propia ventana",
   keepOneTabInMainWindow: "Al menos una pestaña debe permanecer en la ventana principal",
   resetSequenceTitle: "¿Abrir confirmación de reinicio?",
   resetSequenceMessage:

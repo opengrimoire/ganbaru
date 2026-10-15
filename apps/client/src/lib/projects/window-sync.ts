@@ -6,8 +6,8 @@ export const PROJECTS_WORKSPACE_CHANGE_KEY = "workspace";
 
 const projectChanges = createVaultChangeChannel("projects-changed");
 
-/** Ids of the projects a committed mutation touched, or the workspace key when it names none. */
-export function projectMutationChangeKeys(mutation: ProjectMutation, selectedProjectId: string | null): string[] {
+/** Ids of the projects a committed mutation touched, else the projects the window shows, else the workspace key. */
+export function projectMutationChangeKeys(mutation: ProjectMutation, shownProjectIds: readonly (string | null)[]): string[] {
   const { changed } = mutation;
   const keys = new Set<string>([
     ...changed.projects.map((project) => project.id),
@@ -16,13 +16,14 @@ export function projectMutationChangeKeys(mutation: ProjectMutation, selectedPro
       ...changed.tags, ...changed.customFields, ...changed.views,
     ].map((row) => row.projectId),
   ]);
-  if (keys.size === 0) keys.add(selectedProjectId ?? PROJECTS_WORKSPACE_CHANGE_KEY);
-  return [...keys];
+  if (keys.size > 0) return [...keys];
+  const shown = new Set(shownProjectIds.filter((projectId): projectId is string => Boolean(projectId)));
+  return shown.size > 0 ? [...shown] : [PROJECTS_WORKSPACE_CHANGE_KEY];
 }
 
 /** Tell other windows of this vault that Projects data changed. */
-export function publishProjectChanges(mutation: ProjectMutation, selectedProjectId: string | null): void {
-  projectChanges.publish(projectMutationChangeKeys(mutation, selectedProjectId));
+export function publishProjectChanges(mutation: ProjectMutation, shownProjectIds: readonly (string | null)[]): void {
+  projectChanges.publish(projectMutationChangeKeys(mutation, shownProjectIds));
 }
 
 /** Receive the project ids (or the workspace key) other windows changed, gathered per pause in their editing. */

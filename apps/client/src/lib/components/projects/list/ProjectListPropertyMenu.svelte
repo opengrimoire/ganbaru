@@ -26,7 +26,7 @@
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { projectCustomFieldUsesOptions, uniqueProjectCustomFieldName } from "$lib/projects/custom-fields";
   import { customFieldIdFromTaskListColumn } from "$lib/projects/tasks/list-columns";
   import {
@@ -49,7 +49,7 @@
   let { column, label }: { column: ProjectTaskListResizableColumn; label: string } = $props();
   const context = getProjectListTableContext();
   const query = context?.query;
-  const projects = getProjects();
+  const projects = useProjects();
   const preferences = getPreferences();
   const localization = getLocalization();
   const { t } = localization;

@@ -7,7 +7,10 @@ import type { ProjectCustomField } from "$lib/projects/types";
 import { ProjectTaskQueryController } from "$lib/components/projects/task-query-controller.svelte";
 import ProjectListTableHarness from "./ProjectListTableHarness.test.svelte";
 
-vi.mock("$lib/stores/projects.svelte", () => ({ getProjects: () => ({customFieldOptionsForField: () => []}) }));
+vi.mock("$lib/stores/projects.svelte", () => {
+  const getProjects = () => ({ customFieldOptionsForField: () => [] });
+  return { getProjects, useProjects: getProjects };
+});
 type Input = ConstructorParameters<typeof ProjectTaskQueryController>[0];
 let component: ReturnType<typeof mount> | undefined;
 let target: HTMLDivElement;

@@ -26,7 +26,7 @@
     type ProjectGroup,
     type ProjectView,
   } from "$lib/projects/types";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { getViewport } from "$lib/stores/viewport.svelte";
   import { cn } from "$lib/utils";
@@ -80,7 +80,7 @@
     viewControlsTarget?: HTMLElement | null;
   } = $props();
 
-  const projects = getProjects();
+  const projects = useProjects();
   const mobileBackStack = getMobileBackStack();
   const viewport = getViewport();
   const { t } = getLocalization();

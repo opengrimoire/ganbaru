@@ -27,7 +27,7 @@ import {
 } from "./custom-field-drafts";
 import { projectHasLockedSystemIdentity } from "$lib/projects/system-defaults";
 import { getLocalization } from "$lib/i18n/translator.svelte";
-import { getProjects } from "$lib/stores/projects.svelte";
+import { getProjects, type ProjectsStore } from "$lib/stores/projects.svelte";
 import {
   PROJECT_TAG_DEFAULT_COLOR,
   type ProjectCustomFieldType,
@@ -88,7 +88,7 @@ export interface ProjectSettingsSessionCreateColors {
 
 export interface ProjectSettingsSessionOptions {
   onRevealInactive: () => void;
-  projects?: ReturnType<typeof getProjects>;
+  projects?: ProjectsStore;
   translate?: ReturnType<typeof getLocalization>["t"];
 }
 

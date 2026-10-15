@@ -81,7 +81,7 @@
   import type { NotesDiscussionsPanelFocus } from "./pages/comments/NotesDiscussionsPanel.svelte";
   import { buildNotesTableOfContents } from "$lib/notes/block-types/table-of-contents";
   import { getPreferences } from "$lib/stores/preferences.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import type {
     NotesAgentBridgeExportRequest,
     NotesHtmlExportRequest,
@@ -147,7 +147,7 @@
   const mobileBackStack = getMobileBackStack();
   const mobileLayout = BUILD_PLATFORM_PROFILE.shell === "mobile";
   const preferences = getPreferences();
-  const projects = getProjects();
+  const projects = useProjects();
   const fileExportAvailable = platformHasCapability(
     BUILD_PLATFORM_PROFILE,
     "notes.file-export",

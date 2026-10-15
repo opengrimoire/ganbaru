@@ -4,7 +4,7 @@
   import { getCalendar } from "$lib/stores/calendar.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { getViewport } from "$lib/stores/viewport.svelte";
   import type { CalendarEvent, CalendarViewMode } from "$lib/calendar/types";
@@ -50,7 +50,7 @@
     projectChat?: ProjectChatIntegration | null;
   } = $props();
 
-  const projects = getProjects();
+  const projects = useProjects();
   const mobileBackStack = getMobileBackStack();
   const calendar = getCalendar();
   const preferences = getPreferences();

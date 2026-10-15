@@ -35,7 +35,7 @@
   } from "$lib/projects/toolbar";
   import type { Project, ProjectGroup } from "$lib/projects/types";
   import { useNotesWorkspace } from "$lib/stores/notes.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { getViewport } from "$lib/stores/viewport.svelte";
   import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
   import { cn } from "$lib/utils";
@@ -93,7 +93,7 @@
   } = $props();
 
   const notes = useNotesWorkspace();
-  const projects = getProjects();
+  const projects = useProjects();
   const viewport = getViewport();
   const tabs = getWorkspaceTabs();
   const { t } = getLocalization();

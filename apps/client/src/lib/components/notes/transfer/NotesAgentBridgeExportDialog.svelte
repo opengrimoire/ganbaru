@@ -4,7 +4,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import type { Project } from "$lib/projects/types";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import {
     buildRoundTripNotesSourceHref,
     toRoundTripDiagnosticItem,
@@ -38,7 +38,7 @@
   } = $props();
 
   const { t } = getLocalization();
-  const projects = getProjects();
+  const projects = useProjects();
   let includeDescendants = $state(true);
   let includeBacklinks = $state(true);
   let includeDatabaseViews = $state(true);

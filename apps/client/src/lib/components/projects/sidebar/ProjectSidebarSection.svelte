@@ -30,7 +30,7 @@
   } from "$lib/projects/views";
   import { PROJECT_HOSTED_VIEW_TYPES } from "$lib/projects/types";
   import { PROJECT_VIEW_DRAG_SETTLE_MS } from "$lib/projects/view-drag";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { anchoredPopover } from "$lib/utils/anchored-popover";
   import { portal } from "$lib/utils/portal";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
@@ -98,7 +98,7 @@
     canMoveDown?: boolean;
   } = $props();
 
-  const projects = getProjects();
+  const projects = useProjects();
   const { t } = getLocalization();
   const modifierLabel = shortcutModifierLabel();
 

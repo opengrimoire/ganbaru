@@ -35,7 +35,6 @@ import {
   serializeClosedWorkspaceTabs,
   serializeWorkspaceTabsState,
   setWorkspaceSplitOrientation,
-  canShowSideBySide,
   secondaryScopeTabId,
   showWorkspaceTabNeighbor,
   splitWorkspaceTabs,
@@ -409,19 +408,14 @@ function recordLocation(tab: WorkspaceTab, location: WorkspaceTabLocation): void
 }
 
 /**
- * Adopt what the stores show into the tab beside the active one. The split ends when that tab can no longer
- * show beside it: its lock no longer holds what it shows, or it now shows through the active tab's stores.
+ * Adopt what the stores show into the tab beside the active one. The split ends when that tab's lock no longer
+ * holds what it shows.
  */
 function recordPartnerLocation(partnerId: string, location: WorkspaceTabLocation): void {
-  const host = connection;
   const partner = partnerTab();
-  if (!host || partner?.id !== partnerId) return;
+  if (!connection || partner?.id !== partnerId) return;
   if (!isWithinTabScope(partner, location)) {
     if (meaningfulLocation(location)) setState(unsplitWorkspaceTab(tabsState, partnerId));
-    return;
-  }
-  if (!canShowSideBySide(location, currentTab().location, (shown) => host.adapter.paneView(shown))) {
-    setState(unsplitWorkspaceTab(tabsState, partnerId));
     return;
   }
   setState(updateWorkspaceTab(tabsState, partnerId, { location }));
@@ -688,7 +682,7 @@ function splitBlock(id: string): WorkspaceSplitBlock | "unavailable" | null {
   const host = connection;
   const tab = tabsState.tabs.find((candidate) => candidate.id === id);
   if (!host || !tab) return "unavailable";
-  return workspaceSplitBlock(currentTab(), tab, (location) => host.adapter.paneView(location));
+  return workspaceSplitBlock(currentTab(), tab);
 }
 
 /** Record where the shown tabs are, so a change of split keeps what they show. */
@@ -722,10 +716,9 @@ function splitKinds(): View[] {
   const host = connection;
   if (!host || !canAddWorkspaceTab(tabsState)) return [];
   const current = currentTab();
-  const paneView = (location: WorkspaceTabLocation) => host.adapter.paneView(location);
   return availableAppViews().filter((kind) => {
     const location = host.adapter.read(kind) ?? kindLocation(kind);
-    return workspaceSplitBlock(current, createWorkspaceTab("", location), paneView) === null;
+    return workspaceSplitBlock(current, createWorkspaceTab("", location)) === null;
   });
 }
 

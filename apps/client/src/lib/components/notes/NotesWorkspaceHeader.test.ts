@@ -52,8 +52,8 @@ vi.mock("$lib/stores/viewport.svelte", () => ({
   getViewport: () => ({ width: 1200, height: 800 }),
 }));
 
-vi.mock("$lib/stores/projects.svelte", () => ({
-  getProjects: () => ({
+vi.mock("$lib/stores/projects.svelte", () => {
+  const getProjects = () => ({
     customEmojis: [],
     visibleGroups: () => [group],
     projectsForGroup: () => [project],
@@ -61,8 +61,9 @@ vi.mock("$lib/stores/projects.svelte", () => ({
     isProjectStarred: () => false,
     projectById: (id: string | null) => id === project.id ? project : undefined,
     groupById: (id: string | null) => id === group.id ? group : undefined,
-  }),
-}));
+  });
+  return { getProjects, useProjects: getProjects };
+});
 
 const group = {
   id: "group-1",

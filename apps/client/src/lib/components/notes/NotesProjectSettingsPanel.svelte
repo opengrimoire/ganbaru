@@ -24,7 +24,7 @@
     PROJECT_SETTINGS_PANEL_MAX_HEIGHT,
     projectToolbarPanelGeometry,
   } from "$lib/projects/toolbar";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { useNotesWorkspace } from "$lib/stores/notes.svelte";
   import { getViewport } from "$lib/stores/viewport.svelte";
   import {
@@ -63,7 +63,7 @@
     onOpenTrash: () => void;
   } = $props();
 
-  const projects = getProjects();
+  const projects = useProjects();
   const notes = useNotesWorkspace();
   const viewport = getViewport();
   const { t } = getLocalization();

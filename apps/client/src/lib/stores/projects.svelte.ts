@@ -45,6 +45,8 @@ import {
 import { createProjectStoreActions } from "$lib/stores/projects/actions";
 import { createProjectStoreSelectors } from "$lib/stores/projects/selectors";
 import { getPreferences } from "$lib/stores/preferences.svelte";
+import type { WorkspacePaneScope } from "$lib/workspace-tabs/model";
+import { getWorkspacePaneScope } from "$lib/workspace-tabs/pane-scope";
 import { sortSidebarItems, starredFirst, withStarredId } from "$lib/utils/sidebar-order";
 import type {
   Project,
@@ -99,10 +101,7 @@ let snapshot = $state<ProjectsSnapshot>({
 let loaded = $state(false);
 let loading = $state(false);
 let loadError = $state<string | null>(null);
-let selectedProjectId = $state<string | null>(loadSavedActiveProjectId());
-let activeViewIds = $state<Record<string, string>>(loadSavedProjectActiveViewIds());
 let hostableViewTypes = $state<ProjectHostedViewType[]>([]);
-let sidebarCollapsed = $state(loadSavedProjectSidebarCollapsed());
 let collapsedSidebarProjectIds = $state<string[]>(loadSavedCollapsedSidebarProjectIds());
 let starredProjectIds = $state<string[]>(loadSavedStarredProjectIds());
 let starredViewIds = $state<string[]>(loadSavedStarredViewIds());
@@ -114,16 +113,11 @@ onConfigChangedElsewhere((keys) => {
 });
 let loadedProjectIds = $state<string[]>([]);
 let loadRequestId = 0;
-let selectProjectRequestId = 0;
 let initialLoadPromise: Promise<void> | null = null;
 const optionalDataLoadedKeys = new Set<string>();
 const optionalDataRequests = new Map<string, Promise<void>>();
 let optionalDataVersion = $state(0);
-let taskViewPage = $state<ProjectTaskViewPage | null>(null);
-let taskViewLoading = $state(false);
-let taskViewError = $state<string | null>(null);
 let taskMutationRevision = $state(0);
-const taskViewRequestGate = new ProjectTaskViewRequestGate();
 const taskDetailCache = new ProjectTaskDetailCache(4 * 1024 * 1024);
 const taskDetailRequests = new Map<string, Promise<ProjectTaskDetailData>>();
 /** Task details requested most recently, newest last; refreshed in place when another window changes their project. */
@@ -136,20 +130,72 @@ let otherWindowRefresh: Promise<void> | null = null;
 let otherWindowRefreshQueued = false;
 const selectors = createProjectStoreSelectors(() => snapshot);
 
-function ensureSelectedProject(): void {
-  if (snapshot.projects.length === 0) return;
-  if (selectedProjectId && snapshot.projects.some((project) => project.id === selectedProjectId)) {
-    return;
+/**
+ * What one split pane's Projects view shows: its project, the view open in each project, its sidebar, and its
+ * task page. The project data and the other preferences are shared by the window. Only the primary pane
+ * remembers its choices for the next launch; a secondary pane starts from the primary's.
+ */
+class ProjectsPane {
+  selectedProjectId = $state<string | null>(null);
+  activeViewIds = $state<Record<string, string>>({});
+  sidebarCollapsed = $state(false);
+  taskViewPage = $state<ProjectTaskViewPage | null>(null);
+  taskViewLoading = $state(false);
+  taskViewError = $state<string | null>(null);
+  selectProjectRequestId = 0;
+  readonly taskViewRequestGate = new ProjectTaskViewRequestGate();
+  readonly owner: boolean;
+
+  constructor(primary: ProjectsPane | null) {
+    this.owner = primary === null;
+    this.selectedProjectId = primary ? primary.selectedProjectId : loadSavedActiveProjectId();
+    this.activeViewIds = primary ? { ...primary.activeViewIds } : loadSavedProjectActiveViewIds();
+    this.sidebarCollapsed = primary ? primary.sidebarCollapsed : loadSavedProjectSidebarCollapsed();
   }
-  setSelectedProjectId(firstSidebarProjectId());
 }
 
-function setSelectedProjectId(projectId: string | null): void {
-  if (selectedProjectId === projectId) return;
-  taskViewRequestGate.cancel();
-  taskViewLoading = false;
-  selectedProjectId = projectId;
-  saveActiveProjectId(projectId);
+const primaryPane = new ProjectsPane(null);
+const panes: Partial<Record<WorkspacePaneScope, ProjectsPane>> = { primary: primaryPane };
+
+function paneFor(scope: WorkspacePaneScope): ProjectsPane {
+  return panes[scope] ??= new ProjectsPane(primaryPane);
+}
+
+function allPanes(): ProjectsPane[] {
+  return Object.values(panes);
+}
+
+/** The projects the window's panes show, each once. */
+function shownProjectIds(): (string | null)[] {
+  return [...new Set(allPanes().map((pane) => pane.selectedProjectId))];
+}
+
+function ensureSelectedProject(pane: ProjectsPane): void {
+  if (snapshot.projects.length === 0) return;
+  if (pane.selectedProjectId && snapshot.projects.some((project) => project.id === pane.selectedProjectId)) {
+    return;
+  }
+  setSelectedProjectId(pane, firstSidebarProjectId());
+}
+
+function cancelTaskView(pane: ProjectsPane): void {
+  pane.taskViewRequestGate.cancel();
+  pane.taskViewLoading = false;
+}
+
+function setSelectedProjectId(pane: ProjectsPane, projectId: string | null): void {
+  if (pane.selectedProjectId === projectId) return;
+  cancelTaskView(pane);
+  pane.selectedProjectId = projectId;
+  if (pane.owner) saveActiveProjectId(projectId);
+}
+
+function deselectProjectsOfGroup(groupId: string): void {
+  for (const pane of allPanes()) {
+    if (pane.selectedProjectId && selectors.projectById(pane.selectedProjectId)?.groupId === groupId) {
+      setSelectedProjectId(pane, null);
+    }
+  }
 }
 
 function isProjectDataLoaded(projectId: string | null | undefined): boolean {
@@ -205,24 +251,25 @@ function firstSidebarProjectId(): string | null {
   return selectors.firstProjectId();
 }
 
-/** Returns the open view of the selected project: the remembered one while it exists, else its first view. */
-function activeProjectView(): ProjectView | undefined {
-  ensureSelectedProject();
-  return resolveActiveProjectView(viewsForProject(selectedProjectId), selectedProjectId ? activeViewIds[selectedProjectId] : null);
+/** Returns the open view of a pane's project: the remembered one while it exists, else its first view. */
+function activeProjectView(pane: ProjectsPane): ProjectView | undefined {
+  ensureSelectedProject(pane);
+  const projectId = pane.selectedProjectId;
+  return resolveActiveProjectView(viewsForProject(projectId), projectId ? pane.activeViewIds[projectId] : null);
 }
 
-/** Opens one of a project's views and remembers it for the next visit to that project. */
-function selectView(view: ProjectView): void {
-  if (activeViewIds[view.projectId] === view.id) return;
+/** Opens one of a project's views in a pane and remembers it for the pane's next visit to that project. */
+function selectView(pane: ProjectsPane, view: ProjectView): void {
+  if (pane.activeViewIds[view.projectId] === view.id) return;
   const projectIds = new Set(snapshot.projects.map((project) => project.id));
-  activeViewIds = pruneProjectActiveViewIds({ ...activeViewIds, [view.projectId]: view.id }, projectIds);
-  saveProjectActiveViewIds(activeViewIds);
+  pane.activeViewIds = pruneProjectActiveViewIds({ ...pane.activeViewIds, [view.projectId]: view.id }, projectIds);
+  if (pane.owner) saveProjectActiveViewIds(pane.activeViewIds);
 }
 
-/** Opens the selected project's view of a task type; does nothing when the project has no view of that type. */
-function setActiveView(viewType: ProjectViewId): void {
-  const target = projectViewForType(viewsForProject(selectedProjectId), activeProjectView(), viewType);
-  if (target) selectView(target);
+/** Opens a pane project's view of a task type; does nothing when the project has no view of that type. */
+function setActiveView(pane: ProjectsPane, viewType: ProjectViewId): void {
+  const target = projectViewForType(viewsForProject(pane.selectedProjectId), activeProjectView(pane), viewType);
+  if (target) selectView(pane, target);
 }
 
 function applyLoadedSnapshot(incoming: ProjectsSnapshot, projectId: string | null | undefined): void {
@@ -254,14 +301,16 @@ function applyLoadedSnapshot(incoming: ProjectsSnapshot, projectId: string | nul
 /**
  * Load the workspace and one project's data. A quiet reload refreshes data another window changed: it keeps the
  * current task view request and loading state, and re-reads recently opened task details alongside the workspace so
- * an open detail panel never falls back to a summary.
+ * an open detail panel never falls back to a summary. When a pane asks, the project the workspace resolves becomes
+ * that pane's selection and its pending task view request is dropped.
  */
-async function reload(projectId: string | null = selectedProjectId, quiet = false): Promise<void> {
+async function reload(
+  projectId: string | null = primaryPane.selectedProjectId,
+  quiet = false,
+  pane: ProjectsPane | null = null,
+): Promise<void> {
   listenForOtherWindows();
-  if (!quiet) {
-    taskViewRequestGate.cancel();
-    taskViewLoading = false;
-  }
+  if (pane && !quiet) cancelTaskView(pane);
   const requestId = ++loadRequestId;
   const isInitialLoad = !loaded;
   const customEmojiKey = projectOptionalDataKey("custom_emojis", null);
@@ -294,7 +343,7 @@ async function reload(projectId: string | null = selectedProjectId, quiet = fals
       restoreTaskDetails(details, resolvedProjectId);
       taskMutationRevision += 1;
     }
-    setSelectedProjectId(resolvedProjectId);
+    if (pane) setSelectedProjectId(pane, resolvedProjectId);
     loaded = true;
     if (resolvedProjectId && optionalKindsToRefresh.length > 0) {
       await Promise.allSettled(
@@ -337,13 +386,14 @@ async function reload(projectId: string | null = selectedProjectId, quiet = fals
 async function ensureLoaded(): Promise<void> {
   if (loaded) return;
   if (!initialLoadPromise) {
-    initialLoadPromise = reload().finally(() => {
+    initialLoadPromise = reload(primaryPane.selectedProjectId, false, primaryPane).finally(() => {
       initialLoadPromise = null;
     });
   }
   await initialLoadPromise;
 }
 
+/** Load a project's data without changing any pane's selection. */
 async function ensureProjectData(projectId: string | null | undefined): Promise<void> {
   if (!projectId) return;
   if (!loaded) await ensureLoaded();
@@ -351,16 +401,16 @@ async function ensureProjectData(projectId: string | null | undefined): Promise<
   await reload(projectId);
 }
 
-async function selectProject(projectId: string | null): Promise<void> {
-  const requestId = ++selectProjectRequestId;
+async function selectProject(pane: ProjectsPane, projectId: string | null): Promise<void> {
+  const requestId = ++pane.selectProjectRequestId;
   if (!projectId || isProjectDataLoaded(projectId)) {
-    setSelectedProjectId(projectId);
+    setSelectedProjectId(pane, projectId);
     return;
   }
   await ensureProjectData(projectId);
-  if (requestId !== selectProjectRequestId) return;
+  if (requestId !== pane.selectProjectRequestId) return;
   if (!isProjectDataLoaded(projectId)) return;
-  setSelectedProjectId(projectId);
+  setSelectedProjectId(pane, projectId);
 }
 
 async function ensureOptionalData(
@@ -480,29 +530,32 @@ function mergeTaskViewPage(
 }
 
 async function loadTaskView(
+  pane: ProjectsPane,
   request: ProjectTaskViewRequest,
   append = false,
   retainedTaskIds: readonly string[] = [],
 ): Promise<void> {
-  const requestId = taskViewRequestGate.begin();
-  taskViewLoading = true;
-  taskViewError = null;
+  const gate = pane.taskViewRequestGate;
+  const requestId = gate.begin();
+  pane.taskViewLoading = true;
+  pane.taskViewError = null;
   try {
     const page = await loadProjectTaskView(request);
-    if (!taskViewRequestGate.isCurrent(requestId) || page.projectId !== request.projectId || page.view !== request.view) return;
+    if (!gate.isCurrent(requestId) || page.projectId !== request.projectId || page.view !== request.view) return;
     mergeTaskViewPage(page, append, retainedTaskIds);
-    taskViewPage = append && taskViewPage
+    const current = pane.taskViewPage;
+    pane.taskViewPage = append && current
       ? {
           ...page,
-          tasks: [...new Map([...taskViewPage.tasks, ...page.tasks].map((task) => [task.id, task])).values()],
+          tasks: [...new Map([...current.tasks, ...page.tasks].map((task) => [task.id, task])).values()],
         }
       : page;
   } catch (error) {
-    if (!taskViewRequestGate.isCurrent(requestId)) return;
-    taskViewError = error instanceof Error ? error.message : String(error);
+    if (!gate.isCurrent(requestId)) return;
+    pane.taskViewError = error instanceof Error ? error.message : String(error);
     throw error;
   } finally {
-    if (taskViewRequestGate.isCurrent(requestId)) taskViewLoading = false;
+    if (gate.isCurrent(requestId)) pane.taskViewLoading = false;
   }
 }
 
@@ -627,12 +680,12 @@ function listenForOtherWindows(): void {
 }
 
 /**
- * Show what another window committed. Changed projects other than the selected one reload when next selected; the
- * selected one reloads quietly once local commands settle, and again if this window commits while it reads.
+ * Show what another window committed. Changed projects no pane shows reload when next selected; the shown ones
+ * reload quietly once local commands settle, and again if this window commits while they read.
  */
 function refreshFromOtherWindow(projectIds: ReadonlySet<string>): Promise<void> {
-  loadedProjectIds = loadedProjectIds.filter((projectId) =>
-    projectId === selectedProjectId || !projectIds.has(projectId));
+  const shown = new Set(shownProjectIds());
+  loadedProjectIds = loadedProjectIds.filter((projectId) => shown.has(projectId) || !projectIds.has(projectId));
   if (otherWindowRefresh) {
     otherWindowRefreshQueued = true;
     return otherWindowRefresh;
@@ -653,7 +706,9 @@ async function reloadQuietlyBetweenCommands(): Promise<void> {
     if (!loaded) return;
     await actions.whenMutationsIdle();
     const committed = actions.readMutationActivity().committed;
-    await reload(selectedProjectId, true);
+    const shown = shownProjectIds().filter((projectId): projectId is string => Boolean(projectId));
+    // One at a time, since a newer workspace load supersedes the one in flight.
+    for (const projectId of shown.length > 0 ? shown : [null]) await reload(projectId, true);
     if (actions.readMutationActivity().committed === committed) return;
   }
 }
@@ -689,16 +744,15 @@ const actions = createProjectStoreActions({
       console.error("Failed to apply committed calendar event project assignments", error);
     }
   },
-  readSelectedProjectId: () => selectedProjectId,
-  setSelectedProjectId,
+  deselectProjectsOfGroup,
   reload,
   ensureProjectData,
   ensureTaskDetailData,
   refreshTaskDetail,
-  onCommitted: (mutation) => publishProjectChanges(mutation, selectedProjectId),
+  onCommitted: (mutation) => publishProjectChanges(mutation, shownProjectIds()),
 });
 
-export function getProjects() {
+function createProjectsStore(pane: ProjectsPane) {
   const {
     projectById,
     groupById,
@@ -796,18 +850,18 @@ export function getProjects() {
       return snapshot.customEmojis;
     },
     get selectedProjectId(): string | null {
-      ensureSelectedProject();
-      return selectedProjectId;
+      ensureSelectedProject(pane);
+      return pane.selectedProjectId;
     },
     set selectedProjectId(projectId: string | null) {
-      setSelectedProjectId(projectId);
+      setSelectedProjectId(pane, projectId);
     },
     get selectedProject(): Project | undefined {
-      ensureSelectedProject();
-      return selectors.projectById(selectedProjectId);
+      ensureSelectedProject(pane);
+      return selectors.projectById(pane.selectedProjectId);
     },
     get selectedGroup(): ProjectGroup | undefined {
-      const selectedProject = selectors.projectById(selectedProjectId);
+      const selectedProject = selectors.projectById(pane.selectedProjectId);
       return selectors.groupById(selectedProject?.groupId);
     },
     /** Every loaded project view, unsorted; use `viewsForProject` for one project's sidebar order. */
@@ -825,14 +879,14 @@ export function getProjects() {
     },
     /** The open view of the selected project, or undefined when the project has no views. */
     get activeProjectView(): ProjectView | undefined {
-      return activeProjectView();
+      return activeProjectView(pane);
     },
     get activeViewId(): string | null {
-      return activeProjectView()?.id ?? null;
+      return activeProjectView(pane)?.id ?? null;
     },
     /** Task view type rendered in the Projects workspace, or null while a hosted view is open or no view exists. */
     get activeTaskView(): ProjectViewId | null {
-      const view = activeProjectView();
+      const view = activeProjectView(pane);
       return view && isProjectTaskViewType(view.viewType) ? view.viewType : null;
     },
     /**
@@ -840,33 +894,35 @@ export function getProjects() {
      * the selected project's view of that type, keeping the active view when it already matches.
      */
     get activeView(): ProjectViewId {
-      const view = activeProjectView();
+      const view = activeProjectView(pane);
       return view && isProjectTaskViewType(view.viewType) ? view.viewType : "list";
     },
     set activeView(viewType: ProjectViewId) {
-      setActiveView(viewType);
+      setActiveView(pane, viewType);
     },
     /** Hosted workspace open in the Projects tab, or null while a task view is open. */
     get hostedPlace(): ProjectHostedViewType | null {
-      const view = activeProjectView();
+      const view = activeProjectView(pane);
       return view && isProjectHostedViewType(view.viewType) ? view.viewType : null;
     },
-    selectView,
+    selectView(view: ProjectView): void {
+      selectView(pane, view);
+    },
     /** Leaves a hosted workspace for the project's first task view, for routes that open a project or one of its tasks. */
     showProjectView(): void {
-      const view = activeProjectView();
+      const view = activeProjectView(pane);
       if (!view || !isProjectHostedViewType(view.viewType)) return;
       const taskView = viewsForProject(view.projectId).find((entry) => isProjectTaskViewType(entry.viewType));
-      if (taskView) selectView(taskView);
+      if (taskView) selectView(pane, taskView);
     },
     /** Whether the docked desktop Projects sidebar is collapsed to its rail. */
     get sidebarCollapsed(): boolean {
-      return sidebarCollapsed;
+      return pane.sidebarCollapsed;
     },
     set sidebarCollapsed(collapsed: boolean) {
-      if (sidebarCollapsed === collapsed) return;
-      sidebarCollapsed = collapsed;
-      saveProjectSidebarCollapsed(collapsed);
+      if (pane.sidebarCollapsed === collapsed) return;
+      pane.sidebarCollapsed = collapsed;
+      if (pane.owner) saveProjectSidebarCollapsed(collapsed);
     },
     /** Whether a project's section in the Projects sidebar hides its views. Sections start expanded. */
     isSidebarProjectCollapsed(projectId: string): boolean {
@@ -923,29 +979,36 @@ export function getProjects() {
       return loadError;
     },
     get taskViewPage(): ProjectTaskViewPage | null {
-      return taskViewPage;
+      return pane.taskViewPage;
     },
     get taskViewLoading(): boolean {
-      return taskViewLoading;
+      return pane.taskViewLoading;
     },
     get taskViewError(): string | null {
-      return taskViewError;
+      return pane.taskViewError;
     },
     get taskMutationRevision(): number {
       return taskMutationRevision;
     },
-    load: reload,
+    /** Reload the workspace with a project's data, which becomes this pane's selection; defaults to its current one. */
+    load(projectId: string | null = pane.selectedProjectId, quiet = false): Promise<void> {
+      return reload(projectId, quiet, pane);
+    },
     ensureLoaded,
     ensureProjectData,
     ensureProjectViewData,
     ensureProjectToolbarData,
-    loadTaskView,
+    loadTaskView(request: ProjectTaskViewRequest, append = false, retainedTaskIds: readonly string[] = []): Promise<void> {
+      return loadTaskView(pane, request, append, retainedTaskIds);
+    },
     ensureTaskDetailData,
     ensureCustomEmojis,
     isProjectOptionalDataLoaded,
     isProjectViewDataLoaded,
     isProjectDataLoaded,
-    selectProject,
+    selectProject(projectId: string | null): Promise<void> {
+      return selectProject(pane, projectId);
+    },
     projectById,
     groupById,
     projectsForGroup: sidebarProjectsForGroup,
@@ -985,5 +1048,31 @@ export function getProjects() {
     dependenciesBlockingTask,
     dependenciesBlockedByTask,
     ...actions,
+    /** Create a project and select it in this pane. */
+    async addProject(...args: Parameters<typeof actions.addProject>): Promise<string | undefined> {
+      const projectId = await actions.addProject(...args);
+      if (projectId) setSelectedProjectId(pane, projectId);
+      return projectId;
+    },
   };
+}
+
+/** The Projects store as one split pane sees it. */
+export type ProjectsStore = ReturnType<typeof createProjectsStore>;
+
+const stores: Partial<Record<WorkspacePaneScope, ProjectsStore>> = {};
+
+/** The Projects store of one split pane; the panes share project data and differ in what they show. */
+export function getProjectsStore(scope: WorkspacePaneScope): ProjectsStore {
+  return stores[scope] ??= createProjectsStore(paneFor(scope));
+}
+
+/** The primary pane's Projects store, for app-wide code outside a pane. */
+export function getProjects(): ProjectsStore {
+  return getProjectsStore("primary");
+}
+
+/** The Projects store of the calling view's split pane. Call during component initialization. */
+export function useProjects(): ProjectsStore {
+  return getProjectsStore(getWorkspacePaneScope());
 }

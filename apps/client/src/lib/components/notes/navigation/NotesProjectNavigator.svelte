@@ -47,7 +47,7 @@
   import { useNotesWorkspace } from "$lib/stores/notes.svelte";
   import { createNotesSearchController } from "$lib/stores/notes/search.svelte";
   import NotesPageIcon from "$lib/components/notes/pages/NotesPageIcon.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
   import { openInNewTabIntent, preventMiddleClickAutoscroll, type OpenInNewTabIntent } from "$lib/workspace-tabs/gestures";
   import { getPreferences } from "$lib/stores/preferences.svelte";
@@ -81,7 +81,7 @@
     onClose?: () => void;
   } = $props();
 
-  const projects = getProjects();
+  const projects = useProjects();
   const tabs = getWorkspaceTabs();
   const preferences = getPreferences();
   const notes = useNotesWorkspace();

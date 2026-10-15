@@ -54,7 +54,7 @@
   import { formatShortcut } from "$lib/keyboard-shortcuts";
   import { useChatPaneEvents } from "$lib/chat/pane-events";
   import { useChat, type ChatOrganizationalDraft } from "$lib/stores/chat.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { requireActiveVaultIdentity } from "$lib/vault/active-vault";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import ChatParticipantAvatar from "$lib/components/chat/identity/ChatParticipantAvatar.svelte";
@@ -146,7 +146,7 @@
 
   const chat = useChat();
   const paneEvents = useChatPaneEvents();
-  const projects = getProjects();
+  const projects = useProjects();
   const localization = getLocalization();
   const { t } = localization;
   const localExecutionAvailable = platformHasCapability(

@@ -14,16 +14,19 @@ const store = vi.hoisted(() => ({
   moveCustomFieldOption: vi.fn<(option: ProjectCustomFieldOption, direction: -1 | 1) => Promise<void>>(),
   removeCustomFieldOption: vi.fn<(optionId: string) => Promise<void>>(),
 }));
-vi.mock("$lib/stores/projects.svelte", () => ({getProjects: () => ({
-  customFieldOptionsForField: (fieldId: string) => store.options.filter((option) => option.fieldId === fieldId),
-  customEmojis: [],
-  updateCustomField: store.updateCustomField,
-  removeCustomField: store.removeCustomField,
-  addCustomFieldOption: store.addCustomFieldOption,
-  updateCustomFieldOption: store.updateCustomFieldOption,
-  moveCustomFieldOption: store.moveCustomFieldOption,
-  removeCustomFieldOption: store.removeCustomFieldOption,
-})}));
+vi.mock("$lib/stores/projects.svelte", () => {
+  const getProjects = () => ({
+    customFieldOptionsForField: (fieldId: string) => store.options.filter((option) => option.fieldId === fieldId),
+    customEmojis: [],
+    updateCustomField: store.updateCustomField,
+    removeCustomField: store.removeCustomField,
+    addCustomFieldOption: store.addCustomFieldOption,
+    updateCustomFieldOption: store.updateCustomFieldOption,
+    moveCustomFieldOption: store.moveCustomFieldOption,
+    removeCustomFieldOption: store.removeCustomFieldOption,
+  });
+  return { getProjects, useProjects: getProjects };
+});
 vi.mock("$lib/vault/config", () => ({ensureConfigLoaded: async () => undefined, getConfigKey: <T>(_key: string, fallback: T) => fallback, setConfigKey: () => undefined, configKeyChanged: () => false, onConfigChangedElsewhere: () => () => undefined}));
 
 let component: ReturnType<typeof mount> | undefined;

@@ -13,15 +13,16 @@ const store = vi.hoisted(() => ({
   addView: vi.fn(),
 }));
 
-vi.mock("$lib/stores/projects.svelte", () => ({
-  getProjects: () => ({
+vi.mock("$lib/stores/projects.svelte", () => {
+  const getProjects = () => ({
     get views() { return store.views; },
     get hostableViewTypes() { return store.hostableViewTypes; },
     get activeViewId() { return store.activeViewId; },
     viewsForProject: (projectId: string) => projectViewsFor(store.views, projectId, store.hostableViewTypes),
     addView: store.addView,
-  }),
-}));
+  });
+  return { getProjects, useProjects: getProjects };
+});
 
 const PROJECT_ID = "project-a";
 

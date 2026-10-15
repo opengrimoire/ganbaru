@@ -8,7 +8,7 @@
   import { PROJECT_HOSTED_VIEW_TYPES, type ProjectView, type ProjectViewType } from "$lib/projects/types";
   import { projectViewAddOptions, projectViewsFor } from "$lib/projects/views";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { cn } from "$lib/utils";
   import { anchoredPopover } from "$lib/utils/anchored-popover";
   import { portal } from "$lib/utils/portal";
@@ -29,7 +29,7 @@
     onSelectView: (view: ProjectView) => void;
   } = $props();
 
-  const projects = getProjects();
+  const projects = useProjects();
   const mobileBackStack = getMobileBackStack();
   const { t } = getLocalization();
 

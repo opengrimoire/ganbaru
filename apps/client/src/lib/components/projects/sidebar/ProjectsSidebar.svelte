@@ -8,7 +8,7 @@
   import { projectSidebarActions, resolveProjectSidebarGroupId, searchProjectSidebar } from "$lib/projects/sidebar";
   import type { Project, ProjectView } from "$lib/projects/types";
   import { getPreferences } from "$lib/stores/preferences.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
   import { createSidebarOrderDrag } from "$lib/utils/sidebar-order-drag.svelte";
   import { suppressHoverOnToggle } from "$lib/utils/hover-suppression";
@@ -45,7 +45,7 @@
 
   const panel = $derived(presentation === "panel");
 
-  const projects = getProjects();
+  const projects = useProjects();
   const preferences = getPreferences();
   const tabs = getWorkspaceTabs();
   const { t } = getLocalization();

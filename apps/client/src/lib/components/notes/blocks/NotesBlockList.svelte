@@ -5,7 +5,7 @@
   import { getLocalTimezone } from "$lib/calendar/timezone-utils";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getNotesEditor } from "$lib/components/notes/editor-context";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { buildNotesBlockLink, buildNotesPageLink } from "$lib/notes/links/block-link";
   import { normalizeNotesSelectableBlockIds } from "$lib/notes/blocks/selection";
   import { notesTemplateBlockStatus } from "$lib/notes/block-types/template";
@@ -91,7 +91,7 @@
 
   const notes = getNotesEditor();
   const preferences = getPreferences();
-  const projects = getProjects();
+  const projects = useProjects();
   const localization = getLocalization();
   const { t } = localization;
   let blockListElement: HTMLDivElement | null = $state(null);

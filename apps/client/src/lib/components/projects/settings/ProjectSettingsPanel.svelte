@@ -54,7 +54,7 @@
   } from "$lib/music/assignment-draft";
   import type { MusicContextAssignmentDraft } from "$lib/music/context-assignment";
   import type { MusicPlaylistSummary } from "$lib/music/library/contracts";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { getTheme } from "$lib/stores/theme.svelte";
   import ProjectSettingsCustomFieldsSection from "./ProjectSettingsCustomFieldsSection.svelte";
   import ProjectSettingsDefaultsSection from "./ProjectSettingsDefaultsSection.svelte";
@@ -82,7 +82,7 @@
     onDirtyChange: (dirty: boolean) => void;
   } = $props();
 
-  const projects = getProjects();
+  const projects = useProjects();
   const theme = getTheme();
   const { t } = getLocalization();
   const musicAssignmentsAvailable = platformHasCapability(
@@ -105,6 +105,7 @@
   type SelectOption = { value: string; label: string };
 
   const session = createProjectSettingsSession({
+    projects,
     onRevealInactive: () => onRevealInactive(),
   });
   const sessionState = session.state;

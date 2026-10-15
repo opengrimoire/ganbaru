@@ -127,9 +127,9 @@ export interface ProjectStoreActionContext {
   applyCalendarEventProjectAssignments: (
     assignments: readonly { eventId: string; projectId: string }[],
   ) => Promise<void>;
-  readSelectedProjectId: () => string | null;
+  /** Clear the project selection of every pane that shows a project of a removed group. */
+  deselectProjectsOfGroup: (groupId: string) => void;
   readLoadGeneration: () => number;
-  setSelectedProjectId: (projectId: string | null) => void;
   reload: (projectId?: string | null) => Promise<void>;
   ensureProjectData: (projectId: string | null | undefined) => Promise<void>;
   ensureTaskDetailData: (projectId: string, taskId: string) => Promise<void>;
@@ -176,13 +176,12 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     ensureProjectData,
     ensureTaskDetailData,
     applyCalendarEventProjectAssignments,
+    deselectProjectsOfGroup,
     onCommitted,
     readLoadGeneration,
-    readSelectedProjectId,
     readSnapshot,
     refreshTaskDetail,
     selectors,
-    setSelectedProjectId,
     updateSnapshot,
   } = context;
   const mutationGenerations = new Map<string, number>();
@@ -382,13 +381,11 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
   async function removeGroup(group: ProjectGroup): Promise<void> {
     await commitMutation(`group:${group.id}`, () => deleteProjectGroup(group.id));
     invalidateAssetUrlKind("project-icon");
-    const selectedProjectId = readSelectedProjectId();
-    if (selectedProjectId && group.id === selectors.projectById(selectedProjectId)?.groupId) {
-      setSelectedProjectId(null);
-    }
+    deselectProjectsOfGroup(group.id);
   }
 
-  async function addProject(groupId: string, name: string, templateId: ProjectTemplateId = "blank"): Promise<void> {
+  /** Create a project and return its id, which the calling pane selects; an empty name creates nothing. */
+  async function addProject(groupId: string, name: string, templateId: ProjectTemplateId = "blank"): Promise<string | undefined> {
     const displayName = normalizeProjectName(name);
     if (!displayName) return;
     const templateDefaults = PROJECT_TEMPLATE_DEFAULTS[templateId];
@@ -414,7 +411,7 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
       defaultIdleThresholdMinutes: templateDefaults.defaultIdleThresholdMinutes,
     };
     await commitMutation(`project:${project.id}`, () => createProjectBackend(project));
-    setSelectedProjectId(project.id);
+    return project.id;
   }
 
   async function updateProject(project: ProjectUpdate): Promise<void> {

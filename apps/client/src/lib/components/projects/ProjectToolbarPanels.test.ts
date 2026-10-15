@@ -9,11 +9,12 @@ import ProjectToolbarPanels from "./ProjectToolbarPanels.svelte";
 
 const store = vi.hoisted(() => ({ options: [] as ProjectCustomFieldOption[] }));
 
-vi.mock("$lib/stores/projects.svelte", () => ({
-  getProjects: () => ({
+vi.mock("$lib/stores/projects.svelte", () => {
+  const getProjects = () => ({
     customFieldOptionsForField: (fieldId: string) => store.options.filter((option) => option.fieldId === fieldId),
-  }),
-}));
+  });
+  return { getProjects, useProjects: getProjects };
+});
 
 vi.mock("$lib/stores/theme.svelte", async () => {
   const { lightTheme } = await import("$lib/themes");

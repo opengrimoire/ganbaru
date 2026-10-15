@@ -23,7 +23,7 @@
   import type { Project } from "$lib/projects/types";
   import { useChat } from "$lib/stores/chat.svelte";
   import { getChatSidebarOrder } from "$lib/stores/chat/sidebar-order.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
   import { openInNewTabIntent, preventMiddleClickAutoscroll, type OpenInNewTabIntent } from "$lib/workspace-tabs/gestures";
   import { cn, type MaybePromise } from "$lib/utils";
@@ -66,7 +66,7 @@
   const chat = useChat();
   const { t } = getLocalization();
   const chatSidebarOrder = getChatSidebarOrder();
-  const projects = getProjects();
+  const projects = useProjects();
   const tabs = getWorkspaceTabs();
   const canOpenChannelTabs = $derived(tabs.canOpenTabs && !mobileLayout);
   const panelGap = 4;

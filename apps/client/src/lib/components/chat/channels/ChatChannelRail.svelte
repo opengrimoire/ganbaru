@@ -40,7 +40,7 @@
   import { useChat } from "$lib/stores/chat.svelte";
   import { getChatSidebarOrder } from "$lib/stores/chat/sidebar-order.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
   import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
   import { onActiveVaultIdentityChange } from "$lib/vault/active-vault";
@@ -98,7 +98,7 @@
   const paneEvents = useChatPaneEvents();
   const chatSidebarOrder = getChatSidebarOrder();
   const preferences = getPreferences();
-  const projects = getProjects();
+  const projects = useProjects();
   const settings = getSettingsLauncher();
   const tabs = getWorkspaceTabs();
   /** The phone panel leaves out new tabs; the docked rail opens channels in them. */

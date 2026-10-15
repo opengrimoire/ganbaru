@@ -60,7 +60,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { useChatPaneEvents } from "$lib/chat/pane-events";
   import { useChat } from "$lib/stores/chat.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import ChatAccessControl from "./ChatAccessControl.svelte";
   import ChatComposerInfoPanel from "./ChatComposerInfoPanel.svelte";
   import ChatComposerSuggestionMenu from "./ChatComposerSuggestionMenu.svelte";
@@ -76,7 +76,7 @@
   const { t } = localization;
   const chat = useChat();
   const paneEvents = useChatPaneEvents();
-  const projects = getProjects();
+  const projects = useProjects();
   let editorRoot: HTMLDivElement | undefined = $state();
   let editorController: ChatComposerEditor | undefined;
   let editorFocused = false;

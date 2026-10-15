@@ -13,7 +13,7 @@
   import { projectPriorityDisplayColor, projectPriorityDisplayLabel } from "$lib/projects/display";
   import { manualStatusCompare } from "$lib/projects/tasks/view";
   import type { ProjectPriorityConfig, ProjectStatus, ProjectTask, ProjectTaskSortDirection, ProjectTaskSortMode, ProjectTaskColumnCount } from "$lib/projects/types";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { getTheme } from "$lib/stores/theme.svelte";
   import PriorityFlagIcon from "$lib/components/projects/PriorityFlagIcon.svelte";
   import ProjectStatusBadge from "$lib/components/projects/ProjectStatusBadge.svelte";
@@ -32,7 +32,7 @@
     mobileLayout?: boolean;
   } = $props();
 
-  const projects = getProjects();
+  const projects = useProjects();
   const theme = getTheme();
   const localization = getLocalization();
   const { t } = localization;

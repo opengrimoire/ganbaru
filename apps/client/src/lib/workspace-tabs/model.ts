@@ -408,9 +408,6 @@ export function splitWorkspaceTabs(state: WorkspaceTabsState, currentId: string,
  */
 export type WorkspacePaneScope = "primary" | "secondary";
 
-/** Kinds whose views can run a secondary set of stores, so two tabs of them can show side by side. */
-export const PANE_SCOPED_KINDS: ReadonlySet<View> = new Set<View>(["notes", "calendar", "chat"]);
-
 /** Whether two locations show through the same stores: tabs of one kind, or the same view, such as Notes hosted in Projects. */
 export function sharesViewStores(
   a: WorkspaceTabLocation,
@@ -418,16 +415,6 @@ export function sharesViewStores(
   paneView: (location: WorkspaceTabLocation) => View,
 ): boolean {
   return a.kind === b.kind || paneView(a) === paneView(b);
-}
-
-/** Whether two locations can show side by side: they use different stores, or both kinds can take a secondary set. */
-export function canShowSideBySide(
-  a: WorkspaceTabLocation,
-  b: WorkspaceTabLocation,
-  paneView: (location: WorkspaceTabLocation) => View,
-  scopedKinds: ReadonlySet<View> = PANE_SCOPED_KINDS,
-): boolean {
-  return !sharesViewStores(a, b, paneView) || (scopedKinds.has(a.kind) && scopedKinds.has(b.kind));
 }
 
 /**
@@ -440,30 +427,21 @@ export function secondaryScopeTabId(
   partner: WorkspaceTab | null,
   current: string | null,
   paneView: (location: WorkspaceTabLocation) => View,
-  scopedKinds: ReadonlySet<View> = PANE_SCOPED_KINDS,
 ): string | null {
   if (!partner || !sharesViewStores(active.location, partner.location, paneView)) return null;
-  if (!canShowSideBySide(active.location, partner.location, paneView, scopedKinds)) return null;
   return current === active.id || current === partner.id ? current : partner.id;
 }
 
 /**
- * Why a tab cannot show beside another: the same tab, the same stores (two views of a kind that has one set of
- * stores per window would show the same place twice), or a tab locked to a project other than the one the
+ * Why a tab cannot show beside another: the same tab, or a tab locked to a project other than the one the
  * current tab shows. The added tab follows the current tab's project otherwise, because the views share it.
  */
-export type WorkspaceSplitBlock = "same-tab" | "same-view" | "locked-project";
+export type WorkspaceSplitBlock = "same-tab" | "locked-project";
 
-/** Whether `added` can show beside `current`, given the view each location shows. */
-export function workspaceSplitBlock(
-  current: WorkspaceTab,
-  added: WorkspaceTab,
-  paneView: (location: WorkspaceTabLocation) => View,
-  scopedKinds: ReadonlySet<View> = PANE_SCOPED_KINDS,
-): WorkspaceSplitBlock | null {
+/** Whether `added` can show beside `current`. */
+export function workspaceSplitBlock(current: WorkspaceTab, added: WorkspaceTab): WorkspaceSplitBlock | null {
   if (current.id === added.id) return "same-tab";
   const [a, b] = [current.location, added.location];
-  if (!canShowSideBySide(a, b, paneView, scopedKinds)) return "same-view";
   const shareProject = a.kind === "calendar" || b.kind === "calendar" || a.projectId === null
     || b.projectId === a.projectId;
   return added.locked && !shareProject ? "locked-project" : null;

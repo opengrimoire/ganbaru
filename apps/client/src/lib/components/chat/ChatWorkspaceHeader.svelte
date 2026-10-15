@@ -19,7 +19,7 @@
   import { useChatPaneEvents } from "$lib/chat/pane-events";
   import { useChat } from "$lib/stores/chat.svelte";
   import { getChatSidebarOrder } from "$lib/stores/chat/sidebar-order.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
   import { getViewport } from "$lib/stores/viewport.svelte";
   import { cn } from "$lib/utils";
@@ -67,7 +67,7 @@
   const chat = useChat();
   const paneEvents = useChatPaneEvents();
   const chatSidebarOrder = getChatSidebarOrder();
-  const projects = getProjects();
+  const projects = useProjects();
   const tabs = getWorkspaceTabs();
   const viewport = getViewport();
   const { t, locale } = getLocalization();

@@ -13,7 +13,7 @@
     projectPriorityDisplayLabel,
     projectTaskHistoryEventLabel,
   } from "$lib/projects/display";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { getTheme } from "$lib/stores/theme.svelte";
   import ProjectListScrollbars from "$lib/components/projects/list/ProjectListScrollbars.svelte";
   import PriorityFlagIcon from "$lib/components/projects/PriorityFlagIcon.svelte";
@@ -43,7 +43,7 @@
     mobileLayout?: boolean;
   } = $props();
 
-  const projects = getProjects();
+  const projects = useProjects();
   const theme = getTheme();
   const { t } = getLocalization();
 

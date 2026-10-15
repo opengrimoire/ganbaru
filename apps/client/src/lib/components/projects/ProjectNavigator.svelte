@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { ProjectNavigatorPanelMode } from "$lib/projects/toolbar";
   import type { Project } from "$lib/projects/types";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
   import type { OpenInNewTabIntent } from "$lib/workspace-tabs/gestures";
   import ProjectPickerPanels from "$lib/components/projects/pickers/ProjectPickerPanels.svelte";
@@ -32,7 +32,7 @@
     onClose?: () => void;
   } = $props();
 
-  const projects = getProjects();
+  const projects = useProjects();
   const tabs = getWorkspaceTabs();
 
   let projectSearch = $state("");

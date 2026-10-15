@@ -58,7 +58,7 @@
     type ProjectTaskSortMode,
     type ProjectTaskStatusFilter,
   } from "$lib/projects/types";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { getTheme } from "$lib/stores/theme.svelte";
   import { getViewport } from "$lib/stores/viewport.svelte";
   import {
@@ -151,7 +151,7 @@
     mobileLayout?: boolean;
   } = $props();
 
-  const projects = getProjects();
+  const projects = useProjects();
   const theme = getTheme();
   const viewport = getViewport();
   const localization = getLocalization();

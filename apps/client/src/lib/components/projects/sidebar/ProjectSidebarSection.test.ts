@@ -23,8 +23,8 @@ const store = vi.hoisted(() => ({
   setViewStarred: vi.fn(),
 }));
 
-vi.mock("$lib/stores/projects.svelte", () => ({
-  getProjects: () => ({
+vi.mock("$lib/stores/projects.svelte", () => {
+  const getProjects = () => ({
     get views() { return store.views; },
     get hostableViewTypes() { return store.hostableViewTypes; },
     viewsForProject: (projectId: string) => sidebarViews(projectId),
@@ -36,8 +36,9 @@ vi.mock("$lib/stores/projects.svelte", () => ({
     isViewStarred: (viewId: string) => store.starredViewIds.includes(viewId),
     setProjectStarred: store.setProjectStarred,
     setViewStarred: store.setViewStarred,
-  }),
-}));
+  });
+  return { getProjects, useProjects: getProjects };
+});
 
 const project: Project = {
   id: "project-a",

@@ -9,7 +9,7 @@
   } from "$lib/calendar/utils";
   import { useCalendar } from "$lib/stores/calendar.svelte";
   import { getCalendars } from "$lib/stores/calendars.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { calendarIdentityEmail } from "$lib/calendar/display";
   import { getPomodoro } from "$lib/stores/pomodoro.svelte";
   import { getTheme } from "$lib/stores/theme.svelte";
@@ -99,7 +99,7 @@
   const paneScope = getWorkspacePaneScope();
   const calendarStore = useCalendar();
   const calendarsStore = getCalendars();
-  const projects = getProjects();
+  const projects = useProjects();
   const pomodoro = getPomodoro();
   const nativeEditor = getNativeCalendarEditController(() => pomodoro.vaultContext, "panel", paneScope);
   const directEditor = getNativeCalendarEditController(() => pomodoro.vaultContext, "direct", paneScope);

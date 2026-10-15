@@ -21,7 +21,7 @@
   } from "$lib/projects/icons/values";
   import type { ProjectLucideIconNode } from "$lib/projects/icons/lucide-catalog.generated";
   import { projectAppIconNode } from "$lib/projects/icons/app-icons";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { getTheme } from "$lib/stores/theme.svelte";
   import LucideNodeIcon from "$lib/components/icon-picker/LucideNodeIcon.svelte";
 
@@ -39,7 +39,7 @@
     class?: string;
   } = $props();
 
-  const projects = getProjects();
+  const projects = useProjects();
   const theme = getTheme();
 
   const icons: Record<string, Component> = {

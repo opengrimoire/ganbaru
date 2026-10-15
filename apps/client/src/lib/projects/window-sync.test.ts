@@ -25,14 +25,14 @@ describe("projectMutationChangeKeys", () => {
     const tasks = [{ projectId: "a" }, { projectId: "b" }, { projectId: "a" }] as ProjectTask[];
     const views = [{ projectId: "c" }] as ProjectView[];
 
-    expect(projectMutationChangeKeys(mutation({ tasks, views }), "selected").sort()).toEqual(["a", "b", "c"]);
+    expect(projectMutationChangeKeys(mutation({ tasks, views }), ["selected"]).sort()).toEqual(["a", "b", "c"]);
   });
 
-  it("falls back to the selected project for row-less commits such as removals", () => {
-    expect(projectMutationChangeKeys(mutation({}), "selected")).toEqual(["selected"]);
+  it("falls back to the projects the window shows for row-less commits such as removals", () => {
+    expect(projectMutationChangeKeys(mutation({}), ["left", null, "right", "left"]).sort()).toEqual(["left", "right"]);
   });
 
-  it("uses the workspace key when no project is selected", () => {
-    expect(projectMutationChangeKeys(mutation({}), null)).toEqual([PROJECTS_WORKSPACE_CHANGE_KEY]);
+  it("uses the workspace key when no pane shows a project", () => {
+    expect(projectMutationChangeKeys(mutation({}), [null])).toEqual([PROJECTS_WORKSPACE_CHANGE_KEY]);
   });
 });

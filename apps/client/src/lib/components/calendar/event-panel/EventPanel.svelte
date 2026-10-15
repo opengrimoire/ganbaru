@@ -17,7 +17,7 @@
   import { slide } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
   import { getTheme } from "$lib/stores/theme.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import type { CalendarDeleteOutcome } from "$lib/api/calendar-edit";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
@@ -84,7 +84,7 @@
     BUILD_PLATFORM_PROFILE,
     "pomodoro.native-idle-detection",
   );
-  const projects = getProjects();
+  const projects = useProjects();
   const preferences = getPreferences();
   const mobileBackStack = getMobileBackStack();
   const viewport = getViewport();

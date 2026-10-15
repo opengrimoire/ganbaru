@@ -12,7 +12,7 @@
   import { getPomodoro } from "$lib/stores/pomodoro.svelte";
   import { buildDesktopFocusNotificationCopy, type DesktopFocusNotificationCopy } from "$lib/api/focus";
   import { getNotes, getNotesWorkspace } from "$lib/stores/notes.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { getProjects, getProjectsStore } from "$lib/stores/projects.svelte";
   import { getChat, getChatStore, resetChatForVault } from "$lib/stores/chat.svelte";
   import { getZoom } from "$lib/stores/zoom.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
@@ -103,6 +103,7 @@
   const notes = getNotes();
   const secondaryNotes = getNotesWorkspace("secondary");
   const projects = getProjects();
+  const secondaryProjects = getProjectsStore("secondary");
   const chat = getChat();
   const secondaryChat = getChatStore("secondary");
   const zoom = getZoom();
@@ -115,7 +116,10 @@
   const locale = $derived(localization.locale);
   const workspaceTabs = getWorkspaceTabs();
   workspaceTabs.connect({
-    adapter: createAppWorkspaceLocationAdapter({ projects, notes, chat, secondaryNotes, secondaryChat }, t),
+    adapter: createAppWorkspaceLocationAdapter(
+      { projects, notes, chat, secondary: { projects: secondaryProjects, notes: secondaryNotes, chat: secondaryChat } },
+      t,
+    ),
     ...(platformHasCapability(BUILD_PLATFORM_PROFILE, "window.detached-views")
       ? { windows: createWorkspaceTabWindows(appWindow.label, availableAppViews()) }
       : {}),

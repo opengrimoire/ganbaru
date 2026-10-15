@@ -47,7 +47,7 @@
     type ProjectGroup,
     type ProjectTemplateId,
   } from "$lib/projects/types";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import SidebarOrderMenu from "$lib/components/ui/SidebarOrderMenu.svelte";
   import StarredIconBadge from "$lib/components/ui/StarredIconBadge.svelte";
@@ -152,7 +152,7 @@
     onClose?: () => void;
   } = $props();
 
-  const projects = getProjects();
+  const projects = useProjects();
   const preferences = getPreferences();
   const mobileBackStack = getMobileBackStack();
   const { t } = getLocalization();

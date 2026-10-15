@@ -23,7 +23,7 @@
   import { useChatPaneEvents } from "$lib/chat/pane-events";
   import { useChat } from "$lib/stores/chat.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
 
@@ -46,7 +46,7 @@
   const chat = useChat();
   const paneEvents = useChatPaneEvents();
   const preferences = getPreferences();
-  const projects = getProjects();
+  const projects = useProjects();
   const settingsLauncher = getSettingsLauncher();
   const { t } = getLocalization();
   const currentChannel = untrack(() => channel);

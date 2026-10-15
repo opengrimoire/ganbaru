@@ -21,6 +21,7 @@ const projectState = vi.hoisted(() => ({
 
 vi.mock("$lib/stores/projects.svelte", () => ({
   getProjects: () => projectState.store,
+  useProjects: () => projectState.store,
 }));
 
 describe("ChatChannelRail", () => {

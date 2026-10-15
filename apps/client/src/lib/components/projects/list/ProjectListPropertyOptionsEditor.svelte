@@ -7,7 +7,7 @@
   import CollectionMenuItem from "$lib/components/collections/CollectionMenuItem.svelte";
   import CollectionMenuTextField from "$lib/components/collections/CollectionMenuTextField.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { PROJECT_CUSTOM_FIELD_OPTION_DRAG_DATA_TYPE } from "$lib/projects/custom-fields";
   import { createProjectSettingsReorderController } from "$lib/projects/settings/reorder-controller.svelte";
   import type { ProjectCustomField, ProjectCustomFieldOption } from "$lib/projects/types";
@@ -19,7 +19,7 @@
    */
   let { field, disabled = false }: { field: ProjectCustomField; disabled?: boolean } = $props();
 
-  const projects = getProjects();
+  const projects = useProjects();
   const { t } = getLocalization();
   const options = $derived(projects.customFieldOptionsForField(field.id));
   let root: HTMLDivElement | undefined = $state();

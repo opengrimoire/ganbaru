@@ -27,8 +27,8 @@ vi.mock("$lib/stores/preferences.svelte", () => ({
   getPreferences: () => ({ get projectsSidebarOrder() { return store.order; } }),
 }));
 
-vi.mock("$lib/stores/projects.svelte", () => ({
-  getProjects: () => ({
+vi.mock("$lib/stores/projects.svelte", () => {
+  const getProjects = () => ({
     sidebarCollapsed: false,
     showInactiveProjects: false,
     selectedProjectId: "project-a",
@@ -45,8 +45,9 @@ vi.mock("$lib/stores/projects.svelte", () => ({
     isProjectStarred: (projectId: string) => store.starredProjectIds.includes(projectId),
     isViewStarred: () => false,
     reorderProjectsInGroup: store.reorderProjectsInGroup,
-  }),
-}));
+  });
+  return { getProjects, useProjects: getProjects };
+});
 
 function project(id: string, name: string, sortOrder: number): Project {
   return {

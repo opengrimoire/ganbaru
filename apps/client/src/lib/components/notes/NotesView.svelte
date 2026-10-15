@@ -16,7 +16,7 @@
   import { notesUndoShortcutAction } from "$lib/notes/history/undo-history";
   import type { NotesWorkingMarkdownFileRef } from "$lib/notes/types";
   import { useNotesWorkspace } from "$lib/stores/notes.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { getViewport } from "$lib/stores/viewport.svelte";
   import { isAppShortcutBlockedTarget, isEditableKeyboardTarget } from "$lib/utils";
@@ -62,7 +62,7 @@
 
   const notes = useNotesWorkspace();
   const paneFocused = getWorkspacePaneFocus();
-  const projects = getProjects();
+  const projects = useProjects();
   const mobileBackStack = getMobileBackStack();
   const viewport = getViewport();
   const { t } = getLocalization();

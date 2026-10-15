@@ -2,7 +2,7 @@
   import { onMount, tick } from "svelte";
   import FolderX from "@lucide/svelte/icons/folder-x";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { cn } from "$lib/utils";
   import { portal } from "$lib/utils/portal";
   import ProjectIcon from "$lib/components/projects/ProjectIcon.svelte";
@@ -22,7 +22,7 @@
     onSelect: (projectId: string | undefined) => void;
   } = $props();
 
-  const projects = getProjects();
+  const projects = useProjects();
   const { t } = getLocalization();
   const PROJECT_ICON_SIZE = 18;
   const PROJECT_EMOJI_SCALE = 0.82;

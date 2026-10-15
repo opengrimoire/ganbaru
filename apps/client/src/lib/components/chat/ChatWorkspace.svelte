@@ -39,7 +39,7 @@
   import { useChatPaneEvents } from "$lib/chat/pane-events";
   import { useChat } from "$lib/stores/chat.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { suppressHoverOnToggle } from "$lib/utils/hover-suppression";
   import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
@@ -77,7 +77,7 @@
   const chat = useChat();
   const paneEvents = useChatPaneEvents();
   const preferences = getPreferences();
-  const projects = getProjects();
+  const projects = useProjects();
   const settings = getSettingsLauncher();
   const localExecutionAvailable = platformHasCapability(
     BUILD_PLATFORM_PROFILE,

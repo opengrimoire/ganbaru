@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { describe, expect, it, vi } from "vitest";
-import { loadProjectTaskView, updateProjectTask } from "$lib/api/projects";
+import { loadProjectTaskView, refreshProjectsWorkspace, updateProjectTask } from "$lib/api/projects";
 import { PROJECT_TASK_FILTER_DEFAULTS } from "$lib/projects/list/view";
 import type {
   ProjectOptionalDataKind,
@@ -213,5 +213,44 @@ describe("Projects initial loading", () => {
     await older;
     expect(projects.taskById(task.id)?.title).toBe("Newest");
     expect(projects.taskMutationRevision).toBe(initialRevision + 2);
+  });
+});
+
+describe("Projects split panes", () => {
+  it("lets each pane select its own project, task page, and sidebar while sharing the project data", async () => {
+    const { getProjects, getProjectsStore } = await import("./projects.svelte");
+    const primary = getProjects();
+    backend.resolveWorkspace({resolvedProjectId: "project-1", snapshot: emptySnapshot()} satisfies ProjectsWorkspaceSnapshot);
+    await primary.ensureLoaded();
+    const secondary = getProjectsStore("secondary");
+    expect(secondary.selectedProjectId).toBe(primary.selectedProjectId);
+
+    const base = emptySnapshot();
+    const otherProject = {...base.projects[0], id: "project-2", name: "Other"};
+    vi.mocked(refreshProjectsWorkspace).mockResolvedValueOnce({
+      resolvedProjectId: "project-2",
+      snapshot: {...base, projects: [...base.projects, otherProject], tasks: []},
+    } satisfies ProjectsWorkspaceSnapshot);
+    await secondary.selectProject("project-2");
+    expect(secondary.selectedProjectId).toBe("project-2");
+    expect(primary.selectedProjectId).toBe("project-1");
+    expect(primary.projectById("project-2")?.name).toBe("Other");
+
+    const page: ProjectTaskViewPage = {
+      projectId: "project-2", view: "list", tasks: [], totalCount: 0, matchedCount: 0, archivedCount: 0,
+      columnCounts: [], matchedEventIds: [], taskTagLinks: [], customFieldValues: [], customFieldOptionValues: [],
+      dependencies: [], eventLinks: [], tags: [], customFields: [], customFieldOptions: [],
+    };
+    const primaryPage = primary.taskViewPage;
+    vi.mocked(loadProjectTaskView).mockResolvedValueOnce(page);
+    await secondary.loadTaskView({...PROJECT_TASK_FILTER_DEFAULTS, projectId: "project-2", view: "list", pageSize: 100,
+      columnCursors: {}, showArchived: false, visibleSectionIds: [], today: "2026-07-11", weekEnd: "2026-07-18",
+      candidateEventIds: []});
+    expect(secondary.taskViewPage).toEqual(page);
+    expect(primary.taskViewPage).toBe(primaryPage);
+
+    const collapsed = primary.sidebarCollapsed;
+    secondary.sidebarCollapsed = !collapsed;
+    expect(primary.sidebarCollapsed).toBe(collapsed);
   });
 });

@@ -284,28 +284,18 @@ describe("tabs leaving for another window", () => {
 });
 
 describe("workspace split blocks", () => {
-  const hostedNotes: WorkspaceTabLocation = { kind: "projects", projectId: "a", item: { type: "project-view", id: "notes-view" } };
-  const paneView = (location: WorkspaceTabLocation): View => (
-    location.item?.type === "project-view" && location.item.id === "notes-view" ? "notes" : location.kind
-  );
-
-  it("refuses a tab beside itself and two tabs of one kind, even on different views", () => {
+  it("refuses a tab beside itself and lets two tabs of one kind show side by side", () => {
     const tasks = tab("tasks", "projects", { location: projectA });
-    const hosted = tab("hosted", "projects", { location: hostedNotes });
-    expect(workspaceSplitBlock(tasks, tasks, paneView)).toBe("same-tab");
-    expect(workspaceSplitBlock(tasks, hosted, paneView)).toBe("same-view");
-  });
-
-  it("refuses a project view hosting Notes beside a Notes tab", () => {
-    const hosted = tab("hosted", "projects", { location: hostedNotes });
-    expect(workspaceSplitBlock(hosted, tab("notes", "notes", { location: pageOne }), paneView)).toBe("same-view");
-    expect(workspaceSplitBlock(hosted, tab("chat", "chat"), paneView)).toBeNull();
+    expect(workspaceSplitBlock(tasks, tasks)).toBe("same-tab");
+    expect(workspaceSplitBlock(tasks, tab("other", "projects", { location: projectB }))).toBeNull();
+    expect(workspaceSplitBlock(tab("one", "notes", { location: pageOne }), tab("two", "notes", { location: pageOne })))
+      .toBeNull();
   });
 
   it("lets Calendar sit beside any project, locked or not", () => {
     const locked = tab("b", "projects", { location: projectB, level: "project", locked: true });
-    expect(workspaceSplitBlock(tab("cal", "calendar"), locked, paneView)).toBeNull();
-    expect(workspaceSplitBlock(locked, tab("cal", "calendar"), paneView)).toBeNull();
+    expect(workspaceSplitBlock(tab("cal", "calendar"), locked)).toBeNull();
+    expect(workspaceSplitBlock(locked, tab("cal", "calendar"))).toBeNull();
   });
 
   it("refuses a tab locked to another project, but lets an unlocked one follow the current project", () => {
@@ -315,53 +305,44 @@ describe("workspace split blocks", () => {
       level: "item",
       locked: true,
     });
-    expect(workspaceSplitBlock(current, lockedPage, paneView)).toBe("locked-project");
-    expect(workspaceSplitBlock(current, { ...lockedPage, locked: false, level: "kind" }, paneView)).toBeNull();
-    expect(workspaceSplitBlock(current, { ...lockedPage, location: pageOne }, paneView)).toBeNull();
+    expect(workspaceSplitBlock(current, lockedPage)).toBe("locked-project");
+    expect(workspaceSplitBlock(current, { ...lockedPage, locked: false, level: "kind" })).toBeNull();
+    expect(workspaceSplitBlock(current, { ...lockedPage, location: pageOne })).toBeNull();
   });
 
   it("lets a locked tab join a current tab that shows no project", () => {
     const empty = tab("chat", "chat");
     const locked = tab("b", "projects", { location: projectB, level: "project", locked: true });
-    expect(workspaceSplitBlock(empty, locked, paneView)).toBeNull();
-  });
-
-  it("lets two tabs of a kind with per-pane stores show side by side, but not beside a kind without them", () => {
-    const scoped: ReadonlySet<View> = new Set<View>(["notes"]);
-    const first = tab("one", "notes", { location: pageOne });
-    const second = tab("two", "notes", { location: { ...pageOne, item: { type: "notes-page", id: "page-2" } } });
-    const hosted = tab("hosted", "projects", { location: hostedNotes });
-    expect(workspaceSplitBlock(first, second, paneView, scoped)).toBeNull();
-    expect(workspaceSplitBlock(first, hosted, paneView, scoped)).toBe("same-view");
-    expect(workspaceSplitBlock(hosted, tab("tasks", "projects", { location: projectA }), paneView, scoped))
-      .toBe("same-view");
+    expect(workspaceSplitBlock(empty, locked)).toBeNull();
   });
 });
 
 describe("workspace pane scopes", () => {
-  const scoped: ReadonlySet<View> = new Set<View>(["notes"]);
-  const paneView = (location: WorkspaceTabLocation): View => location.kind;
+  const hostedNotes: WorkspaceTabLocation = { kind: "projects", projectId: "a", item: { type: "project-view", id: "notes-view" } };
+  const paneView = (location: WorkspaceTabLocation): View => (
+    location.item?.type === "project-view" && location.item.id === "notes-view" ? "notes" : location.kind
+  );
   const first = tab("one", "notes", { location: pageOne });
   const second = tab("two", "notes", { location: pageOne });
 
   it("gives no tab secondary stores without a partner or when the shown tabs use different stores", () => {
-    expect(secondaryScopeTabId(first, null, null, paneView, scoped)).toBeNull();
-    expect(secondaryScopeTabId(first, tab("cal", "calendar"), "cal", paneView, scoped)).toBeNull();
+    expect(secondaryScopeTabId(first, null, null, paneView)).toBeNull();
+    expect(secondaryScopeTabId(first, tab("cal", "calendar"), "cal", paneView)).toBeNull();
   });
 
   it("gives the partner secondary stores, leaving the primary ones with the tab that showed first", () => {
-    expect(secondaryScopeTabId(first, second, null, paneView, scoped)).toBe("two");
-    expect(secondaryScopeTabId(first, second, "gone", paneView, scoped)).toBe("two");
+    expect(secondaryScopeTabId(first, second, null, paneView)).toBe("two");
+    expect(secondaryScopeTabId(first, second, "gone", paneView)).toBe("two");
   });
 
   it("keeps secondary stores on the tab that has them when the other pane takes focus", () => {
-    expect(secondaryScopeTabId(second, first, "two", paneView, scoped)).toBe("two");
+    expect(secondaryScopeTabId(second, first, "two", paneView)).toBe("two");
   });
 
-  it("gives no secondary stores to a kind that has none", () => {
-    const tasks = tab("tasks", "projects", { location: projectA });
-    expect(secondaryScopeTabId(tasks, tab("other", "projects", { location: projectB }), null, paneView, scoped))
-      .toBeNull();
+  it("gives secondary stores to a project view hosting the view of the tab beside it", () => {
+    const hosted = tab("hosted", "projects", { location: hostedNotes });
+    expect(secondaryScopeTabId(first, hosted, null, paneView)).toBe("hosted");
+    expect(secondaryScopeTabId(first, tab("tasks", "projects", { location: projectA }), null, paneView)).toBeNull();
   });
 });
 

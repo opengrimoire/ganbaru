@@ -5,26 +5,25 @@ import { isProjectHostedViewType } from "$lib/projects/views";
 import type { WorkspaceLocationAdapter } from "$lib/stores/workspace-tabs.svelte";
 import type { ChatStore } from "$lib/stores/chat.svelte";
 import type { NotesWorkspace } from "$lib/stores/notes.svelte";
-import type { getProjects } from "$lib/stores/projects.svelte";
+import type { ProjectsStore } from "$lib/stores/projects.svelte";
 import { createWorkspaceLocationAdapter, type WorkspaceLocationStores } from "./location-adapter";
 
-/** The app's view stores that workspace tab locations describe. */
-export interface AppWorkspaceLocationStores {
-  projects: ReturnType<typeof getProjects>;
+/** The view stores of one pane scope that workspace tab locations describe. */
+export interface AppPaneLocationStores {
+  projects: ProjectsStore;
   notes: NotesWorkspace;
   chat: ChatStore;
-  /** The Notes workspace of the secondary pane scope, or none where split views are unavailable. */
-  secondaryNotes?: NotesWorkspace;
-  /** The Chat store of the secondary pane scope, or none where split views are unavailable. */
-  secondaryChat?: ChatStore;
 }
 
-type AppProjectView = ReturnType<ReturnType<typeof getProjects>["viewsForProject"]>[number];
+/** The app's view stores that workspace tab locations describe. */
+export interface AppWorkspaceLocationStores extends AppPaneLocationStores {
+  /** The stores of the secondary pane scope, or none where split views are unavailable. */
+  secondary?: AppPaneLocationStores;
+}
 
-interface PaneLocationStores {
-  projects: AppWorkspaceLocationStores["projects"];
-  notes: NotesWorkspace;
-  chat: ChatStore;
+type AppProjectView = ReturnType<ProjectsStore["viewsForProject"]>[number];
+
+interface PaneLocationStores extends AppPaneLocationStores {
   /** Name of a channel any pane's Chat store has loaded. */
   channelName: (projectId: string, channelId: string) => string | null;
 }
@@ -72,14 +71,14 @@ function locationStores(
 }
 
 /**
- * Bind workspace tab locations to the app's Projects, Notes, and Chat stores. Notes and Chat locations follow
- * the stores of the pane scope a tab shows through, the ones a tab restores into; for Notes, its main editor pane.
+ * Bind workspace tab locations to the app's Projects, Notes, and Chat stores. Locations follow the stores of the
+ * pane scope a tab shows through, the ones a tab restores into; for Notes, its main editor pane.
  */
 export function createAppWorkspaceLocationAdapter(
-  { projects, notes, chat, secondaryNotes, secondaryChat }: AppWorkspaceLocationStores,
+  { projects, notes, chat, secondary: secondaryStores }: AppWorkspaceLocationStores,
   t: Translate,
 ): WorkspaceLocationAdapter {
-  const chats = secondaryChat ? [chat, secondaryChat] : [chat];
+  const chats = secondaryStores ? [chat, secondaryStores.chat] : [chat];
   const channelName = (projectId: string, channelId: string) => {
     for (const store of chats) {
       const channel = store.channelsForProject(projectId).find((candidate) => candidate.id === channelId);
@@ -88,8 +87,6 @@ export function createAppWorkspaceLocationAdapter(
     return null;
   };
   const primary = locationStores({ projects, notes, chat, channelName }, t);
-  const secondary = secondaryNotes || secondaryChat
-    ? locationStores({ projects, notes: secondaryNotes ?? notes, chat: secondaryChat ?? chat, channelName }, t)
-    : primary;
+  const secondary = secondaryStores ? locationStores({ ...secondaryStores, channelName }, t) : primary;
   return createWorkspaceLocationAdapter(primary, secondary);
 }

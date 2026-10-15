@@ -23,7 +23,7 @@
   } from "$lib/projects/types";
   import type { ProjectTaskUpdatePatch } from "$lib/projects/snapshot/update-payloads";
   import { getCalendar } from "$lib/stores/calendar.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { getTheme } from "$lib/stores/theme.svelte";
   import { cn } from "$lib/utils";
@@ -105,7 +105,7 @@
     onCreated?: (task: ProjectTask) => void;
   } = $props();
 
-  const projects = getProjects();
+  const projects = useProjects();
   const calendar = getCalendar();
   const theme = getTheme();
   const { t } = getLocalization();

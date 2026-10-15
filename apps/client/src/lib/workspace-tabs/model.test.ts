@@ -21,6 +21,7 @@ import {
   savedWindowLabels,
   serializeClosedWorkspaceTabs,
   serializeWorkspaceTabsState,
+  showWorkspaceTabNeighbor,
   tabMatchesTarget,
   takeWorkspaceTab,
   updateWorkspaceTab,
@@ -257,6 +258,21 @@ describe("tabs leaving for another window", () => {
     expect(takeWorkspaceTab(current, "b")?.activeTabId).toBe("a");
     expect(takeWorkspaceTab(current, "missing")).toBe(current);
     expect(takeWorkspaceTab(state([tab("a", "calendar")]), "a")).toBeNull();
+  });
+
+  it("shows the next tab, else the previous one, while the active tab is pulled out, keeping its slot", () => {
+    const current = state([tab("a", "calendar"), tab("b", "projects"), tab("c", "notes")], "b");
+    const middle = showWorkspaceTabNeighbor(current, "b");
+    expect(ids(middle)).toEqual(["a", "b", "c"]);
+    expect(middle.activeTabId).toBe("c");
+    expect(showWorkspaceTabNeighbor({ ...current, activeTabId: "c" }, "c").activeTabId).toBe("b");
+  });
+
+  it("leaves the state alone for an inactive tab or one alone in its window", () => {
+    const current = state([tab("a", "calendar"), tab("b", "projects")], "a");
+    expect(showWorkspaceTabNeighbor(current, "b")).toBe(current);
+    const single = state([tab("a", "calendar")]);
+    expect(showWorkspaceTabNeighbor(single, "a")).toBe(single);
   });
 });
 

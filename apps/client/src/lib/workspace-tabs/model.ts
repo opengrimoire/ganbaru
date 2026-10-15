@@ -242,6 +242,16 @@ function neighborTabId(tabs: readonly WorkspaceTab[], id: string): string | null
 }
 
 /**
+ * Show the neighbor of the active tab `id` while `id` is pulled out of the strip, keeping its slot. Any other
+ * tab, or a tab alone in its window, leaves the state unchanged.
+ */
+export function showWorkspaceTabNeighbor(state: WorkspaceTabsState, id: string): WorkspaceTabsState {
+  if (state.activeTabId !== id) return state;
+  const neighbor = neighborTabId(state.tabs, id);
+  return neighbor ? activateWorkspaceTab(state, neighbor) : state;
+}
+
+/**
  * Close a tab and remember it for reopening. Returns null when it is the window's last tab, which the
  * caller turns into closing the window.
  */

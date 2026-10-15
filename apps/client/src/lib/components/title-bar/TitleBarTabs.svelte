@@ -335,6 +335,8 @@
     const grab = { grabX: event.clientX - rect.left, grabY: event.clientY - rect.top, width: rect.width };
     transfer.effectAllowed = "move";
     transfer.setData(TAB_REORDER_MIME, tab.id);
+    // A drag started on the close button skipped the press that opens the tab.
+    tabs.activate(tab.id);
     nativeDrag = { tab, origin: originOf(tab.id) };
     const payload = tabs.beginDrag(tab.id, grab);
     if (payload) transfer.setData(TAB_WINDOW_DRAG_MIME, tabWindowDragData(payload));
@@ -472,6 +474,20 @@
     pushAddButton(left + current.width);
   }
 
+  /**
+   * Apply a `change` to where the held tab `id` is dragged. When it lifts out of the strip the window shows its
+   * neighbor meanwhile, as a browser does, and when it lands back it is shown again.
+   */
+  function liftHeldTab(change: () => void, id: string): void {
+    slideLayout(() => {
+      const wasLifted = draggedTabLifted;
+      change();
+      if (draggedTabLifted === wasLifted) return;
+      if (wasLifted) tabs.activate(id);
+      else tabs.showNeighborOf(id);
+    }, id);
+  }
+
   /** Slide the dragged tab along the bar under the pointer, and lift it off once pulled away from the bar. */
   function dragOwnTab(event: DragEvent, current: HeldTabDrag): void {
     acceptDrag(event);
@@ -480,7 +496,7 @@
     const leaving = current.canTearOff
       && (pulledOffBar(event.clientY) || passedTrack(event.clientX, current.grabX, current.width));
     // The strip copy goes or comes at once, at full width, while the tabs around it slide.
-    if (leaving !== offBar) slideLayout(() => { offBar = leaving; }, current.id);
+    if (leaving !== offBar) liftHeldTab(() => { offBar = leaving; }, current.id);
     if (leaving) addOffset = 0;
     else slideAlongStrip(current, event.clientX);
   }
@@ -671,6 +687,7 @@
     slideLayout(() => {
       endDrag();
       if (origin && tabs.tabs.some((tab) => tab.id === origin.id)) tabs.move(id, origin.id, origin.placement);
+      tabs.activate(id);
     }, null);
   }
 
@@ -680,7 +697,7 @@
     dragDepth += change;
     if (heldId !== null) {
       const outside = dragDepth <= 0;
-      if (outside !== outsideWindow) slideLayout(() => { outsideWindow = outside; }, heldId);
+      if (outside !== outsideWindow) liftHeldTab(() => { outsideWindow = outside; }, heldId);
       if (outside) addOffset = 0;
     } else if (dragDepth <= 0 && !droppedTab) {
       leaveStrip(live?.tab.id ?? null);

@@ -34,6 +34,7 @@ import {
   sameTabLocation,
   serializeClosedWorkspaceTabs,
   serializeWorkspaceTabsState,
+  showWorkspaceTabNeighbor,
   tabMatchesTarget,
   takeWorkspaceTab,
   updateWorkspaceTab,
@@ -555,6 +556,17 @@ function activate(id: string): void {
   commitState(activateWorkspaceTab(tabsState, id));
 }
 
+/**
+ * Show the neighbor of the active tab `id` while it is dragged out of the strip. Its place is recorded first,
+ * because only the shown tab reads it from the live stores.
+ */
+function showNeighborOf(id: string): void {
+  const tab = tabsState.tabs.find((candidate) => candidate.id === id);
+  if (!tab || id !== tabsState.activeTabId) return;
+  const recorded = updateWorkspaceTab(tabsState, id, { location: liveLocation(tab) });
+  commitState(showWorkspaceTabNeighbor(recorded, id));
+}
+
 /** Open a new tab of a kind from the launcher. */
 function openKind(kind: View): void {
   const host = connection;
@@ -903,6 +915,7 @@ export function getWorkspaceTabs() {
     holds,
     connect,
     activate,
+    showNeighborOf,
     openKind,
     openLocation,
     close,

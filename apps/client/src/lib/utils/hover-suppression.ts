@@ -1,9 +1,7 @@
 /**
  * Keeps a resting pointer from hovering content that a layout change moved under it, such as a sidebar collapsing.
  * While suppressed, the root carries {@link HOVER_SUPPRESSED_ATTRIBUTE} and the app stylesheet makes tab content ignore
- * the pointer. The first pointer event only records where the pointer rests, because engines may replay it after
- * layout; suppression ends once the pointer travels {@link HOVER_RESUME_DISTANCE_PX} from there, a button is pressed, or
- * the wheel turns, since content that ignores the pointer would not scroll either.
+ * the pointer. Suppression ends once the pointer deliberately moves, as {@link waitForPointerTravel} defines it.
  */
 
 /** Pointer travel, in CSS pixels, that counts as deliberate movement rather than a resting pointer. */
@@ -12,10 +10,13 @@ export const HOVER_RESUME_DISTANCE_PX = 3;
 /** Root attribute that the app stylesheet reads while hover is suppressed. */
 export const HOVER_SUPPRESSED_ATTRIBUTE = "data-hover-suppressed";
 
+/** Source of the pointer events that end a wait for deliberate movement. */
+export type PointerTravelEvents = Pick<EventTarget, "addEventListener" | "removeEventListener">;
+
 /** Where suppression is marked, which events end it, and whether the device hovers at all. */
 export interface HoverSuppressionHost {
   root: Pick<Element, "setAttribute" | "removeAttribute">;
-  events: Pick<EventTarget, "addEventListener" | "removeEventListener">;
+  events: PointerTravelEvents;
   canHover: () => boolean;
 }
 
@@ -31,23 +32,25 @@ function documentHost(): HoverSuppressionHost | null {
 }
 
 /**
- * Suppresses hover until the pointer deliberately moves. Touch-only devices are left alone, so a tap is never swallowed.
- * Calling it again while active restarts the wait from the pointer's next reported position.
+ * Calls `onTravel` once when the pointer deliberately moves. The first pointer move only records where the pointer
+ * rests, because engines may replay it after layout or a drag; the wait ends once the pointer travels
+ * {@link HOVER_RESUME_DISTANCE_PX} from there, a button is pressed, or the wheel turns. Returns a function that stops
+ * waiting without calling `onTravel`.
  */
-export function suppressHoverUntilPointerMoves(host: HoverSuppressionHost | null = documentHost()): void {
-  if (!host || !host.canHover()) return;
-  releaseActive?.();
-
+export function waitForPointerTravel(events: PointerTravelEvents, onTravel: () => void): () => void {
   let origin: { x: number; y: number } | null = null;
   const options: AddEventListenerOptions = { capture: true, passive: true };
 
-  const release = (): void => {
-    host.root.removeAttribute(HOVER_SUPPRESSED_ATTRIBUTE);
-    host.events.removeEventListener("pointermove", handleMove, options);
-    host.events.removeEventListener("pointerdown", release, options);
-    host.events.removeEventListener("wheel", release, options);
-    if (releaseActive === release) releaseActive = null;
+  const stop = (): void => {
+    events.removeEventListener("pointermove", handleMove, options);
+    events.removeEventListener("pointerdown", travel, options);
+    events.removeEventListener("wheel", travel, options);
   };
+
+  function travel(): void {
+    stop();
+    onTravel();
+  }
 
   function handleMove(event: Event): void {
     const { clientX, clientY } = event as PointerEvent;
@@ -55,13 +58,31 @@ export function suppressHoverUntilPointerMoves(host: HoverSuppressionHost | null
       origin = { x: clientX, y: clientY };
       return;
     }
-    if (Math.hypot(clientX - origin.x, clientY - origin.y) >= HOVER_RESUME_DISTANCE_PX) release();
+    if (Math.hypot(clientX - origin.x, clientY - origin.y) >= HOVER_RESUME_DISTANCE_PX) travel();
   }
 
+  events.addEventListener("pointermove", handleMove, options);
+  events.addEventListener("pointerdown", travel, options);
+  events.addEventListener("wheel", travel, options);
+  return stop;
+}
+
+/**
+ * Suppresses hover until the pointer deliberately moves. Touch-only devices are left alone, so a tap is never swallowed.
+ * Calling it again while active restarts the wait from the pointer's next reported position.
+ */
+export function suppressHoverUntilPointerMoves(host: HoverSuppressionHost | null = documentHost()): void {
+  if (!host || !host.canHover()) return;
+  releaseActive?.();
+
+  const release = (): void => {
+    stopWaiting();
+    host.root.removeAttribute(HOVER_SUPPRESSED_ATTRIBUTE);
+    if (releaseActive === release) releaseActive = null;
+  };
+
   host.root.setAttribute(HOVER_SUPPRESSED_ATTRIBUTE, "");
-  host.events.addEventListener("pointermove", handleMove, options);
-  host.events.addEventListener("pointerdown", release, options);
-  host.events.addEventListener("wheel", release, options);
+  const stopWaiting = waitForPointerTravel(host.events, release);
   releaseActive = release;
 }
 

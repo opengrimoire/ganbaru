@@ -4,6 +4,7 @@ import {
   HOVER_SUPPRESSED_ATTRIBUTE,
   suppressHoverOnToggle,
   suppressHoverUntilPointerMoves,
+  waitForPointerTravel,
   type HoverSuppressionHost,
 } from "./hover-suppression";
 
@@ -113,5 +114,41 @@ describe("hover suppression after layout changes", () => {
     expect(suppressed(second)).toBe(true);
     pointer(second.target, "pointermove", 200, 200 + HOVER_RESUME_DISTANCE_PX);
     expect(suppressed(second)).toBe(false);
+  });
+});
+
+describe("waiting for deliberate pointer travel", () => {
+  function wait(): { target: EventTarget; travelled: () => number; stop: () => void } {
+    const target = new EventTarget();
+    let count = 0;
+    const stop = waitForPointerTravel(target, () => { count += 1; });
+    return { target, travelled: () => count, stop };
+  }
+
+  it("takes the first move as the resting position, even far from where the wait began", () => {
+    const { target, travelled } = wait();
+    pointer(target, "pointermove", 400, 300);
+    pointer(target, "pointermove", 401, 300);
+    expect(travelled()).toBe(0);
+    pointer(target, "pointermove", 400, 300 + HOVER_RESUME_DISTANCE_PX);
+    expect(travelled()).toBe(1);
+  });
+
+  it("ends once on a press or a wheel turn and then stops listening", () => {
+    const { target, travelled } = wait();
+    pointer(target, "pointerdown");
+    pointer(target, "wheel");
+    pointer(target, "pointermove", 0, 0);
+    pointer(target, "pointermove", 50, 50);
+    expect(travelled()).toBe(1);
+  });
+
+  it("never reports travel after it is stopped", () => {
+    const { target, travelled, stop } = wait();
+    stop();
+    pointer(target, "pointermove", 0, 0);
+    pointer(target, "pointermove", 50, 50);
+    pointer(target, "pointerdown");
+    expect(travelled()).toBe(0);
   });
 });

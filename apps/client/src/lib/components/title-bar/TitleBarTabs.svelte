@@ -25,6 +25,7 @@
     type TabDragEnd,
   } from "$lib/stores/workspace-tabs.svelte";
   import { cn } from "$lib/utils";
+  import { waitForPointerTravel } from "$lib/utils/hover-suppression";
   import type { WorkspaceTab, WorkspaceTabPlacement } from "$lib/workspace-tabs/model";
   import {
     shortWorkspaceTabProject,
@@ -722,11 +723,9 @@
   });
 
   $effect(() => {
-    // The platform sends no pointer moves during a drag, so the first one after it means the pointer moved again.
+    // Engines replay the resting pointer after a drag, so only deliberate movement brings hover back.
     if (!hoverHeld || stripDragActive) return;
-    const release = () => { hoverHeld = false; };
-    window.addEventListener("pointermove", release, { once: true });
-    return () => window.removeEventListener("pointermove", release);
+    return waitForPointerTravel(window, () => { hoverHeld = false; });
   });
 
   $effect(() => {

@@ -46,7 +46,7 @@ import {
   setNotesEditableDirectionalSelection,
   type NotesTextSelection,
 } from "$lib/notes/editor/selection";
-import { normalizeNotesTextLinkUrl, notesPastedTextLinkUrl, notesLinkTarget, openNotesTextLink } from "$lib/notes/links/navigation";
+import { normalizeNotesTextLinkUrl, notesPastedTextLinkUrl, notesLinkTarget, openNotesTextLink, type NotesLinkOpener } from "$lib/notes/links/navigation";
 import { writeTextToClipboard } from "$lib/utils/clipboard";
 import type { NotesFloatingPanelRect } from "$lib/notes/editor/floating-panel";
 import { notesTextContextMenuSelectionAtPoint } from "$lib/notes/editor/text-context-menu";
@@ -142,6 +142,8 @@ export interface NotesTextEditorControllerSource {
   onInsertDateMention: (blockId: string, start: number, end: number, target: NotesDateMentionTarget) => Promise<void> | void;
   onInsertObjectMention: (blockId: string, start: number, end: number, target: NotesObjectMentionTarget) => Promise<void> | void;
   onApplyTextLink: (blockId: string, start: number, end: number, url: string | null) => Promise<void> | void;
+  /** Opens local links through the Notes navigation of the editor this text belongs to. */
+  notes: NotesLinkOpener;
   onInsertInlineEquation: (blockId: string, start: number, end: number, expression: string) => Promise<void> | void;
   onPastePlainText: (blockId: string, start: number, end: number, plainText: string) => Promise<boolean> | boolean;
   onPasteRichHtml: (blockId: string, start: number, end: number, html: string) => Promise<boolean> | boolean;
@@ -1232,7 +1234,7 @@ export class NotesTextEditorController {
     if (this.linkBusy) return;
     this.linkBusy = true;
     try {
-      await openNotesTextLink(this.linkUrlInput);
+      await openNotesTextLink(this.linkUrlInput, this.source.notes);
       this.cancelLinkEditor();
     } catch (error: unknown) {
       console.warn("Notes link navigation failed", error);

@@ -89,7 +89,7 @@
     NotesPageIcon as NotesPageIconValue,
     NotesParent,
   } from "$lib/notes/types";
-  import { getNotes } from "$lib/stores/notes.svelte";
+  import { useNotesWorkspace } from "$lib/stores/notes.svelte";
   import type { NotesEditorStore } from "$lib/stores/notes/editor-session.svelte";
   import { provideNotesEditor } from "./editor-context";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
@@ -142,7 +142,7 @@
   } = $props();
 
   // A pane keeps the same editor session for its entire mounted lifetime.
-  const notes = untrack(() => editorStore) ?? getNotes();
+  const notes = untrack(() => editorStore) ?? useNotesWorkspace();
   provideNotesEditor(notes);
   const mobileBackStack = getMobileBackStack();
   const mobileLayout = BUILD_PLATFORM_PROFILE.shell === "mobile";

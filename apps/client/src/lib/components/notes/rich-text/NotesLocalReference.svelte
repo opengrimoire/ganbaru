@@ -12,6 +12,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { isNotesUuid } from "$lib/notes/links/block-link";
   import { notesLinkTarget, openNotesTextLink } from "$lib/notes/links/navigation";
+  import { getNotesEditor } from "$lib/components/notes/editor-context";
   import { notesLabeledRoute, notesPageLocationHeading } from "$lib/notes/rich-text/mention-preview";
   import type { NotesDatabaseReference } from "$lib/notes/types";
   import Database from "@lucide/svelte/icons/database";
@@ -37,6 +38,7 @@
   } = $props();
 
   const { t } = getLocalization();
+  const notesEditor = getNotesEditor();
   const componentId = $props.id();
   const previewId = `${componentId}-reference-preview`;
   const referenceType = $derived(reference.mention.type);
@@ -143,7 +145,7 @@
         url = `#notes?page=${target.page_id}&block=${target.block_id}`;
       }
       if (disposed || requestRevision !== revision) return;
-      await openNotesTextLink(url);
+      await openNotesTextLink(url, notesEditor);
     } catch (error: unknown) {
       if (disposed || requestRevision !== revision) return;
       hasNavigationError = true;

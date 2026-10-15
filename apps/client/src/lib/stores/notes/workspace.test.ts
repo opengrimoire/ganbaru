@@ -41,6 +41,7 @@ describe("Notes workspace reloads", () => {
   it("cancels old project pagination while refreshing the destination sidebar without reopening its note", async () => {
     const { createNotesWorkspaceController } = await import("./workspace.svelte");
     let projectId = "project-a";
+    const applyInitialShell = vi.fn<(...args: unknown[]) => string | null>(() => null);
     const applyAdditionalShell = vi.fn();
     const mergeReloadedShell = vi.fn();
     const prepareLoad = vi.fn();
@@ -48,13 +49,13 @@ describe("Notes workspace reloads", () => {
     const controller = createNotesWorkspaceController({
       readRequestState: () => ({ projectId, expandedPageIds: [], seedPageIds: [], selectedPageId: "note" }),
       readNavigationMutationRevision: () => 0,
-      prepareLoad, applyInitialShell: () => null, applyAdditionalShell, mergeReloadedShell,
+      prepareLoad, applyInitialShell, applyAdditionalShell, mergeReloadedShell,
       loadSelectedPage, clearSelectedPageState: vi.fn(), readSelectedPageId: () => "note",
     });
     const initial = controller.load();
     backend.resolvers[0]?.(shell("project-a-next"));
     await initial;
-    expect(controller.projectId).toBe("project-a");
+    expect(applyInitialShell).toHaveBeenCalledExactlyOnceWith(expect.anything(), "note", "project-a");
     const stalePagination = controller.loadMoreWorkspaceWindow();
     projectId = "project-b";
     const refresh = controller.refreshProjectNavigation();
@@ -64,12 +65,11 @@ describe("Notes workspace reloads", () => {
     backend.resolvers[1]?.(shell("stale-next"));
     await stalePagination;
     expect(applyAdditionalShell).not.toHaveBeenCalled();
-    expect(controller.projectId).toBe("project-a");
+    expect(mergeReloadedShell).not.toHaveBeenCalled();
     const fresh = shell("project-b-next");
     backend.resolvers[2]?.(fresh);
     await refresh;
-    expect(mergeReloadedShell).toHaveBeenCalledExactlyOnceWith(fresh);
-    expect(controller.projectId).toBe("project-b");
+    expect(mergeReloadedShell).toHaveBeenCalledExactlyOnceWith(fresh, "project-b");
     expect(prepareLoad).toHaveBeenCalledOnce();
     expect(loadSelectedPage).not.toHaveBeenCalled();
     const more = controller.loadMoreWorkspaceWindow();
@@ -100,7 +100,7 @@ describe("Notes workspace reloads", () => {
     backend.resolvers[0]?.(shell("old-a"));
     backend.resolvers[1]?.(shell("old-b"));
     await Promise.all([old, intermediate]);
-    expect(mergeReloadedShell).toHaveBeenCalledExactlyOnceWith(fresh);
+    expect(mergeReloadedShell).toHaveBeenCalledExactlyOnceWith(fresh, "project-a");
   });
 
   it("keeps concurrent startup callers waiting until the selected note has loaded", async () => {
@@ -157,7 +157,7 @@ describe("Notes workspace reloads", () => {
     const fresh = shell("fresh");
     backend.resolvers[1]?.(fresh);
     await pending;
-    expect(mergeReloadedShell).toHaveBeenCalledExactlyOnceWith(fresh);
+    expect(mergeReloadedShell).toHaveBeenCalledExactlyOnceWith(fresh, "project-a");
   });
 
   it("drops stale pagination results and resets its cursor from the fresh shell", async () => {
@@ -194,7 +194,7 @@ describe("Notes workspace reloads", () => {
     const fresh = shell("fresh-next");
     backend.resolvers[2]?.(fresh);
     await pagination;
-    expect(mergeReloadedShell).toHaveBeenCalledExactlyOnceWith(fresh);
+    expect(mergeReloadedShell).toHaveBeenCalledExactlyOnceWith(fresh, "project-a");
     expect(controller.totalPageCount).toBe(fresh.total_page_count);
 
     const nextPage = controller.loadMoreWorkspaceWindow();

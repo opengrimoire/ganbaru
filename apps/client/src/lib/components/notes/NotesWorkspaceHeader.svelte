@@ -34,7 +34,7 @@
     type ProjectNavigatorPanelMode,
   } from "$lib/projects/toolbar";
   import type { Project, ProjectGroup } from "$lib/projects/types";
-  import { getNotes } from "$lib/stores/notes.svelte";
+  import { useNotesWorkspace } from "$lib/stores/notes.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
   import { getViewport } from "$lib/stores/viewport.svelte";
   import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
@@ -92,7 +92,7 @@
     pageActionsTarget?: HTMLElement | null;
   } = $props();
 
-  const notes = getNotes();
+  const notes = useNotesWorkspace();
   const projects = getProjects();
   const viewport = getViewport();
   const tabs = getWorkspaceTabs();

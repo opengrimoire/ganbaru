@@ -11,7 +11,7 @@
   import { getMusicPlayer } from "$lib/stores/music-player.svelte";
   import { getPomodoro } from "$lib/stores/pomodoro.svelte";
   import { buildDesktopFocusNotificationCopy, type DesktopFocusNotificationCopy } from "$lib/api/focus";
-  import { getNotes } from "$lib/stores/notes.svelte";
+  import { getNotes, getNotesWorkspace } from "$lib/stores/notes.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
   import { getChat } from "$lib/stores/chat.svelte";
   import { getZoom } from "$lib/stores/zoom.svelte";
@@ -101,6 +101,7 @@
   const music = getMusicPlayer();
   const pomodoro = getPomodoro();
   const notes = getNotes();
+  const secondaryNotes = getNotesWorkspace("secondary");
   const projects = getProjects();
   const chat = getChat();
   const zoom = getZoom();
@@ -113,7 +114,7 @@
   const locale = $derived(localization.locale);
   const workspaceTabs = getWorkspaceTabs();
   workspaceTabs.connect({
-    adapter: createAppWorkspaceLocationAdapter({ projects, notes, chat }, t),
+    adapter: createAppWorkspaceLocationAdapter({ projects, notes, chat, secondaryNotes }, t),
     ...(platformHasCapability(BUILD_PLATFORM_PROFILE, "window.detached-views")
       ? { windows: createWorkspaceTabWindows(appWindow.label, availableAppViews()) }
       : {}),
@@ -406,6 +407,8 @@
           const projectsRequest = previousVaultId ? projects.load() : projects.ensureLoaded();
           void projectsRequest.then(() => Promise.all([
             previousVaultId ? notes.load() : notes.ensureLoaded(),
+            // The secondary workspace shares the primary's page lists, so it only drops the previous vault's pages.
+            previousVaultId ? secondaryNotes.selectPage(null) : null,
             chat.prewarmForProject(projects.selectedProjectId),
           ])).catch((error) => {
             console.error("core workspace preload failed", error);

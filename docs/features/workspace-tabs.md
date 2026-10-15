@@ -38,7 +38,7 @@ On desktop, two tabs can show together in one window, as in a browser split view
 
 A split tab's menu arranges the split: unsplit both tabs, close either view, show the panes side by side or stacked, and swap their positions. Dragging or keyboard-moving the divider resizes the panes, and double-clicking it or pressing Enter shares the space equally. When a window is too small for the chosen orientation, the panes show the other way, and when neither fits, only the focused tab shows; turning a split is offered only when the panes fit the other way. Each split keeps its orientation and sizes with the window's tabs.
 
-The panes show two different views. Tabs of one kind share that kind's live state, and the panes share one open project, so a split pairs different kinds, and a tab locked to another project cannot join it. Closing a split tab or moving it to another window ends its split, and phones show each tab on its own.
+Two Notes tabs can show side by side, each pane with its own open note, previews, and explorer state; the window remembers only the first pane's note for its next launch. Other kinds keep one live state per window, so their split pairs different kinds, and Notes hosted in a project view cannot sit beside a Notes tab. The panes share one open project, so a tab locked to another project cannot join a split, and opening another project's note in either pane moves both. Closing a split tab or moving it to another window ends its split, and phones show each tab on its own.
 
 ## Windows
 

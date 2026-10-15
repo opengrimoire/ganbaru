@@ -1,5 +1,5 @@
 import { getContext, setContext } from "svelte";
-import { getNotes } from "$lib/stores/notes.svelte";
+import { useNotesWorkspace } from "$lib/stores/notes.svelte";
 import type { NotesEditorStore } from "$lib/stores/notes/editor-session.svelte";
 
 const NOTES_EDITOR_CONTEXT = Symbol("notes-editor");
@@ -11,5 +11,5 @@ export function provideNotesEditor(store: NotesEditorStore): void {
 
 /** Standalone block renderers use the active workspace when no editor owns them. */
 export function getNotesEditor(): NotesEditorStore {
-  return getContext<NotesEditorStore | undefined>(NOTES_EDITOR_CONTEXT) ?? getNotes();
+  return getContext<NotesEditorStore | undefined>(NOTES_EDITOR_CONTEXT) ?? useNotesWorkspace();
 }

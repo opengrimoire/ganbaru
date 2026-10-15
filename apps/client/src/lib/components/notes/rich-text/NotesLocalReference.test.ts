@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { NotesLinkOpener } from "$lib/notes/links/navigation";
 import { createDatabaseMentionRichText, createPageMentionRichText } from "$lib/notes/rich-text/core";
 import type { NotesDatabaseMentionRichText, NotesDatabaseReference, NotesPageMentionRichText } from "$lib/notes/types";
 import NotesLocalReference from "./NotesLocalReference.svelte";
@@ -26,12 +27,14 @@ const PAGE_LOCATION = ["Personal", "Website", "Plans", "", "Current project"];
 const { getDatabase, getLocation, openLink } = vi.hoisted(() => ({
   getDatabase: vi.fn<(blockId: string) => Promise<NotesDatabaseReference>>(),
   getLocation: vi.fn<(pageId: string) => Promise<string[]>>(),
-  openLink: vi.fn<(url: string) => Promise<void>>(),
+  openLink: vi.fn<(url: string, notes: NotesLinkOpener) => Promise<void>>(),
 }));
 vi.mock("$lib/api/notes", () => ({ getNotesDatabaseReference: getDatabase, getNotesPageLocation: getLocation }));
 vi.mock("$lib/notes/links/navigation", async (importOriginal) => ({
   ...await importOriginal<typeof import("$lib/notes/links/navigation")>(), openNotesTextLink: openLink,
 }));
+/** The editor or workspace a link opens through, resolved from the component's Notes context. */
+const notesOpener = expect.toSatisfy((notes: NotesLinkOpener) => typeof notes.openNotesLink === "function");
 
 let component: ReturnType<typeof mount> | undefined;
 
@@ -115,7 +118,7 @@ describe("inline local reference navigation", () => {
     expect(getLocation).not.toHaveBeenCalled();
     anchor.click();
     await settleMetadata();
-    expect(openLink).toHaveBeenCalledExactlyOnceWith(PAGE_URL);
+    expect(openLink).toHaveBeenCalledExactlyOnceWith(PAGE_URL, notesOpener);
     expect(parentClick).not.toHaveBeenCalled();
     expect(getDatabase).not.toHaveBeenCalled();
     expect(getLocation).not.toHaveBeenCalled();
@@ -128,7 +131,7 @@ describe("inline local reference navigation", () => {
     expect(anchor.getAttribute("href")).toBe(DATABASE_URL);
     anchor.click();
     await settleMetadata();
-    expect(openLink).toHaveBeenCalledExactlyOnceWith(DATABASE_URL);
+    expect(openLink).toHaveBeenCalledExactlyOnceWith(DATABASE_URL, notesOpener);
     expect(getDatabase).not.toHaveBeenCalled();
     expect(getLocation).not.toHaveBeenCalled();
   });
@@ -144,7 +147,7 @@ describe("inline local reference navigation", () => {
     anchor.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, clientX: 28, clientY: 34 }));
     await settleMetadata();
     expect(getDatabase).toHaveBeenCalledExactlyOnceWith(DATABASE_ID);
-    expect(openLink).toHaveBeenCalledExactlyOnceWith(DATABASE_URL);
+    expect(openLink).toHaveBeenCalledExactlyOnceWith(DATABASE_URL, notesOpener);
     expect(getLocation).not.toHaveBeenCalled();
     expect(document.querySelector("[role='tooltip']")).toBeNull();
   });
@@ -159,7 +162,7 @@ describe("inline local reference navigation", () => {
     await settleMetadata();
     expect(enter.defaultPrevented).toBe(true);
     expect(parentKeydown).not.toHaveBeenCalled();
-    expect(openLink).toHaveBeenCalledExactlyOnceWith(PAGE_URL);
+    expect(openLink).toHaveBeenCalledExactlyOnceWith(PAGE_URL, notesOpener);
     anchor.blur();
     host.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
     expect(parentKeydown).toHaveBeenCalledTimes(1);
@@ -204,7 +207,7 @@ describe("inline local reference navigation", () => {
     anchor.click();
     await settleMetadata();
     expect(getDatabase).toHaveBeenCalledTimes(2);
-    expect(openLink).toHaveBeenCalledExactlyOnceWith(DATABASE_URL);
+    expect(openLink).toHaveBeenCalledExactlyOnceWith(DATABASE_URL, notesOpener);
   });
 });
 
@@ -273,7 +276,7 @@ describe("local reference previews", () => {
     expect(getDatabase).toHaveBeenCalledTimes(1);
     resolveMetadata?.(DATABASE_METADATA);
     await settleMetadata();
-    expect(openLink).toHaveBeenCalledExactlyOnceWith(DATABASE_URL);
+    expect(openLink).toHaveBeenCalledExactlyOnceWith(DATABASE_URL, notesOpener);
   });
 
   it("cancels a brief hover and releases a pending hover timeout on unmount", async () => {
@@ -346,6 +349,6 @@ describe("local reference previews", () => {
     expect(previewCard().querySelector("[role='status']")?.textContent).toBe("No preview");
     anchor.click();
     await settleMetadata();
-    expect(openLink).toHaveBeenCalledExactlyOnceWith(PAGE_URL);
+    expect(openLink).toHaveBeenCalledExactlyOnceWith(PAGE_URL, notesOpener);
   });
 });

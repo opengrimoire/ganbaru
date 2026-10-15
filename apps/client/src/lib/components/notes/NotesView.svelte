@@ -15,7 +15,7 @@
   import { notesPageProjectId, notesPagesForProject } from "$lib/notes/project-membership";
   import { notesUndoShortcutAction } from "$lib/notes/history/undo-history";
   import type { NotesWorkingMarkdownFileRef } from "$lib/notes/types";
-  import { getNotes } from "$lib/stores/notes.svelte";
+  import { useNotesWorkspace } from "$lib/stores/notes.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { getViewport } from "$lib/stores/viewport.svelte";
@@ -60,7 +60,8 @@
   /** Whether Notes opens as one view of the selected project, so the selected project leads what it shows. */
   const projectHosted = $derived(projectSidebar !== undefined || projectViewSwitcher !== undefined);
 
-  const notes = getNotes();
+  const notes = useNotesWorkspace();
+  const paneFocused = getWorkspacePaneFocus();
   const projects = getProjects();
   const mobileBackStack = getMobileBackStack();
   const viewport = getViewport();
@@ -294,6 +295,8 @@
 
   onMount(() => {
     async function openHashTarget(): Promise<void> {
+      // The window has one hash, so of two Notes panes only the focused one opens its target.
+      if (!paneFocused()) return;
       const target = parseNotesLinkHash(window.location.hash);
       if (!target) {
         return;
@@ -583,8 +586,6 @@
   function runNotesHistoryShortcut(action: "undo" | "redo"): void {
     void (action === "undo" ? notes.undoNotesEdit() : notes.redoNotesEdit());
   }
-
-  const paneFocused = getWorkspacePaneFocus();
 
   function handleNotesWindowKeydown(event: KeyboardEvent): void {
     if (!paneFocused()) return;

@@ -25,7 +25,7 @@
     projectToolbarPanelGeometry,
   } from "$lib/projects/toolbar";
   import { getProjects } from "$lib/stores/projects.svelte";
-  import { getNotes } from "$lib/stores/notes.svelte";
+  import { useNotesWorkspace } from "$lib/stores/notes.svelte";
   import { getViewport } from "$lib/stores/viewport.svelte";
   import {
     isSidebarSortOrder,
@@ -64,7 +64,7 @@
   } = $props();
 
   const projects = getProjects();
-  const notes = getNotes();
+  const notes = useNotesWorkspace();
   const viewport = getViewport();
   const { t } = getLocalization();
 

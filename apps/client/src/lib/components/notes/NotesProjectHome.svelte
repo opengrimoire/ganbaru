@@ -65,7 +65,7 @@
     NotesWorkingMarkdownFileRef,
     NotesWorkingMarkdownTreeRead,
   } from "$lib/notes/types";
-  import { getNotes } from "$lib/stores/notes.svelte";
+  import { useNotesWorkspace } from "$lib/stores/notes.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
   import { cn } from "$lib/utils";
@@ -110,7 +110,7 @@
     onBeforeDocumentNavigation: () => boolean;
   } = $props();
 
-  const notes = getNotes();
+  const notes = useNotesWorkspace();
   const preferences = getPreferences();
   const tabs = getWorkspaceTabs();
   /** The docked explorer opens pages in new tabs; the phone panel leaves the gesture out. */

@@ -45,7 +45,7 @@ vi.mock("$lib/stores/notes.svelte", async () => {
     get: () => selection.get("database") ?? null,
     set: (block: NotesChildDatabaseBlock | null) => selection.set("database", block),
   });
-  return { getNotes: () => notesState.store };
+  return { useNotesWorkspace: () => notesState.store };
 });
 
 vi.mock("$lib/stores/viewport.svelte", () => ({

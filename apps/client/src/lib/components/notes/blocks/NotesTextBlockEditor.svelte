@@ -215,6 +215,7 @@
     locale: () => localization.locale,
     timeFormat: () => preferences.calendarTimeFormat,
     translate: t,
+    notes: notesEditor,
     onTextInput: (blockId, value, selection) => onTextInput(blockId, value, selection),
     onReplaceRichText: (blockId, richText) => onReplaceRichText(blockId, richText),
     onInsertPageMention: (blockId, start, end, target) => onInsertPageMention(blockId, start, end, target),

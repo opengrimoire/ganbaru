@@ -12,12 +12,14 @@ interface NotesWorkspaceControllerContext {
   readRequestState: () => NotesWorkspaceShellRequestState;
   readNavigationMutationRevision: () => number;
   prepareLoad: () => void;
+  /** Apply a freshly loaded shell for `projectId`, or the unscoped workspace when `null`, and return the page to open. */
   applyInitialShell: (
     shell: NotesWorkspaceShell,
     requestedSelection: string | null,
+    projectId: string | null,
   ) => string | null;
   applyAdditionalShell: (shell: NotesWorkspaceShell) => void;
-  mergeReloadedShell: (shell: NotesWorkspaceShell) => void;
+  mergeReloadedShell: (shell: NotesWorkspaceShell, projectId: string | null) => void;
   loadSelectedPage: (pageId: string) => Promise<void>;
   clearSelectedPageState: () => void;
   readSelectedPageId: () => string | null;
@@ -35,7 +37,6 @@ export function createNotesWorkspaceController(context: NotesWorkspaceController
   let windowLoading = $state(false);
   let nextPageCursor = $state<string | null>(null);
   let nextFolderCursor = $state<string | null>(null);
-  let shellProjectId = $state<string | null>(null);
   let totalPageCount = 0;
   let totalFolderCount = 0;
   let requestId = 0;
@@ -65,8 +66,7 @@ export function createNotesWorkspaceController(context: NotesWorkspaceController
       nextFolderCursor = shell.next_folder_cursor;
       totalPageCount = shell.total_page_count;
       totalFolderCount = shell.total_folder_count;
-      const nextSelected = context.applyInitialShell(shell, requestedSelection);
-      shellProjectId = state.projectId;
+      const nextSelected = context.applyInitialShell(shell, requestedSelection, state.projectId);
       loaded = true;
       if (nextSelected) {
         await context.loadSelectedPage(nextSelected).catch((caught) => {
@@ -149,8 +149,7 @@ export function createNotesWorkspaceController(context: NotesWorkspaceController
       nextFolderCursor = shell.next_folder_cursor;
       totalPageCount = shell.total_page_count;
       totalFolderCount = shell.total_folder_count;
-      context.mergeReloadedShell(shell);
-      shellProjectId = state.projectId;
+      context.mergeReloadedShell(shell, state.projectId);
       return;
     }
   }
@@ -170,8 +169,6 @@ export function createNotesWorkspaceController(context: NotesWorkspaceController
     get loading(): boolean { return loading; },
     get error(): string | null { return error; },
     get windowLoading(): boolean { return windowLoading; },
-    /** Project whose shell was applied last, or `null` for the unscoped workspace. */
-    get projectId(): string | null { return shellProjectId; },
     get totalPageCount(): number { return totalPageCount; },
     get totalFolderCount(): number { return totalFolderCount; },
     load,

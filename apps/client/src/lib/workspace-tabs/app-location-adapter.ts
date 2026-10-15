@@ -4,27 +4,27 @@ import { notesPageTitle } from "$lib/notes/pages/title";
 import { isProjectHostedViewType } from "$lib/projects/views";
 import type { WorkspaceLocationAdapter } from "$lib/stores/workspace-tabs.svelte";
 import type { getChat } from "$lib/stores/chat.svelte";
-import type { getNotes } from "$lib/stores/notes.svelte";
+import type { NotesWorkspace } from "$lib/stores/notes.svelte";
 import type { getProjects } from "$lib/stores/projects.svelte";
-import { createWorkspaceLocationAdapter } from "./location-adapter";
+import { createWorkspaceLocationAdapter, type WorkspaceLocationStores } from "./location-adapter";
 
 /** The app's view stores that workspace tab locations describe. */
 export interface AppWorkspaceLocationStores {
   projects: ReturnType<typeof getProjects>;
-  notes: ReturnType<typeof getNotes>;
+  notes: NotesWorkspace;
   chat: ReturnType<typeof getChat>;
+  /** The Notes workspace of the secondary pane scope, or none where split views are unavailable. */
+  secondaryNotes?: NotesWorkspace;
 }
 
-/**
- * Bind workspace tab locations to the app's Projects, Notes, and Chat stores. Notes locations follow the
- * main editor pane, the one a tab restores into.
- */
-export function createAppWorkspaceLocationAdapter(
-  { projects, notes, chat }: AppWorkspaceLocationStores,
+type AppProjectView = ReturnType<ReturnType<typeof getProjects>["viewsForProject"]>[number];
+
+function locationStores(
+  { projects, notes, chat }: Omit<AppWorkspaceLocationStores, "secondaryNotes">,
   t: Translate,
-): WorkspaceLocationAdapter {
+): WorkspaceLocationStores<AppProjectView> {
   const notesMainPaneStore = () => notes.editorPanes.find((pane) => pane.id === notes.mainPaneId)?.store ?? null;
-  return createWorkspaceLocationAdapter({
+  return {
     projects: {
       get selectedProjectId() { return projects.selectedProjectId; },
       get activeViewId() { return projects.activeViewId; },
@@ -60,5 +60,18 @@ export function createAppWorkspaceLocationAdapter(
         chat.channelsForProject(projectId).find((channel) => channel.id === channelId)?.name ?? null
       ),
     },
-  });
+  };
+}
+
+/**
+ * Bind workspace tab locations to the app's Projects, Notes, and Chat stores. Notes locations follow the
+ * main editor pane of the workspace a tab shows through, the one a tab restores into.
+ */
+export function createAppWorkspaceLocationAdapter(
+  { secondaryNotes, ...stores }: AppWorkspaceLocationStores,
+  t: Translate,
+): WorkspaceLocationAdapter {
+  const primary = locationStores(stores, t);
+  const secondary = secondaryNotes ? locationStores({ ...stores, notes: secondaryNotes }, t) : primary;
+  return createWorkspaceLocationAdapter(primary, secondary);
 }

@@ -7,13 +7,13 @@
   import { notesPageRestoresToWorkspace } from "$lib/notes/pages/recovery";
   import { notesPageTitle } from "$lib/notes/pages/title";
   import type { NotesPage } from "$lib/notes/types";
-  import { getNotes } from "$lib/stores/notes.svelte";
+  import { useNotesWorkspace } from "$lib/stores/notes.svelte";
   import ArrowLeft from "@lucide/svelte/icons/arrow-left";
   import RotateCcw from "@lucide/svelte/icons/rotate-ccw";
   import Search from "@lucide/svelte/icons/search";
   import Trash2 from "@lucide/svelte/icons/trash-2";
 
-  const notes = getNotes();
+  const notes = useNotesWorkspace();
   const localization = getLocalization();
   const { t } = localization;
   let search = $state("");

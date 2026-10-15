@@ -44,7 +44,7 @@
   import { notesPagesForProject } from "$lib/notes/project-membership";
   import type { NotesPage } from "$lib/notes/types";
   import type { ProjectNavigatorPanelMode } from "$lib/projects/toolbar";
-  import { getNotes } from "$lib/stores/notes.svelte";
+  import { useNotesWorkspace } from "$lib/stores/notes.svelte";
   import { createNotesSearchController } from "$lib/stores/notes/search.svelte";
   import NotesPageIcon from "$lib/components/notes/pages/NotesPageIcon.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
@@ -84,7 +84,7 @@
   const projects = getProjects();
   const tabs = getWorkspaceTabs();
   const preferences = getPreferences();
-  const notes = getNotes();
+  const notes = useNotesWorkspace();
   const { t } = getLocalization();
   const iconStrokeWidth = 1.6;
   const iconSize = 13;

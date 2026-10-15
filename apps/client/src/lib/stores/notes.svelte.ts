@@ -1,6 +1,11 @@
 import { untrack } from "svelte";
-import { createNotesEditorStore, type NotesEditorStore, type NotesSelectPageOptions } from "$lib/stores/notes/editor-session.svelte";
-import { saveNotesSelectedPageId } from "$lib/stores/notes/page-state";
+import {
+  createNotesEditorStore,
+  createNotesWorkspaceUi,
+  type NotesEditorStore,
+  type NotesSelectPageOptions,
+} from "$lib/stores/notes/editor-session.svelte";
+import { initialNotesSelectedPageId, saveNotesSelectedPageId } from "$lib/stores/notes/page-state";
 import { getProjects } from "./projects.svelte";
 import { notesPageProjectId } from "$lib/notes/project-membership";
 import type { NotesPageOpenMode } from "$lib/notes/pages/open-mode";
@@ -8,17 +13,28 @@ import type { NotesLoadedPage } from "$lib/notes/types";
 import type { NotesSidebarMetadataImpact } from "$lib/notes/post-mutation";
 import { listenForNotesPageChanges } from "$lib/notes/pages/window-sync";
 import { registerWindowCloseFlusher } from "$lib/windows/close-flush";
+import type { WorkspacePaneScope } from "$lib/workspace-tabs/model";
+import { getWorkspacePaneScope } from "$lib/workspace-tabs/pane-scope";
 
 export interface NotesEditorPane {
   id: string;
   store: NotesEditorStore;
 }
 
+interface NotesWorkspaceOptions {
+  /** Whether the workspace opens on, and remembers, the window's last selected page. */
+  remembersSelection: boolean;
+}
+
+/** Numbers editor panes across workspaces, so a pane id names one editor in the window. */
+let nextPaneId = 0;
+
 /** Coordinate live panes without replacing the main editor when a preview opens. */
-function createNotesWorkspace() {
+function createNotesWorkspace({ remembersSelection }: NotesWorkspaceOptions) {
   const projects = getProjects();
-  let nextPaneId = 0;
-  let main = $state.raw<NotesEditorPane>(createPane(true));
+  const ui = createNotesWorkspaceUi();
+  const persistSelectedPageId = remembersSelection ? saveNotesSelectedPageId : () => undefined;
+  let main = $state.raw<NotesEditorPane>(createPane(remembersSelection));
   let preview = $state.raw<NotesEditorPane | null>(null);
   let activePaneId = $state(untrack(() => main.id));
   const active = $derived(preview?.id === activePaneId ? preview : main);
@@ -59,7 +75,12 @@ function createNotesWorkspace() {
         if (!main.store.selectedPageId) await main.store.selectPageLocally(replacementId, { openMode: "full" });
         activatePane(main.id);
       },
-    }, restoreSelection);
+      editors: () => panes.map((pane) => pane.store),
+    }, {
+      ui,
+      initialSelectedPageId: restoreSelection ? initialNotesSelectedPageId() : null,
+      persistSelectedPageId,
+    });
     return { id, store };
   }
 
@@ -78,7 +99,7 @@ function createNotesWorkspace() {
     const pane = paneById(id);
     if (activePaneId !== id) {
       activePaneId = id;
-      saveNotesSelectedPageId(pane.store.selectedPageId);
+      persistSelectedPageId(pane.store.selectedPageId);
     }
     if (!restoreProjectContext) return;
     void synchronizeProjectContext(pane).catch((error: unknown) => {
@@ -256,8 +277,23 @@ function createNotesWorkspace() {
   });
 }
 
-const notes = createNotesWorkspace();
-registerWindowCloseFlusher(() => notes.flushPendingWrites());
+export type NotesWorkspace = ReturnType<typeof createNotesWorkspace>;
 
-/** Shared workspace controls and the live editor that currently owns input focus. */
-export function getNotes() { return notes; }
+// Both exist from the start, so neither is created inside, and owned by, a reactive effect that reads it.
+const workspaces: Record<WorkspacePaneScope, NotesWorkspace> = {
+  primary: createNotesWorkspace({ remembersSelection: true }),
+  secondary: createNotesWorkspace({ remembersSelection: false }),
+};
+for (const workspace of Object.values(workspaces)) registerWindowCloseFlusher(() => workspace.flushPendingWrites());
+
+/**
+ * The window's primary Notes workspace: its shared workspace controls and the live editor that currently owns input
+ * focus. Outside a split view, every Notes surface shows through it.
+ */
+export function getNotes(): NotesWorkspace { return workspaces.primary; }
+
+/** The Notes workspace a split pane scope shows through. */
+export function getNotesWorkspace(scope: WorkspacePaneScope): NotesWorkspace { return workspaces[scope]; }
+
+/** The Notes workspace of the calling view's split pane. Call during component initialization. */
+export function useNotesWorkspace(): NotesWorkspace { return workspaces[getWorkspacePaneScope()]; }

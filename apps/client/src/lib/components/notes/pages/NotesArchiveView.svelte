@@ -5,13 +5,13 @@
   import { filterNotesPagesByTitle } from "$lib/notes/pages/selection";
   import { notesPageTitle } from "$lib/notes/pages/title";
   import type { NotesPage } from "$lib/notes/types";
-  import { getNotes } from "$lib/stores/notes.svelte";
+  import { useNotesWorkspace } from "$lib/stores/notes.svelte";
   import Archive from "@lucide/svelte/icons/archive";
   import ArchiveRestore from "@lucide/svelte/icons/archive-restore";
   import ArrowLeft from "@lucide/svelte/icons/arrow-left";
   import Search from "@lucide/svelte/icons/search";
 
-  const notes = getNotes();
+  const notes = useNotesWorkspace();
   const localization = getLocalization();
   const { t } = localization;
   let search = $state("");

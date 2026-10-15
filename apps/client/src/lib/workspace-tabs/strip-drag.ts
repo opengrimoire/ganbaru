@@ -66,3 +66,33 @@ export function tabStripVisualLeft(pointerX: number, grabX: number, width: numbe
 export function tabStripRight(slots: readonly TabStripSlot[]): number {
   return slots.reduce((right, slot) => Math.max(right, slot.left + slot.width), 0);
 }
+
+/** Gap a tab entering the strip at `x` takes: the number of shown tabs whose center lies before it. */
+export function tabStripInsertIndex(slots: readonly TabStripSlot[], x: number): number {
+  return slots.filter((slot) => slot.left + slot.width / 2 < x).length;
+}
+
+/**
+ * Neighbor that puts a tab arriving from elsewhere at `index` among `ids`: before the tab now there, after the
+ * last one past the end, or null for an empty strip.
+ */
+export function tabStripInsertTarget(
+  ids: readonly string[],
+  index: number,
+): { id: string; placement: WorkspaceTabPlacement } | null {
+  const at = Math.min(Math.max(index, 0), ids.length);
+  const before = ids[at];
+  if (before !== undefined) return { id: before, placement: "before" };
+  const last = ids.at(-1);
+  return last === undefined ? null : { id: last, placement: "after" };
+}
+
+/** Position in `ids` that `target`, from {@link tabStripInsertTarget}, names, or the end when it names none. */
+export function tabStripInsertPosition(
+  ids: readonly string[],
+  target: { id: string; placement: WorkspaceTabPlacement } | null,
+): number {
+  const index = target ? ids.indexOf(target.id) : -1;
+  if (index < 0) return ids.length;
+  return target?.placement === "after" ? index + 1 : index;
+}

@@ -12,6 +12,10 @@ const TAB_WINDOW_LABEL_PATTERN = /^view-[A-Za-z0-9-]{1,64}$/;
 const TAB_WINDOW_TRANSFER_EVENT = "tab-window-transfer";
 const TAB_WINDOW_RELEASE_EVENT = "tab-window-release";
 const TAB_WINDOW_REQUEST_EVENT = "tab-window-request";
+/** Sent to every window when a tab drag starts, so the windows it passes over can draw the tab. */
+const TAB_WINDOW_DRAG_STARTED_EVENT = "tab-window-drag-started";
+/** Sent to every window when that drag ends. */
+const TAB_WINDOW_DRAG_ENDED_EVENT = "tab-window-drag-ended";
 /** Sent by the native side with the label of a window it brought on screen. */
 const WINDOW_RAISED_EVENT = "app-window-raised";
 /** Drag data naming a tab another window can ask for. Only ids travel, so the tab leaves with its live location. */
@@ -46,6 +50,30 @@ export interface TabWindowRequest extends TabWindowMessage {
 
 /** A tab dragged out of its window, as another window reads it on drop. */
 export interface TabWindowDrag {
+  sourceLabel: string;
+  vaultId: string;
+  tabId: string;
+}
+
+/** Where the pointer holds a dragged tab, from its top-left corner, and the tab's width, in pixels. */
+export interface TabDragGrab {
+  grabX: number;
+  grabY: number;
+  width: number;
+}
+
+/**
+ * A tab another window is dragging, as every window hears of it when the drag starts. It only draws the tab;
+ * the move itself still asks the source window for the tab with its live location.
+ */
+export interface TabWindowDragStarted extends TabDragGrab {
+  sourceLabel: string;
+  vaultId: string;
+  tab: WorkspaceTab;
+}
+
+/** The drag of a tab another window announced has ended. */
+export interface TabWindowDragEnded {
   sourceLabel: string;
   vaultId: string;
   tabId: string;
@@ -134,13 +162,41 @@ export function tabWindowDragData(drag: TabWindowDrag): string {
 
 /** Read a tab dragged in from another window. Drags from `ownLabel` itself are not cross-window drags. */
 export function parseTabWindowDrag(raw: string, ownLabel: string): TabWindowDrag | null {
-  const value = parseJson(raw);
+  return parseDragIdentity(parseJson(raw), ownLabel);
+}
+
+/** Read which tab of which window a drag carries, dropping drags from `ownLabel` itself. */
+function parseDragIdentity(value: unknown, ownLabel: string): TabWindowDrag | null {
   if (!isRecord(value)) return null;
   const { sourceLabel, vaultId, tabId } = value;
   if (!isWindowLabel(sourceLabel) || sourceLabel === ownLabel) return null;
   if (typeof vaultId !== "string" || vaultId.length === 0) return null;
   if (typeof tabId !== "string" || tabId.length === 0) return null;
   return { sourceLabel, vaultId, tabId };
+}
+
+function isPixelLength(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+/** Validate a drag another window announced. Announcements from `ownLabel` itself are dropped. */
+export function parseTabWindowDragStarted(
+  value: unknown,
+  availableKinds: readonly View[],
+  ownLabel: string,
+): TabWindowDragStarted | null {
+  if (!isRecord(value)) return null;
+  const { sourceLabel, vaultId, grabX, grabY, width } = value;
+  if (!isWindowLabel(sourceLabel) || sourceLabel === ownLabel) return null;
+  if (typeof vaultId !== "string" || vaultId.length === 0) return null;
+  if (!isPixelLength(grabX) || !isPixelLength(grabY) || !isPixelLength(width)) return null;
+  const tab = parseWorkspaceTab(value.tab, availableKinds);
+  return tab ? { sourceLabel, vaultId, tab, grabX, grabY, width } : null;
+}
+
+/** Validate the end of a drag another window announced. Announcements from `ownLabel` itself are dropped. */
+export function parseTabWindowDragEnded(value: unknown, ownLabel: string): TabWindowDragEnded | null {
+  return parseDragIdentity(value, ownLabel);
 }
 
 /** Where a drag ended, as its `dragend` event reports it. */
@@ -180,6 +236,14 @@ async function sendTabWindowMessage(
     | typeof TAB_WINDOW_RELEASE_EVENT
     | typeof TAB_WINDOW_REQUEST_EVENT,
   message: TabWindowTransfer | TabWindowRelease | TabWindowRequest,
+): Promise<void> {
+  await emit(event, message);
+}
+
+/** Tell every window that a tab drag started or ended, so the windows it passes over can draw the tab. */
+async function announceTabDrag(
+  event: typeof TAB_WINDOW_DRAG_STARTED_EVENT | typeof TAB_WINDOW_DRAG_ENDED_EVENT,
+  message: TabWindowDragStarted | TabWindowDragEnded,
 ): Promise<void> {
   await emit(event, message);
 }
@@ -278,6 +342,10 @@ export interface TabWindowHandlers {
   transfer(message: TabWindowTransfer): void;
   release(message: TabWindowRelease): void;
   request(message: TabWindowRequest): void;
+  /** Another window started dragging a tab. */
+  dragStarted(message: TabWindowDragStarted): void;
+  /** Another window's tab drag ended. */
+  dragEnded(message: TabWindowDragEnded): void;
   /** The app brought this window on screen, for example on a second launch or to open a notification. */
   raised(): void;
 }
@@ -302,6 +370,10 @@ export interface WorkspaceTabWindows {
   request(sourceLabel: string, vaultId: string, tabId: string): Promise<void>;
   /** Read a tab dragged in from another window, or null for drags from this one or malformed data. */
   readDrag(raw: string): TabWindowDrag | null;
+  /** Tell every other window that this one started dragging `tab`, held at `grab`. */
+  announceDrag(vaultId: string, tab: WorkspaceTab, grab: TabDragGrab): Promise<void>;
+  /** Tell every other window that this one's drag of a tab ended. */
+  announceDragEnd(vaultId: string, tabId: string): Promise<void>;
   /** Count the other app windows on screen, so closing this one can tell whether it is the last. */
   otherOpenWindows(): Promise<number>;
   /** Listen for messages addressed to this window. Returns a cleanup. */
@@ -324,6 +396,10 @@ export function createWorkspaceTabWindows(label: string, availableKinds: readonl
     request: (sourceLabel, vaultId, tabId) =>
       sendTabWindowMessage(TAB_WINDOW_REQUEST_EVENT, { targetLabel: sourceLabel, sourceLabel: label, vaultId, tabId }),
     readDrag: (raw) => parseTabWindowDrag(raw, label),
+    announceDrag: (vaultId, tab, grab) =>
+      announceTabDrag(TAB_WINDOW_DRAG_STARTED_EVENT, { sourceLabel: label, vaultId, tab, ...grab }),
+    announceDragEnd: (vaultId, tabId) =>
+      announceTabDrag(TAB_WINDOW_DRAG_ENDED_EVENT, { sourceLabel: label, vaultId, tabId }),
     otherOpenWindows: () => countOtherOpenWindows(label),
     listen(handlers) {
       const cleanups = [
@@ -335,6 +411,14 @@ export function createWorkspaceTabWindows(label: string, availableKinds: readonl
         ),
         listenTabWindowMessages(TAB_WINDOW_RELEASE_EVENT, label, parseTabWindowRelease, handlers.release),
         listenTabWindowMessages(TAB_WINDOW_REQUEST_EVENT, label, parseTabWindowRequest, handlers.request),
+        listenEvent(TAB_WINDOW_DRAG_STARTED_EVENT, (payload) => {
+          const message = parseTabWindowDragStarted(payload, availableKinds, label);
+          if (message) handlers.dragStarted(message);
+        }),
+        listenEvent(TAB_WINDOW_DRAG_ENDED_EVENT, (payload) => {
+          const message = parseTabWindowDragEnded(payload, label);
+          if (message) handlers.dragEnded(message);
+        }),
         listenEvent(WINDOW_RAISED_EVENT, (raisedLabel) => {
           if (raisedLabel === label) handlers.raised();
         }),

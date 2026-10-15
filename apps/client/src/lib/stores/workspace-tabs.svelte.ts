@@ -4,7 +4,9 @@ import { registerNavigationRouter, type NavigationRouterRegistration } from "$li
 import { activeVaultIdentity, onActiveVaultIdentityChange } from "$lib/vault/active-vault";
 import type {
   ScreenPoint,
+  TabDragGrab,
   TabWindowDrag,
+  TabWindowDragStarted,
   TabWindowRequest,
   TabWindowTransfer,
   WorkspaceTabWindows,
@@ -77,6 +79,8 @@ const CLOSED_STORAGE_PREFIX = "ganbaru.workspace-tabs-closed.v1";
  * window asks for the tab within this time, and that move wins.
  */
 const TEAR_OFF_SETTLE_MS = 250;
+/** How long a tab dropped here from another window keeps its slot in the strip while it has not arrived. */
+const TAB_ARRIVAL_TIMEOUT_MS = 3000;
 
 function createTabId(): string {
   return crypto.randomUUID();
@@ -102,6 +106,9 @@ const departingTabIds = new Set<string>();
 const requestedTabIds = new Set<string>();
 /** Where a tab dropped from another window goes once it arrives, or null to keep it at the end. */
 let pendingDrop: { tabId: string; target: { id: string; placement: WorkspaceTabPlacement } | null } | null = null;
+/** Another window's tab being dragged, which this window draws in its strip while the drag passes over it. */
+let incomingDrag = $state.raw<TabWindowDragStarted | null>(null);
+let arrivalTimer: ReturnType<typeof setTimeout> | null = null;
 
 /**
  * Every window saves its tabs under its own key per vault. The host window's key has no label so the tabs
@@ -337,8 +344,11 @@ function adoptTransfer(transfer: TabWindowTransfer): void {
     const inserted = insertWorkspaceTab(tabsState, transfer.tab, "end");
     commitState(target ? moveWorkspaceTab(inserted, transfer.tab.id, target.id, target.placement) : inserted);
   } else {
+    clearIncomingDrag(transfer.tab.id);
     return;
   }
+  // Cleared in the same update that adds the tab, so the tab drawn during the drag becomes the real one in place.
+  clearIncomingDrag(transfer.tab.id);
   void windows.release(transfer.sourceLabel, transfer.vaultId, transfer.tab.id).catch((error: unknown) => {
     console.error("Failed to confirm a moved tab:", error);
   });
@@ -415,6 +425,15 @@ function connectWindows(host: WorkspaceTabsConnection): () => void {
         console.error("Failed to move a dragged tab:", error);
       });
     },
+    dragStarted: (started) => {
+      if (started.vaultId === storageVaultId) showIncomingDrag(started);
+    },
+    dragEnded: (ended) => {
+      // A tab dropped here keeps its slot until it arrives.
+      if (incomingDrag?.sourceLabel === ended.sourceLabel && pendingDrop?.tabId !== ended.tabId) {
+        clearIncomingDrag(ended.tabId);
+      }
+    },
     raised: reviveHostWindow,
   });
   return () => {
@@ -438,6 +457,8 @@ function connect(host: WorkspaceTabsConnection): void {
   const cleanups = [connectWindows(host)];
   cleanups.push(onActiveVaultIdentityChange((_previous, next) => {
     if (next === storageVaultId) return;
+    pendingDrop = null;
+    clearIncomingDrag();
     loadForVault(next, null);
     void restoreActive();
   }));
@@ -463,6 +484,7 @@ function connect(host: WorkspaceTabsConnection): void {
 
   $effect(() => () => {
     cleanups.forEach((cleanup) => cleanup());
+    clearIncomingDrag();
     navigation?.unregister();
     navigation = null;
     if (connection === host) connection = null;
@@ -537,6 +559,7 @@ function setLocked(id: string, locked: boolean): void {
   if (level) setState(updateWorkspaceTab(tabsState, id, { level, locked }));
 }
 
+/** Whether a tab may move into a new window of its own, which a window's last tab may not. */
 function detachBlock(id: string): WorkspaceTabDetachBlock | null {
   if (!connection?.windows || !tabsState.tabs.some((tab) => tab.id === id)) return "unsupported";
   return tabsState.tabs.length <= 1 ? "last-tab" : null;
@@ -553,10 +576,13 @@ async function prepareDeparture(id: string): Promise<WorkspaceTab | null> {
   return tabsState.tabs.find((candidate) => candidate.id === id) ?? null;
 }
 
-/** Run one move of a tab out of this window, refusing to start a second move of the same tab meanwhile. */
+/**
+ * Run one move of a tab out of this window, refusing to start a second move of the same tab meanwhile. The
+ * last tab may move to another window, which then closes this one.
+ */
 async function depart(id: string, move: (windows: WorkspaceTabWindows) => Promise<void>): Promise<void> {
   const windows = connection?.windows;
-  if (!windows || detachBlock(id) || departingTabIds.has(id)) return;
+  if (!windows || detachBlock(id) === "unsupported" || departingTabIds.has(id)) return;
   departingTabIds.add(id);
   try {
     await move(windows);
@@ -567,6 +593,7 @@ async function depart(id: string, move: (windows: WorkspaceTabWindows) => Promis
 
 /** Move a tab into a new window of its own, opening it at `position` when given. */
 function detach(id: string, position: ScreenPoint | null = null): Promise<void> {
+  if (detachBlock(id)) return Promise.resolve();
   return depart(id, async (windows) => {
     const tab = await prepareDeparture(id);
     if (!tab) return;
@@ -589,15 +616,56 @@ async function tearOff(id: string, position: ScreenPoint | null): Promise<void> 
   await detach(id, position);
 }
 
-/** What a drag of a tab carries so another window can ask for it, or null when the tab cannot leave. */
-function dragPayload(id: string): TabWindowDrag | null {
+/**
+ * Start dragging a tab held at `grab`, telling the other windows so they can draw it as it passes over them.
+ * Returns what the drag carries so the window it is dropped on can ask for the tab, or null when tabs
+ * cannot leave this window.
+ */
+function beginDrag(id: string, grab: TabDragGrab): TabWindowDrag | null {
   const windows = connection?.windows;
-  if (!windows || !storageVaultId || detachBlock(id)) return null;
+  const tab = tabsState.tabs.find((candidate) => candidate.id === id);
+  const vaultId = storageVaultId;
+  if (!windows || !vaultId || !tab) return null;
   requestedTabIds.delete(id);
   void connection?.flushPendingEdits?.().catch((error: unknown) => {
     console.error("Failed to save pending edits before a tab drag:", error);
   });
-  return { sourceLabel: windows.label, vaultId: storageVaultId, tabId: id };
+  void windows.announceDrag(vaultId, { ...tab, location: liveLocation(tab) }, grab).catch((error: unknown) => {
+    console.error("Failed to announce a tab drag:", error);
+  });
+  return { sourceLabel: windows.label, vaultId, tabId: id };
+}
+
+/** Tell the other windows that the drag of a tab started with {@link beginDrag} has ended. */
+function finishDrag(drag: TabWindowDrag): void {
+  void connection?.windows?.announceDragEnd(drag.vaultId, drag.tabId).catch((error: unknown) => {
+    console.error("Failed to announce the end of a tab drag:", error);
+  });
+}
+
+/** Draw another window's dragged tab here, unless the strip is full or already holds it. */
+function showIncomingDrag(started: TabWindowDragStarted): void {
+  if (pendingDrop) return;
+  clearIncomingDrag();
+  if (canAddWorkspaceTab(tabsState) && !tabsState.tabs.some((tab) => tab.id === started.tab.id)) incomingDrag = started;
+}
+
+/** Stop drawing another window's dragged tab, only when it is `tabId` if given. */
+function clearIncomingDrag(tabId?: string): void {
+  if (tabId !== undefined && incomingDrag?.tab.id !== tabId) return;
+  incomingDrag = null;
+  if (arrivalTimer !== null) clearTimeout(arrivalTimer);
+  arrivalTimer = null;
+}
+
+/** Give up on a tab dropped here that has not arrived in time, freeing the slot it was drawn in. */
+function awaitArrival(tabId: string): void {
+  if (arrivalTimer !== null) clearTimeout(arrivalTimer);
+  arrivalTimer = setTimeout(() => {
+    arrivalTimer = null;
+    if (pendingDrop?.tabId === tabId) pendingDrop = null;
+    clearIncomingDrag(tabId);
+  }, TAB_ARRIVAL_TIMEOUT_MS);
 }
 
 /**
@@ -609,6 +677,7 @@ function receiveDrop(raw: string, target: { id: string; placement: WorkspaceTabP
   const drag = windows?.readDrag(raw) ?? null;
   if (!windows || !drag || drag.vaultId !== storageVaultId || !canAddWorkspaceTab(tabsState)) return false;
   pendingDrop = { tabId: drag.tabId, target };
+  awaitArrival(drag.tabId);
   void windows.request(drag.sourceLabel, drag.vaultId, drag.tabId).catch((error: unknown) => {
     console.error("Failed to ask for a dragged tab:", error);
   });
@@ -710,6 +779,10 @@ export function getWorkspaceTabs() {
     get launcherRequests(): number {
       return launcherRequests;
     },
+    /** Another window's tab dragged over this vault's windows, for this strip to draw while the drag passes over it. */
+    get incomingDrag(): TabWindowDragStarted | null {
+      return incomingDrag;
+    },
     connect,
     activate,
     openKind,
@@ -735,7 +808,8 @@ export function getWorkspaceTabs() {
     detachBlock,
     detach,
     tearOff,
-    dragPayload,
+    beginDrag,
+    finishDrag,
     receiveDrop,
     releaseWindow,
     otherOpenWindows,

@@ -33,6 +33,9 @@
   import {
     tabDragLeftBar,
     tabStripDropIndex,
+    tabStripInsertIndex,
+    tabStripInsertPosition,
+    tabStripInsertTarget,
     tabStripMoveTarget,
     tabStripRight,
     tabStripVisualLeft,
@@ -44,6 +47,9 @@
     dragEndedOutsideWindow,
     tabWindowDragData,
     tearOffWindowPosition,
+    type TabDragGrab,
+    type TabWindowDrag,
+    type TabWindowDragStarted,
   } from "$lib/windows/tab-windows";
 
   let {
@@ -56,15 +62,10 @@
     onOpenContextMenu: (event: MouseEvent, tabId: string) => void;
   } = $props();
 
-  interface OwnTabDrag {
+  interface OwnTabDrag extends TabDragGrab {
     id: string;
-    /** Pointer offset from the tab's left edge when the drag started. */
-    grabX: number;
-    /** Pointer offset from the tab's top edge when the drag started. */
-    grabY: number;
-    width: number;
-    /** Whether the tab may leave this window, which a window's last tab may not. */
-    canLeave: boolean;
+    /** Whether the tab may open in a new window of its own, which a window's last tab may not. */
+    canTearOff: boolean;
     /** Neighbor that puts the tab back where it started when the drag is cancelled. */
     origin: { id: string; placement: WorkspaceTabPlacement } | null;
   }
@@ -106,15 +107,41 @@
   /** How far the dragged tab is drawn from its slot so it stays under the pointer. */
   let movingOffset = $state(0);
   /** The dragged tab no longer holds a slot in the strip. */
-  const draggedTabLifted = $derived(draggingId !== null && (offBar || (outsideWindow && drag?.canLeave === true)));
-  /** Where the floating copy of a tab pulled off the bar is drawn. */
-  const floatingStyle = $derived.by(() => {
-    if (!draggingId || !offBar || outsideWindow || !pointer || !drag) return null;
-    return `left: ${pointer.x - drag.grabX}px; top: ${pointer.y - drag.grabY}px; width: ${drag.width}px;`;
+  const draggedTabLifted = $derived(draggingId !== null && (offBar || (outsideWindow && drag?.canTearOff === true)));
+  /** The drag this window told the others about, until it ends. */
+  let announcedDrag: TabWindowDrag | null = null;
+  /** Another window's tab being dragged, drawn in this strip while over the bar and floating below it. */
+  const incoming = $derived(tabs.incomingDrag);
+  /** Slot another window's tab takes in this strip, or null while it is off the bar or outside this window. */
+  let incomingIndex = $state<number | null>(null);
+  /** How far another window's tab is drawn from its slot so it stays under the pointer. */
+  let incomingOffset = $state(0);
+  /** Another window's tab was dropped here and keeps its slot until it arrives. */
+  let incomingDropped = $state(false);
+  /** Another window's tab while it holds a slot in this strip. */
+  const incomingTab = $derived(incoming && incomingIndex !== null ? incoming.tab : null);
+  /** The tabs the strip draws: this window's, with another window's dragged tab in the slot it would take. */
+  const shownTabs = $derived.by((): readonly WorkspaceTab[] => {
+    if (!incomingTab || incomingIndex === null) return tabs.tabs;
+    const shown = [...tabs.tabs];
+    shown.splice(Math.min(incomingIndex, shown.length), 0, incomingTab);
+    return shown;
   });
-  const floatingTab = $derived(floatingStyle ? tabs.tabs.find((tab) => tab.id === draggingId) ?? null : null);
-  /** Where another window's tab dragged over this strip would land. */
-  let dropTarget = $state<{ id: string; placement: WorkspaceTabPlacement } | null>(null);
+  /** A tab is dragged along this strip, so the others slide out of its way. */
+  const stripDragActive = $derived(draggingId !== null || incomingTab !== null);
+  /** The copy of a dragged tab that floats under the pointer once it is off the bar. */
+  const floating = $derived.by((): { tab: WorkspaceTab; style: string } | null => {
+    const at = pointer;
+    const current = drag;
+    if (!at || outsideWindow) return null;
+    const placed = (grab: TabDragGrab) =>
+      `left: ${at.x - grab.grabX}px; top: ${at.y - grab.grabY}px; width: ${grab.width}px;`;
+    if (current) {
+      const tab = offBar ? tabs.tabs.find((candidate) => candidate.id === current.id) : undefined;
+      return tab ? { tab, style: placed(current) } : null;
+    }
+    return incoming && incomingIndex === null && !incomingDropped ? { tab: incoming.tab, style: placed(incoming) } : null;
+  });
   /** Document drag entries minus exits while a tab is dragged, which reaches zero once the drag leaves the window. */
   let dragDepth = 0;
   let measureSequence = 0;
@@ -255,19 +282,18 @@
     const element = event.currentTarget;
     if (!transfer || !(element instanceof HTMLElement)) return;
     const rect = element.getBoundingClientRect();
-    const grabX = event.clientX - rect.left;
+    const grab = { grabX: event.clientX - rect.left, grabY: event.clientY - rect.top, width: rect.width };
     transfer.effectAllowed = "move";
     transfer.setData(TAB_REORDER_MIME, tab.id);
-    const payload = tabs.dragPayload(tab.id);
+    const payload = tabs.beginDrag(tab.id, grab);
     if (payload) transfer.setData(TAB_WINDOW_DRAG_MIME, tabWindowDragData(payload));
-    // The tab itself follows the pointer while it is over a window, so the platform drags an empty image.
+    announcedDrag = payload;
+    // The tab itself is drawn under the pointer while it is over a window, so the platform drags an empty image.
     transfer.setDragImage(EMPTY_DRAG_IMAGE, 0, 0);
     drag = {
       id: tab.id,
-      grabX,
-      grabY: event.clientY - rect.top,
-      width: rect.width,
-      canLeave: payload !== null,
+      ...grab,
+      canTearOff: payload !== null && tabs.detachBlock(tab.id) === null,
       origin: originOf(tab.id),
     };
     draggingId = tab.id;
@@ -275,7 +301,6 @@
     outsideWindow = false;
     pointer = { x: event.clientX, y: event.clientY };
     movingOffset = 0;
-    dropTarget = null;
     dragDepth = 0;
   }
 
@@ -294,7 +319,7 @@
 
   /** Tabs the strip shows, by their layout position so slide animations in flight do not move the slots. */
   function shownSlots(): TabStripSlot[] {
-    return tabs.tabs.flatMap((tab) => {
+    return shownTabs.flatMap((tab) => {
       const element = tabElements[tab.id];
       return element && element.offsetParent !== null
         ? [{ id: tab.id, left: element.offsetLeft, width: element.offsetWidth }]
@@ -339,22 +364,87 @@
     acceptDrag(event);
     outsideWindow = false;
     pointer = { x: event.clientX, y: event.clientY };
-    const leaving = current.canLeave && pulledOffBar(event.clientY);
+    const leaving = current.canTearOff && pulledOffBar(event.clientY);
     if (leaving !== offBar) offBar = leaving;
     if (!leaving) slideAlongStrip(current, event.clientX);
   }
 
-  /** Mark where another window's tab would land, before or after the tab under the pointer. */
+  /** Position among this window's tabs that a tab entering the strip at `clientX` takes. */
+  function entryIndex(clientX: number): number {
+    const slots = shownSlots();
+    const target = tabStripInsertTarget(slots.map((slot) => slot.id), tabStripInsertIndex(slots, stripX(clientX)));
+    return tabStripInsertPosition(tabs.tabs.map((tab) => tab.id), target);
+  }
+
+  /**
+   * Draw another window's tab under the pointer in this strip, taking a slot as it enters and then trading
+   * places with the tabs it passes, just like a tab of this window.
+   */
+  function slideIncoming(current: TabWindowDragStarted, clientX: number): void {
+    if (incomingIndex === null) {
+      incomingIndex = entryIndex(clientX);
+      flushSync();
+    }
+    const element = tabElements[current.tab.id];
+    if (!element) return;
+    const width = element.offsetWidth;
+    const slots = shownSlots();
+    const left = tabStripVisualLeft(stripX(clientX), Math.min(current.grabX, width), width, tabStripRight(slots));
+    const target = tabStripMoveTarget(
+      slots.map((slot) => slot.id),
+      current.tab.id,
+      tabStripDropIndex(slots, left + width / 2),
+    );
+    if (target) {
+      incomingIndex = tabStripInsertPosition(tabs.tabs.map((tab) => tab.id), target);
+      flushSync();
+    }
+    incomingOffset = left - element.offsetLeft;
+  }
+
+  /** Draw another window's tab in the strip while it is over the bar, and floating under the pointer below it. */
   function dragForeignTab(event: DragEvent): void {
+    if (incomingDropped) return;
+    pointer = { x: event.clientX, y: event.clientY };
     if (pulledOffBar(event.clientY)) {
-      dropTarget = null;
+      incomingIndex = null;
       return;
     }
     acceptDrag(event);
-    const slots = shownSlots();
-    const x = stripX(event.clientX);
-    const slot = slots[tabStripDropIndex(slots, x)];
-    dropTarget = slot ? { id: slot.id, placement: x < slot.left + slot.width / 2 ? "before" : "after" } : null;
+    if (incoming) slideIncoming(incoming, event.clientX);
+  }
+
+  /**
+   * Take another window's tab dropped on the bar into the slot it is drawn in, or, without a drawing, the
+   * slot under the pointer. It keeps that slot until it arrives.
+   */
+  function dropForeignTab(event: DragEvent): void {
+    if (pulledOffBar(event.clientY)) {
+      resetIncoming();
+      return;
+    }
+    acceptDrag(event);
+    const ids = tabs.tabs.map((tab) => tab.id);
+    const target = tabStripInsertTarget(ids, incomingIndex ?? entryIndex(event.clientX));
+    const taken = tabs.receiveDrop(event.dataTransfer?.getData(TAB_WINDOW_DRAG_MIME) ?? "", target);
+    if (!taken || !incomingTab) {
+      resetIncoming();
+      return;
+    }
+    incomingDropped = true;
+    incomingOffset = 0;
+    pointer = null;
+    dragDepth = 0;
+  }
+
+  /** Stop drawing another window's tab, once its drag ended or it arrived. */
+  function resetIncoming(): void {
+    incomingIndex = null;
+    incomingOffset = 0;
+    incomingDropped = false;
+    if (drag) return;
+    pointer = null;
+    dragDepth = 0;
   }
 
   /**
@@ -373,10 +463,9 @@
    */
   function handleWindowDrop(event: DragEvent): void {
     const kind = dragKind(event);
-    if (kind === "window" && !pulledOffBar(event.clientY)) {
-      acceptDrag(event);
-      tabs.receiveDrop(event.dataTransfer?.getData(TAB_WINDOW_DRAG_MIME) ?? "", dropTarget);
-      endDrag();
+    if (kind === "window") {
+      dropForeignTab(event);
+      return;
     }
     const current = drag;
     if (kind !== "reorder" || !current) return;
@@ -400,8 +489,10 @@
     const current = drag;
     const leftWindow = dragEndedOutsideWindow(event, { width: window.innerWidth, height: window.innerHeight }, dragDepth);
     endDrag();
+    if (announcedDrag) tabs.finishDrag(announcedDrag);
+    announcedDrag = null;
     if (!current || event.dataTransfer?.dropEffect !== "none") return;
-    if (leftWindow && current.canLeave) {
+    if (leftWindow && current.canTearOff) {
       reportFailedMove(tabs.tearOff(current.id, tearOffWindowPosition(event.screenX, event.screenY)));
       return;
     }
@@ -413,8 +504,12 @@
   function trackDragDepth(event: DragEvent, change: 1 | -1): void {
     if (!dragKind(event)) return;
     dragDepth += change;
-    if (drag) outsideWindow = dragDepth <= 0;
-    else if (dragDepth <= 0) dropTarget = null;
+    if (drag) {
+      outsideWindow = dragDepth <= 0;
+    } else if (dragDepth <= 0 && !incomingDropped) {
+      incomingIndex = null;
+      pointer = null;
+    }
   }
 
   function endDrag(): void {
@@ -424,7 +519,6 @@
     outsideWindow = false;
     pointer = null;
     movingOffset = 0;
-    dropTarget = null;
     dragDepth = 0;
   }
 
@@ -441,6 +535,11 @@
   $effect(() => {
     // A tab another window took may disappear before its drag ends.
     if (draggingId !== null && !tabs.tabs.some((tab) => tab.id === draggingId)) untrack(endDrag);
+  });
+
+  $effect(() => {
+    // The other window's drag ended, or its tab arrived and now holds the slot it was drawn in.
+    if (!incoming) untrack(resetIncoming);
   });
 </script>
 
@@ -467,34 +566,37 @@
     role="tablist"
     aria-orientation="horizontal"
   >
-    {#if indicatorStyle && draggingId === null}
+    {#if indicatorStyle && !stripDragActive}
       <div
         class="tab-indicator absolute top-0 h-full rounded-md bg-card shadow-(--tab-active-shadow)"
         style={indicatorStyle}
       ></div>
     {/if}
-    {#each tabs.tabs as tab, index (tab.id)}
-      {@const active = tab.id === tabs.activeTabId}
+    {#each shownTabs as tab, index (tab.id)}
+      {@const arriving = tab.id === incomingTab?.id}
+      {@const active = !arriving && tab.id === tabs.activeTabId}
       {@const fullLabel = workspaceTabFullLabel(tab, t)}
-      {@const moving = draggingId === tab.id}
+      {@const moving = arriving || draggingId === tab.id}
+      {@const lifted = !arriving && moving && draggedTabLifted}
       <div
         bind:this={tabElements[tab.id]}
-        animate:flip={{ duration: draggingId === null || moving || reducedMotion ? 0 : TAB_SLIDE_MS }}
+        animate:flip={{ duration: !stripDragActive || moving || reducedMotion ? 0 : TAB_SLIDE_MS }}
         data-active={active ? "" : undefined}
         class={cn(
           "titlebar-tab group relative z-1 flex items-center rounded-md text-sm font-medium transition-colors",
           compact && "titlebar-tab-compact",
-          activeOnly && !active ? "hidden" : "",
+          activeOnly && !active && !moving ? "hidden" : "",
           active || moving
             ? "text-foreground dark:text-white"
             : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-          (active || moving) && draggingId !== null && "bg-card shadow-(--tab-active-shadow)",
+          (active || moving) && stripDragActive && "bg-card shadow-(--tab-active-shadow)",
           moving && "titlebar-tab-moving",
-          moving && draggedTabLifted && "titlebar-tab-lifted",
-          dropTarget?.id === tab.id && (dropTarget.placement === "before" ? "drop-before" : "drop-after"),
+          lifted && "titlebar-tab-lifted",
+          arriving && incomingDropped && "titlebar-tab-settling",
         )}
-        style:translate={moving && !draggedTabLifted ? `${movingOffset}px 0` : undefined}
-        draggable="true"
+        style:translate={moving && !lifted ? `${arriving ? incomingOffset : movingOffset}px 0` : undefined}
+        draggable={!arriving}
+        inert={arriving}
         role="presentation"
         ondragstart={(event) => handleDragStart(event, tab)}
         ondragend={handleDragEnd}
@@ -555,16 +657,16 @@
   {/if}
 </div>
 
-{#if floatingTab && floatingStyle}
+{#if floating}
   <div
     class={cn(
       "titlebar-tab-floating pointer-events-none fixed z-60 flex h-7 items-center rounded-md bg-card text-sm font-medium text-foreground shadow-(--tab-active-shadow) dark:text-white",
       compact ? "justify-center" : "gap-1.5 px-3",
     )}
-    style={floatingStyle}
+    style={floating.style}
     aria-hidden="true"
   >
-    {@render tabFace(floatingTab, compact)}
+    {@render tabFace(floating.tab, compact)}
   </div>
 {/if}
 
@@ -646,6 +748,11 @@
     visibility: hidden;
   }
 
+  /* Dropped here from another window, the tab eases into its slot while it arrives. */
+  .titlebar-tab.titlebar-tab-moving.titlebar-tab-settling {
+    transition: translate 150ms ease;
+  }
+
   /* Pulled off the bar, the tab gives its slot back and the strip closes around it. */
   .titlebar-tab.titlebar-tab-lifted {
     width: 0;
@@ -656,21 +763,14 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .titlebar-tab.titlebar-tab-moving {
+    .titlebar-tab.titlebar-tab-moving,
+    .titlebar-tab.titlebar-tab-moving.titlebar-tab-settling {
       transition: none;
     }
   }
 
   .titlebar-tab-floating {
     max-width: 12.5rem;
-  }
-
-  .drop-before {
-    box-shadow: inset 2px 0 0 var(--ring);
-  }
-
-  .drop-after {
-    box-shadow: inset -2px 0 0 var(--ring);
   }
 
   :global(html[data-focus-intent="keyboard"]) .titlebar-tab-button:focus {

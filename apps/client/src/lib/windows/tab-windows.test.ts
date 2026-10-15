@@ -7,6 +7,8 @@ import {
   dragEndedOutsideWindow,
   isTabWindowLabel,
   parseTabWindowDrag,
+  parseTabWindowDragEnded,
+  parseTabWindowDragStarted,
   parseTabWindowRelease,
   parseTabWindowRequest,
   parseTabWindowSearch,
@@ -121,6 +123,34 @@ describe("tab window drags", () => {
     expect(parseTabWindowDrag(tabWindowDragData({ ...drag, sourceLabel: "settings" }), MAIN_WINDOW_LABEL)).toBeNull();
     expect(parseTabWindowDrag(tabWindowDragData({ ...drag, vaultId: "" }), MAIN_WINDOW_LABEL)).toBeNull();
     expect(parseTabWindowDrag(tabWindowDragData({ ...drag, tabId: "" }), MAIN_WINDOW_LABEL)).toBeNull();
+  });
+});
+
+describe("tab window drag announcements", () => {
+  const started = { sourceLabel: SECONDARY, vaultId: "vault-1", tab: tab("tab-1", "notes"), grabX: 40, grabY: 12, width: 200 };
+
+  it("reads a drag another window started, with the tab it draws", () => {
+    expect(parseTabWindowDragStarted(JSON.parse(JSON.stringify(started)) as unknown, KINDS, MAIN_WINDOW_LABEL)).toEqual(started);
+  });
+
+  it("ignores announcements from the same window", () => {
+    expect(parseTabWindowDragStarted(started, KINDS, SECONDARY)).toBeNull();
+    expect(parseTabWindowDragEnded({ sourceLabel: SECONDARY, vaultId: "vault-1", tabId: "tab-1" }, SECONDARY)).toBeNull();
+  });
+
+  it("rejects tabs of unavailable kinds and invalid grab points", () => {
+    expect(parseTabWindowDragStarted(started, ["calendar"], MAIN_WINDOW_LABEL)).toBeNull();
+    expect(parseTabWindowDragStarted({ ...started, grabX: -1 }, KINDS, MAIN_WINDOW_LABEL)).toBeNull();
+    expect(parseTabWindowDragStarted({ ...started, width: Number.NaN }, KINDS, MAIN_WINDOW_LABEL)).toBeNull();
+    expect(parseTabWindowDragStarted({ ...started, grabY: "12" }, KINDS, MAIN_WINDOW_LABEL)).toBeNull();
+    expect(parseTabWindowDragStarted({ ...started, vaultId: "" }, KINDS, MAIN_WINDOW_LABEL)).toBeNull();
+    expect(parseTabWindowDragStarted(null, KINDS, MAIN_WINDOW_LABEL)).toBeNull();
+  });
+
+  it("reads the end of a drag another window started", () => {
+    const ended = { sourceLabel: SECONDARY, vaultId: "vault-1", tabId: "tab-1" };
+    expect(parseTabWindowDragEnded(ended, MAIN_WINDOW_LABEL)).toEqual(ended);
+    expect(parseTabWindowDragEnded({ ...ended, tabId: 4 }, MAIN_WINDOW_LABEL)).toBeNull();
   });
 });
 

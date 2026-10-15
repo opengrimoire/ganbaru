@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   tabDragLeftBar,
   tabStripDropIndex,
+  tabStripInsertIndex,
+  tabStripInsertPosition,
+  tabStripInsertTarget,
   tabStripMoveTarget,
   tabStripRight,
   tabStripVisualLeft,
@@ -96,5 +99,36 @@ describe("dragged tab position", () => {
   it("measures the strip by its rightmost tab", () => {
     expect(tabStripRight(slots("a", "b", "c"))).toBe(10 + 2 * (WIDTH + GAP) + WIDTH);
     expect(tabStripRight([])).toBe(0);
+  });
+});
+
+describe("tab entering the strip from another window", () => {
+  const strip = slots("a", "b", "c");
+
+  it("takes the gap the pointer is in", () => {
+    expect(tabStripInsertIndex(strip, 0)).toBe(0);
+    expect(tabStripInsertIndex(strip, 10 + WIDTH / 2 + 1)).toBe(1);
+    expect(tabStripInsertIndex(strip, 10 + WIDTH + GAP + 10)).toBe(1);
+    expect(tabStripInsertIndex(strip, 1000)).toBe(3);
+    expect(tabStripInsertIndex([], 50)).toBe(0);
+  });
+
+  it("lands before the tab at its index, or after the last one past the end", () => {
+    const ids = ["a", "b", "c"];
+    expect(tabStripInsertTarget(ids, 0)).toEqual({ id: "a", placement: "before" });
+    expect(tabStripInsertTarget(ids, 2)).toEqual({ id: "c", placement: "before" });
+    expect(tabStripInsertTarget(ids, 3)).toEqual({ id: "c", placement: "after" });
+    expect(tabStripInsertTarget(ids, 9)).toEqual({ id: "c", placement: "after" });
+    expect(tabStripInsertTarget(ids, -1)).toEqual({ id: "a", placement: "before" });
+    expect(tabStripInsertTarget([], 0)).toBeNull();
+  });
+
+  it("maps a landing neighbor back to the index it names", () => {
+    const ids = ["a", "b", "c"];
+    for (let index = 0; index <= ids.length; index += 1) {
+      expect(tabStripInsertPosition(ids, tabStripInsertTarget(ids, index))).toBe(index);
+    }
+    expect(tabStripInsertPosition(ids, null)).toBe(3);
+    expect(tabStripInsertPosition(ids, { id: "gone", placement: "before" })).toBe(3);
   });
 });

@@ -335,6 +335,8 @@ function liveLocation(tab: WorkspaceTab): WorkspaceTabLocation {
 function adoptTransfer(transfer: TabWindowTransfer): void {
   const windows = connection?.windows;
   if (!windows || transfer.vaultId !== storageVaultId) return;
+  // Stop drawing the tab before it is added, so it never appears twice; the real tab takes the same slot.
+  clearIncomingDrag(transfer.tab.id);
   const existing = tabsState.tabs.find((tab) => tab.id === transfer.tab.id);
   if (existing) {
     commitState(activateWorkspaceTab(tabsState, existing.id));
@@ -344,11 +346,8 @@ function adoptTransfer(transfer: TabWindowTransfer): void {
     const inserted = insertWorkspaceTab(tabsState, transfer.tab, "end");
     commitState(target ? moveWorkspaceTab(inserted, transfer.tab.id, target.id, target.placement) : inserted);
   } else {
-    clearIncomingDrag(transfer.tab.id);
     return;
   }
-  // Cleared in the same update that adds the tab, so the tab drawn during the drag becomes the real one in place.
-  clearIncomingDrag(transfer.tab.id);
   void windows.release(transfer.sourceLabel, transfer.vaultId, transfer.tab.id).catch((error: unknown) => {
     console.error("Failed to confirm a moved tab:", error);
   });

@@ -122,7 +122,7 @@
   const incomingTab = $derived(incoming && incomingIndex !== null ? incoming.tab : null);
   /** The tabs the strip draws: this window's, with another window's dragged tab in the slot it would take. */
   const shownTabs = $derived.by((): readonly WorkspaceTab[] => {
-    if (!incomingTab || incomingIndex === null) return tabs.tabs;
+    if (!incomingTab || incomingIndex === null || tabs.tabs.some((tab) => tab.id === incomingTab.id)) return tabs.tabs;
     const shown = [...tabs.tabs];
     shown.splice(Math.min(incomingIndex, shown.length), 0, incomingTab);
     return shown;
@@ -538,8 +538,15 @@
   });
 
   $effect(() => {
-    // The other window's drag ended, or its tab arrived and now holds the slot it was drawn in.
-    if (!incoming) untrack(resetIncoming);
+    // The drag ended, or its tab arrived and now holds the slot it was drawn in.
+    if (!incoming) {
+      untrack(resetIncoming);
+      return;
+    }
+    // Another drag started over this window, which must not keep the previous one's slot.
+    untrack(() => {
+      if (!incomingDropped) incomingIndex = null;
+    });
   });
 </script>
 

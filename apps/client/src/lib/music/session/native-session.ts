@@ -183,7 +183,7 @@ function choice<const T extends readonly string[]>(value: unknown, values: T): T
 /** Validates the platform source contract without accepting arbitrary response casts. */
 export function parseNativeMusicSource(value: unknown): MusicSource {
   const raw = record(value);
-  const common = { identity: text(raw.identity), originalInput: text(raw.originalInput), title: text(raw.title), startMs: optional(raw.startMs, integer), endMs: optional(raw.endMs, integer) };
+  const common = { identity: text(raw.identity), originalInput: text(raw.originalInput), title: text(raw.title), artist: optional(raw.artist, text), album: optional(raw.album, text), startMs: optional(raw.startMs, integer), endMs: optional(raw.endMs, integer) };
   const kind = choice(raw.kind, ["local-file", "youtube-video", "youtube-playlist"] as const);
   if (kind === "local-file") return { ...common, kind, path: optional(raw.path, text) ?? "", artworkPath: optional(raw.artworkPath, text) };
   if (kind === "youtube-video") return { ...common, kind, videoId: text(raw.videoId), playlistId: optional(raw.playlistId, text) };

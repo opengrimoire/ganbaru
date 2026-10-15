@@ -12,6 +12,8 @@ fn entry(index: usize) -> SessionQueueEntry {
             identity: format!("local:{index}"),
             original_input: String::new(),
             title: format!("Track {index}"),
+            artist: None,
+            album: None,
             path: Some(format!("/music/{index}.flac")),
             artwork_path: None,
             video_id: None,

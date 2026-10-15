@@ -215,3 +215,40 @@ async fn native_music_canonical_queue_rejects_unknown_duplicates_and_excess_work
     transaction.rollback().await.unwrap();
     pool.close().await;
 }
+
+#[tokio::test]
+async fn native_music_queue_sources_prefer_edited_artist_and_album_over_tags() {
+    let pool = pool().await;
+    sqlx::query("UPDATE music_library_items SET original_artist = 'Tag artist', original_album = 'Tag album', artist_override = 'Edited artist', album_override = '' WHERE id = 'item'")
+        .execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO music_library_items (id, identity_key, source_kind, original_title, availability, review_state, discovered_at_ms, updated_at_ms) VALUES ('untagged', 'portable:untagged', 'local-file', 'Untagged', 'available', 'unreviewed', 1, 1)")
+        .execute(&pool).await.unwrap();
+    let mut state = SessionPolicy::new("session".into(), 1);
+    let definition = SessionQueueIntent::LibraryItems {
+        item_ids: vec!["item".into(), "untagged".into()],
+        selected_item_id: None,
+        name: "Queue".into(),
+    };
+    let mut transaction = pool.begin().await.unwrap();
+    queue::load_queue(
+        &mut transaction,
+        &BTreeMap::new(),
+        &definition,
+        &mut state,
+        10,
+    )
+    .await
+    .unwrap();
+    transaction.rollback().await.unwrap();
+    let tagged = &state.queue[0].source;
+    assert_eq!(tagged.artist.as_deref(), Some("Edited artist"));
+    // An empty override falls back to the tag rather than blanking it.
+    assert_eq!(tagged.album.as_deref(), Some("Tag album"));
+    // Empty tags stay absent so the decoder's own file metadata can show.
+    let untagged = &state.queue[1].source;
+    assert_eq!(
+        (untagged.artist.as_deref(), untagged.album.as_deref()),
+        (None, None)
+    );
+    pool.close().await;
+}

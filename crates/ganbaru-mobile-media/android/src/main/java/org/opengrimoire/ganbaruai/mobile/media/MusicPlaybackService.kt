@@ -142,7 +142,7 @@ class MusicPlaybackService : MediaSessionService() {
                 applying = true
                 try {
                   val item = MediaItem.Builder().setUri(uri).setMediaId(source.getString("identity"))
-                    .setMediaMetadata(MediaMetadata.Builder().setTitle(source.getString("title")).build()).build()
+                    .setMediaMetadata(sourceMetadata(source)).build()
                   decoder.playWhenReady = desiredAutoplay
                   decoder.setMediaItem(item, loadPositionMs)
                   decoder.prepare()
@@ -179,6 +179,19 @@ class MusicPlaybackService : MediaSessionService() {
       }
     } catch (error: Exception) { resolutionDeadlineMs = null; sourceError = error.message ?: "Android media effect failed"; loading = false; throw error }
     finally { applying = false; reportObservation() }
+  }
+
+  /**
+   * Library metadata for the media notification and lock screen. Fields left unset fall back to the
+   * file's own tags, including embedded artwork, because ExoPlayer merges them beneath these values.
+   */
+  private fun sourceMetadata(source: JSONObject): MediaMetadata {
+    fun text(key: String): String? = if (source.isNull(key)) null else source.getString(key).takeIf { it.isNotBlank() }
+    return MediaMetadata.Builder()
+      .setTitle(source.getString("title"))
+      .apply { text("artist")?.let { setArtist(it) } }
+      .apply { text("album")?.let { setAlbumTitle(it) } }
+      .build()
   }
 
   /** Elapsed realtime includes sleep; a late callback cannot outrun the observer. */

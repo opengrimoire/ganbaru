@@ -1288,6 +1288,8 @@ mod tests {
                 identity: "local:song".into(),
                 original_input: "song".into(),
                 title: "Song".into(),
+                artist: None,
+                album: None,
                 path: Some(path.to_string_lossy().into_owned()),
                 artwork_path: None,
                 video_id: None,

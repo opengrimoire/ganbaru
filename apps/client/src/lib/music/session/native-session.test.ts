@@ -38,6 +38,13 @@ describe("native Music response validation", () => {
     expect(() => parseNativeMusicSource({ ...source, kind: "youtube-video", videoId: null })).toThrow("text");
   });
 
+  it("keeps library artist and album and treats their absence as unknown", () => {
+    expect(parseNativeMusicSource({ ...source, artist: "Artista", album: "Álbum" })).toMatchObject({ artist: "Artista", album: "Álbum" });
+    expect(parseNativeMusicSource({ ...source, artist: null })).toMatchObject({ artist: null, album: null });
+    expect(() => parseNativeMusicSource({ ...source, artist: 7 })).toThrow("text");
+    expect(() => parseNativeMusicSource({ ...source, album: "x".repeat(16_385) })).toThrow("text");
+  });
+
   it("preserves source generations and explicit browser load intent", () => {
     expect(parseNativeMusicEffect({ kind: "load", sessionId: "session", generation: 4, source: { ...source, kind: "youtube-video", videoId: "video", playlistId: null },
       backend: "browser", positionMs: 20, autoplay: false, volume: 0.5, muted: true, rate: 1 })).toMatchObject({ generation: 4, autoplay: false, muted: true });

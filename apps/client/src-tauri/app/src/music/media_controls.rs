@@ -122,11 +122,13 @@ pub(crate) fn publish_session(
             .as_ref()
             .map(|source| source.title.clone()),
         source_kind_label: session.current_source.as_ref().map(|source| {
-            match source.kind {
-                SourceKind::LocalFile => "Local file",
-                SourceKind::YoutubeVideo | SourceKind::YoutubePlaylist => "YouTube",
-            }
-            .into()
+            source.artist.clone().unwrap_or_else(|| {
+                match source.kind {
+                    SourceKind::LocalFile => "Local file",
+                    SourceKind::YoutubeVideo | SourceKind::YoutubePlaylist => "YouTube",
+                }
+                .into()
+            })
         }),
         artwork_url: None,
         can_play_pause: session.current_source.is_some(),

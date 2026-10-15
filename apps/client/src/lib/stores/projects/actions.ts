@@ -48,6 +48,7 @@ import {
   updateProjectSection,
   updateProjectStatus,
   updateProjectTag,
+  isProjectTaskConflict,
   updateProjectTask,
   upsertProjectViewPreference,
 } from "$lib/api/projects";
@@ -132,6 +133,18 @@ export interface ProjectStoreActionContext {
   reload: (projectId?: string | null) => Promise<void>;
   ensureProjectData: (projectId: string | null | undefined) => Promise<void>;
   ensureTaskDetailData: (projectId: string, taskId: string) => Promise<void>;
+  /** Read one task's detail from the database, bypassing caches, and return the canonical task. */
+  refreshTaskDetail: (projectId: string, taskId: string) => Promise<ProjectTask>;
+  /** Called after each command commits, including receipts a newer local command superseded. */
+  onCommitted?: (mutation: ProjectMutation) => void;
+}
+
+/** Local command activity, so a refresh can wait for and detect commits made while it reads. */
+export interface ProjectMutationActivity {
+  /** Commands sent and not yet settled. */
+  pending: number;
+  /** Commands committed since the store was created. */
+  committed: number;
 }
 
 /** Spacing between custom sidebar ranks, matching the backend reorder commands. */
@@ -163,14 +176,18 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     ensureProjectData,
     ensureTaskDetailData,
     applyCalendarEventProjectAssignments,
+    onCommitted,
     readLoadGeneration,
     readSelectedProjectId,
     readSnapshot,
+    refreshTaskDetail,
     selectors,
     setSelectedProjectId,
     updateSnapshot,
   } = context;
   const mutationGenerations = new Map<string, number>();
+  const activity: ProjectMutationActivity = { pending: 0, committed: 0 };
+  const idleWaiters: Array<() => void> = [];
   interface PendingProjectOperation {
     operationId: string;
     projectId: string;
@@ -197,7 +214,16 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
   ): Promise<ProjectMutation> {
     const generation = (mutationGenerations.get(key) ?? 0) + 1;
     mutationGenerations.set(key, generation);
-    const mutation = await request();
+    activity.pending += 1;
+    let mutation: ProjectMutation;
+    try {
+      mutation = await request();
+      activity.committed += 1;
+    } finally {
+      activity.pending -= 1;
+      if (activity.pending === 0) for (const resolve of idleWaiters.splice(0)) resolve();
+    }
+    onCommitted?.(mutation);
     invalidateProjectTaskReminderSchedule();
     if (
       mutationGenerations.get(key) === generation
@@ -871,11 +897,26 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
   async function updateTask(task: ProjectTask, patch: ProjectTaskUpdatePatch): Promise<void> {
     const loadGeneration = readLoadGeneration();
     const hydrated = await taskForMutation(task);
-    await commitMutation(
-      `task:${task.id}`,
-      () => updateProjectTask(taskUpdatePayload(hydrated, patch)),
-      loadGeneration,
-    );
+    const key = `task:${task.id}`;
+    try {
+      await commitMutation(key, () => updateProjectTask(taskUpdatePayload(hydrated, patch)), loadGeneration);
+    } catch (error) {
+      if (!isProjectTaskConflict(error)) throw error;
+      // The task changed since it was read, in another window or by an earlier command; reapply only this edit.
+      const fresh = await refreshTaskDetail(task.projectId, task.id);
+      await commitMutation(key, () => updateProjectTask(taskUpdatePayload(fresh, patch)), loadGeneration);
+    }
+  }
+
+  /** Current local command activity. */
+  function readMutationActivity(): ProjectMutationActivity {
+    return { ...activity };
+  }
+
+  /** Resolve once no local command is in flight. */
+  function whenMutationsIdle(): Promise<void> {
+    if (activity.pending === 0) return Promise.resolve();
+    return new Promise((resolve) => idleWaiters.push(resolve));
   }
 
   /** Apply exactly the reviewed native graph and retain its identity after uncertain responses. */
@@ -1221,5 +1262,7 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     saveTaskListColumnWidths,
     saveTaskListPresentation,
     saveViewQuery,
+    readMutationActivity,
+    whenMutationsIdle,
   };
 }

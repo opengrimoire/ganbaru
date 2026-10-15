@@ -91,6 +91,7 @@ pub(super) fn task_update_from_row(task: &ProjectTaskRow) -> ProjectTaskUpdate {
         blocker_reason: task.blocker_reason.clone(),
         milestone: task.milestone != 0,
         change_reason: None,
+        expected_revision: None,
     }
 }
 

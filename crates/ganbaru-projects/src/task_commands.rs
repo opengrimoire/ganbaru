@@ -86,6 +86,12 @@ pub async fn update_task(
             .await
             .map_err(|e| format!("load project task: {e}"))?
             .ok_or_else(|| "project task not found".to_string())?;
+    if task
+        .expected_revision
+        .is_some_and(|expected| expected != previous_task.revision)
+    {
+        return Err(task_conflict(&task.id));
+    }
     let project_id = previous_task.project_id.clone();
     ensure_section_and_status_match_project(
         &mut tx,
@@ -108,7 +114,7 @@ pub async fn update_task(
     } else {
         None
     };
-    sqlx::query(
+    let updated = sqlx::query(
         "UPDATE project_tasks
          SET section_id = ?,
              status_id = ?,
@@ -132,7 +138,7 @@ pub async fn update_task(
              blocker_reason = ?,
              milestone = ?,
              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-         WHERE id = ?",
+         WHERE id = ? AND revision = ?",
     )
     .bind(&task.section_id)
     .bind(&task.status_id)
@@ -156,9 +162,13 @@ pub async fn update_task(
     .bind(&task.blocker_reason)
     .bind(if task.milestone { 1_i64 } else { 0_i64 })
     .bind(&task.id)
+    .bind(previous_task.revision)
     .execute(&mut *tx)
     .await
     .map_err(|e| format!("update project task: {e}"))?;
+    if updated.rows_affected() != 1 {
+        return Err(task_conflict(&task.id));
+    }
     insert_task_update_change_events(&mut tx, &previous_task, &task).await?;
     tx.commit().await.map_err(|e| format!("commit: {e}"))?;
     task_mutation(pool, &task.id).await
@@ -251,4 +261,11 @@ pub async fn delete_checklist_item(
             id: item_id.trim().to_string(),
         });
     Ok(mutation)
+}
+
+/// Message prefix the frontend recognizes to reload the task and reapply only its own edit.
+pub const TASK_CONFLICT_PREFIX: &str = "Project task conflict:";
+
+fn task_conflict(task_id: &str) -> String {
+    format!("{TASK_CONFLICT_PREFIX} task {task_id} changed; reload before retrying")
 }

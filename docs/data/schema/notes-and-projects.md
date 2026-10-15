@@ -91,6 +91,8 @@ A dependency cascade previews deterministic finish-to-start shifts over one cons
 
 Task, custom-field, and option rows carry a revision that increases on every update. The frontend ignores older revisions and keeps deletion evidence for pending requests, so a recovered receipt cannot overwrite newer state or resurrect removed schema. Absence from a paginated view is not deletion evidence.
 
+A task edit sends every field, so it also sends the revision it was based on, and Rust refuses the write when the row has moved on. The client then reloads that task and reapplies only the fields the user changed, so an edit made in another window or by an earlier command is not overwritten. Each committed command tells the other windows of the vault which projects changed; they reload the selected project quietly once their own commands settle and mark other changed projects for reload on selection.
+
 ## Working folders
 
 Every project has a durable managed working-folder row and a managed directory below the vault named by project identity. Creation uses staged compensation so a project never claims a folder that does not exist.

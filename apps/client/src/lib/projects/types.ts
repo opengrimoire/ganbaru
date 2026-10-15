@@ -909,4 +909,6 @@ export interface ProjectTaskUpdate {
   blockerReason: string | null;
   milestone: boolean;
   changeReason: string | null;
+  /** Revision the edit was based on; Rust refuses the update when the task changed since. */
+  expectedRevision: number | null;
 }

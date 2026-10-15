@@ -77,6 +77,12 @@ describe("createProjectStoreActions", () => {
       snapshot = reloaded;
     });
     const applyCalendarEventProjectAssignments = vi.fn(async () => undefined);
+    const refreshTaskDetail = vi.fn(async (_projectId: string, taskId: string) => {
+      const fresh = { ...task, id: taskId, title: "Renamed elsewhere", priority: "high", revision: 4, updatedAt: "elsewhere" };
+      snapshot = { ...snapshot, tasks: snapshot.tasks.map((entry) => entry.id === taskId ? fresh : entry) };
+      return fresh;
+    });
+    const onCommitted = vi.fn();
     const actions = createProjectStoreActions({
       selectors: createProjectStoreSelectors(() => snapshot),
       readSnapshot: () => snapshot,
@@ -93,8 +99,10 @@ describe("createProjectStoreActions", () => {
           tasks: snapshot.tasks.map((task) => task.id === taskId ? { ...task, detailLoaded: true } : task),
         };
       }),
+      refreshTaskDetail,
+      onCommitted,
     });
-    return { actions, readSnapshot: () => snapshot, reload, applyCalendarEventProjectAssignments };
+    return { actions, readSnapshot: () => snapshot, reload, applyCalendarEventProjectAssignments, refreshTaskDetail, onCommitted };
   }
 
   it("preserves settings draft identities and ranks when creating collection rows", async () => {
@@ -198,6 +206,55 @@ describe("createProjectStoreActions", () => {
     await expect(context.actions.duplicateCustomField(field, "   ")).resolves.toBeUndefined();
     expect(createProjectCustomField).not.toHaveBeenCalled();
     expect(context.readSnapshot().customFields).toEqual([]);
+  });
+
+  it("reapplies only its own edit on the canonical task after another window changed it", async () => {
+    vi.mocked(updateProjectTask)
+      .mockRejectedValueOnce(new Error("Project task conflict: task task-1 changed; reload before retrying"))
+      .mockImplementation(async (update: ProjectTaskUpdate) =>
+        taskMutation({ ...task, title: update.title, priority: update.priority, revision: 5, updatedAt: "server" }));
+    const context = setup();
+
+    await context.actions.updateTask({ ...task, revision: 3 }, { priority: "low" });
+
+    expect(vi.mocked(updateProjectTask).mock.calls.map(([update]) => update.expectedRevision)).toEqual([3, 4]);
+    expect(vi.mocked(updateProjectTask).mock.calls[1][0]).toMatchObject({ title: "Renamed elsewhere", priority: "low" });
+    expect(context.readSnapshot().tasks[0]).toMatchObject({ title: "Renamed elsewhere", priority: "low", revision: 5 });
+    expect(context.onCommitted).toHaveBeenCalledOnce();
+    expect(context.actions.readMutationActivity()).toEqual({ pending: 0, committed: 1 });
+  });
+
+  it("does not retry a failure that is not a revision conflict", async () => {
+    vi.mocked(updateProjectTask).mockRejectedValue(new Error("project task not found"));
+    const context = setup();
+
+    await expect(context.actions.updateTask(task, { title: "After" })).rejects.toThrow("project task not found");
+
+    expect(updateProjectTask).toHaveBeenCalledOnce();
+    expect(context.refreshTaskDetail).not.toHaveBeenCalled();
+    expect(context.onCommitted).not.toHaveBeenCalled();
+  });
+
+  it("resolves the idle wait only after every in-flight command settles", async () => {
+    const first = deferred<ProjectMutation>();
+    const second = deferred<ProjectMutation>();
+    vi.mocked(updateProjectTask).mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const context = setup();
+    const requests = [
+      context.actions.updateTask(task, { title: "One" }),
+      context.actions.updateTask({ ...task, id: "task-2" }, { title: "Two" }),
+    ];
+    await vi.waitFor(() => expect(updateProjectTask).toHaveBeenCalledTimes(2));
+    const idle = vi.fn();
+    void context.actions.whenMutationsIdle().then(idle);
+
+    first.resolve(taskMutation({ ...task, title: "One" }));
+    await requests[0];
+    expect(idle).not.toHaveBeenCalled();
+    second.resolve(taskMutation({ ...task, id: "task-2", title: "Two" }));
+    await requests[1];
+    await vi.waitFor(() => expect(idle).toHaveBeenCalledOnce());
+    expect(context.actions.readMutationActivity()).toEqual({ pending: 0, committed: 2 });
   });
 
   it("keeps the snapshot unchanged when the command transaction fails", async () => {
@@ -366,6 +423,7 @@ describe("project identity and lifecycle actions", () => {
       reload: vi.fn(async () => undefined),
       ensureProjectData: vi.fn(async () => undefined),
       ensureTaskDetailData: vi.fn(async () => undefined),
+      refreshTaskDetail: vi.fn(async () => task),
     });
     return { actions, readSnapshot: () => snapshot };
   }

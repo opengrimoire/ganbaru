@@ -1156,6 +1156,15 @@ export async function updateProjectCustomFieldValue(value: ProjectCustomFieldVal
   return invokeProjectMutation("projects_update_custom_field_value", { dbUrl, value });
 }
 
+/** Message prefix Rust uses when a task update was based on an older revision. */
+const PROJECT_TASK_CONFLICT_PREFIX = "Project task conflict:";
+
+/** Whether a task update was refused because another window changed the task first. */
+export function isProjectTaskConflict(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  return message.startsWith(PROJECT_TASK_CONFLICT_PREFIX);
+}
+
 export async function updateProjectTask(task: ProjectTaskUpdate): Promise<ProjectMutation> {
   const dbUrl = await ensureDbUrl();
   return invokeProjectMutation("projects_update_task", { dbUrl, task });

@@ -14,6 +14,7 @@ import {
   projectViewOptionalDataKinds,
 } from "$lib/projects/snapshot/optional-data";
 import { mergeProjectSnapshot } from "$lib/projects/snapshot/queries";
+import { listenForProjectChanges, publishProjectChanges } from "$lib/projects/window-sync";
 import {
   loadSavedActiveProjectId,
   loadSavedCollapsedSidebarProjectIds,
@@ -117,6 +118,14 @@ let taskMutationRevision = $state(0);
 const taskViewRequestGate = new ProjectTaskViewRequestGate();
 const taskDetailCache = new ProjectTaskDetailCache(4 * 1024 * 1024);
 const taskDetailRequests = new Map<string, Promise<ProjectTaskDetailData>>();
+/** Task details requested most recently, newest last; refreshed in place when another window changes their project. */
+const recentDetailTaskIds: string[] = [];
+const RECENT_DETAIL_TASK_LIMIT = 4;
+/** Quiet reloads tried while this window keeps committing before waiting for the next change. */
+const OTHER_WINDOW_REFRESH_ATTEMPTS = 3;
+let listeningForOtherWindows = false;
+let otherWindowRefresh: Promise<void> | null = null;
+let otherWindowRefreshQueued = false;
 const selectors = createProjectStoreSelectors(() => snapshot);
 
 function ensureSelectedProject(): void {
@@ -234,20 +243,31 @@ function applyLoadedSnapshot(incoming: ProjectsSnapshot, projectId: string | nul
   }
 }
 
-async function reload(projectId: string | null = selectedProjectId): Promise<void> {
-  taskViewRequestGate.cancel();
-  taskViewLoading = false;
+/**
+ * Load the workspace and one project's data. A quiet reload refreshes data another window changed: it keeps the
+ * current task view request and loading state, and re-reads recently opened task details alongside the workspace so
+ * an open detail panel never falls back to a summary.
+ */
+async function reload(projectId: string | null = selectedProjectId, quiet = false): Promise<void> {
+  listenForOtherWindows();
+  if (!quiet) {
+    taskViewRequestGate.cancel();
+    taskViewLoading = false;
+  }
   const requestId = ++loadRequestId;
   const isInitialLoad = !loaded;
   const customEmojiKey = projectOptionalDataKey("custom_emojis", null);
   const refreshCustomEmojis = optionalDataLoadedKeys.has(customEmojiKey)
     || optionalDataRequests.has(customEmojiKey);
-  loading = true;
-  loadError = null;
+  if (!quiet) {
+    loading = true;
+    loadError = null;
+  }
   try {
-    const response = isInitialLoad
-      ? await loadProjectsWorkspace(projectId)
-      : await refreshProjectsWorkspace(projectId);
+    const [response, details] = await Promise.all([
+      isInitialLoad ? loadProjectsWorkspace(projectId) : refreshProjectsWorkspace(projectId),
+      quiet ? loadRecentTaskDetails(projectId) : Promise.resolve([]),
+    ]);
     if (requestId !== loadRequestId) return;
     const resolvedProjectId = response.resolvedProjectId;
     const optionalKindsToRefresh = resolvedProjectId
@@ -256,7 +276,16 @@ async function reload(projectId: string | null = selectedProjectId): Promise<voi
           return optionalDataLoadedKeys.has(key) || optionalDataRequests.has(key);
         })
       : [];
+    if (quiet && resolvedProjectId) {
+      for (const task of snapshot.tasks) {
+        if (task.projectId === resolvedProjectId) taskDetailCache.deleteTask(task.id);
+      }
+    }
     applyLoadedSnapshot(response.snapshot, resolvedProjectId);
+    if (quiet) {
+      restoreTaskDetails(details, resolvedProjectId);
+      taskMutationRevision += 1;
+    }
     setSelectedProjectId(resolvedProjectId);
     loaded = true;
     if (resolvedProjectId && optionalKindsToRefresh.length > 0) {
@@ -290,7 +319,7 @@ async function reload(projectId: string | null = selectedProjectId): Promise<voi
     }
   } catch (error) {
     if (requestId !== loadRequestId) return;
-    loadError = error instanceof Error ? error.message : String(error);
+    if (!quiet) loadError = error instanceof Error ? error.message : String(error);
     throw error;
   } finally {
     if (requestId === loadRequestId) loading = false;
@@ -519,6 +548,7 @@ async function ensureTaskDetailData(
 ): Promise<void> {
   if (!projectId) return;
   const summary = selectors.taskById(taskId);
+  rememberDetailTask(taskId);
   if (summary?.detailLoaded) return;
   const cached = summary ? taskDetailCache.get(taskId, summary.updatedAt) : undefined;
   if (cached) {
@@ -540,6 +570,84 @@ async function ensureTaskDetailData(
   }).finally(() => taskDetailRequests.delete(taskId));
   taskDetailRequests.set(taskId, request);
   await request;
+}
+
+function rememberDetailTask(taskId: string): void {
+  const index = recentDetailTaskIds.indexOf(taskId);
+  if (index >= 0) recentDetailTaskIds.splice(index, 1);
+  recentDetailTaskIds.push(taskId);
+  if (recentDetailTaskIds.length > RECENT_DETAIL_TASK_LIMIT) recentDetailTaskIds.shift();
+}
+
+/** Fresh details of the recently opened tasks of one project; a task removed elsewhere is skipped. */
+async function loadRecentTaskDetails(projectId: string | null): Promise<ProjectTaskDetailData[]> {
+  const taskIds = recentDetailTaskIds.filter((taskId) => {
+    const task = selectors.taskById(taskId);
+    return task?.detailLoaded && task.projectId === projectId;
+  });
+  const details = await Promise.all(taskIds.map((taskId) => loadProjectTaskDetail(taskId).catch(() => null)));
+  return details.filter((detail): detail is ProjectTaskDetailData => detail !== null);
+}
+
+function restoreTaskDetails(details: readonly ProjectTaskDetailData[], projectId: string | null): void {
+  for (const detail of details) {
+    if (detail.task.projectId !== projectId || !selectors.taskById(detail.task.id)) continue;
+    taskDetailCache.set(detail);
+    mergeTaskDetail(detail);
+  }
+}
+
+/** Read one task's detail from the database, replacing any cached copy, and return the canonical task. */
+async function refreshTaskDetail(projectId: string, taskId: string): Promise<ProjectTask> {
+  const detail = await loadProjectTaskDetail(taskId);
+  if (detail.task.projectId !== projectId) throw new Error("Task detail project mismatch");
+  taskDetailCache.set(detail);
+  mergeTaskDetail(detail);
+  taskMutationRevision += 1;
+  return detail.task;
+}
+
+function listenForOtherWindows(): void {
+  if (listeningForOtherWindows) return;
+  listeningForOtherWindows = true;
+  void listenForProjectChanges((projectIds) => {
+    void refreshFromOtherWindow(projectIds);
+  }).catch((error: unknown) => {
+    listeningForOtherWindows = false;
+    console.warn("Listening for Projects changes from other windows failed", error);
+  });
+}
+
+/**
+ * Show what another window committed. Changed projects other than the selected one reload when next selected; the
+ * selected one reloads quietly once local commands settle, and again if this window commits while it reads.
+ */
+function refreshFromOtherWindow(projectIds: ReadonlySet<string>): Promise<void> {
+  loadedProjectIds = loadedProjectIds.filter((projectId) =>
+    projectId === selectedProjectId || !projectIds.has(projectId));
+  if (otherWindowRefresh) {
+    otherWindowRefreshQueued = true;
+    return otherWindowRefresh;
+  }
+  otherWindowRefresh = (async () => {
+    do {
+      otherWindowRefreshQueued = false;
+      await reloadQuietlyBetweenCommands();
+    } while (otherWindowRefreshQueued);
+  })()
+    .catch((error: unknown) => console.warn("Refreshing Projects after another window's change failed", error))
+    .finally(() => { otherWindowRefresh = null; });
+  return otherWindowRefresh;
+}
+
+async function reloadQuietlyBetweenCommands(): Promise<void> {
+  for (let attempt = 0; attempt < OTHER_WINDOW_REFRESH_ATTEMPTS; attempt += 1) {
+    if (!loaded) return;
+    await actions.whenMutationsIdle();
+    const committed = actions.readMutationActivity().committed;
+    await reload(selectedProjectId, true);
+    if (actions.readMutationActivity().committed === committed) return;
+  }
 }
 
 async function ensureCustomEmojis(): Promise<void> {
@@ -578,6 +686,8 @@ const actions = createProjectStoreActions({
   reload,
   ensureProjectData,
   ensureTaskDetailData,
+  refreshTaskDetail,
+  onCommitted: (mutation) => publishProjectChanges(mutation, selectedProjectId),
 });
 
 export function getProjects() {

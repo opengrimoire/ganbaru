@@ -978,6 +978,10 @@ pub struct ProjectTaskUpdate {
     pub(crate) blocker_reason: Option<String>,
     pub(crate) milestone: bool,
     pub(crate) change_reason: Option<String>,
+    /// Revision the edit was based on. When present, the update is refused if the task changed since, so a stale
+    /// window never overwrites fields it did not edit.
+    #[serde(default)]
+    pub(crate) expected_revision: Option<i64>,
 }
 
 #[derive(Deserialize)]

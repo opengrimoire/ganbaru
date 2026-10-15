@@ -183,3 +183,45 @@ fn task_mutation_returns_the_authoritative_row_and_committed_history() {
         }));
     });
 }
+
+#[test]
+fn task_update_refuses_a_stale_expected_revision_without_writing() {
+    block_on(async {
+        let pool = migrated_memory_pool().await;
+        insert_project_graph_fixture(&pool).await;
+        let load = || async {
+            sqlx::query_as::<_, ProjectTaskRow>("SELECT * FROM project_tasks WHERE id = 'task-a'")
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        };
+        let base = load().await;
+        let mut first = task_update_from_row(&base);
+        first.title = "Edited in one window".to_string();
+        first.expected_revision = Some(base.revision);
+        task_commands::update_task(&pool, first).await.unwrap();
+
+        let mut stale = task_update_from_row(&base);
+        stale.description = "Edited in another window".to_string();
+        stale.expected_revision = Some(base.revision);
+        let error = task_commands::update_task(&pool, stale)
+            .await
+            .err()
+            .unwrap();
+        assert!(
+            error.starts_with(task_commands::TASK_CONFLICT_PREFIX),
+            "{error}"
+        );
+
+        let current = load().await;
+        assert_eq!(current.title, "Edited in one window");
+        assert_eq!(current.description, base.description);
+        assert!(current.revision > base.revision);
+
+        let mut fresh = task_update_from_row(&current);
+        fresh.description = "Reapplied".to_string();
+        fresh.expected_revision = Some(current.revision);
+        task_commands::update_task(&pool, fresh).await.unwrap();
+        assert_eq!(load().await.description, "Reapplied");
+    });
+}

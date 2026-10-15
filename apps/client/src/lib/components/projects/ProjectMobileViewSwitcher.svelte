@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import Check from "@lucide/svelte/icons/check";
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
+  import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import Plus from "@lucide/svelte/icons/plus";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { PROJECT_HOSTED_VIEW_TYPES, type ProjectView, type ProjectViewType } from "$lib/projects/types";
@@ -14,8 +16,9 @@
   import { PROJECT_VIEW_TYPE_ICONS, projectViewLabel, projectViewTypeLabel } from "./sidebar/project-view-presentation";
 
   /**
-   * Phone toolbar controls for the selected project's views: a switcher that names the open view and lists the others,
-   * and a plus button that adds a view of a chosen type and opens it.
+   * Phone toolbar switcher for the selected project's views: it names the open view, and its menu lists the views and
+   * ends with an Add view row that expands the view types in place, so a new view is created and opened from the same
+   * menu.
    */
   let {
     projectId,
@@ -30,11 +33,10 @@
   const mobileBackStack = getMobileBackStack();
   const { t } = getLocalization();
 
-  type OpenMenu = "views" | "add" | null;
-
-  let openMenu = $state<OpenMenu>(null);
+  let menuOpen = $state(false);
+  let addOpen = $state(false);
   let switcherButton = $state<HTMLButtonElement | null>(null);
-  let addButton = $state<HTMLButtonElement | null>(null);
+  let addGroup = $state<HTMLDivElement | null>(null);
 
   const views = $derived(projects.viewsForProject(projectId));
   const activeView = $derived(views.find((view) => view.id === projects.activeViewId) ?? null);
@@ -51,16 +53,25 @@
   );
 
   $effect(() => {
-    if (!openMenu) return;
+    if (!menuOpen) return;
     return mobileBackStack.activate({ handle: closeMenu });
   });
 
   function closeMenu(): void {
-    openMenu = null;
+    menuOpen = false;
+    addOpen = false;
   }
 
-  function toggleMenu(menu: Exclude<OpenMenu, null>): void {
-    openMenu = openMenu === menu ? null : menu;
+  function toggleMenu(): void {
+    if (menuOpen) closeMenu();
+    else menuOpen = true;
+  }
+
+  /** Expands or collapses the view types, keeping them in sight when the menu scrolls. */
+  function toggleAdd(): void {
+    addOpen = !addOpen;
+    if (!addOpen) return;
+    void tick().then(() => addGroup?.scrollIntoView?.({ block: "nearest" }));
   }
 
   function selectView(view: ProjectView): void {
@@ -83,9 +94,8 @@
   function handleMenuKeydown(event: KeyboardEvent): void {
     if (event.key !== "Escape") return;
     event.stopPropagation();
-    const trigger = openMenu === "add" ? addButton : switcherButton;
     closeMenu();
-    trigger?.focus();
+    switcherButton?.focus();
   }
 </script>
 
@@ -94,37 +104,21 @@
   type="button"
   class={cn(
     "mobile-chrome-button flex min-w-0 items-center justify-start gap-1.5 px-1.5 text-foreground transition-colors hover:bg-accent",
-    openMenu === "views" && "bg-accent",
+    menuOpen && "bg-accent",
   )}
   aria-label={activeLabel}
   title={activeLabel}
   aria-haspopup="menu"
-  aria-expanded={openMenu === "views"}
+  aria-expanded={menuOpen}
   data-project-mobile-view-switcher
-  onclick={() => toggleMenu("views")}
+  onclick={toggleMenu}
 >
   {#if ActiveIcon}<ActiveIcon class="shrink-0" size={16} strokeWidth={1.75} aria-hidden="true" />{/if}
   <span class="min-w-0 truncate text-xs font-medium">{activeLabel}</span>
   <ChevronDown class="shrink-0" size={11} aria-hidden="true" />
 </button>
-<button
-  bind:this={addButton}
-  type="button"
-  class={cn(
-    "mobile-chrome-button flex w-(--mobile-chrome-column) shrink-0 items-center justify-center text-foreground transition-colors hover:bg-accent",
-    openMenu === "add" && "bg-accent",
-  )}
-  aria-label={t("projects.sidebar.addView")}
-  title={t("projects.sidebar.addView")}
-  aria-haspopup="menu"
-  aria-expanded={openMenu === "add"}
-  data-project-mobile-add-view
-  onclick={() => toggleMenu("add")}
->
-  <Plus size={16} strokeWidth={1.75} />
-</button>
 
-{#if openMenu === "views"}
+{#if menuOpen}
   <div
     use:portal
     use:anchoredPopover={{ anchor: switcherButton ?? undefined, onOutside: closeMenu }}
@@ -153,33 +147,43 @@
       {:else}
         <p class="px-2 py-1 text-panel-detail text-muted-foreground">{t("projects.sidebar.noViews")}</p>
       {/each}
-    </div>
-  </div>
-{:else if openMenu === "add"}
-  <div
-    use:portal
-    use:anchoredPopover={{ anchor: addButton ?? undefined, onOutside: closeMenu }}
-    class="surface-floating fixed z-90 flex w-floating-sm flex-col overflow-hidden"
-    role="menu"
-    tabindex="-1"
-    aria-label={t("projects.sidebar.addView")}
-    data-app-floating-surface
-    onkeydown={handleMenuKeydown}
-  >
-    <div class="surface-floating-body flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden" use:scrollEdgeFadeAction>
-      {#each addableViewTypes as viewType (viewType)}
-        {@const Icon = PROJECT_VIEW_TYPE_ICONS[viewType]}
+      {#if addableViewTypes.length > 0}
+        <div role="separator" class="menu-separator"></div>
         <button
           type="button"
           role="menuitem"
           class="menu-item"
-          data-project-add-view={viewType}
-          onclick={() => void addView(viewType)}
+          aria-expanded={addOpen}
+          data-project-mobile-add-view
+          onclick={toggleAdd}
         >
-          <Icon class="text-muted-foreground" />
-          <span class="min-w-0 flex-1 truncate">{projectViewTypeLabel(t, viewType)}</span>
+          <Plus class="text-muted-foreground" />
+          <span class="min-w-0 flex-1 truncate">{t("projects.sidebar.addView")}</span>
+          {#if addOpen}<ChevronDown aria-hidden="true" />{:else}<ChevronRight aria-hidden="true" />{/if}
         </button>
-      {/each}
+        {#if addOpen}
+          <div
+            bind:this={addGroup}
+            class="flex flex-col border-y border-border bg-muted/25 py-1"
+            role="group"
+            aria-label={t("projects.sidebar.addView")}
+          >
+            {#each addableViewTypes as viewType (viewType)}
+              {@const Icon = PROJECT_VIEW_TYPE_ICONS[viewType]}
+              <button
+                type="button"
+                role="menuitem"
+                class="menu-item"
+                data-project-add-view={viewType}
+                onclick={() => void addView(viewType)}
+              >
+                <Icon class="text-muted-foreground" />
+                <span class="min-w-0 flex-1 truncate">{projectViewTypeLabel(t, viewType)}</span>
+              </button>
+            {/each}
+          </div>
+        {/if}
+      {/if}
     </div>
   </div>
 {/if}

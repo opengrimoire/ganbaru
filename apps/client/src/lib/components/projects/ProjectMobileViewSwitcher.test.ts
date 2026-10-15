@@ -43,9 +43,9 @@ function switcher(): HTMLButtonElement {
   return match;
 }
 
-function addButton(): HTMLButtonElement {
-  const match = target.querySelector<HTMLButtonElement>("[data-project-mobile-add-view]");
-  if (!match) throw new Error("No add view button");
+function addViewRow(): HTMLButtonElement {
+  const match = document.body.querySelector<HTMLButtonElement>("[data-project-mobile-add-view]");
+  if (!match) throw new Error("No add view row");
   return match;
 }
 
@@ -110,10 +110,44 @@ describe("ProjectMobileViewSwitcher", () => {
     expect(switcher().getAttribute("aria-expanded")).toBe("false");
   });
 
+  it("expands the view types from the Add view row at the end of the same menu", () => {
+    render();
+    switcher().click();
+    flushSync();
+    const menu = openMenu();
+    expect(menu?.lastElementChild?.lastElementChild).toBe(addViewRow());
+    expect(menu?.querySelector("[data-project-add-view]")).toBeNull();
+
+    addViewRow().click();
+    flushSync();
+    expect(addViewRow().getAttribute("aria-expanded")).toBe("true");
+    expect(menu?.querySelector('[data-project-add-view="list"]')).not.toBeNull();
+
+    addViewRow().click();
+    flushSync();
+    expect(menu?.querySelector("[data-project-add-view]")).toBeNull();
+    expect(openMenu()).toBe(menu);
+  });
+
+  it("collapses the view types again when the menu reopens", () => {
+    render();
+    switcher().click();
+    flushSync();
+    addViewRow().click();
+    flushSync();
+    switcher().click();
+    flushSync();
+    switcher().click();
+    flushSync();
+    expect(addViewRow().getAttribute("aria-expanded")).toBe("false");
+  });
+
   it("leaves out hosted views the project already has and opens a newly added view", async () => {
     const onSelectView = vi.fn();
     render(onSelectView);
-    addButton().click();
+    switcher().click();
+    flushSync();
+    addViewRow().click();
     flushSync();
     const menu = openMenu();
     expect(menu?.querySelector('[data-project-add-view="notes"]')).toBeNull();

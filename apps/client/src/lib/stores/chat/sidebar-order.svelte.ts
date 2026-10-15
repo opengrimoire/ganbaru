@@ -12,7 +12,7 @@ import {
   withStarredId,
   type SidebarSortOrder,
 } from "$lib/utils/sidebar-order";
-import { getConfigKey, setConfigKey } from "$lib/vault/config";
+import { configKeyChanged, getConfigKey, onConfigChangedElsewhere, setConfigKey } from "$lib/vault/config";
 
 const STARRED_CHANNEL_IDS_CONFIG_KEY = "chatSidebar.starredChannelIds";
 const SIDEBAR_ORDER_BY_PROJECT_CONFIG_KEY = "chatSidebar.orderByProject";
@@ -46,6 +46,18 @@ function createChatSidebarOrder(): ChatSidebarOrderStore {
   let customOrders = $state<Record<string, string[]>>(
     parseCustomOrders(getConfigKey<unknown>(CUSTOM_ORDER_BY_PROJECT_CONFIG_KEY, undefined)),
   );
+
+  onConfigChangedElsewhere((keys) => {
+    if (configKeyChanged(keys, STARRED_CHANNEL_IDS_CONFIG_KEY)) {
+      starredChannelIds = parseStarredIds(getConfigKey<unknown>(STARRED_CHANNEL_IDS_CONFIG_KEY, undefined));
+    }
+    if (configKeyChanged(keys, SIDEBAR_ORDER_BY_PROJECT_CONFIG_KEY)) {
+      orderOverrides = parseSidebarSortOrderOverrides(getConfigKey<unknown>(SIDEBAR_ORDER_BY_PROJECT_CONFIG_KEY, undefined));
+    }
+    if (configKeyChanged(keys, CUSTOM_ORDER_BY_PROJECT_CONFIG_KEY)) {
+      customOrders = parseCustomOrders(getConfigKey<unknown>(CUSTOM_ORDER_BY_PROJECT_CONFIG_KEY, undefined));
+    }
+  });
 
   function orderOverride(projectId: string | null): SidebarSortOrder | null {
     return projectId ? orderOverrides[projectId] ?? null : null;

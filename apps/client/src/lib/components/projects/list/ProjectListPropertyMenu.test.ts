@@ -24,7 +24,7 @@ vi.mock("$lib/stores/projects.svelte", () => ({getProjects: () => ({
   moveCustomFieldOption: store.moveCustomFieldOption,
   removeCustomFieldOption: store.removeCustomFieldOption,
 })}));
-vi.mock("$lib/vault/config", () => ({ensureConfigLoaded: async () => undefined, getConfigKey: <T>(_key: string, fallback: T) => fallback, setConfigKey: () => undefined}));
+vi.mock("$lib/vault/config", () => ({ensureConfigLoaded: async () => undefined, getConfigKey: <T>(_key: string, fallback: T) => fallback, setConfigKey: () => undefined, configKeyChanged: () => false, onConfigChangedElsewhere: () => () => undefined}));
 
 let component: ReturnType<typeof mount> | undefined;
 const initialField: ProjectCustomField = {id: "points", projectId: "project", name: "Points", fieldType: "number", sortOrder: 100, icon: null, createdAt: "", updatedAt: ""};

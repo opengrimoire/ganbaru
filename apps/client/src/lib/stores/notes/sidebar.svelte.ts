@@ -3,6 +3,11 @@ import {
   setNotesPageFavoriteId,
 } from "$lib/notes/pages/navigation";
 import {
+  notesCustomOrderByProjectKey,
+  notesFavoriteFolderIdsKey,
+  notesFavoritePageIdsKey,
+  notesRecentPageIdsKey,
+  notesSidebarOrderByProjectKey,
   initialNotesCustomOrders,
   initialNotesFavoriteFolderIds,
   initialNotesFavoritePageIds,
@@ -17,6 +22,7 @@ import {
   saveNotesSidebarOrderOverrides,
 } from "./page-state";
 import { withCustomSiblingOrder, withSidebarSortOrderOverride, type SidebarSortOrder } from "$lib/utils/sidebar-order";
+import { configKeyChanged, onConfigChangedElsewhere } from "$lib/vault/config";
 
 interface NotesSidebarShellMetadata {
   pageIdsWithChildren: readonly string[];
@@ -35,6 +41,14 @@ export function createNotesSidebarController() {
   let pageIdsWithChildren = $state<string[]>([]);
   let missingParentPageIds = $state<string[]>([]);
   let trashedParentPageIds = $state<string[]>([]);
+
+  onConfigChangedElsewhere((keys) => {
+    if (configKeyChanged(keys, notesFavoritePageIdsKey)) favoritePageIds = initialNotesFavoritePageIds();
+    if (configKeyChanged(keys, notesFavoriteFolderIdsKey)) favoriteFolderIds = initialNotesFavoriteFolderIds();
+    if (configKeyChanged(keys, notesRecentPageIdsKey)) recentPageIds = initialNotesRecentPageIds();
+    if (configKeyChanged(keys, notesSidebarOrderByProjectKey)) sidebarOrderOverrides = initialNotesSidebarOrderOverrides();
+    if (configKeyChanged(keys, notesCustomOrderByProjectKey)) customOrders = initialNotesCustomOrders();
+  });
 
   function recordRecentPage(pageId: string): void {
     recentPageIds = recordRecentNotesPageId(recentPageIds, pageId);

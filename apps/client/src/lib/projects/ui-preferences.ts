@@ -6,8 +6,8 @@ const ACTIVE_VIEW_IDS_CONFIG_KEY = "projects.activeViewIds";
 const SIDEBAR_COLLAPSED_CONFIG_KEY = "projects.sidebarCollapsed";
 const SIDEBAR_COLLAPSED_PROJECT_IDS_CONFIG_KEY = "projects.sidebarCollapsedProjectIds";
 const SHOW_INACTIVE_PROJECTS_CONFIG_KEY = "projects.showInactiveProjects";
-const STARRED_PROJECT_IDS_CONFIG_KEY = "projects.starredProjectIds";
-const STARRED_VIEW_IDS_CONFIG_KEY = "projects.starredViewIds";
+export const STARRED_PROJECT_IDS_CONFIG_KEY = "projects.starredProjectIds";
+export const STARRED_VIEW_IDS_CONFIG_KEY = "projects.starredViewIds";
 
 export function parseStoredProjectId(value: unknown): string | null {
   if (typeof value !== "string") return null;

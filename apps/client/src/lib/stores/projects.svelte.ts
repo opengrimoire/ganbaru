@@ -15,6 +15,7 @@ import {
 } from "$lib/projects/snapshot/optional-data";
 import { mergeProjectSnapshot } from "$lib/projects/snapshot/queries";
 import { listenForProjectChanges, publishProjectChanges } from "$lib/projects/window-sync";
+import { configKeyChanged, onConfigChangedElsewhere } from "$lib/vault/config";
 import {
   loadSavedActiveProjectId,
   loadSavedCollapsedSidebarProjectIds,
@@ -24,6 +25,8 @@ import {
   loadSavedStarredProjectIds,
   loadSavedStarredViewIds,
   pruneProjectActiveViewIds,
+  STARRED_PROJECT_IDS_CONFIG_KEY,
+  STARRED_VIEW_IDS_CONFIG_KEY,
   saveActiveProjectId,
   saveCollapsedSidebarProjectIds,
   saveProjectActiveViewIds,
@@ -104,6 +107,11 @@ let collapsedSidebarProjectIds = $state<string[]>(loadSavedCollapsedSidebarProje
 let starredProjectIds = $state<string[]>(loadSavedStarredProjectIds());
 let starredViewIds = $state<string[]>(loadSavedStarredViewIds());
 let showInactiveProjects = $state(loadSavedShowInactiveProjects());
+
+onConfigChangedElsewhere((keys) => {
+  if (configKeyChanged(keys, STARRED_PROJECT_IDS_CONFIG_KEY)) starredProjectIds = loadSavedStarredProjectIds();
+  if (configKeyChanged(keys, STARRED_VIEW_IDS_CONFIG_KEY)) starredViewIds = loadSavedStarredViewIds();
+});
 let loadedProjectIds = $state<string[]>([]);
 let loadRequestId = 0;
 let selectProjectRequestId = 0;

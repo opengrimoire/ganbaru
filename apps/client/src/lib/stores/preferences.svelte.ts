@@ -57,7 +57,7 @@ import {
   normalizeProfileFullName,
   resolveFontFamilyStack,
 } from "./preference-options";
-import { getConfigKey, setConfigKey } from "../vault/config";
+import { configKeyChanged, getConfigKey, onConfigChangedElsewhere, setConfigKey } from "../vault/config";
 import type { EventColor } from "$lib/calendar/types";
 import {
   isDefaultProfileImageCrop,
@@ -373,6 +373,70 @@ function applyPreferencesToDom(): void {
 if (typeof document !== "undefined") {
   applyPreferencesToDom();
 }
+
+/** Config branches this store reads, so a change another window saved under them reloads it. */
+const PREFERENCE_CONFIG_BRANCHES = ["preferences", "profile", "contacts.trustDefaults"] as const;
+
+/** Reread every preference from the cache after another window saved some of them. */
+function reloadSavedPreferences(): void {
+  fontFamilyId = loadSavedFontFamilyId();
+  fontScale = loadSavedFontScale();
+  eventTimezoneDisplay = loadSavedEventTimezoneDisplay();
+  profileDisplayName = loadSavedProfileDisplayName();
+  profileFullName = loadSavedProfileFullName();
+  profileImagePath = loadSavedProfileImagePath();
+  profileUseImage = loadSavedProfileUseImage();
+  profileColor = loadSavedProfileColor();
+  profileImageCrop = loadSavedProfileImageCrop();
+  calendarTimeFormat = loadSavedCalendarTimeFormat();
+  calendarViewMode = loadSavedCalendarViewMode();
+  calendarDimPastEvents = loadSavedCalendarDimPastEvents();
+  focusIdleThresholdMinutes = loadSavedFocusIdleThresholdMinutes();
+  focusIdlePauseOnEventCreate = loadSavedFocusIdlePauseOnEventCreate();
+  focusBreakFinishedRepeatSeconds = loadSavedFocusBreakFinishedRepeatSeconds();
+  focusBreakEndWarningSeconds = loadSavedFocusBreakEndWarningSeconds();
+  focusBreakEndEscPresses = loadSavedFocusBreakEndEscPresses();
+  focusBreakExtensionLimit = loadSavedFocusBreakExtensionLimit();
+  focusPauseNotificationIntervalMinutes = loadSavedFocusPauseNotificationIntervalMinutes();
+  musicPauseOnPomodoroPause = loadSavedMusicPauseOnPomodoroPause();
+  notesDefaultOpenMode = loadSavedNotesDefaultOpenMode();
+  notesSidebarOrder = loadSavedSidebarOrder(NOTES_SIDEBAR_ORDER_CONFIG_KEY);
+  projectsSidebarOrder = loadSavedSidebarOrder(PROJECTS_SIDEBAR_ORDER_CONFIG_KEY);
+  chatSidebarOrder = loadSavedSidebarOrder(CHAT_SIDEBAR_ORDER_CONFIG_KEY);
+  notesMentionNotificationsEnabled = loadSavedBooleanPreference(
+    NOTES_MENTION_NOTIFICATIONS_ENABLED_CONFIG_KEY,
+    DEFAULT_NOTES_MENTION_NOTIFICATIONS_ENABLED,
+  );
+  notesReminderNotificationsEnabled = loadSavedBooleanPreference(
+    NOTES_REMINDER_NOTIFICATIONS_ENABLED_CONFIG_KEY,
+    DEFAULT_NOTES_REMINDER_NOTIFICATIONS_ENABLED,
+  );
+  notesUserMentionNotificationsEnabled = loadSavedBooleanPreference(
+    NOTES_USER_MENTION_NOTIFICATIONS_ENABLED_CONFIG_KEY,
+    DEFAULT_NOTES_USER_MENTION_NOTIFICATIONS_ENABLED,
+  );
+  notesTaskMentionNotificationsEnabled = loadSavedBooleanPreference(
+    NOTES_TASK_MENTION_NOTIFICATIONS_ENABLED_CONFIG_KEY,
+    DEFAULT_NOTES_TASK_MENTION_NOTIFICATIONS_ENABLED,
+  );
+  notesNotificationIncludeContent = loadSavedBooleanPreference(
+    NOTES_NOTIFICATION_INCLUDE_CONTENT_CONFIG_KEY,
+    DEFAULT_NOTES_NOTIFICATION_INCLUDE_CONTENT,
+  );
+  notesShowPropertyIcons = loadSavedBooleanPreference(NOTES_SHOW_PROPERTY_ICONS_CONFIG_KEY, DEFAULT_NOTES_SHOW_PROPERTY_ICONS);
+  projectsShowPropertyIcons = loadSavedBooleanPreference(
+    PROJECTS_SHOW_PROPERTY_ICONS_CONFIG_KEY,
+    DEFAULT_PROJECTS_SHOW_PROPERTY_ICONS,
+  );
+  titleBarVisibility = loadSavedTitleBarVisibility();
+  contactsInviteTrustDefault = loadSavedContactTrustDuration(CONTACTS_INVITE_TRUST_DEFAULT_CONFIG_KEY);
+  contactsMessageTrustDefault = loadSavedContactTrustDuration(CONTACTS_MESSAGE_TRUST_DEFAULT_CONFIG_KEY);
+  applyPreferencesToDom();
+}
+
+onConfigChangedElsewhere((keys) => {
+  if (PREFERENCE_CONFIG_BRANCHES.some((branch) => configKeyChanged(keys, branch))) reloadSavedPreferences();
+});
 
 function setFontFamily(id: FontFamilyId): void {
   if (!getFontFamilyById(id)) return;

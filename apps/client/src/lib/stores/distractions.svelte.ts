@@ -26,7 +26,7 @@ import {
   type DistractionsUsageLimit,
 } from "$lib/distractions";
 import type { EventColor } from "$lib/calendar/types";
-import { getConfigKey, setConfigKey } from "$lib/vault/config";
+import { configKeyChanged, getConfigKey, onConfigChangedElsewhere, setConfigKey } from "$lib/vault/config";
 import { publishMobileDistractionsConfig } from "$lib/scheduling/mobile-distractions";
 
 const CONFIG_KEY = "distractions";
@@ -78,6 +78,10 @@ function loadSavedConfig(): DistractionsConfig {
 }
 
 let config = $state<DistractionsConfig>(loadSavedConfig());
+
+onConfigChangedElsewhere((keys) => {
+  if (configKeyChanged(keys, CONFIG_KEY)) config = loadSavedConfig();
+});
 
 function persist(next: DistractionsConfig): void {
   config = next;

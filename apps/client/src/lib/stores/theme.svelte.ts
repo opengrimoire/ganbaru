@@ -213,9 +213,6 @@ function applyThemeSyncPayload(payload: ThemeWindowSyncPayload): void {
   quickToggleLightId = validThemeId(payload.quickToggleLightId, lightTheme.id);
   quickToggleDarkId = validThemeId(payload.quickToggleDarkId, darkTheme.id);
   applyThemeToDom();
-  setConfigKey(ACTIVE_KEY, activeId);
-  setConfigKey(QUICK_TOGGLE_LIGHT_KEY, quickToggleLightId);
-  setConfigKey(QUICK_TOGGLE_DARK_KEY, quickToggleDarkId);
 }
 
 function publishThemeSync(): void {

@@ -203,3 +203,83 @@ describe("flushConfig", () => {
     expect(writes.length).toBe(1);
   });
 });
+
+describe("refreshConfigKeysFromDisk", () => {
+  it("copies only the received keys into the cache and tells subscribers", async () => {
+    setReadResponse(JSON.stringify({ notes: { favorites: ["a"] }, theme: { activeId: "light" } }));
+    const { ensureConfigLoaded, getConfigKey, onConfigChangedElsewhere, refreshConfigKeysFromDisk } = await loadModule();
+    await ensureConfigLoaded();
+    const listener = vi.fn();
+    onConfigChangedElsewhere(listener);
+    setReadResponse(JSON.stringify({ notes: { favorites: ["a", "b"] }, theme: { activeId: "dark" } }));
+
+    await refreshConfigKeysFromDisk(["notes.favorites"]);
+
+    expect(getConfigKey("notes.favorites", [])).toEqual(["a", "b"]);
+    expect(getConfigKey("theme.activeId", "")).toBe("light");
+    expect(listener).toHaveBeenCalledWith(new Set(["notes.favorites"]));
+  });
+
+  it("removes a received key that another window deleted", async () => {
+    setReadResponse(JSON.stringify({ projects: { starredProjectIds: ["p"] } }));
+    const { ensureConfigLoaded, getConfigKey, refreshConfigKeysFromDisk } = await loadModule();
+    await ensureConfigLoaded();
+    setReadResponse(JSON.stringify({ projects: {} }));
+
+    await refreshConfigKeysFromDisk(["projects.starredProjectIds"]);
+
+    expect(getConfigKey("projects.starredProjectIds", null)).toBeNull();
+  });
+
+  it("keeps this window's unsaved value for a key or branch it is still writing", async () => {
+    vi.useFakeTimers();
+    setReadResponse(JSON.stringify({ chatSidebar: { orderByProject: { p: "name" } } }));
+    const { ensureConfigLoaded, getConfigKey, onConfigChangedElsewhere, refreshConfigKeysFromDisk, setConfigKey } = await loadModule();
+    await ensureConfigLoaded();
+    const listener = vi.fn();
+    onConfigChangedElsewhere(listener);
+    setConfigKey("chatSidebar.orderByProject", { p: "created" });
+    setReadResponse(JSON.stringify({ chatSidebar: { orderByProject: { p: "modified" }, starredChannelIds: ["c"] } }));
+
+    await refreshConfigKeysFromDisk(["chatSidebar.orderByProject.p", "chatSidebar.starredChannelIds"]);
+
+    expect(getConfigKey("chatSidebar.orderByProject", {})).toEqual({ p: "created" });
+    expect(getConfigKey("chatSidebar.starredChannelIds", [])).toEqual(["c"]);
+    expect(listener).toHaveBeenCalledWith(new Set(["chatSidebar.starredChannelIds"]));
+  });
+
+  it("does not write, and stays quiet when nothing applied", async () => {
+    const { ensureConfigLoaded, onConfigChangedElsewhere, refreshConfigKeysFromDisk } = await loadModule();
+    await ensureConfigLoaded();
+    const listener = vi.fn();
+    onConfigChangedElsewhere(listener);
+
+    await refreshConfigKeysFromDisk(["", "."]);
+
+    expect(listener).not.toHaveBeenCalled();
+    expect(invokeMock.mock.calls.some(([cmd]) => cmd === "vault_patch_config")).toBe(false);
+  });
+
+  it("leaves the cache alone when the file is no longer a JSON object", async () => {
+    setReadResponse(JSON.stringify({ distractions: { enabled: true } }));
+    const { ensureConfigLoaded, getConfigKey, refreshConfigKeysFromDisk } = await loadModule();
+    await ensureConfigLoaded();
+    setReadResponse("not json");
+
+    await expect(refreshConfigKeysFromDisk(["distractions"])).rejects.toThrow();
+
+    expect(getConfigKey("distractions", null)).toEqual({ enabled: true });
+  });
+});
+
+describe("configKeyChanged", () => {
+  it("matches the key itself and its parent or child branches only", async () => {
+    const { configKeyChanged } = await loadModule();
+
+    expect(configKeyChanged(new Set(["preferences.fontScale"]), "preferences")).toBe(true);
+    expect(configKeyChanged(new Set(["preferences"]), "preferences.fontScale")).toBe(true);
+    expect(configKeyChanged(new Set(["preferences.fontScale"]), "preferences.fontScale")).toBe(true);
+    expect(configKeyChanged(new Set(["preferencesExtra.value"]), "preferences")).toBe(false);
+    expect(configKeyChanged(new Set(["profile.color"]), "preferences")).toBe(false);
+  });
+});

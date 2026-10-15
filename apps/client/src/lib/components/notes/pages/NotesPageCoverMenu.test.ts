@@ -10,6 +10,8 @@ import NotesPageCoverMenu from "./NotesPageCoverMenu.svelte";
 const images = vi.hoisted(() => ({ pick: vi.fn(), save: vi.fn() }));
 const preferences = vi.hoisted(() => ({ values: new Map<string, unknown>(), save: vi.fn() }));
 vi.mock("$lib/vault/config", () => ({
+  configKeyChanged: () => false,
+  onConfigChangedElsewhere: () => () => undefined,
   ensureConfigLoaded: async () => {},
   getConfigKey: (key: string, fallback: unknown) => preferences.values.get(key) ?? fallback,
   setConfigKey: preferences.save,

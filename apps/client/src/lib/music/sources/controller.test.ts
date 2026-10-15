@@ -349,6 +349,39 @@ describe("MusicSourcesController", () => {
     expect(controller.detectedDefaultFolder).toBeNull();
   });
 
+  it("prepares a chosen first-use folder through the default folder preparation state", async () => {
+    const refresh = refreshStub();
+    let finishRefresh: () => void = () => undefined;
+    refresh.run = vi.fn(() => new Promise<[]>((resolve) => { finishRefresh = () => resolve([]); }));
+    const ids = ["root-1", "collection-1", "job-1"];
+    const controller = createMusicSourcesController(api(), () => 20, () => ids.shift() ?? "id", refresh);
+    controller.setVault("vault-1");
+    const selection = { folderPath: "content://music", tracks: [], truncated: false };
+
+    const prepared = controller.prepareFirstUseFolder(selection, "Music");
+
+    expect(controller.preparingDefaultFolder).toBe(true);
+    expect(controller.preparingDefaultFolderPath).toBe("content://music");
+    expect(await controller.prepareFirstUseFolder(selection, "Music")).toBeNull();
+    await vi.waitFor(() => expect(refresh.run).toHaveBeenCalledOnce());
+    finishRefresh();
+
+    expect(await prepared).toBe("collection-1");
+    expect(controller.preparingDefaultFolder).toBe(false);
+    expect(controller.defaultFolderPreparationError).toBeNull();
+  });
+
+  it("reports a failed first-use folder preparation without rejecting", async () => {
+    const controller = createMusicSourcesController(api({
+      bindRoot: vi.fn(async () => { throw new Error("The folder grant was revoked."); }),
+    }), () => 20, () => "id", refreshStub());
+    controller.setVault("vault-1");
+
+    expect(await controller.prepareFirstUseFolder({ folderPath: "content://music", tracks: [], truncated: false }, "Music")).toBeNull();
+    expect(controller.preparingDefaultFolder).toBe(false);
+    expect(controller.defaultFolderPreparationError).toBe("The folder grant was revoked.");
+  });
+
   it("distinguishes videos from playlists and saves a resolved video", async () => {
     const saveYouTubeVideo = vi.fn(async (request: Parameters<MusicSourcesControllerApi["saveYouTubeVideo"]>[0]) => ({ id: request.videoId, version: 1 }));
     const controller = createMusicSourcesController(api({ saveYouTubeVideo }), () => 20, () => "id", refreshStub());

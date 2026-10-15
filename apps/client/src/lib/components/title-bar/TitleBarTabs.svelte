@@ -701,13 +701,13 @@
 
   /**
    * End this window's drag as cancelled when its end never arrived. WebKitGTK may not report the end of a drag
-   * dropped on the desktop shell, such as the GNOME top bar, yet no pointer reaches the page while a drag is
-   * under way. Where the tab was dropped is unknown, so it goes back where it started.
+   * dropped on the desktop shell, such as the GNOME top bar, yet no press reaches the page while a drag is under
+   * way. Pointer moves prove nothing, because WebKit sends them during a drag after layout changes. Where the
+   * tab was dropped is unknown, so it goes back where it started.
    */
-  function recoverUnfinishedDrag(event: PointerEvent): void {
+  function recoverUnfinishedDrag(): void {
     const native = nativeDrag;
-    // A move that still reports a pressed button may be a replay from the drag itself.
-    if (!native || (event.type === "pointermove" && event.buttons !== 0)) return;
+    if (!native) return;
     const end = tabs.finishDrag(native.tab.id, { accepted: false, screen: null });
     if (end) concludeDrag(end, false, native.origin);
     else endDrag();
@@ -716,12 +716,8 @@
   $effect(() => {
     if (!nativeDrag) return;
     const options = { capture: true, passive: true };
-    window.addEventListener("pointermove", recoverUnfinishedDrag, options);
     window.addEventListener("pointerdown", recoverUnfinishedDrag, options);
-    return () => {
-      window.removeEventListener("pointermove", recoverUnfinishedDrag, options);
-      window.removeEventListener("pointerdown", recoverUnfinishedDrag, options);
-    };
+    return () => window.removeEventListener("pointerdown", recoverUnfinishedDrag, options);
   });
 
   /** Put a tab back where its drag started and show it. */

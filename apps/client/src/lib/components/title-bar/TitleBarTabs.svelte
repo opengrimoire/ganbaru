@@ -755,9 +755,10 @@
         incomingIndex = null;
         incomingOffset = 0;
       } else if (id === null) {
-        // The tab moved to another window while still dragged.
+        // The tab moved to another window while still dragged, so nothing here draws it until it comes back.
         offBar = false;
         outsideWindow = false;
+        pointer = null;
         movingOffset = 0;
         addOffset = 0;
       }

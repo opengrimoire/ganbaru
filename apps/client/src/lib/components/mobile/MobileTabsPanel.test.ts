@@ -13,8 +13,6 @@ function fakeTabs(tabs: WorkspaceTab[]): MobileTabsPanelTabs {
     activate: vi.fn(),
     openKind: vi.fn(),
     close: vi.fn(),
-    closeOthers: vi.fn(),
-    setLocked: vi.fn(),
     move: vi.fn(),
   };
 }
@@ -52,18 +50,6 @@ describe("MobileTabsPanel", () => {
     const element = document.querySelector<HTMLElement>(`[data-mobile-tab-row="${id}"]`);
     if (!element) throw new Error(`Missing row ${id}`);
     return element;
-  }
-
-  function menuItem(id: string, label: string): HTMLButtonElement {
-    const item = [...row(id).querySelectorAll<HTMLButtonElement>("[role=menuitem]")]
-      .find((button) => button.textContent?.trim() === label);
-    if (!item) throw new Error(`Missing menu item ${label}`);
-    return item;
-  }
-
-  function openMenu(id: string): void {
-    row(id).querySelector<HTMLButtonElement>("[aria-haspopup=menu]")?.click();
-    flushSync();
   }
 
   function press(element: Element): void {
@@ -106,37 +92,16 @@ describe("MobileTabsPanel", () => {
     await render(fakeTabs([calendarTab]));
 
     expect(row("calendar-tab").querySelector("[data-mobile-tab-close]")).toBeNull();
-    openMenu("calendar-tab");
-    expect([...row("calendar-tab").querySelectorAll("[role=menuitem]")].map((item) => item.textContent?.trim()))
-      .toEqual(["Move up", "Move down", "Lock tab"]);
   });
 
-  it("moves a tab past its neighbor and keeps the ends disabled", async () => {
-    const tabs = fakeTabs([calendarTab, roadmapTab, chatTab]);
-    await render(tabs);
+  it("keeps each row to switching and closing, without a row menu", async () => {
+    await render(fakeTabs([calendarTab, roadmapTab, chatTab]));
 
-    openMenu("calendar-tab");
-    expect(menuItem("calendar-tab", "Move up").getAttribute("aria-disabled")).toBe("true");
-    menuItem("calendar-tab", "Move down").click();
-    expect(tabs.move).toHaveBeenCalledWith("calendar-tab", "roadmap-tab", "after");
-
-    openMenu("chat-tab");
-    expect(menuItem("chat-tab", "Move down").getAttribute("aria-disabled")).toBe("true");
-    menuItem("chat-tab", "Move up").click();
-    expect(tabs.move).toHaveBeenLastCalledWith("chat-tab", "roadmap-tab", "before");
-  });
-
-  it("toggles a lock and closes the other tabs from a row menu", async () => {
-    const tabs = fakeTabs([calendarTab, roadmapTab]);
-    await render(tabs);
-
-    openMenu("roadmap-tab");
-    menuItem("roadmap-tab", "Unlock tab").click();
-    expect(tabs.setLocked).toHaveBeenCalledWith("roadmap-tab", false);
-
-    openMenu("roadmap-tab");
-    menuItem("roadmap-tab", "Close other tabs").click();
-    expect(tabs.closeOthers).toHaveBeenCalledWith("roadmap-tab");
+    for (const id of ["calendar-tab", "roadmap-tab", "chat-tab"]) {
+      expect(row(id).querySelectorAll("button")).toHaveLength(2);
+      expect(row(id).querySelector("[aria-haspopup=menu]")).toBeNull();
+    }
+    expect(row("roadmap-tab").querySelector("[data-mobile-tab-close]")).not.toBeNull();
   });
 
   it("lists only open tabs and keeps new tab kinds behind their own level", async () => {

@@ -1,5 +1,6 @@
 package org.opengrimoire.ganbaruai
 
+import android.app.UiModeManager
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -29,6 +30,7 @@ private const val ANDROID_TRANSITION_FRAME_HELD_EVENT_NAME =
   "ganbaru:android-transition-frame-held"
 private const val APPEARANCE_PREFERENCES_NAME = "ganbaru_appearance"
 private const val WINDOW_BACKGROUND_KEY = "window_background"
+private const val NIGHT_MODE_KEY = "night_mode"
 
 /** Content background of the default dark theme, painted until the page reports the active theme. */
 private const val DEFAULT_WINDOW_BACKGROUND = 0xFF27282A.toInt()
@@ -134,6 +136,7 @@ private class AndroidAppearanceBridge(private val activity: MainActivity) {
         isAppearanceLightStatusBars = lightTheme
         isAppearanceLightNavigationBars = lightTheme
       }
+      activity.applyNightMode(!lightTheme)
     }
   }
 
@@ -233,6 +236,18 @@ class MainActivity : TauriActivity() {
     if (storedWindowBackground() != color) {
       appearancePreferences.edit().putInt(WINDOW_BACKGROUND_KEY, color).apply()
     }
+  }
+
+  /**
+   * Android 12 and later draw the launch splash before the page runs, using the app's persisted night mode, so the
+   * app theme's mode is persisted for the next cold start. Earlier versions follow the system mode.
+   */
+  internal fun applyNightMode(dark: Boolean) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+    val mode = if (dark) UiModeManager.MODE_NIGHT_YES else UiModeManager.MODE_NIGHT_NO
+    if (appearancePreferences.getInt(NIGHT_MODE_KEY, UiModeManager.MODE_NIGHT_AUTO) == mode) return
+    getSystemService(UiModeManager::class.java)?.setApplicationNightMode(mode) ?: return
+    appearancePreferences.edit().putInt(NIGHT_MODE_KEY, mode).apply()
   }
 
   override fun onWebViewCreate(webView: WebView) {

@@ -50,10 +50,10 @@ html[data-shell="mobile"] {
   --text-panel--line-height: 1.5;
   --text-panel-detail: var(--panel-detail-font-size);
   --text-panel-detail--line-height: 1.4;
-  /* Floating surface widths; keep in sync with lib/components/ui/floating-width.ts. */
-  --container-floating-sm: 240px;
-  --container-floating: 280px;
-  --container-floating-lg: 320px;
+  /* Floating surface widths; keep in sync with lib/components/ui/floating-width.ts. The cap keeps a panel inside a narrow screen. */
+  --container-floating-sm: min(240px, 100vw - 1rem);
+  --container-floating: min(280px, 100vw - 1rem);
+  --container-floating-lg: min(320px, 100vw - 1rem);
   --radius-floating: var(--floating-radius);
   --radius-floating-item: var(--floating-item-radius);
   --shadow-floating: var(--floating-shadow);

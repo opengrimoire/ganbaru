@@ -47,6 +47,7 @@
   import { getTheme } from "$lib/stores/theme.svelte";
   import { cn } from "$lib/utils";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
+  import { keepInViewport } from "$lib/utils/keep-in-viewport";
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
   import PriorityFlagIcon from "$lib/components/projects/PriorityFlagIcon.svelte";
   import ProjectStatusBadge from "$lib/components/projects/ProjectStatusBadge.svelte";
@@ -491,6 +492,7 @@
     </div>
       {#if statusMenuOpen}
         <div
+          use:keepInViewport
           class="surface-floating surface-floating-body absolute left-0 top-full z-30 mt-1 w-44"
           role="menu"
         >
@@ -536,6 +538,7 @@
     </div>
       {#if priorityMenuOpen}
         <div
+          use:keepInViewport
           class="surface-floating surface-floating-body absolute left-0 top-full z-30 mt-1 w-44"
           role="menu"
         >

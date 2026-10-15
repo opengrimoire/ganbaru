@@ -70,6 +70,11 @@ Panels were restyled one at a time, so radii, shadows, text sizes, input styles,
 
 - Floating surfaces use `w-floating-sm` (compact action menus), `w-floating` (settings and option panels), or `w-floating-lg` (searchable lists, editors, and two-part rows), capped by the viewport. Content that genuinely needs another width, such as a calendar grid or an editor, may use its own.
 
+## Placement and dismissal
+
+- A floating surface stays inside the visible viewport. Panels positioned by script use the shared anchored helpers; panels placed by CSS beside their trigger use `keepInViewport`, which slides them back only as far as a narrow screen requires. Its `translate` makes the panel the containing block for fixed descendants, so nested fixed pickers portal out.
+- A second press on the trigger of an open surface only closes it. A full-screen backdrop closes on `click`, not on `pointerdown`, because a touch that closes on press lets the following click land on the trigger and reopen the surface. Outside-press handlers count the trigger as inside.
+
 ## Scrolling
 
 - Every scrollable panel body fades the edge that has more content beyond it with `scrollEdgeFadeAction`.

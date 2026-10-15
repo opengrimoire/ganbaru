@@ -41,6 +41,7 @@
   import { trapTabFocus } from "$lib/chat/focus-navigation";
   import { isPointerAimingAtSubmenu, SUBMENU_AIM_TOLERANCES } from "$lib/utils/menu-aim";
   import { portal } from "$lib/utils/portal";
+  import { keepInViewport } from "$lib/utils/keep-in-viewport";
   import { getChat } from "$lib/stores/chat.svelte";
   import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
   import ChatProviderIcon from "$lib/components/chat/identity/ChatProviderIcon.svelte";
@@ -132,6 +133,8 @@
   const effortEndpointInsetRem = effortTrackHeightRem / 2;
   const dummyEffortStops = [0, 1, 2, 3, 4] as const;
   const controlled = $derived(value !== undefined);
+  /** The composer popover is placed by CSS above its trigger, so nudge it back inside a narrow screen. */
+  const keepComposerPopoverInViewport = (node: HTMLElement) => (controlled ? undefined : keepInViewport(node));
   const providers = $derived(chat.settings?.providerInstances ?? []);
   const providerInstanceId = $derived(value === undefined
     ? chat.composer.providerInstanceId
@@ -831,6 +834,7 @@
     <div
       bind:this={pickerPanel}
       use:portal={controlled ? "body" : pickerRoot ?? "body"}
+      use:keepComposerPopoverInViewport
       class="model-popover surface-floating w-floating"
       class:portaled={controlled}
       class:below={controlled && pickerPlacement === "below"}

@@ -236,8 +236,12 @@
     const popoverWidth = node.offsetWidth || 220;
     let left = buttonRect.left + buttonRect.width / 2 - popoverWidth / 2;
     left = Math.max(8, Math.min(window.innerWidth - popoverWidth - 8, left));
+    const popoverHeight = node.offsetHeight;
+    const viewportBottom = window.visualViewport ? window.visualViewport.offsetTop + window.visualViewport.height : window.innerHeight;
+    let top = buttonRect.bottom + 4;
+    if (top + popoverHeight + 8 > viewportBottom) top = Math.max(8, buttonRect.top - popoverHeight - 4);
     node.style.left = `${left}px`;
-    node.style.top = `${buttonRect.bottom + 4}px`;
+    node.style.top = `${top}px`;
     return { destroy() {} };
   }
 

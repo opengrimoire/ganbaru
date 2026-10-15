@@ -52,8 +52,8 @@
     { mode: "utc-fallback", label: t("calendar.timezone.utcFallback") },
   ]);
 
-  // Width is fixed; height caps the scrollable result list. Both feed into
-  // the viewport-aware position math so the popover never spills off-screen.
+  // Preferred width, and the height cap of the scrollable result list. Both shrink to fit
+  // the viewport in the position math so the popover never spills off-screen.
   const POPOVER_WIDTH = 360;
   const POPOVER_HEIGHT = 480;
   const VIEWPORT_MARGIN = 8;
@@ -63,7 +63,7 @@
   let popoverEl: HTMLDivElement | undefined = $state();
   let inputEl: HTMLInputElement | undefined = $state();
   let listEl: HTMLDivElement | undefined = $state();
-  let popoverPos = $state({ top: 0, left: 0 });
+  let popoverPos = $state({ top: 0, left: 0, width: POPOVER_WIDTH, height: POPOVER_HEIGHT });
   let query = $state("");
   let highlightIndex = $state(0);
   let searchHydrated = $state(false);
@@ -115,18 +115,15 @@
     const rect = triggerEl.getBoundingClientRect();
     const viewportWidth = window.innerWidth;
     const viewportHeight = window.innerHeight;
-    let left = rect.left;
-    if (left + POPOVER_WIDTH + VIEWPORT_MARGIN > viewportWidth) {
-      left = Math.max(
-        VIEWPORT_MARGIN,
-        viewportWidth - POPOVER_WIDTH - VIEWPORT_MARGIN,
-      );
-    }
+    const width = Math.min(POPOVER_WIDTH, viewportWidth - VIEWPORT_MARGIN * 2);
+    const height = Math.min(POPOVER_HEIGHT, viewportHeight - VIEWPORT_MARGIN * 2);
+    const left = Math.max(VIEWPORT_MARGIN, Math.min(rect.left, viewportWidth - width - VIEWPORT_MARGIN));
     let top = rect.bottom + 6;
-    if (top + POPOVER_HEIGHT + VIEWPORT_MARGIN > viewportHeight) {
-      top = Math.max(VIEWPORT_MARGIN, rect.top - POPOVER_HEIGHT - 6);
+    if (top + height + VIEWPORT_MARGIN > viewportHeight) {
+      top = rect.top - height - 6;
+      if (top < VIEWPORT_MARGIN) top = Math.max(VIEWPORT_MARGIN, viewportHeight - height - VIEWPORT_MARGIN);
     }
-    popoverPos = { top, left };
+    popoverPos = { top, left, width, height };
   }
 
   function toggleOpen() {
@@ -365,7 +362,7 @@
     bind:this={popoverEl}
     use:portal
     class="tz-popover surface-floating fixed z-80 flex flex-col"
-    style="top: {popoverPos.top}px; left: {popoverPos.left}px; width: {POPOVER_WIDTH}px; max-height: {POPOVER_HEIGHT}px; --foreground: var(--popover-foreground);"
+    style="top: {popoverPos.top}px; left: {popoverPos.left}px; width: {popoverPos.width}px; max-height: {popoverPos.height}px; --foreground: var(--popover-foreground);"
     role="dialog"
     aria-label={t("calendar.timezone.title")}
     onwheel={(e) => e.stopPropagation()}

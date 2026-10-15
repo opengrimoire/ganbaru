@@ -18,6 +18,7 @@
   } from "$lib/i18n/pre-vault-language";
   import { cn } from "$lib/utils";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
+  import { keepInViewport } from "$lib/utils/keep-in-viewport";
   import { OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
 
   const localization = getLocalization();
@@ -137,7 +138,8 @@
 
   {#if open}
     <div
-      class="surface-floating absolute left-0 top-full z-20 mt-1 w-floating-lg max-w-[calc(100vw-2rem)] overflow-hidden"
+      use:keepInViewport
+      class="surface-floating absolute left-0 top-full z-20 mt-1 w-floating-lg overflow-hidden"
     >
       <div class="px-1.5 pt-1.5">
         <label class="field flex items-center gap-1.5">

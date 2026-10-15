@@ -20,6 +20,7 @@
   import { getMusicPlayer } from "$lib/stores/music-player.svelte";
   import { cn } from "$lib/utils";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
+  import { keepInViewport } from "$lib/utils/keep-in-viewport";
 
   let { onOpenBuilder, active = true }: {
     onOpenBuilder: (itemId: string | null) => void;
@@ -167,7 +168,7 @@
 <div bind:this={root} class="relative">
   <button bind:this={trigger} type="button" onclick={activate} class="inline-flex h-9 w-9 items-center justify-center rounded-md bg-secondary text-secondary-foreground transition-colors hover:bg-accent" aria-label={available ? t("music.itemMenu.actions") : t("music.playlistBuilder")} aria-expanded={open} aria-haspopup={available ? "dialog" : undefined}><ListTodo size={15} /></button>
   {#if open}
-    <div role="dialog" aria-label={t("music.itemMenu.actions")} class="surface-floating absolute bottom-[calc(100%+0.45rem)] right-0 z-40 flex max-h-[calc(100vh-1rem)] w-floating-lg flex-col overflow-hidden">
+    <div use:keepInViewport role="dialog" aria-label={t("music.itemMenu.actions")} class="surface-floating absolute bottom-[calc(100%+0.45rem)] right-0 z-40 flex max-h-[calc(100vh-1rem)] w-floating-lg flex-col overflow-hidden">
       <h2 class="shrink-0 px-3 pb-1 pt-2.5 font-semibold">{t("music.launcher.playlists")}</h2>
       {#if error && playlists.length > 0}<Notice class="shrink-0 px-3 text-panel-detail" message={error} />{/if}
       <div use:scrollEdgeFadeAction class="surface-floating-body h-56 min-h-0 shrink overflow-y-auto" data-music-scrollable="true">

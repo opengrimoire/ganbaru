@@ -18,6 +18,7 @@
   import { tick, type Component } from "svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import { notesCaretMenuPosition } from "./caret-menu-position";
+  import { keepInViewport } from "$lib/utils/keep-in-viewport";
   import Search from "@lucide/svelte/icons/search";
   import ArrowDown from "@lucide/svelte/icons/arrow-down";
   import ArrowUp from "@lucide/svelte/icons/arrow-up";
@@ -89,6 +90,8 @@
   let localActiveIndex = $state(0);
   let recentKeys = $state<readonly string[]>(notesRecentSlashCommandKeys());
   const searchQuery = $derived(anchor ? query : localQuery || query);
+  /** A menu without a caret anchor is placed by CSS, so nudge it back inside a narrow screen. */
+  const keepUnanchoredInViewport = (node: HTMLElement) => (anchor ? undefined : keepInViewport(node));
   const catalog = $derived(notesSlashCommandItems({ canSetColor }).map((item) => ({
     ...item,
     searchText: `${item.searchText} ${commandLabel(item.command).normalize("NFD").replace(/\p{M}/gu, "").toLowerCase()}`,
@@ -467,6 +470,7 @@
 
 <div
   use:notesCaretMenuPosition={{ editor: anchor, offset: 0, scrollArea: () => scrollArea, onOutside: onClose }}
+  use:keepUnanchoredInViewport
   id={menuId}
   class={`${anchor ? "" : menuClass} surface-floating z-50 flex max-h-[min(22rem,70vh)] w-floating-lg flex-col overflow-hidden`}
   role="menu"

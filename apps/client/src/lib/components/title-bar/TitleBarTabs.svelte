@@ -259,9 +259,8 @@
       indicatorStyle = "";
       return;
     }
-    const parentRect = parent.getBoundingClientRect();
-    const elementRect = element.getBoundingClientRect();
-    indicatorStyle = `left: ${elementRect.left - parentRect.left + parent.scrollLeft}px; width: ${elementRect.width}px;`;
+    // Layout offsets ignore the transforms of slides still in flight, which would mark the slot a tab left.
+    indicatorStyle = `left: ${element.offsetLeft}px; width: ${element.offsetWidth}px;`;
   }
 
   function scheduleIndicatorUpdate(): void {
@@ -276,6 +275,7 @@
     void tabs.activeTabId;
     void tabs.tabs;
     void activeOnly;
+    void departingId;
     // The indicator comes back once tabs stop moving, already under the active tab.
     if (!stripInMotion) updateIndicator();
     scheduleIndicatorUpdate();
@@ -633,8 +633,9 @@
     acceptDrag(event);
     const screen = tearOffWindowPosition(event.screenX, event.screenY);
     const lifted = offBar;
+    const origin = nativeDrag?.origin ?? null;
     tabs.finishDrag(held.id, { accepted: true, screen });
-    if (lifted) holdDeparture(held.id, tabs.detach(held.id, screen));
+    if (lifted) holdDeparture(held.id, tabs.detach(held.id, screen), origin);
     else settle(held.id);
     endDrag();
   }
@@ -648,14 +649,18 @@
 
   /**
    * Keep a tab that left by drag out of the strip until it is gone, so it never shows here again on its way
-   * out. It comes back when its `move` fails, or when it has not gone in time.
+   * out. When its `move` fails, or it has not gone in time, it comes back in front at `origin`.
    */
-  function holdDeparture(id: string, move: Promise<void> | null): void {
+  function holdDeparture(id: string, move: Promise<void> | null, origin: TabOrigin | null): void {
     clearTimeout(departureTimer);
     departingId = id;
     const release = () => {
       clearTimeout(departureTimer);
-      if (departingId === id) slideLayout(() => { departingId = null; }, null);
+      if (departingId !== id) return;
+      slideLayout(() => {
+        departingId = null;
+        if (tabs.holds(id)) restoreTab(id, origin);
+      }, null);
     };
     departureTimer = setTimeout(release, TAB_ARRIVAL_TIMEOUT_MS);
     void move?.catch((error: unknown) => {
@@ -673,32 +678,61 @@
       accepted: event.dataTransfer?.dropEffect !== "none",
       screen: tearOffWindowPosition(event.screenX, event.screenY),
     });
-    if (end) concludeDrag(end, leftWindow, native.origin);
+    if (end) concludeDrag(end, outsideWindow || leftWindow, native.origin);
     else endDrag();
   }
 
   /**
-   * Act on the end of a drag that no drop on this window ended. When this window still holds the tab, a drop
-   * another window took moves the tab there, a drag that ended away from this window's bar opens the tab in a
-   * new window, and otherwise, as when cancelled, the tab goes back where it started.
+   * End this window's drag as cancelled when its end never arrived. WebKitGTK may not report the end of a drag
+   * dropped on the desktop shell, such as the GNOME top bar, yet no pointer reaches the page while a drag is
+   * under way. Where the tab was dropped is unknown, so it goes back where it started.
    */
-  function concludeDrag(end: TabDragEnd, leftWindow: boolean, origin: TabOrigin | null): void {
+  function recoverUnfinishedDrag(event: PointerEvent): void {
+    const native = nativeDrag;
+    // A move that still reports a pressed button may be a replay from the drag itself.
+    if (!native || (event.type === "pointermove" && event.buttons !== 0)) return;
+    const end = tabs.finishDrag(native.tab.id, { accepted: false, screen: null });
+    if (end) concludeDrag(end, false, native.origin);
+    else endDrag();
+  }
+
+  $effect(() => {
+    if (!nativeDrag) return;
+    const options = { capture: true, passive: true };
+    window.addEventListener("pointermove", recoverUnfinishedDrag, options);
+    window.addEventListener("pointerdown", recoverUnfinishedDrag, options);
+    return () => {
+      window.removeEventListener("pointermove", recoverUnfinishedDrag, options);
+      window.removeEventListener("pointerdown", recoverUnfinishedDrag, options);
+    };
+  });
+
+  /** Put a tab back where its drag started and show it. */
+  function restoreTab(id: string, origin: TabOrigin | null): void {
+    if (origin && tabs.tabs.some((tab) => tab.id === origin.id)) tabs.move(id, origin.id, origin.placement);
+    tabs.activate(id);
+  }
+
+  /**
+   * Act on the end of a drag that no drop on this window ended. When this window still holds the tab, a drop
+   * another window took moves the tab there, a drag that ended `away` from this window opens the tab in a new
+   * window, and otherwise, as when cancelled, the tab goes back where it started.
+   */
+  function concludeDrag(end: TabDragEnd, away: boolean, origin: TabOrigin | null): void {
     const id = end.tabId;
     if (!tabs.holds(id)) {
       endDrag();
       return;
     }
     const canTearOff = tabs.detachBlock(id) === null;
-    const away = outsideWindow || leftWindow;
     if (end.accepted || (away && canTearOff)) {
-      if (canTearOff) holdDeparture(id, end.accepted ? null : tabs.tearOff(id, end.screen));
+      if (canTearOff) holdDeparture(id, end.accepted ? null : tabs.tearOff(id, end.screen), origin);
       endDrag();
       return;
     }
     slideLayout(() => {
       endDrag();
-      if (origin && tabs.tabs.some((tab) => tab.id === origin.id)) tabs.move(id, origin.id, origin.placement);
-      tabs.activate(id);
+      restoreTab(id, origin);
     }, null);
   }
 
@@ -796,7 +830,7 @@
   });
 
   // Another window saw the drag end, so no drag end reaches this one.
-  $effect(() => tabs.onDragEnd((end) => concludeDrag(end, false, null)));
+  $effect(() => tabs.onDragEnd((end) => concludeDrag(end, outsideWindow, nativeDrag?.origin ?? null)));
 
   let previousHeldId: string | null = null;
   $effect.pre(() => {

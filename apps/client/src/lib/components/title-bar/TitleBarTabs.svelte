@@ -218,7 +218,8 @@
   function updateIndicator(): void {
     const element = tabElements[tabs.activeTabId];
     const parent = element?.parentElement;
-    if (!element || !parent || element.offsetParent === null) {
+    // A tab kept off the strip on its way to another window has no slot to mark.
+    if (!element || !parent || element.offsetParent === null || tabs.activeTabId === departingId) {
       indicatorStyle = "";
       return;
     }

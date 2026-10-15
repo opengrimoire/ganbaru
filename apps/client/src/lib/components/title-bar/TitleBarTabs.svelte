@@ -106,9 +106,13 @@
 
   /** Icon-only tabs, chosen in the title bar settings. */
   const compact = $derived(preferences.titleBarVisibility.compactTabs);
-  /** Tabs shrink like browser tabs; only when they no longer fit at their narrowest does the strip keep just the active one. */
+  /** Tabs shrink like browser tabs; only when they no longer fit at their narrowest does the strip keep just the shown ones. */
   let activeOnly = $state(false);
   const canOpenTabs = $derived(tabs.canOpenTabs);
+  /** The tab shown beside the active one, which reads as shown but not focused. */
+  const partnerId = $derived(tabs.partnerTab?.id ?? null);
+  /** The active tab's side of its split, so the indicator joins the partner tab like the tab itself does. */
+  const activeSplitSide = $derived(splitSide(tabs.activeTabId));
 
   let strip: HTMLDivElement | undefined = $state();
   let addButton: HTMLButtonElement | undefined = $state();
@@ -253,6 +257,16 @@
     observer.observe(element);
     return () => observer.disconnect();
   });
+
+  /**
+   * The side of its split a tab shows on, or null when it is in none. A split's tabs sit next to each other in the
+   * strip in the order the view shows them, so the first is also the left one here.
+   */
+  function splitSide(id: string): 0 | 1 | null {
+    const split = tabs.splitOf(id);
+    if (!split) return null;
+    return split.tabIds[0] === id ? 0 : 1;
+  }
 
   function updateIndicator(): void {
     const element = tabElements[tabs.activeTabId];
@@ -927,7 +941,11 @@
   >
     {#if indicatorStyle && !tabsDrawHighlight}
       <div
-        class="tab-indicator absolute top-0 h-full rounded-md bg-card shadow-(--tab-active-shadow)"
+        class={cn(
+          "tab-indicator absolute top-0 h-full rounded-md bg-card shadow-(--tab-active-shadow)",
+          activeSplitSide === 0 && "rounded-r-none",
+          activeSplitSide === 1 && "rounded-l-none",
+        )}
         style={indicatorStyle}
       ></div>
     {/if}
@@ -940,6 +958,9 @@
       {@const lifted = !arriving && (!tabs.holds(tab.id) || (moving && draggedTabLifted) || departingId === tab.id)}
       {@const settling = settlingId === tab.id}
       {@const hovered = hoveredTabId === tab.id}
+      {@const side = moving ? null : splitSide(tab.id)}
+      {@const partner = !moving && tab.id === partnerId}
+      {@const name = tab.locked ? t("titleBar.tab.lockedTab", fullLabel) : fullLabel}
       <div
         bind:this={tabElements[tab.id]}
         data-tab-id={tab.id}
@@ -947,11 +968,21 @@
         class={cn(
           "titlebar-tab relative z-1 flex items-center rounded-md text-sm font-medium",
           compact && "titlebar-tab-compact",
-          activeOnly && !active && !moving ? "hidden" : "",
+          activeOnly && !active && !moving && !partner ? "hidden" : "",
+          // A split's tabs join into one piece, each with its inner corners squared.
+          side === 0 && "rounded-r-none",
+          side === 1 && "rounded-l-none",
           // The highlight passes between the indicator and the tab itself at once, so it never fades in or out.
           active || moving
             ? "text-foreground dark:text-white"
-            : cn("transition-colors", hovered ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-sidebar-foreground/70"),
+            : partner
+              ? cn("text-foreground transition-colors dark:text-white", hovered ? "bg-card/75" : "bg-card/50")
+              : cn(
+                "transition-colors",
+                hovered
+                  ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                  : cn("text-sidebar-foreground/70", side !== null && "bg-sidebar-accent/50"),
+              ),
           (active || moving) && tabsDrawHighlight && "bg-card shadow-(--tab-active-shadow)",
           moving && "titlebar-tab-moving",
           lifted && "titlebar-tab-lifted",
@@ -980,7 +1011,7 @@
           onclick={() => tabs.activate(tab.id)}
         >
           <!-- Named by a label rather than aria-label, so the tooltip centers on the whole tab, close button included. -->
-          <span id={`titlebar-tab-name-${tab.id}`} class="sr-only">{tab.locked ? t("titleBar.tab.lockedTab", fullLabel) : fullLabel}</span>
+          <span id={`titlebar-tab-name-${tab.id}`} class="sr-only">{tabs.splitOf(tab.id) ? t("titleBar.split.inSplit", name) : name}</span>
           {@render tabFace(tab, compact)}
           {#if !compact && tab.locked}<Lock class="titlebar-tab-lock shrink-0 opacity-60" size={11} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />{/if}
         </button>

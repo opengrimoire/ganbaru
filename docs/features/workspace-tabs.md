@@ -1,6 +1,6 @@
 # Workspace tabs
 
-Status: Partial. Kind, project, and item tabs, with reordering, persistence, shortcuts, closed-tab history, opening projects and items in a new tab, locking, and moving tabs between windows from their menu, are implemented on desktop, and phones show the same tabs in their bottom bar. Notes folder tabs are planned, and opening projects and items in a new tab is desktop only for now.
+Status: Partial. Kind, project, and item tabs, with reordering, persistence, shortcuts, closed-tab history, opening projects and items in a new tab, locking, split view, and moving tabs between windows from their menu, are implemented on desktop, and phones show the same tabs in their bottom bar. Notes folder tabs are planned, and opening projects and items in a new tab is desktop only for now.
 
 ## Model
 
@@ -30,7 +30,15 @@ The + after the last tab opens a launcher with the kinds, each opened by its num
 
 Tabs size like browser tabs: each has the same fixed width and all of them shrink evenly only when the bar runs out of room, dropping the inactive close button, then the label, as they narrow. Only when they no longer fit at their narrowest does the strip show just the active tab, with the launcher keeping every tab reachable. The compact tabs setting shows icons only at any size, and a strip of empty title bar stays free for moving the window.
 
-A tab's context menu closes it, reopens a closed tab, locks or unlocks it, and moves it into a new window. A locked tab shows a lock after its label.
+A tab's context menu closes it, reopens a closed tab, locks or unlocks it, offers [split view](#split-view), and moves it into a new window. A locked tab shows a lock after its label.
+
+## Split view
+
+On desktop, two tabs can show together in one window, as in a browser split view, for working with two places without a second window. The context menu of another tab opens it beside the active tab, replacing the tab shown there, and the active tab's menu opens a new tab of a chosen kind beside it. Selecting either tab shows both; the one last clicked or focused is the focused pane, which takes keyboard shortcuts and the active tab's place, while the other reads as shown but unfocused in the strip. The two tabs sit next to each other in the strip, joined into one piece, in the order the view shows them, and move together.
+
+A split tab's menu arranges the split: unsplit both tabs, close either view, show the panes side by side or stacked, and swap their positions. Dragging or keyboard-moving the divider resizes the panes, and double-clicking it or pressing Enter shares the space equally. When a window is too small for the chosen orientation, the panes show the other way, and when neither fits, only the focused tab shows; turning a split is offered only when the panes fit the other way. Each split keeps its orientation and sizes with the window's tabs.
+
+The panes show two different views. Tabs of one kind share that kind's live state, and the panes share one open project, so a split pairs different kinds, and a tab locked to another project cannot join it. Closing a split tab or moving it to another window ends its split, and phones show each tab on its own.
 
 ## Windows
 

@@ -13,11 +13,9 @@
   import { portal } from "$lib/utils/portal";
 
   const { t } = getLocalization();
-  const PALETTE_COLUMNS = 4;
-  const MOBILE_PALETTE_COLUMNS = 5;
-  const PALETTE_SWATCH_REM = 1.375;
-  const PALETTE_GAP_REM = 0.5;
-  const PALETTE_PADDING_REM = 0.625;
+  /** Palette grid metrics, matching the panel and swatch classes of each layout. */
+  const DESKTOP_PALETTE = { columns: 4, swatchRem: 1.375, gapRem: 0.5, paddingRem: 0.625 };
+  const TOUCH_PALETTE = { columns: 6, swatchRem: 2.5, gapRem: 0.25, paddingRem: 0.5 };
   const PALETTE_EDGE_PX = 8;
   /** Border width on each side of the floating surface. */
   const PALETTE_BORDER_PX = 1;
@@ -48,6 +46,7 @@
   let paletteEl: HTMLDivElement | undefined = $state();
   let activeIndex = $state(0);
   let palettePosition = $state({ left: PALETTE_EDGE_PX, top: PALETTE_EDGE_PX });
+  const palette = $derived(mobileLayout ? TOUCH_PALETTE : DESKTOP_PALETTE);
 
   const selectedColor = $derived(color ?? FALLBACK_COLOR_INDEX);
   const colorEntry = $derived(getEventColor(color, theme));
@@ -76,15 +75,15 @@
 
   function paletteSizePx(): { width: number; height: number } {
     const rem = rootRemPx();
-    const rows = Math.ceil(EVENT_COLOR_OPTIONS.length / PALETTE_COLUMNS);
+    const rows = Math.ceil(EVENT_COLOR_OPTIONS.length / palette.columns);
     return {
-      width: PALETTE_COLUMNS * PALETTE_SWATCH_REM * rem
-        + (PALETTE_COLUMNS - 1) * PALETTE_GAP_REM * rem
-        + PALETTE_PADDING_REM * rem * 2
+      width: palette.columns * palette.swatchRem * rem
+        + (palette.columns - 1) * palette.gapRem * rem
+        + palette.paddingRem * rem * 2
         + PALETTE_BORDER_PX * 2,
-      height: rows * PALETTE_SWATCH_REM * rem
-        + Math.max(0, rows - 1) * PALETTE_GAP_REM * rem
-        + PALETTE_PADDING_REM * rem * 2
+      height: rows * palette.swatchRem * rem
+        + Math.max(0, rows - 1) * palette.gapRem * rem
+        + palette.paddingRem * rem * 2
         + PALETTE_BORDER_PX * 2,
     };
   }
@@ -94,7 +93,7 @@
     const rect = buttonEl.getBoundingClientRect();
     const { width, height } = paletteSizePx();
     const rem = rootRemPx();
-    const offset = PALETTE_PADDING_REM / 2 * rem;
+    const offset = palette.paddingRem / 2 * rem;
     const maxLeft = Math.max(PALETTE_EDGE_PX, window.innerWidth - width - PALETTE_EDGE_PX);
     const preferredLeft = displayLabel
       ? rect.left
@@ -102,9 +101,13 @@
     const left = Math.min(Math.max(PALETTE_EDGE_PX, preferredLeft), maxLeft);
     const belowTop = rect.bottom + offset;
     const aboveTop = rect.top - height - offset;
-    const top = belowTop + height + PALETTE_EDGE_PX <= window.innerHeight
+    const fitsBelow = belowTop + height + PALETTE_EDGE_PX <= window.innerHeight;
+    const fitsAbove = aboveTop >= PALETTE_EDGE_PX;
+    const top = fitsBelow
       ? belowTop
-      : Math.max(PALETTE_EDGE_PX, aboveTop);
+      : fitsAbove
+        ? aboveTop
+        : Math.max(PALETTE_EDGE_PX, window.innerHeight - height - PALETTE_EDGE_PX);
     palettePosition = { left, top };
   }
 
@@ -173,7 +176,7 @@
       itemCount: EVENT_COLOR_OPTIONS.length,
       key: e.key,
       orientation: "grid",
-      columns: mobileLayout ? MOBILE_PALETTE_COLUMNS : PALETTE_COLUMNS,
+      columns: palette.columns,
     });
     if (nextIndex === index) return;
     e.preventDefault();
@@ -182,7 +185,15 @@
     void focusSwatch(nextIndex);
   }
 
+  /**
+   * The backdrop closes on click rather than on press. Removing it on press would deliver the
+   * following click to whatever lies beneath, so a tap on the trigger would reopen the palette.
+   */
   function handleBackdropPointerDown(event: PointerEvent): void {
+    event.stopPropagation();
+  }
+
+  function handleBackdropClick(event: MouseEvent): void {
     event.stopPropagation();
     closePalette("pointer");
   }
@@ -219,28 +230,15 @@
     };
   });
 
-  const paletteStyle = $derived(mobileLayout
-    ? `
-      left: calc(var(--visual-viewport-offset-left) + var(--safe-area-left) + 0.5rem);
-      right: calc(var(--safe-area-right) + 0.5rem);
-      bottom: calc(var(--keyboard-inset) + var(--safe-area-bottom) + 0.5rem);
-      max-width: 30rem;
-      max-height: calc(var(--visual-viewport-height) - var(--safe-area-top) - var(--safe-area-bottom) - 1rem);
-      margin-inline: auto;
-      grid-template-columns: repeat(${MOBILE_PALETTE_COLUMNS}, 3rem);
-      justify-content: center;
-      background-color: ${pickerBg};
-      color: ${pickerText};
-      --selection-border: ${selectionBorder};
-    `
-    : `
-      left: ${palettePosition.left}px;
-      top: ${palettePosition.top}px;
-      grid-template-columns: repeat(${PALETTE_COLUMNS}, 1.375rem);
-      background-color: ${pickerBg};
-      color: ${pickerText};
-      --selection-border: ${selectionBorder};
-    `);
+  const paletteStyle = $derived(`
+    left: ${palettePosition.left}px;
+    top: ${palettePosition.top}px;
+    max-height: calc(100dvh - ${PALETTE_EDGE_PX * 2}px);
+    grid-template-columns: repeat(${palette.columns}, ${palette.swatchRem}rem);
+    background-color: ${pickerBg};
+    color: ${pickerText};
+    --selection-border: ${selectionBorder};
+  `);
 </script>
 
 <div class={cn("relative flex items-center", displayLabel && "min-w-0", className)}>
@@ -288,6 +286,7 @@
       class="fixed inset-0 z-90"
       data-app-floating-surface
       onpointerdown={handleBackdropPointerDown}
+      onclick={handleBackdropClick}
     ></div>
     <div
       bind:this={paletteEl}
@@ -315,7 +314,7 @@
           onfocus={() => { activeIndex = index; }}
           onkeydown={(e) => handleSwatchKeydown(e, index, option)}
           class={mobileLayout
-            ? "calendar-color-swatch min-h-12 min-w-12 rounded-xl"
+            ? "calendar-color-swatch size-10 rounded-lg"
             : "calendar-color-swatch size-5.5 rounded-[3px]"}
           class:swatch-selected={selectedColor === option}
           style={swatchStyle(entry.bg)}

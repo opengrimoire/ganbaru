@@ -56,7 +56,7 @@ Every theme owns exactly 32 event-color slots with stable numeric identity. Cale
 
 ## Persistence
 
-User themes and their seed snapshots are normalized SQLite records. Built-in light and dark themes are code-pinned, never stored as rows, and their reserved IDs cannot be inserted by import or persistence. Unknown active IDs fall back to the default built-in.
+User themes and their seed snapshots are normalized SQLite records. Built-in light and dark themes are code-pinned, never stored as rows, and their reserved IDs cannot be inserted by import or persistence. First launch and unknown active IDs use the built-in dark theme.
 
 The active theme ID, quick-toggle light and dark choices, font family, and font scale are portable preferences in active-vault `config.json`; theme content never lives there. Platform bootstraps load configuration and hydrate user themes before mounting the app shell.
 

@@ -232,7 +232,7 @@
       <span class={cn("text-[0.8rem]", status?.error ? "text-destructive" : "text-muted-foreground")} aria-live="polite">{status?.message ?? ""}</span>
     </div>
   </div>
-  <div class="relative shrink-0 overflow-hidden rounded-md max-[480px]:self-center">
+  <div class="relative shrink-0 overflow-hidden max-[480px]:self-center">
     <svg
       {viewBox}
       class={cn("aspect-square w-52 bg-white max-[480px]:w-full max-[480px]:max-w-64", !ready && "blur-xs")}

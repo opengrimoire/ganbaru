@@ -288,7 +288,7 @@ export const BUILTIN_THEME_REGISTRY: Readonly<Record<ThemeId, BuiltinTheme>> =
   });
 
 /** Theme ID used on first launch and when the stored ID is unknown. */
-export const DEFAULT_THEME_ID: ThemeId = lightTheme.id;
+export const DEFAULT_THEME_ID: ThemeId = darkTheme.id;
 
 export function pickQuickToggleTarget({
   activeId,

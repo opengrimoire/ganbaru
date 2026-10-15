@@ -4,8 +4,10 @@ import { kindLocation } from "./model";
 import {
   shortWorkspaceTabProject,
   workspaceTabFullLabel,
+  workspaceTabLabel,
   workspaceTabPositionShortcut,
   workspaceTabProject,
+  workspaceTabProjectHint,
 } from "./presentation";
 
 describe("workspace tab position shortcuts", () => {
@@ -48,6 +50,26 @@ describe("workspace tab project names", () => {
       .toBe("Roadmap (Alpha)");
     expect(workspaceTabFullLabel({ location: kindLocation("calendar"), title: null, projectTitle: null }, translate))
       .toBe("Calendar");
+    expect(workspaceTabFullLabel({ location: notes, title: null, projectTitle: "Alpha" }, translate))
+      .toBe("Notes (Alpha)");
+  });
+
+  it("labels a project tab with its project alone, leaving the kind to its icon", () => {
+    expect(workspaceTabLabel({ location: notes, title: null, projectTitle: "Alpha" }, translate)).toBe("Alpha");
+    expect(workspaceTabProjectHint({ location: notes, title: null, projectTitle: "Alpha" })).toBeNull();
+  });
+
+  it("labels an item tab with its item and keeps the project as a hint", () => {
+    const tab = { location: notes, title: "Roadmap", projectTitle: "Alpha" };
+    expect(workspaceTabLabel(tab, translate)).toBe("Roadmap");
+    expect(workspaceTabProjectHint(tab)).toBe("Alpha");
+  });
+
+  it("falls back to the kind name for Calendar and tabs outside a project", () => {
+    const calendar = { location: { kind: "calendar" as const, projectId: "p1", item: null }, title: null, projectTitle: "Alpha" };
+    expect(workspaceTabLabel(calendar, translate)).toBe("Calendar");
+    expect(workspaceTabLabel({ location: kindLocation("notes"), title: null, projectTitle: null }, translate)).toBe("Notes");
+    expect(workspaceTabLabel({ location: notes, title: null, projectTitle: null }, translate)).toBe("Notes");
   });
 
   it("keeps short project names whole", () => {

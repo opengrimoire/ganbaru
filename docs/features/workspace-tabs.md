@@ -14,7 +14,7 @@ Tabs follow navigation: moving around inside a tab updates where it points, and 
 
 On a project, project view, note, or Chat channel row, a middle click or Ctrl+click opens it in a new tab behind the current one, and adding Shift brings the new tab to the front. Row menus that have one also offer "Open in new tab". Several background opens from the same tab line up in the order they were opened, as in a browser.
 
-A kind or project tab shows the kind's name, and an item tab shows the view, note, or channel name. Every tab except Calendar adds its project in parentheses, shortened when long. Names stay current across renames. Any kind, Calendar included, can have several tabs, so the same place can be open twice when the user asks for it.
+Each tab shows its kind icon and one name: an item tab shows the view, note, or channel name followed by its project in parentheses, shortened when long; a kind or project tab inside a project shows just the project name; and Calendar and tabs outside a project show the kind name. The icon tells kinds apart, so the strip skips the kind name; tooltips, the launcher, and screen readers still name it. Names stay current across renames. Any kind, Calendar included, can have several tabs, so the same place can be open twice when the user asks for it.
 
 A fresh vault opens with Calendar and Projects. Closing the last tab of the main window asks to close the app, the same confirmation as closing the window, so the app is never left without a tab. Closing the last tab of any other window closes that window.
 

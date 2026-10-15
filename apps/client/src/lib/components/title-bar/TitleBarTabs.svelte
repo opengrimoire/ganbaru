@@ -15,7 +15,7 @@
     workspaceTabKindIcon,
     workspaceTabLabel,
     workspaceTabPositionShortcut,
-    workspaceTabProject,
+    workspaceTabProjectHint,
   } from "$lib/workspace-tabs/presentation";
   import TitleBarTabLauncher from "./TitleBarTabLauncher.svelte";
   import {
@@ -296,7 +296,7 @@
       {@const Icon = workspaceTabKindIcon(tab.location.kind)}
       {@const active = tab.id === tabs.activeTabId}
       {@const label = workspaceTabLabel(tab, t)}
-      {@const project = workspaceTabProject(tab)}
+      {@const project = workspaceTabProjectHint(tab)}
       {@const fullLabel = workspaceTabFullLabel(tab, t)}
       <div
         bind:this={tabElements[tab.id]}
@@ -335,7 +335,7 @@
         >
           <Icon class="shrink-0" size={ICON_SIZE} strokeWidth={ICON_STROKE_WIDTH} />
           {#if !compact}
-            <span class="titlebar-tab-label min-w-0 flex-1 truncate">
+            <span class="titlebar-tab-label min-w-0 flex-1 truncate text-start">
               {label}{#if project}<span class="opacity-60"> {t("titleBar.tab.projectHint", shortWorkspaceTabProject(project))}</span>{/if}
             </span>
           {/if}

@@ -66,15 +66,24 @@ describe("MobileNavigation", () => {
     expect(tabButtons[0]?.querySelector("[data-mobile-tab-locked]")).toBeNull();
   });
 
-  it("opens the tabs sheet from a button that counts every open tab", async () => {
+  it("opens the tabs panel from a button that counts the tabs past the bar", async () => {
     const { tabsButton, onOpenTabs } = await render();
 
     expect(tabsButton?.getAttribute("aria-label")).toBe("Tabs, 6 open");
-    expect(tabsButton?.querySelector("[data-mobile-tab-count]")?.textContent).toBe("6");
+    expect(tabsButton?.querySelector("[data-mobile-tab-overflow]")?.textContent).toBe("+2");
+    expect(tabsButton?.querySelector("[data-mobile-tabs-add]")).toBeNull();
     expect(tabsButton?.getAttribute("aria-expanded")).toBe("false");
 
     tabsButton?.click();
     expect(onOpenTabs).toHaveBeenCalledOnce();
+  });
+
+  it("marks the tabs button with an add sign while the bar shows every tab", async () => {
+    const { tabsButton } = await render({ tabs: tabs.slice(0, 4), activeTabId: "calendar-tab" });
+
+    expect(tabsButton?.getAttribute("aria-label")).toBe("Tabs, 4 open");
+    expect(tabsButton?.querySelector("[data-mobile-tabs-add]")).not.toBeNull();
+    expect(tabsButton?.querySelector("[data-mobile-tab-overflow]")).toBeNull();
   });
 
   it("sizes the bottom bar to the tabs it shows plus the tabs button", async () => {

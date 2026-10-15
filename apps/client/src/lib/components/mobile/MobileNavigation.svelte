@@ -1,16 +1,18 @@
 <script lang="ts">
   import Lock from "@lucide/svelte/icons/lock";
+  import SquarePlus from "@lucide/svelte/icons/square-plus";
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { MobileNavigationPresentation } from "$lib/mobile/layout";
-  import { mobileTabBarSlots, mobileTabCountLabel } from "$lib/mobile/tab-bar";
+  import { mobileTabBarSlots, mobileTabsButtonBadge } from "$lib/mobile/tab-bar";
   import { cn } from "$lib/utils";
   import type { WorkspaceTab } from "$lib/workspace-tabs/model";
   import { workspaceTabFullLabel, workspaceTabKindIcon, workspaceTabLabel } from "$lib/workspace-tabs/presentation";
 
   /**
    * The phone shell's workspace tab bar: the first open tabs that fit, the active one always among them, and a
-   * tabs button with the open count that opens the full list.
+   * tabs button that opens the full list, marked with an add sign while the bar shows every tab or with the count of
+   * tabs past the bar.
    */
   let {
     tabs,
@@ -32,7 +34,7 @@
   const localization = getLocalization();
   const { t } = localization;
   const slots = $derived(mobileTabBarSlots(tabs, activeTabId));
-  const countLabel = $derived(mobileTabCountLabel(tabs.length, (value) => formatNumber(localization.locale, value)));
+  const badge = $derived(mobileTabsButtonBadge(tabs.length, slots.length, (value) => formatNumber(localization.locale, value)));
   const iconSize = $derived(presentation === "rail" ? 21 : 20);
 </script>
 
@@ -93,11 +95,15 @@
   {/each}
 
   {#snippet countBox()}
-    <span
-      class="grid h-5 min-w-5 place-items-center rounded-md border-[1.5px] border-current px-1 text-[0.666667rem] leading-none font-semibold tabular-nums"
-      aria-hidden="true"
-      data-mobile-tab-count
-    >{countLabel}</span>
+    {#if badge.kind === "add"}
+      <SquarePlus size={iconSize} strokeWidth={tabsOpen ? 2 : 1.7} aria-hidden="true" data-mobile-tabs-add />
+    {:else}
+      <span
+        class="grid h-5 min-w-5 place-items-center rounded-md border-[1.5px] border-current px-1 text-[0.666667rem] leading-none font-semibold tabular-nums"
+        aria-hidden="true"
+        data-mobile-tab-overflow
+      >{badge.label}</span>
+    {/if}
   {/snippet}
   <button
     type="button"

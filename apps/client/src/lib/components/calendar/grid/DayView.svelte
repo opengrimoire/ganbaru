@@ -24,6 +24,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { formatNumber } from "$lib/i18n/formatters";
   import { onMount } from "svelte";
+  import { getWorkspacePaneFocus } from "$lib/workspace-tabs/pane-focus";
   import type { Theme } from "$lib/themes";
 
   let {
@@ -213,6 +214,8 @@
     if (nowStr !== todayStr) todayStr = nowStr;
   }
 
+  const paneFocused = getWorkspacePaneFocus();
+
   onMount(() => {
     updateCurrentTime();
     const interval = setInterval(updateCurrentTime, 1000);
@@ -246,6 +249,7 @@
 
     // Keyboard shortcuts for internal calendar zoom; layout handling lives in zoom-keys.ts.
     function handleKeyDown(e: KeyboardEvent) {
+      if (!paneFocused()) return;
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement)?.isContentEditable) return;
 

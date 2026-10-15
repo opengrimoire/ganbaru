@@ -63,6 +63,7 @@
   import { ProjectListQuickAddController } from "./quick-add-controller.svelte";
   import { ProjectListViewportController } from "./viewport-controller.svelte";
   import { createProjectListColumnReorder } from "./column-reorder";
+  import { getWorkspacePaneFocus } from "$lib/workspace-tabs/pane-focus";
 
   let {
     mobileLayout = false,
@@ -218,7 +219,10 @@
     columnReorder,
   });
 
+  const paneFocused = getWorkspacePaneFocus();
+
   function handleHorizontalKeydown(event: KeyboardEvent): void {
+    if (!paneFocused()) return;
     if (event.key === "Escape" && quickAdd.hasActiveDraft()) {
       event.preventDefault();
       event.stopPropagation();

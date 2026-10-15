@@ -8,6 +8,7 @@
   import { getCalendars } from "$lib/stores/calendars.svelte";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { onMount, tick } from "svelte";
+  import { getWorkspacePaneFocus } from "$lib/workspace-tabs/pane-focus";
   import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
@@ -128,6 +129,7 @@
   // navigation so target readiness gating and stale-event drops apply uniformly.
   // A second listener here would let auto-repeat keydowns bypass the gate and
   // drain the queue for seconds after the user releases the key.
+  const paneFocused = getWorkspacePaneFocus();
   onMount(() => {
     const monthYearObserver = typeof ResizeObserver === "undefined"
       ? null
@@ -137,6 +139,7 @@
     updateMonthYearLabel();
 
     function handleKeyDown(e: KeyboardEvent) {
+      if (!paneFocused()) return;
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement)?.isContentEditable) return;
       if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { getNavigation } from "$lib/stores/navigation.svelte";
-  import { availableAppViews } from "$lib/navigation";
+  import { availableAppViews, type View } from "$lib/navigation";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
   import { createAppWorkspaceLocationAdapter } from "$lib/workspace-tabs/app-location-adapter";
@@ -55,6 +55,7 @@
   import ProjectListView from "$lib/components/projects/list/ProjectListView.svelte";
   import type { ProjectViewComponents } from "$lib/components/projects/view-components";
   import ChatWorkspace from "$lib/components/chat/ChatWorkspace.svelte";
+  import WorkspaceSplitView, { type WorkspaceShownPane } from "$lib/components/workspace-tabs/WorkspaceSplitView.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import TooltipHost from "$lib/components/ui/TooltipHost.svelte";
   import UpdateNotificationToast from "$lib/components/updates/UpdateNotificationToast.svelte";
@@ -92,8 +93,6 @@
   const appClose = getAppCloseCoordinator();
   const isMainWindow = appWindow.label === MAIN_WINDOW_LABEL;
   const nav = getNavigation();
-  /** Calendar paints the content panel itself; Projects, Notes, and Chat paint a surface beside their docked explorer. */
-  const contentPanelPainted = $derived(nav.current === "calendar");
   const calendar = getCalendar();
   const calendars = getCalendars();
   const distractions = getDistractions();
@@ -314,7 +313,12 @@
       }, UPDATE_AUTO_CHECK_INTERVAL_MS + AUTOMATIC_UPDATE_CHECK_DELAY_MS + 1_000)
       : null;
     const handleMusicAssignmentInspection = (event: Event) => {
-      if (!(event instanceof CustomEvent) || event.detail?.ready === true || nav.current === "calendar") return;
+      if (!(event instanceof CustomEvent) || event.detail?.ready === true) return;
+      // A shown Calendar inspects the event itself; a Calendar beside the active tab only takes focus.
+      if (shownKinds.includes("calendar")) {
+        if (nav.current !== "calendar") nav.navigate("calendar");
+        return;
+      }
       const eventId = typeof event.detail?.eventId === "string" ? event.detail.eventId : null;
       if (!eventId) return;
       nav.navigate("calendar");
@@ -601,9 +605,27 @@
   /** Workspace the Projects tab hosts in place of a task view; hosting needs an open project to scope it. */
   const projectHostedPlace = $derived.by<ProjectHostedViewType | null>(() => {
     const place = projects.hostedPlace;
-    if (nav.current !== "projects" || !place) return null;
+    if (!shownKinds.includes("projects") || !place) return null;
     return projects.selectedProject && projects.selectedGroup ? place : null;
   });
+  /** The kinds of the active tab and the tab shown beside it, if any. */
+  const shownKinds = $derived<readonly View[]>(
+    workspaceTabs.partnerTab ? [nav.current, workspaceTabs.partnerTab.location.kind] : [nav.current],
+  );
+  /** The tabs the content area shows in split order, each with the view that shows it, and never one view twice. */
+  const shownPanes = $derived.by<WorkspaceShownPane[]>(() => {
+    const active: WorkspaceShownPane = { tabId: workspaceTabs.activeTabId, view: paneView(nav.current) };
+    const partner = workspaceTabs.partnerTab;
+    if (!partner) return [active];
+    const beside: WorkspaceShownPane = { tabId: partner.id, view: paneView(partner.location.kind) };
+    if (beside.view === active.view) return [active];
+    return workspaceTabs.split?.tabIds[0] === partner.id ? [beside, active] : [active, beside];
+  });
+
+  /** The view that shows a tab of `kind`, which for Projects is the workspace it hosts. */
+  function paneView(kind: View): View {
+    return kind === "projects" ? projectHostedPlace ?? "projects" : kind;
+  }
 
   const suspendInfo = $derived(pomodoro.suspendedAway);
   const idleInfo = $derived(pomodoro.idlePaused);
@@ -933,19 +955,29 @@
 >
   <div class="flex h-full flex-col overflow-hidden bg-sidebar">
     <TitleBar {shellStartupMs} {startupMemorySnapshot} {ensureBenchmarkOverlay} />
-    <main class="content-panel flex-1 min-h-0 overflow-hidden" class:surface-content={contentPanelPainted}>
-      {#if nav.current === "calendar"}
-        <CalendarView />
-      {:else if nav.current === "projects" && !projectHostedPlace}
-        <ProjectsView
-          viewComponents={projectViewComponents}
-          projectChat={projectChatIntegration}
-        />
-      {:else if nav.current === "notes" || projectHostedPlace === "notes"}
-        <NotesView projectSidebar={projectHostedPlace === "notes" ? hostedProjectSidebar : undefined} />
-      {:else}
-        <ChatWorkspace projectSidebar={projectHostedPlace === "chat" ? hostedProjectSidebar : undefined} />
-      {/if}
+    <main class="content-panel flex-1 min-h-0 overflow-hidden">
+      <WorkspaceSplitView
+        panes={shownPanes}
+        split={workspaceTabs.split}
+        focusedTabId={workspaceTabs.activeTabId}
+        onFocusPane={workspaceTabs.focusPane}
+        onResize={(ratio) => workspaceTabs.resizeSplit(workspaceTabs.activeTabId, ratio)}
+      >
+        {#snippet content(pane)}
+          {#if pane.view === "calendar"}
+            <CalendarView />
+          {:else if pane.view === "projects"}
+            <ProjectsView
+              viewComponents={projectViewComponents}
+              projectChat={projectChatIntegration}
+            />
+          {:else if pane.view === "notes"}
+            <NotesView projectSidebar={projectHostedPlace === "notes" ? hostedProjectSidebar : undefined} />
+          {:else}
+            <ChatWorkspace projectSidebar={projectHostedPlace === "chat" ? hostedProjectSidebar : undefined} />
+          {/if}
+        {/snippet}
+      </WorkspaceSplitView>
     </main>
   </div>
 

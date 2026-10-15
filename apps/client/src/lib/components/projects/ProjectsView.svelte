@@ -38,6 +38,7 @@
   import { ProjectTaskQueryController } from "./task-query-controller.svelte";
   import { ProjectRouteLoadController } from "./route-load-controller.svelte";
   import { ProjectRouteUiController } from "./route-ui-controller.svelte";
+  import { getWorkspacePaneFocus } from "$lib/workspace-tabs/pane-focus";
 
   let {
     mobileLayout = false,
@@ -287,9 +288,11 @@
     });
   }
 
+  const paneFocused = getWorkspacePaneFocus();
+
   /** Switches project views with the Ctrl and digit shortcut, even while typing; the app shell handles hosted views. */
   function handlePlaceShortcut(event: KeyboardEvent): void {
-    if (event.defaultPrevented || !projects.selectedProject) return;
+    if (event.defaultPrevented || !projects.selectedProject || !paneFocused()) return;
     const view = projectPlaceShortcut(event, sidebarViews);
     if (!view) return;
     event.preventDefault();
@@ -367,7 +370,7 @@
 
 <svelte:window
   onkeydowncapture={handlePlaceShortcut}
-  onkeydown={(event) => routeUi.handleWindowKeydown(event)}
+  onkeydown={(event) => { if (paneFocused()) routeUi.handleWindowKeydown(event); }}
 />
 
 <svelte:document

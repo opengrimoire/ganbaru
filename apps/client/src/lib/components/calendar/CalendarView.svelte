@@ -18,6 +18,7 @@
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { onDestroy, onMount, tick, untrack } from "svelte";
+  import { getWorkspacePaneFocus } from "$lib/workspace-tabs/pane-focus";
   import { getNativeCalendarEditController } from "$lib/components/calendar/view/native-edit-controller.svelte";
   import type { CalendarEditDraft } from "$lib/components/calendar/view/native-edit-controller.svelte";
   import type { CalendarDeleteOutcome } from "$lib/api/calendar-edit";
@@ -834,8 +835,10 @@
 
   let containerEl: HTMLDivElement | undefined = $state();
 
+  const paneFocused = getWorkspacePaneFocus();
   const navigationController = new CalendarViewNavigationController({
     getViewMode: () => viewMode,
+    isFocused: paneFocused,
     getSessionClosed: () => session.state.mode === "closed",
     getConfirmOpen: () => !!confirm.action,
     getViewWrapper: () => viewportController.viewWrapper,
@@ -856,8 +859,9 @@
 
   onMount(() => {
     const removeNavigationListeners = navigationController.installWindowListeners();
+    // The Calendar tab inspects music assignments; a calendar scoped to a project leaves them to it.
     const inspectMusicAssignment = (event: Event) => {
-      if (!(event instanceof CustomEvent) || typeof event.detail?.eventId !== "string") return;
+      if (eventFilter || !(event instanceof CustomEvent) || typeof event.detail?.eventId !== "string") return;
       const eventId = event.detail.eventId;
       const selected = currentVisibleStoreEvents().find((candidate) => candidate.id === eventId)
         ?? calendarStore.sourceEvents.find((candidate) => candidate.id === eventId);

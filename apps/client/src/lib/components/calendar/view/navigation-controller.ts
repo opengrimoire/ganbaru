@@ -11,6 +11,8 @@ import type { CalendarViewMode } from "$lib/calendar/types";
 
 export interface CalendarViewNavigationControllerOptions {
   getViewMode: () => CalendarViewMode;
+  /** Whether window keys act on this calendar, false while another pane of a split view has focus. */
+  isFocused?: () => boolean;
   getSessionClosed: () => boolean;
   getConfirmOpen: () => boolean;
   getViewWrapper: () => HTMLElement | undefined;
@@ -113,6 +115,7 @@ export class CalendarViewNavigationController {
   }
 
   private handleKeydown(event: KeyboardEvent): void {
+    if (this.options.isFocused?.() === false) return;
     const blocked = event.key !== "Escape" && (
       isEditableKeyboardTarget(event.target)
       || isEditableKeyboardTarget(document.activeElement)

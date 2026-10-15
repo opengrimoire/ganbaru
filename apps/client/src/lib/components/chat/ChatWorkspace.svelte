@@ -53,6 +53,7 @@
   import ChatChannelFeed from "$lib/components/chat/channels/ChatChannelFeed.svelte";
   import ChatReplyThreadPanel from "$lib/components/chat/timeline/ChatReplyThreadPanel.svelte";
   import { isTextEntryElement, OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
+  import { getWorkspacePaneFocus } from "$lib/workspace-tabs/pane-focus";
 
   let {
     projectSidebar = undefined,
@@ -535,7 +536,10 @@
     );
   }
 
+  const paneFocused = getWorkspacePaneFocus();
+
   function handleKeydown(event: KeyboardEvent): void {
+    if (!paneFocused()) return;
     if (commandMenuOpen && event.key === "Escape") {
       event.preventDefault();
       commandMenuOpen = false;

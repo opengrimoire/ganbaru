@@ -13,6 +13,7 @@
   import RecurrenceSection from "./RecurrenceSection.svelte";
   import ProjectSelector from "$lib/components/projects/pickers/ProjectSelector.svelte";
   import { onMount, tick } from "svelte";
+  import { getWorkspacePaneFocus } from "$lib/workspace-tabs/pane-focus";
   import { slide } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
   import { getTheme } from "$lib/stores/theme.svelte";
@@ -928,7 +929,9 @@
     onScopeChange?.(s);
   }
 
-  // Global shortcut handling: active whenever the panel is mounted, so the
+  const paneFocused = getWorkspacePaneFocus();
+
+  // Global shortcut handling: active whenever the panel is mounted in the focused pane, so the
   // user does not have to click a field inside the panel first. If a modal
   // (ConfirmDialog) is open, its capture-phase window listener swallows the
   // event before it reaches this handler.
@@ -937,7 +940,9 @@
       console.error("load projects failed", error);
     });
 
-    function handleKeydown(e: KeyboardEvent) { actions.handleKeydown(e); }
+    function handleKeydown(e: KeyboardEvent) {
+      if (paneFocused()) actions.handleKeydown(e);
+    }
     function refreshNotificationAccess(): void {
       if (document.visibilityState === "visible") void refreshMobileNotificationStatus();
     }

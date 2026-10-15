@@ -134,6 +134,7 @@
   import PinOff from "@lucide/svelte/icons/pin-off";
   import Settings2 from "@lucide/svelte/icons/settings-2";
   import TextWrap from "@lucide/svelte/icons/text-wrap";
+  import { getWorkspacePaneFocus } from "$lib/workspace-tabs/pane-focus";
 
   let {
     dataSourceId,
@@ -927,12 +928,14 @@
     }
   }
 
+  const paneFocused = getWorkspacePaneFocus();
+
   /**
    * Delete moves the selected rows to the trash while focus is in this table or nowhere, unless a value, a cell editor,
    * or a menu owns the key.
    */
   function trashSelectionKey(event: KeyboardEvent): void {
-    if (event.key !== "Delete" || event.defaultPrevented || selectedRows.length === 0 || isEditingCell || mutating) return;
+    if (event.key !== "Delete" || event.defaultPrevented || selectedRows.length === 0 || isEditingCell || mutating || !paneFocused()) return;
     const target = event.target;
     if (!(target instanceof Element) || !(target === document.body || tableSection?.contains(target)) || target.closest("[data-app-floating-surface]")
       || target.matches("textarea, select, [contenteditable]:not([contenteditable='false']), input:not([type='checkbox']):not([type='radio']):not([type='button'])")) return;

@@ -40,6 +40,7 @@
   import NotesWorkingMarkdownEditor from "$lib/components/notes/working-markdown/NotesWorkingMarkdownEditor.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { getWorkspacePaneFocus } from "$lib/workspace-tabs/pane-focus";
 
   let {
     mobileLayout = false,
@@ -583,7 +584,10 @@
     void (action === "undo" ? notes.undoNotesEdit() : notes.redoNotesEdit());
   }
 
+  const paneFocused = getWorkspacePaneFocus();
+
   function handleNotesWindowKeydown(event: KeyboardEvent): void {
+    if (!paneFocused()) return;
     const historyAction = notesUndoShortcutAction(event);
     if (historyAction) {
       if (

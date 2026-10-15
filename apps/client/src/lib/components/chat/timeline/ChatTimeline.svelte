@@ -39,6 +39,7 @@
   import ChatChangedFilesSummary from "$lib/components/chat/review/ChatChangedFilesSummary.svelte";
   import ChatImageGallery from "./ChatImageGallery.svelte";
   import ChatMessageActionToolbar from "./ChatMessageActionToolbar.svelte";
+  import { heldMessageActionsKey, messageTouchActions } from "./message-touch-actions.svelte";
   import ChatMessageReactionList from "./ChatMessageReactionList.svelte";
   import ChatIdentityButton from "$lib/components/chat/identity/ChatIdentityButton.svelte";
 
@@ -91,6 +92,7 @@
   let reducedMotion = $state(false);
   let hoveredActionMessageId = $state<string | null>(null);
   let hoveredActionTurnId = $state<ChatTurnId | null>(null);
+  const touchActionsScope = $props.id();
   let disclosureMeasureFrame: number | null = null;
   let destroyed = false;
   let pendingDisclosureAnchor: { rowId: string; viewportOffset: number } | null = null;
@@ -448,6 +450,12 @@
   function showUserActionToolbar(messageId: string): void {
     hoveredActionMessageId = messageId;
     hoveredActionTurnId = null;
+  }
+
+  function touchActionsKey(row: TimelineDisplayRow): string | null {
+    if (isModelOwnedRow(row) && row.turnId) return `${touchActionsScope}:turn:${row.turnId}`;
+    if (row.kind === "message" && row.role === "user") return `${touchActionsScope}:message:${row.id}`;
+    return null;
   }
 
   function clearActionToolbar(): void {
@@ -956,7 +964,10 @@
           aria-posinset={virtual.index + 1}
           aria-setsize={displayRows.length}
           tabindex="-1"
-          onpointerenter={() => {
+          use:messageTouchActions={touchActionsKey(row)}
+          data-message-touch-actions
+          onpointerenter={(event) => {
+            if (event.pointerType === "touch") return;
             if (isModelOwnedRow(row) && row.turnId) showModelActionToolbar(row.turnId);
             else if (row.kind === "message" && row.role === "user") showUserActionToolbar(row.id);
             else clearActionToolbar();
@@ -989,7 +1000,7 @@
                     {/if}
                     <ChatMessageActionToolbar
                       target={executionMessageActionTarget(message)}
-                      visible={hoveredActionMessageId === message.id}
+                      visible={hoveredActionMessageId === message.id || heldMessageActionsKey() === touchActionsKey(row)}
                       onError={reportError}
                     />
                   </article>
@@ -1000,7 +1011,7 @@
               {@const actionMessage = row.turnId ? assistantActionMessages.get(row.turnId) : undefined}
               <div class="chat-participant-row">
                 <ChatIdentityButton participant={teammate} model={identity.model} presentation="avatar" size={embedded ? 34 : 36} currentResponseSettings={embedded} />
-                <div class="chat-participant-content"><div class="chat-participant-header"><strong><ChatIdentityButton participant={teammate} model={identity.model} presentation="name" triggerLabel={teammate?.displayName ?? identity.model.displayName} currentResponseSettings={embedded} /></strong><span>{timestampLabel(row.createdAt)}</span></div>{#if actionMessage}<ChatMessageActionToolbar target={executionMessageActionTarget(actionMessage)} visible={hoveredActionTurnId === row.turnId} onError={reportError} />{/if}{@render modelRowContent(row)}</div>
+                <div class="chat-participant-content"><div class="chat-participant-header"><strong><ChatIdentityButton participant={teammate} model={identity.model} presentation="name" triggerLabel={teammate?.displayName ?? identity.model.displayName} currentResponseSettings={embedded} /></strong><span>{timestampLabel(row.createdAt)}</span></div>{#if actionMessage}<ChatMessageActionToolbar target={executionMessageActionTarget(actionMessage)} visible={hoveredActionTurnId === row.turnId || heldMessageActionsKey() === touchActionsKey(row)} onError={reportError} />{/if}{@render modelRowContent(row)}</div>
               </div>
             {:else}
               <div class="chat-participant-followup">{@render modelRowContent(row)}</div>
@@ -1011,7 +1022,7 @@
               {@const actionMessage = row.turnId ? assistantActionMessages.get(row.turnId) : undefined}
               <div class="chat-participant-row">
                 <ChatIdentityButton participant={teammate} model={identity.model} presentation="avatar" size={embedded ? 34 : 36} currentResponseSettings={embedded} />
-                <div class="chat-participant-content"><div class="chat-participant-header"><strong><ChatIdentityButton participant={teammate} model={identity.model} presentation="name" triggerLabel={teammate?.displayName ?? identity.model.displayName} currentResponseSettings={embedded} /></strong><span>{timestampLabel(row.createdAt)}</span></div>{#if actionMessage}<ChatMessageActionToolbar target={executionMessageActionTarget(actionMessage)} visible={hoveredActionTurnId === row.turnId} onError={reportError} />{/if}{@render modelRowContent(row)}</div>
+                <div class="chat-participant-content"><div class="chat-participant-header"><strong><ChatIdentityButton participant={teammate} model={identity.model} presentation="name" triggerLabel={teammate?.displayName ?? identity.model.displayName} currentResponseSettings={embedded} /></strong><span>{timestampLabel(row.createdAt)}</span></div>{#if actionMessage}<ChatMessageActionToolbar target={executionMessageActionTarget(actionMessage)} visible={hoveredActionTurnId === row.turnId || heldMessageActionsKey() === touchActionsKey(row)} onError={reportError} />{/if}{@render modelRowContent(row)}</div>
               </div>
             {:else}
               <div class="chat-participant-followup">{@render modelRowContent(row)}</div>

@@ -471,6 +471,12 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
     user-select: text;
     -webkit-user-select: text;
   }
+  /* A long press on a Chat message reveals its actions instead of starting a native selection. */
+  html[data-shell="mobile"] body [data-message-touch-actions] :where(:not(input, textarea, [contenteditable], [contenteditable] *)) {
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+  }
   html[data-shell="mobile"] body {
     touch-action: manipulation;
     -webkit-tap-highlight-color: transparent;

@@ -11,6 +11,7 @@
   import ChatIdentityButton from "$lib/components/chat/identity/ChatIdentityButton.svelte";
   import ChatMessageActionToolbar from "./ChatMessageActionToolbar.svelte";
   import ChatMessageReactionList from "./ChatMessageReactionList.svelte";
+  import { heldMessageActionsKey, messageTouchActions } from "./message-touch-actions.svelte";
   import ChatParticipantAvatar from "$lib/components/chat/identity/ChatParticipantAvatar.svelte";
 
   let {
@@ -31,6 +32,7 @@
   const { t } = localization;
   const chat = getChat();
   const preferences = getPreferences();
+  const touchActionsKey = $props.id();
   let actionToolbarVisible = $state(false);
   const authorDisplayName = $derived(message.authorLabelSnapshot || chatParticipantDisplayName(
     message.author,
@@ -88,9 +90,11 @@
   data-message-item-id={message.itemId}
   tabindex="-1"
   aria-label={`${authorDisplayName}, ${formatDateTime(localization.locale, Date.parse(message.createdAt), { dateStyle: "medium", timeStyle: "short" })}`}
-  onpointerenter={() => { actionToolbarVisible = true; }}
+  use:messageTouchActions={touchActionsKey}
+  data-message-touch-actions
+  onpointerenter={(event) => { if (event.pointerType !== "touch") actionToolbarVisible = true; }}
   onpointerleave={() => { actionToolbarVisible = false; }}
-  onfocusin={() => { actionToolbarVisible = true; }}
+  onfocusin={(event) => { if (event.target instanceof Element && event.target.matches(":focus-visible")) actionToolbarVisible = true; }}
   onfocusout={(event) => {
     if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) {
       actionToolbarVisible = false;
@@ -126,7 +130,7 @@
     <ChatMessageReactionList target={actionTarget} />
     <ChatMessageActionToolbar
       target={actionTarget}
-      visible={actionToolbarVisible}
+      visible={actionToolbarVisible || heldMessageActionsKey() === touchActionsKey}
       placement={grouped ? "grouped-message" : "participant-header"}
     />
   </div>

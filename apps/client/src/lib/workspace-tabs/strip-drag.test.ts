@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { tabDragLeftBar, tabStripDropIndex, tabStripMoveTarget, type TabStripSlot } from "./strip-drag";
+import {
+  tabDragLeftBar,
+  tabStripDropIndex,
+  tabStripMoveTarget,
+  tabStripRight,
+  tabStripVisualLeft,
+  type TabStripSlot,
+} from "./strip-drag";
 
 const WIDTH = 100;
 const GAP = 2;
@@ -69,5 +76,25 @@ describe("tab drag leaving the bar", () => {
     expect(tabDragLeftBar(51, bar, 14)).toBe(true);
     expect(tabDragLeftBar(400, bar, 14)).toBe(true);
     expect(tabDragLeftBar(-15, bar, 14)).toBe(true);
+  });
+});
+
+describe("dragged tab position", () => {
+  it("follows the pointer from where the tab was grabbed", () => {
+    expect(tabStripVisualLeft(150, 40, 100, 400)).toBe(110);
+  });
+
+  it("stops at either end of the strip", () => {
+    expect(tabStripVisualLeft(10, 40, 100, 400)).toBe(0);
+    expect(tabStripVisualLeft(900, 40, 100, 400)).toBe(300);
+  });
+
+  it("stays at the start when the strip is narrower than the tab", () => {
+    expect(tabStripVisualLeft(900, 40, 100, 60)).toBe(0);
+  });
+
+  it("measures the strip by its rightmost tab", () => {
+    expect(tabStripRight(slots("a", "b", "c"))).toBe(10 + 2 * (WIDTH + GAP) + WIDTH);
+    expect(tabStripRight([])).toBe(0);
   });
 });

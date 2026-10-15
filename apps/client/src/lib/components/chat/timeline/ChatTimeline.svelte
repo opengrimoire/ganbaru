@@ -965,7 +965,7 @@
           aria-setsize={displayRows.length}
           tabindex="-1"
           use:messageTouchActions={touchActionsKey(row)}
-          data-message-touch-actions
+          data-message-touch-actions={touchActionsKey(row) === null ? undefined : ""}
           onpointerenter={(event) => {
             if (event.pointerType === "touch") return;
             if (isModelOwnedRow(row) && row.turnId) showModelActionToolbar(row.turnId);

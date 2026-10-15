@@ -1195,7 +1195,7 @@
         {#if dateTime.timePickerTarget}
           <!-- svelte-ignore a11y_click_events_have_key_events -->
           <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div class="fixed inset-0 z-19" onpointerdown={() => dateTime.closeTimePicker("pointer")}></div>
+          <div class="fixed inset-0 z-19" onclick={() => dateTime.closeTimePicker("pointer")}></div>
           {@const isEnd = dateTime.timePickerTarget === 'end'}
           {@const startMinutes = (() => { const [h, m] = (session.startTime || "0:0").split(":").map(Number); return h * 60 + m; })()}
           <div class="absolute top-full z-20 mt-1 rounded-lg bg-popover shadow-lg ring-1 ring-border/60"

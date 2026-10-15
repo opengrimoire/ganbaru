@@ -47,7 +47,6 @@
   import { getTheme } from "$lib/stores/theme.svelte";
   import { cn } from "$lib/utils";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
-  import { keepInViewport } from "$lib/utils/keep-in-viewport";
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
   import PriorityFlagIcon from "$lib/components/projects/PriorityFlagIcon.svelte";
   import ProjectStatusBadge from "$lib/components/projects/ProjectStatusBadge.svelte";
@@ -152,6 +151,7 @@
   let customFieldPanelOpen = $state(false);
   let customFieldRootEl: HTMLDivElement | undefined = $state();
   let customFieldTriggerEl: HTMLButtonElement | undefined = $state();
+  let selectMenuTriggerEl: HTMLButtonElement | undefined = $state();
   let valueSaveError = $state<string | null>(null);
   let numericDraft = $state<string | null>(null);
   let numericSaving = $state(false);
@@ -440,10 +440,11 @@
     };
   }
 
-  function positionCustomFieldPanel(node: HTMLElement) {
+  /** Place a fixed menu beside its trigger so the list scroller never clips it. */
+  function positionCellMenu(node: HTMLElement, anchor: HTMLElement | undefined) {
     function updatePosition(): void {
-      positionPanel(node, customFieldTriggerEl, {
-        fallbackWidth: Math.max(180, customFieldTriggerEl?.offsetWidth ?? 0),
+      positionPanel(node, anchor, {
+        fallbackWidth: Math.max(180, anchor?.offsetWidth ?? 0),
         minHeight: 48,
       });
     }
@@ -480,6 +481,7 @@
       data-app-tooltip-disabled="true"
       aria-haspopup="menu"
       aria-expanded={statusMenuOpen}
+      bind:this={selectMenuTriggerEl}
       onclick={onToggleStatusMenu}
     ></button>
     <div class="pointer-events-none relative z-10 min-w-0 max-w-full">
@@ -492,8 +494,8 @@
     </div>
       {#if statusMenuOpen}
         <div
-          use:keepInViewport
-          class="surface-floating surface-floating-body absolute left-0 top-full z-30 mt-1 w-44"
+          use:positionCellMenu={selectMenuTriggerEl}
+          class="surface-floating surface-floating-body fixed z-40 w-44"
           role="menu"
         >
           {#each statuses as nextStatus (nextStatus.id)}
@@ -528,6 +530,7 @@
       data-app-tooltip-disabled="true"
       aria-haspopup="menu"
       aria-expanded={priorityMenuOpen}
+      bind:this={selectMenuTriggerEl}
       onclick={onTogglePriorityMenu}
     ></button>
     <div class="pointer-events-none relative z-10 min-w-0 max-w-full">
@@ -538,8 +541,8 @@
     </div>
       {#if priorityMenuOpen}
         <div
-          use:keepInViewport
-          class="surface-floating surface-floating-body absolute left-0 top-full z-30 mt-1 w-44"
+          use:positionCellMenu={selectMenuTriggerEl}
+          class="surface-floating surface-floating-body fixed z-40 w-44"
           role="menu"
         >
           {#each priorities as priority (priority.id)}
@@ -811,7 +814,7 @@
               class="surface-floating fixed z-40 w-floating-sm p-2"
               role="dialog"
               aria-label={customField.name}
-              use:positionCustomFieldPanel
+              use:positionCellMenu={customFieldTriggerEl}
             >
               <MiniDatePicker
                 selectedDate={customValue?.dateValue ?? todayDate}
@@ -852,7 +855,7 @@
               class="surface-floating fixed z-40 flex min-w-44 flex-col overflow-hidden"
               role="menu"
               aria-label={customField.name}
-              use:positionCustomFieldPanel
+              use:positionCellMenu={customFieldTriggerEl}
             >
               <div use:scrollEdgeFadeAction class="surface-floating-body min-h-0 overflow-y-auto">
                 {#if selectedOptionIds.length > 0}

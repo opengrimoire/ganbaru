@@ -29,21 +29,32 @@ import {
   relativeWorkspaceTabId,
   rememberClosedWorkspaceTabs,
   reopenWorkspaceTab,
+  resizeWorkspaceSplit,
   savedWindowLabels,
   sameTabLocation,
   serializeClosedWorkspaceTabs,
   serializeWorkspaceTabsState,
+  setWorkspaceSplitOrientation,
   showWorkspaceTabNeighbor,
+  splitWorkspaceTabs,
+  swapWorkspaceSplit,
   tabMatchesTarget,
   takeWorkspaceTab,
+  unsplitWorkspaceTab,
   updateWorkspaceTab,
+  workspaceSplitBlock,
+  workspaceSplitPartnerId,
   workspaceTabIdAtPosition,
   workspaceTabLockLevel,
+  workspaceTabSplit,
   type ClosedWorkspaceTab,
+  type WorkspaceSplitBlock,
+  type WorkspaceSplitOrientation,
   type WorkspaceTab,
   type WorkspaceTabLevel,
   type WorkspaceTabLocation,
   type WorkspaceTabPlacement,
+  type WorkspaceTabSplit,
   type WorkspaceTabsState,
 } from "$lib/workspace-tabs/model";
 
@@ -248,6 +259,26 @@ function currentTab(): WorkspaceTab {
   return activeWorkspaceTab(tabsState);
 }
 
+/** The tab shown beside the active one in its split, or null. */
+function partnerTab(): WorkspaceTab | null {
+  const id = workspaceSplitPartnerId(tabsState, tabsState.activeTabId);
+  return id ? tabsState.tabs.find((tab) => tab.id === id) ?? null : null;
+}
+
+/** Whether a tab is on screen: the active tab or the tab beside it. */
+function isShown(id: string): boolean {
+  return id === tabsState.activeTabId || id === workspaceSplitPartnerId(tabsState, tabsState.activeTabId);
+}
+
+/**
+ * Whether restoring a split partner can show where it was: Calendar always can, and any other view only on the
+ * project the active tab shows, because the views share the selected project.
+ */
+function partnerFollowsActive(active: WorkspaceTab, partner: WorkspaceTab): boolean {
+  const { kind, projectId } = partner.location;
+  return kind === "calendar" || active.location.kind === "calendar" || projectId === active.location.projectId;
+}
+
 /**
  * Current names for a tab's item and project. Only item tabs carry an item name, and Calendar and tabs
  * without a project carry no project name. A name that is not loaded is left out so the cached one stays.
@@ -271,22 +302,35 @@ function cancelRestore(): void {
   restoring = false;
 }
 
+/**
+ * Show the active tab and the tab beside it. The partner goes first, so the active tab's own location wins
+ * wherever the two touch the same stores. A partner on another project than the active tab is not restored
+ * and shows the active tab's project instead.
+ */
 async function restoreActive(): Promise<void> {
   const host = connection;
   if (!host) return;
   const tab = currentTab();
+  const partner = partnerTab();
+  const restorePartner = partner !== null && partnerFollowsActive(tab, partner);
   const sequence = ++restoreSequence;
   restoring = true;
   navigation?.commit(tab.location.kind);
   const isCurrent = () => sequence === restoreSequence && tabsState.activeTabId === tab.id;
+  const partnerIsCurrent = () => isCurrent() && partnerTab()?.id === partner?.id;
   try {
-    await host.adapter.apply(tab.location, isCurrent);
+    if (partner && restorePartner) await host.adapter.apply(partner.location, partnerIsCurrent);
+    if (isCurrent()) await host.adapter.apply(tab.location, isCurrent);
   } catch (error) {
     console.error("Failed to restore workspace tab:", error);
   } finally {
     if (sequence === restoreSequence) {
       const shown = host.adapter.read(tab.location.kind);
       if (shown) unlockIfUnreachable(tab.id, shown);
+      const partnerShown = partner && restorePartner && partnerIsCurrent()
+        ? host.adapter.read(partner.location.kind)
+        : null;
+      if (partner && partnerShown) unlockIfUnreachable(partner.id, partnerShown);
       restoring = false;
     }
   }
@@ -324,6 +368,25 @@ function recordLocation(tab: WorkspaceTab, location: WorkspaceTabLocation): void
     : insertWorkspaceTab(tabsState, createWorkspaceTab(createTabId(), location), "after-active"));
 }
 
+/**
+ * Adopt what the stores show into the tab beside the active one. The split ends when that tab can no longer
+ * show beside it: its lock no longer holds what it shows, or it now shows the same view as the active tab.
+ */
+function recordPartnerLocation(partnerId: string, location: WorkspaceTabLocation): void {
+  const host = connection;
+  const partner = partnerTab();
+  if (!host || partner?.id !== partnerId) return;
+  if (!isWithinTabScope(partner, location)) {
+    if (meaningfulLocation(location)) setState(unsplitWorkspaceTab(tabsState, partnerId));
+    return;
+  }
+  if (host.adapter.paneView(location) === host.adapter.paneView(currentTab().location)) {
+    setState(unsplitWorkspaceTab(tabsState, partnerId));
+    return;
+  }
+  setState(updateWorkspaceTab(tabsState, partnerId, { location }));
+}
+
 function mostRecent(candidates: readonly WorkspaceTab[]): WorkspaceTab | null {
   for (const id of activationOrder) {
     const tab = candidates.find((candidate) => candidate.id === id);
@@ -353,6 +416,11 @@ function routeNavigation(kind: View): boolean {
   const host = connection;
   if (!host) return false;
   if (currentTab().location.kind === kind) return navigation?.commit(kind) ?? false;
+  const partner = partnerTab();
+  if (partner?.location.kind === kind) {
+    focusPane(partner.id);
+    return true;
+  }
   const location = host.adapter.read(kind) ?? kindLocation(kind);
   const target = tabForLocation(location);
   const next = target
@@ -364,9 +432,9 @@ function routeNavigation(kind: View): boolean {
   return navigation?.commit(kind) ?? false;
 }
 
-/** Where a tab is now: the live stores for the shown tab, else its recorded location. */
+/** Where a tab is now: the live stores for a tab on screen, else its recorded location. */
 function liveLocation(tab: WorkspaceTab): WorkspaceTabLocation {
-  if (tab.id !== tabsState.activeTabId || restoring) return tab.location;
+  if (!isShown(tab.id) || restoring) return tab.location;
   return connection?.adapter.read(tab.location.kind) ?? tab.location;
 }
 
@@ -528,8 +596,13 @@ function connect(host: WorkspaceTabsConnection): void {
   $effect(() => {
     if (restoring) return;
     const tab = currentTab();
+    const partner = partnerTab();
     const location = host.adapter.read(tab.location.kind);
-    if (location) untrack(() => recordLocation(tab, location));
+    const partnerLocation = partner ? host.adapter.read(partner.location.kind) : null;
+    untrack(() => {
+      if (location) recordLocation(tab, location);
+      if (partner && partnerLocation) recordPartnerLocation(partner.id, partnerLocation);
+    });
   });
 
   // Keep cached names current, including renames of what inactive tabs point at. A name that is not
@@ -554,7 +627,84 @@ function connect(host: WorkspaceTabsConnection): void {
 
 function activate(id: string): void {
   if (id === tabsState.activeTabId) return;
-  commitState(activateWorkspaceTab(tabsState, id));
+  if (id === partnerTab()?.id) focusPane(id);
+  else commitState(activateWorkspaceTab(tabsState, id));
+}
+
+/**
+ * Make the tab beside the active one active. Both already show, so nothing is restored and whatever the user
+ * started in that pane carries on.
+ */
+function focusPane(id: string): void {
+  const tab = partnerTab();
+  if (tab?.id !== id) return;
+  cancelRestore();
+  setState(activateWorkspaceTab(tabsState, id));
+  navigation?.commit(tab.location.kind);
+}
+
+/** Why a tab cannot show beside the active tab, or null when it can. */
+function splitBlock(id: string): WorkspaceSplitBlock | "unavailable" | null {
+  const host = connection;
+  const tab = tabsState.tabs.find((candidate) => candidate.id === id);
+  if (!host || !tab) return "unavailable";
+  return workspaceSplitBlock(currentTab(), tab, (location) => host.adapter.paneView(location));
+}
+
+/** Record where the shown tabs are, so a change of split keeps what they show. */
+function recordShownTabs(): WorkspaceTabsState {
+  let next = tabsState;
+  for (const tab of [currentTab(), partnerTab()]) {
+    if (tab) next = updateWorkspaceTab(next, tab.id, { location: liveLocation(tab) });
+  }
+  return next;
+}
+
+/** Show a tab beside the active one, replacing the tab shown there, if any. */
+function openInSplit(id: string): void {
+  if (splitBlock(id)) return;
+  const recorded = recordShownTabs();
+  cancelRestore();
+  setState(splitWorkspaceTabs(recorded, recorded.activeTabId, id));
+  void restoreActive();
+}
+
+/** A new tab of a kind, at what its stores show now, or null when no tab can open. */
+function newKindTab(kind: View): WorkspaceTab | null {
+  const host = connection;
+  if (!host || !canAddWorkspaceTab(tabsState)) return null;
+  const tab = createWorkspaceTab(createTabId(), host.adapter.read(kind) ?? kindLocation(kind));
+  return { ...tab, ...tabNames(host.adapter, tab) };
+}
+
+/** Kinds a new tab beside the active one can show. */
+function splitKinds(): View[] {
+  const host = connection;
+  if (!host || !canAddWorkspaceTab(tabsState)) return [];
+  const current = currentTab();
+  const paneView = (location: WorkspaceTabLocation) => host.adapter.paneView(location);
+  return availableAppViews().filter((kind) => {
+    const location = host.adapter.read(kind) ?? kindLocation(kind);
+    return workspaceSplitBlock(current, createWorkspaceTab("", location), paneView) === null;
+  });
+}
+
+/** Open a new tab of a kind beside the active one. */
+function openKindInSplit(kind: View): void {
+  if (!splitKinds().includes(kind)) return;
+  const tab = newKindTab(kind);
+  if (!tab) return;
+  const recorded = recordShownTabs();
+  cancelRestore();
+  const inserted = insertWorkspaceTab(recorded, tab, "after-active", false);
+  setState(splitWorkspaceTabs(inserted, inserted.activeTabId, tab.id));
+  void restoreActive();
+}
+
+/** Close one side of the active tab's split, the first (left or top) or the second. */
+function closeSplitSide(side: 0 | 1): void {
+  const split = workspaceTabSplit(tabsState, tabsState.activeTabId);
+  if (split) close(split.tabIds[side]);
 }
 
 /**
@@ -913,9 +1063,39 @@ export function getWorkspaceTabs() {
     get canReceiveTab(): boolean {
       return canAddWorkspaceTab(tabsState);
     },
+    /** The split the active tab shows in, or null. */
+    get split(): WorkspaceTabSplit | null {
+      return workspaceTabSplit(tabsState, tabsState.activeTabId);
+    },
+    /** The tab shown beside the active one, or null. */
+    get partnerTab(): WorkspaceTab | null {
+      return partnerTab();
+    },
+    /** The split a tab belongs to, or null. */
+    splitOf(id: string): WorkspaceTabSplit | null {
+      return workspaceTabSplit(tabsState, id);
+    },
     holds,
     connect,
     activate,
+    focusPane,
+    splitBlock,
+    splitKinds,
+    openInSplit,
+    openKindInSplit,
+    closeSplitSide,
+    unsplit(id: string): void {
+      setState(unsplitWorkspaceTab(tabsState, id));
+    },
+    swapSplit(id: string): void {
+      setState(swapWorkspaceSplit(tabsState, id));
+    },
+    setSplitOrientation(id: string, orientation: WorkspaceSplitOrientation): void {
+      setState(setWorkspaceSplitOrientation(tabsState, id, orientation));
+    },
+    resizeSplit(id: string, ratio: number): void {
+      setState(resizeWorkspaceSplit(tabsState, id, ratio));
+    },
     showNeighborOf,
     openKind,
     openLocation,

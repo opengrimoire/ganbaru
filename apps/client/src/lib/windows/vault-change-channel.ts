@@ -1,6 +1,6 @@
 import { activeVaultIdentity } from "$lib/vault/active-vault";
 import { createWindowSyncEnvelope, isForeignWindowSyncEnvelope, isWindowSyncEnvelope } from "./sync";
-import { emitWindowSync, listenWindowSync } from "./sync-transport";
+import { emitWindowSync, listenWindowSync } from "$lib/windows/sync-transport";
 
 /** Quiet period that gathers a burst of writes from another window into one refresh. */
 export const VAULT_CHANGE_QUIET_MS = 300;

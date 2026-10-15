@@ -1,10 +1,13 @@
 <script lang="ts" module>
   import type { View } from "$lib/navigation";
+  import type { WorkspacePaneScope } from "$lib/workspace-tabs/model";
 
   /** A tab shown in the content area and the view that shows it. */
   export interface WorkspaceShownPane {
     tabId: string;
     view: View;
+    /** The set of view stores the view shows through, which tells apart two panes of one view. */
+    scope: WorkspacePaneScope;
   }
 </script>
 
@@ -65,8 +68,10 @@
       ? DEFAULT_SPLIT_RATIO
       : fitSplitRatio(dragRatio ?? split?.ratio ?? DEFAULT_SPLIT_RATIO, extent, minSplitPaneLength(layout)),
   );
+  /** What a pane's view is mounted for, so switching between tabs of one view keeps that view mounted. */
+  const paneKey = (pane: WorkspaceShownPane): string => `${pane.scope}:${pane.view}`;
   /** Panes in a fixed DOM order, so swapping sides or changing the split never moves or remounts a view. */
-  const stablePanes = $derived([...panes].sort((a, b) => a.view.localeCompare(b.view)));
+  const stablePanes = $derived([...panes].sort((a, b) => paneKey(a).localeCompare(paneKey(b))));
 
   function paneIndex(pane: WorkspaceShownPane): number {
     return panes.findIndex((candidate) => candidate.tabId === pane.tabId);
@@ -133,11 +138,12 @@
   class:workspace-split-resizing={dragRatio !== null}
   data-split-layout={layout}
 >
-  {#each stablePanes as pane (pane.view)}
+  {#each stablePanes as pane (paneKey(pane))}
     {@const index = paneIndex(pane)}
     {@const focused = pane.tabId === focusedTabId}
     <WorkspacePane
       {focused}
+      scope={pane.scope}
       outlined={focused && layout !== "single"}
       hidden={layout === "single" && panes.length > 1 && !focused}
       painted={pane.view === "calendar"}

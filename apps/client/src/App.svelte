@@ -615,13 +615,25 @@
   const shownKinds = $derived<readonly View[]>(
     workspaceTabs.partnerTab ? [nav.current, workspaceTabs.partnerTab.location.kind] : [nav.current],
   );
-  /** The tabs the content area shows in split order, each with the view that shows it, and never one view twice. */
+  /**
+   * The tabs the content area shows in split order, each with the view and stores that show it. One view shows
+   * twice only through two sets of stores.
+   */
   const shownPanes = $derived.by<WorkspaceShownPane[]>(() => {
-    const active: WorkspaceShownPane = { tabId: workspaceTabs.activeTabId, view: paneView(nav.current) };
+    const activeId = workspaceTabs.activeTabId;
+    const active: WorkspaceShownPane = {
+      tabId: activeId,
+      view: paneView(nav.current),
+      scope: workspaceTabs.paneScope(activeId),
+    };
     const partner = workspaceTabs.partnerTab;
     if (!partner) return [active];
-    const beside: WorkspaceShownPane = { tabId: partner.id, view: paneView(partner.location.kind) };
-    if (beside.view === active.view) return [active];
+    const beside: WorkspaceShownPane = {
+      tabId: partner.id,
+      view: paneView(partner.location.kind),
+      scope: workspaceTabs.paneScope(partner.id),
+    };
+    if (beside.view === active.view && beside.scope === active.scope) return [active];
     return workspaceTabs.split?.tabIds[0] === partner.id ? [beside, active] : [active, beside];
   });
 

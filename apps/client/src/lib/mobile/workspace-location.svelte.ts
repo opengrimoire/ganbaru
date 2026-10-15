@@ -27,9 +27,9 @@ export function createDeferredWorkspaceLocationAdapter(
   }
 
   return {
-    read(kind) {
+    read(kind, scope) {
       if (kind === "calendar") return kindLocation(kind);
-      return loaded?.read(kind) ?? null;
+      return loaded?.read(kind, scope) ?? null;
     },
     itemTitle(location) {
       return loaded?.itemTitle(location) ?? null;
@@ -40,10 +40,10 @@ export function createDeferredWorkspaceLocationAdapter(
     paneView(location) {
       return loaded?.paneView(location) ?? location.kind;
     },
-    async apply(location, isCurrent) {
+    async apply(location, isCurrent, scope) {
       if (location.kind === "calendar") return;
       const adapter = await ensureLoaded();
-      if (isCurrent()) await adapter.apply(location, isCurrent);
+      if (isCurrent()) await adapter.apply(location, isCurrent, scope);
     },
   };
 }

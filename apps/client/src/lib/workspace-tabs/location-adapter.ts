@@ -1,6 +1,6 @@
 import type { View } from "$lib/navigation";
 import type { WorkspaceLocationAdapter } from "$lib/stores/workspace-tabs.svelte";
-import { kindLocation, type WorkspaceTabItem, type WorkspaceTabLocation } from "./model";
+import { kindLocation, type WorkspacePaneScope, type WorkspaceTabItem, type WorkspaceTabLocation } from "./model";
 
 /** The Projects store surface a tab location reads and restores. */
 export interface WorkspaceLocationProjects<TView extends { id: string }> {
@@ -90,31 +90,36 @@ async function applyItem<TView extends { id: string }>(
 }
 
 /**
- * Map tab locations onto the shared view stores. Reading tracks the stores' reactive selection, so the tab
- * store records where a tab is as the user navigates. Restoring skips projects and items that no longer
- * exist, leaving the stores where they are.
+ * Map tab locations onto the view stores. Reading tracks the stores' reactive selection, so the tab store
+ * records where a tab is as the user navigates. Restoring skips projects and items that no longer exist,
+ * leaving the stores where they are. A tab in the secondary pane scope reads and restores `secondary`, whose
+ * members may be the primary stores for kinds that have one set per window.
  */
 export function createWorkspaceLocationAdapter<TView extends { id: string }>(
-  stores: WorkspaceLocationStores<TView>,
+  primary: WorkspaceLocationStores<TView>,
+  secondary: WorkspaceLocationStores<TView> = primary,
 ): WorkspaceLocationAdapter {
+  const scoped = (scope: WorkspacePaneScope) => (scope === "secondary" ? secondary : primary);
   return {
-    read(kind) {
+    read(kind, scope = "primary") {
       if (kind === "calendar") return kindLocation(kind);
+      const stores = scoped(scope);
       return { kind, projectId: stores.projects.selectedProjectId, item: readItem(kind, stores) };
     },
     itemTitle(location) {
-      return itemTitle(location, stores);
+      return itemTitle(location, primary);
     },
     projectName(projectId) {
-      return stores.projects.projectName(projectId);
+      return primary.projects.projectName(projectId);
     },
     paneView(location) {
       const { kind, projectId, item } = location;
       if (kind !== "projects" || !projectId || item?.type !== "project-view") return kind;
-      return stores.projects.hostedView(projectId, item.id) ?? kind;
+      return primary.projects.hostedView(projectId, item.id) ?? kind;
     },
-    async apply(location, isCurrent) {
+    async apply(location, isCurrent, scope = "primary") {
       if (location.kind === "calendar") return;
+      const stores = scoped(scope);
       const projectId = location.projectId;
       if (projectId && stores.projects.selectedProjectId !== projectId) {
         await stores.projects.ensureLoaded();

@@ -35,6 +35,8 @@ import {
   serializeClosedWorkspaceTabs,
   serializeWorkspaceTabsState,
   setWorkspaceSplitOrientation,
+  canShowSideBySide,
+  secondaryScopeTabId,
   showWorkspaceTabNeighbor,
   splitWorkspaceTabs,
   swapWorkspaceSplit,
@@ -49,6 +51,7 @@ import {
   workspaceTabSplit,
   type ClosedWorkspaceTab,
   type WorkspaceSplitBlock,
+  type WorkspacePaneScope,
   type WorkspaceSplitOrientation,
   type WorkspaceTab,
   type WorkspaceTabLevel,
@@ -58,18 +61,21 @@ import {
   type WorkspaceTabsState,
 } from "$lib/workspace-tabs/model";
 
-/** Reads and restores the singleton view stores that a tab location describes. */
+/** Reads and restores the view stores that a tab location describes. */
 export interface WorkspaceLocationAdapter {
-  /** Where the stores behind a kind are now, or null while they are not loaded, so nothing is recorded yet. */
-  read(kind: View): WorkspaceTabLocation | null;
+  /**
+   * Where the stores behind a kind are now, in the primary pane scope unless `scope` says otherwise, or null
+   * while they are not loaded, so nothing is recorded yet.
+   */
+  read(kind: View, scope?: WorkspacePaneScope): WorkspaceTabLocation | null;
   /** Name of the item a location points at, or null when it has none or it is not loaded. */
   itemTitle(location: WorkspaceTabLocation): string | null;
   /** Name of a project, or null when it is not loaded. */
   projectName(projectId: string): string | null;
   /** The view that shows a location, such as Notes for a project view that hosts Notes. */
   paneView(location: WorkspaceTabLocation): View;
-  /** Restore a location, stopping between steps once `isCurrent` turns false. */
-  apply(location: WorkspaceTabLocation, isCurrent: () => boolean): Promise<void>;
+  /** Restore a location into a pane scope, the primary one by default, stopping between steps once `isCurrent` turns false. */
+  apply(location: WorkspaceTabLocation, isCurrent: () => boolean, scope?: WorkspacePaneScope): Promise<void>;
 }
 
 export interface WorkspaceTabsConnection {
@@ -124,6 +130,8 @@ function createTabId(): string {
 let tabsState = $state.raw<WorkspaceTabsState>(defaultWorkspaceTabsState(availableAppViews(), createTabId));
 let restoring = $state(false);
 let launcherRequests = $state(0);
+/** The shown tab that reads and restores the secondary view stores, or null when the shown tabs use different stores. */
+let secondaryTabId = $state<string | null>(null);
 let restoreSequence = 0;
 let activationOrder: string[] = [];
 let connection: WorkspaceTabsConnection | null = null;
@@ -251,8 +259,38 @@ function setState(next: WorkspaceTabsState): boolean {
   activationOrder = [next.activeTabId, ...activationOrder.filter((id) => id !== next.activeTabId && ids.has(id))];
   if (next.closed !== tabsState.closed) persistClosed(next.closed);
   tabsState = next;
-  persist(next);
+  const rescoped = assignPaneScopes();
+  persist(tabsState);
+  if (rescoped) void restoreActive();
   return true;
+}
+
+/** The view stores a tab reads and restores. */
+function scopeOf(id: string): WorkspacePaneScope {
+  return id === secondaryTabId ? "secondary" : "primary";
+}
+
+/**
+ * Give the shown tabs their pane scopes. Returns whether a shown tab changed scope, so the tabs must be restored
+ * into the stores they now show through. A tab that leaves the secondary stores while it still shows first takes
+ * its place from them, so it shows the same place through the primary ones.
+ */
+function assignPaneScopes(): boolean {
+  const host = connection;
+  const previous = secondaryTabId;
+  const next = host
+    ? secondaryScopeTabId(currentTab(), partnerTab(), previous, (location) => host.adapter.paneView(location))
+    : null;
+  if (next === previous) return false;
+  const leaving = previous !== null && isShown(previous)
+    ? tabsState.tabs.find((tab) => tab.id === previous) ?? null
+    : null;
+  const location = host && leaving && !restoring ? host.adapter.read(leaving.location.kind, "secondary") : null;
+  if (leaving && location && isWithinTabScope(leaving, location)) {
+    tabsState = updateWorkspaceTab(tabsState, leaving.id, { location });
+  }
+  secondaryTabId = next;
+  return leaving !== null || next !== null;
 }
 
 function currentTab(): WorkspaceTab {
@@ -319,16 +357,18 @@ async function restoreActive(): Promise<void> {
   const isCurrent = () => sequence === restoreSequence && tabsState.activeTabId === tab.id;
   const partnerIsCurrent = () => isCurrent() && partnerTab()?.id === partner?.id;
   try {
-    if (partner && restorePartner) await host.adapter.apply(partner.location, partnerIsCurrent);
-    if (isCurrent()) await host.adapter.apply(tab.location, isCurrent);
+    if (partner && restorePartner) {
+      await host.adapter.apply(partner.location, partnerIsCurrent, scopeOf(partner.id));
+    }
+    if (isCurrent()) await host.adapter.apply(tab.location, isCurrent, scopeOf(tab.id));
   } catch (error) {
     console.error("Failed to restore workspace tab:", error);
   } finally {
     if (sequence === restoreSequence) {
-      const shown = host.adapter.read(tab.location.kind);
+      const shown = host.adapter.read(tab.location.kind, scopeOf(tab.id));
       if (shown) unlockIfUnreachable(tab.id, shown);
       const partnerShown = partner && restorePartner && partnerIsCurrent()
-        ? host.adapter.read(partner.location.kind)
+        ? host.adapter.read(partner.location.kind, scopeOf(partner.id))
         : null;
       if (partner && partnerShown) unlockIfUnreachable(partner.id, partnerShown);
       restoring = false;
@@ -370,7 +410,7 @@ function recordLocation(tab: WorkspaceTab, location: WorkspaceTabLocation): void
 
 /**
  * Adopt what the stores show into the tab beside the active one. The split ends when that tab can no longer
- * show beside it: its lock no longer holds what it shows, or it now shows the same view as the active tab.
+ * show beside it: its lock no longer holds what it shows, or it now shows through the active tab's stores.
  */
 function recordPartnerLocation(partnerId: string, location: WorkspaceTabLocation): void {
   const host = connection;
@@ -380,7 +420,7 @@ function recordPartnerLocation(partnerId: string, location: WorkspaceTabLocation
     if (meaningfulLocation(location)) setState(unsplitWorkspaceTab(tabsState, partnerId));
     return;
   }
-  if (host.adapter.paneView(location) === host.adapter.paneView(currentTab().location)) {
+  if (!canShowSideBySide(location, currentTab().location, (shown) => host.adapter.paneView(shown))) {
     setState(unsplitWorkspaceTab(tabsState, partnerId));
     return;
   }
@@ -435,7 +475,7 @@ function routeNavigation(kind: View): boolean {
 /** Where a tab is now: the live stores for a tab on screen, else its recorded location. */
 function liveLocation(tab: WorkspaceTab): WorkspaceTabLocation {
   if (!isShown(tab.id) || restoring) return tab.location;
-  return connection?.adapter.read(tab.location.kind) ?? tab.location;
+  return connection?.adapter.read(tab.location.kind, scopeOf(tab.id)) ?? tab.location;
 }
 
 /** Whether this window holds a tab: it is in its strip and has not moved to another window. */
@@ -597,8 +637,8 @@ function connect(host: WorkspaceTabsConnection): void {
     if (restoring) return;
     const tab = currentTab();
     const partner = partnerTab();
-    const location = host.adapter.read(tab.location.kind);
-    const partnerLocation = partner ? host.adapter.read(partner.location.kind) : null;
+    const location = host.adapter.read(tab.location.kind, scopeOf(tab.id));
+    const partnerLocation = partner ? host.adapter.read(partner.location.kind, scopeOf(partner.id)) : null;
     untrack(() => {
       if (location) recordLocation(tab, location);
       if (partner && partnerLocation) recordPartnerLocation(partner.id, partnerLocation);
@@ -1075,6 +1115,8 @@ export function getWorkspaceTabs() {
     splitOf(id: string): WorkspaceTabSplit | null {
       return workspaceTabSplit(tabsState, id);
     },
+    /** The view stores a shown tab reads and restores. */
+    paneScope: scopeOf,
     holds,
     connect,
     activate,

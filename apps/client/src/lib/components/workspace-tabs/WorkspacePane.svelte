@@ -1,9 +1,12 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
+  import type { WorkspacePaneScope } from "$lib/workspace-tabs/model";
   import { provideWorkspacePaneFocus } from "$lib/workspace-tabs/pane-focus";
+  import { provideWorkspacePaneScope } from "$lib/workspace-tabs/pane-scope";
 
   let {
     focused,
+    scope,
     outlined,
     hidden,
     painted,
@@ -14,6 +17,8 @@
   }: {
     /** Whether window-wide shortcuts act on this pane. */
     focused: boolean;
+    /** The set of view stores the view shows through. */
+    scope: WorkspacePaneScope;
     /** Whether to mark this pane as the focused one beside another. */
     outlined: boolean;
     hidden: boolean;
@@ -27,6 +32,7 @@
   } = $props();
 
   provideWorkspacePaneFocus(() => focused);
+  provideWorkspacePaneScope(() => scope);
 
   /** Focus the pane when keyboard navigation moves into it, but not when a view focuses itself after a click. */
   function handleFocusIn(event: FocusEvent): void {

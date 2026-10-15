@@ -18,6 +18,7 @@
     fitSplitRatio,
     minSplitPaneLength,
     workspaceSplitLayout,
+    type WorkspaceSplitArea,
     type WorkspaceSplitLayout,
   } from "$lib/workspace-tabs/split-layout";
   import WorkspacePane from "./WorkspacePane.svelte";
@@ -29,6 +30,7 @@
     onFocusPane,
     onResize,
     content,
+    area = $bindable({ width: 0, height: 0 }),
   }: {
     /** The shown tabs in split order, first on the left or top; one pane when there is no split. */
     panes: readonly WorkspaceShownPane[];
@@ -37,6 +39,8 @@
     onFocusPane: (tabId: string) => void;
     onResize: (ratio: number) => void;
     content: Snippet<[WorkspaceShownPane]>;
+    /** The size of the area the panes share, which decides how a split can show. */
+    area?: WorkspaceSplitArea;
   } = $props();
 
   const { t } = getLocalization();
@@ -52,6 +56,9 @@
       ? workspaceSplitLayout(split.orientation, width, height, SPLIT_DIVIDER_SIZE)
       : "single",
   );
+  $effect(() => {
+    area = { width, height };
+  });
   const extent = $derived((layout === "stacked" ? height : width) - SPLIT_DIVIDER_SIZE);
   const ratio = $derived(
     layout === "single"

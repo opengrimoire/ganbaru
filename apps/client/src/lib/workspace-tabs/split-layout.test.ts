@@ -5,6 +5,8 @@ import {
   MIN_SPLIT_PANE_WIDTH,
   fitSplitRatio,
   minSplitPaneLength,
+  oppositeSplitOrientation,
+  workspaceSplitArrangement,
   workspaceSplitLayout,
 } from "./split-layout";
 
@@ -26,6 +28,34 @@ describe("workspaceSplitLayout", () => {
   it("shows only the focused tab when neither orientation fits, as in the smallest window", () => {
     expect(workspaceSplitLayout("side-by-side", 280, 180, GAP)).toBe("single");
     expect(workspaceSplitLayout("stacked", wide - 1, tall - 1, GAP)).toBe("single");
+  });
+});
+
+describe("workspaceSplitArrangement", () => {
+  it("offers turning the panes when they fit either way", () => {
+    expect(workspaceSplitArrangement("side-by-side", { width: wide, height: tall }, GAP))
+      .toEqual({ orientation: "side-by-side", canTurn: true });
+    expect(workspaceSplitArrangement("stacked", { width: wide, height: tall }, GAP))
+      .toEqual({ orientation: "stacked", canTurn: true });
+  });
+
+  it("reads the panes as the fallback layout shows them and does not offer the way that has no room", () => {
+    expect(workspaceSplitArrangement("side-by-side", { width: wide - 1, height: tall }, GAP))
+      .toEqual({ orientation: "stacked", canTurn: false });
+    expect(workspaceSplitArrangement("stacked", { width: wide, height: tall - 1 }, GAP))
+      .toEqual({ orientation: "side-by-side", canTurn: false });
+  });
+
+  it("keeps the chosen orientation and offers no turn when only one tab shows", () => {
+    expect(workspaceSplitArrangement("stacked", { width: 280, height: 180 }, GAP))
+      .toEqual({ orientation: "stacked", canTurn: false });
+  });
+});
+
+describe("oppositeSplitOrientation", () => {
+  it("turns each orientation into the other", () => {
+    expect(oppositeSplitOrientation("side-by-side")).toBe("stacked");
+    expect(oppositeSplitOrientation("stacked")).toBe("side-by-side");
   });
 });
 

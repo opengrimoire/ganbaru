@@ -701,9 +701,9 @@ function openKindInSplit(kind: View): void {
   void restoreActive();
 }
 
-/** Close one side of the active tab's split, the first (left or top) or the second. */
-function closeSplitSide(side: 0 | 1): void {
-  const split = workspaceTabSplit(tabsState, tabsState.activeTabId);
+/** Close one side of the split a tab belongs to, the first (left or top) or the second. */
+function closeSplitSide(id: string, side: 0 | 1): void {
+  const split = workspaceTabSplit(tabsState, id);
   if (split) close(split.tabIds[side]);
 }
 

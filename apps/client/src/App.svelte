@@ -56,6 +56,7 @@
   import type { ProjectViewComponents } from "$lib/components/projects/view-components";
   import ChatWorkspace from "$lib/components/chat/ChatWorkspace.svelte";
   import WorkspaceSplitView, { type WorkspaceShownPane } from "$lib/components/workspace-tabs/WorkspaceSplitView.svelte";
+  import type { WorkspaceSplitArea } from "$lib/workspace-tabs/split-layout";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import TooltipHost from "$lib/components/ui/TooltipHost.svelte";
   import UpdateNotificationToast from "$lib/components/updates/UpdateNotificationToast.svelte";
@@ -608,6 +609,8 @@
     if (!shownKinds.includes("projects") || !place) return null;
     return projects.selectedProject && projects.selectedGroup ? place : null;
   });
+  /** The area the split view shows in, which decides how the tab menu offers to arrange a split. */
+  let splitArea = $state<WorkspaceSplitArea>({ width: 0, height: 0 });
   /** The kinds of the active tab and the tab shown beside it, if any. */
   const shownKinds = $derived<readonly View[]>(
     workspaceTabs.partnerTab ? [nav.current, workspaceTabs.partnerTab.location.kind] : [nav.current],
@@ -954,7 +957,7 @@
   data-size-class={viewport.sizeClass}
 >
   <div class="flex h-full flex-col overflow-hidden bg-sidebar">
-    <TitleBar {shellStartupMs} {startupMemorySnapshot} {ensureBenchmarkOverlay} />
+    <TitleBar {shellStartupMs} {startupMemorySnapshot} {ensureBenchmarkOverlay} {splitArea} />
     <main class="content-panel flex-1 min-h-0 overflow-hidden">
       <WorkspaceSplitView
         panes={shownPanes}
@@ -962,6 +965,7 @@
         focusedTabId={workspaceTabs.activeTabId}
         onFocusPane={workspaceTabs.focusPane}
         onResize={(ratio) => workspaceTabs.resizeSplit(workspaceTabs.activeTabId, ratio)}
+        bind:area={splitArea}
       >
         {#snippet content(pane)}
           {#if pane.view === "calendar"}

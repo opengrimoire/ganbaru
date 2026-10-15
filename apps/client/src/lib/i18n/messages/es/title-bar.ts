@@ -40,6 +40,8 @@ export const titleBar = {
     resize: "Cambiar el tamaño de la vista dividida",
     sameViewBlocked: "Una vista dividida muestra dos vistas distintas",
     lockedProjectBlocked: "Esta pestaña está bloqueada en otro proyecto",
+    tabLimitBlocked: "Esta ventana ya tiene todas las pestañas que admite",
+    noRoomBlocked: "Esta ventana no tiene espacio para mostrar las vistas así",
     inSplit: (label: string) => `${label}, en vista dividida`,
   },
   control: {

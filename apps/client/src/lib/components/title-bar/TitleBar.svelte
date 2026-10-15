@@ -12,7 +12,8 @@
   import type { TitleBarControlId } from "$lib/stores/preference-options";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getWorkspaceTabs, type WorkspaceTabDetachBlock } from "$lib/stores/workspace-tabs.svelte";
-  import { workspaceTabLockLevel } from "$lib/workspace-tabs/model";
+  import { workspaceTabLockLevel, type WorkspaceSplitBlock } from "$lib/workspace-tabs/model";
+  import { SPLIT_DIVIDER_SIZE, oppositeSplitOrientation, workspaceSplitArrangement, type WorkspaceSplitArea } from "$lib/workspace-tabs/split-layout";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
   import { getThemeEditor } from "$lib/stores/theme-editor.svelte";
@@ -27,7 +28,7 @@
   import TitleBarUtilityControls from "./TitleBarUtilityControls.svelte";
   import { createTitleBarWindowController } from "./window-controller.svelte";
   import { createTitleBarTabWindowController } from "./tab-window-controller";
-  import TitleBarMenus from "./TitleBarMenus.svelte";
+  import TitleBarMenus, { type TabSplitMenu } from "./TitleBarMenus.svelte";
   import {
     createTitleBarShortcutController,
     getAppCloseCoordinator,
@@ -42,10 +43,13 @@
     shellStartupMs = null,
     startupMemorySnapshot = { status: "pending" },
     ensureBenchmarkOverlay = async () => {},
+    splitArea = { width: 0, height: 0 },
   }: {
     shellStartupMs: number | null;
     startupMemorySnapshot: StartupMemorySnapshot;
     ensureBenchmarkOverlay?: () => Promise<void>;
+    /** The area this window's split view shows in, which decides how a split can be arranged. */
+    splitArea?: WorkspaceSplitArea;
   } = $props();
 
   const appWindow = getCurrentWindow();
@@ -438,6 +442,38 @@
     return workspaceTabLockLevel(tab) ? "lock" : null;
   });
 
+  function splitBlockReason(block: WorkspaceSplitBlock): string {
+    return block === "locked-project" ? t("titleBar.split.lockedProjectBlocked") : t("titleBar.split.sameViewBlocked");
+  }
+
+  /**
+   * A tab in a split arranges that split. The active tab opens a new tab beside it, and any other tab can show
+   * beside the active one.
+   */
+  const contextSplitMenu = $derived.by((): TabSplitMenu | null => {
+    const id = tabContextId;
+    if (!id) return null;
+    const split = tabs.splitOf(id);
+    if (split) {
+      const arrangement = workspaceSplitArrangement(split.orientation, splitArea, SPLIT_DIVIDER_SIZE);
+      return {
+        kind: "arrange",
+        orientation: arrangement.orientation,
+        turnBlockReason: arrangement.canTurn ? null : t("titleBar.split.noRoomBlocked"),
+      };
+    }
+    if (id === tabs.activeTabId) {
+      const kinds = tabs.splitKinds();
+      const blockReason = kinds.length > 0
+        ? null
+        : t(tabs.canReceiveTab ? "titleBar.split.sameViewBlocked" : "titleBar.split.tabLimitBlocked");
+      return { kind: "open-new", kinds, blockReason };
+    }
+    const block = tabs.splitBlock(id);
+    if (block === "unavailable") return null;
+    return { kind: "open", blockReason: block ? splitBlockReason(block) : null };
+  });
+
   function toggleTitleBarControl(id: TitleBarControlId) {
     preferences.toggleTitleBarControl(id);
     showTitleBarMenu = false;
@@ -541,6 +577,7 @@
   moveToNewWindowBlockReason={contextDetachBlockReason}
   canReopenTab={tabs.closed.length > 0}
   lockAction={contextLockAction}
+  splitMenu={contextSplitMenu}
   bind:showTitleBarMenu
   {titleBarMenuStyle}
   controls={titleBarControls.map((control) => ({
@@ -554,6 +591,16 @@
     const lock = contextLockAction === "lock";
     runTabContextAction((id) => tabs.setLocked(id, lock));
   }}
+  onOpenInSplit={() => runTabContextAction((id) => tabs.openInSplit(id))}
+  onOpenKindInSplit={(kind) => runTabContextAction(() => tabs.openKindInSplit(kind))}
+  onUnsplit={() => runTabContextAction((id) => tabs.unsplit(id))}
+  onCloseSplitSide={(side) => runTabContextAction((id) => tabs.closeSplitSide(id, side))}
+  onTurnSplit={() => {
+    const menu = contextSplitMenu;
+    if (menu?.kind !== "arrange") return;
+    runTabContextAction((id) => tabs.setSplitOrientation(id, oppositeSplitOrientation(menu.orientation)));
+  }}
+  onSwapSplit={() => runTabContextAction((id) => tabs.swapSplit(id))}
   onToggleControl={toggleTitleBarControl}
 />
 

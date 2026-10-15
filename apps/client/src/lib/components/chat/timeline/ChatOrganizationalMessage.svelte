@@ -6,7 +6,8 @@
   import { chatReferenceTextSegments } from "$lib/chat/composer/message-references";
   import { formatDateTime } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { getChat } from "$lib/stores/chat.svelte";
+  import { useChatPaneEvents } from "$lib/chat/pane-events";
+  import { useChat } from "$lib/stores/chat.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import ChatIdentityButton from "$lib/components/chat/identity/ChatIdentityButton.svelte";
   import ChatMessageActionToolbar from "./ChatMessageActionToolbar.svelte";
@@ -30,7 +31,8 @@
 
   const localization = getLocalization();
   const { t } = localization;
-  const chat = getChat();
+  const chat = useChat();
+  const paneEvents = useChatPaneEvents();
   const preferences = getPreferences();
   const touchActionsKey = $props.id();
   let actionToolbarVisible = $state(false);
@@ -69,7 +71,7 @@
       return;
     }
     if (reference.kind === "workspacePath") {
-      window.dispatchEvent(new CustomEvent("ganbaru-ai:chat-open-file", {
+      paneEvents.dispatchEvent(new CustomEvent("ganbaru-ai:chat-open-file", {
         detail: {
           workingFolderId: reference.workingFolderId,
           relativePath: reference.relativePath,

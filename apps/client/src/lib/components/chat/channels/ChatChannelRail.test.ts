@@ -4,6 +4,7 @@ import { mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatChannelRead } from "$lib/chat/contracts";
 import { readChatSidebarSections, saveChatSidebarSections } from "$lib/chat/channel-sections";
+import { chatPaneEvents } from "$lib/chat/pane-events";
 import { getChat } from "$lib/stores/chat.svelte";
 import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
 import { setActiveVaultIdentity } from "$lib/vault/active-vault";
@@ -103,7 +104,7 @@ describe("ChatChannelRail", () => {
     expect(input).not.toBeNull();
     expect(document.activeElement).not.toBe(input);
     expect(target.querySelectorAll(".explorer-dock-content > .explorer-toolbar button")).toHaveLength(1);
-    window.dispatchEvent(new Event("ganbaru-ai:chat-focus-search"));
+    chatPaneEvents("primary").dispatchEvent(new Event("ganbaru-ai:chat-focus-search"));
     await tick();
     await vi.waitFor(() => expect(document.activeElement).toBe(input));
     if (!input) throw new Error("Search input is missing");

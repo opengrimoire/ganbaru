@@ -52,7 +52,8 @@
   import { parseChatMessageReference } from "$lib/chat/validation";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { formatShortcut } from "$lib/keyboard-shortcuts";
-  import { getChat, type ChatOrganizationalDraft } from "$lib/stores/chat.svelte";
+  import { useChatPaneEvents } from "$lib/chat/pane-events";
+  import { useChat, type ChatOrganizationalDraft } from "$lib/stores/chat.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
   import { requireActiveVaultIdentity } from "$lib/vault/active-vault";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
@@ -143,7 +144,8 @@
     onRequestScrollToBottom?: () => void;
   } = $props();
 
-  const chat = getChat();
+  const chat = useChat();
+  const paneEvents = useChatPaneEvents();
   const projects = getProjects();
   const localization = getLocalization();
   const { t } = localization;
@@ -286,13 +288,13 @@
     };
     const stop = () => { void stopAssignment(); };
     document.addEventListener("selectionchange", selectionChanged);
-    window.addEventListener("ganbaru-ai:chat-stop-requested", stop);
+    paneEvents.addEventListener("ganbaru-ai:chat-stop-requested", stop);
     if (focusEditorOnMount) {
       editorController.focus({ start: selectionStart, end: selectionEnd });
     }
     return () => {
       document.removeEventListener("selectionchange", selectionChanged);
-      window.removeEventListener("ganbaru-ai:chat-stop-requested", stop);
+      paneEvents.removeEventListener("ganbaru-ai:chat-stop-requested", stop);
       editorController = null;
     };
   });
@@ -664,7 +666,7 @@
     if (candidate.kind === "participant" && candidate.needsMembership) {
       persist();
       closePicker();
-      window.dispatchEvent(new CustomEvent("ganbaru-ai:chat-configure-teammate", {
+      paneEvents.dispatchEvent(new CustomEvent("ganbaru-ai:chat-configure-teammate", {
         detail: {
           participantId: candidate.participant.id,
           channelId: chat.selectedChannel?.id,
@@ -864,7 +866,7 @@
     const channelId = disclosureBlocker?.sourceChannelId;
     if (!channelId) return;
     persist();
-    window.dispatchEvent(new CustomEvent("ganbaru-ai:chat-manage-members", {
+    paneEvents.dispatchEvent(new CustomEvent("ganbaru-ai:chat-manage-members", {
       detail: { channelId },
     }));
   }

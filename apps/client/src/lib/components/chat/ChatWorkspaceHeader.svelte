@@ -16,7 +16,8 @@
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { projectNavigatorPanelGeometry, type ProjectNavigatorPanelMode } from "$lib/projects/toolbar";
-  import { getChat } from "$lib/stores/chat.svelte";
+  import { useChatPaneEvents } from "$lib/chat/pane-events";
+  import { useChat } from "$lib/stores/chat.svelte";
   import { getChatSidebarOrder } from "$lib/stores/chat/sidebar-order.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
   import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
@@ -63,7 +64,8 @@
     projectViewSwitcher?: Snippet;
   } = $props();
 
-  const chat = getChat();
+  const chat = useChat();
+  const paneEvents = useChatPaneEvents();
   const chatSidebarOrder = getChatSidebarOrder();
   const projects = getProjects();
   const tabs = getWorkspaceTabs();
@@ -189,7 +191,7 @@
 
   function createChannel(): void {
     navigatorOpen = false;
-    window.dispatchEvent(new Event("ganbaru-ai:chat-new-channel"));
+    paneEvents.dispatchEvent(new Event("ganbaru-ai:chat-new-channel"));
   }
 
   const membersOpen = $derived(membersChannelId !== null && membersChannelId === chat.selectedChannelId);
@@ -228,8 +230,8 @@
       membersChannelId = detail.channelId;
       void loadMembersPanel();
     };
-    window.addEventListener(CHAT_OPEN_MEMBERS_EVENT, openMembers);
-    return () => window.removeEventListener(CHAT_OPEN_MEMBERS_EVENT, openMembers);
+    paneEvents.addEventListener(CHAT_OPEN_MEMBERS_EVENT, openMembers);
+    return () => paneEvents.removeEventListener(CHAT_OPEN_MEMBERS_EVENT, openMembers);
   });
 
   async function commitTitle(title: string): Promise<void> {
@@ -292,7 +294,7 @@
           {/if}
           {#if selectedChannel.topic && !explorerExpanded}<span class="hidden max-w-80 truncate px-1 text-xs text-muted-foreground @min-[760px]:inline" data-chat-channel-topic>{selectedChannel.topic}</span>{/if}
         {/if}
-        <button type="button" class="chat-inline-new-button" aria-label={t("chat.channels.createTitle")} data-chat-new-channel-button onclick={() => window.dispatchEvent(new Event("ganbaru-ai:chat-new-channel"))}><WorkspaceBreadcrumbTerminalIcon kind="plus" /></button>
+        <button type="button" class="chat-inline-new-button" aria-label={t("chat.channels.createTitle")} data-chat-new-channel-button onclick={() => paneEvents.dispatchEvent(new Event("ganbaru-ai:chat-new-channel"))}><WorkspaceBreadcrumbTerminalIcon kind="plus" /></button>
       {:else}
         <div class="chat-context-segment"><MessageSquare size={identityIconSize} /><span>{t("chat.title")}</span></div>
       {/if}

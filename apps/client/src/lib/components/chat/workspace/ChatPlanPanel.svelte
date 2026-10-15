@@ -8,12 +8,12 @@
   import { chatErrorMessage } from "$lib/chat/error-presentation";
   import { projectTimelineReadModel, type TimelinePlanRow } from "$lib/chat/timeline/model";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { getChat } from "$lib/stores/chat.svelte";
+  import { useChat } from "$lib/stores/chat.svelte";
   import ChatMarkdown from "$lib/components/chat/timeline/ChatMarkdown.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
 
   const { t } = getLocalization();
-  const chat = getChat();
+  const chat = useChat();
   let dismissedByThread = $state<Record<string, string[]>>({});
   let error = $state<string | null>(null);
   const pageTurns = $derived(chat.timelinePages.flatMap((page) => page.turns));

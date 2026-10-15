@@ -58,7 +58,8 @@
   import { chatErrorMessage } from "$lib/chat/error-presentation";
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { getChat } from "$lib/stores/chat.svelte";
+  import { useChatPaneEvents } from "$lib/chat/pane-events";
+  import { useChat } from "$lib/stores/chat.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
   import ChatAccessControl from "./ChatAccessControl.svelte";
   import ChatComposerInfoPanel from "./ChatComposerInfoPanel.svelte";
@@ -73,7 +74,8 @@
   const { hero = false } = $props<{ hero?: boolean }>();
   const localization = getLocalization();
   const { t } = localization;
-  const chat = getChat();
+  const chat = useChat();
+  const paneEvents = useChatPaneEvents();
   const projects = getProjects();
   let editorRoot: HTMLDivElement | undefined = $state();
   let editorController: ChatComposerEditor | undefined;
@@ -128,9 +130,9 @@
     const stop = () => void stopTurn();
     const continuePlan = () => preparePlanTurn("plan");
     const implementPlan = () => preparePlanTurn("build");
-    window.addEventListener("ganbaru-ai:chat-stop-requested", stop);
-    window.addEventListener("ganbaru-ai:chat-continue-plan", continuePlan);
-    window.addEventListener("ganbaru-ai:chat-implement-plan", implementPlan);
+    paneEvents.addEventListener("ganbaru-ai:chat-stop-requested", stop);
+    paneEvents.addEventListener("ganbaru-ai:chat-continue-plan", continuePlan);
+    paneEvents.addEventListener("ganbaru-ai:chat-implement-plan", implementPlan);
     if (editorRoot) {
       editorController = new ChatComposerEditor(
         editorRoot,
@@ -159,9 +161,9 @@
       restoreProviderCommand = activeProviderCommand;
       document.removeEventListener("selectionchange", selectionChanged);
       editorController = undefined;
-      window.removeEventListener("ganbaru-ai:chat-stop-requested", stop);
-      window.removeEventListener("ganbaru-ai:chat-continue-plan", continuePlan);
-      window.removeEventListener("ganbaru-ai:chat-implement-plan", implementPlan);
+      paneEvents.removeEventListener("ganbaru-ai:chat-stop-requested", stop);
+      paneEvents.removeEventListener("ganbaru-ai:chat-continue-plan", continuePlan);
+      paneEvents.removeEventListener("ganbaru-ai:chat-implement-plan", implementPlan);
       if (stopTimer !== null) clearTimeout(stopTimer);
       void chat.flushComposer().catch(() => undefined);
     };
@@ -380,7 +382,7 @@
         openComposerPanel("status");
         break;
       case "/changes":
-        window.dispatchEvent(new CustomEvent("ganbaru-ai:chat-open-review"));
+        paneEvents.dispatchEvent(new CustomEvent("ganbaru-ai:chat-open-review"));
         break;
     }
     queueMicrotask(() => editorController?.focus());

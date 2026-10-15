@@ -3,7 +3,7 @@ import type { Translate } from "$lib/i18n/translator.svelte";
 import { notesPageTitle } from "$lib/notes/pages/title";
 import { isProjectHostedViewType } from "$lib/projects/views";
 import type { WorkspaceLocationAdapter } from "$lib/stores/workspace-tabs.svelte";
-import type { getChat } from "$lib/stores/chat.svelte";
+import type { ChatStore } from "$lib/stores/chat.svelte";
 import type { NotesWorkspace } from "$lib/stores/notes.svelte";
 import type { getProjects } from "$lib/stores/projects.svelte";
 import { createWorkspaceLocationAdapter, type WorkspaceLocationStores } from "./location-adapter";
@@ -12,15 +12,25 @@ import { createWorkspaceLocationAdapter, type WorkspaceLocationStores } from "./
 export interface AppWorkspaceLocationStores {
   projects: ReturnType<typeof getProjects>;
   notes: NotesWorkspace;
-  chat: ReturnType<typeof getChat>;
+  chat: ChatStore;
   /** The Notes workspace of the secondary pane scope, or none where split views are unavailable. */
   secondaryNotes?: NotesWorkspace;
+  /** The Chat store of the secondary pane scope, or none where split views are unavailable. */
+  secondaryChat?: ChatStore;
 }
 
 type AppProjectView = ReturnType<ReturnType<typeof getProjects>["viewsForProject"]>[number];
 
+interface PaneLocationStores {
+  projects: AppWorkspaceLocationStores["projects"];
+  notes: NotesWorkspace;
+  chat: ChatStore;
+  /** Name of a channel any pane's Chat store has loaded. */
+  channelName: (projectId: string, channelId: string) => string | null;
+}
+
 function locationStores(
-  { projects, notes, chat }: Omit<AppWorkspaceLocationStores, "secondaryNotes">,
+  { projects, notes, chat, channelName }: PaneLocationStores,
   t: Translate,
 ): WorkspaceLocationStores<AppProjectView> {
   const notesMainPaneStore = () => notes.editorPanes.find((pane) => pane.id === notes.mainPaneId)?.store ?? null;
@@ -56,22 +66,30 @@ function locationStores(
     chat: {
       get selectedChannelId() { return chat.selectedChannelId; },
       selectChannel: (channelId) => chat.selectChannel(channelId),
-      channelName: (projectId, channelId) => (
-        chat.channelsForProject(projectId).find((channel) => channel.id === channelId)?.name ?? null
-      ),
+      channelName,
     },
   };
 }
 
 /**
- * Bind workspace tab locations to the app's Projects, Notes, and Chat stores. Notes locations follow the
- * main editor pane of the workspace a tab shows through, the one a tab restores into.
+ * Bind workspace tab locations to the app's Projects, Notes, and Chat stores. Notes and Chat locations follow
+ * the stores of the pane scope a tab shows through, the ones a tab restores into; for Notes, its main editor pane.
  */
 export function createAppWorkspaceLocationAdapter(
-  { secondaryNotes, ...stores }: AppWorkspaceLocationStores,
+  { projects, notes, chat, secondaryNotes, secondaryChat }: AppWorkspaceLocationStores,
   t: Translate,
 ): WorkspaceLocationAdapter {
-  const primary = locationStores(stores, t);
-  const secondary = secondaryNotes ? locationStores({ ...stores, notes: secondaryNotes }, t) : primary;
+  const chats = secondaryChat ? [chat, secondaryChat] : [chat];
+  const channelName = (projectId: string, channelId: string) => {
+    for (const store of chats) {
+      const channel = store.channelsForProject(projectId).find((candidate) => candidate.id === channelId);
+      if (channel) return channel.name;
+    }
+    return null;
+  };
+  const primary = locationStores({ projects, notes, chat, channelName }, t);
+  const secondary = secondaryNotes || secondaryChat
+    ? locationStores({ projects, notes: secondaryNotes ?? notes, chat: secondaryChat ?? chat, channelName }, t)
+    : primary;
   return createWorkspaceLocationAdapter(primary, secondary);
 }

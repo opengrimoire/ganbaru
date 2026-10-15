@@ -1,10 +1,10 @@
 <script lang="ts">
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { getChat } from "$lib/stores/chat.svelte";
+  import { useChat } from "$lib/stores/chat.svelte";
   import ChatControlMenu from "./ChatControlMenu.svelte";
 
-  const chat = getChat();
+  const chat = useChat();
   const { t } = getLocalization();
   let saving = $state(false);
   let error = $state<string | null>(null);

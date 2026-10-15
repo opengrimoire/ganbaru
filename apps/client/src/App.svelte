@@ -13,7 +13,7 @@
   import { buildDesktopFocusNotificationCopy, type DesktopFocusNotificationCopy } from "$lib/api/focus";
   import { getNotes, getNotesWorkspace } from "$lib/stores/notes.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
-  import { getChat } from "$lib/stores/chat.svelte";
+  import { getChat, getChatStore, resetChatForVault } from "$lib/stores/chat.svelte";
   import { getZoom } from "$lib/stores/zoom.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
@@ -104,6 +104,7 @@
   const secondaryNotes = getNotesWorkspace("secondary");
   const projects = getProjects();
   const chat = getChat();
+  const secondaryChat = getChatStore("secondary");
   const zoom = getZoom();
   const preferences = getPreferences();
   const settingsLauncher = getSettingsLauncher();
@@ -114,7 +115,7 @@
   const locale = $derived(localization.locale);
   const workspaceTabs = getWorkspaceTabs();
   workspaceTabs.connect({
-    adapter: createAppWorkspaceLocationAdapter({ projects, notes, chat, secondaryNotes }, t),
+    adapter: createAppWorkspaceLocationAdapter({ projects, notes, chat, secondaryNotes, secondaryChat }, t),
     ...(platformHasCapability(BUILD_PLATFORM_PROFILE, "window.detached-views")
       ? { windows: createWorkspaceTabWindows(appWindow.label, availableAppViews()) }
       : {}),
@@ -400,7 +401,7 @@
     const unsubscribeHistoryVault = isMainWindow
       ? onActiveVaultIdentityChange((previousVaultId, nextVaultId) => {
           notesProjectHistoryScheduler.switchVault();
-          chat.resetForVault();
+          resetChatForVault();
           syncQuickNotesTrashPurge();
           projectTaskReminderScheduler.invalidate();
           if (!nextVaultId) return;

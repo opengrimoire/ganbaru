@@ -12,7 +12,8 @@
   import { loadChatReviewDiffRuntime } from "$lib/chat/review/diff-loader";
   import { prefetchChatReview } from "$lib/chat/review/prefetch";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { getChat } from "$lib/stores/chat.svelte";
+  import { useChatPaneEvents } from "$lib/chat/pane-events";
+  import { useChat } from "$lib/stores/chat.svelte";
   import ChatFileIcon from "$lib/components/chat/workspace/ChatFileIcon.svelte";
 
   let {
@@ -28,7 +29,8 @@
   } = $props();
   const localization = getLocalization();
   const { t } = localization;
-  const chat = getChat();
+  const chat = useChat();
+  const paneEvents = useChatPaneEvents();
   const additions = $derived(files.reduce((total, file) => total + (file.additions ?? 0), 0));
   const deletions = $derived(files.reduce((total, file) => total + (file.deletions ?? 0), 0));
   let prefetchTimer: number | null = null;
@@ -37,7 +39,7 @@
 
   function openChanges(relativePath: string | null): void {
     if (!sourceThreadId || !sourceWorkingFolderId) return;
-    window.dispatchEvent(new CustomEvent("ganbaru-ai:chat-open-review", {
+    paneEvents.dispatchEvent(new CustomEvent("ganbaru-ai:chat-open-review", {
       detail: {
         source: { kind: "provider_turn", turnId },
         relativePath,

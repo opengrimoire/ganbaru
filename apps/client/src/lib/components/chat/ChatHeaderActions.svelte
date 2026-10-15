@@ -5,7 +5,7 @@
   import SquareArrowOutUpRight from "@lucide/svelte/icons/square-arrow-out-up-right";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
-  import { getChat } from "$lib/stores/chat.svelte";
+  import { useChat } from "$lib/stores/chat.svelte";
   import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
   import { cn } from "$lib/utils";
   import Notice from "$lib/components/ui/Notice.svelte";
@@ -24,7 +24,7 @@
     onToggleProjectSettings: (trigger: HTMLButtonElement) => void;
   } = $props();
 
-  const chat = getChat();
+  const chat = useChat();
   const { t } = getLocalization();
   const localExecutionAvailable = platformHasCapability(
     BUILD_PLATFORM_PROFILE,

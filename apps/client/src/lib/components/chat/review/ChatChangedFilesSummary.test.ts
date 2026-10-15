@@ -2,6 +2,7 @@
 
 import { mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { chatPaneEvents } from "$lib/chat/pane-events";
 import ChatChangedFilesSummary from "./ChatChangedFilesSummary.svelte";
 
 describe("ChatChangedFilesSummary", () => {
@@ -38,7 +39,7 @@ describe("ChatChangedFilesSummary", () => {
       },
     });
     const listener = vi.fn();
-    window.addEventListener("ganbaru-ai:chat-open-review", listener, { once: true });
+    chatPaneEvents("primary").addEventListener("ganbaru-ai:chat-open-review", listener, { once: true });
 
     target.querySelector<HTMLButtonElement>(".changed-files-header")?.click();
 

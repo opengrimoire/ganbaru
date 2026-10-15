@@ -17,10 +17,12 @@
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { getChat } from "$lib/stores/chat.svelte";
+  import { useChatPaneEvents } from "$lib/chat/pane-events";
+  import { useChat } from "$lib/stores/chat.svelte";
 
   const { t } = getLocalization();
-  const chat = getChat();
+  const chat = useChat();
+  const paneEvents = useChatPaneEvents();
   let status = $state<GitStatusRead | null>(null);
   let loading = $state(false);
   let operation = $state<string | null>(null);
@@ -172,7 +174,7 @@
   }
 
   function openReview(mode: "staged" | "unstaged", relativePath: string): void {
-    window.dispatchEvent(new CustomEvent("ganbaru-ai:chat-open-review", {
+    paneEvents.dispatchEvent(new CustomEvent("ganbaru-ai:chat-open-review", {
       detail: { source: { kind: "working_tree", mode }, relativePath },
     }));
   }

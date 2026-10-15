@@ -21,7 +21,7 @@
   } from "$lib/projects/picker-panels";
   import type { ProjectNavigatorPanelMode } from "$lib/projects/toolbar";
   import type { Project } from "$lib/projects/types";
-  import { getChat } from "$lib/stores/chat.svelte";
+  import { useChat } from "$lib/stores/chat.svelte";
   import { getChatSidebarOrder } from "$lib/stores/chat/sidebar-order.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
   import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
@@ -63,7 +63,7 @@
     onClose?: () => void;
   } = $props();
 
-  const chat = getChat();
+  const chat = useChat();
   const { t } = getLocalization();
   const chatSidebarOrder = getChatSidebarOrder();
   const projects = getProjects();

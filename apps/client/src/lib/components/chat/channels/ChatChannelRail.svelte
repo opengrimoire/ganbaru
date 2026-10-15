@@ -36,7 +36,8 @@
     type ChatSidebarSection,
   } from "$lib/chat/channel-sections";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { getChat } from "$lib/stores/chat.svelte";
+  import { useChatPaneEvents } from "$lib/chat/pane-events";
+  import { useChat } from "$lib/stores/chat.svelte";
   import { getChatSidebarOrder } from "$lib/stores/chat/sidebar-order.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
@@ -93,7 +94,8 @@
 
   /** The phone shell opens the rail as a floating panel that closes after a channel opens. */
   const panel = $derived(presentation === "panel");
-  const chat = getChat();
+  const chat = useChat();
+  const paneEvents = useChatPaneEvents();
   const chatSidebarOrder = getChatSidebarOrder();
   const preferences = getPreferences();
   const projects = getProjects();
@@ -834,9 +836,9 @@
         closeChannelContextMenu();
       }
     };
-    window.addEventListener("ganbaru-ai:chat-new-channel", createChannel);
-    window.addEventListener("ganbaru-ai:chat-edit-channel", editChannelFromEvent);
-    window.addEventListener("ganbaru-ai:chat-focus-search", focusSearch);
+    paneEvents.addEventListener("ganbaru-ai:chat-new-channel", createChannel);
+    paneEvents.addEventListener("ganbaru-ai:chat-edit-channel", editChannelFromEvent);
+    paneEvents.addEventListener("ganbaru-ai:chat-focus-search", focusSearch);
     document.addEventListener("pointerdown", closeOpenMenus);
     const unsubscribeVault = onActiveVaultIdentityChange(() => {
       loadedProjectId = null;
@@ -845,9 +847,9 @@
       sectionNameDraft = "";
     });
     return () => {
-      window.removeEventListener("ganbaru-ai:chat-new-channel", createChannel);
-      window.removeEventListener("ganbaru-ai:chat-edit-channel", editChannelFromEvent);
-      window.removeEventListener("ganbaru-ai:chat-focus-search", focusSearch);
+      paneEvents.removeEventListener("ganbaru-ai:chat-new-channel", createChannel);
+      paneEvents.removeEventListener("ganbaru-ai:chat-edit-channel", editChannelFromEvent);
+      paneEvents.removeEventListener("ganbaru-ai:chat-focus-search", focusSearch);
       document.removeEventListener("pointerdown", closeOpenMenus);
       unsubscribeVault();
       clearMoveMenuHoverTimer();

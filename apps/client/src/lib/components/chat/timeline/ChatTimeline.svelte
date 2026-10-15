@@ -28,7 +28,8 @@
   import { computeTimelineVirtualWindow, nextTimelineUnreadCount, scrollTopForPreservedAnchor, timelineMinimapRows, timelineScrollbarThumbGeometry, timelineScrollIntent, type TimelineScrollbarThumbGeometry, type TimelineScrollIntent } from "$lib/chat/timeline/virtualization";
   import { formatDateTime, formatList, formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { getChat } from "$lib/stores/chat.svelte";
+  import { useChatPaneEvents } from "$lib/chat/pane-events";
+  import { useChat } from "$lib/stores/chat.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
   import { writeTextToClipboard } from "$lib/utils/clipboard";
@@ -68,7 +69,8 @@
   const TIMELINE_EDGE_PADDING_PX = 16;
   const localization = getLocalization();
   const { t } = localization;
-  const chat = getChat();
+  const chat = useChat();
+  const paneEvents = useChatPaneEvents();
   const preferences = getPreferences();
   const settings = getSettingsLauncher();
   let scroller: HTMLDivElement | undefined = $state();
@@ -885,7 +887,7 @@
       <h3><ListChecks size={16} />{t("chat.timeline.plan")}</h3>
       <ChatMarkdown markdown={plan.markdown} onError={reportError} />
       {#if plan.steps.length > 0}<ol>{#each plan.steps as step}<li><span>{step.text}</span><small>{statusLabel(step.status)}</small></li>{/each}</ol>{/if}
-      <div class="chat-plan-actions"><button type="button" onclick={() => window.dispatchEvent(new CustomEvent("ganbaru-ai:chat-continue-plan", { detail: { planId: plan.id } }))}>{t("chat.timeline.continuePlanning")}</button><button type="button" onclick={() => window.dispatchEvent(new CustomEvent("ganbaru-ai:chat-implement-plan", { detail: { planId: plan.id } }))}>{t("chat.timeline.implementPlan")}</button><button type="button" onclick={() => { dismissedPlans = [...dismissedPlans, plan.id]; }}>{t("chat.timeline.dismiss")}</button></div>
+      <div class="chat-plan-actions"><button type="button" onclick={() => paneEvents.dispatchEvent(new CustomEvent("ganbaru-ai:chat-continue-plan", { detail: { planId: plan.id } }))}>{t("chat.timeline.continuePlanning")}</button><button type="button" onclick={() => paneEvents.dispatchEvent(new CustomEvent("ganbaru-ai:chat-implement-plan", { detail: { planId: plan.id } }))}>{t("chat.timeline.implementPlan")}</button><button type="button" onclick={() => { dismissedPlans = [...dismissedPlans, plan.id]; }}>{t("chat.timeline.dismiss")}</button></div>
     </article>
   {/if}
 {/snippet}
@@ -995,7 +997,7 @@
                     {#if message.markdown.length > 1200 || message.userContext?.preCheckpointId && (!message.sourceThreadId || message.sourceThreadId === chat.selectedThreadId)}
                       <div class="chat-message-secondary-actions text-muted-foreground">
                         {#if message.markdown.length > 1200}<button type="button" data-timeline-disclosure-expanded={messageExpanded} aria-expanded={messageExpanded} onclick={() => { expandedMessages = toggle(expandedMessages, message.id); }}>{messageExpanded ? t("chat.timeline.showLess") : t("chat.timeline.showMore")}</button>{/if}
-                        {#if message.userContext?.preCheckpointId && (!message.sourceThreadId || message.sourceThreadId === chat.selectedThreadId)}<button type="button" class="inline-flex items-center gap-1" onclick={() => window.dispatchEvent(new CustomEvent("ganbaru-ai:chat-revert-message", { detail: { threadId: message.sourceThreadId ?? chat.selectedThreadId, checkpointId: message.userContext?.preCheckpointId, turnId: message.turnId } }))}><RotateCcw size={11} />{t("chat.timeline.revert")}</button>{/if}
+                        {#if message.userContext?.preCheckpointId && (!message.sourceThreadId || message.sourceThreadId === chat.selectedThreadId)}<button type="button" class="inline-flex items-center gap-1" onclick={() => paneEvents.dispatchEvent(new CustomEvent("ganbaru-ai:chat-revert-message", { detail: { threadId: message.sourceThreadId ?? chat.selectedThreadId, checkpointId: message.userContext?.preCheckpointId, turnId: message.turnId } }))}><RotateCcw size={11} />{t("chat.timeline.revert")}</button>{/if}
                       </div>
                     {/if}
                     <ChatMessageActionToolbar

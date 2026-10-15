@@ -42,7 +42,7 @@
   import { isPointerAimingAtSubmenu, SUBMENU_AIM_TOLERANCES } from "$lib/utils/menu-aim";
   import { portal } from "$lib/utils/portal";
   import { keepInViewport } from "$lib/utils/keep-in-viewport";
-  import { getChat } from "$lib/stores/chat.svelte";
+  import { useChat } from "$lib/stores/chat.svelte";
   import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
   import ChatProviderIcon from "$lib/components/chat/identity/ChatProviderIcon.svelte";
   import ChatProviderForkDialog from "./ChatProviderForkDialog.svelte";
@@ -87,7 +87,7 @@
 
   const localization = getLocalization();
   const { t } = localization;
-  const chat = getChat();
+  const chat = useChat();
   const settings = getSettingsLauncher();
   let pickerOpen = $state(false);
   let pickerWasOpen = false;

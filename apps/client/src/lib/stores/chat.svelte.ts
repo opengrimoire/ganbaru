@@ -43,6 +43,9 @@ import type {
 import type { ChatComposerSnapshot } from "$lib/chat/composer/controller";
 import { chatErrorCode, chatErrorMessage } from "$lib/chat/error-presentation";
 import { listenForChatChanges, publishChatChanges, type ChatWindowChanges } from "$lib/chat/window-sync";
+import { ChatPaneStores, chatWindowChanges, type ChatChangeIds } from "$lib/stores/chat/pane-stores";
+import type { WorkspacePaneScope } from "$lib/workspace-tabs/model";
+import { getWorkspacePaneScope } from "$lib/workspace-tabs/pane-scope";
 import { registerWindowCloseFlusher } from "$lib/windows/close-flush";
 import { AsyncFrameCoalescer } from "$lib/chat/timeline/frame-coalescer";
 import {
@@ -79,7 +82,28 @@ const localExecutionAvailable = platformHasCapability(
 );
 export type { ChatComposerSendOptions } from "$lib/stores/chat/composer-runtime-controller.svelte";
 
-class ChatStore {
+const paneStores = new ChatPaneStores<ChatStore>();
+
+/** Vault-wide Chat state that every pane's store shows, loaded by the primary pane's store. */
+class ChatSharedState {
+  teammates = $state<ChatAiTeammateRead[]>([]);
+  archivedTeammates = $state<ChatAiTeammateRead[]>([]);
+  providerDiscoveryStarted = false;
+  readonly configuration = new ChatConfigurationController({
+    onSettingsChanged: () => {
+      for (const store of paneStores.all()) store.scheduleComposerDefaults();
+    },
+  });
+}
+
+const shared = new ChatSharedState();
+
+/**
+ * The Chat state of one split pane: its channel, thread, reply thread, composer, timeline, and panels. Settings,
+ * working folders, and teammates are shared by every pane, and only the primary pane's store loads them and
+ * remembers its selection for the next launch.
+ */
+export class ChatStore {
   private readonly channelNavigationController: ChatChannelNavigationController;
   private readonly configurationController: ChatConfigurationController;
   private readonly communicationController: ChatCommunicationController;
@@ -89,8 +113,6 @@ class ChatStore {
   private readonly threadCollectionController: ChatThreadCollectionController;
   private readonly timelineController: ChatTimelineController;
   selectedChannelId = $state<ChatChannelId | null>(null);
-  teammates = $state<ChatAiTeammateRead[]>([]);
-  archivedTeammates = $state<ChatAiTeammateRead[]>([]);
   teammateIdentities = $derived([...this.teammates, ...this.archivedTeammates]);
   openReplyThreadId = $state<ChatReplyThreadId | null>(null);
   selectedExecutionRunId = $state<string | null>(null);
@@ -115,8 +137,12 @@ class ChatStore {
   );
   private vaultGeneration = 0;
   private otherWindowListening = false;
+  /** Whether this is the primary pane's store, which loads shared state and persists its selection. */
+  private readonly owner: boolean;
 
-  constructor() {
+  constructor(scope: WorkspacePaneScope) {
+    this.owner = scope === "primary";
+    this.configurationController = shared.configuration;
     registerWindowCloseFlusher(() => this.flushComposer());
     this.composerDefaultsCoordinator = new ChatComposerDefaultsCoordinator({
       settings: () => this.settings,
@@ -132,10 +158,7 @@ class ChatStore {
       currentProjectId: () => projects.selectedProjectId,
       selectedChannelId: () => this.selectedChannelId,
       selectChannel: (channelId) => this.selectChannel(channelId),
-      onChanged: (channelId) => publishChatChanges({ channelIds: [channelId] }),
-    });
-    this.configurationController = new ChatConfigurationController({
-      onSettingsChanged: () => this.composerDefaultsCoordinator.schedule(),
+      onChanged: (channelId) => this.publishChanges({ channelIds: [channelId] }),
     });
     this.communicationController = new ChatCommunicationController({
       selectedChannelId: () => this.selectedChannelId,
@@ -147,7 +170,7 @@ class ChatStore {
     this.threadCollectionController = new ChatThreadCollectionController({
       selectedThreadId: () => this.selectedThreadId,
       selectThread: (threadId) => this.selectThread(threadId),
-      onChanged: (threadIds) => publishChatChanges({ threadIds }),
+      onChanged: (threadIds) => this.publishChanges({ threadIds }),
     });
     this.organizationalController = new ChatOrganizationalController({
       selectedChannel: () => this.selectedChannel,
@@ -155,7 +178,7 @@ class ChatStore {
       openReplyThreadId: () => this.openReplyThreadId,
       upsertChannel: (channel) => {
         this.channelNavigationController.upsert(channel);
-        publishChatChanges({ channelIds: [channel.id] });
+        this.publishChanges({ channelIds: [channel.id] });
       },
       loadChannelMessages: (channelId, force) => this.loadChannelMessages(channelId, force),
       loadReplyThread: (replyThreadId, force) => this.loadReplyThread(replyThreadId, force),
@@ -173,6 +196,7 @@ class ChatStore {
       setSettings: (settings) => { this.settings = settings; },
       onComposerChanged: () => this.composerDefaultsCoordinator.schedule(),
     });
+    paneStores.add(this);
   }
 
   get selectedWorkingFolder(): ProjectWorkingFolderRead | null {
@@ -185,6 +209,16 @@ class ChatStore {
 
   set settings(settings: ChatSettingsRead | null) {
     this.configurationController.setSettings(settings);
+  }
+
+  get teammates(): ChatAiTeammateRead[] { return shared.teammates; }
+  set teammates(teammates: ChatAiTeammateRead[]) { shared.teammates = teammates; }
+  get archivedTeammates(): ChatAiTeammateRead[] { return shared.archivedTeammates; }
+  set archivedTeammates(teammates: ChatAiTeammateRead[]) { shared.archivedTeammates = teammates; }
+
+  /** Applies changed shared settings to this pane's composer defaults. */
+  scheduleComposerDefaults(): void {
+    this.composerDefaultsCoordinator.schedule();
   }
 
   get workingFolders(): ProjectWorkingFolderRead[] { return this.configurationController.workingFolders; }
@@ -344,8 +378,6 @@ class ChatStore {
       : null;
   }
 
-  private providerDiscoveryStarted = false;
-
   /** Opens Chat from cached history and discovers providers without delaying that history. */
   async ensureLoaded(): Promise<void> {
     const vaultGeneration = this.vaultGeneration;
@@ -370,8 +402,8 @@ class ChatStore {
     }
   }
 
-  /** Invalidates vault-scoped Chat state before prewarming another vault. */
-  resetForVault(): void {
+  /** Invalidates this pane's vault-scoped Chat state; {@link resetChatForVault} also resets the shared state. */
+  resetPaneForVault(): void {
     this.vaultGeneration += 1;
     this.loadRequest += 1;
     this.channelSelectionRequest += 1;
@@ -386,11 +418,7 @@ class ChatStore {
     this.projectSelectionPromise = null;
     this.channelReadPromise = null;
     this.sessionMessageReactions = {};
-    this.configurationController.reset();
-    this.providerDiscoveryStarted = false;
     this.selectedChannelId = null;
-    this.teammates = [];
-    this.archivedTeammates = [];
     this.openReplyThreadId = null;
     this.selectedExecutionRunId = null;
     this.messageAnchorId = null;
@@ -408,24 +436,13 @@ class ChatStore {
     this.loading = true;
     this.error = null;
     try {
-      if (localExecutionAvailable) await chatApi.recoverInterruptedChatTurns();
-      const [settings, workingFolders, navigationChannels, teammates, archivedTeammates] = await Promise.all([
-        chatApi.readChatSettings(),
-        localExecutionAvailable
-          ? workingFolderApi.listCachedProjectWorkingFolders()
-          : Promise.resolve([]),
-        chatApi.listChatNavigationChannels(),
-        chatApi.listChatTeammates(false),
-        chatApi.listChatTeammates(true),
-      ]);
-      if (request !== this.loadRequest || vaultGeneration !== this.vaultGeneration) return;
-      this.configurationController.hydrate(settings, workingFolders);
-      this.teammates = teammates;
-      this.archivedTeammates = archivedTeammates;
+      const loaded = this.owner ? await this.loadSharedState() : await this.followSharedState();
+      if (!loaded || request !== this.loadRequest || vaultGeneration !== this.vaultGeneration) return;
+      const { settings, navigationChannels } = loaded;
       this.channelNavigationController.hydrateNavigation(navigationChannels);
       this.threadCollectionController.resetWindow();
       if (discoverProviders) this.startProviderDiscovery();
-      if (localExecutionAvailable) {
+      if (this.owner && localExecutionAvailable) {
         void chatApi.recoverChatAssignmentDispatchJobs().catch((error: unknown) => {
           console.error("Chat assignment recovery failed", error);
         });
@@ -455,6 +472,7 @@ class ChatStore {
       if (request !== this.loadRequest || vaultGeneration !== this.vaultGeneration) return;
       this.loaded = true;
       this.listenForOtherWindows();
+      if (!this.owner) return;
       void this.prefetchRememberedProjectChannels(projectId, vaultGeneration);
       void this.configurationController.refreshWorkingFolders().catch((error: unknown) => {
         console.error("Chat working folder reconciliation failed", error);
@@ -468,10 +486,39 @@ class ChatStore {
     }
   }
 
+  /** Recovers interrupted turns and loads the settings, working folders, and teammates every pane shows. */
+  private async loadSharedState(): Promise<{ settings: ChatSettingsRead; navigationChannels: ChatChannelRead[] }> {
+    const vaultGeneration = this.vaultGeneration;
+    if (localExecutionAvailable) await chatApi.recoverInterruptedChatTurns();
+    const [settings, workingFolders, navigationChannels, teammates, archivedTeammates] = await Promise.all([
+      chatApi.readChatSettings(),
+      localExecutionAvailable
+        ? workingFolderApi.listCachedProjectWorkingFolders()
+        : Promise.resolve([]),
+      chatApi.listChatNavigationChannels(),
+      chatApi.listChatTeammates(false),
+      chatApi.listChatTeammates(true),
+    ]);
+    if (vaultGeneration === this.vaultGeneration) {
+      this.configurationController.hydrate(settings, workingFolders);
+      this.teammates = teammates;
+      this.archivedTeammates = archivedTeammates;
+    }
+    return { settings, navigationChannels };
+  }
+
+  /** Waits for the primary pane's store to load the shared state, then reads this pane's own channel list. */
+  private async followSharedState(): Promise<{ settings: ChatSettingsRead; navigationChannels: ChatChannelRead[] } | null> {
+    await storeFor("primary").ensureCachedLoaded();
+    const navigationChannels = await chatApi.listChatNavigationChannels();
+    const settings = this.settings;
+    return settings ? { settings, navigationChannels } : null;
+  }
+
   /** Starts at most one automatic discovery per vault, without delaying local history. */
   private startProviderDiscovery(): void {
-    if (this.providerDiscoveryStarted) return;
-    this.providerDiscoveryStarted = true;
+    if (shared.providerDiscoveryStarted) return;
+    shared.providerDiscoveryStarted = true;
     const vaultGeneration = this.vaultGeneration;
     const isCurrentVault = () => vaultGeneration === this.vaultGeneration;
     void this.configurationController.discoverProviders(isCurrentVault).catch(async (error: unknown) => {
@@ -558,7 +605,7 @@ class ChatStore {
     this.channelNavigationController.upsert(channel);
     const changedChannel = this.selectedChannelId !== channelId;
     this.selectedChannelId = channelId;
-    saveLastChatChannelId(channel.projectId, channelId);
+    if (this.owner) saveLastChatChannelId(channel.projectId, channelId);
     this.channelArchiveOpen = false;
     await projects.selectProject(channel.projectId);
     if (request !== this.channelSelectionRequest) return;
@@ -603,7 +650,7 @@ class ChatStore {
       .then((updated) => {
         if (this.vaultGeneration !== vaultGeneration) return;
         this.channelNavigationController.upsert(updated);
-        publishChatChanges({ channelIds: [updated.id] });
+        this.publishChanges({ channelIds: [updated.id] });
       })
       .catch((error: unknown) => {
         console.error(`Could not mark #${channel.name} as read`, error);
@@ -917,7 +964,7 @@ class ChatStore {
     const projectId = this.selectedWorkingFolder?.workingFolder.projectId;
     if (projectId) {
       void projects.selectProject(projectId);
-      void workingFolderApi.rememberProjectWorkingFolder(projectId, workingFolderId);
+      if (this.owner) void workingFolderApi.rememberProjectWorkingFolder(projectId, workingFolderId);
     }
     this.selectThread(null);
     this.composerRuntimeController.ensureDraftThread(workingFolderId);
@@ -944,7 +991,7 @@ class ChatStore {
       }
       this.selectedWorkingFolderId = thread.workingFolderId;
       void projects.selectProject(thread.projectId);
-      void workingFolderApi.rememberProjectWorkingFolder(thread.projectId, thread.workingFolderId);
+      if (this.owner) void workingFolderApi.rememberProjectWorkingFolder(thread.projectId, thread.workingFolderId);
     }
     if (this.selectedWorkingFolderId) {
       void this.composerRuntimeController.bind(
@@ -953,9 +1000,11 @@ class ChatStore {
         composerSeedForThread(thread),
       ).catch(() => undefined);
     }
-    void chatApi.setLastSelectedChatThread(threadId).catch((error) => {
-      console.error("Failed to persist selected Chat thread", error);
-    });
+    if (this.owner) {
+      void chatApi.setLastSelectedChatThread(threadId).catch((error) => {
+        console.error("Failed to persist selected Chat thread", error);
+      });
+    }
     if (threadId) void this.loadTimeline(threadId).catch(() => undefined);
     if (threadId) void this.refreshInteraction(threadId).catch(() => undefined);
     else this.interaction = null;
@@ -1040,7 +1089,21 @@ class ChatStore {
   }
 
   private publishChannelChange(channelId: ChatChannelId | null): void {
-    if (channelId) publishChatChanges({ channelIds: [channelId] });
+    if (channelId) this.publishChanges({ channelIds: [channelId] });
+  }
+
+  /** Tells other windows and this window's other panes which Chat records this pane changed. */
+  private publishChanges(ids: ChatChangeIds): void {
+    const changes = chatWindowChanges(ids);
+    publishChatChanges(changes);
+    paneStores.notifyOthers(this, changes);
+  }
+
+  /** Rereads what another pane of this window changed. Receiving never publishes, so panes do not echo each other. */
+  refreshFromOtherPane(changes: ChatWindowChanges): void {
+    void this.refreshFromOtherWindow(changes).catch((error: unknown) => {
+      console.error("Chat refresh from another pane failed", error);
+    });
   }
 
   /** Starts receiving Chat changes from other windows once per store. */
@@ -1182,9 +1245,32 @@ class ChatStore {
   }
 }
 
-let store: ChatStore | null = null;
+const stores: Partial<Record<WorkspacePaneScope, ChatStore>> = {};
 
+function storeFor(scope: WorkspacePaneScope): ChatStore {
+  return stores[scope] ??= new ChatStore(scope);
+}
+
+/** The primary pane's Chat store, which app-wide flows such as settings and notifications use. */
 export function getChat(): ChatStore {
-  store ??= new ChatStore();
-  return store;
+  return storeFor("primary");
+}
+
+/** The Chat store a split pane scope shows through. */
+export function getChatStore(scope: WorkspacePaneScope): ChatStore {
+  return storeFor(scope);
+}
+
+/** The Chat store of the calling view's split pane. Call during component initialization. */
+export function useChat(): ChatStore {
+  return storeFor(getWorkspacePaneScope());
+}
+
+/** Invalidates every pane's Chat state and the shared Chat state before prewarming another vault. */
+export function resetChatForVault(): void {
+  for (const store of paneStores.all()) store.resetPaneForVault();
+  shared.providerDiscoveryStarted = false;
+  shared.teammates = [];
+  shared.archivedTeammates = [];
+  shared.configuration.reset();
 }

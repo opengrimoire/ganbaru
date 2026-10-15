@@ -121,6 +121,22 @@ pnpm --dir apps/client run tauri android dev --host 127.0.0.1
 
 This installs the separate `.dev` application identity and keeps the frontend development server on the USB and ADB loopback path instead of exposing it to the local network. Keep the terminal running for logs and hot reload. Native Rust or Android changes may trigger a rebuild and reinstall.
 
+To work without the cable, switch ADB to Wi-Fi once while the device is still connected by USB. The device and the computer must be on the same trusted network:
+
+```bash
+adb tcpip 5555
+adb shell ip -f inet addr show wlan0
+```
+
+The second command prints the device's address (also shown in its Wi-Fi settings). Unplug the cable, connect to that address, and confirm that `adb devices` lists it as `device`:
+
+```bash
+adb connect 192.168.1.50:5555
+adb devices
+```
+
+The same `tauri android dev` command then works over Wi-Fi, still through the ADB loopback path. Wi-Fi mode lasts until the device restarts, so repeat both steps after a device restart; after a computer restart or a dropped connection, `adb connect` alone is usually enough. If the router assigns a new address, connect to the new one. If `adb devices` lists the device both by USB and by address, unplug the cable so the build targets one device. `adb usb` returns the device to USB-only mode. On Android 11 and newer, Developer options also offer Wireless debugging, which pairs with `adb pair` without any cable but uses a different port each time.
+
 For an ordinary contribution, test the changed flow on the physical device, including Android Back, background and resume, rotation or responsive layout, and relevant permission denial or recovery. A debug launch is not release acceptance. Use the complete [Android testing matrix](docs/testing/android.md) for lifecycle, storage, notifications, media, distraction blocker, artifact, and release validation.
 
 ### Browser extension local testing

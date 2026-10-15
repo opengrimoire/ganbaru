@@ -41,7 +41,8 @@ import type {
   VersionedJson,
 } from "$lib/chat/contracts";
 import type { ChatComposerSnapshot } from "$lib/chat/composer/controller";
-import { chatErrorMessage } from "$lib/chat/error-presentation";
+import { chatErrorCode, chatErrorMessage } from "$lib/chat/error-presentation";
+import { listenForChatChanges, publishChatChanges, type ChatWindowChanges } from "$lib/chat/window-sync";
 import { AsyncFrameCoalescer } from "$lib/chat/timeline/frame-coalescer";
 import {
   toggleChatMessageReactionParticipant,
@@ -112,6 +113,7 @@ class ChatStore {
     (threadId) => this.refreshNativeChange(threadId),
   );
   private vaultGeneration = 0;
+  private otherWindowListening = false;
 
   constructor() {
     this.composerDefaultsCoordinator = new ChatComposerDefaultsCoordinator({
@@ -128,6 +130,7 @@ class ChatStore {
       currentProjectId: () => projects.selectedProjectId,
       selectedChannelId: () => this.selectedChannelId,
       selectChannel: (channelId) => this.selectChannel(channelId),
+      onChanged: (channelId) => publishChatChanges({ channelIds: [channelId] }),
     });
     this.configurationController = new ChatConfigurationController({
       onSettingsChanged: () => this.composerDefaultsCoordinator.schedule(),
@@ -142,12 +145,16 @@ class ChatStore {
     this.threadCollectionController = new ChatThreadCollectionController({
       selectedThreadId: () => this.selectedThreadId,
       selectThread: (threadId) => this.selectThread(threadId),
+      onChanged: (threadIds) => publishChatChanges({ threadIds }),
     });
     this.organizationalController = new ChatOrganizationalController({
       selectedChannel: () => this.selectedChannel,
       selectedChannelId: () => this.selectedChannelId,
       openReplyThreadId: () => this.openReplyThreadId,
-      upsertChannel: (channel) => this.channelNavigationController.upsert(channel),
+      upsertChannel: (channel) => {
+        this.channelNavigationController.upsert(channel);
+        publishChatChanges({ channelIds: [channel.id] });
+      },
       loadChannelMessages: (channelId, force) => this.loadChannelMessages(channelId, force),
       loadReplyThread: (replyThreadId, force) => this.loadReplyThread(replyThreadId, force),
       openReplyThread: (replyThreadId) => this.openReplyThread(replyThreadId),
@@ -445,6 +452,7 @@ class ChatStore {
       );
       if (request !== this.loadRequest || vaultGeneration !== this.vaultGeneration) return;
       this.loaded = true;
+      this.listenForOtherWindows();
       void this.prefetchRememberedProjectChannels(projectId, vaultGeneration);
       void this.configurationController.refreshWorkingFolders().catch((error: unknown) => {
         console.error("Chat working folder reconciliation failed", error);
@@ -591,7 +599,9 @@ class ChatStore {
     const vaultGeneration = this.vaultGeneration;
     const promise = chatApi.setChatChannelRead(channel.id, true)
       .then((updated) => {
-        if (this.vaultGeneration === vaultGeneration) this.channelNavigationController.upsert(updated);
+        if (this.vaultGeneration !== vaultGeneration) return;
+        this.channelNavigationController.upsert(updated);
+        publishChatChanges({ channelIds: [updated.id] });
       })
       .catch((error: unknown) => {
         console.error(`Could not mark #${channel.name} as read`, error);
@@ -667,7 +677,10 @@ class ChatStore {
     scheduledFor: UtcTimestamp,
     options: { alsoSendToChannel?: boolean } = {},
   ): Promise<ChatScheduledMessageRead> {
-    return this.organizationalController.schedule(destination, scheduledFor, options);
+    const channelId = this.selectedChannelId;
+    const scheduled = await this.organizationalController.schedule(destination, scheduledFor, options);
+    this.publishChannelChange(channelId);
+    return scheduled;
   }
 
   async listScheduledOrganizationalMessages(destination: string): Promise<ChatScheduledMessageRead[]> {
@@ -675,11 +688,16 @@ class ChatStore {
   }
 
   async cancelScheduledOrganizationalMessage(id: ChatScheduledMessageId): Promise<void> {
-    return this.organizationalController.cancelScheduled(id);
+    const channelId = this.selectedChannelId;
+    await this.organizationalController.cancelScheduled(id);
+    this.publishChannelChange(channelId);
   }
 
   async retryScheduledOrganizationalMessage(id: ChatScheduledMessageId): Promise<ChatScheduledMessageRead> {
-    return this.organizationalController.retryScheduled(id);
+    const channelId = this.selectedChannelId;
+    const scheduled = await this.organizationalController.retryScheduled(id);
+    this.publishChannelChange(channelId);
+    return scheduled;
   }
 
   async sendScheduledOrganizationalMessageNow(
@@ -757,6 +775,7 @@ class ChatStore {
       : null;
     if (expectedRevision === null) throw new Error("Work assignment was not loaded");
     await chatApi.cancelChatAssignment(assignmentId, expectedRevision);
+    this.publishChannelChange(this.selectedChannelId);
     if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
     if (this.selectedChannelId) await this.loadChannelMessages(this.selectedChannelId, true);
   }
@@ -767,6 +786,7 @@ class ChatStore {
       : null;
     if (expectedRevision === null) throw new Error("Work assignment was not loaded");
     await chatApi.retryChatAssignment(assignmentId, expectedRevision);
+    this.publishChannelChange(this.selectedChannelId);
     if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
   }
 
@@ -1015,6 +1035,62 @@ class ChatStore {
     if (threadId !== this.selectedThreadId) return;
     await this.loadTimeline(threadId);
     await this.refreshInteraction(threadId);
+  }
+
+  private publishChannelChange(channelId: ChatChannelId | null): void {
+    if (channelId) publishChatChanges({ channelIds: [channelId] });
+  }
+
+  /** Starts receiving Chat changes from other windows once per store. */
+  private listenForOtherWindows(): void {
+    if (this.otherWindowListening) return;
+    this.otherWindowListening = true;
+    void listenForChatChanges((changes) => {
+      void this.refreshFromOtherWindow(changes).catch((error: unknown) => {
+        console.error("Chat refresh from another window failed", error);
+      });
+    }).catch((error: unknown) => {
+      this.otherWindowListening = false;
+      console.error("Chat could not listen for other windows", error);
+    });
+  }
+
+  /** Rereads what another window changed. Receiving never publishes, so windows do not echo each other. */
+  private async refreshFromOtherWindow(changes: ChatWindowChanges): Promise<void> {
+    const vaultGeneration = this.vaultGeneration;
+    if (!this.loaded) return;
+    const isCurrentVault = () => vaultGeneration === this.vaultGeneration;
+    await Promise.all([
+      ...[...changes.threadIds].map((threadId) => this.refreshThreadFromOtherWindow(threadId, isCurrentVault)),
+      ...[...changes.channelIds].map((channelId) => this.refreshChannelFromOtherWindow(channelId, isCurrentVault)),
+    ]);
+    const channelId = this.selectedChannelId;
+    if (!isCurrentVault() || !channelId || !changes.channelIds.has(channelId)) return;
+    this.organizationalController.scheduledMessagesVersion += 1;
+    await this.loadChannelMessages(channelId, true);
+    if (this.openReplyThreadId && isCurrentVault()) await this.loadReplyThread(this.openReplyThreadId, true);
+  }
+
+  private async refreshThreadFromOtherWindow(threadId: ChatThreadId, isCurrentVault: () => boolean): Promise<void> {
+    try {
+      const thread = await chatApi.readChatThreadShell(threadId);
+      if (!isCurrentVault()) return;
+      if (thread.workingFolderId !== null && thread.scratchGenerationId === null) {
+        this.threadCollectionController.upsert(thread);
+      }
+    } catch (error: unknown) {
+      if (chatErrorCode(error) !== "not_found") throw error;
+      if (isCurrentVault()) this.threadCollectionController.remove(threadId);
+    }
+  }
+
+  private async refreshChannelFromOtherWindow(channelId: ChatChannelId, isCurrentVault: () => boolean): Promise<void> {
+    try {
+      const channel = await chatApi.readChatChannel(channelId);
+      if (isCurrentVault()) this.channelNavigationController.upsert(channel);
+    } catch (error: unknown) {
+      if (chatErrorCode(error) !== "not_found") throw error;
+    }
   }
 
   async renameThread(thread: ChatThreadShellRead, title: string): Promise<void> {

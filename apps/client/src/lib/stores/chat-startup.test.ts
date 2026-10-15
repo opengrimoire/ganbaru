@@ -12,6 +12,10 @@ const projects = vi.hoisted(() => ({
   selectProject: vi.fn(async () => undefined),
 }));
 vi.mock("$lib/stores/projects.svelte", () => ({ getProjects: () => projects }));
+vi.mock("$lib/chat/window-sync", () => ({
+  listenForChatChanges: vi.fn(async () => () => undefined),
+  publishChatChanges: vi.fn(),
+}));
 
 /** Creates a controllable external request without timeouts or real provider processes. */
 function deferred<T>() {

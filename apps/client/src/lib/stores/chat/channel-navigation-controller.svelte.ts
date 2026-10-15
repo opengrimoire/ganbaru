@@ -13,6 +13,8 @@ export interface ChatChannelNavigationControllerOptions {
   currentProjectId: () => string | null;
   selectedChannelId: () => ChatChannelId | null;
   selectChannel: (channelId: ChatChannelId) => Promise<void>;
+  /** Called after this window changed a channel, so other windows can refresh it. */
+  onChanged: (channelId: ChatChannelId) => void;
 }
 
 /** Owns project channel collections, archive loading, and channel mutations. */
@@ -163,7 +165,7 @@ export class ChatChannelNavigationController {
 
   async create(request: CreateChatChannelRequest): Promise<ChatChannelRead> {
     const channel = await chatApi.createChatChannel(request);
-    this.upsert(channel);
+    this.commit(channel);
     await this.options.selectChannel(channel.id);
     return channel;
   }
@@ -179,13 +181,13 @@ export class ChatChannelNavigationController {
       topic,
       expectedRevision: channel.revision,
     });
-    this.upsert(updated);
+    this.commit(updated);
     return updated;
   }
 
   async archive(channel: ChatChannelRead): Promise<void> {
     const archived = await chatApi.archiveChatChannel(channel.id, channel.revision);
-    this.upsert(archived);
+    this.commit(archived);
     if (this.options.selectedChannelId() !== channel.id) return;
     const fallback = this.activeChannels.find((entry) => entry.isDefault)
       ?? this.activeChannels[0];
@@ -193,7 +195,7 @@ export class ChatChannelNavigationController {
   }
 
   async restore(channel: ChatChannelRead): Promise<void> {
-    this.upsert(await chatApi.restoreChatChannel(channel.id, channel.revision));
+    this.commit(await chatApi.restoreChatChannel(channel.id, channel.revision));
   }
 
   openArchive(projectId: string | null): void {
@@ -208,6 +210,7 @@ export class ChatChannelNavigationController {
   upsert(channel: ChatChannelRead): void {
     this.mergeNavigation([channel]);
     this.mergeArchivedNavigation(channel);
+    if (channel.projectId !== this.options.currentProjectId()) return;
     const target = channel.archivedAt ? this.archivedChannels : this.activeChannels;
     const next = target.some((entry) => entry.id === channel.id)
       ? target.map((entry) => entry.id === channel.id ? channel : entry)
@@ -219,6 +222,11 @@ export class ChatChannelNavigationController {
       this.archivedChannels = this.archivedChannels.filter((entry) => entry.id !== channel.id);
       this.activeChannels = next.sort(compareChannels);
     }
+  }
+
+  private commit(channel: ChatChannelRead): void {
+    this.upsert(channel);
+    this.options.onChanged(channel.id);
   }
 
   private mergeNavigation(channels: readonly ChatChannelRead[]): void {

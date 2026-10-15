@@ -6,11 +6,15 @@ const api = vi.hoisted(() => ({
   listThreadWindow: vi.fn<
     (workingFolderId: string | null, archived: boolean, limit: number) => Promise<ChatThreadShellRead[]>
   >(),
+  renameThread: vi.fn<(threadId: string, title: string, revision: number) => Promise<ChatThreadShellRead>>(),
+  deleteThread: vi.fn<(threadId: string, revision: number, title: string) => Promise<void>>(),
 }));
 
 vi.mock("$lib/api/chat", async (importOriginal) => ({
   ...await importOriginal<typeof import("$lib/api/chat")>(),
   listChatThreadWindow: api.listThreadWindow,
+  renameChatThread: api.renameThread,
+  deleteChatThreadPermanently: api.deleteThread,
 }));
 
 describe("ChatThreadCollectionController archived threads", () => {
@@ -61,10 +65,73 @@ describe("ChatThreadCollectionController archived threads", () => {
   });
 });
 
-function createController(): ChatThreadCollectionController {
+describe("ChatThreadCollectionController changes for other windows", () => {
+  beforeEach(() => {
+    api.renameThread.mockReset();
+    api.deleteThread.mockReset();
+  });
+
+  it("reports a renamed thread after storing it", async () => {
+    const onChanged = vi.fn();
+    const controller = createController({ onChanged });
+    const thread = { ...archivedThread("thread-1"), archivedAt: null };
+    controller.upsert(thread);
+    api.renameThread.mockResolvedValueOnce({ ...thread, title: "Renamed", revision: 2 });
+
+    await controller.rename(thread, "Renamed");
+
+    expect(controller.activeThreads.map((entry) => entry.title)).toEqual(["Renamed"]);
+    expect(onChanged).toHaveBeenCalledWith(["thread-1"]);
+  });
+
+  it("does not report a rename the backend refused", async () => {
+    const onChanged = vi.fn();
+    const controller = createController({ onChanged });
+    const thread = { ...archivedThread("thread-1"), archivedAt: null };
+    api.renameThread.mockRejectedValueOnce({ code: "stale_revision" });
+
+    await expect(controller.rename(thread, "Renamed")).rejects.toEqual({ code: "stale_revision" });
+
+    expect(onChanged).not.toHaveBeenCalled();
+  });
+
+  it("removes a deleted thread, clears its selection, and reports it", async () => {
+    const onChanged = vi.fn();
+    const selectThread = vi.fn();
+    const controller = createController({ onChanged, selectThread, selectedThreadId: () => "thread-1" });
+    controller.upsert(archivedThread("thread-1"));
+    controller.upsert(archivedThread("thread-2"));
+    api.deleteThread.mockResolvedValueOnce(undefined);
+
+    await controller.delete(archivedThread("thread-1"));
+
+    expect(controller.archivedThreads.map((thread) => thread.id)).toEqual(["thread-2"]);
+    expect(selectThread).toHaveBeenCalledWith(null);
+    expect(onChanged).toHaveBeenCalledWith(["thread-1"]);
+  });
+
+  it("removes a thread another window deleted without reporting it again", () => {
+    const onChanged = vi.fn();
+    const selectThread = vi.fn();
+    const controller = createController({ onChanged, selectThread, selectedThreadId: () => "thread-2" });
+    controller.upsert(archivedThread("thread-1"));
+
+    controller.remove("thread-1");
+
+    expect(controller.archivedThreads).toEqual([]);
+    expect(selectThread).not.toHaveBeenCalled();
+    expect(onChanged).not.toHaveBeenCalled();
+  });
+});
+
+function createController(
+  overrides: Partial<ConstructorParameters<typeof ChatThreadCollectionController>[0]> = {},
+): ChatThreadCollectionController {
   return new ChatThreadCollectionController({
     selectedThreadId: () => null,
     selectThread: vi.fn(),
+    onChanged: vi.fn(),
+    ...overrides,
   });
 }
 

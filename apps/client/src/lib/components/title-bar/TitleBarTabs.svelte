@@ -768,12 +768,13 @@
         bind:this={tabElements[tab.id]}
         data-active={active ? "" : undefined}
         class={cn(
-          "titlebar-tab group relative z-1 flex items-center rounded-md text-sm font-medium transition-colors",
+          "titlebar-tab group relative z-1 flex items-center rounded-md text-sm font-medium",
           compact && "titlebar-tab-compact",
           activeOnly && !active && !moving ? "hidden" : "",
+          // The highlight passes between the indicator and the tab itself at once, so it never fades in or out.
           active || moving
             ? "text-foreground dark:text-white"
-            : cn("text-sidebar-foreground/70", !hoverQuiet && "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"),
+            : cn("text-sidebar-foreground/70 transition-colors", !hoverQuiet && "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"),
           (active || moving) && stripInMotion && "bg-card shadow-(--tab-active-shadow)",
           moving && "titlebar-tab-moving",
           lifted && "titlebar-tab-lifted",

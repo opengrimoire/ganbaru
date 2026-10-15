@@ -28,7 +28,7 @@ export const chat = {
   projectSettingsTitle: (projectName: string) => `Configuración de Chat de ${projectName}`,
   projectSettingsSidebarOrder: "Orden de secciones y canales",
   openFolder: "Abrir carpeta de trabajo",
-  detach: "Abrir en ventana separada",
+  detach: "Abrir en una ventana nueva",
   copyThreadId: "Copiar ID del chat",
   rename: "Cambiar nombre",
   forkTitle: (title: string) => `Bifurcación de ${title}`,

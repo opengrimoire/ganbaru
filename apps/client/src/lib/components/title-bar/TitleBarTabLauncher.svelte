@@ -1,10 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import Check from "@lucide/svelte/icons/check";
-  import ExternalLink from "@lucide/svelte/icons/external-link";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { availableAppViews, type View } from "$lib/navigation";
-  import { getDetachedWindows } from "$lib/stores/detached-windows.svelte";
   import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
   import { anchoredPopover } from "$lib/utils/anchored-popover";
   import { portal } from "$lib/utils/portal";
@@ -27,7 +25,6 @@
   } = $props();
 
   const tabs = getWorkspaceTabs();
-  const detachedWindows = getDetachedWindows();
   const { t } = getLocalization();
   const kinds = availableAppViews();
 
@@ -119,7 +116,6 @@
     <p class="menu-label">{t("titleBar.tab.newTab")}</p>
     {#each kinds as kind, index (kind)}
       {@const Icon = workspaceTabKindIcon(kind)}
-      {@const detached = detachedWindows.views.has(kind)}
       {@const key = index < 9 ? String(index + 1) : null}
       <button
         type="button"
@@ -132,10 +128,6 @@
         <Icon class="text-muted-foreground" />
         <span class="min-w-0 truncate">{workspaceTabKindLabel(kind, t)}</span>
         {#if key}<span class="shrink-0 text-panel-detail text-muted-foreground">{t("titleBar.tab.pressKey", key)}</span>{/if}
-        <span class="flex-1"></span>
-        {#if detached}
-          <ExternalLink class="size-3.5 shrink-0 text-muted-foreground" aria-label={t("titleBar.tab.inAnotherWindow")} />
-        {/if}
       </button>
     {/each}
 

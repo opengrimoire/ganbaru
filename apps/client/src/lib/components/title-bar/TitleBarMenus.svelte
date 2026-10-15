@@ -15,15 +15,16 @@
     showTabContextMenu = $bindable(),
     tabContextId = $bindable(),
     tabContextMenuStyle,
-    detachedWindow,
-    detachBlockReason,
+    canMoveToMainWindow,
+    moveToNewWindowBlockReason,
     canCloseOtherTabs,
     canReopenTab,
     lockAction,
     showTitleBarMenu = $bindable(),
     titleBarMenuStyle,
     controls,
-    onTabContextAction,
+    onMoveToNewWindow,
+    onMoveToMainWindow,
     onCloseTab,
     onCloseOtherTabs,
     onReopenTab,
@@ -33,9 +34,10 @@
     showTabContextMenu: boolean;
     tabContextId: string | null;
     tabContextMenuStyle: string;
-    detachedWindow: boolean;
-    /** Why the tab cannot move to its own window, or null when it can. */
-    detachBlockReason: string | null;
+    /** Whether this window is not the main one, so its tabs can move there. */
+    canMoveToMainWindow: boolean;
+    /** Why the tab cannot move to a new window, or null when it can. */
+    moveToNewWindowBlockReason: string | null;
     canCloseOtherTabs: boolean;
     canReopenTab: boolean;
     /** Whether the tab can be locked or unlocked, or null when it shows nothing to lock to. */
@@ -43,7 +45,8 @@
     showTitleBarMenu: boolean;
     titleBarMenuStyle: string;
     controls: Array<{ id: TitleBarControlId; label: string }>;
-    onTabContextAction: () => void;
+    onMoveToNewWindow: () => void;
+    onMoveToMainWindow: () => void;
     onCloseTab: () => void;
     onCloseOtherTabs: () => void;
     onReopenTab: () => void;
@@ -73,43 +76,42 @@
         <X size={15} strokeWidth={2.2} />
         <span class="shrink-0 whitespace-nowrap">{t("titleBar.tab.closeTab")}</span>
       </button>
-      {#if !detachedWindow}
-        <button role="menuitem" disabled={!canCloseOtherTabs} onclick={onCloseOtherTabs} class="menu-item">
-          <ListX size={15} strokeWidth={2.2} />
-          <span class="shrink-0 whitespace-nowrap">{t("titleBar.tab.closeOtherTabs")}</span>
+      <button role="menuitem" disabled={!canCloseOtherTabs} onclick={onCloseOtherTabs} class="menu-item">
+        <ListX size={15} strokeWidth={2.2} />
+        <span class="shrink-0 whitespace-nowrap">{t("titleBar.tab.closeOtherTabs")}</span>
+      </button>
+      <button role="menuitem" disabled={!canReopenTab} onclick={onReopenTab} class="menu-item">
+        <RotateCcw size={15} strokeWidth={2.2} />
+        <span class="shrink-0 whitespace-nowrap">{t("titleBar.tab.reopenClosedTab")}</span>
+      </button>
+      {#if lockAction}
+        <button role="menuitem" onclick={onToggleLock} class="menu-item">
+          {#if lockAction === "lock"}
+            <Lock size={15} strokeWidth={2.2} />
+            <span class="shrink-0 whitespace-nowrap">{t("titleBar.tab.lockTab")}</span>
+          {:else}
+            <LockOpen size={15} strokeWidth={2.2} />
+            <span class="shrink-0 whitespace-nowrap">{t("titleBar.tab.unlockTab")}</span>
+          {/if}
         </button>
-        <button role="menuitem" disabled={!canReopenTab} onclick={onReopenTab} class="menu-item">
-          <RotateCcw size={15} strokeWidth={2.2} />
-          <span class="shrink-0 whitespace-nowrap">{t("titleBar.tab.reopenClosedTab")}</span>
-        </button>
-        {#if lockAction}
-          <button role="menuitem" onclick={onToggleLock} class="menu-item">
-            {#if lockAction === "lock"}
-              <Lock size={15} strokeWidth={2.2} />
-              <span class="shrink-0 whitespace-nowrap">{t("titleBar.tab.lockTab")}</span>
-            {:else}
-              <LockOpen size={15} strokeWidth={2.2} />
-              <span class="shrink-0 whitespace-nowrap">{t("titleBar.tab.unlockTab")}</span>
-            {/if}
-          </button>
-        {/if}
       {/if}
       <div role="separator" class="menu-separator"></div>
       <button
         role="menuitem"
-        disabled={!detachedWindow && detachBlockReason !== null}
-        title={!detachedWindow && detachBlockReason !== null ? detachBlockReason : undefined}
-        onclick={onTabContextAction}
+        disabled={moveToNewWindowBlockReason !== null}
+        title={moveToNewWindowBlockReason ?? undefined}
+        onclick={onMoveToNewWindow}
         class="menu-item"
       >
-        {#if detachedWindow}
+        <SquareArrowUpRight size={15} strokeWidth={2.2} />
+        <span class="shrink-0 whitespace-nowrap">{t("titleBar.moveToNewWindow")}</span>
+      </button>
+      {#if canMoveToMainWindow}
+        <button role="menuitem" onclick={onMoveToMainWindow} class="menu-item">
           <SquareArrowLeft size={15} strokeWidth={2.2} />
           <span class="shrink-0 whitespace-nowrap">{t("titleBar.moveBackToMainWindow")}</span>
-        {:else}
-          <SquareArrowUpRight size={15} strokeWidth={2.2} />
-          <span class="shrink-0 whitespace-nowrap">{t("titleBar.moveToNewWindow")}</span>
-        {/if}
-      </button>
+        </button>
+      {/if}
     </div>
   </div>
 {/if}

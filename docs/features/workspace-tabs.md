@@ -1,6 +1,6 @@
 # Workspace tabs
 
-Status: Partial. Kind, project, and item tabs, with reordering, persistence, shortcuts, closed-tab history, opening projects and items in a new tab, locking, and moving a tab into its own window, are implemented on desktop, and phones show the same tabs in their bottom bar. Notes folder tabs are planned, and opening projects and items in a new tab is desktop only for now.
+Status: Partial. Kind, project, and item tabs, with reordering, persistence, shortcuts, closed-tab history, opening projects and items in a new tab, locking, and moving tabs between windows from their menu, are implemented on desktop, and phones show the same tabs in their bottom bar. Notes folder tabs are planned, and opening projects and items in a new tab is desktop only for now.
 
 ## Model
 
@@ -16,9 +16,9 @@ On a project, project view, note, or Chat channel row, a middle click or Ctrl+cl
 
 A kind or project tab shows the kind's name, and an item tab shows the view, note, or channel name. Every tab except Calendar adds its project in parentheses, shortened when long. Names stay current across renames. Any kind, Calendar included, can have several tabs, so the same place can be open twice when the user asks for it.
 
-A fresh vault opens with Calendar and Projects. Closing the last tab asks to close the app, the same confirmation as closing the window, so the app is never left without a tab.
+A fresh vault opens with Calendar and Projects. Closing the last tab of the main window asks to close the app, the same confirmation as closing the window, so the app is never left without a tab. Closing the last tab of any other window closes that window.
 
-Tabs, their order, the active tab, and the recently closed list persist per device and per vault. They are device-local interface state, not vault data, because another device may have a different window size and different working context.
+Tabs, their order, the active tab, and the recently closed list persist per device, per vault, and per window. They are device-local interface state, not vault data, because another device may have a different window size and different working context.
 
 ## Locking
 
@@ -30,7 +30,11 @@ The + after the last tab opens a launcher with the kinds, each opened by its num
 
 Tabs size like browser tabs: each has the same fixed width and all of them shrink evenly only when the bar runs out of room, dropping the inactive close button, then the label, as they narrow. Only when they no longer fit at their narrowest does the strip show just the active tab, with the launcher keeping every tab reachable. The compact tabs setting shows icons only at any size, and a strip of empty title bar stays free for moving the window.
 
-A tab's context menu closes it, closes the other tabs, reopens a closed tab, locks or unlocks it, and moves it into its own window. A locked tab shows a lock after its label. A tab can move to its own window only while it is the sole tab of its kind and another tab stays in the main window, because each kind owns one window. Closing that window closes the tab, which then appears in the recently closed list.
+A tab's context menu closes it, closes the other tabs, reopens a closed tab, locks or unlocks it, and moves it into a new window. A locked tab shows a lock after its label.
+
+## Windows
+
+On desktop, every window holds its own tabs of any kind, opens new ones, and can move a tab into a new window while it has another tab left. Tabs in other windows also offer moving back to the main window. A tab carries its place and lock when it moves, and pending edits are saved first so the new window shows them. Closing a window other than the main one hands its tabs to the main window's recently closed list. The main window owns app-wide work such as the tray, and closing it closes the app.
 
 ## Phone
 

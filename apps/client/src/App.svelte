@@ -1,8 +1,8 @@
 <script lang="ts">
   import { getNavigation } from "$lib/stores/navigation.svelte";
-  import { mainTabViews, type DetachableTabView } from "$lib/navigation";
+  import { availableAppViews } from "$lib/navigation";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
-  import { getWorkspaceTabs, type WorkspaceTabWindowHost } from "$lib/stores/workspace-tabs.svelte";
+  import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
   import { createAppWorkspaceLocationAdapter } from "$lib/workspace-tabs/app-location-adapter";
   import { getCalendar } from "$lib/stores/calendar.svelte";
   import { getCalendars } from "$lib/stores/calendars.svelte";
@@ -20,7 +20,6 @@
   import { getUpdateManager } from "$lib/stores/updates.svelte";
   import { UPDATE_AUTO_CHECK_INTERVAL_MS } from "$lib/stores/update-policy";
   import { getViewport } from "$lib/stores/viewport.svelte";
-  import { getDetachedWindows } from "$lib/stores/detached-windows.svelte";
   import { parseNotesLinkHash } from "$lib/notes/links/block-link";
   import {
     listPendingNotesMentionNotifications,
@@ -31,14 +30,8 @@
     NotesMentionNotification,
     NotesMentionNotificationKind,
   } from "$lib/notes/types";
-  import {
-    DETACHED_VIEW_OPEN_LOCATION_EVENT,
-    detachableTabViewFromWindowLabel,
-    openDetachedViewWindow,
-    openLocationInDetachedViewWindow,
-    parseDetachedViewOpenLocationRequest,
-    parseDetachedViewWindowTab,
-  } from "$lib/windows/detached";
+  import { MAIN_WINDOW_LABEL, createWorkspaceTabWindows, parseTabWindowSearch } from "$lib/windows/tab-windows";
+  import { flushBeforeWindowClose } from "$lib/windows/close-flush";
   import { ensureDbUrl } from "$lib/api/db";
   import { prepareDesktopWorkspace } from "$lib/windows/desktop-workspace-readiness";
   import "$lib/stores/app-session";
@@ -97,8 +90,7 @@
 
   const appWindow = getCurrentWindow();
   const appClose = getAppCloseCoordinator();
-  const isMainWindow = appWindow.label === "main";
-  const detachedWindowView = detachableTabViewFromWindowLabel(appWindow.label);
+  const isMainWindow = appWindow.label === MAIN_WINDOW_LABEL;
   const nav = getNavigation();
   /** Calendar paints the content panel itself; Projects, Notes, and Chat paint a surface beside their docked explorer. */
   const contentPanelPainted = $derived(nav.current === "calendar");
@@ -119,46 +111,15 @@
   const localization = getLocalization();
   const { t } = localization;
   const locale = $derived(localization.locale);
-  const detachedWindows = getDetachedWindows();
   const workspaceTabs = getWorkspaceTabs();
-  const workspaceTabWindows: WorkspaceTabWindowHost = {
-    canDetach: platformHasCapability(BUILD_PLATFORM_PROFILE, "window.detached-views"),
-    detachedKinds: () => detachedWindows.views,
-    async open(kind, tab) {
-      await openDetachedViewWindow(kind, tab);
-      detachedWindows.markDetached(kind, tab.tabId);
-    },
-    showLocation(kind, location) {
-      void openLocationInDetachedViewWindow(kind, location).catch((error: unknown) => {
-        console.error("Failed to show a location in its window:", error);
-      });
-    },
-    onChange: (listener) => detachedWindows.onChange(listener),
-    onOpenLocation(listener) {
-      let disposed = false;
-      let cleanup: UnlistenFn | undefined;
-      void listen<unknown>(DETACHED_VIEW_OPEN_LOCATION_EVENT, (event) => {
-        const request = parseDetachedViewOpenLocationRequest(event.payload);
-        if (request && request.view === detachedWindowView) listener(request.location);
-      }).then((unlisten) => {
-        if (disposed) unlisten();
-        else cleanup = unlisten;
-      }).catch((error: unknown) => {
-        console.error("Failed to listen for tab locations:", error);
-      });
-      return () => {
-        disposed = true;
-        cleanup?.();
-      };
-    },
-  };
   workspaceTabs.connect({
     adapter: createAppWorkspaceLocationAdapter({ projects, notes, chat }, t),
-    mode: detachedWindowView
-      ? { type: "detached", view: detachedWindowView, tab: parseDetachedViewWindowTab(window.location.search, detachedWindowView) }
-      : { type: "main" },
+    ...(platformHasCapability(BUILD_PLATFORM_PROFILE, "window.detached-views")
+      ? { windows: createWorkspaceTabWindows(appWindow.label, availableAppViews()) }
+      : {}),
+    initialTab: isMainWindow ? null : parseTabWindowSearch(window.location.search, availableAppViews()),
+    flushPendingEdits: flushBeforeWindowClose,
     requestWindowClose: () => appClose.request(),
-    windows: workspaceTabWindows,
   });
   const notesNotificationSchedule = getNotesNotificationSchedule();
   const projectTaskReminderSchedule = getProjectTaskReminderSchedule();
@@ -630,13 +591,9 @@
     };
   });
 
-  const visibleTabViews = $derived.by<DetachableTabView[]>(() => {
-    if (detachedWindowView) return [detachedWindowView];
-    return mainTabViews(detachedWindows.views);
-  });
   // Runs before the first paint so a remembered Notes or Chat view opens without showing a task view first.
   $effect.pre(() => {
-    projects.hostableViewTypes = projectHostablePlaces(visibleTabViews);
+    projects.hostableViewTypes = projectHostablePlaces(availableAppViews());
   });
   const projectSidebarViews = $derived(projects.viewsForProject(projects.selectedProjectId));
   /** Workspace the Projects tab hosts in place of a task view; hosting needs an open project to scope it. */

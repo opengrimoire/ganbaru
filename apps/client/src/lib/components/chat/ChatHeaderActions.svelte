@@ -38,11 +38,7 @@
   const selectedThread = $derived(chat.selectedThread);
   const detachBlock = $derived(tabs.detachBlock(tabs.activeTabId));
   const detachTitle = $derived(
-    detachBlock === "last-tab"
-      ? t("titleBar.keepOneTabInMainWindow")
-      : detachBlock === "kind-has-other-tabs"
-        ? t("titleBar.tab.kindHasOtherTabs", t("titleBar.tab.chat"))
-        : t("chat.detach"),
+    detachBlock === "last-tab" ? t("titleBar.onlyTabInWindow") : t("chat.detach"),
   );
   let actionError = $state<string | null>(null);
 

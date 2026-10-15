@@ -11,11 +11,8 @@
   import { getViewport } from "$lib/stores/viewport.svelte";
   import type { TitleBarControlId } from "$lib/stores/preference-options";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { getDetachedWindows } from "$lib/stores/detached-windows.svelte";
   import { getWorkspaceTabs, type WorkspaceTabDetachBlock } from "$lib/stores/workspace-tabs.svelte";
   import { workspaceTabLockLevel } from "$lib/workspace-tabs/model";
-  import { workspaceTabKindLabel } from "$lib/workspace-tabs/presentation";
-  import { detachableTabViewFromWindowLabel } from "$lib/windows/detached";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
   import { getThemeEditor } from "$lib/stores/theme-editor.svelte";
@@ -29,7 +26,7 @@
   import TitleBarMediaControls from "./TitleBarMediaControls.svelte";
   import TitleBarUtilityControls from "./TitleBarUtilityControls.svelte";
   import { createTitleBarWindowController } from "./window-controller.svelte";
-  import { createTitleBarDetachedController } from "./detached-controller.svelte";
+  import { createTitleBarTabWindowController } from "./tab-window-controller";
   import TitleBarMenus from "./TitleBarMenus.svelte";
   import {
     createTitleBarShortcutController,
@@ -38,6 +35,7 @@
   import TitleBarWindowControls from "./TitleBarWindowControls.svelte";
   import { flushQuickNoteEditors } from "$lib/quick-notes/persistence";
   import { flushBeforeWindowClose } from "$lib/windows/close-flush";
+  import { MAIN_WINDOW_LABEL } from "$lib/windows/tab-windows";
   import { preloadQuickNotesInitialSnapshot } from "$lib/quick-notes/initial-snapshot";
 
   let {
@@ -51,8 +49,7 @@
   } = $props();
 
   const appWindow = getCurrentWindow();
-  const isMainWindow = appWindow.label === "main";
-  const detachedWindowView = detachableTabViewFromWindowLabel(appWindow.label);
+  const isMainWindow = appWindow.label === MAIN_WINDOW_LABEL;
   const tabs = getWorkspaceTabs();
   const pomodoro = getPomodoro();
   const theme = getTheme();
@@ -60,7 +57,6 @@
   const preferences = getPreferences();
   const viewport = getViewport();
   const { t } = getLocalization();
-  const detachedWindows = getDetachedWindows();
   const benchmarkStatus = getBenchmarkStatus();
   const appClose = getAppCloseCoordinator();
 
@@ -239,9 +235,8 @@
 
   const windowController = createTitleBarWindowController({
     window: appWindow,
-    detachedWindowView,
-    markDetachedViewAttached: (view) => detachedWindows.markAttached(view),
-    detachedTab: () => tabs.detachedDetails(),
+    isMainWindow,
+    releaseWindow: () => tabs.releaseWindow(),
     benchmarkLocked: () => lockedByBenchmark,
     resetConfirmationOpen: () => showResetSequenceConfirm || showResetConfirm,
     requestCloseConfirmation: () => {
@@ -282,21 +277,15 @@
     openShortcutHelp: () => { if (!lockedByThemeEditor) openSettings("shortcuts"); },
   });
 
-  const detachedController = createTitleBarDetachedController({
-    window: appWindow,
-    isMainWindow,
-    detachedWindowView,
+  const tabWindowController = createTitleBarTabWindowController({
     contextTabId: () => tabContextId,
     closeContextMenu: () => {
       showTabContextMenu = false;
       tabContextId = null;
     },
     tabs,
-    markAttached: (view) => detachedWindows.markAttached(view),
     reportError: (message, error) => { console.error(message, error); },
   });
-
-
 
   const titleBarControls: { id: TitleBarControlId; label: () => string }[] = [
     { id: "pomodoro", label: () => t("titleBar.control.pomodoro") },
@@ -431,19 +420,12 @@
     if (tabId) action(tabId);
   }
 
-  function detachBlockReason(block: WorkspaceTabDetachBlock | null, tabId: string): string | null {
+  function detachBlockReason(block: WorkspaceTabDetachBlock | null): string | null {
     if (block === null) return null;
-    if (block === "last-tab") return t("titleBar.keepOneTabInMainWindow");
-    if (block === "kind-has-other-tabs") {
-      const tab = tabs.tabs.find((candidate) => candidate.id === tabId);
-      return tab ? t("titleBar.tab.kindHasOtherTabs", workspaceTabKindLabel(tab.location.kind, t)) : null;
-    }
-    return t("titleBar.moveToNewWindowUnavailable");
+    return block === "last-tab" ? t("titleBar.onlyTabInWindow") : t("titleBar.moveToNewWindowUnavailable");
   }
 
-  const contextDetachBlockReason = $derived(
-    tabContextId ? detachBlockReason(tabs.detachBlock(tabContextId), tabContextId) : null,
-  );
+  const contextDetachBlockReason = $derived(tabContextId ? detachBlockReason(tabs.detachBlock(tabContextId)) : null);
 
   const contextLockAction = $derived.by((): "lock" | "unlock" | null => {
     const tab = tabs.tabs.find((candidate) => candidate.id === tabContextId);
@@ -469,13 +451,9 @@
   style="height: var(--titlebar-h);"
   onwheel={(event) => titleBarTabs?.handleWheel(event)}
   oncontextmenu={openTitleBarMenu}
-  ondragover={detachedController.handleDragOver}
-  ondrop={detachedController.handleDrop}
 >
   <TitleBarTabs
     bind:this={titleBarTabs}
-    {detachedWindowView}
-    windowLabel={appWindow.label}
     pomodoroMenuOpen={showPomodoroMenu}
     onVolumeWheel={(event) => mediaControls?.handleVolumeWheel(event)}
     onOpenContextMenu={openTabContextMenu}
@@ -556,18 +534,19 @@
   bind:showTabContextMenu
   bind:tabContextId
   {tabContextMenuStyle}
-  detachedWindow={!!detachedWindowView}
-  detachBlockReason={contextDetachBlockReason}
+  canMoveToMainWindow={!isMainWindow}
+  moveToNewWindowBlockReason={contextDetachBlockReason}
   canCloseOtherTabs={tabs.tabs.length > 1}
   canReopenTab={tabs.closed.length > 0}
-  lockAction={detachedWindowView ? null : contextLockAction}
+  lockAction={contextLockAction}
   bind:showTitleBarMenu
   {titleBarMenuStyle}
   controls={titleBarControls.map((control) => ({
     id: control.id,
     label: control.label(),
   }))}
-  onTabContextAction={detachedController.activateContextAction}
+  onMoveToNewWindow={tabWindowController.moveToNewWindow}
+  onMoveToMainWindow={tabWindowController.moveToMainWindow}
   onCloseTab={() => runTabContextAction((id) => tabs.close(id))}
   onCloseOtherTabs={() => runTabContextAction((id) => tabs.closeOthers(id))}
   onReopenTab={() => runTabContextAction(() => tabs.reopen())}

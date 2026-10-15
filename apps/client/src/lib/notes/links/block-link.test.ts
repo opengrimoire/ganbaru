@@ -29,13 +29,13 @@ describe("notes block links", () => {
     );
   });
 
-  it("removes detached window search state from copied links", () => {
+  it("removes window search state from copied links", () => {
     expect(
-      buildNotesBlockLink("http://localhost:1420/?ganbaruWindow=notes&view=notes", {
+      buildNotesBlockLink("http://localhost:1420/?ganbaruWindow=notes&view=notes&tab=%7B%7D", {
         pageId,
         blockId,
       }),
-    ).not.toContain("ganbaruWindow");
+    ).toBe("http://localhost:1420/?view=notes#notes?page=11111111-1111-4111-8111-111111111111&block=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
   });
 
   it("parses valid notes block hashes", () => {

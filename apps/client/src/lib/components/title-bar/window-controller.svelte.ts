@@ -1,16 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { DetachableTabView } from "$lib/navigation";
-import { notifyDetachedViewWindowChanged, type DetachedViewWindowTab } from "$lib/windows/detached";
 
 type CurrentWindow = ReturnType<typeof getCurrentWindow>;
 
 export interface TitleBarWindowControllerContext {
   window: CurrentWindow;
-  detachedWindowView: DetachableTabView | undefined;
-  markDetachedViewAttached: (view: DetachableTabView) => void;
-  /** The tab a detached window shows, so closing the window closes that tab in the main window. */
-  detachedTab: () => DetachedViewWindowTab | null;
+  /** Whether this is the main window, whose close asks to quit the app. */
+  isMainWindow: boolean;
+  /** Stop saving this window's tabs and hand them to the main window's reopen history before it closes. */
+  releaseWindow: () => Promise<void>;
   benchmarkLocked: () => boolean;
   resetConfirmationOpen: () => boolean;
   requestCloseConfirmation: () => void;
@@ -38,23 +36,17 @@ export function createTitleBarWindowController(
   }
 
   async function requestClose(): Promise<void> {
-    if (context.detachedWindowView) {
+    if (!context.isMainWindow) {
       try {
         await context.beforeClose();
       } catch (error) {
         context.reportError("Failed to save pending edits before closing:", error);
         return;
       }
-      context.markDetachedViewAttached(context.detachedWindowView);
       try {
-        await notifyDetachedViewWindowChanged({
-          view: context.detachedWindowView,
-          detached: false,
-          ...(context.detachedTab() ?? {}),
-          closed: true,
-        });
+        await context.releaseWindow();
       } catch (error) {
-        context.reportError("Failed to publish detached window close:", error);
+        context.reportError("Failed to report closed tabs to the main window:", error);
       }
       await context.window.destroy();
       return;

@@ -2,32 +2,28 @@ import { untrack } from "svelte";
 import { availableAppViews, type View } from "$lib/navigation";
 import { registerNavigationRouter, type NavigationRouterRegistration } from "$lib/stores/navigation.svelte";
 import { activeVaultIdentity, onActiveVaultIdentityChange } from "$lib/vault/active-vault";
-import type {
-  DetachedViewWindowChange,
-  DetachedViewWindowTab,
-} from "$lib/windows/detached";
+import type { TabWindowTransfer, WorkspaceTabWindows } from "$lib/windows/tab-windows";
 import {
   activateWorkspaceTab,
   activeWorkspaceTab,
-  attachWorkspaceTabs,
+  canAddWorkspaceTab,
   closeOtherWorkspaceTabs,
   closeWorkspaceTab,
   createWorkspaceTab,
   defaultWorkspaceTabsState,
-  detachWorkspaceTab,
   insertWorkspaceTab,
   isWithinTabScope,
   kindLocation,
   moveWorkspaceTab,
   parseWorkspaceTabsState,
   relativeWorkspaceTabId,
-  removeWorkspaceTab,
+  rememberClosedWorkspaceTabs,
   reopenWorkspaceTab,
   sameTabLocation,
   serializeWorkspaceTabsState,
   tabMatchesTarget,
+  takeWorkspaceTab,
   updateWorkspaceTab,
-  visibleWorkspaceTabs,
   workspaceTabIdAtPosition,
   workspaceTabLockLevel,
   type ClosedWorkspaceTab,
@@ -50,31 +46,19 @@ export interface WorkspaceLocationAdapter {
   apply(location: WorkspaceTabLocation, isCurrent: () => boolean): Promise<void>;
 }
 
-/** Desktop window operations behind detached tabs. */
-export interface WorkspaceTabWindowHost {
-  canDetach: boolean;
-  detachedKinds(): ReadonlySet<View>;
-  /** Open the kind's window with the tab and record the kind as detached. */
-  open(kind: View, tab: DetachedViewWindowTab): Promise<void>;
-  /** Show a location in the window that holds its kind. */
-  showLocation(kind: View, location: WorkspaceTabLocation | null): void;
-  onChange(listener: (change: DetachedViewWindowChange) => void): () => void;
-  onOpenLocation(listener: (location: WorkspaceTabLocation) => void): () => void;
-}
-
-export type WorkspaceTabsWindowMode =
-  | { type: "main" }
-  | { type: "detached"; view: View; tab: DetachedViewWindowTab | null };
-
 export interface WorkspaceTabsConnection {
   adapter: WorkspaceLocationAdapter;
-  mode: WorkspaceTabsWindowMode;
-  /** Ask to close the app, or this window when it is detached. */
+  /** Windows the tabs can move between. Without them every tab stays in the one window. */
+  windows?: WorkspaceTabWindows;
+  /** Tab a new window opened with, used when the window has no saved tabs yet. */
+  initialTab?: WorkspaceTab | null;
+  /** Save edits that are still pending, so a tab that moves shows them in its new window. */
+  flushPendingEdits?(): Promise<void>;
+  /** Ask to close the app from the main window, or this window from any other. */
   requestWindowClose(): void;
-  windows?: WorkspaceTabWindowHost;
 }
 
-export type WorkspaceTabDetachBlock = "unsupported" | "last-tab" | "kind-has-other-tabs";
+export type WorkspaceTabDetachBlock = "unsupported" | "last-tab";
 
 const STORAGE_PREFIX = "ganbaru.workspace-tabs.v1";
 
@@ -92,19 +76,33 @@ let connection: WorkspaceTabsConnection | null = null;
 let lastBackgroundOpen: { fromId: string; tabId: string } | null = null;
 let navigation: NavigationRouterRegistration | null = null;
 let storageVaultId: string | null = null;
+/** Set once this window is closing, so it stops saving tabs it has handed off or reported as closed. */
+let windowReleased = false;
+/** Tabs that moved to another window, which a closing window must not report as closed. */
+const departedTabIds = new Set<string>();
 
-function isMainMode(): boolean {
-  return connection?.mode.type === "main";
+/** Whether this is the main window. A window without window operations is the only one, so it is main. */
+function isMainWindow(): boolean {
+  return connection !== null && (connection.windows?.isMain ?? true);
 }
 
-function storageKey(vaultId: string): string {
-  return `${STORAGE_PREFIX}:${vaultId}`;
+/**
+ * Every window saves its tabs under its own key per vault. The main window's key has no label so the
+ * tabs of a single-window setup keep one stable place.
+ */
+function storageKey(vaultId: string): string | null {
+  if (!connection) return null;
+  const windows = connection.windows;
+  return windows && !windows.isMain
+    ? `${STORAGE_PREFIX}:${vaultId}:${windows.label}`
+    : `${STORAGE_PREFIX}:${vaultId}`;
 }
 
 function readStoredState(vaultId: string | null): WorkspaceTabsState | null {
-  if (!vaultId || typeof localStorage === "undefined") return null;
+  const key = vaultId ? storageKey(vaultId) : null;
+  if (!key || typeof localStorage === "undefined") return null;
   try {
-    const raw = localStorage.getItem(storageKey(vaultId));
+    const raw = localStorage.getItem(key);
     return raw ? parseWorkspaceTabsState(JSON.parse(raw) as unknown, availableAppViews()) : null;
   } catch (error) {
     console.warn("Failed to read workspace tabs:", error);
@@ -113,11 +111,22 @@ function readStoredState(vaultId: string | null): WorkspaceTabsState | null {
 }
 
 function persist(state: WorkspaceTabsState): void {
-  if (!isMainMode() || !storageVaultId || typeof localStorage === "undefined") return;
+  const key = storageVaultId ? storageKey(storageVaultId) : null;
+  if (windowReleased || !key || typeof localStorage === "undefined") return;
   try {
-    localStorage.setItem(storageKey(storageVaultId), serializeWorkspaceTabsState(state));
+    localStorage.setItem(key, serializeWorkspaceTabsState(state));
   } catch (error) {
     console.warn("Failed to save workspace tabs:", error);
+  }
+}
+
+function forgetStoredState(): void {
+  const key = storageVaultId ? storageKey(storageVaultId) : null;
+  if (!key || typeof localStorage === "undefined") return;
+  try {
+    localStorage.removeItem(key);
+  } catch (error) {
+    console.warn("Failed to forget workspace tabs:", error);
   }
 }
 
@@ -149,10 +158,6 @@ function tabNames(
   const projectTitle = projectId ? adapter.projectName(projectId) : null;
   if (!projectId || projectTitle !== null) names.projectTitle = projectTitle;
   return names;
-}
-
-function isKindDetached(kind: View): boolean {
-  return connection?.windows?.detachedKinds().has(kind) ?? false;
 }
 
 /** Stop any pending restore so the recording effect adopts what the stores show now. */
@@ -214,10 +219,6 @@ function recordLocation(tab: WorkspaceTab, location: WorkspaceTabLocation): void
     : insertWorkspaceTab(tabsState, createWorkspaceTab(createTabId(), location), "after-active"));
 }
 
-function mostRecentTabOfKind(kind: View): WorkspaceTab | null {
-  return mostRecent(visibleWorkspaceTabs(tabsState).filter((tab) => tab.location.kind === kind && !tab.locked));
-}
-
 function mostRecent(candidates: readonly WorkspaceTab[]): WorkspaceTab | null {
   for (const id of activationOrder) {
     const tab = candidates.find((candidate) => candidate.id === id);
@@ -228,7 +229,7 @@ function mostRecent(candidates: readonly WorkspaceTab[]): WorkspaceTab | null {
 
 /** Pick the tab a location should land in: an exact match, else one on the same project, else the most recent. */
 function tabForLocation(location: WorkspaceTabLocation): WorkspaceTab | null {
-  const candidates = visibleWorkspaceTabs(tabsState).filter((tab) => isWithinTabScope(tab, location));
+  const candidates = tabsState.tabs.filter((tab) => isWithinTabScope(tab, location));
   return candidates.find((tab) => sameTabLocation(tab.location, location))
     ?? mostRecent(candidates.filter((tab) => location.projectId !== null && tab.location.projectId === location.projectId))
     ?? mostRecent(candidates);
@@ -246,11 +247,6 @@ function meaningfulLocation(location: WorkspaceTabLocation): WorkspaceTabLocatio
 function routeNavigation(kind: View): boolean {
   const host = connection;
   if (!host) return false;
-  if (host.mode.type === "detached") return kind === host.mode.view && (navigation?.commit(kind) ?? false);
-  if (isKindDetached(kind)) {
-    host.windows?.showLocation(kind, meaningfulLocation(host.adapter.read(kind) ?? kindLocation(kind)));
-    return false;
-  }
   if (currentTab().location.kind === kind) return navigation?.commit(kind) ?? false;
   const location = host.adapter.read(kind) ?? kindLocation(kind);
   const target = tabForLocation(location);
@@ -263,65 +259,59 @@ function routeNavigation(kind: View): boolean {
   return navigation?.commit(kind) ?? false;
 }
 
-function handleDetachedChange(change: DetachedViewWindowChange): void {
-  if (change.detached) {
-    if (change.tabId) commitState(detachWorkspaceTab(tabsState, change.tabId));
-    return;
-  }
-  const tab = change.tabId ? tabsState.tabs.find((candidate) => candidate.id === change.tabId) : undefined;
-  if (change.closed) {
-    if (tab) setState(removeWorkspaceTab(tabsState, tab.id, change.location ?? tab.location));
-    setState(attachWorkspaceTabs(tabsState, isKindDetached));
-    return;
-  }
-  setState(attachWorkspaceTabs(tabsState, isKindDetached));
-  if (!change.tabId) return;
-  const location = change.location ?? tab?.location ?? kindLocation(change.view);
-  if (tab) {
-    setState(updateWorkspaceTab(tabsState, tab.id, { detached: false, location }));
-    setState(activateWorkspaceTab(tabsState, tab.id));
-  } else {
-    setState(insertWorkspaceTab(tabsState, createWorkspaceTab(change.tabId, location), "after-active"));
-  }
-  void restoreActive();
+/** Where a tab is now: the live stores for the shown tab, else its recorded location. */
+function liveLocation(tab: WorkspaceTab): WorkspaceTabLocation {
+  if (tab.id !== tabsState.activeTabId || restoring) return tab.location;
+  return connection?.adapter.read(tab.location.kind) ?? tab.location;
 }
 
-function loadForVault(vaultId: string | null): void {
+/**
+ * Adopt a tab another window offers, then tell that window to drop its copy. A full strip leaves the tab
+ * where it is. A tab this window already holds is only confirmed, so a repeated offer cannot duplicate it.
+ */
+function adoptTransfer(transfer: TabWindowTransfer): void {
+  const windows = connection?.windows;
+  if (!windows || transfer.vaultId !== storageVaultId) return;
+  const existing = tabsState.tabs.find((tab) => tab.id === transfer.tab.id);
+  if (existing) {
+    commitState(activateWorkspaceTab(tabsState, existing.id));
+  } else if (canAddWorkspaceTab(tabsState)) {
+    commitState(insertWorkspaceTab(tabsState, transfer.tab, "end"));
+  } else {
+    return;
+  }
+  void windows.release(transfer.sourceLabel, transfer.vaultId, transfer.tab.id).catch((error: unknown) => {
+    console.error("Failed to confirm a moved tab:", error);
+  });
+}
+
+/** Drop a tab that now lives in another window, closing this window when it was the last one. */
+function releaseTab(tabId: string, vaultId: string): void {
+  const host = connection;
+  if (!host || vaultId !== storageVaultId || !tabsState.tabs.some((tab) => tab.id === tabId)) return;
+  departedTabIds.add(tabId);
+  const next = takeWorkspaceTab(tabsState, tabId);
+  if (next) commitState(next);
+  else host.requestWindowClose();
+}
+
+function loadForVault(vaultId: string | null, initialTab: WorkspaceTab | null): void {
   storageVaultId = vaultId;
-  const loaded = readStoredState(vaultId) ?? defaultWorkspaceTabsState(availableAppViews(), createTabId);
+  const initial = initialTab ? { tabs: [initialTab], activeTabId: initialTab.id, closed: [] } : null;
+  const loaded = readStoredState(vaultId) ?? initial ?? defaultWorkspaceTabsState(availableAppViews(), createTabId);
   activationOrder = [];
   setState(loaded);
 }
 
-function connectMain(host: WorkspaceTabsConnection): () => void {
-  loadForVault(activeVaultIdentity());
-  const cleanups: (() => void)[] = [];
-  cleanups.push(onActiveVaultIdentityChange((_previous, next) => {
-    if (next === storageVaultId) return;
-    loadForVault(next);
-    void restoreActive();
-  }));
-  if (host.windows) {
-    const windows = host.windows;
-    cleanups.push(windows.onChange(handleDetachedChange));
-    $effect(() => {
-      const detached = windows.detachedKinds();
-      untrack(() => setState(attachWorkspaceTabs(tabsState, (kind) => detached.has(kind))));
-    });
-  }
-  return () => cleanups.forEach((cleanup) => cleanup());
-}
-
-function connectDetached(host: WorkspaceTabsConnection, view: View, tab: DetachedViewWindowTab | null): () => void {
-  storageVaultId = null;
-  const initial = createWorkspaceTab(tab?.tabId ?? createTabId(), tab?.location ?? kindLocation(view));
-  activationOrder = [];
-  setState({ tabs: [initial], activeTabId: initial.id, closed: [] });
-  return host.windows?.onOpenLocation((location) => {
-    if (location.kind !== view) return;
-    setState(updateWorkspaceTab(tabsState, currentTab().id, { location }));
-    void restoreActive();
-  }) ?? (() => undefined);
+function connectWindows(host: WorkspaceTabsConnection): () => void {
+  if (!host.windows) return () => undefined;
+  return host.windows.listen({
+    transfer: adoptTransfer,
+    release: (release) => releaseTab(release.tabId, release.vaultId),
+    closed: (closed) => {
+      if (closed.vaultId === storageVaultId) setState(rememberClosedWorkspaceTabs(tabsState, closed.tabs));
+    },
+  });
 }
 
 /**
@@ -330,16 +320,21 @@ function connectDetached(host: WorkspaceTabsConnection, view: View, tab: Detache
  */
 function connect(host: WorkspaceTabsConnection): void {
   connection = host;
+  windowReleased = false;
+  departedTabIds.clear();
   navigation = registerNavigationRouter(routeNavigation);
-  const disconnectMode = host.mode.type === "main"
-    ? connectMain(host)
-    : connectDetached(host, host.mode.view, host.mode.tab);
+  loadForVault(activeVaultIdentity(), host.initialTab ?? null);
+  const cleanups = [connectWindows(host)];
+  cleanups.push(onActiveVaultIdentityChange((_previous, next) => {
+    if (next === storageVaultId) return;
+    loadForVault(next, null);
+    void restoreActive();
+  }));
   void restoreActive();
 
   $effect(() => {
     if (restoring) return;
     const tab = currentTab();
-    if (tab.detached) return;
     const location = host.adapter.read(tab.location.kind);
     if (location) untrack(() => recordLocation(tab, location));
   });
@@ -347,7 +342,7 @@ function connect(host: WorkspaceTabsConnection): void {
   // Keep cached names current, including renames of what inactive tabs point at. A name that is not
   // loaded keeps the cached one.
   $effect(() => {
-    const names = visibleWorkspaceTabs(tabsState).map((tab) => ({ id: tab.id, ...tabNames(host.adapter, tab) }));
+    const names = tabsState.tabs.map((tab) => ({ id: tab.id, ...tabNames(host.adapter, tab) }));
     untrack(() => {
       let next = tabsState;
       for (const { id, ...patch } of names) next = updateWorkspaceTab(next, id, patch);
@@ -356,7 +351,7 @@ function connect(host: WorkspaceTabsConnection): void {
   });
 
   $effect(() => () => {
-    disconnectMode();
+    cleanups.forEach((cleanup) => cleanup());
     navigation?.unregister();
     navigation = null;
     if (connection === host) connection = null;
@@ -372,10 +367,6 @@ function activate(id: string): void {
 function openKind(kind: View): void {
   const host = connection;
   if (!host) return;
-  if (isKindDetached(kind)) {
-    host.windows?.showLocation(kind, null);
-    return;
-  }
   const location = host.adapter.read(kind) ?? kindLocation(kind);
   const tab = createWorkspaceTab(createTabId(), location);
   commitState(insertWorkspaceTab(tabsState, { ...tab, ...tabNames(host.adapter, tab) }, "end"));
@@ -386,24 +377,17 @@ export interface OpenWorkspaceLocationOptions {
   background?: boolean;
 }
 
-/**
- * Open a project or item in a tab of its own. A tab that already shows it at that level is focused
- * instead, and a kind shown in another window receives the location there.
- */
+/** Open a project or item in a tab of its own. A tab that already shows it at that level is focused instead. */
 function openLocation(
   level: WorkspaceTabLevel,
   location: WorkspaceTabLocation,
   options: OpenWorkspaceLocationOptions = {},
 ): void {
   const host = connection;
-  if (!host || !isMainMode()) return;
-  if (isKindDetached(location.kind)) {
-    host.windows?.showLocation(location.kind, location);
-    return;
-  }
+  if (!host) return;
   const created = createWorkspaceTab(createTabId(), location, { level });
   const tab = { ...created, ...tabNames(host.adapter, created) };
-  const existing = visibleWorkspaceTabs(tabsState).find((candidate) => tabMatchesTarget(candidate, tab.level, location));
+  const existing = tabsState.tabs.find((candidate) => tabMatchesTarget(candidate, tab.level, location));
   if (existing) {
     activate(existing.id);
     return;
@@ -418,28 +402,17 @@ function openLocation(
   commitState(insertWorkspaceTab(tabsState, tab, "after-active"));
 }
 
+/** Close a tab. Closing the last one asks to close the app, or this window when it is not the main one. */
 function close(id: string): void {
   const host = connection;
   if (!host) return;
-  if (host.mode.type === "detached") {
-    host.requestWindowClose();
-    return;
-  }
   const next = closeWorkspaceTab(tabsState, id);
   if (next === null) host.requestWindowClose();
   else commitState(next);
 }
 
 function reopen(closedIndex = 0): void {
-  const host = connection;
-  const entry = tabsState.closed[closedIndex];
-  if (!host || !isMainMode() || !entry) return;
-  if (isKindDetached(entry.location.kind)) {
-    host.windows?.showLocation(entry.location.kind, entry.location);
-    setState({ ...tabsState, closed: tabsState.closed.filter((_, index) => index !== closedIndex) });
-    return;
-  }
-  const reopened = reopenWorkspaceTab(tabsState, createTabId, closedIndex);
+  const reopened = connection && reopenWorkspaceTab(tabsState, createTabId, closedIndex);
   if (reopened) commitState(reopened.state);
 }
 
@@ -452,46 +425,66 @@ function setLocked(id: string, locked: boolean): void {
 }
 
 function detachBlock(id: string): WorkspaceTabDetachBlock | null {
-  const tab = tabsState.tabs.find((candidate) => candidate.id === id);
-  if (!connection?.windows?.canDetach || !isMainMode() || !tab || tab.detached) return "unsupported";
-  if (visibleWorkspaceTabs(tabsState).length <= 1) return "last-tab";
-  const sameKind = tabsState.tabs.some((candidate) => (
-    candidate.id !== id && candidate.location.kind === tab.location.kind
-  ));
-  return sameKind || isKindDetached(tab.location.kind) ? "kind-has-other-tabs" : null;
+  if (!connection?.windows || !tabsState.tabs.some((tab) => tab.id === id)) return "unsupported";
+  return tabsState.tabs.length <= 1 ? "last-tab" : null;
 }
 
-/** Move a tab into its own window. The main window keeps its place for when it comes back. */
-async function detach(id: string): Promise<void> {
+/** Take a tab out of this window with its live location, after saving its pending edits. */
+async function prepareDeparture(id: string): Promise<WorkspaceTab | null> {
   const host = connection;
   const tab = tabsState.tabs.find((candidate) => candidate.id === id);
-  if (!host?.windows || !tab || detachBlock(id)) return;
-  const location = id === tabsState.activeTabId ? (host.adapter.read(tab.location.kind) ?? tab.location) : tab.location;
+  if (!host || !tab) return null;
+  await host.flushPendingEdits?.();
+  const location = liveLocation(tab);
   setState(updateWorkspaceTab(tabsState, id, { location }));
-  await host.windows.open(tab.location.kind, { tabId: id, location });
+  return tabsState.tabs.find((candidate) => candidate.id === id) ?? null;
 }
 
-/** Return the tab this detached window shows, with its live location. */
-function detachedDetails(): DetachedViewWindowTab | null {
-  const host = connection;
-  if (host?.mode.type !== "detached") return null;
-  const tab = currentTab();
-  return { tabId: tab.id, location: restoring ? tab.location : host.adapter.read(tab.location.kind) ?? tab.location };
-}
-
-/** Bring back the most recent tab of a kind after its window returns, restoring where it was. */
-function focusKind(kind: View): void {
-  setState(attachWorkspaceTabs(tabsState, isKindDetached));
-  const tab = mostRecentTabOfKind(kind);
+/** Move a tab into a new window of its own. */
+async function detach(id: string): Promise<void> {
+  const windows = connection?.windows;
+  if (!windows || detachBlock(id)) return;
+  const tab = await prepareDeparture(id);
   if (!tab) return;
-  setState(activateWorkspaceTab(tabsState, tab.id));
-  void restoreActive();
+  await windows.open(tab);
+  const next = takeWorkspaceTab(tabsState, id);
+  if (next) {
+    departedTabIds.add(id);
+    commitState(next);
+  }
+}
+
+/** Offer a tab to the main window, which adopts it and then releases it from this one. */
+async function moveToMainWindow(id: string): Promise<void> {
+  const windows = connection?.windows;
+  if (!windows || windows.isMain || !storageVaultId) return;
+  const vaultId = storageVaultId;
+  const tab = await prepareDeparture(id);
+  if (!tab) return;
+  await windows.offer(windows.mainLabel, vaultId, tab);
+  await windows.focusMain();
+}
+
+/**
+ * Stop saving this window's tabs and report the ones the user closed with it to the main window, so they
+ * can be reopened there. Call right before a window other than the main one closes.
+ */
+async function releaseWindow(): Promise<void> {
+  const windows = connection?.windows;
+  if (!windows || windows.isMain || windowReleased) return;
+  windowReleased = true;
+  forgetStoredState();
+  const tabs = tabsState.tabs
+    .filter((tab) => !departedTabIds.has(tab.id))
+    .map((tab) => ({ ...tab, location: liveLocation(tab) }));
+  if (!storageVaultId || tabs.length === 0) return;
+  await windows.reportClosed(storageVaultId, tabs);
 }
 
 export function getWorkspaceTabs() {
   return {
     get tabs(): readonly WorkspaceTab[] {
-      return visibleWorkspaceTabs(tabsState);
+      return tabsState.tabs;
     },
     get activeTabId(): string {
       return tabsState.activeTabId;
@@ -502,9 +495,13 @@ export function getWorkspaceTabs() {
     get closed(): readonly ClosedWorkspaceTab[] {
       return tabsState.closed;
     },
-    /** Whether this window can open more tabs; a detached window holds exactly one. */
+    /** Whether this window shows workspace tabs at all. */
     get canOpenTabs(): boolean {
-      return connection !== null && isMainMode();
+      return connection !== null;
+    },
+    /** Whether this window is the main one, which owns the app and outlives the others. */
+    get isMainWindow(): boolean {
+      return isMainWindow();
     },
     get launcherRequests(): number {
       return launcherRequests;
@@ -532,8 +529,8 @@ export function getWorkspaceTabs() {
     },
     detachBlock,
     detach,
-    detachedDetails,
-    focusKind,
+    moveToMainWindow,
+    releaseWindow,
     requestLauncher(): void {
       launcherRequests += 1;
     },
@@ -541,4 +538,3 @@ export function getWorkspaceTabs() {
 }
 
 export type WorkspaceTabs = ReturnType<typeof getWorkspaceTabs>;
-

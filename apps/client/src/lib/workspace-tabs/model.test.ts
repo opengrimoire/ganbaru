@@ -6,7 +6,6 @@ import {
   closeWorkspaceTab,
   createWorkspaceTab,
   defaultWorkspaceTabsState,
-  detachWorkspaceTab,
   insertWorkspaceTab,
   isWithinTabScope,
   kindLocation,
@@ -16,12 +15,12 @@ import {
   parseWorkspaceTabLocation,
   parseWorkspaceTabsState,
   relativeWorkspaceTabId,
-  removeWorkspaceTab,
+  rememberClosedWorkspaceTabs,
   reopenWorkspaceTab,
   serializeWorkspaceTabsState,
   tabMatchesTarget,
+  takeWorkspaceTab,
   updateWorkspaceTab,
-  visibleWorkspaceTabs,
   workspaceTabIdAtPosition,
   workspaceTabLockLevel,
   type WorkspaceTab,
@@ -161,16 +160,20 @@ describe("closing workspace tabs", () => {
     expect(closeWorkspaceTab(current, "a")?.activeTabId).toBe("b");
   });
 
-  it("refuses to close the last visible tab even when detached tabs exist", () => {
-    const current = state([tab("a", "calendar"), tab("b", "chat", { detached: true })]);
-    expect(closeWorkspaceTab(current, "a")).toBeNull();
+  it("refuses to close the window's last tab", () => {
+    expect(closeWorkspaceTab(state([tab("a", "calendar")]), "a")).toBeNull();
   });
 
-  it("removes a detached tab with its final location", () => {
-    const current = state([tab("a", "calendar"), tab("b", "projects", { detached: true })]);
-    const next = removeWorkspaceTab(current, "b", projectB);
-    expect(ids(next)).toEqual(["a"]);
-    expect(next.closed[0]).toMatchObject({ location: projectB, index: 1 });
+  it("remembers the tabs of a closed window after the current strip", () => {
+    const current = state([tab("a", "calendar"), tab("b", "notes")]);
+    const next = rememberClosedWorkspaceTabs(current, [
+      { ...tab("x", "projects"), location: projectB },
+      tab("y", "chat"),
+    ]);
+    expect(ids(next)).toEqual(["a", "b"]);
+    expect(next.closed.map((entry) => [entry.location.kind, entry.index])).toEqual([["chat", 2], ["projects", 2]]);
+    expect(next.closed[1].location).toEqual(projectB);
+    expect(rememberClosedWorkspaceTabs(current, [])).toBe(current);
   });
 
   it("keeps a bounded reopen history with the newest first", () => {
@@ -182,15 +185,10 @@ describe("closing workspace tabs", () => {
     expect(current.closed[0].index).toBe(0);
   });
 
-  it("closes other visible tabs and keeps detached ones", () => {
-    const current = state([
-      tab("a", "calendar"),
-      tab("b", "projects"),
-      tab("c", "chat", { detached: true }),
-      tab("d", "notes"),
-    ]);
+  it("closes every other tab", () => {
+    const current = state([tab("a", "calendar"), tab("b", "projects"), tab("c", "notes")]);
     const next = closeOtherWorkspaceTabs(current, "b");
-    expect(ids(next)).toEqual(["b", "c"]);
+    expect(ids(next)).toEqual(["b"]);
     expect(next.activeTabId).toBe("b");
     expect(next.closed.map((entry) => entry.location.kind)).toEqual(["notes", "calendar"]);
   });
@@ -226,10 +224,10 @@ describe("arranging workspace tabs", () => {
     expect(moveWorkspaceTab(current, "a", "missing", "before")).toBe(current);
   });
 
-  it("cycles through visible tabs and skips detached ones", () => {
-    const current = state([tab("a", "calendar"), tab("b", "chat", { detached: true }), tab("c", "notes")], "c");
+  it("cycles through tabs in both directions", () => {
+    const current = state([tab("a", "calendar"), tab("b", "chat"), tab("c", "notes")], "c");
     expect(relativeWorkspaceTabId(current, 1)).toBe("a");
-    expect(relativeWorkspaceTabId(current, -1)).toBe("a");
+    expect(relativeWorkspaceTabId(current, -1)).toBe("b");
   });
 
   it("selects tabs by position, with the ninth position meaning the last tab", () => {
@@ -240,25 +238,26 @@ describe("arranging workspace tabs", () => {
   });
 });
 
-describe("detached workspace tabs", () => {
-  it("hides a detached tab and moves focus to a neighbor", () => {
-    const current = state([tab("a", "calendar"), tab("b", "projects")], "b");
-    const next = detachWorkspaceTab(current, "b");
-    expect(visibleWorkspaceTabs(next).map((entry) => entry.id)).toEqual(["a"]);
-    expect(next.activeTabId).toBe("a");
-    expect(activeWorkspaceTab(next).id).toBe("a");
+describe("tabs leaving for another window", () => {
+  it("removes the tab without remembering it and moves focus to a neighbor", () => {
+    const current = state([tab("a", "calendar"), tab("b", "projects"), tab("c", "notes")], "b");
+    const next = takeWorkspaceTab(current, "b");
+    expect(next && ids(next)).toEqual(["a", "c"]);
+    expect(next?.activeTabId).toBe("c");
+    expect(next && activeWorkspaceTab(next).id).toBe("c");
+    expect(next?.closed).toEqual([]);
   });
 
-  it("keeps focus when an inactive tab detaches and refuses to detach the only visible tab", () => {
+  it("keeps focus when an inactive tab leaves and reports when nothing would be left", () => {
     const current = state([tab("a", "calendar"), tab("b", "projects")], "a");
-    expect(detachWorkspaceTab(current, "b").activeTabId).toBe("a");
-    const single = state([tab("a", "calendar")]);
-    expect(detachWorkspaceTab(single, "a")).toBe(single);
+    expect(takeWorkspaceTab(current, "b")?.activeTabId).toBe("a");
+    expect(takeWorkspaceTab(current, "missing")).toBe(current);
+    expect(takeWorkspaceTab(state([tab("a", "calendar")]), "a")).toBeNull();
   });
 });
 
 describe("workspace tab persistence", () => {
-  it("round-trips tabs without the runtime detached flag", () => {
+  it("round-trips tabs, the active tab, and the reopen history", () => {
     const current: WorkspaceTabsState = {
       tabs: [
         tab("a", "calendar"),
@@ -267,9 +266,8 @@ describe("workspace tab persistence", () => {
       activeTabId: "b",
       closed: [{ level: "project", locked: false, location: projectA, title: "A", projectTitle: "Alpha", index: 1 }],
     };
-    current.tabs[1] = { ...current.tabs[1], detached: true };
     const parsed = parseWorkspaceTabsState(JSON.parse(serializeWorkspaceTabsState(current)), ALL_KINDS);
-    expect(parsed?.tabs[1]).toEqual({ ...current.tabs[1], detached: false });
+    expect(parsed?.tabs).toEqual(current.tabs);
     expect(parsed?.activeTabId).toBe("b");
     expect(parsed?.closed).toEqual(current.closed);
   });

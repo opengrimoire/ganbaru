@@ -2,12 +2,9 @@ import { hasOnlyShortcutModifier, type KeyboardModifierState } from "$lib/keyboa
 import type { View } from "$lib/navigation";
 import { PROJECT_HOSTED_VIEW_TYPES, type ProjectHostedViewType } from "./types";
 
-/**
- * Returns the hosted view types a window can open: a feature is hosted only where its own tab is visible, so a
- * detached Notes or Chat window never shares its workspace with a Projects tab elsewhere.
- */
-export function projectHostablePlaces(visibleViews: readonly View[]): ProjectHostedViewType[] {
-  return PROJECT_HOSTED_VIEW_TYPES.filter((place) => visibleViews.includes(place));
+/** Returns the hosted view types a window can open: a feature is hosted only where its own views are available. */
+export function projectHostablePlaces(availableViews: readonly View[]): ProjectHostedViewType[] {
+  return PROJECT_HOSTED_VIEW_TYPES.filter((place) => availableViews.includes(place));
 }
 
 /**

@@ -29,8 +29,6 @@ export interface WorkspaceTab {
   title: string | null;
   /** Last known name of the project the tab shows, rendered beside its label. */
   projectTitle: string | null;
-  /** Shown in its own window; the main window keeps its place so a quit never loses it. */
-  detached: boolean;
 }
 
 /** A closed tab kept for reopening at its former position. */
@@ -132,7 +130,6 @@ export function createWorkspaceTab(
     location,
     title: options.title ?? null,
     projectTitle: options.projectTitle ?? null,
-    detached: false,
   };
 }
 
@@ -148,20 +145,14 @@ export function defaultWorkspaceTabsState(
   return { tabs, activeTabId: tabs[0].id, closed: [] };
 }
 
-export function visibleWorkspaceTabs(state: WorkspaceTabsState): WorkspaceTab[] {
-  return state.tabs.filter((tab) => !tab.detached);
-}
-
 export function activeWorkspaceTab(state: WorkspaceTabsState): WorkspaceTab {
-  return state.tabs.find((tab) => tab.id === state.activeTabId)
-    ?? visibleWorkspaceTabs(state)[0]
-    ?? state.tabs[0];
+  return state.tabs.find((tab) => tab.id === state.activeTabId) ?? state.tabs[0];
 }
 
 export function activateWorkspaceTab(state: WorkspaceTabsState, id: string): WorkspaceTabsState {
   if (state.activeTabId === id) return state;
   const tab = state.tabs.find((candidate) => candidate.id === id);
-  return tab && !tab.detached ? { ...state, activeTabId: id } : state;
+  return tab ? { ...state, activeTabId: id } : state;
 }
 
 export function canAddWorkspaceTab(state: WorkspaceTabsState): boolean {
@@ -209,7 +200,6 @@ export function updateWorkspaceTab(
     && next.locked === current.locked
     && next.title === current.title
     && next.projectTitle === current.projectTitle
-    && next.detached === current.detached
     && sameTabLocation(next.location, current.location)
   ) return state;
   const tabs = [...state.tabs];
@@ -233,52 +223,58 @@ function rememberClosed(
   return [entry, ...closed].slice(0, MAX_CLOSED_WORKSPACE_TABS);
 }
 
-/** Pick the visible tab that takes focus when one closes or leaves: its right neighbor, else its left one. */
+/** Remember closed tabs at the end of the list, for example the tabs of a window that closed. */
+export function rememberClosedWorkspaceTabs(
+  state: WorkspaceTabsState,
+  tabs: readonly WorkspaceTab[],
+): WorkspaceTabsState {
+  if (tabs.length === 0) return state;
+  let closed = state.closed;
+  for (const tab of tabs) closed = rememberClosed(closed, tab, state.tabs.length);
+  return { ...state, closed };
+}
+
+/** Pick the tab that takes focus when one closes or leaves: its right neighbor, else its left one. */
 function neighborTabId(tabs: readonly WorkspaceTab[], id: string): string | null {
-  const visible = tabs.filter((tab) => !tab.detached || tab.id === id);
-  const index = visible.findIndex((tab) => tab.id === id);
-  const neighbor = visible[index + 1] ?? visible[index - 1];
+  const index = tabs.findIndex((tab) => tab.id === id);
+  const neighbor = tabs[index + 1] ?? tabs[index - 1];
   return neighbor && neighbor.id !== id ? neighbor.id : null;
 }
 
 /**
- * Close a tab and remember it for reopening. Returns null when it is the last visible tab, which the
- * caller turns into the app close confirmation.
+ * Close a tab and remember it for reopening. Returns null when it is the window's last tab, which the
+ * caller turns into closing the window.
  */
 export function closeWorkspaceTab(state: WorkspaceTabsState, id: string): WorkspaceTabsState | null {
   const index = state.tabs.findIndex((tab) => tab.id === id);
   if (index < 0) return state;
+  if (state.tabs.length <= 1) return null;
   const tab = state.tabs[index];
-  if (!tab.detached && visibleWorkspaceTabs(state).length <= 1) return null;
-  return removeWorkspaceTab(state, id, tab.location);
+  const without = takeWorkspaceTab(state, id);
+  return without && { ...without, closed: rememberClosed(state.closed, tab, index) };
 }
 
-/** Remove a tab even while it is detached, remembering its final location for reopening. */
-export function removeWorkspaceTab(
-  state: WorkspaceTabsState,
-  id: string,
-  finalLocation: WorkspaceTabLocation,
-): WorkspaceTabsState {
-  const index = state.tabs.findIndex((tab) => tab.id === id);
-  if (index < 0) return state;
-  const tab = { ...state.tabs[index], location: finalLocation };
-  const activeTabId = state.activeTabId === id
-    ? neighborTabId(state.tabs, id) ?? state.activeTabId
-    : state.activeTabId;
+/**
+ * Remove a tab without remembering it, as when it moves to another window. Returns null when it is the
+ * window's last tab, so the window has nothing left to show.
+ */
+export function takeWorkspaceTab(state: WorkspaceTabsState, id: string): WorkspaceTabsState | null {
+  if (!state.tabs.some((tab) => tab.id === id)) return state;
   const tabs = state.tabs.filter((candidate) => candidate.id !== id);
-  if (tabs.length === 0) return state;
-  return { tabs, activeTabId, closed: rememberClosed(state.closed, tab, index) };
+  if (tabs.length === 0) return null;
+  const activeTabId = state.activeTabId === id ? neighborTabId(state.tabs, id) ?? tabs[0].id : state.activeTabId;
+  return { ...state, tabs, activeTabId };
 }
 
-/** Close every visible tab except one, keeping detached tabs in their windows. */
+/** Close every tab except one. */
 export function closeOtherWorkspaceTabs(state: WorkspaceTabsState, id: string): WorkspaceTabsState {
-  if (!state.tabs.some((tab) => tab.id === id && !tab.detached)) return state;
+  if (!state.tabs.some((tab) => tab.id === id)) return state;
   let closed = state.closed;
   state.tabs.forEach((tab, index) => {
-    if (tab.id !== id && !tab.detached) closed = rememberClosed(closed, tab, index);
+    if (tab.id !== id) closed = rememberClosed(closed, tab, index);
   });
   return {
-    tabs: state.tabs.filter((tab) => tab.id === id || tab.detached),
+    tabs: state.tabs.filter((tab) => tab.id === id),
     activeTabId: id,
     closed,
   };
@@ -322,40 +318,19 @@ export function reopenWorkspaceTab(
   return { state: { tabs, activeTabId: tab.id, closed }, tab };
 }
 
-/** Return the visible tab next to the active one, wrapping around the ends. */
+/** Return the tab next to the active one, wrapping around the ends. */
 export function relativeWorkspaceTabId(state: WorkspaceTabsState, direction: -1 | 1): string | null {
-  const visible = visibleWorkspaceTabs(state);
-  if (visible.length === 0) return null;
-  const index = Math.max(0, visible.findIndex((tab) => tab.id === state.activeTabId));
-  return visible[(index + direction + visible.length) % visible.length].id;
+  const { tabs } = state;
+  if (tabs.length === 0) return null;
+  const index = Math.max(0, tabs.findIndex((tab) => tab.id === state.activeTabId));
+  return tabs[(index + direction + tabs.length) % tabs.length].id;
 }
 
-/** Return the visible tab at a zero-based position; the ninth position always means the last tab. */
+/** Return the tab at a zero-based position; the ninth position always means the last tab. */
 export function workspaceTabIdAtPosition(state: WorkspaceTabsState, index: number): string | null {
-  const visible = visibleWorkspaceTabs(state);
-  if (index === 8) return visible.at(-1)?.id ?? null;
-  return visible[index]?.id ?? null;
-}
-
-/** Mark a tab as shown in its own window, moving focus to a neighbor when it was active. */
-export function detachWorkspaceTab(state: WorkspaceTabsState, id: string): WorkspaceTabsState {
-  const tab = state.tabs.find((candidate) => candidate.id === id);
-  if (!tab || tab.detached) return state;
-  const activeTabId = state.activeTabId === id ? neighborTabId(state.tabs, id) : state.activeTabId;
-  if (!activeTabId) return state;
-  return { ...updateWorkspaceTab(state, id, { detached: true }), activeTabId };
-}
-
-/** Show again every detached tab whose kind no longer has its own window. */
-export function attachWorkspaceTabs(
-  state: WorkspaceTabsState,
-  isKindDetached: (kind: View) => boolean,
-): WorkspaceTabsState {
-  if (!state.tabs.some((tab) => tab.detached && !isKindDetached(tab.location.kind))) return state;
-  const tabs = state.tabs.map((tab) => (
-    tab.detached && !isKindDetached(tab.location.kind) ? { ...tab, detached: false } : tab
-  ));
-  return { ...state, tabs };
+  const { tabs } = state;
+  if (index === 8) return tabs.at(-1)?.id ?? null;
+  return tabs[index]?.id ?? null;
 }
 
 function boundedId(value: unknown): string | null {
@@ -398,7 +373,8 @@ function parseTitle(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value.slice(0, MAX_TITLE_LENGTH) : null;
 }
 
-function parseTab(value: unknown, availableKinds: readonly View[]): WorkspaceTab | null {
+/** Validate one untrusted tab, such as a tab moved in from another window. */
+export function parseWorkspaceTab(value: unknown, availableKinds: readonly View[]): WorkspaceTab | null {
   if (!isRecord(value)) return null;
   const id = boundedId(value.id);
   const level = parseLevel(value.level);
@@ -432,8 +408,7 @@ function parseClosedTab(value: unknown, availableKinds: readonly View[]): Closed
 }
 
 /**
- * Validate persisted tabs. Detached flags are dropped because detached windows never outlive the app.
- * Returns null when nothing usable remains.
+ * Validate persisted tabs. Returns null when nothing usable remains.
  */
 export function parseWorkspaceTabsState(
   value: unknown,
@@ -442,7 +417,7 @@ export function parseWorkspaceTabsState(
   if (!isRecord(value) || !Array.isArray(value.tabs)) return null;
   const seen = new Set<string>();
   const tabs = value.tabs.slice(0, MAX_WORKSPACE_TABS).flatMap((entry) => {
-    const tab = parseTab(entry, availableKinds);
+    const tab = parseWorkspaceTab(entry, availableKinds);
     if (!tab || seen.has(tab.id)) return [];
     seen.add(tab.id);
     return [tab];
@@ -458,10 +433,10 @@ export function parseWorkspaceTabsState(
   return { tabs, activeTabId, closed };
 }
 
-/** Return the persisted shape, without the runtime-only detached flag. */
+/** Return the persisted shape. */
 export function serializeWorkspaceTabsState(state: WorkspaceTabsState): string {
   return JSON.stringify({
-    tabs: state.tabs.map(({ detached: _detached, ...tab }) => tab),
+    tabs: state.tabs,
     activeTabId: state.activeTabId,
     closed: state.closed,
   });

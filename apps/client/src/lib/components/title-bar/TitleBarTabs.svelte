@@ -5,14 +5,9 @@
   import X from "@lucide/svelte/icons/x";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { formatShortcut } from "$lib/keyboard-shortcuts";
-  import type { DetachableTabView } from "$lib/navigation";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
   import { cn } from "$lib/utils";
-  import {
-    DETACHED_VIEW_DRAG_MIME,
-    serializeDetachedViewDragPayload,
-  } from "$lib/windows/detached";
   import type { WorkspaceTab, WorkspaceTabPlacement } from "$lib/workspace-tabs/model";
   import {
     shortWorkspaceTabProject,
@@ -25,14 +20,10 @@
   import TitleBarTabLauncher from "./TitleBarTabLauncher.svelte";
 
   let {
-    detachedWindowView,
-    windowLabel,
     pomodoroMenuOpen,
     onVolumeWheel,
     onOpenContextMenu,
   }: {
-    detachedWindowView: DetachableTabView | undefined;
-    windowLabel: string;
     pomodoroMenuOpen: boolean;
     onVolumeWheel: (event: WheelEvent) => void;
     onOpenContextMenu: (event: MouseEvent, tabId: string) => void;
@@ -50,7 +41,7 @@
   const compact = $derived(preferences.titleBarVisibility.compactTabs);
   /** Tabs shrink like browser tabs; only when they no longer fit at their narrowest does the strip keep just the active one. */
   let activeOnly = $state(false);
-  const canOpenTabs = $derived(!detachedWindowView);
+  const canOpenTabs = $derived(tabs.canOpenTabs);
 
   let strip: HTMLDivElement | undefined = $state();
   let addButton: HTMLButtonElement | undefined = $state();
@@ -187,13 +178,6 @@
   function handleDragStart(event: DragEvent, tab: WorkspaceTab): void {
     const transfer = event.dataTransfer;
     if (!transfer) return;
-    if (detachedWindowView) {
-      const payload = serializeDetachedViewDragPayload(detachedWindowView, windowLabel);
-      transfer.effectAllowed = "move";
-      transfer.setData(DETACHED_VIEW_DRAG_MIME, payload);
-      transfer.setData("text/plain", payload);
-      return;
-    }
     draggingId = tab.id;
     transfer.effectAllowed = "move";
     transfer.setData(TAB_REORDER_MIME, tab.id);

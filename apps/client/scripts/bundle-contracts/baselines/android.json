@@ -171,7 +171,7 @@
     "src/lib/components/chat/review/ChatReviewPanel.svelte",
     "src/lib/components/chat/review/ChatPierreDiff.svelte",
     "src/lib/components/chat/review/ChatPlainDiff.svelte",
-    "src/lib/windows/detached.ts",
+    "src/lib/windows/tab-windows.ts",
     "src/lib/components/themes/editor/FloatingThemeEditor.svelte",
     "src/lib/components/projects/component-registry.ts",
     "src/lib/components/projects/pickers/ProjectTaskFinder.svelte",

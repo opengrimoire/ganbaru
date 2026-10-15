@@ -154,7 +154,6 @@
   const workspaceTabs = getWorkspaceTabs();
   workspaceTabs.connect({
     adapter: createDeferredWorkspaceLocationAdapter(loadWorkspaceLocationAdapter),
-    mode: { type: "main" },
     // The sheet offers no close on the only tab, and Back from the first tab leaves the app.
     requestWindowClose: () => undefined,
   });

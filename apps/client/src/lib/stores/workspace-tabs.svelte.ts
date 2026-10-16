@@ -1,7 +1,7 @@
 import { untrack } from "svelte";
 import { SvelteSet } from "svelte/reactivity";
 import { availableAppViews, type View } from "$lib/navigation";
-import { registerNavigationRouter, type NavigationRouterRegistration } from "$lib/stores/navigation.svelte";
+import { getNavigation, registerNavigationRouter, type NavigationRouterRegistration } from "$lib/stores/navigation.svelte";
 import { activeVaultIdentity, onActiveVaultIdentityChange } from "$lib/vault/active-vault";
 import type {
   ScreenPoint,
@@ -431,22 +431,25 @@ function meaningfulLocation(location: WorkspaceTabLocation): WorkspaceTabLocatio
 /**
  * Land a navigation request in a tab: the active tab when it already shows the kind, else a tab whose scope
  * holds the location (an exact match first, then the same project, then the most recent), else a new tab. The views already changed
- * the stores, so the chosen tab adopts them instead of restoring its own location.
+ * the stores, so the chosen tab adopts them instead of restoring its own location. A request that names the
+ * `scope` it changed lands in the tab beside the active one only when that tab shows through it.
  */
-function routeNavigation(kind: View): boolean {
+function routeNavigation(kind: View, scope?: WorkspacePaneScope): boolean {
   const host = connection;
   if (!host) return false;
   if (currentTab().location.kind === kind) return navigation?.commit(kind) ?? false;
   const partner = partnerTab();
-  if (partner?.location.kind === kind) {
+  if (partner?.location.kind === kind && (scope === undefined || scopeOf(partner.id) === scope)) {
     focusPane(partner.id);
     return true;
   }
   const location = host.adapter.read(kind) ?? kindLocation(kind);
   const target = tabForLocation(location);
-  // The target takes the location first, so leaving a split, which restores the tabs shown next, keeps it.
+  // The target takes a meaningful location first, so leaving a split, which restores the tabs shown next, keeps
+  // it; an empty read leaves the target's own place to restore.
+  const placed = target && meaningfulLocation(location) ? updateWorkspaceTab(tabsState, target.id, { location }) : tabsState;
   const next = target
-    ? activateWorkspaceTab(updateWorkspaceTab(tabsState, target.id, { location }), target.id)
+    ? activateWorkspaceTab(placed, target.id)
     : insertWorkspaceTab(tabsState, createWorkspaceTab(createTabId(), location), "after-active");
   if (currentTab().location.kind !== kind && next === tabsState) return false;
   cancelRestore();
@@ -455,14 +458,20 @@ function routeNavigation(kind: View): boolean {
 }
 
 /**
- * The pane scope whose stores a navigation to `kind` shows: the shown tab of that kind, else the primary scope
- * the tab it activates shows through.
+ * The pane scope whose stores should take a navigation to `location`: a shown tab whose lock holds it, else the
+ * primary scope the tab the navigation activates shows through. Pass the scope to {@link navigateIn} after
+ * changing its stores.
  */
-function navigationScope(kind: View): WorkspacePaneScope {
+function navigationScope(location: WorkspaceTabLocation): WorkspacePaneScope {
   const tab = currentTab();
-  if (tab.location.kind === kind) return scopeOf(tab.id);
+  if (isWithinTabScope(tab, location)) return scopeOf(tab.id);
   const partner = partnerTab();
-  return partner?.location.kind === kind ? scopeOf(partner.id) : "primary";
+  return partner && isWithinTabScope(partner, location) ? scopeOf(partner.id) : "primary";
+}
+
+/** Navigate to a kind after changing its stores in `scope`, so the request lands in a tab showing through them. */
+function navigateIn(kind: View, scope: WorkspacePaneScope): boolean {
+  return connection ? routeNavigation(kind, scope) : getNavigation().navigate(kind);
 }
 
 /** Where a tab is now: the live stores for a tab on screen, else its recorded location. */
@@ -1101,6 +1110,7 @@ export function getWorkspaceTabs() {
     /** The view stores a shown tab reads and restores. */
     paneScope: scopeOf,
     navigationScope,
+    navigateIn,
     holds,
     connect,
     activate,

@@ -152,7 +152,7 @@
     ensureLoaded: () => chat.ensureLoaded(),
     // Selects in the stores of the pane Chat shows in, which may be the other side of a split.
     openProject: async (projectId, workingFolderId) => {
-      const scope = workspaceTabs.navigationScope("chat");
+      const scope = workspaceTabs.navigationScope({ kind: "chat", projectId, item: null });
       const target = scope === "secondary" ? secondaryChat : chat;
       await target.ensureLoaded();
       if (workingFolderId) {
@@ -161,7 +161,7 @@
         await projectsIn(scope).selectProject(projectId);
         await target.syncProjectSelection(projectId);
       }
-      nav.navigate("chat");
+      workspaceTabs.navigateIn("chat", scope);
     },
   };
   let unlistenCalendarNotificationOpen: UnlistenFn | null = null;

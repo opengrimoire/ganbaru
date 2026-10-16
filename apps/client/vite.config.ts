@@ -262,7 +262,10 @@ function hasCompiledSvelteCss(meta: Record<string, unknown> | undefined): boolea
  * compiled component's module metadata, but the Tauri webview's network cache
  * speculatively revalidates every subresource of the previous page load in
  * parallel, so a fresh dev server can receive style requests before the
- * components that import them.
+ * components that import them. Those requests can also name a component whose
+ * `<style>` block was removed since that load; it gets an empty stylesheet,
+ * because Vite's default loader would hand the raw `.svelte` source to the CSS
+ * pipeline.
  */
 function compileSvelteStyleOwners(): Plugin {
   return {
@@ -277,7 +280,7 @@ function compileSvelteStyleOwners(): Plugin {
         const owner = ownerFile ? await this.resolve(ownerFile) : null;
         if (!owner || hasCompiledSvelteCss(this.getModuleInfo(owner.id)?.meta)) return null;
         await this.environment.transformRequest(owner.id);
-        return null;
+        return hasCompiledSvelteCss(this.getModuleInfo(owner.id)?.meta) ? null : "";
       },
     },
   };

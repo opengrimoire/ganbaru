@@ -58,7 +58,7 @@ export const quickNotes = {
   editor: {
     newTitle: "New quick note",
     editTitle: "Edit quick note",
-    titlePlaceholder: "Title",
+    titlePlaceholder: "Title (optional)",
     bodyPlaceholder: "Write something...",
     bodyLabel: "Quick note body",
     close: "Close",

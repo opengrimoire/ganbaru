@@ -25,9 +25,9 @@ describe("createDeferredWorkspaceLocationAdapter", () => {
     expect(adapter.itemTitle(notesPage)).toBeNull();
     expect(adapter.projectName("project-1")).toBeNull();
 
-    await adapter.apply(notesPage, () => true);
+    await adapter.apply(notesPage, () => true, "secondary");
 
-    expect(inner.apply).toHaveBeenCalledWith(notesPage, expect.any(Function));
+    expect(inner.apply).toHaveBeenCalledWith(notesPage, expect.any(Function), "secondary");
     expect(adapter.read("projects")).toEqual({ kind: "projects", projectId: "project-1", item: null });
     expect(adapter.itemTitle(notesPage)).toBe("Roadmap");
     expect(adapter.projectName("project-1")).toBe("Alpha");
@@ -54,7 +54,7 @@ describe("createDeferredWorkspaceLocationAdapter", () => {
 
     expect(load).toHaveBeenCalledTimes(1);
     expect(inner.apply).toHaveBeenCalledTimes(1);
-    expect(inner.apply).toHaveBeenCalledWith({ ...notesPage, kind: "chat" }, expect.any(Function));
+    expect(inner.apply).toHaveBeenCalledWith({ ...notesPage, kind: "chat" }, expect.any(Function), undefined);
   });
 
   it("retries the load on the next restore after a failure", async () => {

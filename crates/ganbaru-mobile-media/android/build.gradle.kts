@@ -6,7 +6,7 @@ plugins {
 }
 
 android {
-    namespace = "org.opengrimoire.ganbaruai.mobile.media"
+    namespace = "org.opengrimoire.ganbaru.mobile.media"
     compileSdk = 36
 
     defaultConfig {

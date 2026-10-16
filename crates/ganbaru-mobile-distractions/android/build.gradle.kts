@@ -6,7 +6,7 @@ plugins {
 }
 
 android {
-    namespace = "org.opengrimoire.ganbaruai.mobile.distractions"
+    namespace = "org.opengrimoire.ganbaru.mobile.distractions"
     compileSdk = 36
 
     defaultConfig {

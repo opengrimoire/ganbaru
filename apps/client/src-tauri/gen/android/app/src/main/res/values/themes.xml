@@ -1,6 +1,6 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
     <!-- Base application theme. -->
-    <style name="Theme.ganbaru_ai" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+    <style name="Theme.ganbaru" parent="Theme.MaterialComponents.DayNight.NoActionBar">
         <item name="android:forceDarkAllowed">false</item>
         <!-- The caret stays visible; only the insertion handle under it is hidden. Selection handles stay. -->
         <item name="android:textSelectHandle">@drawable/text_select_handle_hidden</item>

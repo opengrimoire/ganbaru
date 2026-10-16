@@ -19,13 +19,13 @@
 
     <application>
         <provider
-            android:name="org.opengrimoire.ganbaruai.mobile.distractions.DistractionsGuardianProvider"
+            android:name="org.opengrimoire.ganbaru.mobile.distractions.DistractionsGuardianProvider"
             android:authorities="${applicationId}.ganbaru.guardian.distractions"
             android:exported="false"
             android:process=":guardian" />
 
         <service
-            android:name="org.opengrimoire.ganbaruai.mobile.distractions.DistractionsAccessibilityService"
+            android:name="org.opengrimoire.ganbaru.mobile.distractions.DistractionsAccessibilityService"
             android:exported="true"
             android:label="@string/ganbaru_distractions_accessibility_label"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
@@ -39,7 +39,7 @@
         </service>
 
         <receiver
-            android:name="org.opengrimoire.ganbaruai.mobile.distractions.DistractionsPhaseReceiver"
+            android:name="org.opengrimoire.ganbaru.mobile.distractions.DistractionsPhaseReceiver"
             android:exported="false"
             android:process=":guardian">
             <intent-filter>

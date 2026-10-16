@@ -104,5 +104,6 @@ Panels were restyled one at a time, so radii, shadows, text sizes, input styles,
 - Tooltips use an inverted palette so they read as transient hints rather than panels.
 - Calendar-colored pickers (icon picker, event and quick note color pickers) keep the Calendar background so they match the surface that opens them, while sharing the radius and shadow.
 - The settings panels opened from the Projects, Notes, and Chat toolbars keep their own section order and layout inside shared chrome.
+- Quick notes tags are created and renamed in place: the input takes the chip's shape and grows with its name instead of using a bordered `field`, so the tag row keeps its height.
 
 New exceptions need a product reason recorded here.

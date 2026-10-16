@@ -5,10 +5,11 @@
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { activateModalFocus } from "$lib/modal-focus";
-  import { QUICK_NOTE_TAG_NAME_MAX_CHARS, type QuickNoteTag } from "$lib/quick-notes/types";
+  import type { QuickNoteTag } from "$lib/quick-notes/types";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { cn } from "$lib/utils";
   import { portal } from "$lib/utils/portal";
+  import QuickNoteTagNameInput from "./QuickNoteTagNameInput.svelte";
 
   let {
     tag,
@@ -137,32 +138,18 @@
 </script>
 
 {#if renaming}
-  <form
-    class={cn("field flex shrink-0 items-center gap-1 py-0 text-foreground", mobileLayout ? "min-h-12 w-44" : "h-7 w-32", error && "border-destructive focus-within:border-destructive")}
-    title={error || undefined}
-    data-quick-note-tag-creator
-    onsubmit={(event) => { event.preventDefault(); void submitRename(); }}
-  >
-    <input
-      bind:this={input}
-      type="text"
-      bind:value={name}
-      maxlength={QUICK_NOTE_TAG_NAME_MAX_CHARS}
-      class={mobileLayout ? "field-bare min-h-12 text-base caret-primary" : "field-bare text-xs caret-primary"}
-      aria-label={t("quickNotes.tag.rename")}
-      aria-invalid={error ? "true" : undefined}
-      disabled={busy}
-      oninput={() => { error = ""; }}
-      onkeydown={(event) => {
-        if (event.key !== "Escape") return;
-        event.preventDefault();
-        event.stopPropagation();
-        cancelRename(true);
-      }}
-      onblur={() => { if (!busy && !error) void submitRename(); }}
-    />
-    {#if error}<span class="sr-only" role="alert">{error}</span>{/if}
-  </form>
+  <QuickNoteTagNameInput
+    bind:value={name}
+    bind:input
+    label={t("quickNotes.tag.rename")}
+    {error}
+    {busy}
+    {mobileLayout}
+    onInput={() => { error = ""; }}
+    onSubmit={() => void submitRename()}
+    onCancel={() => cancelRename(true)}
+    onBlur={() => { if (!busy && !error) void submitRename(); }}
+  />
 {:else}
   <!-- A selected chip opens its menu on click, so rename and delete need no extra control beside it. -->
   <button

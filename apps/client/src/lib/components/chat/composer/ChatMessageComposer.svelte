@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount, tick, untrack } from "svelte";
   import ArrowUp from "@lucide/svelte/icons/arrow-up";
-  import AtSign from "@lucide/svelte/icons/at-sign";
   import Bold from "@lucide/svelte/icons/bold";
   import Bot from "@lucide/svelte/icons/bot";
   import CircleAlert from "@lucide/svelte/icons/circle-alert";
@@ -64,6 +63,7 @@
   import { isAppFloatingSurfaceTarget } from "$lib/utils";
   import { cloneData } from "$lib/utils/clone";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
+  import { chatReferencePickerPosition } from "./reference-picker-position";
 
   type ScheduleMenuComponent = typeof import("./ChatMessageScheduleMenu.svelte").default;
 
@@ -182,8 +182,8 @@
   let pickerLoading = $state(false);
   let pickerRequest = 0;
   let pickerRoot = $state<HTMLDivElement | null>(null);
-  let addMenuOpen = $state(false);
-  let addMenuAnchor = $state<HTMLDivElement | null>(null);
+  let pickerScroll = $state<HTMLDivElement | null>(null);
+  let composerRoot = $state<HTMLDivElement | null>(null);
   let scheduleMenuOpen = $state(false);
   let scheduleMenuAnchor = $state<HTMLDivElement | null>(null);
   let scheduledMessagesOpen = $state(false);
@@ -332,11 +332,10 @@
   });
 
   $effect(() => {
-    if (!addMenuOpen && !scheduleMenuOpen && !scheduledMessagesOpen && !pickerOpen) return;
+    if (!scheduleMenuOpen && !scheduledMessagesOpen && !pickerOpen) return;
     const closeMenusFromOutside = (event: PointerEvent) => {
       const target = event.target;
       if (!(target instanceof Node) || isAppFloatingSurfaceTarget(target)) return;
-      if (addMenuOpen && !addMenuAnchor?.contains(target)) addMenuOpen = false;
       if (scheduleMenuOpen && !scheduleMenuAnchor?.contains(target)) scheduleMenuOpen = false;
       if (scheduledMessagesOpen && !scheduledMessagesAnchor?.contains(target)) scheduledMessagesOpen = false;
       if (pickerOpen && !editorRoot?.contains(target) && !pickerRoot?.contains(target)) closePicker();
@@ -366,7 +365,8 @@
     editorReferences = change.references;
     disclosureBlocker = null;
     persist();
-    void updateReferencePicker(change.plainText, editorController?.selection().start ?? change.plainText.length);
+    const end = change.plainText.length;
+    void updateReferencePicker(change.plainText, editorController?.selection() ?? { start: end, end }, change.references);
   }
 
   function handleEditorSelectionChange(selection: ChatComposerSelection, marks: ChatComposerMark[]): void {
@@ -375,7 +375,7 @@
     isBoldActive = marks.includes("bold");
     isItalicActive = marks.includes("italic");
     persist();
-    void updateReferencePicker(editorController?.plainText() ?? "", selection.start);
+    void updateReferencePicker(editorController?.plainText() ?? "", selection, editorController?.messageReferences() ?? editorReferences);
   }
 
   function handleBeforeInput(event: InputEvent): void {
@@ -494,8 +494,12 @@
     }
   }
 
-  async function updateReferencePicker(text: string, caret: number): Promise<void> {
-    const trigger = chatReferenceTriggerAtCaret(text, caret);
+  async function updateReferencePicker(
+    text: string,
+    selection: ChatComposerSelection,
+    references: readonly ChatMessageReference[],
+  ): Promise<void> {
+    const trigger = chatReferenceTriggerAtCaret(text, selection, references);
     if (!trigger) {
       closePicker();
       return;
@@ -734,12 +738,6 @@
     }
   }
 
-  function insertReferenceTrigger(value: "@" | "#"): void {
-    closePicker();
-    editorController?.insertPlainText(value);
-    queueMicrotask(() => editorController?.focus());
-  }
-
   function closePicker(): void {
     pickerRequest += 1;
     pickerOpen = false;
@@ -876,7 +874,6 @@
       ?? chat.workingFolders.find((folder) => folder.workingFolder.projectId === chat.selectedChannel?.projectId)
         ?.workingFolder.id;
     if (!workingFolderId) return;
-    addMenuOpen = false;
     const available = Math.max(0, CHAT_IMAGE_LIMIT - attachmentIds.length);
     if (available === 0) return;
     const imported = await chatApi.pickChatImages(
@@ -1010,7 +1007,6 @@
   function toggleScheduleMenu(): void {
     scheduleMenuOpen = !scheduleMenuOpen;
     scheduledMessagesOpen = false;
-    addMenuOpen = false;
     if (scheduleMenuOpen) void loadScheduleMenu();
   }
 
@@ -1030,7 +1026,6 @@
   function toggleScheduledMessages(): void {
     scheduledMessagesOpen = !scheduledMessagesOpen;
     scheduleMenuOpen = false;
-    addMenuOpen = false;
     if (scheduledMessagesOpen) void loadScheduleMenu();
   }
 
@@ -1314,7 +1309,7 @@
     </section>
   {/if}
 
-  <div class="organizational-composer" data-organizational-composer>
+  <div bind:this={composerRoot} class="organizational-composer" data-organizational-composer>
     <div class="editor-frame">
       <div
         bind:this={editorRoot}
@@ -1342,8 +1337,8 @@
     </div>
 
     {#if pickerOpen}
-      <div bind:this={pickerRoot} id="chat-reference-picker" class="reference-picker surface-floating" role="listbox" aria-label={pickerTrigger?.kind === "channel" ? t("chat.organization.referenceChannel") : t("chat.organization.referencePeopleAndResources")}>
-        <div class="reference-picker-scroll surface-floating-body" use:scrollEdgeFadeAction>
+      <div bind:this={pickerRoot} use:chatReferencePickerPosition={{ composer: composerRoot, scrollArea: () => pickerScroll, contentKey: [pickerLoading, pickerEntries] }} id="chat-reference-picker" class="reference-picker surface-floating" data-app-floating-surface role="listbox" aria-label={pickerTrigger?.kind === "channel" ? t("chat.organization.referenceChannel") : t("chat.organization.referencePeopleAndResources")}>
+        <div bind:this={pickerScroll} class="reference-picker-scroll surface-floating-body" use:scrollEdgeFadeAction>
           {#if pickerLoading}<Loading layout="rows" rows={3} />
           {:else if pickerEntries.length === 0}<p>{t("chat.organization.noReferenceResults")}</p>
           {:else}
@@ -1380,14 +1375,9 @@
 
     <div class="composer-footer">
       <div class="composer-tools">
-        <div bind:this={addMenuAnchor} class="menu-anchor">
-          <button type="button" class="tool-button" aria-label={t("chat.organization.addContext")} aria-expanded={addMenuOpen} onclick={() => { addMenuOpen = !addMenuOpen; scheduleMenuOpen = false; scheduledMessagesOpen = false; }}><Plus size={16} /></button>
-          {#if addMenuOpen}<div class="composer-menu add-menu surface-floating surface-floating-body w-floating-sm">{#if localExecutionAvailable}<button type="button" class="menu-item" onclick={() => void pickImages()}><Image size={14} />{t("chat.composer.attachImages")}</button>{/if}<button type="button" class="menu-item" onclick={() => { addMenuOpen = false; insertReferenceTrigger("@"); }}><AtSign size={14} />{t("chat.organization.peopleAndResources")}</button><button type="button" class="menu-item" onclick={() => { addMenuOpen = false; insertReferenceTrigger("#"); }}><Hash size={14} />{t("chat.organization.channels")}</button></div>{/if}
-        </div>
+        {#if localExecutionAvailable}<button type="button" class="tool-button" aria-label={t("chat.composer.attachImages")} title={t("chat.composer.attachImages")} onclick={() => void pickImages()}><Plus size={16} /></button>{/if}
         <button type="button" class="tool-button" class:active={isBoldActive} aria-label={t("chat.organization.bold")} aria-pressed={isBoldActive} onclick={() => editorController?.toggleMark("bold")}><Bold size={15} /></button>
         <button type="button" class="tool-button" class:active={isItalicActive} aria-label={t("chat.organization.italic")} aria-pressed={isItalicActive} onclick={() => editorController?.toggleMark("italic")}><Italic size={15} /></button>
-        <button type="button" class="tool-button" aria-label={t("chat.organization.peopleAndResources")} onpointerdown={(event) => event.preventDefault()} onclick={() => insertReferenceTrigger("@")}><AtSign size={15} /></button>
-        <button type="button" class="tool-button" aria-label={t("chat.organization.channels")} onpointerdown={(event) => event.preventDefault()} onclick={() => insertReferenceTrigger("#")}><Hash size={15} /></button>
         <div bind:this={scheduleMenuAnchor} class="menu-anchor">
           <button type="button" class="tool-button" class:active={scheduleMenuOpen || Boolean(scheduledFor)} aria-label={scheduledFor ? t("chat.organization.scheduleSelected", formatScheduledInstant(scheduledFor)) : t("chat.organization.scheduleMessage")} aria-haspopup="dialog" aria-expanded={scheduleMenuOpen} aria-pressed={Boolean(scheduledFor)} title={scheduledFor ? t("chat.organization.scheduleSelected", formatScheduledInstant(scheduledFor)) : t("chat.organization.scheduleMessage")} onpointerenter={() => { void loadScheduleMenu(); }} onfocus={() => { void loadScheduleMenu(); }} onclick={toggleScheduleMenu}><Clock3 size={15} /></button>
           {#if scheduleMenuOpen}
@@ -1434,9 +1424,9 @@
   .organizational-composer { position:relative; width:100%; border:1px solid color-mix(in srgb,var(--border) 88%,transparent); border-radius:1.3rem; background:var(--card); box-shadow:0 8px 22px -18px rgb(0 0 0 / 0.24),0 1px 4px -3px rgb(0 0 0 / 0.16); }
   .editor-frame { max-height:8.2rem; overflow-y:auto; padding:1rem 1.25rem 0.4rem; }
   .organizational-editor { position:relative; min-height:2.625rem; outline:none; white-space:pre-wrap; overflow-wrap:anywhere; font-size:var(--chat-conversation-font-size,calc(0.875rem * var(--type-scale))); line-height:var(--chat-conversation-line-height,calc(1.3125rem * var(--type-scale))); }
-  .organizational-editor.empty::before { position:absolute; pointer-events:none; content:attr(data-placeholder); color:color-mix(in srgb,var(--muted-foreground) 52%,transparent); }
+  .organizational-editor.empty::before { position:absolute; inset-inline:0; pointer-events:none; content:attr(data-placeholder); color:color-mix(in srgb,var(--muted-foreground) 52%,transparent); }
   .organizational-editor :global(.chat-reference-atom) { display:inline-block; border-radius:0.3rem; background:color-mix(in srgb,var(--primary) 13%,transparent); padding-inline:0.12rem; color:color-mix(in srgb,var(--primary) 78%,var(--foreground)); box-decoration-break:clone; cursor:default; user-select:all; }
-  .reference-picker { position:absolute; z-index:100; right:0.6rem; bottom:3rem; left:0.6rem; display:flex; max-height:min(22rem,55vh); flex-direction:column; overflow:hidden; }
+  .reference-picker { z-index:100; display:flex; flex-direction:column; overflow:hidden; }
   .reference-picker-scroll { min-height:0; flex:1 1 auto; overflow-y:auto; }
   .reference-picker-scroll > p { padding:0.5rem; color:var(--muted-foreground); font-size:var(--panel-detail-font-size); }
   .picker-group { position:sticky; top:calc(-1 * var(--floating-padding)); z-index:1; background:var(--popover); }
@@ -1447,11 +1437,11 @@
   .composer-footer { display:flex; min-height:2.6rem; align-items:center; justify-content:space-between; gap:0.5rem; padding:0 0.75rem 0.5rem; }.composer-tools { display:flex; align-items:center; gap:0.3rem; }
   .tool-button { display:grid; width:1.9rem; height:1.9rem; place-items:center; border-radius:0.5rem; color:var(--muted-foreground); }.tool-button:hover,.tool-button.active { background:var(--accent); color:var(--foreground); }
   .send-button { display:grid; width:2rem; height:2rem; flex:0 0 auto; place-items:center; border-radius:999px; background:color-mix(in srgb,var(--primary) 92%,transparent); color:var(--primary-foreground); box-shadow:0 2px 7px color-mix(in srgb,var(--primary) 22%,transparent); transition:transform 120ms ease,filter 120ms ease; }.send-button:hover:not(:disabled) { filter:brightness(1.04); transform:scale(1.04); }.send-button:disabled,.send-button[aria-disabled="true"] { opacity:0.45; }
-  .composer-menu { position:absolute; z-index:110; max-width:calc(100vw - 1rem); }.add-menu,.schedule-loading { bottom:calc(100% + 0.35rem); left:0; }.schedule-loading.align-right { right:0; left:auto; }
+  .composer-menu { position:absolute; z-index:110; max-width:calc(100vw - 1rem); }.schedule-loading { bottom:calc(100% + 0.35rem); left:0; }.schedule-loading.align-right { right:0; left:auto; }
   .composer-blocker { display:flex; gap:0.45rem; margin:0 0.65rem 0.5rem; border-radius:0.5rem; background:color-mix(in srgb,var(--destructive) 8%,transparent); padding:0.45rem 0.55rem; color:var(--destructive); outline:none; }.composer-blocker:focus-visible { outline:2px solid var(--ring); }.composer-blocker > div { display:grid; gap:0.2rem; }.composer-blocker p { font-size:calc(0.68rem * var(--type-scale)); }.composer-blocker span { display:flex; flex-wrap:wrap; gap:0.25rem; }.composer-blocker button { min-height:1.75rem; border-radius:0.35rem; padding:0.2rem 0.4rem; font-size:calc(0.62rem * var(--type-scale)); font-weight:600; }.composer-blocker button:hover { background:color-mix(in srgb,var(--destructive) 10%,transparent); }
   .composer-stack :global(.composer-error) { padding:0 0.75rem 0.5rem; font-size:calc(0.7rem * var(--type-scale)); }
   .sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; }
-  @media (max-width:42rem) { .assignment-preview { grid-template-columns:auto minmax(0,1fr); }.assignment-preview :global(.assignment-target-select),.approval-pill { grid-column:2; }.reference-picker { right:0.3rem; left:0.3rem; }.composer-tools { gap:0.05rem; } }
+  @media (max-width:42rem) { .assignment-preview { grid-template-columns:auto minmax(0,1fr); }.assignment-preview :global(.assignment-target-select),.approval-pill { grid-column:2; }.composer-tools { gap:0.05rem; } }
   @media (pointer:coarse) { .tool-button,.send-button { min-width:2.75rem; min-height:2.75rem; } }
   @media (prefers-reduced-motion:reduce) { .send-button { transition:none; } }
   @media (forced-colors:active) { .organizational-composer { border:1px solid CanvasText; } }

@@ -49,16 +49,36 @@ export function chatReferenceSemanticKey(reference: ChatMessageReference): strin
   }
 }
 
-/** Finds the active @ or # reference query immediately before a visible caret. */
-export function chatReferenceTriggerAtCaret(text: string, caret: number): ChatReferenceTrigger | null {
-  const before = text.slice(0, Math.max(0, Math.min(caret, text.length)));
+const REFERENCE_QUERY_LIMIT = 80;
+
+/**
+ * Finds the active @ or # reference query immediately before a collapsed visible caret.
+ *
+ * @param text The visible plain text.
+ * @param selection The visible-text selection; a range selection has no active query.
+ * @param references Atoms in the text, as UTF-8 byte ranges, whose own @ or # never starts a query.
+ * @returns The query and the range it replaces, or null.
+ */
+export function chatReferenceTriggerAtCaret(
+  text: string,
+  selection: { start: number; end: number },
+  references: readonly ChatMessageReference[] = [],
+): ChatReferenceTrigger | null {
+  if (selection.start !== selection.end) return null;
+  const before = text.slice(0, Math.max(0, Math.min(selection.start, text.length)));
   const match = /(^|\s)([@#])([^\n@#]*)$/u.exec(before);
   if (!match) return null;
   const query = match[3] ?? "";
+  if (query.length > REFERENCE_QUERY_LIMIT) return null;
+  const start = before.length - query.length - 1;
+  const byteStart = chatUtf8Offset(text, start);
+  if (references.some((reference) => (
+    byteStart >= reference.metadata.startOffset && byteStart < reference.metadata.endOffset
+  ))) return null;
   return {
     kind: match[2] === "#" ? "channel" : "mention",
     query,
-    start: before.length - query.length - 1,
+    start,
     end: before.length,
   };
 }

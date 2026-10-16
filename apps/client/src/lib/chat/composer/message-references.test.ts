@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ChatMessageReference } from "$lib/chat/contracts";
 import {
   chatReferenceTextSegments,
+  chatReferenceTriggerAtCaret,
   chatReferencesForEditor,
   chatReferencesForMarkdown,
   copyChatReferenceSlice,
@@ -123,5 +124,39 @@ describe("message references", () => {
 
     expect(persisted[0]?.metadata).toMatchObject({ startOffset: 2, endOffset: 9 });
     expect(chatReferencesForEditor(document, persisted)).toEqual([editorReference]);
+  });
+
+  it("opens a query only after a whitespace-led trigger at a collapsed caret", () => {
+    expect(chatReferenceTriggerAtCaret("Ask @ág", { start: 7, end: 7 })).toEqual({
+      kind: "mention",
+      query: "ág",
+      start: 4,
+      end: 7,
+    });
+    expect(chatReferenceTriggerAtCaret("See #gen", { start: 8, end: 8 })?.kind).toBe("channel");
+    expect(chatReferenceTriggerAtCaret("mail@host", { start: 9, end: 9 })).toBeNull();
+    expect(chatReferenceTriggerAtCaret("Ask @ág", { start: 5, end: 7 })).toBeNull();
+    expect(chatReferenceTriggerAtCaret(`@${"x".repeat(81)}`, { start: 82, end: 82 })).toBeNull();
+  });
+
+  it("does not reopen a query from an inserted atom", () => {
+    const inserted = insertChatMessageReference("Hola @Ág", [], 5, 8, participantReference("ref:one"));
+    const caret = { start: inserted.selection, end: inserted.selection };
+
+    expect(chatReferenceTriggerAtCaret(inserted.text, caret, inserted.references)).toBeNull();
+    expect(chatReferenceTriggerAtCaret(`${inserted.text}then`, { start: 16, end: 16 }, inserted.references)).toBeNull();
+    expect(chatReferenceTriggerAtCaret(inserted.text, { start: 8, end: 8 }, inserted.references)).toBeNull();
+  });
+
+  it("opens a new query typed after an atom", () => {
+    const inserted = insertChatMessageReference("", [], 0, 0, participantReference("ref:one"));
+    const text = `${inserted.text}@B`;
+
+    expect(chatReferenceTriggerAtCaret(text, { start: text.length, end: text.length }, inserted.references)).toEqual({
+      kind: "mention",
+      query: "B",
+      start: inserted.text.length,
+      end: text.length,
+    });
   });
 });

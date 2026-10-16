@@ -85,7 +85,6 @@ export const quickNotes = {
     emptyTrash: "Vaciar Papelera",
     undo: "Deshacer",
     loadMore: "Cargar más notas rápidas",
-    reorder: "Reordenar nota",
   },
   formatting: {
     bold: "Negrita",

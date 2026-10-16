@@ -82,7 +82,6 @@ export const quickNotes = {
     emptyTrash: "Empty Trash",
     undo: "Undo",
     loadMore: "Load more quick notes",
-    reorder: "Reorder note",
   },
   formatting: {
     bold: "Bold",

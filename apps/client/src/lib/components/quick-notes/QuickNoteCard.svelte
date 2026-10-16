@@ -55,9 +55,6 @@
   const tag = $derived(tags.find((candidate) => candidate.id === note.tagId) ?? null);
   const surfaceStyle = $derived(`--quick-card-bg: ${colors.bg}; --quick-card-fg: ${colors.text};`);
   const actionClass = "flex size-7 items-center justify-center rounded-md transition-colors hover:bg-black/10 aria-expanded:bg-black/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current dark:hover:bg-white/10 dark:aria-expanded:bg-white/10";
-  /** Mobile cards are compact: their actions live in the editor and touch reorders with a long press. */
-  const showHandle = $derived(reorderable && !mobileLayout);
-
   function handleReorderKeydown(event: KeyboardEvent): void {
     if (event.key !== "ArrowUp" && event.key !== "ArrowLeft" && event.key !== "ArrowDown" && event.key !== "ArrowRight") return;
     event.preventDefault();
@@ -70,25 +67,11 @@
   class="quick-note-card group relative overflow-hidden rounded-xl"
   style={surfaceStyle}
 >
-  {#if showHandle}
-    <button
-      type="button"
-      class="quick-note-drag-handle absolute right-1 top-1 z-10 flex size-7 touch-none items-center justify-center rounded-md opacity-60 transition-opacity hover:bg-black/10 hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current dark:hover:bg-white/10"
-      data-quick-note-drag-handle
-      aria-label={t("quickNotes.action.reorder")}
-      data-app-tooltip-disabled="true"
-      onkeydown={handleReorderKeydown}
-    >
-      <span class="grid grid-cols-2 gap-0.5" aria-hidden="true">
-        {#each [1, 2, 3, 4, 5, 6] as _}<span class="size-0.5 rounded-full bg-current"></span>{/each}
-      </span>
-    </button>
-  {/if}
   <button
     type="button"
-    class={`block w-full px-3.5 pt-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-current ${mobileLayout ? "min-h-12 pb-3" : "pb-2"} ${showHandle ? "pr-9" : ""}`}
+    class={`block w-full px-3.5 pt-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-current ${mobileLayout ? "min-h-12 pb-3" : "pb-2"}`}
     onclick={onOpen}
-    onkeydown={reorderable && !showHandle ? handleReorderKeydown : undefined}
+    onkeydown={reorderable ? handleReorderKeydown : undefined}
   >
     {#if note.hasConflict || tag}
       <span class={`flex max-w-full flex-wrap items-center gap-1 ${note.title || note.runs.length > 0 ? "mb-1.5" : ""}`}>

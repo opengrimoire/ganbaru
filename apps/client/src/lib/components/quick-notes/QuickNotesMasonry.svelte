@@ -64,7 +64,7 @@
     grabY: number;
     width: number;
     height: number;
-    /** Touch outside the drag handle starts a drag only after a stationary hold, so swipes scroll. */
+    /** Touch starts a drag only after a stationary hold, so swipes scroll. */
     hold: boolean;
   }
 
@@ -161,7 +161,6 @@
     if (!pointerCanStart(event)) return;
     completeDropSettle();
     const rect = node.getBoundingClientRect();
-    const onHandle = event.target instanceof Element && event.target.closest("[data-quick-note-drag-handle]") !== null;
     const pending: PendingPointer = {
       pointerId: event.pointerId,
       pointerType: event.pointerType,
@@ -173,7 +172,7 @@
       grabY: event.clientY - rect.top,
       width: rect.width,
       height: rect.height,
-      hold: event.pointerType === "touch" && !onHandle,
+      hold: event.pointerType === "touch",
     };
     pendingPointer = pending;
     if (pending.hold) {

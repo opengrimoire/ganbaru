@@ -48,6 +48,10 @@
     } finally {
       busy = false;
     }
+    // The input is disabled while saving, so it can take focus back only once busy clears.
+    if (!error) return;
+    await tick();
+    input?.focus();
   }
 
   function cancel(restoreFocus = false): void {

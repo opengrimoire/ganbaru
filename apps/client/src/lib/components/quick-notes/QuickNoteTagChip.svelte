@@ -94,11 +94,13 @@
       void tick().then(() => chip?.focus());
     } catch (cause: unknown) {
       error = cause instanceof Error ? cause.message : String(cause);
-      await tick();
-      input?.focus();
     } finally {
       busy = false;
     }
+    // The input is disabled while saving, so it can take focus back only once busy clears.
+    if (!error) return;
+    await tick();
+    input?.focus();
   }
 
   function requestDelete(): void {

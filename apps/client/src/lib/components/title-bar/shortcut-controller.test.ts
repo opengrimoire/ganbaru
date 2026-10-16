@@ -24,7 +24,7 @@ describe("shell shortcuts during editing", () => {
     component = mount(ShortcutHost, { target: document.body, props: { context } });
     await tick();
     const commands = [
-      { key: "m", ctrlKey: true, action: context.toggleMusic },
+      { key: "m", ctrlKey: true, shiftKey: true, action: context.toggleMusic },
       { key: "n", ctrlKey: true, shiftKey: true, action: context.toggleQuickNotes },
       { key: "l", ctrlKey: true, shiftKey: true, action: context.toggleTheme },
       { key: "o", ctrlKey: true, shiftKey: true, action: context.openThemeSwitcher },

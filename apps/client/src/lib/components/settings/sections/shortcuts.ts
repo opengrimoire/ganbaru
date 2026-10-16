@@ -23,7 +23,7 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = Object.freeze([
       { keys: ["Mod + Shift + Tab", "Mod + Page up"], action: "Previous tab" },
       { keys: ["Alt + 1-8"], action: "Go to tab by position" },
       { keys: ["Alt + 9"], action: "Go to last tab" },
-      { keys: ["Mod + M"], action: "Toggle music panel" },
+      { keys: ["Mod + Shift + M"], action: "Toggle music panel" },
       { keys: ["Mod + Shift + N"], action: "Toggle Quick notes" },
       { keys: ["Mod + ,"], action: "Open or close settings" },
       { keys: ["Mod + +"], action: "Zoom in" },

@@ -81,10 +81,10 @@ export function titleBarShortcutAction(
     if (key === "l") return "theme-toggle";
     if (key === "o") return "theme-switcher";
     if (key === "d") return "diagnostics-toggle";
+    if (key === "m") return "music-toggle";
     if (key === "n") return "quick-notes-toggle";
   }
   if (!hasOnlyShortcutModifier(event)) return null;
-  if (key === "m") return "music-toggle";
   if (key === "=" || key === "+") return "zoom-in";
   if (key === "-") return "zoom-out";
   if (key === "0") return "zoom-reset";

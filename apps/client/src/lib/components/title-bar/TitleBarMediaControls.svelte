@@ -54,7 +54,7 @@
     `${isActive ? t("titleBar.pomodoro.remaining", pomodoro.formattedTime) : t("titleBar.control.pomodoro")}\n${musicVolumeTooltipLine}`,
   );
   const musicButtonTooltip = $derived(
-    `${t("titleBar.tab.withShortcut", t("titleBar.control.music"), formatShortcut("Mod + M"))}\n${musicVolumeTooltipLine}${musicPlayer.contextPlayback && musicPlayer.contextPlayback.state !== "overridden" ? `\n${t("titleBar.music.contextual", t(`music.assignment.phase.${musicPlayer.contextPlayback.phase}`), musicPlayer.contextPlayback.eventTitle)}` : ""}`,
+    `${t("titleBar.tab.withShortcut", t("titleBar.control.music"), formatShortcut("Mod + Shift + M"))}\n${musicVolumeTooltipLine}${musicPlayer.contextPlayback && musicPlayer.contextPlayback.state !== "overridden" ? `\n${t("titleBar.music.contextual", t(`music.assignment.phase.${musicPlayer.contextPlayback.phase}`), musicPlayer.contextPlayback.eventTitle)}` : ""}`,
   );
 
   function toggleMenu(): void {

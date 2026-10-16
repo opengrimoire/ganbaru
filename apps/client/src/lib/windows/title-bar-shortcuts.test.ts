@@ -79,7 +79,8 @@ describe("title bar shortcuts", () => {
   });
 
   it("classifies the Music and Quick notes panel shortcuts", () => {
-    expect(titleBarShortcutAction(shortcutEvent({ ctrlKey: true, key: "m" }))).toBe("music-toggle");
+    expect(titleBarShortcutAction(shortcutEvent({ ctrlKey: true, shiftKey: true, key: "m" }))).toBe("music-toggle");
+    expect(titleBarShortcutAction(shortcutEvent({ ctrlKey: true, key: "m" }))).toBeNull();
     expect(titleBarShortcutAction(shortcutEvent({ ctrlKey: true, shiftKey: true, key: "n" }))).toBe("quick-notes-toggle");
     expect(titleBarShortcutAction(shortcutEvent({ ctrlKey: true, key: "n" }))).toBeNull();
   });

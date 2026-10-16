@@ -52,6 +52,8 @@ export interface QuickNoteCreate {
 export interface QuickNoteTag {
   id: string;
   name: string;
+  /** Palette slot that notes take when they are tagged. */
+  color: EventColor;
   orderKey: string;
   createdAt: string;
   updatedAt: string;
@@ -78,6 +80,12 @@ export interface QuickNoteReorderRequest {
   previousId: string | null;
   nextId: string | null;
   tagId: string | null;
+}
+
+export interface QuickNoteTagReorderRequest {
+  id: string;
+  previousId: string | null;
+  nextId: string | null;
 }
 
 export interface QuickNoteFormatting {

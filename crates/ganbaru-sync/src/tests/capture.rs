@@ -50,7 +50,7 @@ fn inserts_capture_created_rows_with_every_group() {
         assert_eq!(
             captures(&pool).await,
             [
-                (1, "tag-1".to_string(), 15, 1, 0),
+                (1, "tag-1".to_string(), 31, 1, 0),
                 (2, "note-1".to_string(), 255, 1, 0),
             ]
         );

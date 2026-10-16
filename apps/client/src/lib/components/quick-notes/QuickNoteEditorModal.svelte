@@ -16,7 +16,7 @@
     updateQuickNote,
     QuickNoteWriteError,
   } from "$lib/api/quick-notes";
-  import { FALLBACK_COLOR_INDEX } from "$lib/calendar/types";
+  import type { EventColor } from "$lib/calendar/types";
   import {
     notesPlainTextFromEditableRoot,
     notesTextSelectionFromEditableRoot,
@@ -77,6 +77,7 @@
     note,
     tags,
     defaultTagId,
+    defaultColor,
     theme,
     onClose,
     onSaved,
@@ -91,6 +92,8 @@
     note: QuickNote | null;
     tags: readonly QuickNoteTag[];
     defaultTagId: string | null;
+    /** Color a new note starts with. */
+    defaultColor: EventColor;
     theme: Theme;
     onClose: () => void;
     onSaved: (note: QuickNote) => void;
@@ -107,11 +110,12 @@
   const mobileBackStack = getMobileBackStack();
   const initialNote = untrack(() => note);
   const initialTagId = untrack(() => defaultTagId);
+  const initialColor = untrack(() => defaultColor);
   const initialId = initialNote?.id ?? crypto.randomUUID();
   let id = $state(initialId);
   let title = $state(initialNote?.title ?? "");
   let runs = $state<QuickNoteTextRun[]>(initialNote?.runs.map((run) => ({ ...run })) ?? []);
-  let color = $state<QuickNote["color"]>(initialNote?.color ?? FALLBACK_COLOR_INDEX);
+  let color = $state<QuickNote["color"]>(initialNote?.color ?? initialColor);
   let tagId = $state(initialNote?.tagId ?? initialTagId);
   let pinned = $state(initialNote?.pinned ?? false);
   let persisted = $state<QuickNote | null>(initialNote);
@@ -537,8 +541,11 @@
     markDirty();
   }
 
+  /** Tags the note, which also takes the tag's color; clearing the tag keeps the note's color. */
   function updateTag(next: string | null): void {
     tagId = next;
+    const tag = tags.find((current) => current.id === next);
+    if (tag) color = tag.color;
     markDirty();
   }
 
@@ -767,7 +774,7 @@
         <button class={`${toolbarButton} ${selectedFormatting.italic ? "bg-black/10 dark:bg-white/10" : ""}`} type="button" aria-label={t("quickNotes.formatting.italic")} title={t("quickNotes.formatting.italic")} aria-pressed={selectedFormatting.italic} onpointerdown={(event) => event.preventDefault()} onclick={() => toggleFormatting("italic")}><Italic class="size-4" strokeWidth={1.5} /></button>
         <button class={`${toolbarButton} ${selectedFormatting.underline ? "bg-black/10 dark:bg-white/10" : ""}`} type="button" aria-label={t("quickNotes.formatting.underline")} title={t("quickNotes.formatting.underline")} aria-pressed={selectedFormatting.underline} onpointerdown={(event) => event.preventDefault()} onclick={() => toggleFormatting("underline")}><UnderlineIcon class="size-4" /></button>
         <QuickNoteColorPicker {color} {theme} onSelect={updateColor} buttonClass={toolbarButton} {mobileLayout} />
-        <QuickNoteTagPicker {tagId} {tags} onSelect={updateTag} buttonClass={toolbarButton} {mobileLayout} />
+        <QuickNoteTagPicker {tagId} {tags} {theme} onSelect={updateTag} buttonClass={toolbarButton} {mobileLayout} />
         <button class={toolbarButton} type="button" disabled={history.undo.length === 0} aria-label={t("quickNotes.formatting.undo")} title={t("quickNotes.formatting.undo")} onclick={undo}><Undo2 class="size-4" strokeWidth={1.5} /></button>
         <button class={toolbarButton} type="button" disabled={history.redo.length === 0} aria-label={t("quickNotes.formatting.redo")} title={t("quickNotes.formatting.redo")} onclick={redo}><Redo2 class="size-4" strokeWidth={1.5} /></button>
         <span class="mx-1 h-5 w-px bg-current/15"></span>

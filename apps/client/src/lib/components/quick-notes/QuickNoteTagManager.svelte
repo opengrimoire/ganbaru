@@ -1,18 +1,32 @@
 <script lang="ts">
   import { tick } from "svelte";
+  import Palette from "@lucide/svelte/icons/palette";
   import Plus from "@lucide/svelte/icons/plus";
+  import type { EventColor } from "$lib/calendar/types";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { getQuickNoteColor } from "$lib/quick-notes/colors";
+  import { pickQuickNoteTagColor } from "$lib/quick-notes/tags";
   import { QUICK_NOTE_TAG_LIMIT } from "$lib/quick-notes/types";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
+  import type { Theme } from "$lib/themes";
+  import QuickNoteColorPicker from "./QuickNoteColorPicker.svelte";
   import QuickNoteTagNameInput from "./QuickNoteTagNameInput.svelte";
 
   let {
     tagCount,
+    usedColors,
+    defaultColor,
+    theme,
     onCreate,
     mobileLayout = false,
   }: {
     tagCount: number;
-    onCreate: (name: string) => Promise<void>;
+    /** Colors existing tags use, which a new tag avoids while others are free. */
+    usedColors: readonly EventColor[];
+    /** Color of untagged notes, which a new tag avoids. */
+    defaultColor: EventColor;
+    theme: Theme;
+    onCreate: (name: string, color: EventColor) => Promise<void>;
     mobileLayout?: boolean;
   } = $props();
 
@@ -22,13 +36,17 @@
   let input = $state<HTMLInputElement | null>(null);
   let createButton = $state<HTMLButtonElement | null>(null);
   let name = $state("");
+  let color = $state<EventColor>(0);
+  let paletteOpen = $state(false);
   let busy = $state(false);
   let error = $state("");
+  const colors = $derived(getQuickNoteColor(color, theme));
 
   async function begin(): Promise<void> {
     if (tagCount >= QUICK_NOTE_TAG_LIMIT) return;
     creating = true;
     name = "";
+    color = pickQuickNoteTagColor(usedColors, defaultColor);
     error = "";
     await tick();
     input?.focus();
@@ -40,7 +58,7 @@
     busy = true;
     error = "";
     try {
-      await onCreate(value);
+      await onCreate(value, color);
       name = "";
       creating = false;
     } catch {
@@ -78,12 +96,27 @@
       {error}
       {busy}
       {mobileLayout}
+      {colors}
       onInput={() => { error = ""; }}
       onSubmit={() => void create()}
       onCancel={() => cancel(true)}
-      onBlur={() => { if (!busy) cancel(); }}
+      onBlur={() => { if (!busy && !paletteOpen) cancel(); }}
     >
-      {#snippet leading()}<Plus class="size-3.5 shrink-0 text-muted-foreground" strokeWidth={1.5} aria-hidden="true" />{/snippet}
+      {#snippet leading()}
+        <!-- The palette opens from inside the name input, so the user can recolor the tag before saving it. -->
+        <QuickNoteColorPicker
+          bind:open={paletteOpen}
+          {color}
+          {theme}
+          {mobileLayout}
+          label={t("quickNotes.tag.color")}
+          buttonClass={mobileLayout ? "-ml-2 flex size-9 shrink-0 items-center justify-center rounded-lg active:bg-current/15" : "-ml-1 flex size-5 shrink-0 items-center justify-center rounded-sm hover:bg-current/15"}
+          onSelect={(next) => { color = next; }}
+          onClosed={() => input?.focus()}
+        >
+          {#snippet trigger()}<Palette class={mobileLayout ? "size-4" : "size-3.5"} strokeWidth={1.5} aria-hidden="true" />{/snippet}
+        </QuickNoteColorPicker>
+      {/snippet}
     </QuickNoteTagNameInput>
   {:else if tagCount < QUICK_NOTE_TAG_LIMIT}
     <button

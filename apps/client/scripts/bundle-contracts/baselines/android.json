@@ -37,7 +37,7 @@
       "roots": [
         "src/lib/components/quick-notes/QuickNotesPanel.svelte"
       ],
-      "maxSourceModules": 113
+      "maxSourceModules": 124
     },
     {
       "name": "music",
@@ -55,7 +55,7 @@
       "maxSourceModules": 304
     }
   ],
-  "maxTotalSourceModules": 1246,
+  "maxTotalSourceModules": 1250,
   "requiredMobileModules": [
     "src/main.ts",
     "src/main-mobile.ts",

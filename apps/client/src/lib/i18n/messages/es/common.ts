@@ -42,6 +42,8 @@ export const common = {
   removeFromFavorites: "Quitar de favoritos",
   moveUp: "Mover arriba",
   moveDown: "Mover abajo",
+  moveLeft: "Mover a la izquierda",
+  moveRight: "Mover a la derecha",
   sortOrder: {
     nameAscending: "Nombre (A a Z)",
     nameDescending: "Nombre (Z a A)",

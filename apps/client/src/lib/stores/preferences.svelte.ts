@@ -58,7 +58,7 @@ import {
   resolveFontFamilyStack,
 } from "./preference-options";
 import { configKeyChanged, getConfigKey, onConfigChangedElsewhere, setConfigKey } from "../vault/config";
-import type { EventColor } from "$lib/calendar/types";
+import { FALLBACK_COLOR_INDEX, type EventColor } from "$lib/calendar/types";
 import {
   isDefaultProfileImageCrop,
   isProfileImageCrop,
@@ -102,6 +102,7 @@ const FOCUS_BREAK_EXTENSION_LIMIT_CONFIG_KEY =
 const FOCUS_PAUSE_NOTIFICATION_INTERVAL_MINUTES_CONFIG_KEY =
   "preferences.focusPauseNotificationIntervalMinutes";
 const MUSIC_PAUSE_ON_POMODORO_PAUSE_CONFIG_KEY = "preferences.musicPauseOnPomodoroPause";
+const QUICK_NOTES_DEFAULT_COLOR_CONFIG_KEY = "preferences.quickNotesDefaultColor";
 const NOTES_DEFAULT_OPEN_MODE_CONFIG_KEY = "preferences.notesDefaultOpenMode";
 const NOTES_SIDEBAR_ORDER_CONFIG_KEY = "preferences.notesSidebarOrder";
 const PROJECTS_SIDEBAR_ORDER_CONFIG_KEY = "preferences.projectsSidebarOrder";
@@ -255,6 +256,11 @@ function loadSavedMusicPauseOnPomodoroPause(): boolean {
   return DEFAULT_MUSIC_PAUSE_ON_POMODORO_PAUSE;
 }
 
+function loadSavedQuickNotesDefaultColor(): EventColor {
+  const saved = getConfigKey<unknown>(QUICK_NOTES_DEFAULT_COLOR_CONFIG_KEY, undefined);
+  return isProfileColor(saved) ? saved : FALLBACK_COLOR_INDEX;
+}
+
 function loadSavedBooleanPreference(key: string, fallback: boolean): boolean {
   const saved = getConfigKey<unknown>(key, undefined);
   if (typeof saved === "boolean") return saved;
@@ -312,6 +318,7 @@ let focusPauseNotificationIntervalMinutes = $state<FocusPauseNotificationInterva
   loadSavedFocusPauseNotificationIntervalMinutes(),
 );
 let musicPauseOnPomodoroPause = $state<boolean>(loadSavedMusicPauseOnPomodoroPause());
+let quickNotesDefaultColor = $state<EventColor>(loadSavedQuickNotesDefaultColor());
 let notesDefaultOpenMode = $state<NotesPageOpenMode>(loadSavedNotesDefaultOpenMode());
 let notesSidebarOrder = $state<SidebarSortOrder>(loadSavedSidebarOrder(NOTES_SIDEBAR_ORDER_CONFIG_KEY));
 let projectsSidebarOrder = $state<SidebarSortOrder>(loadSavedSidebarOrder(PROJECTS_SIDEBAR_ORDER_CONFIG_KEY));
@@ -399,6 +406,7 @@ function reloadSavedPreferences(): void {
   focusBreakExtensionLimit = loadSavedFocusBreakExtensionLimit();
   focusPauseNotificationIntervalMinutes = loadSavedFocusPauseNotificationIntervalMinutes();
   musicPauseOnPomodoroPause = loadSavedMusicPauseOnPomodoroPause();
+  quickNotesDefaultColor = loadSavedQuickNotesDefaultColor();
   notesDefaultOpenMode = loadSavedNotesDefaultOpenMode();
   notesSidebarOrder = loadSavedSidebarOrder(NOTES_SIDEBAR_ORDER_CONFIG_KEY);
   projectsSidebarOrder = loadSavedSidebarOrder(PROJECTS_SIDEBAR_ORDER_CONFIG_KEY);
@@ -602,6 +610,12 @@ function setMusicPauseOnPomodoroPause(value: boolean): void {
   setConfigKey(MUSIC_PAUSE_ON_POMODORO_PAUSE_CONFIG_KEY, value);
 }
 
+function setQuickNotesDefaultColor(value: EventColor): void {
+  if (!isProfileColor(value)) return;
+  quickNotesDefaultColor = value;
+  setConfigKey(QUICK_NOTES_DEFAULT_COLOR_CONFIG_KEY, value === FALLBACK_COLOR_INDEX ? undefined : value);
+}
+
 function setNotesDefaultOpenMode(value: NotesPageOpenMode): void {
   if (!isNotesPageOpenMode(value)) return;
   notesDefaultOpenMode = value;
@@ -758,6 +772,10 @@ export function getPreferences() {
     get musicPauseOnPomodoroPause(): boolean {
       return musicPauseOnPomodoroPause;
     },
+    /** Palette slot new untagged quick notes start with; existing notes keep theirs when it changes. */
+    get quickNotesDefaultColor(): EventColor {
+      return quickNotesDefaultColor;
+    },
     get notesDefaultOpenMode(): NotesPageOpenMode {
       return notesDefaultOpenMode;
     },
@@ -827,6 +845,7 @@ export function getPreferences() {
     setFocusBreakExtensionLimit,
     setFocusPauseNotificationIntervalMinutes,
     setMusicPauseOnPomodoroPause,
+    setQuickNotesDefaultColor,
     setNotesDefaultOpenMode,
     setNotesSidebarOrder,
     setProjectsSidebarOrder,

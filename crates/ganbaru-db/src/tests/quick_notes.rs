@@ -217,7 +217,7 @@ fn replication_migration_preserves_quick_notes() {
         .unwrap();
         assert_eq!(captures.len(), 7);
         assert!(captures.iter().all(|(table_id, _, mask, created)| {
-            *created == 1 && *mask == if *table_id == 1 { 15 } else { 255 }
+            *created == 1 && *mask == if *table_id == 1 { 31 } else { 255 }
         }));
 
         // The rebuilt tag table still enforces the reference from notes.

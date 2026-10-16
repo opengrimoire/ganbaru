@@ -27,6 +27,8 @@ pub mod tag_group {
     pub const ORDER: GroupId = group_id(2);
     /// `updated_at`.
     pub const UPDATED: GroupId = group_id(3);
+    /// `color`.
+    pub const COLOR: GroupId = group_id(4);
 }
 
 /// Note field groups.
@@ -98,8 +100,13 @@ const ORDER_KEY: &[ColumnSpec] = &[ColumnSpec {
     name: "order_key",
     ty: ColumnType::OrderKey,
 }];
+/// A palette slot shared by tags and notes.
+const COLOR: &[ColumnSpec] = &[ColumnSpec {
+    name: "color",
+    ty: ColumnType::Integer { min: 0, max: 31 },
+}];
 
-const TAG_GROUPS: [GroupSpec; 4] = [
+const TAG_GROUPS: [GroupSpec; 5] = [
     plain(
         tag_group::CREATED,
         "created",
@@ -120,6 +127,7 @@ const TAG_GROUPS: [GroupSpec; 4] = [
     ),
     plain(tag_group::ORDER, "order", MergeKind::Position, ORDER_KEY),
     plain(tag_group::UPDATED, "updated", MergeKind::Max, UPDATED_AT),
+    plain(tag_group::COLOR, "color", MergeKind::Register, COLOR),
 ];
 
 const NOTE_GROUPS: [GroupSpec; 8] = [
@@ -155,10 +163,7 @@ const NOTE_GROUPS: [GroupSpec; 8] = [
         note_group::COLOR,
         "color",
         MergeKind::Register,
-        GroupStorage::Columns(&[ColumnSpec {
-            name: "color",
-            ty: ColumnType::Integer { min: 0, max: 31 },
-        }]),
+        GroupStorage::Columns(COLOR),
         false,
     ),
     content(

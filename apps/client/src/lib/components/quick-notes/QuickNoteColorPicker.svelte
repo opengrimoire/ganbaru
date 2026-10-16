@@ -1,14 +1,14 @@
 <script lang="ts">
-  import { tick } from "svelte";
+  import { tick, type Snippet } from "svelte";
   import Palette from "@lucide/svelte/icons/palette";
-  import { EVENT_COLOR_OPTIONS, getEventColor } from "$lib/calendar/utils";
+  import { EVENT_COLOR_OPTIONS } from "$lib/calendar/utils";
   import type { EventColor } from "$lib/calendar/types";
-  import { contrastRatio } from "$lib/color/math";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { activateModalFocus } from "$lib/modal-focus";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { resolveCalendarTokens, type Theme } from "$lib/themes";
   import { portal } from "$lib/utils/portal";
+  import QuickNoteColorSwatches from "./QuickNoteColorSwatches.svelte";
 
   const PALETTE_COLUMNS = 4;
   const MOBILE_PALETTE_COLUMNS = 5;
@@ -23,30 +23,37 @@
     color,
     theme,
     onSelect,
+    label,
     buttonClass = "",
     mobileLayout = false,
+    open = $bindable(false),
+    trigger,
+    onClosed,
   }: {
     color: EventColor;
     theme: Theme;
     onSelect: (color: EventColor) => void;
+    /** Names the button and the palette; defaults to the note color label. */
+    label?: string;
     buttonClass?: string;
     mobileLayout?: boolean;
+    /** Whether the palette is showing, bindable so a host can tell focus moving into it from focus leaving. */
+    open?: boolean;
+    /** Button content in place of the palette icon. */
+    trigger?: Snippet;
+    /** Runs after the palette closes instead of focusing the button, so a host can return focus elsewhere. */
+    onClosed?: () => void;
   } = $props();
 
   const { t } = getLocalization();
   const mobileBackStack = getMobileBackStack();
-  let open = $state(false);
   let button = $state<HTMLButtonElement | null>(null);
   let palette = $state<HTMLDivElement | null>(null);
   let palettePosition = $state({ left: PALETTE_EDGE_PX, top: PALETTE_EDGE_PX });
+  const resolvedLabel = $derived(label ?? t("quickNotes.action.color"));
   const calendarTokens = $derived(resolveCalendarTokens(theme));
   const pickerBg = $derived(calendarTokens["--cal-bg"]);
   const pickerText = $derived(calendarTokens["--cal-time-label"]);
-  const selectionBorder = $derived(
-    contrastRatio(pickerBg, "#000000") >= contrastRatio(pickerBg, "#ffffff")
-      ? "#000000"
-      : "#ffffff",
-  );
 
   function rootRemPx(): number {
     const fontSize = Number.parseFloat(getComputedStyle(document.documentElement).fontSize);
@@ -97,7 +104,10 @@
 
   function closePicker(): void {
     open = false;
-    void tick().then(() => button?.focus());
+    void tick().then(() => {
+      if (onClosed) onClosed();
+      else button?.focus();
+    });
   }
 
   function choose(next: EventColor): void {
@@ -120,19 +130,14 @@
       max-width: 30rem;
       max-height: calc(var(--visual-viewport-height) - var(--safe-area-top) - var(--safe-area-bottom) - 1rem);
       margin-inline: auto;
-      grid-template-columns: repeat(${MOBILE_PALETTE_COLUMNS}, 3rem);
-      justify-content: center;
       background-color: ${pickerBg};
       color: ${pickerText};
-      --selection-border: ${selectionBorder};
     `
     : `
       left: ${palettePosition.left}px;
       top: ${palettePosition.top}px;
-      grid-template-columns: repeat(${PALETTE_COLUMNS}, ${PALETTE_SWATCH_REM}rem);
       background-color: ${pickerBg};
       color: ${pickerText};
-      --selection-border: ${selectionBorder};
     `);
 
   $effect(() => {
@@ -156,13 +161,13 @@
   bind:this={button}
   type="button"
   class={buttonClass}
-  aria-label={t("quickNotes.action.color")}
-  title={t("quickNotes.action.color")}
+  aria-label={resolvedLabel}
+  title={resolvedLabel}
   aria-haspopup="dialog"
   aria-expanded={open}
   onclick={() => { if (open) closePicker(); else void openPicker(); }}
 >
-  <Palette class="size-4" strokeWidth={1.5} aria-hidden="true" />
+  {#if trigger}{@render trigger()}{:else}<Palette class="size-4" strokeWidth={1.5} aria-hidden="true" />{/if}
 </button>
 
 {#if open}
@@ -172,40 +177,21 @@
   <div
     bind:this={palette}
     use:portal
-    class={mobileLayout ? "surface-floating fixed z-100 grid gap-1 overflow-y-auto overscroll-contain p-2" : "surface-floating fixed z-100 grid gap-2 p-2.5"}
+    class={mobileLayout ? "surface-floating fixed z-100 overflow-y-auto overscroll-contain p-2" : "surface-floating fixed z-100 p-2.5"}
     style={paletteStyle}
     role="dialog"
     aria-modal="true"
-    aria-label={t("quickNotes.action.color")}
+    aria-label={resolvedLabel}
     tabindex="-1"
   >
-    {#each EVENT_COLOR_OPTIONS as entry, index}
-      {@const resolved = getEventColor(entry, theme)}
-      <button
-        type="button"
-        class={mobileLayout ? "quick-note-color-swatch min-h-12 min-w-12 rounded-xl" : "quick-note-color-swatch size-5.5 rounded-[3px]"}
-        class:swatch-selected={color === entry}
-        style="background-color: {resolved.bg};"
-        aria-label={`${t("quickNotes.action.color")} ${index + 1}`}
-        title={`${t("quickNotes.action.color")} ${index + 1}`}
-        onclick={() => choose(entry)}
-      ></button>
-    {/each}
+    <QuickNoteColorSwatches
+      {color}
+      {theme}
+      label={resolvedLabel}
+      onSelect={choose}
+      columns={mobileLayout ? `repeat(${MOBILE_PALETTE_COLUMNS}, 3rem)` : `repeat(${PALETTE_COLUMNS}, ${PALETTE_SWATCH_REM}rem)`}
+      class={mobileLayout ? "justify-center gap-1" : "gap-2"}
+      swatchClass={mobileLayout ? "min-h-12 min-w-12 rounded-xl" : "size-5.5 rounded-[3px]"}
+    />
   </div>
 {/if}
-
-<style>
-  .quick-note-color-swatch {
-    position: relative;
-    overflow: hidden;
-  }
-
-  .quick-note-color-swatch.swatch-selected::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    border: 2px solid var(--selection-border);
-    border-radius: inherit;
-    pointer-events: none;
-  }
-</style>

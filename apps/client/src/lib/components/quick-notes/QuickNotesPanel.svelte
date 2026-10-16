@@ -5,7 +5,7 @@
   import Search from "@lucide/svelte/icons/search";
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import X from "@lucide/svelte/icons/x";
-  import { FALLBACK_COLOR_INDEX } from "$lib/calendar/types";
+  import type { EventColor } from "$lib/calendar/types";
   import {
     archiveQuickNote,
     createQuickNoteTag,
@@ -16,18 +16,19 @@
     listQuickNotes,
     listQuickNoteTags,
     QuickNoteTagError,
-    renameQuickNoteTag,
     restoreQuickNote,
     reorderQuickNote,
+    reorderQuickNoteTag,
     setQuickNotePinned,
     trashQuickNote,
     unarchiveQuickNote,
     updateQuickNote,
+    updateQuickNoteTag,
   } from "$lib/api/quick-notes";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getQuickNoteColor } from "$lib/quick-notes/colors";
-  import { compareQuickNoteTags, quickNoteViewIndexForKey, quickNoteViewShortcut } from "$lib/quick-notes/tags";
+  import { compareQuickNoteTags, quickNoteTagMoveRequest, quickNoteViewIndexForKey } from "$lib/quick-notes/tags";
   import { applyQuickNoteGroupOrder } from "$lib/quick-notes/masonry";
   import {
     cacheQuickNotesAllWindow,
@@ -40,13 +41,14 @@
   import type { QuickNote, QuickNotesCollection, QuickNoteTag } from "$lib/quick-notes/types";
   import { listenForQuickNotesChanges, publishQuickNotesChanged } from "$lib/quick-notes/window-sync";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
+  import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getTheme } from "$lib/stores/theme.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import QuickNoteEditorModal from "./QuickNoteEditorModal.svelte";
-  import QuickNoteTagChip from "./QuickNoteTagChip.svelte";
-  import QuickNoteTagManager from "./QuickNoteTagManager.svelte";
+  import QuickNoteTagBar from "./QuickNoteTagBar.svelte";
   import QuickNotesMasonry from "./QuickNotesMasonry.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
+  import { movedToIndex } from "$lib/utils/sidebar-order";
   import { captureFocusReturn } from "$lib/modal-focus";
   import { cn } from "$lib/utils";
 
@@ -62,6 +64,7 @@
 
   const { t } = getLocalization();
   const theme = getTheme();
+  const preferences = getPreferences();
   const mobileBackStack = getMobileBackStack();
   const initialSnapshot = readQuickNotesInitialSnapshot();
   let panel = $state<HTMLDivElement | null>(null);
@@ -83,6 +86,7 @@
   let editorNote = $state<QuickNote | null | undefined>(undefined);
   let deleteTarget = $state<QuickNote | null>(null);
   let deleteTagTarget = $state<QuickNoteTag | null>(null);
+  let movingTag = $state(false);
   let confirmEmptyTrash = $state(false);
   let undoMessage = $state("");
   let reorderAnnouncement = $state("");
@@ -100,7 +104,10 @@
 
   const pinnedNotes = $derived(renderedCollection === "active" ? notes.filter((note) => note.pinned) : []);
   const otherNotes = $derived(renderedCollection === "active" ? notes.filter((note) => !note.pinned) : notes);
-  const creationColors = $derived(getQuickNoteColor(FALLBACK_COLOR_INDEX, theme.current));
+  const selectedTag = $derived(tags.find((tag) => tag.id === selectedTagId) ?? null);
+  /** Color a new note starts with: the tag of the current view, or the default for untagged notes. */
+  const creationColor = $derived(selectedTag?.color ?? preferences.quickNotesDefaultColor);
+  const creationColors = $derived(getQuickNoteColor(creationColor, theme.current));
   const reorderable = $derived(
     collection === "active"
       && renderedCollection === "active"
@@ -202,27 +209,63 @@
     }
   }
 
-  async function createTag(name: string): Promise<void> {
-    const created = await createQuickNoteTag(crypto.randomUUID(), name);
+  async function createTag(name: string, color: EventColor): Promise<void> {
+    const created = await createQuickNoteTag(crypto.randomUUID(), name, color);
     tags = [...tags, created].sort(compareQuickNoteTags);
+    cacheQuickNoteTags(tags);
     publishQuickNotesChanged();
   }
 
   function tagErrorMessage(error: unknown): string {
     if (error instanceof QuickNoteTagError && error.code === "duplicate_name") return t("quickNotes.tag.duplicateName");
     if (error instanceof QuickNoteTagError && error.code === "not_found") return t("quickNotes.tag.notFound");
-    return t("quickNotes.tag.renameFailed");
+    return t("quickNotes.tag.updateFailed");
   }
 
-  async function renameTag(tag: QuickNoteTag, name: string): Promise<void> {
+  /** Saves a tag's name and color; existing notes keep the color they already have. */
+  async function updateTag(tag: QuickNoteTag, name: string, color: EventColor): Promise<void> {
     try {
-      const renamed = await renameQuickNoteTag(tag.id, name);
-      tags = tags.map((current) => current.id === renamed.id ? renamed : current).sort(compareQuickNoteTags);
+      const updated = await updateQuickNoteTag(tag.id, name, color);
+      tags = tags.map((current) => current.id === updated.id ? updated : current).sort(compareQuickNoteTags);
       cacheQuickNoteTags(tags);
       publishQuickNotesChanged();
     } catch (error: unknown) {
       if (error instanceof QuickNoteTagError && error.code === "not_found") void loadTags();
       throw new Error(tagErrorMessage(error), { cause: error });
+    }
+  }
+
+  function colorTag(tag: QuickNoteTag, color: EventColor): void {
+    loadError = "";
+    void updateTag(tag, tag.name, color).catch((error: unknown) => {
+      loadError = error instanceof Error ? error.message : String(error);
+    });
+  }
+
+  /** Moves a tag to `targetIndex` in the tag order, showing the new order while the move saves. */
+  async function moveTag(id: string, targetIndex: number): Promise<void> {
+    if (movingTag) return;
+    const ids = tags.map((tag) => tag.id);
+    const request = quickNoteTagMoveRequest(ids, id, targetIndex);
+    if (!request) return;
+    const byId = new Map(tags.map((tag) => [tag.id, tag]));
+    tags = movedToIndex(ids, id, targetIndex).flatMap((tagId) => byId.get(tagId) ?? []);
+    movingTag = true;
+    loadError = "";
+    try {
+      await reorderQuickNoteTag(request);
+      publishQuickNotesChanged();
+    } catch (error: unknown) {
+      loadError = error instanceof QuickNoteTagError && error.code === "not_found"
+        ? t("quickNotes.tag.notFound")
+        : t("quickNotes.tag.moveFailed");
+    } finally {
+      movingTag = false;
+    }
+    try {
+      await loadTags();
+    } catch (error: unknown) {
+      loadError = error instanceof Error ? error.message : String(error);
     }
   }
 
@@ -235,10 +278,6 @@
       await deleteQuickNoteTag(target.id);
       await loadTags();
     });
-  }
-
-  function tagTitle(tag: QuickNoteTag, index: number): string {
-    return `${tag.name} (${t("calendar.toolbar.shortcutKey", quickNoteViewShortcut(index + 1) ?? "")})`;
   }
 
   function updateSearch(value: string): void {
@@ -349,7 +388,9 @@
     });
   }
 
+  /** Tags a note, which also takes the tag's color; clearing the tag keeps the note's color. */
   function tagNote(note: QuickNote, tagId: string | null): void {
+    const tag = tags.find((current) => current.id === tagId);
     void runMutation(async () => {
       const full = await getQuickNote(note.id);
       await updateQuickNote({
@@ -357,7 +398,7 @@
         expectedRevision: full.revision,
         title: full.title,
         runs: full.runs,
-        color: full.color,
+        color: tag?.color ?? full.color,
         tagId,
         pinned: full.pinned,
       });
@@ -475,7 +516,9 @@
       }
       return;
     }
+    // Menus and dialogs above the panel keep Tab inside themselves.
     if (event.key !== "Tab" || !panel) return;
+    if ((target?.closest("[role='menu']") ?? null) !== null || (targetDialog !== null && targetDialog !== panel)) return;
     const focusable = [...panel.querySelectorAll<HTMLElement>(
       "button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex='-1'])",
     )].filter((element) => element.offsetParent !== null);
@@ -573,27 +616,22 @@
 >
   <header class={mobileLayout ? "shrink-0 px-2 pb-2 pt-2" : "shrink-0 px-3 pb-1.5 pt-3 sm:px-4"}>
     <div class={mobileLayout ? "flex min-w-0 flex-col gap-1" : "flex min-w-0 items-center gap-1"}>
-      <div class={mobileLayout ? "flex min-h-12 w-full min-w-0 items-center gap-1 overflow-x-auto" : "flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"} role="group" aria-label={t("quickNotes.title")}>
-        <button
-          type="button"
-          aria-pressed={collection === "active" && selectedTagId === null}
-          class={`flex shrink-0 items-center text-foreground transition-colors ${mobileLayout ? "min-h-12 rounded-xl px-4 text-sm active:bg-accent" : "h-7 rounded-md px-2.5 text-xs hover:bg-accent/60"} ${collection === "active" && selectedTagId === null ? "bg-accent/60" : ""}`}
-          title={`${t("quickNotes.collection.active")} (${t("calendar.toolbar.shortcutKey", "1")})`}
-          onclick={() => selectTag(null)}
-        >{t("quickNotes.collection.active")}</button>
-        {#each tags as tag, index (tag.id)}
-          <QuickNoteTagChip
-            {tag}
-            selected={collection === "active" && selectedTagId === tag.id}
-            title={tagTitle(tag, index)}
-            {mobileLayout}
-            onSelect={() => selectTag(tag.id)}
-            onRename={(name) => renameTag(tag, name)}
-            onDelete={() => { deleteTagTarget = tag; }}
-          />
-        {/each}
-        <QuickNoteTagManager tagCount={tags.length} onCreate={createTag} {mobileLayout} />
-      </div>
+      <QuickNoteTagBar
+        {tags}
+        allSelected={collection === "active" && selectedTagId === null}
+        selectedTagId={collection === "active" ? selectedTagId : null}
+        defaultColor={preferences.quickNotesDefaultColor}
+        theme={theme.current}
+        moving={movingTag}
+        {mobileLayout}
+        onSelect={selectTag}
+        onCreate={createTag}
+        onRename={(tag, name) => updateTag(tag, name, tag.color)}
+        onColor={colorTag}
+        onMove={moveTag}
+        onDelete={(tag) => { deleteTagTarget = tag; }}
+        onDefaultColor={preferences.setQuickNotesDefaultColor}
+      />
       <div class={mobileLayout ? "flex min-h-12 w-full min-w-0 items-center gap-1" : "ml-auto flex shrink-0 items-center gap-1"} role="group" aria-label={t("quickNotes.title")}>
         {#if mobileLayout && !searchOpen}<h2 class="min-w-0 flex-1 truncate px-2 text-base font-semibold">{t("quickNotes.title")}</h2>{/if}
         {#if searchOpen}
@@ -698,6 +736,7 @@
     note={editorNote}
     {tags}
     defaultTagId={selectedTagId}
+    defaultColor={creationColor}
     theme={theme.current}
     {mobileLayout}
     obscured={deleteTarget !== null}

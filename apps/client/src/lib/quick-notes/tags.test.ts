@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { compareQuickNoteTags, quickNoteViewIndexForKey, quickNoteViewShortcut } from "$lib/quick-notes/tags";
+import {
+  compareQuickNoteTags,
+  pickQuickNoteTagColor,
+  quickNoteTagMoveRequest,
+  quickNoteTagVisibleCount,
+  quickNoteViewIndexForKey,
+  quickNoteViewShortcut,
+} from "$lib/quick-notes/tags";
 
 describe("Quick notes tag shortcuts", () => {
   it("maps All and nine tag views to 1 through 9 and then 0", () => {
@@ -32,5 +39,63 @@ describe("Quick notes tag order", () => {
       { id: "e", orderKey: "a0V" },
     ];
     expect(tags.sort(compareQuickNoteTags).map((tag) => tag.id)).toEqual(["d", "a", "c", "e", "b"]);
+  });
+});
+
+describe("Quick notes tag colors", () => {
+  const allSlots = Array.from({ length: 32 }, (_, index) => index);
+
+  it("never picks the default color while another slot is free", () => {
+    for (const roll of [0, 0.25, 0.5, 0.999]) {
+      expect(pickQuickNoteTagColor([], 30, () => roll)).not.toBe(30);
+    }
+  });
+
+  it("picks only colors no other tag uses", () => {
+    const used = allSlots.filter((color) => color !== 3 && color !== 7 && color !== 30);
+    expect(pickQuickNoteTagColor(used, 30, () => 0)).toBe(3);
+    expect(pickQuickNoteTagColor(used, 30, () => 0.999)).toBe(7);
+  });
+
+  it("reuses colors but still avoids the default once every slot is taken", () => {
+    const picked = new Set([0, 0.3, 0.6, 0.999].map((roll) => pickQuickNoteTagColor(allSlots, 30, () => roll)));
+    expect(picked.has(30)).toBe(false);
+    expect(picked.size).toBeGreaterThan(1);
+  });
+
+  it("follows a changed default color", () => {
+    expect(pickQuickNoteTagColor([], 0, () => 0)).toBe(1);
+  });
+});
+
+describe("Quick notes tag moves", () => {
+  const ids = ["a", "b", "c", "d"];
+
+  it("names the new neighbors of a moved tag", () => {
+    expect(quickNoteTagMoveRequest(ids, "a", 2)).toEqual({ id: "a", previousId: "c", nextId: "d" });
+    expect(quickNoteTagMoveRequest(ids, "d", 0)).toEqual({ id: "d", previousId: null, nextId: "a" });
+    expect(quickNoteTagMoveRequest(ids, "b", 3)).toEqual({ id: "b", previousId: "d", nextId: null });
+  });
+
+  it("returns null when the tag stays or is missing", () => {
+    expect(quickNoteTagMoveRequest(ids, "b", 1)).toBeNull();
+    expect(quickNoteTagMoveRequest(ids, "z", 0)).toBeNull();
+  });
+});
+
+describe("Quick notes tag row overflow", () => {
+  it("shows every tag when the row fits", () => {
+    expect(quickNoteTagVisibleCount([40, 40, 40], 128, 4, 30)).toBe(3);
+    expect(quickNoteTagVisibleCount([], 0, 4, 30)).toBe(0);
+  });
+
+  it("keeps room for the overflow button once a tag does not fit", () => {
+    expect(quickNoteTagVisibleCount([40, 40, 40], 127, 4, 30)).toBe(2);
+    expect(quickNoteTagVisibleCount([40, 40, 40], 77, 4, 30)).toBe(1);
+    expect(quickNoteTagVisibleCount([40, 40, 40], 73, 4, 30)).toBe(0);
+  });
+
+  it("stops at the first tag that does not fit, so shown tags stay a prefix", () => {
+    expect(quickNoteTagVisibleCount([40, 200, 10], 100, 4, 30)).toBe(1);
   });
 });

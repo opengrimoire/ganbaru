@@ -121,7 +121,7 @@
       {/if}
       {#if collection !== "trash"}
         <QuickNoteColorPicker color={note.color} {theme} onSelect={onColor} buttonClass={actionClass} />
-        <QuickNoteTagPicker tagId={note.tagId} {tags} onSelect={onTag} buttonClass={actionClass} />
+        <QuickNoteTagPicker tagId={note.tagId} {tags} {theme} onSelect={onTag} buttonClass={actionClass} />
         <button class={actionClass} type="button" aria-label={collection === "archive" ? t("quickNotes.action.unarchive") : t("quickNotes.action.archive")} title={collection === "archive" ? t("quickNotes.action.unarchive") : t("quickNotes.action.archive")} onclick={collection === "archive" ? onUnarchive : onArchive}>
           {#if collection === "archive"}<ArchiveRestore class="size-3.5" strokeWidth={1.5} />{:else}<Archive class="size-3.5" strokeWidth={1.5} />{/if}
         </button>

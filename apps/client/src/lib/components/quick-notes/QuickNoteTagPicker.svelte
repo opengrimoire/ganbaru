@@ -5,20 +5,24 @@
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { activateModalFocus } from "$lib/modal-focus";
+  import { getQuickNoteColor } from "$lib/quick-notes/colors";
   import type { QuickNoteTag } from "$lib/quick-notes/types";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
+  import type { Theme } from "$lib/themes";
   import { portal } from "$lib/utils/portal";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
 
   let {
     tagId,
     tags,
+    theme,
     onSelect,
     buttonClass = "",
     mobileLayout = false,
   }: {
     tagId: string | null;
     tags: readonly QuickNoteTag[];
+    theme: Theme;
     onSelect: (tagId: string | null) => void;
     buttonClass?: string;
     mobileLayout?: boolean;
@@ -119,6 +123,7 @@
         class="menu-item"
         onclick={() => choose(null)}
       >
+        <span class="size-3 shrink-0 rounded-full border border-dashed border-muted-foreground" aria-hidden="true"></span>
         <span class="min-w-0 flex-1 truncate">{t("quickNotes.tag.none")}</span>
         {#if tagId === null}<Check class="size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />{/if}
       </button>
@@ -128,6 +133,7 @@
           class="menu-item"
           onclick={() => choose(tag.id)}
         >
+          <span class="size-3 shrink-0 rounded-full border border-border" style="background-color: {getQuickNoteColor(tag.color, theme).bg};" aria-hidden="true"></span>
           <span class="min-w-0 flex-1 truncate">{tag.name}</span>
           {#if tagId === tag.id}<Check class="size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />{/if}
         </button>

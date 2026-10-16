@@ -22,7 +22,7 @@ pub use conflicts::{
     QuickNoteConflictResolved, conflict_from_pool, resolve_from_pool,
 };
 use order::{OrderedRow, placement, take_key};
-pub use tags::{QuickNoteTagError, QuickNoteTagRead, QuickNoteTagWrite};
+pub use tags::{QuickNoteTagError, QuickNoteTagRead, QuickNoteTagReorder, QuickNoteTagWrite};
 
 const DEFAULT_PAGE_SIZE: i64 = 60;
 const MAX_PAGE_SIZE: i64 = 60;

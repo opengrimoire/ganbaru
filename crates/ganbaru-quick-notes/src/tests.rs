@@ -86,6 +86,33 @@ async fn create_tag(
         QuickNoteTagWrite {
             id: id.to_string(),
             name: name.to_string(),
+            color: 4,
+        },
+    )
+    .await
+}
+
+async fn tag_ids(pool: &SqlitePool) -> Vec<String> {
+    tags::list_from_pool(pool)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|tag| tag.id)
+        .collect()
+}
+
+async fn reorder_tag(
+    pool: &SqlitePool,
+    id: &str,
+    previous_id: Option<&str>,
+    next_id: Option<&str>,
+) -> Result<(), QuickNoteTagError> {
+    tags::reorder_from_pool(
+        pool,
+        QuickNoteTagReorder {
+            id: id.to_string(),
+            previous_id: previous_id.map(str::to_string),
+            next_id: next_id.map(str::to_string),
         },
     )
     .await
@@ -549,33 +576,100 @@ fn tags_append_in_order_and_enforce_the_local_create_rules() {
 }
 
 #[test]
-fn renaming_a_tag_checks_names_and_existence() {
+fn tags_keep_a_palette_color() {
+    block_on(async {
+        let pool = pool().await;
+        let created = create_tag(&pool, "tag-1", "Work").await.unwrap();
+        assert_eq!(created.color, 4);
+        for color in [-1, 32] {
+            let invalid = tags::create_from_pool(
+                &pool,
+                QuickNoteTagWrite {
+                    id: "tag-2".to_string(),
+                    name: "Home".to_string(),
+                    color,
+                },
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error_code(invalid), "failed");
+        }
+        assert_eq!(tag_ids(&pool).await, ["tag-1"]);
+    });
+}
+
+#[test]
+fn updating_a_tag_checks_names_colors_and_existence() {
     block_on(async {
         let pool = pool().await;
         create_tag(&pool, "tag-1", "Work").await.unwrap();
         create_tag(&pool, "tag-2", "Home").await.unwrap();
-        let rename = |id: &str, name: &str| QuickNoteTagWrite {
+        let mut tagged = note("tagged", "body");
+        tagged.tag_id = Some("tag-1".into());
+        tagged.color = 4;
+        create_from_pool(&pool, tagged).await.unwrap();
+        let update = |id: &str, name: &str, color: i64| QuickNoteTagWrite {
             id: id.to_string(),
             name: name.to_string(),
+            color,
         };
 
-        let renamed = tags::rename_from_pool(&pool, rename("tag-1", " Office "))
+        let renamed = tags::update_from_pool(&pool, update("tag-1", " Office ", 9))
             .await
             .unwrap();
-        assert_eq!(renamed.name, "Office");
-        let recased = tags::rename_from_pool(&pool, rename("tag-1", "OFFICE"))
+        assert_eq!((renamed.name.as_str(), renamed.color), ("Office", 9));
+        let recased = tags::update_from_pool(&pool, update("tag-1", "OFFICE", 9))
             .await
             .unwrap();
         assert_eq!(recased.name, "OFFICE");
+        // Recoloring a tag leaves the colors of its notes alone.
+        assert_eq!(load_note_from_pool(&pool, "tagged").await.unwrap().color, 4);
 
-        let duplicate = tags::rename_from_pool(&pool, rename("tag-2", "office"))
+        let duplicate = tags::update_from_pool(&pool, update("tag-2", "office", 4))
             .await
             .unwrap_err();
         assert_eq!(error_code(duplicate), "duplicate_name");
-        let missing = tags::rename_from_pool(&pool, rename("tag-3", "Garden"))
+        let color = tags::update_from_pool(&pool, update("tag-2", "Home", 32))
+            .await
+            .unwrap_err();
+        assert_eq!(error_code(color), "failed");
+        let missing = tags::update_from_pool(&pool, update("tag-3", "Garden", 4))
             .await
             .unwrap_err();
         assert_eq!(error_code(missing), "not_found");
+    });
+}
+
+#[test]
+fn reordering_tags_moves_between_adjacent_neighbors() {
+    block_on(async {
+        let pool = pool().await;
+        for id in ["a", "b", "c", "d"] {
+            create_tag(&pool, id, &id.to_uppercase()).await.unwrap();
+        }
+
+        reorder_tag(&pool, "d", None, Some("a")).await.unwrap();
+        assert_eq!(tag_ids(&pool).await, ["d", "a", "b", "c"]);
+        reorder_tag(&pool, "d", Some("c"), None).await.unwrap();
+        assert_eq!(tag_ids(&pool).await, ["a", "b", "c", "d"]);
+        reorder_tag(&pool, "a", Some("b"), Some("c")).await.unwrap();
+        assert_eq!(tag_ids(&pool).await, ["b", "a", "c", "d"]);
+
+        let gap = reorder_tag(&pool, "a", Some("b"), Some("d"))
+            .await
+            .unwrap_err();
+        assert_eq!(error_code(gap), "failed");
+        let itself = reorder_tag(&pool, "a", Some("a"), None).await.unwrap_err();
+        assert_eq!(error_code(itself), "failed");
+        let unknown = reorder_tag(&pool, "a", Some("gone"), None)
+            .await
+            .unwrap_err();
+        assert_eq!(error_code(unknown), "failed");
+        let missing = reorder_tag(&pool, "gone", None, Some("a"))
+            .await
+            .unwrap_err();
+        assert_eq!(error_code(missing), "not_found");
+        assert_eq!(tag_ids(&pool).await, ["b", "a", "c", "d"]);
     });
 }
 

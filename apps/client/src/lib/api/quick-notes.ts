@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { ensureDbUrl } from "$lib/api/db";
+import type { EventColor } from "$lib/calendar/types";
 import { normalizeEventColor } from "$lib/calendar/utils";
 import { mapSyncDeviceRef } from "$lib/api/sync";
 import type {
@@ -18,6 +19,7 @@ import type {
   QuickNotesWindow,
   QuickNoteTextRun,
   QuickNoteTag,
+  QuickNoteTagReorderRequest,
   QuickNoteUpdate,
 } from "$lib/quick-notes/types";
 import {
@@ -182,9 +184,12 @@ export function mapQuickNoteTag(value: unknown): QuickNoteTag {
   if (!ORDER_KEY_PATTERN.test(orderKey) || orderKey.length > QUICK_NOTE_ORDER_KEY_MAX_CHARS) {
     throw new Error("quick note tag.orderKey is invalid");
   }
+  const color = normalizeEventColor(row.color);
+  if (color === undefined) throw new Error("quick note tag.color is invalid");
   return {
     id,
     name,
+    color,
     orderKey,
     createdAt: string(row.createdAt, "quick note tag.createdAt"),
     updatedAt: string(row.updatedAt, "quick note tag.updatedAt"),
@@ -225,12 +230,18 @@ export async function listQuickNoteTags(): Promise<QuickNoteTag[]> {
   return value.map(mapQuickNoteTag);
 }
 
-export async function createQuickNoteTag(id: string, name: string): Promise<QuickNoteTag> {
-  return mapQuickNoteTag(await invokeTagWrite("quick_notes_create_tag", { tag: { id, name } }));
+export async function createQuickNoteTag(id: string, name: string, color: EventColor): Promise<QuickNoteTag> {
+  return mapQuickNoteTag(await invokeTagWrite("quick_notes_create_tag", { tag: { id, name, color } }));
 }
 
-export async function renameQuickNoteTag(id: string, name: string): Promise<QuickNoteTag> {
-  return mapQuickNoteTag(await invokeTagWrite("quick_notes_rename_tag", { tag: { id, name } }));
+/** Renames and recolors a tag; notes keep the color they already have. */
+export async function updateQuickNoteTag(id: string, name: string, color: EventColor): Promise<QuickNoteTag> {
+  return mapQuickNoteTag(await invokeTagWrite("quick_notes_update_tag", { tag: { id, name, color } }));
+}
+
+/** Moves a tag between two adjacent neighbors; a null anchor means the start or the end. */
+export async function reorderQuickNoteTag(request: QuickNoteTagReorderRequest): Promise<void> {
+  await invokeTagWrite("quick_notes_reorder_tag", { request });
 }
 
 /** Deletes a tag and untags its notes; deleting a tag that no longer exists succeeds. */

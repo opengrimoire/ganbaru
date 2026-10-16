@@ -11,9 +11,9 @@ import {
   QuickNoteConflictError,
   QuickNoteTagError,
   QuickNoteWriteError,
-  renameQuickNoteTag,
   resolveQuickNoteConflict,
   updateQuickNote,
+  updateQuickNoteTag,
 } from "./quick-notes";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -95,10 +95,12 @@ describe("Quick notes API boundary", () => {
       id: "tag-1",
       name: "Work",
       orderKey: "a0V",
+      color: 4,
       createdAt: "2026-07-13T12:00:00.000Z",
       updatedAt: "2026-07-13T12:00:00.000Z",
     };
-    expect(mapQuickNoteTag(validTag)).toMatchObject({ name: "Work", orderKey: "a0V" });
+    expect(mapQuickNoteTag(validTag)).toMatchObject({ name: "Work", orderKey: "a0V", color: 4 });
+    expect(() => mapQuickNoteTag({ ...validTag, color: 32 })).toThrow("color is invalid");
     expect(() => mapQuickNoteTag({ ...validTag, name: " Work " })).toThrow("name is invalid");
     expect(() => mapQuickNoteTag({ ...validTag, orderKey: 8 })).toThrow("orderKey must be a string");
     expect(() => mapQuickNoteTag({ ...validTag, orderKey: "" })).toThrow("orderKey is invalid");
@@ -112,7 +114,7 @@ describe("Quick notes API boundary", () => {
     "preserves the native %s tag code",
     async (code) => {
       vi.mocked(invoke).mockRejectedValueOnce({ code, message: "native wording" });
-      const result = renameQuickNoteTag("tag-1", "Work");
+      const result = updateQuickNoteTag("tag-1", "Work", 4);
       await expect(result).rejects.toBeInstanceOf(QuickNoteTagError);
       await expect(result).rejects.toMatchObject({ code, message: "native wording" });
     },
@@ -121,7 +123,7 @@ describe("Quick notes API boundary", () => {
   it("passes unknown tag failures through unchanged", async () => {
     const failure = { code: "revision_conflict", message: "not a tag code" };
     vi.mocked(invoke).mockRejectedValueOnce(failure);
-    await expect(createQuickNoteTag("tag-1", "Work")).rejects.toBe(failure);
+    await expect(createQuickNoteTag("tag-1", "Work", 4)).rejects.toBe(failure);
   });
 
   it("validates trash purge results", async () => {

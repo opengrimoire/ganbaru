@@ -6,7 +6,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getQuickNoteColor } from "$lib/quick-notes/colors";
   import { pickQuickNoteTagColor } from "$lib/quick-notes/tags";
-  import { QUICK_NOTE_TAG_LIMIT } from "$lib/quick-notes/types";
+  import { QUICK_NOTE_TAG_LIMIT, type QuickNoteTag } from "$lib/quick-notes/types";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import type { Theme } from "$lib/themes";
   import QuickNoteColorPicker from "./QuickNoteColorPicker.svelte";
@@ -26,7 +26,8 @@
     /** Color of untagged notes, which a new tag avoids. */
     defaultColor: EventColor;
     theme: Theme;
-    onCreate: (name: string, color: EventColor) => Promise<void>;
+    /** Creates the tag, or rejects with an error whose message is shown. */
+    onCreate: (name: string, color: EventColor) => Promise<QuickNoteTag>;
     mobileLayout?: boolean;
   } = $props();
 
@@ -61,8 +62,8 @@
       await onCreate(value, color);
       name = "";
       creating = false;
-    } catch {
-      error = t("quickNotes.tag.saveFailed");
+    } catch (cause: unknown) {
+      error = cause instanceof Error && cause.message ? cause.message : t("quickNotes.tag.saveFailed");
     } finally {
       busy = false;
     }

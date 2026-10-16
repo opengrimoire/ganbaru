@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
+  import type { EventColor } from "$lib/calendar/types";
   import type { QuickNote, QuickNotesCollection, QuickNoteTag } from "$lib/quick-notes/types";
   import {
     QUICK_NOTE_DESKTOP_MASONRY_DENSITY,
@@ -22,10 +23,12 @@
     reorderable = false,
     theme,
     tags,
+    untaggedColor,
     onOpen,
     onPin,
     onColor,
     onTag,
+    onCreateTag,
     onArchive,
     onUnarchive,
     onTrash,
@@ -40,10 +43,13 @@
     reorderable?: boolean;
     theme: Theme;
     tags: readonly QuickNoteTag[];
+    /** Color of untagged notes, which a new tag avoids. */
+    untaggedColor: EventColor;
     onOpen: (note: QuickNote) => void;
     onPin: (note: QuickNote, pinned: boolean) => void;
     onColor: (note: QuickNote, color: QuickNote["color"]) => void;
     onTag: (note: QuickNote, tagId: string | null) => void;
+    onCreateTag: (name: string, color: EventColor) => Promise<QuickNoteTag>;
     onArchive: (note: QuickNote) => void;
     onUnarchive: (note: QuickNote) => void;
     onTrash: (note: QuickNote) => void;
@@ -486,12 +492,14 @@
         {reorderable}
         {theme}
         {tags}
+        {untaggedColor}
         {mobileLayout}
         onOpen={() => onOpen(note)}
         onMove={(direction) => keyboardMove(note.id, direction)}
         onPin={(pinned) => onPin(note, pinned)}
         onColor={(color) => onColor(note, color)}
         onTag={(tagId) => onTag(note, tagId)}
+        {onCreateTag}
         onArchive={() => onArchive(note)}
         onUnarchive={() => onUnarchive(note)}
         onTrash={() => onTrash(note)}

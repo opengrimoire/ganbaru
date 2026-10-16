@@ -8,6 +8,7 @@
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getQuickNoteColor } from "$lib/quick-notes/colors";
+  import type { EventColor } from "$lib/calendar/types";
   import type { QuickNote, QuickNotesCollection, QuickNoteTag } from "$lib/quick-notes/types";
   import type { Theme } from "$lib/themes";
   import QuickNoteColorPicker from "./QuickNoteColorPicker.svelte";
@@ -19,12 +20,14 @@
     collection,
     theme,
     tags,
+    untaggedColor,
     reorderable = false,
     onOpen,
     onMove,
     onPin,
     onColor,
     onTag,
+    onCreateTag,
     onArchive,
     onUnarchive,
     onTrash,
@@ -36,12 +39,15 @@
     collection: QuickNotesCollection;
     theme: Theme;
     tags: readonly QuickNoteTag[];
+    /** Color of untagged notes, which a new tag avoids. */
+    untaggedColor: EventColor;
     reorderable?: boolean;
     onOpen: () => void;
     onMove: (direction: -1 | 1) => void;
     onPin: (pinned: boolean) => void;
     onColor: (color: QuickNote["color"]) => void;
     onTag: (tagId: string | null) => void;
+    onCreateTag: (name: string, color: EventColor) => Promise<QuickNoteTag>;
     onArchive: () => void;
     onUnarchive: () => void;
     onTrash: () => void;
@@ -104,7 +110,7 @@
       {/if}
       {#if collection !== "trash"}
         <QuickNoteColorPicker color={note.color} {theme} onSelect={onColor} buttonClass={actionClass} />
-        <QuickNoteTagPicker tagId={note.tagId} {tags} {theme} onSelect={onTag} buttonClass={actionClass} />
+        <QuickNoteTagPicker tagId={note.tagId} {tags} {theme} defaultColor={untaggedColor} onSelect={onTag} onCreate={onCreateTag} buttonClass={actionClass} />
         <button class={actionClass} type="button" aria-label={collection === "archive" ? t("quickNotes.action.unarchive") : t("quickNotes.action.archive")} title={collection === "archive" ? t("quickNotes.action.unarchive") : t("quickNotes.action.archive")} onclick={collection === "archive" ? onUnarchive : onArchive}>
           {#if collection === "archive"}<ArchiveRestore class="size-3.5" strokeWidth={1.5} />{:else}<Archive class="size-3.5" strokeWidth={1.5} />{/if}
         </button>

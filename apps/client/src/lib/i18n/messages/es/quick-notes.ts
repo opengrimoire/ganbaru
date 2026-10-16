@@ -13,6 +13,8 @@ export const quickNotes = {
   },
   tag: {
     add: "Añadir etiqueta",
+    new: "Nueva etiqueta",
+    create: "Crear etiqueta",
     namePlaceholder: "Nombre de la etiqueta",
     assign: "Etiqueta de la nota",
     none: "Sin etiqueta",

@@ -46,7 +46,7 @@
     /** Whether a tag move is still saving, which holds back the next one. */
     moving: boolean;
     onSelect: (tagId: string | null) => void;
-    onCreate: (name: string, color: EventColor) => Promise<void>;
+    onCreate: (name: string, color: EventColor) => Promise<QuickNoteTag>;
     /** Rejects with a message to show when the name cannot be saved. */
     onRename: (tag: QuickNoteTag, name: string) => Promise<void>;
     onColor: (tag: QuickNoteTag, color: EventColor) => void;

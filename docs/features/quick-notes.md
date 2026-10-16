@@ -14,7 +14,7 @@ A device can create tags only while fewer than nine exist. Merging changes from 
 
 The view row shows All first, then each tag chip in its color, with All in the default note color. Tags that do not fit collapse into a button that opens a list of every tag, so the row never scrolls sideways. Chips and list rows drag to reorder, and their menu also moves a tag one step, renames, recolors, or deletes it. All always stays first; its menu sets the default color for new untagged notes, which affects only notes created later and is stored in the vault configuration rather than synced.
 
-Assigning a tag sets the note's color to the tag's color, and a note created inside a tag view starts with that color. Clearing the tag keeps the note's color, and recoloring a tag does not recolor existing notes.
+The tag picker on a card or in the editor can also create a tag, which is assigned to the note right away. Assigning a tag sets the note's color to the tag's color, and a note created inside a tag view starts with that color. Clearing the tag keeps the note's color, and recoloring a tag does not recolor existing notes.
 
 Active notes have durable manual order with separate pinned and unpinned groups. Moving a note changes only its own position between its new visible neighbors, so reordering inside a filtered tag view changes only the relative order of visible matching notes. Creating, pinning, unarchiving, and restoring place a note first in its group; content edits never move it. Concurrent reorders on linked devices converge to the same order everywhere. Search, Archive, and Trash use relevance or lifecycle order and cannot be manually reordered.
 

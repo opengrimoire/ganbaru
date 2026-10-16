@@ -10,6 +10,8 @@ export const quickNotes = {
   },
   tag: {
     add: "Add tag",
+    new: "New tag",
+    create: "Create tag",
     namePlaceholder: "Tag name",
     assign: "Note tag",
     none: "No tag",

@@ -78,6 +78,8 @@
     tags,
     defaultTagId,
     defaultColor,
+    untaggedColor,
+    onCreateTag,
     theme,
     onClose,
     onSaved,
@@ -94,6 +96,9 @@
     defaultTagId: string | null;
     /** Color a new note starts with. */
     defaultColor: EventColor;
+    /** Color of untagged notes, which a new tag avoids. */
+    untaggedColor: EventColor;
+    onCreateTag: (name: string, color: EventColor) => Promise<QuickNoteTag>;
     theme: Theme;
     onClose: () => void;
     onSaved: (note: QuickNote) => void;
@@ -775,7 +780,7 @@
         <button class={`${toolbarButton} ${selectedFormatting.italic ? "bg-black/10 dark:bg-white/10" : ""}`} type="button" aria-label={t("quickNotes.formatting.italic")} title={t("quickNotes.formatting.italic")} aria-pressed={selectedFormatting.italic} onpointerdown={(event) => event.preventDefault()} onclick={() => toggleFormatting("italic")}><Italic class="size-4" strokeWidth={1.5} /></button>
         <button class={`${toolbarButton} ${selectedFormatting.underline ? "bg-black/10 dark:bg-white/10" : ""}`} type="button" aria-label={t("quickNotes.formatting.underline")} title={t("quickNotes.formatting.underline")} aria-pressed={selectedFormatting.underline} onpointerdown={(event) => event.preventDefault()} onclick={() => toggleFormatting("underline")}><UnderlineIcon class="size-4" /></button>
         <QuickNoteColorPicker {color} {theme} onSelect={updateColor} buttonClass={toolbarButton} {mobileLayout} />
-        <QuickNoteTagPicker {tagId} {tags} {theme} onSelect={updateTag} buttonClass={toolbarButton} {mobileLayout} />
+        <QuickNoteTagPicker {tagId} {tags} {theme} defaultColor={untaggedColor} onSelect={updateTag} onCreate={onCreateTag} buttonClass={toolbarButton} {mobileLayout} />
         <button class={toolbarButton} type="button" disabled={history.undo.length === 0} aria-label={t("quickNotes.formatting.undo")} title={t("quickNotes.formatting.undo")} onclick={undo}><Undo2 class="size-4" strokeWidth={1.5} /></button>
         <button class={toolbarButton} type="button" disabled={history.redo.length === 0} aria-label={t("quickNotes.formatting.redo")} title={t("quickNotes.formatting.redo")} onclick={redo}><Redo2 class="size-4" strokeWidth={1.5} /></button>
         <span class="mx-1 h-5 w-px bg-current/15"></span>

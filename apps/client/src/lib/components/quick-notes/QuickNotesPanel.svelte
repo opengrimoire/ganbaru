@@ -210,11 +210,21 @@
     }
   }
 
-  async function createTag(name: string, color: EventColor): Promise<void> {
-    const created = await createQuickNoteTag(crypto.randomUUID(), name, color);
-    tags = [...tags, created].sort(compareQuickNoteTags);
-    cacheQuickNoteTags(tags);
-    publishQuickNotesChanged();
+  /** Creates a tag, rejecting with an error whose message can be shown as is. */
+  async function createTag(name: string, color: EventColor): Promise<QuickNoteTag> {
+    try {
+      const created = await createQuickNoteTag(crypto.randomUUID(), name, color);
+      tags = [...tags, created].sort(compareQuickNoteTags);
+      cacheQuickNoteTags(tags);
+      publishQuickNotesChanged();
+      return created;
+    } catch (error: unknown) {
+      if (error instanceof QuickNoteTagError && error.code === "limit_reached") void loadTags();
+      const message = error instanceof QuickNoteTagError && error.code === "duplicate_name"
+        ? t("quickNotes.tag.duplicateName")
+        : t("quickNotes.tag.saveFailed");
+      throw new Error(message, { cause: error });
+    }
   }
 
   function tagErrorMessage(error: unknown): string {
@@ -708,11 +718,11 @@
     {:else}
       {#if pinnedNotes.length > 0}
         <h3 class="mb-2 px-1 text-[0.7rem] font-semibold uppercase tracking-[0.12em] text-muted-foreground">{t("quickNotes.pinned")}</h3>
-        <QuickNotesMasonry notes={pinnedNotes} collection={renderedCollection} {animateLayout} {reorderable} theme={theme.current} {tags} {mobileLayout} onOpen={(note) => void openNote(note)} onReorder={(ids, id, position) => reorderNoteGroup(ids, id, position, true)} onPin={pinNote} onColor={colorNote} onTag={tagNote} onArchive={archiveNote} onUnarchive={unarchiveNote} onTrash={trashNote} onRestore={restoreNote} onDelete={(note) => { deleteTarget = note; }} />
+        <QuickNotesMasonry notes={pinnedNotes} collection={renderedCollection} {animateLayout} {reorderable} theme={theme.current} {tags} untaggedColor={preferences.quickNotesDefaultColor} {mobileLayout} onOpen={(note) => void openNote(note)} onReorder={(ids, id, position) => reorderNoteGroup(ids, id, position, true)} onPin={pinNote} onColor={colorNote} onTag={tagNote} onCreateTag={createTag} onArchive={archiveNote} onUnarchive={unarchiveNote} onTrash={trashNote} onRestore={restoreNote} onDelete={(note) => { deleteTarget = note; }} />
       {/if}
       {#if otherNotes.length > 0}
         {#if pinnedNotes.length > 0}<h3 class="mb-2 mt-5 px-1 text-[0.7rem] font-semibold uppercase tracking-[0.12em] text-muted-foreground">{t("quickNotes.others")}</h3>{/if}
-        <QuickNotesMasonry notes={otherNotes} collection={renderedCollection} {animateLayout} {reorderable} theme={theme.current} {tags} {mobileLayout} onOpen={(note) => void openNote(note)} onReorder={(ids, id, position) => reorderNoteGroup(ids, id, position, false)} onPin={pinNote} onColor={colorNote} onTag={tagNote} onArchive={archiveNote} onUnarchive={unarchiveNote} onTrash={trashNote} onRestore={restoreNote} onDelete={(note) => { deleteTarget = note; }} />
+        <QuickNotesMasonry notes={otherNotes} collection={renderedCollection} {animateLayout} {reorderable} theme={theme.current} {tags} untaggedColor={preferences.quickNotesDefaultColor} {mobileLayout} onOpen={(note) => void openNote(note)} onReorder={(ids, id, position) => reorderNoteGroup(ids, id, position, false)} onPin={pinNote} onColor={colorNote} onTag={tagNote} onCreateTag={createTag} onArchive={archiveNote} onUnarchive={unarchiveNote} onTrash={trashNote} onRestore={restoreNote} onDelete={(note) => { deleteTarget = note; }} />
       {/if}
       {#if nextCursor}
         <button use:observeMore type="button" class={cn("mt-4 flex w-full items-center justify-center gap-1.5 text-xs text-muted-foreground", mobileLayout ? "min-h-12 rounded-xl px-3 active:bg-accent" : "rounded-md py-2 hover:bg-accent")} disabled={loadingMore} aria-busy={loadingMore || undefined} onclick={() => { animateLayout = true; void load(false); }}>{#if loadingMore}<LoaderCircle class="size-3.5 animate-spin" aria-hidden="true" />{/if}{t("quickNotes.action.loadMore")}</button>
@@ -736,6 +746,8 @@
     {tags}
     defaultTagId={selectedTagId}
     defaultColor={creationColor}
+    untaggedColor={preferences.quickNotesDefaultColor}
+    onCreateTag={createTag}
     theme={theme.current}
     {mobileLayout}
     obscured={deleteTarget !== null}

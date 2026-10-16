@@ -54,7 +54,7 @@
   const colors = $derived(getQuickNoteColor(note.color, theme));
   const tag = $derived(tags.find((candidate) => candidate.id === note.tagId) ?? null);
   const surfaceStyle = $derived(`--quick-card-bg: ${colors.bg}; --quick-card-fg: ${colors.text};`);
-  const actionClass = "flex size-7 items-center justify-center rounded-md transition-colors hover:bg-black/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current dark:hover:bg-white/10";
+  const actionClass = "flex size-7 items-center justify-center rounded-md transition-colors hover:bg-black/10 aria-expanded:bg-black/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current dark:hover:bg-white/10 dark:aria-expanded:bg-white/10";
   /** Mobile cards are compact: their actions live in the editor and touch reorders with a long press. */
   const showHandle = $derived(reorderable && !mobileLayout);
 
@@ -156,8 +156,10 @@
       transition: opacity 120ms ease;
     }
 
+    /* An open color or tag picker covers the card with its backdrop and takes focus, so its expanded trigger keeps the actions shown. */
     .quick-note-card:hover .quick-note-actions,
-    .quick-note-card:focus-within .quick-note-actions {
+    .quick-note-card:focus-within .quick-note-actions,
+    .quick-note-actions:has(:global([aria-expanded="true"])) {
       opacity: 1;
     }
   }

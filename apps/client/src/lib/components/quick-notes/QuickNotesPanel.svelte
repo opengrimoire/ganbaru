@@ -28,7 +28,7 @@
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getQuickNoteColor } from "$lib/quick-notes/colors";
-  import { compareQuickNoteTags, quickNoteTagMoveRequest, quickNoteViewIndexForKey } from "$lib/quick-notes/tags";
+  import { compareQuickNoteTags, quickNoteRelativeViewTagId, quickNoteTagMoveRequest, quickNoteViewIndexForKey } from "$lib/quick-notes/tags";
   import { applyQuickNoteGroupOrder } from "$lib/quick-notes/masonry";
   import {
     cacheQuickNotesAllWindow,
@@ -49,7 +49,8 @@
   import QuickNotesMasonry from "./QuickNotesMasonry.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import { movedToIndex } from "$lib/utils/sidebar-order";
-  import { captureFocusReturn } from "$lib/modal-focus";
+  import { activateIsolatingKeyboardLayer, captureFocusReturn } from "$lib/modal-focus";
+  import { appNavigationShortcut } from "$lib/keyboard-shortcuts";
   import { cn } from "$lib/utils";
 
   let {
@@ -480,61 +481,59 @@
     await runMutation(() => emptyQuickNotesTrash());
   }
 
-  function handlePanelKeydown(event: KeyboardEvent): void {
-    if (editorNote !== undefined || deleteTarget || deleteTagTarget || confirmEmptyTrash) return;
+  /**
+   * Handles the panel's own keys ahead of the app, which leaves its shortcuts inactive while the panel is open.
+   * Returns whether the panel claimed the key, which then reaches nothing else.
+   */
+  function handlePanelKeydown(event: KeyboardEvent): boolean {
+    if (editorNote !== undefined || deleteTarget || deleteTagTarget || confirmEmptyTrash) return false;
     const target = event.target instanceof Element ? event.target : null;
     const targetDialog = target?.closest("[role='dialog']") ?? null;
+    // Menus and dialogs above the panel keep their keys.
+    const insideOverlay = target?.closest("[role='menu']") !== null || (targetDialog !== null && targetDialog !== panel);
     if (event.key === "Escape") {
-      if (document.documentElement.dataset.quickNoteDragging === "true") return;
-      if (target?.closest("[data-quick-note-tag-creator]") !== null) return;
-      if (target?.closest("[role='menu']") !== null) return;
-      if (targetDialog !== null && targetDialog !== panel) return;
+      if (document.documentElement.dataset.quickNoteDragging === "true") return false;
+      if (target?.closest("[data-quick-note-tag-creator]") !== null || insideOverlay) return false;
       event.preventDefault();
-      event.stopPropagation();
-      if (searchOpen) {
-        closeSearch();
-        return;
-      }
-      onClose();
-      return;
+      if (searchOpen) closeSearch();
+      else onClose();
+      return true;
+    }
+    if (insideOverlay) return false;
+    // Like workspace tabs, the shortcuts that step between tabs step between views here.
+    const navigation = appNavigationShortcut(event);
+    if (navigation?.type === "relative-tab") {
+      event.preventDefault();
+      selectTag(quickNoteRelativeViewTagId(tags.map((tag) => tag.id), collection === "active" ? selectedTagId : undefined, navigation.direction));
+      return true;
     }
     const shortcutIndex = quickNoteViewIndexForKey(event.key);
     const shortcutBlocked = event.ctrlKey || event.metaKey || event.altKey || event.shiftKey
-      || target?.closest("input, textarea, [contenteditable='true']") !== null
-      || target?.closest("[role='menu']") !== null
-      || (targetDialog !== null && targetDialog !== panel);
+      || target?.closest("input, textarea, [contenteditable='true']") !== null;
     if (shortcutIndex !== null && !shortcutBlocked) {
-      if (shortcutIndex === 0) {
-        event.preventDefault();
-        selectTag(null);
-      } else {
-        const tag = tags[shortcutIndex - 1];
-        if (tag) {
-          event.preventDefault();
-          selectTag(tag.id);
-        }
-      }
-      return;
+      const tagId = shortcutIndex === 0 ? null : tags[shortcutIndex - 1]?.id;
+      if (tagId === undefined) return false;
+      event.preventDefault();
+      selectTag(tagId);
+      return true;
     }
-    // Menus and dialogs above the panel keep Tab inside themselves.
-    if (event.key !== "Tab" || !panel) return;
-    if ((target?.closest("[role='menu']") ?? null) !== null || (targetDialog !== null && targetDialog !== panel)) return;
+    if (event.key !== "Tab" || !panel) return false;
     const focusable = [...panel.querySelectorAll<HTMLElement>(
       "button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex='-1'])",
     )].filter((element) => element.offsetParent !== null);
     const first = focusable[0];
     const last = focusable.at(-1);
+    if (!first || !last) return false;
     const active = document.activeElement;
-    if (first && last && (active === panel || !panel.contains(active))) {
-      event.preventDefault();
-      (event.shiftKey ? last : first).focus();
-    } else if (first && last && event.shiftKey && active === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (first && last && !event.shiftKey && active === last) {
-      event.preventDefault();
-      first.focus();
-    }
+    const next = active === panel || !panel.contains(active)
+      ? (event.shiftKey ? last : first)
+      : event.shiftKey && active === first ? last
+      : !event.shiftKey && active === last ? first
+      : null;
+    if (!next) return false;
+    event.preventDefault();
+    next.focus();
+    return true;
   }
 
   function observeMore(node: HTMLElement): { destroy: () => void } {
@@ -555,7 +554,7 @@
 
   onMount(() => {
     const returnFocus = captureFocusReturn();
-    window.addEventListener("keydown", handlePanelKeydown, true);
+    const releaseKeyboard = activateIsolatingKeyboardLayer(handlePanelKeydown);
     if (initialSnapshot === null) {
       void preloadQuickNotesInitialSnapshot().then((snapshot) => {
         if (loadGeneration !== 0) return;
@@ -590,7 +589,7 @@
     });
     return () => {
       disposed = true;
-      window.removeEventListener("keydown", handlePanelKeydown, true);
+      releaseKeyboard();
       stopSync?.();
       if (searchTimer) clearTimeout(searchTimer);
       if (undoTimer) clearTimeout(undoTimer);

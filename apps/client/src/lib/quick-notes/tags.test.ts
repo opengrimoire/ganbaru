@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   compareQuickNoteTags,
   pickQuickNoteTagColor,
+  quickNoteRelativeViewTagId,
   quickNoteTagMoveRequest,
   quickNoteTagVisibleCount,
   quickNoteViewIndexForKey,
@@ -26,6 +27,33 @@ describe("Quick notes tag shortcuts", () => {
     expect(quickNoteViewShortcut(1.5)).toBeNull();
     expect(quickNoteViewIndexForKey("Digit1")).toBeNull();
     expect(quickNoteViewIndexForKey("a")).toBeNull();
+  });
+});
+
+describe("Quick notes view stepping", () => {
+  const tagIds = ["work", "home", "ideas"];
+
+  it("steps from All through the tags and wraps at both ends", () => {
+    expect(quickNoteRelativeViewTagId(tagIds, null, 1)).toBe("work");
+    expect(quickNoteRelativeViewTagId(tagIds, "home", 1)).toBe("ideas");
+    expect(quickNoteRelativeViewTagId(tagIds, "ideas", 1)).toBeNull();
+    expect(quickNoteRelativeViewTagId(tagIds, null, -1)).toBe("ideas");
+    expect(quickNoteRelativeViewTagId(tagIds, "work", -1)).toBeNull();
+  });
+
+  it("enters the views from Archive or Trash at All going forward and at the last view going back", () => {
+    expect(quickNoteRelativeViewTagId(tagIds, undefined, 1)).toBeNull();
+    expect(quickNoteRelativeViewTagId(tagIds, undefined, -1)).toBe("ideas");
+  });
+
+  it("treats a tag that no longer exists like being outside the views", () => {
+    expect(quickNoteRelativeViewTagId(tagIds, "deleted", 1)).toBeNull();
+    expect(quickNoteRelativeViewTagId(tagIds, "deleted", -1)).toBe("ideas");
+  });
+
+  it("stays on All when there are no tags", () => {
+    expect(quickNoteRelativeViewTagId([], null, 1)).toBeNull();
+    expect(quickNoteRelativeViewTagId([], null, -1)).toBeNull();
   });
 });
 

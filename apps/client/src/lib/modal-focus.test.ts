@@ -4,8 +4,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   activateModalFocus,
   captureFocusReturn,
+  activateIsolatingKeyboardLayer,
   activateModalKeyboardLayer,
   installModalKeyboardRouter,
+  isAppKeyboardIsolated,
   trapModalTabKey,
 } from "./modal-focus";
 
@@ -138,5 +140,39 @@ describe("modal focus", () => {
     deactivateModal();
     window.removeEventListener("keydown", onParentKeydown, true);
     uninstallRouter();
+  });
+
+  it("stops only the keys an isolating panel claims and lets the rest reach its controls", () => {
+    const uninstallRouter = installModalKeyboardRouter(window);
+    const input = document.createElement("input");
+    document.body.append(input);
+    const onAppKeydown = vi.fn();
+    const onInputKeydown = vi.fn();
+    window.addEventListener("keydown", onAppKeydown, true);
+    input.addEventListener("keydown", onInputKeydown);
+    const release = activateIsolatingKeyboardLayer((event) => event.key === "1");
+
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "1", bubbles: true, cancelable: true }));
+    expect(onAppKeydown).not.toHaveBeenCalled();
+    expect(onInputKeydown).not.toHaveBeenCalled();
+
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true, cancelable: true }));
+    expect(onAppKeydown).toHaveBeenCalledOnce();
+    expect(onInputKeydown).toHaveBeenCalledOnce();
+
+    release();
+    window.removeEventListener("keydown", onAppKeydown, true);
+    uninstallRouter();
+  });
+
+  it("reports keyboard isolation while an isolating panel is open, even under a dialog", () => {
+    expect(isAppKeyboardIsolated()).toBe(false);
+    const releasePanel = activateIsolatingKeyboardLayer(() => false);
+    const releaseDialog = activateModalKeyboardLayer(() => undefined);
+    expect(isAppKeyboardIsolated()).toBe(true);
+    releaseDialog();
+    expect(isAppKeyboardIsolated()).toBe(true);
+    releasePanel();
+    expect(isAppKeyboardIsolated()).toBe(false);
   });
 });

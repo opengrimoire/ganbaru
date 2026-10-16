@@ -41,6 +41,7 @@
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { appNavigationShortcut, hasShortcutModifier } from "$lib/keyboard-shortcuts";
+  import { isAppKeyboardIsolated } from "$lib/modal-focus";
   import TitleBar from "$lib/components/title-bar/TitleBar.svelte";
   import { getAppCloseCoordinator } from "$lib/components/title-bar/shortcut-controller.svelte";
   import WindowResizeHandles from "$lib/components/WindowResizeHandles.svelte";
@@ -704,6 +705,7 @@
       toggleDevtools();
       return;
     }
+    if (isAppKeyboardIsolated()) return;
 
     const action = appNavigationShortcut(e);
     if (!action) {

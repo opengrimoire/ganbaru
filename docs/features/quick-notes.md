@@ -8,7 +8,7 @@ A Quick note has no project membership, page hierarchy, blocks, icons, covers, c
 
 The title-bar control opens a floating collection panel on desktop and mobile. The panel stays within the visible viewport and adapts to narrow windows without becoming a primary destination.
 
-The collection supports All, ordered tags, search, Archive, and Trash. A note has at most one tag. Numeric shortcuts can select All and the first nine tag views when the user is not typing or interacting with a nested modal.
+The collection supports All, ordered tags, search, Archive, and Trash. A note has at most one tag. Numeric shortcuts can select All and the first nine tag views when the user is not typing or interacting with a nested modal, and the workspace tab stepping shortcuts (Ctrl+Tab, Ctrl+Shift+Tab, Ctrl+PageUp, Ctrl+PageDown) step through All and the tags, wrapping at the ends. While the panel is open, its keys never reach the app or view behind it.
 
 A device can create tags only while fewer than nine exist. Merging changes from linked devices can leave more than nine, and they all stay reachable so the user can rename or delete them. Tag names are unique without regard to case. Each tag has an event-palette color. A new tag starts with a random color that no other tag uses yet, excluding the default note color so an unchanged tag stays distinguishable, and the user can change it while typing the name. Tags can be renamed, recolored, reordered, or, after confirmation, deleted. Deleting a tag keeps its notes and clears the tag from them, and a note saved with a tag that was deleted meanwhile is left untagged instead of failing.
 

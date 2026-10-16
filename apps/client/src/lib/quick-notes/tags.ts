@@ -106,3 +106,21 @@ export function quickNoteChipClass(mobileLayout: boolean, selected: boolean): st
     : "bg-(--tag-bg)/30 text-foreground hover:bg-(--tag-bg)/50";
   return `flex shrink-0 items-center transition-[filter,background-color,color] ${tone} ${size}`;
 }
+
+/**
+ * Steps from the current Quick notes view to the next or previous one among All (null) and the tags, wrapping at
+ * the ends like workspace tabs. `currentTagId` is null for All and undefined outside them, as in Archive or Trash,
+ * where stepping forward lands on All and stepping back on the last view.
+ */
+export function quickNoteRelativeViewTagId(
+  tagIds: readonly string[],
+  currentTagId: string | null | undefined,
+  direction: -1 | 1,
+): string | null {
+  const views: (string | null)[] = [null, ...tagIds];
+  const current = currentTagId === undefined ? -1 : views.indexOf(currentTagId);
+  const next = current < 0
+    ? (direction === 1 ? 0 : views.length - 1)
+    : (current + direction + views.length) % views.length;
+  return views[next] ?? null;
+}

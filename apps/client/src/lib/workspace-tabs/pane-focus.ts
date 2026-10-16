@@ -1,4 +1,5 @@
 import { getContext, setContext } from "svelte";
+import { isAppKeyboardIsolated } from "$lib/modal-focus";
 
 const WORKSPACE_PANE_FOCUS_KEY = Symbol("workspace-pane-focus");
 
@@ -12,8 +13,10 @@ export function provideWorkspacePaneFocus(focused: WorkspacePaneFocus): void {
 
 /**
  * Returns whether the calling view's pane is focused. Outside a split view, as on phones, the view is always
- * focused. Call during component initialization.
+ * focused. No pane is focused while a modal panel such as Quick notes owns the keyboard, so keys typed there never
+ * reach the view behind it. Call during component initialization.
  */
 export function getWorkspacePaneFocus(): WorkspacePaneFocus {
-  return getContext<WorkspacePaneFocus | undefined>(WORKSPACE_PANE_FOCUS_KEY) ?? (() => true);
+  const paneFocused = getContext<WorkspacePaneFocus | undefined>(WORKSPACE_PANE_FOCUS_KEY) ?? (() => true);
+  return () => paneFocused() && !isAppKeyboardIsolated();
 }

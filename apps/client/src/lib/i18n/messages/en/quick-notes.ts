@@ -57,8 +57,6 @@ export const quickNotes = {
     bodyPlaceholder: "Write something...",
     bodyLabel: "Quick note body",
     close: "Close",
-    saving: "Saving...",
-    saved: "Saved",
     failed: "Could not save",
     retry: "Retry save",
     conflict: "This note changed in another window or on another device",
@@ -80,7 +78,6 @@ export const quickNotes = {
     undo: "Undo",
     loadMore: "Load more quick notes",
     reorder: "Reorder note",
-    reorderHint: "Drag to reorder. Use arrow keys for keyboard reordering.",
   },
   formatting: {
     bold: "Bold",

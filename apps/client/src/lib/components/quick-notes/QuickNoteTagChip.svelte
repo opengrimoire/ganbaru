@@ -1,6 +1,5 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import Ellipsis from "@lucide/svelte/icons/ellipsis";
   import Pencil from "@lucide/svelte/icons/pencil";
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
@@ -33,7 +32,6 @@
   const { t } = getLocalization();
   const mobileBackStack = getMobileBackStack();
   let chip = $state<HTMLButtonElement | null>(null);
-  let menuButton = $state<HTMLButtonElement | null>(null);
   let menu = $state<HTMLDivElement | null>(null);
   let firstItem = $state<HTMLButtonElement | null>(null);
   let input = $state<HTMLInputElement | null>(null);
@@ -61,7 +59,7 @@
 
   function closeMenu(restoreFocus = true): void {
     menuOpen = false;
-    if (restoreFocus) void tick().then(() => (menuButton ?? chip)?.focus());
+    if (restoreFocus) void tick().then(() => chip?.focus());
   }
 
   async function beginRename(): Promise<void> {
@@ -141,7 +139,7 @@
 {#if renaming}
   <form
     class={cn("field flex shrink-0 items-center gap-1 py-0 text-foreground", mobileLayout ? "min-h-12 w-44" : "h-7 w-32", error && "border-destructive focus-within:border-destructive")}
-    title={error || t("quickNotes.tag.rename")}
+    title={error || undefined}
     data-quick-note-tag-creator
     onsubmit={(event) => { event.preventDefault(); void submitRename(); }}
   >
@@ -166,39 +164,29 @@
     {#if error}<span class="sr-only" role="alert">{error}</span>{/if}
   </form>
 {:else}
-  <div class={cn("flex shrink-0 items-center rounded-md transition-colors", mobileLayout && "rounded-xl", selected && "bg-accent/60")}>
-    <button
-      bind:this={chip}
-      type="button"
-      aria-pressed={selected}
-      class={`flex items-center text-foreground transition-colors ${mobileLayout ? "min-h-12 max-w-40 rounded-xl px-4 text-sm active:bg-accent" : "h-7 max-w-32 rounded-md px-2.5 text-xs hover:bg-accent/60"} ${selected ? "pr-1" : ""}`}
-      {title}
-      onclick={onSelect}
-      oncontextmenu={(event) => { event.preventDefault(); void openMenu(chip); }}
-    ><span class="truncate">{tag.name}</span></button>
-    {#if selected}
-      <button
-        bind:this={menuButton}
-        type="button"
-        class={mobileLayout ? "flex min-h-12 min-w-10 items-center justify-center rounded-xl text-muted-foreground active:bg-accent" : "flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent/60 hover:text-foreground"}
-        aria-label={t("quickNotes.tag.manage", tag.name)}
-        title={t("quickNotes.tag.manage", tag.name)}
-        aria-haspopup="menu"
-        aria-expanded={menuOpen}
-        onclick={() => { if (menuOpen) closeMenu(); else void openMenu(menuButton); }}
-      ><Ellipsis class={mobileLayout ? "size-5" : "size-3.5"} strokeWidth={1.5} aria-hidden="true" /></button>
-    {/if}
-  </div>
+  <!-- A selected chip opens its menu on click, so rename and delete need no extra control beside it. -->
+  <button
+    bind:this={chip}
+    type="button"
+    aria-pressed={selected}
+    aria-haspopup={selected ? "menu" : undefined}
+    aria-expanded={selected ? menuOpen : undefined}
+    class={cn("flex shrink-0 items-center text-foreground transition-colors", mobileLayout ? "min-h-12 max-w-40 rounded-xl px-4 text-sm active:bg-accent" : "h-7 max-w-32 rounded-md px-2.5 text-xs hover:bg-accent/60", selected && "bg-accent/60")}
+    {title}
+    onclick={() => { if (selected) void openMenu(chip); else onSelect(); }}
+    oncontextmenu={(event) => { event.preventDefault(); void openMenu(chip); }}
+    onkeydown={(event) => {
+      if (event.key !== "F2") return;
+      event.preventDefault();
+      void beginRename();
+    }}
+  ><span class="truncate">{tag.name}</span></button>
 {/if}
 
 {#if menuOpen}
-  <button
-    use:portal
-    type="button"
-    class="fixed inset-0 z-90 cursor-default"
-    aria-label={t("common.close")}
-    onclick={() => closeMenu()}
-  ></button>
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <div use:portal class="fixed inset-0 z-90" aria-hidden="true" onclick={() => closeMenu()}></div>
   <div
     bind:this={menu}
     use:portal

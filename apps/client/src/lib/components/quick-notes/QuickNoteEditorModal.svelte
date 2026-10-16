@@ -783,10 +783,7 @@
       {/if}
       </div>
       <div class={mobileLayout ? "flex min-h-12 w-full items-center" : "contents"}>
-      <span class="ml-auto px-2 text-[0.72rem] opacity-65" aria-live="polite">
-        {status === "saving" ? t("quickNotes.editor.saving") : status === "saved" ? t("quickNotes.editor.saved") : ""}
-      </span>
-      <button class={mobileLayout ? "min-h-12 rounded-xl px-4 text-sm font-medium active:bg-black/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current disabled:opacity-40 dark:active:bg-white/10" : "rounded-md px-3 py-1.5 text-sm font-medium hover:bg-black/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current disabled:opacity-40 dark:hover:bg-white/10"} type="button" disabled={transitionPending} onclick={() => void requestClose()}>{t("quickNotes.editor.close")}</button>
+      <button class={mobileLayout ? "ml-auto min-h-12 rounded-xl px-4 text-sm font-medium active:bg-black/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current disabled:opacity-40 dark:active:bg-white/10" : "ml-auto rounded-md px-3 py-1.5 text-sm font-medium hover:bg-black/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current disabled:opacity-40 dark:hover:bg-white/10"} type="button" disabled={transitionPending} onclick={() => void requestClose()}>{t("quickNotes.editor.close")}</button>
       </div>
     </footer>
   </div>

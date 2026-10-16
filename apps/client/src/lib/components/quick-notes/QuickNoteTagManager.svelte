@@ -71,7 +71,7 @@
   {#if creating}
     <form
       class={cn("field flex items-center gap-1 py-0 text-foreground", mobileLayout ? "min-h-12 w-44" : "h-7 w-30", error && "border-destructive focus-within:border-destructive")}
-      title={error || t("quickNotes.tag.namePlaceholder")}
+      title={error || undefined}
       onsubmit={(event) => { event.preventDefault(); void create(); }}
     >
       <Plus class="size-3.5 shrink-0 text-muted-foreground" strokeWidth={1.5} />
@@ -101,7 +101,7 @@
     bind:this={createButton}
     type="button"
     class={mobileLayout ? "flex min-h-12 shrink-0 items-center gap-1 rounded-xl px-4 text-sm text-muted-foreground transition-colors active:bg-accent active:text-foreground" : "flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"}
-    title={t("quickNotes.tag.add")}
+    aria-label={t("quickNotes.tag.add")}
     onclick={() => void begin()}
   >
     <Plus class="size-3.5" strokeWidth={1.5} />

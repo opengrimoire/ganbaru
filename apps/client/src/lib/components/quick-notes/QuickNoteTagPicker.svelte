@@ -99,13 +99,9 @@
 </button>
 
 {#if open}
-  <button
-    use:portal
-    type="button"
-    class="fixed inset-0 z-90 cursor-default"
-    aria-label={t("common.close")}
-    onclick={closePicker}
-  ></button>
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <div use:portal class="fixed inset-0 z-90" aria-hidden="true" onclick={closePicker}></div>
   <div
     bind:this={picker}
     use:portal

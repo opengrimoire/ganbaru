@@ -76,7 +76,7 @@
       class="quick-note-drag-handle absolute right-1 top-1 z-10 flex size-7 touch-none items-center justify-center rounded-md opacity-60 transition-opacity hover:bg-black/10 hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current dark:hover:bg-white/10"
       data-quick-note-drag-handle
       aria-label={t("quickNotes.action.reorder")}
-      title={t("quickNotes.action.reorderHint")}
+      data-app-tooltip-disabled="true"
       onkeydown={handleReorderKeydown}
     >
       <span class="grid grid-cols-2 gap-0.5" aria-hidden="true">
@@ -93,16 +93,6 @@
     {#if note.title}
       <h3 class="mb-1.5 wrap-break-word text-[0.92rem] font-semibold leading-snug">{note.title}</h3>
     {/if}
-    {#if note.hasConflict || tag}
-      <span class="mb-1.5 flex max-w-full flex-wrap items-center gap-1">
-        {#if note.hasConflict}
-          <span class="inline-flex items-center gap-1 rounded-md bg-black/8 px-1.5 py-0.5 text-[0.65rem] font-medium dark:bg-white/10" title={t("quickNotes.conflict.cardHint")}>
-            <GitCompareArrows class="size-3" strokeWidth={1.75} aria-hidden="true" />{t("quickNotes.conflict.badge")}
-          </span>
-        {/if}
-        {#if tag}<span class="inline-flex max-w-full truncate rounded-md bg-black/8 px-1.5 py-0.5 text-[0.65rem] font-medium dark:bg-white/10">{tag.name}</span>{/if}
-      </span>
-    {/if}
     {#if note.runs.length > 0}
       <div class="quick-note-preview relative max-h-65 overflow-hidden text-[0.82rem] leading-relaxed">
         <QuickNoteRichText runs={note.runs} />
@@ -110,6 +100,16 @@
           <span class="quick-note-fade pointer-events-none absolute inset-x-0 bottom-0 h-12"></span>
         {/if}
       </div>
+    {/if}
+    {#if note.hasConflict || tag}
+      <span class={`flex max-w-full flex-wrap items-center gap-1 ${note.runs.length > 0 ? "mt-1.5" : ""}`}>
+        {#if note.hasConflict}
+          <span class="inline-flex items-center gap-1 rounded-md bg-black/8 px-1.5 py-0.5 text-[0.65rem] font-medium dark:bg-white/10" title={t("quickNotes.conflict.cardHint")}>
+            <GitCompareArrows class="size-3" strokeWidth={1.75} aria-hidden="true" />{t("quickNotes.conflict.badge")}
+          </span>
+        {/if}
+        {#if tag}<span class="inline-flex max-w-full truncate rounded-md bg-black/8 px-1.5 py-0.5 text-[0.65rem] font-medium dark:bg-white/10">{tag.name}</span>{/if}
+      </span>
     {/if}
   </button>
   {#if !mobileLayout}

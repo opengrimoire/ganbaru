@@ -60,8 +60,6 @@ export const quickNotes = {
     bodyPlaceholder: "Escribe algo...",
     bodyLabel: "Contenido de la nota rápida",
     close: "Cerrar",
-    saving: "Guardando...",
-    saved: "Guardada",
     failed: "No se pudo guardar",
     retry: "Reintentar guardado",
     conflict: "Esta nota cambió en otra ventana o en otro dispositivo",
@@ -83,7 +81,6 @@ export const quickNotes = {
     undo: "Deshacer",
     loadMore: "Cargar más notas rápidas",
     reorder: "Reordenar nota",
-    reorderHint: "Arrastra para reordenar. Usa las flechas para reordenar con el teclado.",
   },
   formatting: {
     bold: "Negrita",

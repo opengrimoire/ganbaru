@@ -96,11 +96,13 @@ function rowWidth(widths: readonly number[], gap: number): number {
 }
 
 /**
- * Classes of a Quick notes view chip. The chip paints the `--tag-bg` and `--tag-fg` colors it is given, and a selected
- * chip adds an inset ring in its text color so the selection reads on any palette color.
+ * Classes of a Quick notes view chip, which paints the `--tag-bg` and `--tag-fg` colors it is given. Only the selected
+ * chip shows its full color; the others show a faint tint of theirs, so the selection reads without a ring.
  */
 export function quickNoteChipClass(mobileLayout: boolean, selected: boolean): string {
   const size = mobileLayout ? "min-h-12 max-w-40 rounded-xl px-4 text-sm" : "h-7 max-w-32 rounded-md px-2.5 text-xs";
-  const ring = selected ? " shadow-[inset_0_0_0_1.5px_var(--tag-fg)]" : "";
-  return `flex shrink-0 items-center bg-(--tag-bg) text-(--tag-fg) transition-[filter] hover:brightness-95 ${size}${ring}`;
+  const tone = selected
+    ? "bg-(--tag-bg) text-(--tag-fg) hover:brightness-95"
+    : "bg-(--tag-bg)/30 text-foreground hover:bg-(--tag-bg)/50";
+  return `flex shrink-0 items-center transition-[filter,background-color,color] ${tone} ${size}`;
 }

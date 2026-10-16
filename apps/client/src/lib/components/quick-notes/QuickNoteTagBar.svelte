@@ -79,7 +79,7 @@
   const usedColors = $derived(tags.map((tag) => tag.color));
   const moreColors = $derived(selectedHidden && selectedTag
     ? getQuickNoteColor(selectedTag.color, theme)
-    : { bg: "transparent", text: "var(--muted-foreground)" });
+    : { bg: "var(--muted-foreground)", text: "var(--foreground)" });
 
   const drag = createSortableDrag({
     getIds: () => visibleTags.map((tag) => tag.id),

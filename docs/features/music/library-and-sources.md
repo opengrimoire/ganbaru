@@ -18,7 +18,7 @@ Android uses the system directory-tree picker, retains the granted read permissi
 
 ## YouTube sources
 
-Users can add YouTube video and playlist links. Playlist links resolve into canonical video items, so Ganbaru AI owns queue order without requiring a YouTube Data API key. Resolution has a timeout and explicit ready, unavailable, embedding-blocked, and timed-out states. Missing metadata keeps a stable fallback label.
+Users can add YouTube video and playlist links. Playlist links resolve into canonical video items, so Ganbaru owns queue order without requiring a YouTube Data API key. Resolution has a timeout and explicit ready, unavailable, embedding-blocked, and timed-out states. Missing metadata keeps a stable fallback label.
 
 Owner-disabled embedding is never bypassed by scraping streams, proxying media, impersonating clients, or download tools. The recovery action opens the video on YouTube.
 
@@ -38,7 +38,7 @@ Search is a rebuildable index over titles, artists, albums, source collections, 
 
 ## Import and export
 
-Ganbaru AI exports and imports playlists as versioned JSON and as M3U8. Transfers carry source identity, playlists, membership configuration, and user-authored metadata, never media bytes.
+Ganbaru exports and imports playlists as versioned JSON and as M3U8. Transfers carry source identity, playlists, membership configuration, and user-authored metadata, never media bytes.
 
 - JSON preserves logical roots and source identities, never device-local absolute paths or Android content URIs. Imports require the current format, including every current playlist field. Unsupported membership kinds are skipped with diagnostics; malformed supported records fail validation.
 - M3U8 knowingly loses weights, snoozes, assignments, listening signals, and focus guidance. Relative M3U paths can be mapped to a selected Android root, and Android exports omit content URIs because they are not portable paths.
@@ -51,4 +51,4 @@ Android uses the bounded system document picker and Downloads adapter.
 
 ## Privacy
 
-Local file names, paths, listening history, and playlist choices stay local. YouTube receives only the requests its embedded player and metadata surfaces require when the user loads a YouTube source. Ganbaru AI adds no analytics around them.
+Local file names, paths, listening history, and playlist choices stay local. YouTube receives only the requests its embedded player and metadata surfaces require when the user loads a YouTube source. Ganbaru adds no analytics around them.

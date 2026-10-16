@@ -2,7 +2,7 @@
 
 **Status: Implemented.** Reviewed native deletion, archive, and short-lived Undo are implemented for desktop and Android; installed-app acceptance remains pending.
 
-Ganbaru AI has no general Calendar undo and redo stack. Creates, edits, moves, resizes, and recurrence changes commit directly. Delete and archive are the only Calendar actions with an Undo opportunity.
+Ganbaru has no general Calendar undo and redo stack. Creates, edits, moves, resizes, and recurrence changes commit directly. Delete and archive are the only Calendar actions with an Undo opportunity.
 
 ## Delete versus archive
 

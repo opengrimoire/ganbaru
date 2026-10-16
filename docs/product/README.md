@@ -1,6 +1,6 @@
 # Product direction
 
-Ganbaru AI is an anti-procrastination and anti-burnout productivity app. It combines planning, focus, knowledge, communication, and distraction blocking without requiring hosted Ganbaru infrastructure.
+Ganbaru is an anti-procrastination and anti-burnout productivity app. It combines planning, focus, knowledge, communication, and distraction blocking without requiring hosted Ganbaru infrastructure.
 
 The product is free, local-first, privacy-first, donation-funded, and licensed under AGPL 3.0. AI is optional. The app must remain useful when no provider is installed, configured, or reachable.
 
@@ -8,7 +8,7 @@ The product is free, local-first, privacy-first, donation-funded, and licensed u
 
 ### Local ownership
 
-The user's Ganbaru AI folder and selected external working folders remain under the user's control. Structured application data lives in SQLite. Canonical documents remain files when their format is naturally file-owned. Export formats do not silently become a second source of truth.
+The user's Ganbaru folder and selected external working folders remain under the user's control. Structured application data lives in SQLite. Canonical documents remain files when their format is naturally file-owned. Export formats do not silently become a second source of truth.
 
 ### Sustainable productivity
 
@@ -28,7 +28,7 @@ Installing a provider, joining a channel, mentioning an AI agent, or possessing 
 
 ### Self-hosted and donation-funded
 
-Ganbaru AI does not depend on a subscription or a hosted service operated by the project. Product infrastructure such as sync must be user-provisioned and self-hostable, with setup guidance that non-technical users can follow. Optional third-party integrations may use their documented external services.
+Ganbaru does not depend on a subscription or a hosted service operated by the project. Product infrastructure such as sync must be user-provisioned and self-hostable, with setup guidance that non-technical users can follow. Optional third-party integrations may use their documented external services.
 
 ### Platform-appropriate behavior
 
@@ -56,7 +56,7 @@ Detailed behavior belongs in the relevant feature document. Delivery order belon
 
 ## Scope boundaries
 
-Ganbaru AI is not a hosted project-management service, an enterprise device-management product, a browser surveillance tool, or an automatic authority broker for AI. It does not collect telemetry or require a Ganbaru account.
+Ganbaru is not a hosted project-management service, an enterprise device-management product, a browser surveillance tool, or an automatic authority broker for AI. It does not collect telemetry or require a Ganbaru account.
 
 Planned collaboration does not change the local-first source-of-truth model. Planned AI does not change the explicit authorization model. Planned gamification must measure genuine progress without gambling with real money or punishing recovery.
 
@@ -65,5 +65,5 @@ Planned collaboration does not change the local-first source-of-truth model. Pla
 - [System map](system-map.md): ownership and cross-feature transitions.
 - [Feature index](../features/README.md): current implementation status and feature specifications.
 - [Architecture](../architecture/README.md): current code and platform boundaries.
-- [Data architecture](../data/architecture.md): storage categories and the Ganbaru AI folder.
+- [Data architecture](../data/architecture.md): storage categories and the Ganbaru folder.
 - [Roadmap](../ROADMAP.md): remaining delivery sequence.

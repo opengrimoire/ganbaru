@@ -2,7 +2,7 @@
 
 Status: Partial. Project channels and messaging are implemented on desktop and Android; local coding-agent execution is desktop-only. Direct messages, task discussions, delegation, and human collaboration are planned.
 
-Chat is Ganbaru AI's project communication and coding-work surface. It combines durable human-readable conversations with bounded provider runs, review, files, terminals, and checkpoints without making provider threads the organizational source of truth.
+Chat is Ganbaru's project communication and coding-work surface. It combines durable human-readable conversations with bounded provider runs, review, files, terminals, and checkpoints without making provider threads the organizational source of truth.
 
 ## Current scope
 
@@ -32,7 +32,7 @@ See [Conversations](conversations.md), [Agents and coordination](agents-and-coor
 
 Opening Chat creates or resolves the selected project's durable `#general` channel. Chat is useful without a configured provider for reading, writing, organizing, searching, and scheduling messages.
 
-Provider setup is explicit. Ganbaru AI discovers supported provider families, explains missing or invalid installations, and never claims a provider is ready before its probe succeeds. Discovery never blocks reading local history; see [Provider runtimes](../ai/provider-runtimes.md).
+Provider setup is explicit. Ganbaru discovers supported provider families, explains missing or invalid installations, and never claims a provider is ready before its probe succeeds. Discovery never blocks reading local history; see [Provider runtimes](../ai/provider-runtimes.md).
 
 ## Data ownership
 

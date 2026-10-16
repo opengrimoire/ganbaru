@@ -1,6 +1,6 @@
 # Data documentation
 
-This directory defines how Ganbaru AI owns, protects, and evolves durable data. It explains decisions that are not obvious from the schema or source code. SQL migrations and schema tests remain authoritative for exact columns, indexes, triggers, and foreign keys.
+This directory defines how Ganbaru owns, protects, and evolves durable data. It explains decisions that are not obvious from the schema or source code. SQL migrations and schema tests remain authoritative for exact columns, indexes, triggers, and foreign keys.
 
 These documents describe the intended contract. When current code does not meet it, the document names the gap instead of redefining the contract around an accidental implementation detail.
 

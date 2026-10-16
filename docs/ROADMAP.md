@@ -1,6 +1,6 @@
 # Roadmap
 
-This roadmap records delivery horizons, not implementation history or feature design. Ganbaru AI develops across several domains in parallel, so it groups work by outcome rather than numbered phases. Detailed behavior and current status belong in the [feature index](features/README.md) and feature specifications.
+This roadmap records delivery horizons, not implementation history or feature design. Ganbaru develops across several domains in parallel, so it groups work by outcome rather than numbered phases. Detailed behavior and current status belong in the [feature index](features/README.md) and feature specifications.
 
 ## Implemented foundation
 

@@ -15,4 +15,4 @@ Additional formats should receive their own folder only when they have a durable
 - Conformance documents record implementation status and known gaps against current source and tests.
 - Client documents record dated observations from real applications and services.
 
-Compatibility claims should be semantic and evidence-based. Ganbaru AI does not promise byte-for-byte reproduction of imported files, because legal serializers may normalize case, escaping, ordering, and line folding without changing meaning.
+Compatibility claims should be semantic and evidence-based. Ganbaru does not promise byte-for-byte reproduction of imported files, because legal serializers may normalize case, escaping, ordering, and line folding without changing meaning.

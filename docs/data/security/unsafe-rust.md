@@ -1,6 +1,6 @@
 # Unsafe Rust
 
-Unsafe Rust is exceptional in Ganbaru AI. It is allowed only at a reviewed native, foreign-function, or operating-system boundary whose required behavior cannot currently be preserved with safe Rust. The [`unsafe` keyword](https://doc.rust-lang.org/stable/reference/unsafe-keyword.html) creates proof obligations the compiler does not check. Calling an upstream function marked `unsafe` does not transfer those obligations upstream: Ganbaru AI remains responsible for the arguments, ownership, lifetime, aliasing, thread, callback, and cleanup invariants at every call.
+Unsafe Rust is exceptional in Ganbaru. It is allowed only at a reviewed native, foreign-function, or operating-system boundary whose required behavior cannot currently be preserved with safe Rust. The [`unsafe` keyword](https://doc.rust-lang.org/stable/reference/unsafe-keyword.html) creates proof obligations the compiler does not check. Calling an upstream function marked `unsafe` does not transfer those obligations upstream: Ganbaru remains responsible for the arguments, ownership, lifetime, aliasing, thread, callback, and cleanup invariants at every call.
 
 ## Scope
 

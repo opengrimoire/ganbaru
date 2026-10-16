@@ -18,7 +18,7 @@ The harness fires a desktop notification when it reaches the summary or error st
 
 ## Data safety
 
-The harness uses device-local `app_config_dir/benchmark.sqlite` for the whole run. The user's real database and Ganbaru AI folder are never opened during benchmark passes.
+The harness uses device-local `app_config_dir/benchmark.sqlite` for the whole run. The user's real database and Ganbaru folder are never opened during benchmark passes.
 
 - The benchmark database and its sidecars are deleted before a run starts and when the summary closes, the run is cancelled, or stale state is detected.
 - `vaultMode: "benchmark"` in `benchmark-state.json` tells the database URL resolver to open the benchmark database.
@@ -105,7 +105,7 @@ phase-a-running or phase-b-running on boot
   continue on the user's real DB
 ```
 
-The startup scenario records five process launches per dataset; each relaunch exits the app, waits 10 seconds in a helper process, then opens Ganbaru AI again. A pass interrupted by a killed process is not comparable, so the next boot discards it rather than resuming. Pending state carries `startedAt`, which caps the whole run, and `updatedAt`, which caps the restart gap, so a failed relaunch returns to the user's database quickly.
+The startup scenario records five process launches per dataset; each relaunch exits the app, waits 10 seconds in a helper process, then opens Ganbaru again. A pass interrupted by a killed process is not comparable, so the next boot discards it rather than resuming. Pending state carries `startedAt`, which caps the whole run, and `updatedAt`, which caps the restart gap, so a failed relaunch returns to the user's database quickly.
 
 ## Lazy loading
 

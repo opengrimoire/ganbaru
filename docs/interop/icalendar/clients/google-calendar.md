@@ -18,16 +18,16 @@ Sources:
 
 ## Known Google file quirks
 
-These are client-compatibility notes, not standards rules. Ganbaru AI should stay standards-first and use these notes to decide warnings, repair prompts, and fixture priorities.
+These are client-compatibility notes, not standards rules. Ganbaru should stay standards-first and use these notes to decide warnings, repair prompts, and fixture priorities.
 
-- **Stale unbounded recurrences can appear in exports.** A Google export can contain old recurring master `VEVENT`s that no longer appear in the Google Calendar UI. The problematic shape is a confirmed master event with `RRULE:FREQ=DAILY` or similar, no `UNTIL`, no `COUNT`, no `EXDATE` covering the future, no `STATUS:CANCELLED`, and no `RECURRENCE-ID;RANGE=THISANDFUTURE` cancellation. Per iCalendar semantics, that file says the event repeats forever. Ganbaru AI must not silently invent an end date, but a future import review should warn about old unbounded recurring events and let the user exclude them.
+- **Stale unbounded recurrences can appear in exports.** A Google export can contain old recurring master `VEVENT`s that no longer appear in the Google Calendar UI. The problematic shape is a confirmed master event with `RRULE:FREQ=DAILY` or similar, no `UNTIL`, no `COUNT`, no `EXDATE` covering the future, no `STATUS:CANCELLED`, and no `RECURRENCE-ID;RANGE=THISANDFUTURE` cancellation. Per iCalendar semantics, that file says the event repeats forever. Ganbaru must not silently invent an end date, but a future import review should warn about old unbounded recurring events and let the user exclude them.
 - **Google can mix UTC and `TZID` event times in the same export.** For example, one event may use `DTSTART;TZID=America/Mexico_City:20210510T080000` while another uses `DTSTART:20260515T204500Z`. Both are legal. Import must treat `Z` values as UTC, `TZID` values as local to the given zone, and persist the projected wall clock without applying the timezone offset twice.
-- **"This and following" deletion is not always exported as a future cancellation.** When the file contains a capped `RRULE` with `UNTIL`, Ganbaru AI should respect it. When the file contains `RECURRENCE-ID;RANGE=THISANDFUTURE` with `STATUS:CANCELLED`, Ganbaru AI should suppress that occurrence and later occurrences. When Google exports neither shape and leaves an unbounded confirmed master event, the file is incomplete relative to the Google UI state.
-- **Duplicate master revisions may appear.** If two master `VEVENT`s share a `UID`, Ganbaru AI projects the newest revision by `SEQUENCE`, then `LAST-MODIFIED`, `DTSTAMP`, or `CREATED`. This handles files where a newer capped recurrence appears next to an older uncapped revision.
-- **Colors are not reliable through `.ics`.** Google Calendar API resources expose color IDs, but Google `.ics` exports do not reliably carry original calendar or event colors. File import should map to Ganbaru AI's default palette unless a standard or extension color property is actually present.
-- **Guests and conference data are not symmetric through file import.** Google exports can include attendees, organizer data, `X-GOOGLE-CONFERENCE`, and generated Google Meet text inside `DESCRIPTION`, but Google Help states that importing an event file into Google does not import guests and conference data. Ganbaru AI should preserve these fields when present, promote Google Meet conference URLs into the call-link field, and avoid showing generated Meet boilerplate as a user-authored description when it can identify the block. File round trips through Google may still drop or rewrite those fields.
+- **"This and following" deletion is not always exported as a future cancellation.** When the file contains a capped `RRULE` with `UNTIL`, Ganbaru should respect it. When the file contains `RECURRENCE-ID;RANGE=THISANDFUTURE` with `STATUS:CANCELLED`, Ganbaru should suppress that occurrence and later occurrences. When Google exports neither shape and leaves an unbounded confirmed master event, the file is incomplete relative to the Google UI state.
+- **Duplicate master revisions may appear.** If two master `VEVENT`s share a `UID`, Ganbaru projects the newest revision by `SEQUENCE`, then `LAST-MODIFIED`, `DTSTAMP`, or `CREATED`. This handles files where a newer capped recurrence appears next to an older uncapped revision.
+- **Colors are not reliable through `.ics`.** Google Calendar API resources expose color IDs, but Google `.ics` exports do not reliably carry original calendar or event colors. File import should map to Ganbaru's default palette unless a standard or extension color property is actually present.
+- **Guests and conference data are not symmetric through file import.** Google exports can include attendees, organizer data, `X-GOOGLE-CONFERENCE`, and generated Google Meet text inside `DESCRIPTION`, but Google Help states that importing an event file into Google does not import guests and conference data. Ganbaru should preserve these fields when present, promote Google Meet conference URLs into the call-link field, and avoid showing generated Meet boilerplate as a user-authored description when it can identify the block. File round trips through Google may still drop or rewrite those fields.
 
-## Ganbaru AI policy for Google quirks
+## Ganbaru policy for Google quirks
 
 - Treat the `.ics` file as the immediate source of truth for import.
 - Do not auto-repair stale Google recurrence data without user consent.
@@ -55,9 +55,9 @@ These are client-compatibility notes, not standards rules. Ganbaru AI should sta
 
 Partial manual compatibility run recorded in May 2026:
 
-- Ganbaru AI export imported into Google preserved ordinary timed events and a recurring series capped by the app's "following" delete behavior.
-- Google export back to Ganbaru AI included expected May 2026 events as UTC `Z` values, while older recurring routine events used `TZID=America/Mexico_City`.
+- Ganbaru export imported into Google preserved ordinary timed events and a recurring series capped by the app's "following" delete behavior.
+- Google export back to Ganbaru included expected May 2026 events as UTC `Z` values, while older recurring routine events used `TZID=America/Mexico_City`.
 - The same Google export contained old unbounded daily recurrences that were not visible in the Google Calendar UI. The file represented them as confirmed infinite recurrences, so a standards-based importer expands them.
-- A Google invitation with an empty title was exported with organizer, attendees, and conference properties. Ganbaru AI should import it as an event with an empty stored title unless the UI adds a display-only "Untitled" fallback.
+- A Google invitation with an empty title was exported with organizer, attendees, and conference properties. Ganbaru should import it as an event with an empty stored title unless the UI adds a display-only "Untitled" fallback.
 
 Future runs should preserve the date and account context required by the shared result record so behavior changes can be distinguished from the May 2026 observations.

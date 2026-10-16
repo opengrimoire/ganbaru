@@ -1,6 +1,6 @@
 # Integration boundaries
 
-Ganbaru AI integrates with local tools and operating-system services while remaining useful offline. Every integration is optional, capability-scoped, and subordinate to canonical application authority.
+Ganbaru integrates with local tools and operating-system services while remaining useful offline. Every integration is optional, capability-scoped, and subordinate to canonical application authority.
 
 ## Native coding-agent providers
 

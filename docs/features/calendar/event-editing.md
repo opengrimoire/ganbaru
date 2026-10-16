@@ -34,7 +34,7 @@ Tasks link through explicit task-event link records. Links require the task and 
 
 ## Meeting metadata
 
-Locally authored events can edit location, call link, organizer, and attendees. Attendees who use Ganbaru AI are chosen from contacts with the shared participant picker and show a response chip (accepted, tentative, pending, declined), as described in [Contacts and invitations](../collaboration/README.md). Imported organizer and attendee identities remain read-only until Ganbaru AI can prove the current user's identity and write permission.
+Locally authored events can edit location, call link, organizer, and attendees. Attendees who use Ganbaru are chosen from contacts with the shared participant picker and show a response chip (accepted, tentative, pending, declined), as described in [Contacts and invitations](../collaboration/README.md). Imported organizer and attendee identities remain read-only until Ganbaru can prove the current user's identity and write permission.
 
 The app never changes another attendee's response based only on a displayed email or label. Local response metadata may drive local rendering without becoming external attendee data.
 

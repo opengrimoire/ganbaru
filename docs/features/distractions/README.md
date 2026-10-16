@@ -25,7 +25,7 @@ The distraction blocker adds calm, explainable friction when a selected website 
 
 **Local and minimal.** Browser reporting uses normalized hosts, not full URLs. Native adapters observe only the app identity and timing configured rules need. Page content, taps, notifications, and general app history are never collected.
 
-**Protect essential software.** Ganbaru AI, Home, Settings, dialers, system UI, shells, generic runtimes, and other protected applications can never be targets. Destructive enforcement revalidates the exact persisted rule and observed process or package at the final moment.
+**Protect essential software.** Ganbaru, Home, Settings, dialers, system UI, shells, generic runtimes, and other protected applications can never be targets. Destructive enforcement revalidates the exact persisted rule and observed process or package at the final moment.
 
 **Do not judge the user.** Block and usage history can suggest configuration changes. It never proves productivity or becomes a shame, ranking, or engagement surface.
 

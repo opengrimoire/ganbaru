@@ -1,6 +1,6 @@
 # Supply-chain security
 
-Ganbaru AI's build and release systems can access source code, user-facing binaries, package repositories, and signing material. Dependency and CI choices therefore receive the same scrutiny as runtime code.
+Ganbaru's build and release systems can access source code, user-facing binaries, package repositories, and signing material. Dependency and CI choices therefore receive the same scrutiny as runtime code.
 
 ## Dependency installation
 

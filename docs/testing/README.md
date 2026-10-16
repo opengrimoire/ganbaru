@@ -1,6 +1,6 @@
 # Testing
 
-Ganbaru AI uses layered validation across the Svelte frontend, Rust workspace, SQLite persistence, browser extension, Android project, production bundles, and dependency graph.
+Ganbaru uses layered validation across the Svelte frontend, Rust workspace, SQLite persistence, browser extension, Android project, production bundles, and dependency graph.
 
 This document is the command and gate-selection reference. Supporting documents cover:
 
@@ -49,7 +49,7 @@ Always use the workspace flag for root scripts.
 
 `validate` is the normal comprehensive gate. `validate:full` is required for dependency or lockfile changes, security-sensitive dependency work, releases, and explicit full-security requests.
 
-The hosted `linux validation` job in `.github/workflows/check.yml` runs `validate:ci` for pull requests and the merge queue. It covers the same static checks, tests, editor diagnostics, and bundle contracts as local `validate`; only Cargo compilation uses two jobs instead of one. Rust tests use the same two test threads, and the frontend shards remain sequential and single-worker. The independent Android job builds an ARM64 debug APK, while the Windows job runs `cargo check -p ganbaru-ai` without producing an installer.
+The hosted `linux validation` job in `.github/workflows/check.yml` runs `validate:ci` for pull requests and the merge queue. It covers the same static checks, tests, editor diagnostics, and bundle contracts as local `validate`; only Cargo compilation uses two jobs instead of one. Rust tests use the same two test threads, and the frontend shards remain sequential and single-worker. The independent Android job builds an ARM64 debug APK, while the Windows job runs `cargo check -p ganbaru` without producing an installer.
 
 ## Choosing a gate
 
@@ -93,13 +93,13 @@ The engine's desktop performance budgets (capture overhead per write, seal of 10
 Use the native messaging binary only for binary-local tests:
 
 ```sh
-cargo test -p ganbaru-native-messaging --bin ganbaru-ai-native-messaging -j 1 test_name -- --test-threads=1
+cargo test -p ganbaru-native-messaging --bin ganbaru-native-messaging -j 1 test_name -- --test-threads=1
 ```
 
 Check desktop composition after changing a core crate or Tauri adapter:
 
 ```sh
-cargo check -p ganbaru-ai --bin ganbaru-ai -j 1
+cargo check -p ganbaru --bin ganbaru -j 1
 ```
 
 ### Focused static feedback

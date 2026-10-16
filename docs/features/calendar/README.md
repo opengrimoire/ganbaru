@@ -1,6 +1,6 @@
 # Calendar
 
-Calendar is the time anchor for Ganbaru AI. Focus sessions, project scheduling, music automation, notifications, and future work environments attach to calendar events, so correctness and durable history take priority over feature breadth.
+Calendar is the time anchor for Ganbaru. Focus sessions, project scheduling, music automation, notifications, and future work environments attach to calendar events, so correctness and durable history take priority over feature breadth.
 
 **Status: Partial.** Views, native recurrence, reviewed scoped editing, deletion, and Undo are implemented; installed desktop and Android acceptance remains pending.
 

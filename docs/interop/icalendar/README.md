@@ -2,7 +2,7 @@
 
 Status: Partial. Offline `.ics` import, structured preservation, `VEVENT` projection, and merged export are implemented. Non-event projections, full recurrence and timezone semantics, and manual client runs remain incomplete. Exact status lives in the [conformance audit](./conformance/README.md).
 
-Ganbaru AI accepts, preserves, edits where possible, and exports iCalendar files without depending on Google, Outlook, CalDAV, email, or any hosted service. The target is broad offline round-trip compatibility: import RFC 5545 objects, retain unsupported structured data instead of dropping it, project supported `VEVENT` data into the calendar, and merge current projected fields over the preserved source on export.
+Ganbaru accepts, preserves, edits where possible, and exports iCalendar files without depending on Google, Outlook, CalDAV, email, or any hosted service. The target is broad offline round-trip compatibility: import RFC 5545 objects, retain unsupported structured data instead of dropping it, project supported `VEVENT` data into the calendar, and merge current projected fields over the preserved source on export.
 
 Preservation is semantic, not byte-for-byte. Legal changes to property order, case, escaping, quoting, and line folding are acceptable when component meaning and unsupported structured data survive within the documented parser limits.
 
@@ -10,7 +10,7 @@ Preservation is semantic, not byte-for-byte. Legal changes to property order, ca
 
 - **RFC 5545 (iCalendar):** the core format and data model for components, properties, parameters, value types, recurrence, `VTIMEZONE`, and line serialization. This is the primary target.
 - **RFC 6868 (parameter value encoding):** caret escaping for parameter values.
-- **RFC 5546 (iTIP scheduling):** invitation and reply semantics. Ganbaru AI preserves this metadata offline but does not act on it. See [scheduling boundary](./scheduling-boundary.md).
+- **RFC 5546 (iTIP scheduling):** invitation and reply semantics. Ganbaru preserves this metadata offline but does not act on it. See [scheduling boundary](./scheduling-boundary.md).
 - **RFC 7265 (jCal):** the in-memory parser and serializer shape. SQLite stores the same model relationally.
 - **RFC 7986 (property extensions):** calendar names, colors, images, and conference properties. Tracked; currently preserved but not merged into object-level export.
 - **IANA iCalendar registries:** the live list of registered components, properties, parameters, values, and methods.

@@ -6,7 +6,7 @@ Outlook is a practical compatibility target, not the source of truth for iCalend
 
 - Microsoft documents importing `.ics` files into Outlook calendars and subscribing to iCalendar feeds. An imported file does not refresh when the source calendar changes.
 - Outlook desktop exports iCalendar through calendar sharing, with detail controlled by sharing settings.
-- Outlook commonly emits Windows timezone names such as `Pacific Standard Time`. Ganbaru AI maps recognized Windows names to IANA zones for projection and keeps the original `TZID` in preservation. See [recurrence and timezones](../recurrence-and-timezones.md#timezones).
+- Outlook commonly emits Windows timezone names such as `Pacific Standard Time`. Ganbaru maps recognized Windows names to IANA zones for projection and keeps the original `TZID` in preservation. See [recurrence and timezones](../recurrence-and-timezones.md#timezones).
 
 Sources:
 
@@ -25,4 +25,4 @@ Sources:
 
 ## Observed behavior log
 
-No manual Ganbaru AI compatibility run recorded yet.
+No manual Ganbaru compatibility run recorded yet.

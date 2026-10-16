@@ -19,7 +19,7 @@ Component and property coverage for the [conformance baseline](./README.md#audit
 
 | Property | Status |
 | --- | --- |
-| `PRODID` | Stored. Export generates Ganbaru AI's own. |
+| `PRODID` | Stored. Export generates Ganbaru's own. |
 | `VERSION` | Stored. Export emits `2.0`. |
 | `CALSCALE` | Stored. Export emits `GREGORIAN`. |
 | `METHOD` | Stored. Export reuses one valid distinct method, otherwise `PUBLISH`. |

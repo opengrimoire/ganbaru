@@ -6,7 +6,7 @@ This document owns the shared model for human collaboration: identity, contacts,
 
 ## Why
 
-Ganbaru AI already coordinates work between a person and configured AI agents through explicit memberships and access profiles. Human collaboration adds other people to the same model instead of a second one. One picker, one access step, and one member list serve people and agents alike, so the only visible difference between adding a colleague and adding an AI agent is that the agent also has a configurable brain and execution limits. Users who know chat and planning apps should recognize the flow immediately: pick from contacts, choose a role, done.
+Ganbaru already coordinates work between a person and configured AI agents through explicit memberships and access profiles. Human collaboration adds other people to the same model instead of a second one. One picker, one access step, and one member list serve people and agents alike, so the only visible difference between adding a colleague and adding an AI agent is that the agent also has a configurable brain and execution limits. Users who know chat and planning apps should recognize the flow immediately: pick from contacts, choose a role, done.
 
 ## Vocabulary
 

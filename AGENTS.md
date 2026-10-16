@@ -1,6 +1,6 @@
-# Ganbaru AI
+# Ganbaru
 
-Ganbaru AI is an anti-procrastination and anti-burnout productivity app. It is free, local, open-source (AGPL 3.0), privacy-first, and lightweight, with opt-in AI. It is built with Tauri v2 (Rust) and Svelte 5 for Linux, Windows, and a pre-release Android implementation. macOS and iOS are future platform work.
+Ganbaru is an anti-procrastination and anti-burnout productivity app. It is free, local, open-source (AGPL 3.0), privacy-first, and lightweight, with opt-in AI. It is built with Tauri v2 (Rust) and Svelte 5 for Linux, Windows, and a pre-release Android implementation. macOS and iOS are future platform work.
 
 Features are highly interconnected. Calendar, Pomodoro, Projects, Notes, Chat with local coding agents, the distraction blocker, Music, Quick notes, themes, localization, and the Android shell exist and are still being completed. Concurrent sync covers Quick notes so far. The diary, sleep alarm, and work environments are planned; gamification is deferred. [docs/features/README.md](docs/features/README.md) owns the current status of each feature.
 
@@ -69,7 +69,7 @@ apps/
     static/: static assets
     scripts/: repo-owned scripts grouped by purpose (release/, bundle-contracts/, checks/, provider-protocols/, codegen/, browser-extension/); tauri-cli.mjs wraps the Tauri CLI
     test-fixtures/: shared test fixtures such as sample .ics files
-    src-tauri/: Tauri package (crate ganbaru-ai), configuration, and platform entries
+    src-tauri/: Tauri package (crate ganbaru), configuration, and platform entries
       src/main.rs, src/lib.rs: thin desktop entry and mobile library entry
       app/: ganbaru-tauri-app library with Tauri commands, managed state, and platform integrations
         build.rs: emits the `desktop` and `mobile` cfg aliases used for platform gating
@@ -119,7 +119,7 @@ crates/
   ganbaru-sync/: Tauri-free sync engine with the replication manifest, capture triggers, sealing, apply and merge, conflicts, recovery, and the simulation harness
   ganbaru-sync-replica/: Tauri-free replica sync with guarded vault access, installation writer keys and record, carry-forward, recovery offers, and the LAN hub and client exchange
   ganbaru-themes/: Tauri-free user theme persistence, seed resets, upgrade dismissals, and row validation
-  ganbaru-native-messaging/: ganbaru-ai-native-messaging browser host binary
+  ganbaru-native-messaging/: ganbaru-native-messaging browser host binary
   ganbaru-mobile-*/: Android plugins for documents, the distraction blocker, media, and notifications
 extensions/chromium/: Chromium extension (manifest v3); chromium-dev/ is a generated, ignored dev copy
 Cargo.toml, rust-toolchain.toml, rustfmt.toml, turbo.json, pnpm-workspace.yaml, package.json: workspace configuration and root scripts
@@ -127,15 +127,15 @@ Cargo.toml, rust-toolchain.toml, rustfmt.toml, turbo.json, pnpm-workspace.yaml, 
 
 Planned work without source directories yet includes the self-hosted sync relay, the Firefox extension, the diary, BYOK assistant, edge panel, sleep alarm, work environments, and gamification.
 
-## Ganbaru AI folder structure
+## Ganbaru folder structure
 
-> Everything the app produces belongs to one active vault. On desktop, production defaults to `Documents/Ganbaru AI` and development to `Documents/Ganbaru AI Dev`, unless the user selects another location. Android keeps the active vault in application-private storage. Asset subdirectories are created on demand. Planned paths are labeled.
+> Everything the app produces belongs to one active vault. On desktop, production defaults to `Documents/Ganbaru` and development to `Documents/Ganbaru Dev`, unless the user selects another location. Android keeps the active vault in application-private storage. Asset subdirectories are created on demand. Planned paths are labeled.
 
 ```
-Ganbaru AI/
+Ganbaru/
   vault.json: folder marker, id, display name, and schema version
   config.json: folder-local preferences, UI state, and anti-distraction settings
-  ganbaru-ai.sqlite: SQLite source of truth for structured data, Notes, and indexes
+  ganbaru.sqlite: SQLite source of truth for structured data, Notes, and indexes
   notes/daily/, notes/projects/: reserved note document directories
   notes/exports/: derivative Markdown exports (planned, not authoritative)
   diary/morning/, diary/evening/: dated diary entries (planned feature)
@@ -203,8 +203,8 @@ Read `docs/testing/README.md` when changing tests, validation scripts, task orde
 - `pnpm --dir apps/client exec vitest run path/to/file.test.ts --maxWorkers=1`: focused frontend test file.
 - `cargo test -p ganbaru-chat --lib -j 1 test_name -- --test-threads=1`: focused core crate test (substitute `ganbaru-notes`, `ganbaru-db`, `ganbaru-civil-time`, `ganbaru-distractions`, `ganbaru-chat-contracts`, `ganbaru-chat-providers`, `ganbaru-pomodoro`, `ganbaru-quick-notes`, `ganbaru-music`, `ganbaru-music-library`, `ganbaru-music-player`, `ganbaru-projects`, `ganbaru-calendar`, `ganbaru-working-folders`, `ganbaru-contacts`, `ganbaru-handoff`, `ganbaru-sync-contracts`, `ganbaru-sync`, `ganbaru-sync-replica`, or `ganbaru-themes`).
 - `cargo test -p ganbaru-tauri-app --lib -j 1 test_name -- --test-threads=1`: focused Tauri composition or command-adapter test.
-- `cargo test -p ganbaru-native-messaging --bin ganbaru-ai-native-messaging -j 1 test_name -- --test-threads=1`: focused native messaging host test.
-- `cargo check -p ganbaru-ai --bin ganbaru-ai -j 1`: focused desktop composition check.
+- `cargo test -p ganbaru-native-messaging --bin ganbaru-native-messaging -j 1 test_name -- --test-threads=1`: focused native messaging host test.
+- `cargo check -p ganbaru --bin ganbaru -j 1`: focused desktop composition check.
 - `cargo fmt --check` and `cargo clippy --workspace -j 1 -- -D warnings`: Rust formatting and linting only.
 - `pnpm -w run audit:deps`, `audit:rust`, `audit`: npm and RustSec audits. Run for dependency or lockfile changes, before PRs and releases, and when investigating security alerts. Reviewed Rust ignores live in `.cargo/audit.toml` and must be documented in `docs/data/security/dependency-audits.md`.
 - `pnpm -w run validate`: full normal gate (check, test, editor-check, bundle contracts). All errors must be fixed before treating it as passed.
@@ -223,10 +223,10 @@ Read `docs/testing/README.md` when changing tests, validation scripts, task orde
 - There are no external users yet. Old development vaults, internal exports, and device state need no compatibility, migration shims, or fallback readers. Keep one current internal format and require an explicit development reset for unsupported state. Preserve crash recovery, transaction rollback, external standards support, and platform-specific behavior.
 - Remove obsolete internal readers, writers, and unused code together. Keep fresh-vault schema construction and current schema invariants covered. Never delete or reset local vaults automatically as part of source cleanup.
 - Migrations live in `crates/ganbaru-db/migrations/` and are embedded by `ganbaru-db` through `sqlx::migrate!` (no manual registration). Name them `YYYYMMDDHHMMSS_description.sql` with a UTC timestamp.
-- `20261004220000_baseline_schema.sql` is the final pre-user baseline, approved by the maintainer on 2026-10-04. Earlier development databases are unsupported and must be recreated. Once a user-capable release can apply it, never edit it; add new timestamped migrations instead. Future baseline squashes require explicit maintainer approval.
+- `20261004220000_baseline_schema.sql` is the final pre-user baseline, approved by the maintainer on 2026-10-04 and edited in place on 2026-10-16 for the product rename. Earlier development databases are unsupported and must be recreated. Once a user-capable release can apply it, never edit it; add new timestamped migrations instead. Future baseline squashes require explicit maintainer approval.
 - SQLx validates applied migration checksums, so never rewrite an applied migration to fix a live install. Keep migrations idempotent and narrowly scoped when practical. Preserve user-authored values that still have meaning; only delete data that is obsolete or derivable from canonical data.
 - Keep `crates/ganbaru-db/src/lib.rs` focused on pool and migration services, schema and migration invariant tests in `crates/ganbaru-db/src/tests/`, and active-folder path authorization in `apps/client/src-tauri/app/src/db.rs`.
-- Never hardcode Ganbaru AI folder paths; read them from user configuration.
+- Never hardcode Ganbaru folder paths; read them from user configuration.
 
 ### Theme and color tokens
 

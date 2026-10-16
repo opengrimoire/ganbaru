@@ -1,6 +1,6 @@
 # Network and privacy
 
-Ganbaru AI has no analytics, advertising, telemetry, crash-reporting, or behavioral-tracking service. It sends no calendar, focus, Notes, project, browsing-control, or Chat data to project-operated infrastructure. Offline use is a first-class mode, and every network-capable feature is explicit, bounded, and attributable to a user choice or configured integration.
+Ganbaru has no analytics, advertising, telemetry, crash-reporting, or behavioral-tracking service. It sends no calendar, focus, Notes, project, browsing-control, or Chat data to project-operated infrastructure. Offline use is a first-class mode, and every network-capable feature is explicit, bounded, and attributable to a user choice or configured integration.
 
 ## Current network surfaces
 
@@ -19,7 +19,7 @@ Current code uses the network only for these feature-owned purposes:
 
 Each adapter owns its allowed schemes, origins, redirects, response bounds, timeouts, and credential handling. There is no generic command that fetches an arbitrary URL with application credentials.
 
-Provider network behavior follows the selected provider and its own policy. Ganbaru AI constrains the process, workspace, environment, host tools, and context it supplies, but cannot promise that an external provider does not retain submitted content. The UI must make provider choice and data transfer understandable.
+Provider network behavior follows the selected provider and its own policy. Ganbaru constrains the process, workspace, environment, host tools, and context it supplies, but cannot promise that an external provider does not retain submitted content. The UI must make provider choice and data transfer understandable.
 
 ## Planned network surfaces
 
@@ -28,7 +28,7 @@ Not implemented:
 - Concurrent sync of domains other than Quick notes, LAN peer exchange between enrolled devices, operation encryption, and optional remote synchronization through a user-hosted Rust relay or always-on anchor.
 - A hosted or local BYOK chat widget separate from coding-agent Chat.
 - A separately authorized external MCP service.
-- A `ganbaru-ai` CLI with external integration commands.
+- A `ganbaru` CLI with external integration commands.
 
 Their security requirements are design constraints. Documentation must not describe their proposed endpoints as current traffic.
 
@@ -57,7 +57,7 @@ Activated Notes hyperlinks use a feature-owned native command on desktop and And
 
 ## Local data encryption
 
-The vault and SQLite database are not application-encrypted. Ganbaru AI relies on operating-system account isolation and full-disk encryption such as LUKS, BitLocker, or FileVault.
+The vault and SQLite database are not application-encrypted. Ganbaru relies on operating-system account isolation and full-disk encryption such as LUKS, BitLocker, or FileVault.
 
 Why: this keeps user files accessible to ordinary backup and editing tools and avoids a second fragile key-recovery system. The cost is that malware running as the same user can read the vault, and documentation must state that limitation honestly.
 

@@ -2,7 +2,7 @@
 
 Status: Partial. The local coding-agent path is implemented; the BYOK assistant and external MCP and CLI access are planned.
 
-Ganbaru AI is fully usable without AI. Every AI path is opt-in, has an explicit authority boundary, and stays subordinate to the user's local data and organizational model.
+Ganbaru is fully usable without AI. Every AI path is opt-in, has an explicit authority boundary, and stays subordinate to the user's local data and organizational model.
 
 ## Integration paths
 
@@ -16,7 +16,7 @@ The local coding-agent path is not a general vault assistant. It is the executio
 
 ## Authority model
 
-Rust resolves the effective project, conversation, participant, execution target, context package, provider, model, interaction mode, and authorization before work starts (see [Chat agents and coordination](../chat/agents-and-coordination.md#resolution-before-work-starts)). Provider-native trust or approval cannot widen Ganbaru AI authority.
+Rust resolves the effective project, conversation, participant, execution target, context package, provider, model, interaction mode, and authorization before work starts (see [Chat agents and coordination](../chat/agents-and-coordination.md#resolution-before-work-starts)). Provider-native trust or approval cannot widen Ganbaru authority.
 
 Svelte renders validated canonical events and read models; it never receives a generic shell or arbitrary filesystem capability. Credentials stay behind operating-system credential references, and provider processes receive only the environment their configured runtime needs. Authorization details live in [Chat access control](../../data/access-control.md).
 

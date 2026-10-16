@@ -1,6 +1,6 @@
 # SQLite schema
 
-Ganbaru AI stores structured application data and document graphs in the active vault's `ganbaru-ai.sqlite` database. This directory explains durable domain relationships and non-obvious constraints. It is not a handwritten copy of every column or index.
+Ganbaru stores structured application data and document graphs in the active vault's `ganbaru.sqlite` database. This directory explains durable domain relationships and non-obvious constraints. It is not a handwritten copy of every column or index.
 
 The authoritative schema is the ordered migration set in `crates/ganbaru-db/migrations/`. The `ganbaru-db` crate embeds it with SQLx and owns pool and migration services. Schema invariant tests verify the resulting database.
 

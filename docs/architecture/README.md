@@ -1,6 +1,6 @@
 # Architecture
 
-Ganbaru AI is a pnpm and Cargo monorepo containing one Svelte 5 frontend, a Tauri v2 application shell, Tauri-free Rust domain crates, Android adapter plugins, and a Chromium extension. The architecture keeps canonical data local and shares domain behavior across platforms without pretending every platform has the same authority.
+Ganbaru is a pnpm and Cargo monorepo containing one Svelte 5 frontend, a Tauri v2 application shell, Tauri-free Rust domain crates, Android adapter plugins, and a Chromium extension. The architecture keeps canonical data local and shares domain behavior across platforms without pretending every platform has the same authority.
 
 Exact dependency versions are authoritative in `package.json`, `apps/client/package.json`, `Cargo.toml`, and the package manifests. This documentation records why the major boundaries exist.
 
@@ -62,5 +62,5 @@ Dependencies are added for an implemented boundary, not speculative future use. 
 - [Native backend](native-backend.md): Rust workspace, Tauri composition, persistence, and native services.
 - [Integration boundaries](integrations.md): Chat providers, browser integration, media, platform adapters, and future networked systems.
 - [Architecture decisions](decisions/README.md): focused decisions whose rationale should outlive a particular implementation.
-- [Data architecture](../data/architecture.md): sources of truth and the Ganbaru AI folder.
+- [Data architecture](../data/architecture.md): sources of truth and the Ganbaru folder.
 - [Security](../data/security/README.md): threat model and enforcement boundaries.

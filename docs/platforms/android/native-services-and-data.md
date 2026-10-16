@@ -4,7 +4,7 @@
 
 Android creates the active vault in application-private storage. The user cannot choose another live-vault path because Android document providers do not offer a safe writable folder with desktop semantics. The displayed data location is informational; reveal-in-file-manager and live-folder switching are absent.
 
-First use states clearly that uninstall can remove this data and offers `Start from zero`, import of a complete Ganbaru AI folder, or restore of a portable Android backup.
+First use states clearly that uninstall can remove this data and offers `Start from zero`, import of a complete Ganbaru folder, or restore of a portable Android backup.
 
 ## Folder import
 

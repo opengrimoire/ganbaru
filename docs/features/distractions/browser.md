@@ -1,6 +1,6 @@
 # Anti-distraction browser integration
 
-The Chromium extension is a small enforcement and status client for the local Ganbaru AI application. Firefox should later implement the same product semantics through its own adapter.
+The Chromium extension is a small enforcement and status client for the local Ganbaru application. Firefox should later implement the same product semantics through its own adapter.
 
 ## Responsibilities
 
@@ -29,7 +29,7 @@ If the host is unavailable, the extension shows a disconnected state and stops e
 
 ## Block page
 
-The block page is deliberately quiet: the normalized host, the rule or exhausted budget, remaining focus time when relevant, and a close-tab action. It has no feeds, rewards, streaks, statistics, browsing history, or quick bypass; access changes happen in Ganbaru AI settings where their scope is explicit. It uses only extension-owned assets.
+The block page is deliberately quiet: the normalized host, the rule or exhausted budget, remaining focus time when relevant, and a close-tab action. It has no feeds, rewards, streaks, statistics, browsing history, or quick bypass; access changes happen in Ganbaru settings where their scope is explicit. It uses only extension-owned assets.
 
 ## Popup
 

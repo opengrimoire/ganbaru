@@ -6,7 +6,7 @@ External integrations are separate from the internal coding-agent runtime. They 
 
 ## BYOK assistant
 
-A compact general-user surface for questions, summaries, and bounded actions over explicitly selected Ganbaru AI context. Users choose a hosted or local provider and see what context will be sent before an action runs.
+A compact general-user surface for questions, summaries, and bounded actions over explicitly selected Ganbaru context. Users choose a hosted or local provider and see what context will be sent before an action runs.
 
 The assistant never becomes an ambient reader of the vault. Context comes from the current surface, selected records, or a named context action. Destructive or externally visible actions require typed commands and appropriate confirmation.
 
@@ -16,7 +16,7 @@ A separately authorized MCP service for external clients, exposing bounded resou
 
 ## CLI
 
-A `ganbaru-ai` CLI for explicit external queries and derivative exports for scripts, agents, and collaborators. It must use application-owned authorization and data services rather than treating direct database or filesystem access as permission. Documentation must not imply that the executable already ships.
+A `ganbaru` CLI for explicit external queries and derivative exports for scripts, agents, and collaborators. It must use application-owned authorization and data services rather than treating direct database or filesystem access as permission. Documentation must not imply that the executable already ships.
 
 ## Context actions
 

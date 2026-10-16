@@ -1,6 +1,6 @@
 # Release process
 
-Ganbaru AI releases are built from explicit `app-v*` tags and staged as draft GitHub Releases. Publishing the draft makes the release public and then updates the Linux package repositories and AUR package.
+Ganbaru releases are built from explicit `app-v*` tags and staged as draft GitHub Releases. Publishing the draft makes the release public and then updates the Linux package repositories and AUR package.
 
 The release workflow builds Linux x64 packages, Windows x64 installers, a signed Android universal APK, and a signed Android AAB. It signs desktop updater assets, produces checksums and `latest.json`, and keeps all signing or publishing jobs behind the protected `release` environment.
 

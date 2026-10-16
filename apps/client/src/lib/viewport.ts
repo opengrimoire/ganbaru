@@ -41,11 +41,22 @@ export function parseAndroidSystemBarInsets(value: unknown): SystemBarInsets | n
 }
 
 /**
+ * Parse the Android soft keyboard height bridge response, in CSS pixels. The native shell already resizes the WebView
+ * above the keyboard, so this reports that a keyboard is open rather than an area the page must avoid.
+ */
+export function parseAndroidKeyboardHeight(value: unknown): number | null {
+  if (typeof value !== "string" || value.trim() === "") return null;
+  const height = Number(value);
+  if (!Number.isFinite(height) || height < 0 || height > MAX_SYSTEM_BAR_INSET_CSS_PIXELS) return null;
+  return height;
+}
+
+/**
  * Returns the part of the layout viewport hidden below the visual viewport.
  *
- * This is a WebView fallback for keyboard avoidance. Native Android insets
- * can override the corresponding CSS variable once the Android bridge is
- * available.
+ * A soft keyboard that overlays the page without resizing it shows up here.
+ * The Android shell resizes the WebView above the keyboard instead, so this
+ * stays zero there and the keyboard bridge reports that it is open.
  */
 export function calculateKeyboardInset(
   layoutHeight: number,

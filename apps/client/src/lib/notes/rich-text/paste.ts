@@ -41,6 +41,7 @@ import {
   type NotesRichTextAnnotations,
   type NotesRichTextLink,
 } from "$lib/notes/types";
+import { cloneData } from "$lib/utils/clone";
 
 type NotesRichHtmlPasteBlockType =
   | "paragraph"
@@ -238,7 +239,7 @@ function linksEqual(
 }
 
 function cloneRichTextItem(item: NotesRichText): NotesRichText {
-  return structuredClone(item);
+  return cloneData(item);
 }
 
 function appendRichTextItem(output: NotesRichText[], item: NotesRichText): void {
@@ -267,7 +268,7 @@ function appendText(
   const reference = context.reference;
   const item: NotesRichText = !reference
     ? context.linkUrl ? createLinkedTextRichText(content, context.linkUrl) : createTextRichText(content)
-    : reference.type === "mention" ? { ...structuredClone(reference.item), plain_text: content, href: null }
+    : reference.type === "mention" ? { ...cloneData(reference.item), plain_text: content, href: null }
       : reference.type === "page" ? createPageMentionRichText(reference.id, content, reference.href)
         : createDatabaseMentionRichText(reference.id, content);
   if (reference && reference.type !== "mention") {

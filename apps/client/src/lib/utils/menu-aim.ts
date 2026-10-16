@@ -15,6 +15,109 @@ export const SUBMENU_AIM_TOLERANCES = {
   minTowardDistance: 3,
 } as const satisfies Pick<MenuAimInput, "tolerance" | "topTolerance" | "bottomTolerance" | "minTowardDistance">;
 
+/** Runs `action` after `delayMs` and returns a function that cancels it. Injectable so tests control time. */
+export type HoverTimerScheduler = (action: () => void, delayMs: number) => () => void;
+
+const scheduleBrowserTimer: HoverTimerScheduler = (action, delayMs) => {
+  const handle = setTimeout(action, delayMs);
+  return () => clearTimeout(handle);
+};
+
+/** A single pending hover action, such as closing a submenu or switching to the row under a resting pointer. */
+export interface HoverDelay {
+  /** Replaces any pending action with `action`, run after `delayMs` (the submenu close delay by default). */
+  schedule: (action: () => void, delayMs?: number) => void;
+  cancel: () => void;
+}
+
+export function createHoverDelay(scheduler: HoverTimerScheduler = scheduleBrowserTimer): HoverDelay {
+  let cancelPending: (() => void) | null = null;
+  return {
+    schedule(action, delayMs = SUBMENU_CLOSE_DELAY_MS) {
+      cancelPending?.();
+      cancelPending = scheduler(() => {
+        cancelPending = null;
+        action();
+      }, delayMs);
+    },
+    cancel() {
+      cancelPending?.();
+      cancelPending = null;
+    },
+  };
+}
+
+/**
+ * Hover intent for a row of triggers that share one panel, such as breadcrumb navigators. Resting on a trigger opens
+ * its panel after the open delay, and moving to a sibling trigger while a panel shows switches at once. A hover-opened
+ * panel closes after the close delay once the pointer leaves both the triggers and the panel. A click, a press inside
+ * the panel, or typing in it pins the panel until it is dismissed.
+ */
+export interface HoverMenu {
+  /** The pointer entered a trigger; `open` shows that trigger's panel. Touch pointers are ignored, since a tap clicks. */
+  enterTrigger: (event: Pick<PointerEvent, "pointerType">, open: () => void) => void;
+  /** The pointer left a trigger or the panel. */
+  leave: () => void;
+  /** The pointer entered the panel. */
+  enterPanel: () => void;
+  /** Keeps the panel open until it is dismissed. */
+  pin: () => void;
+  /**
+   * Call first when a trigger is clicked. Returns true when the click only pinned the panel that hover had opened for
+   * this trigger, so the caller should not toggle it closed. Any other click pins whatever the caller opens next.
+   */
+  claimClick: (triggerPanelOpen: boolean) => boolean;
+  /** Drops any pending open or close, for example when the panel closes another way. */
+  cancel: () => void;
+}
+
+export function createHoverMenu(options: {
+  isOpen: () => boolean;
+  close: () => void;
+  scheduler?: HoverTimerScheduler;
+}): HoverMenu {
+  const delay = createHoverDelay(options.scheduler);
+  let pinned = false;
+
+  return {
+    enterTrigger(event, open) {
+      if (event.pointerType === "touch") return;
+      if (options.isOpen()) {
+        delay.cancel();
+        open();
+        return;
+      }
+      delay.schedule(() => {
+        pinned = false;
+        open();
+      }, SUBMENU_OPEN_DELAY_MS);
+    },
+    leave() {
+      if (!options.isOpen() || pinned) {
+        delay.cancel();
+        return;
+      }
+      delay.schedule(options.close, SUBMENU_CLOSE_DELAY_MS);
+    },
+    enterPanel() {
+      delay.cancel();
+    },
+    pin() {
+      delay.cancel();
+      pinned = true;
+    },
+    claimClick(triggerPanelOpen) {
+      delay.cancel();
+      const hoverOpened = triggerPanelOpen && !pinned;
+      pinned = true;
+      return hoverOpened;
+    },
+    cancel() {
+      delay.cancel();
+    },
+  };
+}
+
 export interface MenuAimPoint {
   x: number;
   y: number;

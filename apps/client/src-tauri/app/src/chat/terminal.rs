@@ -501,8 +501,7 @@ fn spawn_session(
             pixel_height: 0,
         })
         .map_err(terminal_io_error)?;
-    let mut command = CommandBuilder::new_default_prog();
-    command.cwd(&spec.workspace_path);
+    let command = shell_command(&spec.workspace_path);
     let mut child = pair
         .slave
         .spawn_command(command)
@@ -600,6 +599,25 @@ fn validate_dimensions(columns: u16, rows: u16) -> ChatResult<()> {
         ));
     }
     Ok(())
+}
+
+/// Terminal type variables for the xterm.js emulator. Shells and tools read them to enable colored prompts and
+/// output, and the app's own environment lacks them when it starts outside a terminal. Windows consoles do not use
+/// `TERM`, so only the color depth is advertised there.
+#[cfg(not(windows))]
+const TERMINAL_ENVIRONMENT: &[(&str, &str)] =
+    &[("TERM", "xterm-256color"), ("COLORTERM", "truecolor")];
+#[cfg(windows)]
+const TERMINAL_ENVIRONMENT: &[(&str, &str)] = &[("COLORTERM", "truecolor")];
+
+/// Builds the default shell command for a terminal in the workspace, advertising the emulator's capabilities.
+fn shell_command(workspace_path: &Path) -> CommandBuilder {
+    let mut command = CommandBuilder::new_default_prog();
+    command.cwd(workspace_path);
+    for (key, value) in TERMINAL_ENVIRONMENT {
+        command.env(key, value);
+    }
+    command
 }
 
 fn default_shell_label() -> String {
@@ -802,6 +820,16 @@ mod tests {
             .expect("registry should lock")
             .insert("terminal:test".to_string(), session(true));
         assert!(registry.input("terminal:test", "bad\0input").is_err());
+    }
+
+    #[test]
+    fn shell_command_starts_in_the_workspace_and_advertises_a_color_terminal() {
+        let workspace = PathBuf::from("workspace");
+        let command = shell_command(&workspace);
+        assert_eq!(command.get_cwd().map(PathBuf::from), Some(workspace));
+        assert_eq!(command.get_env("COLORTERM"), Some("truecolor".as_ref()));
+        #[cfg(not(windows))]
+        assert_eq!(command.get_env("TERM"), Some("xterm-256color".as_ref()));
     }
 
     #[test]

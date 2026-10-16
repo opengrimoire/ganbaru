@@ -3,7 +3,7 @@
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getCalendar } from "$lib/stores/calendar.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { getTheme } from "$lib/stores/theme.svelte";
   import { getEventColor } from "$lib/calendar/utils";
   import { collectionRowContentStart } from "$lib/components/collections/row-expansion";
@@ -63,6 +63,7 @@
   import { ProjectListQuickAddController } from "./quick-add-controller.svelte";
   import { ProjectListViewportController } from "./viewport-controller.svelte";
   import { createProjectListColumnReorder } from "./column-reorder";
+  import { getWorkspacePaneFocus } from "$lib/workspace-tabs/pane-focus";
 
   let {
     mobileLayout = false,
@@ -114,7 +115,7 @@
     onNeedMore: () => void;
   } = $props();
 
-  const projects = getProjects();
+  const projects = useProjects();
   const calendar = getCalendar();
   const theme = getTheme();
   const { t } = getLocalization();
@@ -218,7 +219,10 @@
     columnReorder,
   });
 
+  const paneFocused = getWorkspacePaneFocus();
+
   function handleHorizontalKeydown(event: KeyboardEvent): void {
+    if (!paneFocused()) return;
     if (event.key === "Escape" && quickAdd.hasActiveDraft()) {
       event.preventDefault();
       event.stopPropagation();

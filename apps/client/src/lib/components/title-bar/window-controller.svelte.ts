@@ -1,14 +1,16 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { DetachableTabView } from "$lib/navigation";
-import { notifyDetachedViewWindowChanged } from "$lib/windows/detached";
 
 type CurrentWindow = ReturnType<typeof getCurrentWindow>;
 
 export interface TitleBarWindowControllerContext {
   window: CurrentWindow;
-  detachedWindowView: DetachableTabView | undefined;
-  markDetachedViewAttached: (view: DetachableTabView) => void;
+  /** Count the other app windows on screen, so closing the last one asks to quit the app instead. */
+  otherOpenWindows: () => Promise<number>;
+  /** Remember this window's tabs in the shared reopen history and stop saving them, right before it goes. */
+  releaseWindow: () => void;
+  /** Take this window off the screen: the host window hides so its app-wide work keeps running, others close. */
+  dismissWindow: () => Promise<void>;
   benchmarkLocked: () => boolean;
   resetConfirmationOpen: () => boolean;
   requestCloseConfirmation: () => void;
@@ -35,24 +37,31 @@ export function createTitleBarWindowController(
     }
   }
 
+  async function otherWindowsOpen(): Promise<boolean> {
+    try {
+      return (await context.otherOpenWindows()) > 0;
+    } catch (error) {
+      context.reportError("Failed to list open windows:", error);
+      return false;
+    }
+  }
+
+  /** Close this window while others stay open, saving its pending edits first. */
+  async function closeWindow(): Promise<void> {
+    try {
+      await context.beforeClose();
+    } catch (error) {
+      context.reportError("Failed to save pending edits before closing:", error);
+      return;
+    }
+    context.releaseWindow();
+    await context.dismissWindow();
+  }
+
+  /** Close this window, or ask to quit the app when it is the last one open. */
   async function requestClose(): Promise<void> {
-    if (context.detachedWindowView) {
-      try {
-        await context.beforeClose();
-      } catch (error) {
-        context.reportError("Failed to save Quick notes before closing:", error);
-        return;
-      }
-      context.markDetachedViewAttached(context.detachedWindowView);
-      try {
-        await notifyDetachedViewWindowChanged({
-          view: context.detachedWindowView,
-          detached: false,
-        });
-      } catch (error) {
-        context.reportError("Failed to publish detached window close:", error);
-      }
-      await context.window.destroy();
+    if (await otherWindowsOpen()) {
+      await closeWindow();
       return;
     }
     if (context.resetConfirmationOpen()) return;
@@ -73,7 +82,7 @@ export function createTitleBarWindowController(
     try {
       await context.beforeClose();
     } catch (error) {
-      context.reportError("Failed to save Quick notes before closing:", error);
+      context.reportError("Failed to save pending edits before closing:", error);
       return;
     }
     context.closeConfirmation();

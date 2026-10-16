@@ -8,7 +8,7 @@
   import { notesDateMentionReminderMinutes } from "$lib/notes/rich-text/date-mention-edit";
   import { getNavigation } from "$lib/stores/navigation.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import ProjectIcon from "$lib/components/projects/ProjectIcon.svelte";
   import Bell from "@lucide/svelte/icons/bell";
   import CalendarDays from "@lucide/svelte/icons/calendar-days";
@@ -57,7 +57,7 @@
   const previewId = `${componentId}-mention-preview`;
   const navigation = getNavigation();
   const preferences = getPreferences();
-  const projects = getProjects();
+  const projects = useProjects();
   const objectMention = $derived(mention.mention.type === "ganbaru_object" ? mention.mention.ganbaru_object : null);
   const objectKey = $derived(objectMention ? `${objectMention.type}:${objectMention.id}` : mention.mention.type);
   const project = $derived(objectMention?.type === "project" ? projects.projectById(objectMention.id) : undefined);
@@ -217,6 +217,7 @@
       }
       const projectId = objectMention.type === "project" ? objectMention.id : (await resolveTask(objectMention.id)).projectId;
       await projects.selectProject(projectId);
+      projects.showProjectView();
       navigation.navigate("projects");
     } catch (error: unknown) {
       console.warn("Notes mention navigation failed", { type: objectMention.type, id: objectMention.id, error });

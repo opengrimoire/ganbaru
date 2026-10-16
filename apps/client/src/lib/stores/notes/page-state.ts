@@ -3,20 +3,27 @@ import {
   parseStoredNotesPageId,
 } from "$lib/notes/pages/selection";
 import {
+  notesCustomOrderByProjectConfigKey,
+  notesFavoriteFolderIdsConfigKey,
   notesFavoritePageIdsConfigKey,
   notesRecentPageIdsConfigKey,
+  notesSidebarOrderByProjectConfigKey,
   parseStoredNotesPageIdList,
 } from "$lib/notes/pages/navigation";
 import {
   notesSidebarCollapsedFolderIdsConfigKey,
   parseStoredNotesSidebarCollapsedFolderIds,
 } from "$lib/notes/navigation/tree";
+import { parseCustomOrders, parseSidebarSortOrderOverrides, type SidebarSortOrder } from "$lib/utils/sidebar-order";
 import { getConfigKey, setConfigKey } from "$lib/vault/config";
 
 export const notesSelectedPageKey = notesSelectedPageConfigKey();
 export const notesFavoritePageIdsKey = notesFavoritePageIdsConfigKey();
+export const notesFavoriteFolderIdsKey = notesFavoriteFolderIdsConfigKey();
 export const notesRecentPageIdsKey = notesRecentPageIdsConfigKey();
 export const notesSidebarCollapsedFolderIdsKey = notesSidebarCollapsedFolderIdsConfigKey();
+export const notesSidebarOrderByProjectKey = notesSidebarOrderByProjectConfigKey();
+export const notesCustomOrderByProjectKey = notesCustomOrderByProjectConfigKey();
 
 /**
  * Load the persisted Notes page selection id.
@@ -30,6 +37,13 @@ export function initialNotesSelectedPageId(): string | null {
  */
 export function initialNotesFavoritePageIds(): string[] {
   return parseStoredNotesPageIdList(getConfigKey<unknown>(notesFavoritePageIdsKey, undefined));
+}
+
+/**
+ * Load the persisted favorite Notes folder ids.
+ */
+export function initialNotesFavoriteFolderIds(): string[] {
+  return parseStoredNotesPageIdList(getConfigKey<unknown>(notesFavoriteFolderIdsKey, undefined));
 }
 
 /**
@@ -63,6 +77,13 @@ export function saveNotesFavoritePageIds(pageIds: readonly string[]): void {
 }
 
 /**
+ * Persist the favorite Notes folder ids.
+ */
+export function saveNotesFavoriteFolderIds(folderIds: readonly string[]): void {
+  setConfigKey(notesFavoriteFolderIdsKey, folderIds.length > 0 ? [...folderIds] : undefined);
+}
+
+/**
  * Persist the recent Notes page ids.
  */
 export function saveNotesRecentPageIds(pageIds: readonly string[]): void {
@@ -77,4 +98,32 @@ export function saveNotesSidebarCollapsedFolderIds(folderIds: readonly string[])
     notesSidebarCollapsedFolderIdsKey,
     folderIds.length > 0 ? [...folderIds] : undefined,
   );
+}
+
+/**
+ * Load the per-project Notes sidebar order overrides.
+ */
+export function initialNotesSidebarOrderOverrides(): Record<string, SidebarSortOrder> {
+  return parseSidebarSortOrderOverrides(getConfigKey<unknown>(notesSidebarOrderByProjectKey, undefined));
+}
+
+/**
+ * Persist the per-project Notes sidebar order overrides.
+ */
+export function saveNotesSidebarOrderOverrides(overrides: Readonly<Record<string, SidebarSortOrder>>): void {
+  setConfigKey(notesSidebarOrderByProjectKey, Object.keys(overrides).length > 0 ? { ...overrides } : undefined);
+}
+
+/**
+ * Load the custom order of each project's Notes folders and notes.
+ */
+export function initialNotesCustomOrders(): Record<string, string[]> {
+  return parseCustomOrders(getConfigKey<unknown>(notesCustomOrderByProjectKey, undefined));
+}
+
+/**
+ * Persist the custom order of each project's Notes folders and notes.
+ */
+export function saveNotesCustomOrders(orders: Readonly<Record<string, readonly string[]>>): void {
+  setConfigKey(notesCustomOrderByProjectKey, Object.keys(orders).length > 0 ? { ...orders } : undefined);
 }

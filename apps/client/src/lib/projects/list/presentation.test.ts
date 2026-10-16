@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ProjectCustomField, ProjectTask } from "$lib/projects/types";
-import { defaultProjectListPresentation, parseProjectListPresentation, projectListColumnGroupMode, projectListDateLabel, projectListFrozenOffsets, projectListNumberLabel, projectListPresentationForProject, projectListRowColor, projectListTimeLabel } from "./presentation";
+import { defaultProjectListPresentation, parseProjectListPresentation, projectListColumnGroupMode, projectListDateLabel, projectListFrozenOffsets, projectListNumberLabel, projectListPresentationForView, projectListRowColor, projectListTimeLabel } from "./presentation";
 
 const fields: ProjectCustomField[] = [
   { id: "text", projectId: "project", name: "Text", fieldType: "text", sortOrder: 1, icon: null, createdAt: "", updatedAt: "" },
@@ -24,12 +24,12 @@ describe("Projects table presentation", () => {
       colorRules: [{id: "valid", property: "status", value: "active", color: 0}] });
   });
 
-  it("restores only the current project's preference and tolerates malformed JSON", () => {
-    const preference = {projectId: "project", viewId: "list" as const, preferenceKey: "list-presentation", preferenceValue: "broken", updatedAt: ""};
-    expect(projectListPresentationForProject([preference], "project", fields)).toEqual(defaultProjectListPresentation());
+  it("restores only the current list view preference and tolerates malformed JSON", () => {
+    const preference = {projectId: "project", viewId: "view-list", preferenceKey: "list-presentation", preferenceValue: "broken", updatedAt: ""};
+    expect(projectListPresentationForView([preference], "view-list", fields)).toEqual(defaultProjectListPresentation());
     preference.preferenceValue = JSON.stringify({ frozenThrough: "custom:text" });
-    expect(projectListPresentationForProject([preference], "other", fields).frozenThrough).toBeNull();
-    expect(projectListPresentationForProject([preference], "project", fields).frozenThrough).toBe("custom:text");
+    expect(projectListPresentationForView([preference], "view-other", fields).frozenThrough).toBeNull();
+    expect(projectListPresentationForView([preference], "view-list", fields).frozenThrough).toBe("custom:text");
   });
 
   it("freezes the leading selection, name, and visible columns through the stable selected property", () => {

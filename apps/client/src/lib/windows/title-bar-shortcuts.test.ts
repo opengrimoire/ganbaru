@@ -78,11 +78,19 @@ describe("title bar shortcuts", () => {
     expect(result.state).toEqual({ pressCount: 1, lastPressAtMs: 10_001 });
   });
 
+  it("classifies the Music and Quick notes panel shortcuts", () => {
+    expect(titleBarShortcutAction(shortcutEvent({ ctrlKey: true, shiftKey: true, key: "m" }))).toBe("music-toggle");
+    expect(titleBarShortcutAction(shortcutEvent({ ctrlKey: true, key: "m" }))).toBeNull();
+    expect(titleBarShortcutAction(shortcutEvent({ ctrlKey: true, shiftKey: true, key: "n" }))).toBe("quick-notes-toggle");
+    expect(titleBarShortcutAction(shortcutEvent({ ctrlKey: true, key: "n" }))).toBeNull();
+  });
+
   it("classifies theme and zoom shortcuts", () => {
     expect(titleBarShortcutAction(shortcutEvent({ ctrlKey: true, shiftKey: true, key: "l" })))
       .toBe("theme-toggle");
-    expect(titleBarShortcutAction(shortcutEvent({ ctrlKey: true, shiftKey: true, key: "t" })))
+    expect(titleBarShortcutAction(shortcutEvent({ ctrlKey: true, shiftKey: true, key: "o" })))
       .toBe("theme-switcher");
+    expect(titleBarShortcutAction(shortcutEvent({ ctrlKey: true, shiftKey: true, key: "t" }))).toBeNull();
     expect(titleBarShortcutAction(shortcutEvent({ ctrlKey: true, key: "+" })))
       .toBe("zoom-in");
     expect(titleBarShortcutAction(shortcutEvent({ ctrlKey: true, key: "-" })))
@@ -91,8 +99,9 @@ describe("title bar shortcuts", () => {
       .toBe("zoom-reset");
   });
 
-  it("keeps close and theme commands global", () => {
-    expect(titleBarShortcutAction(shortcutEvent({ ctrlKey: true }))).toBe("close");
+  it("closes the app with Mod+Shift+W and leaves Mod+W to the workspace tabs", () => {
+    expect(titleBarShortcutAction(shortcutEvent({ ctrlKey: true, shiftKey: true }))).toBe("close");
+    expect(titleBarShortcutAction(shortcutEvent({ ctrlKey: true }))).toBeNull();
     expect(titleBarShortcutAction(shortcutEvent({ ctrlKey: true, shiftKey: true, key: "l" })))
       .toBe("theme-toggle");
   });

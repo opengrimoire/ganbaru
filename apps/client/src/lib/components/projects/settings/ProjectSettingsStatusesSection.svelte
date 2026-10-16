@@ -7,11 +7,11 @@
   import Select from "$lib/components/ui/Select.svelte";
   import { moveTextInputCaretToPointer } from "$lib/utils/text-input-caret";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import type { ProjectSettingsDropPosition } from "$lib/projects/settings/reorder";
+  import type { ProjectSettingsSortableController } from "$lib/projects/settings/sortable-controller.svelte";
   import { projectSettingsIconButtonClass } from "$lib/projects/settings/ui";
   import type { MoveDirection, ProjectStatus, ProjectStatusCategory } from "$lib/projects/types";
   import type { Theme } from "$lib/themes";
-  import { cn, type MaybePromise } from "$lib/utils";
+  import type { MaybePromise } from "$lib/utils";
   import ProjectSettingsNewRowDragHandle from "./ProjectSettingsNewRowDragHandle.svelte";
   import ProjectSettingsSectionHeading from "./ProjectSettingsSectionHeading.svelte";
 
@@ -21,17 +21,11 @@
     theme,
     statuses,
     statusCategoryOptions,
-    draggedStatusId,
-    statusReorderPending,
+    statusSortable,
     newStatusRowElement = $bindable<HTMLDivElement | undefined>(),
     newStatusName = $bindable<string>(),
     newStatusColor = $bindable<EventColor>(),
     newStatusCategory = $bindable<ProjectStatusCategory>(),
-    statusDropMarkerVisible,
-    onStatusDragOver,
-    onStatusDrop,
-    onStatusDragStart,
-    clearStatusDrag,
     moveStatusByDirection,
     statusColorDraftValue,
     setStatusColor,
@@ -49,17 +43,12 @@
     theme: Theme;
     statuses: ProjectStatus[];
     statusCategoryOptions: SelectOption[];
-    draggedStatusId: string | null;
-    statusReorderPending: boolean;
+    /** Pointer reordering of the status rows. */
+    statusSortable: ProjectSettingsSortableController;
     newStatusRowElement: HTMLDivElement | undefined;
     newStatusName: string;
     newStatusColor: EventColor;
     newStatusCategory: ProjectStatusCategory;
-    statusDropMarkerVisible: (statusId: string, position: ProjectSettingsDropPosition) => boolean;
-    onStatusDragOver: (event: DragEvent, status: ProjectStatus, target: HTMLElement) => void;
-    onStatusDrop: (event: DragEvent, status: ProjectStatus) => MaybePromise;
-    onStatusDragStart: (event: DragEvent, status: ProjectStatus) => void;
-    clearStatusDrag: () => void;
     moveStatusByDirection: (status: ProjectStatus, direction: MoveDirection) => MaybePromise;
     statusColorDraftValue: (status: ProjectStatus) => EventColor;
     setStatusColor: (statusId: string, color: EventColor | undefined) => void;
@@ -84,29 +73,17 @@
     {#each statuses as status (status.id)}
       {@const deleteStatusTitle = statusDeleteTitle(status)}
       <div
-        class={cn(
-          "relative grid min-h-7 grid-cols-[auto_auto_minmax(0,1fr)_auto_auto] items-center gap-1 px-1 py-0.5",
-          draggedStatusId === status.id && "opacity-50",
-        )}
+        class="grid min-h-7 grid-cols-[auto_auto_minmax(0,1fr)_auto_auto] items-center gap-1 px-1 py-0.5"
         role="group"
         aria-label={status.name}
-        ondragover={(event) => onStatusDragOver(event, status, event.currentTarget)}
-        ondrop={(event) => { void onStatusDrop(event, status); }}
+        {@attach statusSortable.item(status.id)}
       >
-        {#if statusDropMarkerVisible(status.id, "before")}
-          <div class="pointer-events-none absolute left-1 right-1 top-0 h-0.5 rounded-full bg-primary"></div>
-        {/if}
-        {#if statusDropMarkerVisible(status.id, "after")}
-          <div class="pointer-events-none absolute bottom-0 left-1 right-1 h-0.5 rounded-full bg-primary"></div>
-        {/if}
         <button
           type="button"
-          class="flex h-7 w-7 shrink-0 cursor-grab items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-40"
-          draggable={statuses.length > 1 && !statusReorderPending}
-          disabled={statuses.length <= 1 || statusReorderPending}
+          class="flex h-7 w-7 shrink-0 cursor-grab items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-40 touch-none"
+          disabled={statuses.length <= 1 || statusSortable.pending}
           aria-label={t("projects.actions.dragStatus", status.name)}
-          ondragstart={(event) => onStatusDragStart(event, status)}
-          ondragend={clearStatusDrag}
+          onpointerdown={(event) => statusSortable.pointerDown(event, status.id)}
           onkeydown={(event) => {
             if (event.key === "ArrowUp") {
               event.preventDefault();

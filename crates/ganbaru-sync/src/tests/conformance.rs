@@ -632,6 +632,6 @@ fn vault_manifest_is_well_formed() {
             .iter()
             .map(|table| table.full_mask().0)
             .collect::<Vec<_>>(),
-        [15, 255]
+        [31, 255]
     );
 }

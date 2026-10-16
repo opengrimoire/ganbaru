@@ -7,6 +7,8 @@ const RECENT_THREAD_WINDOW = 200;
 export interface ChatThreadCollectionControllerOptions {
   selectedThreadId: () => ChatThreadId | null;
   selectThread: (threadId: ChatThreadId | null) => void;
+  /** Called after this window changed thread shells, so other windows can refresh them. */
+  onChanged: (threadIds: ChatThreadId[]) => void;
 }
 
 /** Owns provider-thread collections, archival loading, and thread mutations. */
@@ -71,36 +73,35 @@ export class ChatThreadCollectionController {
   }
 
   async rename(thread: ChatThreadShellRead, title: string): Promise<void> {
-    this.upsert(await chatApi.renameChatThread(thread.id, title, thread.revision));
+    this.commit(await chatApi.renameChatThread(thread.id, title, thread.revision));
   }
 
   async setRead(thread: ChatThreadShellRead, read: boolean): Promise<void> {
-    this.upsert(await chatApi.setChatThreadRead(thread.id, read, thread.revision));
+    this.commit(await chatApi.setChatThreadRead(thread.id, read, thread.revision));
   }
 
   async fork(thread: ChatThreadShellRead, title: string): Promise<void> {
     const forked = await chatApi.forkChatThread(thread.id, crypto.randomUUID(), title);
-    this.upsert(forked);
+    this.commit(forked);
     this.options.selectThread(forked.id);
   }
 
   async archive(thread: ChatThreadShellRead): Promise<void> {
     const archived = await chatApi.archiveChatThread(thread.id, thread.revision);
-    this.upsert(archived);
+    this.commit(archived);
     if (this.options.selectedThreadId() === thread.id) this.options.selectThread(archived.id);
   }
 
   async restore(thread: ChatThreadShellRead): Promise<void> {
     const restored = await chatApi.restoreChatThread(thread.id, thread.revision);
-    this.upsert(restored);
+    this.commit(restored);
     this.options.selectThread(restored.id);
   }
 
   async delete(thread: ChatThreadShellRead): Promise<void> {
     await chatApi.deleteChatThreadPermanently(thread.id, thread.revision, thread.title);
-    this.activeThreads = this.activeThreads.filter((entry) => entry.id !== thread.id);
-    this.archivedThreads = this.archivedThreads.filter((entry) => entry.id !== thread.id);
-    if (this.options.selectedThreadId() === thread.id) this.options.selectThread(null);
+    this.remove(thread.id);
+    this.options.onChanged([thread.id]);
   }
 
   upsert(thread: ChatThreadShellRead): void {
@@ -116,5 +117,17 @@ export class ChatThreadCollectionController {
       this.archivedThreads = this.archivedThreads.filter((entry) => entry.id !== thread.id);
       this.activeThreads = next;
     }
+  }
+
+  /** Drops a thread that no longer exists, clearing the selection when it was selected. */
+  remove(threadId: ChatThreadId): void {
+    this.activeThreads = this.activeThreads.filter((entry) => entry.id !== threadId);
+    this.archivedThreads = this.archivedThreads.filter((entry) => entry.id !== threadId);
+    if (this.options.selectedThreadId() === threadId) this.options.selectThread(null);
+  }
+
+  private commit(thread: ChatThreadShellRead): void {
+    this.upsert(thread);
+    this.options.onChanged([thread.id]);
   }
 }

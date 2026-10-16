@@ -109,3 +109,38 @@ export function canDropNotesNavigationItem(
   }
   return !descendantPageIds(pages, sourcePage.id).has(targetPage.id);
 }
+
+/**
+ * How a pointer drop onto a destination resolves: `move` changes the item's location, `current` is the location it
+ * already has (a no-op the sidebar leaves unmarked), and `forbidden` is a destination it can never take.
+ */
+export type NotesNavigationDropResolution = "move" | "current" | "forbidden";
+
+function isCurrentNotesNavigationLocation(
+  source: NotesNavigationDragItem,
+  target: NotesNavigationDropTarget,
+  pages: readonly NotesPage[],
+  folders: readonly NotesFolder[],
+): boolean {
+  if (target.kind === "page") return false;
+  const targetFolderId = target.kind === "folder" ? target.id : null;
+  if (source.kind === "folder") {
+    const sourceFolder = folders.find((folder) => folder.id === source.id);
+    if (!sourceFolder) return false;
+    return sourceFolder.id === targetFolderId || sourceFolder.parent_folder_id === targetFolderId;
+  }
+  const sourcePage = pages.find((page) => page.id === source.id);
+  if (!sourcePage || sourcePage.parent.type !== "workspace") return false;
+  return sourcePage.folder_id === targetFolderId;
+}
+
+/** Classify a pointer drop so the sidebar marks real moves and forbidden destinations, but not the current location. */
+export function resolveNotesNavigationDrop(
+  source: NotesNavigationDragItem,
+  target: NotesNavigationDropTarget,
+  pages: readonly NotesPage[],
+  folders: readonly NotesFolder[],
+): NotesNavigationDropResolution {
+  if (canDropNotesNavigationItem(source, target, pages, folders)) return "move";
+  return isCurrentNotesNavigationLocation(source, target, pages, folders) ? "current" : "forbidden";
+}

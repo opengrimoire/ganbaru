@@ -18,7 +18,8 @@
   import ProjectPickerMobileDialog from "$lib/components/projects/pickers/ProjectPickerMobileDialog.svelte";
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { getChat } from "$lib/stores/chat.svelte";
+  import { useChatPaneEvents } from "$lib/chat/pane-events";
+  import { useChat } from "$lib/stores/chat.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
   import { cn } from "$lib/utils";
@@ -48,7 +49,8 @@
   const AVATAR_SIZE = 26;
   const ACTION_ICON_SIZE = 13;
   const ACTION_ICON_STROKE = 1.6;
-  const chat = getChat();
+  const chat = useChat();
+  const paneEvents = useChatPaneEvents();
   const preferences = getPreferences();
   const settingsLauncher = getSettingsLauncher();
   const { t } = getLocalization();
@@ -72,12 +74,12 @@
 
   function configureTeammate(participantId: string): void {
     onClose();
-    window.dispatchEvent(new CustomEvent("ganbaru-ai:chat-configure-teammate", { detail: { participantId, channelId: channel.id } }));
+    paneEvents.dispatchEvent(new CustomEvent("ganbaru-ai:chat-configure-teammate", { detail: { participantId, channelId: channel.id } }));
   }
 
   function editChannel(): void {
     onClose();
-    window.dispatchEvent(new CustomEvent("ganbaru-ai:chat-edit-channel", { detail: { channelId: channel.id } }));
+    paneEvents.dispatchEvent(new CustomEvent("ganbaru-ai:chat-edit-channel", { detail: { channelId: channel.id } }));
   }
 
   /** Settings covers the panel, so it closes now and asks the header to reopen it with the picker once Settings is gone. */
@@ -88,7 +90,7 @@
       chatSubsection: "teammates",
       chatChannelId: channelId,
       chatCreateTeammate: true,
-      onClosed: () => window.dispatchEvent(new CustomEvent(CHAT_OPEN_MEMBERS_EVENT, { detail: { channelId, addMembers: true } satisfies ChatOpenMembersDetail })),
+      onClosed: () => paneEvents.dispatchEvent(new CustomEvent(CHAT_OPEN_MEMBERS_EVENT, { detail: { channelId, addMembers: true } satisfies ChatOpenMembersDetail })),
     });
   }
 

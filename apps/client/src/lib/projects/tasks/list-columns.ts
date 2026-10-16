@@ -103,16 +103,15 @@ export function taskListColumnsPreferenceValue(columns: readonly ProjectTaskList
   return JSON.stringify({ visibleColumns: uniqueTaskListColumns(columns) });
 }
 
-export function taskListColumnsForProject(
+/** Restore one list view's visible columns, falling back to defaults without a view or saved value. */
+export function taskListColumnsForView(
   preferences: readonly ProjectViewPreference[],
-  projectId: string | null | undefined,
+  viewId: string | null | undefined,
   customFieldIds?: ReadonlySet<string>,
 ): ProjectTaskListColumn[] {
-  if (!projectId) return [...DEFAULT_TASK_LIST_COLUMNS];
+  if (!viewId) return [...DEFAULT_TASK_LIST_COLUMNS];
   const preference = preferences.find((entry) =>
-    entry.projectId === projectId
-    && entry.viewId === "list"
-    && entry.preferenceKey === TASK_LIST_COLUMNS_PREFERENCE_KEY
+    entry.viewId === viewId && entry.preferenceKey === TASK_LIST_COLUMNS_PREFERENCE_KEY
   );
   return parseTaskListColumns(preference?.preferenceValue, customFieldIds);
 }

@@ -4,6 +4,7 @@ import {
   type CalendarTaskScheduleIntent, type ScheduledTaskIdentity,
 } from "$lib/api/calendar-edit";
 import { activeVaultIdentity } from "$lib/vault/active-vault";
+import { cloneData } from "$lib/utils/clone";
 
 interface PendingSchedule {
   key: string;
@@ -31,18 +32,18 @@ export class ProjectSchedulingController {
     const vaultId = this.vault();
     if (!vaultId) throw new Error("Scheduling requires an active vault");
     const key = JSON.stringify([vaultId, intent]);
-    if (this.accepted?.key === key) return structuredClone(this.accepted.receipt);
+    if (this.accepted?.key === key) return cloneData(this.accepted.receipt);
     if (this.accepted) throw new Error("Refresh the accepted schedule before scheduling another selection");
     if (this.pending) throw new Error("The previous schedule is unresolved; retry it first");
     if (this.running) throw new Error("Project scheduling is already in progress");
     this.running = true;
     try {
-      const edit = structuredClone(intent);
+      const edit = cloneData(intent);
       const preview = await this.preview({ commandId: this.commandId(), edit, window });
       if (this.vault() !== vaultId || preview.vaultId !== vaultId || !preview.scheduledTasks) {
         throw new Error("Scheduling vault changed during review");
       }
-      this.pending = { key, identities: structuredClone(preview.scheduledTasks), request: {
+      this.pending = { key, identities: cloneData(preview.scheduledTasks), request: {
         vaultId, vaultGeneration: preview.vaultGeneration, commandId: preview.commandId,
         reviewRevision: preview.reviewRevision, edit,
       } };
@@ -55,7 +56,7 @@ export class ProjectSchedulingController {
     if (this.running) throw new Error("Project scheduling is already in progress");
     if (this.accepted) {
       if (this.vault() !== this.accepted.vaultId) throw new Error("Return to the original scheduling vault before retrying");
-      return structuredClone(this.accepted.receipt);
+      return cloneData(this.accepted.receipt);
     }
     this.running = true;
     try { return await this.send(); }
@@ -66,12 +67,12 @@ export class ProjectSchedulingController {
     const pending = this.pending;
     if (!pending || this.vault() !== pending.request.vaultId) throw new Error("Return to the original scheduling vault before retrying");
     try {
-      const receipt = await this.commit(structuredClone(pending.request));
+      const receipt = await this.commit(cloneData(pending.request));
       if (!receipt.changed || receipt.editedId !== pending.identities[0]?.eventId
         || JSON.stringify(receipt.scheduledTasks) !== JSON.stringify(pending.identities)) {
         throw new Error("Scheduling receipt does not match its reviewed selection");
       }
-      this.accepted = { key: pending.key, receipt: structuredClone(receipt), vaultId: pending.request.vaultId };
+      this.accepted = { key: pending.key, receipt: cloneData(receipt), vaultId: pending.request.vaultId };
       this.pending = null;
       return receipt;
     } catch (error) {

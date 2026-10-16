@@ -194,4 +194,53 @@ describe("notes block persistence", () => {
     await expect(persistence.flushPendingBlockSaves()).resolves.toBeUndefined();
   });
 
+  it("sends the content revision and abandons a refused edit instead of holding the queue", async () => {
+    const current: NotesBlock = { ...paragraph("Base"), content_revision: "a".repeat(64) };
+    updateNotesBlock.mockReset().mockRejectedValueOnce(new Error(`Notes edit conflict: block ${blockId} changed; reload before retrying`));
+    const setLoadError = vi.fn();
+    const onConflict = vi.fn();
+    const onCommitted = vi.fn();
+    const persistence = createNotesBlockPersistence({
+      beforeSave: async () => undefined, readBlock: () => current, replaceBlock: vi.fn(),
+      setLoadError, onConflict, onCommitted, debounceMs: 250,
+    });
+    const update = blockWithText(current, "Local");
+    persistence.localApplyBlockUpdate(blockId, update);
+
+    await expect(persistence.saveBlockNow(blockId, update)).resolves.toBeUndefined();
+
+    expect(updateNotesBlock).toHaveBeenCalledWith(blockId, update, "a".repeat(64));
+    expect(persistence.hasLocalChanges(blockId)).toBe(false);
+    expect(onConflict).toHaveBeenCalledOnce();
+    expect(onCommitted).not.toHaveBeenCalled();
+    expect(setLoadError).not.toHaveBeenCalledWith(expect.any(String));
+    const later = vi.fn(async () => undefined);
+    await persistence.enqueueEditorMutation(later);
+    expect(later).toHaveBeenCalledOnce();
+    expect(onCommitted).toHaveBeenCalledOnce();
+  });
+
+  it("runs a canonical read after earlier writes without blocking later ones when it fails", async () => {
+    const order: string[] = [];
+    let finishWrite!: () => void;
+    const persistence = createNotesBlockPersistence({
+      beforeSave: async () => undefined, readBlock: () => undefined, replaceBlock: vi.fn(),
+      setLoadError: vi.fn(), debounceMs: 250,
+    });
+    const write = persistence.enqueueEditorMutation(() => new Promise<void>((resolve) => {
+      finishWrite = () => { order.push("write"); resolve(); };
+    }));
+    const read = persistence.runBetweenWrites(async () => {
+      order.push("read");
+      throw new Error("read failed");
+    });
+    const later = persistence.enqueueEditorMutation(async () => { order.push("later"); });
+    await vi.waitFor(() => expect(finishWrite).toBeTypeOf("function"));
+    finishWrite();
+
+    await write;
+    await expect(read).rejects.toThrow("read failed");
+    await later;
+    expect(order).toEqual(["write", "read", "later"]);
+  });
 });

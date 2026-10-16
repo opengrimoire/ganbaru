@@ -10,6 +10,7 @@
   import Shuffle from "@lucide/svelte/icons/shuffle";
   import ListOrdered from "@lucide/svelte/icons/list-ordered";
   import Select from "$lib/components/ui/Select.svelte";
+  import { keepInViewport } from "$lib/utils/keep-in-viewport";
   import {
     bulkEditMusicMemberships,
     bulkSnoozeMusicItems,
@@ -295,7 +296,7 @@
     aria-expanded={open}
   ><SlidersHorizontal size={14} strokeWidth={1.6} /></button>
   {#if open}
-    <div bind:this={panel} role="dialog" tabindex="-1" data-music-track-preferences-open data-app-shortcuts="ignore" aria-label={t("music.preferences.title")} class="surface-floating absolute bottom-[calc(100%+0.5rem)] right-0 z-40 w-floating p-4">
+    <div bind:this={panel} use:keepInViewport role="dialog" tabindex="-1" data-music-track-preferences-open data-app-shortcuts="ignore" aria-label={t("music.preferences.title")} class="surface-floating absolute bottom-[calc(100%+0.5rem)] right-0 z-40 w-floating p-4">
       {#if loading}
         <Loading layout="fill" label={t("music.itemMenu.loading")} class="h-24" />
       {:else}

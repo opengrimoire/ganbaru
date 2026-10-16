@@ -4,12 +4,12 @@
   import * as chatApi from "$lib/api/chat";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { getChat } from "$lib/stores/chat.svelte";
+  import { useChat } from "$lib/stores/chat.svelte";
   import { portal } from "$lib/utils/portal";
   import ChatControlMenu, { type ChatControlOption } from "./ChatControlMenu.svelte";
 
   const { t } = getLocalization();
-  const chat = getChat();
+  const chat = useChat();
   let {
     value,
     providerInstanceId,

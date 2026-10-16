@@ -86,7 +86,7 @@ export type CalendarColorDefaultMode =
  * a stored theme's stamp and this constant to render an opt-in "rebake"
  * banner so non-pinned colors do not silently drift across app updates.
  */
-export const DERIVATION_ENGINE_VERSION = 6;
+export const DERIVATION_ENGINE_VERSION = 7;
 
 /**
  * A built-in theme ships with the app, never persists to SQLite, and paints
@@ -143,9 +143,8 @@ export interface UserTheme {
   /** Engine version stamp; drives the rebake banner. */
   derivationEngineVersion: number;
   /**
-   * Default bundle used for the internal calendar area: calendar surface,
-   * event palette, and calendar details. The header follows app canvas
-   * separately through `--cal-header-bg`.
+   * Default bundle used for the internal calendar area, including its day
+   * and time headers: calendar surface, event palette, and calendar details.
    */
   calendarDefaultMode: CalendarColorDefaultMode;
   /** Custom basis used when `calendarDefaultMode` is "custom". */
@@ -274,7 +273,7 @@ export const darkTheme: BuiltinTheme = Object.freeze({
   base: "dark",
   iconLabel: "dark",
   eventPalette: DARK_EVENT_PALETTE,
-  blendCanvas: "#131314",
+  blendCanvas: "#1F2023",
 });
 
 /**
@@ -289,7 +288,7 @@ export const BUILTIN_THEME_REGISTRY: Readonly<Record<ThemeId, BuiltinTheme>> =
   });
 
 /** Theme ID used on first launch and when the stored ID is unknown. */
-export const DEFAULT_THEME_ID: ThemeId = lightTheme.id;
+export const DEFAULT_THEME_ID: ThemeId = darkTheme.id;
 
 export function pickQuickToggleTarget({
   activeId,
@@ -339,7 +338,6 @@ export function getThemeById(
  */
 export const APP_TOKEN_KEYS = Object.freeze([
   "--background",
-  "--cal-header-bg",
   "--card",
   "--card-foreground",
   "--popover",
@@ -378,8 +376,8 @@ export const APP_TOKEN_KEYS = Object.freeze([
 
 /**
  * Calendar-shell CSS custom properties a user theme is allowed to override.
- * Same hex-only restriction as APP_TOKEN_KEYS; cal-hover (rgba) and
- * cal-header-row-h (px) are excluded.
+ * Same hex-only restriction as APP_TOKEN_KEYS; cal-hover (rgba) is
+ * excluded.
  */
 export const CALENDAR_TOKEN_KEYS = Object.freeze([
   "--cal-bg",
@@ -477,7 +475,6 @@ export type ThemeTokenRowOrderEntry =
 export const THEME_TOKEN_ROW_ORDER = Object.freeze([
   { kind: "source", key: "canvas" },
   { kind: "app", key: "--background" },
-  { kind: "app", key: "--cal-header-bg" },
   { kind: "app", key: "--card" },
   { kind: "app", key: "--card-foreground" },
   { kind: "app", key: "--popover" },
@@ -539,22 +536,21 @@ export const BASE_APP_TOKENS: Readonly<
 > = Object.freeze({
   light: Object.freeze({
     "--background": "#F4F4F7",
-    "--cal-header-bg": "#F4F4F7",
     "--card": "#FFFFFF",
-    "--card-foreground": "#141420",
+    "--card-foreground": "#17171F",
     "--popover": "#FFFFFF",
-    "--popover-foreground": "#141420",
+    "--popover-foreground": "#17171F",
     "--secondary": "#E2E2E7",
-    "--secondary-foreground": "#141420",
+    "--secondary-foreground": "#17171F",
     "--muted": "#E2E2E7",
-    "--muted-foreground": "#646470",
+    "--muted-foreground": "#6F6F7A",
     "--accent": "#E8E8ED",
-    "--accent-foreground": "#141420",
+    "--accent-foreground": "#17171F",
     "--ring": "#8C8C98",
-    "--sidebar": "#DCDCE2",
-    "--sidebar-foreground": "#141420",
-    "--sidebar-accent": "#CFCFD6",
-    "--sidebar-accent-foreground": "#141420",
+    "--sidebar": "#EEEEF1",
+    "--sidebar-foreground": "#17171F",
+    "--sidebar-accent": "#E0E0E5",
+    "--sidebar-accent-foreground": "#17171F",
     "--event-panel-bg": "#F0F4F9",
     "--event-panel-contrast": "#E8EDF5",
     "--event-panel-edge": "#0000004D",
@@ -564,7 +560,7 @@ export const BASE_APP_TOKENS: Readonly<
     "--event-panel-placeholder": "#444746",
     "--event-panel-text": "#141420",
     "--event-panel-muted-text": "#646470",
-    "--foreground": "#141420",
+    "--foreground": "#17171F",
     "--form-indicator": "#6B6F6E",
     "--primary": "#404048",
     "--primary-foreground": "#F4F4F7",
@@ -583,7 +579,6 @@ export const BASE_APP_TOKENS: Readonly<
   }),
   dark: Object.freeze({
     "--background": "#27282A",
-    "--cal-header-bg": "#27282A",
     "--card": "#2E2F31",
     "--card-foreground": "#ECECF2",
     "--popover": "#353638",
@@ -591,13 +586,13 @@ export const BASE_APP_TOKENS: Readonly<
     "--secondary": "#333436",
     "--secondary-foreground": "#ECECF2",
     "--muted": "#333436",
-    "--muted-foreground": "#9494A0",
+    "--muted-foreground": "#9C9CA8",
     "--accent": "#3B3B3F",
     "--accent-foreground": "#ECECF2",
     "--ring": "#606070",
-    "--sidebar": "#1E1E23",
+    "--sidebar": "#151518",
     "--sidebar-foreground": "#FFFFFF",
-    "--sidebar-accent": "#3B3B3F",
+    "--sidebar-accent": "#2A2B2F",
     "--sidebar-accent-foreground": "#FFFFFF",
     "--event-panel-bg": "#2A2B2E",
     "--event-panel-contrast": "#222325",
@@ -635,17 +630,17 @@ export const BASE_CALENDAR_TOKENS: Readonly<
 > = Object.freeze({
   light: Object.freeze({
     "--cal-bg": "#FFFFFF",
-    "--cal-gridline": "#DDDDE3",
-    "--cal-time-label": "#646470",
+    "--cal-gridline": "#ECECF0",
+    "--cal-time-label": "#6F6F7A",
     "--cal-timeline-rail": "#E5E7EB",
     "--cal-current-time": "#B83A3A",
     "--cal-timeline-break": "#000000",
     "--cal-timeline-focus": "#39965c",
   }),
   dark: Object.freeze({
-    "--cal-bg": "#131314",
-    "--cal-gridline": "#333537",
-    "--cal-time-label": "#9494A0",
+    "--cal-bg": "#1F2023",
+    "--cal-gridline": "#2A2B2F",
+    "--cal-time-label": "#9C9CA8",
     "--cal-timeline-rail": "#3F3F46",
     "--cal-current-time": "#B83A3A",
     "--cal-timeline-break": "#000000",

@@ -75,6 +75,7 @@ export class NotesTreeProjectionController {
       const restored = { ...(payloadIds.has(block.id) || !current ? block : current),
         parent: placementIds.has(block.id) || !current ? block.parent : current.parent,
         edit_revision: current?.edit_revision ?? block.edit_revision,
+        content_revision: current?.content_revision ?? block.content_revision,
       } as NotesBlock;
       nextBlocksById[block.id] = restored;
       this.rememberChildVisibility(restored);

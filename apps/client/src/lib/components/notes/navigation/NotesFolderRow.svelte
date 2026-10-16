@@ -13,9 +13,12 @@
   import FolderOpen from "@lucide/svelte/icons/folder-open";
   import FolderPlus from "@lucide/svelte/icons/folder-plus";
   import Pencil from "@lucide/svelte/icons/pencil";
+  import Star from "@lucide/svelte/icons/star";
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import ExplorerRowStar from "$lib/components/ui/ExplorerRowStar.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
+  import MoveStepMenuItems from "$lib/components/ui/MoveStepMenuItems.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import {
     COMPACT_IDENTITY_ICON_SIZE,
@@ -52,15 +55,20 @@
     folder,
     depth,
     collapsed,
+    favorited = false,
     renameRequestId = 0,
     moveTargets,
     onActivate,
     onToggleCollapsed,
+    onToggleFavorite,
     onCreatePage,
     onCreateFolder,
     onRename,
     onMove,
     onDelete,
+    onReorder = undefined,
+    canMoveUp = false,
+    canMoveDown = false,
     navigationDragging = false,
     navigationDropState = "none",
     onNavigationDragStart = undefined,
@@ -72,15 +80,21 @@
     folder: NotesFolder;
     depth: number;
     collapsed: boolean;
+    favorited?: boolean;
     renameRequestId?: number;
     moveTargets: NotesFolderRowMoveTarget[];
     onActivate: () => void;
     onToggleCollapsed: (collapsed: boolean) => void;
+    onToggleFavorite: (favorited: boolean) => void;
     onCreatePage: () => void;
     onCreateFolder: () => void;
     onRename: (name: string) => boolean | Promise<boolean>;
     onMove: (parentFolderId: string | null) => void;
     onDelete: () => void;
+    /** Moves the folder one place among its siblings in the custom order; left out in other orders. */
+    onReorder?: (step: -1 | 1) => void;
+    canMoveUp?: boolean;
+    canMoveDown?: boolean;
     navigationDragging?: boolean;
     navigationDropState?: "none" | "valid" | "invalid";
     onNavigationDragStart?: (event: DragEvent) => void;
@@ -355,7 +369,12 @@
         {/if}
         <span class="min-w-0 flex-1 truncate" use:overflowTooltip={visibleName}>{visibleName}</span>
       </button>
-      <button type="button" class="explorer-icon explorer-row-action" aria-label={`${t("notes.folderActions")}: ${visibleName}`} data-app-tooltip-disabled="true" aria-haspopup="menu" aria-expanded={menuOpen} onclick={openActionMenu}><EllipsisVertical size={14} /></button>
+      <span class="explorer-row-trailing">
+        {#if favorited}
+          <ExplorerRowStar />
+        {/if}
+        <button type="button" class="explorer-icon explorer-row-action" aria-label={`${t("notes.folderActions")}: ${visibleName}`} data-app-tooltip-disabled="true" aria-haspopup="menu" aria-expanded={menuOpen} onclick={openActionMenu}><EllipsisVertical size={14} /></button>
+      </span>
     </div>
   {/if}
 
@@ -395,6 +414,17 @@
         >
           <FolderPlus />
           <span>{t("notes.newSubfolder")}</span>
+        </button>
+        <button
+          class="menu-item"
+          type="button"
+          onclick={() => {
+            closeMenu();
+            onToggleFavorite(!favorited);
+          }}
+        >
+          <Star class={favorited ? "fill-current text-primary" : undefined} />
+          <span>{favorited ? t("common.removeFromFavorites") : t("common.addToFavorites")}</span>
         </button>
         <button
           class="menu-item"
@@ -444,6 +474,9 @@
             </div>
           {/if}
         {/if}
+        {#if onReorder}
+          <MoveStepMenuItems {canMoveUp} {canMoveDown} onMove={(step) => onReorder?.(step)} onClose={closeMenu} />
+        {/if}
         <button
           class="menu-item menu-item-destructive"
           type="button"
@@ -471,10 +504,6 @@
 
   .notes-row-context-menu-open .notes-folder-row-content {
     background: var(--explorer-row-highlight);
-  }
-
-  .notes-navigation-dragging .notes-folder-row-content {
-    opacity: 0.42;
   }
 
   .notes-navigation-draggable .notes-folder-row-content {

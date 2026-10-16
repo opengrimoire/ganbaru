@@ -68,6 +68,7 @@ function removeProject(snapshot: ProjectsSnapshot, projectId: string): ProjectsS
     eventLinks: snapshot.eventLinks.filter((link) => !taskIds.has(link.taskId)),
     taskChangeEvents: snapshot.taskChangeEvents.filter((event) => !taskIds.has(event.taskId)),
     viewPreferences: snapshot.viewPreferences.filter((preference) => preference.projectId !== projectId),
+    views: snapshot.views.filter((view) => view.projectId !== projectId),
   };
 }
 
@@ -150,20 +151,16 @@ function applyRemoval(snapshot: ProjectsSnapshot, removal: ProjectMutationRemova
           (link) => link.taskId !== removal.taskId || link.eventId !== removal.eventId,
         ),
       };
-    case "view_preference":
-      return {
-        ...snapshot,
-        viewPreferences: snapshot.viewPreferences.filter(
-          (preference) =>
-            preference.projectId !== removal.projectId ||
-            preference.viewId !== removal.viewId ||
-            preference.preferenceKey !== removal.preferenceKey,
-        ),
-      };
     case "custom_emoji":
       return {
         ...snapshot,
         customEmojis: snapshot.customEmojis.filter((emoji) => emoji.id !== removal.id),
+      };
+    case "view":
+      return {
+        ...snapshot,
+        views: snapshot.views.filter((view) => view.id !== removal.id),
+        viewPreferences: snapshot.viewPreferences.filter((preference) => preference.viewId !== removal.id),
       };
   }
 }
@@ -214,6 +211,7 @@ export function applyProjectMutation(
       (preference) =>
         `${preference.projectId}\u0000${preference.viewId}\u0000${preference.preferenceKey}`,
     ),
+    views: upsertById(removed.views, changed.views),
     customEmojis: upsertById(removed.customEmojis, changed.customEmojis),
   };
 }

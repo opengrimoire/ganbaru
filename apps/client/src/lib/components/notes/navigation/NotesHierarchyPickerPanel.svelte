@@ -1,7 +1,10 @@
 <script lang="ts">
   import { getContext, tick, untrack } from "svelte";
+  import Archive from "@lucide/svelte/icons/archive";
   import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
+  import Eye from "@lucide/svelte/icons/eye";
+  import EyeOff from "@lucide/svelte/icons/eye-off";
   import FileText from "@lucide/svelte/icons/file-text";
   import Folder from "@lucide/svelte/icons/folder";
   import FolderPlus from "@lucide/svelte/icons/folder-plus";
@@ -20,11 +23,14 @@
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import {
+    notesArchivedParentPageIds,
+    notesHierarchyArchivedChildren,
     notesHierarchyPickerChildren,
     notesHierarchyPickerTitle,
     notesHierarchyPanelChromeHeight,
     NOTES_HIERARCHY_PANEL_LIST_PADDING,
     NOTES_HIERARCHY_PANEL_ROW_HEIGHT,
+    type NotesHierarchyOrder,
     type NotesHierarchyPickerNode,
     type NotesHierarchyParent,
   } from "$lib/notes/navigation/hierarchy-menu";
@@ -41,9 +47,16 @@
   } from "$lib/projects/picker-panels";
   import { getNotesEditor } from "$lib/components/notes/editor-context";
   import { cn, type MaybePromise } from "$lib/utils";
+  import { createHoverDelay } from "$lib/utils/menu-aim";
+  import { createSidebarOrderDrag } from "$lib/utils/sidebar-order-drag.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
+  import { openInNewTabIntent, preventMiddleClickAutoscroll, type OpenInNewTabIntent } from "$lib/workspace-tabs/gestures";
   import NotesHierarchyPickerPanel from "./NotesHierarchyPickerPanel.svelte";
   import NotesPageIcon from "$lib/components/notes/pages/NotesPageIcon.svelte";
+  import StarredIconBadge from "$lib/components/ui/StarredIconBadge.svelte";
+  import SidebarOrderMenu from "$lib/components/ui/SidebarOrderMenu.svelte";
+  import { getPreferences } from "$lib/stores/preferences.svelte";
+  import type { SidebarSortOrder } from "$lib/utils/sidebar-order";
 
 
   interface NotesMobileHierarchyLevel {
@@ -59,8 +72,10 @@
     zIndexClass = "z-81",
     rootElement = $bindable<HTMLDivElement | undefined>(),
     onPageSelected,
+    onPageOpenInNewTab = undefined,
     onLayoutChange = undefined,
     onItemCountChange = undefined,
+    onPointerEnter = undefined,
     onPointerLeave = undefined,
     showSearch = true,
     mobileLayout = false,
@@ -76,8 +91,11 @@
     zIndexClass?: string;
     rootElement?: HTMLDivElement | undefined;
     onPageSelected: () => MaybePromise<void>;
+    /** Opens a page in a new workspace tab; rows leave out the gesture without it. */
+    onPageOpenInNewTab?: (pageId: string, intent: OpenInNewTabIntent) => void;
     onLayoutChange?: () => void;
     onItemCountChange?: (count: number) => void;
+    onPointerEnter?: (event: PointerEvent) => void;
     onPointerLeave?: (event: PointerEvent) => void;
     showSearch?: boolean;
     mobileLayout?: boolean;
@@ -88,6 +106,7 @@
   } = $props();
 
   const notes = getNotesEditor();
+  const preferences = getPreferences();
   const { t } = getLocalization();
   const activateNestedMobileBack = getContext<((handle: () => void) => () => void) | undefined>(
     "ganbaru-mobile-nested-back",
@@ -106,6 +125,8 @@
   let folderInput = $state<HTMLInputElement | null>(null);
   let activeNodeKey = $state<string | null>(null);
   let activeNodeAnchor = $state<HTMLElement | null>(null);
+  const childDelay = createHoverDelay();
+  $effect(() => () => childDelay.cancel());
   let childPanelElement = $state<HTMLDivElement | undefined>();
   let childBridgeElement = $state<HTMLDivElement | undefined>();
   let childPanelStyle = $state("");
@@ -126,21 +147,73 @@
 
   const projectPages = $derived.by(() => notesPagesForProject(notes.allPages, projectId));
   const projectFolders = $derived.by(() => notesFoldersForProject(notes.folders, projectId));
+  const hierarchyOrder = $derived<NotesHierarchyOrder>({
+    sortOrder: notes.sidebarOrderForProject(projectId),
+    favoriteFolderIds: notes.favoriteFolderIds,
+    favoritePageIds: notes.favoritePageIds,
+    customOrderKeys: notes.customOrderForProject(projectId),
+  });
   const normalizedSearch = $derived(showSearch ? search.trim().toLocaleLowerCase() : "");
+  /** Only the panel opened first carries the order button, beside its search; sub-panels have neither. */
+  const showOrderMenu = $derived(showSearch && effectiveParent.kind !== "database");
+  /** The project's archived notes, listed only while the shared picker eye is on. */
+  const archivedProjectPages = $derived(notes.showArchivedInPickers ? notesPagesForProject(notes.pickerArchivedPages, projectId) : []);
+  const activePageIds = $derived(new Set(notes.allPages.map((page) => page.id)));
+  /** Notes holding only archived children still open a level while archived notes are listed. */
+  const pageIdsWithChildren = $derived([
+    ...notes.sidebarPageIdsWithChildren,
+    ...notesArchivedParentPageIds(archivedProjectPages, activePageIds),
+  ]);
   const allItems = $derived(notesHierarchyPickerChildren(
     projectPages,
     projectFolders,
     notes.navigationDatabases,
     effectiveParent,
     t("notes.untitled"),
-    notes.sidebarPageIdsWithChildren,
+    pageIdsWithChildren,
     views,
+    hierarchyOrder,
   ));
-  const items = $derived(allItems.filter((item) => {
-    if (!normalizedSearch) return true;
-    const title = notesHierarchyPickerTitle(item, t("notes.untitled"));
-    return title.toLocaleLowerCase().includes(normalizedSearch);
-  }));
+  const items = $derived(allItems.filter(matchesSearch));
+  /** Archived notes of this level follow the active rows while the shared picker eye is on. */
+  const archivedItems = $derived(notesHierarchyArchivedChildren(
+    archivedProjectPages,
+    activePageIds,
+    effectiveParent,
+    t("notes.untitled"),
+    hierarchyOrder,
+  ).filter(matchesSearch));
+  const rowCount = $derived(items.length + archivedItems.length);
+  $effect(() => {
+    if (notes.showArchivedInPickers) untrack(() => notes.ensurePickerArchivedPages());
+  });
+  /** Folders and notes drag by their row in the custom order of an open project, each within its own block. */
+  const orderDrag = createSidebarOrderDrag({
+    getIds: () => items.filter(isOrderedNode).map((item) => item.key),
+    enabled: () => !mobileLayout && projectId !== null && hierarchyOrder.sortOrder === "custom" && !normalizedSearch,
+    isStarred: (key) => favoriteKeys.has(key),
+    kindOf: (key) => key.slice(0, key.indexOf(":")),
+    save: async (orderedKeys) => {
+      if (projectId) notes.setCustomSiblingOrder(projectId, orderedKeys);
+    },
+    description: "notes from the notes picker",
+  });
+  const favoriteKeys = $derived(new Set([
+    ...notes.favoriteFolderIds.map((id) => `folder:${id}`),
+    ...notes.favoritePageIds.map((id) => `page:${id}`),
+  ]));
+  $effect(() => orderDrag.reset);
+
+  /** A lifted row closes the subpanel it would otherwise open while passing over rows. */
+  $effect(() => {
+    if (orderDrag.draggedId === null) return;
+    untrack(() => {
+      childDelay.cancel();
+      activeNodeKey = null;
+      activeNodeAnchor = null;
+    });
+  });
+
   const activeNode = $derived(items.find((item) => item.key === activeNodeKey) ?? null);
   const childParent = $derived.by((): NotesHierarchyParent | null => {
     if (!activeNode?.hasChildren) return null;
@@ -153,7 +226,7 @@
         notes.navigationDatabases,
         childParent,
         t("notes.untitled"),
-        notes.sidebarPageIdsWithChildren,
+        pageIdsWithChildren,
       ).length
     : 0));
 
@@ -193,7 +266,29 @@
     childBridgeStyle = projectPickerBridgeFrameStyle(geometry.bridge);
   }
 
+  function matchesSearch(node: NotesHierarchyPickerNode): boolean {
+    if (!normalizedSearch) return true;
+    return notesHierarchyPickerTitle(node, t("notes.untitled")).toLocaleLowerCase().includes(normalizedSearch);
+  }
+
+  /** Archived notes cannot open as they are, so selecting one restores it and opens it. */
+  async function restoreArchivedPage(pageId: string): Promise<void> {
+    navigationError = null;
+    try {
+      await notes.unarchivePage(pageId);
+      await onPageSelected();
+    } catch (error: unknown) {
+      navigationError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  function isOrderedNode(node: NotesHierarchyPickerNode): boolean {
+    return node.kind === "folder" || node.kind === "page";
+  }
+
   function activateNode(node: NotesHierarchyPickerNode, target: EventTarget | null): void {
+    if (orderDrag.draggedId !== null) return;
+    childDelay.cancel();
     if (!node.hasChildren) {
       activeNodeKey = null;
       activeNodeAnchor = null;
@@ -275,9 +370,16 @@
 
   function handleBoundaryLeave(event: PointerEvent): void {
     if (boundaryContains(event.relatedTarget)) return;
-    activeNodeKey = null;
-    activeNodeAnchor = null;
+    childDelay.schedule(() => {
+      activeNodeKey = null;
+      activeNodeAnchor = null;
+    });
     onPointerLeave?.(event);
+  }
+
+  function handleBoundaryEnter(event: PointerEvent): void {
+    childDelay.cancel();
+    onPointerEnter?.(event);
   }
 
   async function selectPage(pageId: string): Promise<void> {
@@ -301,6 +403,19 @@
     } catch (error: unknown) {
       navigationError = error instanceof Error ? error.message : String(error);
     }
+  }
+
+  /** Route a page click to a new tab when the gesture asks for one; folders expand and other nodes open here. */
+  function handleNodeClick(event: MouseEvent, node: NotesHierarchyPickerNode): void {
+    const intent = node.kind === "page" && onPageOpenInNewTab ? openInNewTabIntent(event) : null;
+    if (intent && node.kind === "page") {
+      event.preventDefault();
+      onPageOpenInNewTab?.(node.page.id, intent);
+      return;
+    }
+    if (event.type !== "click") return;
+    if (node.kind === "folder") activateNode(node, event.currentTarget);
+    else void selectNode(node);
   }
 
   async function createPage(): Promise<void> {
@@ -329,6 +444,12 @@
     let suffix = 2;
     while (siblingNames.has(`${baseName} ${suffix}`.toLocaleLowerCase())) suffix += 1;
     return `${baseName} ${suffix}`;
+  }
+
+  /** Write the chosen order to the project, or to the global setting when no project is open. */
+  function selectSortOrder(order: SidebarSortOrder | null): void {
+    if (projectId) notes.setProjectSidebarOrder(projectId, order);
+    else if (order) preferences.setNotesSidebarOrder(order);
   }
 
   function beginFolderCreation(): void {
@@ -397,7 +518,7 @@
   });
 
   $effect(() => {
-    const itemCount = items.length;
+    const itemCount = rowCount;
     onItemCountChange?.(itemCount);
     childItemCount;
     requestAnimationFrame(() => {
@@ -424,6 +545,7 @@
     zIndexClass,
   )}
   style={mobileLayout ? frameStyle : `${frameStyle}; height: auto`}
+  onpointerenter={handleBoundaryEnter}
   onpointerleave={handleBoundaryLeave}
 >
   {#if mobileLayout || showSearch}
@@ -458,6 +580,7 @@
     <div class={cn(
       "field flex items-center gap-1.5",
       mobileLayout && "min-h-12 rounded-xl px-3",
+      showOrderMenu && (mobileLayout ? "pr-0" : "py-0 pr-1"),
     )}>
       <Search size={iconSize} strokeWidth={iconStrokeWidth} class="shrink-0 text-popover-foreground/60" />
       <input
@@ -479,6 +602,42 @@
           <X size={18} strokeWidth={iconStrokeWidth} aria-hidden="true" />
         </button>
       {/if}
+      {#if showOrderMenu}
+        <div class="flex shrink-0 items-center">
+          <SidebarOrderMenu
+            order={notes.sidebarOrderForProject(projectId)}
+            override={notes.sidebarOrderOverride(projectId)}
+            allowGlobal={projectId !== null}
+            label={t("notes.sortExplorer")}
+            buttonClass={cn(
+              "flex shrink-0 items-center justify-center text-popover-foreground/60 hover:bg-accent hover:text-accent-foreground",
+              mobileLayout ? "h-12 w-12 rounded-xl" : "h-6 w-6 rounded",
+            )}
+            activeClass="bg-accent text-accent-foreground"
+            {iconSize}
+            {iconStrokeWidth}
+            menuZIndexClass="z-90"
+            onSelect={selectSortOrder}
+          />
+          <button
+            type="button"
+            class={cn(
+              "flex shrink-0 items-center justify-center text-popover-foreground/60 hover:bg-accent hover:text-accent-foreground",
+              mobileLayout ? "h-12 w-12 rounded-xl" : "h-6 w-6 rounded",
+            )}
+            aria-pressed={notes.showArchivedInPickers}
+            aria-label={t(notes.showArchivedInPickers ? "notes.hideArchivedNotes" : "notes.showArchivedNotes")}
+            title={t(notes.showArchivedInPickers ? "notes.hideArchivedNotes" : "notes.showArchivedNotes")}
+            onclick={() => { notes.showArchivedInPickers = !notes.showArchivedInPickers; }}
+          >
+            {#if notes.showArchivedInPickers}
+              <EyeOff size={iconSize} strokeWidth={iconStrokeWidth} aria-hidden="true" />
+            {:else}
+              <Eye size={iconSize} strokeWidth={iconStrokeWidth} aria-hidden="true" />
+            {/if}
+          </button>
+        </div>
+      {/if}
     </div>
     {/if}
   </div>
@@ -491,11 +650,13 @@
         <Loading layout="rows" rows={3} label={t("notes.loading")} />
       {:else if notes.loadError}
         <Notice class="px-3 py-2" message={t("notes.loadFailed", notes.loadError)} copy={notes.loadError} onRetry={() => notes.load()} />
-      {:else if items.length === 0}
+      {:else if rowCount === 0}
+        {@render ArchiveErrorNotice()}
         <div class="px-3 py-2 text-popover-foreground/60">
           {normalizedSearch ? t("notes.noSearchResults") : t(effectiveParent.kind === "database" ? "notes.databaseNoViews" : "notes.noPages")}
         </div>
       {:else}
+        {@render ArchiveErrorNotice()}
         <div class="grid">
           {#each items as item (item.key)}
             {@const title = nodeTitle(item)}
@@ -510,24 +671,7 @@
                     else void selectNode(item);
                   }}
                 >
-                  {#if item.kind === "folder"}
-                    <Folder size={iconSize} strokeWidth={iconStrokeWidth} class="shrink-0" />
-                  {:else if item.kind === "database"}
-                    <Database size={iconSize} strokeWidth={iconStrokeWidth} class="shrink-0" />
-                  {:else if item.kind === "view"}
-                    {@const Icon = viewIcons[item.view.type as NotesDatabaseViewKind]}
-                    <Icon size={iconSize} strokeWidth={iconStrokeWidth} class="shrink-0" />
-                  {:else if item.page.icon}
-                    <NotesPageIcon
-                      icon={item.page.icon}
-                      size={iconSize}
-                      strokeWidth={iconStrokeWidth}
-                      emojiScale={NOTES_PAGE_CHROME_EMOJI_SCALE}
-                      class="shrink-0"
-                    />
-                  {:else}
-                    <FileText size={iconSize} strokeWidth={iconStrokeWidth} class="shrink-0" />
-                  {/if}
+                  {@render NodeIcon(item)}
                   <span class="min-w-0 flex-1 truncate">{title}</span>
                   {#if item.kind === "folder"}
                     <ChevronRight size={iconSize} strokeWidth={iconStrokeWidth} class="shrink-0 text-popover-foreground/45" />
@@ -550,35 +694,53 @@
                 class="menu-item text-popover-foreground"
                 aria-expanded={item.hasChildren ? activeNodeKey === item.key : undefined}
                 aria-label={title}
+                {@attach orderDrag.item(item.key)}
+                onpointerdown={(event) => { if (isOrderedNode(item)) orderDrag.pointerDown(event, item.key); }}
                 onpointerenter={(event) => activateNode(item, event.currentTarget)}
                 onfocus={(event) => activateNode(item, event.currentTarget)}
-                onclick={(event) => {
-                  if (item.kind === "folder") activateNode(item, event.currentTarget);
-                  else void selectNode(item);
-                }}
+                onmousedown={preventMiddleClickAutoscroll}
+                onclick={(event) => handleNodeClick(event, item)}
+                onauxclick={(event) => handleNodeClick(event, item)}
               >
-                {#if item.kind === "folder"}
-                  <Folder size={iconSize} strokeWidth={iconStrokeWidth} class="shrink-0" />
-                {:else if item.kind === "database"}
-                  <Database size={iconSize} strokeWidth={iconStrokeWidth} class="shrink-0" />
-                {:else if item.kind === "view"}
-                  {@const Icon = viewIcons[item.view.type as NotesDatabaseViewKind]}
-                  <Icon size={iconSize} strokeWidth={iconStrokeWidth} class="shrink-0" />
-                {:else if item.page.icon}
-                  <NotesPageIcon
-                    icon={item.page.icon}
-                    size={iconSize}
-                    strokeWidth={iconStrokeWidth}
-                    emojiScale={NOTES_PAGE_CHROME_EMOJI_SCALE}
-                    class="shrink-0"
-                  />
-                {:else}
-                  <FileText size={iconSize} strokeWidth={iconStrokeWidth} class="shrink-0" />
-                {/if}
+                {@render NodeIcon(item)}
                 <span class="min-w-0 flex-1 truncate">{title}</span>
                 {#if item.hasChildren}
                   <ChevronRight size={iconSize} strokeWidth={iconStrokeWidth} class="shrink-0 text-popover-foreground/45" />
                 {/if}
+              </button>
+            {/if}
+          {/each}
+          {#each archivedItems as item (item.key)}
+            {@const title = nodeTitle(item)}
+            {@const restoreLabel = t("notes.archivedNoteRestore", title)}
+            {#if mobileLayout}
+              <button
+                type="button"
+                class="flex min-h-12 min-w-0 items-center gap-2 rounded-floating-item px-3 text-left text-sm text-popover-foreground active:bg-accent"
+                aria-label={restoreLabel}
+                onclick={() => { if (item.kind === "page") void restoreArchivedPage(item.page.id); }}
+              >
+                {@render NodeIcon(item)}
+                <span class="min-w-0 flex-1 truncate">{title}</span>
+                <span role="img" class="shrink-0 text-popover-foreground/60" aria-label={t("notes.archivedNote")}>
+                  <Archive size={iconSize} strokeWidth={iconStrokeWidth} aria-hidden="true" />
+                </span>
+              </button>
+            {:else}
+              <button
+                type="button"
+                class="menu-item text-popover-foreground"
+                aria-label={restoreLabel}
+                title={restoreLabel}
+                onpointerenter={(event) => activateNode(item, event.currentTarget)}
+                onfocus={(event) => activateNode(item, event.currentTarget)}
+                onclick={() => { if (item.kind === "page") void restoreArchivedPage(item.page.id); }}
+              >
+                {@render NodeIcon(item)}
+                <span class="min-w-0 flex-1 truncate">{title}</span>
+                <span role="img" class="shrink-0 text-popover-foreground/60" aria-label={t("notes.archivedNote")}>
+                  <Archive size={iconSize} strokeWidth={iconStrokeWidth} aria-hidden="true" />
+                </span>
               </button>
             {/if}
           {/each}
@@ -667,6 +829,7 @@
     aria-hidden="true"
     class={cn("fixed bg-transparent", zIndexClass)}
     style={childBridgeStyle}
+    onpointerenter={handleBoundaryEnter}
     onpointerleave={handleBoundaryLeave}
   ></div>
   <NotesHierarchyPickerPanel
@@ -677,11 +840,44 @@
     frameStyle={childPanelStyle}
     {zIndexClass}
     {onPageSelected}
+    {onPageOpenInNewTab}
     onItemCountChange={(count) => { childMeasuredItemCount = count; }}
     onLayoutChange={updateChildGeometry}
+    onPointerEnter={handleBoundaryEnter}
     onPointerLeave={handleBoundaryLeave}
   />
 {/if}
+
+{#snippet ArchiveErrorNotice()}
+  {#if notes.showArchivedInPickers && notes.pickerArchiveError}
+    <Notice class="px-3 py-2" message={t("notes.archivedNotesLoadFailed", notes.pickerArchiveError)} copy={notes.pickerArchiveError} onRetry={() => notes.reloadPickerArchivedPages()} />
+  {/if}
+{/snippet}
+
+{#snippet NodeIcon(item: NotesHierarchyPickerNode)}
+  <StarredIconBadge starred={item.kind === "folder"
+    ? notes.favoriteFolderIds.includes(item.folder.id)
+    : item.kind === "page" && notes.favoritePageIds.includes(item.page.id)}>
+    {#if item.kind === "folder"}
+      <Folder size={iconSize} strokeWidth={iconStrokeWidth} class="shrink-0" />
+    {:else if item.kind === "database"}
+      <Database size={iconSize} strokeWidth={iconStrokeWidth} class="shrink-0" />
+    {:else if item.kind === "view"}
+      {@const Icon = viewIcons[item.view.type as NotesDatabaseViewKind]}
+      <Icon size={iconSize} strokeWidth={iconStrokeWidth} class="shrink-0" />
+    {:else if item.page.icon}
+      <NotesPageIcon
+        icon={item.page.icon}
+        size={iconSize}
+        strokeWidth={iconStrokeWidth}
+        emojiScale={NOTES_PAGE_CHROME_EMOJI_SCALE}
+        class="shrink-0"
+      />
+    {:else}
+      <FileText size={iconSize} strokeWidth={iconStrokeWidth} class="shrink-0" />
+    {/if}
+  </StarredIconBadge>
+{/snippet}
 
 <style>
   .project-picker-panel {

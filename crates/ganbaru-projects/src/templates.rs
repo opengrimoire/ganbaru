@@ -1,3 +1,5 @@
+use super::views::insert_default_views;
+
 const DEFAULT_STATUSES: &[(&str, &str, &str, i64, i64, i64)] = &[
     ("backlog", "Backlog", "not_started", 30, 0, 0),
     ("todo", "To do", "not_started", 31, 10, 0),
@@ -114,7 +116,7 @@ pub(super) async fn insert_default_project_graphs(
         .await
         .map_err(|e| format!("restore built-in project priorities: {e}"))?;
 
-    Ok(())
+    insert_default_views(tx, project_ids).await
 }
 
 fn project_template_sections(template_id: &str) -> &'static [(&'static str, &'static str, i64)] {

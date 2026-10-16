@@ -5,7 +5,7 @@ const commands = vi.hoisted(() => ({
   openNotesLink: vi.fn(async (_target: { pageId: string; blockId?: string }) => true),
   openUrl: vi.fn(async (_url: string) => undefined),
 }));
-vi.mock("$lib/stores/notes.svelte", () => ({ getNotes: () => ({ openNotesLink: commands.openNotesLink }) }));
+const notes = { openNotesLink: commands.openNotesLink };
 vi.mock("$lib/api/notes/knowledge", () => ({ openNotesExternalUrl: commands.openUrl }));
 afterEach(() => { vi.clearAllMocks(); });
 
@@ -15,22 +15,22 @@ describe("Notes link navigation", () => {
   const hash = `#notes?page=${pageId}&block=${blockId}`;
 
   it("opens local database references through Notes rather than a web browser", async () => {
-    await openNotesTextLink(hash);
+    await openNotesTextLink(hash, notes);
     expect(commands.openNotesLink).toHaveBeenCalledExactlyOnceWith({ pageId, blockId });
     expect(commands.openUrl).not.toHaveBeenCalled();
   });
 
   it("opens web links through the system and rejects executable or filesystem destinations", async () => {
-    await openNotesTextLink("https://example.com/tasks");
+    await openNotesTextLink("https://example.com/tasks", notes);
     expect(commands.openUrl).toHaveBeenCalledExactlyOnceWith("https://example.com/tasks");
-    await expect(openNotesTextLink("javascript:alert(1)")).rejects.toThrow("invalid");
-    await expect(openNotesTextLink("file:///tmp/private")).rejects.toThrow("invalid");
+    await expect(openNotesTextLink("javascript:alert(1)", notes)).rejects.toThrow("invalid");
+    await expect(openNotesTextLink("file:///tmp/private", notes)).rejects.toThrow("invalid");
     expect(commands.openNotesLink).not.toHaveBeenCalled();
   });
 
   it("reports unavailable local links rather than silently succeeding", async () => {
     commands.openNotesLink.mockResolvedValueOnce(false);
-    await expect(openNotesTextLink(hash)).rejects.toThrow("unavailable");
+    await expect(openNotesTextLink(hash, notes)).rejects.toThrow("unavailable");
     expect(commands.openUrl).not.toHaveBeenCalled();
   });
 

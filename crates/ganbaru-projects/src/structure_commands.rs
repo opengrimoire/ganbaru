@@ -1,8 +1,11 @@
+use std::collections::HashSet;
+
 use sqlx::SqlitePool;
 
 use super::models::{
-    ProjectGroupCreate, ProjectGroupUpdate, ProjectMutationRemoval, ProjectPriorityCreate,
-    ProjectPriorityUpdate, ProjectSectionCreate, ProjectSectionUpdate, ProjectStatusCreate,
+    GroupProjectReorder, ProjectGroupCreate, ProjectGroupReorder, ProjectGroupRow,
+    ProjectGroupUpdate, ProjectMutationRemoval, ProjectPriorityCreate, ProjectPriorityUpdate,
+    ProjectRow, ProjectSectionCreate, ProjectSectionUpdate, ProjectStatusCreate,
     ProjectStatusUpdate, ProjectTagCreate, ProjectTagUpdate, ProjectsMutationRows,
 };
 use super::mutations::{
@@ -16,6 +19,8 @@ use super::validation::{
     validate_priority_update, validate_section_create, validate_section_update,
     validate_status_create, validate_status_update, validate_tag_create, validate_tag_update,
 };
+
+const SIDEBAR_ORDER_SPACING: i64 = 1_000;
 
 pub async fn create_group(
     pool: &SqlitePool,
@@ -135,6 +140,114 @@ pub async fn set_group_collapsed(
         return Err("project group not found".to_string());
     }
     group_mutation(pool, group_id.trim()).await
+}
+
+/// Rewrites the custom sidebar order of every project group in one transaction.
+/// Modified times stay, since a sidebar order is not an edit of the group.
+pub async fn reorder_groups(
+    pool: &SqlitePool,
+    reorder: ProjectGroupReorder,
+) -> Result<ProjectsMutationRows, String> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| format!("begin project group reorder: {e}"))?;
+    let current: Vec<String> = sqlx::query_scalar("SELECT id FROM project_groups")
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| format!("load project groups to reorder: {e}"))?;
+    let requested = complete_sibling_order(&reorder.group_ids, &current)
+        .ok_or_else(|| "group order must list each project group once".to_string())?;
+    for (index, group_id) in requested.iter().enumerate() {
+        sqlx::query("UPDATE project_groups SET sort_order = ? WHERE id = ? AND sort_order <> ?")
+            .bind(sidebar_order_at(index))
+            .bind(group_id)
+            .bind(sidebar_order_at(index))
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("reorder project group: {e}"))?;
+    }
+    tx.commit()
+        .await
+        .map_err(|e| format!("commit project group reorder: {e}"))?;
+    let groups = sqlx::query_as::<_, ProjectGroupRow>(
+        "SELECT * FROM project_groups ORDER BY sort_order ASC, name ASC",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("load reordered project groups: {e}"))?;
+    Ok(ProjectsMutationRows {
+        groups,
+        ..ProjectsMutationRows::default()
+    })
+}
+
+/// Rewrites the custom sidebar order of the projects in one group, including hidden and archived ones, in one transaction.
+/// Modified times stay, since a sidebar order is not an edit of the project.
+pub async fn reorder_group_projects(
+    pool: &SqlitePool,
+    reorder: GroupProjectReorder,
+) -> Result<ProjectsMutationRows, String> {
+    let group_id = reorder.group_id.trim();
+    require_non_empty(group_id, "group_id")?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| format!("begin project reorder: {e}"))?;
+    let group_exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM project_groups WHERE id = ?)")
+            .bind(group_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| format!("load project group to reorder: {e}"))?;
+    if !group_exists {
+        return Err("project group not found".to_string());
+    }
+    let current: Vec<String> = sqlx::query_scalar("SELECT id FROM projects WHERE group_id = ?")
+        .bind(group_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| format!("load projects to reorder: {e}"))?;
+    let requested = complete_sibling_order(&reorder.project_ids, &current)
+        .ok_or_else(|| "project order must list each project of the group once".to_string())?;
+    for (index, project_id) in requested.iter().enumerate() {
+        sqlx::query("UPDATE projects SET sort_order = ? WHERE id = ? AND sort_order <> ?")
+            .bind(sidebar_order_at(index))
+            .bind(project_id)
+            .bind(sidebar_order_at(index))
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("reorder project: {e}"))?;
+    }
+    tx.commit()
+        .await
+        .map_err(|e| format!("commit project reorder: {e}"))?;
+    let projects = sqlx::query_as::<_, ProjectRow>(
+        "SELECT * FROM projects WHERE group_id = ? ORDER BY sort_order ASC, name ASC",
+    )
+    .bind(group_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("load reordered projects: {e}"))?;
+    Ok(ProjectsMutationRows {
+        projects,
+        ..ProjectsMutationRows::default()
+    })
+}
+
+/// Trims the requested order and accepts it only when it names every current sibling exactly once.
+fn complete_sibling_order<'a>(requested: &'a [String], current: &[String]) -> Option<Vec<&'a str>> {
+    let requested: Vec<&str> = requested.iter().map(|id| id.trim()).collect();
+    let current: HashSet<&str> = current.iter().map(String::as_str).collect();
+    let unique: HashSet<&str> = requested.iter().copied().collect();
+    (unique.len() == requested.len()
+        && requested.len() == current.len()
+        && requested.iter().all(|id| current.contains(id)))
+    .then_some(requested)
+}
+
+fn sidebar_order_at(index: usize) -> i64 {
+    (index as i64 + 1) * SIDEBAR_ORDER_SPACING
 }
 
 pub async fn create_section(

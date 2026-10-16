@@ -14,7 +14,7 @@ function result() {
   return {
     groups: [], projects: [], sections: [], statuses: [], priorities: [], checklist_items: [],
     tags: [], task_tag_links: [], custom_fields: [], custom_field_options: [], custom_field_values: [],
-    custom_field_option_values: [], dependencies: [], event_links: [], view_preferences: [], custom_emojis: [],
+    custom_field_option_values: [], dependencies: [], event_links: [], view_preferences: [], views: [], custom_emojis: [],
     removals: [], calendar_event_project_assignments: [], task_change_events: [],
     tasks: [{
       id: "task-1", project_id: "project-1", revision: 7, section_id: "section-1", status_id: "status-1",

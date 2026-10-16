@@ -311,6 +311,29 @@ export class MusicSourcesController {
     }
   }
 
+  /**
+   * Adds a folder the person chose during first use and reports it through the same preparation state as a detected
+   * default folder, so the Builder opens on its preparing screen. The preparing flag is set before any await.
+   */
+  async prepareFirstUseFolder(selection: MediaFolderSelection, name: string): Promise<string | null> {
+    if (this.preparingDefaultFolder) return null;
+    const vaultId = this.vaultId;
+    this.defaultFolderDismissed = true;
+    this.preparingDefaultFolder = true;
+    this.preparingDefaultFolderPath = selection.folderPath;
+    this.defaultFolderPreparationError = null;
+    try {
+      return await this.addLocalFolder(selection, name, true);
+    } catch (error) {
+      if (vaultId === this.vaultId) {
+        this.defaultFolderPreparationError = error instanceof Error ? error.message : String(error);
+      }
+      return null;
+    } finally {
+      if (vaultId === this.vaultId) this.preparingDefaultFolder = false;
+    }
+  }
+
   async chooseLocalFolder(): Promise<MusicLocalSourceSelection | null> {
     const selection = await this.api.pickFolder();
     if (!selection) return null;

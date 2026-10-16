@@ -19,6 +19,8 @@ Panels were restyled one at a time, so radii, shadows, text sizes, input styles,
 | --- | --- |
 | `surface-floating` | Menus, popovers, pickers, hover cards, and nonmodal panels |
 | `surface-dialog` | Modal dialogs and large windows such as Settings |
+| `surface-content` | A tab's content surface; with overflow clipping, its content always stays inside the edge |
+| `surface-content-edge` | The edge alone, laid over a content surface whose content is painted by sibling elements (Chat) |
 | `surface-backdrop` | The dimmed layer behind a modal dialog |
 | `surface-floating-body` | The inset between a floating surface and its rows |
 
@@ -26,7 +28,10 @@ Panels were restyled one at a time, so radii, shadows, text sizes, input styles,
 - Rows and fields use the concentric item radius (`rounded-floating-item`), so inner corners follow the panel corner.
 - Fullscreen and sheet variants on narrow or mobile layouts may drop the radius and border where they touch the screen edge.
 - Floating surfaces use the `popover` color; dialogs use the `card` color. Do not add `dark:` background overrides; themes own those colors.
+- The window shell has two layers: the `sidebar` color frames the app (title bar and window edge), and each tab paints one `cal-bg` content surface. A tab's toolbar row sits on that surface at `--toolbar-h` with no fill or bottom border of its own, so the header reads as the top of the page rather than a separate band. Docked desktop explorers (Projects, Notes, and Chat) belong to the frame: they take the `sidebar` color and its accent for rows, run the full height of the tab, and the `cal-bg` surface with its own toolbar sits beside them. They collapse to a narrow rail through the shared `explorer-dock` utilities, which clip fixed-width content instead of reflowing it, so all three move identically. Sheet and mobile explorers keep the content surface color. The content surface carries a hairline edge derived from the frame color, always painted as a border just inside its box so every tab's edge sits on the same pixels; a border snaps to whole device pixels, while a shadow ring changes thickness with its position at fractional display scales. The active title bar tab adds a barely visible lift. Both use fixed values, not editable tokens.
+- On phones, the top bar and every tab's action row place icon buttons on one column grid: `--mobile-chrome-column` wide, with no gap and a `--mobile-chrome-inset` edge inset, and the leading column centers under the top bar pill icon. Action row icons therefore stack under the top bar icons instead of reading as a separate toolbar. Each button keeps the whole column as its touch target but paints its pressed and open fill as a round `--mobile-chrome-highlight` shape through the shared `mobile-chrome-button` utility, matching the top bar.
 - Closing a panel or dialog returns focus through `captureFocusReturn` in `apps/client/src/lib/modal-focus.ts`: to the opener only when the opener had keyboard focus, otherwise to the dialog that contained the opener or nowhere. A pointer-opened panel must not leave a focused trigger, or a focused control inside a hidden panel, that Space or Enter would activate later.
+- A modal panel that hosts its own controls, such as Quick notes, owns the keyboard through `activateIsolatingKeyboardLayer` in `apps/client/src/lib/modal-focus.ts`: it sees keys before the app, and while it is open, window-wide app shortcuts (tab switching, Settings) and view shortcuts gated by workspace pane focus stay inactive. Shell shortcuts such as close, zoom, theme, and the panel toggles still work. Dialogs whose keys all belong to them use `activateModalKeyboardLayer` instead.
 
 ## Rows and text
 
@@ -66,6 +71,12 @@ Panels were restyled one at a time, so radii, shadows, text sizes, input styles,
 
 - Floating surfaces use `w-floating-sm` (compact action menus), `w-floating` (settings and option panels), or `w-floating-lg` (searchable lists, editors, and two-part rows), capped by the viewport. Content that genuinely needs another width, such as a calendar grid or an editor, may use its own.
 
+## Placement and dismissal
+
+- A floating surface stays inside the visible viewport. Panels positioned by script use the shared anchored helpers; panels placed by CSS beside their trigger use `keepInViewport`, which slides them back only as far as a narrow screen requires. Its `translate` makes the panel the containing block for fixed descendants, so nested fixed pickers portal out.
+- Touch screens keep `:hover` on the last tapped element, so the build moves every hand-written `:hover` rule behind `@media (hover: hover)`, as Tailwind's `hover:` already is. On touch, a trigger shows its highlight only through open, active, or keyboard focus states, so it clears as soon as its surface closes.
+- A second press on the trigger of an open surface only closes it. A full-screen backdrop closes on `click`, not on `pointerdown`, because a touch that closes on press lets the following click land on the trigger and reopen the surface. Outside-press handlers count the trigger as inside.
+
 ## Scrolling
 
 - Every scrollable panel body fades the edge that has more content beyond it with `scrollEdgeFadeAction`.
@@ -74,15 +85,26 @@ Panels were restyled one at a time, so radii, shadows, text sizes, input styles,
 ## Hover submenus
 
 - In a menu, a hovered row opens its submenu after `SUBMENU_OPEN_DELAY_MS` and a hover-opened submenu closes `SUBMENU_CLOSE_DELAY_MS` after the pointer leaves both, unless the pointer is aiming at it within `SUBMENU_AIM_TOLERANCES`.
-- Cascading pickers and settings flyouts, whose side panel stays open until dismissed, switch to a hovered row immediately unless the pointer is aiming at the open panel within `SUBMENU_AIM_TOLERANCES`.
+- Cascading pickers (the Projects, Notes, and Chat navigators) switch to a hovered row immediately, or after `SUBMENU_CLOSE_DELAY_MS` while the pointer is aiming at the open side panel within `SUBMENU_AIM_TOLERANCES`. A side panel closes `SUBMENU_CLOSE_DELAY_MS` after the pointer leaves its row, bridge, and panel, and re-entering any of them cancels the close. Only the first panel of a cascading picker carries search and the order button, side by side; side panels have neither, so the panel footer keeps only creation actions. The first panel searches what its view navigates to: notes in Notes, channels in Chat, and projects elsewhere.
+- Settings flyouts keep their side panel open until dismissed and switch rows with the same aim rule.
+- Breadcrumb triggers that open a navigator on hover wait `SUBMENU_OPEN_DELAY_MS`, switch between sibling triggers at once while open, and close `SUBMENU_CLOSE_DELAY_MS` after the pointer leaves both the triggers and the panel. A click on a trigger, or a press or keystroke inside the panel, pins it until dismissed. Touch pointers never open on hover.
 - The parent row keeps `aria-expanded="true"` and its highlight while the submenu is open. Opening one submenu closes its siblings.
 - ArrowRight or Enter opens a submenu from the keyboard, and ArrowLeft or Escape returns to the parent row.
+
+## Sortable lists
+
+- Lists reordered in place (Project settings statuses, priorities, tags, custom fields, and options) use `createSortableDrag` from a grip handle: the dragged row lifts and follows the pointer, its siblings slide aside, and the move commits once the row settles, with no landing flash. Escape or leaving the window returns the row to its slot, and the grip keeps arrow key moves.
+- Lists whose moves wait on an asynchronous store write keep native drag, since a commit after the settle would jump.
+- Sidebar and picker custom orders use the same drag through `createSidebarOrderDrag`, which drags the whole row with a mouse or pen, or after a stationary touch hold so a swipe still scrolls, and updates the store synchronously before the save so the settle never jumps. A new move waits for the previous save. Row menus offer the keyboard alternative through `MoveStepMenuItems`. While a touch hold is pending or active, the long-press context menu stays closed.
+- The click that follows a drop is swallowed, so releasing a lifted row never also opens it.
 
 ## Deliberate exceptions
 
 - The Calendar event panel family (event panel, recurrence, notifications, and description editor surfaces) keeps its own shape, color, and shadow.
+- A lifted sortable row takes the popover color and a stronger shadow while it follows the pointer, so it reads as picked up above its list.
 - Tooltips use an inverted palette so they read as transient hints rather than panels.
 - Calendar-colored pickers (icon picker, event and quick note color pickers) keep the Calendar background so they match the surface that opens them, while sharing the radius and shadow.
 - The settings panels opened from the Projects, Notes, and Chat toolbars keep their own section order and layout inside shared chrome.
+- Quick notes tags are created and renamed in place: the input takes the chip's shape and grows with its name instead of using a bordered `field`, so the tag row keeps its height.
 
 New exceptions need a product reason recorded here.

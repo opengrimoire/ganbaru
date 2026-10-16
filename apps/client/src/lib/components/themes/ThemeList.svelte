@@ -38,7 +38,7 @@
   } | undefined>(undefined);
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
   const quickToggleShortcuts = ["Mod + Shift + L"] as const;
-  const themePickerShortcuts = ["Mod + Shift + T"] as const;
+  const themePickerShortcuts = ["Mod + Shift + O"] as const;
 
   const orderedThemes = $derived.by(() => {
     const all = Object.values(themeStore.registry);

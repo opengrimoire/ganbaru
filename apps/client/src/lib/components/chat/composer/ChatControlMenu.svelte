@@ -131,7 +131,7 @@
 
   function popoverStyle(): string {
     if (!ready) return "visibility:hidden;top:0;left:0;";
-    return `visibility:visible;top:${geometry.top}px;left:${geometry.left}px;min-width:${Math.max(220, geometry.minWidth)}px;max-width:${geometry.maxWidth}px;max-height:${geometry.maxHeight}px;`;
+    return `visibility:visible;top:${geometry.top}px;left:${geometry.left}px;min-width:${Math.min(Math.max(220, geometry.minWidth), geometry.maxWidth)}px;max-width:${geometry.maxWidth}px;max-height:${geometry.maxHeight}px;`;
   }
 
   async function toggle(): Promise<void> {

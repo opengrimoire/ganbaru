@@ -18,7 +18,7 @@ The hybrid logical clock is 48 bits of Unix milliseconds and a 16-bit counter. A
 | Kind | Winner among concurrent versions | Quick notes use |
 | --- | --- | --- |
 | Immutable | Set on create; concurrent creates keep the lowest `(clock, writer)` | `created_at` |
-| Register | Greatest `(clock, writer)` | Title, body, color, tag name |
+| Register | Greatest `(clock, writer)` | Title, body, color, tag name, tag color |
 | Coupled register | Greatest `(priority, clock, writer)` over several columns that must stay consistent | Lifecycle: pinned, archived, and trash time, with priority trashed, then archived, then active |
 | Max | Greatest value, then `(clock, writer)`; never a conflict | `updated_at` |
 | Position | Greatest `(clock, writer)` over an order key; rows sort by `(order_key, id)` | Note and tag order |
@@ -26,7 +26,7 @@ The hybrid logical clock is 48 bits of Unix milliseconds and a 16-bit counter. A
 | Owned children | The parent group's value is a canonical list that replaces the child rows | Body text runs |
 
 - A multi-column CHECK always lives inside one coupled register, so every materialized winner satisfies it.
-- A register is surfaced when its concurrent distinct versions are shown to people as a conflict; otherwise it resolves silently. Quick note title and body are surfaced. Color, tag, lifecycle, order, and tag names are silent.
+- A register is surfaced when its concurrent distinct versions are shown to people as a conflict; otherwise it resolves silently. Quick note title and body are surfaced. Color, tag, lifecycle, order, tag names, and tag colors are silent.
 - A group is recoverable when edits to it that a deletion did not see should be offered for recovery. Quick note title, body, color, tag, and lifecycle are recoverable; order, timestamps, and every tag group are not.
 
 ## Order keys

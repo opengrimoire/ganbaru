@@ -1,4 +1,5 @@
 <script lang="ts">
+  import AppWindow from "@lucide/svelte/icons/app-window";
   import EllipsisVertical from "@lucide/svelte/icons/ellipsis-vertical";
   import { onDestroy, tick } from "svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -16,6 +17,7 @@
   import { dismissOnOutside } from "$lib/utils/dismiss-on-outside";
   import { overflowTooltip } from "$lib/utils/overflow-tooltip";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
+  import { openInNewTabIntent, preventMiddleClickAutoscroll, type OpenInNewTabIntent } from "$lib/workspace-tabs/gestures";
   import {
     createInlineRenameHistory,
     inlineRenameHistoryAction,
@@ -45,7 +47,9 @@
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
   import NotesPageIcon from "$lib/components/notes/pages/NotesPageIcon.svelte";
+  import ExplorerRowStar from "$lib/components/ui/ExplorerRowStar.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
+  import MoveStepMenuItems from "$lib/components/ui/MoveStepMenuItems.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import {
     loadNotesOptionalComponent,
@@ -62,6 +66,7 @@
     favorited,
     selected,
     onSelect,
+    onOpenInNewTab = undefined,
     onRename,
     onToggleCollapsed,
     onToggleFavorite,
@@ -74,6 +79,9 @@
     onMoveToFolder = undefined,
     onArchive,
     onTrash,
+    onReorder = undefined,
+    canMoveUp = false,
+    canMoveDown = false,
     blockDropActive = false,
     onBlockDragOver,
     onBlockDragLeave,
@@ -98,6 +106,8 @@
     favorited: boolean;
     selected: boolean;
     onSelect: () => void;
+    /** Opens the page in a new workspace tab; leaving it out hides the gesture and the menu entry. */
+    onOpenInNewTab?: (intent: OpenInNewTabIntent) => void;
     onRename: (title: string) => boolean | void | Promise<boolean | void>;
     onToggleCollapsed?: (collapsed: boolean) => void;
     onToggleFavorite: (favorited: boolean) => void;
@@ -110,6 +120,10 @@
     onMoveToFolder?: (folderId: string | null) => void;
     onArchive: () => void;
     onTrash: () => void;
+    /** Moves the note one place among its siblings in the custom order; left out in other orders. */
+    onReorder?: (step: -1 | 1) => void;
+    canMoveUp?: boolean;
+    canMoveDown?: boolean;
     blockDropActive?: boolean;
     onBlockDragOver?: (pageId: string, event: DragEvent) => void;
     onBlockDragLeave?: (pageId: string, event: DragEvent) => void;
@@ -165,12 +179,19 @@
     }, 0);
   }
 
-  function handleSelect(): void {
+  /** Route a click to a new tab when the gesture asks for one, else select the page. */
+  function handleSelect(event: MouseEvent): void {
     if (shouldSuppressNavigationSelect) {
       shouldSuppressNavigationSelect = false;
       return;
     }
-    onSelect();
+    const intent = onOpenInNewTab ? openInNewTabIntent(event) : null;
+    if (intent) {
+      event.preventDefault();
+      onOpenInNewTab?.(intent);
+      return;
+    }
+    if (event.type === "click") onSelect();
   }
   const storedTitle = $derived(
     displayTitle === undefined
@@ -539,7 +560,9 @@
         class="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 pr-1 text-left explorer-row-label text-[0.866667rem] text-inherit"
         type="button"
         aria-current={selected ? "page" : undefined}
+        onmousedown={preventMiddleClickAutoscroll}
         onclick={handleSelect}
+        onauxclick={handleSelect}
       >
         {#if page.icon}
           <NotesPageIcon
@@ -566,12 +589,16 @@
             data-app-tooltip={parentStatusLabel(parentStatus)}
           />
         {/if}
-        {#if favorited}
-          <Star class="size-3.5 shrink-0 fill-current text-primary" aria-hidden="true" />
-        {/if}
       </button>
-      {#if !readOnly}
-      <button type="button" class="explorer-icon explorer-row-action" aria-label={`${t("notes.pageActions")}: ${title}`} data-app-tooltip-disabled="true" aria-haspopup="menu" aria-expanded={menuOpen} onclick={openActionMenu}><EllipsisVertical size={14} /></button>
+      {#if favorited || !readOnly}
+        <span class="explorer-row-trailing">
+          {#if favorited}
+            <ExplorerRowStar />
+          {/if}
+          {#if !readOnly}
+            <button type="button" class="explorer-icon explorer-row-action" aria-label={`${t("notes.pageActions")}: ${title}`} data-app-tooltip-disabled="true" aria-haspopup="menu" aria-expanded={menuOpen} onclick={openActionMenu}><EllipsisVertical size={14} /></button>
+          {/if}
+        </span>
       {/if}
     </div>
   {/if}
@@ -591,6 +618,19 @@
       data-app-floating-surface
     >
       <div class="surface-floating-body flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden" use:scrollEdgeFadeAction>
+        {#if onOpenInNewTab}
+          <button
+            class="menu-item"
+            type="button"
+            onclick={() => {
+              closeMenu();
+              onOpenInNewTab?.({ background: false });
+            }}
+          >
+            <AppWindow />
+            <span>{t("titleBar.tab.openInNewTab")}</span>
+          </button>
+        {/if}
         <button
           class="menu-item"
           type="button"
@@ -611,7 +651,7 @@
           }}
         >
           <Star class={favorited ? "fill-current text-primary" : undefined} />
-          <span>{favorited ? t("notes.removeFromFavorites") : t("notes.addToFavorites")}</span>
+          <span>{favorited ? t("common.removeFromFavorites") : t("common.addToFavorites")}</span>
         </button>
         <button
           class="menu-item"
@@ -716,6 +756,9 @@
               {/if}
             </div>
           {/if}
+        {/if}
+        {#if onReorder}
+          <MoveStepMenuItems {canMoveUp} {canMoveDown} onMove={(step) => onReorder?.(step)} onClose={() => (menuOpen = false)} />
         {/if}
         <button
           class="menu-item"

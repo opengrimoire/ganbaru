@@ -1,7 +1,9 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import { COMPACT_IDENTITY_ICON_SIZE, COMPACT_IDENTITY_ICON_STROKE_WIDTH } from "$lib/icon-sizing";
+  import MobileSidebarPanel from "$lib/components/mobile/MobileSidebarPanel.svelte";
   import SearchField from "$lib/components/ui/SearchField.svelte";
+  import AppWindow from "@lucide/svelte/icons/app-window";
   import Archive from "@lucide/svelte/icons/archive";
   import Check from "@lucide/svelte/icons/check";
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
@@ -18,6 +20,7 @@
   import Mail from "@lucide/svelte/icons/mail";
   import Pencil from "@lucide/svelte/icons/pencil";
   import Plus from "@lucide/svelte/icons/plus";
+  import Star from "@lucide/svelte/icons/star";
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import X from "@lucide/svelte/icons/x";
   import type { ChatChannelRead, ChatMessageSearchResultRead } from "$lib/chat/contracts";
@@ -25,21 +28,35 @@
   import {
     moveChatChannelToSection,
     normalizeChatSidebarSections,
+    orderChatSidebarSections,
     readChatSidebarSections,
+    reorderChatSidebarSections,
     saveChatSidebarSections,
+    withChatSidebarSectionStarred,
     type ChatSidebarSection,
   } from "$lib/chat/channel-sections";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { getChat } from "$lib/stores/chat.svelte";
+  import { useChatPaneEvents } from "$lib/chat/pane-events";
+  import { useChat } from "$lib/stores/chat.svelte";
+  import { getChatSidebarOrder } from "$lib/stores/chat/sidebar-order.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
+  import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
   import { onActiveVaultIdentityChange } from "$lib/vault/active-vault";
+  import { openInNewTabIntent, preventMiddleClickAutoscroll, type OpenInNewTabIntent } from "$lib/workspace-tabs/gestures";
   import { overflowTooltip } from "$lib/utils/overflow-tooltip";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
+  import { scrollOverflowAction } from "$lib/utils/scroll-overflow";
   import { SUBMENU_CLOSE_DELAY_MS, SUBMENU_OPEN_DELAY_MS } from "$lib/utils/menu-aim";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import ExplorerRowStar from "$lib/components/ui/ExplorerRowStar.svelte";
+  import MoveStepMenuItems from "$lib/components/ui/MoveStepMenuItems.svelte";
+  import { placedNextTo, starredSiblingGroups, steppedBy, type SidebarDropPlacement } from "$lib/utils/sidebar-order";
+  import { createSidebarOrderDrag } from "$lib/utils/sidebar-order-drag.svelte";
+  import { suppressClickAfterRelease } from "$lib/utils/click-suppression";
+  import { TouchHoldArbiter } from "$lib/utils/touch-hold";
 
   /** Which header opened the section menu: the default Channels group, a custom section, or Direct messages. */
   type SectionMenuTarget =
@@ -49,6 +66,17 @@
   type ChatChannelSetupDialogComponent = typeof import("./ChatChannelSetupDialog.svelte").default;
   type ParticipantPickerComponent =
     typeof import("$lib/components/contacts/ParticipantPicker.svelte").default;
+  /** A pending custom order drop: the dragged channel lands before or after `targetId`. */
+  interface RailReorder {
+    targetId: string;
+    placement: SidebarDropPlacement;
+    orderedIds: string[];
+  }
+  /** A touch press on a channel row that lifts the channel once the touch holds still. */
+  interface ChannelTouchPress {
+    pointerId: number;
+    channelId: string;
+  }
 
   let {
     presentation = "column",
@@ -57,23 +85,32 @@
     onExpand,
     onCollapse,
   }: {
-    presentation?: "column" | "sheet" | "surface";
+    presentation?: "column" | "sheet" | "panel";
     expanded: boolean;
     showCollapsedStrip: boolean;
     onExpand: () => void;
     onCollapse: () => void;
   } = $props();
 
-  const chat = getChat();
+  /** The phone shell opens the rail as a floating panel that closes after a channel opens. */
+  const panel = $derived(presentation === "panel");
+  const chat = useChat();
+  const paneEvents = useChatPaneEvents();
+  const chatSidebarOrder = getChatSidebarOrder();
   const preferences = getPreferences();
-  const projects = getProjects();
+  const projects = useProjects();
   const settings = getSettingsLauncher();
+  const tabs = getWorkspaceTabs();
+  /** The phone panel leaves out new tabs; the docked rail opens channels in them. */
+  const canOpenChannelTabs = $derived(tabs.canOpenTabs && !panel);
   const { t } = getLocalization();
   let query = $state("");
   let directMessagesCollapsed = $state(false);
   let directMessageButton = $state<HTMLButtonElement | null>(null);
   let directMessagePickerOpen = $state(false);
   let railElement = $state<HTMLElement | null>(null);
+  let expandButton = $state<HTMLButtonElement>();
+  let collapseButton = $state<HTMLButtonElement>();
   let channelMenuTrigger: HTMLElement | null = null;
   const menuViewportGap = 8;
   let sectionInput = $state<HTMLInputElement>();
@@ -111,7 +148,35 @@
   let messageSearchRequest = 0;
   const matchingChannels = $derived(chat.activeChannels.filter(matchesQuery));
   const assignedChannelIds = $derived(new Set(sections.flatMap((section) => section.channelIds)));
-  const unsectionedChannels = $derived(matchingChannels.filter((channel) => !assignedChannelIds.has(channel.id)));
+  const unsectionedChannels = $derived(
+    chatSidebarOrder.sortChannels(loadedProjectId, matchingChannels.filter((channel) => !assignedChannelIds.has(channel.id))),
+  );
+  const orderedSections = $derived(orderChatSidebarSections(sections, chatSidebarOrder.orderForProject(loadedProjectId)));
+  /** Channels and sections reorder in the custom order of the open project, except in search results. */
+  const customOrderActive = $derived(
+    loadedProjectId !== null && chatSidebarOrder.orderForProject(loadedProjectId) === "custom" && !query.trim(),
+  );
+  /** Each channel maps to the channels it can trade places with: the same section and starred state. */
+  const channelSiblings = $derived.by(() => starredSiblingGroups(
+    [unsectionedChannels, ...orderedSections.map(sectionChannels)].map((list) => list.map((channel) => channel.id)),
+    (channelId) => chatSidebarOrder.isChannelStarred(channelId),
+  ));
+  let draggedChannelId = $state<string | null>(null);
+  let railReorder = $state.raw<RailReorder | null>(null);
+  /** The section a touch-dragged channel would move into, with `null` for the default Channels group. */
+  let touchDropSectionId = $state<string | null | undefined>(undefined);
+  let channelTouchPress = $state.raw<ChannelTouchPress | null>(null);
+  const channelTouchHold = new TouchHoldArbiter();
+  /** Sections drag from their heading in the custom order, outside search and renaming, like Projects sidebar sections. */
+  const sectionDrag = createSidebarOrderDrag({
+    getIds: () => orderedSections.map((section) => section.id),
+    enabled: () => customOrderActive && renamingSectionId === null,
+    isStarred: (sectionId) => sections.some((section) => section.id === sectionId && section.starred === true),
+    save: async (orderedIds) => persist(reorderChatSidebarSections(sections, orderedIds)),
+    description: "chat sidebar sections",
+  });
+  $effect(() => sectionDrag.reset);
+  $effect(() => endChannelTouchDrag);
 
   function searchAuthorDisplayName(result: ChatMessageSearchResultRead): string {
     return chatParticipantDisplayName(
@@ -182,7 +247,7 @@
 
   function sectionChannels(section: ChatSidebarSection): ChatChannelRead[] {
     const byId = new Map(matchingChannels.map((channel) => [channel.id, channel]));
-    return section.channelIds.flatMap((id) => byId.get(id) ?? []);
+    return chatSidebarOrder.sortChannels(loadedProjectId, section.channelIds.flatMap((id) => byId.get(id) ?? []));
   }
 
   function persist(next: ChatSidebarSection[]): void {
@@ -326,6 +391,12 @@
     if (section) startSectionRename(section);
   }
 
+  function toggleSectionStarFromContextMenu(): void {
+    const section = contextMenuSection();
+    closeSectionContextMenu();
+    if (section) persist(withChatSidebarSectionStarred(sections, section.id, section.starred !== true));
+  }
+
   function deleteSectionFromContextMenu(): void {
     const section = contextMenuSection();
     closeSectionContextMenu();
@@ -341,15 +412,159 @@
     persist(moveChatChannelToSection(sections, channelId, sectionId));
   }
 
+  /** Drop on a section moves the dragged channel into it. */
   function handleDrop(event: DragEvent, sectionId: string | null): void {
     event.preventDefault();
+    clearRailDrag();
     const channelId = event.dataTransfer?.getData("application/x-ganbaru-chat-channel") ?? "";
     if (channelId) moveChannel(channelId, sectionId);
   }
 
   function beginDrag(event: DragEvent, channelId: string): void {
+    // A touch drag runs on pointer events; a native drag from the same hold would compete with it.
+    if (channelTouchPress) {
+      event.preventDefault();
+      return;
+    }
     event.dataTransfer?.setData("application/x-ganbaru-chat-channel", channelId);
     if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+    draggedChannelId = channelId;
+  }
+
+  function clearRailDrag(): void {
+    draggedChannelId = null;
+    railReorder = null;
+    touchDropSectionId = undefined;
+  }
+
+  /** Before or after the hovered element, split at its vertical middle. */
+  function dropPlacement(event: DragEvent): SidebarDropPlacement {
+    const bounds = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    return event.clientY < bounds.top + bounds.height / 2 ? "before" : "after";
+  }
+
+  function setRailReorder(next: RailReorder | null): void {
+    const current = railReorder;
+    if (current?.targetId === next?.targetId && current?.placement === next?.placement) return;
+    railReorder = next;
+  }
+
+  /**
+   * A channel dragged over a sibling in the custom order claims the drop as a reorder; over any other row the drop
+   * falls through to the section, which moves the channel there.
+   */
+  function handleChannelDragOver(event: DragEvent, channelId: string): void {
+    const sourceId = draggedChannelId;
+    if (!sourceId) return;
+    const placement = dropPlacement(event);
+    const orderedIds = customOrderActive
+      ? placedNextTo(channelSiblings.get(sourceId) ?? [], sourceId, channelId, placement)
+      : null;
+    if (!orderedIds) {
+      setRailReorder(null);
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    setRailReorder({ targetId: channelId, placement, orderedIds });
+  }
+
+  function handleChannelDrop(event: DragEvent, channelId: string): void {
+    const reorder = railReorder;
+    if (!reorder || reorder.targetId !== channelId || !loadedProjectId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    clearRailDrag();
+    chatSidebarOrder.setCustomSiblingOrder(loadedProjectId, reorder.orderedIds);
+  }
+
+  /** A channel dragged over a section, outside its rows, drops into the section and clears a stale reorder line. */
+  function handleSectionDragOver(event: DragEvent): void {
+    event.preventDefault();
+    setRailReorder(null);
+  }
+
+  /**
+   * A touch on a channel row lifts the channel after a stationary hold, while a swipe keeps scrolling the rail. The
+   * lifted channel then follows the same drops as a mouse drag: a reorder among its siblings, or a move into a section.
+   */
+  function handleChannelPointerDown(event: PointerEvent, channelId: string): void {
+    if (event.pointerType !== "touch" || event.button !== 0 || !event.isPrimary || channelTouchPress) return;
+    if (event.target instanceof Element && event.target.closest(".explorer-row-action")) return;
+    const press: ChannelTouchPress = { pointerId: event.pointerId, channelId };
+    channelTouchPress = press;
+    window.addEventListener("pointermove", handleChannelTouchMove);
+    window.addEventListener("pointerup", handleChannelTouchUp);
+    window.addEventListener("pointercancel", endChannelTouchDrag);
+    const startX = event.clientX;
+    const startY = event.clientY;
+    channelTouchHold.begin(event, () => {
+      if (channelTouchPress !== press) return;
+      draggedChannelId = channelId;
+      updateChannelTouchTarget(startX, startY);
+    });
+  }
+
+  function handleChannelTouchMove(event: PointerEvent): void {
+    if (event.pointerId !== channelTouchPress?.pointerId || !draggedChannelId) return;
+    updateChannelTouchTarget(event.clientX, event.clientY);
+  }
+
+  /** Resolve the row or section under the finger into a reorder line or a section drop. */
+  function updateChannelTouchTarget(clientX: number, clientY: number): void {
+    const sourceId = draggedChannelId;
+    if (!sourceId) return;
+    const hit = document.elementFromPoint(clientX, clientY);
+    const row = hit?.closest<HTMLElement>("[data-chat-channel-id]");
+    const targetId = row?.dataset.chatChannelId;
+    if (row && targetId && customOrderActive) {
+      const bounds = row.getBoundingClientRect();
+      const placement: SidebarDropPlacement = clientY < bounds.top + bounds.height / 2 ? "before" : "after";
+      const orderedIds = placedNextTo(channelSiblings.get(sourceId) ?? [], sourceId, targetId, placement);
+      if (orderedIds) {
+        touchDropSectionId = undefined;
+        setRailReorder({ targetId, placement, orderedIds });
+        return;
+      }
+    }
+    setRailReorder(null);
+    const section = hit?.closest<HTMLElement>("[data-chat-section-drop]");
+    touchDropSectionId = section ? section.dataset.chatSectionDrop || null : undefined;
+  }
+
+  function handleChannelTouchUp(event: PointerEvent): void {
+    if (event.pointerId !== channelTouchPress?.pointerId) return;
+    const channelId = draggedChannelId;
+    const reorder = railReorder;
+    const sectionId = touchDropSectionId;
+    endChannelTouchDrag();
+    if (!channelId) return;
+    suppressClickAfterRelease();
+    if (reorder && loadedProjectId) {
+      chatSidebarOrder.setCustomSiblingOrder(loadedProjectId, reorder.orderedIds);
+      return;
+    }
+    if (sectionId === undefined) return;
+    const currentSectionId = sections.find((section) => section.channelIds.includes(channelId))?.id ?? null;
+    if (sectionId !== currentSectionId) moveChannel(channelId, sectionId);
+  }
+
+  function endChannelTouchDrag(): void {
+    window.removeEventListener("pointermove", handleChannelTouchMove);
+    window.removeEventListener("pointerup", handleChannelTouchUp);
+    window.removeEventListener("pointercancel", endChannelTouchDrag);
+    channelTouchHold.finish();
+    channelTouchPress = null;
+    clearRailDrag();
+  }
+
+  function reorderLine(id: string, placement: SidebarDropPlacement): boolean {
+    return railReorder?.targetId === id && railReorder.placement === placement;
+  }
+
+  function moveChannelStep(channelId: string, step: -1 | 1): void {
+    const orderedIds = steppedBy(channelSiblings.get(channelId) ?? [], channelId, step);
+    if (orderedIds && loadedProjectId) chatSidebarOrder.setCustomSiblingOrder(loadedProjectId, orderedIds);
   }
 
   async function openChannelContextMenu(event: MouseEvent, channel: ChatChannelRead): Promise<void> {
@@ -444,6 +659,13 @@
     moveChannel(menu.channel.id, sectionId);
   }
 
+  function toggleChannelStarFromContextMenu(): void {
+    const menu = channelContextMenu;
+    if (!menu) return;
+    closeChannelContextMenu();
+    chatSidebarOrder.setChannelStarred(menu.channel.id, !chatSidebarOrder.isChannelStarred(menu.channel.id));
+  }
+
   function archiveChannelFromContextMenu(): void {
     const menu = channelContextMenu;
     if (!menu) return;
@@ -467,7 +689,19 @@
     moveChannel(channel.id, sectionId);
     setupChannel = undefined;
     setupSectionId = null;
-    if (presentation === "surface") onCollapse();
+    if (panel) onCollapse();
+  }
+
+  /** Collapse the docked rail and keep focus on the control that reopens it. */
+  function collapseToStrip(): void {
+    onCollapse();
+    if (showCollapsedStrip) void tick().then(() => expandButton?.focus());
+  }
+
+  /** Expand the docked rail and keep focus on the control that collapses it. */
+  function expandFromStrip(): void {
+    onExpand();
+    void tick().then(() => collapseButton?.focus());
   }
 
   /** Focus the persistent search field after the rail has opened. */
@@ -536,10 +770,35 @@
     railError = null;
     try {
       await chat.selectChannel(channelId);
-      if (presentation === "surface") onCollapse();
+      if (panel) onCollapse();
     } catch (cause: unknown) {
       railError = cause instanceof Error ? cause.message : String(cause);
     }
+  }
+
+  function openChannelInNewTab(channel: ChatChannelRead, intent: OpenInNewTabIntent): void {
+    tabs.openLocation("item", {
+      kind: "chat",
+      projectId: channel.projectId,
+      item: { type: "chat-channel", id: channel.id },
+    }, intent);
+  }
+
+  /** Route a row click to a new tab when the gesture asks for one, else open the channel here. */
+  function handleChannelRowClick(event: MouseEvent, channel: ChatChannelRead): void {
+    const intent = canOpenChannelTabs ? openInNewTabIntent(event) : null;
+    if (intent) {
+      event.preventDefault();
+      openChannelInNewTab(channel, intent);
+      return;
+    }
+    if (event.type === "click") void selectChannel(channel.id);
+  }
+
+  function openChannelInNewTabFromContextMenu(): void {
+    const channel = channelContextMenu?.channel;
+    closeChannelContextMenu();
+    if (channel) openChannelInNewTab(channel, { background: false });
   }
 
   async function openMessageResult(result: ChatMessageSearchResultRead): Promise<void> {
@@ -547,7 +806,7 @@
     try {
       await chat.openMessageSearchResult(result);
       query = "";
-      if (presentation === "surface") onCollapse();
+      if (panel) onCollapse();
     } catch (cause: unknown) {
       railError = cause instanceof Error ? cause.message : String(cause);
     }
@@ -577,9 +836,9 @@
         closeChannelContextMenu();
       }
     };
-    window.addEventListener("ganbaru-ai:chat-new-channel", createChannel);
-    window.addEventListener("ganbaru-ai:chat-edit-channel", editChannelFromEvent);
-    window.addEventListener("ganbaru-ai:chat-focus-search", focusSearch);
+    paneEvents.addEventListener("ganbaru-ai:chat-new-channel", createChannel);
+    paneEvents.addEventListener("ganbaru-ai:chat-edit-channel", editChannelFromEvent);
+    paneEvents.addEventListener("ganbaru-ai:chat-focus-search", focusSearch);
     document.addEventListener("pointerdown", closeOpenMenus);
     const unsubscribeVault = onActiveVaultIdentityChange(() => {
       loadedProjectId = null;
@@ -588,9 +847,9 @@
       sectionNameDraft = "";
     });
     return () => {
-      window.removeEventListener("ganbaru-ai:chat-new-channel", createChannel);
-      window.removeEventListener("ganbaru-ai:chat-edit-channel", editChannelFromEvent);
-      window.removeEventListener("ganbaru-ai:chat-focus-search", focusSearch);
+      paneEvents.removeEventListener("ganbaru-ai:chat-new-channel", createChannel);
+      paneEvents.removeEventListener("ganbaru-ai:chat-edit-channel", editChannelFromEvent);
+      paneEvents.removeEventListener("ganbaru-ai:chat-focus-search", focusSearch);
       document.removeEventListener("pointerdown", closeOpenMenus);
       unsubscribeVault();
       clearMoveMenuHoverTimer();
@@ -598,122 +857,160 @@
   });
 </script>
 
-{#if expanded}
-  <aside bind:this={railElement} class="explorer-sidebar flex h-full min-h-0 flex-col" class:explorer-touch={presentation === "surface"} aria-label={t("chat.channels.explorerLabel")}>
-    <div class="explorer-toolbar">
-      <SearchField bind:value={query} label={t("chat.channels.search")} clearLabel={t("chat.channels.clearSearch")} inline focusOnMount={false} />
-      <button type="button" class="explorer-icon" data-chat-rail-close aria-label={t("chat.collapseRail")} aria-expanded="true" data-app-tooltip={t("chat.collapseRail")} onclick={onCollapse}><ChevronsLeft size={16} /></button>
-    </div>
-
-    {#if creatingSection}
-      <form class="mx-2 mb-2 flex gap-1" onsubmit={(event) => { event.preventDefault(); createSection(); }}>
-        <input bind:this={sectionInput} class="field min-w-0 flex-1 text-xs" bind:value={newSectionName} maxlength="80" placeholder={t("chat.channels.sectionName")} aria-label={t("chat.channels.sectionName")} onkeydown={(event) => { if (event.key === "Escape") { event.stopPropagation(); toggleSectionDraft(); } }} />
-        <button type="submit" class="explorer-icon" disabled={!newSectionName.trim()} aria-label={t("chat.channels.add")}><Plus size={16} /></button>
-      </form>
-    {/if}
-
-    {#if railError}<Notice class="mx-2 mb-1 px-2 py-1 text-xs" message={railError} />{/if}
-
-    <div class="min-h-0 flex-1 overflow-y-scroll px-2 pb-2">
-      {#if query.trim().length >= 2}
-        <section class="message-results" aria-label={t("chat.organization.messageSearchResults")}>
-          <div class="section-heading"><span>{t("chat.organization.messages")}</span>{#if messageSearchLoading}<LoaderCircle size={12} class="animate-spin" aria-label={t("common.loading")} />{/if}</div>
-          {#each messageSearchResults as result (result.messageItemId)}
-            <button type="button" class="message-result" onclick={() => void openMessageResult(result)}>
-              <span><strong>{searchAuthorDisplayName(result)}</strong><small>{projectName(result.projectId)} · #{result.channelName}{#if result.replyThreadId} · {t("chat.organization.thread")}{/if}</small></span>
-              <span>{searchExcerpt(result)}</span>
-            </button>
-          {/each}
-          {#if !messageSearchLoading && messageSearchResults.length === 0}<p class="px-2 py-1 text-xs text-muted-foreground">{t("chat.organization.noMessageSearchResults")}</p>{/if}
-        </section>
-      {/if}
-      <section class="channel-section" role="group" ondragover={(event) => event.preventDefault()} ondrop={(event) => handleDrop(event, null)}>
-        <div class="section-heading">
-          <button type="button" class="section-toggle" class:collapsed={channelsCollapsed} aria-label={sectionToggleLabel(t("chat.channels.defaultSection"), channelsCollapsed)} aria-expanded={!channelsCollapsed} onclick={() => { channelsCollapsed = !channelsCollapsed; }}>
-            <span use:overflowTooltip={t("chat.channels.defaultSection")}>{t("chat.channels.defaultSection")}</span>
-            {#if channelsCollapsed}<ChevronRight class="section-chevron" size={13} />{:else}<ChevronDown class="section-chevron" size={13} />{/if}
-          </button>
-          <button type="button" class="section-create-action" aria-label={t("chat.channels.createTitle")} data-app-tooltip={t("chat.channels.createTitle")} onclick={() => openCreate()}><Plus size={13} /></button>
-          <button bind:this={sectionButton} type="button" class="explorer-icon explorer-row-action" aria-label={t("chat.moreActions")} data-app-tooltip-disabled="true" aria-haspopup="menu" aria-expanded={sectionContextMenu?.target.kind === "channels"} onclick={(event) => void toggleSectionContextMenu(event, { kind: "channels" })}><EllipsisVertical size={14} /></button>
+{#if panel}
+  {#if expanded}
+    <MobileSidebarPanel
+      title={t("chat.channels.explorerLabel")}
+      searchLabel={t("chat.channels.search")}
+      clearSearchLabel={t("chat.channels.clearSearch")}
+      bind:query
+      onClose={onCollapse}
+    >
+      <div bind:this={railElement} class="explorer-sidebar explorer-touch explorer-panel flex min-h-0 flex-1 flex-col pt-2" role="group" aria-label={t("chat.channels.explorerLabel")}>
+        {@render railBody("hide-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 pb-2")}
+      </div>
+      {@render railMenus()}
+      {@render railDialogs()}
+    </MobileSidebarPanel>
+  {:else}
+    {@render railMenus()}
+    {@render railDialogs()}
+  {/if}
+{:else}
+  {#if expanded || showCollapsedStrip}
+    <aside bind:this={railElement} class="explorer-sidebar flex h-full min-h-0 flex-col" class:explorer-dock={showCollapsedStrip} class:explorer-dock-collapsed={showCollapsedStrip && !expanded} aria-label={t("chat.channels.explorerLabel")}>
+      {#if showCollapsedStrip}
+        <div class="explorer-dock-rail" aria-hidden={expanded} inert={expanded}>
+          <div class="explorer-toolbar justify-center"><button bind:this={expandButton} type="button" class="explorer-icon" aria-expanded="false" data-app-tooltip={t("chat.openRail")} aria-label={t("chat.openRail")} onclick={expandFromStrip}><ChevronsRight size={16} /></button></div>
         </div>
-        {#if !channelsCollapsed}
-          {#if chat.channelsLoading && projects.selectedProjectId}
-            <div class="channel-row explorer-row-label channel-loading" role="status" aria-label={t("common.loading")}>
-              <Hash size={COMPACT_IDENTITY_ICON_SIZE} strokeWidth={COMPACT_IDENTITY_ICON_STROKE_WIDTH} class="explorer-row-icon" />
-              <span class="min-w-0 flex-1 truncate">general</span>
-              <LoaderCircle size={12} class="animate-spin" />
-            </div>
-          {:else}
-            {#each unsectionedChannels as channel (channel.id)}
-              {@render ChannelRow({ channel })}
-            {/each}
-            {#if unsectionedChannels.length === 0 && query}<p class="px-2 py-1 text-xs text-muted-foreground">{t("chat.channels.noResults")}</p>{/if}
-          {/if}
-        {/if}
-      </section>
-
-      {#each sections as section (section.id)}
-        <section class="channel-section" role="group" ondragover={(event) => event.preventDefault()} ondrop={(event) => handleDrop(event, section.id)}>
-          <div
-            class="section-heading"
-            class:section-renaming={renamingSectionId === section.id}
-            onfocusout={(event) => { if (renamingSectionId === section.id) handleSectionRenameFocusOut(event); }}
-          >
-            {#if renamingSectionId === section.id}
-              <input
-                bind:this={renameSectionInput}
-                class="section-rename-input"
-                bind:value={sectionNameDraft}
-                maxlength="80"
-                aria-label={t("chat.channels.sectionName")}
-                data-app-shortcuts="ignore"
-                onkeydown={handleSectionRenameKeydown}
-              />
-              <button type="button" class="explorer-icon section-rename-control" aria-label={t("chat.save")} disabled={!sectionNameDraft.trim() || [...sectionNameDraft.trim()].length > 80} data-app-tooltip-disabled="true" onpointerdown={() => { sectionRenameControlPointerActive = true; }} onpointerup={releaseSectionRenameControlPointer} onpointercancel={() => { sectionRenameControlPointerActive = false; }} onkeydown={handleSectionRenameControlKeydown} onclick={(event) => finishSectionRenameAndFocus(event, true)}><Check size={14} /></button>
-              <button type="button" class="explorer-icon section-rename-control" aria-label={t("chat.cancel")} data-app-tooltip-disabled="true" onpointerdown={() => { sectionRenameControlPointerActive = true; }} onpointerup={releaseSectionRenameControlPointer} onpointercancel={() => { sectionRenameControlPointerActive = false; }} onkeydown={handleSectionRenameControlKeydown} onclick={(event) => finishSectionRenameAndFocus(event, false)}><X size={14} /></button>
-            {:else}
-              <button type="button" class="section-toggle" class:collapsed={section.collapsed} aria-label={sectionToggleLabel(section.name, section.collapsed)} aria-expanded={!section.collapsed} onclick={() => toggleSection(section.id)}>
-                <span use:overflowTooltip={section.name}>{section.name}</span>
-                {#if section.collapsed}<ChevronRight class="section-chevron" size={13} />{:else}<ChevronDown class="section-chevron" size={13} />{/if}
-              </button>
-              <button type="button" class="section-create-action" aria-label={t("chat.channels.createTitle")} data-app-tooltip={t("chat.channels.createTitle")} onclick={() => openCreate(section.id)}><Plus size={13} /></button>
-              <button type="button" class="explorer-icon explorer-row-action" aria-label={`${t("chat.moreActions")}: ${section.name}`} data-app-tooltip-disabled="true" aria-haspopup="menu" aria-expanded={sectionContextMenu?.target.kind === "section" && sectionContextMenu.target.section.id === section.id} onclick={(event) => void toggleSectionContextMenu(event, { kind: "section", section })}><EllipsisVertical size={14} /></button>
-            {/if}
-          </div>
-          {#if !section.collapsed}
-            {#each sectionChannels(section) as channel (channel.id)}{@render ChannelRow({ channel })}{/each}
-          {/if}
-        </section>
-      {/each}
-
-      {#if !query.trim()}
-        <section class="channel-section" role="group" data-chat-direct-messages>
-          <div class="section-heading">
-            <button type="button" class="section-toggle" class:collapsed={directMessagesCollapsed} aria-label={sectionToggleLabel(t("chat.channels.directMessages"), directMessagesCollapsed)} aria-expanded={!directMessagesCollapsed} onclick={() => { directMessagesCollapsed = !directMessagesCollapsed; }}>
-              <span use:overflowTooltip={t("chat.channels.directMessages")}>{t("chat.channels.directMessages")}</span>
-              {#if directMessagesCollapsed}<ChevronRight class="section-chevron" size={13} />{:else}<ChevronDown class="section-chevron" size={13} />{/if}
-            </button>
-            <button bind:this={directMessageButton} type="button" class="section-create-action" aria-label={t("chat.channels.newDirectMessage")} data-app-tooltip={t("chat.channels.newDirectMessage")} aria-haspopup="dialog" aria-expanded={directMessagePickerOpen} onpointerenter={() => { void loadDirectMessagePicker(); }} onfocus={() => { void loadDirectMessagePicker(); }} onclick={openDirectMessagePicker}><Plus size={13} /></button>
-            <button type="button" class="explorer-icon explorer-row-action" aria-label={`${t("chat.moreActions")}: ${t("chat.channels.directMessages")}`} data-app-tooltip-disabled="true" aria-haspopup="menu" aria-expanded={sectionContextMenu?.target.kind === "directMessages"} onclick={(event) => void toggleSectionContextMenu(event, { kind: "directMessages" })}><EllipsisVertical size={14} /></button>
-          </div>
-          {#if !directMessagesCollapsed}
-            <p class="section-hint" data-chat-direct-messages-hint>{t("chat.channels.directMessagesHint")}</p>
-          {/if}
-        </section>
       {/if}
-
-    </div>
-
-  </aside>
-{:else if showCollapsedStrip}
-  <aside class="explorer-sidebar flex h-full flex-col items-center" aria-label={t("chat.channels.explorerLabel")}><div class="explorer-toolbar"><button type="button" class="explorer-icon" aria-expanded="false" data-app-tooltip={t("chat.openRail")} aria-label={t("chat.openRail")} onclick={onExpand}><ChevronsRight size={16} /></button></div></aside>
+      <div class="flex h-full min-h-0 flex-col" class:explorer-dock-content={showCollapsedStrip} inert={!expanded}>
+        <div class="explorer-toolbar">
+          <SearchField bind:value={query} label={t("chat.channels.search")} clearLabel={t("chat.channels.clearSearch")} inline focusOnMount={false} />
+          <button bind:this={collapseButton} type="button" class="explorer-icon" data-chat-rail-close aria-label={t("chat.collapseRail")} aria-expanded="true" data-app-tooltip={t("chat.collapseRail")} onclick={collapseToStrip}><ChevronsLeft size={16} /></button>
+        </div>
+        {@render railBody("explorer-list min-h-0 flex-1 pb-2")}
+      </div>
+    </aside>
+  {/if}
+  {@render railMenus()}
+  {@render railDialogs()}
 {/if}
 
+{#snippet railBody(listClass: string)}
+      {#if creatingSection}
+        <form class="mx-2 mb-2 flex gap-1" onsubmit={(event) => { event.preventDefault(); createSection(); }}>
+          <input bind:this={sectionInput} class="field min-w-0 flex-1 text-xs" bind:value={newSectionName} maxlength="80" placeholder={t("chat.channels.sectionName")} aria-label={t("chat.channels.sectionName")} onkeydown={(event) => { if (event.key === "Escape") { event.stopPropagation(); toggleSectionDraft(); } }} />
+          <button type="submit" class="explorer-icon" disabled={!newSectionName.trim()} aria-label={t("chat.channels.add")}><Plus size={16} /></button>
+        </form>
+      {/if}
+
+      {#if railError}<Notice class="mx-2 mb-1 px-2 py-1 text-xs" message={railError} />{/if}
+
+      <div use:scrollOverflowAction class={listClass}>
+        {#if query.trim().length >= 2}
+          <section class="message-results" aria-label={t("chat.organization.messageSearchResults")}>
+            <div class="section-heading"><span>{t("chat.organization.messages")}</span>{#if messageSearchLoading}<LoaderCircle size={12} class="animate-spin" aria-label={t("common.loading")} />{/if}</div>
+            {#each messageSearchResults as result (result.messageItemId)}
+              <button type="button" class="message-result" onclick={() => void openMessageResult(result)}>
+                <span><strong>{searchAuthorDisplayName(result)}</strong><small>{projectName(result.projectId)} · #{result.channelName}{#if result.replyThreadId} · {t("chat.organization.thread")}{/if}</small></span>
+                <span>{searchExcerpt(result)}</span>
+              </button>
+            {/each}
+            {#if !messageSearchLoading && messageSearchResults.length === 0}<p class="px-2 py-1 text-xs text-muted-foreground">{t("chat.organization.noMessageSearchResults")}</p>{/if}
+          </section>
+        {/if}
+        <section class="channel-section" role="group" data-chat-section-drop="" class:rail-drop-section={touchDropSectionId === null} ondragover={handleSectionDragOver} ondrop={(event) => handleDrop(event, null)}>
+          <div class="section-heading">
+            <button type="button" class="section-toggle" class:collapsed={channelsCollapsed} aria-label={sectionToggleLabel(t("chat.channels.defaultSection"), channelsCollapsed)} aria-expanded={!channelsCollapsed} onclick={() => { channelsCollapsed = !channelsCollapsed; }}>
+              <span use:overflowTooltip={t("chat.channels.defaultSection")}>{t("chat.channels.defaultSection")}</span>
+              {#if channelsCollapsed}<ChevronRight class="section-chevron" size={13} />{:else}<ChevronDown class="section-chevron" size={13} />{/if}
+            </button>
+            <button type="button" class="section-create-action" aria-label={t("chat.channels.createTitle")} data-app-tooltip={t("chat.channels.createTitle")} onclick={() => openCreate()}><Plus size={13} /></button>
+            <button bind:this={sectionButton} type="button" class="explorer-icon explorer-row-action" aria-label={t("chat.moreActions")} data-app-tooltip-disabled="true" aria-haspopup="menu" aria-expanded={sectionContextMenu?.target.kind === "channels"} onclick={(event) => void toggleSectionContextMenu(event, { kind: "channels" })}><EllipsisVertical size={14} /></button>
+          </div>
+          {#if !channelsCollapsed}
+            {#if chat.channelsLoading && projects.selectedProjectId}
+              <div class="channel-row explorer-row-label channel-loading" role="status" aria-label={t("common.loading")}>
+                <Hash size={COMPACT_IDENTITY_ICON_SIZE} strokeWidth={COMPACT_IDENTITY_ICON_STROKE_WIDTH} class="explorer-row-icon" />
+                <span class="min-w-0 flex-1 truncate">general</span>
+                <LoaderCircle size={12} class="animate-spin" />
+              </div>
+            {:else}
+              {#each unsectionedChannels as channel (channel.id)}
+                {@render ChannelRow({ channel })}
+              {/each}
+              {#if unsectionedChannels.length === 0 && query}<p class="px-2 py-1 text-xs text-muted-foreground">{t("chat.channels.noResults")}</p>{/if}
+            {/if}
+          {/if}
+        </section>
+
+        {#each orderedSections as section (section.id)}
+          <section
+            class="channel-section"
+            role="group"
+            {@attach sectionDrag.item(section.id)}
+            data-chat-section-drop={section.id}
+            class:rail-drop-section={touchDropSectionId === section.id}
+            ondragover={handleSectionDragOver}
+            ondrop={(event) => handleDrop(event, section.id)}
+          >
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div
+              class="section-heading"
+              class:section-renaming={renamingSectionId === section.id}
+              onfocusout={(event) => { if (renamingSectionId === section.id) handleSectionRenameFocusOut(event); }}
+            >
+              {#if renamingSectionId === section.id}
+                <input
+                  bind:this={renameSectionInput}
+                  class="section-rename-input"
+                  bind:value={sectionNameDraft}
+                  maxlength="80"
+                  aria-label={t("chat.channels.sectionName")}
+                  data-app-shortcuts="ignore"
+                  onkeydown={handleSectionRenameKeydown}
+                />
+                <button type="button" class="explorer-icon section-rename-control" aria-label={t("chat.save")} disabled={!sectionNameDraft.trim() || [...sectionNameDraft.trim()].length > 80} data-app-tooltip-disabled="true" onpointerdown={() => { sectionRenameControlPointerActive = true; }} onpointerup={releaseSectionRenameControlPointer} onpointercancel={() => { sectionRenameControlPointerActive = false; }} onkeydown={handleSectionRenameControlKeydown} onclick={(event) => finishSectionRenameAndFocus(event, true)}><Check size={14} /></button>
+                <button type="button" class="explorer-icon section-rename-control" aria-label={t("chat.cancel")} data-app-tooltip-disabled="true" onpointerdown={() => { sectionRenameControlPointerActive = true; }} onpointerup={releaseSectionRenameControlPointer} onpointercancel={() => { sectionRenameControlPointerActive = false; }} onkeydown={handleSectionRenameControlKeydown} onclick={(event) => finishSectionRenameAndFocus(event, false)}><X size={14} /></button>
+              {:else}
+                <button type="button" class="section-toggle" class:collapsed={section.collapsed} aria-label={sectionToggleLabel(section.name, section.collapsed)} aria-expanded={!section.collapsed} onpointerdown={(event) => sectionDrag.pointerDown(event, section.id)} onclick={() => toggleSection(section.id)}>
+                  {#if section.starred}<Star class="section-star size-2.5 shrink-0 translate-y-[-0.05em] fill-current text-primary" aria-hidden="true" />{/if}
+                  <span use:overflowTooltip={section.name}>{section.name}</span>
+                  {#if section.collapsed}<ChevronRight class="section-chevron" size={13} />{:else}<ChevronDown class="section-chevron" size={13} />{/if}
+                </button>
+                <button type="button" class="section-create-action" aria-label={t("chat.channels.createTitle")} data-app-tooltip={t("chat.channels.createTitle")} onclick={() => openCreate(section.id)}><Plus size={13} /></button>
+                <button type="button" class="explorer-icon explorer-row-action" aria-label={`${t("chat.moreActions")}: ${section.name}`} data-app-tooltip-disabled="true" aria-haspopup="menu" aria-expanded={sectionContextMenu?.target.kind === "section" && sectionContextMenu.target.section.id === section.id} onclick={(event) => void toggleSectionContextMenu(event, { kind: "section", section })}><EllipsisVertical size={14} /></button>
+              {/if}
+            </div>
+            {#if !section.collapsed}
+              {#each sectionChannels(section) as channel (channel.id)}{@render ChannelRow({ channel })}{/each}
+            {/if}
+          </section>
+        {/each}
+
+        {#if !query.trim()}
+          <section class="channel-section" role="group" data-chat-direct-messages>
+            <div class="section-heading">
+              <button type="button" class="section-toggle" class:collapsed={directMessagesCollapsed} aria-label={sectionToggleLabel(t("chat.channels.directMessages"), directMessagesCollapsed)} aria-expanded={!directMessagesCollapsed} onclick={() => { directMessagesCollapsed = !directMessagesCollapsed; }}>
+                <span use:overflowTooltip={t("chat.channels.directMessages")}>{t("chat.channels.directMessages")}</span>
+                {#if directMessagesCollapsed}<ChevronRight class="section-chevron" size={13} />{:else}<ChevronDown class="section-chevron" size={13} />{/if}
+              </button>
+              <button bind:this={directMessageButton} type="button" class="section-create-action" aria-label={t("chat.channels.newDirectMessage")} data-app-tooltip={t("chat.channels.newDirectMessage")} aria-haspopup="dialog" aria-expanded={directMessagePickerOpen} onpointerenter={() => { void loadDirectMessagePicker(); }} onfocus={() => { void loadDirectMessagePicker(); }} onclick={openDirectMessagePicker}><Plus size={13} /></button>
+              <button type="button" class="explorer-icon explorer-row-action" aria-label={`${t("chat.moreActions")}: ${t("chat.channels.directMessages")}`} data-app-tooltip-disabled="true" aria-haspopup="menu" aria-expanded={sectionContextMenu?.target.kind === "directMessages"} onclick={(event) => void toggleSectionContextMenu(event, { kind: "directMessages" })}><EllipsisVertical size={14} /></button>
+            </div>
+          </section>
+        {/if}
+
+      </div>
+{/snippet}
+
+{#snippet railMenus()}
 {#if sectionContextMenu}
   <div
     bind:this={sectionContextMenuElement}
     class="section-context-menu surface-floating surface-floating-body fixed z-90 w-floating-sm"
-    class:explorer-touch={presentation === "surface"}
+    class:explorer-touch={panel}
     role="menu"
     tabindex="-1"
     style={`left:${sectionContextMenu.x}px;top:${sectionContextMenu.y}px`}
@@ -732,17 +1029,29 @@
       <button type="button" role="menuitem" class="menu-item" onclick={() => openContactsFromContextMenu("contacts")}><ContactRound class="size-4" /><span>{t("contacts.tabs.contacts")}</span></button>
       <button type="button" role="menuitem" class="menu-item" data-chat-invitations onclick={() => openContactsFromContextMenu("invitations")}><Mail class="size-4" /><span>{t("contacts.tabs.invitations")}</span></button>
     {:else}
+      {@const sectionStarred = sectionContextMenu.target.section.starred === true}
       <button type="button" role="menuitem" class="menu-item" onclick={renameSectionFromContextMenu}><Pencil class="size-4" /><span>{t("chat.rename")}</span></button>
+      <button type="button" role="menuitem" class="menu-item" onclick={toggleSectionStarFromContextMenu}><Star class={sectionStarred ? "size-4 fill-current text-primary" : "size-4"} /><span>{sectionStarred ? t("common.removeFromFavorites") : t("common.addToFavorites")}</span></button>
+      {#if customOrderActive}
+        {@const sectionId = sectionContextMenu.target.section.id}
+        <MoveStepMenuItems
+          canMoveUp={sectionDrag.canMove(sectionId, -1)}
+          canMoveDown={sectionDrag.canMove(sectionId, 1)}
+          onMove={(step) => sectionDrag.move(sectionId, step)}
+          onClose={closeSectionContextMenu}
+        />
+      {/if}
       <button type="button" role="menuitem" class="menu-item menu-item-destructive" onclick={deleteSectionFromContextMenu}><Trash2 class="size-4" /><span>{t("chat.channels.deleteSectionConfirm")}</span></button>
     {/if}
   </div>
 {/if}
 
 {#if channelContextMenu}
+  {@const channelStarred = chatSidebarOrder.isChannelStarred(channelContextMenu.channel.id)}
   <div
     bind:this={channelContextMenuElement}
     class="channel-context-menu surface-floating surface-floating-body fixed z-90 w-floating-sm"
-    class:explorer-touch={presentation === "surface"}
+    class:explorer-touch={panel}
     role="menu"
     tabindex="-1"
     style={`left:${channelContextMenu.x}px;top:${channelContextMenu.y}px`}
@@ -756,6 +1065,7 @@
     }}
     onscroll={hideMoveMenu}
   >
+    {#if canOpenChannelTabs}<button type="button" role="menuitem" class="menu-item" onclick={openChannelInNewTabFromContextMenu}><AppWindow class="size-4" /><span>{t("titleBar.tab.openInNewTab")}</span></button>{/if}
     <button type="button" role="menuitem" class="menu-item" onclick={editChannelFromContextMenu}><Pencil class="size-4" /><span>{t("chat.channels.edit")}</span></button>
     <div
       role="group"
@@ -778,28 +1088,43 @@
         >
           <div class="surface-floating-body min-h-0 flex-1 overflow-y-auto" use:scrollEdgeFadeAction>
             <button type="button" role="menuitem" class="menu-item" onclick={() => moveChannelFromContextMenu(null)}><Hash class="size-4" /><span class="min-w-0 truncate">{t("chat.channels.defaultSection")}</span></button>
-            {#each sections as section (section.id)}<button type="button" role="menuitem" class="menu-item" onclick={() => moveChannelFromContextMenu(section.id)}><Folder class="size-4" /><span class="min-w-0 truncate">{section.name}</span></button>{/each}
+            {#each orderedSections as section (section.id)}<button type="button" role="menuitem" class="menu-item" onclick={() => moveChannelFromContextMenu(section.id)}><Folder class="size-4" /><span class="min-w-0 truncate">{section.name}</span></button>{/each}
           </div>
         </div>
       {/if}
     </div>
+    <button type="button" role="menuitem" class="menu-item" onclick={toggleChannelStarFromContextMenu}><Star class={channelStarred ? "size-4 fill-current text-primary" : "size-4"} /><span>{channelStarred ? t("common.removeFromFavorites") : t("common.addToFavorites")}</span></button>
+    {#if customOrderActive}
+      {@const channelId = channelContextMenu.channel.id}
+      <MoveStepMenuItems
+        canMoveUp={steppedBy(channelSiblings.get(channelId) ?? [], channelId, -1) !== null}
+        canMoveDown={steppedBy(channelSiblings.get(channelId) ?? [], channelId, 1) !== null}
+        onMove={(step) => moveChannelStep(channelId, step)}
+        onClose={closeChannelContextMenu}
+      />
+    {/if}
     {#if !channelContextMenu.channel.isDefault}<button type="button" role="menuitem" class="menu-item menu-item-destructive" onclick={archiveChannelFromContextMenu}><Archive class="size-4" /><span>{t("chat.archive")}</span></button>{/if}
   </div>
 {/if}
+{/snippet}
 
 {#snippet ChannelRow({ channel }: { channel: ChatChannelRead })}
-  <div class="channel-row-group explorer-row" class:explorer-selected={chat.selectedChannelId === channel.id && !chat.channelArchiveOpen} role="group" aria-label={channel.name} draggable="true" ondragstart={(event) => beginDrag(event, channel.id)}>
-    <button type="button" class="channel-row explorer-row-label" class:selected={chat.selectedChannelId === channel.id && !chat.channelArchiveOpen} aria-current={chat.selectedChannelId === channel.id && !chat.channelArchiveOpen ? "page" : undefined} onclick={() => void selectChannel(channel.id)} oncontextmenu={(event) => void openChannelContextMenu(event, channel)}>
+  <div class="channel-row-group explorer-row" class:explorer-selected={chat.selectedChannelId === channel.id && !chat.channelArchiveOpen} role="group" aria-label={channel.name} data-chat-channel-id={channel.id} class:rail-touch-dragged={draggedChannelId === channel.id && channelTouchPress !== null} onpointerdown={(event) => handleChannelPointerDown(event, channel.id)} class:rail-reorder-before={reorderLine(channel.id, "before")} class:rail-reorder-after={reorderLine(channel.id, "after")} draggable="true" ondragstart={(event) => beginDrag(event, channel.id)} ondragend={clearRailDrag} ondragover={(event) => handleChannelDragOver(event, channel.id)} ondrop={(event) => handleChannelDrop(event, channel.id)}>
+    <button type="button" class="channel-row explorer-row-label" class:selected={chat.selectedChannelId === channel.id && !chat.channelArchiveOpen} aria-current={chat.selectedChannelId === channel.id && !chat.channelArchiveOpen ? "page" : undefined} onmousedown={preventMiddleClickAutoscroll} onclick={(event) => handleChannelRowClick(event, channel)} onauxclick={(event) => handleChannelRowClick(event, channel)} oncontextmenu={(event) => void openChannelContextMenu(event, channel)}>
       <Hash size={COMPACT_IDENTITY_ICON_SIZE} strokeWidth={COMPACT_IDENTITY_ICON_STROKE_WIDTH} class="explorer-row-icon" />
       <span class="min-w-0 flex-1 truncate" use:overflowTooltip={channel.name}>{channel.name}</span>
     </button>
-    <button type="button" class="explorer-icon explorer-row-action" aria-label={`${t("chat.channels.actions")}: ${channel.name}`} data-app-tooltip-disabled="true" aria-haspopup="menu" aria-expanded={channelContextMenu?.channel.id === channel.id} onclick={(event) => void openChannelContextMenu(event, channel)}><EllipsisVertical size={14} /></button>
+    <span class="explorer-row-trailing">
+      {#if chatSidebarOrder.isChannelStarred(channel.id)}<ExplorerRowStar />{/if}
+      <button type="button" class="explorer-icon explorer-row-action" aria-label={`${t("chat.channels.actions")}: ${channel.name}`} data-app-tooltip-disabled="true" aria-haspopup="menu" aria-expanded={channelContextMenu?.channel.id === channel.id} onclick={(event) => void openChannelContextMenu(event, channel)}><EllipsisVertical size={14} /></button>
+    </span>
   </div>
 {/snippet}
 
+{#snippet railDialogs()}
 {#if setupChannel !== undefined && SetupDialog}
   {@const LoadedSetupDialog = SetupDialog}
-  <LoadedSetupDialog channel={setupChannel} {sections} initialSectionId={setupSectionId} onSaved={savedChannel} onCancel={() => { setupChannel = undefined; setupSectionId = null; }} />
+  <LoadedSetupDialog channel={setupChannel} sections={orderedSections} initialSectionId={setupSectionId} onSaved={savedChannel} onCancel={() => { setupChannel = undefined; setupSectionId = null; }} />
 {/if}
 
 {#if directMessagePickerOpen && DirectMessagePicker}
@@ -817,38 +1142,47 @@
 
 {#if archiveCandidate}<ConfirmDialog title={t("chat.channels.archiveConfirmTitle", archiveCandidate.name)} message={t("chat.channels.archiveConfirmMessage")} confirmLabel={t("chat.archive")} cancelLabel={t("chat.cancel")} onConfirm={() => void confirmArchive()} onCancel={() => { archiveCandidate = null; }} />{/if}
 {#if deleteSectionCandidate}<ConfirmDialog title={t("chat.channels.deleteSectionTitle", deleteSectionCandidate.name)} message={t("chat.channels.deleteSectionMessage")} confirmLabel={t("chat.channels.deleteSectionConfirm")} cancelLabel={t("chat.cancel")} onConfirm={confirmDeleteSection} onCancel={() => { deleteSectionCandidate = null; }} />{/if}
+{/snippet}
 
 <style>
   .channel-section + .channel-section { margin-top: 0.5rem; }
   .message-results { margin-block:0.3rem 0.45rem; border-bottom:1px solid var(--border); padding-bottom:0.45rem; }
   .message-result { display:grid; width:100%; gap:0.18rem; border-radius:0.4rem; padding:0.42rem 0.5rem; text-align:left; }
-  .message-result:hover,.message-result:focus-visible { background:var(--accent); }
+  .message-result:hover,.message-result:focus-visible { background:var(--explorer-icon-hover, var(--accent)); }
   .message-result > span:first-child { display:flex; min-width:0; align-items:baseline; gap:0.35rem; }
   .message-result strong { flex:0 0 auto; font-size: calc(0.72rem * var(--type-scale)); }
   .message-result small { min-width:0; overflow:hidden; color:var(--muted-foreground); font-size: calc(0.6rem * var(--type-scale)); text-overflow:ellipsis; white-space:nowrap; }
   .message-result > span:last-child { display:-webkit-box; overflow:hidden; color:var(--muted-foreground); font-size: calc(0.68rem * var(--type-scale)); line-height: calc(1rem * var(--type-scale)); -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2; }
-  .section-heading { --section-heading-gap: 0.2rem; display: flex; min-height: var(--explorer-row-height); align-items: center; gap: var(--section-heading-gap); padding-inline: 0.5rem; color: var(--muted-foreground); }
+  .section-heading { --section-heading-gap: 0.2rem; --section-heading-inset: 0.5rem; display: flex; min-height: var(--explorer-row-height); align-items: center; gap: var(--section-heading-gap); padding-inline: var(--section-heading-inset); color: var(--muted-foreground); }
   .channel-section > .section-heading { padding-inline-end: 0; }
-  .section-heading.section-renaming { border-radius: 0.375rem; background: color-mix(in oklab, var(--accent) 50%, transparent); }
+  .section-heading.section-renaming { border-radius: 0.375rem; background: var(--explorer-row-hover, color-mix(in oklab, var(--accent) 50%, transparent)); }
   .section-rename-input { min-width: 0; width: 0; flex: 1; min-height: var(--explorer-action-size); border: 0; background: transparent; color: var(--foreground); caret-color: var(--primary); font: inherit; outline: none; }
   .section-rename-control { color: var(--foreground); }
   .section-heading > .section-rename-control:last-child { margin-inline-end: var(--explorer-row-action-end-inset); }
   .section-heading > button { display: flex; min-width: var(--explorer-action-size); min-height: var(--explorer-action-size); align-items: center; justify-content: center; gap: 0.2rem; border-radius: 0.3rem; }
   .section-heading > .section-create-action { margin-inline-end: calc(-1 * var(--section-heading-gap)); }
   .section-heading > .section-create-action:is(:hover, :focus-visible) { background: transparent; color: var(--foreground); }
-  .channel-section > .section-heading > .explorer-row-action { opacity: 1; }
-  .section-heading > :is(.section-toggle, .section-rename-control):hover { background: var(--accent); color: var(--foreground); }
-  .section-heading > .section-toggle { min-width: 0; flex: 1; justify-content: flex-start; }
+  .channel-section > .section-heading > .explorer-row-action { margin-inline-end: 0; opacity: 1; }
+  .section-heading > :is(.section-toggle, .section-rename-control):active { background: var(--explorer-icon-hover, var(--accent)); color: var(--foreground); }
+  @media (hover: hover) { .section-heading > :is(.section-toggle, .section-rename-control):hover { background: var(--explorer-icon-hover, var(--accent)); color: var(--foreground); } }
+  .section-heading > .section-toggle { min-width: 0; flex: 1; justify-content: flex-start; margin-inline-start: calc(-1 * var(--section-heading-inset)); padding-inline: var(--section-heading-inset); border-radius: 0.375rem; }
   .section-toggle > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .section-toggle :global(.section-chevron) { flex: 0 0 auto; transition: opacity 120ms ease; }
   .section-context-menu, .channel-context-menu { max-height: min(22rem, calc(100vh - 4rem)); overflow-y: auto; }
   .channel-move-menu { max-height: min(22rem, calc(100vh - 4rem)); }
   .section-context-menu.explorer-touch button, .channel-context-menu.explorer-touch button { min-height: var(--touch-target-min); }
   .channel-row-group { position: relative; display: flex; min-width: 0; align-items: center; }
+  .channel-section { position: relative; }
+  .rail-reorder-before::before, .rail-reorder-after::after { position: absolute; right: 0.5rem; left: 0.5rem; z-index: 1; height: 2px; border-radius: 1px; background: var(--primary); content: ""; pointer-events: none; }
+  .channel-row-group.rail-reorder-before::before { top: -1px; }
+  .channel-row-group.rail-reorder-after::after { bottom: -1px; }
+  .rail-touch-dragged { opacity: 0.5; }
+  .rail-drop-section > .section-heading { border-radius: 0.375rem; background: var(--explorer-row-highlight); }
   .channel-row { display: flex; width: 100%; min-width: 0; min-height: var(--explorer-row-height); align-items: center; gap: 0.375rem; border-radius: 0.35rem; padding: var(--explorer-row-padding) 0.5rem; color: var(--foreground); text-align: left; }
   .channel-row-group .channel-row { flex: 1; }
-  .section-hint { padding: 0.25rem 0.5rem 0.375rem; color: var(--muted-foreground); font-size: var(--panel-detail-font-size); line-height: 1.35; }
   .explorer-touch .section-heading > button { min-width: var(--touch-target-min); min-height: var(--touch-target-min); }
   .explorer-touch .section-heading > .section-toggle { min-width: 0; }
+  /* Touch headings keep the row action end inset, so their actions line up with the channel rows below. */
+  .explorer-touch .channel-section > .section-heading > .explorer-row-action { margin-inline-end: var(--explorer-row-action-end-inset); }
   .channel-loading { padding-right: 0.55rem; opacity: 0.72; }
 </style>

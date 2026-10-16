@@ -100,7 +100,7 @@ export function createNotesCompoundPersistence(
         const current = context.blockById(saved.id);
         const expected = request!.expected_blocks[saved.id] ?? presented.get(saved.id)?.edit_revision;
         if (!current || (current.edit_revision && current.edit_revision !== expected && current.edit_revision !== saved.edit_revision)) return [];
-        const block = current === presented.get(saved.id) ? saved : { ...current, edit_revision: saved.edit_revision };
+        const block = current === presented.get(saved.id) ? saved : { ...current, edit_revision: saved.edit_revision, content_revision: saved.content_revision };
         reconciled.set(block.id, block);
         return [block];
       });

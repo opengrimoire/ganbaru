@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { getCalendarZoom } from "$lib/stores/calendar-zoom.svelte";
+  import { useCalendarZoom } from "$lib/stores/calendar-zoom.svelte";
   import {
     CALENDAR_FORWARDED_WHEEL_EVENT,
     getSmoothScrollDelta,
@@ -22,7 +22,7 @@
     activeThumb?: boolean;
   } = $props();
 
-  const calendarZoom = getCalendarZoom();
+  const calendarZoom = useCalendarZoom();
   const SCROLLBAR_VISIBILITY_THRESHOLD_PX = 2;
 
   let trackEl: HTMLDivElement | undefined = $state();

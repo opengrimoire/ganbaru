@@ -51,6 +51,7 @@ export interface TitleBarShortcutControllerContext {
   zoomOut: () => void;
   resetZoom: () => void;
   toggleMusic: () => void;
+  toggleQuickNotes: () => void;
   toggleDiagnostics: () => void;
   openShortcutHelp: () => void;
 }
@@ -115,6 +116,8 @@ export function createTitleBarShortcutController(
         context.zoomIn();
       } else if (action === "zoom-out") {
         context.zoomOut();
+      } else if (action === "quick-notes-toggle") {
+        context.toggleQuickNotes();
       } else if (action === "music-toggle") {
         context.toggleMusic();
       } else if (action === "diagnostics-toggle") {

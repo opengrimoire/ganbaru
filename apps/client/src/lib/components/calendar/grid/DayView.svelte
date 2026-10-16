@@ -19,11 +19,12 @@
   import { eventMatchesActiveOccurrence } from "$lib/components/calendar/occurrence-protection";
   import { hasCalendarEventStarted } from "$lib/components/calendar/event-edit-permissions";
   import type { PanelAnchor } from "$lib/components/calendar/edit-session.svelte";
-  import { getCalendarZoom } from "$lib/stores/calendar-zoom.svelte";
+  import { useCalendarZoom } from "$lib/stores/calendar-zoom.svelte";
   import { getPomodoro } from "$lib/stores/pomodoro.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { formatNumber } from "$lib/i18n/formatters";
   import { onMount } from "svelte";
+  import { getWorkspacePaneFocus } from "$lib/workspace-tabs/pane-focus";
   import type { Theme } from "$lib/themes";
 
   let {
@@ -92,7 +93,7 @@
   let stickyHeaderHeight = $state(0);
   let visibleStartMinute = $state(0);
   let visibleEndMinute = $state(1440);
-  const calendarZoom = getCalendarZoom();
+  const calendarZoom = useCalendarZoom();
   const timelineWheelScroll = createTimelineWheelScroll(() => scrollContainer);
   const localization = getLocalization();
   const { t } = localization;
@@ -213,6 +214,8 @@
     if (nowStr !== todayStr) todayStr = nowStr;
   }
 
+  const paneFocused = getWorkspacePaneFocus();
+
   onMount(() => {
     updateCurrentTime();
     const interval = setInterval(updateCurrentTime, 1000);
@@ -246,6 +249,7 @@
 
     // Keyboard shortcuts for internal calendar zoom; layout handling lives in zoom-keys.ts.
     function handleKeyDown(e: KeyboardEvent) {
+      if (!paneFocused()) return;
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement)?.isContentEditable) return;
 
@@ -359,10 +363,10 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="flex h-full flex-col" style="visibility: {ready ? 'visible' : 'hidden'};">
-<div class="relative min-h-0 flex-1" style="background-color: var(--cal-header-bg);">
+<div class="relative min-h-0 flex-1" style="background-color: var(--cal-bg);">
   <div
     class="absolute left-0 right-0 top-0 z-40 grid"
-    style="grid-template-columns: {gridCols}; background-color: var(--cal-header-bg);"
+    style="grid-template-columns: {gridCols}; background-color: var(--cal-bg);"
   >
     <!-- Header row -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -373,8 +377,8 @@
       style="
         grid-column: 1 / -1;
         grid-template-columns: subgrid;
-        height: var(--cal-header-row-h);
-        background-color: var(--cal-header-bg);
+        height: var(--toolbar-h);
+        background-color: var(--cal-bg);
       "
     >
       <TimezoneSelector
@@ -431,7 +435,7 @@
       style="
         grid-column: 1 / -1;
         grid-template-columns: subgrid;
-        background-color: var(--cal-header-bg);
+        background-color: var(--cal-bg);
       "
     >
       <div style="grid-column: span {timezoneCount};"></div>

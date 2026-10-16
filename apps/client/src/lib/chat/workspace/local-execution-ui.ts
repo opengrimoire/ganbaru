@@ -3,7 +3,6 @@ import ChatWorkspaceObserver from "$lib/components/chat/workspace/ChatWorkspaceO
 import ChatWorkspacePanel from "$lib/components/chat/workspace/ChatWorkspacePanel.svelte";
 import ChatCommandMenu from "$lib/components/chat/composer/ChatCommandMenu.svelte";
 import type ChatScratchManager from "$lib/components/settings/chat/ChatScratchManager.svelte";
-import { openDetachedViewWindow } from "$lib/windows/detached";
 import { loadChatCodeEditorRuntime } from "./code-editor-loader";
 
 export type ChatScratchManagerComponent = typeof ChatScratchManager;
@@ -32,11 +31,6 @@ export function listenForChatChanges(
   onPayload: (payload: unknown) => void,
 ): Promise<StopChatChangeListener> {
   return listen<unknown>("chat://change", (event) => onPayload(event.payload));
-}
-
-/** Opens Chat in a detached desktop window. */
-export function openDetachedChatWindow(): Promise<void> {
-  return openDetachedViewWindow("chat");
 }
 
 /** Lazily loads the desktop private scratch inspector. */

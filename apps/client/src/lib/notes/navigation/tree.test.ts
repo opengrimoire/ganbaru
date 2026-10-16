@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createRichText } from "$lib/notes/blocks/factory";
 import {
   buildNotesNavigationTree,
+  firstNotesNavigationPage,
   notesFolderMoveTargets,
   notesFoldersForProject,
   notesPageFolderMoveTargets,
@@ -134,6 +135,95 @@ describe("notes navigation tree", () => {
     expect(keysFor("created-asc")).toEqual([
       "folder:folder-z", "folder:folder-a", "page:page-z", "page:page-a",
     ]);
+  });
+
+  it("lists favorite folders and notes first within their kind and level", () => {
+    const pages = [
+      page("page-a", "Alpha"),
+      page("page-z", "Zulu"),
+      page("nested-a", "Nested alpha", { type: "workspace", workspace: true }, "folder-a"),
+      page("nested-z", "Nested zulu", { type: "workspace", workspace: true }, "folder-a"),
+    ];
+    const folders = [folder("folder-a", "Archive"), folder("folder-z", "Zoo")];
+
+    expect(buildNotesNavigationTree(pages, folders, {
+      favoriteFolderIds: ["folder-z"],
+      favoritePageIds: ["page-z", "nested-z"],
+    }).map((item) => item.key)).toEqual([
+      "folder:folder-z",
+      "folder:folder-a",
+      "page:nested-z",
+      "page:nested-a",
+      "page:page-z",
+      "page:page-a",
+    ]);
+  });
+
+  it("ranks siblings by the custom order while folders and favorites stay first", () => {
+    const pages = [
+      page("page-a", "Alpha"),
+      page("page-b", "Bravo"),
+      page("page-c", "Charlie"),
+      page("starred", "Starred"),
+      page("nested-a", "Nested alpha", { type: "workspace", workspace: true }, "folder-a"),
+      page("nested-b", "Nested bravo", { type: "workspace", workspace: true }, "folder-a"),
+    ];
+    const folders = [folder("folder-a", "Archive"), folder("folder-z", "Zoo")];
+    const options = {
+      sortOrder: "custom" as const,
+      favoritePageIds: ["starred"],
+      customOrderKeys: ["page:page-c", "page:starred", "page:nested-b", "folder:folder-z", "page:page-a"],
+    };
+
+    expect(buildNotesNavigationTree(pages, folders, options).map((item) => item.key)).toEqual([
+      "folder:folder-z",
+      "folder:folder-a",
+      "page:nested-b",
+      "page:nested-a",
+      "page:starred",
+      "page:page-c",
+      "page:page-a",
+      "page:page-b",
+    ]);
+    expect(buildNotesNavigationTree(pages, folders, { ...options, sortOrder: "name-asc" }).map((item) => item.key))
+      .toEqual([
+        "folder:folder-a",
+        "page:nested-a",
+        "page:nested-b",
+        "folder:folder-z",
+        "page:starred",
+        "page:page-a",
+        "page:page-b",
+        "page:page-c",
+      ]);
+  });
+
+  it("finds the first note from the top of the sidebar, skipping collapsed folders", () => {
+    const pages = [
+      page("page-b", "Bravo"),
+      page("page-a", "Alpha"),
+      page("nested", "Nested", { type: "workspace", workspace: true }, "folder-a"),
+      page("child", "Child", { type: "page_id", page_id: "page-a" }),
+    ];
+    const folders = [folder("folder-a", "Archive")];
+
+    expect(firstNotesNavigationPage(pages, folders, { rootPagesOnly: true })?.id).toBe("nested");
+    expect(firstNotesNavigationPage(pages, folders, { rootPagesOnly: true, collapsedFolderIds: ["folder-a"] })?.id)
+      .toBe("page-a");
+    expect(firstNotesNavigationPage(pages, folders, {
+      rootPagesOnly: true,
+      collapsedFolderIds: ["folder-a"],
+      sortOrder: "custom",
+      customOrderKeys: ["page:page-b", "page:page-a"],
+    })?.id).toBe("page-b");
+  });
+
+  it("falls back to a note inside a collapsed folder and returns null without notes", () => {
+    const folders = [folder("folder-a", "Archive")];
+    const nested = page("nested", "Nested", { type: "workspace", workspace: true }, "folder-a");
+
+    expect(firstNotesNavigationPage([nested], folders, { collapsedFolderIds: ["folder-a"] })?.id).toBe("nested");
+    expect(firstNotesNavigationPage([], folders, { collapsedFolderIds: ["folder-a"] })).toBeNull();
   });
 
   it("keeps selected notes open while allowing their folder to close", () => {

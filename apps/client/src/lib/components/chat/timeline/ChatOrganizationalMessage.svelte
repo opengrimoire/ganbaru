@@ -6,11 +6,13 @@
   import { chatReferenceTextSegments } from "$lib/chat/composer/message-references";
   import { formatDateTime } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { getChat } from "$lib/stores/chat.svelte";
+  import { useChatPaneEvents } from "$lib/chat/pane-events";
+  import { useChat } from "$lib/stores/chat.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import ChatIdentityButton from "$lib/components/chat/identity/ChatIdentityButton.svelte";
   import ChatMessageActionToolbar from "./ChatMessageActionToolbar.svelte";
   import ChatMessageReactionList from "./ChatMessageReactionList.svelte";
+  import { heldMessageActionsKey, messageTouchActions } from "./message-touch-actions.svelte";
   import ChatParticipantAvatar from "$lib/components/chat/identity/ChatParticipantAvatar.svelte";
 
   let {
@@ -29,8 +31,10 @@
 
   const localization = getLocalization();
   const { t } = localization;
-  const chat = getChat();
+  const chat = useChat();
+  const paneEvents = useChatPaneEvents();
   const preferences = getPreferences();
+  const touchActionsKey = $props.id();
   let actionToolbarVisible = $state(false);
   const authorDisplayName = $derived(message.authorLabelSnapshot || chatParticipantDisplayName(
     message.author,
@@ -67,7 +71,7 @@
       return;
     }
     if (reference.kind === "workspacePath") {
-      window.dispatchEvent(new CustomEvent("ganbaru-ai:chat-open-file", {
+      paneEvents.dispatchEvent(new CustomEvent("ganbaru-ai:chat-open-file", {
         detail: {
           workingFolderId: reference.workingFolderId,
           relativePath: reference.relativePath,
@@ -88,9 +92,11 @@
   data-message-item-id={message.itemId}
   tabindex="-1"
   aria-label={`${authorDisplayName}, ${formatDateTime(localization.locale, Date.parse(message.createdAt), { dateStyle: "medium", timeStyle: "short" })}`}
-  onpointerenter={() => { actionToolbarVisible = true; }}
+  use:messageTouchActions={touchActionsKey}
+  data-message-touch-actions
+  onpointerenter={(event) => { if (event.pointerType !== "touch") actionToolbarVisible = true; }}
   onpointerleave={() => { actionToolbarVisible = false; }}
-  onfocusin={() => { actionToolbarVisible = true; }}
+  onfocusin={(event) => { if (event.target instanceof Element && event.target.matches(":focus-visible")) actionToolbarVisible = true; }}
   onfocusout={(event) => {
     if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) {
       actionToolbarVisible = false;
@@ -126,7 +132,7 @@
     <ChatMessageReactionList target={actionTarget} />
     <ChatMessageActionToolbar
       target={actionTarget}
-      visible={actionToolbarVisible}
+      visible={actionToolbarVisible || heldMessageActionsKey() === touchActionsKey}
       placement={grouped ? "grouped-message" : "participant-header"}
     />
   </div>

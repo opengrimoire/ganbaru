@@ -12,7 +12,6 @@ import type {
   ProjectCustomFieldValue,
   ProjectGroup,
   ProjectPriorityConfig,
-  ProjectSavedTaskView,
   ProjectSection,
   ProjectsSnapshot,
   ProjectStatus,
@@ -358,14 +357,6 @@ export function dependenciesBlockedByTask(
   return taskId ? copy(projectLoadedDataIndex(source).dependenciesBlockedByTask.get(taskId)) : [];
 }
 
-export function savedTaskViewsForProject(
-  source: ProjectLoadedDataIndexSource,
-  projectId: string | null | undefined,
-): ProjectSavedTaskView[] {
-  if (!projectId) return [];
-  return copy(projectLoadedDataIndex(source).savedTaskViewsByProject.get(projectId));
-}
-
 export function nextGroupSortOrder(source: ProjectLoadedDataIndexSource): number {
   return projectLoadedDataIndex(source).maxGroupSortOrder + 1000;
 }
@@ -471,6 +462,7 @@ export function mergeProjectSnapshot(
     groups: incoming.groups,
     projects: incoming.projects,
     viewPreferences: incoming.viewPreferences,
+    views: incoming.views,
     customEmojis: incoming.customEmojis,
     sections: [...base.sections, ...incoming.sections],
     statuses: [...base.statuses, ...incoming.statuses],

@@ -1480,9 +1480,16 @@ pub async fn notes_update_block<R: Runtime>(
     db_url: String,
     block_id: String,
     update: NoteBlockUpdate,
+    expected_content_revision: Option<String>,
 ) -> Result<project_history::NotesMutationResultDto<NoteBlockDto>, String> {
     let pool = connect_sqlite(app, db_url).await?;
-    let value = writes::update_block(&pool, &block_id, update).await?;
+    let value = writes::update_block_if_unchanged(
+        &pool,
+        &block_id,
+        update,
+        expected_content_revision.as_deref(),
+    )
+    .await?;
     project_history::mutation_result(&pool, value).await
 }
 

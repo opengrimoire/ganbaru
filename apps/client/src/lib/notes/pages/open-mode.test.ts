@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  DEFAULT_NOTES_PAGE_OPEN_MODE,
   isNotesPageOpenMode,
   notesContextualPageOpenMode,
   notesPageOpenModeForSelection,
@@ -15,23 +14,13 @@ describe("notes page open mode", () => {
     expect(notesDefaultOpenModeForProject("side", undefined)).toBe("side");
   });
 
-  it("uses center peek for fresh page selections", () => {
+  it("opens fresh page selections as a full page", () => {
     expect(
       notesPageOpenModeForSelection({
         currentOpenMode: "side",
         hasOpenPage: false,
       }),
-    ).toBe(DEFAULT_NOTES_PAGE_OPEN_MODE);
-  });
-
-  it("uses the configured default for fresh page selections", () => {
-    expect(
-      notesPageOpenModeForSelection({
-        currentOpenMode: "center",
-        defaultOpenMode: "side",
-        hasOpenPage: false,
-      }),
-    ).toBe("side");
+    ).toBe("full");
   });
 
   it.each<NotesPageOpenMode>(["side", "center", "full"])(

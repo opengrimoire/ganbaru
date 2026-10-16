@@ -29,12 +29,16 @@ export function notesPastedTextLinkUrl(value: string, baseHref?: string): string
   return notesLinkTarget(value.trim(), baseHref) ? normalizeNotesTextLinkUrl(value, baseHref) : notesPastedLinkUrl(value);
 }
 
-/** Open local links through normal Notes navigation and web or email links through the system. */
-export async function openNotesTextLink(value: string): Promise<void> {
+/** The Notes navigation a local link opens through, such as the editor or workspace the link is in. */
+export interface NotesLinkOpener {
+  openNotesLink(target: NotesPageLinkTarget): Promise<boolean>;
+}
+
+/** Open local links through `notes` and web or email links through the system. */
+export async function openNotesTextLink(value: string, notes: NotesLinkOpener): Promise<void> {
   const target = notesLinkTarget(value, typeof window === "undefined" ? undefined : window.location.href);
   if (target) {
-    const { getNotes } = await import("$lib/stores/notes.svelte");
-    if (!await getNotes().openNotesLink(target)) throw new Error("Notes link target is unavailable");
+    if (!await notes.openNotesLink(target)) throw new Error("Notes link target is unavailable");
     return;
   }
   const url = normalizeRichTextLinkUrl(value);

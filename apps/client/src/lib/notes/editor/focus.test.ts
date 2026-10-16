@@ -6,6 +6,7 @@ import {
   planNotesDeletedBlockFocus,
   planNotesInsertedBlockFocus,
   planNotesPageLoadFocus,
+  planNotesPageOpenFocus,
 } from "./focus";
 
 describe("notes editor focus helpers", () => {
@@ -81,6 +82,30 @@ describe("notes editor focus helpers", () => {
       requestId: 3,
       selection: { start: 3, end: 3 },
     });
+  });
+
+  it("marks a request that only reveals its block", () => {
+    expect(nextNotesFocusRequest({ blockId: "a", requestId: 2, selection: null }, "b", null, false, true)).toEqual({
+      blockId: "b",
+      requestId: 3,
+      selection: null,
+      revealOnly: true,
+    });
+  });
+
+  it("focuses the requested or first block when opening may focus text", () => {
+    expect(planNotesPageOpenFocus(["a", "b"], "b", true)).toEqual({ blockId: "b", revealOnly: false });
+    expect(planNotesPageOpenFocus(["a", "b"], null, true)).toEqual({ blockId: "a", revealOnly: false });
+    expect(planNotesPageOpenFocus([], null, true)).toEqual({ blockId: null, revealOnly: false });
+  });
+
+  it("only reveals a linked block when opening must not focus text", () => {
+    expect(planNotesPageOpenFocus(["a", "b"], "b", false)).toEqual({ blockId: "b", revealOnly: true });
+  });
+
+  it("clears the focus target on a plain open when opening must not focus text", () => {
+    expect(planNotesPageOpenFocus(["a", "b"], null, false)).toEqual({ blockId: null, revealOnly: false });
+    expect(planNotesPageOpenFocus(["a", "b"], "missing", false)).toEqual({ blockId: null, revealOnly: false });
   });
 
   it("focuses a requested visible block when loading a link", () => {

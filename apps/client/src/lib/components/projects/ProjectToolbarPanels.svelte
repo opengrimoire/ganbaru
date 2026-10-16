@@ -18,10 +18,8 @@
   import Link2 from "@lucide/svelte/icons/link-2";
   import ListTree from "@lucide/svelte/icons/list-tree";
   import RotateCcw from "@lucide/svelte/icons/rotate-ccw";
-  import Save from "@lucide/svelte/icons/save";
   import SlidersHorizontal from "@lucide/svelte/icons/sliders-horizontal";
   import Tags from "@lucide/svelte/icons/tags";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
   import type { Component } from "svelte";
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -49,7 +47,6 @@
     type ProjectTag,
     type ProjectPriority,
     type ProjectPriorityConfig,
-    type ProjectSavedTaskView,
     type ProjectSection,
     type ProjectTaskDependencyFilter,
     type ProjectTaskDueFilter,
@@ -61,7 +58,7 @@
     type ProjectTaskSortMode,
     type ProjectTaskStatusFilter,
   } from "$lib/projects/types";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { getTheme } from "$lib/stores/theme.svelte";
   import { getViewport } from "$lib/stores/viewport.svelte";
   import {
@@ -89,13 +86,10 @@
     priorities,
     projectTags,
     projectCustomFields,
-    savedTaskViews,
     taskListColumnControls,
     archivedProjectTaskCount,
     inactiveSectionCount,
     taskFiltersActive,
-    savedViewSaving,
-    savedViewError,
     listColumnsSaving = false,
     listColumnsError = null,
     taskStatusFilter = $bindable<ProjectTaskStatusFilter>(),
@@ -113,14 +107,10 @@
     taskSortDirection = $bindable<ProjectTaskSortDirection>(),
     showArchivedTasks = $bindable<boolean>(),
     showInactiveSections = $bindable<boolean>(),
-    savedViewNameDraft = $bindable<string>(),
     onClose,
     onRevealInactive,
     onProjectSettingsDirtyChange,
     onClearTaskFilters,
-    onSaveCurrentTaskView,
-    onApplyTaskView,
-    onDeleteSavedTaskView,
     onToggleTaskListColumn,
     mobileLayout = false,
     taskQuery,
@@ -132,13 +122,10 @@
     priorities: ProjectPriorityConfig[];
     projectTags: ProjectTag[];
     projectCustomFields: ProjectCustomField[];
-    savedTaskViews: ProjectSavedTaskView[];
     taskListColumnControls: ProjectListColumnControl[];
     archivedProjectTaskCount: number;
     inactiveSectionCount: number;
     taskFiltersActive: boolean;
-    savedViewSaving: boolean;
-    savedViewError: string | null;
     listColumnsSaving?: boolean;
     listColumnsError?: string | null;
     taskStatusFilter: ProjectTaskStatusFilter;
@@ -156,19 +143,15 @@
     taskSortDirection: ProjectTaskSortDirection;
     showArchivedTasks: boolean;
     showInactiveSections: boolean;
-    savedViewNameDraft: string;
     onClose: () => void;
     onRevealInactive: () => void;
     onProjectSettingsDirtyChange: (dirty: boolean) => void;
     onClearTaskFilters: () => void;
-    onSaveCurrentTaskView: () => void | Promise<void>;
-    onApplyTaskView: (view: ProjectSavedTaskView) => void | Promise<void>;
-    onDeleteSavedTaskView: (view: ProjectSavedTaskView) => void | Promise<void>;
     onToggleTaskListColumn: (column: ProjectTaskListColumn) => void | Promise<void>;
     mobileLayout?: boolean;
   } = $props();
 
-  const projects = getProjects();
+  const projects = useProjects();
   const theme = getTheme();
   const viewport = getViewport();
   const localization = getLocalization();
@@ -610,65 +593,13 @@
           </button>
         {/if}
       {:else if panel === "customize"}
-        {#if taskQuery?.request()?.view === "list"}<ProjectListPresentationControls query={taskQuery} />{/if}
+        {#if taskQuery}<ProjectListPresentationControls query={taskQuery} />{/if}
         <CollectionMenu fullWidth kind="properties" icon={Columns3} label={t("projects.columns.title")} summary={formatNumber(localization.locale, taskListColumnControls.filter((control) => control.visible).length)}>
           {#each taskListColumnControls as control (control.column)}
             {@render optionRow(control.label, control.visible, () => { void onToggleTaskListColumn(control.column); }, listColumnsSaving)}
           {/each}
           {#if listColumnsError}
             <Notice class="px-2 py-1" message={listColumnsError} />
-          {/if}
-        </CollectionMenu>
-        <CollectionMenu fullWidth kind="layout" icon={Save} label={t("projects.savedViews.title")} summary={savedTaskViews.length > 0 ? formatNumber(localization.locale, savedTaskViews.length) : t("projects.toolbar.none")}>
-          <form
-            class="mb-1 flex gap-1 border-b border-border/60 px-1 pb-2"
-            onsubmit={(event) => { event.preventDefault(); void onSaveCurrentTaskView(); }}
-          >
-            <input
-              bind:value={savedViewNameDraft}
-              placeholder={t("projects.savedViews.namePlaceholder")}
-              aria-label={t("projects.savedViews.namePlaceholder")}
-              class="field min-w-0 flex-1"
-            />
-            <button
-              type="submit"
-              class="flex min-h-(--panel-row-height) shrink-0 items-center gap-1.5 rounded-floating-item px-2 font-medium text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-not-allowed"
-              disabled={savedViewSaving || listColumnsSaving}
-            >
-              <Save size={13} strokeWidth={1.75} />
-              <span>{t("projects.savedViews.save")}</span>
-            </button>
-          </form>
-          {#each savedTaskViews as view (view.id)}
-            <div class="grid grid-cols-[minmax(0,1fr)_2rem] gap-0.5">
-              <button
-                type="button"
-                data-collection-settings-row
-                class="menu-item min-w-0"
-                title={view.name}
-                disabled={savedViewSaving || listColumnsSaving}
-                onclick={() => {
-                  void onApplyTaskView(view);
-                }}
-              >
-                <span class="truncate">{view.name}</span>
-              </button>
-              <button
-                type="button"
-                class="flex min-h-(--panel-row-height) items-center justify-center rounded-floating-item text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-not-allowed"
-                disabled={savedViewSaving}
-                aria-label={t("projects.savedViews.delete", view.name)}
-                title={t("projects.savedViews.delete", view.name)}
-                onclick={() => {
-                  void onDeleteSavedTaskView(view);
-                }}
-              >
-                <Trash2 size={12} strokeWidth={1.75} />
-              </button>
-            </div>
-          {/each}
-          {#if savedViewError}
-            <Notice class="px-2 py-1" message={savedViewError} />
           {/if}
         </CollectionMenu>
       {/if}

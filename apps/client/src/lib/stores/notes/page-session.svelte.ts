@@ -61,6 +61,11 @@ export class NotesPageSessionController {
     this.titleFocus = { pageId, requestId: this.titleFocus.requestId + 1 };
   }
 
+  /** Forget a pending title focus for `pageId` so its remounted title field does not take focus again. */
+  clearTitleFocus(pageId: string): void {
+    if (this.titleFocus.pageId === pageId) this.titleFocus = { pageId: null, requestId: this.titleFocus.requestId };
+  }
+
   setTitleDraft(pageId: string, title: string): void {
     this.titleDraft = { pageId, title };
   }

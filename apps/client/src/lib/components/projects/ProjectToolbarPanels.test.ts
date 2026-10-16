@@ -2,18 +2,19 @@
 
 import { mount, tick, unmount, type ComponentProps } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ProjectCustomFieldOption, ProjectSavedTaskView } from "$lib/projects/types";
+import type { ProjectCustomFieldOption } from "$lib/projects/types";
 import type { ProjectToolbarPanel } from "$lib/projects/toolbar";
 import { PROJECT_TASK_FILTER_DEFAULTS } from "$lib/projects/list/view";
 import ProjectToolbarPanels from "./ProjectToolbarPanels.svelte";
 
 const store = vi.hoisted(() => ({ options: [] as ProjectCustomFieldOption[] }));
 
-vi.mock("$lib/stores/projects.svelte", () => ({
-  getProjects: () => ({
+vi.mock("$lib/stores/projects.svelte", () => {
+  const getProjects = () => ({
     customFieldOptionsForField: (fieldId: string) => store.options.filter((option) => option.fieldId === fieldId),
-  }),
-}));
+  });
+  return { getProjects, useProjects: getProjects };
+});
 
 vi.mock("$lib/stores/theme.svelte", async () => {
   const { lightTheme } = await import("$lib/themes");
@@ -58,13 +59,10 @@ function toolbarProps(panel: ProjectToolbarPanel, overrides: Partial<ToolbarProp
     priorities: [],
     projectTags: [],
     projectCustomFields: [],
-    savedTaskViews: [],
     taskListColumnControls: [],
     archivedProjectTaskCount: 0,
     inactiveSectionCount: 0,
     taskFiltersActive: false,
-    savedViewSaving: false,
-    savedViewError: null,
     taskStatusFilter: PROJECT_TASK_FILTER_DEFAULTS.statusFilter,
     taskSectionFilter: PROJECT_TASK_FILTER_DEFAULTS.sectionFilter,
     taskPriorityFilter: PROJECT_TASK_FILTER_DEFAULTS.priorityFilter,
@@ -80,14 +78,10 @@ function toolbarProps(panel: ProjectToolbarPanel, overrides: Partial<ToolbarProp
     taskSortDirection: PROJECT_TASK_FILTER_DEFAULTS.sortDirection,
     showArchivedTasks: false,
     showInactiveSections: false,
-    savedViewNameDraft: "",
     onClose: vi.fn(),
     onRevealInactive: vi.fn(),
     onProjectSettingsDirtyChange: vi.fn(),
     onClearTaskFilters: vi.fn(),
-    onSaveCurrentTaskView: vi.fn(),
-    onApplyTaskView: vi.fn(),
-    onDeleteSavedTaskView: vi.fn(),
     onToggleTaskListColumn: vi.fn(),
     ...overrides,
   };
@@ -188,57 +182,24 @@ describe("Project collection configuration", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it("keeps column writes and saved view operations connected to their project callbacks", async () => {
-    const view: ProjectSavedTaskView = {
-      ...PROJECT_TASK_FILTER_DEFAULTS,
-      customFieldFilters: [],
-      id: "view-one",
-      projectId: "project-one",
-      name: "Weekly work",
-      viewId: "list",
-      collapsedSectionIds: [],
-      showArchivedTasks: false,
-      visibleColumns: ["status"],
-      updatedAt: "",
-    };
+  it("connects column writes to their project callback", async () => {
     const onToggleTaskListColumn = vi.fn();
-    const onApplyTaskView = vi.fn();
-    const onDeleteSavedTaskView = vi.fn();
-    const onSaveCurrentTaskView = vi.fn();
     await open(toolbarProps("customize", {
-      savedTaskViews: [view],
       taskListColumnControls: [{ column: "status", label: "Status", visible: true }, { column: "due", label: "Due date", visible: false }],
-      onToggleTaskListColumn, onApplyTaskView, onDeleteSavedTaskView, onSaveCurrentTaskView,
+      onToggleTaskListColumn,
     }));
     await navigate("Columns");
     await choose("Due date");
     expect(onToggleTaskListColumn).toHaveBeenCalledWith("due");
-    await back();
-    await navigate("Saved views");
-    await choose("Weekly work");
-    expect(onApplyTaskView).toHaveBeenCalledWith(view);
-    visiblePage().querySelector<HTMLButtonElement>('[aria-label="Delete saved view Weekly work"]')?.click();
-    expect(onDeleteSavedTaskView).toHaveBeenCalledWith(view);
-    visiblePage().querySelector("form")?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-    expect(onSaveCurrentTaskView).toHaveBeenCalledOnce();
   });
 
-  it("shows column save errors beside disabled pending controls without discarding the saved view draft", async () => {
+  it("shows column save errors beside disabled pending controls", async () => {
     const onToggleTaskListColumn = vi.fn();
-    const onApplyTaskView = vi.fn();
-    const view: ProjectSavedTaskView = {
-      ...PROJECT_TASK_FILTER_DEFAULTS,
-      customFieldFilters: [],
-      id: "view-one", projectId: "project-one", name: "Weekly work", viewId: "list",
-      collapsedSectionIds: [], showArchivedTasks: false, visibleColumns: ["status"], updatedAt: "",
-    };
     await open(toolbarProps("customize", {
       listColumnsSaving: true,
       listColumnsError: "Could not save visible columns: Disk is full",
-      savedViewNameDraft: "Unsaved name",
-      savedTaskViews: [view],
       taskListColumnControls: [{ column: "due", label: "Due date", visible: false }],
-      onToggleTaskListColumn, onApplyTaskView,
+      onToggleTaskListColumn,
     }));
     await navigate("Columns");
     const column = [...visiblePage().querySelectorAll<HTMLButtonElement>("button")]
@@ -247,12 +208,6 @@ describe("Project collection configuration", () => {
     column.click();
     expect(onToggleTaskListColumn).not.toHaveBeenCalled();
     expect(visiblePage().querySelector('[role="alert"]')?.textContent).toContain("Disk is full");
-    await back();
-    await navigate("Saved views");
-    expect(visiblePage().querySelector<HTMLInputElement>("input")?.value).toBe("Unsaved name");
-    expect(visiblePage().querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(true);
-    await choose("Weekly work");
-    expect(onApplyTaskView).not.toHaveBeenCalled();
   });
 
   it("requests guarded project draft closure only after nested floating controls dismiss", async () => {

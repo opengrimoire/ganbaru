@@ -12,7 +12,7 @@
   import { projectCustomFieldTypeLabel } from "$lib/projects/display";
   import { projectSettingsIconButtonClass } from "$lib/projects/settings/ui";
   import { projectCustomFieldUsesOptions } from "$lib/projects/custom-fields";
-  import type { ProjectSettingsDropPosition } from "$lib/projects/settings/reorder";
+  import type { ProjectSettingsSortableController } from "$lib/projects/settings/sortable-controller.svelte";
   import type {
     NewCustomFieldDraft,
     NewCustomFieldOptionDraft,
@@ -27,10 +27,7 @@
   import ProjectSettingsCustomFieldTypePicker from "./ProjectSettingsCustomFieldTypePicker.svelte";
   import ProjectSettingsNewRowDragHandle from "./ProjectSettingsNewRowDragHandle.svelte";
   import ProjectSettingsSectionHeading from "./ProjectSettingsSectionHeading.svelte";
-  import { cn, type MaybePromise } from "$lib/utils";
-
-  type CustomFieldDropPosition = ProjectSettingsDropPosition;
-  type CustomFieldOptionDropPosition = ProjectSettingsDropPosition;
+  import type { MaybePromise } from "$lib/utils";
 
   let {
     projectCustomFields,
@@ -45,22 +42,10 @@
     newCustomFieldOptionRows = $bindable<NewCustomFieldOptionDraft[]>(),
     newCustomFieldOptionName = $bindable<string>(),
     newCustomFieldRowElement = $bindable<HTMLDivElement | undefined>(),
-    draggedCustomFieldId,
-    draggedCustomFieldOptionId,
-    customFieldReorderPending,
-    customFieldOptionReorderPending,
-    customFieldDropMarkerVisible,
-    customFieldOptionDropMarkerVisible,
-    onCustomFieldDragOver,
-    onCustomFieldDrop,
-    onCustomFieldDragStart,
-    clearCustomFieldDrag,
+    customFieldSortable,
+    customFieldOptionSortable,
     moveCustomFieldByDirection,
     requestDeleteCustomField,
-    onCustomFieldOptionDragOver,
-    onCustomFieldOptionDrop,
-    onCustomFieldOptionDragStart,
-    clearCustomFieldOptionDrag,
     moveCustomFieldOptionByDirection,
     requestDeleteCustomFieldOption,
     setCustomFieldOptionCreateDraftName,
@@ -89,30 +74,12 @@
     newCustomFieldOptionRows: NewCustomFieldOptionDraft[];
     newCustomFieldOptionName: string;
     newCustomFieldRowElement: HTMLDivElement | undefined;
-    draggedCustomFieldId: string | null;
-    draggedCustomFieldOptionId: string | null;
-    customFieldReorderPending: boolean;
-    customFieldOptionReorderPending: boolean;
-    customFieldDropMarkerVisible: (fieldId: string, position: CustomFieldDropPosition) => boolean;
-    customFieldOptionDropMarkerVisible: (optionId: string, position: CustomFieldOptionDropPosition) => boolean;
-    onCustomFieldDragOver: (
-      event: DragEvent,
-      field: ProjectCustomField,
-      target: HTMLElement,
-    ) => void;
-    onCustomFieldDrop: (event: DragEvent, field: ProjectCustomField) => MaybePromise;
-    onCustomFieldDragStart: (event: DragEvent, field: ProjectCustomField) => void;
-    clearCustomFieldDrag: () => void;
+    /** Pointer reordering of the field blocks, each with its options. */
+    customFieldSortable: ProjectSettingsSortableController;
+    /** Pointer reordering of the options within each field. */
+    customFieldOptionSortable: ProjectSettingsSortableController;
     moveCustomFieldByDirection: (field: ProjectCustomField, direction: MoveDirection) => MaybePromise;
     requestDeleteCustomField: (field: ProjectCustomField) => void;
-    onCustomFieldOptionDragOver: (
-      event: DragEvent,
-      option: ProjectCustomFieldOption,
-      target: HTMLElement,
-    ) => void;
-    onCustomFieldOptionDrop: (event: DragEvent, option: ProjectCustomFieldOption) => MaybePromise;
-    onCustomFieldOptionDragStart: (event: DragEvent, option: ProjectCustomFieldOption) => void;
-    clearCustomFieldOptionDrag: () => void;
     moveCustomFieldOptionByDirection: (
       option: ProjectCustomFieldOption,
       direction: MoveDirection,
@@ -180,31 +147,18 @@
       {@const fieldOptions = customFieldOptions(field)}
       {@const fieldOptionDraftRows = customFieldOptionCreateDraftRows(field.id)}
       {@const displayedFieldOptionCount = fieldOptions.length + fieldOptionDraftRows.length}
-      <div class="custom-field-config flex flex-col gap-2">
+      <div class="custom-field-config flex flex-col gap-2" {@attach customFieldSortable.item(field.id)}>
         <div
-          class={cn(
-            "relative grid min-h-7 grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-1.5 px-1 py-0.5",
-            draggedCustomFieldId === field.id && "opacity-50",
-          )}
+          class="grid min-h-7 grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-1.5 px-1 py-0.5"
           role="group"
           aria-label={field.name}
-          ondragover={(event) => onCustomFieldDragOver(event, field, event.currentTarget)}
-          ondrop={(event) => { void onCustomFieldDrop(event, field); }}
         >
-          {#if customFieldDropMarkerVisible(field.id, "before")}
-            <div class="pointer-events-none absolute left-1 right-1 top-0 h-0.5 rounded-full bg-primary"></div>
-          {/if}
-          {#if customFieldDropMarkerVisible(field.id, "after")}
-            <div class="pointer-events-none absolute bottom-0 left-1 right-1 h-0.5 rounded-full bg-primary"></div>
-          {/if}
           <button
             type="button"
-            class="flex h-7 w-7 shrink-0 cursor-grab items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-40"
-            draggable={projectCustomFields.length > 1 && !customFieldReorderPending}
-            disabled={projectCustomFields.length <= 1 || customFieldReorderPending}
+            class="flex h-7 w-7 shrink-0 cursor-grab items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-40 touch-none"
+            disabled={projectCustomFields.length <= 1 || customFieldSortable.pending}
             aria-label={t("projects.actions.dragCustomField", field.name)}
-            ondragstart={(event) => onCustomFieldDragStart(event, field)}
-            ondragend={clearCustomFieldDrag}
+            onpointerdown={(event) => customFieldSortable.pointerDown(event, field.id)}
             onkeydown={(event) => {
               if (event.key === "ArrowUp") {
                 event.preventDefault();
@@ -258,29 +212,17 @@
                 </svg>
                 {#each fieldOptions as option (option.id)}
                   <div
-                    class={cn(
-                      "relative grid min-h-7 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1.5 py-0.5",
-                      draggedCustomFieldOptionId === option.id && "opacity-50",
-                    )}
+                    class="grid min-h-7 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1.5 py-0.5"
                     role="group"
                     aria-label={option.name}
-                    ondragover={(event) => onCustomFieldOptionDragOver(event, option, event.currentTarget)}
-                    ondrop={(event) => { void onCustomFieldOptionDrop(event, option); }}
+                    {@attach customFieldOptionSortable.item(option.id)}
                   >
-                    {#if customFieldOptionDropMarkerVisible(option.id, "before")}
-                      <div class="pointer-events-none absolute left-0 right-0 top-0 h-0.5 rounded-full bg-primary"></div>
-                    {/if}
-                    {#if customFieldOptionDropMarkerVisible(option.id, "after")}
-                      <div class="pointer-events-none absolute bottom-0 left-0 right-0 h-0.5 rounded-full bg-primary"></div>
-                    {/if}
                     <button
                       type="button"
-                      class="flex h-7 w-7 shrink-0 cursor-grab items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-40"
-                      draggable={fieldOptions.length > 1 && !customFieldOptionReorderPending}
-                      disabled={fieldOptions.length <= 1 || customFieldOptionReorderPending}
+                      class="flex h-7 w-7 shrink-0 cursor-grab items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-40 touch-none"
+                      disabled={fieldOptions.length <= 1 || customFieldOptionSortable.pending}
                       aria-label={t("projects.actions.dragCustomFieldOption", option.name)}
-                      ondragstart={(event) => onCustomFieldOptionDragStart(event, option)}
-                      ondragend={clearCustomFieldOptionDrag}
+                      onpointerdown={(event) => customFieldOptionSortable.pointerDown(event, option.id)}
                       onkeydown={(event) => {
                         if (event.key === "ArrowUp") {
                           event.preventDefault();

@@ -25,6 +25,8 @@ Vault changes revoke new playback admission immediately and wait a bounded time 
 
 The player supports play, pause, previous, next, seek where the backend supports it, volume, mute, one playback-order control, and playlist repeat. Queue identity stays stable across source transitions so controls never briefly target the previous item. The main player does not expose a speed control; playlist membership rate overrides still apply.
 
+On desktop, the Music volume is an app volume apart from the system volume. On Android, the volume control is the phone's media volume, so it follows the hardware buttons and system controls, and Music plays at full app volume beneath it; mute stays an app control. Devices whose volume apps cannot change keep the app volume.
+
 Playback order has three exclusive modes:
 
 - **In order** follows stored playlist membership order.
@@ -67,7 +69,7 @@ Desktop local video uses the platform WebView media stack, served through an app
 
 ## Android playback
 
-Android local audio uses ExoPlayer inside a Media3 session service, which owns background playback, audio focus, media notification, headset disconnection, lock-screen controls, and trusted system controllers. Rust still owns queue selection and membership boundaries; Kotlin does not keep a competing queue, and trusted controllers can send only transport intent. The desktop audio backend and loopback media host are not compiled on Android.
+Android local audio uses ExoPlayer inside a Media3 session service, which owns background playback, audio focus, media notification, headset disconnection, lock-screen controls, and trusted system controllers. Rust still owns queue selection and membership boundaries; Kotlin does not keep a competing queue, and trusted controllers can send only transport intent. The media notification shows the library title, artist, and album (including user edits), with the file's tags and embedded artwork filling anything the library leaves empty, and offers play and pause, previous, next, and seeking. The desktop audio backend and loopback media host are not compiled on Android.
 
 Native effects reach the service through a bounded queue drained on the main thread. Success means the SDK effect actually ran (a Load acknowledgement means the decoder was reset and resolution scheduled; Stop means the decoder is stopped and cleared). Every delivery carries its vault revision and, for Focus-owned playback, its phase lease, and is rechecked before execution and after document resolution, so stale work cannot start after a freeze, phase change, or service restart. Document resolution has a 30-second elapsed-realtime deadline; expiry is an interruption, not a failed-track skip. Service termination is likewise an interruption that retains the selection. Canonical Pause wins over late Playing reports.
 

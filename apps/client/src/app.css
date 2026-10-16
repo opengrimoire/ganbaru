@@ -147,19 +147,19 @@
 
   /* Content area */
   --background: #F4F4F7;
-  --foreground: #141420;
+  --foreground: #17171F;
   --card: #FFFFFF;
-  --card-foreground: #141420;
+  --card-foreground: #17171F;
   --popover: #FFFFFF;
-  --popover-foreground: #141420;
+  --popover-foreground: #17171F;
   --primary: #404048;
   --primary-foreground: #F4F4F7;
   --secondary: #E2E2E7;
-  --secondary-foreground: #141420;
+  --secondary-foreground: #17171F;
   --muted: #E2E2E7;
-  --muted-foreground: #646470;
+  --muted-foreground: #6F6F7A;
   --accent: #E8E8ED;
-  --accent-foreground: #141420;
+  --accent-foreground: #17171F;
   --destructive: #D93B3B;
   --destructive-foreground: #FFFFFF;
   --border: rgba(0, 0, 20, 0.10);
@@ -168,12 +168,13 @@
   --selection-background: rgba(37, 99, 235, 0.28);
   --app-scrollbar-thumb: color-mix(in srgb, var(--foreground) 18%, transparent);
   --app-scrollbar-thumb-hover: color-mix(in srgb, var(--foreground) 36%, transparent);
+  --app-scrollbar-size: 8px;
 
   /* Frame / contour (titlebar) */
-  --sidebar: #DCDCE2;
-  --sidebar-foreground: #141420;
-  --sidebar-accent: #CFCFD6;
-  --sidebar-accent-foreground: #141420;
+  --sidebar: #EEEEF1;
+  --sidebar-foreground: #17171F;
+  --sidebar-accent: #E0E0E5;
+  --sidebar-accent-foreground: #17171F;
   --sidebar-border: rgba(0, 0, 20, 0.08);
 
   /* Event panel surface + form controls (light) */
@@ -206,10 +207,11 @@
   --editor-chrome-checker-a: #CCCCCC;
   --editor-chrome-checker-b: #FFFFFF;
 
-  --shell-gap: 0.375rem;
-  --content-radius: 0.5rem;
-  --titlebar-h: 42px;
-  --toolbar-h: 42px;
+  /* Whole pixels: with the 15px root size, rem gaps put content edges between device pixels and blur their hairline. */
+  --shell-gap: 6px;
+  --content-radius: 8px;
+  --titlebar-h: 36px;
+  --toolbar-h: 40px;
   --panel-margin: 0.5rem;
   --safe-area-top: env(safe-area-inset-top, 0px);
   --safe-area-right: env(safe-area-inset-right, 0px);
@@ -220,9 +222,16 @@
   --visual-viewport-height: 100vh;
   --visual-viewport-offset-top: 0px;
   --visual-viewport-offset-left: 0px;
-  --mobile-topbar-h: 56px;
+  --mobile-topbar-h: 48px;
+  --mobile-bottom-nav-h: 64px;
+  --mobile-bottom-chrome-h: 0px;
   --mobile-nav-rail-w: 72px;
   --touch-target-min: 48px;
+  /* Phone chrome icon columns: the top bar and every action row share one button width and edge inset, so icons stack in columns from either edge, and the leading column centers under the top bar pill icon. */
+  --mobile-chrome-column: 2.75rem;
+  --mobile-chrome-inset: 0.25rem;
+  /* Diameter of the round pressed and open highlight inside a chrome column. */
+  --mobile-chrome-highlight: 2rem;
 }
 
 svg.lucide:not(.app-title-bar *, .explorer-sidebar *) {
@@ -250,7 +259,7 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
   --secondary: #333436;
   --secondary-foreground: #ECECF2;
   --muted: #333436;
-  --muted-foreground: #9494A0;
+  --muted-foreground: #9C9CA8;
   --accent: #3B3B3F;
   --accent-foreground: #ECECF2;
   --destructive: #E54545;
@@ -261,9 +270,9 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
   --selection-background: rgba(96, 165, 250, 0.38);
 
   /* Frame / contour (titlebar) */
-  --sidebar: #1E1E23;
+  --sidebar: #151518;
   --sidebar-foreground: #FFFFFF;
-  --sidebar-accent: #3B3B3F;
+  --sidebar-accent: #2A2B2F;
   --sidebar-accent-foreground: #FFFFFF;
   --sidebar-border: rgba(255, 255, 255, 0.08);
 
@@ -389,8 +398,8 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
     @apply border-border outline-ring/50;
   }
   *::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
+    width: var(--app-scrollbar-size);
+    height: var(--app-scrollbar-size);
     background: transparent;
   }
   *::-webkit-scrollbar-track,
@@ -462,6 +471,12 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
     user-select: text;
     -webkit-user-select: text;
   }
+  /* A long press on a Chat message reveals its actions instead of starting a native selection. */
+  html[data-shell="mobile"] body [data-message-touch-actions] :where(:not(input, textarea, [contenteditable], [contenteditable] *)) {
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+  }
   html[data-shell="mobile"] body {
     touch-action: manipulation;
     -webkit-tap-highlight-color: transparent;
@@ -469,7 +484,7 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
   }
   html[data-shell="mobile"] {
     --titlebar-h: var(--mobile-topbar-h);
-    --cal-header-row-h: 56px;
+    --toolbar-h: 56px;
     --collection-table-row-height: 2.75rem;
   }
   .mobile-viewport-height {
@@ -616,24 +631,20 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
 }
 
 .app-shell[data-size-class="compact"] {
-  --shell-gap: 0.25rem;
-  --content-radius: 0.375rem;
+  --shell-gap: 4px;
+  --content-radius: 6px;
   --panel-margin: 0.375rem;
 }
 
 .app-shell[data-size-class="narrow"] {
-  --shell-gap: 0.125rem;
-  --content-radius: 0.25rem;
-  --titlebar-h: 40px;
-  --toolbar-h: 40px;
+  --shell-gap: 2px;
+  --content-radius: 4px;
   --panel-margin: 0.25rem;
 }
 
 .app-shell[data-size-class="micro"] {
   --shell-gap: 0;
   --content-radius: 0;
-  --titlebar-h: 38px;
-  --toolbar-h: 38px;
   --panel-margin: 0.125rem;
 }
 
@@ -642,12 +653,20 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
   border-radius: var(--content-radius);
 }
 
+/*
+ * After a sidebar toggle moves content under a resting pointer, tab content ignores the pointer until it moves
+ * (lib/utils/hover-suppression.ts). It must win over components that opt back into pointer events, hence !important.
+ */
+html[data-hover-suppressed] .content-panel,
+html[data-hover-suppressed] .content-panel * {
+  pointer-events: none !important;
+}
+
 /* Calendar theme variables */
 :root {
   --cal-bg: #FFFFFF;
-  --cal-header-bg: #F4F4F7;
-  --cal-gridline: #DDDDE3;
-  --cal-time-label: #646470;
+  --cal-gridline: #ECECF0;
+  --cal-time-label: #6F6F7A;
   --cal-current-time: #B83A3A;
   --cal-hover: rgba(0, 0, 20, 0.04);
   --cal-timeline-rail: #E5E7EB;
@@ -655,14 +674,12 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
   --cal-timeline-focus: #39965c;
   --cal-scrollbar-thumb: var(--muted);
   --cal-scrollbar-thumb-hover: var(--muted-foreground);
-  --cal-header-row-h: 42px;
 }
 
 .dark {
-  --cal-bg: #131314;
-  --cal-header-bg: #27282A;
-  --cal-gridline: #333537;
-  --cal-time-label: #9494A0;
+  --cal-bg: #1F2023;
+  --cal-gridline: #2A2B2F;
+  --cal-time-label: #9C9CA8;
   --cal-current-time: #B83A3A;
   --cal-hover: rgba(255, 255, 255, 0.04);
   --cal-timeline-rail: #3F3F46;
@@ -773,9 +790,9 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
 .notes-mention-chip[data-notes-selected="true"]::selection,
 .notes-mention-chip[data-notes-selected="true"] *::selection { background-color: transparent; }
 
-/* Notes and Chat share explorer surfaces, controls, and navigation states. */
+/* Projects, Notes, and Chat share explorer surfaces, controls, and navigation states. */
 .explorer-sidebar {
-  --explorer-toolbar-height: var(--cal-header-row-h);
+  --explorer-toolbar-height: var(--toolbar-h);
   --explorer-row-icon-size: 14px;
   --explorer-toolbar-icon-size: var(--explorer-row-icon-size);
   --explorer-action-size: 1.75rem;
@@ -786,9 +803,67 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
   --explorer-row-padding: 0.375rem;
   --explorer-row-height: max(2rem, calc(var(--explorer-line-height) + 2 * var(--explorer-row-padding)));
   --explorer-text-weight: 400;
+  --explorer-heading-size: calc(var(--explorer-text-size) * 0.875);
+  --explorer-heading-weight: 500;
   --explorer-background: color-mix(in oklab, var(--sidebar) 45%, var(--cal-bg));
   background: var(--explorer-background);
   color: var(--foreground);
+}
+
+/* A docked desktop explorer takes the window frame color, so it reads as part of the frame rather than the tab surface. */
+.explorer-chrome .explorer-sidebar {
+  --explorer-background: var(--sidebar);
+  --explorer-row-hover: color-mix(in oklab, var(--sidebar-accent) 60%, transparent);
+  --explorer-row-selected: var(--sidebar-accent);
+  --explorer-icon-hover: var(--sidebar-accent);
+  color: var(--sidebar-foreground);
+}
+
+/* A docked desktop explorer collapses to a rail by clipping fixed-width content, so its rows never reflow while the width animates. */
+.explorer-dock {
+  --explorer-dock-rail-width: 2.75rem;
+  --explorer-dock-duration: 180ms;
+  --explorer-dock-easing: cubic-bezier(0.2, 0, 0, 1);
+  position: relative;
+  width: var(--explorer-width);
+  flex-shrink: 0;
+  overflow: hidden;
+  transition: width var(--explorer-dock-duration) var(--explorer-dock-easing);
+}
+
+.explorer-dock-collapsed {
+  width: var(--explorer-dock-rail-width);
+}
+
+.explorer-dock-content {
+  width: var(--explorer-width);
+  min-width: var(--explorer-width);
+}
+
+/* The rail fades in once the panel has mostly closed and fades out at once when it reopens. */
+.explorer-dock-rail {
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  z-index: 10;
+  width: var(--explorer-dock-rail-width);
+  background-color: var(--explorer-background);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 60ms linear;
+}
+
+.explorer-dock-collapsed .explorer-dock-rail {
+  opacity: 1;
+  pointer-events: auto;
+  transition-delay: 100ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .explorer-dock,
+  .explorer-dock-rail {
+    transition: none;
+  }
 }
 
 .explorer-toolbar {
@@ -799,6 +874,22 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
   align-items: center;
   gap: 0.125rem;
   padding-inline: 0.5rem;
+}
+
+/*
+ * Explorer lists always reserve the scrollbar gutter, which stands in for their end padding so rows end with the toolbar.
+ * While the content overflows, rows end a little earlier so highlights stay clear of the visible scrollbar.
+ */
+.explorer-list {
+  --explorer-list-end-padding: max(0px, 0.5rem - var(--app-scrollbar-size));
+  --explorer-list-scrollbar-gap: 0.375rem;
+  overflow-y: scroll;
+  padding-inline-start: 0.5rem;
+  padding-inline-end: var(--explorer-list-end-padding);
+}
+
+.explorer-list[data-scroll-overflow] {
+  padding-inline-end: calc(var(--explorer-list-end-padding) + var(--explorer-list-scrollbar-gap));
 }
 
 .explorer-icon {
@@ -812,11 +903,11 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
   color: var(--muted-foreground);
 }
 
-.explorer-icon:hover,
+.explorer-icon:active,
 .explorer-icon[aria-pressed="true"],
 .explorer-icon.explorer-icon-active,
 .explorer-icon[aria-expanded="true"].explorer-row-action {
-  background: var(--accent);
+  background: var(--explorer-icon-hover, var(--accent));
   color: var(--foreground);
 }
 
@@ -837,8 +928,17 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
   outline-offset: -2px;
 }
 
-/* Sidebar search fields take the explorer row height; the `field` utility owns their look. */
+/* Sidebar search fields match the toolbar buttons beside them; the `field` utility owns their look. */
 .explorer-sidebar .explorer-search {
+  min-height: var(--explorer-action-size);
+}
+
+.explorer-sidebar .explorer-search .explorer-icon {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+.explorer-touch .explorer-search {
   min-height: var(--explorer-row-height);
 }
 
@@ -847,22 +947,56 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
 }
 
 .explorer-row {
-  --explorer-row-highlight: color-mix(in oklab, var(--accent) 50%, transparent);
+  --explorer-row-highlight: var(--explorer-row-hover, color-mix(in oklab, var(--accent) 50%, transparent));
   min-height: var(--explorer-row-height, 2rem);
   border-radius: 0.375rem;
 }
 
-.explorer-row:hover {
+/* Touch shows press feedback only while pressed; a tap would otherwise leave a sticky hover highlight. */
+.explorer-row:active {
   background: var(--explorer-row-highlight);
 }
 
+@media (hover: hover) {
+  .explorer-icon:hover {
+    background: var(--explorer-icon-hover, var(--accent));
+    color: var(--foreground);
+  }
+
+  .explorer-row:hover {
+    background: var(--explorer-row-highlight);
+  }
+}
+
 .explorer-row.explorer-selected {
-  --explorer-row-highlight: var(--selection-background);
+  --explorer-row-highlight: var(--explorer-row-selected, var(--accent));
   background: var(--explorer-row-highlight);
 }
 
 .explorer-row-action {
   margin-inline-end: var(--explorer-row-action-end-inset);
+}
+
+/* A favorite star shares the actions slot so it lines up with the actions button on every row. */
+.explorer-row-trailing {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  margin-inline-end: var(--explorer-row-action-end-inset);
+}
+
+.explorer-row-trailing > .explorer-row-action {
+  margin-inline-end: 0;
+}
+
+.explorer-row-star {
+  display: inline-flex;
+  width: var(--explorer-action-size);
+  height: var(--explorer-action-size);
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
 }
 
 .explorer-sidebar .explorer-row-action:is(:hover, :focus-visible, [aria-expanded="true"]) {
@@ -879,6 +1013,20 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
   :is(.explorer-row, .section-heading):has(:focus-visible) .explorer-row-action,
   .explorer-row-action[aria-expanded="true"] {
     opacity: 1;
+  }
+
+  /* While the actions button is hidden, the star takes its place; touch layouts keep both side by side. */
+  .explorer-sidebar:not(.explorer-touch) .explorer-row-trailing:has(> .explorer-row-star + .explorer-row-action) {
+    display: grid;
+  }
+
+  .explorer-sidebar:not(.explorer-touch) .explorer-row-trailing:has(> .explorer-row-star + .explorer-row-action) > * {
+    grid-area: 1 / 1;
+  }
+
+  .explorer-sidebar:not(.explorer-touch) .explorer-row:is(:hover, :has(:focus-visible)) .explorer-row-star:has(+ .explorer-row-action),
+  .explorer-sidebar:not(.explorer-touch) .explorer-row-star:has(+ .explorer-row-action[aria-expanded="true"]) {
+    visibility: hidden;
   }
 }
 
@@ -911,20 +1059,27 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
   height: var(--explorer-toolbar-icon-size);
 }
 
-.explorer-sidebar :is(.explorer-row, .section-heading, .explorer-section-title, .explorer-search) svg.lucide {
+/* The starred badge keeps its own small size on top of a row icon. */
+.explorer-sidebar :is(.explorer-row, .section-heading, .explorer-section-title, .explorer-search) svg.lucide:not(.starred-icon-badge) {
   width: var(--explorer-row-icon-size);
   height: var(--explorer-row-icon-size);
 }
 
 .explorer-sidebar .explorer-row-label,
-.explorer-sidebar .section-toggle,
-.explorer-sidebar .section-heading,
-.explorer-sidebar .explorer-section-title,
 .explorer-sidebar .archive-button,
 .explorer-sidebar .explorer-search input {
   font-size: var(--explorer-text-size);
   line-height: var(--explorer-line-height);
   font-weight: var(--explorer-text-weight);
+}
+
+/* Section headings read as labels over their rows, so they sit a step below the row text. */
+.explorer-sidebar .section-toggle,
+.explorer-sidebar .section-heading,
+.explorer-sidebar .explorer-section-title {
+  font-size: var(--explorer-heading-size);
+  line-height: var(--explorer-line-height);
+  font-weight: var(--explorer-heading-weight);
 }
 
 /* Section headings occupy one navigation row, preserving the same baseline rhythm. */
@@ -945,6 +1100,17 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
 
 .explorer-touch {
   --explorer-row-height: max(var(--touch-target-min), calc(var(--explorer-line-height) + 2 * var(--explorer-row-padding)));
+}
+
+/* Phone explorers, in sidebar panels or the Notes landing list, lie on their surface with the picker row shape and icon size. */
+.explorer-panel {
+  --explorer-background: transparent;
+  --explorer-row-hover: var(--accent);
+  --explorer-row-icon-size: 18px;
+}
+
+.explorer-panel :is(.explorer-row, .section-heading > button, .explorer-icon) {
+  border-radius: 0.75rem;
 }
 
 .explorer-sidebar .explorer-row > button.explorer-row-label,

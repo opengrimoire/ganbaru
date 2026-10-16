@@ -4,10 +4,12 @@ import { mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatChannelRead } from "$lib/chat/contracts";
 import { readChatSidebarSections, saveChatSidebarSections } from "$lib/chat/channel-sections";
+import { chatPaneEvents } from "$lib/chat/pane-events";
 import { getChat } from "$lib/stores/chat.svelte";
 import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
 import { setActiveVaultIdentity } from "$lib/vault/active-vault";
 import { SUBMENU_CLOSE_DELAY_MS } from "$lib/utils/menu-aim";
+import { TOUCH_LONG_PRESS_MS } from "$lib/utils/touch-hold";
 import ChatChannelRail from "./ChatChannelRail.svelte";
 
 const projectState = vi.hoisted(() => ({
@@ -19,6 +21,8 @@ const projectState = vi.hoisted(() => ({
 
 vi.mock("$lib/stores/projects.svelte", () => ({
   getProjects: () => projectState.store,
+  useProjects: () => projectState.store,
+  getProjectsStore: () => projectState.store,
 }));
 
 describe("ChatChannelRail", () => {
@@ -47,6 +51,7 @@ describe("ChatChannelRail", () => {
   });
 
   afterEach(async () => {
+    vi.useRealTimers();
     if (component) await unmount(component);
     target.remove();
     setActiveVaultIdentity(null);
@@ -77,8 +82,6 @@ describe("ChatChannelRail", () => {
       expect(toggle.getAttribute("aria-expanded")).toBe("true");
     }
 
-    expect(target.querySelector("[data-chat-direct-messages-hint]")).not.toBeNull();
-
     toggles[0]?.click();
     toggles[1]?.click();
     toggles[2]?.click();
@@ -91,7 +94,6 @@ describe("ChatChannelRail", () => {
     ]);
     expect(toggles.every((toggle) => toggle.classList.contains("collapsed"))).toBe(true);
     expect(target.querySelectorAll(".channel-row")).toHaveLength(0);
-    expect(target.querySelector("[data-chat-direct-messages-hint]")).toBeNull();
   });
 
   it("keeps search in the toolbar and clears filtering without hiding the field", async () => {
@@ -103,8 +105,8 @@ describe("ChatChannelRail", () => {
     const input = target.querySelector<HTMLInputElement>('.explorer-toolbar input[type="search"]');
     expect(input).not.toBeNull();
     expect(document.activeElement).not.toBe(input);
-    expect(target.querySelectorAll(".explorer-toolbar button")).toHaveLength(1);
-    window.dispatchEvent(new Event("ganbaru-ai:chat-focus-search"));
+    expect(target.querySelectorAll(".explorer-dock-content > .explorer-toolbar button")).toHaveLength(1);
+    chatPaneEvents("primary").dispatchEvent(new Event("ganbaru-ai:chat-focus-search"));
     await tick();
     await vi.waitFor(() => expect(document.activeElement).toBe(input));
     if (!input) throw new Error("Search input is missing");
@@ -124,6 +126,36 @@ describe("ChatChannelRail", () => {
     await tick();
     expect(target.querySelector('input[type="search"]')).toBe(input);
     expect(document.activeElement).toBe(input);
+  });
+
+  it("keeps the docked rail content mounted and inert behind the collapsed strip", async () => {
+    const onExpand = vi.fn();
+    component = mount(ChatChannelRail, {
+      target,
+      props: { expanded: false, showCollapsedStrip: true, onExpand, onCollapse: vi.fn() },
+    });
+    await tick();
+
+    const rail = target.querySelector("aside.explorer-sidebar");
+    const content = target.querySelector<HTMLElement>(".explorer-dock-content");
+    const strip = target.querySelector<HTMLElement>(".explorer-dock-rail");
+    expect(rail?.classList.contains("explorer-dock-collapsed")).toBe(true);
+    expect(content?.inert).toBe(true);
+    expect(content?.querySelector("[data-chat-rail-close]")).not.toBeNull();
+    expect(strip?.inert).toBe(false);
+
+    strip?.querySelector<HTMLButtonElement>("button")?.click();
+    expect(onExpand).toHaveBeenCalledOnce();
+  });
+
+  it("renders nothing when collapsed without a docked strip", async () => {
+    component = mount(ChatChannelRail, {
+      target,
+      props: { expanded: false, showCollapsedStrip: false, onExpand: vi.fn(), onCollapse: vi.fn() },
+    });
+    await tick();
+
+    expect(target.querySelector("aside")).toBeNull();
   });
 
   it("shows a channel name tooltip only while the label is clipped", async () => {
@@ -283,13 +315,73 @@ describe("ChatChannelRail", () => {
     trigger?.click();
     await tick();
     const menu = target.querySelector<HTMLElement>(".section-context-menu");
-    expect([...menu?.querySelectorAll('[role="menuitem"]') ?? []].map((item) => item.textContent?.trim())).toEqual(["Rename", "Delete section"]);
-    expect(menu?.querySelectorAll("svg")).toHaveLength(2);
-    menu?.querySelectorAll<HTMLButtonElement>("button")[1]?.click();
+    expect([...menu?.querySelectorAll('[role="menuitem"]') ?? []].map((item) => item.textContent?.trim())).toEqual(["Rename", "Add to favorites", "Delete section"]);
+    expect(menu?.querySelectorAll("svg")).toHaveLength(3);
+    menu?.querySelectorAll<HTMLButtonElement>("button")[2]?.click();
     await tick();
     expect(target.querySelector(".section-context-menu")).toBeNull();
     expect(trigger?.getAttribute("aria-expanded")).toBe("false");
     expect(target.textContent).toContain("Delete section");
+  });
+
+  it("stars a section from its menu, shows the heading star, and keeps it after reload", async () => {
+    component = mount(ChatChannelRail, {
+      target,
+      props: { expanded: true, showCollapsedStrip: true, onExpand: vi.fn(), onCollapse: vi.fn() },
+    });
+    await tick();
+    const trigger = target.querySelectorAll<HTMLButtonElement>(".section-heading .explorer-row-action")[1];
+    trigger?.click();
+    await tick();
+    const favorite = [...target.querySelectorAll<HTMLButtonElement>('.section-context-menu [role="menuitem"]')]
+      .find((item) => item.textContent?.trim() === "Add to favorites");
+    favorite?.click();
+    await tick();
+
+    expect(target.querySelector(".section-context-menu")).toBeNull();
+    expect(readChatSidebarSections("project-1")[0]?.starred).toBe(true);
+    expect(target.querySelectorAll<HTMLElement>(".channel-section")[1]?.querySelector(".section-star")?.nextElementSibling?.textContent).toBe(readChatSidebarSections("project-1")[0]?.name);
+
+    trigger?.click();
+    await tick();
+    expect([...target.querySelectorAll('.section-context-menu [role="menuitem"]')].map((item) => item.textContent?.trim()))
+      .toContain("Remove from favorites");
+  });
+
+  it("stars a channel from its menu and lists it before other channels", async () => {
+    getChat().activeChannels = [
+      channel("channel-general", "general"),
+      channel("channel-design", "design"),
+      channel("channel-zeta", "zeta"),
+    ];
+    component = mount(ChatChannelRail, {
+      target,
+      props: { expanded: true, showCollapsedStrip: true, onExpand: vi.fn(), onCollapse: vi.fn() },
+    });
+    await tick();
+    const channelNames = () => [...target.querySelectorAll<HTMLElement>(".channel-section")[0]?.querySelectorAll(".channel-row") ?? []]
+      .map((row) => row.textContent?.trim());
+    expect(channelNames()).toEqual(["general", "zeta"]);
+
+    const toggleZetaFavorite = async (label: string) => {
+      const group = [...target.querySelectorAll<HTMLElement>(".channel-row-group")]
+        .find((row) => row.querySelector(".channel-row")?.textContent?.trim() === "zeta");
+      group?.querySelector<HTMLButtonElement>(".explorer-row-action")?.click();
+      await tick();
+      [...document.querySelectorAll<HTMLButtonElement>('[role="menu"] [role="menuitem"]')]
+        .find((item) => item.textContent?.trim() === label)
+        ?.click();
+      await tick();
+    };
+
+    await toggleZetaFavorite("Add to favorites");
+    expect(channelNames()).toEqual(["zeta", "general"]);
+    const zetaGroup = [...target.querySelectorAll<HTMLElement>(".channel-row-group")]
+      .find((row) => row.querySelector(".channel-row")?.textContent?.trim() === "zeta");
+    expect(zetaGroup?.querySelector(".explorer-row-star")).not.toBeNull();
+
+    await toggleZetaFavorite("Remove from favorites");
+    expect(channelNames()).toEqual(["general", "zeta"]);
   });
 
   it("renames a section in its heading and keeps its navigation state", async () => {
@@ -392,14 +484,14 @@ describe("ChatChannelRail", () => {
   it("keeps mobile rename controls tappable without saving before Cancel", async () => {
     component = mount(ChatChannelRail, {
       target,
-      props: { presentation: "surface", expanded: true, showCollapsedStrip: true, onExpand: vi.fn(), onCollapse: vi.fn() },
+      props: { presentation: "panel", expanded: true, showCollapsedStrip: false, onExpand: vi.fn(), onCollapse: vi.fn() },
     });
     await tick();
-    const section = target.querySelectorAll<HTMLElement>(".channel-section")[1];
+    const section = document.querySelectorAll<HTMLElement>(".channel-section")[1];
     async function openRename(): Promise<HTMLInputElement> {
       section?.querySelector<HTMLButtonElement>(".section-heading .explorer-row-action")?.click();
       await tick();
-      target.querySelector<HTMLButtonElement>(".section-context-menu button")?.click();
+      document.querySelector<HTMLButtonElement>(".section-context-menu button")?.click();
       await tick();
       const input = section?.querySelector<HTMLInputElement>(".section-heading input");
       if (!input) throw new Error("Section rename input is missing");
@@ -534,14 +626,14 @@ describe("ChatChannelRail", () => {
     expect(target.querySelector('.archive-button')).toBeNull();
   });
 
-  it("closes the mobile surface after navigating to a channel", async () => {
+  it("closes the mobile panel after navigating to a channel", async () => {
     const chat = getChat();
     const selectChannel = vi.spyOn(chat, "selectChannel").mockResolvedValue();
     const onCollapse = vi.fn();
     component = mount(ChatChannelRail, {
       target,
       props: {
-        presentation: "surface",
+        presentation: "panel",
         expanded: true,
         showCollapsedStrip: false,
         onExpand: vi.fn(),
@@ -550,7 +642,7 @@ describe("ChatChannelRail", () => {
     });
     await tick();
 
-    const designChannel = [...target.querySelectorAll<HTMLButtonElement>(".channel-row")]
+    const designChannel = [...document.querySelectorAll<HTMLButtonElement>(".channel-row")]
       .find((button) => button.textContent?.trim() === "design");
     designChannel?.click();
 
@@ -558,6 +650,41 @@ describe("ChatChannelRail", () => {
       expect(selectChannel).toHaveBeenCalledWith("channel-design");
       expect(onCollapse).toHaveBeenCalledOnce();
     });
+  });
+
+  it("moves a channel into a section after a touch hold and leaves an early swipe to scroll", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const selectChannel = vi.spyOn(getChat(), "selectChannel").mockResolvedValue();
+    component = mount(ChatChannelRail, {
+      target,
+      props: { expanded: true, showCollapsedStrip: true, onExpand: vi.fn(), onCollapse: vi.fn() },
+    });
+    await tick();
+    const general = [...target.querySelectorAll<HTMLButtonElement>(".channel-row")]
+      .find((button) => button.textContent?.trim() === "general");
+    const designHeading = target.querySelector<HTMLElement>('[data-chat-section-drop="section-design"] .section-heading');
+    if (!general || !designHeading) throw new Error("Rail rows are missing");
+    document.elementFromPoint = vi.fn(() => designHeading);
+    const touch = (element: EventTarget, type: string, clientY: number) => element.dispatchEvent(
+      new PointerEvent(type, { bubbles: true, button: 0, pointerId: 7, isPrimary: true, pointerType: "touch", clientX: 20, clientY }),
+    );
+
+    touch(general, "pointerdown", 10);
+    touch(window, "pointermove", 60);
+    vi.advanceTimersByTime(TOUCH_LONG_PRESS_MS);
+    touch(window, "pointerup", 60);
+    expect(readChatSidebarSections("project-1")[0]?.channelIds).toEqual(["channel-design"]);
+
+    touch(general, "pointerdown", 10);
+    vi.advanceTimersByTime(TOUCH_LONG_PRESS_MS);
+    touch(window, "pointermove", 60);
+    await tick();
+    expect(designHeading.parentElement?.classList.contains("rail-drop-section")).toBe(true);
+    touch(window, "pointerup", 60);
+    general.click();
+    await tick();
+    expect(readChatSidebarSections("project-1")[0]?.channelIds).toEqual(["channel-design", "channel-general"]);
+    expect(selectChannel).not.toHaveBeenCalled();
   });
 });
 

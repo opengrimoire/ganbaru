@@ -15,7 +15,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getCalendar } from "$lib/stores/calendar.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import ProjectBulkActionBar from "./ProjectBulkActionBar.svelte";
 
@@ -41,7 +41,7 @@
     showArchivedTasks: boolean;
   } = $props();
 
-  const projects = getProjects();
+  const projects = useProjects();
   const calendar = getCalendar();
   const preferences = getPreferences();
   const scheduling = getProjectSchedulingController();

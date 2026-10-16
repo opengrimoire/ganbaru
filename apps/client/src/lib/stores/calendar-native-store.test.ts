@@ -6,7 +6,6 @@ import { loadNativeCalendarWindow, type MappedNativeCalendarWindow } from "$lib/
 import { publishCalendarWindowSync } from "$lib/stores/calendar/window-sync";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
-vi.mock("$lib/api/db", () => ({ dbUrl: () => "sqlite:calendar", ensureDbUrl: async () => "sqlite:calendar" }));
 vi.mock("$lib/stores/calendar/native-window", async (original) => ({
   ...await original<typeof import("$lib/stores/calendar/native-window")>(), loadNativeCalendarWindow: vi.fn(),
 }));
@@ -140,5 +139,74 @@ describe("Calendar store native occurrence ownership", () => {
     expect(store.eventsInWindow(start, end)).toEqual([]);
     await store.loadWindow(start, end);
     expect(store.isWindowCurrent(start, end)).toBe(true);
+  });
+});
+
+describe("Calendar stores of split panes", () => {
+  const nextStart = Temporal.PlainDate.from("2024-03-16");
+  const nextEnd = Temporal.PlainDate.from("2024-03-22");
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    vi.mocked(loadNativeCalendarWindow).mockResolvedValue(snapshot());
+  });
+
+  it("loads the secondary pane's first window from the shared cache while the app boots only the primary", async () => {
+    const { getCalendarStore } = await import("./calendar.svelte");
+    const primary = getCalendarStore("primary");
+    const secondary = getCalendarStore("secondary");
+    await primary.loadWindow(start, end);
+
+    await primary.loadInitialWindow(nextStart, nextEnd);
+    expect(primary.isWindowCurrent(start, end)).toBe(true);
+
+    await secondary.loadInitialWindow(start, end);
+    expect(loadNativeCalendarWindow).toHaveBeenCalledTimes(1);
+    expect(secondary.loaded).toBe(true);
+    expect(secondary.eventsInWindow(start, end)).toEqual([event()]);
+
+    await secondary.loadInitialWindow(nextStart, nextEnd);
+    expect(secondary.isWindowCurrent(start, end)).toBe(true);
+  });
+
+  it("reloads the other pane's own window after a commit through either pane", async () => {
+    const { getCalendarStore } = await import("./calendar.svelte");
+    const primary = getCalendarStore("primary");
+    const secondary = getCalendarStore("secondary");
+    await primary.loadWindow(start, end);
+    await secondary.loadWindow(nextStart, nextEnd);
+    expect(loadNativeCalendarWindow).toHaveBeenCalledTimes(2);
+
+    vi.mocked(loadNativeCalendarWindow).mockResolvedValue({ ...snapshot([]), sourceEvents: [] });
+    primary.acceptNativeEdit();
+    await primary.refreshWindow(start, end);
+
+    expect(loadNativeCalendarWindow).toHaveBeenCalledTimes(4);
+    expect(loadNativeCalendarWindow).toHaveBeenCalledWith(expect.objectContaining({ windowStartDate: "2024-03-16" }));
+    expect(primary.isWindowCurrent(start, end)).toBe(true);
+    expect(secondary.isWindowCurrent(nextStart, nextEnd)).toBe(true);
+    expect(secondary.eventsInWindow(nextStart, nextEnd)).toEqual([]);
+    expect(secondary.sourceEvents).toEqual([]);
+  });
+
+  it("keeps a commit's refresh successful when only the other pane's reload fails", async () => {
+    const { getCalendarStore } = await import("./calendar.svelte");
+    const primary = getCalendarStore("primary");
+    const secondary = getCalendarStore("secondary");
+    await primary.loadWindow(start, end);
+    await secondary.loadWindow(nextStart, nextEnd);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.mocked(loadNativeCalendarWindow).mockImplementation(async ({ windowStartDate }) => {
+      if (windowStartDate === "2024-03-16") throw new Error("Secondary read unavailable");
+      return snapshot([]);
+    });
+
+    await expect(primary.refreshCurrentWindow()).resolves.toBeUndefined();
+
+    expect(primary.isWindowCurrent(start, end)).toBe(true);
+    expect(secondary.isWindowCurrent(nextStart, nextEnd)).toBe(false);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 });

@@ -1,8 +1,12 @@
+// @vitest-environment jsdom
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as chatApi from "$lib/api/chat";
 import * as workingFolderApi from "$lib/api/project-working-folders";
 import type { ChatChannelRead, ChatMessageRead, ChatSettingsRead } from "$lib/chat/contracts";
-import { getChat } from "./chat.svelte";
+import { readLastChatChannelId } from "$lib/chat/channel-sections";
+import { setActiveVaultIdentity } from "$lib/vault/active-vault";
+import { getChat, getChatStore, resetChatForVault } from "./chat.svelte";
 import { ChatConfigurationController } from "$lib/stores/chat/configuration-controller.svelte";
 
 const projects = vi.hoisted(() => ({
@@ -11,7 +15,11 @@ const projects = vi.hoisted(() => ({
   ensureLoaded: vi.fn(async () => undefined),
   selectProject: vi.fn(async () => undefined),
 }));
-vi.mock("$lib/stores/projects.svelte", () => ({ getProjects: () => projects }));
+vi.mock("$lib/stores/projects.svelte", () => ({ getProjects: () => projects, getProjectsStore: () => projects }));
+vi.mock("$lib/chat/window-sync", () => ({
+  listenForChatChanges: vi.fn(async () => () => undefined),
+  publishChatChanges: vi.fn(),
+}));
 
 /** Creates a controllable external request without timeouts or real provider processes. */
 function deferred<T>() {
@@ -68,7 +76,7 @@ let discovery: ReturnType<typeof deferred<ChatSettingsRead>>;
 
 beforeEach(() => {
   discovery = deferred<ChatSettingsRead>();
-  chat.resetForVault();
+  resetChatForVault();
   vi.spyOn(chatApi, "readChatSettings").mockResolvedValue(settings());
   vi.spyOn(chatApi, "discoverDefaultChatProviders").mockReturnValue(discovery.promise);
   vi.spyOn(chatApi, "recoverInterruptedChatTurns").mockResolvedValue();
@@ -85,7 +93,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  chat.resetForVault();
+  resetChatForVault();
   vi.restoreAllMocks();
 });
 
@@ -109,6 +117,21 @@ describe("Chat startup", () => {
     expect(chat.channelMessages).toEqual([message("general")]);
     expect(chatApi.recoverInterruptedChatTurns).toHaveBeenCalledOnce();
     expect(chatApi.recoverChatAssignmentDispatchJobs).toHaveBeenCalledOnce();
+  });
+
+  it("keeps one draft thread per working folder so a channel's terminal has a scope", async () => {
+    await chat.ensureLoaded();
+    expect(chat.selectedWorkingFolderId).toBe(null);
+    expect(chat.draftThreadId).toBe(null);
+    vi.mocked(chatApi.readChatProjectPrimaryWorkingFolder).mockResolvedValue({
+      projectId: "project", workingFolderId: "folder", revision: 1,
+    });
+    await chat.selectChannel("other");
+    expect(chat.selectedWorkingFolderId).toBe("folder");
+    const draftThreadId = chat.draftThreadId;
+    expect(draftThreadId).toEqual(expect.any(String));
+    await chat.selectChannel("general");
+    expect(chat.draftThreadId).toBe(draftThreadId);
   });
 
   it("applies later provider settings without resetting a user's channel or draft", async () => {
@@ -154,7 +177,7 @@ describe("Chat startup", () => {
   it("does not start fallback reads for a discovery failure from a previous vault", async () => {
     const report = vi.spyOn(console, "error").mockImplementation(() => undefined);
     await chat.ensureLoaded();
-    chat.resetForVault();
+    resetChatForVault();
     discovery.reject(new Error("old discovery failed"));
     await discovery.promise.catch(() => undefined);
     await Promise.resolve();
@@ -170,7 +193,7 @@ describe("Chat startup", () => {
     vi.mocked(chatApi.readChatSettings).mockReturnValueOnce(fallback.promise);
     discovery.reject(new Error("provider failed"));
     await vi.waitFor(() => expect(chatApi.readChatSettings).toHaveBeenCalledTimes(2));
-    chat.resetForVault();
+    resetChatForVault();
     chat.settings = settings();
     fallback.resolve(settings("mod_enter"));
     await fallback.promise;
@@ -257,5 +280,74 @@ describe("Chat configuration startup requests", () => {
     fallback.resolve(settings("mod_enter"));
     await pending;
     expect(controller.settings?.configuration.behavior.sendKey).toBe("enter");
+  });
+});
+
+describe("Chat stores of split panes", () => {
+  const secondary = getChatStore("secondary");
+
+  beforeEach(() => {
+    localStorage.clear();
+    setActiveVaultIdentity("vault-a");
+  });
+
+  afterEach(() => {
+    setActiveVaultIdentity(null);
+  });
+
+  it("loads the secondary pane after the primary without loading shared state twice", async () => {
+    await secondary.ensureLoaded();
+    expect(chat.loaded).toBe(true);
+    expect(secondary.loaded).toBe(true);
+    expect(secondary.selectedChannelId).toBe("general");
+    expect(secondary.settings).toBe(chat.settings);
+    expect(chatApi.readChatSettings).toHaveBeenCalledOnce();
+    expect(chatApi.recoverInterruptedChatTurns).toHaveBeenCalledOnce();
+    expect(chatApi.recoverChatAssignmentDispatchJobs).toHaveBeenCalledOnce();
+    await chat.ensureLoaded();
+    expect(chatApi.discoverDefaultChatProviders).toHaveBeenCalledOnce();
+  });
+
+  it("keeps each pane's channel and remembers only the primary pane's for the next launch", async () => {
+    await secondary.ensureLoaded();
+    await secondary.selectChannel("other");
+    expect(secondary.selectedChannelId).toBe("other");
+    expect(chat.selectedChannelId).toBe("general");
+    expect(readLastChatChannelId("project")).not.toBe("other");
+    await chat.selectChannel("other");
+    expect(readLastChatChannelId("project")).toBe("other");
+  });
+
+  it("rereads a channel in the other pane after a change through one pane", async () => {
+    await secondary.ensureLoaded();
+    vi.spyOn(chatApi, "setChatChannelRead").mockResolvedValue(channel());
+    vi.spyOn(chatApi, "readChatChannel").mockResolvedValue(channel());
+    const pageReads = vi.mocked(chatApi.readChatChannelPage).mock.calls.length;
+    const scheduledVersion = chat.scheduledMessagesVersion;
+    secondary.activeChannels = [{ ...channel(), unreadCount: 1 }, channel("other")];
+    await secondary.markSelectedChannelRead();
+    expect(chatApi.readChatChannel).toHaveBeenCalledWith("general");
+    await vi.waitFor(() => expect(chat.scheduledMessagesVersion).toBe(scheduledVersion + 1));
+    await vi.waitFor(() => expect(chatApi.readChatChannelPage).toHaveBeenCalledTimes(pageReads + 1));
+    expect(secondary.scheduledMessagesVersion).toBe(scheduledVersion);
+  });
+
+  it("applies changed shared settings to every pane's composer defaults", async () => {
+    await secondary.ensureLoaded();
+    const primaryDefaults = vi.spyOn(chat, "scheduleComposerDefaults");
+    const secondaryDefaults = vi.spyOn(secondary, "scheduleComposerDefaults");
+    chat.settings = settings("mod_enter");
+    expect(primaryDefaults).toHaveBeenCalledOnce();
+    expect(secondaryDefaults).toHaveBeenCalledOnce();
+    expect(secondary.settings?.configuration.behavior.sendKey).toBe("mod_enter");
+  });
+
+  it("resets every pane and the shared state for another vault", async () => {
+    await secondary.ensureLoaded();
+    resetChatForVault();
+    expect(chat.loaded).toBe(false);
+    expect(secondary.loaded).toBe(false);
+    expect(secondary.selectedChannelId).toBeNull();
+    expect(secondary.settings).toBeNull();
   });
 });

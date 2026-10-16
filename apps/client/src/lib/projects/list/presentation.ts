@@ -79,9 +79,9 @@ export function parseProjectListPresentation(value: unknown, fields: readonly Pr
   return result;
 }
 
-/** Restore one project's presentation, falling back to defaults when the stored value is malformed. */
-export function projectListPresentationForProject(preferences: readonly ProjectViewPreference[], projectId: string | null, fields: readonly ProjectCustomField[]): ProjectListPresentation {
-  const preference = preferences.find((entry) => entry.projectId === projectId && entry.viewId === "list" && entry.preferenceKey === PROJECT_LIST_PRESENTATION_KEY);
+/** Restore one list view's presentation, falling back to defaults when the stored value is malformed. */
+export function projectListPresentationForView(preferences: readonly ProjectViewPreference[], viewId: string | null, fields: readonly ProjectCustomField[]): ProjectListPresentation {
+  const preference = viewId ? preferences.find((entry) => entry.viewId === viewId && entry.preferenceKey === PROJECT_LIST_PRESENTATION_KEY) : undefined;
   if (!preference) return defaultProjectListPresentation();
   try { return parseProjectListPresentation(JSON.parse(preference.preferenceValue), fields); }
   catch { return defaultProjectListPresentation(); }

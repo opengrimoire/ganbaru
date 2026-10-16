@@ -7,7 +7,7 @@ import type {
 import { chatErrorMessage } from "$lib/chat/error-presentation";
 import { boundTerminalContext } from "./terminal-model";
 import { workspacePreviewImpact } from "./change-model";
-import { getChat } from "$lib/stores/chat.svelte";
+import { useChat } from "$lib/stores/chat.svelte";
 
 interface FileMutationContext {
   requestId: number;
@@ -28,7 +28,10 @@ export interface ChatFileEditorSessionOptions {
   previewUnavailableMessage: () => string;
 }
 
-/** Owns editable file preview state, conflict recovery, and review selection actions. */
+/**
+ * Owns editable file preview state, conflict recovery, and review selection actions for the Chat store of its
+ * split pane. Construct during component initialization.
+ */
 export class ChatFileEditorSession {
   preview = $state<ProjectWorkingFolderFilePreview | null>(null);
   draftText = $state("");
@@ -45,7 +48,7 @@ export class ChatFileEditorSession {
   loadingVisible = $state(false);
   error = $state<string | null>(null);
 
-  private readonly chat = getChat();
+  private readonly chat = useChat();
   private scopeRevision = 0;
   private previewRequestId = 0;
   private mutationRequestId = 0;

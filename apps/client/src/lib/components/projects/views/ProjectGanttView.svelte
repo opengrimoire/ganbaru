@@ -17,7 +17,7 @@
   import type { ProjectDependencyCascadeItem } from "$lib/api/project-cascade";
   import { ProjectDependencyCascadeController } from "$lib/projects/scheduling/dependency-cascade-controller.svelte";
   import type { ProjectSection, ProjectStatus, ProjectTask } from "$lib/projects/types";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { cn } from "$lib/utils";
 
   let {
@@ -36,7 +36,7 @@
     onToggleSectionCollapsed: (section: ProjectSection) => void;
   } = $props();
 
-  const projects = getProjects();
+  const projects = useProjects();
   const { t } = getLocalization();
 
   const cascade = new ProjectDependencyCascadeController(() => projects.selectedProjectId, (preview) => projects.applyDependencyCascade(preview));

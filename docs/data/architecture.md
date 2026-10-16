@@ -38,7 +38,7 @@ Vault selection, whole-vault snapshots, ownership handoff, backup restore, and r
 
 ## Portable configuration
 
-Portable preferences that should follow the vault live in `config.json`. Writes use a Rust-owned read, validate, merge, and atomic-replace flow so independent windows do not overwrite unrelated settings. Unknown fields are handled by explicit validation, not silently preserved forever.
+Portable preferences that should follow the vault live in `config.json`. Writes use a Rust-owned read, validate, merge, and atomic-replace flow so independent windows do not overwrite unrelated settings. Unknown fields are handled by explicit validation, not silently preserved forever. After a write, the window tells the other windows of the vault which keys changed; they reread those keys from disk, keep any local edit still being saved, and refresh the affected views without writing back, so windows do not echo each other. Per-window navigation, such as the selected Notes page and collapsed folders, is not shared.
 
 Device-only values never belong in `config.json`: external absolute paths, credential material, executable discovery, provider process state, and the active-folder pointer.
 

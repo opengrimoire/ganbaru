@@ -5,6 +5,7 @@
   import type { NotesResolvedSuggestionAnchor } from "$lib/notes/collaboration/suggestions";
   import type { NotesDateMentionRichText, NotesRichText } from "$lib/notes/types";
   import { normalizeNotesTextLinkUrl, openNotesTextLink } from "$lib/notes/links/navigation";
+  import { getNotesEditor } from "$lib/components/notes/editor-context";
   import NotesLocalReference, { isNotesLocalReference } from "./NotesLocalReference.svelte";
   import NotesObjectMention from "./NotesObjectMention.svelte";
   import { isNotesDateMentionRichText, isNotesExternalMentionRichText } from "$lib/notes/rich-text/core";
@@ -21,6 +22,8 @@
     /** Editing hosts open a date editor from a date mention chip. */
     onEditDateMention?: (item: NotesDateMentionRichText, anchor: HTMLElement) => void;
   } = $props();
+
+  const notesEditor = getNotesEditor();
 
   const visibleRichText = $derived(richText.filter(richTextItemIsVisible));
   const visibleRuns = $derived(visibleRichTextRuns(visibleRichText));
@@ -171,7 +174,7 @@
       if (!event.ctrlKey && !event.metaKey && !editor.ownerDocument.getSelection()?.isCollapsed) return;
     }
     event.preventDefault();
-    void openNotesTextLink(url).catch((error: unknown) => console.warn("Notes inline link navigation failed", error));
+    void openNotesTextLink(url, notesEditor).catch((error: unknown) => console.warn("Notes inline link navigation failed", error));
   }
 
   /** Show a mention's icon once, on the part where the mention begins. */

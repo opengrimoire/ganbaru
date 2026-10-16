@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick, untrack } from "svelte";
+  import { tick, untrack, type Snippet } from "svelte";
   import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import Eye from "@lucide/svelte/icons/eye";
@@ -12,14 +12,18 @@
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import {
-    projectLifecycleBadgeClass,
-    projectLifecycleLabel,
-  } from "$lib/projects/display";
+  import ProjectLifecycleIcon from "$lib/components/projects/ProjectLifecycleIcon.svelte";
   import { verticalBorderWidth } from "$lib/utils/anchored-panel";
   import {
+    openInNewTabIntent,
+    preventMiddleClickAutoscroll,
+    type OpenInNewTabIntent,
+  } from "$lib/workspace-tabs/gestures";
+  import {
+    createHoverDelay,
     isPointerAimingAtSubmenu,
     SUBMENU_AIM_TOLERANCES,
+    type HoverDelay,
     type MenuAimPoint,
   } from "$lib/utils/menu-aim";
   import {
@@ -43,10 +47,14 @@
     type ProjectGroup,
     type ProjectTemplateId,
   } from "$lib/projects/types";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
+  import { getPreferences } from "$lib/stores/preferences.svelte";
+  import SidebarOrderMenu from "$lib/components/ui/SidebarOrderMenu.svelte";
+  import StarredIconBadge from "$lib/components/ui/StarredIconBadge.svelte";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { cn, type MaybePromise } from "$lib/utils";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
+  import { createSidebarOrderDrag } from "$lib/utils/sidebar-order-drag.svelte";
   import type { ProjectNavigatorPanelMode } from "$lib/projects/toolbar";
   import ProjectIcon from "$lib/components/projects/ProjectIcon.svelte";
 
@@ -70,20 +78,26 @@
     zIndexClass = "z-61",
     showInactiveProjects = false,
     showInactiveToggle = false,
+    showOrderMenu = false,
     showClearProject = false,
     showLifecycleBadges = false,
     closeOnProjectCreate = false,
     showProjectChildren = false,
     activeProjectId = null,
     projectSearch = $bindable(""),
+    searchPlaceholder = undefined,
+    searchResults = undefined,
+    searchResultCount = 0,
     onShowInactiveProjectsChange = undefined,
     onProjectSelected,
+    onProjectOpenInNewTab = undefined,
     onProjectCreated = undefined,
     onClearProject = undefined,
     onProjectPreview = undefined,
     onProjectPreviewClose = undefined,
     projectChildContainsTarget = undefined,
     pointerAimingAtProjectChild = undefined,
+    projectChildHoverDelay = undefined,
     mobileLayout = false,
     initialMobileGroupId = null,
     onProjectDrilldown = undefined,
@@ -102,14 +116,24 @@
     zIndexClass?: string;
     showInactiveProjects?: boolean;
     showInactiveToggle?: boolean;
+    /** Show the button that picks the order of groups and projects, shared with the Projects sidebar. */
+    showOrderMenu?: boolean;
     showClearProject?: boolean;
     showLifecycleBadges?: boolean;
     closeOnProjectCreate?: boolean;
     showProjectChildren?: boolean;
     activeProjectId?: string | null;
     projectSearch?: string;
+    /** Placeholder and mobile search title when the search finds something other than projects. */
+    searchPlaceholder?: string;
+    /** Renders the results of a non-empty search in place of matching projects; the parent reads the bound `projectSearch`. */
+    searchResults?: Snippet;
+    /** Rows `searchResults` renders, used to size the panel before it is measured. */
+    searchResultCount?: number;
     onShowInactiveProjectsChange?: (value: boolean) => void;
     onProjectSelected: (project: Project) => MaybePromise<void>;
+    /** Open a project in a tab of its own on a middle click or Ctrl+click; rows ignore those gestures without it. */
+    onProjectOpenInNewTab?: (project: Project, intent: OpenInNewTabIntent) => void;
     onProjectCreated?: (projectId: string | null) => MaybePromise<void>;
     onClearProject?: () => MaybePromise<void>;
     onProjectPreview?: (
@@ -120,13 +144,16 @@
     onProjectPreviewClose?: () => void;
     projectChildContainsTarget?: (target: EventTarget | null) => boolean;
     pointerAimingAtProjectChild?: (point: MenuAimPoint) => boolean;
+    /** Pending close or switch of the project child panel, shared so the parent can cancel it when the pointer enters that panel. */
+    projectChildHoverDelay?: HoverDelay;
     mobileLayout?: boolean;
     initialMobileGroupId?: string | null;
     onProjectDrilldown?: (project: Project) => MaybePromise<void>;
     onClose?: () => void;
   } = $props();
 
-  const projects = getProjects();
+  const projects = useProjects();
+  const preferences = getPreferences();
   const mobileBackStack = getMobileBackStack();
   const { t } = getLocalization();
   const iconSize = $derived(mobileLayout ? 18 : 13);
@@ -148,6 +175,12 @@
   let projectTemplateDraftByGroup = $state<Record<string, ProjectTemplateId>>({});
   let activeGroupId = $state<string | null>(untrack(() => mobileLayout ? initialMobileGroupId : null));
   let activeGroupAnchorElement = $state<HTMLElement | null>(null);
+  const groupSubpanelDelay = createHoverDelay();
+  const projectPreviewDelay = untrack(() => projectChildHoverDelay) ?? createHoverDelay();
+  $effect(() => () => {
+    groupSubpanelDelay.cancel();
+    projectPreviewDelay.cancel();
+  });
   let panelRootElement = $state<HTMLDivElement | null>(null);
   let panelHeaderElement = $state<HTMLDivElement | undefined>();
   let panelFooterElement = $state<HTMLDivElement | undefined>();
@@ -178,6 +211,9 @@
       .map((group) => ({ group, projects: projectsInGroup(group) }))
       .filter((entry) => entry.projects.length > 0),
   );
+  const searchRowCount = $derived(searchResults
+    ? searchResultCount
+    : searchResultGroups.reduce((count, entry) => count + entry.projects.length, 0));
   const activeGroup = $derived.by(() => groups.find((group) => group.id === activeGroupId));
   const directProjectGroup = $derived.by(() => selectedGroup);
   const directProjects = $derived.by(() => directProjectGroup ? projectsInGroup(directProjectGroup) : []);
@@ -202,6 +238,44 @@
   const projectRowsHaveChildren = $derived(
     showProjectChildren || (mobileLayout && onProjectDrilldown !== undefined),
   );
+
+  const customOrder = $derived(preferences.projectsSidebarOrder === "custom");
+  /** Groups drag by their row in the custom order. */
+  const groupDrag = createSidebarOrderDrag({
+    getIds: () => visibleGroups.map((group) => group.id),
+    enabled: () => customOrder && !searchActive,
+    save: (orderedIds) => projects.reorderGroups(orderedIds),
+    description: "project groups from the project picker",
+  });
+  /** Projects drag by their row in the custom order, in the main panel or the open group subpanel. */
+  const projectDrag = createSidebarOrderDrag({
+    getIds: () => projectDragGroup ? projectsInGroup(projectDragGroup).map((project) => project.id) : [],
+    enabled: () => customOrder && !searchActive && projectDragGroup !== undefined,
+    isStarred: (projectId) => projects.isProjectStarred(projectId),
+    save: async (orderedIds) => {
+      if (projectDragGroup) await projects.reorderProjectsInGroup(projectDragGroup.id, orderedIds);
+    },
+    description: "projects from the project picker",
+  });
+  const projectDragGroup = $derived(mode === "groups" && !mobileLayout ? activeGroup : mainProjectGroup);
+  $effect(() => groupDrag.reset);
+  $effect(() => projectDrag.reset);
+
+  /** A lifted group or project closes the panels it would otherwise open while passing over rows. */
+  $effect(() => {
+    const groupLifted = groupDrag.draggedId !== null;
+    const projectLifted = projectDrag.draggedId !== null;
+    if (!groupLifted && !projectLifted) return;
+    untrack(() => {
+      projectPreviewDelay.cancel();
+      onProjectPreviewClose?.();
+      if (groupLifted) closeProjectSubpanel();
+    });
+  });
+
+  function rowDragActive(): boolean {
+    return groupDrag.draggedId !== null || projectDrag.draggedId !== null;
+  }
 
   function projectsInGroup(group: ProjectGroup): Project[] {
     const groupProjects = showInactiveProjects
@@ -255,7 +329,7 @@
 
   function mainListEstimatedHeight(): number {
     const itemCount = searchActive
-      ? searchResultGroups.reduce((count, entry) => count + entry.projects.length, 0)
+      ? searchRowCount
       : mobileLayout && mobilePane === "projects"
         ? mainProjects.length
         : mode === "projects" && directProjectGroup
@@ -401,6 +475,7 @@
   }
 
   function closeProjectSubpanel(): void {
+    groupSubpanelDelay.cancel();
     activeGroupId = null;
     activeGroupAnchorElement = null;
     createProjectGroupId = null;
@@ -413,8 +488,10 @@
     group: ProjectGroup,
     target: EventTarget | null,
   ): void {
+    groupSubpanelDelay.cancel();
     if (activeGroupId !== group.id) {
       createProjectGroupId = null;
+      projectPreviewDelay.cancel();
       onProjectPreviewClose?.();
     }
     activeGroupId = group.id;
@@ -427,25 +504,28 @@
     void tick().then(updateProjectSubpanelGeometry);
   }
 
-  function handleGroupPointerEnter(group: ProjectGroup, event: PointerEvent): void {
-    if (mobileLayout) return;
-    const point = projectPickerPointerPoint(event);
-    if (activeGroupId && activeGroupId !== group.id && pointerAimingAtProjectSubpanel(point)) {
+  /** Switches to a hovered group now, or after the grace delay while the pointer is heading into the open subpanel. */
+  function hoverGroup(group: ProjectGroup, event: PointerEvent): void {
+    const target = event.currentTarget;
+    if (activeGroupId && pointerAimingAtProjectSubpanel(projectPickerPointerPoint(event))) {
+      groupSubpanelDelay.schedule(() => showProjectSubpanel(group, target));
       return;
     }
-    showProjectSubpanel(group, event.currentTarget);
+    showProjectSubpanel(group, target);
+  }
+
+  function handleGroupPointerEnter(group: ProjectGroup, event: PointerEvent): void {
+    if (mobileLayout || rowDragActive()) return;
+    if (activeGroupId === group.id) {
+      groupSubpanelDelay.cancel();
+      return;
+    }
+    hoverGroup(group, event);
   }
 
   function handleGroupPointerMove(group: ProjectGroup, event: PointerEvent): void {
-    if (mobileLayout) return;
-    const point = projectPickerPointerPoint(event);
-    if (activeGroupId === group.id) {
-      return;
-    }
-    if (activeGroupId && pointerAimingAtProjectSubpanel(point)) {
-      return;
-    }
-    showProjectSubpanel(group, event.currentTarget);
+    if (mobileLayout || rowDragActive() || activeGroupId === group.id) return;
+    hoverGroup(group, event);
   }
 
   function isProjectSubpanelBoundaryTarget(target: EventTarget | null): boolean {
@@ -461,10 +541,11 @@
   function handleProjectSubpanelBoundaryLeave(event: PointerEvent): void {
     if (mobileLayout) return;
     if (isProjectSubpanelBoundaryTarget(event.relatedTarget)) return;
-    if (pointerAimingAtProjectChild?.(projectPickerPointerPoint(event))) return;
-    if (pointerAimingAtProjectSubpanel(projectPickerPointerPoint(event))) return;
-    onProjectPreviewClose?.();
-    closeProjectSubpanel();
+    groupSubpanelDelay.schedule(() => {
+      projectPreviewDelay.cancel();
+      onProjectPreviewClose?.();
+      closeProjectSubpanel();
+    });
   }
 
   function previewProject(project: Project, target: EventTarget | null): void {
@@ -476,25 +557,45 @@
     );
   }
 
+  /** Previews a hovered project now, or after the grace delay while the pointer is heading into the open child panel. */
+  function hoverProject(project: Project, event: PointerEvent): void {
+    const target = event.currentTarget;
+    if (activeProjectId && pointerAimingAtProjectChild?.(projectPickerPointerPoint(event))) {
+      projectPreviewDelay.schedule(() => previewProject(project, target));
+      return;
+    }
+    projectPreviewDelay.cancel();
+    previewProject(project, target);
+  }
+
   function handleProjectPointerEnter(project: Project, event: PointerEvent): void {
-    if (
-      activeProjectId
-      && activeProjectId !== project.id
-      && pointerAimingAtProjectChild?.(projectPickerPointerPoint(event))
-    ) return;
-    previewProject(project, event.currentTarget);
+    if (rowDragActive()) return;
+    if (activeProjectId === project.id) {
+      projectPreviewDelay.cancel();
+      return;
+    }
+    hoverProject(project, event);
   }
 
   function handleProjectPointerMove(project: Project, event: PointerEvent): void {
-    if (activeProjectId === project.id) return;
-    if (activeProjectId && pointerAimingAtProjectChild?.(projectPickerPointerPoint(event))) return;
-    previewProject(project, event.currentTarget);
+    if (rowDragActive() || activeProjectId === project.id) return;
+    hoverProject(project, event);
   }
 
   function handleProjectPointerLeave(event: PointerEvent): void {
     if (projectChildContainsTarget?.(event.relatedTarget)) return;
-    if (pointerAimingAtProjectChild?.(projectPickerPointerPoint(event))) return;
-    onProjectPreviewClose?.();
+    projectPreviewDelay.schedule(() => onProjectPreviewClose?.());
+  }
+
+  /** Route a row click to a new tab when the gesture asks for one, else select the project. */
+  function handleProjectRowClick(event: MouseEvent, project: Project): void {
+    const intent = onProjectOpenInNewTab ? openInNewTabIntent(event) : null;
+    if (intent) {
+      event.preventDefault();
+      onProjectOpenInNewTab?.(project, intent);
+      return;
+    }
+    if (event.type === "click") void activateProject(project);
   }
 
   async function activateProject(project: Project): Promise<void> {
@@ -628,7 +729,7 @@
     const activeSearch = searchActive;
     const panelMode = mode;
     const groupCount = visibleGroups.length;
-    const resultCount = searchResultGroups.reduce((count, entry) => count + entry.projects.length, 0);
+    const resultCount = searchRowCount;
     const directProjectCount = directProjectGroup ? projectsInGroup(directProjectGroup).length : 0;
     const mainProjectCount = mainProjects.length;
     const creatingGroup = createGroupOpen;
@@ -726,7 +827,7 @@
         {/if}
         <h2 class="min-w-0 flex-1 truncate px-2 text-base font-semibold">
           {searchActive
-            ? t("calendar.eventPanel.searchProjects")
+            ? searchPlaceholder ?? t("calendar.eventPanel.searchProjects")
             : mainProjectGroup?.name ?? t("projects.navigator.pickerLabel")}
         </h2>
         {#if onClose}
@@ -751,32 +852,50 @@
         type="search"
         value={projectSearch}
         oninput={(event) => updateProjectSearch(event.currentTarget.value)}
-        placeholder={t("calendar.eventPanel.searchProjects")}
+        placeholder={searchPlaceholder ?? t("calendar.eventPanel.searchProjects")}
         class={cn(
-          "field-bare text-popover-foreground",
+          "project-picker-search field-bare text-popover-foreground",
           mobileLayout && "h-12 text-base",
         )}
       />
-      {#if showInactiveToggle}
-        <button
-          type="button"
-          class={cn(
-            "flex shrink-0 items-center justify-center text-popover-foreground/60 hover:bg-accent hover:text-accent-foreground",
-            mobileLayout ? "h-12 w-12 rounded-xl" : "h-6 w-6 rounded",
-            showInactiveProjects && "bg-accent text-accent-foreground",
-          )}
-          aria-label={showInactiveProjects ? t("projects.navigator.hideInactive") : t("projects.navigator.showInactive")}
-          title={showInactiveProjects ? t("projects.navigator.hideInactive") : t("projects.navigator.showInactive")}
-          onclick={() => {
-            onShowInactiveProjectsChange?.(!showInactiveProjects);
-          }}
-        >
-          {#if showInactiveProjects}
-            <EyeOff size={mobileLayout ? 18 : 13} strokeWidth={iconStrokeWidth} />
-          {:else}
-            <Eye size={mobileLayout ? 18 : 13} strokeWidth={iconStrokeWidth} />
+      {#if showOrderMenu || showInactiveToggle}
+        <div class="flex shrink-0 items-center">
+          {#if showOrderMenu}
+            <SidebarOrderMenu
+              order={preferences.projectsSidebarOrder}
+              label={t("projects.navigator.sortGroupsAndProjects")}
+              buttonClass={cn(
+                "flex shrink-0 items-center justify-center text-popover-foreground/60 hover:bg-accent hover:text-accent-foreground",
+                mobileLayout ? "h-12 w-12 rounded-xl" : "h-6 w-6 rounded",
+              )}
+              activeClass="bg-accent text-accent-foreground"
+              iconSize={mobileLayout ? 18 : 13}
+              {iconStrokeWidth}
+              menuZIndexClass="z-90"
+              onSelect={(order) => { if (order) preferences.setProjectsSidebarOrder(order); }}
+            />
           {/if}
-        </button>
+          {#if showInactiveToggle}
+            <button
+              type="button"
+              class={cn(
+                "flex shrink-0 items-center justify-center text-popover-foreground/60 hover:bg-accent hover:text-accent-foreground",
+                mobileLayout ? "h-12 w-12 rounded-xl" : "h-6 w-6 rounded",
+              )}
+              aria-label={showInactiveProjects ? t("projects.navigator.hideInactive") : t("projects.navigator.showInactive")}
+              title={showInactiveProjects ? t("projects.navigator.hideInactive") : t("projects.navigator.showInactive")}
+              onclick={() => {
+                onShowInactiveProjectsChange?.(!showInactiveProjects);
+              }}
+            >
+              {#if showInactiveProjects}
+                <EyeOff size={mobileLayout ? 18 : 13} strokeWidth={iconStrokeWidth} />
+              {:else}
+                <Eye size={mobileLayout ? 18 : 13} strokeWidth={iconStrokeWidth} />
+              {/if}
+            </button>
+          {/if}
+        </div>
       {/if}
       {#if mobileLayout && searchActive}
         <button
@@ -818,6 +937,8 @@
           <Loading layout="rows" rows={3} label={t("projects.loading")} />
         {:else if projects.loadError}
           <Notice class="px-3 py-2" message={t("projects.loadFailed", projects.loadError)} onRetry={() => projects.load()} />
+        {:else if searchActive && searchResults}
+          {@render searchResults()}
         {:else if searchActive && searchResultGroups.length === 0}
           <div class="px-3 py-2 text-popover-foreground/60">
             {t("calendar.eventPanel.noProjectsFound")}
@@ -839,14 +960,14 @@
                         project.status === "active" ? "text-popover-foreground" : "text-popover-foreground/60",
                       )}
                       aria-label={t("projects.actions.selectProject", project.name, resultGroup.group.name)}
-                      onclick={() => { void activateProject(project); }}
+                      onmousedown={preventMiddleClickAutoscroll}
+                  onclick={(event) => handleProjectRowClick(event, project)}
+                  onauxclick={(event) => handleProjectRowClick(event, project)}
                     >
-                      <ProjectIcon name={project.icon} size={iconSize} strokeWidth={iconStrokeWidth} emojiScale={EMOJI_SCALE} class="shrink-0" />
+                      <StarredIconBadge starred={projects.isProjectStarred(project.id)}><ProjectIcon name={project.icon} size={iconSize} strokeWidth={iconStrokeWidth} emojiScale={EMOJI_SCALE} /></StarredIconBadge>
                       <span class="min-w-0 flex-1 truncate">{project.name}</span>
                       {#if showLifecycleBadges && project.status !== "active"}
-                        <span class={cn("shrink-0 rounded border px-1.5 py-0.5 text-[0.666667rem]", projectLifecycleBadgeClass(project.status))}>
-                          {projectLifecycleLabel(project.status, t)}
-                        </span>
+                        <ProjectLifecycleIcon status={project.status} size={iconSize} strokeWidth={iconStrokeWidth} class="text-popover-foreground/60" />
                       {/if}
                       {#if projectRowsHaveChildren}
                         <ChevronRight size={mobileLayout ? 18 : 13} strokeWidth={iconStrokeWidth} class="shrink-0 text-popover-foreground/60" />
@@ -865,10 +986,11 @@
           {:else}
             <div class={mobileLayout ? "grid px-1" : "grid pl-1"}>
               {#each visibleGroups as group (group.id)}
-                <div class={mobileLayout ? "px-1" : "pl-1 pr-1"}>
+                <div class={mobileLayout ? "px-1" : "pl-1 pr-1"} {@attach groupDrag.item(group.id)}>
                   <button
                     type="button"
                     data-mobile-project-group-id={mobileLayout ? group.id : undefined}
+                    onpointerdown={(event) => groupDrag.pointerDown(event, group.id)}
                     class={cn(
                       "menu-item grid gap-2",
                       mobileLayout
@@ -903,9 +1025,10 @@
         {:else}
           <div class="grid px-1">
             {#each mainProjects as project (project.id)}
-              <div class="px-1">
+              <div class="px-1" {@attach projectDrag.item(project.id)}>
                 <button
                   type="button"
+                  onpointerdown={(event) => projectDrag.pointerDown(event, project.id)}
                   class={cn(
                     "menu-item gap-2",
                     mobileLayout && "min-h-12 px-3 text-sm",
@@ -922,16 +1045,16 @@
                   onpointermove={(event) => handleProjectPointerMove(project, event)}
                   onpointerleave={handleProjectPointerLeave}
                   onfocus={(event) => previewProject(project, event.currentTarget)}
-                  onclick={() => { void activateProject(project); }}
+                  onmousedown={preventMiddleClickAutoscroll}
+                  onclick={(event) => handleProjectRowClick(event, project)}
+                  onauxclick={(event) => handleProjectRowClick(event, project)}
                 >
-                  <ProjectIcon name={project.icon} size={iconSize} strokeWidth={iconStrokeWidth} emojiScale={EMOJI_SCALE} class="shrink-0" />
+                  <StarredIconBadge starred={projects.isProjectStarred(project.id)}><ProjectIcon name={project.icon} size={iconSize} strokeWidth={iconStrokeWidth} emojiScale={EMOJI_SCALE} /></StarredIconBadge>
                   <span class="min-w-0 flex-1 truncate">{project.name}</span>
                   {#if projectRowsHaveChildren || (showLifecycleBadges && project.status !== "active")}
                     <span class="flex min-w-0 items-center justify-end gap-1">
                       {#if showLifecycleBadges && project.status !== "active"}
-                        <span class={cn("shrink-0 rounded border px-1.5 py-0.5 text-[0.666667rem]", projectLifecycleBadgeClass(project.status))}>
-                          {projectLifecycleLabel(project.status, t)}
-                        </span>
+                        <ProjectLifecycleIcon status={project.status} size={iconSize} strokeWidth={iconStrokeWidth} class="text-popover-foreground/60" />
                       {/if}
                       {#if projectRowsHaveChildren}<ChevronRight size={mobileLayout ? 18 : 13} strokeWidth={iconStrokeWidth} class="shrink-0 text-popover-foreground/60" />{/if}
                     </span>
@@ -1098,6 +1221,7 @@
     aria-hidden="true"
     class={cn("fixed bg-transparent", zIndexClass)}
     style={projectSubpanelBridgeStyle}
+    onpointerenter={groupSubpanelDelay.cancel}
     onpointerleave={handleProjectSubpanelBoundaryLeave}
   ></div>
   <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -1105,6 +1229,7 @@
     bind:this={projectSubpanelElement}
     class={cn("project-picker-panel surface-floating fixed flex min-h-0 flex-col overflow-hidden", zIndexClass)}
     style={projectSubpanelStyle}
+    onpointerenter={groupSubpanelDelay.cancel}
     onpointerleave={handleProjectSubpanelBoundaryLeave}
   >
     <div class="relative min-h-0 flex-1">
@@ -1126,6 +1251,8 @@
               {#each activeGroupProjects as project (project.id)}
                 <button
                   type="button"
+                  {@attach projectDrag.item(project.id)}
+                  onpointerdown={(event) => projectDrag.pointerDown(event, project.id)}
                   class={cn(
                     "menu-item gap-2",
                     showProjectChildren
@@ -1139,16 +1266,16 @@
                   onpointermove={(event) => handleProjectPointerMove(project, event)}
                   onpointerleave={handleProjectPointerLeave}
                   onfocus={(event) => previewProject(project, event.currentTarget)}
-                  onclick={() => { void activateProject(project); }}
+                  onmousedown={preventMiddleClickAutoscroll}
+                  onclick={(event) => handleProjectRowClick(event, project)}
+                  onauxclick={(event) => handleProjectRowClick(event, project)}
                 >
-                  <ProjectIcon name={project.icon} size={iconSize} strokeWidth={iconStrokeWidth} emojiScale={EMOJI_SCALE} class="shrink-0" />
+                  <StarredIconBadge starred={projects.isProjectStarred(project.id)}><ProjectIcon name={project.icon} size={iconSize} strokeWidth={iconStrokeWidth} emojiScale={EMOJI_SCALE} /></StarredIconBadge>
                   <span class="min-w-0 flex-1 truncate">{project.name}</span>
                   {#if showProjectChildren || (showLifecycleBadges && project.status !== "active")}
                     <span class="flex min-w-0 items-center justify-end gap-1">
                       {#if showLifecycleBadges && project.status !== "active"}
-                        <span class={cn("shrink-0 rounded border px-1.5 py-0.5 text-[0.666667rem]", projectLifecycleBadgeClass(project.status))}>
-                          {projectLifecycleLabel(project.status, t)}
-                        </span>
+                        <ProjectLifecycleIcon status={project.status} size={iconSize} strokeWidth={iconStrokeWidth} class="text-popover-foreground/60" />
                       {/if}
                       {#if showProjectChildren}<ChevronRight size={13} strokeWidth={iconStrokeWidth} class="shrink-0 text-popover-foreground/60" />{/if}
                     </span>
@@ -1228,6 +1355,11 @@
 {/if}
 
 <style>
+  /* The search row is short on room beside the order and inactive buttons, so it has no native clear button. */
+  .project-picker-search::-webkit-search-cancel-button {
+    display: none;
+  }
+
   .project-picker-panel {
     --cal-scrollbar-thumb: color-mix(in srgb, var(--popover-foreground) 18%, var(--popover));
     --cal-scrollbar-thumb-hover: color-mix(in srgb, var(--popover-foreground) 36%, var(--popover));

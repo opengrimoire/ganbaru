@@ -7,10 +7,9 @@ const FOCUSABLE_SELECTOR = [
   "[tabindex]:not([tabindex='-1'])",
 ].join(",");
 
-interface ModalKeyboardLayer {
-  id: symbol;
-  handle: (event: KeyboardEvent) => void;
-}
+type ModalKeyboardLayer =
+  | { id: symbol; kind: "exclusive"; handle: (event: KeyboardEvent) => void }
+  | { id: symbol; kind: "isolating"; handle: (event: KeyboardEvent) => boolean };
 
 let modalKeyboardLayers: ModalKeyboardLayer[] = [];
 let modalKeyboardRouterTarget: Window | null = null;
@@ -18,6 +17,10 @@ let modalKeyboardRouterTarget: Window | null = null;
 function routeModalKeyboardEvent(event: KeyboardEvent): void {
   const layer = modalKeyboardLayers.at(-1);
   if (!layer) return;
+  if (layer.kind === "isolating") {
+    if (layer.handle(event)) event.stopImmediatePropagation();
+    return;
+  }
   try {
     layer.handle(event);
   } finally {
@@ -44,13 +47,32 @@ export function installModalKeyboardRouter(target: Window = window): () => void 
 export function activateModalKeyboardLayer(
   handle: (event: KeyboardEvent) => void,
 ): () => void {
+  return pushModalKeyboardLayer({ id: Symbol("modal-keyboard-layer"), kind: "exclusive", handle });
+}
+
+/**
+ * Give a modal panel first look at keyboard input while the controls inside it keep receiving keys. `handle` returns
+ * whether it claimed the event, which then stops there. While the layer is active, window-wide app and view shortcuts
+ * stay inactive (see `isAppKeyboardIsolated`), so keys the panel leaves alone do not reach the app behind it.
+ */
+export function activateIsolatingKeyboardLayer(
+  handle: (event: KeyboardEvent) => boolean,
+): () => void {
+  return pushModalKeyboardLayer({ id: Symbol("isolating-keyboard-layer"), kind: "isolating", handle });
+}
+
+/** Whether a modal panel owns the keyboard, so window-wide app and view shortcuts must not act. */
+export function isAppKeyboardIsolated(): boolean {
+  return modalKeyboardLayers.some((layer) => layer.kind === "isolating");
+}
+
+function pushModalKeyboardLayer(layer: ModalKeyboardLayer): () => void {
   if (!modalKeyboardRouterTarget && typeof window !== "undefined") {
     installModalKeyboardRouter(window);
   }
-  const id = Symbol("modal-keyboard-layer");
-  modalKeyboardLayers = [...modalKeyboardLayers, { id, handle }];
+  modalKeyboardLayers = [...modalKeyboardLayers, layer];
   return () => {
-    modalKeyboardLayers = modalKeyboardLayers.filter((layer) => layer.id !== id);
+    modalKeyboardLayers = modalKeyboardLayers.filter((candidate) => candidate.id !== layer.id);
   };
 }
 

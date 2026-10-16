@@ -22,6 +22,10 @@ pub struct SessionSource {
     pub identity: String,
     pub original_input: String,
     pub title: String,
+    /// Display artist for media metadata; `None` leaves the decoder's file tags in place.
+    pub artist: Option<String>,
+    /// Display album for media metadata; `None` leaves the decoder's file tags in place.
+    pub album: Option<String>,
     pub path: Option<String>,
     pub artwork_path: Option<String>,
     pub video_id: Option<String>,

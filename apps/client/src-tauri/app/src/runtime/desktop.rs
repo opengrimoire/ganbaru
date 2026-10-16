@@ -28,15 +28,11 @@ impl Drop for DeferredExitCompletion {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-fn focus_main_window_for_second_launch(app: &tauri::AppHandle) {
+fn raise_window_for_second_launch(app: &tauri::AppHandle) {
     if !MAIN_WINDOW_FRONTEND_READY.load(std::sync::atomic::Ordering::Acquire) {
         return;
     }
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
-    }
+    crate::app_windows::raise_app_window(app);
 }
 
 #[tauri::command]
@@ -227,7 +223,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            focus_main_window_for_second_launch(app);
+            raise_window_for_second_launch(app);
         }))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
@@ -640,6 +636,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             projects::structure_commands::projects_update_group,
             projects::structure_commands::projects_delete_group,
             projects::structure_commands::projects_set_group_collapsed,
+            projects::structure_commands::projects_reorder_groups,
+            projects::structure_commands::projects_reorder_group_projects,
             projects::project_commands::projects_create_project,
             projects::project_commands::projects_update_project,
             projects::project_commands::projects_update_notes_settings,
@@ -679,7 +677,10 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             projects::dependency_cascade::projects_preview_dependency_cascade,
             projects::dependency_cascade::projects_apply_dependency_cascade,
             projects::preferences::projects_upsert_view_preference,
-            projects::preferences::projects_delete_view_preference,
+            projects::views::projects_create_view,
+            projects::views::projects_rename_view,
+            projects::views::projects_reorder_views,
+            projects::views::projects_delete_view,
             projects::emojis::projects_create_custom_emoji,
             projects::emojis::projects_delete_custom_emoji,
             notes::notes_load_workspace_shell,
@@ -841,7 +842,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             quick_notes::quick_notes_purge_expired_trash,
             quick_notes::quick_notes_list_tags,
             quick_notes::quick_notes_create_tag,
-            quick_notes::quick_notes_rename_tag,
+            quick_notes::quick_notes_update_tag,
+            quick_notes::quick_notes_reorder_tag,
             quick_notes::quick_notes_delete_tag,
             quick_notes::quick_notes_conflict,
             quick_notes::quick_notes_resolve_conflict,

@@ -46,6 +46,7 @@ apps/
         api/: typed wrappers around Tauri commands, split by domain (Chat and Notes have several clients)
         components/: Svelte components grouped by feature (calendar, chat, collections, diagnostics, icon-picker, mobile, music, notes, pomodoro, projects, quick-notes, settings, sync, themes, title-bar, vault, and others), with subfolders that mirror lib/ domains (for example calendar/grid/, chat/timeline/, notes/blocks/, projects/list/); ui/ holds handwritten shared primitives
         benchmark/: benchmark runner, samplers, output, and scenarios
+        build/: build-time CSS transforms used by the Vite config
         calendar/: shared Calendar logic, types, recurrence rules, navigation helpers, and iCalendar parser/serializer
         chat/: Chat contracts, runtime validation of untrusted responses, and interaction models and controllers
         color/: color math and display helpers
@@ -60,10 +61,11 @@ apps/
         scheduling/: lifecycle and notification schedulers
         settings/: Settings section identifiers shared by launchers and the Settings modal
         sync/: sync status presentation helpers
-        mobile/: Android shell back handling, layout, and persistence lifecycle helpers
+        mobile/: Android shell back handling, layout, top bar context slot, and persistence lifecycle helpers
         stores/: Svelte rune stores and domain controllers for runtime state; large stores keep private modules in a same-named subfolder (calendar/, chat/, music-player/, notes/, projects/)
         themes/: theme definitions, derivation, serialization, operations, editor session, and theme JSON file access
         utils/, vault/, windows/: shared helpers, vault state, and detached window and cross-window sync helpers
+        workspace-tabs/: workspace tab model, location mapping, and presentation helpers
     static/: static assets
     scripts/: repo-owned scripts grouped by purpose (release/, bundle-contracts/, checks/, provider-protocols/, codegen/, browser-extension/); tauri-cli.mjs wraps the Tauri CLI
     test-fixtures/: shared test fixtures such as sample .ics files
@@ -86,7 +88,7 @@ apps/
         src/contacts.rs, contacts/: person identity storage, contact card assembly, contact and request persistence, and LAN request delivery
         src/sync.rs, sync/: sync service lifecycle, paired transport, recovery listing, status, and sync commands
         src/quick_notes.rs: Quick notes command adapters
-        src/tray.rs, themes.rs, updates.rs, profile_images.rs: tray, theme command adapters, updates, and profile images
+        src/tray.rs, app_windows.rs, themes.rs, updates.rs, profile_images.rs: tray, window raising, theme command adapters, updates, and profile images
         src/benchmark.rs, benchmark/, first_use_contracts.rs: benchmark state, seed data, memory reports, and first-use query contracts
       capabilities/: permission declarations (desktop and mobile)
       gen/android/: generated Android project and native platform integration

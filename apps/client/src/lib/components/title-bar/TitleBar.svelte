@@ -4,7 +4,6 @@
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { onMount } from "svelte";
   import { clearAssetUrlCache } from "$lib/api/asset-url-cache";
-  import { getNavigation } from "$lib/stores/navigation.svelte";
   import { getPomodoro } from "$lib/stores/pomodoro.svelte";
   import { getTheme } from "$lib/stores/theme.svelte";
   import { getZoom } from "$lib/stores/zoom.svelte";
@@ -12,9 +11,9 @@
   import { getViewport } from "$lib/stores/viewport.svelte";
   import type { TitleBarControlId } from "$lib/stores/preference-options";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import type { DetachableTabView } from "$lib/navigation";
-  import { getDetachedWindows } from "$lib/stores/detached-windows.svelte";
-  import { detachableTabViewFromWindowLabel } from "$lib/windows/detached";
+  import { getWorkspaceTabs, type WorkspaceTabDetachBlock } from "$lib/stores/workspace-tabs.svelte";
+  import { workspaceTabLockLevel } from "$lib/workspace-tabs/model";
+  import { SPLIT_DIVIDER_SIZE, oppositeSplitOrientation, workspaceSplitArrangement, type WorkspaceSplitArea } from "$lib/workspace-tabs/split-layout";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
   import { getThemeEditor } from "$lib/stores/theme-editor.svelte";
@@ -28,37 +27,42 @@
   import TitleBarMediaControls from "./TitleBarMediaControls.svelte";
   import TitleBarUtilityControls from "./TitleBarUtilityControls.svelte";
   import { createTitleBarWindowController } from "./window-controller.svelte";
-  import { createTitleBarDetachedController } from "./detached-controller.svelte";
-  import TitleBarMenus from "./TitleBarMenus.svelte";
+  import { createTitleBarTabWindowController } from "./tab-window-controller";
+  import TitleBarMenus, { type TabSplitMenu } from "./TitleBarMenus.svelte";
   import {
     createTitleBarShortcutController,
     getAppCloseCoordinator,
   } from "./shortcut-controller.svelte";
   import TitleBarWindowControls from "./TitleBarWindowControls.svelte";
   import { flushQuickNoteEditors } from "$lib/quick-notes/persistence";
+  import { flushBeforeWindowClose } from "$lib/windows/close-flush";
+  import { MAIN_WINDOW_LABEL } from "$lib/windows/tab-windows";
+  import { MUSIC_HOST_OPEN_EVENT } from "$lib/music/host-window";
   import { preloadQuickNotesInitialSnapshot } from "$lib/quick-notes/initial-snapshot";
 
   let {
     shellStartupMs = null,
     startupMemorySnapshot = { status: "pending" },
     ensureBenchmarkOverlay = async () => {},
+    splitArea = { width: 0, height: 0 },
   }: {
     shellStartupMs: number | null;
     startupMemorySnapshot: StartupMemorySnapshot;
     ensureBenchmarkOverlay?: () => Promise<void>;
+    /** The area this window's split view shows in, which decides how a split can be arranged. */
+    splitArea?: WorkspaceSplitArea;
   } = $props();
 
   const appWindow = getCurrentWindow();
-  const isMainWindow = appWindow.label === "main";
-  const detachedWindowView = detachableTabViewFromWindowLabel(appWindow.label);
-  const nav = getNavigation();
+  /** Whether this window hosts app-wide work such as Music playback; it hides instead of closing while others stay open. */
+  const isHostWindow = appWindow.label === MAIN_WINDOW_LABEL;
+  const tabs = getWorkspaceTabs();
   const pomodoro = getPomodoro();
   const theme = getTheme();
   const zoom = getZoom();
   const preferences = getPreferences();
   const viewport = getViewport();
   const { t } = getLocalization();
-  const detachedWindows = getDetachedWindows();
   const benchmarkStatus = getBenchmarkStatus();
   const appClose = getAppCloseCoordinator();
 
@@ -74,9 +78,11 @@
   let showUtilityOverflowMenu = $state(false);
   let titleBarMenuStyle = $state("");
   let tabContextMenuStyle = $state("");
-  let tabContextView = $state<DetachableTabView | null>(null);
+  let tabContextId = $state<string | null>(null);
   let titleBarTabs: { handleWheel: (event: WheelEvent) => void } | undefined;
   let mediaControls: { handleVolumeWheel: (event: WheelEvent) => void } | undefined;
+  /** Empty title bar space after the tabs, whose end is as far right as a dragged tab may slide. */
+  let tabTrackEnd: HTMLDivElement | undefined = $state();
   const settingsLauncher = getSettingsLauncher();
   const themeEditor = getThemeEditor();
   let perfPinned = $state(false);
@@ -126,7 +132,6 @@
   }
 
   function openMusicPanel(): void {
-    if (!isMainWindow) return;
     showMusicPanel = true;
     showQuickNotes = false;
     showPomodoroMenu = false;
@@ -145,37 +150,37 @@
     openMusicPanel();
   }
 
-  async function openMusicPanelFromTray(): Promise<void> {
+  async function raiseWithMusicPanel(): Promise<void> {
     openMusicPanel();
     try {
       await appWindow.show();
       await appWindow.unminimize();
       await appWindow.setFocus();
     } catch (error) {
-      console.error("Failed to focus the main window for Music:", error);
+      console.error("Failed to focus the window for Music:", error);
     }
   }
 
   onMount(() => {
-    if (!isMainWindow) return;
-    let unlisten: UnlistenFn | undefined;
+    if (!isHostWindow) return;
+    const unlisteners: UnlistenFn[] = [];
     let disposed = false;
-    void listen("tray-music-open", () => {
-      if (!disposed) void openMusicPanelFromTray();
-    })
-      .then((nextUnlisten) => {
-        if (disposed) {
-          nextUnlisten();
-          return;
-        }
-        unlisten = nextUnlisten;
+    // The tray and other windows' Music panels both ask the window that shows Music video to come forward.
+    for (const event of ["tray-music-open", MUSIC_HOST_OPEN_EVENT]) {
+      void listen(event, () => {
+        if (!disposed) void raiseWithMusicPanel();
       })
-      .catch((error: unknown) => {
-        console.error("Failed to listen for Music panel opens:", error);
-      });
+        .then((unlisten) => {
+          if (disposed) unlisten();
+          else unlisteners.push(unlisten);
+        })
+        .catch((error: unknown) => {
+          console.error("Failed to listen for Music panel opens:", error);
+        });
+    }
     return () => {
       disposed = true;
-      unlisten?.();
+      for (const unlisten of unlisteners) unlisten();
     };
   });
 
@@ -237,8 +242,9 @@
 
   const windowController = createTitleBarWindowController({
     window: appWindow,
-    detachedWindowView,
-    markDetachedViewAttached: (view) => detachedWindows.markAttached(view),
+    otherOpenWindows: () => tabs.otherOpenWindows(),
+    releaseWindow: () => tabs.releaseWindow(),
+    dismissWindow: () => (isHostWindow ? appWindow.hide() : appWindow.destroy()),
     benchmarkLocked: () => lockedByBenchmark,
     resetConfirmationOpen: () => showResetSequenceConfirm || showResetConfirm,
     requestCloseConfirmation: () => {
@@ -247,7 +253,7 @@
     },
     closeConfirmation: cancelClose,
     ensureBenchmarkOverlay: () => ensureBenchmarkOverlay(),
-    beforeClose: flushQuickNoteEditors,
+    beforeClose: async () => { await Promise.all([flushQuickNoteEditors(), flushBeforeWindowClose()]); },
     themeEditOpen: () => !!themeEditor.editingId,
     cancelThemeEdit: () => themeEditor.cancel(),
     reportError: (message, error) => { console.error(message, error); },
@@ -274,29 +280,21 @@
     zoomIn: () => zoom.zoomIn(),
     zoomOut: () => zoom.zoomOut(),
     resetZoom: () => zoom.reset(),
-    toggleMusic: () => { if (isMainWindow) toggleMusicPanel(); },
+    toggleMusic: toggleMusicPanel,
+    toggleQuickNotes: () => { void toggleQuickNotes(); },
     toggleDiagnostics: togglePerfMenu,
     openShortcutHelp: () => { if (!lockedByThemeEditor) openSettings("shortcuts"); },
   });
 
-  const detachedController = createTitleBarDetachedController({
-    window: appWindow,
-    isMainWindow,
-    detachedWindowView,
-    contextView: () => tabContextView,
+  const tabWindowController = createTitleBarTabWindowController({
+    contextTabId: () => tabContextId,
     closeContextMenu: () => {
       showTabContextMenu = false;
-      tabContextView = null;
+      tabContextId = null;
     },
-    currentView: () => nav.current,
-    navigate: (view) => nav.navigate(view),
-    detachedViews: () => detachedWindows.views,
-    markAttached: (view) => detachedWindows.markAttached(view),
-    markDetached: (view) => detachedWindows.markDetached(view),
+    tabs,
     reportError: (message, error) => { console.error(message, error); },
   });
-
-
 
   const titleBarControls: { id: TitleBarControlId; label: () => string }[] = [
     { id: "pomodoro", label: () => t("titleBar.control.pomodoro") },
@@ -356,7 +354,7 @@
 
     if (showTabContextMenu && e.key === "Escape") {
       showTabContextMenu = false;
-      tabContextView = null;
+      tabContextId = null;
       return;
     }
 
@@ -381,7 +379,7 @@
     showQuickNotes = false;
     showMusicPanel = false;
     showTabContextMenu = false;
-    tabContextView = null;
+    tabContextId = null;
 
     const left = Math.min(
       Math.max(MENU_EDGE_GAP, e.clientX),
@@ -397,7 +395,7 @@
     showTitleBarMenu = true;
   }
 
-  function openTabContextMenu(e: MouseEvent, view: DetachableTabView) {
+  function openTabContextMenu(e: MouseEvent, tabId: string) {
     e.preventDefault();
     e.stopPropagation();
     showPomodoroMenu = false;
@@ -406,7 +404,7 @@
     showTitleBarMenu = false;
     showUtilityOverflowMenu = false;
     showTabContextMenu = true;
-    tabContextView = view;
+    tabContextId = tabId;
 
     const left = Math.min(
       Math.max(MENU_EDGE_GAP, e.clientX),
@@ -423,6 +421,51 @@
     ].join("; ");
   }
 
+
+  function runTabContextAction(action: (tabId: string) => void): void {
+    const tabId = tabContextId;
+    showTabContextMenu = false;
+    tabContextId = null;
+    if (tabId) action(tabId);
+  }
+
+  function detachBlockReason(block: WorkspaceTabDetachBlock | null): string | null {
+    if (block === null) return null;
+    return block === "last-tab" ? t("titleBar.onlyTabInWindow") : t("titleBar.moveToNewWindowUnavailable");
+  }
+
+  const contextDetachBlockReason = $derived(tabContextId ? detachBlockReason(tabs.detachBlock(tabContextId)) : null);
+
+  const contextLockAction = $derived.by((): "lock" | "unlock" | null => {
+    const tab = tabs.tabs.find((candidate) => candidate.id === tabContextId);
+    if (!tab) return null;
+    if (tab.locked) return "unlock";
+    return workspaceTabLockLevel(tab) ? "lock" : null;
+  });
+
+  /**
+   * A tab in a split arranges that split. The active tab opens a new tab beside it, and any other tab can show
+   * beside the active one.
+   */
+  const contextSplitMenu = $derived.by((): TabSplitMenu | null => {
+    const id = tabContextId;
+    if (!id) return null;
+    const split = tabs.splitOf(id);
+    if (split) {
+      const arrangement = workspaceSplitArrangement(split.orientation, splitArea, SPLIT_DIVIDER_SIZE);
+      return {
+        kind: "arrange",
+        orientation: arrangement.orientation,
+        turnBlockReason: arrangement.canTurn ? null : t("titleBar.split.noRoomBlocked"),
+      };
+    }
+    if (id === tabs.activeTabId) {
+      const kinds = tabs.splitKinds();
+      const blockReason = kinds.length > 0 ? null : t("titleBar.split.tabLimitBlocked");
+      return { kind: "open-new", kinds, blockReason };
+    }
+    return tabs.canOpenInSplit(id) ? { kind: "open" } : null;
+  });
 
   function toggleTitleBarControl(id: TitleBarControlId) {
     preferences.toggleTitleBarControl(id);
@@ -441,20 +484,17 @@
   style="height: var(--titlebar-h);"
   onwheel={(event) => titleBarTabs?.handleWheel(event)}
   oncontextmenu={openTitleBarMenu}
-  ondragover={detachedController.handleDragOver}
-  ondrop={detachedController.handleDrop}
 >
   <TitleBarTabs
     bind:this={titleBarTabs}
-    {detachedWindowView}
-    windowLabel={appWindow.label}
     pomodoroMenuOpen={showPomodoroMenu}
     onVolumeWheel={(event) => mediaControls?.handleVolumeWheel(event)}
     onOpenContextMenu={openTabContextMenu}
+    trackEnd={tabTrackEnd}
   />
 
-  <!-- Draggable spacer -->
-  <div class="flex-1"></div>
+  <!-- Draggable spacer, kept wide enough to grab the window when tabs fill the bar -->
+  <div bind:this={tabTrackEnd} data-tauri-drag-region class="min-w-8 flex-1 self-stretch"></div>
 
   <!-- Utility buttons -->
   <div class="flex shrink-0 items-center gap-0.5">
@@ -465,7 +505,6 @@
       quickNotesOpen={showQuickNotes}
       musicPanelOpen={showMusicPanel}
       bind:showMenu={showPomodoroMenu}
-      {isMainWindow}
       onMenuOpened={() => {
         showPerfMenu = false;
         showTitleBarMenu = false;
@@ -506,7 +545,6 @@
   <TitleBarWindowControls
     isMaximized={windowController.isMaximized}
     {lockedByBenchmark}
-    {isMainWindow}
     onMinimize={() => { void appWindow.minimize(); }}
     onToggleMaximize={() => { void appWindow.toggleMaximize(); }}
     onClose={() => { void handleClose(); }}
@@ -526,17 +564,35 @@
 
 <TitleBarMenus
   bind:showTabContextMenu
-  bind:tabContextView
+  bind:tabContextId
   {tabContextMenuStyle}
-  detachedWindow={!!detachedWindowView}
-  canDetachTab={detachedWindowView ? true : detachedController.canDetachContextView()}
+  moveToNewWindowBlockReason={contextDetachBlockReason}
+  canReopenTab={tabs.closed.length > 0}
+  lockAction={contextLockAction}
+  splitMenu={contextSplitMenu}
   bind:showTitleBarMenu
   {titleBarMenuStyle}
   controls={titleBarControls.map((control) => ({
     id: control.id,
     label: control.label(),
   }))}
-  onTabContextAction={detachedController.activateContextAction}
+  onMoveToNewWindow={tabWindowController.moveToNewWindow}
+  onCloseTab={() => runTabContextAction((id) => tabs.close(id))}
+  onReopenTab={() => runTabContextAction(() => tabs.reopen())}
+  onToggleLock={() => {
+    const lock = contextLockAction === "lock";
+    runTabContextAction((id) => tabs.setLocked(id, lock));
+  }}
+  onOpenInSplit={() => runTabContextAction((id) => tabs.openInSplit(id))}
+  onOpenKindInSplit={(kind) => runTabContextAction(() => tabs.openKindInSplit(kind))}
+  onUnsplit={() => runTabContextAction((id) => tabs.unsplit(id))}
+  onCloseSplitSide={(side) => runTabContextAction((id) => tabs.closeSplitSide(id, side))}
+  onTurnSplit={() => {
+    const menu = contextSplitMenu;
+    if (menu?.kind !== "arrange") return;
+    runTabContextAction((id) => tabs.setSplitOrientation(id, oppositeSplitOrientation(menu.orientation)));
+  }}
+  onSwapSplit={() => runTabContextAction((id) => tabs.swapSplit(id))}
   onToggleControl={toggleTitleBarControl}
 />
 

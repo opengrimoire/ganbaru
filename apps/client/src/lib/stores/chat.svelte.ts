@@ -41,14 +41,19 @@ import type {
   VersionedJson,
 } from "$lib/chat/contracts";
 import type { ChatComposerSnapshot } from "$lib/chat/composer/controller";
-import { chatErrorMessage } from "$lib/chat/error-presentation";
+import { chatErrorCode, chatErrorMessage } from "$lib/chat/error-presentation";
+import { listenForChatChanges, publishChatChanges, type ChatWindowChanges } from "$lib/chat/window-sync";
+import { ChatPaneStores, chatWindowChanges, type ChatChangeIds } from "$lib/stores/chat/pane-stores";
+import type { WorkspacePaneScope } from "$lib/workspace-tabs/model";
+import { getWorkspacePaneScope } from "$lib/workspace-tabs/pane-scope";
+import { registerWindowCloseFlusher } from "$lib/windows/close-flush";
 import { AsyncFrameCoalescer } from "$lib/chat/timeline/frame-coalescer";
 import {
   toggleChatMessageReactionParticipant,
   type ChatMessageReaction,
 } from "$lib/chat/timeline/organizational-message-model";
 import { LOCAL_CHAT_PARTICIPANT_ID } from "$lib/chat/teammates/participant-display";
-import { getProjects } from "$lib/stores/projects.svelte";
+import { getProjectsStore, type ProjectsStore } from "$lib/stores/projects.svelte";
 import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
 import { preferredProjectWorkingFolder } from "$lib/chat/workspace/working-folder-selection";
 import { readLastChatChannelId, saveLastChatChannelId } from "$lib/chat/channel-sections";
@@ -70,14 +75,34 @@ import {
 
 export type { ChatOrganizationalDraft } from "$lib/stores/chat/organizational-controller.svelte";
 
-const projects = getProjects();
 const localExecutionAvailable = platformHasCapability(
   BUILD_PLATFORM_PROFILE,
   "chat.local-execution",
 );
 export type { ChatComposerSendOptions } from "$lib/stores/chat/composer-runtime-controller.svelte";
 
-class ChatStore {
+const paneStores = new ChatPaneStores<ChatStore>();
+
+/** Vault-wide Chat state that every pane's store shows, loaded by the primary pane's store. */
+class ChatSharedState {
+  teammates = $state<ChatAiTeammateRead[]>([]);
+  archivedTeammates = $state<ChatAiTeammateRead[]>([]);
+  providerDiscoveryStarted = false;
+  readonly configuration = new ChatConfigurationController({
+    onSettingsChanged: () => {
+      for (const store of paneStores.all()) store.scheduleComposerDefaults();
+    },
+  });
+}
+
+const shared = new ChatSharedState();
+
+/**
+ * The Chat state of one split pane: its channel, thread, reply thread, composer, timeline, and panels. Settings,
+ * working folders, and teammates are shared by every pane, and only the primary pane's store loads them and
+ * remembers its selection for the next launch.
+ */
+export class ChatStore {
   private readonly channelNavigationController: ChatChannelNavigationController;
   private readonly configurationController: ChatConfigurationController;
   private readonly communicationController: ChatCommunicationController;
@@ -87,8 +112,6 @@ class ChatStore {
   private readonly threadCollectionController: ChatThreadCollectionController;
   private readonly timelineController: ChatTimelineController;
   selectedChannelId = $state<ChatChannelId | null>(null);
-  teammates = $state<ChatAiTeammateRead[]>([]);
-  archivedTeammates = $state<ChatAiTeammateRead[]>([]);
   teammateIdentities = $derived([...this.teammates, ...this.archivedTeammates]);
   openReplyThreadId = $state<ChatReplyThreadId | null>(null);
   selectedExecutionRunId = $state<string | null>(null);
@@ -96,6 +119,8 @@ class ChatStore {
   loading = $state(false);
   error = $state<string | null>(null);
   selectedWorkingFolderId = $state<ProjectWorkingFolderId | null>(null);
+  /** The primary working folder of the selected channel's project. */
+  primaryWorkingFolder = $state<ChatProjectPrimaryWorkingFolderRead | null>(null);
   selectedThreadId = $state<ChatThreadId | null>(null);
   selectedExecutionEnvironmentId = $state<string | null>(null);
   railOpen = $state(true);
@@ -112,8 +137,17 @@ class ChatStore {
     (threadId) => this.refreshNativeChange(threadId),
   );
   private vaultGeneration = 0;
+  private otherWindowListening = false;
+  /** Whether this is the primary pane's store, which loads shared state and persists its selection. */
+  private readonly owner: boolean;
+  /** The Projects store of this pane's scope, whose selection the pane follows. */
+  private readonly projects: ProjectsStore;
 
-  constructor() {
+  constructor(scope: WorkspacePaneScope) {
+    this.owner = scope === "primary";
+    this.projects = getProjectsStore(scope);
+    this.configurationController = shared.configuration;
+    registerWindowCloseFlusher(() => this.flushComposer());
     this.composerDefaultsCoordinator = new ChatComposerDefaultsCoordinator({
       settings: () => this.settings,
       composer: () => this.composer,
@@ -125,12 +159,10 @@ class ChatStore {
       flush: () => this.flushComposer(),
     });
     this.channelNavigationController = new ChatChannelNavigationController({
-      currentProjectId: () => projects.selectedProjectId,
+      currentProjectId: () => this.projects.selectedProjectId,
       selectedChannelId: () => this.selectedChannelId,
       selectChannel: (channelId) => this.selectChannel(channelId),
-    });
-    this.configurationController = new ChatConfigurationController({
-      onSettingsChanged: () => this.composerDefaultsCoordinator.schedule(),
+      onChanged: (channelId) => this.publishChanges({ channelIds: [channelId] }),
     });
     this.communicationController = new ChatCommunicationController({
       selectedChannelId: () => this.selectedChannelId,
@@ -142,12 +174,16 @@ class ChatStore {
     this.threadCollectionController = new ChatThreadCollectionController({
       selectedThreadId: () => this.selectedThreadId,
       selectThread: (threadId) => this.selectThread(threadId),
+      onChanged: (threadIds) => this.publishChanges({ threadIds }),
     });
     this.organizationalController = new ChatOrganizationalController({
       selectedChannel: () => this.selectedChannel,
       selectedChannelId: () => this.selectedChannelId,
       openReplyThreadId: () => this.openReplyThreadId,
-      upsertChannel: (channel) => this.channelNavigationController.upsert(channel),
+      upsertChannel: (channel) => {
+        this.channelNavigationController.upsert(channel);
+        this.publishChanges({ channelIds: [channel.id] });
+      },
       loadChannelMessages: (channelId, force) => this.loadChannelMessages(channelId, force),
       loadReplyThread: (replyThreadId, force) => this.loadReplyThread(replyThreadId, force),
       openReplyThread: (replyThreadId) => this.openReplyThread(replyThreadId),
@@ -164,6 +200,7 @@ class ChatStore {
       setSettings: (settings) => { this.settings = settings; },
       onComposerChanged: () => this.composerDefaultsCoordinator.schedule(),
     });
+    paneStores.add(this);
   }
 
   get selectedWorkingFolder(): ProjectWorkingFolderRead | null {
@@ -178,10 +215,18 @@ class ChatStore {
     this.configurationController.setSettings(settings);
   }
 
+  get teammates(): ChatAiTeammateRead[] { return shared.teammates; }
+  set teammates(teammates: ChatAiTeammateRead[]) { shared.teammates = teammates; }
+  get archivedTeammates(): ChatAiTeammateRead[] { return shared.archivedTeammates; }
+  set archivedTeammates(teammates: ChatAiTeammateRead[]) { shared.archivedTeammates = teammates; }
+
+  /** Applies changed shared settings to this pane's composer defaults. */
+  scheduleComposerDefaults(): void {
+    this.composerDefaultsCoordinator.schedule();
+  }
+
   get workingFolders(): ProjectWorkingFolderRead[] { return this.configurationController.workingFolders; }
   set workingFolders(workingFolders: ProjectWorkingFolderRead[]) { this.configurationController.workingFolders = workingFolders; }
-  get primaryWorkingFolder(): ChatProjectPrimaryWorkingFolderRead | null { return this.configurationController.primaryWorkingFolder; }
-  set primaryWorkingFolder(primary: ChatProjectPrimaryWorkingFolderRead | null) { this.configurationController.primaryWorkingFolder = primary; }
   get providerDiscoveryLoading(): boolean { return this.configurationController.providerDiscoveryLoading; }
   set providerDiscoveryLoading(loading: boolean) { this.configurationController.providerDiscoveryLoading = loading; }
   get activeChannels(): ChatChannelRead[] { return this.channelNavigationController.activeChannels; }
@@ -196,6 +241,8 @@ class ChatStore {
   set channelsLoading(loading: boolean) { this.channelNavigationController.channelsLoading = loading; }
   get channelArchiveOpen(): boolean { return this.channelNavigationController.archiveOpen; }
   set channelArchiveOpen(open: boolean) { this.channelNavigationController.archiveOpen = open; }
+  get showArchivedChannelsInPickers(): boolean { return this.channelNavigationController.showArchivedInPickers; }
+  set showArchivedChannelsInPickers(show: boolean) { this.channelNavigationController.showArchivedInPickers = show; }
   get activeThreads(): ChatThreadShellRead[] { return this.threadCollectionController.activeThreads; }
   set activeThreads(threads: ChatThreadShellRead[]) { this.threadCollectionController.activeThreads = threads; }
   get archivedThreads(): ChatThreadShellRead[] { return this.threadCollectionController.archivedThreads; }
@@ -319,13 +366,19 @@ class ChatStore {
     return this.channelNavigationController.channelsForProject(projectId);
   }
 
+  archivedChannelsForProject(projectId: string): ChatChannelRead[] {
+    return this.channelNavigationController.archivedChannelsForProject(projectId);
+  }
+
+  loadArchivedChannelsForPicker(projectId: string): Promise<void> {
+    return this.channelNavigationController.loadArchivedForPicker(projectId);
+  }
+
   get selectedThread(): ChatThreadShellRead | null {
     return this.selectedThreadId
       ? this.threadCollectionController.find(this.selectedThreadId)
       : null;
   }
-
-  private providerDiscoveryStarted = false;
 
   /** Opens Chat from cached history and discovers providers without delaying that history. */
   async ensureLoaded(): Promise<void> {
@@ -351,8 +404,8 @@ class ChatStore {
     }
   }
 
-  /** Invalidates vault-scoped Chat state before prewarming another vault. */
-  resetForVault(): void {
+  /** Invalidates this pane's vault-scoped Chat state; {@link resetChatForVault} also resets the shared state. */
+  resetPaneForVault(): void {
     this.vaultGeneration += 1;
     this.loadRequest += 1;
     this.channelSelectionRequest += 1;
@@ -367,15 +420,12 @@ class ChatStore {
     this.projectSelectionPromise = null;
     this.channelReadPromise = null;
     this.sessionMessageReactions = {};
-    this.configurationController.reset();
-    this.providerDiscoveryStarted = false;
     this.selectedChannelId = null;
-    this.teammates = [];
-    this.archivedTeammates = [];
     this.openReplyThreadId = null;
     this.selectedExecutionRunId = null;
     this.messageAnchorId = null;
     this.selectedWorkingFolderId = null;
+    this.primaryWorkingFolder = null;
     this.selectedThreadId = null;
     this.error = null;
     this.loading = false;
@@ -389,31 +439,20 @@ class ChatStore {
     this.loading = true;
     this.error = null;
     try {
-      if (localExecutionAvailable) await chatApi.recoverInterruptedChatTurns();
-      const [settings, workingFolders, navigationChannels, teammates, archivedTeammates] = await Promise.all([
-        chatApi.readChatSettings(),
-        localExecutionAvailable
-          ? workingFolderApi.listCachedProjectWorkingFolders()
-          : Promise.resolve([]),
-        chatApi.listChatNavigationChannels(),
-        chatApi.listChatTeammates(false),
-        chatApi.listChatTeammates(true),
-      ]);
-      if (request !== this.loadRequest || vaultGeneration !== this.vaultGeneration) return;
-      this.configurationController.hydrate(settings, workingFolders);
-      this.teammates = teammates;
-      this.archivedTeammates = archivedTeammates;
+      const loaded = this.owner ? await this.loadSharedState() : await this.followSharedState();
+      if (!loaded || request !== this.loadRequest || vaultGeneration !== this.vaultGeneration) return;
+      const { settings, navigationChannels } = loaded;
       this.channelNavigationController.hydrateNavigation(navigationChannels);
       this.threadCollectionController.resetWindow();
       if (discoverProviders) this.startProviderDiscovery();
-      if (localExecutionAvailable) {
+      if (this.owner && localExecutionAvailable) {
         void chatApi.recoverChatAssignmentDispatchJobs().catch((error: unknown) => {
           console.error("Chat assignment recovery failed", error);
         });
       }
-      await projects.ensureLoaded();
+      await this.projects.ensureLoaded();
       if (request !== this.loadRequest || vaultGeneration !== this.vaultGeneration) return;
-      const projectId = projects.selectedProjectId;
+      const projectId = this.projects.selectedProjectId;
       if (projectId) {
         await this.loadProjectChannels(projectId);
         const rememberedChannelId = readLastChatChannelId(projectId);
@@ -435,6 +474,8 @@ class ChatStore {
       );
       if (request !== this.loadRequest || vaultGeneration !== this.vaultGeneration) return;
       this.loaded = true;
+      this.listenForOtherWindows();
+      if (!this.owner) return;
       void this.prefetchRememberedProjectChannels(projectId, vaultGeneration);
       void this.configurationController.refreshWorkingFolders().catch((error: unknown) => {
         console.error("Chat working folder reconciliation failed", error);
@@ -448,10 +489,39 @@ class ChatStore {
     }
   }
 
+  /** Recovers interrupted turns and loads the settings, working folders, and teammates every pane shows. */
+  private async loadSharedState(): Promise<{ settings: ChatSettingsRead; navigationChannels: ChatChannelRead[] }> {
+    const vaultGeneration = this.vaultGeneration;
+    if (localExecutionAvailable) await chatApi.recoverInterruptedChatTurns();
+    const [settings, workingFolders, navigationChannels, teammates, archivedTeammates] = await Promise.all([
+      chatApi.readChatSettings(),
+      localExecutionAvailable
+        ? workingFolderApi.listCachedProjectWorkingFolders()
+        : Promise.resolve([]),
+      chatApi.listChatNavigationChannels(),
+      chatApi.listChatTeammates(false),
+      chatApi.listChatTeammates(true),
+    ]);
+    if (vaultGeneration === this.vaultGeneration) {
+      this.configurationController.hydrate(settings, workingFolders);
+      this.teammates = teammates;
+      this.archivedTeammates = archivedTeammates;
+    }
+    return { settings, navigationChannels };
+  }
+
+  /** Waits for the primary pane's store to load the shared state, then reads this pane's own channel list. */
+  private async followSharedState(): Promise<{ settings: ChatSettingsRead; navigationChannels: ChatChannelRead[] } | null> {
+    await storeFor("primary").ensureCachedLoaded();
+    const navigationChannels = await chatApi.listChatNavigationChannels();
+    const settings = this.settings;
+    return settings ? { settings, navigationChannels } : null;
+  }
+
   /** Starts at most one automatic discovery per vault, without delaying local history. */
   private startProviderDiscovery(): void {
-    if (this.providerDiscoveryStarted) return;
-    this.providerDiscoveryStarted = true;
+    if (shared.providerDiscoveryStarted) return;
+    shared.providerDiscoveryStarted = true;
     const vaultGeneration = this.vaultGeneration;
     const isCurrentVault = () => vaultGeneration === this.vaultGeneration;
     void this.configurationController.discoverProviders(isCurrentVault).catch(async (error: unknown) => {
@@ -469,7 +539,7 @@ class ChatStore {
     selectedProjectId: string | null,
     vaultGeneration: number,
   ): Promise<void> {
-    for (const project of projects.projects) {
+    for (const project of this.projects.projects) {
       if (project.id === selectedProjectId || project.status !== "active") continue;
       const rememberedChannelId = readLastChatChannelId(project.id);
       const projectChannels = this.channelNavigationController.channelsForProject(project.id);
@@ -517,7 +587,7 @@ class ChatStore {
 
   private async performProjectSelection(projectId: string): Promise<void> {
     if (!await this.loadProjectChannels(projectId)) return;
-    if (projects.selectedProjectId !== projectId) return;
+    if (this.projects.selectedProjectId !== projectId) return;
     const rememberedChannelId = readLastChatChannelId(projectId);
     const selected = this.activeChannels.find((channel) => channel.id === rememberedChannelId)
       ?? this.activeChannels.find((channel) => channel.isDefault)
@@ -532,25 +602,20 @@ class ChatStore {
 
   async selectChannel(channelId: ChatChannelId): Promise<void> {
     const request = ++this.channelSelectionRequest;
-    const channel = [...this.activeChannels, ...this.archivedChannels]
-      .find((entry) => entry.id === channelId)
+    const channel = this.channelNavigationController.find(channelId)
       ?? await chatApi.readChatChannel(channelId);
     if (request !== this.channelSelectionRequest) return;
     this.channelNavigationController.upsert(channel);
     const changedChannel = this.selectedChannelId !== channelId;
     this.selectedChannelId = channelId;
-    saveLastChatChannelId(channel.projectId, channelId);
+    if (this.owner) saveLastChatChannelId(channel.projectId, channelId);
     this.channelArchiveOpen = false;
-    await projects.selectProject(channel.projectId);
+    await this.projects.selectProject(channel.projectId);
     if (request !== this.channelSelectionRequest) return;
     if (changedChannel) this.closeReplyThread();
-    if (localExecutionAvailable) {
-      try {
-        await this.configurationController.readPrimaryWorkingFolder(channel.projectId);
-      } catch {
-        this.primaryWorkingFolder = null;
-      }
-    } else {
+    try {
+      this.primaryWorkingFolder = await this.configurationController.readPrimaryWorkingFolder(channel.projectId);
+    } catch {
       this.primaryWorkingFolder = null;
     }
     const rememberedFolderId = localExecutionAvailable
@@ -563,8 +628,12 @@ class ChatStore {
     this.selectedThreadId = null;
     this.selectedExecutionRunId = null;
     this.selectedExecutionEnvironmentId = null;
-    this.draftWorkingFolderId = null;
-    this.draftThreadId = null;
+    // Workspace tools such as the terminal are scoped to a thread, so a channel without a session keeps a draft one.
+    if (this.selectedWorkingFolderId) {
+      this.composerRuntimeController.ensureDraftThread(this.selectedWorkingFolderId);
+    } else {
+      this.composerRuntimeController.discardDraft();
+    }
     await this.loadChannelMessages(channel.id);
     if (request !== this.channelSelectionRequest) return;
     this.interaction = null;
@@ -578,7 +647,9 @@ class ChatStore {
     const vaultGeneration = this.vaultGeneration;
     const promise = chatApi.setChatChannelRead(channel.id, true)
       .then((updated) => {
-        if (this.vaultGeneration === vaultGeneration) this.channelNavigationController.upsert(updated);
+        if (this.vaultGeneration !== vaultGeneration) return;
+        this.channelNavigationController.upsert(updated);
+        this.publishChanges({ channelIds: [updated.id] });
       })
       .catch((error: unknown) => {
         console.error(`Could not mark #${channel.name} as read`, error);
@@ -654,7 +725,10 @@ class ChatStore {
     scheduledFor: UtcTimestamp,
     options: { alsoSendToChannel?: boolean } = {},
   ): Promise<ChatScheduledMessageRead> {
-    return this.organizationalController.schedule(destination, scheduledFor, options);
+    const channelId = this.selectedChannelId;
+    const scheduled = await this.organizationalController.schedule(destination, scheduledFor, options);
+    this.publishChannelChange(channelId);
+    return scheduled;
   }
 
   async listScheduledOrganizationalMessages(destination: string): Promise<ChatScheduledMessageRead[]> {
@@ -662,11 +736,16 @@ class ChatStore {
   }
 
   async cancelScheduledOrganizationalMessage(id: ChatScheduledMessageId): Promise<void> {
-    return this.organizationalController.cancelScheduled(id);
+    const channelId = this.selectedChannelId;
+    await this.organizationalController.cancelScheduled(id);
+    this.publishChannelChange(channelId);
   }
 
   async retryScheduledOrganizationalMessage(id: ChatScheduledMessageId): Promise<ChatScheduledMessageRead> {
-    return this.organizationalController.retryScheduled(id);
+    const channelId = this.selectedChannelId;
+    const scheduled = await this.organizationalController.retryScheduled(id);
+    this.publishChannelChange(channelId);
+    return scheduled;
   }
 
   async sendScheduledOrganizationalMessageNow(
@@ -693,7 +772,7 @@ class ChatStore {
 
   async openMessageSearchResult(result: ChatMessageSearchResultRead): Promise<void> {
     this.messageAnchorId = null;
-    await projects.selectProject(result.projectId);
+    await this.projects.selectProject(result.projectId);
     await this.loadProjectChannels(result.projectId);
     await this.selectChannel(result.channelId);
     const anchorCursor = String(result.ordinal + 1);
@@ -744,6 +823,7 @@ class ChatStore {
       : null;
     if (expectedRevision === null) throw new Error("Work assignment was not loaded");
     await chatApi.cancelChatAssignment(assignmentId, expectedRevision);
+    this.publishChannelChange(this.selectedChannelId);
     if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
     if (this.selectedChannelId) await this.loadChannelMessages(this.selectedChannelId, true);
   }
@@ -754,6 +834,7 @@ class ChatStore {
       : null;
     if (expectedRevision === null) throw new Error("Work assignment was not loaded");
     await chatApi.retryChatAssignment(assignmentId, expectedRevision);
+    this.publishChannelChange(this.selectedChannelId);
     if (this.openReplyThreadId) await this.loadReplyThread(this.openReplyThreadId, true);
   }
 
@@ -766,7 +847,7 @@ class ChatStore {
   }
 
   openChannelArchive(): void {
-    this.channelNavigationController.openArchive(projects.selectedProjectId);
+    this.channelNavigationController.openArchive(this.projects.selectedProjectId);
   }
 
   closeChannelArchive(): void {
@@ -858,7 +939,7 @@ class ChatStore {
     await this.configurationController.removeWorkingFolder(workingFolderId);
     if (this.selectedWorkingFolderId === workingFolderId) {
       this.selectedWorkingFolderId = null;
-      await this.syncProjectSelection(projects.selectedProjectId);
+      await this.syncProjectSelection(this.projects.selectedProjectId);
     }
   }
 
@@ -869,11 +950,11 @@ class ChatStore {
     );
   }
 
-  async setProjectPrimaryWorkingFolder(workingFolderId: ProjectWorkingFolderId): Promise<void> {
-    const projectId = this.selectedChannel?.projectId ?? projects.selectedProjectId;
-    if (!projectId) throw new Error("Project primary working folder was not loaded");
-    await this.configurationController.setProjectPrimaryWorkingFolder(projectId, workingFolderId);
-    this.selectedWorkingFolderId = workingFolderId;
+  /** Show a project's newly saved primary working folder when this pane's channel belongs to that project. */
+  adoptProjectPrimaryWorkingFolder(primary: ChatProjectPrimaryWorkingFolderRead): void {
+    if (this.selectedChannel?.projectId !== primary.projectId) return;
+    this.primaryWorkingFolder = primary;
+    this.selectedWorkingFolderId = primary.workingFolderId;
   }
 
   selectWorkingFolder(workingFolderId: ProjectWorkingFolderId): void {
@@ -881,8 +962,8 @@ class ChatStore {
     this.selectedExecutionEnvironmentId = null;
     const projectId = this.selectedWorkingFolder?.workingFolder.projectId;
     if (projectId) {
-      void projects.selectProject(projectId);
-      void workingFolderApi.rememberProjectWorkingFolder(projectId, workingFolderId);
+      void this.projects.selectProject(projectId);
+      if (this.owner) void workingFolderApi.rememberProjectWorkingFolder(projectId, workingFolderId);
     }
     this.selectThread(null);
     this.composerRuntimeController.ensureDraftThread(workingFolderId);
@@ -908,8 +989,8 @@ class ChatStore {
         throw new Error("Private scratch threads cannot be opened as direct agent threads");
       }
       this.selectedWorkingFolderId = thread.workingFolderId;
-      void projects.selectProject(thread.projectId);
-      void workingFolderApi.rememberProjectWorkingFolder(thread.projectId, thread.workingFolderId);
+      void this.projects.selectProject(thread.projectId);
+      if (this.owner) void workingFolderApi.rememberProjectWorkingFolder(thread.projectId, thread.workingFolderId);
     }
     if (this.selectedWorkingFolderId) {
       void this.composerRuntimeController.bind(
@@ -918,9 +999,11 @@ class ChatStore {
         composerSeedForThread(thread),
       ).catch(() => undefined);
     }
-    void chatApi.setLastSelectedChatThread(threadId).catch((error) => {
-      console.error("Failed to persist selected Chat thread", error);
-    });
+    if (this.owner) {
+      void chatApi.setLastSelectedChatThread(threadId).catch((error) => {
+        console.error("Failed to persist selected Chat thread", error);
+      });
+    }
     if (threadId) void this.loadTimeline(threadId).catch(() => undefined);
     if (threadId) void this.refreshInteraction(threadId).catch(() => undefined);
     else this.interaction = null;
@@ -968,6 +1051,7 @@ class ChatStore {
   setComposerModel(selection: VersionedJson | null): void { this.composerRuntimeController.setModel(selection); }
   setComposerModes(safety: SafetyMode | null, interaction: InteractionMode | null): void { this.composerRuntimeController.setModes(safety, interaction); }
   markComposerSent(): void { this.composerRuntimeController.markSent(); }
+  dismissComposerChangedElsewhere(): void { this.composerRuntimeController.dismissChangedElsewhere(); }
   flushComposer(): Promise<void> { return this.composerRuntimeController.flush(); }
   refreshInteraction(threadId = this.selectedThreadId): Promise<void> { return this.composerRuntimeController.refreshInteraction(threadId); }
   sendComposer(options: ChatComposerSendOptions = {}): Promise<void> { return this.composerRuntimeController.send(options); }
@@ -1001,6 +1085,76 @@ class ChatStore {
     if (threadId !== this.selectedThreadId) return;
     await this.loadTimeline(threadId);
     await this.refreshInteraction(threadId);
+  }
+
+  private publishChannelChange(channelId: ChatChannelId | null): void {
+    if (channelId) this.publishChanges({ channelIds: [channelId] });
+  }
+
+  /** Tells other windows and this window's other panes which Chat records this pane changed. */
+  private publishChanges(ids: ChatChangeIds): void {
+    const changes = chatWindowChanges(ids);
+    publishChatChanges(changes);
+    paneStores.notifyOthers(this, changes);
+  }
+
+  /** Rereads what another pane of this window changed. Receiving never publishes, so panes do not echo each other. */
+  refreshFromOtherPane(changes: ChatWindowChanges): void {
+    void this.refreshFromOtherWindow(changes).catch((error: unknown) => {
+      console.error("Chat refresh from another pane failed", error);
+    });
+  }
+
+  /** Starts receiving Chat changes from other windows once per store. */
+  private listenForOtherWindows(): void {
+    if (this.otherWindowListening) return;
+    this.otherWindowListening = true;
+    void listenForChatChanges((changes) => {
+      void this.refreshFromOtherWindow(changes).catch((error: unknown) => {
+        console.error("Chat refresh from another window failed", error);
+      });
+    }).catch((error: unknown) => {
+      this.otherWindowListening = false;
+      console.error("Chat could not listen for other windows", error);
+    });
+  }
+
+  /** Rereads what another window changed. Receiving never publishes, so windows do not echo each other. */
+  private async refreshFromOtherWindow(changes: ChatWindowChanges): Promise<void> {
+    const vaultGeneration = this.vaultGeneration;
+    if (!this.loaded) return;
+    const isCurrentVault = () => vaultGeneration === this.vaultGeneration;
+    await Promise.all([
+      ...[...changes.threadIds].map((threadId) => this.refreshThreadFromOtherWindow(threadId, isCurrentVault)),
+      ...[...changes.channelIds].map((channelId) => this.refreshChannelFromOtherWindow(channelId, isCurrentVault)),
+    ]);
+    const channelId = this.selectedChannelId;
+    if (!isCurrentVault() || !channelId || !changes.channelIds.has(channelId)) return;
+    this.organizationalController.scheduledMessagesVersion += 1;
+    await this.loadChannelMessages(channelId, true);
+    if (this.openReplyThreadId && isCurrentVault()) await this.loadReplyThread(this.openReplyThreadId, true);
+  }
+
+  private async refreshThreadFromOtherWindow(threadId: ChatThreadId, isCurrentVault: () => boolean): Promise<void> {
+    try {
+      const thread = await chatApi.readChatThreadShell(threadId);
+      if (!isCurrentVault()) return;
+      if (thread.workingFolderId !== null && thread.scratchGenerationId === null) {
+        this.threadCollectionController.upsert(thread);
+      }
+    } catch (error: unknown) {
+      if (chatErrorCode(error) !== "not_found") throw error;
+      if (isCurrentVault()) this.threadCollectionController.remove(threadId);
+    }
+  }
+
+  private async refreshChannelFromOtherWindow(channelId: ChatChannelId, isCurrentVault: () => boolean): Promise<void> {
+    try {
+      const channel = await chatApi.readChatChannel(channelId);
+      if (isCurrentVault()) this.channelNavigationController.upsert(channel);
+    } catch (error: unknown) {
+      if (chatErrorCode(error) !== "not_found") throw error;
+    }
   }
 
   async renameThread(thread: ChatThreadShellRead, title: string): Promise<void> {
@@ -1045,16 +1199,16 @@ class ChatStore {
       this.selectedThreadId = remembered;
       this.selectedWorkingFolderId = this.selectedThread?.workingFolderId ?? null;
       const selectedThread = this.selectedThread;
-      if (selectedThread) await projects.selectProject(selectedThread.projectId);
+      if (selectedThread) await this.projects.selectProject(selectedThread.projectId);
       void this.loadTimeline(remembered).catch(() => undefined);
       return;
     }
     if (this.selectedWorkingFolderId && this.workingFolders.some((entry) => (
       entry.workingFolder.id === this.selectedWorkingFolderId
-        && entry.workingFolder.projectId === projects.selectedProjectId
+        && entry.workingFolder.projectId === this.projects.selectedProjectId
     ))) return;
     this.selectedThreadId = null;
-    const projectId = projects.selectedProjectId;
+    const projectId = this.projects.selectedProjectId;
     const rememberedFolderId = projectId && localExecutionAvailable
       ? await workingFolderApi.lastProjectWorkingFolder(projectId)
       : null;
@@ -1090,9 +1244,37 @@ class ChatStore {
   }
 }
 
-let store: ChatStore | null = null;
+const stores: Partial<Record<WorkspacePaneScope, ChatStore>> = {};
 
+function storeFor(scope: WorkspacePaneScope): ChatStore {
+  return stores[scope] ??= new ChatStore(scope);
+}
+
+/** The primary pane's Chat store, which app-wide flows such as settings and notifications use. */
 export function getChat(): ChatStore {
-  store ??= new ChatStore();
-  return store;
+  return storeFor("primary");
+}
+
+/** The Chat store a split pane scope shows through. */
+export function getChatStore(scope: WorkspacePaneScope): ChatStore {
+  return storeFor(scope);
+}
+
+/** The Chat store of the calling view's split pane. Call during component initialization. */
+export function useChat(): ChatStore {
+  return storeFor(getWorkspacePaneScope());
+}
+
+/** Invalidates every pane's Chat state and the shared Chat state before prewarming another vault. */
+export function resetChatForVault(): void {
+  for (const store of paneStores.all()) store.resetPaneForVault();
+  shared.providerDiscoveryStarted = false;
+  shared.teammates = [];
+  shared.archivedTeammates = [];
+  shared.configuration.reset();
+}
+
+/** Show a project's newly saved primary working folder in every pane whose channel belongs to that project. */
+export function adoptChatProjectPrimaryWorkingFolder(primary: ChatProjectPrimaryWorkingFolderRead): void {
+  for (const store of paneStores.all()) store.adoptProjectPrimaryWorkingFolder(primary);
 }

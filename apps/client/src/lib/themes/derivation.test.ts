@@ -85,13 +85,10 @@ const AA_LARGE_PAIRS: ReadonlyArray<[string, string]> = [
 
 /**
  * Tokens whose job is to recede (not disappear): at or above AA-large
- * 3:1, but not so prominent they compete with primary body text. On
- * BASE.dark `--muted-foreground` on `--muted` lands at exactly 3:1. On
- * BASE.light it sits at 4.4:1. User canvases whose lightness clamps at
- * the gamut edge (near-white / near-black) push the derived muted-bg to
- * the boundary, so the achieved ratio can drift slightly above BASE's
- * own; the upper bound is therefore relaxed to 5.0 to accommodate that
- * clamp without losing the "recessed" constraint. Event-panel
+ * 3:1, but not so prominent they compete with primary body text. The
+ * built-in captions sit between about 4.5:1 and 5.4:1 on `--muted`, and
+ * canvases whose lightness clamps at the gamut edge push the ratio a
+ * little higher, so the upper bound is 5.5. Event-panel
  * placeholders and muted-text land higher on BASE.dark (closer to
  * primary body), so they are not in this band.
  */
@@ -148,12 +145,12 @@ describe("deriveAppTokens", () => {
       }
     });
 
-    it(`parks muted captions inside [3.0, 5.0] (${base})`, () => {
+    it(`parks muted captions inside [3.0, 5.5] (${base})`, () => {
       const tokens = deriveAppTokens(sources);
       for (const { fg, bg } of MUTED_BANDS) {
         const ratio = contrastRatio(tokens[fg], tokens[bg]);
         expect(ratio).toBeGreaterThanOrEqual(3.0);
-        expect(ratio).toBeLessThanOrEqual(5.0);
+        expect(ratio).toBeLessThanOrEqual(5.5);
       }
     });
 
@@ -170,7 +167,6 @@ describe("deriveAppTokens", () => {
   it("pins the source colors to the tokens they represent", () => {
     const light = deriveAppTokens(LIGHT_SOURCES);
     expect(light["--background"]).toBe(LIGHT_SOURCES.canvas);
-    expect(light["--cal-header-bg"]).toBe(LIGHT_SOURCES.canvas);
     expect(light["--foreground"]).toBe(LIGHT_SOURCES.ink);
     expect(light["--primary"]).toBe(LIGHT_SOURCES.primary);
     expect(light["--destructive"]).toBe(LIGHT_SOURCES.destructive);
@@ -342,7 +338,6 @@ describe("deriveAppTokens", () => {
     const derived = deriveAppTokens(DARK_SOURCES);
     const exactKeys = [
       "--background",
-      "--cal-header-bg",
       "--foreground",
       "--card-foreground",
       "--popover-foreground",
@@ -475,13 +470,13 @@ describe("deriveCalendarTokens", () => {
   for (const base of ["light", "dark"] as const) {
     const sources = base === "light" ? LIGHT_SOURCES : DARK_SOURCES;
 
-    it(`gridline sits at or above 1.4:1 against the calendar canvas (${base})`, () => {
-      // The 1.4 gridline target lets cloned themes inherit the
-      // built-in's subtle gridline style (~1.5:1) instead of
-      // prominent 3:1 lines.
+    it(`gridline stays a quiet but visible hairline against the calendar canvas (${base})`, () => {
+      // Cloned themes inherit the built-in hairline (about 1.15:1): enough to
+      // separate cells without drawing a prominent grid.
       const tokens = deriveCalendarTokens(sources);
       const ratio = contrastRatio(tokens["--cal-gridline"], tokens["--cal-bg"]);
-      expect(ratio).toBeGreaterThanOrEqual(1.4);
+      expect(ratio).toBeGreaterThanOrEqual(1.1);
+      expect(ratio).toBeLessThan(1.4);
     });
 
     it(`time label stays at or above 3:1 against the calendar canvas (${base})`, () => {
@@ -600,9 +595,6 @@ describe("deriveCalendarColorDefaultBundle", () => {
     expect(bundle.runtimeTokens["--cal-scrollbar-thumb"]).not.toBe(
       deriveAppTokens(LIGHT_SOURCES)["--muted"],
     );
-    expect(
-      Object.hasOwn(bundle.calendarTokens, "--cal-header-bg"),
-    ).toBe(false);
   });
 
   it("uses custom mode to derive from the supplied basis", () => {

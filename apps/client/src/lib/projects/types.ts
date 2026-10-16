@@ -17,8 +17,35 @@ import type { NotesHistoryRetentionDays } from "$lib/notes/history/retention";
 /** One step toward the start (-1) or the end (1) of a manual order. */
 export type MoveDirection = -1 | 1;
 
+/** View types that show the project's tasks. */
 export const PROJECT_VIEW_IDS = ["dashboard", "list", "kanban", "calendar", "gantt"] as const;
 export type ProjectViewId = (typeof PROJECT_VIEW_IDS)[number];
+
+/** View types that host another feature's workspace scoped to the project; a project holds at most one of each. */
+export const PROJECT_HOSTED_VIEW_TYPES = ["notes", "chat"] as const;
+export type ProjectHostedViewType = (typeof PROJECT_HOSTED_VIEW_TYPES)[number];
+
+/** Every type a project view can have, in the order the add menu offers them. */
+export const PROJECT_VIEW_TYPES = [...PROJECT_VIEW_IDS, ...PROJECT_HOSTED_VIEW_TYPES] as const;
+export type ProjectViewType = (typeof PROJECT_VIEW_TYPES)[number];
+
+/** One entry in a project's sidebar. A missing name shows the localized label of its type. */
+export interface ProjectView {
+  id: string;
+  projectId: string;
+  viewType: ProjectViewType;
+  name?: string;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectViewCreate {
+  id: string;
+  projectId: string;
+  viewType: ProjectViewType;
+  name: string | null;
+}
 
 export type ProjectPriority = string;
 export const PROJECT_TAG_DEFAULT_COLOR: EventColor = 13;
@@ -542,15 +569,14 @@ export interface ProjectLinkableEvent {
 
 export interface ProjectViewPreference {
   projectId: string;
-  viewId: ProjectViewId;
+  viewId: string;
   preferenceKey: string;
   preferenceValue: string;
   updatedAt: string;
 }
 
 export interface ProjectViewPreferenceUpsert {
-  projectId: string;
-  viewId: ProjectViewId;
+  viewId: string;
   preferenceKey: string;
   preferenceValue: string;
 }
@@ -569,31 +595,6 @@ export interface ProjectCustomEmojiCreate {
   name: string;
   assetPath: string;
   sortOrder: number;
-}
-
-export interface ProjectSavedTaskView {
-  id: string;
-  projectId: string;
-  name: string;
-  viewId: ProjectViewId;
-  search: string;
-  statusFilter: ProjectTaskStatusFilter;
-  sectionFilter: string | "all";
-  priorityFilter: ProjectPriority | "all";
-  dueFilter: ProjectTaskDueFilter;
-  dueRangeStart: string;
-  dueRangeEnd: string;
-  scheduleFilter: ProjectTaskScheduleFilter;
-  dependencyFilter: ProjectTaskDependencyFilter;
-  tagFilter: ProjectTaskTagFilter;
-  customFieldFilters: ProjectCustomFieldFilter[];
-  sortMode: ProjectTaskSortMode;
-  sortDirection: ProjectTaskSortDirection;
-  groupBy: ProjectTaskGroupMode;
-  collapsedSectionIds: string[];
-  showArchivedTasks: boolean;
-  visibleColumns: ProjectTaskListColumn[];
-  updatedAt: string;
 }
 
 export interface ProjectTaskEventLinkCreate {
@@ -702,6 +703,7 @@ export interface ProjectsSnapshot {
   eventLinks: ProjectTaskEventLink[];
   taskChangeEvents: ProjectTaskChangeEvent[];
   viewPreferences: ProjectViewPreference[];
+  views: ProjectView[];
   customEmojis: ProjectCustomEmoji[];
 }
 
@@ -718,13 +720,8 @@ export type ProjectMutationRemoval =
   | { kind: "custom_field_value"; taskId: string; fieldId: string }
   | { kind: "dependency"; id: string }
   | { kind: "event_link"; taskId: string; eventId: string }
-  | {
-      kind: "view_preference";
-      projectId: string;
-      viewId: string;
-      preferenceKey: string;
-    }
-  | { kind: "custom_emoji"; id: string };
+  | { kind: "custom_emoji"; id: string }
+  | { kind: "view"; id: string };
 
 export interface ProjectMutation {
   changed: ProjectsSnapshot;
@@ -734,7 +731,6 @@ export interface ProjectMutation {
 
 export interface ProjectsWorkspaceSnapshot {
   resolvedProjectId: string | null;
-  activeView: ProjectViewId;
   snapshot: ProjectsSnapshot;
 }
 
@@ -743,7 +739,7 @@ export type ProjectOptionalDataKind =
   | "custom_fields"
   | "history"
   | "checklist"
-  | "saved_views"
+  | "view_preferences"
   | "custom_emojis";
 
 export interface ProjectsOptionalData {
@@ -913,4 +909,6 @@ export interface ProjectTaskUpdate {
   blockerReason: string | null;
   milestone: boolean;
   changeReason: string | null;
+  /** Revision the edit was based on; Rust refuses the update when the task changed since. */
+  expectedRevision: number | null;
 }

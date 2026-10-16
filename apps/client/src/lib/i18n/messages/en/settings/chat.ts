@@ -437,6 +437,8 @@ export const chatSettings = {
     sendKeyDescription: "Choose the shortcut that submits a message",
     enter: "Enter sends",
     modEnter: "Ctrl or Cmd + Enter sends",
+    sidebarOrder: "Section and channel order",
+    sidebarOrderDescription: "Favorites first. Projects can override it",
     restoreThread: "Restore last selected Chat thread",
     restoreThreadDescription: "Return to the last open Chat task when the app starts",
     reasoning: "Show provider reasoning summaries",

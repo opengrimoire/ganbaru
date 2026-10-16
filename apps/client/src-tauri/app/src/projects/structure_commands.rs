@@ -1,8 +1,9 @@
 use ganbaru_projects::structure_commands;
 use ganbaru_projects::{
-    ProjectGroupCreate, ProjectGroupUpdate, ProjectPriorityCreate, ProjectPriorityUpdate,
-    ProjectSectionCreate, ProjectSectionUpdate, ProjectStatusCreate, ProjectStatusUpdate,
-    ProjectTagCreate, ProjectTagUpdate, ProjectsMutationRows,
+    GroupProjectReorder, ProjectGroupCreate, ProjectGroupReorder, ProjectGroupUpdate,
+    ProjectPriorityCreate, ProjectPriorityUpdate, ProjectSectionCreate, ProjectSectionUpdate,
+    ProjectStatusCreate, ProjectStatusUpdate, ProjectTagCreate, ProjectTagUpdate,
+    ProjectsMutationRows,
 };
 use tauri::{AppHandle, Runtime};
 
@@ -158,4 +159,24 @@ pub async fn projects_delete_tag<R: Runtime>(
 ) -> Result<ProjectsMutationRows, String> {
     let pool = connect_sqlite(app, db_url).await?;
     structure_commands::delete_tag(&pool, tag_id).await
+}
+
+#[tauri::command]
+pub async fn projects_reorder_groups<R: Runtime>(
+    app: AppHandle<R>,
+    db_url: String,
+    reorder: ProjectGroupReorder,
+) -> Result<ProjectsMutationRows, String> {
+    let pool = connect_sqlite(app, db_url).await?;
+    structure_commands::reorder_groups(&pool, reorder).await
+}
+
+#[tauri::command]
+pub async fn projects_reorder_group_projects<R: Runtime>(
+    app: AppHandle<R>,
+    db_url: String,
+    reorder: GroupProjectReorder,
+) -> Result<ProjectsMutationRows, String> {
+    let pool = connect_sqlite(app, db_url).await?;
+    structure_commands::reorder_group_projects(&pool, reorder).await
 }

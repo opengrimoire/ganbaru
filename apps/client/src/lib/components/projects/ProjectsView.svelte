@@ -4,14 +4,16 @@
   import { getCalendar } from "$lib/stores/calendar.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { getViewport } from "$lib/stores/viewport.svelte";
   import type { CalendarEvent, CalendarViewMode } from "$lib/calendar/types";
   import type {
+    Project,
     ProjectChatIntegration,
     ProjectSection,
     ProjectTask,
+    ProjectView,
     ProjectViewId,
   } from "$lib/projects/types";
   import {
@@ -20,18 +22,23 @@
   } from "$lib/projects/scheduling/schedule";
   import {
     pickProjectTaskModalLayout,
+    projectToolbarPanelsForView,
     type ProjectToolbarPanel,
   } from "$lib/projects/toolbar";
+  import { projectPlaceShortcut } from "$lib/projects/places";
   import CollectionSettings from "$lib/components/collections/CollectionSettings.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import ProjectEmptyState from "./ProjectEmptyState.svelte";
   import ProjectWorkspaceHeader from "./ProjectWorkspaceHeader.svelte";
+  import ProjectsSidebar from "./sidebar/ProjectsSidebar.svelte";
+  import { projectViewLabel } from "./sidebar/project-view-presentation";
   import ProjectTaskDetailPanel from "./task-detail/ProjectTaskDetailPanel.svelte";
   import type { ProjectViewComponents } from "./view-components";
   import { ProjectTaskQueryController } from "./task-query-controller.svelte";
   import { ProjectRouteLoadController } from "./route-load-controller.svelte";
   import { ProjectRouteUiController } from "./route-ui-controller.svelte";
+  import { getWorkspacePaneFocus } from "$lib/workspace-tabs/pane-focus";
 
   let {
     mobileLayout = false,
@@ -43,26 +50,17 @@
     projectChat?: ProjectChatIntegration | null;
   } = $props();
 
-  const projects = getProjects();
+  const projects = useProjects();
   const mobileBackStack = getMobileBackStack();
   const calendar = getCalendar();
   const preferences = getPreferences();
   const viewport = getViewport();
   const { t } = getLocalization();
-  let showInactiveProjects = $state(false);
-  let projectCalendarViewMode = $state<CalendarViewMode>("week");
-  let projectCalendarViewModeInitialized = false;
-
-  $effect(() => {
-    if (projectCalendarViewModeInitialized) return;
-    projectCalendarViewModeInitialized = true;
-    projectCalendarViewMode = mobileLayout ? "day" : "week";
-  });
+  let projectViewControlsTarget = $state<HTMLElement | null>(null);
   const taskQuery = new ProjectTaskQueryController({ projects, calendar, translate: t });
+  const projectCalendarViewMode = $derived<CalendarViewMode>(taskQuery.calendarMode ?? (mobileLayout ? "day" : "week"));
   const routeLoad = new ProjectRouteLoadController(projects);
-  const routeUi = new ProjectRouteUiController({
-    setActiveView: (view) => { projects.activeView = view; },
-  });
+  const routeUi = new ProjectRouteUiController();
 
 
   const toolbarLoadState = $derived(routeLoad.optionalState("toolbar"));
@@ -72,12 +70,19 @@
   const selectedProject = $derived(projects.selectedProject);
   const selectedGroup = $derived(projects.selectedGroup);
   const selectedProjectId = $derived(selectedProject?.id ?? null);
+  const sidebarDocked = $derived(!mobileLayout && Boolean(selectedProject && selectedGroup));
+  /** The mobile shell shows the sidebar as a full surface that replaces the project while open. */
+  let mobileSidebarRequested = $state(false);
+  const mobileSidebarOpen = $derived(mobileLayout && mobileSidebarRequested && Boolean(selectedProject && selectedGroup));
+  const sidebarViews = $derived(projects.viewsForProject(selectedProjectId));
+  /** Chat opens from the sidebar when the project has a Chat view, so the header keeps its shortcut only otherwise. */
+  const chatIsPlace = $derived(sidebarDocked && sidebarViews.some((view) => view.viewType === "chat"));
   const toolbarDataReady = $derived.by(() => {
     const projectId = selectedProjectId;
     return Boolean(
       projectId
       && projects.taskViewPage?.projectId === projectId
-      && projects.isProjectOptionalDataLoaded("saved_views", projectId),
+      && projects.isProjectOptionalDataLoaded("view_preferences", projectId),
     );
   });
   const taskDetailDataReady = $derived.by(() => {
@@ -132,7 +137,6 @@
   const taskFilterControlsActive = $derived(taskQuery.filterControlsActive);
   const taskGroupingActive = $derived(taskQuery.groupingActive);
   const taskCustomizeActive = $derived(taskQuery.customizeActive);
-  const savedTaskViews = $derived(taskQuery.savedViews);
   const scheduledThisWeekMinutes = $derived.by(() => thisWeekScheduledMinutes());
   const selectedTask = $derived.by(() =>
     routeUi.selectedTaskId ? allProjectTasks.find((task) => task.id === routeUi.selectedTaskId) : undefined
@@ -176,11 +180,12 @@
     void projects.ensureLoaded().catch((error) => {
       console.error("load projects failed", error);
     });
+    return () => taskQuery.dispose();
   });
 
   let viewDataFailure = $state<{ projectId: string; view: ProjectViewId } | null>(null);
   const viewDataFailed = $derived(
-    viewDataFailure?.projectId === selectedProjectId && viewDataFailure?.view === projects.activeView,
+    viewDataFailure?.projectId === selectedProjectId && viewDataFailure?.view === projects.activeTaskView,
   );
 
   function requestViewData(projectId: string, view: ProjectViewId): void {
@@ -192,13 +197,22 @@
   }
 
   $effect(() => {
-    const view = projects.activeView;
-    if (!selectedProject || !selectedGroup) return;
+    const view = projects.activeTaskView;
+    if (!selectedProject || !selectedGroup || !view) return;
     requestViewData(selectedProject.id, view);
   });
 
   $effect(() => {
-    projects.activeView;
+    taskQuery.syncViewQuery();
+  });
+
+  $effect(() => {
+    taskQuery.persistViewQuery();
+  });
+
+  $effect(() => {
+    projects.activeTaskView;
+    taskQuery.queryReady;
     taskQuery.filterState;
     taskQuery.sections;
     taskQuery.allEvents;
@@ -212,6 +226,14 @@
     void routeLoad.requestToolbarData(projectId, () => (
       routeUi.toolbarPanel !== null && selectedProjectId === projectId
     ));
+  });
+
+  $effect(() => {
+    const panel = routeUi.toolbarPanel;
+    if (!panel) return;
+    const view = projects.activeTaskView;
+    const available: readonly ProjectToolbarPanel[] = view ? projectToolbarPanelsForView(view) : ["settings"];
+    if (!available.includes(panel)) routeUi.closeToolbarImmediately();
   });
 
   $effect(() => {
@@ -255,8 +277,53 @@
     sections;
     projectTags;
     projectCustomFields;
+    taskQuery.queryReady;
+    projects.taskViewPage;
     taskQuery.repairDisappearingFields();
   });
+
+  function selectView(view: ProjectView): void {
+    routeUi.runAfterSettingsClose(() => {
+      projects.selectView(view);
+    });
+  }
+
+  const paneFocused = getWorkspacePaneFocus();
+
+  /** Switches project views with the Ctrl and digit shortcut, even while typing; the app shell handles hosted views. */
+  function handlePlaceShortcut(event: KeyboardEvent): void {
+    if (event.defaultPrevented || !projects.selectedProject || !paneFocused()) return;
+    const view = projectPlaceShortcut(event, sidebarViews);
+    if (!view) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    selectView(view);
+  }
+
+  function closeMobileSidebar(): void {
+    mobileSidebarRequested = false;
+  }
+
+  function handleProjectSelected(): void {
+    routeUi.closeTaskDetail();
+    routeUi.closeToolbarImmediately();
+  }
+
+  /** Selects a project from its sidebar menu and opens its settings, asking first when other settings are unsaved. */
+  function openProjectSettings(project: Project): void {
+    if (project.id === projects.selectedProjectId && routeUi.toolbarPanel === "settings") return;
+    routeUi.runAfterSettingsClose(() => {
+      void (async () => {
+        try {
+          if (project.id !== projects.selectedProjectId) await projects.selectProject(project.id);
+          routeUi.closeTaskDetail();
+          routeUi.setToolbarPanel("settings");
+        } catch (error: unknown) {
+          console.error("Failed to open project settings from the sidebar", error);
+        }
+      })();
+    });
+  }
 
   function clearTaskFilters(): void {
     taskQuery.reset();
@@ -283,14 +350,11 @@
     ));
   }
 
+  /** Opens a task created from the list without touching the view's saved query, even when its filters hide the task. */
   function revealCreatedTask(task: ProjectTask | undefined): void {
     if (!task) return;
-    projects.activeView = "list";
-    taskQuery.reset();
     routeUi.selectedTaskId = task.id;
     routeUi.clearTaskSelection();
-    taskQuery.showArchivedTasks = false;
-    taskQuery.showInactiveSections = false;
   }
 
 
@@ -304,7 +368,10 @@
 
 </script>
 
-<svelte:window onkeydown={(event) => routeUi.handleWindowKeydown(event)} />
+<svelte:window
+  onkeydowncapture={handlePlaceShortcut}
+  onkeydown={(event) => { if (paneFocused()) routeUi.handleWindowKeydown(event); }}
+/>
 
 <svelte:document
   onselectstart={(event) => routeUi.handleDocumentSelectStart(event)}
@@ -314,32 +381,58 @@
 <div
   bind:this={routeUi.rootElement}
   class="projects-view-root relative flex h-full min-h-0 overflow-hidden text-foreground"
-  style="background-color: var(--cal-bg);"
+  class:explorer-chrome={sidebarDocked}
+  style:background-color={sidebarDocked ? undefined : "var(--cal-bg)"}
   data-first-use-shell="projects"
 >
-  <section class="flex min-w-0 flex-1 flex-col">
+  {#if sidebarDocked}
+    <ProjectsSidebar
+      onSelectView={selectView}
+      onProjectSelected={handleProjectSelected}
+      onOpenProjectSettings={openProjectSettings}
+    />
+  {:else if mobileSidebarOpen}
+    <ProjectsSidebar
+      presentation="panel"
+      onSelectView={(view) => {
+        closeMobileSidebar();
+        selectView(view);
+      }}
+      onProjectSelected={handleProjectSelected}
+      onOpenProjectSettings={(project) => {
+        closeMobileSidebar();
+        openProjectSettings(project);
+      }}
+      onClose={closeMobileSidebar}
+    />
+  {/if}
+  <section
+    class="flex min-w-0 flex-1 flex-col overflow-hidden"
+    class:surface-content={sidebarDocked}
+    style="background-color: var(--cal-bg);"
+  >
     {#if selectedProject && selectedGroup}
-      <header class="flex shrink-0 flex-col" style="background-color: var(--cal-header-bg);">
+      <header class="flex shrink-0 flex-col" style="background-color: var(--cal-bg);">
         <ProjectWorkspaceHeader
           {selectedProject}
           {selectedGroup}
           {selectedProjectId}
-          {showInactiveProjects}
+          showInactiveProjects={projects.showInactiveProjects}
           projectToolbarPanel={routeUi.toolbarPanel}
           {taskGroupingActive}
           taskFiltersActive={taskFilterControlsActive}
           {taskCustomizeActive}
           {mobileLayout}
-          {projectChat}
+          projectChat={chatIsPlace ? null : projectChat}
+          bind:viewControlsTarget={projectViewControlsTarget}
           onShowInactiveProjectsChange={(value) => {
-            showInactiveProjects = value;
+            projects.showInactiveProjects = value;
           }}
-          onProjectSelected={() => {
-            routeUi.closeTaskDetail();
-            routeUi.closeToolbarImmediately();
-          }}
+          onProjectSelected={handleProjectSelected}
           onToggleToolbarPanel={(panel) => routeUi.toggleToolbarPanel(panel)}
           onCreateTask={() => { if (selectedProjectId) routeUi.openTaskDraft(selectedProjectId); }}
+          onOpenSidebar={mobileLayout ? () => { mobileSidebarRequested = true; } : undefined}
+          onSelectView={mobileLayout ? selectView : undefined}
         />
         {#if routeUi.toolbarPanel}
           {#if toolbarDataReady && toolbarLoadState?.status === "ready" && toolbarLoadState.component.kind === "toolbar"}
@@ -353,13 +446,10 @@
               {priorities}
               {projectTags}
               {projectCustomFields}
-              {savedTaskViews}
               {taskListColumnControls}
               {archivedProjectTaskCount}
               {inactiveSectionCount}
               {taskFiltersActive}
-              savedViewSaving={taskQuery.savedViewSaving}
-              savedViewError={taskQuery.savedViewError}
               listColumnsSaving={taskQuery.listColumnsSaving || taskQuery.propertySaving}
               listColumnsError={taskQuery.listColumnsError}
               bind:taskStatusFilter={taskQuery.statusFilter}
@@ -377,7 +467,6 @@
               bind:taskSortDirection={taskQuery.sortDirection}
               bind:showArchivedTasks={taskQuery.showArchivedTasks}
               bind:showInactiveSections={taskQuery.showInactiveSections}
-              bind:savedViewNameDraft={taskQuery.savedViewNameDraft}
               onClose={() => {
                 routeUi.requestToolbarClose();
               }}
@@ -385,14 +474,9 @@
                 routeUi.settingsDirty = dirty;
               }}
               onRevealInactive={() => {
-                showInactiveProjects = true;
+                projects.showInactiveProjects = true;
               }}
               onClearTaskFilters={clearTaskFilters}
-              onSaveCurrentTaskView={() => { void taskQuery.saveCurrentView(); }}
-              onApplyTaskView={(view) => {
-                void taskQuery.applySavedView(view).finally(() => routeUi.clearTaskSelection());
-              }}
-              onDeleteSavedTaskView={(view) => { void taskQuery.deleteSavedView(view); }}
               onToggleTaskListColumn={(column) => { void taskQuery.toggleColumn(column); }}
             />
           {:else if routeLoad.toolbarDataError || toolbarLoadState?.status === "failed"}
@@ -418,8 +502,8 @@
     {:else}
       <header
         data-projects-shell-header
-        class="flex h-11 shrink-0 items-center border-b border-border px-4 text-sm font-semibold"
-        style="background-color: var(--cal-header-bg);"
+        class="flex shrink-0 items-center px-4 text-sm font-semibold"
+        style="height: var(--toolbar-h); background-color: var(--cal-bg);"
       >
         {t("titleBar.tab.projects")}
       </header>
@@ -461,9 +545,29 @@
           {/if}
           </div>
         {/if}
-          {#if projects.activeView === "list"}
+          {#if projects.activeTaskView === null}
+            <p class="flex h-full items-center justify-center p-4 text-center text-sm text-muted-foreground">
+              {t("projects.sidebar.noViews")}
+            </p>
+          {:else if !taskQuery.queryReady}
+            {#if viewDataFailed}
+              <Notice
+                layout="fill"
+                class="text-sm"
+                message={t("common.viewLoadFailed", projects.activeProjectView ? projectViewLabel(t, projects.activeProjectView) : "")}
+                copy={false}
+                onRetry={() => {
+                  if (selectedProjectId && projects.activeTaskView) requestViewData(selectedProjectId, projects.activeTaskView);
+                }}
+              />
+            {:else}
+              <Loading layout="fill" />
+            {/if}
+          {:else}
+          {#key projects.activeViewId}
+          {#if projects.activeTaskView === "list"}
             {@const ProjectListView = viewComponents?.list ?? null}
-            {#if ProjectListView && projects.isProjectViewDataLoaded(selectedProjectId, "list")}
+            {#if ProjectListView}
             <ProjectListView
               {taskQuery}
               {mobileLayout}
@@ -491,18 +595,10 @@
               onTaskListColumnWidthsChange={(widths, options) => taskQuery.updateColumnWidths(widths, options)}
               onNeedMore={() => taskQuery.loadNextList(routeUi.selectedTaskIds)}
             />
-            {:else if viewDataFailed}
-              <Notice
-                layout="fill"
-                class="text-sm"
-                message={t("common.viewLoadFailed", t("projects.tabs.list"))}
-                copy={false}
-                onRetry={() => { if (selectedProjectId) requestViewData(selectedProjectId, "list"); }}
-              />
             {:else}
               <Loading layout="fill" />
             {/if}
-          {:else if projects.activeView === "kanban" && viewComponents?.kanban}
+          {:else if projects.activeTaskView === "kanban" && viewComponents?.kanban}
             {@const ProjectKanbanView = viewComponents.kanban}
             {#if ProjectKanbanView}
             <ProjectKanbanView
@@ -519,7 +615,7 @@
               onNeedMore={() => taskQuery.loadNextKanban(routeUi.selectedTaskIds)}
             />
             {/if}
-          {:else if projects.activeView === "calendar" && viewComponents?.calendar}
+          {:else if projects.activeTaskView === "calendar" && viewComponents?.calendar}
             {@const CalendarView = viewComponents.calendar}
             {#if CalendarView}
             <div class="h-full min-h-112 overflow-hidden">
@@ -528,13 +624,14 @@
                 createDefaults={projectCalendarCreateDefaults}
                 initialViewMode={projectCalendarViewMode}
                 onViewModeChange={(mode) => {
-                  projectCalendarViewMode = mode;
+                  taskQuery.calendarMode = mode;
                 }}
                 {mobileLayout}
+                headerTarget={projectViewControlsTarget}
               />
             </div>
             {/if}
-          {:else if projects.activeView === "gantt" && viewComponents?.gantt}
+          {:else if projects.activeTaskView === "gantt" && viewComponents?.gantt}
             {@const ProjectGanttView = viewComponents.gantt}
             {#if ProjectGanttView}
             <ProjectGanttView
@@ -548,7 +645,7 @@
               }}
             />
             {/if}
-          {:else if projects.activeView === "dashboard" && viewComponents?.dashboard}
+          {:else if projects.activeTaskView === "dashboard" && viewComponents?.dashboard}
             {@const ProjectDashboardView = viewComponents.dashboard}
             {#if ProjectDashboardView}
             <ProjectDashboardView
@@ -567,15 +664,14 @@
           {:else}
             <Loading layout="fill" />
           {/if}
+          {/key}
+          {/if}
       {:else}
         <ProjectEmptyState
           {selectedProjectId}
-          bind:showInactiveProjects
+          bind:showInactiveProjects={projects.showInactiveProjects}
           {mobileLayout}
-          onProjectSelected={() => {
-            routeUi.closeTaskDetail();
-            routeUi.closeToolbarImmediately();
-          }}
+          onProjectSelected={handleProjectSelected}
         />
       {/if}
     </div>

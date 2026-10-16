@@ -9,6 +9,7 @@
   import { cn, type MaybePromise } from "$lib/utils";
   import type { ProjectSection } from "$lib/projects/types";
   import ProjectListSelectionButton from "./ProjectListSelectionButton.svelte";
+  import { keepInViewport } from "$lib/utils/keep-in-viewport";
 
 
   let {
@@ -165,6 +166,7 @@
       </button>
       {#if menuOpen}
         <div
+          use:keepInViewport
           class="surface-floating surface-floating-body absolute right-0 top-8 z-30 w-floating-sm"
           role="menu"
           aria-label={optionsLabel}

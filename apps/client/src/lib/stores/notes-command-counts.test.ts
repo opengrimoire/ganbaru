@@ -29,6 +29,8 @@ const backend = vi.hoisted(() => ({
 }));
 
 vi.mock("$lib/vault/config", () => ({
+  configKeyChanged: () => false,
+  onConfigChangedElsewhere: () => () => undefined,
   getConfigKey: (_key: string, fallback: unknown) => fallback,
   setConfigKey: vi.fn(),
 }));

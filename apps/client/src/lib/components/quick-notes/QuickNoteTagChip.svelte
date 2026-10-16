@@ -1,71 +1,67 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import Ellipsis from "@lucide/svelte/icons/ellipsis";
-  import Pencil from "@lucide/svelte/icons/pencil";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
-  import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
+  import type { EventColor } from "$lib/calendar/types";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { activateModalFocus } from "$lib/modal-focus";
-  import { QUICK_NOTE_TAG_NAME_MAX_CHARS, type QuickNoteTag } from "$lib/quick-notes/types";
+  import { getQuickNoteColor } from "$lib/quick-notes/colors";
+  import { quickNoteChipClass } from "$lib/quick-notes/tags";
+  import type { QuickNoteTag } from "$lib/quick-notes/types";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
-  import { cn } from "$lib/utils";
-  import { portal } from "$lib/utils/portal";
+  import type { Theme } from "$lib/themes";
+  import QuickNoteTagMenu from "./QuickNoteTagMenu.svelte";
+  import QuickNoteTagNameInput from "./QuickNoteTagNameInput.svelte";
+
+  /** Moves the tag one place along the tag row. */
+  interface TagChipMove {
+    canMoveBack: boolean;
+    canMoveForward: boolean;
+    onMove: (step: -1 | 1) => void;
+  }
 
   let {
     tag,
     selected,
     title,
+    theme,
+    move,
     onSelect,
     onRename,
+    onColor,
     onDelete,
+    onPointerDown,
     mobileLayout = false,
   }: {
     tag: QuickNoteTag;
     selected: boolean;
     title: string;
+    theme: Theme;
+    move: TagChipMove;
     onSelect: () => void;
     /** Rejects with a message to show when the name cannot be saved. */
     onRename: (name: string) => Promise<void>;
+    onColor: (color: EventColor) => void;
     onDelete: () => void;
+    /** Presses on the chip, which can start dragging it along the row. */
+    onPointerDown?: (event: PointerEvent) => void;
     mobileLayout?: boolean;
   } = $props();
 
   const { t } = getLocalization();
   const mobileBackStack = getMobileBackStack();
   let chip = $state<HTMLButtonElement | null>(null);
-  let menuButton = $state<HTMLButtonElement | null>(null);
-  let menu = $state<HTMLDivElement | null>(null);
-  let firstItem = $state<HTMLButtonElement | null>(null);
   let input = $state<HTMLInputElement | null>(null);
   let menuOpen = $state(false);
   let renaming = $state(false);
   let name = $state("");
   let busy = $state(false);
   let error = $state("");
-  let left = $state(8);
-  let top = $state(8);
-  const MENU_HEIGHT = 84;
+  const colors = $derived(getQuickNoteColor(tag.color, theme));
 
-  async function openMenu(anchor: HTMLElement | null): Promise<void> {
-    if (!anchor) return;
-    const rect = anchor.getBoundingClientRect();
-    const width = FLOATING_WIDTH.sm;
-    left = Math.min(Math.max(8, rect.left), Math.max(8, window.innerWidth - width - 8));
-    top = rect.bottom + MENU_HEIGHT + 8 <= window.innerHeight
-      ? rect.bottom + 4
-      : Math.max(8, rect.top - MENU_HEIGHT - 4);
-    menuOpen = true;
-    await tick();
-    firstItem?.focus();
-  }
-
-  function closeMenu(restoreFocus = true): void {
+  function closeMenu(restoreFocus: boolean): void {
     menuOpen = false;
-    if (restoreFocus) void tick().then(() => (menuButton ?? chip)?.focus());
+    if (restoreFocus) void tick().then(() => chip?.focus());
   }
 
   async function beginRename(): Promise<void> {
-    closeMenu(false);
     name = tag.name;
     error = "";
     renaming = true;
@@ -95,42 +91,14 @@
       void tick().then(() => chip?.focus());
     } catch (cause: unknown) {
       error = cause instanceof Error ? cause.message : String(cause);
-      await tick();
-      input?.focus();
     } finally {
       busy = false;
     }
+    // The input is disabled while saving, so it can take focus back only once busy clears.
+    if (!error) return;
+    await tick();
+    input?.focus();
   }
-
-  function requestDelete(): void {
-    closeMenu();
-    onDelete();
-  }
-
-  function handleMenuKeydown(event: KeyboardEvent): void {
-    if (event.key !== "Escape") return;
-    event.preventDefault();
-    event.stopPropagation();
-    closeMenu();
-  }
-
-  const menuStyle = $derived(mobileLayout
-    ? "left: calc(var(--visual-viewport-offset-left) + var(--safe-area-left) + 0.5rem); right: calc(var(--safe-area-right) + 0.5rem); bottom: calc(var(--keyboard-inset) + var(--safe-area-bottom) + 0.5rem); max-width: 32rem; margin-inline: auto;"
-    : `left: ${left}px; top: ${top}px;`);
-
-  $effect(() => {
-    if (!menuOpen) return;
-    const deactivateBack = mobileLayout
-      ? mobileBackStack.activate({ handle: () => closeMenu() })
-      : () => undefined;
-    const deactivateFocus = menu ? activateModalFocus(menu, firstItem) : () => undefined;
-    window.addEventListener("keydown", handleMenuKeydown, true);
-    return () => {
-      deactivateBack();
-      deactivateFocus();
-      window.removeEventListener("keydown", handleMenuKeydown, true);
-    };
-  });
 
   $effect(() => {
     if (!mobileLayout || !renaming) return;
@@ -139,84 +107,53 @@
 </script>
 
 {#if renaming}
-  <form
-    class={cn("field flex shrink-0 items-center gap-1 py-0 text-foreground", mobileLayout ? "min-h-12 w-44" : "h-7 w-32", error && "border-destructive focus-within:border-destructive")}
-    title={error || t("quickNotes.tag.rename")}
-    data-quick-note-tag-creator
-    onsubmit={(event) => { event.preventDefault(); void submitRename(); }}
-  >
-    <input
-      bind:this={input}
-      type="text"
-      bind:value={name}
-      maxlength={QUICK_NOTE_TAG_NAME_MAX_CHARS}
-      class={mobileLayout ? "field-bare min-h-12 text-base caret-primary" : "field-bare text-xs caret-primary"}
-      aria-label={t("quickNotes.tag.rename")}
-      aria-invalid={error ? "true" : undefined}
-      disabled={busy}
-      oninput={() => { error = ""; }}
-      onkeydown={(event) => {
-        if (event.key !== "Escape") return;
-        event.preventDefault();
-        event.stopPropagation();
-        cancelRename(true);
-      }}
-      onblur={() => { if (!busy && !error) void submitRename(); }}
-    />
-    {#if error}<span class="sr-only" role="alert">{error}</span>{/if}
-  </form>
+  <QuickNoteTagNameInput
+    bind:value={name}
+    bind:input
+    label={t("quickNotes.tag.rename")}
+    {error}
+    {busy}
+    {mobileLayout}
+    {colors}
+    onInput={() => { error = ""; }}
+    onSubmit={() => void submitRename()}
+    onCancel={() => cancelRename(true)}
+    onBlur={() => { if (!busy && !error) void submitRename(); }}
+  />
 {:else}
-  <div class={cn("flex shrink-0 items-center rounded-md transition-colors", mobileLayout && "rounded-xl", selected && "bg-accent/60")}>
-    <button
-      bind:this={chip}
-      type="button"
-      aria-pressed={selected}
-      class={`flex items-center text-foreground transition-colors ${mobileLayout ? "min-h-12 max-w-40 rounded-xl px-4 text-sm active:bg-accent" : "h-7 max-w-32 rounded-md px-2.5 text-xs hover:bg-accent/60"} ${selected ? "pr-1" : ""}`}
-      {title}
-      onclick={onSelect}
-      oncontextmenu={(event) => { event.preventDefault(); void openMenu(chip); }}
-    ><span class="truncate">{tag.name}</span></button>
-    {#if selected}
-      <button
-        bind:this={menuButton}
-        type="button"
-        class={mobileLayout ? "flex min-h-12 min-w-10 items-center justify-center rounded-xl text-muted-foreground active:bg-accent" : "flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent/60 hover:text-foreground"}
-        aria-label={t("quickNotes.tag.manage", tag.name)}
-        title={t("quickNotes.tag.manage", tag.name)}
-        aria-haspopup="menu"
-        aria-expanded={menuOpen}
-        onclick={() => { if (menuOpen) closeMenu(); else void openMenu(menuButton); }}
-      ><Ellipsis class={mobileLayout ? "size-5" : "size-3.5"} strokeWidth={1.5} aria-hidden="true" /></button>
-    {/if}
-  </div>
+  <!-- A selected chip opens its menu on click, so its actions need no extra control beside it. -->
+  <button
+    bind:this={chip}
+    type="button"
+    aria-pressed={selected}
+    aria-haspopup={selected ? "menu" : undefined}
+    aria-expanded={selected ? menuOpen : undefined}
+    class={quickNoteChipClass(mobileLayout, selected)}
+    style="--tag-bg: {colors.bg}; --tag-fg: {colors.text};"
+    {title}
+    onclick={() => { if (selected) menuOpen = true; else onSelect(); }}
+    oncontextmenu={(event) => { event.preventDefault(); menuOpen = true; }}
+    onpointerdown={onPointerDown}
+    onkeydown={(event) => {
+      if (event.key !== "F2") return;
+      event.preventDefault();
+      void beginRename();
+    }}
+  ><span class="truncate">{tag.name}</span></button>
 {/if}
 
 {#if menuOpen}
-  <button
-    use:portal
-    type="button"
-    class="fixed inset-0 z-90 cursor-default"
-    aria-label={t("common.close")}
-    onclick={() => closeMenu()}
-  ></button>
-  <div
-    bind:this={menu}
-    use:portal
-    class={mobileLayout ? "surface-floating fixed z-100 flex flex-col overflow-hidden" : "surface-floating fixed z-100 flex w-floating-sm flex-col overflow-hidden"}
-    style={menuStyle}
-    role="menu"
-    tabindex="-1"
-    aria-label={t("quickNotes.tag.manage", tag.name)}
-  >
-    <div class="surface-floating-body">
-      <button bind:this={firstItem} type="button" role="menuitem" class="menu-item" onclick={() => void beginRename()}>
-        <Pencil class="size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
-        <span class="min-w-0 flex-1 truncate">{t("quickNotes.tag.rename")}</span>
-      </button>
-      <button type="button" role="menuitem" class="menu-item text-destructive" onclick={requestDelete}>
-        <Trash2 class="size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
-        <span class="min-w-0 flex-1 truncate">{t("quickNotes.tag.delete")}</span>
-      </button>
-    </div>
-  </div>
+  <QuickNoteTagMenu
+    anchor={chip}
+    label={t("quickNotes.tag.manage", tag.name)}
+    colorLabel={t("quickNotes.tag.color")}
+    color={tag.color}
+    {theme}
+    {mobileLayout}
+    onColor={onColor}
+    onRename={() => void beginRename()}
+    move={{ orientation: "horizontal", ...move }}
+    {onDelete}
+    onClose={closeMenu}
+  />
 {/if}

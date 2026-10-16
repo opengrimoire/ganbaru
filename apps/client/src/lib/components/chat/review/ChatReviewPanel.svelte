@@ -55,7 +55,8 @@
   import type { ReviewDiffRenderItem, ReviewLineSelection } from "$lib/chat/review/diff-runtime";
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { getChat } from "$lib/stores/chat.svelte";
+  import { useChatPaneEvents } from "$lib/chat/pane-events";
+  import { useChat } from "$lib/stores/chat.svelte";
   import { subscribeChatWorkspaceChanges } from "$lib/chat/workspace/observer-client";
   import { writeTextToClipboard } from "$lib/utils/clipboard";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
@@ -98,7 +99,8 @@
 
   const localization = getLocalization();
   const { t } = localization;
-  const chat = getChat();
+  const chat = useChat();
+  const paneEvents = useChatPaneEvents();
   let panel: HTMLElement | undefined = $state();
   let content: HTMLElement | undefined = $state();
   let searchInput: HTMLInputElement | undefined = $state();
@@ -457,7 +459,7 @@
 
   function openInEditor(file: ChatReviewFileRead): void {
     if (commentDraft.trim()) return;
-    window.dispatchEvent(new CustomEvent("ganbaru-ai:chat-open-file", { detail: { relativePath: file.relativePath } }));
+    paneEvents.dispatchEvent(new CustomEvent("ganbaru-ai:chat-open-file", { detail: { relativePath: file.relativePath } }));
   }
 
   function stepFile(direction: -1 | 1): void {
@@ -847,7 +849,7 @@
                 if (file) {
                   activateFile(file.fileId);
                   if (!reviewCommentIsOutdated(comment, snapshot)) requestAnimationFrame(() => viewport?.scrollToLine(file.fileId, comment.endLine, comment.selectionSide === "old" ? "deletions" : "additions"));
-                } else window.dispatchEvent(new CustomEvent("ganbaru-ai:chat-open-file", { detail: { relativePath: comment.relativePath } }));
+                } else paneEvents.dispatchEvent(new CustomEvent("ganbaru-ai:chat-open-file", { detail: { relativePath: comment.relativePath } }));
               }}><strong title={comment.relativePath}>{comment.relativePath}</strong><span>{t("chat.review.lines", comment.startLine, comment.endLine)}</span></button>
               {#if reviewCommentIsOutdated(comment, snapshot)}<span class="comment-state">{t("chat.review.outdated")}</span>{/if}
               <p>{comment.commentText}</p>

@@ -6,17 +6,17 @@
   import type { ProjectCustomFieldFilter, ProjectTaskDueFilter, ProjectTaskStatusFilter } from "$lib/projects/types";
   import type { ProjectTaskListResizableColumn } from "$lib/projects/list/view";
   import type { ProjectTaskQueryController } from "$lib/components/projects/task-query-controller.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
 
   let { query, column }: { query: ProjectTaskQueryController; column: ProjectTaskListResizableColumn } = $props();
   const { t } = getLocalization();
-  const projects = getProjects();
+  const projects = useProjects();
   const field = $derived(column === "name" ? undefined : query.customFields.find((entry) => entry.id === customFieldIdFromTaskListColumn(column)));
   const current = $derived(field ? query.customFieldFilters.find((entry) => entry.fieldId === field.id) : undefined);
   const statusOptions: ProjectTaskStatusFilter[] = ["all", "open", "blocked", "done"];
   const dueOptions: ProjectTaskDueFilter[] = ["all", "overdue", "today", "week", "none"];
 
-  /** Replace the canonical property's filter so toolbar controls and saved views stay synchronized. */
+  /** Replace the canonical property's filter so toolbar controls stay synchronized. */
   function setCustom(filter?: ProjectCustomFieldFilter): void {
     if (!field) return;
     query.customFieldFilters = [...query.customFieldFilters.filter((entry) => entry.fieldId !== field.id), ...(filter ? [filter] : [])];

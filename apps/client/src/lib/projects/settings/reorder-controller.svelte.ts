@@ -10,27 +10,78 @@ import {
 
 type ReorderEntry = { id: string };
 
-export interface ProjectSettingsReorderControllerOptions<T extends ReorderEntry> {
-  dataType: string;
+export interface ProjectSettingsMoveControllerOptions<T extends ReorderEntry> {
   getEntries: () => readonly T[];
+  /** The entries `entry` moves among, when that is a subset such as the options of one field. */
   getEntriesForEntry?: (entry: T) => readonly T[];
   moveEntry: (entry: T, direction: -1 | 1) => Promise<void>;
   setError: (error: string | null) => void;
   reorderFailedMessage: () => string;
   saveFailedMessage: (message: string) => string;
+}
+
+export interface ProjectSettingsReorderControllerOptions<T extends ReorderEntry>
+  extends ProjectSettingsMoveControllerOptions<T> {
+  dataType: string;
   canDrop?: (draggedEntry: T, targetEntry: T) => boolean;
 }
 
 /**
- * Owns the transient drag state and serialized move lifecycle for one settings collection.
+ * Owns the serialized move lifecycle for one settings collection: one move at a time, reported through `pending`, with
+ * failures shown through `setError`.
+ */
+export function createProjectSettingsMoveController<T extends ReorderEntry>(
+  options: ProjectSettingsMoveControllerOptions<T>,
+) {
+  let pending = $state(false);
+
+  /** Return the entries `entryId` moves among, in their current order. */
+  function siblings(entryId: string): readonly T[] {
+    const entry = options.getEntries().find((candidate) => candidate.id === entryId);
+    return entry && options.getEntriesForEntry ? options.getEntriesForEntry(entry) : options.getEntries();
+  }
+
+  async function moveToIndex(entryId: string, targetIndex: number): Promise<void> {
+    pending = true;
+    options.setError(null);
+    try {
+      const entry = options.getEntries().find((candidate) => candidate.id === entryId);
+      const getEntries = entry && options.getEntriesForEntry
+        ? () => options.getEntriesForEntry?.(entry) ?? options.getEntries()
+        : options.getEntries;
+      const moved = await moveProjectSettingsEntryToIndex({
+        entryId,
+        targetIndex,
+        getEntries,
+        moveEntry: options.moveEntry,
+      });
+      if (!moved) options.setError(options.reorderFailedMessage());
+    } catch (error) {
+      options.setError(
+        options.saveFailedMessage(error instanceof Error ? error.message : String(error)),
+      );
+    } finally {
+      pending = false;
+    }
+  }
+
+  return {
+    get pending() { return pending; },
+    siblings,
+    moveToIndex,
+  };
+}
+
+/**
+ * Owns the transient native drag state and serialized move lifecycle for one settings collection.
  */
 export function createProjectSettingsReorderController<T extends ReorderEntry>(
   options: ProjectSettingsReorderControllerOptions<T>,
 ) {
+  const mover = createProjectSettingsMoveController(options);
   let draggedId = $state<string | null>(null);
   let overId = $state<string | null>(null);
   let position = $state<ProjectSettingsDropPosition | null>(null);
-  let pending = $state(false);
 
   function clear(): void {
     draggedId = null;
@@ -51,7 +102,7 @@ export function createProjectSettingsReorderController<T extends ReorderEntry>(
     const plan = projectSettingsDragOverPlan({
       draggedId,
       targetId: targetEntry.id,
-      reorderPending: pending,
+      reorderPending: mover.pending,
       position: projectSettingsDropPosition(event.clientY, bounds.top, bounds.height),
       dropAllowed: draggedEntry && options.canDrop
         ? options.canDrop(draggedEntry, targetEntry)
@@ -77,26 +128,9 @@ export function createProjectSettingsReorderController<T extends ReorderEntry>(
   }
 
   async function moveToIndex(entryId: string, targetIndex: number): Promise<void> {
-    pending = true;
-    options.setError(null);
     try {
-      const entry = options.getEntries().find((candidate) => candidate.id === entryId);
-      const getEntries = entry && options.getEntriesForEntry
-        ? () => options.getEntriesForEntry?.(entry) ?? options.getEntries()
-        : options.getEntries;
-      const moved = await moveProjectSettingsEntryToIndex({
-        entryId,
-        targetIndex,
-        getEntries,
-        moveEntry: options.moveEntry,
-      });
-      if (!moved) options.setError(options.reorderFailedMessage());
-    } catch (error) {
-      options.setError(
-        options.saveFailedMessage(error instanceof Error ? error.message : String(error)),
-      );
+      await mover.moveToIndex(entryId, targetIndex);
     } finally {
-      pending = false;
       clear();
     }
   }
@@ -109,14 +143,11 @@ export function createProjectSettingsReorderController<T extends ReorderEntry>(
       clear();
       return;
     }
-    const entries = draggedEntry && options.getEntriesForEntry
-      ? options.getEntriesForEntry(draggedEntry)
-      : allEntries;
     const target = projectSettingsDraggedEntryDropTarget({
       event,
       dataType: options.dataType,
       activeDraggedId: draggedId,
-      entries,
+      entries: draggedEntry ? mover.siblings(draggedEntry.id) : allEntries,
       targetId: targetEntry.id,
       position: position ?? "before",
     });
@@ -129,7 +160,7 @@ export function createProjectSettingsReorderController<T extends ReorderEntry>(
 
   return {
     get draggedId() { return draggedId; },
-    get pending() { return pending; },
+    get pending() { return mover.pending; },
     clear,
     start,
     dragOver,

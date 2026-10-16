@@ -14,7 +14,7 @@
     terminalPasteNeedsConfirmation,
   } from "$lib/chat/workspace/terminal-model";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { getChat } from "$lib/stores/chat.svelte";
+  import { useChat } from "$lib/stores/chat.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import "@xterm/xterm/css/xterm.css";
@@ -28,7 +28,7 @@
   } = $props();
 
   const { t } = getLocalization();
-  const chat = getChat();
+  const chat = useChat();
   const preferences = getPreferences();
   const terminalIdentity = untrack(() => ({
     id: terminalRead.id,
@@ -65,9 +65,7 @@
       ),
     ]).then(async ([xtermModule, fitModule, snapshot]) => {
       if (disposed || !host) return;
-      const hostStyles = getComputedStyle(host);
-      const terminalBackground = hostStyles.getPropertyValue("--cal-bg").trim() || hostStyles.backgroundColor;
-      const terminalForeground = hostStyles.color;
+      const terminalHost = host;
       const terminal = new xtermModule.Terminal({
         allowProposedApi: false,
         convertEol: false,
@@ -80,13 +78,13 @@
         fontWeightBold: "600",
         letterSpacing: 0,
         lineHeight: 1.1,
-        theme: {
-          background: terminalBackground,
-          foreground: terminalForeground,
-          cursor: terminalForeground,
-          selectionBackground: hostStyles.getPropertyValue("--selection-background").trim(),
-        },
+        theme: terminalTheme(terminalHost),
       });
+      const themeObserver = new MutationObserver(() => {
+        terminal.options.theme = terminalTheme(terminalHost);
+      });
+      themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "style"] });
+      disposers.push(() => themeObserver.disconnect());
       const fit = new fitModule.FitAddon();
       terminal.loadAddon(fit);
       terminal.open(host);
@@ -181,6 +179,18 @@
     };
   });
 
+  /** Reads the terminal colors from the host's current theme tokens; the scrollbar is styled by the shared tokens in CSS. */
+  function terminalTheme(element: HTMLElement): import("@xterm/xterm").ITheme {
+    const styles = getComputedStyle(element);
+    const foreground = styles.color;
+    return {
+      background: styles.getPropertyValue("--cal-bg").trim() || styles.backgroundColor,
+      foreground,
+      cursor: foreground,
+      selectionBackground: styles.getPropertyValue("--selection-background").trim(),
+    };
+  }
+
   function applyChunk(chunk: import("$lib/chat/contracts").ChatTerminalOutputChunk): void {
     if (!xterm) return;
     const decision = applyTerminalOutput(outputState, chunk);
@@ -245,6 +255,11 @@
   .terminal-host { min-height: 0; flex: 1; overflow: hidden; color: var(--foreground); background: var(--cal-bg); }
   :global(.xterm) { height: 100%; padding: 0.45rem 0.55rem; }
   :global(.xterm-viewport), :global(.xterm-screen) { background: var(--cal-bg) !important; }
-  :global(.xterm .xterm-scrollable-element > .scrollbar.vertical) { width: 6px !important; }
-  :global(.xterm .xterm-scrollable-element > .scrollbar > .slider) { border-radius: 3px; }
+  /* xterm.js draws its own scrollbar, so it is restyled to match the shared app scrollbar and stays visible while the buffer overflows. */
+  .terminal-host :global(.xterm-viewport) { scrollbar-width: none; }
+  .terminal-host :global(.xterm-viewport::-webkit-scrollbar) { display: none; }
+  .terminal-host :global(.xterm-scrollable-element > .scrollbar.vertical) { width: var(--app-scrollbar-size) !important; background: transparent !important; }
+  .terminal-host :global(.xterm-scrollable-element > .scrollbar.invisible.fade) { opacity: 1; pointer-events: auto; transition: none; }
+  .terminal-host :global(.xterm-scrollable-element > .scrollbar > .slider) { left: 0 !important; width: 100% !important; box-sizing: border-box; border: 2px solid transparent; border-radius: 9999px; background: var(--app-scrollbar-thumb) !important; background-clip: content-box !important; }
+  .terminal-host :global(.xterm-scrollable-element > .scrollbar > .slider:hover), .terminal-host :global(.xterm-scrollable-element > .scrollbar > .slider.active) { background: var(--app-scrollbar-thumb-hover) !important; background-clip: content-box !important; }
 </style>

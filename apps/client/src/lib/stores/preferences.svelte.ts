@@ -57,8 +57,8 @@ import {
   normalizeProfileFullName,
   resolveFontFamilyStack,
 } from "./preference-options";
-import { getConfigKey, setConfigKey } from "../vault/config";
-import type { EventColor } from "$lib/calendar/types";
+import { configKeyChanged, getConfigKey, onConfigChangedElsewhere, setConfigKey } from "../vault/config";
+import { FALLBACK_COLOR_INDEX, type EventColor } from "$lib/calendar/types";
 import {
   isDefaultProfileImageCrop,
   isProfileImageCrop,
@@ -71,6 +71,11 @@ import {
   isNotesPageOpenMode,
   type NotesPageOpenMode,
 } from "$lib/notes/pages/open-mode";
+import {
+  DEFAULT_SIDEBAR_SORT_ORDER,
+  isSidebarSortOrder,
+  type SidebarSortOrder,
+} from "$lib/utils/sidebar-order";
 
 const PROFILE_DISPLAY_NAME_CONFIG_KEY = "profile.displayName";
 const PROFILE_FULL_NAME_CONFIG_KEY = "profile.fullName";
@@ -97,7 +102,11 @@ const FOCUS_BREAK_EXTENSION_LIMIT_CONFIG_KEY =
 const FOCUS_PAUSE_NOTIFICATION_INTERVAL_MINUTES_CONFIG_KEY =
   "preferences.focusPauseNotificationIntervalMinutes";
 const MUSIC_PAUSE_ON_POMODORO_PAUSE_CONFIG_KEY = "preferences.musicPauseOnPomodoroPause";
+const QUICK_NOTES_DEFAULT_COLOR_CONFIG_KEY = "preferences.quickNotesDefaultColor";
 const NOTES_DEFAULT_OPEN_MODE_CONFIG_KEY = "preferences.notesDefaultOpenMode";
+const NOTES_SIDEBAR_ORDER_CONFIG_KEY = "preferences.notesSidebarOrder";
+const PROJECTS_SIDEBAR_ORDER_CONFIG_KEY = "preferences.projectsSidebarOrder";
+const CHAT_SIDEBAR_ORDER_CONFIG_KEY = "preferences.chatSidebarOrder";
 const NOTES_MENTION_NOTIFICATIONS_ENABLED_CONFIG_KEY =
   "preferences.notesMentionNotificationsEnabled";
 const NOTES_REMINDER_NOTIFICATIONS_ENABLED_CONFIG_KEY =
@@ -247,10 +256,20 @@ function loadSavedMusicPauseOnPomodoroPause(): boolean {
   return DEFAULT_MUSIC_PAUSE_ON_POMODORO_PAUSE;
 }
 
+function loadSavedQuickNotesDefaultColor(): EventColor {
+  const saved = getConfigKey<unknown>(QUICK_NOTES_DEFAULT_COLOR_CONFIG_KEY, undefined);
+  return isProfileColor(saved) ? saved : FALLBACK_COLOR_INDEX;
+}
+
 function loadSavedBooleanPreference(key: string, fallback: boolean): boolean {
   const saved = getConfigKey<unknown>(key, undefined);
   if (typeof saved === "boolean") return saved;
   return fallback;
+}
+
+function loadSavedSidebarOrder(key: string): SidebarSortOrder {
+  const saved = getConfigKey<unknown>(key, undefined);
+  return isSidebarSortOrder(saved) ? saved : DEFAULT_SIDEBAR_SORT_ORDER;
 }
 
 function loadSavedNotesDefaultOpenMode(): NotesPageOpenMode {
@@ -299,7 +318,11 @@ let focusPauseNotificationIntervalMinutes = $state<FocusPauseNotificationInterva
   loadSavedFocusPauseNotificationIntervalMinutes(),
 );
 let musicPauseOnPomodoroPause = $state<boolean>(loadSavedMusicPauseOnPomodoroPause());
+let quickNotesDefaultColor = $state<EventColor>(loadSavedQuickNotesDefaultColor());
 let notesDefaultOpenMode = $state<NotesPageOpenMode>(loadSavedNotesDefaultOpenMode());
+let notesSidebarOrder = $state<SidebarSortOrder>(loadSavedSidebarOrder(NOTES_SIDEBAR_ORDER_CONFIG_KEY));
+let projectsSidebarOrder = $state<SidebarSortOrder>(loadSavedSidebarOrder(PROJECTS_SIDEBAR_ORDER_CONFIG_KEY));
+let chatSidebarOrder = $state<SidebarSortOrder>(loadSavedSidebarOrder(CHAT_SIDEBAR_ORDER_CONFIG_KEY));
 let notesMentionNotificationsEnabled = $state<boolean>(
   loadSavedBooleanPreference(
     NOTES_MENTION_NOTIFICATIONS_ENABLED_CONFIG_KEY,
@@ -357,6 +380,71 @@ function applyPreferencesToDom(): void {
 if (typeof document !== "undefined") {
   applyPreferencesToDom();
 }
+
+/** Config branches this store reads, so a change another window saved under them reloads it. */
+const PREFERENCE_CONFIG_BRANCHES = ["preferences", "profile", "contacts.trustDefaults"] as const;
+
+/** Reread every preference from the cache after another window saved some of them. */
+function reloadSavedPreferences(): void {
+  fontFamilyId = loadSavedFontFamilyId();
+  fontScale = loadSavedFontScale();
+  eventTimezoneDisplay = loadSavedEventTimezoneDisplay();
+  profileDisplayName = loadSavedProfileDisplayName();
+  profileFullName = loadSavedProfileFullName();
+  profileImagePath = loadSavedProfileImagePath();
+  profileUseImage = loadSavedProfileUseImage();
+  profileColor = loadSavedProfileColor();
+  profileImageCrop = loadSavedProfileImageCrop();
+  calendarTimeFormat = loadSavedCalendarTimeFormat();
+  calendarViewMode = loadSavedCalendarViewMode();
+  calendarDimPastEvents = loadSavedCalendarDimPastEvents();
+  focusIdleThresholdMinutes = loadSavedFocusIdleThresholdMinutes();
+  focusIdlePauseOnEventCreate = loadSavedFocusIdlePauseOnEventCreate();
+  focusBreakFinishedRepeatSeconds = loadSavedFocusBreakFinishedRepeatSeconds();
+  focusBreakEndWarningSeconds = loadSavedFocusBreakEndWarningSeconds();
+  focusBreakEndEscPresses = loadSavedFocusBreakEndEscPresses();
+  focusBreakExtensionLimit = loadSavedFocusBreakExtensionLimit();
+  focusPauseNotificationIntervalMinutes = loadSavedFocusPauseNotificationIntervalMinutes();
+  musicPauseOnPomodoroPause = loadSavedMusicPauseOnPomodoroPause();
+  quickNotesDefaultColor = loadSavedQuickNotesDefaultColor();
+  notesDefaultOpenMode = loadSavedNotesDefaultOpenMode();
+  notesSidebarOrder = loadSavedSidebarOrder(NOTES_SIDEBAR_ORDER_CONFIG_KEY);
+  projectsSidebarOrder = loadSavedSidebarOrder(PROJECTS_SIDEBAR_ORDER_CONFIG_KEY);
+  chatSidebarOrder = loadSavedSidebarOrder(CHAT_SIDEBAR_ORDER_CONFIG_KEY);
+  notesMentionNotificationsEnabled = loadSavedBooleanPreference(
+    NOTES_MENTION_NOTIFICATIONS_ENABLED_CONFIG_KEY,
+    DEFAULT_NOTES_MENTION_NOTIFICATIONS_ENABLED,
+  );
+  notesReminderNotificationsEnabled = loadSavedBooleanPreference(
+    NOTES_REMINDER_NOTIFICATIONS_ENABLED_CONFIG_KEY,
+    DEFAULT_NOTES_REMINDER_NOTIFICATIONS_ENABLED,
+  );
+  notesUserMentionNotificationsEnabled = loadSavedBooleanPreference(
+    NOTES_USER_MENTION_NOTIFICATIONS_ENABLED_CONFIG_KEY,
+    DEFAULT_NOTES_USER_MENTION_NOTIFICATIONS_ENABLED,
+  );
+  notesTaskMentionNotificationsEnabled = loadSavedBooleanPreference(
+    NOTES_TASK_MENTION_NOTIFICATIONS_ENABLED_CONFIG_KEY,
+    DEFAULT_NOTES_TASK_MENTION_NOTIFICATIONS_ENABLED,
+  );
+  notesNotificationIncludeContent = loadSavedBooleanPreference(
+    NOTES_NOTIFICATION_INCLUDE_CONTENT_CONFIG_KEY,
+    DEFAULT_NOTES_NOTIFICATION_INCLUDE_CONTENT,
+  );
+  notesShowPropertyIcons = loadSavedBooleanPreference(NOTES_SHOW_PROPERTY_ICONS_CONFIG_KEY, DEFAULT_NOTES_SHOW_PROPERTY_ICONS);
+  projectsShowPropertyIcons = loadSavedBooleanPreference(
+    PROJECTS_SHOW_PROPERTY_ICONS_CONFIG_KEY,
+    DEFAULT_PROJECTS_SHOW_PROPERTY_ICONS,
+  );
+  titleBarVisibility = loadSavedTitleBarVisibility();
+  contactsInviteTrustDefault = loadSavedContactTrustDuration(CONTACTS_INVITE_TRUST_DEFAULT_CONFIG_KEY);
+  contactsMessageTrustDefault = loadSavedContactTrustDuration(CONTACTS_MESSAGE_TRUST_DEFAULT_CONFIG_KEY);
+  applyPreferencesToDom();
+}
+
+onConfigChangedElsewhere((keys) => {
+  if (PREFERENCE_CONFIG_BRANCHES.some((branch) => configKeyChanged(keys, branch))) reloadSavedPreferences();
+});
 
 function setFontFamily(id: FontFamilyId): void {
   if (!getFontFamilyById(id)) return;
@@ -522,10 +610,34 @@ function setMusicPauseOnPomodoroPause(value: boolean): void {
   setConfigKey(MUSIC_PAUSE_ON_POMODORO_PAUSE_CONFIG_KEY, value);
 }
 
+function setQuickNotesDefaultColor(value: EventColor): void {
+  if (!isProfileColor(value)) return;
+  quickNotesDefaultColor = value;
+  setConfigKey(QUICK_NOTES_DEFAULT_COLOR_CONFIG_KEY, value === FALLBACK_COLOR_INDEX ? undefined : value);
+}
+
 function setNotesDefaultOpenMode(value: NotesPageOpenMode): void {
   if (!isNotesPageOpenMode(value)) return;
   notesDefaultOpenMode = value;
   setConfigKey(NOTES_DEFAULT_OPEN_MODE_CONFIG_KEY, value);
+}
+
+function setNotesSidebarOrder(value: SidebarSortOrder): void {
+  if (!isSidebarSortOrder(value)) return;
+  notesSidebarOrder = value;
+  setConfigKey(NOTES_SIDEBAR_ORDER_CONFIG_KEY, value);
+}
+
+function setProjectsSidebarOrder(value: SidebarSortOrder): void {
+  if (!isSidebarSortOrder(value)) return;
+  projectsSidebarOrder = value;
+  setConfigKey(PROJECTS_SIDEBAR_ORDER_CONFIG_KEY, value);
+}
+
+function setChatSidebarOrder(value: SidebarSortOrder): void {
+  if (!isSidebarSortOrder(value)) return;
+  chatSidebarOrder = value;
+  setConfigKey(CHAT_SIDEBAR_ORDER_CONFIG_KEY, value);
 }
 
 function setNotesMentionNotificationsEnabled(value: boolean): void {
@@ -660,8 +772,23 @@ export function getPreferences() {
     get musicPauseOnPomodoroPause(): boolean {
       return musicPauseOnPomodoroPause;
     },
+    /** Palette slot new untagged quick notes start with; existing notes keep theirs when it changes. */
+    get quickNotesDefaultColor(): EventColor {
+      return quickNotesDefaultColor;
+    },
     get notesDefaultOpenMode(): NotesPageOpenMode {
       return notesDefaultOpenMode;
+    },
+    get notesSidebarOrder(): SidebarSortOrder {
+      return notesSidebarOrder;
+    },
+    /** Order of groups and projects in the Projects sidebar and project pickers, with starred projects first. */
+    get projectsSidebarOrder(): SidebarSortOrder {
+      return projectsSidebarOrder;
+    },
+    /** Default order of Chat sections and channels, which a project can override. */
+    get chatSidebarOrder(): SidebarSortOrder {
+      return chatSidebarOrder;
     },
     get notesMentionNotificationsEnabled(): boolean {
       return notesMentionNotificationsEnabled;
@@ -718,7 +845,11 @@ export function getPreferences() {
     setFocusBreakExtensionLimit,
     setFocusPauseNotificationIntervalMinutes,
     setMusicPauseOnPomodoroPause,
+    setQuickNotesDefaultColor,
     setNotesDefaultOpenMode,
+    setNotesSidebarOrder,
+    setProjectsSidebarOrder,
+    setChatSidebarOrder,
     setNotesMentionNotificationsEnabled,
     setNotesReminderNotificationsEnabled,
     setNotesUserMentionNotificationsEnabled,
@@ -776,6 +907,15 @@ export function getPreferences() {
     },
     resetNotesDefaultOpenMode() {
       setNotesDefaultOpenMode(DEFAULT_NOTES_PAGE_OPEN_MODE);
+    },
+    resetNotesSidebarOrder() {
+      setNotesSidebarOrder(DEFAULT_SIDEBAR_SORT_ORDER);
+    },
+    resetProjectsSidebarOrder() {
+      setProjectsSidebarOrder(DEFAULT_SIDEBAR_SORT_ORDER);
+    },
+    resetChatSidebarOrder() {
+      setChatSidebarOrder(DEFAULT_SIDEBAR_SORT_ORDER);
     },
     resetNotesMentionNotificationsEnabled() {
       setNotesMentionNotificationsEnabled(DEFAULT_NOTES_MENTION_NOTIFICATIONS_ENABLED);

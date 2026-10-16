@@ -5,6 +5,7 @@ import {
   collectionColumnOffsets,
   type CollectionColumnSlot,
 } from "./column-reorder";
+import { suppressClickAfterRelease } from "$lib/utils/click-suppression";
 
 /** Pixels the pointer travels horizontally before a press on a column name becomes a drag. */
 const DRAG_THRESHOLD = 4;
@@ -295,7 +296,7 @@ export class CollectionColumnReorder {
     } catch {
       // Capture already ended with the pointer.
     }
-    suppressNextClick();
+    suppressClickAfterRelease();
     if (commit && session && session.targetIndex !== session.startIndex) this.#options.onReorder(press.columnId, session.targetIndex);
   }
 }
@@ -361,14 +362,4 @@ function frozenInset(row: HTMLElement, dragged: HTMLElement, scrollerLeft: numbe
     right = Math.max(right, child.getBoundingClientRect().right);
   }
   return right - scrollerLeft;
-}
-
-/** Swallow the click that ends a drag, so releasing over a column name does not open its menu. */
-function suppressNextClick(): void {
-  const swallow = (event: MouseEvent): void => {
-    event.preventDefault();
-    event.stopPropagation();
-  };
-  window.addEventListener("click", swallow, { capture: true, once: true });
-  setTimeout(() => window.removeEventListener("click", swallow, { capture: true }), 0);
 }

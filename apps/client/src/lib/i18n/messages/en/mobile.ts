@@ -6,6 +6,7 @@ export const mobile = {
   pomodoroInactiveDescription:
     "Pomodoro starts automatically when a Pomodoro-enabled calendar block begins.",
   pomodoroOpenCalendar: "Open calendar",
+  contextSwitcher: (current: string) => `${current}, change`,
   vaultSetup: {
     title: "Set up your data",
     intro: "Start with new data, restore a backup, or import a folder.",

@@ -12,6 +12,7 @@ import type {
   UtcTimestamp,
   VersionedJson,
 } from "$lib/chat/contracts";
+import { cloneData } from "$lib/utils/clone";
 
 export interface ChatOrganizationalDraft {
   normalizedMarkdown: string;
@@ -53,7 +54,7 @@ export class ChatOrganizationalController {
   }
 
   setDraft(destination: string, draft: ChatOrganizationalDraft): void {
-    this.drafts = { ...this.drafts, [destination]: structuredClone(draft) };
+    this.drafts = { ...this.drafts, [destination]: cloneData(draft) };
   }
 
   setScrollPosition(destination: string, scrollTop: number): void {
@@ -74,8 +75,8 @@ export class ChatOrganizationalController {
       normalizedMarkdown: draft.normalizedMarkdown,
       richContent: draft.richContent,
       attachmentIds: [...draft.attachmentIds],
-      references: structuredClone(draft.references),
-      executionTarget: draft.executionTarget ? structuredClone(draft.executionTarget) : null,
+      references: cloneData(draft.references),
+      executionTarget: draft.executionTarget ? cloneData(draft.executionTarget) : null,
       alsoSendToChannel: options.alsoSendToChannel ?? false,
     });
     this.setDraft(destination, emptyOrganizationalDraft());
@@ -104,8 +105,8 @@ export class ChatOrganizationalController {
         normalizedMarkdown: draft.normalizedMarkdown,
         richContent: draft.richContent,
         attachmentIds: [...draft.attachmentIds],
-        references: structuredClone(draft.references),
-        executionTarget: draft.executionTarget ? structuredClone(draft.executionTarget) : null,
+        references: cloneData(draft.references),
+        executionTarget: draft.executionTarget ? cloneData(draft.executionTarget) : null,
         alsoSendToChannel: options.alsoSendToChannel ?? false,
       },
     });

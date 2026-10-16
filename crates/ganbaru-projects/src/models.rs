@@ -21,6 +21,7 @@ pub struct ProjectsMutationRows {
     pub(crate) event_links: Vec<ProjectTaskEventLinkRow>,
     pub(crate) task_change_events: Vec<ProjectTaskChangeEventRow>,
     pub(crate) view_preferences: Vec<ProjectViewPreferenceRow>,
+    pub(crate) views: Vec<ProjectViewRow>,
     pub(crate) custom_emojis: Vec<ProjectCustomEmojiRow>,
     pub(crate) removals: Vec<ProjectMutationRemoval>,
     pub(crate) calendar_event_project_assignments: Vec<CalendarEventProjectAssignment>,
@@ -29,53 +30,20 @@ pub struct ProjectsMutationRows {
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProjectMutationRemoval {
-    Group {
-        id: String,
-    },
-    Project {
-        id: String,
-    },
-    Status {
-        id: String,
-    },
-    Priority {
-        id: String,
-    },
-    ChecklistItem {
-        id: String,
-    },
-    Tag {
-        id: String,
-    },
-    TaskTagLink {
-        task_id: String,
-        tag_id: String,
-    },
-    CustomField {
-        id: String,
-    },
-    CustomFieldOption {
-        id: String,
-    },
-    CustomFieldValue {
-        task_id: String,
-        field_id: String,
-    },
-    Dependency {
-        id: String,
-    },
-    EventLink {
-        task_id: String,
-        event_id: String,
-    },
-    ViewPreference {
-        project_id: String,
-        view_id: String,
-        preference_key: String,
-    },
-    CustomEmoji {
-        id: String,
-    },
+    Group { id: String },
+    Project { id: String },
+    Status { id: String },
+    Priority { id: String },
+    ChecklistItem { id: String },
+    Tag { id: String },
+    TaskTagLink { task_id: String, tag_id: String },
+    CustomField { id: String },
+    CustomFieldOption { id: String },
+    CustomFieldValue { task_id: String, field_id: String },
+    Dependency { id: String },
+    EventLink { task_id: String, event_id: String },
+    CustomEmoji { id: String },
+    View { id: String },
 }
 
 #[derive(Serialize)]
@@ -532,6 +500,28 @@ impl_sqlite_from_row!(ProjectTaskChangeEventRow {
     occurred_at,
 });
 
+/// One view in a project's sidebar. A `None` name shows the localized label of the view type.
+#[derive(Serialize)]
+pub struct ProjectViewRow {
+    pub(crate) id: String,
+    pub(crate) project_id: String,
+    pub(crate) view_type: String,
+    pub(crate) name: Option<String>,
+    pub(crate) sort_order: i64,
+    pub(crate) created_at: String,
+    pub(crate) updated_at: String,
+}
+impl_sqlite_from_row!(ProjectViewRow {
+    id,
+    project_id,
+    view_type,
+    name,
+    sort_order,
+    created_at,
+    updated_at,
+});
+
+/// A preference of one view, reported with the project that owns the view.
 #[derive(Serialize)]
 pub struct ProjectViewPreferenceRow {
     pub(crate) project_id: String,
@@ -657,6 +647,7 @@ pub struct ProjectsSnapshot {
     pub(crate) event_links: Vec<ProjectTaskEventLinkRow>,
     pub(crate) task_change_events: Vec<ProjectTaskChangeEventRow>,
     pub(crate) view_preferences: Vec<ProjectViewPreferenceRow>,
+    pub(crate) views: Vec<ProjectViewRow>,
     pub(crate) custom_emojis: Vec<ProjectCustomEmojiRow>,
 }
 
@@ -780,7 +771,6 @@ pub struct ProjectTaskDetailData {
 #[derive(Serialize)]
 pub struct ProjectsWorkspaceSnapshot {
     pub(crate) resolved_project_id: Option<String>,
-    pub(crate) active_view: ProjectViewId,
     pub(crate) snapshot: ProjectsSnapshot,
 }
 
@@ -791,7 +781,7 @@ pub enum ProjectOptionalDataKind {
     CustomFields,
     History,
     Checklist,
-    SavedViews,
+    ViewPreferences,
     CustomEmojis,
 }
 
@@ -988,6 +978,10 @@ pub struct ProjectTaskUpdate {
     pub(crate) blocker_reason: Option<String>,
     pub(crate) milestone: bool,
     pub(crate) change_reason: Option<String>,
+    /// Revision the edit was based on. When present, the update is refused if the task changed since, so a stale
+    /// window never overwrites fields it did not edit.
+    #[serde(default)]
+    pub(crate) expected_revision: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -1108,10 +1102,50 @@ pub struct ProjectTaskEventLinkCreate {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectViewPreferenceUpsert {
-    pub(crate) project_id: String,
     pub(crate) view_id: String,
     pub(crate) preference_key: String,
     pub(crate) preference_value: String,
+}
+
+/// Adds a view at the end of a project's views.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectViewCreate {
+    pub(crate) id: String,
+    pub(crate) project_id: String,
+    pub(crate) view_type: String,
+    pub(crate) name: Option<String>,
+}
+
+/// Renames a view; `None` or a blank name restores the label of its type.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectViewRename {
+    pub(crate) id: String,
+    pub(crate) name: Option<String>,
+}
+
+/// The complete new order of a project's views.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectViewReorder {
+    pub(crate) project_id: String,
+    pub(crate) view_ids: Vec<String>,
+}
+
+/// The complete new order of every project group.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectGroupReorder {
+    pub(crate) group_ids: Vec<String>,
+}
+
+/// The complete new order of the projects in one group.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupProjectReorder {
+    pub(crate) group_id: String,
+    pub(crate) project_ids: Vec<String>,
 }
 
 #[derive(Deserialize)]

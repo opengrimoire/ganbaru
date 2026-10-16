@@ -512,16 +512,15 @@ export function taskListColumnWidthsPreferenceValue(widths: ProjectTaskListColum
   return JSON.stringify({ widths: Object.fromEntries(normalizedEntries) });
 }
 
-export function taskListColumnWidthsForProject(
+/** Restore one list view's manual column widths. */
+export function taskListColumnWidthsForView(
   preferences: readonly ProjectViewPreference[],
-  projectId: string | null | undefined,
+  viewId: string | null | undefined,
   customFieldIds?: ReadonlySet<string>,
 ): ProjectTaskListColumnWidths {
-  if (!projectId) return {};
+  if (!viewId) return {};
   const preference = preferences.find((entry) =>
-    entry.projectId === projectId
-    && entry.viewId === "list"
-    && entry.preferenceKey === TASK_LIST_COLUMN_WIDTHS_PREFERENCE_KEY
+    entry.viewId === viewId && entry.preferenceKey === TASK_LIST_COLUMN_WIDTHS_PREFERENCE_KEY
   );
   return parseProjectTaskListColumnWidths(preference?.preferenceValue, customFieldIds);
 }

@@ -1,13 +1,16 @@
 // @vitest-environment jsdom
 import { mount, tick, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { NotesLinkOpener } from "$lib/notes/links/navigation";
 import { applyRichTextLink, createTextRichText } from "$lib/notes/rich-text/core";
 import NotesRichTextInline from "./NotesRichTextInline.svelte";
 
-const openLink = vi.hoisted(() => vi.fn(async (_url: string) => undefined));
+const openLink = vi.hoisted(() => vi.fn(async (_url: string, _notes: NotesLinkOpener) => undefined));
 vi.mock("$lib/notes/links/navigation", async (importOriginal) => ({
   ...await importOriginal<typeof import("$lib/notes/links/navigation")>(), openNotesTextLink: openLink,
 }));
+/** The editor or workspace a link opens through, resolved from the component's Notes context. */
+const notesOpener = expect.toSatisfy((notes: NotesLinkOpener) => typeof notes.openNotesLink === "function");
 let component: ReturnType<typeof mount> | undefined;
 afterEach(async () => {
   if (component) await unmount(component);
@@ -32,7 +35,7 @@ describe("shared rich-text link navigation", () => {
   it("opens a read-only link with click or keyboard activation", async () => {
     const link = await linkedText();
     link.click();
-    await vi.waitFor(() => expect(openLink).toHaveBeenCalledExactlyOnceWith("https://example.com/tasks"));
+    await vi.waitFor(() => expect(openLink).toHaveBeenCalledExactlyOnceWith("https://example.com/tasks", notesOpener));
     link.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
     await vi.waitFor(() => expect(openLink).toHaveBeenCalledTimes(2));
   });
@@ -42,7 +45,7 @@ describe("shared rich-text link navigation", () => {
     const event = new MouseEvent("click", { ctrlKey: true, bubbles: true, cancelable: true });
     link.dispatchEvent(event);
     expect(event.defaultPrevented).toBe(true);
-    await vi.waitFor(() => expect(openLink).toHaveBeenCalledExactlyOnceWith("https://example.com/tasks"));
+    await vi.waitFor(() => expect(openLink).toHaveBeenCalledExactlyOnceWith("https://example.com/tasks", notesOpener));
   });
 
   it("preserves selected text and editing Enter in table hosts", async () => {

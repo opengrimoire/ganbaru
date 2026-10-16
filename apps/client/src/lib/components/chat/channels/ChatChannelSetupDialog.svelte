@@ -20,9 +20,10 @@
   import Select from "$lib/components/ui/Select.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { activateModalFocus, activateModalKeyboardLayer, trapModalTabKey } from "$lib/modal-focus";
-  import { getChat } from "$lib/stores/chat.svelte";
+  import { useChatPaneEvents } from "$lib/chat/pane-events";
+  import { useChat } from "$lib/stores/chat.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
 
@@ -42,9 +43,10 @@
 
   const MEMBER_AVATAR_SIZE = 26;
 
-  const chat = getChat();
+  const chat = useChat();
+  const paneEvents = useChatPaneEvents();
   const preferences = getPreferences();
-  const projects = getProjects();
+  const projects = useProjects();
   const settingsLauncher = getSettingsLauncher();
   const { t } = getLocalization();
   const currentChannel = untrack(() => channel);
@@ -91,8 +93,8 @@
       chatChannelId: channelId,
       chatCreateTeammate: true,
       onClosed: () => {
-        if (channelId) window.dispatchEvent(new CustomEvent("ganbaru-ai:chat-edit-channel", { detail: { channelId } }));
-        else window.dispatchEvent(new Event("ganbaru-ai:chat-new-channel"));
+        if (channelId) paneEvents.dispatchEvent(new CustomEvent("ganbaru-ai:chat-edit-channel", { detail: { channelId } }));
+        else paneEvents.dispatchEvent(new Event("ganbaru-ai:chat-new-channel"));
       },
     });
   }
@@ -129,7 +131,7 @@
 
   function configureMember(participantId: string): void {
     onCancel();
-    window.dispatchEvent(new CustomEvent("ganbaru-ai:chat-configure-teammate", {
+    paneEvents.dispatchEvent(new CustomEvent("ganbaru-ai:chat-configure-teammate", {
       detail: { participantId, channelId: currentChannel?.id },
     }));
   }

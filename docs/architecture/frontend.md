@@ -8,7 +8,7 @@ The frontend is a plain Svelte 5 application built with Vite. It is not SvelteKi
 
 The shell owns cross-feature navigation and mounts only the selected primary surface. Desktop loads its common surfaces eagerly and prepares the main workspaces before mounting, so first navigation is immediate. Android makes Calendar usable first, then prepares the other surfaces in prioritized background batches; an early navigation reuses the in-flight preparation. Heavy or uncommon workflows load on demand on both platforms. Without an active vault, desktop boot loads only setup and handoff onboarding, not the feature roots. Production bundle contracts protect these resident and lazy boundaries.
 
-The desktop main window starts hidden and is revealed only after the selected root has mounted with theme, locale, and required fonts ready, so the user never sees an unstyled or half-laid-out window. A native timeout remains as failure recovery. Detached windows and Pomodoro overlays do not reveal the main window or prepare its workspaces.
+The desktop main window starts hidden and is revealed only after the selected root has mounted with theme, locale, and required fonts ready, so the user never sees an unstyled or half-laid-out window. A native timeout remains as failure recovery. Other tab windows and Pomodoro overlays do not reveal the main window or prepare its workspaces.
 
 ## Source organization
 
@@ -37,6 +37,8 @@ Components do not duplicate command contracts or parse unknown backend values ad
 ## State model
 
 Svelte runes provide in-memory presentation state. Durable user data is loaded from native services and persisted through typed commands. A store can cache, coordinate, or optimistically present data, but it never becomes a second source of truth.
+
+Deep `$state` values are proxies, which the Android WebView's `structuredClone` rejects although desktop WebKitGTK accepts them. Copy data that may come from state with the shared `cloneData` helper (or `$state.snapshot` in rune files), never `structuredClone` directly.
 
 State is scoped to the smallest useful owner:
 

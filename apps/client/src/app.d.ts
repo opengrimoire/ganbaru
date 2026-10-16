@@ -10,10 +10,20 @@ import type { Temporal as TemporalPolyfill } from "@js-temporal/polyfill";
 declare global {
   interface GanbaruAndroidInsetsBridge {
     systemBars(): string;
+    keyboard(): string;
   }
 
   interface GanbaruAndroidAppearanceBridge {
     setLightTheme(lightTheme: boolean): void;
+    /** Persists the `#rrggbb` surface color painted behind the WebView, including on the next cold start. */
+    setWindowBackground(color: string): void;
+  }
+
+  interface GanbaruAndroidMediaVolumeBridge {
+    /** Device media volume as `index,max`, or empty when apps cannot change it. */
+    state(): string;
+    /** Sets the media volume to the nearest device step for a level from 0 to 1 and returns the new state. */
+    setLevel(level: number): string;
   }
 
   interface GanbaruAndroidTransitionBridge {
@@ -24,6 +34,7 @@ declare global {
   interface Window {
     GanbaruAndroidInsets?: GanbaruAndroidInsetsBridge;
     GanbaruAndroidAppearance?: GanbaruAndroidAppearanceBridge;
+    GanbaruAndroidMediaVolume?: GanbaruAndroidMediaVolumeBridge;
     GanbaruAndroidTransition?: GanbaruAndroidTransitionBridge;
   }
 

@@ -1,6 +1,6 @@
 use super::*;
 use crate::mutations::{delete_tag_with_history, delete_unused_status};
-use crate::structure_commands::delete_project_group;
+use crate::structure_commands::{delete_project_group, reorder_group_projects, reorder_groups};
 
 #[test]
 fn delete_group_cascades_projects_and_keeps_calendar_events() {
@@ -197,5 +197,118 @@ fn delete_tag_removes_links_and_records_task_history() {
         assert_eq!(tag_count, 0);
         assert_eq!(link_count, 0);
         assert_eq!(history_count, 2);
+    });
+}
+
+#[test]
+fn reordering_groups_requires_every_group_and_keeps_modified_times() {
+    block_on(async {
+        let pool = migrated_memory_pool().await;
+        insert_project_graph_fixture(&pool).await;
+        sqlx::query(
+            "INSERT INTO project_groups (id, name, icon, sort_order, updated_at)
+             VALUES ('group-b', 'Group B', 'lucide:folder', 200, '2026-01-01T00:00:00.000Z')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let mut group_ids: Vec<String> =
+            sqlx::query_scalar("SELECT id FROM project_groups ORDER BY sort_order, name")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        let reorder = |ids: &[String]| ProjectGroupReorder {
+            group_ids: ids.to_vec(),
+        };
+
+        let duplicated = [group_ids.clone(), vec!["group-a".to_string()]].concat();
+        let unknown = [group_ids.clone(), vec!["other".to_string()]].concat();
+        for incomplete in [&group_ids[1..], &duplicated[..], &unknown[..]] {
+            assert!(reorder_groups(&pool, reorder(incomplete)).await.is_err());
+        }
+
+        group_ids.reverse();
+        group_ids[0] = format!(" {} ", group_ids[0]);
+        let mutation = reorder_groups(&pool, reorder(&group_ids)).await.unwrap();
+        let returned: Vec<&str> = mutation
+            .groups
+            .iter()
+            .map(|group| group.id.as_str())
+            .collect();
+        let expected: Vec<&str> = group_ids.iter().map(|id| id.trim()).collect();
+        assert_eq!(returned, expected);
+        assert_eq!(mutation.groups[0].sort_order, 1_000);
+        let updated_at: String =
+            sqlx::query_scalar("SELECT updated_at FROM project_groups WHERE id = 'group-b'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(updated_at, "2026-01-01T00:00:00.000Z");
+    });
+}
+
+#[test]
+fn reordering_group_projects_covers_inactive_projects_of_that_group_only() {
+    block_on(async {
+        let pool = migrated_memory_pool().await;
+        insert_project_graph_fixture(&pool).await;
+        for (id, status) in [("project-b", "hidden"), ("project-c", "archived")] {
+            sqlx::query(
+                "INSERT INTO projects (id, group_id, name, icon, sort_order, status, updated_at)
+                 VALUES (?, 'group-a', ?, 'lucide:folder', 100, ?, '2026-01-01T00:00:00.000Z')",
+            )
+            .bind(id)
+            .bind(id)
+            .bind(status)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let reorder = |group_id: &str, ids: &[&str]| GroupProjectReorder {
+            group_id: group_id.to_string(),
+            project_ids: ids.iter().map(|id| id.to_string()).collect(),
+        };
+
+        assert!(
+            reorder_group_projects(&pool, reorder("group-a", &["project-c", "project-a"]))
+                .await
+                .is_err()
+        );
+        assert!(
+            reorder_group_projects(&pool, reorder("missing", &[]))
+                .await
+                .is_err()
+        );
+        assert!(
+            reorder_group_projects(&pool, reorder(" ", &[]))
+                .await
+                .is_err()
+        );
+
+        let mutation = reorder_group_projects(
+            &pool,
+            reorder("group-a", &["project-c", "project-a", "project-b"]),
+        )
+        .await
+        .unwrap();
+        let returned: Vec<(&str, i64)> = mutation
+            .projects
+            .iter()
+            .map(|project| (project.id.as_str(), project.sort_order))
+            .collect();
+        assert_eq!(
+            returned,
+            [
+                ("project-c", 1_000),
+                ("project-a", 2_000),
+                ("project-b", 3_000)
+            ]
+        );
+        let updated_at: String =
+            sqlx::query_scalar("SELECT updated_at FROM projects WHERE id = 'project-c'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(updated_at, "2026-01-01T00:00:00.000Z");
     });
 }

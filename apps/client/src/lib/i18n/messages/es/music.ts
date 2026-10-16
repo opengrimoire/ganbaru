@@ -4,6 +4,9 @@ import type { MessageShape } from "../types";
 export const music = {
   nativeSession: {
     browserUnavailable: "La reproducción está pausada porque esta fuente necesita el reproductor visible. Abre la aplicación y pulsa Reproducir para continuar.",
+    browserUnavailableOtherWindow: "La reproducción está pausada porque esta fuente se reproduce en la ventana principal. Muéstrala y pulsa Reproducir para continuar.",
+    otherWindow: "Este video se muestra en la ventana principal.",
+    showMainWindow: "Mostrar ventana principal",
     interrupted: "La reproducción se interrumpió. Pulsa Reproducir para continuar desde la posición guardada.",
   },
   title: "Música",

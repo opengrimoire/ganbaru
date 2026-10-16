@@ -2,6 +2,7 @@
 import { mount, tick, unmount, type ComponentProps } from "svelte";
 import { fromStore, writable } from "svelte/store";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { NotesLinkOpener } from "$lib/notes/links/navigation";
 import { applyBlockUpdate, blockEditableRichText, blockPlainText, blockWithRichText, createBlockUpdate, createBlockWrite } from "$lib/notes/blocks/factory";
 import { applyRichTextLink } from "$lib/notes/rich-text/core";
 import { notesTextSelectionFromEditableRoot, restoreNotesEditableSelection } from "$lib/notes/editor/selection";
@@ -11,10 +12,12 @@ import type { NotesBlock, NotesBlockType, NotesRichText } from "$lib/notes/types
 import NotesTextBlockEditor from "./NotesTextBlockEditor.svelte";
 import { createNotesBlockSelectionController } from "./selection-controller.svelte";
 
-const openLink = vi.hoisted(() => vi.fn(async (_url: string) => undefined));
+const openLink = vi.hoisted(() => vi.fn(async (_url: string, _notes: NotesLinkOpener) => undefined));
 vi.mock("$lib/notes/links/navigation", async (importOriginal) => ({
   ...await importOriginal<typeof import("$lib/notes/links/navigation")>(), openNotesTextLink: openLink,
 }));
+/** The editor or workspace a link opens through, resolved from the component's Notes context. */
+const notesOpener = expect.toSatisfy((notes: NotesLinkOpener) => typeof notes.openNotesLink === "function");
 
 let component: ReturnType<typeof mount> | undefined;
 let releaseDelegates: (() => void) | undefined;
@@ -138,7 +141,7 @@ describe("Notes inline links", () => {
     expect(panel.classList.contains("fixed")).toBe(true);
     const open = panel.querySelector<HTMLButtonElement>('button[aria-label="Open link"]')!;
     open.click();
-    await vi.waitFor(() => expect(openLink).toHaveBeenCalledExactlyOnceWith("https://example.com/tasks"));
+    await vi.waitFor(() => expect(openLink).toHaveBeenCalledExactlyOnceWith("https://example.com/tasks", notesOpener));
     await tick();
     expect(document.querySelector("[data-notes-link-panel]")).toBeNull();
     link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: true }));
@@ -240,7 +243,7 @@ describe("Notes inline links", () => {
     const link = h.host.querySelector<HTMLAnchorElement>("a")!;
     expect(link.getAttribute("href")).toBe(hash);
     link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, metaKey: true }));
-    await vi.waitFor(() => expect(openLink).toHaveBeenCalledExactlyOnceWith(hash));
+    await vi.waitFor(() => expect(openLink).toHaveBeenCalledExactlyOnceWith(hash, notesOpener));
     expect(document.querySelector("[data-notes-link-panel]")).toBeNull();
   });
 

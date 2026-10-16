@@ -1,9 +1,23 @@
 import type {
   ProjectCustomFieldFilter,
   ProjectTaskListColumn,
+  ProjectViewId,
 } from "./types";
 
 export type ProjectToolbarPanel = "group" | "filters" | "sort" | "customize" | "settings";
+
+/**
+ * Returns the toolbar panels that apply to a view, in toolbar order. Columns and grouping exist only in the list, and
+ * sorting only where tasks keep the requested order: Gantt orders rows by date and Calendar and the dashboard by time.
+ */
+export function projectToolbarPanelsForView(view: ProjectViewId): readonly ProjectToolbarPanel[] {
+  const panels: ProjectToolbarPanel[] = ["filters"];
+  if (view === "list" || view === "kanban") panels.push("sort");
+  if (view === "list") panels.push("customize", "group");
+  panels.push("settings");
+  return panels;
+}
+
 export type ProjectNavigatorPanelMode = "groups" | "projects";
 export type ProjectTaskModalLayout = "modal" | "sheet" | "fullscreen";
 

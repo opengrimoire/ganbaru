@@ -15,9 +15,9 @@
   } from "$lib/chat/workspace/observer-client";
   import { mergeWorkspaceChangeBatches } from "$lib/chat/workspace/change-model";
   import { parseChatWorkspaceChangeBatch } from "$lib/chat/validation";
-  import { getChat } from "$lib/stores/chat.svelte";
+  import { useChat } from "$lib/stores/chat.svelte";
 
-  const chat = getChat();
+  const chat = useChat();
   const WORKSPACE_CHANGE_EVENT = "chat://workspace-change";
   const UNAVAILABLE_POLL_DELAYS = [3_000, 5_000, 8_000, 12_000, 15_000] as const;
   let mounted = $state(false);

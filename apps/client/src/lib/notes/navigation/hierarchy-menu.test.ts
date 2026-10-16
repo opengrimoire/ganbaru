@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { createRichText } from "$lib/notes/blocks/factory";
 import type { NotesDatabaseView, NotesFolder, NotesNavigationDatabase, NotesPage } from "$lib/notes/types";
 import {
+  notesArchivedParentPageIds,
+  notesHierarchyArchivedChildren,
   notesHierarchyChildren,
   notesHierarchyNodeParent,
   notesHierarchyPath,
@@ -91,6 +93,45 @@ describe("notes hierarchy navigation", () => {
       .toEqual(["page:child-note"]);
   });
 
+  it("orders each level like the sidebar: folders first, favorites first, then the chosen order", () => {
+    const folders = [folder("Alpha"), folder("Beta")];
+    const older = { ...page("Older"), created_time: "2026-01-01T00:00:00Z" };
+    const newer = { ...page("Newer"), created_time: "2026-03-01T00:00:00Z" };
+    const starred = { ...page("Starred"), created_time: "2025-01-01T00:00:00Z" };
+    const order = { sortOrder: "created-desc" as const, favoriteFolderIds: ["Beta"], favoritePageIds: ["Starred"] };
+
+    expect(notesHierarchyChildren([older, newer, starred], folders, { kind: "root" }, "Untitled", [], order)
+      .map((item) => item.key))
+      .toEqual(["folder:Beta", "folder:Alpha", "page:Starred", "page:Newer", "page:Older"]);
+    expect(notesHierarchyChildren([older, newer, starred], folders, { kind: "root" }).map((item) => item.key))
+      .toEqual(["folder:Alpha", "folder:Beta", "page:Newer", "page:Older", "page:Starred"]);
+  });
+
+  it("ranks each level by the custom order, with unranked items after by name", () => {
+    const folders = [folder("Alpha"), folder("Beta")];
+    const pages = [page("One"), page("Two"), page("Three"), page("Starred")];
+    const order = {
+      sortOrder: "custom" as const,
+      favoriteFolderIds: [],
+      favoritePageIds: ["Starred"],
+      customOrderKeys: ["page:Three", "folder:Beta", "page:Starred", "page:One"],
+    };
+
+    expect(notesHierarchyChildren(pages, folders, { kind: "root" }, "Untitled", [], order).map((item) => item.key))
+      .toEqual(["folder:Beta", "folder:Alpha", "page:Starred", "page:Three", "page:One", "page:Two"]);
+  });
+
+  it("lists a note's databases after its child notes", () => {
+    const notes = [page("parent"), page("Zed", { type: "page_id", page_id: "parent" })];
+    const databases: NotesNavigationDatabase[] = [
+      { id: "tasks", page_id: "parent", title: "Tasks", data_source_id: "source" },
+      { id: "archive", page_id: "parent", title: "Archive", data_source_id: "source" },
+    ];
+    expect(notesHierarchyPickerChildren(notes, [], databases, { kind: "page", id: "parent" }, "Untitled")
+      .map((item) => item.key))
+      .toEqual(["page:Zed", "database:archive", "database:tasks"]);
+  });
+
   it("keeps unloaded note branches available from shell metadata", () => {
     const rootPage = page("root-note");
 
@@ -160,5 +201,62 @@ describe("notes hierarchy navigation", () => {
     expect(notesPageContainingFolderId(childPage.id, [parentPage, childPage]))
       .toBe("folder-1");
     expect(notesPageContainingFolderId("missing", [parentPage, childPage])).toBeNull();
+  });
+});
+
+describe("archived notes in the hierarchy pickers", () => {
+  function archived(id: string, parent?: NotesPage["parent"], folderId: string | null = null): NotesPage {
+    return { ...page(id, parent, folderId), archived: true };
+  }
+
+  it("places archived notes under their own level in the level order, without further levels", () => {
+    const pages = [
+      archived("zeta"),
+      archived("alpha"),
+      archived("in-folder", undefined, "folder-a"),
+      archived("child", { type: "page_id", page_id: "parent" }),
+    ];
+
+    expect(notesHierarchyArchivedChildren(pages, new Set(), { kind: "root" }, "Untitled").map((item) => item.key))
+      .toEqual(["page:alpha", "page:zeta"]);
+    expect(notesHierarchyArchivedChildren(pages, new Set(), { kind: "folder", id: "folder-a" }, "Untitled"))
+      .toMatchObject([{ key: "page:in-folder", hasChildren: false }]);
+    expect(notesHierarchyArchivedChildren(pages, new Set(), { kind: "page", id: "parent" }, "Untitled").map((item) => item.key))
+      .toEqual(["page:child"]);
+  });
+
+  it("leaves out notes that are active again, trashed, or under a database level", () => {
+    const pages = [archived("restored"), { ...archived("trashed"), in_trash: true }, archived("kept")];
+
+    expect(notesHierarchyArchivedChildren(pages, new Set(["restored"]), { kind: "root" }, "Untitled").map((item) => item.key))
+      .toEqual(["page:kept"]);
+    expect(notesHierarchyArchivedChildren(pages, new Set(), { kind: "database", id: "database" }, "Untitled")).toEqual([]);
+  });
+
+  it("follows the custom order of the level", () => {
+    const pages = [archived("first"), archived("second")];
+    const order = { sortOrder: "custom" as const, favoriteFolderIds: [], favoritePageIds: [], customOrderKeys: ["page:second", "page:first"] };
+
+    expect(notesHierarchyArchivedChildren(pages, new Set(), { kind: "root" }, "Untitled", order).map((item) => item.key))
+      .toEqual(["page:second", "page:first"]);
+  });
+
+  it("opens a level for notes whose only children are archived", () => {
+    const pages = [
+      archived("child-a", { type: "page_id", page_id: "parent" }),
+      archived("child-b", { type: "page_id", page_id: "parent" }),
+      archived("root-note"),
+      archived("restored", { type: "page_id", page_id: "other" }),
+      { ...archived("trashed", { type: "page_id", page_id: "trash-parent" }), in_trash: true },
+    ];
+
+    expect(notesArchivedParentPageIds(pages, new Set(["restored"]))).toEqual(["parent"]);
+    expect(notesHierarchyChildren(
+      [page("parent")],
+      [],
+      { kind: "root" },
+      "Untitled",
+      notesArchivedParentPageIds(pages, new Set()),
+    )).toMatchObject([{ key: "page:parent", hasChildren: true }]);
   });
 });

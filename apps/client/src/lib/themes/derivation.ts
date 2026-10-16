@@ -42,8 +42,10 @@ const DERIVED_APP_TOKEN_KEYS: readonly string[] = Object.freeze([
  * regardless of canvas brightness:
  *
  * - card / popover / accent / secondary / muted lift upward
- * - sidebar recedes below canvas so the title bar frames the app (the
- *   "contrarian" step that makes the dark built-in read as layered)
+ * - sidebar recedes below canvas so the title bar frames the app. Its
+ *   offset is direction-aware: the dark built-in frame sits well below
+ *   canvas, while the light built-in frame (#EEEEF1 under canvas #F4F4F7)
+ *   only tints it, so light themes keep a quiet frame
  * - event panel sits just above canvas, and event-panel-contrast sits
  *   just below, keeping the panel's recessed band visible on any canvas
  *
@@ -64,8 +66,9 @@ const APP_DERIVATION = {
   secondaryDeltaL: +0.048193,
   mutedDeltaL: +0.048193,
   accentDeltaL: +0.077214,
-  sidebarDeltaL: -0.039433,
-  sidebarAccentDeltaL: +0.077214,
+  sidebarDarkDeltaL: -0.079547,
+  sidebarLightDeltaL: -0.018030,
+  sidebarAccentDeltaL: +0.013047,
   eventPanelBgDeltaL: +0.012636,
   eventPanelContrastDeltaL: -0.020696,
 } as const;
@@ -87,7 +90,7 @@ const APP_DERIVATION = {
  * --event-panel-text) land within a few rgb units of the BASE hex.
  */
 const APP_FRACTIONS = {
-  mutedForeground: 0.442563,
+  mutedForeground: 0.400377,
   ring: 0.673365,
   eventPanelText: 0.180110,
   eventPanelInputText: 0.044202,
@@ -98,32 +101,38 @@ const APP_FRACTIONS = {
 
 /**
  * Calendar-surface derivation offsets, measured from the built-ins.
- * - `calendarCanvasDarkDeltaL`: BASE.dark --cal-bg #131314 sits at ΔL -0.0894
- *   below canvas #27282A.
+ * - `calendarCanvasDarkDeltaL`: BASE.dark --cal-bg #1F2023 sits at ΔL -0.0329
+ *   below canvas #27282A, between the frame and the app canvas, so the content
+ *   reads as a sheet lifted off the darker frame.
  * - `calendarCanvasLightDeltaL`: BASE.light --cal-bg #FFFFFF clamps to L=1,
  *   ΔL +0.0320 above canvas #F4F4F7 (L=0.968). Asymmetric by design:
- *   dark pulls cal-bg into a recessed framing; light pushes it to paper
+ *   dark keeps cal-bg just under canvas; light pushes it to paper
  *   white so the app canvas reads as a tinted border around it.
- * - `timelineRailDarkDeltaL`: BASE.dark rail #3F3F46 sits at +0.1832
+ * - `timelineRailDarkDeltaL`: BASE.dark rail #3F3F46 sits at +0.1270
  *   above the derived cal-bg, elevating the empty track behind events.
  * - `timelineRailLightDeltaL`: BASE.light rail #E5E7EB sits at -0.0724
  *   below cal-bg, recessing the track on a paper-white surface.
+ * - `gridlineDarkDeltaL` and `gridlineLightDeltaL`: BASE gridlines #2A2B2F and
+ *   #ECECF0 sit just off cal-bg toward the foreground, a hairline that
+ *   separates cells without drawing a visible grid.
  */
 const CALENDAR_DERIVATION = {
-  calendarCanvasDarkDeltaL: -0.089432,
+  calendarCanvasDarkDeltaL: -0.032889,
   calendarCanvasLightDeltaL: +0.031968,
-  timelineRailDarkDeltaL: +0.183151,
+  timelineRailDarkDeltaL: +0.127035,
   timelineRailLightDeltaL: -0.072415,
+  gridlineDarkDeltaL: +0.046362,
+  gridlineLightDeltaL: -0.055771,
 } as const;
 
 /**
  * Fractional walks for calendar tokens that land at specific OKLab-L
  * recessions against `cal-bg`. Calibrated from BASE_CALENDAR_TOKENS.dark.
- * --cal-time-label matches --muted-foreground's fraction; both land at
- * the same BASE hex #9494A0.
+ * --cal-time-label and --muted-foreground both land at the BASE hex #9C9CA8
+ * from their own surfaces.
  */
 const CALENDAR_FRACTIONS = {
-  calendarTimeLabel: 0.362173,
+  calendarTimeLabel: 0.353858,
 } as const;
 
 /**
@@ -185,13 +194,12 @@ export function deriveAppTokens(
   const secondary = shift(deltas.secondaryDeltaL);
   const mutedBg = shift(deltas.mutedDeltaL);
   const accent = shift(deltas.accentDeltaL);
-  const sidebar = shift(deltas.sidebarDeltaL);
+  const sidebar = shift(canvasIsDark ? deltas.sidebarDarkDeltaL : deltas.sidebarLightDeltaL);
   const sidebarAccent = shift(deltas.sidebarAccentDeltaL);
   const eventPanelBg = shift(deltas.eventPanelBgDeltaL);
   const eventPanelContrast = shift(deltas.eventPanelContrastDeltaL);
   return {
     "--background": canvas,
-    "--cal-header-bg": canvas,
     "--card": card,
     "--card-foreground": fg(card),
     "--popover": popover,
@@ -244,10 +252,9 @@ export function deriveAppTokens(
  * fully independent surface can isolate `--cal-bg`; pinned values win over
  * derived values during source edits and rebakes.
  *
- * Gridlines are parked just above a minimum-visibility contrast against
- * `--cal-bg`. The target is intentionally subtle (1.4:1) to match how the
- * dark built-in renders its grid: a 3:1 target produces gridlines noticeably more prominent than
- * the built-in's curated hex, which users read as "uglier" on clones.
+ * Gridlines shift `--cal-bg` toward the foreground by the built-in hairline
+ * offset, so every canvas gets the same quiet grid as the built-ins instead
+ * of a contrast-target line that reads heavier than the curated hex.
  *
  * The semantic marker tokens (current time, timeline break, timeline
  * focus) are intentionally omitted: those colors carry hard-coded meaning
@@ -267,6 +274,9 @@ export function deriveCalendarTokens(
   const timelineRailDelta = calendarCanvasIsDark
     ? CALENDAR_DERIVATION.timelineRailDarkDeltaL
     : CALENDAR_DERIVATION.timelineRailLightDeltaL;
+  const gridlineDelta = calendarCanvasIsDark
+    ? CALENDAR_DERIVATION.gridlineDarkDeltaL
+    : CALENDAR_DERIVATION.gridlineLightDeltaL;
   // Same direction-aware anchor as deriveAppTokens: walk-fraction tokens
   // must start from a foreground that is actually visible against the
   // calendar surface, not from raw ink. Dark-BASE parity still holds
@@ -275,7 +285,7 @@ export function deriveCalendarTokens(
     pickReadableForeground(bg, { ink, canvas, target: 4.5 });
   return {
     "--cal-bg": calendarCanvas,
-    "--cal-gridline": pickReadableBorder(calendarCanvas, ink, { target: 1.4 }),
+    "--cal-gridline": shiftPerceptualL(calendarCanvas, gridlineDelta),
     "--cal-time-label": walkFraction(
       anchorFor(calendarCanvas),
       calendarCanvas,

@@ -7,7 +7,6 @@ export const DEFAULT_NOTES_PAGE_OPEN_MODE: NotesPageOpenMode = "center";
 export interface NotesPageOpenModeSelectionContext {
   requestedOpenMode?: NotesPageOpenMode;
   currentOpenMode: NotesPageOpenMode;
-  defaultOpenMode?: NotesPageOpenMode;
   hasOpenPage: boolean;
 }
 
@@ -30,12 +29,15 @@ export function notesContextualPageOpenMode(
   return currentOpenMode === "full" ? defaultOpenMode : currentOpenMode;
 }
 
+/**
+ * Mode for a page opened by navigation rather than from inside another note: a full page when none is open, or the
+ * open page's mode otherwise. The configured default only applies to contextual opens.
+ */
 export function notesPageOpenModeForSelection({
   requestedOpenMode,
   currentOpenMode,
-  defaultOpenMode = DEFAULT_NOTES_PAGE_OPEN_MODE,
   hasOpenPage,
 }: NotesPageOpenModeSelectionContext): NotesPageOpenMode {
   if (requestedOpenMode) return requestedOpenMode;
-  return hasOpenPage ? currentOpenMode : defaultOpenMode;
+  return hasOpenPage ? currentOpenMode : "full";
 }

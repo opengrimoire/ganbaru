@@ -66,10 +66,6 @@ export const APP_TOKEN_INFO: Record<string, TokenInfo> = {
     title: "App canvas",
     description: "Most views paint their own surface over it",
   },
-  "--cal-header-bg": {
-    title: "Calendar header",
-    description: "Calendar toolbar and day/time headers",
-  },
   "--foreground": {
     title: "Text color",
     description: "Applied to text across the app",
@@ -199,7 +195,6 @@ export const SOURCE_GROUPS: SourceGroup[] = [
     navTarget: "general",
     rows: [
       { kind: "single", key: "--background", scope: "app" },
-      { kind: "single", key: "--cal-header-bg", scope: "app" },
       { kind: "single", key: "--card", scope: "app" },
       {
         kind: "pair",
@@ -450,11 +445,6 @@ export function localizedTokenInfo(
       return {
         title: t("settings.theme.editor.token.appCanvas.title"),
         description: t("settings.theme.editor.token.appCanvas.description"),
-      };
-    case "app:--cal-header-bg":
-      return {
-        title: t("settings.theme.editor.token.calendarHeader.title"),
-        description: t("settings.theme.editor.token.calendarHeader.description"),
       };
     case "app:--foreground":
       return {

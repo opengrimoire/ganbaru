@@ -37,7 +37,7 @@ A theme contains:
 
 ## Token catalog
 
-The editable catalog is defined by `APP_TOKEN_KEYS` and `CALENDAR_TOKEN_KEYS` in `apps/client/src/lib/themes/definitions.ts`, currently 36 app tokens and 7 Calendar tokens. Token identities are the compatibility contract; the counts are only a current fact.
+The editable catalog is defined by `APP_TOKEN_KEYS` and `CALENDAR_TOKEN_KEYS` in `apps/client/src/lib/themes/definitions.ts`, currently 35 app tokens and 7 Calendar tokens. Token identities are the compatibility contract; the counts are only a current fact.
 
 User themes store every editable token as a resolved hex snapshot. Runtime-only implementation colors (hover tints, borders, and similar paint details) are derived from stored values and are never exported or shown as editable rows. Add a new editable token only for a stable, user-meaningful color decision; see the theme token rules in `AGENTS.md`.
 
@@ -56,7 +56,7 @@ Every theme owns exactly 32 event-color slots with stable numeric identity. Cale
 
 ## Persistence
 
-User themes and their seed snapshots are normalized SQLite records. Built-in light and dark themes are code-pinned, never stored as rows, and their reserved IDs cannot be inserted by import or persistence. Unknown active IDs fall back to the default built-in.
+User themes and their seed snapshots are normalized SQLite records. Built-in light and dark themes are code-pinned, never stored as rows, and their reserved IDs cannot be inserted by import or persistence. First launch and unknown active IDs use the built-in dark theme. Native window and WebView backgrounds follow the active theme surface so no white frame shows before the page paints; Android keeps the last surface for the next launch and, on Android 12 and later, the theme mode for the system launch splash.
 
 The active theme ID, quick-toggle light and dark choices, font family, and font scale are portable preferences in active-vault `config.json`; theme content never lives there. Platform bootstraps load configuration and hydrate user themes before mounting the app shell.
 

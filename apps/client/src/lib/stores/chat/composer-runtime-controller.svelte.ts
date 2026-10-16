@@ -145,6 +145,10 @@ export class ChatComposerRuntimeController {
     this.composerController.setModes(safety, interaction);
   }
 
+  dismissChangedElsewhere(): void {
+    this.composerController.dismissChangedElsewhere();
+  }
+
   markSent(): void {
     this.composerController.markSent();
   }

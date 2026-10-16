@@ -15,6 +15,7 @@ import { MusicSurfaceClaims } from "$lib/stores/music-player/surface-claims";
 import { initialMusicSnapshot, loadMusicPlayerSettings, persistMusicPlayerSettings } from "$lib/stores/music-player/settings";
 import { MusicLoadRuntime } from "$lib/stores/music-player/load-runtime";
 import { createMusicHostedMediaController, type MusicStaleVisual } from "$lib/stores/music-player/hosted-media-controller";
+import { createDeviceVolume } from "$lib/stores/music-player/device-volume";
 import { createMusicExternalControls } from "$lib/stores/music-player/external-controls";
 import { createMusicYouTubeAdapter } from "$lib/stores/music-player/youtube-adapter";
 import { createMusicWebviewLocalAdapter } from "$lib/stores/music-player/webview-local-adapter";
@@ -102,8 +103,12 @@ class MusicPlayerStore {
   currentArtworkUrl = $state<string | null>(null);
   staleVisual = $state<MusicStaleVisual | null>(null);
   surfaceElement = $state<HTMLElement | null>(null);
+  /** Whether this window runs the browser decoders; other windows show the session without its video. */
+  decodesBrowserMedia = $state(true);
   sourceActionBusy = $state(false);
   volumeFeedbackId = $state(0);
+  /** Platform media volume level that replaces the app volume, or null where the app volume applies. */
+  deviceVolumeLevel = $state<number | null>(null);
   contextOwner = $state<MusicPlaybackContextOwner>("manual");
   contextPlayback = $state<MusicContextPlayback | null>(null);
   contextRetryRequest = $state(0);
@@ -127,6 +132,9 @@ class MusicPlayerStore {
   private isHeartbeatRunning = false;
   private observationTimer: ReturnType<typeof setInterval> | null = null;
   private unsubscribeVault: (() => void) | null = null;
+  private unsubscribeDeviceVolume: (() => void) | null = null;
+  private isPinningSessionVolume = false;
+  private readonly deviceVolume = createDeviceVolume();
   private browserSessionId: string | null = null;
   private browserGeneration = -1;
   private browserSequence = 0;
@@ -240,7 +248,7 @@ class MusicPlayerStore {
   }
 
   get volumeControlValue(): number {
-    return clampVolume(this.snapshot.volume);
+    return this.deviceVolumeLevel ?? clampVolume(this.snapshot.volume);
   }
 
   get volumePercentLabel(): string {
@@ -255,13 +263,22 @@ class MusicPlayerStore {
     return this.currentSource ? isYouTubeSource(this.currentSource) : false;
   }
 
-  init(): void {
+  /** Whether the current source plays through browser decoders that run in another window. */
+  get playsInOtherWindow(): boolean {
+    return !this.decodesBrowserMedia && this.currentSource !== null && this.native?.backend === "browser";
+  }
+
+  /** Connect to the native session; `decodesBrowserMedia` is false in a window that only presents it. */
+  init({ decodesBrowserMedia = true }: { decodesBrowserMedia?: boolean } = {}): void {
     if (this.initialized) return;
     this.initialized = true;
+    this.decodesBrowserMedia = decodesBrowserMedia;
     this.externalControls.init();
     window.addEventListener("online", this.handleConnectivityChange);
     window.addEventListener("offline", this.handleConnectivityChange);
     document.addEventListener("visibilitychange", this.handleVisibilityChange);
+    this.deviceVolumeLevel = this.deviceVolume.read();
+    this.unsubscribeDeviceVolume = this.deviceVolume.subscribe(this.refreshDeviceVolume);
     this.unsubscribeVault = onActiveVaultIdentityChange((previous, next) => {
       if (previous !== next && next) {
         this.stopBrowser(); this.client.reset();
@@ -286,6 +303,7 @@ class MusicPlayerStore {
     this.observationTimer = null;
     this.client.disconnect(); this.stopBrowser(); this.externalControls.destroy(); this.hostedMediaController.destroy();
     this.unsubscribeVault?.(); this.unsubscribeVault = null;
+    this.unsubscribeDeviceVolume?.(); this.unsubscribeDeviceVolume = null;
     window.removeEventListener("online", this.handleConnectivityChange); window.removeEventListener("offline", this.handleConnectivityChange);
     document.removeEventListener("visibilitychange", this.handleVisibilityChange);
   }
@@ -294,7 +312,22 @@ class MusicPlayerStore {
     this.online = navigator.onLine;
     void this.command({ kind: "online", online: this.online }, "system").catch((error: unknown) => this.reportError(error));
   };
-  private readonly handleVisibilityChange = (): void => { void this.heartbeat(); };
+  private readonly handleVisibilityChange = (): void => { this.refreshDeviceVolume(); void this.heartbeat(); };
+  private readonly refreshDeviceVolume = (): void => {
+    const level = this.deviceVolume.read();
+    if (level === this.deviceVolumeLevel) return;
+    this.deviceVolumeLevel = level;
+    this.externalControls.updateBrowser();
+  };
+  /** The device volume scales Music output, so the session keeps the app volume at full while it applies. */
+  private get usesDeviceVolume(): boolean { return this.deviceVolumeLevel !== null; }
+  private pinSessionVolume(volume: number): void {
+    if (!this.usesDeviceVolume || volume === MAX_VOLUME || this.isPinningSessionVolume) return;
+    this.isPinningSessionVolume = true;
+    void this.command({ kind: "volume", volume: MAX_VOLUME }, "system")
+      .catch((error: unknown) => this.reportError(error))
+      .finally(() => { this.isPinningSessionVolume = false; });
+  }
   private async heartbeat(): Promise<void> {
     if (!this.initialized || this.isHeartbeatRunning) return;
     this.isHeartbeatRunning = true;
@@ -340,9 +373,11 @@ class MusicPlayerStore {
     this.currentSource = value.currentSource;
     this.snapshot = { status: value.status, positionMs: value.positionMs, durationMs: value.durationMs, volume: value.volume, rate: value.rate, error: value.error };
     const { t } = getLocalization();
-    this.playerError = value.error ?? (value.issue === "browser-host-unavailable" ? t("music.nativeSession.browserUnavailable")
+    this.playerError = value.error ?? (value.issue === "browser-host-unavailable"
+      ? t(this.decodesBrowserMedia ? "music.nativeSession.browserUnavailable" : "music.nativeSession.browserUnavailableOtherWindow")
       : value.issue === "interrupted" ? t("music.nativeSession.interrupted") : null);
     this.muted = value.muted; this.shuffleEnabled = value.order !== "in-order"; this.mixEnabled = value.order === "mix";
+    this.pinSessionVolume(value.volume);
     this.activePlaylistId = value.playlistId; this.activePlaylistName = value.queueName || null; this.activePlaylistRepeatMode = value.repeatMode;
     this.contextOwner = value.owner;
     if (value.context) {
@@ -446,7 +481,7 @@ class MusicPlayerStore {
   private async start(queue: NativeMusicQueueIntent, autoplay = true, resume = false): Promise<NativeMusicSnapshot> {
     await this.client.connect();
     this.manualPlaybackActionVersion += 1;
-    return this.client.start({ queue, autoplay, resume, order: this.playbackMode, volume: this.snapshot.volume, muted: this.muted, rate: this.snapshot.rate });
+    return this.client.start({ queue, autoplay, resume, order: this.playbackMode, volume: this.usesDeviceVolume ? MAX_VOLUME : this.snapshot.volume, muted: this.muted, rate: this.snapshot.rate });
   }
 
   async loadFromInput(): Promise<void> {
@@ -515,7 +550,13 @@ class MusicPlayerStore {
   async seekToMs(positionMs: number): Promise<void> { await this.command({ kind: "seek", positionMs: Math.max(0, Math.round(positionMs)) }); }
   async seekByMs(deltaMs: number): Promise<void> { await this.command({ kind: "seek-by", deltaMs: Math.round(deltaMs) }); }
   async setVolume(volume: number): Promise<void> {
-    await this.command({ kind: "volume", volume: clampVolume(volume) }); await this.command({ kind: "muted", muted: false });
+    if (this.usesDeviceVolume) {
+      this.deviceVolumeLevel = this.deviceVolume.set(clampVolume(volume));
+      if (this.muted) await this.command({ kind: "muted", muted: false });
+      this.externalControls.updateBrowser();
+    } else {
+      await this.command({ kind: "volume", volume: clampVolume(volume) }); await this.command({ kind: "muted", muted: false });
+    }
     this.volumeFeedbackId += 1; this.persistPlayerSettings();
   }
   async toggleMute(): Promise<void> { await this.command({ kind: "muted", muted: !this.muted }); this.volumeFeedbackId += 1; this.persistPlayerSettings(); }
@@ -549,7 +590,7 @@ class MusicPlayerStore {
     const delta = event.deltaY || -event.deltaX;
     if (delta) void this.adjustVolume(delta > 0 ? -0.05 : 0.05).catch((error: unknown) => this.reportError(error));
   }
-  private effectiveVolume(): number { return this.muted ? 0 : this.volumeControlValue; }
+  private effectiveVolume(): number { return this.muted ? 0 : this.usesDeviceVolume ? MAX_VOLUME : this.volumeControlValue; }
   private persistPlayerSettings(): void {
     persistMusicPlayerSettings({ volume: this.snapshot.volume, rate: this.snapshot.rate, shuffleEnabled: this.shuffleEnabled,
       mixEnabled: this.mixEnabled, muted: this.muted, playlistVisible: this.playlistVisible });

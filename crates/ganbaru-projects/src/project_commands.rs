@@ -16,6 +16,7 @@ use super::templates::{
 use super::validation::{
     require_non_empty, validate_enum, validate_project_create, validate_project_update,
 };
+use super::views::{insert_default_views, load_project_views};
 
 const NOTES_PAGE_OPEN_MODES: &[&str] = &["center", "side", "full"];
 const NOTES_HISTORY_RETENTION_DAYS: &[i64] = &[0, 7, 30, 90, 180, 365];
@@ -86,6 +87,7 @@ pub async fn create_project(
     insert_template_sections(&mut tx, &project.id, &project.template_id).await?;
     insert_default_statuses(&mut tx, &project.id).await?;
     insert_default_priorities(&mut tx, &project.id).await?;
+    insert_default_views(&mut tx, &[project.id.as_str()]).await?;
 
     let managed_folder_path = vault_root.join(&managed_relative_path);
     fs::create_dir_all(&managed_folder_path)
@@ -113,6 +115,7 @@ pub async fn create_project(
     .fetch_all(pool)
     .await
     .map_err(|e| format!("load created project priorities: {e}"))?;
+    mutation.views = load_project_views(pool, &project.id).await?;
     Ok(mutation)
 }
 

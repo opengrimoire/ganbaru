@@ -9,7 +9,6 @@
   import Redo2 from "@lucide/svelte/icons/redo-2";
   import RotateCcw from "@lucide/svelte/icons/rotate-ccw";
   import Trash2 from "@lucide/svelte/icons/trash-2";
-  import Underline from "@lucide/svelte/icons/underline";
   import Undo2 from "@lucide/svelte/icons/undo-2";
   import {
     createQuickNote,
@@ -17,13 +16,14 @@
     updateQuickNote,
     QuickNoteWriteError,
   } from "$lib/api/quick-notes";
-  import { FALLBACK_COLOR_INDEX } from "$lib/calendar/types";
+  import type { EventColor } from "$lib/calendar/types";
   import {
     notesPlainTextFromEditableRoot,
     notesTextSelectionFromEditableRoot,
     restoreNotesEditableSelection,
   } from "$lib/notes/editor/selection";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import UnderlineIcon from "$lib/components/ui/UnderlineIcon.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getQuickNoteColor } from "$lib/quick-notes/colors";
   import { registerQuickNotesFlusher } from "$lib/quick-notes/persistence";
@@ -71,11 +71,15 @@
   import QuickNoteRichText from "./QuickNoteRichText.svelte";
   import QuickNoteTagPicker from "./QuickNoteTagPicker.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
+  import { OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
 
   let {
     note,
     tags,
     defaultTagId,
+    defaultColor,
+    untaggedColor,
+    onCreateTag,
     theme,
     onClose,
     onSaved,
@@ -90,6 +94,11 @@
     note: QuickNote | null;
     tags: readonly QuickNoteTag[];
     defaultTagId: string | null;
+    /** Color a new note starts with. */
+    defaultColor: EventColor;
+    /** Color of untagged notes, which a new tag avoids. */
+    untaggedColor: EventColor;
+    onCreateTag: (name: string, color: EventColor) => Promise<QuickNoteTag>;
     theme: Theme;
     onClose: () => void;
     onSaved: (note: QuickNote) => void;
@@ -106,11 +115,12 @@
   const mobileBackStack = getMobileBackStack();
   const initialNote = untrack(() => note);
   const initialTagId = untrack(() => defaultTagId);
+  const initialColor = untrack(() => defaultColor);
   const initialId = initialNote?.id ?? crypto.randomUUID();
   let id = $state(initialId);
   let title = $state(initialNote?.title ?? "");
   let runs = $state<QuickNoteTextRun[]>(initialNote?.runs.map((run) => ({ ...run })) ?? []);
-  let color = $state<QuickNote["color"]>(initialNote?.color ?? FALLBACK_COLOR_INDEX);
+  let color = $state<QuickNote["color"]>(initialNote?.color ?? initialColor);
   let tagId = $state(initialNote?.tagId ?? initialTagId);
   let pinned = $state(initialNote?.pinned ?? false);
   let persisted = $state<QuickNote | null>(initialNote);
@@ -536,8 +546,11 @@
     markDirty();
   }
 
+  /** Tags the note, which also takes the tag's color; clearing the tag keeps the note's color. */
   function updateTag(next: string | null): void {
     tagId = next;
+    const tag = tags.find((current) => current.id === next);
+    if (tag) color = tag.color;
     markDirty();
   }
 
@@ -638,7 +651,10 @@
       ? mobileBackStack.activate({ handle: () => { void requestClose(); } })
       : () => undefined;
     window.addEventListener("keydown", handleDialogKeydown, true);
-    void tick().then(() => (titleInput ?? editor ?? dialog)?.focus());
+    // A new note starts typing in the body, since the title is optional; opening an existing one on a phone focuses the
+    // dialog so the keyboard stays closed.
+    const focusText = note === null || OPENING_MAY_FOCUS_TEXT;
+    void tick().then(() => (focusText ? editor ?? titleInput ?? dialog : dialog)?.focus());
     let mounted = true;
     let stopChanges: (() => void) | null = null;
     void listenForQuickNotesChanges(() => { void refreshFromCanonical(); })
@@ -762,9 +778,9 @@
       {#if !readOnly}
         <button class={`${toolbarButton} ${selectedFormatting.bold ? "bg-black/10 dark:bg-white/10" : ""}`} type="button" aria-label={t("quickNotes.formatting.bold")} title={t("quickNotes.formatting.bold")} aria-pressed={selectedFormatting.bold} onpointerdown={(event) => event.preventDefault()} onclick={() => toggleFormatting("bold")}><Bold class="size-4" strokeWidth={1.5} /></button>
         <button class={`${toolbarButton} ${selectedFormatting.italic ? "bg-black/10 dark:bg-white/10" : ""}`} type="button" aria-label={t("quickNotes.formatting.italic")} title={t("quickNotes.formatting.italic")} aria-pressed={selectedFormatting.italic} onpointerdown={(event) => event.preventDefault()} onclick={() => toggleFormatting("italic")}><Italic class="size-4" strokeWidth={1.5} /></button>
-        <button class={`${toolbarButton} ${selectedFormatting.underline ? "bg-black/10 dark:bg-white/10" : ""}`} type="button" aria-label={t("quickNotes.formatting.underline")} title={t("quickNotes.formatting.underline")} aria-pressed={selectedFormatting.underline} onpointerdown={(event) => event.preventDefault()} onclick={() => toggleFormatting("underline")}><Underline class="size-4" strokeWidth={1.5} /></button>
+        <button class={`${toolbarButton} ${selectedFormatting.underline ? "bg-black/10 dark:bg-white/10" : ""}`} type="button" aria-label={t("quickNotes.formatting.underline")} title={t("quickNotes.formatting.underline")} aria-pressed={selectedFormatting.underline} onpointerdown={(event) => event.preventDefault()} onclick={() => toggleFormatting("underline")}><UnderlineIcon class="size-4" /></button>
         <QuickNoteColorPicker {color} {theme} onSelect={updateColor} buttonClass={toolbarButton} {mobileLayout} />
-        <QuickNoteTagPicker {tagId} {tags} onSelect={updateTag} buttonClass={toolbarButton} {mobileLayout} />
+        <QuickNoteTagPicker {tagId} {tags} {theme} defaultColor={untaggedColor} onSelect={updateTag} onCreate={onCreateTag} buttonClass={toolbarButton} {mobileLayout} />
         <button class={toolbarButton} type="button" disabled={history.undo.length === 0} aria-label={t("quickNotes.formatting.undo")} title={t("quickNotes.formatting.undo")} onclick={undo}><Undo2 class="size-4" strokeWidth={1.5} /></button>
         <button class={toolbarButton} type="button" disabled={history.redo.length === 0} aria-label={t("quickNotes.formatting.redo")} title={t("quickNotes.formatting.redo")} onclick={redo}><Redo2 class="size-4" strokeWidth={1.5} /></button>
         <span class="mx-1 h-5 w-px bg-current/15"></span>
@@ -780,10 +796,7 @@
       {/if}
       </div>
       <div class={mobileLayout ? "flex min-h-12 w-full items-center" : "contents"}>
-      <span class="ml-auto px-2 text-[0.72rem] opacity-65" aria-live="polite">
-        {status === "saving" ? t("quickNotes.editor.saving") : status === "saved" ? t("quickNotes.editor.saved") : ""}
-      </span>
-      <button class={mobileLayout ? "min-h-12 rounded-xl px-4 text-sm font-medium active:bg-black/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current disabled:opacity-40 dark:active:bg-white/10" : "rounded-md px-3 py-1.5 text-sm font-medium hover:bg-black/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current disabled:opacity-40 dark:hover:bg-white/10"} type="button" disabled={transitionPending} onclick={() => void requestClose()}>{t("quickNotes.editor.close")}</button>
+      <button class={mobileLayout ? "ml-auto min-h-12 rounded-xl px-4 text-sm font-medium active:bg-black/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current disabled:opacity-40 dark:active:bg-white/10" : "ml-auto rounded-md px-3 py-1.5 text-sm font-medium hover:bg-black/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current disabled:opacity-40 dark:hover:bg-white/10"} type="button" disabled={transitionPending} onclick={() => void requestClose()}>{t("quickNotes.editor.close")}</button>
       </div>
     </footer>
   </div>

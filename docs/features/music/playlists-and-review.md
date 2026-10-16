@@ -41,7 +41,7 @@ Built-in and custom playlists share one stored order. Reordering starts from an 
 
 Sources is a library explorer, not a configuration dashboard. It has two top-level roots, Local music and YouTube, with user-editable names. Selecting a root, collection, or folder shows its children and tracks; a side panel keeps the full hierarchy.
 
-- Local music mirrors each connected folder's structure without copying or changing files. A fresh vault tries to connect the operating system Music folder. More folders are added inside Local music.
+- Local music mirrors each connected folder's structure without copying or changing files. A fresh vault tries to connect the operating system Music folder; when none is found, the player offers to choose one, and the Builder opens only after a folder is chosen. More folders are added inside Local music.
 - YouTube has one link entry point for videos and playlists. Playlists keep their own collection; single videos go to Saved videos. Link previews are playable, and names resolve through YouTube's keyless metadata surface when possible. One failed video never blocks a playlist, and refreshes keep metadata already resolved.
 
 Activating a track starts a normal player queue for that source branch. Refresh, rename, repair, and removal are contextual to the selected root or collection. Removal names its scope and consequence explicitly, and disconnecting one device path is distinct from removing a source or unused tracks. Source health appears as an attention marker, with detailed repair in its own workflow.

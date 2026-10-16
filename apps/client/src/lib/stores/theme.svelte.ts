@@ -40,6 +40,8 @@ import {
   themeIdCollisionError,
   toUserThemeSnapshot,
 } from "$lib/themes/operations";
+import { rgbToHex } from "$lib/color/math";
+import { readNativeBackground } from "$lib/themes/native-background";
 import { getConfigKey, setConfigKey } from "../vault/config";
 import {
   deleteTheme as dbDeleteTheme,
@@ -65,6 +67,8 @@ import {
 const ACTIVE_KEY = "theme.activeId";
 const QUICK_TOGGLE_LIGHT_KEY = "theme.quickToggleLightId";
 const QUICK_TOGGLE_DARK_KEY = "theme.quickToggleDarkId";
+/** Theme surface the Android shell paints behind the WebView before the page draws. */
+const ANDROID_WINDOW_BACKGROUND_TOKEN = "--background";
 const THEME_WINDOW_SYNC_EVENT = "theme-window-sync";
 
 interface ThemeWindowSyncPayload {
@@ -123,7 +127,16 @@ function loadQuickToggleIdFromConfig(key: string, fallback: ThemeId): ThemeId {
 }
 
 function resolveActive(): Theme {
-  return getThemeById(activeId, combinedRegistry()) ?? lightTheme;
+  return getThemeById(activeId, combinedRegistry()) ?? BUILTIN_THEME_REGISTRY[DEFAULT_THEME_ID];
+}
+
+/** Tells the Android shell which surface color to paint behind the WebView and on the next cold start. */
+function syncAndroidWindowBackground(root: HTMLElement): void {
+  const bridge = window.GanbaruAndroidAppearance;
+  if (!bridge) return;
+  const background = readNativeBackground(root, ANDROID_WINDOW_BACKGROUND_TOKEN);
+  if (!background) return;
+  bridge.setWindowBackground(rgbToHex(background.r, background.g, background.b));
 }
 
 function beginInstantThemePaint(): (() => void) | undefined {
@@ -167,6 +180,11 @@ function applyThemeToDom(): void {
     for (const [key, value] of toSet) root.style.setProperty(key, value);
     for (const key of toClear) root.style.removeProperty(key);
     appliedTokenKeys = applied;
+    try {
+      syncAndroidWindowBackground(root);
+    } catch (error) {
+      console.warn("Android window background update failed", error);
+    }
   } finally {
     finishInstantPaint?.();
   }
@@ -195,9 +213,6 @@ function applyThemeSyncPayload(payload: ThemeWindowSyncPayload): void {
   quickToggleLightId = validThemeId(payload.quickToggleLightId, lightTheme.id);
   quickToggleDarkId = validThemeId(payload.quickToggleDarkId, darkTheme.id);
   applyThemeToDom();
-  setConfigKey(ACTIVE_KEY, activeId);
-  setConfigKey(QUICK_TOGGLE_LIGHT_KEY, quickToggleLightId);
-  setConfigKey(QUICK_TOGGLE_DARK_KEY, quickToggleDarkId);
 }
 
 function publishThemeSync(): void {

@@ -155,12 +155,12 @@ describe("NotesView first use", () => {
     expect(collapse).not.toBeNull();
     collapse?.click();
     await tick();
-    expect(target.querySelector("[data-notes-explorer]")?.classList.contains("notes-project-explorer-collapsed")).toBe(true);
+    expect(target.querySelector("[data-notes-explorer]")?.classList.contains("explorer-dock-collapsed")).toBe(true);
 
     await unmount(component);
     component = mount(NotesView, { target });
     await tick();
-    expect(target.querySelector("[data-notes-explorer]")?.classList.contains("notes-project-explorer-collapsed")).toBe(true);
+    expect(target.querySelector("[data-notes-explorer]")?.classList.contains("explorer-dock-collapsed")).toBe(true);
 
     const expand = target.querySelector<HTMLButtonElement>('button[aria-label="Expand sidebar"]');
     expect(expand).not.toBeNull();
@@ -169,7 +169,7 @@ describe("NotesView first use", () => {
     await unmount(component);
     component = mount(NotesView, { target });
     await tick();
-    expect(target.querySelector("[data-notes-explorer]")?.classList.contains("notes-project-explorer-collapsed")).toBe(false);
+    expect(target.querySelector("[data-notes-explorer]")?.classList.contains("explorer-dock-collapsed")).toBe(false);
   });
 
 });

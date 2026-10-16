@@ -4,14 +4,14 @@
   import { unreadMessageStartIndex } from "$lib/chat/timeline/organizational-message-model";
   import { organizationalScrollFollowsEnd } from "$lib/chat/timeline/organizational-scroll";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { getChat } from "$lib/stores/chat.svelte";
+  import { useChat } from "$lib/stores/chat.svelte";
   import ChatMessageComposer from "$lib/components/chat/composer/ChatMessageComposer.svelte";
   import ChatOrganizationalMessage from "$lib/components/chat/timeline/ChatOrganizationalMessage.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
 
   let { onThreadOpened = () => undefined }: { onThreadOpened?: (trigger: HTMLElement) => void } = $props();
-  const chat = getChat();
+  const chat = useChat();
   const localization = getLocalization();
   const { t } = localization;
   let feed = $state<HTMLDivElement | null>(null);

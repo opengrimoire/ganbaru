@@ -23,7 +23,7 @@
   } from "$lib/projects/types";
   import type { ProjectTaskUpdatePatch } from "$lib/projects/snapshot/update-payloads";
   import { getCalendar } from "$lib/stores/calendar.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { getTheme } from "$lib/stores/theme.svelte";
   import { cn } from "$lib/utils";
@@ -78,6 +78,7 @@
   import ProjectTaskDetailScheduledBlocksController from "./ProjectTaskDetailScheduledBlocksController.svelte";
   import ProjectTaskDetailSubtasksSection from "./ProjectTaskDetailSubtasksSection.svelte";
   import ProjectTaskDetailTagsSection from "./ProjectTaskDetailTagsSection.svelte";
+  import { OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
 
   let {
     taskId,
@@ -104,7 +105,7 @@
     onCreated?: (task: ProjectTask) => void;
   } = $props();
 
-  const projects = getProjects();
+  const projects = useProjects();
   const calendar = getCalendar();
   const theme = getTheme();
   const { t } = getLocalization();
@@ -542,7 +543,8 @@
 
   $effect(() => {
     if ((!selectedTask && !draftMode) || !detailDialog || discardCloseConfirmOpen) return;
-    return activateModalFocus(detailDialog);
+    // Opening an existing task on a phone focuses the dialog itself so its title field does not open the keyboard.
+    return activateModalFocus(detailDialog, draftMode || OPENING_MAY_FOCUS_TEXT ? null : detailDialog);
   });
 
   function confirmDiscardTaskDetail(): void {

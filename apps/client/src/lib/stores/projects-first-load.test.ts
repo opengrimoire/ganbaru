@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { describe, expect, it, vi } from "vitest";
-import { loadProjectTaskView, updateProjectTask } from "$lib/api/projects";
+import { loadProjectTaskView, refreshProjectsWorkspace, updateProjectTask } from "$lib/api/projects";
 import { PROJECT_TASK_FILTER_DEFAULTS } from "$lib/projects/list/view";
 import type {
   ProjectOptionalDataKind,
@@ -119,6 +119,7 @@ function emptySnapshot(): ProjectsSnapshot {
     eventLinks: [],
     taskChangeEvents: [],
     viewPreferences: [],
+    views: [],
     customEmojis: [],
   };
 }
@@ -155,7 +156,6 @@ describe("Projects initial loading", () => {
     expect(backend.workspaceCalls).toBe(1);
     backend.resolveWorkspace({
       resolvedProjectId: "project-1",
-      activeView: "list",
       snapshot: emptySnapshot(),
     } satisfies ProjectsWorkspaceSnapshot);
     await Promise.all([firstLoad, secondLoad]);
@@ -163,16 +163,14 @@ describe("Projects initial loading", () => {
     expect(projects.isProjectDataLoaded("project-1")).toBe(true);
     expect(backend.workspaceCalls).toBe(1);
 
-    await projects.ensureProjectViewData("project-1", "kanban");
-    expect(backend.optionalCalls).toEqual([]);
-    expect(projects.isProjectViewDataLoaded("project-1", "kanban")).toBe(true);
-
+    const kanban = projects.ensureProjectViewData("project-1", "kanban");
     const list = projects.ensureProjectViewData("project-1", "list");
     const toolbar = projects.ensureProjectToolbarData("project-1");
-    expect(backend.optionalCalls).toEqual(["project-1:saved_views"]);
+    expect(backend.optionalCalls).toEqual(["project-1:view_preferences"]);
     expect(projects.isProjectViewDataLoaded("project-1", "list")).toBe(false);
-    backend.resolveOptional("saved_views", "project-1", optionalData("saved_views"));
-    await Promise.all([list, toolbar]);
+    backend.resolveOptional("view_preferences", "project-1", optionalData("view_preferences"));
+    await Promise.all([kanban, list, toolbar]);
+    expect(projects.isProjectViewDataLoaded("project-1", "kanban")).toBe(true);
     expect(projects.isProjectViewDataLoaded("project-1", "list")).toBe(true);
 
     await Promise.all([
@@ -180,13 +178,13 @@ describe("Projects initial loading", () => {
       projects.ensureTaskDetailData("project-1", "task-1"),
     ]);
     expect(backend.detailCalls).toBe(1);
-    expect(backend.optionalCalls).toEqual(["project-1:saved_views"]);
+    expect(backend.optionalCalls).toEqual(["project-1:view_preferences"]);
   });
 
   it("advances query revisions for applied writes but keeps page merges, failed writes, and stale responses neutral", async () => {
     const { getProjects } = await import("./projects.svelte");
     const projects = getProjects();
-    backend.resolveWorkspace({resolvedProjectId: "project-1", activeView: "list", snapshot: emptySnapshot()} satisfies ProjectsWorkspaceSnapshot);
+    backend.resolveWorkspace({resolvedProjectId: "project-1", snapshot: emptySnapshot()} satisfies ProjectsWorkspaceSnapshot);
     await projects.ensureLoaded();
     const task = {...emptySnapshot().tasks[0], detailLoaded: true};
     const page: ProjectTaskViewPage = {
@@ -215,5 +213,44 @@ describe("Projects initial loading", () => {
     await older;
     expect(projects.taskById(task.id)?.title).toBe("Newest");
     expect(projects.taskMutationRevision).toBe(initialRevision + 2);
+  });
+});
+
+describe("Projects split panes", () => {
+  it("lets each pane select its own project, task page, and sidebar while sharing the project data", async () => {
+    const { getProjects, getProjectsStore } = await import("./projects.svelte");
+    const primary = getProjects();
+    backend.resolveWorkspace({resolvedProjectId: "project-1", snapshot: emptySnapshot()} satisfies ProjectsWorkspaceSnapshot);
+    await primary.ensureLoaded();
+    const secondary = getProjectsStore("secondary");
+    expect(secondary.selectedProjectId).toBe(primary.selectedProjectId);
+
+    const base = emptySnapshot();
+    const otherProject = {...base.projects[0], id: "project-2", name: "Other"};
+    vi.mocked(refreshProjectsWorkspace).mockResolvedValueOnce({
+      resolvedProjectId: "project-2",
+      snapshot: {...base, projects: [...base.projects, otherProject], tasks: []},
+    } satisfies ProjectsWorkspaceSnapshot);
+    await secondary.selectProject("project-2");
+    expect(secondary.selectedProjectId).toBe("project-2");
+    expect(primary.selectedProjectId).toBe("project-1");
+    expect(primary.projectById("project-2")?.name).toBe("Other");
+
+    const page: ProjectTaskViewPage = {
+      projectId: "project-2", view: "list", tasks: [], totalCount: 0, matchedCount: 0, archivedCount: 0,
+      columnCounts: [], matchedEventIds: [], taskTagLinks: [], customFieldValues: [], customFieldOptionValues: [],
+      dependencies: [], eventLinks: [], tags: [], customFields: [], customFieldOptions: [],
+    };
+    const primaryPage = primary.taskViewPage;
+    vi.mocked(loadProjectTaskView).mockResolvedValueOnce(page);
+    await secondary.loadTaskView({...PROJECT_TASK_FILTER_DEFAULTS, projectId: "project-2", view: "list", pageSize: 100,
+      columnCursors: {}, showArchived: false, visibleSectionIds: [], today: "2026-07-11", weekEnd: "2026-07-18",
+      candidateEventIds: []});
+    expect(secondary.taskViewPage).toEqual(page);
+    expect(primary.taskViewPage).toBe(primaryPage);
+
+    const collapsed = primary.sidebarCollapsed;
+    secondary.sidebarCollapsed = !collapsed;
+    expect(primary.sidebarCollapsed).toBe(collapsed);
   });
 });

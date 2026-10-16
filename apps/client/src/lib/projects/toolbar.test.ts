@@ -5,6 +5,7 @@ import {
   pickProjectTaskModalLayout,
   projectNavigatorPanelGeometry,
   projectToolbarPanelGeometry,
+  projectToolbarPanelsForView,
   toggleProjectListColumn,
 } from "./toolbar";
 import type { ProjectCustomFieldFilter, ProjectTaskListColumn } from "./types";
@@ -164,5 +165,13 @@ describe("project toolbar", () => {
       width: 380,
       maxHeight: 320,
     });
+  });
+
+  it("offers grouping, columns, and sorting only where the view honors them", () => {
+    expect(projectToolbarPanelsForView("list")).toEqual(["filters", "sort", "customize", "group", "settings"]);
+    expect(projectToolbarPanelsForView("kanban")).toEqual(["filters", "sort", "settings"]);
+    expect(projectToolbarPanelsForView("gantt")).toEqual(["filters", "settings"]);
+    expect(projectToolbarPanelsForView("calendar")).toEqual(["filters", "settings"]);
+    expect(projectToolbarPanelsForView("dashboard")).toEqual(["filters", "settings"]);
   });
 });

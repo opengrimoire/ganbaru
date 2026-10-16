@@ -54,8 +54,8 @@
   const reservedActionLabel = $derived(reserveActionLabel ?? actionLabel);
   const viewportBottom = $derived(
     stacked
-      ? "calc(var(--keyboard-inset) + var(--safe-area-bottom) + 4rem)"
-      : "calc(var(--keyboard-inset) + var(--safe-area-bottom) + 1rem)",
+      ? "calc(var(--keyboard-inset) + var(--safe-area-bottom) + var(--mobile-bottom-chrome-h) + 4rem)"
+      : "calc(var(--keyboard-inset) + var(--safe-area-bottom) + var(--mobile-bottom-chrome-h) + 1rem)",
   );
 </script>
 

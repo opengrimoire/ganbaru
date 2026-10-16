@@ -3,7 +3,7 @@
   import { composerRateLimitWindows, contextMeter } from "$lib/chat/composer/model";
   import { formatDateTime, formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { getChat } from "$lib/stores/chat.svelte";
+  import { useChat } from "$lib/stores/chat.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
@@ -24,7 +24,7 @@
 
   const localization = getLocalization();
   const { t } = localization;
-  const chat = getChat();
+  const chat = useChat();
   const provider = $derived(chat.settings?.providerInstances.find(
     (entry) => entry.configuration.instanceId === chat.composer.providerInstanceId,
   ) ?? null);

@@ -72,6 +72,8 @@ Full-text search, backlinks, unresolved links, sidebar summaries, computed datab
 
 A project owns metadata, lifecycle state, optional grouping, views, statuses, tasks, dependencies, custom fields, templates, history, and scheduling links. Presentation order is explicit and deterministic.
 
+Project views are ordered rows with a type and an optional name. Task view types may repeat; Notes and Chat views appear at most once per project. New projects receive Overview, List, Notes, and Chat. A view owns its preferences (saved query, List columns and presentation), which are deleted with it; deleting a view never deletes tasks, Notes pages, or Chat channels. A reorder must list every view of the project once.
+
 Tasks have stable identity independent of status, view, schedule, or parent. Dependencies validate both endpoints, reject self-dependencies and forbidden cycles, and survive reordering. Calendar links distinguish scheduled work from looser references.
 
 Custom-field definitions and values are separate, and changing a definition validates existing values. Custom-field and Notes data source property icons are optional presentation metadata limited to Lucide icons (a `lucide:` value in Projects, the native icon object in Notes); no icon means the type icon, and emoji or uploaded icons are rejected. Templates create ordinary rows with new identities; template IDs never become privileges or shared mutable state. Project history records meaningful user changes, not derived counts, and restore goes through domain commands so task links, Notes placement, and working folders stay consistent.
@@ -88,6 +90,8 @@ Dependency date cascades, bulk status, priority, archive, and restore, and reord
 A dependency cascade previews deterministic finish-to-start shifts over one consistent project graph and reports cycles explicitly. Apply recomputes the reviewed digest and rejects a stale preview. Restoring a child below an archived parent is rejected unless the parent is restored in the same operation. Reordering separates section order from status order and normalizes equal ranks atomically.
 
 Task, custom-field, and option rows carry a revision that increases on every update. The frontend ignores older revisions and keeps deletion evidence for pending requests, so a recovered receipt cannot overwrite newer state or resurrect removed schema. Absence from a paginated view is not deletion evidence.
+
+A task edit sends every field, so it also sends the revision it was based on, and Rust refuses the write when the row has moved on. The client then reloads that task and reapplies only the fields the user changed, so an edit made in another window or by an earlier command is not overwritten. Each committed command tells the other windows of the vault which projects changed; they reload the selected project quietly once their own commands settle and mark other changed projects for reload on selection.
 
 ## Working folders
 

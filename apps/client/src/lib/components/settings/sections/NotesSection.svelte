@@ -19,6 +19,12 @@
     isNotesPageOpenMode,
   } from "$lib/notes/pages/open-mode";
   import { getPreferences } from "$lib/stores/preferences.svelte";
+  import {
+    DEFAULT_SIDEBAR_SORT_ORDER,
+    isSidebarSortOrder,
+    SIDEBAR_SORT_ORDER_LABEL_KEYS,
+    SIDEBAR_SORT_ORDERS,
+  } from "$lib/utils/sidebar-order";
   import { getNotes } from "$lib/stores/notes.svelte";
   import Select from "$lib/components/ui/Select.svelte";
   import SwitchField from "$lib/components/ui/SwitchField.svelte";
@@ -50,6 +56,9 @@
     { value: "side", label: t("notes.sidePeek") },
     { value: "full", label: t("notes.fullPage") },
   ]);
+  const sidebarOrderOptions = $derived(
+    SIDEBAR_SORT_ORDERS.map((order) => ({ value: order, label: t(SIDEBAR_SORT_ORDER_LABEL_KEYS[order]) })),
+  );
   const historyRetentionOptions = $derived([
     { value: "0", label: t("settings.notesGeneral.historyRetentionOff") },
     { value: "7", label: t("settings.notesGeneral.historyRetention7") },
@@ -103,6 +112,10 @@
 
   function handleDefaultOpenModeChange(value: string): void {
     if (isNotesPageOpenMode(value)) preferences.setNotesDefaultOpenMode(value);
+  }
+
+  function handleSidebarOrderChange(value: string): void {
+    if (isSidebarSortOrder(value)) preferences.setNotesSidebarOrder(value);
   }
 
   function formatStoredBytes(value: number): string {
@@ -172,6 +185,15 @@
         onChange={handleDefaultOpenModeChange}
         canReset={preferences.notesDefaultOpenMode !== DEFAULT_NOTES_PAGE_OPEN_MODE}
         onReset={() => preferences.resetNotesDefaultOpenMode()}
+      />
+      <Select
+        label={t("settings.notesGeneral.sidebarOrder")}
+        description={t("settings.notesGeneral.sidebarOrderDescription")}
+        value={preferences.notesSidebarOrder}
+        options={sidebarOrderOptions}
+        onChange={handleSidebarOrderChange}
+        canReset={preferences.notesSidebarOrder !== DEFAULT_SIDEBAR_SORT_ORDER}
+        onReset={() => preferences.resetNotesSidebarOrder()}
       />
       <Select
         label={t("settings.notesGeneral.historyRetention")}

@@ -381,6 +381,8 @@ interface NotesBlockBase<Type extends NotesBlockType> {
   id: string;
   /** Opaque canonical revision. Optimistic blocks receive it after their first commit. */
   edit_revision?: string;
+  /** Opaque revision of the canonical type and payload alone, which guards content saves against stale bases. */
+  content_revision?: string;
   parent: NotesParent;
   created_time: string;
   last_edited_time: string;

@@ -13,10 +13,11 @@
   import RecurrenceSection from "./RecurrenceSection.svelte";
   import ProjectSelector from "$lib/components/projects/pickers/ProjectSelector.svelte";
   import { onMount, tick } from "svelte";
+  import { getWorkspacePaneFocus } from "$lib/workspace-tabs/pane-focus";
   import { slide } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
   import { getTheme } from "$lib/stores/theme.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import type { CalendarDeleteOutcome } from "$lib/api/calendar-edit";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
@@ -83,7 +84,7 @@
     BUILD_PLATFORM_PROFILE,
     "pomodoro.native-idle-detection",
   );
-  const projects = getProjects();
+  const projects = useProjects();
   const preferences = getPreferences();
   const mobileBackStack = getMobileBackStack();
   const viewport = getViewport();
@@ -928,7 +929,9 @@
     onScopeChange?.(s);
   }
 
-  // Global shortcut handling: active whenever the panel is mounted, so the
+  const paneFocused = getWorkspacePaneFocus();
+
+  // Global shortcut handling: active whenever the panel is mounted in the focused pane, so the
   // user does not have to click a field inside the panel first. If a modal
   // (ConfirmDialog) is open, its capture-phase window listener swallows the
   // event before it reaches this handler.
@@ -937,7 +940,9 @@
       console.error("load projects failed", error);
     });
 
-    function handleKeydown(e: KeyboardEvent) { actions.handleKeydown(e); }
+    function handleKeydown(e: KeyboardEvent) {
+      if (paneFocused()) actions.handleKeydown(e);
+    }
     function refreshNotificationAccess(): void {
       if (document.visibilityState === "visible") void refreshMobileNotificationStatus();
     }
@@ -1195,7 +1200,7 @@
         {#if dateTime.timePickerTarget}
           <!-- svelte-ignore a11y_click_events_have_key_events -->
           <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div class="fixed inset-0 z-19" onpointerdown={() => dateTime.closeTimePicker("pointer")}></div>
+          <div class="fixed inset-0 z-19" onclick={() => dateTime.closeTimePicker("pointer")}></div>
           {@const isEnd = dateTime.timePickerTarget === 'end'}
           {@const startMinutes = (() => { const [h, m] = (session.startTime || "0:0").split(":").map(Number); return h * 60 + m; })()}
           <div class="absolute top-full z-20 mt-1 rounded-lg bg-popover shadow-lg ring-1 ring-border/60"

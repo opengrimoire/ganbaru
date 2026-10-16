@@ -25,7 +25,25 @@ pub struct ChatDraftWrite {
 
 pub type ChatDraftRead = ChatDraftWrite;
 
-pub async fn save_draft(pool: &SqlitePool, draft: &ChatDraftWrite) -> ChatResult<ChatDraftRead> {
+/// The stored draft a save was based on, so edits from another window are not silently replaced.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ChatDraftBase {
+    /// Replace whatever is stored, as when a send records its snapshot.
+    Any,
+    /// The caller saw no stored draft.
+    None,
+    /// The caller last saw the draft saved at this time.
+    #[serde(rename_all = "camelCase")]
+    Saved { updated_at: UtcTimestamp },
+}
+
+/// Saves a draft when the stored row still matches `base`, refusing with a stale revision otherwise.
+pub async fn save_draft(
+    pool: &SqlitePool,
+    draft: &ChatDraftWrite,
+    base: &ChatDraftBase,
+) -> ChatResult<ChatDraftRead> {
     validate_draft(draft)?;
     let mentions = json_text(&draft.mentions.value)?;
     let rich_content = versioned_parts(draft.rich_content.as_ref())?;
@@ -33,6 +51,7 @@ pub async fn save_draft(pool: &SqlitePool, draft: &ChatDraftWrite) -> ChatResult
     let sent = versioned_parts(draft.sent_snapshot.as_ref())?;
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
     validate_draft_owner(&mut transaction, draft).await?;
+    validate_draft_base(&mut transaction, &draft.id, base).await?;
     sqlx::query(
         "INSERT INTO chat_drafts
             (id, working_folder_id, thread_id, text, rich_content_schema_version,
@@ -258,6 +277,32 @@ async fn validate_draft_owner(
     Ok(())
 }
 
+async fn validate_draft_base(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    id: &str,
+    base: &ChatDraftBase,
+) -> ChatResult<()> {
+    let stored: Option<String> =
+        sqlx::query_scalar("SELECT updated_at FROM chat_drafts WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&mut **transaction)
+            .await
+            .map_err(persistence_error)?;
+    let current = match base {
+        ChatDraftBase::Any => true,
+        ChatDraftBase::None => stored.is_none(),
+        ChatDraftBase::Saved { updated_at } => stored.as_deref() == Some(updated_at.as_str()),
+    };
+    if current {
+        Ok(())
+    } else {
+        Err(ChatError::new(
+            ChatErrorCode::StaleRevision,
+            "Chat draft changed in another window",
+            true,
+        ))
+    }
+}
 fn validate_draft(draft: &ChatDraftWrite) -> ChatResult<()> {
     if draft.id.is_empty() || draft.id.len() > 1024 || draft.id.chars().any(char::is_control) {
         return Err(ChatError::validation(

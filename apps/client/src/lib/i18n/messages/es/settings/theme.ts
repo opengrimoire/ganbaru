@@ -150,10 +150,6 @@ export const theme = {
         title: "Lienzo de app",
         description: "La mayoría de las vistas pintan su propia superficie encima",
       },
-      calendarHeader: {
-        title: "Encabezado del calendario",
-        description: "Barra del calendario y encabezados de día y hora",
-      },
       textColor: {
         title: "Color de texto",
         description: "Se aplica al texto de toda la app",

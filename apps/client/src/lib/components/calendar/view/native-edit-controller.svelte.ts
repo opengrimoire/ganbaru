@@ -4,6 +4,7 @@ import {
   type CalendarEditPreview, type CalendarPreviewRequest,
 } from "$lib/api/calendar-edit";
 import { activeVaultIdentity } from "$lib/vault/active-vault";
+import type { WorkspacePaneScope } from "$lib/workspace-tabs/model";
 
 export interface CalendarEditContext {
   vaultId: string;
@@ -325,19 +326,24 @@ export class NativeCalendarEditController {
   }
 }
 
-let panelController: NativeCalendarEditController | null = null;
-let directController: NativeCalendarEditController | null = null;
-let deleteController: NativeCalendarEditController | null = null;
+type NativeCalendarEditKind = "panel" | "direct" | "delete";
 
-/** Keep one controller per kind (panel, direct drag, deletion) so uncertain Saves survive Calendar view remounts. */
+const controllers = new Map<`${WorkspacePaneScope}:${NativeCalendarEditKind}`, NativeCalendarEditController>();
+
+/**
+ * Keep one controller per split pane scope and kind (panel, direct drag, deletion) so uncertain Saves survive
+ * Calendar view remounts.
+ */
 export function getNativeCalendarEditController(
   context: () => CalendarEditContext | null,
-  kind: "panel" | "direct" | "delete" = "panel",
+  kind: NativeCalendarEditKind = "panel",
+  scope: WorkspacePaneScope = "primary",
 ): NativeCalendarEditController {
-  if (kind === "delete") return deleteController ??= new NativeCalendarEditController(context,
-    undefined, undefined, undefined, activeVaultIdentity);
-  if (kind === "direct") return directController ??= new NativeCalendarEditController(context,
-    undefined, undefined, undefined, activeVaultIdentity);
-  return panelController ??= new NativeCalendarEditController(context,
-    undefined, undefined, undefined, activeVaultIdentity);
+  const key = `${scope}:${kind}` as const;
+  let controller = controllers.get(key);
+  if (!controller) {
+    controller = new NativeCalendarEditController(context, undefined, undefined, undefined, activeVaultIdentity);
+    controllers.set(key, controller);
+  }
+  return controller;
 }

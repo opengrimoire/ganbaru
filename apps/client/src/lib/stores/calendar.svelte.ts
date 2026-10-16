@@ -1,6 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
 import { Temporal } from "@js-temporal/polyfill";
-import { dbUrl } from "$lib/api/db";
 import type {
   Calendar, CalendarEvent, CalendarViewMode,
 } from "$lib/calendar/types";
@@ -40,18 +38,9 @@ import {
 } from "$lib/stores/calendar/event-loaders";
 import { calendarWindowIncludesGlobalCount } from "$lib/stores/calendar/window-count";
 import { loadPomodoroSchedulerEventsFromDb } from "$lib/stores/calendar/pomodoro-window";
+import type { WorkspacePaneScope } from "$lib/workspace-tabs/model";
+import { getWorkspacePaneScope } from "$lib/workspace-tabs/pane-scope";
 
-/** DB-backed template events for the current render window plus recurring templates. */
-let sourceEvents = $state<CalendarEvent[]>([]);
-let windowEvents = $state<CalendarEvent[]>([]);
-let expansionDiagnostics = $state<CalendarExpansionDiagnostic[]>([]);
-let loaded = $state(false);
-let totalEventCount = $state(0);
-let currentWindowKey: string | null = null;
-let currentWindowRenderZone: string | null = null;
-let currentWindowStart: Temporal.PlainDate | null = null;
-let currentWindowEnd: Temporal.PlainDate | null = null;
-let currentWindowSourceVersion = 0;
 const WINDOW_CACHE_LIMIT = 12;
 
 type CalendarWindowLoadMode = "apply" | "ensure" | "prefetch";
@@ -77,12 +66,21 @@ interface CalendarWindowLoadRequest {
   mode: CalendarWindowLoadMode;
 }
 
+/** The part of a store that window-wide cache invalidation reaches, one per split pane scope. */
+interface CalendarWindowPane {
+  /** Drop queued loads and prefetches that read the cleared cache. */
+  supersedePending(): void;
+  /** Read the pane's current window again from the database, if it shows one. */
+  reloadCurrentWindow(): Promise<void>;
+  /** Read `windowStart` to `windowEnd` from the database and show it. */
+  reloadWindow(windowStart: Temporal.PlainDate, windowEnd: Temporal.PlainDate): Promise<void>;
+}
+
+/** Loaded windows every pane reads, so one pane's loads and prefetches serve the other too. */
 const windowCache = new BoundedWindowCache<CalendarWindowSnapshot>(WINDOW_CACHE_LIMIT);
 let sourceVersion = 0;
-let prefetchGeneration = 0;
-let foregroundWindowBusy = false;
-let foregroundWindowRequestId = 0;
-let foregroundWindowIdleWaiters: Array<() => void> = [];
+let totalEventCount = $state(0);
+const panes: CalendarWindowPane[] = [];
 
 /**
  * Reactivity token. `eventsInWindow` reads it so any `$derived` / `$effect`
@@ -93,43 +91,12 @@ let foregroundWindowIdleWaiters: Array<() => void> = [];
  */
 let indexVersion = $state(0);
 
-/**
- * Refresh canonical occurrences after committed mutations without expanding local templates.
- */
-async function invalidate(): Promise<void> {
-  clearPanelEventCache();
-  indexVersion++;
-  await reloadCurrentWindowFromDb();
-}
-
-/**
- * Resolve an event to its DB-backed template.
- * For recurring instances returns the parent; for normal events returns itself.
- */
-function resolveToTemplate(event: CalendarEvent): CalendarEvent | undefined {
-  const parentId = event.recurringParentId ?? event.id;
-  return sourceEvents.find((b) => b.id === parentId);
-}
-
 function calendarWindowKey(
   windowStart: Temporal.PlainDate,
   windowEnd: Temporal.PlainDate,
   renderZone: string,
 ): string {
   return `${renderZone}:${windowStart.toString()}:${windowEnd.toString()}`;
-}
-
-function currentWindowCovers(
-  windowStart: Temporal.PlainDate,
-  windowEnd: Temporal.PlainDate,
-  renderZone: string,
-): boolean {
-  return loaded
-    && currentWindowSourceVersion === sourceVersion
-    && currentWindowStart !== null
-    && currentWindowEnd !== null
-    && currentWindowRenderZone === renderZone
-    && calendarWindowCovers(currentWindowStart, currentWindowEnd, windowStart, windowEnd);
 }
 
 function findCachedWindowCovering(
@@ -147,78 +114,12 @@ function windowQueueKey(mode: CalendarWindowLoadMode, key: string): string {
   return `${sourceVersion}:${mode}:${key}`;
 }
 
-function markWindowLoadEvent(event: WindowLoadEvent<CalendarWindowLoadRequest>): void {
-  const request = "request" in event ? event.request : undefined;
-  if (event.type === "start") {
-    perfMark("window.load-start", {
-      mode: request?.mode ?? "unknown",
-      queued: windowLoadCoordinator.queuedKey ? 1 : 0,
-    });
-  } else if (event.type === "queue") {
-    perfMark("window.load-queued", {
-      mode: request?.mode ?? "unknown",
-      replaced: event.replacedKey ? 1 : 0,
-    });
-  } else if (event.type === "drop") {
-    perfMark("window.load-dropped", { reason: event.reason });
-  } else if (event.type === "finish") {
-    perfMark("window.load-finished", { outcome: event.outcome });
-  } else {
-    perfMark("window.load-error");
-  }
-}
-
-function applyWindowSnapshot(snapshot: CalendarWindowSnapshot): void {
-  sourceEvents = snapshot.sourceEvents;
-  windowEvents = snapshot.windowEvents;
-  expansionDiagnostics = snapshot.diagnostics;
-  totalEventCount = snapshot.totalEventCount;
-  currentWindowKey = snapshot.key;
-  currentWindowRenderZone = snapshot.renderZone;
-  currentWindowStart = snapshot.windowStart;
-  currentWindowEnd = snapshot.windowEnd;
-  currentWindowSourceVersion = sourceVersion;
-  loaded = true;
-  clearPanelEventCache();
-  indexVersion++;
-  perfMark("window.applied", {
-    rows: snapshot.sourceEvents.length,
-    expanded: snapshot.windowEvents.length,
-    cache: windowCache.size,
-  });
-}
-
 function rememberWindowSnapshot(snapshot: CalendarWindowSnapshot): void {
   windowCache.set(snapshot.key, snapshot);
   perfMark("window.cache-put", {
     rows: snapshot.sourceEvents.length,
     expanded: snapshot.windowEvents.length,
     size: windowCache.size,
-  });
-}
-
-function beginForegroundWindowLoad(): number {
-  foregroundWindowBusy = true;
-  return ++foregroundWindowRequestId;
-}
-
-function finishForegroundWindowLoad(requestId: number): void {
-  if (requestId !== foregroundWindowRequestId) return;
-  foregroundWindowBusy = false;
-  resolveForegroundWindowIdle();
-}
-
-function resolveForegroundWindowIdle(): void {
-  if (foregroundWindowBusy) return;
-  const waiters = foregroundWindowIdleWaiters;
-  foregroundWindowIdleWaiters = [];
-  for (const resolve of waiters) resolve();
-}
-
-async function waitForForegroundWindowIdle(): Promise<void> {
-  if (!foregroundWindowBusy) return;
-  await new Promise<void>((resolve) => {
-    foregroundWindowIdleWaiters.push(resolve);
   });
 }
 
@@ -229,243 +130,373 @@ function adjacentWindowRequests(snapshot: CalendarWindowSnapshot): Array<{
   return adjacentCalendarWindowRequests(snapshot.windowStart, snapshot.windowEnd);
 }
 
-
-async function runWindowLoadRequest(
-  request: CalendarWindowLoadRequest,
-  isSuperseded: () => boolean,
-): Promise<WindowLoadOutcome> {
-  const {
-    key,
-    renderZone,
-    windowStart,
-    windowEnd,
-    markBoot,
-    force,
-    mode,
-  } = request;
-  const requestedSourceVersion = sourceVersion;
-  const windowStartDate = windowStart.toString();
-  const windowEndDate = windowEnd.toString();
-  if (!force && !markBoot && mode !== "apply") {
-    const cached = findCachedWindowCovering(windowStart, windowEnd, renderZone);
-    if (cached || currentWindowCovers(windowStart, windowEnd, renderZone)) {
-      perfMark("window.load-covered", { mode });
-      return "applied";
-    }
-  }
-  const mapped = await loadNativeCalendarWindow({
-    windowStartDate,
-    windowEndDate,
-    renderZone,
-    includeTotalEventCount: calendarWindowIncludesGlobalCount(markBoot) || force,
-  });
-  perfMark("window.rows-done", {
-    mode,
-    rows: mapped.sourceEvents.length,
-    total: mapped.totalEventCount ?? totalEventCount,
-  });
-
-  if (requestedSourceVersion !== sourceVersion || isSuperseded()) {
-    perfMark("window.load-superseded", { stage: "rows", mode });
-    return "superseded";
-  }
-
-  if (markBoot) perfMark("boot.sql-main-done", { rows: mapped.sourceEvents.length, total: mapped.totalEventCount ?? totalEventCount });
-  if (markBoot) perfMark("boot.maprow-done");
-  perfMark("window.expand-done", {
-    mode,
-    rows: mapped.sourceEvents.length,
-    expanded: mapped.windowEvents.length,
-  });
-
-  const snapshot: CalendarWindowSnapshot = {
-    key,
-    renderZone,
-    windowStart,
-    windowEnd,
-    sourceEvents: mapped.sourceEvents,
-    windowEvents: mapped.windowEvents,
-    diagnostics: mapped.diagnostics,
-    totalEventCount: mapped.totalEventCount ?? totalEventCount,
-  };
-  rememberWindowSnapshot(snapshot);
-
-  if (mode === "apply") {
-    applyWindowSnapshot(snapshot);
-    if (markBoot) {
-      perfMark("boot.sql-children-done");
-      perfMark("boot.rawblocks-set", { events: sourceEvents.length, total: totalEventCount });
-    }
-    scheduleAdjacentPrefetch(snapshot);
-  }
-
-  return "applied";
+function clearWindowCache(): void {
+  sourceVersion++;
+  windowCache.clear();
+  for (const pane of panes) pane.supersedePending();
 }
 
-const windowLoadCoordinator = new LatestWindowLoadCoordinator<CalendarWindowLoadRequest>(
-  runWindowLoadRequest,
-  markWindowLoadEvent,
-);
-
-async function loadWindowIntoState(
-  windowStart: Temporal.PlainDate,
-  windowEnd: Temporal.PlainDate,
-  markBoot: boolean,
-  force = false,
+/**
+ * Reload every pane's window from the database after a change: `origin` reads `window` when given and its current
+ * window otherwise, while the other panes read their current windows. Only `origin`'s failure rejects.
+ */
+async function refreshPanes(
+  origin: CalendarWindowPane,
+  window?: { start: Temporal.PlainDate; end: Temporal.PlainDate },
 ): Promise<void> {
-  const renderZone = localTimezone();
-  const key = calendarWindowKey(windowStart, windowEnd, renderZone);
-  if (!force && !markBoot && loaded && currentWindowSourceVersion === sourceVersion && currentWindowKey === key) return;
-  if (!force && !markBoot && currentWindowCovers(windowStart, windowEnd, renderZone)) return;
-  if (!force && !markBoot) {
-    const cached = windowCache.get(key) ?? findCachedWindowCovering(windowStart, windowEnd, renderZone);
-    if (cached) {
-      const foregroundId = ++foregroundWindowRequestId;
-      foregroundWindowBusy = false;
-      resolveForegroundWindowIdle();
+  clearWindowCache();
+  const others = panes.filter((pane) => pane !== origin).map((pane) => pane.reloadCurrentWindow().catch((error: unknown) => {
+    console.warn("[calendar] split pane window reload failed", error);
+  }));
+  await Promise.all([
+    window ? origin.reloadWindow(window.start, window.end) : origin.reloadCurrentWindow(),
+    ...others,
+  ]);
+}
+
+interface CalendarWindowStoreOptions {
+  /** Whether the app boots this store with `load()`; other stores load the first window a view asks for. */
+  bootsWithApp: boolean;
+}
+
+function createCalendarWindowStore({ bootsWithApp }: CalendarWindowStoreOptions) {
+  /** DB-backed template events for the current render window plus recurring templates. */
+  let sourceEvents = $state<CalendarEvent[]>([]);
+  let windowEvents = $state<CalendarEvent[]>([]);
+  let expansionDiagnostics = $state<CalendarExpansionDiagnostic[]>([]);
+  let loaded = $state(false);
+  let currentWindowKey: string | null = null;
+  let currentWindowRenderZone: string | null = null;
+  let currentWindowStart: Temporal.PlainDate | null = null;
+  let currentWindowEnd: Temporal.PlainDate | null = null;
+  let currentWindowSourceVersion = 0;
+  let prefetchGeneration = 0;
+  let foregroundWindowBusy = false;
+  let foregroundWindowRequestId = 0;
+  let foregroundWindowIdleWaiters: Array<() => void> = [];
+
+  const pane: CalendarWindowPane = {
+    supersedePending: () => {
       prefetchGeneration++;
       windowLoadCoordinator.supersedePending();
-      perfMark("window.cache-hit", {
-        rows: cached.sourceEvents.length,
-        expanded: cached.windowEvents.length,
-        size: windowCache.size,
+    },
+    reloadCurrentWindow: async () => {
+      if (!currentWindowStart || !currentWindowEnd) {
+        windowEvents = [];
+        expansionDiagnostics = [];
+        return;
+      }
+      await loadWindowIntoState(currentWindowStart, currentWindowEnd, false, true);
+    },
+    reloadWindow: (windowStart, windowEnd) => loadWindowIntoState(windowStart, windowEnd, false, true),
+  };
+  panes.push(pane);
+
+  /**
+   * Refresh canonical occurrences after committed mutations without expanding local templates.
+   */
+  async function invalidate(): Promise<void> {
+    clearPanelEventCache();
+    indexVersion++;
+    await refreshPanes(pane);
+  }
+
+  /**
+   * Resolve an event to its DB-backed template.
+   * For recurring instances returns the parent; for normal events returns itself.
+   */
+  function resolveToTemplate(event: CalendarEvent): CalendarEvent | undefined {
+    const parentId = event.recurringParentId ?? event.id;
+    return sourceEvents.find((b) => b.id === parentId);
+  }
+
+  function currentWindowCovers(
+    windowStart: Temporal.PlainDate,
+    windowEnd: Temporal.PlainDate,
+    renderZone: string,
+  ): boolean {
+    return loaded
+      && currentWindowSourceVersion === sourceVersion
+      && currentWindowStart !== null
+      && currentWindowEnd !== null
+      && currentWindowRenderZone === renderZone
+      && calendarWindowCovers(currentWindowStart, currentWindowEnd, windowStart, windowEnd);
+  }
+
+  function markWindowLoadEvent(event: WindowLoadEvent<CalendarWindowLoadRequest>): void {
+    const request = "request" in event ? event.request : undefined;
+    if (event.type === "start") {
+      perfMark("window.load-start", {
+        mode: request?.mode ?? "unknown",
+        queued: windowLoadCoordinator.queuedKey ? 1 : 0,
       });
-      applyWindowSnapshot(cached);
-      scheduleAdjacentPrefetch(cached);
-      finishForegroundWindowLoad(foregroundId);
-      return;
+    } else if (event.type === "queue") {
+      perfMark("window.load-queued", {
+        mode: request?.mode ?? "unknown",
+        replaced: event.replacedKey ? 1 : 0,
+      });
+    } else if (event.type === "drop") {
+      perfMark("window.load-dropped", { reason: event.reason });
+    } else if (event.type === "finish") {
+      perfMark("window.load-finished", { outcome: event.outcome });
+    } else {
+      perfMark("window.load-error");
     }
   }
 
-  prefetchGeneration++;
-  const foregroundId = beginForegroundWindowLoad();
-  try {
-    await windowLoadCoordinator.enqueue(windowQueueKey("apply", key), {
+  function applyWindowSnapshot(snapshot: CalendarWindowSnapshot): void {
+    sourceEvents = snapshot.sourceEvents;
+    windowEvents = snapshot.windowEvents;
+    expansionDiagnostics = snapshot.diagnostics;
+    totalEventCount = snapshot.totalEventCount;
+    currentWindowKey = snapshot.key;
+    currentWindowRenderZone = snapshot.renderZone;
+    currentWindowStart = snapshot.windowStart;
+    currentWindowEnd = snapshot.windowEnd;
+    currentWindowSourceVersion = sourceVersion;
+    loaded = true;
+    clearPanelEventCache();
+    indexVersion++;
+    perfMark("window.applied", {
+      rows: snapshot.sourceEvents.length,
+      expanded: snapshot.windowEvents.length,
+      cache: windowCache.size,
+    });
+  }
+
+  function beginForegroundWindowLoad(): number {
+    foregroundWindowBusy = true;
+    return ++foregroundWindowRequestId;
+  }
+
+  function finishForegroundWindowLoad(requestId: number): void {
+    if (requestId !== foregroundWindowRequestId) return;
+    foregroundWindowBusy = false;
+    resolveForegroundWindowIdle();
+  }
+
+  function resolveForegroundWindowIdle(): void {
+    if (foregroundWindowBusy) return;
+    const waiters = foregroundWindowIdleWaiters;
+    foregroundWindowIdleWaiters = [];
+    for (const resolve of waiters) resolve();
+  }
+
+  async function waitForForegroundWindowIdle(): Promise<void> {
+    if (!foregroundWindowBusy) return;
+    await new Promise<void>((resolve) => {
+      foregroundWindowIdleWaiters.push(resolve);
+    });
+  }
+
+  async function runWindowLoadRequest(
+    request: CalendarWindowLoadRequest,
+    isSuperseded: () => boolean,
+  ): Promise<WindowLoadOutcome> {
+    const {
       key,
       renderZone,
       windowStart,
       windowEnd,
       markBoot,
       force,
-      mode: "apply",
+      mode,
+    } = request;
+    const requestedSourceVersion = sourceVersion;
+    const windowStartDate = windowStart.toString();
+    const windowEndDate = windowEnd.toString();
+    if (!force && !markBoot && mode !== "apply") {
+      const cached = findCachedWindowCovering(windowStart, windowEnd, renderZone);
+      if (cached || currentWindowCovers(windowStart, windowEnd, renderZone)) {
+        perfMark("window.load-covered", { mode });
+        return "applied";
+      }
+    }
+    const mapped = await loadNativeCalendarWindow({
+      windowStartDate,
+      windowEndDate,
+      renderZone,
+      includeTotalEventCount: calendarWindowIncludesGlobalCount(markBoot) || force,
     });
-  } finally {
-    finishForegroundWindowLoad(foregroundId);
+    perfMark("window.rows-done", {
+      mode,
+      rows: mapped.sourceEvents.length,
+      total: mapped.totalEventCount ?? totalEventCount,
+    });
+
+    if (requestedSourceVersion !== sourceVersion || isSuperseded()) {
+      perfMark("window.load-superseded", { stage: "rows", mode });
+      return "superseded";
+    }
+
+    if (markBoot) perfMark("boot.sql-main-done", { rows: mapped.sourceEvents.length, total: mapped.totalEventCount ?? totalEventCount });
+    if (markBoot) perfMark("boot.maprow-done");
+    perfMark("window.expand-done", {
+      mode,
+      rows: mapped.sourceEvents.length,
+      expanded: mapped.windowEvents.length,
+    });
+
+    const snapshot: CalendarWindowSnapshot = {
+      key,
+      renderZone,
+      windowStart,
+      windowEnd,
+      sourceEvents: mapped.sourceEvents,
+      windowEvents: mapped.windowEvents,
+      diagnostics: mapped.diagnostics,
+      totalEventCount: mapped.totalEventCount ?? totalEventCount,
+    };
+    rememberWindowSnapshot(snapshot);
+
+    if (mode === "apply") {
+      applyWindowSnapshot(snapshot);
+      if (markBoot) {
+        perfMark("boot.sql-children-done");
+        perfMark("boot.rawblocks-set", { events: sourceEvents.length, total: totalEventCount });
+      }
+      scheduleAdjacentPrefetch(snapshot);
+    }
+
+    return "applied";
   }
-}
 
-async function prefetchWindow(
-  windowStart: Temporal.PlainDate,
-  windowEnd: Temporal.PlainDate,
-  generation: number,
-): Promise<void> {
-  if (generation !== prefetchGeneration || !loaded) return;
-  const renderZone = localTimezone();
-  const key = calendarWindowKey(windowStart, windowEnd, renderZone);
-  if (currentWindowCovers(windowStart, windowEnd, renderZone)
-    || findCachedWindowCovering(windowStart, windowEnd, renderZone)) return;
+  const windowLoadCoordinator = new LatestWindowLoadCoordinator<CalendarWindowLoadRequest>(
+    runWindowLoadRequest,
+    markWindowLoadEvent,
+  );
 
-  await windowLoadCoordinator.enqueue(windowQueueKey("prefetch", key), {
-    key,
-    renderZone,
-    windowStart,
-    windowEnd,
-    markBoot: false,
-    force: false,
-    mode: "prefetch",
-  });
-}
+  async function loadWindowIntoState(
+    windowStart: Temporal.PlainDate,
+    windowEnd: Temporal.PlainDate,
+    markBoot: boolean,
+    force = false,
+  ): Promise<void> {
+    const renderZone = localTimezone();
+    const key = calendarWindowKey(windowStart, windowEnd, renderZone);
+    if (!force && !markBoot && loaded && currentWindowSourceVersion === sourceVersion && currentWindowKey === key) return;
+    if (!force && !markBoot && currentWindowCovers(windowStart, windowEnd, renderZone)) return;
+    if (!force && !markBoot) {
+      const cached = windowCache.get(key) ?? findCachedWindowCovering(windowStart, windowEnd, renderZone);
+      if (cached) {
+        const foregroundId = ++foregroundWindowRequestId;
+        foregroundWindowBusy = false;
+        resolveForegroundWindowIdle();
+        prefetchGeneration++;
+        windowLoadCoordinator.supersedePending();
+        perfMark("window.cache-hit", {
+          rows: cached.sourceEvents.length,
+          expanded: cached.windowEvents.length,
+          size: windowCache.size,
+        });
+        applyWindowSnapshot(cached);
+        scheduleAdjacentPrefetch(cached);
+        finishForegroundWindowLoad(foregroundId);
+        return;
+      }
+    }
 
-async function ensureWindowSnapshotReady(
-  windowStart: Temporal.PlainDate,
-  windowEnd: Temporal.PlainDate,
-): Promise<void> {
-  const renderZone = localTimezone();
-  const key = calendarWindowKey(windowStart, windowEnd, renderZone);
-  if (currentWindowCovers(windowStart, windowEnd, renderZone)
-    || findCachedWindowCovering(windowStart, windowEnd, renderZone)) return;
+    prefetchGeneration++;
+    const foregroundId = beginForegroundWindowLoad();
+    try {
+      await windowLoadCoordinator.enqueue(windowQueueKey("apply", key), {
+        key,
+        renderZone,
+        windowStart,
+        windowEnd,
+        markBoot,
+        force,
+        mode: "apply",
+      });
+    } finally {
+      finishForegroundWindowLoad(foregroundId);
+    }
+  }
 
-  prefetchGeneration++;
-  const foregroundId = beginForegroundWindowLoad();
-  try {
-    await windowLoadCoordinator.enqueue(windowQueueKey("ensure", key), {
+  async function prefetchWindow(
+    windowStart: Temporal.PlainDate,
+    windowEnd: Temporal.PlainDate,
+    generation: number,
+  ): Promise<void> {
+    if (generation !== prefetchGeneration || !loaded) return;
+    const renderZone = localTimezone();
+    const key = calendarWindowKey(windowStart, windowEnd, renderZone);
+    if (currentWindowCovers(windowStart, windowEnd, renderZone)
+      || findCachedWindowCovering(windowStart, windowEnd, renderZone)) return;
+
+    await windowLoadCoordinator.enqueue(windowQueueKey("prefetch", key), {
       key,
       renderZone,
       windowStart,
       windowEnd,
       markBoot: false,
       force: false,
-      mode: "ensure",
+      mode: "prefetch",
     });
-  } finally {
-    finishForegroundWindowLoad(foregroundId);
   }
-}
 
-function scheduleAdjacentPrefetch(snapshot: CalendarWindowSnapshot): void {
-  const requests = adjacentWindowRequests(snapshot);
-  if (requests.length === 0) return;
-  const generation = ++prefetchGeneration;
+  async function ensureWindowSnapshotReady(
+    windowStart: Temporal.PlainDate,
+    windowEnd: Temporal.PlainDate,
+  ): Promise<void> {
+    const renderZone = localTimezone();
+    const key = calendarWindowKey(windowStart, windowEnd, renderZone);
+    if (currentWindowCovers(windowStart, windowEnd, renderZone)
+      || findCachedWindowCovering(windowStart, windowEnd, renderZone)) return;
 
-  void (async () => {
-    for (const request of requests) {
-      if (generation !== prefetchGeneration) return;
-      await prefetchWindow(request.start, request.end, generation);
+    prefetchGeneration++;
+    const foregroundId = beginForegroundWindowLoad();
+    try {
+      await windowLoadCoordinator.enqueue(windowQueueKey("ensure", key), {
+        key,
+        renderZone,
+        windowStart,
+        windowEnd,
+        markBoot: false,
+        force: false,
+        mode: "ensure",
+      });
+    } finally {
+      finishForegroundWindowLoad(foregroundId);
     }
-  })().catch((error: unknown) => {
-    console.warn("[calendar] adjacent window prefetch failed", error);
-  });
-}
-
-function scheduleWindowPrefetches(requests: Array<{
-  start: Temporal.PlainDate;
-  end: Temporal.PlainDate;
-}>): void {
-  if (requests.length === 0) return;
-  const generation = prefetchGeneration;
-
-  void (async () => {
-    for (const request of requests) {
-      if (generation !== prefetchGeneration) return;
-      await prefetchWindow(request.start, request.end, generation);
-    }
-  })().catch((error: unknown) => {
-    console.warn("[calendar] requested window prefetch failed", error);
-  });
-}
-
-async function waitForWindowIdle(): Promise<void> {
-  await windowLoadCoordinator.whenIdle();
-}
-
-function clearWindowCache(): void {
-  sourceVersion++;
-  windowCache.clear();
-  prefetchGeneration++;
-  windowLoadCoordinator.supersedePending();
-}
-
-async function reloadCurrentWindowFromDb(): Promise<void> {
-  if (!currentWindowStart || !currentWindowEnd) {
-    clearWindowCache();
-    windowEvents = [];
-    expansionDiagnostics = [];
-    return;
   }
-  await reloadWindowFromDb(currentWindowStart, currentWindowEnd);
-}
 
-async function reloadWindowFromDb(
-  windowStart: Temporal.PlainDate,
-  windowEnd: Temporal.PlainDate,
-): Promise<void> {
-  clearWindowCache();
-  await loadWindowIntoState(windowStart, windowEnd, false, true);
-}
+  function scheduleAdjacentPrefetch(snapshot: CalendarWindowSnapshot): void {
+    const requests = adjacentWindowRequests(snapshot);
+    if (requests.length === 0) return;
+    const generation = ++prefetchGeneration;
 
+    void (async () => {
+      for (const request of requests) {
+        if (generation !== prefetchGeneration) return;
+        await prefetchWindow(request.start, request.end, generation);
+      }
+    })().catch((error: unknown) => {
+      console.warn("[calendar] adjacent window prefetch failed", error);
+    });
+  }
 
-export function getCalendar() {
-  initCalendarWindowSync(() => reloadCurrentWindowFromDb());
+  function scheduleWindowPrefetches(requests: Array<{
+    start: Temporal.PlainDate;
+    end: Temporal.PlainDate;
+  }>): void {
+    if (requests.length === 0) return;
+    const generation = prefetchGeneration;
+
+    void (async () => {
+      for (const request of requests) {
+        if (generation !== prefetchGeneration) return;
+        await prefetchWindow(request.start, request.end, generation);
+      }
+    })().catch((error: unknown) => {
+      console.warn("[calendar] requested window prefetch failed", error);
+    });
+  }
+
+  async function waitForWindowIdle(): Promise<void> {
+    await windowLoadCoordinator.whenIdle();
+  }
+
   const store = {
     /**
      * Select native occurrences from a loaded covering window. This bounded
@@ -582,16 +613,35 @@ export function getCalendar() {
       await waitForForegroundWindowIdle();
     },
 
+    /** Boot the store on today's window and reload the windows other split panes show, as after a zone change. */
     async load(initialViewMode: CalendarViewMode = getPreferences().calendarViewMode) {
       perfMark("boot.sql-start");
       try {
         loaded = false;
         const initialWindow = computeViewWindow(new Date(), initialViewMode);
+        for (const other of panes) {
+          if (other === pane) continue;
+          other.reloadCurrentWindow().catch((error: unknown) => {
+            console.warn("[calendar] split pane window reload failed", error);
+          });
+        }
         await loadWindowIntoState(initialWindow.start, initialWindow.end, true);
       } catch (e) {
         console.error("[calendar] load() failed:", e);
         throw e;
       }
+    },
+
+    /**
+     * Load the first window a view shows when the app does not boot this store, such as a split pane's. Does
+     * nothing once the store shows a window or while one loads.
+     */
+    async loadInitialWindow(
+      windowStart: Temporal.PlainDate,
+      windowEnd: Temporal.PlainDate,
+    ): Promise<void> {
+      if (bootsWithApp || loaded || foregroundWindowBusy) return;
+      await loadWindowIntoState(windowStart, windowEnd, false);
     },
 
     async loadWindow(
@@ -601,8 +651,9 @@ export function getCalendar() {
       await loadWindowIntoState(windowStart, windowEnd, false);
     },
 
+    /** Reload this store's current window, and those of other split panes, from the database. */
     async refreshCurrentWindow(): Promise<void> {
-      await reloadCurrentWindowFromDb();
+      await refreshPanes(pane);
     },
 
     /** Invalidate derived reads and notify other windows after a native Save receipt. */
@@ -613,11 +664,12 @@ export function getCalendar() {
       publishCalendarWindowSync();
     },
 
+    /** Show `windowStart` to `windowEnd` freshly read from the database, and reload other split panes' windows. */
     async refreshWindow(
       windowStart: Temporal.PlainDate,
       windowEnd: Temporal.PlainDate,
     ): Promise<void> {
-      await reloadWindowFromDb(windowStart, windowEnd);
+      await refreshPanes(pane, { start: windowStart, end: windowEnd });
     },
 
     async loadPomodoroSchedulerEvents(
@@ -679,7 +731,7 @@ export function getCalendar() {
 
       totalEventCount += result.added;
       if (result.refreshWindow) {
-        await reloadCurrentWindowFromDb();
+        await refreshPanes(pane);
       }
       publishCalendarWindowSync();
       return result.summary;
@@ -696,4 +748,35 @@ export function getCalendar() {
 
   };
   return store;
+}
+
+export type CalendarWindowStore = ReturnType<typeof createCalendarWindowStore>;
+
+// Both exist from the start and share one window cache, so a change committed through either reloads both.
+const stores: Record<WorkspacePaneScope, CalendarWindowStore> = {
+  primary: createCalendarWindowStore({ bootsWithApp: true }),
+  secondary: createCalendarWindowStore({ bootsWithApp: false }),
+};
+
+function storeFor(scope: WorkspacePaneScope): CalendarWindowStore {
+  initCalendarWindowSync(() => refreshPanes(panes[0]));
+  return stores[scope];
+}
+
+/**
+ * The window's primary Calendar store, the one the app boots and every Calendar outside a split view shows
+ * through. Changes committed through it reload the windows of both split panes.
+ */
+export function getCalendar(): CalendarWindowStore {
+  return storeFor("primary");
+}
+
+/** The Calendar store a split pane scope shows through. */
+export function getCalendarStore(scope: WorkspacePaneScope): CalendarWindowStore {
+  return storeFor(scope);
+}
+
+/** The Calendar store of the calling view's split pane. Call during component initialization. */
+export function useCalendar(): CalendarWindowStore {
+  return storeFor(getWorkspacePaneScope());
 }

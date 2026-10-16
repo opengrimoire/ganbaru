@@ -14,7 +14,8 @@ export function touchMovedBeyondSlop(deltaX: number, deltaY: number): boolean {
 
 /**
  * Arbitrates one touch between native scrolling and a hold gesture. Movement past the slop before
- * the hold cancels it, and an activated hold blocks later touch movement from scrolling.
+ * the hold cancels it, and an activated hold blocks later touch movement from scrolling. While the
+ * touch lasts, the long-press context menu stays closed so it cannot open over the gesture.
  */
 export class TouchHoldArbiter {
   private pointerId: number | null = null;
@@ -44,6 +45,7 @@ export class TouchHoldArbiter {
     window.addEventListener("pointerup", this.handlePendingPointerEnd);
     window.addEventListener("pointercancel", this.handlePendingPointerEnd);
     window.addEventListener("touchmove", this.blockActiveTouchMove, { capture: true, passive: false });
+    window.addEventListener("contextmenu", this.blockContextMenu, { capture: true });
     if (options.immediate) {
       this.activateNow();
       return;
@@ -54,7 +56,8 @@ export class TouchHoldArbiter {
   finish(): void {
     this.clearTimer();
     this.removePendingPointerListeners();
-    window.removeEventListener("touchmove", this.blockActiveTouchMove, true);
+    window.removeEventListener("touchmove", this.blockActiveTouchMove, { capture: true });
+    window.removeEventListener("contextmenu", this.blockContextMenu, { capture: true });
     this.pointerId = null;
     this.activate = null;
     this.onTap = null;
@@ -85,6 +88,11 @@ export class TouchHoldArbiter {
 
   private readonly blockActiveTouchMove = (event: TouchEvent): void => {
     if (this.active && event.cancelable) event.preventDefault();
+  };
+
+  private readonly blockContextMenu = (event: Event): void => {
+    event.preventDefault();
+    event.stopPropagation();
   };
 
   private clearTimer(): void {

@@ -9,18 +9,18 @@
   import type { ProviderInstanceId, ProviderProbeResult } from "$lib/chat/contracts";
   import { resolveChatFirstUseState } from "$lib/chat/shell-model";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { getChat } from "$lib/stores/chat.svelte";
+  import { useChat } from "$lib/stores/chat.svelte";
   import { getNavigation } from "$lib/stores/navigation.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
   import ChatComposer from "$lib/components/chat/composer/ChatComposer.svelte";
   import ChatTimeline from "$lib/components/chat/timeline/ChatTimeline.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
 
   const { t } = getLocalization();
-  const chat = getChat();
+  const chat = useChat();
   const navigation = getNavigation();
-  const projects = getProjects();
+  const projects = useProjects();
   const settings = getSettingsLauncher();
   let operationError = $state<string | null>(null);
   const firstUse = $derived(resolveChatFirstUseState({ providers: chat.settings?.providerInstances ?? [], workingFolders: chat.workingFolders, selectedProjectId: projects.selectedProjectId, selectedProjectArchived: projects.selectedProject?.status === "archived", selectedWorkingFolderId: chat.selectedWorkingFolderId, selectedThreadId: chat.selectedThreadId, threads: [...chat.activeThreads, ...chat.archivedThreads] }));

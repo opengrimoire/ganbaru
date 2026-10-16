@@ -11,6 +11,7 @@
   } from "$lib/notes/pages/destination-picker";
   import Search from "@lucide/svelte/icons/search";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
+  import { OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
 
   let {
     targets,
@@ -63,6 +64,7 @@
   });
 
   $effect(() => {
+    if (!OPENING_MAY_FOCUS_TEXT) return;
     void tick().then(() => {
       searchInput?.focus();
     });

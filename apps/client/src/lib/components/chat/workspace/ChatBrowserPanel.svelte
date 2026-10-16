@@ -15,13 +15,13 @@
   import * as chatApi from "$lib/api/chat";
   import type { BrowserTabBounds, BrowserTabRead } from "$lib/chat/contracts";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { getChat } from "$lib/stores/chat.svelte";
+  import { useChat } from "$lib/stores/chat.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
 
   type ViewportPreset = "responsive" | "mobile" | "tablet" | "desktop";
 
   const { t } = getLocalization();
-  const chat = getChat();
+  const chat = useChat();
   let viewport: HTMLDivElement | undefined = $state();
   let browserTab: BrowserTabRead | null = $state(null);
   let tabs = $state<BrowserTabRead[]>([]);

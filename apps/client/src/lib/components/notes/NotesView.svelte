@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, untrack } from "svelte";
+  import { onMount, untrack, type Snippet } from "svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { hasOnlyShortcutModifier } from "$lib/keyboard-shortcuts";
   import {
@@ -10,10 +10,13 @@
   } from "$lib/lazy-component-loader";
   import { parseNotesLinkHash } from "$lib/notes/links/block-link";
   import { notesPageContainingFolderId } from "$lib/notes/navigation/hierarchy-menu";
+  import { firstNotesNavigationPage, notesFoldersForProject } from "$lib/notes/navigation/tree";
+  import { notesPageTitle } from "$lib/notes/pages/title";
+  import { notesPageProjectId, notesPagesForProject } from "$lib/notes/project-membership";
   import { notesUndoShortcutAction } from "$lib/notes/history/undo-history";
   import type { NotesWorkingMarkdownFileRef } from "$lib/notes/types";
-  import { getNotes } from "$lib/stores/notes.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useNotesWorkspace } from "$lib/stores/notes.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { getViewport } from "$lib/stores/viewport.svelte";
   import { isAppShortcutBlockedTarget, isEditableKeyboardTarget } from "$lib/utils";
@@ -30,21 +33,36 @@
   import NotesEditor from "./NotesEditor.svelte";
   import NotesDatabasePage from "$lib/components/notes/database/NotesDatabasePage.svelte";
   import NotesLoadingSkeleton from "./NotesLoadingSkeleton.svelte";
+  import NotesProjectEmptyState from "./NotesProjectEmptyState.svelte";
   import NotesProjectHome from "./NotesProjectHome.svelte";
   import NotesProjectSettingsPanel from "$lib/components/notes/NotesProjectSettingsPanel.svelte";
   import NotesWorkspaceHeader from "./NotesWorkspaceHeader.svelte";
   import NotesWorkingMarkdownEditor from "$lib/components/notes/working-markdown/NotesWorkingMarkdownEditor.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { getWorkspacePaneFocus } from "$lib/workspace-tabs/pane-focus";
 
   let {
     mobileLayout = false,
+    projectSidebar = undefined,
+    projectViewSwitcher = undefined,
   }: {
     mobileLayout?: boolean;
+    /**
+     * Projects sidebar from a host that opens Notes as one place of a project. It replaces the Notes explorer, so the
+     * header breadcrumb carries page navigation. The snippet receives the handler for a project switch.
+     */
+    projectSidebar?: Snippet<[() => void]>;
+    /** Phone switcher between the views of the project that hosts Notes, shown in the mobile action row. */
+    projectViewSwitcher?: Snippet;
   } = $props();
 
-  const notes = getNotes();
-  const projects = getProjects();
+  /** Whether Notes opens as one view of the selected project, so the selected project leads what it shows. */
+  const projectHosted = $derived(projectSidebar !== undefined || projectViewSwitcher !== undefined);
+
+  const notes = useNotesWorkspace();
+  const paneFocused = getWorkspacePaneFocus();
+  const projects = useProjects();
   const mobileBackStack = getMobileBackStack();
   const viewport = getViewport();
   const { t } = getLocalization();
@@ -53,13 +71,17 @@
   const CENTER_PEEK_FULL_PAGE_MIN_HEIGHT_PX = 520;
   type ActiveNotesSurfaceKind = NotesSurfaceKind | "home" | "editor";
 
-  let showInactiveProjects = $state(false);
   let creationFolderOverride = $state<string | null | undefined>(undefined);
+  let projectSelectionInFlight: { projectId: string | null } | null = null;
+  /** Project hosted Notes last tried to align with, so a failed load is not retried in a loop. */
+  let hostedAlignmentProjectId: string | null | undefined;
   let creationContextProjectId = $state<string | null>(null);
   let creationContextPageId = $state<string | null>(null);
   let notesRootElement = $state<HTMLDivElement | null>(null);
   let pageActionsTarget = $state<HTMLElement | null>(null);
   let projectSettingsOpen = $state(false);
+  /** The phone shell opens the explorer as a floating panel over an open note; the landing level shows it in place. */
+  let mobileExplorerPanelOpen = $state(false);
   let projectSettingsDirty = $state(false);
   let projectSettingsDiscardConfirmOpen = $state(false);
   let projectVersionHistoryOpen = $state(false);
@@ -129,6 +151,16 @@
   );
   const showProjectExplorer = $derived(!mobileLayout || activeSurfaceKind === "home");
   const showPrimaryContent = $derived(!mobileLayout || activeSurfaceKind !== "home");
+  const showMobileExplorerPanel = $derived(mobileLayout && mobileExplorerPanelOpen && !showProjectExplorer);
+  const showEmptyProjectState = $derived(
+    !mobileLayout
+    && notes.loaded
+    && activeSurfaceKind === "home"
+    && !hasContextualSelection
+    && selectedProjectId !== null
+    && notes.workspaceProjectId === selectedProjectId
+    && notesPagesForProject(notes.navigationPages, selectedProjectId).length === 0,
+  );
   const projectHistoryLoadState = $derived(optionalLoadStates["project-history"] ?? null);
   const confirmDialogLoadState = $derived(optionalLoadStates["confirm-dialog"] ?? null);
   const databaseDeletionPanes = $derived(notes.editorPanes.filter(({ store }) => store.databaseDeletion.prompt));
@@ -226,6 +258,10 @@
   });
 
   $effect(() => {
+    if (showProjectExplorer) mobileExplorerPanelOpen = false;
+  });
+
+  $effect(() => {
     if (!mobileLayout || notes.selectedPageId === null) return;
     return mobileBackStack.activate({
       handle: () => {
@@ -259,6 +295,8 @@
 
   onMount(() => {
     async function openHashTarget(): Promise<void> {
+      // The window has one hash, so of two Notes panes only the focused one opens its target.
+      if (!paneFocused()) return;
       const target = parseNotesLinkHash(window.location.hash);
       if (!target) {
         return;
@@ -314,11 +352,11 @@
     }
   });
 
-  function showProjectHome(): void {
-    if (!beforeDocumentNavigation()) return;
+  function showProjectHome(): Promise<void> {
+    if (!beforeDocumentNavigation()) return Promise.resolve();
     if (notes.viewMode === "archive") notes.closeArchive();
     if (notes.viewMode === "trash") notes.closeTrash();
-    void notes.selectPage(null);
+    return notes.selectPage(null);
   }
 
   function handleProjectSelected(): void {
@@ -326,15 +364,91 @@
       if (workingMarkdownProjectId) projects.selectedProjectId = workingMarkdownProjectId;
       return;
     }
+    const projectId = projects.selectedProjectId;
+    if (projectSelectionInFlight && projectSelectionInFlight.projectId === projectId) return;
+    const selection = { projectId };
+    projectSelectionInFlight = selection;
+    hostedAlignmentProjectId = projectId;
     pendingProjectSettingsAction = null;
     projectSettingsOpen = false;
     projectSettingsDirty = false;
     projectSettingsDiscardConfirmOpen = false;
     projectVersionHistoryOpen = false;
-    showProjectHome();
-    void notes.load().catch((error) => {
-      console.error("load selected Notes project failed", error);
-    });
+    // The shell request carries the selected page, so the previous project's page must be cleared before loading.
+    void showProjectHome()
+      .then(() => notes.load())
+      .then(() => openFirstProjectNote(projectId))
+      .catch((error) => {
+        console.error("load selected Notes project failed", error);
+      })
+      .finally(() => {
+        if (projectSelectionInFlight === selection) projectSelectionInFlight = null;
+      });
+  }
+
+  /**
+   * Whether hosted Notes shows the selected project: the open note belongs to it, or the project home or list is
+   * loaded for it. A note of the selected project counts even before its shell refresh finishes, and `null` means the
+   * main pane is still loading.
+   */
+  function hostedNotesShowProject(projectId: string): boolean | null {
+    const main = notes.editorPanes.find((pane) => pane.id === notes.mainPaneId)?.store;
+    if (!main || !main.loaded || main.loading) return null;
+    if (main.selectedPageId) {
+      const page = main.loadedPage;
+      if (page?.id !== main.selectedPageId) return null;
+      if (notesPageProjectId(page) === projectId) return true;
+    }
+    return !main.selectedPageId && main.workspaceProjectId === projectId;
+  }
+
+  // Hosted by Projects, the selected project leads, so a note or shell left from another project, such as the
+  // Notes tab's last document, is replaced by the selected project's notes instead of pulling the project back to it.
+  // Only the main pane counts, so a peek at another project's note stays open, and unsaved working Markdown is kept.
+  $effect(() => {
+    notes.setPreviewsFollowProject(!projectHosted);
+    return () => notes.setPreviewsFollowProject(true);
+  });
+
+  $effect(() => {
+    if (!projectHosted || workingMarkdownDirty) return;
+    const projectId = projects.selectedProjectId;
+    if (!projectId) return;
+    const aligned = hostedNotesShowProject(projectId);
+    if (aligned === null) return;
+    if (aligned) {
+      hostedAlignmentProjectId = undefined;
+      return;
+    }
+    if (hostedAlignmentProjectId === projectId) return;
+    hostedAlignmentProjectId = projectId;
+    untrack(handleProjectSelected);
+  });
+
+  /**
+   * Opens the first note of a newly selected project in sidebar order, unless the project changed or the user opened
+   * something else while it loaded. Mobile keeps the project's note list, which is its navigation surface.
+   */
+  async function openFirstProjectNote(projectId: string | null): Promise<void> {
+    if (mobileLayout || !projectId || projects.selectedProjectId !== projectId) return;
+    if (notes.viewMode !== "pages" || notes.selectedPageId !== null || selectedWorkingMarkdownFile) return;
+    const firstPage = firstNotesNavigationPage(
+      notesPagesForProject(notes.navigationPages, projectId),
+      notesFoldersForProject(notes.folders, projectId),
+      {
+        rootPagesOnly: true,
+        collapsedFolderIds: notes.collapsedFolderIds,
+        pageIdsWithChildren: notes.sidebarPageIdsWithChildren,
+        missingParentPageIds: notes.sidebarMissingParentPageIds,
+        trashedParentPageIds: notes.sidebarTrashedParentPageIds,
+        sortOrder: notes.sidebarOrderForProject(projectId),
+        favoriteFolderIds: notes.favoriteFolderIds,
+        favoritePageIds: notes.favoritePageIds,
+        customOrderKeys: notes.customOrderForProject(projectId),
+        titleForPage: (page) => notesPageTitle(page, t("notes.untitled")),
+      },
+    );
+    if (firstPage) await notes.selectPage(firstPage.id, { openMode: "full" });
   }
 
   function beforeDocumentNavigation(): boolean {
@@ -474,6 +588,7 @@
   }
 
   function handleNotesWindowKeydown(event: KeyboardEvent): void {
+    if (!paneFocused()) return;
     const historyAction = notesUndoShortcutAction(event);
     if (historyAction) {
       if (
@@ -531,27 +646,30 @@
   bind:this={notesRootElement}
   class="notes-view-root flex h-full min-h-0 flex-col overflow-hidden text-foreground"
   class:notes-view-mobile={mobileLayout}
-  style="background-color: var(--cal-bg);"
   data-first-use-shell="notes"
 >
-  <NotesWorkspaceHeader
-    {mobileLayout}
-    {selectedProject}
-    {selectedGroup}
-    {selectedProjectId}
-    selectedPage={topBarSelectedPage}
-    explorerCollapsed={notes.explorerCollapsed}
-    {creationFolderId}
-    {showInactiveProjects}
-    onShowInactiveProjectsChange={(value) => {
-      showInactiveProjects = value;
-    }}
-    onProjectSelected={handleProjectSelected}
-    onShowHome={showProjectHome}
-    {projectSettingsOpen}
-    onToggleProjectSettings={toggleProjectSettings}
-    bind:pageActionsTarget
-  />
+  {#snippet workspaceHeader()}
+    <NotesWorkspaceHeader
+      {mobileLayout}
+      {selectedProject}
+      {selectedGroup}
+      {selectedProjectId}
+      selectedPage={topBarSelectedPage}
+      {creationFolderId}
+      showInactiveProjects={projects.showInactiveProjects}
+      onShowInactiveProjectsChange={(value) => {
+        projects.showInactiveProjects = value;
+      }}
+      onProjectSelected={handleProjectSelected}
+      onShowHome={showProjectHome}
+      onOpenExplorer={mobileLayout ? () => { mobileExplorerPanelOpen = true; } : undefined}
+      projectViewSwitcher={mobileLayout ? projectViewSwitcher : undefined}
+      {projectSettingsOpen}
+      onToggleProjectSettings={toggleProjectSettings}
+      bind:pageActionsTarget
+    />
+  {/snippet}
+  {#if mobileLayout}{@render workspaceHeader()}{/if}
   {#if !mobileLayout && projectSettingsOpen && selectedProjectId}
     <NotesProjectSettingsPanel
         projectId={selectedProjectId}
@@ -637,10 +755,16 @@
       </div>
     {/if}
   {/each}
-  <div class="notes-view-layout relative flex min-h-0 flex-1 overflow-hidden">
-    {#if showProjectExplorer}
+  <div class="notes-view-layout relative flex min-h-0 flex-1 overflow-hidden" class:explorer-chrome={!mobileLayout}>
+    {#if projectSidebar && !mobileLayout}
+      {@render projectSidebar(handleProjectSelected)}
+    {:else if showProjectExplorer || showMobileExplorerPanel}
       <NotesProjectHome
         {mobileLayout}
+        panel={showMobileExplorerPanel}
+        onClosePanel={() => {
+          mobileExplorerPanelOpen = false;
+        }}
         projectId={selectedProjectId}
         bind:explorerCollapsed={notes.explorerCollapsed}
         {creationFolderId}
@@ -653,121 +777,126 @@
       />
     {/if}
     {#if showPrimaryContent}
-      <div class="flex min-w-0 flex-1 overflow-hidden">
-        {#if !notes.loaded && notes.loadError}
-          <div class="flex min-w-0 flex-1 text-sm" data-notes-first-use-state>
-            <Notice layout="fill" message={t("notes.loadFailed", notes.loadError)} onRetry={() => notes.load()} />
-          </div>
-        {:else if !mobileLayout && selectedWorkingMarkdownFile}
-          <NotesWorkingMarkdownEditor
-            file={selectedWorkingMarkdownFile}
-            onDirtyChange={(dirty) => { workingMarkdownDirty = dirty; }}
-          />
-        {:else if activeSurfaceKind === "archive" || activeSurfaceKind === "trash"}
-          {#if activeSurfaceLoadState?.status === "ready" && activeSurfaceLoadState.component.kind === activeSurfaceKind}
-            {@const ActiveNotesSurface = activeSurfaceLoadState.component.component}
-            <ActiveNotesSurface />
-          {:else if activeSurfaceLoadState?.status === "failed"}
-            <div class="flex min-w-0 flex-1 text-sm">
-              <Notice
-                layout="fill"
-                message={t("common.viewLoadFailed", activeSurfaceKind === "archive" ? t("notes.archive") : t("notes.trash"))}
-                copy={false}
-                onRetry={() => requestNotesSurface(activeSurfaceKind, true)}
-              />
+      <div class="notes-view-canvas flex min-w-0 flex-1 flex-col overflow-hidden" class:surface-content={!mobileLayout}>
+        {#if !mobileLayout}{@render workspaceHeader()}{/if}
+        <div class="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+          {#if !notes.loaded && notes.loadError}
+            <div class="flex min-w-0 flex-1 text-sm" data-notes-first-use-state>
+              <Notice layout="fill" message={t("notes.loadFailed", notes.loadError)} onRetry={() => notes.load()} />
             </div>
-          {:else}
-            <Loading layout="fill" label={activeSurfaceKind === "archive" ? t("notes.loadingArchive") : t("notes.loadingTrash")} class="min-w-0 flex-1" />
-          {/if}
-        {:else}
-          {#each notes.editorPanes as pane (pane.id)}
-            {@const store = pane.store}
-            {@const isContextual = contextualPane?.id === pane.id}
-            {@const center = !showDatabasePage && isContextual && showCenterPeek}
-            {@const side = !showDatabasePage && isContextual && showSidePeek}
-            {@const hidden = showDatabasePage
-              ? notes.activePaneId !== pane.id
-              : !isContextual && peekPromotesToFullPage}
-            {@const selected = store.selectedPageId !== null && !store.isPagePendingRemoval(store.selectedPageId)}
-            <div
-              class={hidden ? "hidden" : center
-                ? "surface-backdrop fixed inset-x-0 bottom-0 z-50 flex items-center justify-center px-3 py-4 sm:px-6 sm:py-8"
-                : side ? "ml-auto flex min-w-0 basis-1/2 overflow-hidden"
-                  : !showDatabasePage && showSidePeek ? "flex min-w-0 basis-1/2 overflow-hidden" : "flex min-w-0 flex-1 overflow-hidden"}
-              style={center ? "top: calc(var(--titlebar-h) + var(--cal-header-row-h));" : undefined}
-              inert={hidden || (!showDatabasePage && !isContextual && showCenterPeek)}
-              data-notes-pane={pane.id}
-              data-floating-root
-              data-notes-main-page={pane.id === notes.mainPaneId ? store.selectedPageId : undefined}
-              role="presentation"
-              onpointerdowncapture={(event) => {
-                if (event.target !== event.currentTarget || !center) notes.activatePane(pane.id);
-              }}
-              onfocusincapture={() => notes.activatePane(pane.id)}
-              onclick={(event) => { if (center && event.target === event.currentTarget) closePagePeek(); }}
-            >
-              <div
-                class={center
-                  ? "notes-center-peek-panel flex min-w-0 overflow-hidden rounded-floating border border-border shadow-floating"
-                  : side ? "flex min-w-0 flex-1 overflow-hidden border-l border-border" : "flex min-w-0 flex-1 overflow-hidden"}
-                style="background-color: var(--cal-bg);"
-                role={!showDatabasePage && isContextual && showPagePeek ? "dialog" : undefined}
-                aria-modal={!showDatabasePage && isContextual && showPagePeek ? center : undefined}
-                data-notes-page-peek={!showDatabasePage && isContextual && showPagePeek || undefined}
-              >
-                {#if selected}
-                  {#if store.selectedDatabaseBlockId}
-                    {#key store.selectedDatabaseBlockId}
-                      <NotesDatabasePage
-                        editorStore={store}
-                        {mobileLayout}
-                        pageActionsTarget={notes.activePaneId === pane.id ? pageActionsTarget : null}
-                      />
-                    {/key}
-                  {/if}
-                  <div
-                    class={store.selectedDatabaseBlockId ? "hidden" : "flex min-h-0 min-w-0 flex-1 overflow-hidden"}
-                    inert={store.selectedDatabaseBlockId != null}
-                    data-notes-editor-container
-                  >
-                  {#key store.selectedPageId}
-                    <NotesLoadingSkeleton
-                      ready={store.loadedPage?.id === store.selectedPageId && store.primaryContentReady || !!store.loadError}
-                      page={store.allPages.find((page) => page.id === store.selectedPageId) ?? store.linkResolutionPages.find((page) => page.id === store.selectedPageId) ?? null}
-                      openMode={isContextual && showPagePeek ? store.pageOpenMode : "full"}
-                    >
-                      {#snippet children()}
-                        {#if store.loadedPage?.id === store.selectedPageId && store.primaryContentReady
-                          && (!store.selectedDatabaseBlockId || retainedEditorPages[pane.id] === store.selectedPageId)}
-                          <NotesEditor
-                            projectId={selectedProjectId}
-                            editorStore={store}
-                            active={!store.selectedDatabaseBlockId && notes.activePaneId === pane.id}
-                            openMode={isContextual && showPagePeek ? store.pageOpenMode : "full"}
-                            pageActionsTarget={!store.selectedDatabaseBlockId && notes.activePaneId === pane.id ? pageActionsTarget : null}
-                            onClose={() => { void notes.closePane(pane.id).catch((error: unknown) => console.warn("Close Notes pane failed", error)); }}
-                            onOpenModeChange={(mode) => { void notes.showPaneAs(pane.id, mode).catch((error: unknown) => console.warn("Change Notes pane mode failed", error)); }}
-                          />
-                        {:else if store.loadError}
-                          <div class="flex min-w-0 flex-1 text-sm">
-                            <Notice layout="fill" message={t("notes.loadFailed", store.loadError)} onRetry={() => store.selectPageLocally(store.selectedPageId)}>
-                              {#snippet actions()}
-                                {#if isContextual && showPagePeek}
-                                  <button type="button" class="notice-action-text" onclick={() => { void notes.closePane(pane.id).catch((error: unknown) => console.warn("Close Notes pane failed", error)); }}>{t("notes.closePeek")}</button>
-                                {/if}
-                              {/snippet}
-                            </Notice>
-                          </div>
-                        {/if}
-                      {/snippet}
-                    </NotesLoadingSkeleton>
-                  {/key}
-                  </div>
-                {/if}
+          {:else if !mobileLayout && selectedWorkingMarkdownFile}
+            <NotesWorkingMarkdownEditor
+              file={selectedWorkingMarkdownFile}
+              onDirtyChange={(dirty) => { workingMarkdownDirty = dirty; }}
+            />
+          {:else if activeSurfaceKind === "archive" || activeSurfaceKind === "trash"}
+            {#if activeSurfaceLoadState?.status === "ready" && activeSurfaceLoadState.component.kind === activeSurfaceKind}
+              {@const ActiveNotesSurface = activeSurfaceLoadState.component.component}
+              <ActiveNotesSurface />
+            {:else if activeSurfaceLoadState?.status === "failed"}
+              <div class="flex min-w-0 flex-1 text-sm">
+                <Notice
+                  layout="fill"
+                  message={t("common.viewLoadFailed", activeSurfaceKind === "archive" ? t("notes.archive") : t("notes.trash"))}
+                  copy={false}
+                  onRetry={() => requestNotesSurface(activeSurfaceKind, true)}
+                />
               </div>
-            </div>
-          {/each}
-        {/if}
+            {:else}
+              <Loading layout="fill" label={activeSurfaceKind === "archive" ? t("notes.loadingArchive") : t("notes.loadingTrash")} class="min-w-0 flex-1" />
+            {/if}
+          {:else if showEmptyProjectState}
+            <NotesProjectEmptyState onCreate={createPage} />
+          {:else}
+            {#each notes.editorPanes as pane (pane.id)}
+              {@const store = pane.store}
+              {@const isContextual = contextualPane?.id === pane.id}
+              {@const center = !showDatabasePage && isContextual && showCenterPeek}
+              {@const side = !showDatabasePage && isContextual && showSidePeek}
+              {@const hidden = showDatabasePage
+                ? notes.activePaneId !== pane.id
+                : !isContextual && peekPromotesToFullPage}
+              {@const selected = store.selectedPageId !== null && !store.isPagePendingRemoval(store.selectedPageId)}
+              <div
+                class={hidden ? "hidden" : center
+                  ? "surface-backdrop fixed inset-x-0 bottom-0 z-50 flex items-center justify-center px-3 py-4 sm:px-6 sm:py-8"
+                  : side ? "ml-auto flex min-w-0 basis-1/2 overflow-hidden"
+                    : !showDatabasePage && showSidePeek ? "flex min-w-0 basis-1/2 overflow-hidden" : "flex min-w-0 flex-1 overflow-hidden"}
+                style={center ? "top: calc(var(--titlebar-h) + var(--toolbar-h));" : undefined}
+                inert={hidden || (!showDatabasePage && !isContextual && showCenterPeek)}
+                data-notes-pane={pane.id}
+                data-floating-root
+                data-notes-main-page={pane.id === notes.mainPaneId ? store.selectedPageId : undefined}
+                role="presentation"
+                onpointerdowncapture={(event) => {
+                  if (event.target !== event.currentTarget || !center) notes.activatePane(pane.id, !projectHosted);
+                }}
+                onfocusincapture={() => notes.activatePane(pane.id, !projectHosted)}
+                onclick={(event) => { if (center && event.target === event.currentTarget) closePagePeek(); }}
+              >
+                <div
+                  class={center
+                    ? "notes-center-peek-panel flex min-w-0 overflow-hidden rounded-floating border border-border shadow-floating"
+                    : side ? "flex min-w-0 flex-1 overflow-hidden border-l border-border" : "flex min-w-0 flex-1 overflow-hidden"}
+                  style="background-color: var(--cal-bg);"
+                  role={!showDatabasePage && isContextual && showPagePeek ? "dialog" : undefined}
+                  aria-modal={!showDatabasePage && isContextual && showPagePeek ? center : undefined}
+                  data-notes-page-peek={!showDatabasePage && isContextual && showPagePeek || undefined}
+                >
+                  {#if selected}
+                    {#if store.selectedDatabaseBlockId}
+                      {#key store.selectedDatabaseBlockId}
+                        <NotesDatabasePage
+                          editorStore={store}
+                          {mobileLayout}
+                          pageActionsTarget={notes.activePaneId === pane.id ? pageActionsTarget : null}
+                        />
+                      {/key}
+                    {/if}
+                    <div
+                      class={store.selectedDatabaseBlockId ? "hidden" : "flex min-h-0 min-w-0 flex-1 overflow-hidden"}
+                      inert={store.selectedDatabaseBlockId != null}
+                      data-notes-editor-container
+                    >
+                    {#key store.selectedPageId}
+                      <NotesLoadingSkeleton
+                        ready={store.loadedPage?.id === store.selectedPageId && store.primaryContentReady || !!store.loadError}
+                        page={store.allPages.find((page) => page.id === store.selectedPageId) ?? store.linkResolutionPages.find((page) => page.id === store.selectedPageId) ?? null}
+                        openMode={isContextual && showPagePeek ? store.pageOpenMode : "full"}
+                      >
+                        {#snippet children()}
+                          {#if store.loadedPage?.id === store.selectedPageId && store.primaryContentReady
+                            && (!store.selectedDatabaseBlockId || retainedEditorPages[pane.id] === store.selectedPageId)}
+                            <NotesEditor
+                              projectId={selectedProjectId}
+                              editorStore={store}
+                              active={!store.selectedDatabaseBlockId && notes.activePaneId === pane.id}
+                              openMode={isContextual && showPagePeek ? store.pageOpenMode : "full"}
+                              pageActionsTarget={!store.selectedDatabaseBlockId && notes.activePaneId === pane.id ? pageActionsTarget : null}
+                              onClose={() => { void notes.closePane(pane.id).catch((error: unknown) => console.warn("Close Notes pane failed", error)); }}
+                              onOpenModeChange={(mode) => { void notes.showPaneAs(pane.id, mode).catch((error: unknown) => console.warn("Change Notes pane mode failed", error)); }}
+                            />
+                          {:else if store.loadError}
+                            <div class="flex min-w-0 flex-1 text-sm">
+                              <Notice layout="fill" message={t("notes.loadFailed", store.loadError)} onRetry={() => store.selectPageLocally(store.selectedPageId)}>
+                                {#snippet actions()}
+                                  {#if isContextual && showPagePeek}
+                                    <button type="button" class="notice-action-text" onclick={() => { void notes.closePane(pane.id).catch((error: unknown) => console.warn("Close Notes pane failed", error)); }}>{t("notes.closePeek")}</button>
+                                  {/if}
+                                {/snippet}
+                              </Notice>
+                            </div>
+                          {/if}
+                        {/snippet}
+                      </NotesLoadingSkeleton>
+                    {/key}
+                    </div>
+                  {/if}
+                </div>
+              </div>
+            {/each}
+          {/if}
+        </div>
       </div>
     {/if}
   </div>
@@ -776,6 +905,11 @@
 <style>
   .notes-view-root {
     container: notes-view / inline-size;
+  }
+
+  .notes-view-mobile,
+  .notes-view-canvas {
+    background-color: var(--cal-bg);
   }
 
   .notes-center-peek-panel {

@@ -1,19 +1,18 @@
 <script lang="ts">
-  import { tick } from "svelte";
+  import { tick, untrack } from "svelte";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import Eye from "@lucide/svelte/icons/eye";
   import EyeOff from "@lucide/svelte/icons/eye-off";
+  import FileText from "@lucide/svelte/icons/file-text";
   import Plus from "@lucide/svelte/icons/plus";
   import Search from "@lucide/svelte/icons/search";
   import CalendarScrollbar from "$lib/components/calendar/CalendarScrollbar.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import ProjectLifecycleIcon from "$lib/components/projects/ProjectLifecycleIcon.svelte";
   import {
-    projectLifecycleBadgeClass,
-    projectLifecycleLabel,
-  } from "$lib/projects/display";
-  import {
+    createHoverDelay,
     isPointerAimingAtSubmenu,
     SUBMENU_AIM_TOLERANCES,
     type MenuAimPoint,
@@ -39,19 +38,26 @@
   } from "$lib/projects/types";
   import { notesFoldersForProject } from "$lib/notes/navigation/tree";
   import { notesHierarchyChildren } from "$lib/notes/navigation/hierarchy-menu";
+  import { notesPageSearchGroups, notesPageSearchQueryIsSearchable } from "$lib/notes/navigation/page-search";
+  import { NOTES_PAGE_CHROME_EMOJI_SCALE } from "$lib/notes/pages/icon";
+  import { notesPageTitle } from "$lib/notes/pages/title";
   import { notesPagesForProject } from "$lib/notes/project-membership";
+  import type { NotesPage } from "$lib/notes/types";
   import type { ProjectNavigatorPanelMode } from "$lib/projects/toolbar";
-  import { getNotes } from "$lib/stores/notes.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useNotesWorkspace } from "$lib/stores/notes.svelte";
+  import { createNotesSearchController } from "$lib/stores/notes/search.svelte";
+  import NotesPageIcon from "$lib/components/notes/pages/NotesPageIcon.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
+  import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
+  import { openInNewTabIntent, preventMiddleClickAutoscroll, type OpenInNewTabIntent } from "$lib/workspace-tabs/gestures";
+  import { getPreferences } from "$lib/stores/preferences.svelte";
+  import SidebarOrderMenu from "$lib/components/ui/SidebarOrderMenu.svelte";
+  import StarredIconBadge from "$lib/components/ui/StarredIconBadge.svelte";
   import { cn, type MaybePromise } from "$lib/utils";
+  import { createSidebarOrderDrag } from "$lib/utils/sidebar-order-drag.svelte";
   import ProjectIcon from "$lib/components/projects/ProjectIcon.svelte";
   import NotesHierarchyPickerPanel from "./NotesHierarchyPickerPanel.svelte";
 
-
-  interface ProjectSearchResultGroup {
-    group: ProjectGroup;
-    projects: Project[];
-  }
 
   let {
     selectedProjectId = null,
@@ -62,6 +68,7 @@
     onShowInactiveProjectsChange,
     onProjectSelected,
     onPageSelected,
+    onClose = undefined,
   }: {
     selectedProjectId?: string | null;
     selectedGroupId?: string | null;
@@ -71,10 +78,13 @@
     onShowInactiveProjectsChange: (value: boolean) => void;
     onProjectSelected: () => MaybePromise<void>;
     onPageSelected: () => MaybePromise<void>;
+    onClose?: () => void;
   } = $props();
 
-  const projects = getProjects();
-  const notes = getNotes();
+  const projects = useProjects();
+  const tabs = getWorkspaceTabs();
+  const preferences = getPreferences();
+  const notes = useNotesWorkspace();
   const { t } = getLocalization();
   const iconStrokeWidth = 1.6;
   const iconSize = 13;
@@ -89,8 +99,11 @@
   const subpanelRowHeightPx = 32;
   const subpanelGapPx = 4;
   const zIndexClass = "z-81";
+  const pageSearchDebounceMs = 200;
+  const pageSearchPageSize = 30;
 
   let projectSearch = $state("");
+  let searchedPageQuery = $state("");
   let groupDraft = $state("");
   let isCreateGroupOpen = $state(false);
   let createProjectGroupId = $state<string | null>(null);
@@ -126,17 +139,30 @@
   let noteSubpanelBridgeElement = $state<HTMLDivElement | undefined>();
   let noteSubpanelStyle = $state("");
   let noteSubpanelBridgeStyle = $state("");
+  const projectSubpanelDelay = createHoverDelay();
+  const noteSubpanelDelay = createHoverDelay();
+  $effect(() => () => {
+    projectSubpanelDelay.cancel();
+    noteSubpanelDelay.cancel();
+  });
 
   const selectedProject = $derived(projects.projectById(selectedProjectId));
   const selectedGroup = $derived(projects.groupById(selectedProject?.groupId ?? selectedGroupId));
-  const normalizedSearch = $derived(projectSearch.trim().toLowerCase());
-  const isSearchActive = $derived(normalizedSearch.length > 0);
-  const groups = $derived.by(() => projects.visibleGroups());
-  const visibleGroups = $derived.by(() => groups.filter(isGroupVisible));
-  const searchResultGroups = $derived.by((): ProjectSearchResultGroup[] =>
-    groups
-      .map((group) => ({ group, projects: projectsInGroup(group) }))
-      .filter((entry) => entry.projects.length > 0)
+  const trimmedSearch = $derived(projectSearch.trim());
+  const isSearchActive = $derived(trimmedSearch.length > 0);
+  const visibleGroups = $derived.by(() => projects.visibleGroups());
+  /** The search finds notes by title through the Notes index, grouped by the listed projects in sidebar order. */
+  const pageSearch = createNotesSearchController();
+  const pageSearchQueryIsSearchable = $derived(notesPageSearchQueryIsSearchable(trimmedSearch));
+  const pageSearchPending = $derived(
+    pageSearchQueryIsSearchable && (searchedPageQuery !== trimmedSearch || pageSearch.loading),
+  );
+  const pageSearchGroups = $derived(notesPageSearchGroups(
+    pageSearch.results,
+    visibleGroups.flatMap((group) => projectsInGroup(group)),
+  ));
+  const pageSearchRowCount = $derived(
+    pageSearchGroups.reduce((count, group) => count + group.pages.length + 1, 0),
   );
   const activeGroup = $derived.by(() => visibleGroups.find((group) => group.id === activeGroupId));
   const directProjectGroup = $derived.by(() => selectedGroup);
@@ -151,19 +177,47 @@
     notes.sidebarPageIdsWithChildren,
   ));
 
-  function projectsInGroup(group: ProjectGroup): Project[] {
-    const groupProjects = showInactiveProjects
-      ? projects.projectsForGroupIncludingInactive(group.id)
-      : projects.projectsForGroup(group.id);
-    if (!normalizedSearch) return groupProjects;
-    return groupProjects.filter((project) =>
-      project.name.toLowerCase().includes(normalizedSearch)
-    );
+  const customOrder = $derived(preferences.projectsSidebarOrder === "custom");
+  const projectDragGroup = $derived(panelMode === "groups" ? activeGroup : directProjectGroup);
+  /** Groups drag by their row in the custom order. */
+  const groupDrag = createSidebarOrderDrag({
+    getIds: () => visibleGroups.map((group) => group.id),
+    enabled: () => customOrder && !isSearchActive,
+    save: (orderedIds) => projects.reorderGroups(orderedIds),
+    description: "project groups from the Notes project navigator",
+  });
+  /** Projects drag by their row in the custom order, in the main panel or the open group subpanel. */
+  const projectDrag = createSidebarOrderDrag({
+    getIds: () => projectDragGroup ? projectsInGroup(projectDragGroup).map((project) => project.id) : [],
+    enabled: () => customOrder && !isSearchActive && projectDragGroup !== undefined,
+    isStarred: (projectId) => projects.isProjectStarred(projectId),
+    save: async (orderedIds) => {
+      if (projectDragGroup) await projects.reorderProjectsInGroup(projectDragGroup.id, orderedIds);
+    },
+    description: "projects from the Notes project navigator",
+  });
+  $effect(() => groupDrag.reset);
+  $effect(() => projectDrag.reset);
+
+  /** A lifted group or project closes the panels it would otherwise open while passing over rows. */
+  $effect(() => {
+    const groupLifted = groupDrag.draggedId !== null;
+    const projectLifted = projectDrag.draggedId !== null;
+    if (!groupLifted && !projectLifted) return;
+    untrack(() => {
+      if (groupLifted) closeProjectSubpanel();
+      else closeNoteSubpanel();
+    });
+  });
+
+  function rowDragActive(): boolean {
+    return groupDrag.draggedId !== null || projectDrag.draggedId !== null;
   }
 
-  function isGroupVisible(group: ProjectGroup): boolean {
-    if (!normalizedSearch) return true;
-    return projectsInGroup(group).length > 0;
+  function projectsInGroup(group: ProjectGroup): Project[] {
+    return showInactiveProjects
+      ? projects.projectsForGroupIncludingInactive(group.id)
+      : projects.projectsForGroup(group.id);
   }
 
   function projectTemplateLabel(templateId: ProjectTemplateId): string {
@@ -195,7 +249,7 @@
 
   function mainListEstimatedHeight(): number {
     const itemCount = isSearchActive
-      ? searchResultGroups.reduce((count, entry) => count + entry.projects.length, 0)
+      ? Math.max(1, pageSearchRowCount)
       : panelMode === "projects" && directProjectGroup
         ? projectsInGroup(directProjectGroup).length
         : visibleGroups.length;
@@ -382,6 +436,7 @@
   }
 
   function closeNoteSubpanel(): void {
+    noteSubpanelDelay.cancel();
     activeProjectId = null;
     activeProjectAnchorElement = null;
     activeProjectPanelElement = null;
@@ -390,6 +445,7 @@
   }
 
   function closeProjectSubpanel(): void {
+    projectSubpanelDelay.cancel();
     activeGroupId = null;
     activeGroupAnchorElement = null;
     createProjectGroupId = null;
@@ -403,6 +459,7 @@
     group: ProjectGroup,
     target: EventTarget | null,
   ): void {
+    projectSubpanelDelay.cancel();
     if (activeGroupId !== group.id) {
       createProjectGroupId = null;
       closeNoteSubpanel();
@@ -418,6 +475,7 @@
     target: EventTarget | null,
     sourcePanelElement: HTMLDivElement | null | undefined,
   ): void {
+    noteSubpanelDelay.cancel();
     activeProjectId = project.id;
     activeProjectAnchorElement = target instanceof HTMLElement ? target : null;
     activeProjectPanelElement = sourcePanelElement ?? null;
@@ -425,23 +483,48 @@
     void tick().then(updateNoteSubpanelGeometry);
   }
 
-  function handleGroupPointerEnter(group: ProjectGroup, event: PointerEvent): void {
-    const point = projectPickerPointerPoint(event);
-    if (activeGroupId && activeGroupId !== group.id && isPointerAimingAtProjectSubpanel(point)) {
+  /**
+   * Shows a group's project subpanel, deferring the switch while the pointer
+   * travels toward the open subpanel so a diagonal path does not swap it.
+   */
+  function hoverGroup(group: ProjectGroup, event: PointerEvent): void {
+    const target = event.currentTarget;
+    if (activeGroupId && isPointerAimingAtProjectSubpanel(projectPickerPointerPoint(event))) {
+      projectSubpanelDelay.schedule(() => showProjectSubpanel(group, target));
       return;
     }
-    showProjectSubpanel(group, event.currentTarget);
+    showProjectSubpanel(group, target);
+  }
+
+  /**
+   * Shows a project's note subpanel, deferring the switch while the pointer
+   * travels toward the open subpanel so a diagonal path does not swap it.
+   */
+  function hoverProject(
+    project: Project,
+    event: PointerEvent,
+    sourcePanelElement: HTMLDivElement | null | undefined,
+  ): void {
+    const target = event.currentTarget;
+    if (activeProjectId && isPointerAimingAtNoteSubpanel(projectPickerPointerPoint(event))) {
+      noteSubpanelDelay.schedule(() => showNoteSubpanel(project, target, sourcePanelElement));
+      return;
+    }
+    showNoteSubpanel(project, target, sourcePanelElement);
+  }
+
+  function handleGroupPointerEnter(group: ProjectGroup, event: PointerEvent): void {
+    if (rowDragActive()) return;
+    if (activeGroupId === group.id) {
+      projectSubpanelDelay.cancel();
+      return;
+    }
+    hoverGroup(group, event);
   }
 
   function handleGroupPointerMove(group: ProjectGroup, event: PointerEvent): void {
-    const point = projectPickerPointerPoint(event);
-    if (activeGroupId === group.id) {
-      return;
-    }
-    if (activeGroupId && isPointerAimingAtProjectSubpanel(point)) {
-      return;
-    }
-    showProjectSubpanel(group, event.currentTarget);
+    if (rowDragActive() || activeGroupId === group.id) return;
+    hoverGroup(group, event);
   }
 
   function handleProjectPointerEnter(
@@ -449,11 +532,12 @@
     event: PointerEvent,
     sourcePanelElement: HTMLDivElement | null | undefined,
   ): void {
-    const point = projectPickerPointerPoint(event);
-    if (activeProjectId && activeProjectId !== project.id && isPointerAimingAtNoteSubpanel(point)) {
+    if (rowDragActive()) return;
+    if (activeProjectId === project.id) {
+      noteSubpanelDelay.cancel();
       return;
     }
-    showNoteSubpanel(project, event.currentTarget, sourcePanelElement);
+    hoverProject(project, event, sourcePanelElement);
   }
 
   function handleProjectPointerMove(
@@ -461,14 +545,8 @@
     event: PointerEvent,
     sourcePanelElement: HTMLDivElement | null | undefined,
   ): void {
-    const point = projectPickerPointerPoint(event);
-    if (activeProjectId === project.id) {
-      return;
-    }
-    if (activeProjectId && isPointerAimingAtNoteSubpanel(point)) {
-      return;
-    }
-    showNoteSubpanel(project, event.currentTarget, sourcePanelElement);
+    if (rowDragActive() || activeProjectId === project.id) return;
+    hoverProject(project, event, sourcePanelElement);
   }
 
   function isProjectSubpanelBoundaryTarget(target: EventTarget | null): boolean {
@@ -494,14 +572,17 @@
 
   function handleProjectSubpanelBoundaryLeave(event: PointerEvent): void {
     if (isProjectSubpanelBoundaryTarget(event.relatedTarget)) return;
-    if (isPointerAimingAtProjectSubpanel(projectPickerPointerPoint(event))) return;
-    closeProjectSubpanel();
+    projectSubpanelDelay.schedule(closeProjectSubpanel);
   }
 
   function handleNoteSubpanelBoundaryLeave(event: PointerEvent): void {
     if (isNoteSubpanelBoundaryTarget(event.relatedTarget)) return;
-    if (isPointerAimingAtNoteSubpanel(projectPickerPointerPoint(event))) return;
-    closeNoteSubpanel();
+    noteSubpanelDelay.schedule(closeNoteSubpanel);
+  }
+
+  function handleNoteSubpanelBoundaryEnter(): void {
+    noteSubpanelDelay.cancel();
+    projectSubpanelDelay.cancel();
   }
 
   async function selectProject(project: Project): Promise<void> {
@@ -509,6 +590,57 @@
     await onProjectSelected();
     projectSearch = "";
   }
+
+  function handleProjectRowClick(event: MouseEvent, project: Project): void {
+    const intent = tabs.canOpenTabs ? openInNewTabIntent(event) : null;
+    if (intent) {
+      event.preventDefault();
+      closeNoteSubpanel();
+      tabs.openLocation("project", { kind: "notes", projectId: project.id, item: null }, intent);
+      if (!intent.background) onClose?.();
+      return;
+    }
+    if (event.type === "click") void selectProject(project);
+  }
+
+  async function selectSearchedPage(page: NotesPage): Promise<void> {
+    await notes.selectPage(page.id, { openMode: "full" });
+    await onPageSelected();
+    projectSearch = "";
+  }
+
+  function openPageInNewTab(pageId: string, projectId: string | null, intent: OpenInNewTabIntent): void {
+    tabs.openLocation("item", { kind: "notes", projectId, item: { type: "notes-page", id: pageId } }, intent);
+    if (intent.background) return;
+    closeNoteSubpanel();
+    onClose?.();
+  }
+
+  /** Route a search result click to a new tab when the gesture asks for one, else open the page here. */
+  function handleSearchedPageClick(event: MouseEvent, page: NotesPage, projectId: string | null): void {
+    const intent = tabs.canOpenTabs ? openInNewTabIntent(event) : null;
+    if (intent) {
+      event.preventDefault();
+      openPageInNewTab(page.id, projectId, intent);
+      return;
+    }
+    if (event.type === "click") void selectSearchedPage(page);
+  }
+
+  /** Searches after typing pauses; a query the index cannot run clears the results instead. */
+  $effect(() => {
+    const query = trimmedSearch;
+    if (!pageSearchQueryIsSearchable) {
+      searchedPageQuery = "";
+      void pageSearch.search("", pageSearchPageSize, false);
+      return;
+    }
+    const timer = setTimeout(() => {
+      searchedPageQuery = query;
+      void pageSearch.search(query, pageSearchPageSize, false);
+    }, pageSearchDebounceMs);
+    return () => clearTimeout(timer);
+  });
 
   async function submitGroup(): Promise<void> {
     const name = groupDraft.trim();
@@ -556,7 +688,8 @@
     const hasActiveSearch = isSearchActive;
     const mode = panelMode;
     const groupCount = visibleGroups.length;
-    const resultCount = searchResultGroups.reduce((count, entry) => count + entry.projects.length, 0);
+    const resultCount = pageSearchRowCount;
+    const searchPending = pageSearchPending;
     const directProjectCount = directProjectGroup ? projectsInGroup(directProjectGroup).length : 0;
     const noteCount = activeProjectRootItems.length;
     const isCreatingGroup = isCreateGroupOpen;
@@ -566,6 +699,7 @@
     void mode;
     void groupCount;
     void resultCount;
+    void searchPending;
     void directProjectCount;
     void noteCount;
     void isCreatingGroup;
@@ -633,19 +767,20 @@
     )}
     aria-expanded={activeProjectId === project.id}
     aria-label={t("projects.actions.selectProject", project.name, group.name)}
+    onpointerdown={(event) => projectDrag.pointerDown(event, project.id)}
     onpointerenter={(event) => handleProjectPointerEnter(project, event, sourcePanelElement)}
     onpointermove={(event) => handleProjectPointerMove(project, event, sourcePanelElement)}
     onpointerleave={handleNoteSubpanelBoundaryLeave}
     onfocus={(event) => showNoteSubpanel(project, event.currentTarget, sourcePanelElement)}
-    onclick={() => { void selectProject(project); }}
+    onmousedown={preventMiddleClickAutoscroll}
+    onclick={(event) => handleProjectRowClick(event, project)}
+    onauxclick={(event) => handleProjectRowClick(event, project)}
   >
-    <ProjectIcon name={project.icon} size={iconSize} strokeWidth={iconStrokeWidth} emojiScale={emojiScale} class="shrink-0" />
+    <StarredIconBadge starred={projects.isProjectStarred(project.id)}><ProjectIcon name={project.icon} size={iconSize} strokeWidth={iconStrokeWidth} emojiScale={emojiScale} /></StarredIconBadge>
     <span class="min-w-0 truncate">{project.name}</span>
     <span class="flex min-w-0 items-center justify-end gap-1">
       {#if project.status !== "active"}
-        <span class={cn("shrink-0 rounded border px-1.5 py-0.5 text-[0.666667rem]", projectLifecycleBadgeClass(project.status))}>
-          {projectLifecycleLabel(project.status, t)}
-        </span>
+        <ProjectLifecycleIcon status={project.status} size={iconSize} strokeWidth={iconStrokeWidth} class="text-popover-foreground/60" />
       {/if}
       <ChevronRight size={13} strokeWidth={iconStrokeWidth} class="shrink-0 text-popover-foreground/60" />
     </span>
@@ -662,27 +797,37 @@
       <Search size={13} strokeWidth={iconStrokeWidth} class="shrink-0 text-popover-foreground/60" />
       <input
         bind:value={projectSearch}
-        placeholder={t("calendar.eventPanel.searchProjects")}
+        placeholder={t("notes.searchPlaceholder")}
+        aria-label={t("notes.searchLabel")}
         class="field-bare text-popover-foreground"
       />
-      <button
-        type="button"
-        class={cn(
-          "flex size-6 shrink-0 items-center justify-center rounded-floating-item text-popover-foreground/60 hover:bg-accent hover:text-accent-foreground",
-          showInactiveProjects && "bg-accent text-accent-foreground",
-        )}
-        aria-label={showInactiveProjects ? t("projects.navigator.hideInactive") : t("projects.navigator.showInactive")}
-        title={showInactiveProjects ? t("projects.navigator.hideInactive") : t("projects.navigator.showInactive")}
-        onclick={() => {
-          onShowInactiveProjectsChange(!showInactiveProjects);
-        }}
-      >
-        {#if showInactiveProjects}
-          <EyeOff size={13} strokeWidth={iconStrokeWidth} />
-        {:else}
-          <Eye size={13} strokeWidth={iconStrokeWidth} />
-        {/if}
-      </button>
+      <div class="flex shrink-0 items-center">
+        <SidebarOrderMenu
+          order={preferences.projectsSidebarOrder}
+          label={t("projects.navigator.sortGroupsAndProjects")}
+          buttonClass="flex size-6 shrink-0 items-center justify-center rounded-floating-item text-popover-foreground/60 hover:bg-accent hover:text-accent-foreground"
+          activeClass="bg-accent text-accent-foreground"
+          iconSize={13}
+          {iconStrokeWidth}
+          menuZIndexClass="z-90"
+          onSelect={(order) => { if (order) preferences.setProjectsSidebarOrder(order); }}
+        />
+        <button
+          type="button"
+          class="flex size-6 shrink-0 items-center justify-center rounded-floating-item text-popover-foreground/60 hover:bg-accent hover:text-accent-foreground"
+          aria-label={showInactiveProjects ? t("projects.navigator.hideInactive") : t("projects.navigator.showInactive")}
+          title={showInactiveProjects ? t("projects.navigator.hideInactive") : t("projects.navigator.showInactive")}
+          onclick={() => {
+            onShowInactiveProjectsChange(!showInactiveProjects);
+          }}
+        >
+          {#if showInactiveProjects}
+            <EyeOff size={13} strokeWidth={iconStrokeWidth} />
+          {:else}
+            <Eye size={13} strokeWidth={iconStrokeWidth} />
+          {/if}
+        </button>
+      </div>
     </div>
   </div>
 
@@ -704,40 +849,53 @@
           <Loading layout="rows" rows={3} label={t("projects.loading")} />
         {:else if projects.loadError}
           <Notice class="px-3 py-2" message={t("projects.loadFailed", projects.loadError)} copy={projects.loadError} onRetry={() => projects.load()} />
-        {:else if isSearchActive && searchResultGroups.length === 0}
-          <div class="px-3 py-2 text-popover-foreground/60">
-            {t("calendar.eventPanel.noProjectsFound")}
-          </div>
-        {:else if isSearchActive}
+        {:else if isSearchActive && pageSearch.error}
+          <Notice class="px-3 py-2" message={t("notes.searchFailed", pageSearch.error)} copy={pageSearch.error} />
+        {:else if isSearchActive && pageSearchGroups.length > 0}
           <div class="grid px-1">
-            {#each searchResultGroups as resultGroup (resultGroup.group.id)}
+            {#each pageSearchGroups as resultGroup (resultGroup.project?.id ?? "")}
               <div class="px-1 pb-1">
                 <div class="menu-label">
-                  {resultGroup.group.name}
+                  {resultGroup.project?.name ?? t("notes.searchNoProject")}
                 </div>
                 <div class="grid">
-                  {#each resultGroup.projects as project (project.id)}
+                  {#each resultGroup.pages as page (page.id)}
                     <button
                       type="button"
                       class={cn(
-                        "menu-item",
-                        project.status === "active" ? "text-popover-foreground" : "text-popover-foreground/60",
+                        "menu-item text-popover-foreground",
+                        notes.selectedPageId === page.id && "font-medium",
                       )}
-                      aria-label={t("projects.actions.selectProject", project.name, resultGroup.group.name)}
-                      onclick={() => { void selectProject(project); }}
+                      aria-current={notes.selectedPageId === page.id ? "page" : undefined}
+                      onmousedown={preventMiddleClickAutoscroll}
+                      onclick={(event) => handleSearchedPageClick(event, page, resultGroup.project?.id ?? null)}
+                      onauxclick={(event) => handleSearchedPageClick(event, page, resultGroup.project?.id ?? null)}
                     >
-                      <ProjectIcon name={project.icon} size={iconSize} strokeWidth={iconStrokeWidth} emojiScale={emojiScale} class="shrink-0" />
-                      <span class="min-w-0 flex-1 truncate">{project.name}</span>
-                      {#if project.status !== "active"}
-                        <span class={cn("shrink-0 rounded border px-1.5 py-0.5 text-[0.666667rem]", projectLifecycleBadgeClass(project.status))}>
-                          {projectLifecycleLabel(project.status, t)}
-                        </span>
-                      {/if}
+                      <StarredIconBadge starred={notes.favoritePageIds.includes(page.id)}>
+                        {#if page.icon}
+                          <NotesPageIcon
+                            icon={page.icon}
+                            size={iconSize}
+                            strokeWidth={iconStrokeWidth}
+                            emojiScale={NOTES_PAGE_CHROME_EMOJI_SCALE}
+                            class="shrink-0"
+                          />
+                        {:else}
+                          <FileText size={iconSize} strokeWidth={iconStrokeWidth} class="shrink-0" />
+                        {/if}
+                      </StarredIconBadge>
+                      <span class="min-w-0 flex-1 truncate">{notesPageTitle(page, t("notes.untitled"))}</span>
                     </button>
                   {/each}
                 </div>
               </div>
             {/each}
+          </div>
+        {:else if isSearchActive && pageSearchPending}
+          <Loading layout="rows" rows={3} label={t("notes.searching")} />
+        {:else if isSearchActive}
+          <div class="px-3 py-2 text-popover-foreground/60">
+            {t("notes.noSearchResults")}
           </div>
         {:else if panelMode === "groups"}
           {#if visibleGroups.length === 0}
@@ -747,10 +905,11 @@
           {:else}
             <div class="grid pl-1">
               {#each visibleGroups as group (group.id)}
-                <div class="pl-1 pr-1">
+                <div class="pl-1 pr-1" {@attach groupDrag.item(group.id)}>
                   <button
                     type="button"
                     class="menu-item grid grid-cols-[1.25rem_minmax(0,1fr)_1rem] text-popover-foreground"
+                    onpointerdown={(event) => groupDrag.pointerDown(event, group.id)}
                     aria-expanded={activeGroupId === group.id}
                     onpointerenter={(event) => handleGroupPointerEnter(group, event)}
                     onpointermove={(event) => handleGroupPointerMove(group, event)}
@@ -777,7 +936,7 @@
         {:else}
           <div class="grid px-1">
             {#each directProjects as project (project.id)}
-              <div class="px-1">
+              <div class="px-1" {@attach projectDrag.item(project.id)}>
                 {@render projectRow(project, directProjectGroup, panelRootElement)}
               </div>
             {/each}
@@ -884,6 +1043,7 @@
     aria-hidden="true"
     class={cn("fixed bg-transparent", zIndexClass)}
     style={projectSubpanelBridgeStyle}
+    onpointerenter={projectSubpanelDelay.cancel}
     onpointerleave={handleProjectSubpanelBoundaryLeave}
   ></div>
   <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -891,6 +1051,7 @@
     bind:this={projectSubpanelElement}
     class={cn("project-picker-panel surface-floating fixed flex min-h-0 flex-col overflow-hidden", zIndexClass)}
     style={projectSubpanelStyle}
+    onpointerenter={projectSubpanelDelay.cancel}
     onpointerleave={handleProjectSubpanelBoundaryLeave}
   >
     <div class="relative min-h-0 flex-1">
@@ -913,7 +1074,9 @@
           {:else}
             <div class="grid">
               {#each activeGroupProjects as project (project.id)}
-                {@render projectRow(project, activeGroup, projectSubpanelElement)}
+                <div {@attach projectDrag.item(project.id)}>
+                  {@render projectRow(project, activeGroup, projectSubpanelElement)}
+                </div>
               {/each}
             </div>
           {/if}
@@ -993,6 +1156,7 @@
     aria-hidden="true"
     class={cn("fixed bg-transparent", zIndexClass)}
     style={noteSubpanelBridgeStyle}
+    onpointerenter={handleNoteSubpanelBoundaryEnter}
     onpointerleave={handleNoteSubpanelBoundaryLeave}
   ></div>
   <NotesHierarchyPickerPanel
@@ -1004,11 +1168,13 @@
     className="fixed"
     {zIndexClass}
     onLayoutChange={updateNoteSubpanelGeometry}
+    onPointerEnter={handleNoteSubpanelBoundaryEnter}
     onPointerLeave={handleNoteSubpanelBoundaryLeave}
     onPageSelected={async () => {
       closeNoteSubpanel();
       await onPageSelected();
     }}
+    onPageOpenInNewTab={tabs.canOpenTabs ? (pageId, intent) => openPageInNewTab(pageId, activeProjectId, intent) : undefined}
   />
 {/if}
 

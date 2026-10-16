@@ -58,8 +58,9 @@
   import { chatErrorMessage } from "$lib/chat/error-presentation";
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { getChat } from "$lib/stores/chat.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useChatPaneEvents } from "$lib/chat/pane-events";
+  import { useChat } from "$lib/stores/chat.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import ChatAccessControl from "./ChatAccessControl.svelte";
   import ChatComposerInfoPanel from "./ChatComposerInfoPanel.svelte";
   import ChatComposerSuggestionMenu from "./ChatComposerSuggestionMenu.svelte";
@@ -68,12 +69,14 @@
   import ChatImageGallery from "$lib/components/chat/timeline/ChatImageGallery.svelte";
   import ChatModelControls from "./ChatModelControls.svelte";
   import ChatRequestPanel from "$lib/components/chat/timeline/ChatRequestPanel.svelte";
+  import { OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
 
   const { hero = false } = $props<{ hero?: boolean }>();
   const localization = getLocalization();
   const { t } = localization;
-  const chat = getChat();
-  const projects = getProjects();
+  const chat = useChat();
+  const paneEvents = useChatPaneEvents();
+  const projects = useProjects();
   let editorRoot: HTMLDivElement | undefined = $state();
   let editorController: ChatComposerEditor | undefined;
   let editorFocused = false;
@@ -127,9 +130,9 @@
     const stop = () => void stopTurn();
     const continuePlan = () => preparePlanTurn("plan");
     const implementPlan = () => preparePlanTurn("build");
-    window.addEventListener("ganbaru-ai:chat-stop-requested", stop);
-    window.addEventListener("ganbaru-ai:chat-continue-plan", continuePlan);
-    window.addEventListener("ganbaru-ai:chat-implement-plan", implementPlan);
+    paneEvents.addEventListener("ganbaru-ai:chat-stop-requested", stop);
+    paneEvents.addEventListener("ganbaru-ai:chat-continue-plan", continuePlan);
+    paneEvents.addEventListener("ganbaru-ai:chat-implement-plan", implementPlan);
     if (editorRoot) {
       editorController = new ChatComposerEditor(
         editorRoot,
@@ -144,7 +147,7 @@
       if (document.activeElement === editorRoot) editorController?.handleSelectionChange();
     };
     document.addEventListener("selectionchange", selectionChanged);
-    if (restoreComposerFocus) {
+    if (restoreComposerFocus && OPENING_MAY_FOCUS_TEXT) {
       void tick().then(() => {
         editorController?.focus({ start: restoreSelectionStart, end: restoreSelectionEnd });
       });
@@ -158,9 +161,9 @@
       restoreProviderCommand = activeProviderCommand;
       document.removeEventListener("selectionchange", selectionChanged);
       editorController = undefined;
-      window.removeEventListener("ganbaru-ai:chat-stop-requested", stop);
-      window.removeEventListener("ganbaru-ai:chat-continue-plan", continuePlan);
-      window.removeEventListener("ganbaru-ai:chat-implement-plan", implementPlan);
+      paneEvents.removeEventListener("ganbaru-ai:chat-stop-requested", stop);
+      paneEvents.removeEventListener("ganbaru-ai:chat-continue-plan", continuePlan);
+      paneEvents.removeEventListener("ganbaru-ai:chat-implement-plan", implementPlan);
       if (stopTimer !== null) clearTimeout(stopTimer);
       void chat.flushComposer().catch(() => undefined);
     };
@@ -379,7 +382,7 @@
         openComposerPanel("status");
         break;
       case "/changes":
-        window.dispatchEvent(new CustomEvent("ganbaru-ai:chat-open-review"));
+        paneEvents.dispatchEvent(new CustomEvent("ganbaru-ai:chat-open-review"));
         break;
     }
     queueMicrotask(() => editorController?.focus());
@@ -941,6 +944,7 @@
     </div>
   </div>
   {#if pending}<div class="request-panel-shell"><ChatRequestPanel {pending} /></div>{/if}
+  {#if chat.composer.changedElsewhere}<Notice class="composer-notice composer-notice-end" role="status" tone="warning" message={t("chat.composer.changedElsewhere")} copy={false} onDismiss={() => chat.dismissComposerChangedElsewhere()} />{/if}
   {#if operationError || chat.composer.error}<Notice class="composer-notice composer-notice-end" message={operationError ?? chat.composer.error ?? ""} />{/if}
 </section>
 

@@ -1,8 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Translate } from "$lib/i18n/translator.svelte";
-import type { ProjectCustomField, ProjectSavedTaskView, ProjectTaskViewRequest } from "$lib/projects/types";
+import type { ProjectCustomField, ProjectTaskViewRequest, ProjectViewPreference } from "$lib/projects/types";
+import {
+  defaultProjectViewQuery,
+  PROJECT_VIEW_QUERY_PREFERENCE_KEY,
+  serializeProjectViewQuery,
+  type ProjectViewQuery,
+} from "$lib/projects/view-query";
 import { defaultProjectListPresentation } from "$lib/projects/list/presentation";
-import { PROJECT_TASK_FILTER_DEFAULTS } from "$lib/projects/list/view";
 import {
   ProjectTaskQueryController,
   normalizeProjectFilterDate,
@@ -14,9 +19,9 @@ type ControllerInput = ConstructorParameters<typeof ProjectTaskQueryController>[
 /** Isolate query preferences and their native write boundary from the rest of the project store. */
 function createController(activeView: "list" | "kanban" = "list") {
   const requests: Array<{ request: ProjectTaskViewRequest; append: boolean }> = [];
-  const selection = { projectId: "project-1", mutationRevision: 0, loadError: null as string | null };
+  const selection = { projectId: "project-1", mutationRevision: 0, loadError: null as string | null, preferencesLoaded: true, viewPreferences: [] as ProjectViewPreference[], viewId: null as string | null };
+  const saveViewQuery = vi.fn<ControllerInput["projects"]["saveViewQuery"]>().mockResolvedValue(undefined);
   const saveTaskListColumns = vi.fn<ControllerInput["projects"]["saveTaskListColumns"]>().mockResolvedValue(undefined);
-  const applySectionCollapseState = vi.fn<ControllerInput["projects"]["applySectionCollapseState"]>().mockResolvedValue(undefined);
   const saveTaskListPresentation = vi.fn<ControllerInput["projects"]["saveTaskListPresentation"]>().mockResolvedValue(undefined);
   const fields: ProjectCustomField[] = [];
   const createdField: ProjectCustomField = { id: "created", projectId: "project-1", name: "Points", fieldType: "number", sortOrder: 100, icon: null, createdAt: "", updatedAt: "" };
@@ -28,15 +33,20 @@ function createController(activeView: "list" | "kanban" = "list") {
     get taskMutationRevision() { return selection.mutationRevision; },
     get taskViewError() { return selection.loadError; },
     activeView,
+    activeTaskView: activeView,
+    get activeProjectView() { return { id: selection.viewId ?? `view-${selection.projectId}`, projectId: selection.projectId, viewType: activeView }; },
     saveTaskListColumns,
-    applySectionCollapseState,
     saveTaskListPresentation,
+    saveViewQuery,
+    isProjectOptionalDataLoaded: () => selection.preferencesLoaded,
     addCustomField,
     duplicateCustomField,
     customFieldsForProject: () => fields,
     prioritiesForProject: () => [],
+    tagsForProject: () => [],
+    customFieldOptionsForField: () => [],
     isProjectDataLoaded: () => true,
-    viewPreferences: [],
+    get viewPreferences() { return selection.viewPreferences; },
     taskViewLoading: false,
     taskViewPage: activeView === "list"
       ? { projectId: "project-1", view: "list", nextCursor: "list-cursor", columnCounts: [], columnCalculations: [{ column: "estimate", total: 1000, filled: 900, sum: 5000 }] }
@@ -49,24 +59,10 @@ function createController(activeView: "list" | "kanban" = "list") {
     projects,
     calendar: { sourceEvents: [] } as unknown as ControllerInput["calendar"],
     translate: ((key: string, ...parameters: unknown[]) => parameters.length ? `${key}: ${String(parameters[0])}` : key) as Translate,
+    querySaveDelayMs: 10,
   });
-  return { controller, requests, selection, saveTaskListColumns, applySectionCollapseState, saveTaskListPresentation, addCustomField, duplicateCustomField, fields, createdField, loadTaskView };
-}
-
-/** Describe a saved view that changes columns and section collapse state together. */
-function savedView(): ProjectSavedTaskView {
-  return {
-    ...PROJECT_TASK_FILTER_DEFAULTS,
-    customFieldFilters: [],
-    id: "view-1",
-    projectId: "project-1",
-    name: "Weekly work",
-    viewId: "list",
-    collapsedSectionIds: ["section-1"],
-    showArchivedTasks: false,
-    visibleColumns: ["due"],
-    updatedAt: "",
-  };
+  controller.syncViewQuery();
+  return { controller, requests, selection, saveViewQuery, saveTaskListColumns, saveTaskListPresentation, addCustomField, duplicateCustomField, fields, createdField, loadTaskView };
 }
 
 describe("Project task query controller policy", () => {
@@ -153,10 +149,9 @@ describe("Project task query controller policy", () => {
     expect(kanban.requests[0].request).not.toHaveProperty("cursor");
   });
 
-  it("restores columns and preserves the view name draft when saving fails, then allows a retry", async () => {
+  it("restores columns when saving fails, then allows a retry", async () => {
     const { controller, saveTaskListColumns } = createController();
     controller.listColumns = ["status", "due"];
-    controller.savedViewNameDraft = "Unsaved view name";
     let rejectWrite!: (error: unknown) => void;
     saveTaskListColumns.mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { rejectWrite = reject; }));
     const saving = controller.toggleColumn("status");
@@ -169,15 +164,14 @@ describe("Project task query controller policy", () => {
     expect(controller.listColumns).toEqual(["status", "due"]);
     expect(controller.listColumnsSaving).toBe(false);
     expect(controller.listColumnsError).toBe("projects.columns.saveFailed: Disk is full");
-    expect(controller.savedViewNameDraft).toBe("Unsaved view name");
 
     await controller.toggleColumn("status");
-    expect(saveTaskListColumns).toHaveBeenLastCalledWith("project-1", ["due"]);
+    expect(saveTaskListColumns).toHaveBeenLastCalledWith("view-project-1", ["due"]);
     expect(controller.listColumns).toEqual(["due"]);
     expect(controller.listColumnsError).toBeNull();
   });
 
-  it("keeps a newer project's columns and pending write when an earlier project write fails", async () => {
+  it("keeps a newer view's columns and pending write when an earlier view's write fails", async () => {
     const { controller, selection, saveTaskListColumns } = createController();
     let rejectEarlier!: (error: unknown) => void;
     let finishCurrent!: () => void;
@@ -197,34 +191,6 @@ describe("Project task query controller policy", () => {
     await current;
     expect(controller.listColumnsSaving).toBe(false);
     expect(controller.listColumns).toEqual(["due", "priority"]);
-  });
-
-  it("reports a saved view column failure and skips its dependent section changes", async () => {
-    const { controller, saveTaskListColumns, applySectionCollapseState } = createController();
-    controller.listColumns = ["status"];
-    controller.savedViewNameDraft = "Retained draft";
-    saveTaskListColumns.mockRejectedValueOnce(new Error("Preference write failed"));
-    await expect(controller.applySavedView(savedView())).resolves.toBeUndefined();
-    expect(controller.listColumns).toEqual(["status"]);
-    expect(controller.listColumnsError).toBe("projects.columns.saveFailed: Preference write failed");
-    expect(controller.savedViewError).toBe("projects.savedViews.applyFailed: Preference write failed");
-    expect(applySectionCollapseState).not.toHaveBeenCalled();
-    expect(controller.savedViewNameDraft).toBe("Retained draft");
-  });
-
-  it("waits for saved view columns before applying its section collapse state", async () => {
-    const { controller, saveTaskListColumns, applySectionCollapseState } = createController();
-    let finishWrite!: () => void;
-    saveTaskListColumns.mockImplementationOnce(() => new Promise<void>((resolve) => { finishWrite = resolve; }));
-    const applying = controller.applySavedView(savedView());
-    expect(controller.listColumnsSaving).toBe(true);
-    expect(applySectionCollapseState).not.toHaveBeenCalled();
-    finishWrite();
-    await applying;
-    expect(applySectionCollapseState).toHaveBeenCalledWith("project-1", ["section-1"]);
-    expect(controller.listColumns).toEqual(["due"]);
-    expect(controller.listColumnsSaving).toBe(false);
-    expect(controller.savedViewError).toBeNull();
   });
 
   it("rolls back failed presentation writes, blocks competing changes, and permits retry", async () => {
@@ -253,7 +219,7 @@ describe("Project task query controller policy", () => {
     saveTaskListColumns.mockRejectedValueOnce(new Error("Preference write failed"));
     await controller.addColumnProperty("Points", "number", "status");
     expect(addCustomField).toHaveBeenCalledWith("project-1", "Points", "number", null);
-    expect(saveTaskListColumns).toHaveBeenCalledWith("project-1", ["status", "custom:created", "due"]);
+    expect(saveTaskListColumns).toHaveBeenCalledWith("view-project-1", ["status", "custom:created", "due"]);
     expect(controller.listColumns).toEqual(["status", "due"]);
     expect(controller.listColumnsError).toBe("projects.columns.saveFailed: Preference write failed");
     expect(controller.propertySaving).toBe(false);
@@ -262,7 +228,7 @@ describe("Project task query controller policy", () => {
   });
 
   it("reserves column writes until property creation and its visibility write finish", async () => {
-    const { controller, addCustomField, createdField, saveTaskListColumns, applySectionCollapseState } = createController();
+    const { controller, addCustomField, createdField, saveTaskListColumns } = createController();
     let finishCreation!: (field: ProjectCustomField) => void;
     let finishColumns!: () => void;
     addCustomField.mockImplementationOnce(() => new Promise<ProjectCustomField>((resolve) => { finishCreation = resolve; }));
@@ -272,13 +238,11 @@ describe("Project task query controller policy", () => {
     expect(controller.propertySaving).toBe(true);
     await controller.toggleColumn("due");
     await controller.moveColumn("due", -1);
-    await controller.applySavedView(savedView());
     expect(saveTaskListColumns).not.toHaveBeenCalled();
-    expect(applySectionCollapseState).not.toHaveBeenCalled();
     expect(controller.listColumns).toEqual(["status", "due"]);
     finishCreation(createdField);
     await vi.waitFor(() => expect(saveTaskListColumns).toHaveBeenCalledOnce());
-    expect(saveTaskListColumns).toHaveBeenCalledWith("project-1", ["status", "custom:created", "due"]);
+    expect(saveTaskListColumns).toHaveBeenCalledWith("view-project-1", ["status", "custom:created", "due"]);
     expect(controller.propertySaving).toBe(true);
     await controller.toggleColumn("due");
     await controller.moveColumn("due", -1);
@@ -286,14 +250,14 @@ describe("Project task query controller policy", () => {
     finishColumns();
     await creating;
     await controller.moveColumn("due", -1);
-    expect(saveTaskListColumns).toHaveBeenLastCalledWith("project-1", ["status", "due", "custom:created"]);
+    expect(saveTaskListColumns).toHaveBeenLastCalledWith("view-project-1", ["status", "due", "custom:created"]);
   });
 
   it("places a column at any list index and skips writes that keep the order or name hidden columns", async () => {
     const { controller, saveTaskListColumns } = createController();
     controller.listColumns = ["status", "due", "priority", "custom:created"];
     await controller.placeColumn("custom:created", 0);
-    expect(saveTaskListColumns).toHaveBeenLastCalledWith("project-1", ["custom:created", "status", "due", "priority"]);
+    expect(saveTaskListColumns).toHaveBeenLastCalledWith("view-project-1", ["custom:created", "status", "due", "priority"]);
     expect(controller.listColumns).toEqual(["custom:created", "status", "due", "priority"]);
     await controller.placeColumn("custom:created", 99);
     expect(controller.listColumns).toEqual(["status", "due", "priority", "custom:created"]);
@@ -356,6 +320,7 @@ describe("Project task query controller policy", () => {
     controller.loadCurrent(["one", "two"], null);
     await vi.waitFor(() => expect(requests).toHaveLength(2));
     selection.projectId = "project-2";
+    controller.syncViewQuery();
     controller.loadCurrent([], null);
     await vi.waitFor(() => expect(requests).toHaveLength(3));
     expect(requests[2].request.projectId).toBe("project-2");
@@ -394,7 +359,7 @@ describe("Project task query controller policy", () => {
     expect(controller.columnCalculations?.[0].total).toBe(1000);
   });
 
-  it("preserves the current project's presentation when an earlier project's write fails", async () => {
+  it("preserves the current view's presentation when an earlier view's write fails", async () => {
     const {controller, selection, saveTaskListPresentation} = createController();
     let rejectOld!: (error: unknown) => void;
     let finishCurrent!: () => void;
@@ -413,4 +378,117 @@ describe("Project task query controller policy", () => {
     await current;
     expect(controller.presentationSaving).toBe(false);
   });
+
+  it("restores each view's saved query while the task search stays shared", () => {
+    const { controller, selection } = createController();
+    selection.viewPreferences = [queryPreference("view-b", { statusFilter: "blocked", sortDirection: "desc" }, { showArchivedTasks: true, calendarMode: "month" })];
+    controller.search = "invoice";
+    selection.viewId = "view-b";
+    controller.syncViewQuery();
+    expect(controller.queryReady).toBe(true);
+    expect(controller.statusFilter).toBe("blocked");
+    expect(controller.sortDirection).toBe("desc");
+    expect(controller.showArchivedTasks).toBe(true);
+    expect(controller.calendarMode).toBe("month");
+    expect(controller.search).toBe("invoice");
+
+    selection.viewId = "view-c";
+    controller.syncViewQuery();
+    expect(controller.statusFilter).toBe("all");
+    expect(controller.showArchivedTasks).toBe(false);
+    expect(controller.calendarMode).toBeNull();
+    expect(controller.search).toBe("invoice");
+  });
+
+  it("saves edits once after the quiet period and keeps newer edits when its own write comes back", async () => {
+    const { controller, selection, saveViewQuery } = createController();
+    controller.persistViewQuery();
+    controller.statusFilter = "open";
+    controller.persistViewQuery();
+    controller.sortDirection = "desc";
+    controller.persistViewQuery();
+    await vi.waitFor(() => expect(saveViewQuery).toHaveBeenCalledTimes(1));
+    const [viewId, saved] = saveViewQuery.mock.calls[0];
+    expect(viewId).toBe("view-project-1");
+    expect(saved.filters).toMatchObject({ statusFilter: "open", sortDirection: "desc" });
+
+    controller.statusFilter = "done";
+    controller.persistViewQuery();
+    selection.viewPreferences = [queryPreference("view-project-1", saved.filters)];
+    controller.syncViewQuery();
+    expect(controller.statusFilter).toBe("done");
+    await vi.waitFor(() => expect(saveViewQuery).toHaveBeenCalledTimes(2));
+    expect(saveViewQuery.mock.calls[1][1].filters.statusFilter).toBe("done");
+  });
+
+  it("saves a pending edit to its own view before another view opens and shows it on return", () => {
+    const { controller, selection, saveViewQuery } = createController();
+    controller.statusFilter = "blocked";
+    controller.persistViewQuery();
+    selection.viewId = "view-b";
+    controller.syncViewQuery();
+    expect(saveViewQuery).toHaveBeenCalledTimes(1);
+    expect(saveViewQuery.mock.calls[0][0]).toBe("view-project-1");
+    expect(controller.statusFilter).toBe("all");
+
+    selection.viewId = null;
+    controller.syncViewQuery();
+    expect(controller.statusFilter).toBe("blocked");
+  });
+
+  it("applies a query changed elsewhere and drops the overridden local edit", async () => {
+    const { controller, selection, saveViewQuery } = createController();
+    controller.statusFilter = "open";
+    controller.persistViewQuery();
+    selection.viewPreferences = [queryPreference("view-project-1", { statusFilter: "done" })];
+    controller.syncViewQuery();
+    expect(controller.statusFilter).toBe("done");
+    controller.persistViewQuery();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(saveViewQuery).not.toHaveBeenCalled();
+  });
+
+  it("loads no tasks until the open view's saved query has loaded", async () => {
+    const { controller, selection, requests } = createController();
+    selection.preferencesLoaded = false;
+    selection.viewId = "view-b";
+    controller.syncViewQuery();
+    expect(controller.queryReady).toBe(false);
+    controller.loadCurrent([], null);
+    expect(requests).toHaveLength(0);
+
+    selection.viewPreferences = [queryPreference("view-b", { statusFilter: "blocked" })];
+    selection.preferencesLoaded = true;
+    controller.syncViewQuery();
+    controller.loadCurrent([], null);
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    expect(requests[0].request.statusFilter).toBe("blocked");
+  });
+
+  it("keeps saved field references until the project's fields have loaded", () => {
+    const kanban = createController("kanban").controller;
+    kanban.sortMode = "custom:points";
+    kanban.repairDisappearingFields();
+    expect(kanban.sortMode).toBe("custom:points");
+
+    const list = createController("list").controller;
+    list.sortMode = "custom:points";
+    list.repairDisappearingFields();
+    expect(list.sortMode).toBe("manual");
+  });
 });
+
+function queryPreference(
+  viewId: string,
+  filters: Partial<ProjectViewQuery["filters"]>,
+  rest: Partial<Omit<ProjectViewQuery, "filters">> = {},
+): ProjectViewPreference {
+  const query = defaultProjectViewQuery();
+  return {
+    projectId: "project-1",
+    viewId,
+    preferenceKey: PROJECT_VIEW_QUERY_PREFERENCE_KEY,
+    preferenceValue: serializeProjectViewQuery({ ...query, ...rest, filters: { ...query.filters, ...filters } }),
+    updatedAt: "",
+  };
+}

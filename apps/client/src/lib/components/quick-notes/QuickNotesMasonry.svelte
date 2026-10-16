@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
+  import type { EventColor } from "$lib/calendar/types";
   import type { QuickNote, QuickNotesCollection, QuickNoteTag } from "$lib/quick-notes/types";
   import {
     QUICK_NOTE_DESKTOP_MASONRY_DENSITY,
@@ -22,10 +23,12 @@
     reorderable = false,
     theme,
     tags,
+    untaggedColor,
     onOpen,
     onPin,
     onColor,
     onTag,
+    onCreateTag,
     onArchive,
     onUnarchive,
     onTrash,
@@ -40,10 +43,13 @@
     reorderable?: boolean;
     theme: Theme;
     tags: readonly QuickNoteTag[];
+    /** Color of untagged notes, which a new tag avoids. */
+    untaggedColor: EventColor;
     onOpen: (note: QuickNote) => void;
     onPin: (note: QuickNote, pinned: boolean) => void;
     onColor: (note: QuickNote, color: QuickNote["color"]) => void;
     onTag: (note: QuickNote, tagId: string | null) => void;
+    onCreateTag: (name: string, color: EventColor) => Promise<QuickNoteTag>;
     onArchive: (note: QuickNote) => void;
     onUnarchive: (note: QuickNote) => void;
     onTrash: (note: QuickNote) => void;
@@ -64,7 +70,7 @@
     grabY: number;
     width: number;
     height: number;
-    /** Touch outside the drag handle starts a drag only after a stationary hold, so swipes scroll. */
+    /** Touch starts a drag only after a stationary hold, so swipes scroll. */
     hold: boolean;
   }
 
@@ -161,7 +167,6 @@
     if (!pointerCanStart(event)) return;
     completeDropSettle();
     const rect = node.getBoundingClientRect();
-    const onHandle = event.target instanceof Element && event.target.closest("[data-quick-note-drag-handle]") !== null;
     const pending: PendingPointer = {
       pointerId: event.pointerId,
       pointerType: event.pointerType,
@@ -173,7 +178,7 @@
       grabY: event.clientY - rect.top,
       width: rect.width,
       height: rect.height,
-      hold: event.pointerType === "touch" && !onHandle,
+      hold: event.pointerType === "touch",
     };
     pendingPointer = pending;
     if (pending.hold) {
@@ -487,12 +492,14 @@
         {reorderable}
         {theme}
         {tags}
+        {untaggedColor}
         {mobileLayout}
         onOpen={() => onOpen(note)}
         onMove={(direction) => keyboardMove(note.id, direction)}
         onPin={(pinned) => onPin(note, pinned)}
         onColor={(color) => onColor(note, color)}
         onTag={(tagId) => onTag(note, tagId)}
+        {onCreateTag}
         onArchive={() => onArchive(note)}
         onUnarchive={() => onUnarchive(note)}
         onTrash={() => onTrash(note)}

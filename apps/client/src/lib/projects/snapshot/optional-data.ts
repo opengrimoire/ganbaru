@@ -10,7 +10,7 @@ export const PROJECT_SCOPED_OPTIONAL_DATA_KINDS = [
   "custom_fields",
   "history",
   "checklist",
-  "saved_views",
+  "view_preferences",
 ] as const satisfies readonly ProjectOptionalDataKind[];
 
 /** Returns the stable cache key for one optional Projects data request. */
@@ -24,10 +24,10 @@ export function projectOptionalDataKey(
 /**
  * Lists optional collections a project view needs before it renders.
  *
- * List reads its visible columns, column widths, and presentation from view preferences, which load with saved views. Rendering it without them shows defaults, and a resize or column change made then would overwrite the saved preference.
+ * Every task view reads its saved filters, sort, and grouping from view preferences, and List also reads its columns, widths, and presentation there. They load as optional data; rendering a view without them would show defaults, and an edit made then would overwrite the saved preference.
  */
-export function projectViewOptionalDataKinds(view: ProjectViewId): readonly ProjectOptionalDataKind[] {
-  return view === "list" ? ["saved_views"] : [];
+export function projectViewOptionalDataKinds(_view: ProjectViewId): readonly ProjectOptionalDataKind[] {
+  return ["view_preferences"];
 }
 
 function projectTaskIds(source: ProjectsSnapshot, projectId: string): Set<string> {

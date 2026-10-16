@@ -7,7 +7,7 @@
     formatTimeRange,
     isEventSurfaceCancelled,
   } from "$lib/calendar/utils";
-  import { getCalendarZoom } from "$lib/stores/calendar-zoom.svelte";
+  import { useCalendarZoom } from "$lib/stores/calendar-zoom.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { isThemeCalendarDark, type Theme } from "$lib/themes";
   import { getEventIndicatorState } from "./event-indicators";
@@ -17,7 +17,7 @@
   import MapPin from "@lucide/svelte/icons/map-pin";
   import Users from "@lucide/svelte/icons/users";
 
-  const calendarZoom = getCalendarZoom();
+  const calendarZoom = useCalendarZoom();
   const preferences = getPreferences();
   const { t } = getLocalization();
 

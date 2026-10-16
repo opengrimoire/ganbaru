@@ -8,7 +8,6 @@
     type LazyComponentLoadState,
   } from "$lib/lazy-component-loader";
   import Archive from "@lucide/svelte/icons/archive";
-  import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import Copy from "@lucide/svelte/icons/copy";
   import Download from "@lucide/svelte/icons/download";
   import FolderInput from "@lucide/svelte/icons/folder-input";
@@ -82,7 +81,7 @@
   import type { NotesDiscussionsPanelFocus } from "./pages/comments/NotesDiscussionsPanel.svelte";
   import { buildNotesTableOfContents } from "$lib/notes/block-types/table-of-contents";
   import { getPreferences } from "$lib/stores/preferences.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import type {
     NotesAgentBridgeExportRequest,
     NotesHtmlExportRequest,
@@ -90,7 +89,7 @@
     NotesPageIcon as NotesPageIconValue,
     NotesParent,
   } from "$lib/notes/types";
-  import { getNotes } from "$lib/stores/notes.svelte";
+  import { useNotesWorkspace } from "$lib/stores/notes.svelte";
   import type { NotesEditorStore } from "$lib/stores/notes/editor-session.svelte";
   import { provideNotesEditor } from "./editor-context";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
@@ -104,6 +103,7 @@
   import NotesPeekModeIcon from "$lib/components/notes/pages/NotesPeekModeIcon.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
+  import { OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
   import {
     loadNotesEditorPanel,
     readNotesEditorPanel,
@@ -142,12 +142,12 @@
   } = $props();
 
   // A pane keeps the same editor session for its entire mounted lifetime.
-  const notes = untrack(() => editorStore) ?? getNotes();
+  const notes = untrack(() => editorStore) ?? useNotesWorkspace();
   provideNotesEditor(notes);
   const mobileBackStack = getMobileBackStack();
   const mobileLayout = BUILD_PLATFORM_PROFILE.shell === "mobile";
   const preferences = getPreferences();
-  const projects = getProjects();
+  const projects = useProjects();
   const fileExportAvailable = platformHasCapability(
     BUILD_PLATFORM_PROFILE,
     "notes.file-export",
@@ -619,6 +619,8 @@
     if (activePanel) notes.setPagePanelSubsystemOpen(activePanel, false);
     if (pageHistoryModalOpen) notes.setPagePanelSubsystemOpen("page-history", false);
     if (lastTitlePageId) notes.clearPageTitleDraft(lastTitlePageId);
+    // Reopening this page on a phone, after Back, a database, or another tab, must not reopen the keyboard.
+    if (!OPENING_MAY_FOCUS_TEXT && page) notes.releaseTextFocusForPage(page.id);
   });
 
   async function saveTitle(): Promise<void> {
@@ -654,8 +656,8 @@
 
   function actionButtonClass(active = false): string {
     return cn(
-      "relative flex shrink-0 items-center justify-center rounded-md px-1.5 text-foreground transition-colors hover:bg-accent",
-      mobileLayout ? "h-12 min-w-12" : "h-7 min-w-7",
+      "relative flex shrink-0 items-center justify-center px-1.5 text-foreground transition-colors hover:bg-accent",
+      mobileLayout ? "mobile-chrome-button" : "h-7 min-w-7 rounded-md",
       active && "bg-accent",
     );
   }
@@ -1102,6 +1104,14 @@
         message={t("notes.editorSaveFailed", notes.editorSaveError)}
         onRetry={() => notes.retryEditorMutations()}
       />
+    {:else if notes.editorConflict}
+      <Notice
+        class="shrink-0 border-b border-border px-4 py-2 text-sm"
+        role="status"
+        message={t("notes.editorChangedElsewhere")}
+        copy={false}
+        onDismiss={() => notes.dismissEditorConflict()}
+      />
     {/if}
     {#snippet discussionsTrigger()}
       <button
@@ -1179,7 +1189,7 @@
     {/if}
     {#if pageActionsTarget}
       <div
-        class="relative z-30 flex shrink-0 items-center gap-1"
+        class={cn("relative z-30 flex shrink-0 items-center", mobileLayout ? "gap-0" : "gap-1")}
         data-notes-page-actions
         use:portal={pageActionsTarget}
         use:dismissOnOutside={{ enabled: !!activePanel, onDismiss: (reason) => {
@@ -1187,16 +1197,6 @@
           if (reason === "escape") pageMenuButton?.focus({ preventScroll: true });
         } }}
       >
-        {#if mobileLayout && openMode === "full"}
-          <button
-            type="button"
-            class={actionButtonClass()}
-            aria-label={t("notes.showProjectHome")}
-            onclick={() => onClose?.()}
-          >
-            <ChevronLeft class="size-5" strokeWidth={noteActionIconStrokeWidth} />
-          </button>
-        {/if}
         <div
           class="relative hidden shrink-0 min-[560px]:block"
           role="group"
@@ -1269,14 +1269,14 @@
         {/if}
         <button
           type="button"
-          class={actionButtonClass(pageFavorited)}
-          aria-label={pageFavorited ? t("notes.removeFromFavorites") : t("notes.addToFavorites")}
-          data-app-tooltip={pageFavorited ? t("notes.removeFromFavorites") : t("notes.addToFavorites")}
+          class={actionButtonClass()}
+          aria-label={pageFavorited ? t("common.removeFromFavorites") : t("common.addToFavorites")}
+          data-app-tooltip={pageFavorited ? t("common.removeFromFavorites") : t("common.addToFavorites")}
           onclick={() => {
             notes.setPageFavorited(page.id, !pageFavorited);
           }}
         >
-          <Star class={`size-4 ${pageFavorited ? "fill-current" : ""}`} strokeWidth={noteActionIconStrokeWidth} />
+          <Star class={cn("size-4", pageFavorited && "fill-current text-primary")} strokeWidth={noteActionIconStrokeWidth} />
         </button>
         <div
           class="relative"

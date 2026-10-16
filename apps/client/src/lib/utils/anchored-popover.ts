@@ -34,6 +34,8 @@ export function anchoredPopover(node: HTMLElement, options: AnchoredPopoverOptio
   function place(): void {
     const anchor = current.anchor;
     if (!anchor?.isConnected) return;
+    // Measure the natural width, not the cap from the previous placement, so a moved anchor can widen it again.
+    node.style.maxWidth = "";
     const geometry = pickSelectPopoverGeometry({
       triggerRect: anchor.getBoundingClientRect(),
       boundaryRect: viewportRect(),

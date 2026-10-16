@@ -59,12 +59,6 @@ export function projectLifecycleLabel(status: ProjectLifecycleStatus, t: Transla
   return t("projects.lifecycle.active");
 }
 
-export function projectLifecycleBadgeClass(status: ProjectLifecycleStatus): string {
-  if (status === "hidden") return "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300";
-  if (status === "archived") return "border-muted-foreground/30 bg-muted/50 text-muted-foreground";
-  return "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
-}
-
 export function projectStatusBadgeClass(status: ProjectStatus | undefined): string {
   return status === undefined
     ? "bg-muted/50 text-muted-foreground"

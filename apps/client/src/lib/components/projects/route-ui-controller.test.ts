@@ -1,13 +1,11 @@
 // @vitest-environment jsdom
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { ProjectRouteUiController } from "./route-ui-controller.svelte";
 
 describe("Project route UI controller", () => {
   it("defers a toolbar transition until dirty settings are discarded", () => {
-    const controller = new ProjectRouteUiController({
-      setActiveView: vi.fn(),
-    });
+    const controller = new ProjectRouteUiController();
     controller.toolbarPanel = "settings";
     controller.settingsDirty = true;
 
@@ -21,8 +19,7 @@ describe("Project route UI controller", () => {
   });
 
   it("opens a task draft without a task and swaps it for the created task", () => {
-    const setActiveView = vi.fn();
-    const controller = new ProjectRouteUiController({ setActiveView });
+    const controller = new ProjectRouteUiController();
     controller.selectedTaskId = "previous";
     controller.toolbarPanel = "filters";
 
@@ -31,9 +28,10 @@ describe("Project route UI controller", () => {
     expect(controller.taskDraftProjectId).toBe("project-1");
     expect(controller.toolbarPanel).toBeNull();
 
-    const shortcut = new KeyboardEvent("keydown", { key: "2", cancelable: true });
-    controller.handleWindowKeydown(shortcut);
-    expect(setActiveView).not.toHaveBeenCalled();
+    const finderShortcut = new KeyboardEvent("keydown", { key: "f", ctrlKey: true, cancelable: true });
+    controller.handleWindowKeydown(finderShortcut);
+    expect(controller.taskFinderOpen).toBe(false);
+    expect(finderShortcut.defaultPrevented).toBe(false);
 
     controller.completeTaskDraft({ id: "created" } as Parameters<typeof controller.completeTaskDraft>[0]);
     expect(controller.taskDraftProjectId).toBeNull();
@@ -44,7 +42,7 @@ describe("Project route UI controller", () => {
   });
 
   it("waits for dirty settings to be discarded before opening a task draft", () => {
-    const controller = new ProjectRouteUiController({ setActiveView: vi.fn() });
+    const controller = new ProjectRouteUiController();
     controller.toolbarPanel = "settings";
     controller.settingsDirty = true;
 
@@ -55,22 +53,16 @@ describe("Project route UI controller", () => {
     expect(controller.taskDraftProjectId).toBe("project-1");
   });
 
-  it("suppresses route shortcuts while a document selection surface is open", () => {
-    const setActiveView = vi.fn();
-    const controller = new ProjectRouteUiController({
-      setActiveView,
-    });
-    controller.taskFinderOpen = true;
-    const event = new KeyboardEvent("keydown", { key: "3", cancelable: true });
+  it("leaves plain digits to the active view", () => {
+    const controller = new ProjectRouteUiController();
+    const digit = new KeyboardEvent("keydown", { key: "3", cancelable: true });
 
-    expect(controller.handleViewShortcut(event)).toBe(false);
-    expect(setActiveView).not.toHaveBeenCalled();
+    controller.handleWindowKeydown(digit);
+    expect(digit.defaultPrevented).toBe(false);
   });
 
   it("clears non-editable selections inside the route without touching inputs", () => {
-    const controller = new ProjectRouteUiController({
-      setActiveView: vi.fn(),
-    });
+    const controller = new ProjectRouteUiController();
     const root = document.createElement("div");
     const text = document.createTextNode("selected");
     root.append(text);

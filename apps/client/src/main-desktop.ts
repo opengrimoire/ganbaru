@@ -3,7 +3,7 @@ import { Temporal } from "@js-temporal/polyfill";
 import { mount, tick, unmount } from "svelte";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { ensureConfigLoaded, flushConfig } from "./lib/vault/config";
+import { ensureConfigLoaded, flushConfig, startConfigWindowSync } from "./lib/vault/config";
 import { getActiveVaultInfo } from "./lib/vault/state";
 import {
   getLocalization,
@@ -152,6 +152,7 @@ const appPromise = (async () => {
         onReady: async (info, preferenceReady) => {
           const appRuntimeReady = preferenceReady.then(async () => {
             await ensureConfigLoaded();
+            startConfigWindowSync();
             await initializeLocalizationFromConfig();
             await applyPreVaultLanguagePreference();
             await hydrateUserThemes();
@@ -233,6 +234,7 @@ const appPromise = (async () => {
       return await mountVaultSetupView(null);
     }
     await ensureConfigLoaded();
+    startConfigWindowSync();
     await initializeLocalizationFromConfig();
     await applyPreVaultLanguagePreference();
     benchmarkResumePending = await hasFreshBenchmarkResumeState();

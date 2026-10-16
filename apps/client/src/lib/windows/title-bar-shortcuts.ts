@@ -25,6 +25,7 @@ export type TitleBarShortcutAction =
   | "zoom-out"
   | "zoom-reset"
   | "music-toggle"
+  | "quick-notes-toggle"
   | "diagnostics-toggle"
   | "shortcut-help";
 
@@ -66,20 +67,24 @@ export function isCloseWindowShortcut(event: CloseWindowShortcutEvent): boolean 
   return hasOnlyShortcutModifier(event) || hasOnlyShortcutModifier(event, { shift: true });
 }
 
-/** Resolve shell-wide shortcuts before view-level handlers run. */
+/**
+ * Resolve shell-wide shortcuts before view-level handlers run. The workspace tabs own Mod+W, so only Mod+Shift+W
+ * closes the app here.
+ */
 export function titleBarShortcutAction(
   event: TitleBarShortcutEvent,
 ): TitleBarShortcutAction | null {
-  if (isCloseWindowShortcut(event)) return "close";
   const key = event.key.toLowerCase();
+  if (key === "w" && hasOnlyShortcutModifier(event, { shift: true })) return "close";
   if (key === "f1" && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) return "shortcut-help";
   if (hasOnlyShortcutModifier(event, { shift: true })) {
     if (key === "l") return "theme-toggle";
-    if (key === "t") return "theme-switcher";
+    if (key === "o") return "theme-switcher";
     if (key === "d") return "diagnostics-toggle";
+    if (key === "m") return "music-toggle";
+    if (key === "n") return "quick-notes-toggle";
   }
   if (!hasOnlyShortcutModifier(event)) return null;
-  if (key === "m") return "music-toggle";
   if (key === "=" || key === "+") return "zoom-in";
   if (key === "-") return "zoom-out";
   if (key === "0") return "zoom-reset";

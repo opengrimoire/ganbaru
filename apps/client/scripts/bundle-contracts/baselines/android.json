@@ -8,14 +8,14 @@
         "src/main-mobile.ts",
         "src/MobileApp.svelte"
       ],
-      "maxSourceModules": 124
+      "maxSourceModules": 143
     },
     {
       "name": "calendar",
       "roots": [
         "src/lib/components/calendar/CalendarView.svelte"
       ],
-      "maxSourceModules": 192
+      "maxSourceModules": 202
     },
     {
       "name": "projects",
@@ -23,21 +23,21 @@
         "src/lib/components/projects/ProjectsView.svelte",
         "src/lib/components/projects/list/ProjectListView.svelte"
       ],
-      "maxSourceModules": 258
+      "maxSourceModules": 298
     },
     {
       "name": "notes",
       "roots": [
         "src/lib/components/notes/NotesView.svelte"
       ],
-      "maxSourceModules": 389
+      "maxSourceModules": 413
     },
     {
       "name": "quick-notes",
       "roots": [
         "src/lib/components/quick-notes/QuickNotesPanel.svelte"
       ],
-      "maxSourceModules": 109
+      "maxSourceModules": 127
     },
     {
       "name": "music",
@@ -45,17 +45,17 @@
         "src/lib/components/music/MusicPanel.svelte",
         "src/lib/components/music/MusicPlaybackHost.svelte"
       ],
-      "maxSourceModules": 176
+      "maxSourceModules": 190
     },
     {
       "name": "chat",
       "roots": [
         "src/lib/components/chat/ChatWorkspace.svelte"
       ],
-      "maxSourceModules": 272
+      "maxSourceModules": 309
     }
   ],
-  "maxTotalSourceModules": 1188,
+  "maxTotalSourceModules": 1259,
   "requiredMobileModules": [
     "src/main.ts",
     "src/main-mobile.ts",
@@ -139,6 +139,7 @@
     "src/lib/music/platform-library.mobile.ts",
     "src/lib/music/platform-paths.mobile.ts",
     "src/lib/stores/music-player/external-controls.mobile.ts",
+    "src/lib/stores/music-player/device-volume.mobile.ts",
     "src/lib/stores/soundscape.mobile.svelte.ts",
     "src/lib/components/quick-notes/QuickNotesPanel.svelte"
   ],
@@ -150,6 +151,7 @@
     "src/lib/music/platform-library.ts",
     "src/lib/music/platform-paths.ts",
     "src/lib/stores/music-player/external-controls.ts",
+    "src/lib/stores/music-player/device-volume.ts",
     "src/lib/stores/soundscape.svelte.ts",
     "src/lib/windows/sync-transport.ts",
     "src/lib/stores/mobile-back-stack.desktop.ts",
@@ -169,7 +171,7 @@
     "src/lib/components/chat/review/ChatReviewPanel.svelte",
     "src/lib/components/chat/review/ChatPierreDiff.svelte",
     "src/lib/components/chat/review/ChatPlainDiff.svelte",
-    "src/lib/windows/detached.ts",
+    "src/lib/windows/tab-windows.ts",
     "src/lib/components/themes/editor/FloatingThemeEditor.svelte",
     "src/lib/components/projects/component-registry.ts",
     "src/lib/components/projects/pickers/ProjectTaskFinder.svelte",

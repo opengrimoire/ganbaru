@@ -1,6 +1,6 @@
 export const MOBILE_NAVIGATION_RAIL_MIN_WIDTH = 600;
 
-export type MobileNavigationPresentation = "top" | "rail";
+export type MobileNavigationPresentation = "bottom" | "rail";
 
 export interface MobileCenteredPanelGeometryInput {
   anchorLeft: number;
@@ -44,7 +44,7 @@ export function mobileNavigationPresentation(
 ): MobileNavigationPresentation {
   return Number.isFinite(layoutWidth) && layoutWidth >= MOBILE_NAVIGATION_RAIL_MIN_WIDTH
     ? "rail"
-    : "top";
+    : "bottom";
 }
 
 /** Center a mobile floating panel on its trigger, then keep it inside the visible viewport. */

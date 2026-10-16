@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   calculateKeyboardInset,
+  parseAndroidKeyboardHeight,
   parseAndroidSystemBarInsets,
   resolvePointerCapabilities,
   viewportOrientation,
@@ -22,6 +23,22 @@ describe("parseAndroidSystemBarInsets", () => {
     expect(parseAndroidSystemBarInsets("32,0,Infinity,0")).toBeNull();
     expect(parseAndroidSystemBarInsets("32,0,4097,0")).toBeNull();
     expect(parseAndroidSystemBarInsets({ bottom: 48 })).toBeNull();
+  });
+});
+
+describe("parseAndroidKeyboardHeight", () => {
+  it("parses the native keyboard height in CSS pixels", () => {
+    expect(parseAndroidKeyboardHeight("0")).toBe(0);
+    expect(parseAndroidKeyboardHeight("312")).toBe(312);
+  });
+
+  it("rejects missing, malformed, negative, and unbounded values", () => {
+    expect(parseAndroidKeyboardHeight(undefined)).toBeNull();
+    expect(parseAndroidKeyboardHeight("")).toBeNull();
+    expect(parseAndroidKeyboardHeight("12px")).toBeNull();
+    expect(parseAndroidKeyboardHeight("-1")).toBeNull();
+    expect(parseAndroidKeyboardHeight("4097")).toBeNull();
+    expect(parseAndroidKeyboardHeight(312)).toBeNull();
   });
 });
 

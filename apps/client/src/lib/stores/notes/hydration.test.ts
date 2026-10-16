@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { createBlockWrite } from "$lib/notes/blocks/factory";
 import { notesBlockOutlineFromBlock } from "$lib/notes/blocks/outline";
-import type { NotesBlock } from "$lib/notes/types";
+import type { NotesBlock, NotesBlockOutline } from "$lib/notes/types";
 
 const backend = vi.hoisted(() => {
   let resolveHydration: (blocks: NotesBlock[]) => void = () => {};
   return {
+    openNotesPage: vi.fn(),
     hydrateNotesBlocks: vi.fn(() => new Promise<NotesBlock[]>((resolve) => {
       resolveHydration = resolve;
     })),
@@ -18,6 +19,7 @@ const backend = vi.hoisted(() => {
 vi.mock("$lib/api/notes", () => ({
   getNotesBlockFrontier: vi.fn(),
   getNotesBlockOutlineFrontier: vi.fn(),
+  openNotesPage: backend.openNotesPage,
   hydrateNotesBlocks: backend.hydrateNotesBlocks,
 }));
 
@@ -59,6 +61,7 @@ describe("Notes hydration controller", () => {
       readBlocksById: () => ({ [block.id]: block }),
       readFocusRequest: () => ({ blockId: null, requestId: 0, selection: null }),
       mergeBlockOutlines: vi.fn(),
+      replaceBlockOutlines: vi.fn(),
       replaceHydratedBlocks,
       setLoadError: vi.fn(),
     });
@@ -91,6 +94,7 @@ describe("Notes hydration controller", () => {
       readBlocksById: () => ({}),
       readFocusRequest: () => ({ blockId: null, requestId: 0, selection: null }),
       mergeBlockOutlines: vi.fn(),
+      replaceBlockOutlines: vi.fn(),
       replaceHydratedBlocks,
       setLoadError: vi.fn(),
     });
@@ -117,7 +121,7 @@ describe("Notes hydration controller", () => {
       readPageGeneration: () => 1, readSelectedPageId: () => "page-a", readBlockOutlines: () => outlines,
       readFlatBlockOutlines: () => outlines.map((outline) => ({ outline, depth: 0 })), readBlocksById: () => ({}),
       hasLocalChanges: () => false, readFocusRequest: () => ({ blockId: null, requestId: 0, selection: null }),
-      mergeBlockOutlines: vi.fn(), replaceHydratedBlocks, setLoadError: vi.fn(),
+      mergeBlockOutlines: vi.fn(), replaceBlockOutlines: vi.fn(), replaceHydratedBlocks, setLoadError: vi.fn(),
     });
     await controller.hydrateBlockRange(blocks.map((block) => block.id));
     expect(replaceHydratedBlocks.mock.calls[0][1]["page-a"]).toEqual(blocks.map((block) => block.id));
@@ -140,7 +144,7 @@ describe("Notes hydration controller", () => {
       readBlocksById: () => ({ [blocks[124].id]: blocks[124], [blocks[0].id]: blocks[0], [blocks[1].id]: blocks[1] }),
       hasLocalChanges: (id) => id === blocks[0].id,
       readFocusRequest: () => ({ blockId: null, requestId: 0, selection: null }),
-      mergeBlockOutlines: vi.fn(), replaceHydratedBlocks, setLoadError: vi.fn(),
+      mergeBlockOutlines: vi.fn(), replaceBlockOutlines: vi.fn(), replaceHydratedBlocks, setLoadError: vi.fn(),
     });
     await controller.hydrateBlockRange([blocks[124].id]);
     expect(replaceHydratedBlocks).toHaveBeenCalledWith(
@@ -149,4 +153,61 @@ describe("Notes hydration controller", () => {
     );
   });
 
+  it("refreshes a page from another window while keeping blocks with unsaved typing", async () => {
+    const { createNotesHydrationController } = await import("./hydration");
+    const paragraph = (id: string, text: string): NotesBlock => ({
+      object: "block", parent: { type: "page_id", page_id: "page-a" },
+      created_time: "2026-10-15T00:00:00Z", last_edited_time: "2026-10-15T00:00:00Z",
+      has_children: false, in_trash: false, source_provider: null, source_object_id: null, source_last_edited_time: null,
+      ...createBlockWrite(id, "paragraph", text),
+    } as NotesBlock);
+    const local = { kept: paragraph("kept", "Local"), edited: paragraph("edited", "Typing"), removed: paragraph("removed", "Gone") };
+    const canonical = [paragraph("added", "Added"), paragraph("kept", "Saved elsewhere"), paragraph("edited", "Saved elsewhere")];
+    let outlines = Object.values(local).map((block, index) => notesBlockOutlineFromBlock(block, "page-a", index));
+    let blocksById: Record<string, NotesBlock> = { ...local };
+    const page = { id: "page-a" };
+    backend.openNotesPage.mockResolvedValueOnce({
+      page, outlines: canonical.map((block, index) => notesBlockOutlineFromBlock(block, "page-a", index)),
+    });
+    backend.hydrateNotesBlocks.mockResolvedValueOnce(canonical.filter((block) => block.id !== "edited"));
+    const controller = createNotesHydrationController({
+      readPageGeneration: () => 1, readSelectedPageId: () => "page-a",
+      readBlockOutlines: () => outlines,
+      readFlatBlockOutlines: () => outlines.map((outline) => ({ outline, depth: 0 })),
+      readBlocksById: () => blocksById,
+      hasLocalChanges: (id) => id === "edited",
+      readFocusRequest: () => ({ blockId: null, requestId: 0, selection: null }),
+      mergeBlockOutlines: vi.fn(),
+      replaceBlockOutlines: (next) => { outlines = [...next]; },
+      replaceHydratedBlocks: (next) => { blocksById = next; },
+      setLoadError: vi.fn(),
+    });
+
+    await expect(controller.refreshFromCanonical("page-a", 1)).resolves.toBe(page);
+
+    expect(backend.hydrateNotesBlocks).toHaveBeenLastCalledWith({ page_id: "page-a", block_ids: ["kept", "added"] });
+    expect(outlines.map((outline) => outline.id)).toEqual(["added", "kept", "edited"]);
+    expect(Object.keys(blocksById).sort()).toEqual(["added", "edited", "kept"]);
+    expect(blocksById.kept).toBe(canonical[1]);
+    expect(blocksById.edited).toBe(local.edited);
+  });
+
+  it("skips a canonical refresh when the local outline changed while reading", async () => {
+    const { createNotesHydrationController } = await import("./hydration");
+    let outlines: NotesBlockOutline[] = [];
+    const replaceBlockOutlines = vi.fn();
+    backend.openNotesPage.mockImplementationOnce(async () => {
+      outlines = [...outlines];
+      return { page: { id: "page-a" }, outlines: [] };
+    });
+    const controller = createNotesHydrationController({
+      readPageGeneration: () => 1, readSelectedPageId: () => "page-a",
+      readBlockOutlines: () => outlines, readFlatBlockOutlines: () => [], readBlocksById: () => ({}),
+      hasLocalChanges: () => false, readFocusRequest: () => ({ blockId: null, requestId: 0, selection: null }),
+      mergeBlockOutlines: vi.fn(), replaceBlockOutlines, replaceHydratedBlocks: vi.fn(), setLoadError: vi.fn(),
+    });
+
+    await expect(controller.refreshFromCanonical("page-a", 1)).resolves.toBeNull();
+    expect(replaceBlockOutlines).not.toHaveBeenCalled();
+  });
 });

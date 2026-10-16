@@ -1,30 +1,70 @@
 <script lang="ts">
-  import BookOpen from "@lucide/svelte/icons/book-open";
-  import CalendarDays from "@lucide/svelte/icons/calendar-days";
-  import ListTodo from "@lucide/svelte/icons/list-todo";
-  import MessageSquare from "@lucide/svelte/icons/message-square";
+  import Lock from "@lucide/svelte/icons/lock";
+  import SquarePlus from "@lucide/svelte/icons/square-plus";
+  import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import type { View } from "$lib/navigation";
+  import type { MobileNavigationPresentation } from "$lib/mobile/layout";
+  import { mobileTabBarDropMoves, mobileTabBarSlots, mobileTabsButtonBadge } from "$lib/mobile/tab-bar";
   import { cn } from "$lib/utils";
+  import { createSortableDrag } from "$lib/utils/sortable-drag.svelte";
+  import type { WorkspaceTab, WorkspaceTabPlacement } from "$lib/workspace-tabs/model";
+  import { workspaceTabFullLabel, workspaceTabKindIcon, workspaceTabLabel } from "$lib/workspace-tabs/presentation";
 
+  /**
+   * The phone shell's workspace tab bar: the first open tabs that fit, the active one always among them, and a
+   * tabs button that opens the full list, marked with an add sign while the bar shows every tab or with the count of
+   * tabs past the bar. Holding a tab lifts it to reorder the bar by dragging.
+   */
   let {
-    current,
+    tabs,
+    activeTabId,
+    tabsOpen = false,
     presentation,
-    onNavigate,
+    onSelect,
+    onMove,
+    onOpenTabs,
   }: {
-    current: View;
-    presentation: "top" | "rail";
-    onNavigate: (view: View) => void;
+    tabs: readonly WorkspaceTab[];
+    activeTabId: string;
+    /** Whether the tabs panel is showing. */
+    tabsOpen?: boolean;
+    presentation: MobileNavigationPresentation;
+    onSelect: (tabId: string) => void;
+    /** Moves a tab next to another, as the workspace tab `move` does. */
+    onMove: (tabId: string, targetId: string, placement: WorkspaceTabPlacement) => void;
+    onOpenTabs: () => void;
   } = $props();
 
-  const { t } = getLocalization();
-  const destinations = [
-    { view: "calendar", icon: CalendarDays },
-    { view: "projects", icon: ListTodo },
-    { view: "notes", icon: BookOpen },
-    { view: "chat", icon: MessageSquare },
-  ] as const;
+  const localization = getLocalization();
+  const { t } = localization;
+  const slots = $derived(mobileTabBarSlots(tabs, activeTabId));
+  const badge = $derived(mobileTabsButtonBadge(tabs.length, slots.length, (value) => formatNumber(localization.locale, value)));
+  const iconSize = $derived(presentation === "rail" ? 21 : 20);
+  const drag = createSortableDrag({
+    getIds: () => slots.map((tab) => tab.id),
+    commit: (id, targetIndex) => {
+      for (const move of mobileTabBarDropMoves(tabs, slots, id, targetIndex)) onMove(move.id, move.targetId, move.placement);
+    },
+    touchHold: true,
+    get axis() { return presentation === "rail" ? "y" as const : "x" as const; },
+  });
+
+  $effect(() => () => drag.reset());
 </script>
+
+{#snippet itemContent(selected: boolean, icon: import("svelte").Snippet, label: string)}
+  {#if presentation === "bottom"}
+    <span
+      class={cn("relative grid h-8 w-14 place-items-center rounded-full transition-colors", selected ? "bg-accent" : "group-active:bg-accent/60")}
+      data-mobile-navigation-indicator={selected || undefined}
+    >
+      {@render icon()}
+    </span>
+  {:else}
+    <span class="relative grid place-items-center">{@render icon()}</span>
+  {/if}
+  <span class="max-w-full truncate">{label}</span>
+{/snippet}
 
 <nav
   aria-label={t("mobile.primaryNavigation")}
@@ -32,22 +72,31 @@
     "mobile-primary-navigation",
     presentation === "rail"
       ? "flex w-(--mobile-nav-rail-w) shrink-0 flex-col border-r border-sidebar-border bg-sidebar px-2 py-3 text-sidebar-foreground"
-      : "col-span-4 grid min-w-0 self-stretch grid-cols-4 px-1 text-foreground",
+      : "grid h-(--mobile-bottom-nav-h) shrink-0 border-t border-sidebar-border px-2 text-foreground",
   )}
+  style={presentation === "bottom" ? `background-color: var(--cal-bg); grid-template-columns: repeat(${slots.length + 1}, minmax(0, 1fr));` : undefined}
 >
-  {#each destinations as destination}
-    {@const Icon = destination.icon}
-    {@const selected = current === destination.view}
+  {#each slots as tab (tab.id)}
+    {@const Icon = workspaceTabKindIcon(tab.location.kind)}
+    {@const selected = tab.id === activeTabId}
+    {@const label = workspaceTabLabel(tab, t)}
+    {@const fullLabel = workspaceTabFullLabel(tab, t)}
+    {#snippet icon()}
+      <Icon size={iconSize} strokeWidth={selected ? 2 : 1.7} aria-hidden="true" />
+      {#if tab.locked}
+        <Lock class="absolute -right-0.5 -bottom-0.5 rounded-full bg-(--cal-bg) p-px" size={11} strokeWidth={2} aria-hidden="true" data-mobile-tab-locked />
+      {/if}
+    {/snippet}
     <button
       type="button"
       aria-current={selected ? "page" : undefined}
-      aria-label={t(`titleBar.tab.${destination.view}`)}
-      onclick={() => onNavigate(destination.view)}
+      aria-label={tab.locked ? t("titleBar.tab.lockedTab", fullLabel) : fullLabel}
+      {@attach drag.item(tab.id)}
+      onpointerdown={(event) => drag.pointerDown(event, tab.id)}
+      onclick={() => onSelect(tab.id)}
       class={cn(
-        "group relative flex items-center justify-center text-xs font-medium transition-colors",
-        presentation === "rail"
-          ? "mb-2 min-h-12 flex-col gap-1 rounded-xl"
-          : "min-h-0 min-w-0",
+        "group relative flex min-w-0 flex-col items-center justify-center gap-1 text-xs font-medium transition-colors",
+        presentation === "rail" && "mb-2 min-h-12 rounded-xl",
         presentation === "rail"
           ? selected
             ? "bg-sidebar-accent text-sidebar-accent-foreground"
@@ -57,18 +106,40 @@
             : "text-muted-foreground",
       )}
     >
-      <span class={cn(
-        "grid place-items-center transition-colors",
-        presentation === "top" && "h-8 w-8 rounded-full group-active:bg-accent/70",
-      )}>
-        <Icon size={presentation === "top" ? 19 : 21} strokeWidth={selected ? 2 : 1.7} aria-hidden="true" />
-      </span>
-      {#if presentation === "top" && selected}
-        <span data-mobile-navigation-indicator class="absolute bottom-0 h-0.5 w-5 rounded-full bg-foreground/75" aria-hidden="true"></span>
-      {/if}
-      {#if presentation === "rail"}
-        <span>{t(`titleBar.tab.${destination.view}`)}</span>
-      {/if}
+      {@render itemContent(selected, icon, label)}
     </button>
   {/each}
+
+  {#snippet countBox()}
+    {#if badge.kind === "add"}
+      <SquarePlus size={iconSize} strokeWidth={tabsOpen ? 2 : 1.7} aria-hidden="true" data-mobile-tabs-add />
+    {:else}
+      <span
+        class="grid h-5 min-w-5 place-items-center rounded-md border-[1.5px] border-current px-1 text-[0.666667rem] leading-none font-semibold tabular-nums"
+        aria-hidden="true"
+        data-mobile-tab-overflow
+      >{badge.label}</span>
+    {/if}
+  {/snippet}
+  <button
+    type="button"
+    aria-label={t("titleBar.tab.showTabs", tabs.length)}
+    aria-haspopup="dialog"
+    aria-expanded={tabsOpen}
+    onclick={onOpenTabs}
+    class={cn(
+      "group relative flex min-w-0 flex-col items-center justify-center gap-1 text-xs font-medium transition-colors",
+      presentation === "rail" && "mt-auto min-h-12 rounded-xl",
+      presentation === "rail"
+        ? tabsOpen
+          ? "bg-sidebar-accent text-sidebar-accent-foreground"
+          : "text-sidebar-foreground/70 active:bg-sidebar-accent/70"
+        : tabsOpen
+          ? "text-foreground"
+          : "text-muted-foreground",
+    )}
+    data-mobile-tabs-button
+  >
+    {@render itemContent(tabsOpen, countBox, t("titleBar.tab.tabs"))}
+  </button>
 </nav>

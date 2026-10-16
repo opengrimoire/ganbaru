@@ -86,7 +86,7 @@ describe("MusicPanel", () => {
     target = undefined;
     vi.unstubAllGlobals();
     resizeObserverCallbacks.clear();
-    getMusicSourcesController().firstUseSession = false;
+    Object.assign(getMusicSourcesController(), { firstUseSession: false, preparingDefaultFolder: false, loaded: false });
     const player = getMusicPlayer();
     player.setPlaylistVisible(false);
     player.currentSource = null;
@@ -486,7 +486,7 @@ describe("MusicPanel", () => {
   it("keeps first-use preparation pending when the panel closes before completion", async () => {
     vi.stubGlobal("ResizeObserver", ResizeObserverStub);
     vi.stubGlobal("matchMedia", matchMediaStub);
-    getMusicSourcesController().firstUseSession = true;
+    Object.assign(getMusicSourcesController(), { firstUseSession: true, preparingDefaultFolder: true });
     target = document.createElement("div");
     document.body.append(target);
     const { default: MusicPanel } = await import("./MusicPanel.svelte");
@@ -502,5 +502,32 @@ describe("MusicPanel", () => {
     component = undefined;
 
     expect(getMusicSourcesController().firstUseSession).toBe(true);
+  });
+
+  it("asks for the first Music folder from the player instead of opening the Builder", async () => {
+    vi.stubGlobal("ResizeObserver", ResizeObserverStub);
+    vi.stubGlobal("matchMedia", matchMediaStub);
+    const sources = getMusicSourcesController();
+    Object.assign(sources, { firstUseSession: true, loaded: true, roots: [], collections: [] });
+    const choose = vi.spyOn(sources, "chooseLocalFolder").mockResolvedValue(null);
+    target = document.createElement("div");
+    document.body.append(target);
+    const { default: MusicPanel } = await import("./MusicPanel.svelte");
+
+    component = mount(MusicPanel, { target, props: { onClose: vi.fn() } });
+    await tick();
+
+    const prompt = target.querySelector<HTMLButtonElement>("[data-music-first-use-folder] button");
+    expect(prompt).not.toBeNull();
+    expect(target.querySelector(".builder-root")).toBeNull();
+    expect(target.querySelector("[data-music-player-page]")?.classList.contains("hidden")).toBe(false);
+
+    prompt?.click();
+    await vi.waitFor(() => expect(choose).toHaveBeenCalledOnce());
+    await tick();
+
+    expect(target.querySelector(".builder-root")).toBeNull();
+    expect(target.querySelector("[data-music-first-use-folder]")).not.toBeNull();
+    choose.mockRestore();
   });
 });

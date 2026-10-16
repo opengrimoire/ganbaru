@@ -20,6 +20,8 @@ struct QueueRow {
     youtube_video_id: Option<String>,
     youtube_resolution_state: Option<String>,
     title: String,
+    artist: Option<String>,
+    album: Option<String>,
     availability: String,
     root_id: Option<String>,
     relative_path: Option<String>,
@@ -67,6 +69,12 @@ fn source_entry(source: SessionSource) -> MusicLibraryResult<SessionQueueEntry> 
     bounded_text(&source.identity, "source.identity")?;
     bounded_text(&source.title, "source.title")?;
     bounded_text(&source.original_input, "source.originalInput")?;
+    if let Some(artist) = &source.artist {
+        bounded_text(artist, "source.artist")?;
+    }
+    if let Some(album) = &source.album {
+        bounded_text(album, "source.album")?;
+    }
     if source
         .end_ms
         .is_some_and(|end| end <= source.start_ms.unwrap_or(0))
@@ -236,6 +244,8 @@ fn row_entry(
             identity: row.identity_key,
             original_input: input,
             title: row.title,
+            artist: row.artist,
+            album: row.album,
             path,
             artwork_path: None,
             video_id: row.youtube_video_id,
@@ -262,7 +272,10 @@ fn row_query<'a>(playlist_id: Option<&'a str>, now_ms: i64) -> QueryBuilder<'a, 
     let mut query = QueryBuilder::new(
         "SELECT item.id AS item_id, item.identity_key, item.source_kind, item.media_kind,
          item.youtube_video_id, item.youtube_resolution_state,
-         COALESCE(NULLIF(item.title_override, ''), item.original_title) AS title, item.availability,
+         COALESCE(NULLIF(item.title_override, ''), item.original_title) AS title,
+         COALESCE(NULLIF(item.artist_override, ''), NULLIF(item.original_artist, '')) AS artist,
+         COALESCE(NULLIF(item.album_override, ''), NULLIF(item.original_album, '')) AS album,
+         item.availability,
          (SELECT root_id FROM music_local_locations WHERE item_id = item.id AND availability = 'available'
           ORDER BY updated_at_ms DESC, id LIMIT 1) AS root_id,
          (SELECT relative_path FROM music_local_locations WHERE item_id = item.id AND availability = 'available'

@@ -44,6 +44,7 @@ function assertNotesLinkTarget(target: NotesBlockLinkTarget): void {
 function buildNotesLink(baseHref: string, params: Record<string, string>): string {
   const url = new URL(baseHref);
   url.searchParams.delete("ganbaruWindow");
+  url.searchParams.delete("tab");
   url.searchParams.set("view", "notes");
   url.hash = `${NOTES_LINK_HASH_PREFIX}?${new URLSearchParams(params).toString()}`;
   return url.toString();

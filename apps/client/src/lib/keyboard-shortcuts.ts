@@ -61,25 +61,32 @@ export function hasOnlyShortcutModifier(
 
 export type AppNavigationShortcut =
   | { type: "settings" }
-  | { type: "relative-view"; direction: -1 | 1 }
-  | { type: "view"; index: number };
+  | { type: "relative-tab"; direction: -1 | 1 }
+  /** Zero-based position; the ninth position means the last tab. */
+  | { type: "tab"; index: number }
+  | { type: "new-tab" }
+  | { type: "reopen-tab" }
+  | { type: "close-tab" };
 
-/** Resolve app navigation independently of focus inside a document or input. */
+/** Resolve app and workspace tab navigation independently of focus inside a document or input. */
 export function appNavigationShortcut(
   event: KeyboardModifierState & Pick<KeyboardEvent, "key" | "code" | "isComposing">,
-  viewCount: number,
 ): AppNavigationShortcut | null {
   if (event.isComposing) return null;
-  if (hasOnlyShortcutModifier(event) && event.key === ",") return { type: "settings" };
-  if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && /^[1-9]$/.test(event.key)) {
-    const index = Number(event.key) - 1;
-    return index < viewCount ? { type: "view", index } : null;
+  const key = event.key.toLowerCase();
+  if (hasOnlyShortcutModifier(event) && key === ",") return { type: "settings" };
+  if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && /^[1-9]$/.test(key)) {
+    return { type: "tab", index: Number(key) - 1 };
   }
   if (hasShortcutModifier(event) && !event.altKey && (event.key === "Tab" || event.code === "Tab")) {
-    return { type: "relative-view", direction: event.shiftKey ? -1 : 1 };
+    return { type: "relative-tab", direction: event.shiftKey ? -1 : 1 };
   }
   if (hasOnlyShortcutModifier(event) && (event.key === "PageUp" || event.key === "PageDown")) {
-    return { type: "relative-view", direction: event.key === "PageUp" ? -1 : 1 };
+    return { type: "relative-tab", direction: event.key === "PageUp" ? -1 : 1 };
   }
+  if (hasOnlyShortcutModifier(event, { shift: true }) && key === "t") return { type: "reopen-tab" };
+  if (!hasOnlyShortcutModifier(event)) return null;
+  if (key === "t") return { type: "new-tab" };
+  if (key === "w") return { type: "close-tab" };
   return null;
 }

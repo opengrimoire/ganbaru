@@ -1,8 +1,7 @@
 <script lang="ts">
-  import { onMount, tick, untrack } from "svelte";
+  import { onMount, tick, untrack, type Snippet } from "svelte";
   import { quintOut } from "svelte/easing";
   import { slide } from "svelte/transition";
-  import Menu from "@lucide/svelte/icons/menu";
   import { chatHeaderActionInset, nextThreadIndex } from "$lib/chat/shell-model";
   import {
     CHAT_LOCAL_EXECUTION_COMPONENTS,
@@ -37,9 +36,11 @@
     restoreChatCheckpoint,
   } from "$lib/chat/review/checkpoint-restoration";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { getChat } from "$lib/stores/chat.svelte";
+  import { useChatPaneEvents } from "$lib/chat/pane-events";
+  import { useChat } from "$lib/stores/chat.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
+  import { suppressHoverOnToggle } from "$lib/utils/hover-suppression";
   import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import Loading from "$lib/components/ui/Loading.svelte";
@@ -52,12 +53,31 @@
   import ChatChannelArchive from "$lib/components/chat/channels/ChatChannelArchive.svelte";
   import ChatChannelFeed from "$lib/components/chat/channels/ChatChannelFeed.svelte";
   import ChatReplyThreadPanel from "$lib/components/chat/timeline/ChatReplyThreadPanel.svelte";
+  import { isTextEntryElement, OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
+  import { getWorkspacePaneFocus } from "$lib/workspace-tabs/pane-focus";
+
+  let {
+    projectSidebar = undefined,
+    projectViewSwitcher = undefined,
+  }: {
+    /**
+     * Projects sidebar from a host that opens Chat as one place of a project. It replaces the channel rail, so the
+     * header breadcrumb carries channel navigation. The snippet receives the handler for a project switch.
+     */
+    projectSidebar?: Snippet<[() => void]>;
+    /**
+     * Phone switcher between the views of the project that hosts Chat. The phone keeps the channel sheet, so hosting
+     * there only adds the switcher to the action row.
+     */
+    projectViewSwitcher?: Snippet;
+  } = $props();
 
   const localization = getLocalization();
   const { t } = localization;
-  const chat = getChat();
+  const chat = useChat();
+  const paneEvents = useChatPaneEvents();
   const preferences = getPreferences();
-  const projects = getProjects();
+  const projects = useProjects();
   const settings = getSettingsLauncher();
   const localExecutionAvailable = platformHasCapability(
     BUILD_PLATFORM_PROFILE,
@@ -80,7 +100,7 @@
   let rootElement: HTMLDivElement | undefined = $state();
   let primaryHeaderElement: HTMLDivElement | undefined = $state();
   let globalActionsElement: HTMLDivElement | undefined = $state();
-  let mobileRailToggleElement: HTMLButtonElement | undefined = $state();
+  let canvasEdgeElement: HTMLDivElement | undefined = $state();
   let railShell: HTMLDivElement | undefined = $state();
   let composerDockElement: HTMLDivElement | undefined = $state();
   let composerDockHeight = $state(0);
@@ -114,6 +134,7 @@
   let shellRight = $state(INITIAL_SHELL_WIDTH);
   let shellBottom = $state(INITIAL_SHELL_HEIGHT);
   let displayPixelRatio = $state(1);
+  let canvasEdgeWidth = $state<number | null>(null);
   const fontScale = $derived(Math.max(INITIAL_FONT_SCALE, preferences.fontScale));
   let layout = $state<ChatLayoutDecision>(chatLayoutDecision({
     containerWidth: INITIAL_SHELL_WIDTH,
@@ -130,17 +151,19 @@
   );
   const auxiliaryPairOpen = $derived(chat.openReplyThreadId !== null && chat.inspectorOpen);
   const mobileShell = BUILD_PLATFORM_PROFILE.shell === "mobile";
+  const projectHosted = $derived(projectSidebar !== undefined && !mobileShell);
   const visibleRailOpen = $derived(
-    mobileShell ? mobileRailOpen : auxiliaryPairOpen ? transientRailOpen : chat.railOpen,
+    projectHosted ? false : mobileShell ? mobileRailOpen : auxiliaryPairOpen ? transientRailOpen : chat.railOpen,
   );
-  const railUsesMobileSurface = $derived(
+  const observeRailOpenForHover = suppressHoverOnToggle();
+  $effect(() => observeRailOpenForHover(visibleRailOpen));
+  /** The phone shell opens the channel rail as a floating panel over the channel instead of a sheet. */
+  const railUsesMobilePanel = $derived(
     mobileShell && layout.railPresentation === "sheet",
   );
-  const railComponentPresentation = $derived(
-    railUsesMobileSurface ? "surface" as const : layout.railPresentation,
-  );
+  const railDocked = $derived(projectHosted || (layout.railPresentation === "column" && !mobileShell));
   const railIsModal = $derived(
-    layout.railPresentation === "sheet" && !railUsesMobileSurface && visibleRailOpen,
+    layout.railPresentation === "sheet" && !railUsesMobilePanel && visibleRailOpen,
   );
   const replyThreadWidth = $derived(CHAT_REPLY_THREAD_WIDTH_PX * fontScale);
   const displayedInspectorWidth = $derived.by(() => {
@@ -237,9 +260,9 @@
         chatChannelId: channelId,
       });
     };
-    window.addEventListener("ganbaru-ai:chat-revert-message", revertMessage);
-    window.addEventListener("ganbaru-ai:chat-open-review", openWorkspaceTool);
-    window.addEventListener("ganbaru-ai:chat-open-file", openWorkspaceTool);
+    paneEvents.addEventListener("ganbaru-ai:chat-revert-message", revertMessage);
+    paneEvents.addEventListener("ganbaru-ai:chat-open-review", openWorkspaceTool);
+    paneEvents.addEventListener("ganbaru-ai:chat-open-file", openWorkspaceTool);
     const manageMembers = (event: Event) => {
       const channelId = event instanceof CustomEvent
         && typeof event.detail === "object"
@@ -249,10 +272,10 @@
         ? event.detail.channelId
         : chat.selectedChannelId;
       if (!channelId) return;
-      window.dispatchEvent(new CustomEvent("ganbaru-ai:chat-edit-channel", { detail: { channelId } }));
+      paneEvents.dispatchEvent(new CustomEvent("ganbaru-ai:chat-edit-channel", { detail: { channelId } }));
     };
-    window.addEventListener("ganbaru-ai:chat-configure-teammate", openTeammates);
-    window.addEventListener("ganbaru-ai:chat-manage-members", manageMembers);
+    paneEvents.addEventListener("ganbaru-ai:chat-configure-teammate", openTeammates);
+    paneEvents.addEventListener("ganbaru-ai:chat-manage-members", manageMembers);
     return () => {
       observer.disconnect();
       headerGeometryObserver.disconnect();
@@ -266,11 +289,11 @@
         if (timer !== undefined) window.clearTimeout(timer);
       }
       motionQuery.removeEventListener("change", updateMotionPreference);
-      window.removeEventListener("ganbaru-ai:chat-revert-message", revertMessage);
-      window.removeEventListener("ganbaru-ai:chat-open-review", openWorkspaceTool);
-      window.removeEventListener("ganbaru-ai:chat-open-file", openWorkspaceTool);
-      window.removeEventListener("ganbaru-ai:chat-configure-teammate", openTeammates);
-      window.removeEventListener("ganbaru-ai:chat-manage-members", manageMembers);
+      paneEvents.removeEventListener("ganbaru-ai:chat-revert-message", revertMessage);
+      paneEvents.removeEventListener("ganbaru-ai:chat-open-review", openWorkspaceTool);
+      paneEvents.removeEventListener("ganbaru-ai:chat-open-file", openWorkspaceTool);
+      paneEvents.removeEventListener("ganbaru-ai:chat-configure-teammate", openTeammates);
+      paneEvents.removeEventListener("ganbaru-ai:chat-manage-members", manageMembers);
       void unlisten.then((dispose) => dispose());
     };
   });
@@ -305,19 +328,22 @@
   }
 
   function openRail(): void {
+    if (projectHosted) return;
     if (mobileShell) mobileRailOpen = true;
     else if (auxiliaryPairOpen) transientRailOpen = true;
     else chat.railOpen = true;
   }
 
   function closeRail(): void {
+    if (projectHosted) return;
     if (mobileShell) mobileRailOpen = false;
     else if (auxiliaryPairOpen) transientRailOpen = false;
     else chat.railOpen = false;
   }
 
   function toggleRail(): void {
-    if (visibleRailOpen) closeRail();
+    if (projectHosted) projects.sidebarCollapsed = !projects.sidebarCollapsed;
+    else if (visibleRailOpen) closeRail();
     else openRail();
   }
 
@@ -433,7 +459,7 @@
       containerWidth: shellWidth,
       containerHeight: shellHeight,
       fontScale,
-      railOpen: visibleRailOpen,
+      railOpen: projectHosted ? !projects.sidebarCollapsed : visibleRailOpen,
       inspectorOpen: chat.inspectorOpen,
       inspectorWidth: displayedInspectorWidth,
       replyThreadOpen: chat.openReplyThreadId !== null,
@@ -477,7 +503,8 @@
       queueMicrotask(() => document.querySelector<HTMLElement>("[data-chat-inspector] [role='tab'][aria-selected='true']")?.focus());
     } else if (action === "restore") {
       const target = inspectorReturnFocus;
-      queueMicrotask(() => target?.isConnected && target.focus());
+      // A phone does not reopen the keyboard by returning focus to a text field.
+      if (OPENING_MAY_FOCUS_TEXT || !isTextEntryElement(target)) queueMicrotask(() => target?.isConnected && target.focus());
     }
     inspectorWasOpen = open;
   });
@@ -491,20 +518,14 @@
   });
 
   $effect(() => {
-    const open = layout.railPresentation === "sheet" && visibleRailOpen;
+    const open = layout.railPresentation === "sheet" && !railUsesMobilePanel && visibleRailOpen;
     if (open && !railModalWasOpen) {
       railReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-      queueMicrotask(() => {
-        const target = railUsesMobileSurface
-          ? railShell?.querySelector<HTMLElement>("[data-chat-rail-close]")
-          : firstFocusable(railShell);
-        target?.focus();
-      });
+      queueMicrotask(() => firstFocusable(railShell)?.focus());
     } else if (!open && railModalWasOpen) {
       const target = railReturnFocus;
       queueMicrotask(() => {
         if (target?.isConnected) target.focus();
-        else if (railUsesMobileSurface) mobileRailToggleElement?.focus();
       });
     }
     railModalWasOpen = open;
@@ -517,7 +538,10 @@
     );
   }
 
+  const paneFocused = getWorkspacePaneFocus();
+
   function handleKeydown(event: KeyboardEvent): void {
+    if (!paneFocused()) return;
     if (commandMenuOpen && event.key === "Escape") {
       event.preventDefault();
       commandMenuOpen = false;
@@ -525,20 +549,20 @@
     }
     if (hasOnlyShortcutModifier(event) && event.key === ".") {
       event.preventDefault();
-      window.dispatchEvent(new Event("ganbaru-ai:chat-stop-requested"));
+      paneEvents.dispatchEvent(new Event("ganbaru-ai:chat-stop-requested"));
       return;
     }
     if (isEditingTarget(event.target)) return;
     if (hasOnlyShortcutModifier(event) && event.key.toLowerCase() === "n") {
       event.preventDefault();
       openRail();
-      window.dispatchEvent(new Event("ganbaru-ai:chat-new-channel"));
+      paneEvents.dispatchEvent(new Event("ganbaru-ai:chat-new-channel"));
       return;
     }
     if (hasOnlyShortcutModifier(event) && event.key.toLowerCase() === "f") {
       event.preventDefault();
       openRail();
-      window.dispatchEvent(new Event("ganbaru-ai:chat-focus-search"));
+      paneEvents.dispatchEvent(new Event("ganbaru-ai:chat-focus-search"));
       return;
     }
     if (hasOnlyShortcutModifier(event) && event.key.toLowerCase() === "l") {
@@ -601,6 +625,16 @@
     displayPixelRatio = Number.isFinite(window.devicePixelRatio) && window.devicePixelRatio > 0
       ? window.devicePixelRatio
       : 1;
+    canvasEdgeWidth = canvasEdgeElement ? renderedBorderWidth(canvasEdgeElement) : null;
+  }
+
+  /**
+   * Reads the width an element's top border renders at. Engines snap border widths to whole device pixels, so at a
+   * fractional display scale a 1px border renders narrower than 1px, and an inset that must line up with it uses this.
+   */
+  function renderedBorderWidth(element: HTMLElement): number | null {
+    const width = Number.parseFloat(getComputedStyle(element).borderTopWidth);
+    return Number.isFinite(width) && width > 0 ? width : null;
   }
 
   function enablePanelTransitionsAfterLayout(): void {
@@ -860,7 +894,7 @@
     if (!request) return;
     chat.inspectorOpen = true;
     void tick().then(() => {
-      window.dispatchEvent(new CustomEvent(CHAT_OPEN_WORKSPACE_PANEL_EVENT, {
+      paneEvents.dispatchEvent(new CustomEvent(CHAT_OPEN_WORKSPACE_PANEL_EVENT, {
         detail: request,
       }));
     });
@@ -959,10 +993,21 @@
   }
 </script>
 
+{#snippet headerActions()}
+  <ChatHeaderActions
+    {bottomPanelOpen}
+    projectName={projects.selectedProject?.name ?? null}
+    {projectSettingsOpen}
+    onToggleBottomPanel={toggleBottomPanel}
+    onToggleProjectSettings={toggleProjectSettings}
+  />
+{/snippet}
+
 <svelte:window onkeydown={handleKeydown} />
 
-<div bind:this={rootElement} class="chat-workspace @container/chat-shell relative grid h-full min-h-0 overflow-hidden" class:mobile-rail-surface={railUsesMobileSurface} class:resizing-panels={resizingInspector || resizingBottomPanel} class:panel-transitions-enabled={panelTransitionsEnabled} data-chat-workspace data-layout={layout.variant} data-rail-presentation={layout.railPresentation} data-inspector-presentation={layout.inspectorPresentation} data-reply-thread-presentation={layout.replyThreadPresentation} data-active-surface={layout.activeSurface} data-rail-open={visibleRailOpen} style={`background-color:var(--cal-bg);container-type:inline-size;container-name:chat-shell;--chat-panel-transition-duration:${PANEL_TRANSITION_MS}ms;--chat-bottom-min-height:${MIN_BOTTOM_PANEL_HEIGHT}px;--chat-inspector-width:${displayedInspectorWidth}px;--chat-reply-thread-width:${replyThreadWidth}px;`}>
-  {#if WorkspaceObserver}<WorkspaceObserver />{/if}
+<div bind:this={rootElement} class="chat-workspace @container/chat-shell relative grid h-full min-h-0 overflow-hidden" class:resizing-panels={resizingInspector || resizingBottomPanel} class:panel-transitions-enabled={panelTransitionsEnabled} data-chat-workspace data-layout={layout.variant} data-rail-presentation={layout.railPresentation} data-inspector-presentation={layout.inspectorPresentation} data-reply-thread-presentation={layout.replyThreadPresentation} data-active-surface={layout.activeSurface} data-rail-open={visibleRailOpen} data-rail-docked={railDocked} data-canvas-edge={!mobileShell} data-project-sidebar={projectHosted} style={`container-type:inline-size;container-name:chat-shell;--chat-panel-transition-duration:${PANEL_TRANSITION_MS}ms;--chat-bottom-min-height:${MIN_BOTTOM_PANEL_HEIGHT}px;--chat-inspector-width:${displayedInspectorWidth}px;--chat-reply-thread-width:${replyThreadWidth}px;${canvasEdgeWidth === null ? "" : `--chat-canvas-edge-width:${canvasEdgeWidth}px;`}`}>
+  <div class="chat-canvas" aria-hidden="true"></div>
+{#if WorkspaceObserver}<WorkspaceObserver />{/if}
   <div class="sr-only" aria-live="polite" aria-atomic="true">{politeAnnouncement}</div>
   <div class="sr-only" aria-live="assertive" aria-atomic="true">{assertiveAnnouncement}</div>
   {#if layoutError}<Notice class="surface-floating absolute inset-x-0 top-2 z-50 mx-auto w-fit max-w-md px-2.5 py-2 text-xs" message={layoutError} />{/if}
@@ -975,22 +1020,22 @@
     <ChatWorkspaceHeader
       bind:editingTitle={headerEditingTitle}
       explorerExpanded={layout.railPresentation === "column" && visibleRailOpen}
-      showRailButton={layout.railPresentation === "sheet" && !visibleRailOpen && !railUsesMobileSurface}
+      showRailButton={!projectHosted && layout.railPresentation === "sheet" && (railUsesMobilePanel || !visibleRailOpen)}
       reserveGlobalActions={!chat.inspectorOpen && !threadColumnOpen}
       mobilePresentation={mobileShell}
       onOpenRail={openRail}
+      trailingActions={mobileShell ? headerActions : undefined}
+      projectViewSwitcher={mobileShell ? projectViewSwitcher : undefined}
     />
   </div>
-  {#if railUsesMobileSurface && !visibleRailOpen}
-    <div class="chat-mobile-rail-bar">
-      <button bind:this={mobileRailToggleElement} type="button" class="chat-mobile-rail-toggle" aria-label={visibleRailOpen ? t("chat.collapseRail") : t("chat.openRail")} aria-expanded={visibleRailOpen} onclick={toggleRail}>
-        <Menu size={20} />
-      </button>
+  {#if railUsesMobilePanel}
+    <ChatChannelRail presentation="panel" expanded={visibleRailOpen} showCollapsedStrip={false} onExpand={openRail} onCollapse={closeRail} />
+  {:else}
+    <div bind:this={railShell} class="chat-rail-shell" class:closed={!visibleRailOpen} class:explorer-chrome={railDocked} role={railIsModal ? "dialog" : undefined} aria-modal={railIsModal ? "true" : undefined} aria-label={railIsModal ? t("chat.title") : undefined} onkeydown={(event) => { if (!projectHosted && layout.railPresentation === "sheet") handleRailKeydown(event); }}>
+      {#if projectSidebar && projectHosted}{@render projectSidebar(() => {})}{/if}
+      <ChatChannelRail presentation={layout.railPresentation} expanded={visibleRailOpen} showCollapsedStrip={!projectHosted && layout.railPresentation === "column"} onExpand={openRail} onCollapse={closeRail} />
     </div>
   {/if}
-  <div bind:this={railShell} class="chat-rail-shell" class:closed={!visibleRailOpen} role={railIsModal ? "dialog" : undefined} aria-modal={railIsModal ? "true" : undefined} aria-label={railIsModal ? t("chat.title") : undefined} onkeydown={(event) => { if (layout.railPresentation === "sheet") handleRailKeydown(event); }}>
-    <ChatChannelRail presentation={railComponentPresentation} expanded={visibleRailOpen} showCollapsedStrip={layout.railPresentation === "column"} onExpand={openRail} onCollapse={closeRail} />
-  </div>
   <main class="main-shell relative flex min-w-0 flex-col">
         {#if loadError}
           <div class="min-h-0 flex-1 text-sm"><Notice layout="fill" message={loadError} onRetry={retryWorkspaceLoad} /></div>
@@ -1023,17 +1068,13 @@
     </div>
   </aside>
 
-  <div bind:this={globalActionsElement} class="chat-global-actions">
-    <ChatHeaderActions
-      {bottomPanelOpen}
-      projectName={projects.selectedProject?.name ?? null}
-      {projectSettingsOpen}
-      onToggleBottomPanel={toggleBottomPanel}
-      onToggleProjectSettings={toggleProjectSettings}
-    />
-  </div>
+  {#if !mobileShell}
+    <!-- Desktop overlays the actions on whichever panel owns the top edge; the phone row carries them inline. -->
+    <div bind:this={globalActionsElement} class="chat-global-actions">{@render headerActions()}</div>
+  {/if}
   {#if projectSettingsOpen && projectSettingsTrigger && projects.selectedProject}
     <ChatProjectSettingsPanel
+      projectId={projects.selectedProject.id}
       projectName={projects.selectedProject.name}
       triggerElement={projectSettingsTrigger}
       onClose={closeProjectSettings}
@@ -1052,12 +1093,15 @@
     <LocalCommandMenu
       {bottomPanelOpen}
       onClose={() => { commandMenuOpen = false; }}
-      onNewChannel={() => { openRail(); window.dispatchEvent(new Event("ganbaru-ai:chat-new-channel")); }}
-      onSearch={() => { openRail(); window.dispatchEvent(new Event("ganbaru-ai:chat-focus-search")); }}
+      onNewChannel={() => { openRail(); paneEvents.dispatchEvent(new Event("ganbaru-ai:chat-new-channel")); }}
+      onSearch={() => { openRail(); paneEvents.dispatchEvent(new Event("ganbaru-ai:chat-focus-search")); }}
       onToggleBottomPanel={toggleBottomPanel}
       onToggleInspector={() => { chat.inspectorOpen = !chat.inspectorOpen; }}
       onOpenSettings={() => settings.open("chat")}
     />
+  {/if}
+  {#if !mobileShell}
+    <div bind:this={canvasEdgeElement} class="chat-canvas-edge surface-content-edge" aria-hidden="true"></div>
   {/if}
 </div>
 
@@ -1079,30 +1123,39 @@
     --chat-conversation-max-width: 60rem;
     --chat-conversation-gutter: 1rem;
     --chat-conversation-entry-space: 0.45rem;
-    --chat-rail-column-width: 2.75rem;
     --chat-reply-thread-column-width: 0px;
     --chat-inspector-column-width: 0px;
     --chat-global-actions-width: 6.5rem;
-    --chat-mobile-rail-bar-height: 3rem;
     grid-template-columns: var(--chat-rail-column-width) minmax(0, 1fr) 0 var(--chat-reply-thread-column-width) 0 var(--chat-inspector-column-width);
-    grid-template-rows: var(--cal-header-row-h) minmax(0, 1fr) auto auto;
+    grid-template-rows: var(--toolbar-h) minmax(0, 1fr) auto auto;
   }
   .chat-workspace :global(svg.lucide:not(.explorer-sidebar *)) { stroke-width: var(--chat-icon-stroke-width); }
   .chat-workspace :global(svg.lucide[stroke-width="1"]:not(.explorer-sidebar *)) { stroke-width: 1; }
   .chat-workspace :global(svg.lucide[stroke-width="1.5"]:not(.explorer-sidebar *)) { stroke-width: var(--chat-compact-icon-stroke-width); }
-  .chat-workspace[data-rail-presentation="column"][data-rail-open="true"] { --chat-rail-column-width: var(--explorer-width); }
+  /* A column rail sizes its own track, so it shares the docked explorer collapse motion with Projects and Notes. */
+  .chat-workspace[data-rail-presentation="column"] { --chat-rail-column-width: auto; }
   .chat-workspace[data-rail-presentation="sheet"] { --chat-rail-column-width: 0px; }
   .chat-workspace[data-reply-thread-presentation="column"] { --chat-reply-thread-column-width: var(--chat-reply-thread-width); }
   .chat-workspace[data-inspector-presentation="column"] { --chat-inspector-column-width: var(--chat-inspector-width); }
+  /* Content sits inside the canvas edge, as it does in tabs whose content surface carries the edge as its own border; the canvas and the docked rail reach past that inset. The inset is the width the edge renders at, which is narrower than its specified width at fractional display scales. */
+  .chat-workspace { --chat-canvas-inset: 0px; padding: var(--chat-canvas-inset); }
+  .chat-workspace[data-canvas-edge="true"] { --chat-canvas-inset: var(--chat-canvas-edge-width, var(--content-edge-width)); }
+  .chat-canvas, .chat-canvas-edge { grid-column: 1 / 7; grid-row: 1 / 5; margin: calc(-1 * var(--chat-canvas-inset)); pointer-events: none; }
+  .chat-canvas { background: var(--cal-bg); }
+  /* Above the toolbar actions and composer dock that paint the canvas color at its edges, below sheet backdrops. */
+  .chat-canvas-edge { z-index: 20; }
+  .chat-workspace[data-rail-docked="true"] :is(.chat-canvas, .chat-canvas-edge) { grid-column: 2 / 7; border-radius: var(--content-radius); }
   .chat-primary-header { grid-column: 1 / 3; grid-row: 1; min-width: 0; }
-  .chat-mobile-rail-bar { position: absolute; top: var(--cal-header-row-h); right: 0; left: 0; z-index: 10; display: flex; height: var(--chat-mobile-rail-bar-height); align-items: center; background: var(--cal-bg); padding-inline: 0.5rem; }
-  .chat-mobile-rail-toggle { display: grid; width: 2.5rem; height: 2.5rem; place-items: center; border-radius: 0.5rem; color: var(--foreground); }
-  .chat-mobile-rail-toggle:is(:hover, :focus-visible) { background: var(--accent); }
-  .chat-global-actions { position: absolute; top: 0; right: 0; z-index: 5; display: flex; width: max-content; min-width: var(--chat-global-actions-width); height: var(--cal-header-row-h); align-items: center; justify-content: flex-end; border-bottom: 1px solid var(--sidebar); background: var(--cal-header-bg); padding-right: 0.75rem; }
+  .chat-workspace[data-rail-docked="true"] .chat-primary-header { grid-column: 2; }
+  .chat-global-actions { position: absolute; top: var(--chat-canvas-inset); right: var(--chat-canvas-inset); z-index: 5; display: flex; width: max-content; min-width: var(--chat-global-actions-width); height: var(--toolbar-h); align-items: center; justify-content: flex-end; background: var(--cal-bg); padding-right: 0.75rem; }
   .chat-rail-shell { grid-column: 1; grid-row: 2; min-width: 0; overflow: hidden; }
   .chat-workspace[data-rail-presentation="column"][data-rail-open="true"] .chat-rail-shell { grid-row: 2 / 5; }
-  .main-shell { grid-column: 2; grid-row: 2; min-width: min(440px, 100cqw); min-height: 0; background: var(--cal-bg); }
+  .chat-workspace[data-rail-presentation="column"][data-rail-docked="true"] .chat-rail-shell { grid-row: 1 / 5; }
+  .chat-workspace[data-rail-docked="true"] .chat-rail-shell { margin: calc(-1 * var(--chat-canvas-inset)) var(--chat-canvas-inset) calc(-1 * var(--chat-canvas-inset)) calc(-1 * var(--chat-canvas-inset)); }
+  .main-shell { grid-column: 2; grid-row: 2; min-width: min(440px, 100cqw); min-height: 0; }
   .chat-workspace[data-reply-thread-presentation="column"] .main-shell { min-width: min(320px, 100cqw); }
+  /* Beside a docked rail the main column owns the canvas's bottom-left corner, so its full-bleed fills (composer docks, panels) follow the rounded edge. Only that corner is clipped, so popovers still escape upward and rightward. */
+  .chat-workspace[data-rail-docked="true"]:not(:has(.chat-bottom-transition-shell.open)) .main-shell { clip-path: inset(-100vmax -100vmax 0 0 round 0 0 0 max(0px, var(--content-radius) - var(--chat-canvas-inset))); }
   .chat-thread-separator { grid-column: 3; grid-row: 1 / 3; }
   .chat-thread-shell { --chat-icon-stroke-width: var(--chat-compact-icon-stroke-width); grid-column: 4; grid-row: 1 / 3; min-width: 0; overflow: hidden; background: var(--cal-bg); }
   .chat-inspector-separator { grid-column: 5; grid-row: 1 / 3; }
@@ -1110,7 +1163,10 @@
   .chat-bottom-separator { grid-column: 1 / 7; grid-row: 3; }
   .chat-bottom-transition-shell { --chat-icon-stroke-width: var(--chat-compact-icon-stroke-width); grid-column: 1 / 7; grid-row: 4; }
   .chat-workspace[data-rail-presentation="column"][data-rail-open="true"] .chat-bottom-separator,
-  .chat-workspace[data-rail-presentation="column"][data-rail-open="true"] .chat-bottom-transition-shell { grid-column-start: 2; }
+  .chat-workspace[data-rail-presentation="column"][data-rail-open="true"] .chat-bottom-transition-shell,
+  .chat-workspace[data-rail-docked="true"] .chat-bottom-separator,
+  .chat-workspace[data-rail-docked="true"] .chat-bottom-transition-shell { grid-column-start: 2; }
+  .chat-workspace[data-rail-docked="true"] .chat-bottom-transition-shell { border-bottom-left-radius: max(0px, var(--content-radius) - var(--chat-canvas-inset)); }
   .chat-workspace.panel-transitions-enabled { transition: grid-template-columns var(--chat-panel-transition-duration) cubic-bezier(0.22, 1, 0.36, 1); }
   .chat-workspace.panel-transitions-enabled .chat-rail-shell { transition: transform var(--chat-panel-transition-duration) cubic-bezier(0.22, 1, 0.36, 1); }
   .chat-panel-separator { position: relative; z-index: 1; background: transparent; }
@@ -1118,7 +1174,7 @@
   .chat-panel-separator input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; appearance: none; touch-action: none; cursor: inherit; opacity: 0; }
   .chat-thread-separator, .chat-inspector-separator { width: 8px; min-width: 8px; margin-inline: -4px; }
   .chat-inspector-separator { cursor: col-resize; }
-  .chat-thread-separator::before, .chat-inspector-separator::before { position: absolute; inset: 0 0 auto; height: var(--cal-header-row-h); border-bottom: 1px solid var(--sidebar); background: var(--cal-header-bg); content: ""; pointer-events: none; }
+  .chat-thread-separator::before, .chat-inspector-separator::before { position: absolute; inset: 0 0 auto; height: var(--toolbar-h); background: var(--cal-bg); content: ""; pointer-events: none; }
   .chat-thread-separator .chat-panel-separator-line, .chat-inspector-separator .chat-panel-separator-line { inset-block: 0; left: 50%; width: 1px; }
   .chat-inspector-separator:is(:hover, .active) .chat-panel-separator-line, .chat-inspector-separator input:focus-visible + .chat-panel-separator-line { background: linear-gradient(to bottom, var(--border), var(--chat-divider-highlight) 50%, var(--border)); }
   .chat-inspector-shell.open.resizing { min-width: 0; }
@@ -1135,19 +1191,19 @@
   .chat-workspace.resizing-panels, .chat-workspace.resizing-panels .chat-bottom-transition-shell { transition: none; }
   .chat-bottom-transition-shell.snap-transition { transition: height var(--chat-panel-transition-duration) cubic-bezier(0.22, 1, 0.36, 1); }
   .chat-sheet-backdrop { position: absolute; inset: 0; z-index: 30; background: rgb(0 0 0 / 0.28); }
-  .chat-rail-backdrop { top: var(--cal-header-row-h); }
-  .chat-workspace[data-rail-presentation="sheet"] .chat-rail-shell { position: absolute; top: var(--cal-header-row-h); bottom: 0; left: 0; z-index: 40; width: min(var(--explorer-width), 88cqw); min-width: min(var(--explorer-width), 88cqw); box-shadow: var(--floating-shadow); }
+  .chat-rail-backdrop { top: var(--toolbar-h); }
+  .chat-workspace[data-rail-presentation="sheet"] .chat-rail-shell { position: absolute; top: var(--toolbar-h); bottom: 0; left: 0; z-index: 40; width: min(var(--explorer-width), 88cqw); min-width: min(var(--explorer-width), 88cqw); box-shadow: var(--floating-shadow); }
   .chat-workspace[data-rail-presentation="sheet"] .chat-rail-shell.closed { transform: translateX(-105%); }
-  .chat-workspace.mobile-rail-surface .chat-rail-shell { position: relative; inset: auto; z-index: auto; grid-column: 1 / 7; grid-row: 2 / 5; width: 100%; min-width: 0; background: var(--cal-bg); box-shadow: none; transform: none; }
-  .chat-workspace.mobile-rail-surface .chat-rail-shell.closed { display: none; transform: none; }
-  .chat-workspace.mobile-rail-surface .main-shell { padding-top: var(--chat-mobile-rail-bar-height); }
-  .chat-workspace.mobile-rail-surface[data-rail-open="true"] .main-shell { display: none; }
   .chat-workspace[data-inspector-presentation="sheet"] .chat-inspector-shell { position: absolute; inset-block: 0; right: 0; z-index: 45; width: 0; box-shadow: var(--floating-shadow); }
   .chat-workspace[data-inspector-presentation="sheet"] .chat-inspector-shell.open { width: min(620px, 94cqw); min-width: min(320px, 94cqw); }
   .chat-workspace[data-inspector-presentation="sheet"] .chat-inspector-content-shell { width: min(620px, 94cqw); }
   .chat-workspace[data-layout="minimum_recovery"] .chat-rail-shell, .chat-workspace[data-layout="minimum_recovery"] .chat-rail-shell.closed, .chat-workspace[data-layout="minimum_recovery"] .chat-inspector-shell.open { width: 100cqw; min-width: 0; box-shadow: none; }
   .chat-workspace[data-layout="minimum_recovery"] .chat-inspector-content-shell { width: 100cqw; }
   .chat-workspace[data-layout="minimum_recovery"][data-active-surface="rail"] .main-shell, .chat-workspace[data-layout="minimum_recovery"][data-active-surface="inspector"] .main-shell { display: none; }
+  /* A hosting Projects sidebar sizes its own column and stays docked at every width. */
+  .chat-workspace[data-project-sidebar="true"] { --chat-rail-column-width: auto; }
+  .chat-workspace[data-project-sidebar="true"] .chat-rail-shell, .chat-workspace[data-project-sidebar="true"] .chat-rail-shell.closed { position: relative; inset: auto; z-index: auto; grid-row: 1 / 5; width: auto; min-width: 0; box-shadow: none; transform: none; }
+  .chat-workspace[data-project-sidebar="true"][data-active-surface="rail"] .main-shell { display: flex; }
   @media (prefers-reduced-motion: reduce) {
     :global(.chat-workspace *), :global(.chat-workspace *::before), :global(.chat-workspace *::after) {
       scroll-behavior: auto !important;

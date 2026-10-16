@@ -4,7 +4,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import type { Project } from "$lib/projects/types";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import {
     buildRoundTripNotesSourceHref,
     toRoundTripDiagnosticItem,
@@ -38,7 +38,7 @@
   } = $props();
 
   const { t } = getLocalization();
-  const projects = getProjects();
+  const projects = useProjects();
   let includeDescendants = $state(true);
   let includeBacklinks = $state(true);
   let includeDatabaseViews = $state(true);
@@ -181,12 +181,9 @@
 </script>
 
 <div class="fixed inset-0 z-90 flex items-center justify-center p-3">
-  <button
-    class="absolute inset-0 border-0 surface-backdrop p-0"
-    type="button"
-    aria-label={t("common.close")}
-    onclick={onCancel}
-  ></button>
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <div class="absolute inset-0 surface-backdrop" aria-hidden="true" onclick={onCancel}></div>
   <div
     bind:this={dialogEl}
     class="relative z-10 flex max-h-[min(92vh,40rem)] w-[min(36rem,100%)] flex-col surface-dialog outline-none"

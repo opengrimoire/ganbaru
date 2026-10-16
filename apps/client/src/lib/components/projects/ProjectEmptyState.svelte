@@ -3,7 +3,7 @@
   import FolderX from "@lucide/svelte/icons/folder-x";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import { cn } from "$lib/utils";
   import ProjectNavigator from "./ProjectNavigator.svelte";
   import ProjectPickerMobileDialog from "$lib/components/projects/pickers/ProjectPickerMobileDialog.svelte";
@@ -20,7 +20,7 @@
     onProjectSelected: () => void;
   } = $props();
 
-  const projects = getProjects();
+  const projects = useProjects();
   const { t } = getLocalization();
 
   let navigatorOpen = $state(false);
@@ -92,6 +92,7 @@
               closeNavigator();
               onProjectSelected();
             }}
+            onClose={closeNavigator}
           />
         </div>
       {/if}

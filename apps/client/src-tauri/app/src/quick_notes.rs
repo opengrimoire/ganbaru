@@ -5,8 +5,8 @@
 use ganbaru_quick_notes::{
     QuickNoteConflictError, QuickNoteConflictRead, QuickNoteConflictResolution,
     QuickNoteConflictResolved, QuickNotePinRequest, QuickNoteRead, QuickNoteReorderRequest,
-    QuickNoteRevisionRequest, QuickNoteTagError, QuickNoteTagRead, QuickNoteTagWrite,
-    QuickNoteUpdate, QuickNoteWrite, QuickNoteWriteError, QuickNotesListRequest,
+    QuickNoteRevisionRequest, QuickNoteTagError, QuickNoteTagRead, QuickNoteTagReorder,
+    QuickNoteTagWrite, QuickNoteUpdate, QuickNoteWrite, QuickNoteWriteError, QuickNotesListRequest,
     QuickNotesTrashPurge, QuickNotesWindow, tags,
 };
 use tauri::{AppHandle, Runtime};
@@ -167,13 +167,23 @@ pub async fn quick_notes_create_tag<R: Runtime>(
 }
 
 #[tauri::command]
-pub async fn quick_notes_rename_tag<R: Runtime>(
+pub async fn quick_notes_update_tag<R: Runtime>(
     app: AppHandle<R>,
     db_url: String,
     tag: QuickNoteTagWrite,
 ) -> Result<QuickNoteTagRead, QuickNoteTagError> {
     let pool = connect_sqlite(app, db_url).await?;
-    tags::rename_from_pool(&pool, tag).await
+    tags::update_from_pool(&pool, tag).await
+}
+
+#[tauri::command]
+pub async fn quick_notes_reorder_tag<R: Runtime>(
+    app: AppHandle<R>,
+    db_url: String,
+    request: QuickNoteTagReorder,
+) -> Result<(), QuickNoteTagError> {
+    let pool = connect_sqlite(app, db_url).await?;
+    tags::reorder_from_pool(&pool, request).await
 }
 
 #[tauri::command]

@@ -20,8 +20,9 @@
   import { formatTimeLabel } from "$lib/calendar/utils";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { localTimezone } from "$lib/stores/calendar/event-payloads";
-  import { getChat } from "$lib/stores/chat.svelte";
+  import { useChat } from "$lib/stores/chat.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
+  import { keepInViewport } from "$lib/utils/keep-in-viewport";
   import { portal } from "$lib/utils/portal";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import ChatScheduledMessagePreview from "./ChatScheduledMessagePreview.svelte";
@@ -50,7 +51,7 @@
     onMessagesChange?: (messages: ChatScheduledMessageRead[]) => void;
   } = $props();
 
-  const chat = getChat();
+  const chat = useChat();
   const localization = getLocalization();
   const { t } = localization;
   const preferences = getPreferences();
@@ -229,7 +230,7 @@
   }
 </script>
 
-<div class:align-right={align === "right"} class:manage={mode === "manage"} class="schedule-menu surface-floating surface-floating-body w-floating" role="dialog" aria-label={mode === "manage" ? t("chat.organization.scheduledMessages") : t("chat.organization.scheduleMessage")}>
+<div use:keepInViewport class:align-right={align === "right"} class:manage={mode === "manage"} class="schedule-menu surface-floating surface-floating-body w-floating" role="dialog" aria-label={mode === "manage" ? t("chat.organization.scheduledMessages") : t("chat.organization.scheduleMessage")}>
   {#if mode === "manage"}
     <div class="schedule-header">
       <strong>{t("chat.organization.scheduledMessagesCount", scheduledMessages.length)}</strong>
@@ -282,6 +283,7 @@
           <div
             use:portal
             use:positionTimePickerPanel
+            data-app-floating-surface
             class="schedule-time-picker surface-floating fixed z-100 w-40 overflow-hidden"
             role="dialog"
             aria-label={t("chat.organization.chooseTime")}
@@ -323,7 +325,7 @@
 </div>
 
 <style>
-  .schedule-menu { position:absolute; z-index:70; bottom:calc(100% + 0.35rem); left:0; max-height:min(30rem,calc(100vh - 1rem)); }
+  .schedule-menu { position:absolute; z-index:70; bottom:calc(100% + 0.35rem); left:0; max-width:calc(100vw - 1rem); max-height:min(30rem,calc(100vh - 1rem)); }
   .schedule-menu.align-right { right:0; left:auto; }
   .schedule-menu.manage { width:min(36rem,calc(100vw - 1rem)); }
   .schedule-header { display:flex; min-height:2rem; align-items:center; gap:0.35rem; padding:0.2rem 0.35rem 0.35rem; }

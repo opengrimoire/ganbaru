@@ -18,6 +18,7 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import { createVaultChangeChannel } from "$lib/windows/vault-change-channel";
 
 type JsonObject = Record<string, unknown>;
 
@@ -33,6 +34,11 @@ interface ConfigPatch {
   value: unknown;
 }
 const pendingPatches = new Map<string, ConfigPatch>();
+/** Keys of the write in flight, still unconfirmed on disk. */
+const inflightKeys = new Set<string>();
+const configChanges = createVaultChangeChannel("vault-config-changed");
+const changeListeners = new Set<(keys: ReadonlySet<string>) => void>();
+let windowSyncStarted = false;
 
 function isPlainObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -81,6 +87,16 @@ function deletePath(root: JsonObject, parts: readonly string[]): void {
   delete current[parts[parts.length - 1]];
 }
 
+/** Parse the config file, or return null when it is not a JSON object. */
+function parseConfig(raw: string): JsonObject | null {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return isPlainObject(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 async function fetchFromDisk(): Promise<JsonObject> {
   const raw = await invoke<string>("vault_read_config");
   try {
@@ -97,10 +113,13 @@ async function flushPendingPatches(): Promise<void> {
   if (pendingPatches.size === 0) return;
   const patches = [...pendingPatches.values()];
   pendingPatches.clear();
+  const keys = patches.map((patch) => patch.path.join("."));
+  for (const key of keys) inflightKeys.add(key);
   try {
     const request = invoke<void>("vault_patch_config", { patches });
     writeInflight = request;
     await request;
+    configChanges.publish(keys);
   } catch (err) {
     for (const patch of patches) {
       const key = patch.path.join(".");
@@ -109,6 +128,7 @@ async function flushPendingPatches(): Promise<void> {
     console.error("vault_patch_config failed", err);
   } finally {
     writeInflight = null;
+    for (const key of keys) inflightKeys.delete(key);
   }
 }
 
@@ -174,4 +194,68 @@ export async function flushConfig(): Promise<void> {
   }
   await flushPendingPatches();
   if (pendingPatches.size > 0) await flushPendingPatches();
+}
+
+/** Whether two dotted keys name the same branch or one contains the other. */
+function keysOverlap(left: string, right: string): boolean {
+  return left === right || left.startsWith(`${right}.`) || right.startsWith(`${left}.`);
+}
+
+function hasLocalEdit(key: string): boolean {
+  for (const pending of [...pendingPatches.keys(), ...inflightKeys]) {
+    if (keysOverlap(key, pending)) return true;
+  }
+  return false;
+}
+
+/**
+ * Reread the keys another window saved and copy them into this window's cache, then tell subscribers which keys
+ * changed. Keys this window is still writing keep the local value, since that write lands after the other one.
+ * Receiving never writes or announces anything, so windows do not echo each other.
+ */
+export async function refreshConfigKeysFromDisk(keys: Iterable<string>): Promise<void> {
+  const fresh = parseConfig(await invoke<string>("vault_read_config"));
+  if (fresh === null) throw new Error("config.json is not a JSON object");
+  const applied = new Set<string>();
+  for (const key of new Set(keys)) {
+    const parts = splitKey(key);
+    if (parts.length === 0 || hasLocalEdit(parts.join("."))) continue;
+    const value = readPath(fresh, parts);
+    if (value === undefined) deletePath(cache, parts);
+    else writePath(cache, parts, value);
+    applied.add(parts.join("."));
+  }
+  if (applied.size === 0) return;
+  for (const listener of changeListeners) listener(applied);
+}
+
+/**
+ * Subscribe to config keys that another window changed, after this window's cache holds the new values. Returns a
+ * function that unsubscribes.
+ */
+export function onConfigChangedElsewhere(listener: (keys: ReadonlySet<string>) => void): () => void {
+  changeListeners.add(listener);
+  return () => changeListeners.delete(listener);
+}
+
+/** Whether a changed key touches the given dotted key, including its parent or child branches. */
+export function configKeyChanged(keys: ReadonlySet<string>, key: string): boolean {
+  for (const changed of keys) {
+    if (keysOverlap(changed, key)) return true;
+  }
+  return false;
+}
+
+/** Start receiving config changes from other windows of the vault. Idempotent; call once the config is loaded. */
+export function startConfigWindowSync(): void {
+  if (windowSyncStarted) return;
+  windowSyncStarted = true;
+  void configChanges.listen((keys) => {
+    void refreshConfigKeysFromDisk(keys).catch((error: unknown) => {
+      console.error("Config refresh from another window failed", error);
+    });
+  }).catch((error: unknown) => {
+    windowSyncStarted = false;
+    console.error("Config could not listen for other windows", error);
+  });
 }

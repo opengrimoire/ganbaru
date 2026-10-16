@@ -31,9 +31,10 @@ import {
 } from "$lib/notes/project-membership";
 import {
   nextNotesFocusRequest,
-  planNotesPageLoadFocus,
+  planNotesPageOpenFocus,
   type NotesFocusRequest,
 } from "$lib/notes/editor/focus";
+import { OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
 import type { NotesDocumentSelection, NotesTextSelection } from "$lib/notes/editor/selection";
 import type { NotesUndoSnapshot } from "$lib/notes/history/undo-history";
 import {
@@ -41,6 +42,7 @@ import {
   type NotesSidebarMetadataImpact,
 } from "$lib/notes/post-mutation";
 import { createNotesSidebarRefreshCoordinator } from "$lib/notes/navigation/sidebar-refresh-coordinator";
+import { publishNotesPageChanges } from "$lib/notes/pages/window-sync";
 import { createNotesBlockActions } from "./block-actions";
 import { createNotesDatabaseDeletionController } from "./database-deletion.svelte";
 import { createNotesArchiveController } from "./archive.svelte";
@@ -62,7 +64,8 @@ import {
 import { createNotesPageHistoryController } from "./page-history.svelte";
 import { createNotesUndoController } from "./undo";
 import { getPreferences } from "$lib/stores/preferences.svelte";
-import { getProjects } from "$lib/stores/projects.svelte";
+import { resolveSidebarSortOrder, type SidebarSortOrder } from "$lib/utils/sidebar-order";
+import type { ProjectsStore } from "$lib/stores/projects.svelte";
 import {
   flatNotesBlockItems,
   flatNotesBlockItemsForContext,
@@ -74,10 +77,6 @@ import {
   previousNotesBlockType,
   type NotesBlockTreeSnapshot,
 } from "./block-tree";
-import {
-  initialNotesSelectedPageId,
-  saveNotesSelectedPageId,
-} from "./page-state";
 import { notesPageSubtreeIds } from "$lib/notes/pages/selection";
 import { createNotesBlockPersistence } from "./persistence";
 import { NotesPageSessionController } from "./page-session.svelte";
@@ -103,6 +102,22 @@ import type {
 } from "$lib/notes/types";
 
 type NotesViewMode = "pages" | "archive" | "trash";
+
+/** View state one Notes workspace's editors share, kept for the window session when Notes is not shown. */
+export interface NotesWorkspaceUi {
+  viewMode: NotesViewMode;
+  /** Whether the desktop Notes explorer is collapsed. */
+  explorerCollapsed: boolean;
+  /** Project whose shell the workspace last loaded, or `null` for the unscoped workspace. */
+  shellProjectId: string | null;
+}
+
+/** Create the shared view state for a new Notes workspace. */
+export function createNotesWorkspaceUi(): NotesWorkspaceUi {
+  const ui = $state<NotesWorkspaceUi>({ viewMode: "pages", explorerCollapsed: false, shellProjectId: null });
+  return ui;
+}
+
 export interface NotesSelectPageOptions {
   openMode?: NotesPageOpenMode;
   focusBlockId?: string | null;
@@ -139,12 +154,8 @@ let pendingPageRemovals = $state<Record<string, string[]>>({});
 const pendingPageRemovalIds = $derived(new Set(Object.values(pendingPageRemovals).flat()));
 let trashActionError = $state<string | null>(null);
 let navigationMutationRevision = 0;
-let viewMode = $state<NotesViewMode>("pages");
-// Session UI state outlives NotesView when the active application tab changes.
-let explorerCollapsed = $state(false);
 let workspaceLoaded = $state(false);
 const preferences = getPreferences();
-const projects = getProjects();
 const sidebarController = createNotesSidebarController();
 const archiveController = createNotesArchiveController();
 const searchController = createNotesSearchController();
@@ -175,10 +186,23 @@ export interface NotesEditorNavigation {
   focusTitle: (pageId: string) => boolean;
   removePages: (pageIds: readonly string[]) => void;
   afterRemoval: (replacementId: string | null) => Promise<void>;
+  /** The live editors of this editor's workspace, itself included. */
+  editors: () => readonly NotesEditorStore[];
+}
+
+export interface NotesEditorStoreOptions {
+  ui: NotesWorkspaceUi;
+  /** The Projects store of the pane scope the editor shows through. */
+  projects: ProjectsStore;
+  initialSelectedPageId: string | null;
+  persistSelectedPageId: (pageId: string | null) => void;
 }
 
 /** Own one live editor's document, history, hydration, drafts, and ordered save queue. */
-export function createNotesEditorStore(navigation: NotesEditorNavigation, restoreSelection = false) {
+export function createNotesEditorStore(
+  navigation: NotesEditorNavigation,
+  { ui, projects, initialSelectedPageId, persistSelectedPageId }: NotesEditorStoreOptions,
+) {
   let editorScrollTop = 0;
   let selectedDatabaseBlockId = $state<string | null>(null);
   let databaseNavigationRequest = 0;
@@ -195,8 +219,8 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     requestId: 0,
   });
   const pageSession = new NotesPageSessionController({
-    initialSelectedPageId: restoreSelection ? initialNotesSelectedPageId() : null,
-    persistSelectedPageId: saveNotesSelectedPageId,
+    initialSelectedPageId,
+    persistSelectedPageId,
     recordRecentPage: (pageId) => sidebarController.recordRecentPage(pageId),
   });
   const treeProjection = new NotesTreeProjectionController({
@@ -267,7 +291,7 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     }
     resetDatabaseSelection();
     if (pageId !== pageSession.selectedPageId) editorScrollTop = 0;
-    viewMode = "pages";
+    ui.viewMode = "pages";
     pageSession.open(pageId, openMode);
   }
 
@@ -389,16 +413,33 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     treeProjection.mergeOutlines(outlines, pageId);
   }
 
+  /** Focus or reveal the block a page open targets, following {@link planNotesPageOpenFocus}. */
+  function requestPageOpenFocus(blockIds: readonly string[], requestedBlockId: string | null): void {
+    const plan = planNotesPageOpenFocus(blockIds, requestedBlockId, OPENING_MAY_FOCUS_TEXT);
+    if (plan.revealOnly) {
+      focusRequest = nextNotesFocusRequest(focusRequest, plan.blockId, null, false, true);
+      return;
+    }
+    requestBlockFocus(plan.blockId);
+  }
+
+  /**
+   * Drop block and title focus aimed at a page whose editor is closing, so a remounted editor does not reopen the
+   * soft keyboard. Focus already aimed at another selected page, such as a page just created, stays pending.
+   */
+  function releaseTextFocusForPage(pageId: string): void {
+    const selectedPageId = pageSession.selectedPageId;
+    if (focusRequest.blockId !== null && (selectedPageId === null || selectedPageId === pageId)) {
+      focusRequest = nextNotesFocusRequest(focusRequest, null);
+    }
+    pageSession.clearTitleFocus(pageId);
+  }
+
   function requestLoadedPageFocus(
     loaded: NotesLoadedPage,
     focusBlockId: string | null = null,
   ): void {
-    requestBlockFocus(
-      planNotesPageLoadFocus(
-        loaded.blocks.results.map((block) => block.id),
-        focusBlockId,
-      ),
-    );
+    requestPageOpenFocus(loaded.blocks.results.map((block) => block.id), focusBlockId);
   }
 
   async function hydrateBlockRange(
@@ -433,7 +474,8 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     ];
   }
 
-  function mergeReloadedWorkspaceShell(shell: NotesWorkspaceShell): void {
+  function mergeReloadedWorkspaceShell(shell: NotesWorkspaceShell, projectId: string | null): void {
+    ui.shellProjectId = projectId;
     mergeNavigationDatabases(shell);
     const mergedPages = [...new Map([...allPages, ...shell.pages].map((page) => [page.id, page])).values()];
     replacePages(mergedPages);
@@ -461,8 +503,10 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
   function applyInitialWorkspaceShell(
     shell: NotesWorkspaceShell,
     requestedSelection: string | null,
+    projectId: string | null,
   ): string | null {
     workspaceLoaded = true;
+    ui.shellProjectId = projectId;
     navigationDatabases = shell.navigation_databases;
     replacePages(shell.pages);
     replaceAllPages([...new Map(
@@ -553,6 +597,7 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
   async function loadPageTree(pageId: string, options: NotesLoadPageTreeOptions = {}): Promise<boolean> {
     const requestId = pageSession.invalidate();
     treeProjection.primaryContentReady = false;
+    editorConflict = false;
     const loaded = await openNotesPage(pageId);
     if (!pageSession.isCurrent(requestId, pageId)) return false;
     if (options.focusOnLoad) {
@@ -561,7 +606,7 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     setLoadedPage(loaded);
     replaceBlockOutlines(loaded.outlines, pageId);
     const bodyId = blockActions.ensurePageBody(pageId);
-    if (options.focusOnLoad && loaded.outlines.length === 0) requestBlockFocus(bodyId, { start: 0, end: 0 });
+    if (options.focusOnLoad && OPENING_MAY_FOCUS_TEXT && loaded.outlines.length === 0) requestBlockFocus(bodyId, { start: 0, end: 0 });
     pageSession.applyBreadcrumbsIfCurrent(requestId, pageId, loaded.breadcrumb);
     const outlinePromise = hydrationController.loadOutlineDescendantFrontiers(pageId, requestId);
     pendingPageOutline = { pageId, generation: requestId, promise: outlinePromise };
@@ -682,9 +727,6 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     const openMode = notesPageOpenModeForSelection({
       requestedOpenMode: options.openMode,
       currentOpenMode: pageSession.pageOpenMode,
-      defaultOpenMode: pageId
-        ? defaultNotesPageOpenMode(projectIdForPage(pageId))
-        : defaultNotesPageOpenMode(),
       hasOpenPage: pageSession.selectedPageId !== null,
     });
     if (pageId && alreadyLoaded && options.databaseBlockId) {
@@ -855,7 +897,7 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     undoController.reset(page.id);
     pageHistoryController.resetPageState();
     optionalSubsystemController.resetPageScoped();
-    openSelectedPage(page.id, defaultNotesPageOpenMode(notesPageProjectId(page)));
+    openSelectedPage(page.id, "full");
     applyPostMutation({ pages: [page], sidebarImpact: "hierarchy" });
     await loadPageTree(page.id);
     recordRecentPage(page.id);
@@ -870,26 +912,55 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     sidebarController.setPageFavorited(pageId, favorited);
   }
 
+  function setFolderFavorited(folderId: string, favorited: boolean): void {
+    sidebarController.setFolderFavorited(folderId, favorited);
+  }
+
+  /** Sidebar order set for `projectId`, or `null` when it uses the global setting. */
+  function sidebarOrderOverride(projectId: string | null): SidebarSortOrder | null {
+    return sidebarController.sidebarOrderOverride(projectId);
+  }
+
+  /** Sidebar order in effect for `projectId`: its own order, or the global setting. */
+  function sidebarOrderForProject(projectId: string | null): SidebarSortOrder {
+    return resolveSidebarSortOrder(preferences.notesSidebarOrder, sidebarController.sidebarOrderOverride(projectId));
+  }
+
+  /** Set the sidebar order of `projectId`, or return it to the global setting with `null`. */
+  function setProjectSidebarOrder(projectId: string, order: SidebarSortOrder | null): void {
+    sidebarController.setProjectSidebarOrder(projectId, order);
+  }
+
+  /** Navigation keys of the folders and notes of `projectId` in their custom order. */
+  function customOrderForProject(projectId: string | null): readonly string[] {
+    return sidebarController.customOrder(projectId);
+  }
+
+  /** Save the custom order of one level's siblings in `projectId`, given as navigation keys. */
+  function setCustomSiblingOrder(projectId: string, orderedSiblingKeys: readonly string[]): void {
+    sidebarController.setCustomSiblingOrder(projectId, orderedSiblingKeys);
+  }
+
   async function openArchive(): Promise<void> {
-    viewMode = "archive";
+    ui.viewMode = "archive";
     if (!archiveController.archiveLoaded && !archiveController.archiveLoading) {
       await reloadArchivedPages();
     }
   }
 
   function closeArchive(): void {
-    viewMode = "pages";
+    ui.viewMode = "pages";
   }
 
   async function openTrash(): Promise<void> {
-    viewMode = "trash";
+    ui.viewMode = "trash";
     if (!archiveController.trashLoaded && !archiveController.trashLoading) {
       await reloadTrashedPages();
     }
   }
 
   function closeTrash(): void {
-    viewMode = "pages";
+    ui.viewMode = "pages";
   }
 
   function flatBlockItems(): NotesBlockTreeItem[] {
@@ -931,7 +1002,7 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
   }
 
   function requestPageLoadFocus(requestedBlockId: string | null = null): void {
-    requestBlockFocus(planNotesPageLoadFocus(visibleBlockIds(), requestedBlockId));
+    requestPageOpenFocus(visibleBlockIds(), requestedBlockId);
   }
 
   let editorSaveError = $state<string | null>(null);
@@ -941,6 +1012,7 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     acknowledgeCanonicalBlocks,
     retryEditorMutations,
     enqueueEditorMutation: queueEditorMutation,
+    runBetweenWrites,
     hasLocalChanges,
     localApplyBlockUpdate: applyBlockUpdateLocally,
     markBlockLocallyChanged,
@@ -957,8 +1029,68 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     setLoadError: (message) => {
       editorSaveError = message;
     },
+    onCommitted: publishSelectedPageChange,
+    onConflict: () => {
+      editorConflict = true;
+      void refreshCanonicalPage().catch((error: unknown) => {
+        editorSaveError = error instanceof Error ? error.message : String(error);
+      });
+    },
     debounceMs: BLOCK_SAVE_DEBOUNCE_MS,
   });
+
+  let editorConflict = $state(false);
+  let changedPageIds = new Set<string>();
+
+  /** Coalesce the commits of one task into a single refresh of other panes and windows showing the page. */
+  function publishSelectedPageChange(): void {
+    const pageId = pageSession.selectedPageId;
+    if (!pageId) return;
+    if (changedPageIds.size === 0) {
+      queueMicrotask(() => {
+        const pageIds = changedPageIds;
+        changedPageIds = new Set();
+        publishNotesPageChanges(pageIds);
+        for (const session of sessions) {
+          if (session === facade || !session.selectedPageId || !pageIds.has(session.selectedPageId)) continue;
+          void session.refreshCanonicalPage()
+            .catch((error: unknown) => console.warn("Notes refresh from another pane failed", error));
+        }
+      });
+    }
+    changedPageIds.add(pageId);
+  }
+
+  let canonicalRefresh: Promise<void> | null = null;
+  let canonicalRefreshAgain = false;
+
+  /**
+   * Replace the open page with its saved state after another window changed it or refused a local write, keeping
+   * blocks with unsaved local typing. Concurrent requests coalesce into one more pass.
+   */
+  function refreshCanonicalPage(): Promise<void> {
+    if (canonicalRefresh) {
+      canonicalRefreshAgain = true;
+      return canonicalRefresh;
+    }
+    const refresh = (async () => {
+      let attempts = 0;
+      do {
+        canonicalRefreshAgain = false;
+        const pageId = pageSession.selectedPageId;
+        const generation = pageSession.generation;
+        if (!pageId || treeProjection.loadedPage?.id !== pageId || !treeProjection.primaryContentReady) return;
+        const page = await runBetweenWrites(() => hydrationController.refreshFromCanonical(pageId, generation));
+        if (page && treeProjection.loadedPage?.id === page.id) treeProjection.loadedPage = page;
+        else if (!page && pageSession.isCurrent(generation, pageId) && attempts === 0) canonicalRefreshAgain = true;
+        attempts += 1;
+      } while (canonicalRefreshAgain);
+    })();
+    canonicalRefresh = refresh;
+    const clear = () => { if (canonicalRefresh === refresh) canonicalRefresh = null; };
+    void refresh.then(clear, clear);
+    return refresh;
+  }
 
   function enqueueEditorMutation(mutation: () => Promise<void>): Promise<void> {
     pageCreationController.markChanged(pageSession.selectedPageId);
@@ -1056,7 +1188,7 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     activateReturnedPage: (nextLoadedPage) => activateReturnedPage(nextLoadedPage, "hierarchy"),
     upsertPage: upsertPageInActiveCollections,
     showPages: () => {
-      viewMode = "pages";
+      ui.viewMode = "pages";
     },
     scheduleHierarchyRefresh: () => sidebarRefreshCoordinator.schedule("hierarchy"),
     queueDescendantHydration: () => queueDescendantHydration(),
@@ -1288,6 +1420,7 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
       ? { ...focusRequest, blockId: selectedDatabaseBlockId }
       : focusRequest,
     mergeBlockOutlines,
+    replaceBlockOutlines,
     replaceHydratedBlocks: (nextBlocksById, nextChildIdsByParentId) => {
       treeProjection.replaceHydratedBlocks(nextBlocksById, nextChildIdsByParentId);
     },
@@ -1449,12 +1582,12 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     const pageId = options.followSource === false ? reference.page_id : reference.source_page_id;
     const databaseBlockId = options.followSource === false ? reference.block_id : reference.source_block_id;
     if (pendingPageRemovalIds.has(pageId)) return false;
-    viewMode = "pages";
+    ui.viewMode = "pages";
     if (options.viewId) notesDatabaseSession.selectView(databaseBlockId, options.viewId);
     await navigation.select(pageId, {
       databaseBlockId,
     });
-    const opened = [...sessions].some((session) => session.selectedPageId === pageId
+    const opened = navigation.editors().some((session) => session.selectedPageId === pageId
       && session.selectedDatabaseBlock?.id === databaseBlockId);
     if (opened && typeof window !== "undefined") {
       const hashTarget = parseNotesLinkHash(window.location.hash);
@@ -1470,7 +1603,7 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
   /** Ask one editor showing the linked page, preferring this one, to reveal the linked thread. */
   function revealLinkedDiscussion(target: NotesPageLinkTarget): void {
     if (!target.discussionId) return;
-    const showing = [...sessions].filter((session) => session.selectedPageId === target.pageId);
+    const showing = navigation.editors().filter((session) => session.selectedPageId === target.pageId);
     (showing.find((session) => session === facade) ?? showing[0])?.requestDiscussion(target.discussionId);
   }
 
@@ -1490,7 +1623,7 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
   }
 
   async function openNotesLink(target: NotesPageLinkTarget): Promise<boolean> {
-    viewMode = "pages";
+    ui.viewMode = "pages";
     if (!workspaceLoaded) await workspaceController.ensureLoaded();
     if (!allPages.some((page) => page.id === target.pageId)) {
       await reloadPages(target.pageId);
@@ -1514,7 +1647,7 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     }
     if (treeProjection.loadedPage?.id !== target.pageId) {
       await selectPage(target.pageId, { focusBlockId: target.blockId ?? null });
-      const opened = [...sessions].some((session) => session.selectedPageId === target.pageId
+      const opened = navigation.editors().some((session) => session.selectedPageId === target.pageId
         && (!target.blockId || session.blockById(target.blockId)));
       if (opened) revealLinkedDiscussion(target);
       return opened;
@@ -1528,7 +1661,7 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     }
     if (!treeProjection.blocksById[target.blockId] || !visibleBlockIds().includes(target.blockId)) return false;
     closeDatabase();
-    requestBlockFocus(planNotesPageLoadFocus(visibleBlockIds(), target.blockId));
+    requestPageLoadFocus(target.blockId);
     return true;
   }
 
@@ -1540,7 +1673,6 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
   }
 
   const facade = {
-    defaultOpenMode: defaultNotesPageOpenMode,
     acceptLoadedPage,
     acceptProvisionalPage,
     reconcileCreatedPage,
@@ -1551,6 +1683,8 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     receivePageMetadata: (changedPages: readonly NotesPage[], removedPageIds: readonly string[]): void => {
       treeProjection.applyPostMutation({ pages: changedPages, removedBlockIds: removedPageIds });
       linksController.reconcileDestinationPages(changedPages, removedPageIds);
+      // Pages removed from another editor, possibly of another workspace, close in this editor's workspace too.
+      if (removedPageIds.length) navigation.removePages(removedPageIds);
     },
     clearRemovedPage: (): void => {
       blockActions.databasePaste.dismiss();
@@ -1577,14 +1711,18 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
       undoController.dispose();
       sessions.delete(facade);
     },
-    /** Whether the desktop Notes explorer is collapsed for this window session. */
+    /** Whether the desktop Notes explorer of this workspace is collapsed for the window session. */
     get explorerCollapsed(): boolean {
-      return explorerCollapsed;
+      return ui.explorerCollapsed;
     },
     set explorerCollapsed(collapsed: boolean) {
-      explorerCollapsed = collapsed;
+      ui.explorerCollapsed = collapsed;
     },
     get editorSaveError() { return editorSaveError; },
+    /** Whether a local edit was dropped because another window changed the same content first. */
+    get editorConflict(): boolean { return editorConflict; },
+    dismissEditorConflict: (): void => { editorConflict = false; },
+    refreshCanonicalPage,
     get trashActionError(): string | null { return trashActionError; },
     retryEditorMutations: async () => {
       await retryEditorMutations();
@@ -1629,6 +1767,9 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     },
     get favoritePageIds(): readonly string[] {
       return sidebarController.favoritePageIds;
+    },
+    get favoriteFolderIds(): readonly string[] {
+      return sidebarController.favoriteFolderIds;
     },
     get recentPageIds(): readonly string[] {
       return sidebarController.recentPageIds;
@@ -1798,6 +1939,10 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     get loaded(): boolean {
       return workspaceLoaded;
     },
+    /** Project whose Notes shell is loaded, or `null` for the unscoped workspace. */
+    get workspaceProjectId(): string | null {
+      return ui.shellProjectId;
+    },
     get loading(): boolean {
       return workspaceController.loading;
     },
@@ -1805,7 +1950,7 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
       return workspaceController.error;
     },
     get viewMode(): NotesViewMode {
-      return viewMode;
+      return ui.viewMode;
     },
     get archiveLoaded(): boolean {
       return archiveController.archiveLoaded;
@@ -1825,6 +1970,24 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     get trashError(): string | null {
       return archiveController.trashError;
     },
+    /** Whether the hierarchy pickers list archived notes; one state shared by every picker. */
+    get showArchivedInPickers(): boolean {
+      return archiveController.showArchivedInPickers;
+    },
+    set showArchivedInPickers(shown: boolean) {
+      archiveController.showArchivedInPickers = shown;
+    },
+    get pickerArchivedPages(): NotesPage[] {
+      return archiveController.pickerArchivedPages;
+    },
+    get pickerArchiveLoading(): boolean {
+      return archiveController.pickerArchiveLoading;
+    },
+    get pickerArchiveError(): string | null {
+      return archiveController.pickerArchiveError;
+    },
+    reloadPickerArchivedPages: archiveController.reloadPickerArchivedPages,
+    ensurePickerArchivedPages: archiveController.ensurePickerArchivedPages,
     get pageTemplatesLoading(): boolean {
       return pageTemplatesController.loading;
     },
@@ -1874,6 +2037,11 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     get focusPreventScroll(): boolean {
       return focusRequest.preventScroll ?? false;
     },
+    /** Whether the current request only scrolls its block into view without focusing it. */
+    get focusRevealOnly(): boolean {
+      return focusRequest.revealOnly ?? false;
+    },
+    releaseTextFocusForPage,
     get focusSelection(): NotesTextSelection | null {
       return focusRequest.selection;
     },
@@ -2000,6 +2168,12 @@ export function createNotesEditorStore(navigation: NotesEditorNavigation, restor
     hydrateBlockRange,
     outlineSubtreeIds,
     setPageFavorited,
+    setFolderFavorited,
+    sidebarOrderOverride,
+    sidebarOrderForProject,
+    setProjectSidebarOrder,
+    customOrderForProject,
+    setCustomSiblingOrder,
     setFolderCollapsed,
     loadNavigationChildren,
     updatePageIcon: pageActions.updatePageIcon,

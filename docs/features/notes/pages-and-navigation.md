@@ -12,27 +12,33 @@ Opening a page uses one native page-open read for breadcrumbs, the initial block
 
 Folders organize workspace-parented pages inside a project. They are navigation containers, not page blocks or Markdown directories, and moving a page into one changes placement only. Moving a folder or page rejects self-parenting, descendant cycles, inactive destinations, and destinations outside the effective project scope.
 
+Dragging a sidebar row with a mouse or pen, or after a stationary touch hold, lifts it under the pointer, names the destination folder, and settles it into its new place on drop. Hovering a collapsed folder opens it. Dropping on the item's current location does nothing and is not highlighted, and Escape cancels the drag and returns the row.
+
 ## Child pages and previews
 
 A child page has both a normal page row and a paired `child_page` block in its parent document, sharing stable identity. Creation, rename, move, Trash, restore, and permanent deletion keep the pair synchronized. Moving a page under another page creates or restores the paired block at the destination; moving it back to the workspace hides the old block rather than leaving a broken reference. If a restored page's parent is missing, archived, or trashed, the page moves to a safe project root and the UI explains the placement.
 
-Child notes open in a side or center preview with its own editor session (document, hydration, drafts, save queue, and undo history) while the main editor stays mounted. Both panes accept input in side view; a center preview blocks the main pane. Closing a preview saves its edits and returns to the main editor without reloading it or resetting its scroll position, and a save failure keeps the preview open. Promoting a preview to a full page keeps its editor. Small viewports show the preview full size.
+Notes opened from inside a note, such as sub-notes and links, use the sub-note open mode from Settings or the project; navigation opens a note as a full page when none is open. A preview has its own editor session (document, hydration, drafts, save queue, and undo history) while the main editor stays mounted. Both panes accept input in side view; a center preview blocks the main pane. Closing a preview saves its edits and returns to the main editor without reloading it or resetting its scroll position, and a save failure keeps the preview open. Promoting a preview to a full page keeps its editor. Small viewports show the preview full size.
 
 ## Breadcrumbs and hierarchy
 
-With the sidebar collapsed, the workspace header shows the active note's ancestry: group, project, folders, and the path to the note. Sibling notes never appear as path segments, and in side view the path follows the focused pane. Opening a database extends the path through its containing note, and that segment returns to the retained editor and scroll position.
+Whether or not the sidebar is open, the workspace header shows the active note's ancestry: group, project, folders, and the path to the note. Sibling notes never appear as path segments, and in side view the path follows the focused pane. Opening a database extends the path through its containing note, and that segment returns to the retained editor and scroll position.
 
-Breadcrumb segments open hierarchy pickers that list child notes and databases, including databases inside nested blocks. Database rows in these pickers expose saved views, which are presentation choices rather than navigation levels; selecting one opens the database with that view. Only the panel opened directly from a segment has a search field. Touch navigation uses equivalent drilldown controls.
+The group and project segments open the project navigator, whose search finds notes by title across the listed projects, grouped by project with notes outside any project last; matches inside note content belong to Notes search. Selecting a project there opens its first note in sidebar order on desktop, or its project home when it has no notes; touch layouts open the project's note list. Breadcrumb segments open hierarchy pickers that list child notes and databases, including databases inside nested blocks. Database rows in these pickers expose saved views, which are presentation choices rather than navigation levels; selecting one opens the database with that view. Only the panel opened directly from a segment has a search field; the eye beside its sort button lists archived notes after the active ones at each level, marked with an archive icon, and its subpanels follow the same choice. Selecting an archived note restores it and opens it. Touch navigation uses equivalent drilldown controls.
 
 ## Project scope
 
-Pages created from a project home, project-scoped picker, folder, or top-bar action belong to the selected project. Navigation, search, destination pickers, and flyouts show only content the current project and access policy permit. Opening a note owned by another project switches the active project and group to match, without reopening the note.
+Pages created from a project home, project-scoped picker, folder, or top-bar action belong to the selected project. Navigation, search, destination pickers, and flyouts show only content the current project and access policy permit. Opening a note owned by another project switches the active project and group to match, without reopening the note. On desktop, a project without notes shows a centered empty state that creates its first note.
 
 The sidebar shows folders and workspace-parented notes; child notes do not become nested sidebar rows, and the containing root note stays highlighted when a child is selected. Database row pages stay out of project roots because their database view owns their navigation, but they still participate in search, links, history, and direct opens.
 
 ## Favorites and recents
 
-Favorites and recents are device-local navigation metadata outside the canonical page graph. Favoriting pins a page in navigation; opening or creating a page updates recents. Neither changes parent, project, order, content, or history.
+Favorites and recents are navigation metadata in the vault config, outside the canonical page graph. Pages and folders can be starred; starred items list first among their siblings, in the sidebar and in the breadcrumb pickers, which follow the sidebar order and mark favorites with a star badge. Opening or creating a page updates recents. Neither changes parent, project, order, content, or history.
+
+After favorites, the sidebar orders folders and notes by a custom order, name (A to Z or Z to A), last modified, or creation date (newest or oldest first). Notes settings choose the global order, and each project can follow it or override it from its Notes settings or the sidebar sort menu.
+
+In the custom order, a mouse or pen, or a touch after a stationary hold, drags folders and notes among their siblings in the sidebar and the breadcrumb pickers; folders stay ahead of notes and favorites ahead of the rest. On a folder row, the top and bottom edges place the dragged row next to the folder and the middle moves it into the folder. Row menus move an item up or down for keyboard users. Reordering is off while searching. Each project keeps its custom order in the vault config, and items without a saved place follow by name.
 
 When a page is open, its last-edited detail (with an activity panel), favorite control, and page actions sit in the workspace header; the editor has no separate page header. Previews keep their close and view-mode controls as compact overlays.
 
@@ -44,7 +50,7 @@ Trash applies to the reachable page subtree so active children never remain unde
 
 ## Search and destination reads
 
-Navigation, Archive, Trash, destination, and search surfaces use page summaries and bounded pagination rather than full page content. Search can match titles, aliases, blocks, database properties, comments, links, and managed file metadata according to access. Opening a block or comment result focuses the target when it still exists; a stale or inaccessible target fails safely instead of opening a page with a similar title.
+Navigation, Archive, Trash, destination, and search surfaces use page summaries and bounded pagination rather than full page content. Search can match titles, aliases, blocks, database properties, comments, links, and managed file metadata according to access. Opening a block or comment result focuses the target when it still exists (on a phone it scrolls to the target without opening the keyboard); a stale or inaccessible target fails safely instead of opening a page with a similar title.
 
 ## Working-folder Markdown
 

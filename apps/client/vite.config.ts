@@ -5,6 +5,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "path";
 import { fileURLToPath } from "node:url";
+import { touchHoverPostcss } from "./src/lib/build/touch-hover";
 
 const host = process.env.TAURI_DEV_HOST;
 const TAURI_DEV_READY_PATH = "/__ganbaru-ai_dev_ready";
@@ -261,7 +262,10 @@ function hasCompiledSvelteCss(meta: Record<string, unknown> | undefined): boolea
  * compiled component's module metadata, but the Tauri webview's network cache
  * speculatively revalidates every subresource of the previous page load in
  * parallel, so a fresh dev server can receive style requests before the
- * components that import them.
+ * components that import them. Those requests can also name a component whose
+ * `<style>` block was removed since that load; it gets an empty stylesheet,
+ * because Vite's default loader would hand the raw `.svelte` source to the CSS
+ * pipeline.
  */
 function compileSvelteStyleOwners(): Plugin {
   return {
@@ -276,7 +280,7 @@ function compileSvelteStyleOwners(): Plugin {
         const owner = ownerFile ? await this.resolve(ownerFile) : null;
         if (!owner || hasCompiledSvelteCss(this.getModuleInfo(owner.id)?.meta)) return null;
         await this.environment.transformRequest(owner.id);
-        return null;
+        return hasCompiledSvelteCss(this.getModuleInfo(owner.id)?.meta) ? null : "";
       },
     },
   };
@@ -314,6 +318,10 @@ export default defineConfig({
     compileSvelteStyleOwners(),
     svelte(),
   ],
+  css: {
+    // Touch screens keep :hover on the last tapped element, so hand-written hover styles apply only where hovering is possible.
+    postcss: { plugins: [touchHoverPostcss()] },
+  },
   define: {
     __GANBARU_AI_BUILD_REF__: JSON.stringify(buildRef),
     __GANBARU_AI_GITHUB_REPOSITORY__: JSON.stringify(githubRepository),
@@ -464,6 +472,12 @@ export default defineConfig({
         isMobileBuild
           ? "src/lib/stores/music-player/external-controls.mobile.ts"
           : "src/lib/stores/music-player/external-controls.ts",
+      ),
+      "$lib/stores/music-player/device-volume": path.resolve(
+        configDir,
+        isMobileBuild
+          ? "src/lib/stores/music-player/device-volume.mobile.ts"
+          : "src/lib/stores/music-player/device-volume.ts",
       ),
       "$lib/components/music/builder/MusicItemRepairDialog.svelte": path.resolve(
         configDir,

@@ -74,7 +74,10 @@ import type {
   ProjectViewPreference,
   ProjectViewPreferenceUpsert,
   ProjectViewId,
+  ProjectView,
+  ProjectViewCreate,
 } from "$lib/projects/types";
+import { isProjectViewType } from "$lib/projects/views";
 import { translate } from "$lib/i18n/translator.svelte";
 import { PROJECT_CUSTOM_FIELD_TYPES } from "$lib/projects/types";
 import {
@@ -284,9 +287,19 @@ interface ProjectTaskChangeEventRow {
   occurred_at: string;
 }
 
+interface ProjectViewRow {
+  id: string;
+  project_id: string;
+  view_type: string;
+  name: string | null;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
 interface ProjectViewPreferenceRow {
   project_id: string;
-  view_id: ProjectViewPreference["viewId"];
+  view_id: string;
   preference_key: string;
   preference_value: string;
   updated_at: string;
@@ -339,12 +352,12 @@ interface ProjectsSnapshotRows {
   event_links: ProjectTaskEventLinkRow[];
   task_change_events: ProjectTaskChangeEventRow[];
   view_preferences: ProjectViewPreferenceRow[];
+  views: ProjectViewRow[];
   custom_emojis: ProjectCustomEmojiRow[];
 }
 
 interface ProjectsWorkspaceSnapshotRows {
   resolved_project_id: string | null;
-  active_view: ProjectViewId;
   snapshot: ProjectsSnapshotRows;
 }
 
@@ -424,13 +437,8 @@ type ProjectMutationRemovalRow =
   | { kind: "custom_field_value"; task_id: string; field_id: string }
   | { kind: "dependency"; id: string }
   | { kind: "event_link"; task_id: string; event_id: string }
-  | {
-      kind: "view_preference";
-      project_id: string;
-      view_id: string;
-      preference_key: string;
-    }
-  | { kind: "custom_emoji"; id: string };
+  | { kind: "custom_emoji"; id: string }
+  | { kind: "view"; id: string };
 
 interface ProjectsMutationRows extends ProjectsSnapshotRows {
   removals: ProjectMutationRemovalRow[];
@@ -723,6 +731,24 @@ function mapViewPreference(row: ProjectViewPreferenceRow): ProjectViewPreference
   };
 }
 
+/** Map persisted views, skipping types this client does not know so newer data cannot break loading. */
+function mapViews(rows: readonly ProjectViewRow[]): ProjectView[] {
+  const views: ProjectView[] = [];
+  for (const row of rows) {
+    if (!isProjectViewType(row.view_type)) continue;
+    views.push({
+      id: row.id,
+      projectId: row.project_id,
+      viewType: row.view_type,
+      name: optionalText(row.name),
+      sortOrder: row.sort_order,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    });
+  }
+  return views;
+}
+
 function mapCustomEmoji(row: ProjectCustomEmojiRow): ProjectCustomEmoji {
   return {
     id: row.id,
@@ -776,6 +802,7 @@ function mapSnapshot(rows: ProjectsSnapshotRows): ProjectsSnapshot {
     eventLinks: rows.event_links.map(mapEventLink),
     taskChangeEvents: rows.task_change_events.map(mapTaskChangeEvent),
     viewPreferences: rows.view_preferences.map(mapViewPreference),
+    views: mapViews(rows.views),
     customEmojis: rows.custom_emojis.map(mapCustomEmoji),
   };
 }
@@ -783,7 +810,6 @@ function mapSnapshot(rows: ProjectsSnapshotRows): ProjectsSnapshot {
 function mapWorkspaceSnapshot(rows: ProjectsWorkspaceSnapshotRows): ProjectsWorkspaceSnapshot {
   return {
     resolvedProjectId: rows.resolved_project_id,
-    activeView: rows.active_view,
     snapshot: mapSnapshot(rows.snapshot),
   };
 }
@@ -873,13 +899,6 @@ function mapMutationRemoval(row: ProjectMutationRemovalRow): ProjectMutationRemo
       return { kind: row.kind, taskId: row.task_id, fieldId: row.field_id };
     case "event_link":
       return { kind: row.kind, taskId: row.task_id, eventId: row.event_id };
-    case "view_preference":
-      return {
-        kind: row.kind,
-        projectId: row.project_id,
-        viewId: row.view_id,
-        preferenceKey: row.preference_key,
-      };
     default:
       return row;
   }
@@ -898,26 +917,22 @@ function mapMutation(rows: ProjectsMutationRows): ProjectMutation {
 
 export async function loadProjectsWorkspace(
   preferredProjectId: string | null,
-  activeView: ProjectViewId,
 ): Promise<ProjectsWorkspaceSnapshot> {
   const dbUrl = await ensureDbUrl();
   const rows = await invoke<ProjectsWorkspaceSnapshotRows>("projects_load_workspace", {
     dbUrl,
     preferredProjectId,
-    activeView,
   });
   return mapWorkspaceSnapshot(rows);
 }
 
 export async function refreshProjectsWorkspace(
   preferredProjectId: string | null,
-  activeView: ProjectViewId,
 ): Promise<ProjectsWorkspaceSnapshot> {
   const dbUrl = await ensureDbUrl();
   const rows = await invoke<ProjectsWorkspaceSnapshotRows>("projects_refresh_workspace", {
     dbUrl,
     preferredProjectId,
-    activeView,
   });
   return mapWorkspaceSnapshot(rows);
 }
@@ -983,6 +998,18 @@ export async function setProjectGroupCollapsed(
 ): Promise<ProjectMutation> {
   const dbUrl = await ensureDbUrl();
   return invokeProjectMutation("projects_set_group_collapsed", { dbUrl, groupId, collapsed });
+}
+
+/** Replace the custom sidebar order of every project group; `groupIds` must list each group exactly once. */
+export async function reorderProjectGroups(groupIds: readonly string[]): Promise<ProjectMutation> {
+  const dbUrl = await ensureDbUrl();
+  return invokeProjectMutation("projects_reorder_groups", { dbUrl, reorder: { groupIds } });
+}
+
+/** Replace the custom sidebar order of a group's projects; `projectIds` must list each project of the group, including hidden and archived ones, exactly once. */
+export async function reorderGroupProjects(groupId: string, projectIds: readonly string[]): Promise<ProjectMutation> {
+  const dbUrl = await ensureDbUrl();
+  return invokeProjectMutation("projects_reorder_group_projects", { dbUrl, reorder: { groupId, projectIds } });
 }
 
 export async function createProject(project: ProjectCreate): Promise<ProjectMutation> {
@@ -1127,6 +1154,15 @@ export async function deleteProjectCustomFieldOption(optionId: string): Promise<
 export async function updateProjectCustomFieldValue(value: ProjectCustomFieldValueUpdate): Promise<ProjectMutation> {
   const dbUrl = await ensureDbUrl();
   return invokeProjectMutation("projects_update_custom_field_value", { dbUrl, value });
+}
+
+/** Message prefix Rust uses when a task update was based on an older revision. */
+const PROJECT_TASK_CONFLICT_PREFIX = "Project task conflict:";
+
+/** Whether a task update was refused because another window changed the task first. */
+export function isProjectTaskConflict(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  return message.startsWith(PROJECT_TASK_CONFLICT_PREFIX);
 }
 
 export async function updateProjectTask(task: ProjectTaskUpdate): Promise<ProjectMutation> {
@@ -1293,7 +1329,7 @@ function parseCompoundProjectRows(
   const emptyCollections: Omit<ProjectsMutationRows, "tasks" | "task_change_events" | "custom_fields" | "custom_field_options"> = {
     groups: [], projects: [], sections: [], statuses: [], priorities: [], checklist_items: [],
     tags: [], task_tag_links: [], custom_field_values: [],
-    custom_field_option_values: [], dependencies: [], event_links: [], view_preferences: [], custom_emojis: [],
+    custom_field_option_values: [], dependencies: [], event_links: [], view_preferences: [], views: [], custom_emojis: [],
     removals: [], calendar_event_project_assignments: [],
   };
   for (const key of Object.keys(emptyCollections)) readArray(row[key], 0);
@@ -1352,14 +1388,30 @@ export async function upsertProjectViewPreference(
   return invokeProjectMutation("projects_upsert_view_preference", { dbUrl, preference });
 }
 
-export async function deleteProjectViewPreference(
-  projectId: string,
-  viewId: ProjectViewPreference["viewId"],
-  preferenceKey: string,
-): Promise<ProjectMutation> {
+/** Append a view to the end of its project's views. */
+export async function createProjectView(view: ProjectViewCreate): Promise<ProjectMutation> {
   const dbUrl = await ensureDbUrl();
-  return invokeProjectMutation("projects_delete_view_preference", { dbUrl, projectId, viewId, preferenceKey });
+  return invokeProjectMutation("projects_create_view", { dbUrl, view });
 }
+
+/** Rename a view; a null or blank name restores the label of its type. */
+export async function renameProjectView(id: string, name: string | null): Promise<ProjectMutation> {
+  const dbUrl = await ensureDbUrl();
+  return invokeProjectMutation("projects_rename_view", { dbUrl, rename: { id, name } });
+}
+
+/** Replace a project's view order; `viewIds` must list every view of the project exactly once. */
+export async function reorderProjectViews(projectId: string, viewIds: readonly string[]): Promise<ProjectMutation> {
+  const dbUrl = await ensureDbUrl();
+  return invokeProjectMutation("projects_reorder_views", { dbUrl, reorder: { projectId, viewIds } });
+}
+
+/** Remove a view entry and its preferences; the project's pages and channels stay. */
+export async function deleteProjectView(id: string): Promise<ProjectMutation> {
+  const dbUrl = await ensureDbUrl();
+  return invokeProjectMutation("projects_delete_view", { dbUrl, id });
+}
+
 
 export async function createProjectCustomEmoji(emoji: ProjectCustomEmojiCreate): Promise<ProjectMutation> {
   const dbUrl = await ensureDbUrl();

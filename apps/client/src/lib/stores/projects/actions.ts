@@ -16,6 +16,7 @@ import {
   createProjectStatus,
   createProjectTask,
   createProjectTaskDependency,
+  createProjectView,
   deleteProjectChecklistItem,
   deleteProjectCustomEmoji,
   deleteProjectCustomField,
@@ -25,10 +26,14 @@ import {
   deleteProjectStatus,
   deleteProjectTag,
   deleteProjectTaskDependency,
-  deleteProjectViewPreference,
+  deleteProjectView,
   linkProjectTaskEvent,
   linkProjectTaskTag,
+  renameProjectView,
+  reorderProjectViews,
   searchProjectLinkableEvents,
+  reorderGroupProjects,
+  reorderProjectGroups,
   setProjectGroupCollapsed,
   unlinkProjectTaskEvent,
   unlinkProjectTaskTag,
@@ -43,6 +48,7 @@ import {
   updateProjectSection,
   updateProjectStatus,
   updateProjectTag,
+  isProjectTaskConflict,
   updateProjectTask,
   upsertProjectViewPreference,
 } from "$lib/api/projects";
@@ -59,7 +65,10 @@ import {
   type ProjectTaskListColumnWidths,
 } from "$lib/projects/list/view";
 import { normalizeProjectName } from "$lib/projects/text";
+import { mergeReorderedSubset, sortSidebarItems } from "$lib/utils/sidebar-order";
+import { projectHasLockedSystemIdentity } from "$lib/projects/system-defaults";
 import { PROJECT_LIST_PRESENTATION_KEY, type ProjectListPresentation } from "$lib/projects/list/presentation";
+import { PROJECT_VIEW_QUERY_PREFERENCE_KEY, serializeProjectViewQuery, type ProjectViewQuery } from "$lib/projects/view-query";
 import { applyProjectMutation } from "$lib/projects/snapshot/mutations";
 import { parseProjectIcon } from "$lib/projects/icons/values";
 import {
@@ -73,10 +82,6 @@ import {
   taskUpdatePayload,
   type ProjectTaskUpdatePatch,
 } from "$lib/projects/snapshot/update-payloads";
-import {
-  savedTaskViewPreferenceKey,
-  savedTaskViewPreferenceValue,
-} from "$lib/projects/tasks/saved-views";
 import {
   TASK_LIST_COLUMNS_PREFERENCE_KEY,
   taskListColumnsPreferenceValue,
@@ -93,12 +98,12 @@ import {
   type ProjectCustomFieldType,
   type ProjectCustomFieldValueUpdate,
   type ProjectGroup,
+  type ProjectLifecycleStatus,
   type ProjectLinkableEvent,
   type ProjectMutation,
   type ProjectMutationRemoval,
   type ProjectPriority,
   type ProjectPriorityConfig,
-  type ProjectSavedTaskView,
   type ProjectsSnapshot,
   type ProjectSection,
   type ProjectStatus,
@@ -110,6 +115,7 @@ import {
   type ProjectTaskType,
   type ProjectTemplateId,
   type ProjectUpdate,
+  type ProjectViewType,
 } from "$lib/projects/types";
 import { invalidateProjectTaskReminderSchedule } from "$lib/projects/task-reminder-schedule.svelte";
 import type { ProjectStoreSelectors } from "./selectors";
@@ -121,12 +127,45 @@ export interface ProjectStoreActionContext {
   applyCalendarEventProjectAssignments: (
     assignments: readonly { eventId: string; projectId: string }[],
   ) => Promise<void>;
-  readSelectedProjectId: () => string | null;
+  /** Clear the project selection of every pane that shows a project of a removed group. */
+  deselectProjectsOfGroup: (groupId: string) => void;
   readLoadGeneration: () => number;
-  setSelectedProjectId: (projectId: string | null) => void;
   reload: (projectId?: string | null) => Promise<void>;
   ensureProjectData: (projectId: string | null | undefined) => Promise<void>;
   ensureTaskDetailData: (projectId: string, taskId: string) => Promise<void>;
+  /** Read one task's detail from the database, bypassing caches, and return the canonical task. */
+  refreshTaskDetail: (projectId: string, taskId: string) => Promise<ProjectTask>;
+  /** Called after each command commits, including receipts a newer local command superseded. */
+  onCommitted?: (mutation: ProjectMutation) => void;
+}
+
+/** Local command activity, so a refresh can wait for and detect commits made while it reads. */
+export interface ProjectMutationActivity {
+  /** Commands sent and not yet settled. */
+  pending: number;
+  /** Commands committed since the store was created. */
+  committed: number;
+}
+
+/** Spacing between custom sidebar ranks, matching the backend reorder commands. */
+const SIDEBAR_ORDER_SPACING = 1000;
+
+/** Ids of `items` in their current custom sidebar order. */
+function customOrderIds(items: readonly (Project | ProjectGroup)[]): string[] {
+  return sortSidebarItems(
+    items,
+    "custom",
+    (item) => ({ id: item.id, name: item.name, createdAt: item.createdAt, modifiedAt: item.updatedAt, rank: item.sortOrder }),
+  ).map((item) => item.id);
+}
+
+/** The rank the backend stores for each id of a complete custom order. */
+function sidebarSortOrders(ids: readonly string[]): Map<string, number> {
+  return new Map(ids.map((id, index) => [id, (index + 1) * SIDEBAR_ORDER_SPACING]));
+}
+
+function withSortOrder<T extends { sortOrder: number }>(item: T, sortOrder: number | undefined): T {
+  return sortOrder === undefined || sortOrder === item.sortOrder ? item : { ...item, sortOrder };
 }
 
 /**
@@ -137,14 +176,17 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     ensureProjectData,
     ensureTaskDetailData,
     applyCalendarEventProjectAssignments,
+    deselectProjectsOfGroup,
+    onCommitted,
     readLoadGeneration,
-    readSelectedProjectId,
     readSnapshot,
+    refreshTaskDetail,
     selectors,
-    setSelectedProjectId,
     updateSnapshot,
   } = context;
   const mutationGenerations = new Map<string, number>();
+  const activity: ProjectMutationActivity = { pending: 0, committed: 0 };
+  const idleWaiters: Array<() => void> = [];
   interface PendingProjectOperation {
     operationId: string;
     projectId: string;
@@ -171,7 +213,16 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
   ): Promise<ProjectMutation> {
     const generation = (mutationGenerations.get(key) ?? 0) + 1;
     mutationGenerations.set(key, generation);
-    const mutation = await request();
+    activity.pending += 1;
+    let mutation: ProjectMutation;
+    try {
+      mutation = await request();
+      activity.committed += 1;
+    } finally {
+      activity.pending -= 1;
+      if (activity.pending === 0) for (const resolve of idleWaiters.splice(0)) resolve();
+    }
+    onCommitted?.(mutation);
     invalidateProjectTaskReminderSchedule();
     if (
       mutationGenerations.get(key) === generation
@@ -268,6 +319,54 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     await commitMutation(`group:${groupId}`, () => setProjectGroupCollapsed(groupId, collapsed));
   }
 
+  /**
+   * Apply a custom sidebar order to project groups optimistically, restoring the previous order when the backend
+   * refuses it. `orderedIds` may list only some groups, such as the visible ones; the rest keep their slots.
+   */
+  async function reorderGroups(orderedIds: readonly string[]): Promise<void> {
+    const previous = readSnapshot().groups;
+    const groupIds = mergeReorderedSubset(customOrderIds(previous), orderedIds);
+    const orders = sidebarSortOrders(groupIds);
+    updateSnapshot((current) => ({
+      ...current,
+      groups: current.groups.map((group) => withSortOrder(group, orders.get(group.id))),
+    }));
+    try {
+      await commitMutation("group-order", () => reorderProjectGroups(groupIds));
+    } catch (error: unknown) {
+      const restored = new Map(previous.map((group) => [group.id, group.sortOrder]));
+      updateSnapshot((current) => ({
+        ...current,
+        groups: current.groups.map((group) => withSortOrder(group, restored.get(group.id))),
+      }));
+      throw error;
+    }
+  }
+
+  /**
+   * Apply a custom sidebar order to the projects of a group optimistically, restoring the previous order when the
+   * backend refuses it. `orderedIds` may list only some of them, such as the active ones; the rest keep their slots.
+   */
+  async function reorderProjectsInGroup(groupId: string, orderedIds: readonly string[]): Promise<void> {
+    const previous = readSnapshot().projects.filter((project) => project.groupId === groupId);
+    const projectIds = mergeReorderedSubset(customOrderIds(previous), orderedIds);
+    const orders = sidebarSortOrders(projectIds);
+    updateSnapshot((current) => ({
+      ...current,
+      projects: current.projects.map((project) => withSortOrder(project, orders.get(project.id))),
+    }));
+    try {
+      await commitMutation(`project-order:${groupId}`, () => reorderGroupProjects(groupId, projectIds));
+    } catch (error: unknown) {
+      const restored = new Map(previous.map((project) => [project.id, project.sortOrder]));
+      updateSnapshot((current) => ({
+        ...current,
+        projects: current.projects.map((project) => withSortOrder(project, restored.get(project.id))),
+      }));
+      throw error;
+    }
+  }
+
   async function updateGroup(
     group: ProjectGroup,
     patch: Partial<Pick<ProjectGroup, "name" | "icon" | "color" | "sortOrder" | "collapsed">>,
@@ -282,24 +381,11 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
   async function removeGroup(group: ProjectGroup): Promise<void> {
     await commitMutation(`group:${group.id}`, () => deleteProjectGroup(group.id));
     invalidateAssetUrlKind("project-icon");
-    const selectedProjectId = readSelectedProjectId();
-    if (selectedProjectId && group.id === selectors.projectById(selectedProjectId)?.groupId) {
-      setSelectedProjectId(null);
-    }
+    deselectProjectsOfGroup(group.id);
   }
 
-  async function moveGroup(group: ProjectGroup, direction: -1 | 1): Promise<void> {
-    const ordered = selectors.visibleGroups();
-    const index = ordered.findIndex((entry) => entry.id === group.id);
-    const target = ordered[index + direction];
-    if (index < 0 || !target) return;
-    await commitMutation(`group:${group.id}`, () =>
-      updateProjectGroup(groupUpdatePayload(group, { sortOrder: target.sortOrder })));
-    await commitMutation(`group:${target.id}`, () =>
-      updateProjectGroup(groupUpdatePayload(target, { sortOrder: group.sortOrder })));
-  }
-
-  async function addProject(groupId: string, name: string, templateId: ProjectTemplateId = "blank"): Promise<void> {
+  /** Create a project and return its id, which the calling pane selects; an empty name creates nothing. */
+  async function addProject(groupId: string, name: string, templateId: ProjectTemplateId = "blank"): Promise<string | undefined> {
     const displayName = normalizeProjectName(name);
     if (!displayName) return;
     const templateDefaults = PROJECT_TEMPLATE_DEFAULTS[templateId];
@@ -325,7 +411,7 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
       defaultIdleThresholdMinutes: templateDefaults.defaultIdleThresholdMinutes,
     };
     await commitMutation(`project:${project.id}`, () => createProjectBackend(project));
-    setSelectedProjectId(project.id);
+    return project.id;
   }
 
   async function updateProject(project: ProjectUpdate): Promise<void> {
@@ -343,17 +429,39 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
       updateProjectNotesSettings(projectId, openMode, historyRetentionDays));
   }
 
-  async function moveProject(project: Project, direction: -1 | 1, includeInactive = false): Promise<void> {
-    const ordered = includeInactive
-      ? selectors.projectsForGroupIncludingInactive(project.groupId)
-      : selectors.projectsForGroup(project.groupId);
-    const index = ordered.findIndex((entry) => entry.id === project.id);
-    const target = ordered[index + direction];
-    if (index < 0 || !target) return;
-    await commitMutation(`project:${project.id}`, () =>
-      updateProjectBackend(projectUpdatePayload(project, { sortOrder: target.sortOrder })));
-    await commitMutation(`project:${target.id}`, () =>
-      updateProjectBackend(projectUpdatePayload(target, { sortOrder: project.sortOrder })));
+  /** Renames a project. Built-in projects keep their name, and an empty name is rejected. */
+  async function renameProject(project: Project, name: string): Promise<void> {
+    assertProjectIdentityEditable(project);
+    const normalized = normalizeProjectName(name);
+    if (!normalized) throw new Error("A project name is required");
+    if (normalized === project.name) return;
+    await updateProject(projectUpdatePayload(project, { name: normalized }));
+  }
+
+  /** Moves a project to the end of another visible group. Built-in projects keep their group. */
+  async function moveProjectToGroup(project: Project, groupId: string): Promise<void> {
+    assertProjectIdentityEditable(project);
+    if (groupId === project.groupId) return;
+    if (!selectors.visibleGroups().some((group) => group.id === groupId)) {
+      throw new Error(`Project group ${groupId} is not available`);
+    }
+    const sortOrder = Math.max(
+      0,
+      ...selectors.projectsForGroupIncludingInactive(groupId).map((entry) => entry.sortOrder),
+    ) + 1000;
+    await updateProject(projectUpdatePayload(project, { groupId, sortOrder }));
+  }
+
+  /** Sets whether a project is active, hidden, or archived. */
+  async function setProjectStatus(project: Project, status: ProjectLifecycleStatus): Promise<void> {
+    if (status === project.status) return;
+    await updateProject(projectUpdatePayload(project, { status }));
+  }
+
+  function assertProjectIdentityEditable(project: Project): void {
+    if (projectHasLockedSystemIdentity(project)) {
+      throw new Error(`Built-in project ${project.id} keeps its name and group`);
+    }
   }
 
   async function addSection(projectId: string, name: string): Promise<void> {
@@ -397,17 +505,6 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
       hiddenAt: undefined,
       archivedAt: undefined,
     });
-  }
-
-  async function applySectionCollapseState(projectId: string, collapsedSectionIds: readonly string[]): Promise<void> {
-    const collapsedIds = new Set(collapsedSectionIds);
-    const updates = selectors.sectionsForProject(projectId)
-      .filter((section) => section.collapsed !== collapsedIds.has(section.id));
-    for (const section of updates) {
-      await commitMutation(`section:${section.id}`, () => updateProjectSection(sectionUpdatePayload(section, {
-        collapsed: collapsedIds.has(section.id),
-      })));
-    }
   }
 
   /** Create a status, optionally retaining an identity allocated by a settings draft. */
@@ -797,11 +894,26 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
   async function updateTask(task: ProjectTask, patch: ProjectTaskUpdatePatch): Promise<void> {
     const loadGeneration = readLoadGeneration();
     const hydrated = await taskForMutation(task);
-    await commitMutation(
-      `task:${task.id}`,
-      () => updateProjectTask(taskUpdatePayload(hydrated, patch)),
-      loadGeneration,
-    );
+    const key = `task:${task.id}`;
+    try {
+      await commitMutation(key, () => updateProjectTask(taskUpdatePayload(hydrated, patch)), loadGeneration);
+    } catch (error) {
+      if (!isProjectTaskConflict(error)) throw error;
+      // The task changed since it was read, in another window or by an earlier command; reapply only this edit.
+      const fresh = await refreshTaskDetail(task.projectId, task.id);
+      await commitMutation(key, () => updateProjectTask(taskUpdatePayload(fresh, patch)), loadGeneration);
+    }
+  }
+
+  /** Current local command activity. */
+  function readMutationActivity(): ProjectMutationActivity {
+    return { ...activity };
+  }
+
+  /** Resolve once no local command is in flight. */
+  function whenMutationsIdle(): Promise<void> {
+    if (activity.pending === 0) return Promise.resolve();
+    return new Promise((resolve) => idleWaiters.push(resolve));
   }
 
   /** Apply exactly the reviewed native graph and retain its identity after uncertain responses. */
@@ -992,78 +1104,103 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
       deleteProjectTaskDependency(dependencyId));
   }
 
-  async function saveTaskView(view: ProjectSavedTaskView): Promise<void> {
-    const name = normalizeProjectName(view.name);
-    if (!name) return;
-    const preferenceKey = savedTaskViewPreferenceKey(view.id);
-    await commitMutation(`preference:${view.projectId}:${view.viewId}:${preferenceKey}`, () =>
-      upsertProjectViewPreference({
-      projectId: view.projectId,
-      viewId: view.viewId,
-      preferenceKey,
-      preferenceValue: savedTaskViewPreferenceValue({ ...view, name }),
-    }));
-  }
 
-  async function deleteTaskView(view: ProjectSavedTaskView): Promise<void> {
-    const preferenceKey = savedTaskViewPreferenceKey(view.id);
-    await commitMutation(`preference:${view.projectId}:${view.viewId}:${preferenceKey}`, () =>
-      deleteProjectViewPreference(
-      view.projectId,
-      view.viewId,
-      preferenceKey,
-    ));
+
+  /** Persist one preference of one view, serialized per view and key. */
+  async function saveViewPreference(viewId: string, preferenceKey: string, preferenceValue: string): Promise<void> {
+    await commitMutation(`preference:${viewId}:${preferenceKey}`, () =>
+      upsertProjectViewPreference({ viewId, preferenceKey, preferenceValue }));
   }
 
   async function saveTaskListColumns(
-    projectId: string,
+    viewId: string,
     columns: readonly ProjectTaskListColumn[],
   ): Promise<void> {
-    await commitMutation(`preference:${projectId}:list:${TASK_LIST_COLUMNS_PREFERENCE_KEY}`, () =>
-      upsertProjectViewPreference({
-      projectId,
-      viewId: "list",
-      preferenceKey: TASK_LIST_COLUMNS_PREFERENCE_KEY,
-      preferenceValue: taskListColumnsPreferenceValue(columns),
-    }));
+    await saveViewPreference(viewId, TASK_LIST_COLUMNS_PREFERENCE_KEY, taskListColumnsPreferenceValue(columns));
   }
 
   async function saveTaskListColumnWidths(
-    projectId: string,
+    viewId: string,
     widths: ProjectTaskListColumnWidths,
   ): Promise<void> {
-    await commitMutation(`preference:${projectId}:list:${TASK_LIST_COLUMN_WIDTHS_PREFERENCE_KEY}`, () =>
-      upsertProjectViewPreference({
-      projectId,
-      viewId: "list",
-      preferenceKey: TASK_LIST_COLUMN_WIDTHS_PREFERENCE_KEY,
-      preferenceValue: taskListColumnWidthsPreferenceValue(widths),
-    }));
+    await saveViewPreference(viewId, TASK_LIST_COLUMN_WIDTHS_PREFERENCE_KEY, taskListColumnWidthsPreferenceValue(widths));
   }
 
   /** Persist table presentation independently of task data and manual order. */
-  async function saveTaskListPresentation(projectId: string, presentation: ProjectListPresentation): Promise<void> {
-    await commitMutation(`preference:${projectId}:list:${PROJECT_LIST_PRESENTATION_KEY}`, () => upsertProjectViewPreference({
-      projectId, viewId: "list", preferenceKey: PROJECT_LIST_PRESENTATION_KEY, preferenceValue: JSON.stringify(presentation),
+  async function saveTaskListPresentation(viewId: string, presentation: ProjectListPresentation): Promise<void> {
+    await saveViewPreference(viewId, PROJECT_LIST_PRESENTATION_KEY, JSON.stringify(presentation));
+  }
+
+  /** Persist a task view's filters, sort, grouping, and calendar span. */
+  async function saveViewQuery(viewId: string, query: ProjectViewQuery): Promise<void> {
+    await saveViewPreference(viewId, PROJECT_VIEW_QUERY_PREFERENCE_KEY, serializeProjectViewQuery(query));
+  }
+
+  /**
+   * Append a view to a project.
+   * @returns The new view id once the backend has stored it.
+   */
+  async function addView(projectId: string, viewType: ProjectViewType, name: string | null = null): Promise<string> {
+    const id = crypto.randomUUID();
+    await commitMutation(`view:${id}`, () =>
+      createProjectView({ id, projectId, viewType, name: name?.trim() || null }));
+    return id;
+  }
+
+  /** Rename a view; a blank name restores the label of its type. */
+  async function renameView(viewId: string, name: string): Promise<void> {
+    await commitMutation(`view:${viewId}:name`, () => renameProjectView(viewId, name.trim() || null));
+  }
+
+  /** Apply a complete view order optimistically and restore the previous order when the backend refuses it. */
+  async function reorderViews(projectId: string, viewIds: readonly string[]): Promise<void> {
+    const previous = readSnapshot().views;
+    const orders = new Map(viewIds.map((id, index) => [id, (index + 1) * 1000]));
+    updateSnapshot((current) => ({
+      ...current,
+      views: current.views.map((view) => {
+        const sortOrder = orders.get(view.id);
+        return view.projectId === projectId && sortOrder !== undefined ? { ...view, sortOrder } : view;
+      }),
     }));
+    try {
+      await commitMutation(`view-order:${projectId}`, () => reorderProjectViews(projectId, viewIds));
+    } catch (error: unknown) {
+      updateSnapshot((current) => ({
+        ...current,
+        views: [...current.views.filter((view) => view.projectId !== projectId), ...previous.filter((view) => view.projectId === projectId)],
+      }));
+      throw error;
+    }
+  }
+
+  /** Remove a view entry and its preferences; Notes pages and Chat channels stay. */
+  async function removeView(viewId: string): Promise<void> {
+    await commitMutation(`view:${viewId}`, () => deleteProjectView(viewId));
   }
 
   return {
+    addView,
+    renameView,
+    reorderViews,
+    removeView,
     addGroup,
     setGroupCollapsed,
+    reorderGroups,
+    reorderProjectsInGroup,
     updateGroup,
     removeGroup,
-    moveGroup,
     addProject,
     updateProject,
     setNotesSettings,
-    moveProject,
+    renameProject,
+    moveProjectToGroup,
+    setProjectStatus,
     addSection,
     updateSection,
     hideSection,
     archiveSection,
     restoreSection,
-    applySectionCollapseState,
     addStatus,
     updateStatus,
     moveStatus,
@@ -1117,10 +1254,12 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     searchLinkableEvents,
     addTaskDependency,
     removeTaskDependency,
-    saveTaskView,
-    deleteTaskView,
+    saveViewPreference,
     saveTaskListColumns,
     saveTaskListColumnWidths,
     saveTaskListPresentation,
+    saveViewQuery,
+    readMutationActivity,
+    whenMutationsIdle,
   };
 }

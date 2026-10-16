@@ -2,7 +2,10 @@ package org.opengrimoire.ganbaruai.mobile.media
 
 import androidx.media3.common.Player
 
-/** Only semantic transport controls and decoder reads are exposed to controllers. */
+/**
+ * Only semantic transport controls and decoder reads are exposed to controllers. Volume is left out so controllers
+ * and hardware buttons change the device media volume, which is the Music volume on Android.
+ */
 internal object NativeMusicCommands {
   private val supported = setOf(
     Player.COMMAND_PLAY_PAUSE,
@@ -14,13 +17,11 @@ internal object NativeMusicCommands {
     Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
     Player.COMMAND_SEEK_TO_PREVIOUS,
     Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM,
-    Player.COMMAND_SET_VOLUME,
     Player.COMMAND_SET_SPEED_AND_PITCH,
     Player.COMMAND_GET_CURRENT_MEDIA_ITEM,
     Player.COMMAND_GET_TIMELINE,
     Player.COMMAND_GET_METADATA,
     Player.COMMAND_GET_AUDIO_ATTRIBUTES,
-    Player.COMMAND_GET_VOLUME,
     Player.COMMAND_GET_TRACKS,
   )
 

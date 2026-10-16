@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="ganbaru_music_notification_channel">Music playback</string>
+</resources>

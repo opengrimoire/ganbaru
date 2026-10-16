@@ -1,4 +1,13 @@
 import { notesPageTitle } from "$lib/notes/pages/title";
+import {
+  compareSidebarItems,
+  compareSidebarNames,
+  compareStarredFirst,
+  customOrderRanks,
+  DEFAULT_SIDEBAR_SORT_ORDER,
+  type SidebarSortFields,
+  type SidebarSortOrder,
+} from "$lib/utils/sidebar-order";
 import { NOTES_DATABASE_VIEW_KINDS, type NotesDatabaseView, type NotesDatabaseViewKind, type NotesFolder, type NotesNavigationDatabase, type NotesPage } from "$lib/notes/types";
 
 export const NOTES_HIERARCHY_PANEL_ROW_HEIGHT = 32;
@@ -15,6 +24,17 @@ export type NotesHierarchyParent =
 export type NotesHierarchyNode =
   | { kind: "folder"; key: string; folder: NotesFolder; hasChildren: boolean }
   | { kind: "page"; key: string; page: NotesPage; hasChildren: boolean };
+
+/** Sibling order shared with the sidebar: folders before notes, favorites first within each, then `sortOrder`. */
+export interface NotesHierarchyOrder {
+  sortOrder: SidebarSortOrder;
+  favoriteFolderIds: readonly string[];
+  favoritePageIds: readonly string[];
+  /** Navigation keys in their custom order, which ranks siblings when `sortOrder` is `custom`. */
+  customOrderKeys?: readonly string[];
+}
+
+const NAME_ORDER: NotesHierarchyOrder = { sortOrder: DEFAULT_SIDEBAR_SORT_ORDER, favoriteFolderIds: [], favoritePageIds: [] };
 
 export type NotesHierarchyPickerNode = NotesHierarchyNode
   | { kind: "database"; key: string; database: NotesNavigationDatabase; hasChildren: true }
@@ -33,7 +53,10 @@ export function notesHierarchyPickerTitle(node: NotesHierarchyPickerNode, untitl
   return node.kind === "view" ? node.view.name : node.database.title.trim() || untitledTitle;
 }
 
-/** Mix database shells into their note's children and expose saved views beneath each shell. */
+/**
+ * List a level's children for the hierarchy picker: folders and notes in sidebar order, then the note's database
+ * shells by name. A database level lists its saved views in their own order.
+ */
 export function notesHierarchyPickerChildren(
   pages: readonly NotesPage[],
   folders: readonly NotesFolder[],
@@ -42,6 +65,7 @@ export function notesHierarchyPickerChildren(
   untitledTitle: string,
   pageIdsWithChildren: readonly string[] = [],
   views: readonly NotesDatabaseView[] = [],
+  order: NotesHierarchyOrder = NAME_ORDER,
 ): NotesHierarchyPickerNode[] {
   if (parent.kind === "database") {
     const database = databases.find((item) => item.id === parent.id);
@@ -53,13 +77,33 @@ export function notesHierarchyPickerChildren(
   const items: NotesHierarchyPickerNode[] = notesHierarchyChildren(
     pages, folders, parent, untitledTitle,
     [...pageIdsWithChildren, ...databases.map((database) => database.page_id)],
+    order,
   );
   if (parent.kind !== "page") return items;
-  items.push(...databases.filter((database) => database.page_id === parent.id)
-    .map((database): NotesHierarchyPickerNode => ({ kind: "database", key: `database:${database.id}`, database, hasChildren: true })));
-  return items.sort((left, right) => notesHierarchyPickerTitle(left, untitledTitle).localeCompare(
-    notesHierarchyPickerTitle(right, untitledTitle), undefined, { numeric: true, sensitivity: "base" },
-  ));
+  const databaseNodes = databases.filter((database) => database.page_id === parent.id)
+    .map((database): NotesHierarchyPickerNode => ({ kind: "database", key: `database:${database.id}`, database, hasChildren: true }))
+    .sort((left, right) => compareSidebarNames(
+      notesHierarchyPickerTitle(left, untitledTitle),
+      notesHierarchyPickerTitle(right, untitledTitle),
+    ));
+  return [...items, ...databaseNodes];
+}
+
+function hierarchyNodeSortFields(
+  node: NotesHierarchyNode,
+  untitledTitle: string,
+  customRanks: ReadonlyMap<string, number>,
+): SidebarSortFields {
+  const rank = customRanks.get(node.key);
+  return node.kind === "folder"
+    ? { id: node.key, name: node.folder.name, createdAt: node.folder.created_time, modifiedAt: node.folder.last_edited_time, rank }
+    : {
+      id: node.key,
+      name: notesPageTitle(node.page, untitledTitle),
+      createdAt: node.page.created_time,
+      modifiedAt: node.page.last_edited_time,
+      rank,
+    };
 }
 
 function pageBelongsToParent(page: NotesPage, parent: NotesHierarchyParent): boolean {
@@ -88,13 +132,14 @@ function nodeHasChildren(
   return pages.some((page) => pageBelongsToParent(page, parent));
 }
 
-/** Return only the direct folder and note children for one hierarchy level. */
+/** Return only the direct folder and note children for one hierarchy level, folders first, each kind in `order`. */
 export function notesHierarchyChildren(
   pages: readonly NotesPage[],
   folders: readonly NotesFolder[],
   parent: NotesHierarchyParent,
   untitledTitle = "Untitled",
   pageIdsWithChildren: readonly string[] = [],
+  order: NotesHierarchyOrder = NAME_ORDER,
 ): NotesHierarchyNode[] {
   if (parent.kind === "database") return [];
   const pageIdsWithChildrenSet = new Set(pageIdsWithChildren);
@@ -123,22 +168,56 @@ export function notesHierarchyChildren(
       ),
     }));
 
-  folderNodes.sort((left, right) => {
-    if (left.kind !== "folder" || right.kind !== "folder") return 0;
-    return left.folder.name.localeCompare(right.folder.name, undefined, {
-      numeric: true,
-      sensitivity: "base",
-    });
-  });
-  pageNodes.sort((left, right) => {
-    if (left.kind !== "page" || right.kind !== "page") return 0;
-    return notesPageTitle(left.page, untitledTitle).localeCompare(
-      notesPageTitle(right.page, untitledTitle),
-      undefined,
-      { numeric: true, sensitivity: "base" },
-    );
-  });
-  return [...folderNodes, ...pageNodes];
+  const favoriteFolderIds = new Set(order.favoriteFolderIds);
+  const favoritePageIds = new Set(order.favoritePageIds);
+  const customRanks = customOrderRanks(order.customOrderKeys ?? []);
+  const isFavorite = (node: NotesHierarchyNode): boolean =>
+    node.kind === "folder" ? favoriteFolderIds.has(node.folder.id) : favoritePageIds.has(node.page.id);
+  const compareNodes = (left: NotesHierarchyNode, right: NotesHierarchyNode): number =>
+    compareStarredFirst(isFavorite(left), isFavorite(right))
+      || compareSidebarItems(
+        hierarchyNodeSortFields(left, untitledTitle, customRanks),
+        hierarchyNodeSortFields(right, untitledTitle, customRanks),
+        order.sortOrder,
+      );
+  return [...folderNodes.sort(compareNodes), ...pageNodes.sort(compareNodes)];
+}
+
+/**
+ * List the archived notes placed directly under a picker level, in the level's sort order without favorites, for
+ * rows that follow the active children. Archived notes never open further levels, and a note that is active again
+ * is left out.
+ */
+export function notesHierarchyArchivedChildren(
+  archivedPages: readonly NotesPage[],
+  activePageIds: ReadonlySet<string>,
+  parent: NotesHierarchyParent,
+  untitledTitle: string,
+  order: NotesHierarchyOrder = NAME_ORDER,
+): NotesHierarchyNode[] {
+  if (parent.kind === "database") return [];
+  const customRanks = customOrderRanks(order.customOrderKeys ?? []);
+  return archivedPages
+    .filter((page) => page.archived && !page.in_trash && !activePageIds.has(page.id) && pageBelongsToParent(page, parent))
+    .map((page): NotesHierarchyNode => ({ kind: "page", key: `page:${page.id}`, page, hasChildren: false }))
+    .sort((left, right) => compareSidebarItems(
+      hierarchyNodeSortFields(left, untitledTitle, customRanks),
+      hierarchyNodeSortFields(right, untitledTitle, customRanks),
+      order.sortOrder,
+    ));
+}
+
+/** Return the notes that hold an archived child, so their picker rows open a level while archived notes are listed. */
+export function notesArchivedParentPageIds(
+  archivedPages: readonly NotesPage[],
+  activePageIds: ReadonlySet<string>,
+): string[] {
+  const parentIds = new Set<string>();
+  for (const page of archivedPages) {
+    if (!page.archived || page.in_trash || activePageIds.has(page.id) || page.parent.type !== "page_id") continue;
+    parentIds.add(page.parent.page_id);
+  }
+  return [...parentIds];
 }
 
 /** Return the valid folder and note ancestry ending at a selected note. */

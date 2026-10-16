@@ -3,6 +3,9 @@ import {
   listTrashedNotesPages,
 } from "$lib/api/notes";
 import type { NotesPage } from "$lib/notes/types";
+import { getConfigKey, setConfigKey } from "$lib/vault/config";
+
+const SHOW_ARCHIVED_IN_PICKERS_CONFIG_KEY = "notes.showArchivedInPickers";
 
 type NotesArchiveKind = "archive" | "trash";
 
@@ -15,6 +18,19 @@ interface NotesArchiveCollectionState {
   error: string | null;
   requestId: number;
 }
+
+/** Every archived page across projects, read whole for the hierarchy pickers while their eye button is on. */
+interface NotesPickerArchiveState {
+  shown: boolean;
+  pages: NotesPage[];
+  loaded: boolean;
+  loading: boolean;
+  error: string | null;
+  requestId: number;
+}
+
+/** Largest summary window the archive read accepts, so the pickers need as few reads as possible. */
+const PICKER_ARCHIVE_WINDOW_SIZE = 100;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -35,6 +51,15 @@ export function createNotesArchiveController() {
     pages: [],
     nextCursor: null,
     query: "",
+    loaded: false,
+    loading: false,
+    error: null,
+    requestId: 0,
+  });
+
+  let pickerArchive = $state<NotesPickerArchiveState>({
+    shown: getConfigKey<unknown>(SHOW_ARCHIVED_IN_PICKERS_CONFIG_KEY, undefined) === true,
+    pages: [],
     loaded: false,
     loading: false,
     error: null,
@@ -117,6 +142,36 @@ export function createNotesArchiveController() {
     }
   }
 
+  /** Read every archived page window for the pickers, ignoring a load that a newer one replaced. */
+  async function reloadPickerArchive(): Promise<void> {
+    const requestId = pickerArchive.requestId + 1;
+    pickerArchive = { ...pickerArchive, loading: true, error: null, requestId };
+    try {
+      const pages: NotesPage[] = [];
+      let cursor: string | null = null;
+      do {
+        const window = await listArchivedNotesPages({ cursor, page_size: PICKER_ARCHIVE_WINDOW_SIZE });
+        if (pickerArchive.requestId !== requestId) return;
+        pages.push(...window.pages);
+        cursor = window.next_cursor;
+      } while (cursor !== null);
+      pickerArchive = { ...pickerArchive, pages: [...new Map(pages.map((page) => [page.id, page])).values()], loaded: true };
+    } catch (error) {
+      if (pickerArchive.requestId === requestId) pickerArchive = { ...pickerArchive, error: errorMessage(error) };
+    } finally {
+      if (pickerArchive.requestId === requestId) pickerArchive = { ...pickerArchive, loading: false };
+    }
+  }
+
+  function prependPickerArchive(page: NotesPage): void {
+    if (!pickerArchive.loaded) return;
+    pickerArchive = { ...pickerArchive, pages: [page, ...pickerArchive.pages.filter((candidate) => candidate.id !== page.id)] };
+  }
+
+  function removePickerArchive(pageIds: ReadonlySet<string>): void {
+    pickerArchive = { ...pickerArchive, pages: pickerArchive.pages.filter((page) => !pageIds.has(page.id)) };
+  }
+
   function prepend(kind: NotesArchiveKind, page: NotesPage): void {
     const current = read(kind);
     if (!current.loaded) return;
@@ -149,9 +204,33 @@ export function createNotesArchiveController() {
     loadMoreArchivedPages: () => loadMore("archive"),
     reloadTrashedPages: (query = "") => reload("trash", query),
     loadMoreTrashedPages: () => loadMore("trash"),
-    prependArchivedPage: (page: NotesPage) => prepend("archive", page),
+    get showArchivedInPickers(): boolean { return pickerArchive.shown; },
+    /** Turning the picker eye on reads the archive again so pickers never list a stale archive; the choice is kept until turned off. */
+    set showArchivedInPickers(shown: boolean) {
+      if (pickerArchive.shown === shown) return;
+      pickerArchive = { ...pickerArchive, shown };
+      setConfigKey(SHOW_ARCHIVED_IN_PICKERS_CONFIG_KEY, shown || undefined);
+      if (shown) void reloadPickerArchive();
+    },
+    /** Read the archive for pickers once when the eye was left on from an earlier session. */
+    ensurePickerArchivedPages: () => {
+      if (pickerArchive.shown && !pickerArchive.loaded && !pickerArchive.loading && pickerArchive.error === null) {
+        void reloadPickerArchive();
+      }
+    },
+    get pickerArchivedPages(): NotesPage[] { return pickerArchive.pages; },
+    get pickerArchiveLoading(): boolean { return pickerArchive.loading; },
+    get pickerArchiveError(): string | null { return pickerArchive.error; },
+    reloadPickerArchivedPages: reloadPickerArchive,
+    prependArchivedPage: (page: NotesPage) => {
+      prepend("archive", page);
+      prependPickerArchive(page);
+    },
     prependTrashedPage: (page: NotesPage) => prepend("trash", page),
-    removeArchivedPages: (pageIds: ReadonlySet<string>) => remove("archive", pageIds),
+    removeArchivedPages: (pageIds: ReadonlySet<string>) => {
+      remove("archive", pageIds);
+      removePickerArchive(pageIds);
+    },
     removeTrashedPages: (pageIds: ReadonlySet<string>) => remove("trash", pageIds),
   };
 }

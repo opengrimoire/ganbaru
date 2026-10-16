@@ -55,6 +55,7 @@ export function taskUpdatePayload(task: ProjectTask, patch: ProjectTaskUpdatePat
     blockerReason: merged.blockerReason ?? null,
     milestone: merged.milestone,
     changeReason: patch.changeReason ?? null,
+    expectedRevision: task.revision ?? null,
   };
 }
 

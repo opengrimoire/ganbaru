@@ -1,11 +1,9 @@
 <script lang="ts">
   import { getNavigation } from "$lib/stores/navigation.svelte";
-  import {
-    firstMainView,
-    isDetachableTabView,
-    mainTabViews,
-    type DetachableTabView,
-  } from "$lib/navigation";
+  import { availableAppViews, type View } from "$lib/navigation";
+  import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
+  import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
+  import { createAppWorkspaceLocationAdapter } from "$lib/workspace-tabs/app-location-adapter";
   import { getCalendar } from "$lib/stores/calendar.svelte";
   import { getCalendars } from "$lib/stores/calendars.svelte";
   import { getDistractions } from "$lib/stores/distractions.svelte";
@@ -13,16 +11,16 @@
   import { getMusicPlayer } from "$lib/stores/music-player.svelte";
   import { getPomodoro } from "$lib/stores/pomodoro.svelte";
   import { buildDesktopFocusNotificationCopy, type DesktopFocusNotificationCopy } from "$lib/api/focus";
-  import { getNotes } from "$lib/stores/notes.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
-  import { getChat } from "$lib/stores/chat.svelte";
+  import { getNotes, getNotesWorkspace } from "$lib/stores/notes.svelte";
+  import { getProjects, getProjectsStore, type ProjectsStore } from "$lib/stores/projects.svelte";
+  import type { WorkspacePaneScope } from "$lib/workspace-tabs/model";
+  import { getChat, getChatStore, resetChatForVault } from "$lib/stores/chat.svelte";
   import { getZoom } from "$lib/stores/zoom.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getSettingsLauncher } from "$lib/stores/settings-launcher.svelte";
   import { getUpdateManager } from "$lib/stores/updates.svelte";
   import { UPDATE_AUTO_CHECK_INTERVAL_MS } from "$lib/stores/update-policy";
   import { getViewport } from "$lib/stores/viewport.svelte";
-  import { getDetachedWindows } from "$lib/stores/detached-windows.svelte";
   import { parseNotesLinkHash } from "$lib/notes/links/block-link";
   import {
     listPendingNotesMentionNotifications,
@@ -33,7 +31,8 @@
     NotesMentionNotification,
     NotesMentionNotificationKind,
   } from "$lib/notes/types";
-  import { detachableTabViewFromWindowLabel } from "$lib/windows/detached";
+  import { MAIN_WINDOW_LABEL, createWorkspaceTabWindows, parseTabWindowSearch } from "$lib/windows/tab-windows";
+  import { flushBeforeWindowClose } from "$lib/windows/close-flush";
   import { ensureDbUrl } from "$lib/api/db";
   import { prepareDesktopWorkspace } from "$lib/windows/desktop-workspace-readiness";
   import "$lib/stores/app-session";
@@ -42,6 +41,7 @@
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { appNavigationShortcut, hasShortcutModifier } from "$lib/keyboard-shortcuts";
+  import { isAppKeyboardIsolated } from "$lib/modal-focus";
   import TitleBar from "$lib/components/title-bar/TitleBar.svelte";
   import { getAppCloseCoordinator } from "$lib/components/title-bar/shortcut-controller.svelte";
   import WindowResizeHandles from "$lib/components/WindowResizeHandles.svelte";
@@ -50,12 +50,16 @@
   import MusicSoundscapeCoordinator from "$lib/components/music/soundscape/MusicSoundscapeCoordinator.svelte";
   import NotesView from "$lib/components/notes/NotesView.svelte";
   import ProjectsView from "$lib/components/projects/ProjectsView.svelte";
+  import ProjectsSidebar from "$lib/components/projects/sidebar/ProjectsSidebar.svelte";
   import ProjectDashboardView from "$lib/components/projects/views/ProjectDashboardView.svelte";
   import ProjectGanttView from "$lib/components/projects/views/ProjectGanttView.svelte";
   import ProjectKanbanView from "$lib/components/projects/views/ProjectKanbanView.svelte";
   import ProjectListView from "$lib/components/projects/list/ProjectListView.svelte";
   import type { ProjectViewComponents } from "$lib/components/projects/view-components";
   import ChatWorkspace from "$lib/components/chat/ChatWorkspace.svelte";
+  import WorkspaceSplitView from "$lib/components/workspace-tabs/WorkspaceSplitView.svelte";
+  import { workspaceShownPanes } from "$lib/workspace-tabs/shown-panes";
+  import type { WorkspaceSplitArea } from "$lib/workspace-tabs/split-layout";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import TooltipHost from "$lib/components/ui/TooltipHost.svelte";
   import UpdateNotificationToast from "$lib/components/updates/UpdateNotificationToast.svelte";
@@ -83,18 +87,16 @@
   import { listUpcomingProjectTaskReminders } from "$lib/api/project-task-reminders";
   import { getProjectTaskReminderSchedule } from "$lib/projects/task-reminder-schedule.svelte";
   import { projectTaskReminderNotificationText } from "$lib/projects/task-reminder-notification";
-  import type { ProjectChatIntegration } from "$lib/projects/types";
+  import type { ProjectChatIntegration, ProjectHostedViewType } from "$lib/projects/types";
+  import { projectHostablePlaces, projectPlaceShortcut } from "$lib/projects/places";
   import type { QuickNotesTrashPurgeRuntime } from "$lib/quick-notes/trash-purge-runtime";
 
   perfMark("boot.script-start");
 
   const appWindow = getCurrentWindow();
   const appClose = getAppCloseCoordinator();
-  const isMainWindow = appWindow.label === "main";
-  const detachedWindowView = detachableTabViewFromWindowLabel(appWindow.label);
+  const isMainWindow = appWindow.label === MAIN_WINDOW_LABEL;
   const nav = getNavigation();
-  const startupTabView = detachedWindowView ?? nav.current;
-  if (nav.current !== startupTabView) nav.navigate(startupTabView);
   const calendar = getCalendar();
   const calendars = getCalendars();
   const distractions = getDistractions();
@@ -102,8 +104,11 @@
   const music = getMusicPlayer();
   const pomodoro = getPomodoro();
   const notes = getNotes();
+  const secondaryNotes = getNotesWorkspace("secondary");
   const projects = getProjects();
+  const secondaryProjects = getProjectsStore("secondary");
   const chat = getChat();
+  const secondaryChat = getChatStore("secondary");
   const zoom = getZoom();
   const preferences = getPreferences();
   const settingsLauncher = getSettingsLauncher();
@@ -112,7 +117,19 @@
   const localization = getLocalization();
   const { t } = localization;
   const locale = $derived(localization.locale);
-  const detachedWindows = getDetachedWindows();
+  const workspaceTabs = getWorkspaceTabs();
+  workspaceTabs.connect({
+    adapter: createAppWorkspaceLocationAdapter(
+      { projects, notes, chat, secondary: { projects: secondaryProjects, notes: secondaryNotes, chat: secondaryChat } },
+      t,
+    ),
+    ...(platformHasCapability(BUILD_PLATFORM_PROFILE, "window.detached-views")
+      ? { windows: createWorkspaceTabWindows(appWindow.label, availableAppViews()) }
+      : {}),
+    initialTab: isMainWindow ? null : parseTabWindowSearch(window.location.search, availableAppViews()),
+    flushPendingEdits: flushBeforeWindowClose,
+    requestWindowClose: () => appClose.request(),
+  });
   const notesNotificationSchedule = getNotesNotificationSchedule();
   const projectTaskReminderSchedule = getProjectTaskReminderSchedule();
   const notesProjectHistoryScheduler = getNotesProjectHistoryScheduler();
@@ -134,11 +151,18 @@
         displayName: entry.workingFolder.displayName,
       })),
     ensureLoaded: () => chat.ensureLoaded(),
+    // Selects in the stores of the pane Chat shows in, which may be the other side of a split.
     openProject: async (projectId, workingFolderId) => {
-      await chat.ensureLoaded();
-      if (workingFolderId) chat.selectWorkingFolder(workingFolderId);
-      else await chat.syncProjectSelection(projectId);
-      nav.navigate("chat");
+      const scope = workspaceTabs.navigationScope({ kind: "chat", projectId, item: null });
+      const target = scope === "secondary" ? secondaryChat : chat;
+      await target.ensureLoaded();
+      if (workingFolderId) {
+        target.selectWorkingFolder(workingFolderId);
+      } else {
+        await projectsIn(scope).selectProject(projectId);
+        await target.syncProjectSelection(projectId);
+      }
+      workspaceTabs.navigateIn("chat", scope);
     },
   };
   let unlistenCalendarNotificationOpen: UnlistenFn | null = null;
@@ -215,6 +239,8 @@
     } finally {
       if (!benchmarkClaimedBoot) {
         await startNormalCalendarBoot();
+        // Benchmark relaunches skip this so restored windows do not run beside every sample.
+        if (isMainWindow) void workspaceTabs.restoreWindows();
       }
     }
   }
@@ -269,6 +295,7 @@
   async function openProjectTaskNotification(projectId: string): Promise<void> {
     try {
       await projects.selectProject(projectId);
+      projects.showProjectView();
       nav.navigate("projects");
     } catch (error: unknown) {
       console.error("Failed to open the project of a task reminder", error);
@@ -303,7 +330,12 @@
       }, UPDATE_AUTO_CHECK_INTERVAL_MS + AUTOMATIC_UPDATE_CHECK_DELAY_MS + 1_000)
       : null;
     const handleMusicAssignmentInspection = (event: Event) => {
-      if (!(event instanceof CustomEvent) || event.detail?.ready === true || nav.current === "calendar") return;
+      if (!(event instanceof CustomEvent) || event.detail?.ready === true) return;
+      // A shown Calendar inspects the event itself; a Calendar beside the active tab only takes focus.
+      if (shownKinds.includes("calendar")) {
+        if (nav.current !== "calendar") nav.navigate("calendar");
+        return;
+      }
       const eventId = typeof event.detail?.eventId === "string" ? event.detail.eventId : null;
       if (!eventId) return;
       nav.navigate("calendar");
@@ -383,13 +415,15 @@
     const unsubscribeHistoryVault = isMainWindow
       ? onActiveVaultIdentityChange((previousVaultId, nextVaultId) => {
           notesProjectHistoryScheduler.switchVault();
-          chat.resetForVault();
+          resetChatForVault();
           syncQuickNotesTrashPurge();
           projectTaskReminderScheduler.invalidate();
           if (!nextVaultId) return;
           const projectsRequest = previousVaultId ? projects.load() : projects.ensureLoaded();
           void projectsRequest.then(() => Promise.all([
             previousVaultId ? notes.load() : notes.ensureLoaded(),
+            // The secondary workspace shares the primary's page lists, so it only drops the previous vault's pages.
+            previousVaultId ? secondaryNotes.selectPage(null) : null,
             chat.prewarmForProject(projects.selectedProjectId),
           ])).catch((error) => {
             console.error("core workspace preload failed", error);
@@ -582,23 +616,35 @@
     };
   });
 
-  const visibleTabViews = $derived.by<DetachableTabView[]>(() => {
-    if (detachedWindowView) return [detachedWindowView];
-    return mainTabViews(detachedWindows.views);
+  // Runs before the first paint so a remembered Notes or Chat view opens without showing a task view first.
+  $effect.pre(() => {
+    projects.hostableViewTypes = projectHostablePlaces(availableAppViews());
   });
-  const keyboardViews = $derived(visibleTabViews);
-
-  function navigatePrev() {
-    if (keyboardViews.length === 0) return;
-    const i = Math.max(0, keyboardViews.indexOf(nav.current));
-    nav.navigate(keyboardViews[(i - 1 + keyboardViews.length) % keyboardViews.length]);
+  /** The Projects store a pane scope shows through. */
+  function projectsIn(scope: WorkspacePaneScope): ProjectsStore {
+    return scope === "secondary" ? secondaryProjects : projects;
   }
-
-  function navigateNext() {
-    if (keyboardViews.length === 0) return;
-    const i = Math.max(0, keyboardViews.indexOf(nav.current));
-    nav.navigate(keyboardViews[(i + 1) % keyboardViews.length]);
+  /** Workspace a Projects pane hosts in place of a task view; hosting needs an open project to scope it. */
+  function projectHostedPlace(scope: WorkspacePaneScope): ProjectHostedViewType | null {
+    const store = projectsIn(scope);
+    const place = store.hostedPlace;
+    return place && store.selectedProject && store.selectedGroup ? place : null;
   }
+  /** The area the split view shows in, which decides how the tab menu offers to arrange a split. */
+  let splitArea = $state<WorkspaceSplitArea>({ width: 0, height: 0 });
+  /** The kinds of the active tab and the tab shown beside it, if any. */
+  const shownKinds = $derived<readonly View[]>(
+    workspaceTabs.partnerTab ? [nav.current, workspaceTabs.partnerTab.location.kind] : [nav.current],
+  );
+  const shownPanes = $derived.by(() => {
+    const partner = workspaceTabs.partnerTab;
+    return workspaceShownPanes(
+      { id: workspaceTabs.activeTabId, kind: nav.current },
+      partner ? { id: partner.id, kind: partner.location.kind } : null,
+      partner !== null && workspaceTabs.split?.tabIds[0] === partner.id,
+      { scopeOf: workspaceTabs.paneScope, hostedViewIn: projectHostedPlace },
+    );
+  });
 
   const suspendInfo = $derived(pomodoro.suspendedAway);
   const idleInfo = $derived(pomodoro.idlePaused);
@@ -659,37 +705,48 @@
       toggleDevtools();
       return;
     }
+    if (isAppKeyboardIsolated()) return;
 
-    const action = appNavigationShortcut(e, visibleTabViews.length);
-    if (!action) return;
+    const action = appNavigationShortcut(e);
+    if (!action) {
+      handleProjectPlaceShortcut(e);
+      return;
+    }
     if (action.type !== "settings" && (suspendInfo || idleInfo)) return;
     e.preventDefault();
     e.stopImmediatePropagation();
     if (action.type === "settings") {
       if (settingsLauncher.isOpen) settingsLauncher.close();
       else settingsLauncher.open();
-    } else if (action.type === "view") {
-      nav.navigate(visibleTabViews[action.index]);
-    } else if (action.direction === -1) {
-      navigatePrev();
+    } else if (action.type === "tab") {
+      workspaceTabs.activateAt(action.index);
+    } else if (action.type === "relative-tab") {
+      workspaceTabs.activateRelative(action.direction);
+    } else if (action.type === "new-tab") {
+      workspaceTabs.requestLauncher();
+    } else if (action.type === "reopen-tab") {
+      workspaceTabs.reopen();
     } else {
-      navigateNext();
+      workspaceTabs.close(workspaceTabs.activeTabId);
     }
   }
 
-  $effect(() => {
-    if (detachedWindowView) {
-      if (nav.current !== detachedWindowView) {
-        nav.navigate(detachedWindowView);
-        return;
-      }
-      return;
-    }
-    if (isDetachableTabView(nav.current) && !visibleTabViews.includes(nav.current)) {
-      nav.navigate(firstMainView(detachedWindows.views));
-      return;
-    }
-  });
+  /**
+   * Switches project views from a hosted workspace and holds the shortcut while the app is suspended or idle.
+   * ProjectsView handles it otherwise, so its settings close guard applies.
+   */
+  function handleProjectPlaceShortcut(e: KeyboardEvent): void {
+    if (nav.current !== "projects") return;
+    const scope = workspaceTabs.paneScope(workspaceTabs.activeTabId);
+    const store = projectsIn(scope);
+    const view = projectPlaceShortcut(e, store.viewsForProject(store.selectedProjectId));
+    if (!view) return;
+    const paused = Boolean(suspendInfo || idleInfo);
+    if (!paused && !projectHostedPlace(scope)) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    if (!paused) store.selectView(view);
+  }
 
   // Notes mention notifications
   function notesMentionNotificationSchedulerEnabled(): boolean {
@@ -912,20 +969,37 @@
   data-size-class={viewport.sizeClass}
 >
   <div class="flex h-full flex-col overflow-hidden bg-sidebar">
-    <TitleBar {shellStartupMs} {startupMemorySnapshot} {ensureBenchmarkOverlay} />
-    <main class="content-panel flex-1 min-h-0 overflow-hidden bg-background">
-      {#if nav.current === "calendar"}
-        <CalendarView />
-      {:else if nav.current === "projects"}
-        <ProjectsView
-          viewComponents={projectViewComponents}
-          projectChat={projectChatIntegration}
-        />
-      {:else if nav.current === "notes"}
-        <NotesView />
-      {:else}
-        <ChatWorkspace />
-      {/if}
+    <TitleBar {shellStartupMs} {startupMemorySnapshot} {ensureBenchmarkOverlay} {splitArea} />
+    <main class="content-panel flex-1 min-h-0 overflow-hidden">
+      <WorkspaceSplitView
+        panes={shownPanes}
+        split={workspaceTabs.split}
+        focusedTabId={workspaceTabs.activeTabId}
+        onFocusPane={workspaceTabs.focusPane}
+        onResize={(ratio) => workspaceTabs.resizeSplit(workspaceTabs.activeTabId, ratio)}
+        bind:area={splitArea}
+      >
+        {#snippet content(pane)}
+          {#snippet hostedProjectSidebar(onProjectSelected: () => void)}
+            <ProjectsSidebar
+              onSelectView={(view) => projectsIn(pane.scope).selectView(view)}
+              {onProjectSelected}
+            />
+          {/snippet}
+          {#if pane.view === "calendar"}
+            <CalendarView />
+          {:else if pane.view === "projects"}
+            <ProjectsView
+              viewComponents={projectViewComponents}
+              projectChat={projectChatIntegration}
+            />
+          {:else if pane.view === "notes"}
+            <NotesView projectSidebar={pane.hosted ? hostedProjectSidebar : undefined} />
+          {:else}
+            <ChatWorkspace projectSidebar={pane.hosted ? hostedProjectSidebar : undefined} />
+          {/if}
+        {/snippet}
+      </WorkspaceSplitView>
     </main>
   </div>
 
@@ -972,7 +1046,7 @@
     {/await}
   {/if}
 
-  <MusicPlaybackHost />
+  <MusicPlaybackHost decodes={isMainWindow} />
   {#if isMainWindow}
     <MusicSoundscapeCoordinator />
   {/if}

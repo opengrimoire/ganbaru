@@ -7,8 +7,8 @@ import {
 } from "./layout";
 
 describe("mobileNavigationPresentation", () => {
-  it("keeps compact Android navigation in the top bar", () => {
-    expect(mobileNavigationPresentation(MOBILE_NAVIGATION_RAIL_MIN_WIDTH - 1)).toBe("top");
+  it("keeps compact Android navigation in the bottom tab bar", () => {
+    expect(mobileNavigationPresentation(MOBILE_NAVIGATION_RAIL_MIN_WIDTH - 1)).toBe("bottom");
   });
 
   it("uses a rail from the Android medium-width boundary", () => {
@@ -17,8 +17,8 @@ describe("mobileNavigationPresentation", () => {
   });
 
   it("falls back safely for invalid measurements", () => {
-    expect(mobileNavigationPresentation(Number.NaN)).toBe("top");
-    expect(mobileNavigationPresentation(Number.POSITIVE_INFINITY)).toBe("top");
+    expect(mobileNavigationPresentation(Number.NaN)).toBe("bottom");
+    expect(mobileNavigationPresentation(Number.POSITIVE_INFINITY)).toBe("bottom");
   });
 });
 

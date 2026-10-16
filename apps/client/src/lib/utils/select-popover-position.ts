@@ -79,11 +79,7 @@ export function pickSelectPopoverGeometry({
         leftBound,
         rightBound - renderedWidth,
       )
-    : clamp(
-        triggerRect.left,
-        leftBound,
-        rightBound - Math.min(triggerWidth, maxAvailableWidth),
-      );
+    : clamp(triggerRect.left, leftBound, rightBound - renderedWidth);
   const maxWidth = finiteOrZero(horizontalAlign === "end" ? renderedWidth : rightBound - left);
 
   return {

@@ -22,13 +22,29 @@ Archive is preferred to deletion when a task has history, scheduled blocks, depe
 
 List and Kanban support multi-select with bulk status, priority, scheduling, archive, and restore from the shared selection toolbar. Bulk edits of dates and custom fields are not supported yet. A bulk change commits the complete accepted selection and its history atomically. Missing tasks, mixed projects, or values that changed since selection reject the whole operation rather than silently skipping items. Archive and restore include descendants outside the loaded view, and a failed or uncertain response can be retried with the same operation identity.
 
+## Sidebar and toolbar
+
+On desktop, Projects has one docked sidebar laid out like the Chat channel rail: a project search at the top, then one collapsible section per project of the selected project's group, listing that project's views the way Chat sections list channels. A search lists matching projects from every visible group, matching project or group names. Opening a view of another project selects that project. Each project heading has a plus menu to add a view and a menu to rename the project, move it to another group, open its settings, and hide, show, archive, or restore it; built-in Routine projects keep their name and group, so rename and move appear unavailable. Notes and Chat open the project's pages and channels beside the same sidebar, without the Notes tree or the channel rail, and move between pages and channels through the header breadcrumb; the full explorers and working-Markdown files stay in the Notes and Chat tabs. Hosted Notes follows the selected project and opens its first note, rather than keeping the Notes tab's last page from another project. The header breadcrumb also switches groups and projects and owns their creation; the task search opens with its shortcut. Ctrl (Cmd on Apple) with a digit opens the selected project's views in sidebar order from anywhere in the Projects tab, including while typing in a hosted view, so plain digits stay with the open view, such as the Calendar view's day spans. On desktop, the Calendar view shows its navigation and span controls in the header row while they fit there, and in their own row otherwise. Collapsing the sidebar keeps a narrow rail with the selected project's views only; the collapsed sidebar, collapsed project sections, and each project's open view persist per device. On phones, the action row switches and adds views, and Notes and Chat views also open inside the Projects tab; see [Android experience](../../platforms/android/experience.md).
+
+Groups and projects follow one global order, chosen in Projects settings or from the order button of the group and project picker: custom, name (A to Z or Z to A), last modified, or creation date (newest or oldest first). Starred projects list first within their group. The order is a group-wide choice, so project settings do not override it. In the custom order, a mouse or pen drags groups and projects in the picker and project sections in the sidebar, and a touch drags them after a stationary hold so a swipe still scrolls; a drag stays among projects with the same starred state, and the project heading menu moves a section up or down for keyboard users. The custom order is stored in the vault and reordering does not change a project's last modified time.
+
+Hidden and archived projects leave the sidebar and project pickers. One eye button, shared by the Projects sidebar and every group and project picker in Projects, Notes, and Chat, lists them again with a muted hidden or archived icon. This eye, and the archived-note and archived-channel eyes in the Notes and Chat pickers, stay on in the vault config until the user turns them off. Projects settings list every hidden and archived project with Show or Restore, so they stay recoverable without the eye button.
+
+## Project views
+
+Views are the entries of a project's sidebar section. A new project starts with Overview (the Dashboard), List, Notes, and Chat; Kanban, Calendar, Gantt, and further copies of any task view are added from the plus menu, so a project can keep several Lists with different filters. Notes and Chat appear at most once per project and are unavailable in the menu while present. A view's menu renames it, moves it up or down, and removes it after confirmation; dragging a view with a mouse or pen, or after a stationary touch hold, lifts it and slides the other views aside, and Escape cancels the drag. Starred views list first, and the rest keep their manual order; a drag stays among views with the same starred state. The icon always follows the view type, and a blank name restores the type's label. Removing a view removes its saved filters and presentation but never tasks, Notes pages, or Chat channels. Other view types, such as an embedded web page, are planned.
+
+Each task view autosaves its filters, sort, grouping, archived task and inactive section toggles, Calendar span, and List columns and presentation, so returning to the view restores them. The task search text lasts only for the session.
+
+Toolbar actions follow what the view honors: every view offers filters and project settings, List and Kanban offer sorting, and only List offers grouping and columns. Gantt always orders by date. A configuration panel the new view does not offer closes when the view changes.
+
 ## List
 
-List is the default view. It shows section or computed groups, configurable columns, inline editing, selection, task creation, and horizontal access to wide schemas. It uses the [shared collection components](../collections.md); task property editors, section controls, subtasks, selection, and manual ordering stay project-specific.
+List shows section or computed groups, configurable columns, inline editing, selection, task creation, and horizontal access to wide schemas. It uses the [shared collection components](../collections.md); task property editors, section controls, subtasks, selection, and manual ordering stay project-specific.
 
 Expanding a task lists its subtasks as indented rows with the same columns, followed by an add-subtask row that creates a subtask in the parent's section with the default status. Subtasks have one level, so their rows have no chevron, and they are not dragged in the list. Expansion lasts for the session.
 
-Columns can include status, dates, priority, assignee, reviewer, estimate, schedule, dependencies, tags, and custom fields. Per project, users can show, hide, reorder (by dragging a header or from its menu), resize, wrap, and freeze columns, and choose display formats (date style, time style, number grouping or percent). Display choices never change stored values, query predicates, or sorting.
+Columns can include status, dates, priority, assignee, reviewer, estimate, schedule, dependencies, tags, and custom fields. Per List view, users can show, hide, reorder (by dragging a header or from its menu), resize, wrap, and freeze columns, and choose display formats (date style, time style, number grouping or percent). Display choices never change stored values, query predicates, or sorting.
 
 Column headers can insert a custom property beside the current column, rename it, change its icon, edit its options, and delete it after confirmation together with its values. Status, priority, due, and scheduled columns can also group the list. Built-in columns keep their fixed names and icons and cannot be deleted. Duplicating a property creates a new schema with fresh option identities and no copied values.
 
@@ -55,10 +71,6 @@ Gantt renders dated tasks and milestones on a proportional timeline with section
 ## Dashboard
 
 Dashboard summarizes task counts, completion, open estimates, scheduled hours, blockers, deadlines, overdue work, unscheduled due tasks, missing estimates, and recent changes and completions. These are planning signals; they never become productivity scores, rankings, or automatic judgments.
-
-## Saved views
-
-A saved view captures the selected tab and its search, filters, sorting, visible columns, grouping, collapsed state, and archived visibility. It never snapshots task data, and deleting it does not change tasks.
 
 ## Task detail
 

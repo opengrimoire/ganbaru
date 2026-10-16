@@ -1,7 +1,9 @@
 <script lang="ts">
   import { onDestroy, tick } from "svelte";
   import AlertCircle from "@lucide/svelte/icons/alert-circle";
+  import FolderSearch from "@lucide/svelte/icons/folder-search";
   import ListMusic from "@lucide/svelte/icons/list-music";
+  import MonitorPlay from "@lucide/svelte/icons/monitor-play";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import CalendarClock from "@lucide/svelte/icons/calendar-clock";
   import Pause from "@lucide/svelte/icons/pause";
@@ -23,6 +25,7 @@
   import { getMusicInspectorDetail, removeMusicSnooze } from "$lib/api/music-library";
   import { notifyMusicLibraryChanged } from "$lib/music/library/events";
   import { formatPlaybackTime } from "$lib/music/playback";
+  import { openMusicInHostWindow } from "$lib/music/host-window";
   import { fittedSidePlaylistPanelHeight } from "$lib/music/panel-layout";
   import {
     MUSIC_PLAYLIST_ROW_HEIGHT_PX,
@@ -73,12 +76,28 @@
   let volumeMenuOpen = $state(false);
   const playlistVisible = $derived(player.playlistVisible);
   const playlistHasContent = $derived(player.queue.length > 0);
-  let musicPage = $state<MusicPage>(sources.firstUseSession ? "playlist-builder" : "player");
-  let firstUseRedirectHandled = $state(sources.firstUseSession);
+  /** First use opens the Builder only once a folder is connected or being prepared, never just to ask for one. */
+  function firstUseFolderIsReady(): boolean {
+    return sources.firstUseSession
+      && (sources.roots.length > 0 || (sources.preparingDefaultFolder && !sources.detectingDefaultFolder));
+  }
+  const firstUseFolderReady = $derived(firstUseFolderIsReady());
+  const firstUseNeedsFolder = $derived(
+    sources.firstUseSession
+      && sources.loaded
+      && !sources.busy
+      && !sources.preparingDefaultFolder
+      && sources.collections.length === 0
+      && !player.currentSource,
+  );
+  let firstUseFolderChoosing = $state(false);
+  let firstUseFolderError = $state<string | null>(null);
+  let musicPage = $state<MusicPage>(firstUseFolderIsReady() ? "playlist-builder" : "player");
+  let firstUseRedirectHandled = $state(firstUseFolderIsReady());
   let playlistBuilderComponent = $state<MusicBuilderComponent | null>(musicBuilderLoader.peek());
   let playlistBuilderLoading = $state(false);
   let playlistBuilderLoadError = $state<string | null>(null);
-  let playlistBuilderMounted = $state(sources.firstUseSession);
+  let playlistBuilderMounted = $state(firstUseFolderIsReady());
   let playlistBuilderInitialAction = $state<MusicBuilderInitialAction | null>(null);
   const PlaylistBuilder = $derived(playlistBuilderComponent);
   let mediaSurfaceFullscreen = $state(false);
@@ -157,7 +176,7 @@
     : "");
 
   $effect(() => {
-    if (!sources.firstUseSession || firstUseRedirectHandled) return;
+    if (!firstUseFolderReady || firstUseRedirectHandled) return;
     firstUseRedirectHandled = true;
     playlistBuilderMounted = true;
     musicPage = "playlist-builder";
@@ -408,6 +427,22 @@
     void loadPlaylistBuilder();
   }
 
+  async function chooseFirstUseFolder(): Promise<void> {
+    if (firstUseFolderChoosing) return;
+    firstUseFolderChoosing = true;
+    firstUseFolderError = null;
+    try {
+      const draft = await sources.chooseLocalFolder();
+      if (!draft) return;
+      void sources.prepareFirstUseFolder(draft.selection, draft.name);
+      openPlaylistBuilder();
+    } catch (error) {
+      firstUseFolderError = error instanceof Error ? error.message : String(error);
+    } finally {
+      firstUseFolderChoosing = false;
+    }
+  }
+
   function closePlaylistBuilder(): void {
     musicPage = "player";
   }
@@ -583,6 +618,12 @@
   }
 
 
+  function showMainWindow(): void {
+    void openMusicInHostWindow().catch((error: unknown) => {
+      console.error("Failed to show the main window for Music:", error);
+    });
+  }
+
   function handleMediaSurfaceClick(event: MouseEvent): void {
     event.preventDefault();
     if (event.button !== 0) return;
@@ -706,14 +747,16 @@
 
 <svelte:window onkeydowncapture={handleKeydown} onpointerdown={handleWindowPointerDown} />
 
-<!-- svelte-ignore a11y_click_events_have_key_events -->
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div
-  hidden={!visible}
-  class={cn("fixed z-40", mobileBuilderPresentation ? "bg-background" : !mobilePresentation && "inset-0")}
-  style={mobilePresentation ? "left: var(--visual-viewport-offset-left); top: var(--visual-viewport-offset-top); width: var(--visual-viewport-width); height: var(--visual-viewport-height);" : undefined}
-  onclick={(event) => { if (!mobileBuilderPresentation && event.target === event.currentTarget) onClose(); }}
-></div>
+<!-- The backdrop covers the title bar, so it unmounts on close, which lets the webview restore the trigger's hover at once; merely hiding it leaves hover stale until the pointer moves. -->
+{#if visible}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class={cn("fixed z-40", mobileBuilderPresentation ? "bg-background" : !mobilePresentation && "inset-0")}
+    style={mobilePresentation ? "left: var(--visual-viewport-offset-left); top: var(--visual-viewport-offset-top); width: var(--visual-viewport-width); height: var(--visual-viewport-height);" : undefined}
+    onclick={(event) => { if (!mobileBuilderPresentation && event.target === event.currentTarget) onClose(); }}
+  ></div>
+{/if}
 {#if !mobilePresentation}
   <div
     hidden={!visible}
@@ -789,7 +832,7 @@
     data-music-player-header
     class={cn(
       "relative flex shrink-0 items-stretch",
-      mobilePresentation ? "py-2" : "h-(--cal-header-row-h)",
+      mobilePresentation ? "py-2" : "h-(--toolbar-h)",
     )}
     style="background-color: var(--cal-bg);"
   >
@@ -904,6 +947,14 @@
           <p class="text-[0.8rem] font-medium">{t("music.queueState.unavailable")}</p>
           <button type="button" onclick={() => openPlaylistBuilder({ kind: "open-issues" })} class="text-[0.68rem] font-medium text-primary hover:underline">{t("music.queueState.review")}</button>
         </div>
+      {:else if firstUseNeedsFolder}
+        <div class="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 px-6 text-center" data-music-first-use-folder>
+          <button type="button" onclick={() => { void chooseFirstUseFolder(); }} disabled={firstUseFolderChoosing} aria-label={t("music.builder.chooseMusicFolder")} class="grid h-16 w-16 place-items-center rounded-2xl bg-primary/10 text-primary transition-transform hover:scale-105 active:scale-95 disabled:opacity-50 motion-reduce:transform-none">
+            {#if firstUseFolderChoosing}<LoaderCircle class="animate-spin motion-reduce:animate-none" size={24} />{:else}<FolderSearch size={26} strokeWidth={1.35} />{/if}
+          </button>
+          <p class="text-sm font-medium">{t("music.builder.chooseMusicFolder")}</p>
+          {#if firstUseFolderError || sources.defaultFolderPreparationError}<Notice class="justify-center text-xs" message={firstUseFolderError || sources.defaultFolderPreparationError || ""} />{/if}
+        </div>
       {/if}
       <div
         bind:this={mediaSurface}
@@ -923,7 +974,19 @@
             {player.volumeFeedbackLabel}
           </div>
         {/if}
-        {#if player.currentSource?.kind === "local-file" && (!player.localHasVideo || player.snapshot.error)}
+        {#if player.playsInOtherWindow && !player.snapshot.error}
+          <div class="absolute inset-0 flex flex-col items-center justify-center gap-2 px-6 text-center text-[0.8rem] text-muted-foreground" style="background-color: var(--cal-bg);">
+            <MonitorPlay size={musicIconSize} strokeWidth={musicIconStrokeWidth} />
+            <span>{t("music.nativeSession.otherWindow")}</span>
+            <button
+              type="button"
+              onclick={(event) => { event.stopPropagation(); showMainWindow(); }}
+              ondblclick={(event) => event.stopPropagation()}
+              onkeydown={(event) => event.stopPropagation()}
+              class="text-[0.733333rem] font-medium text-primary hover:underline"
+            >{t("music.nativeSession.showMainWindow")}</button>
+          </div>
+        {:else if player.currentSource?.kind === "local-file" && (!player.localHasVideo || player.snapshot.error)}
           <div class="absolute inset-0 flex items-center justify-center text-muted-foreground" style="background-color: var(--cal-bg);">
             {#if player.currentArtworkUrl && !player.snapshot.error}
               <img

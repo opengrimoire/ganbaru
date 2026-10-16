@@ -44,6 +44,7 @@
   import Scissors from "@lucide/svelte/icons/scissors";
   import Sigma from "@lucide/svelte/icons/sigma";
   import SquareCheck from "@lucide/svelte/icons/square-check";
+  import UnderlineIcon from "$lib/components/ui/UnderlineIcon.svelte";
   import { onDestroy, tick } from "svelte";
   import NotesTextColorPalette from "./NotesTextColorPalette.svelte";
 
@@ -423,12 +424,12 @@
         <button class={itemClass} type="button" role="menuitemcheckbox" onmouseenter={hoverPlainSubmenuRow} aria-checked={annotations.bold} onclick={() => runAction(() => onToggleAnnotation("bold"))}><Bold class="size-4 shrink-0" aria-hidden="true" /><span class="flex-1">{t("notes.bold")}</span>{#if annotations.bold}<Check class="size-3.5 shrink-0" aria-hidden="true" />{/if}</button>
         <button class={itemClass} type="button" role="menuitemcheckbox" onmouseenter={hoverPlainSubmenuRow} aria-checked={annotations.italic} onclick={() => runAction(() => onToggleAnnotation("italic"))}><Italic class="size-4 shrink-0" aria-hidden="true" /><span class="flex-1">{t("notes.italic")}</span>{#if annotations.italic}<Check class="size-3.5 shrink-0" aria-hidden="true" />{/if}</button>
         <button class={itemClass} type="button" role="menuitemcheckbox" onmouseenter={hoverPlainSubmenuRow} aria-checked={annotations.underline} onclick={() => runAction(() => onToggleAnnotation("underline"))}>
-          <svg class="size-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M5.5 4.5v7.25c0 3.75 2.5 5.75 6.5 5.75s6.5-2 6.5-5.75V4.5" /><path d="M4.5 20.5h15" /></svg>
+          <UnderlineIcon class="size-4 shrink-0" />
           <span class="flex-1">{t("notes.underline")}</span>
           {#if annotations.underline}<Check class="size-3.5 shrink-0" aria-hidden="true" />{/if}
         </button>
         <button class={itemClass} type="button" role="menuitemcheckbox" onmouseenter={hoverPlainSubmenuRow} aria-checked={annotations.strikethrough} onclick={() => runAction(() => onToggleAnnotation("strikethrough"))}>
-          <svg class="size-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M17.5 5.5c-1.3-1.2-3.1-1.8-5.5-1.8-3.6 0-5.9 1.7-5.9 4.4 0 2.2 1.9 3.5 5.9 4.3 4 .8 5.9 2 5.9 4.2 0 2.8-2.3 4.5-5.9 4.5-2.4 0-4.2-.6-5.5-1.8" /><path d="M3 12.25h18" stroke-width="1.2" /></svg>
+          <svg class="size-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M17.5 5.5c-1.3-1.2-3.1-1.8-5.5-1.8-3.6 0-5.9 1.7-5.9 4.4 0 2.2 1.9 3.5 5.9 4.3 4 .8 5.9 2 5.9 4.2 0 2.8-2.3 4.5-5.9 4.5-2.4 0-4.2-.6-5.5-1.8" /><path d="M3 12.25h18" stroke-width="1.2" /></svg>
           <span class="flex-1">{t("notes.strikethrough")}</span>
           {#if annotations.strikethrough}<Check class="size-3.5 shrink-0" aria-hidden="true" />{/if}
         </button>

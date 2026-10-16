@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { mount, tick, unmount } from "svelte";
+import { createRawSnippet, mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getChat } from "$lib/stores/chat.svelte";
 import ChatWorkspaceHeader from "./ChatWorkspaceHeader.svelte";
@@ -60,12 +60,15 @@ const projectState = vi.hoisted(() => {
     addGroup: vi.fn(async () => group),
     addProject: vi.fn(async () => project),
     ensureLoaded: vi.fn(async () => undefined),
+    isProjectStarred: () => false,
   };
   return { store };
 });
 
 vi.mock("$lib/stores/projects.svelte", () => ({
   getProjects: () => projectState.store,
+  useProjects: () => projectState.store,
+  getProjectsStore: () => projectState.store,
 }));
 
 class ResizeObserverMock implements ResizeObserver {
@@ -178,6 +181,7 @@ describe("ChatWorkspaceHeader", () => {
     explorerExpanded: boolean,
     reserveGlobalActions = true,
     editingTitle = false,
+    mobilePresentation = false,
   ): HTMLDivElement {
     const target = document.createElement("div");
     target.className = "chat-workspace";
@@ -189,6 +193,7 @@ describe("ChatWorkspaceHeader", () => {
         showRailButton: false,
         reserveGlobalActions,
         editingTitle,
+        mobilePresentation,
         onOpenRail: vi.fn(),
       },
     });
@@ -204,7 +209,7 @@ describe("ChatWorkspaceHeader", () => {
     groupTrigger?.click();
     await tick();
     expect(document.querySelector(".project-picker-panel")).not.toBeNull();
-    expect(document.querySelector<HTMLInputElement>('.project-picker-panel input')?.placeholder).toBe("Search projects...");
+    expect(document.querySelector<HTMLInputElement>('.project-picker-panel input')?.placeholder).toBe("Search channels");
 
     projectTrigger?.click();
     await tick();
@@ -228,13 +233,13 @@ describe("ChatWorkspaceHeader", () => {
     expect(syncProjectSelection).not.toHaveBeenCalled();
   });
 
-  it("shows the channel breadcrumb only when the explorer is collapsed", () => {
+  it("shows the channel breadcrumb whether the explorer is expanded or collapsed", () => {
     const expanded = setup(true);
     expect(expanded.querySelector("[data-chat-group-trigger]")?.textContent).toContain("Work");
     expect(expanded.querySelector("[data-chat-project-trigger]")?.textContent).toContain("Ganbaru");
-    expect(expanded.querySelector("[data-chat-channel-trigger]")).toBeNull();
+    expect(expanded.querySelector("[data-chat-channel-trigger]")?.textContent).toContain("general");
     expect(expanded.querySelector("[data-chat-channel-topic]")).toBeNull();
-    expect(expanded.querySelector("[data-chat-context-chevron]")?.closest("button")).toBe(expanded.querySelector("[data-chat-project-trigger]"));
+    expect(expanded.querySelector("[data-chat-context-chevron]")?.closest("button")).toBe(expanded.querySelector("[data-chat-channel-trigger]"));
     expect(expanded.querySelectorAll("[data-chat-context-chevron]")).toHaveLength(1);
     expect(expanded.querySelector("[data-chat-new-channel-button]")).not.toBeNull();
 
@@ -351,6 +356,75 @@ describe("ChatWorkspaceHeader", () => {
 
     expect(target.querySelector("[data-chat-title-editor]")).not.toBeNull();
     expect(target.querySelector("[data-chat-project-trigger]")).not.toBeNull();
+  });
+
+  it("names the mobile switcher after the project and opens it at the project's channels", async () => {
+    const target = setup(true, false, false, true);
+    const switchers = target.querySelectorAll<HTMLButtonElement>("[data-mobile-context-switcher]");
+
+    expect(switchers).toHaveLength(1);
+    expect(switchers[0].textContent).toContain("Ganbaru");
+    expect(switchers[0].textContent).not.toContain("general");
+    expect(target.querySelector("[data-chat-channel-trigger]")).toBeNull();
+    expect(target.querySelector("[data-chat-group-trigger]")).toBeNull();
+    expect(target.querySelector("[data-chat-project-trigger]")).toBeNull();
+
+    switchers[0].click();
+    await tick();
+    expect(switchers[0].getAttribute("aria-expanded")).toBe("true");
+    expect(document.querySelector("[data-chat-channel-picker]")).not.toBeNull();
+  });
+
+  it("names the mobile switcher after the project when no channel is selected", () => {
+    getChat().selectedChannelId = null;
+    const target = setup(true, false, false, true);
+
+    expect(target.querySelector("[data-mobile-context-switcher]")?.textContent).toContain("Ganbaru");
+  });
+
+  it("opens the mobile channel list from the channel action row", () => {
+    const onOpenRail = vi.fn();
+    const target = document.createElement("div");
+    document.body.append(target);
+    const component = mount(ChatWorkspaceHeader, {
+      target,
+      props: {
+        explorerExpanded: true,
+        showRailButton: true,
+        reserveGlobalActions: false,
+        editingTitle: false,
+        mobilePresentation: true,
+        onOpenRail,
+      },
+    });
+    mounted.push({ target, component });
+
+    const railButton = target.querySelector<HTMLButtonElement>("[data-chat-rail-button]");
+    expect(railButton?.closest("[data-chat-workspace-header]")).not.toBeNull();
+    railButton?.click();
+
+    expect(onOpenRail).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the channel list button beside the project view switcher while Projects hosts Chat", () => {
+    const target = document.createElement("div");
+    document.body.append(target);
+    const component = mount(ChatWorkspaceHeader, {
+      target,
+      props: {
+        explorerExpanded: false,
+        showRailButton: true,
+        reserveGlobalActions: false,
+        mobilePresentation: true,
+        onOpenRail: vi.fn(),
+        projectViewSwitcher: createRawSnippet(() => ({ render: () => "<button data-test-view-switcher>Views</button>" })),
+      },
+    });
+    mounted.push({ target, component });
+
+    const header = target.querySelector("[data-chat-workspace-header]");
+    expect(header?.querySelector("[data-chat-rail-button]")).not.toBeNull();
+    expect(header?.querySelector("[data-test-view-switcher]")).not.toBeNull();
   });
 
 });

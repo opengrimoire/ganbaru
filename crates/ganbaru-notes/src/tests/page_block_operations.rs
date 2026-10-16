@@ -686,3 +686,71 @@ fn trash_blocks_trashes_selected_roots_and_loaded_descendants_once() {
         assert_eq!(trashed_child["in_trash"], true);
     });
 }
+
+#[test]
+fn content_precondition_ignores_structure_but_refuses_replaced_or_trashed_content() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        let content_revision = |row: crate::models::NoteBlockRow| row.content_revision().unwrap();
+        let base = content_revision(reads::get_block_row(&pool, BLOCK_A, false).await.unwrap());
+        writes::append_block_children(
+            &pool,
+            NoteAppendBlockChildren {
+                parent: block_parent(BLOCK_A),
+                after: None,
+                children: vec![block(BLOCK_B, "paragraph", paragraph_payload("Child"))],
+            },
+        )
+        .await
+        .unwrap();
+
+        let saved = writes::update_block_if_unchanged(
+            &pool,
+            BLOCK_A,
+            block_update("paragraph", paragraph_payload("First window")),
+            Some(&base),
+        )
+        .await
+        .unwrap();
+        let saved = serde_json::to_value(saved).unwrap();
+        let after_first =
+            content_revision(reads::get_block_row(&pool, BLOCK_A, false).await.unwrap());
+        assert_eq!(saved["content_revision"], after_first);
+        assert_ne!(after_first, base);
+
+        let stale = writes::update_block_if_unchanged(
+            &pool,
+            BLOCK_A,
+            block_update("paragraph", paragraph_payload("Second window")),
+            Some(&base),
+        )
+        .await
+        .err()
+        .unwrap();
+        assert!(stale.starts_with("Notes edit conflict: block "), "{stale}");
+        let stored =
+            serde_json::to_value(reads::get_block(&pool, BLOCK_A, false).await.unwrap()).unwrap();
+        assert_eq!(
+            stored["paragraph"]["rich_text"][0]["plain_text"],
+            "First window"
+        );
+
+        let child_base =
+            content_revision(reads::get_block_row(&pool, BLOCK_B, false).await.unwrap());
+        writes::trash_block(&pool, BLOCK_B, true).await.unwrap();
+        let trashed = writes::update_block_if_unchanged(
+            &pool,
+            BLOCK_B,
+            block_update("paragraph", paragraph_payload("Edited elsewhere")),
+            Some(&child_base),
+        )
+        .await
+        .err()
+        .unwrap();
+        assert!(
+            trashed.starts_with("Notes edit conflict: block "),
+            "{trashed}"
+        );
+    });
+}

@@ -1,6 +1,6 @@
 import { Temporal } from "@js-temporal/polyfill";
 import { mount, unmount } from "svelte";
-import { ensureConfigLoaded, flushConfig } from "$lib/vault/config";
+import { ensureConfigLoaded, flushConfig, startConfigWindowSync } from "$lib/vault/config";
 import { getActiveVaultInfo } from "$lib/vault/state";
 import {
   getLocalization,
@@ -240,6 +240,7 @@ const appPromise = (async () => {
     const activeVault = await getActiveVaultInfo();
     if (!activeVault) return mountMobileVaultSetup(null);
     await ensureConfigLoaded();
+    startConfigWindowSync();
     await initializeLocalizationFromConfig();
     await applyPreVaultLanguagePreference();
     await hydrateUserThemes();

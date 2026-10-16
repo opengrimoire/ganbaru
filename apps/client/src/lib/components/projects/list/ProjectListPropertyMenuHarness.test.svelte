@@ -15,6 +15,7 @@
     projects: {
       get selectedProject() { return { id: field.projectId }; },
       activeView: "list",
+      get activeProjectView() { return { id: "view-list", projectId: field.projectId, viewType: "list" }; },
       customFieldsForProject: () => [field],
       prioritiesForProject: () => [],
       customFieldOptionsForField: (fieldId: string) => getProjects().customFieldOptionsForField(fieldId),

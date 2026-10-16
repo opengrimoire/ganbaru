@@ -9,6 +9,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { MusicPlaylistSummary } from "$lib/music/library/contracts";
   import { orderMusicPlaylists, systemMusicPlaylistName } from "$lib/music/playlists/system";
+  import { OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
   import { formatNumber } from "$lib/i18n/formatters";
   import MusicPlaylistIcon from "$lib/components/music/builder/MusicPlaylistIcon.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
@@ -74,7 +75,7 @@
     await tick();
     if (!open) return;
     position();
-    searchInput?.focus({ preventScroll: true });
+    if (OPENING_MAY_FOCUS_TEXT) searchInput?.focus({ preventScroll: true });
   }
 
   /** Dismiss the chooser and optionally restore focus to its trigger. */

@@ -5,11 +5,16 @@ import type {
   CreateChatChannelRequest,
 } from "$lib/chat/contracts";
 import { chatErrorMessage } from "$lib/chat/error-presentation";
+import { getConfigKey, setConfigKey } from "$lib/vault/config";
+
+const SHOW_ARCHIVED_IN_PICKERS_CONFIG_KEY = "chatSidebar.showArchivedInPickers";
 
 export interface ChatChannelNavigationControllerOptions {
   currentProjectId: () => string | null;
   selectedChannelId: () => ChatChannelId | null;
   selectChannel: (channelId: ChatChannelId) => Promise<void>;
+  /** Called after this window changed a channel, so other windows can refresh it. */
+  onChanged: (channelId: ChatChannelId) => void;
 }
 
 /** Owns project channel collections, archive loading, and channel mutations. */
@@ -20,12 +25,29 @@ export class ChatChannelNavigationController {
   archivedChannelsError = $state<string | null>(null);
   channelsLoading = $state(true);
   archiveOpen = $state(false);
+  /** The picker eye choice once set this session; until then the saved choice applies. */
+  private showArchivedInPickersChoice = $state<boolean | null>(null);
 
   private navigationChannels: ChatChannelRead[] = [];
+  /** Archived channels per project for pickers, independent of the current project archive view. */
+  private archivedNavigation = $state<Record<string, ChatChannelRead[]>>({});
+  private archivedNavigationRequests = new Map<string, Promise<void>>();
   private loadRequest = 0;
   private archivedProjectId: string | null = null;
 
   constructor(private readonly options: ChatChannelNavigationControllerOptions) {}
+
+  /** Whether channel pickers list archived channels after the active ones, kept until the user turns it off. */
+  get showArchivedInPickers(): boolean {
+    return this.showArchivedInPickersChoice
+      ?? getConfigKey<unknown>(SHOW_ARCHIVED_IN_PICKERS_CONFIG_KEY, undefined) === true;
+  }
+
+  set showArchivedInPickers(show: boolean) {
+    if (this.showArchivedInPickers === show) return;
+    this.showArchivedInPickersChoice = show;
+    setConfigKey(SHOW_ARCHIVED_IN_PICKERS_CONFIG_KEY, show || undefined);
+  }
 
   reset(): void {
     this.loadRequest += 1;
@@ -37,6 +59,7 @@ export class ChatChannelNavigationController {
     this.archivedChannelsError = null;
     this.channelsLoading = true;
     this.archiveOpen = false;
+    this.clearArchivedNavigation();
   }
 
   hydrateNavigation(channels: ChatChannelRead[]): void {
@@ -45,6 +68,37 @@ export class ChatChannelNavigationController {
     this.archivedChannels = [];
     this.archivedProjectId = null;
     this.archivedChannelsError = null;
+    this.clearArchivedNavigation();
+  }
+
+  /** Archived channels of a project known to pickers, sorted by name; empty until loaded. */
+  archivedChannelsForProject(projectId: string): ChatChannelRead[] {
+    const channels = new Map(
+      (this.archivedNavigation[projectId] ?? []).map((channel) => [channel.id, channel]),
+    );
+    if (this.archivedProjectId === projectId) {
+      for (const channel of this.archivedChannels) channels.set(channel.id, channel);
+    }
+    return [...channels.values()].sort(compareChannels);
+  }
+
+  /** Load the archived channels of any project once for pickers; later calls reuse the result. */
+  loadArchivedForPicker(projectId: string): Promise<void> {
+    if (this.archivedNavigation[projectId]) return Promise.resolve();
+    const pending = this.archivedNavigationRequests.get(projectId);
+    if (pending) return pending;
+    const request = chatApi.listChatChannels(projectId, true)
+      .then((channels) => {
+        if (this.archivedNavigationRequests.get(projectId) !== request) return;
+        this.archivedNavigation = { ...this.archivedNavigation, [projectId]: channels };
+      })
+      .finally(() => {
+        if (this.archivedNavigationRequests.get(projectId) === request) {
+          this.archivedNavigationRequests.delete(projectId);
+        }
+      });
+    this.archivedNavigationRequests.set(projectId, request);
+    return request;
   }
 
   channelsForProject(projectId: string): ChatChannelRead[] {
@@ -61,7 +115,9 @@ export class ChatChannelNavigationController {
 
   find(channelId: ChatChannelId): ChatChannelRead | null {
     return [...this.activeChannels, ...this.archivedChannels]
-      .find((channel) => channel.id === channelId) ?? null;
+      .find((channel) => channel.id === channelId)
+      ?? Object.values(this.archivedNavigation).flat().find((channel) => channel.id === channelId)
+      ?? null;
   }
 
   async loadProject(projectId: string): Promise<boolean> {
@@ -109,7 +165,7 @@ export class ChatChannelNavigationController {
 
   async create(request: CreateChatChannelRequest): Promise<ChatChannelRead> {
     const channel = await chatApi.createChatChannel(request);
-    this.upsert(channel);
+    this.commit(channel);
     await this.options.selectChannel(channel.id);
     return channel;
   }
@@ -125,13 +181,13 @@ export class ChatChannelNavigationController {
       topic,
       expectedRevision: channel.revision,
     });
-    this.upsert(updated);
+    this.commit(updated);
     return updated;
   }
 
   async archive(channel: ChatChannelRead): Promise<void> {
     const archived = await chatApi.archiveChatChannel(channel.id, channel.revision);
-    this.upsert(archived);
+    this.commit(archived);
     if (this.options.selectedChannelId() !== channel.id) return;
     const fallback = this.activeChannels.find((entry) => entry.isDefault)
       ?? this.activeChannels[0];
@@ -139,7 +195,7 @@ export class ChatChannelNavigationController {
   }
 
   async restore(channel: ChatChannelRead): Promise<void> {
-    this.upsert(await chatApi.restoreChatChannel(channel.id, channel.revision));
+    this.commit(await chatApi.restoreChatChannel(channel.id, channel.revision));
   }
 
   openArchive(projectId: string | null): void {
@@ -153,6 +209,8 @@ export class ChatChannelNavigationController {
 
   upsert(channel: ChatChannelRead): void {
     this.mergeNavigation([channel]);
+    this.mergeArchivedNavigation(channel);
+    if (channel.projectId !== this.options.currentProjectId()) return;
     const target = channel.archivedAt ? this.archivedChannels : this.activeChannels;
     const next = target.some((entry) => entry.id === channel.id)
       ? target.map((entry) => entry.id === channel.id ? channel : entry)
@@ -166,6 +224,11 @@ export class ChatChannelNavigationController {
     }
   }
 
+  private commit(channel: ChatChannelRead): void {
+    this.upsert(channel);
+    this.options.onChanged(channel.id);
+  }
+
   private mergeNavigation(channels: readonly ChatChannelRead[]): void {
     const byId = new Map(this.navigationChannels.map((channel) => [channel.id, channel]));
     for (const channel of channels) {
@@ -174,9 +237,24 @@ export class ChatChannelNavigationController {
     }
     this.navigationChannels = [...byId.values()];
   }
+
+  /** Keep a loaded picker archive in step with an archived, restored, or renamed channel. */
+  private mergeArchivedNavigation(channel: ChatChannelRead): void {
+    const loaded = this.archivedNavigation[channel.projectId];
+    if (!loaded) return;
+    const others = loaded.filter((entry) => entry.id !== channel.id);
+    this.archivedNavigation = {
+      ...this.archivedNavigation,
+      [channel.projectId]: channel.archivedAt ? [...others, channel] : others,
+    };
+  }
+
+  private clearArchivedNavigation(): void {
+    this.archivedNavigation = {};
+    this.archivedNavigationRequests.clear();
+  }
 }
 
 function compareChannels(left: ChatChannelRead, right: ChatChannelRead): number {
-  if (left.isDefault !== right.isDefault) return left.isDefault ? -1 : 1;
   return left.name.localeCompare(right.name) || left.id.localeCompare(right.id);
 }

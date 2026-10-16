@@ -66,21 +66,29 @@ describe("app navigation shortcuts", () => {
     shiftKey: false, isComposing: false, ...overrides,
   });
 
-  it("accepts numbered navigation and both directions of tab navigation", () => {
-    expect(appNavigationShortcut(key({ key: "3", code: "Digit3", altKey: true }), 4)).toEqual({ type: "view", index: 2 });
-    expect(appNavigationShortcut(key({ ctrlKey: true }), 4)).toEqual({ type: "relative-view", direction: 1 });
-    expect(appNavigationShortcut(key({ ctrlKey: true, shiftKey: true }), 4)).toEqual({ type: "relative-view", direction: -1 });
-    expect(appNavigationShortcut(key({ key: "ISO_Left_Tab", ctrlKey: true, shiftKey: true }), 4)).toEqual({ type: "relative-view", direction: -1 });
-    expect(appNavigationShortcut(key({ key: ",", ctrlKey: true }), 4)).toEqual({ type: "settings" });
-    expect(appNavigationShortcut(key({ key: "PageUp", code: "PageUp", ctrlKey: true }), 4)).toEqual({ type: "relative-view", direction: -1 });
+  it("accepts numbered tabs and both directions of tab navigation", () => {
+    expect(appNavigationShortcut(key({ key: "3", code: "Digit3", altKey: true }))).toEqual({ type: "tab", index: 2 });
+    expect(appNavigationShortcut(key({ key: "9", code: "Digit9", altKey: true }))).toEqual({ type: "tab", index: 8 });
+    expect(appNavigationShortcut(key({ ctrlKey: true }))).toEqual({ type: "relative-tab", direction: 1 });
+    expect(appNavigationShortcut(key({ ctrlKey: true, shiftKey: true }))).toEqual({ type: "relative-tab", direction: -1 });
+    expect(appNavigationShortcut(key({ key: "ISO_Left_Tab", ctrlKey: true, shiftKey: true }))).toEqual({ type: "relative-tab", direction: -1 });
+    expect(appNavigationShortcut(key({ key: ",", ctrlKey: true }))).toEqual({ type: "settings" });
+    expect(appNavigationShortcut(key({ key: "PageUp", code: "PageUp", ctrlKey: true }))).toEqual({ type: "relative-tab", direction: -1 });
+  });
+
+  it("opens, reopens, and closes tabs with the primary modifier", () => {
+    expect(appNavigationShortcut(key({ key: "t", code: "KeyT", ctrlKey: true }))).toEqual({ type: "new-tab" });
+    expect(appNavigationShortcut(key({ key: "T", code: "KeyT", ctrlKey: true, shiftKey: true }))).toEqual({ type: "reopen-tab" });
+    expect(appNavigationShortcut(key({ key: "w", code: "KeyW", ctrlKey: true }))).toEqual({ type: "close-tab" });
+    expect(appNavigationShortcut(key({ key: "W", code: "KeyW", ctrlKey: true, shiftKey: true }))).toBeNull();
   });
 
   it("leaves typing, indentation, composition, and AltGr to the focused editor", () => {
     for (const event of [
       key({}), key({ shiftKey: true }), key({ ctrlKey: true, isComposing: true }),
       key({ key: "3", code: "Digit3", altKey: true, ctrlKey: true }),
-      key({ key: "5", code: "Digit5", altKey: true }),
+      key({ key: "t", code: "KeyT", altKey: true, ctrlKey: true }),
       key({ key: "b", code: "KeyB", ctrlKey: true }),
-    ]) expect(appNavigationShortcut(event, 4)).toBeNull();
+    ]) expect(appNavigationShortcut(event)).toBeNull();
   });
 });

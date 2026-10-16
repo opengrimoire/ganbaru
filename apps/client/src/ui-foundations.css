@@ -22,6 +22,17 @@
   --panel-detail-font-size: calc(var(--panel-font-size) * 0.875);
   /* Row and field height inside panels; touch layouts raise it to a 44px target. */
   --panel-row-height: calc(var(--panel-font-size) * 1.5 + 0.5rem);
+  /* Hairline that separates a tab's content surface from the window frame. It is opaque, the frame darkened slightly, so it reads the same over any content it covers. */
+  --content-edge: color-mix(in srgb, var(--sidebar) 93%, rgb(0 0 20));
+  /* Its width; content inside a surface starts past it. */
+  --content-edge-width: 1px;
+  /* The active title bar tab reads as a raised chip on the frame. */
+  --tab-active-shadow: 0 0 0 1px rgb(0 0 20 / 0.04), 0 1px 2px rgb(0 0 20 / 0.08);
+}
+
+.dark {
+  --content-edge: color-mix(in srgb, var(--sidebar) 94%, white);
+  --tab-active-shadow: 0 0 0 1px rgb(255 255 255 / 0.06);
 }
 
 html[data-shell="mobile"] {
@@ -39,10 +50,10 @@ html[data-shell="mobile"] {
   --text-panel--line-height: 1.5;
   --text-panel-detail: var(--panel-detail-font-size);
   --text-panel-detail--line-height: 1.4;
-  /* Floating surface widths; keep in sync with lib/components/ui/floating-width.ts. */
-  --container-floating-sm: 240px;
-  --container-floating: 280px;
-  --container-floating-lg: 320px;
+  /* Floating surface widths; keep in sync with lib/components/ui/floating-width.ts. The cap keeps a panel inside a narrow screen. */
+  --container-floating-sm: min(240px, 100vw - 1rem);
+  --container-floating: min(280px, 100vw - 1rem);
+  --container-floating-lg: min(320px, 100vw - 1rem);
   --radius-floating: var(--floating-radius);
   --radius-floating-item: var(--floating-item-radius);
   --shadow-floating: var(--floating-shadow);
@@ -67,6 +78,29 @@ html[data-shell="mobile"] {
   background-color: var(--card);
   color: var(--card-foreground);
   box-shadow: var(--floating-shadow);
+}
+
+/*
+ * Content surface edges are borders, not shadow rings: engines snap border widths and boxes to whole device pixels,
+ * while a 1px shadow ring at a fractional display scale spreads over one or two pixels depending on its position.
+ */
+
+/*
+ * A tab's content surface. It paints the content color itself so no other fill bleeds through the rounded clip, and
+ * with overflow clipping its own content stays inside the edge whatever that content's stacking order.
+ */
+@utility surface-content {
+  position: relative;
+  border: var(--content-edge-width) solid var(--content-edge);
+  border-radius: var(--content-radius);
+  background-color: var(--cal-bg);
+}
+
+/* The edge alone, laid over a content surface whose content is painted by sibling elements. */
+@utility surface-content-edge {
+  border: var(--content-edge-width) solid var(--content-edge);
+  border-radius: var(--content-radius);
+  pointer-events: none;
 }
 
 /* The dimmed layer behind a modal dialog. */
@@ -137,6 +171,24 @@ html[data-shell="mobile"] {
 }
 
 /*
+ * An icon button in a phone action row. The whole chrome column stays the touch target, while its transparent border
+ * insets every fill to a round highlight the size of the top bar one, so both bars highlight alike.
+ */
+@utility mobile-chrome-button {
+  height: 3rem;
+  min-width: var(--mobile-chrome-column);
+  border-style: solid;
+  border-color: transparent;
+  border-block-width: calc((3rem - var(--mobile-chrome-highlight)) / 2);
+  border-inline-width: calc((var(--mobile-chrome-column) - var(--mobile-chrome-highlight)) / 2);
+  border-radius: calc(infinity * 1px);
+  background-clip: padding-box;
+  &:active:not(:disabled) {
+    background-color: color-mix(in oklab, var(--accent) 70%, transparent);
+  }
+}
+
+/*
  * A text field: transparent over its surface with a thin border. Focus never adds a contour, ring, or fill; the caret
  * is enough. Use it on bare inputs, textareas, and on wrappers that hold a borderless input with icons.
  */
@@ -187,5 +239,48 @@ html[data-shell="mobile"] {
   &:is(:focus, :focus-visible) {
     outline: none;
     box-shadow: none;
+  }
+}
+
+/*
+ * Items of a list reordered with `createSortableDrag` (lib/utils/sortable-drag.svelte.ts). Siblings slide aside while one
+ * item is dragged; the dragged item lifts above them with the same look as the Projects sidebar drag card.
+ */
+[data-sortable-item] {
+  position: relative;
+}
+
+[data-sortable-item][data-sortable-animated] {
+  transition: translate var(--sortable-duration) cubic-bezier(0.2, 0, 0, 1);
+}
+
+[data-sortable-item][data-sortable-phase] {
+  z-index: 10;
+  border-radius: var(--radius-md);
+}
+
+[data-sortable-item][data-sortable-phase="lifted"] {
+  background-color: var(--popover);
+  box-shadow: 0 0 0 1px var(--border), 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+  scale: 1.01;
+  transition: scale 150ms ease-out, box-shadow 150ms ease-out;
+}
+
+[data-sortable-item][data-sortable-phase="settling"] {
+  transition-property: translate, scale, box-shadow, background-color;
+  transition-duration: var(--sortable-duration);
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+html.sortable-dragging,
+html.sortable-dragging * {
+  cursor: grabbing !important;
+  user-select: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-sortable-item],
+  [data-sortable-item][data-sortable-phase] {
+    transition: none;
   }
 }

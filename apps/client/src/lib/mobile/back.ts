@@ -1,15 +1,14 @@
-import type { View } from "$lib/navigation";
-
 export type MobileBackAction =
   | "consume-feature-layer"
   | "close-nested-route"
-  | "navigate-calendar"
+  | "activate-first-tab"
   | "release-to-system";
 
 export interface MobileBackState {
   featureLayerOpen: boolean;
   nestedRouteOpen: boolean;
-  currentView: View;
+  /** Whether the first workspace tab is active, the root that Back leaves the app from. */
+  firstTabActive: boolean;
 }
 
 export interface MobileBackListener {
@@ -92,6 +91,6 @@ export class MobileBackListenerController {
 export function resolveMobileBackAction(state: MobileBackState): MobileBackAction {
   if (state.featureLayerOpen) return "consume-feature-layer";
   if (state.nestedRouteOpen) return "close-nested-route";
-  if (state.currentView !== "calendar") return "navigate-calendar";
+  if (!state.firstTabActive) return "activate-first-tab";
   return "release-to-system";
 }

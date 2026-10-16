@@ -3,7 +3,9 @@ use crate::chat::workspace::CreateProjectWorkingFolderRequest;
 use ganbaru_chat::repository::attachments::{
     ChatAttachmentKind, import_attachment, run_due_attachment_cleanup,
 };
-use ganbaru_chat::repository::drafts::{ChatDraftWrite, delete_draft, read_draft, save_draft};
+use ganbaru_chat::repository::drafts::{
+    ChatDraftBase, ChatDraftWrite, delete_draft, read_draft, save_draft,
+};
 use ganbaru_chat::repository::events::{
     AppendCanonicalEventRequest, append_canonical_event, read_canonical_events,
 };

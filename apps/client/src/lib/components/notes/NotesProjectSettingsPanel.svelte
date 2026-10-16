@@ -24,9 +24,15 @@
     PROJECT_SETTINGS_PANEL_MAX_HEIGHT,
     projectToolbarPanelGeometry,
   } from "$lib/projects/toolbar";
-  import { getProjects } from "$lib/stores/projects.svelte";
-  import { getNotes } from "$lib/stores/notes.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
+  import { useNotesWorkspace } from "$lib/stores/notes.svelte";
   import { getViewport } from "$lib/stores/viewport.svelte";
+  import {
+    isSidebarSortOrder,
+    SIDEBAR_SORT_ORDER_LABEL_KEYS,
+    SIDEBAR_SORT_ORDERS,
+    type SidebarSortOrder,
+  } from "$lib/utils/sidebar-order";
   import {
     APP_FLOATING_SURFACE_SELECTOR,
     isAppFloatingSurfaceTarget,
@@ -37,6 +43,7 @@
 
   type NotesProjectDefaultOpenMode = "default" | NotesPageOpenMode;
   type NotesProjectHistoryRetention = "global" | NotesHistoryRetentionDays;
+  type NotesProjectSidebarOrder = "global" | SidebarSortOrder;
 
   let {
     projectId,
@@ -56,8 +63,8 @@
     onOpenTrash: () => void;
   } = $props();
 
-  const projects = getProjects();
-  const notes = getNotes();
+  const projects = useProjects();
+  const notes = useNotesWorkspace();
   const viewport = getViewport();
   const { t } = getLocalization();
 
@@ -69,6 +76,8 @@
   let draftProjectUpdatedAt = $state<string | null>(null);
   let defaultOpenModeDraft = $state<NotesProjectDefaultOpenMode>("default");
   let historyRetentionDraft = $state<NotesProjectHistoryRetention>("global");
+  let sidebarOrderDraft = $state<NotesProjectSidebarOrder>("global");
+  let sidebarOrderDraftBase = $state<NotesProjectSidebarOrder>("global");
   let saving = $state(false);
   let error = $state<string | null>(null);
   let pruneConfirmationOpen = $state(false);
@@ -86,6 +95,9 @@
   const persistedHistoryRetention = $derived<NotesProjectHistoryRetention>(
     selectedProject?.notesHistoryRetentionDays ?? "global",
   );
+  const persistedSidebarOrder = $derived<NotesProjectSidebarOrder>(
+    notes.sidebarOrderOverride(selectedProject?.id ?? null) ?? "global",
+  );
   const globalHistoryRetention = $derived(
     notes.pageHistorySettings?.retention_days ?? DEFAULT_NOTES_HISTORY_RETENTION_DAYS,
   );
@@ -100,16 +112,21 @@
       && (
         defaultOpenModeDraft !== persistedDefaultOpenMode
         || historyRetentionDraft !== persistedHistoryRetention
+        || sidebarOrderDraft !== persistedSidebarOrder
       ),
   );
+  const sidebarOrderOptions = $derived([
+    { value: "global", label: t("common.useGlobalSetting") },
+    ...SIDEBAR_SORT_ORDERS.map((order) => ({ value: order, label: t(SIDEBAR_SORT_ORDER_LABEL_KEYS[order]) })),
+  ]);
   const openModeOptions = $derived([
-    { value: "default", label: t("notes.projectSettingsUseGlobal") },
+    { value: "default", label: t("common.useGlobalSetting") },
     { value: "center", label: t("notes.centerPeek") },
     { value: "side", label: t("notes.sidePeek") },
     { value: "full", label: t("notes.fullPage") },
   ]);
   const historyRetentionOptions = $derived([
-    { value: "global", label: t("notes.projectSettingsUseGlobal") },
+    { value: "global", label: t("common.useGlobalSetting") },
     { value: "0", label: t("notes.projectSettingsHistoryOff") },
     { value: "7", label: t("notes.projectSettingsHistory7") },
     { value: "30", label: t("notes.projectSettingsHistory30") },
@@ -124,6 +141,8 @@
     draftProjectUpdatedAt = selectedProject.updatedAt;
     defaultOpenModeDraft = selectedProject.notesDefaultOpenMode ?? "default";
     historyRetentionDraft = selectedProject.notesHistoryRetentionDays ?? "global";
+    sidebarOrderDraft = persistedSidebarOrder;
+    sidebarOrderDraftBase = persistedSidebarOrder;
     error = null;
   }
 
@@ -167,6 +186,10 @@
     if (value === "default" || isNotesPageOpenMode(value)) {
       defaultOpenModeDraft = value;
     }
+  }
+
+  function selectSidebarOrder(value: string): void {
+    if (value === "global" || isSidebarSortOrder(value)) sidebarOrderDraft = value;
   }
 
   function selectHistoryRetention(value: string): void {
@@ -223,9 +246,17 @@
 
   async function saveConfirmed(pruneAfterSave: boolean): Promise<void> {
     if (!selectedProject) return;
-    const openMode = defaultOpenModeDraft === "default" ? null : defaultOpenModeDraft;
-    const retention = historyRetentionDraft === "global" ? null : historyRetentionDraft;
-    await projects.setNotesSettings(selectedProject.id, openMode, retention);
+    if (sidebarOrderDraft !== persistedSidebarOrder) {
+      notes.setProjectSidebarOrder(selectedProject.id, sidebarOrderDraft === "global" ? null : sidebarOrderDraft);
+    }
+    if (
+      defaultOpenModeDraft !== persistedDefaultOpenMode
+      || historyRetentionDraft !== persistedHistoryRetention
+    ) {
+      const openMode = defaultOpenModeDraft === "default" ? null : defaultOpenModeDraft;
+      const retention = historyRetentionDraft === "global" ? null : historyRetentionDraft;
+      await projects.setNotesSettings(selectedProject.id, openMode, retention);
+    }
     if (pruneAfterSave) await pruneNotesProjectHistory(selectedProject.id);
   }
 
@@ -257,6 +288,13 @@
     ) {
       loadDraft();
     }
+  });
+
+  $effect(() => {
+    if (!draftReady || sidebarOrderDraft !== sidebarOrderDraftBase) return;
+    if (persistedSidebarOrder === sidebarOrderDraftBase) return;
+    sidebarOrderDraft = persistedSidebarOrder;
+    sidebarOrderDraftBase = persistedSidebarOrder;
   });
 
   $effect(() => {
@@ -323,6 +361,14 @@
             value={defaultOpenModeDraft}
             options={openModeOptions}
             onChange={selectDefaultOpenMode}
+            {popoverBoundaryElement}
+            class="w-44"
+          />
+          <Select
+            label={t("notes.projectSettingsSidebarOrder")}
+            value={sidebarOrderDraft}
+            options={sidebarOrderOptions}
+            onChange={selectSidebarOrder}
             {popoverBoundaryElement}
             class="w-44"
           />

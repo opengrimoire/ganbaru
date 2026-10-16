@@ -7,7 +7,7 @@
   import type IconPicker from "$lib/components/icon-picker/IconPicker.svelte";
   import type { ChatMessageActionTarget } from "$lib/chat/timeline/message-action-target";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { getChat } from "$lib/stores/chat.svelte";
+  import { useChat } from "$lib/stores/chat.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { writeTextToClipboard } from "$lib/utils/clipboard";
 
@@ -24,7 +24,7 @@
   } = $props();
 
   const { t } = getLocalization();
-  const chat = getChat();
+  const chat = useChat();
   const preferences = getPreferences();
   let copied = $state(false);
   let copiedResetTimer: ReturnType<typeof setTimeout> | null = null;
@@ -135,6 +135,6 @@
   .message-action-controls.grouped-message { top:0; transform:translateY(-50%); }
   .message-action-controls.visible,.message-action-controls:focus-within { pointer-events:auto; opacity:1; }
   .message-action-button { display:inline-grid; width:1.75rem; height:1.75rem; flex:0 0 auto; place-items:center; border-radius:0; color:var(--muted-foreground); }
-  .message-action-button:hover,.message-action-button:focus-visible,.message-action-button.active,.message-action-button.copied { background:var(--accent); color:var(--foreground); }
-  @media (hover:none) { .message-action-controls { pointer-events:auto; opacity:1; } }
+  .message-action-button:focus-visible,.message-action-button.active,.message-action-button.copied { background:var(--accent); color:var(--foreground); }
+  @media (hover:hover) { .message-action-button:hover { background:var(--accent); color:var(--foreground); } }
 </style>

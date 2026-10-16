@@ -1,18 +1,8 @@
-import { isAppShortcutBlockedTarget, isEditableKeyboardTarget } from "$lib/utils";
-import { PROJECT_VIEW_IDS, type ProjectTask, type ProjectViewId } from "$lib/projects/types";
+import type { ProjectTask } from "$lib/projects/types";
 import type { ProjectToolbarPanel } from "$lib/projects/toolbar";
-
-const PROJECT_VIEW_SHORTCUTS = new Map<string, ProjectViewId>(
-  PROJECT_VIEW_IDS.map((view, index) => [String(index + 1), view]),
-);
-
-export interface ProjectRouteUiControllerInput {
-  setActiveView: (view: ProjectViewId) => void;
-}
 
 /** Owns route overlays, settings close guards, selection, and global keyboard policy. */
 export class ProjectRouteUiController {
-  readonly #input: ProjectRouteUiControllerInput;
   taskFinderOpen = $state(false);
   taskFinderFocusRequestId = $state(0);
   selectedTaskId = $state<string | null>(null);
@@ -24,10 +14,6 @@ export class ProjectRouteUiController {
   discardConfirmOpen = $state(false);
   rootElement = $state<HTMLDivElement | null>(null);
   #pendingSettingsAction: (() => void) | null = null;
-
-  constructor(input: ProjectRouteUiControllerInput) {
-    this.#input = input;
-  }
 
   runAfterSettingsClose(action: () => void): void {
     if (this.toolbarPanel === "settings" && this.settingsDirty) {
@@ -128,7 +114,6 @@ export class ProjectRouteUiController {
 
   handleWindowKeydown(event: KeyboardEvent): void {
     if (event.defaultPrevented || this.selectedTaskId || this.taskDraftProjectId) return;
-    if (this.handleViewShortcut(event)) return;
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
       event.preventDefault();
       this.openFinder();
@@ -154,29 +139,6 @@ export class ProjectRouteUiController {
     selection.removeAllRanges();
   }
 
-  #shortcutBlocked(event: KeyboardEvent): boolean {
-    const blocked = (target: EventTarget | null) => isEditableKeyboardTarget(target)
-      || isAppShortcutBlockedTarget(target)
-      || (target instanceof Element && target.closest("[role='dialog']") !== null);
-    return this.taskFinderOpen
-      || this.toolbarPanel !== null
-      || blocked(event.target)
-      || blocked(document.activeElement)
-      || this.rootElement?.querySelector("[role='dialog']") !== null;
-  }
-
-  #handleViewShortcut(event: KeyboardEvent): boolean {
-    if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return false;
-    const view = PROJECT_VIEW_SHORTCUTS.get(event.key);
-    if (!view || this.#shortcutBlocked(event)) return false;
-    event.preventDefault();
-    this.#input.setActiveView(view);
-    return true;
-  }
-
-  handleViewShortcut(event: KeyboardEvent): boolean {
-    return this.#handleViewShortcut(event);
-  }
 }
 
 export function isEditableSelectionTarget(target: EventTarget | null): boolean {

@@ -8,6 +8,7 @@
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getQuickNoteColor } from "$lib/quick-notes/colors";
+  import type { EventColor } from "$lib/calendar/types";
   import type { QuickNote, QuickNotesCollection, QuickNoteTag } from "$lib/quick-notes/types";
   import type { Theme } from "$lib/themes";
   import QuickNoteColorPicker from "./QuickNoteColorPicker.svelte";
@@ -19,12 +20,14 @@
     collection,
     theme,
     tags,
+    untaggedColor,
     reorderable = false,
     onOpen,
     onMove,
     onPin,
     onColor,
     onTag,
+    onCreateTag,
     onArchive,
     onUnarchive,
     onTrash,
@@ -36,12 +39,15 @@
     collection: QuickNotesCollection;
     theme: Theme;
     tags: readonly QuickNoteTag[];
+    /** Color of untagged notes, which a new tag avoids. */
+    untaggedColor: EventColor;
     reorderable?: boolean;
     onOpen: () => void;
     onMove: (direction: -1 | 1) => void;
     onPin: (pinned: boolean) => void;
     onColor: (color: QuickNote["color"]) => void;
     onTag: (tagId: string | null) => void;
+    onCreateTag: (name: string, color: EventColor) => Promise<QuickNoteTag>;
     onArchive: () => void;
     onUnarchive: () => void;
     onTrash: () => void;
@@ -54,10 +60,7 @@
   const colors = $derived(getQuickNoteColor(note.color, theme));
   const tag = $derived(tags.find((candidate) => candidate.id === note.tagId) ?? null);
   const surfaceStyle = $derived(`--quick-card-bg: ${colors.bg}; --quick-card-fg: ${colors.text};`);
-  const actionClass = "flex size-7 items-center justify-center rounded-md transition-colors hover:bg-black/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current dark:hover:bg-white/10";
-  /** Mobile cards are compact: their actions live in the editor and touch reorders with a long press. */
-  const showHandle = $derived(reorderable && !mobileLayout);
-
+  const actionClass = "flex size-7 items-center justify-center rounded-md transition-colors hover:bg-black/10 aria-expanded:bg-black/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current dark:hover:bg-white/10 dark:aria-expanded:bg-white/10";
   function handleReorderKeydown(event: KeyboardEvent): void {
     if (event.key !== "ArrowUp" && event.key !== "ArrowLeft" && event.key !== "ArrowDown" && event.key !== "ArrowRight") return;
     event.preventDefault();
@@ -70,31 +73,14 @@
   class="quick-note-card group relative overflow-hidden rounded-xl"
   style={surfaceStyle}
 >
-  {#if showHandle}
-    <button
-      type="button"
-      class="quick-note-drag-handle absolute right-1 top-1 z-10 flex size-7 touch-none items-center justify-center rounded-md opacity-60 transition-opacity hover:bg-black/10 hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current dark:hover:bg-white/10"
-      data-quick-note-drag-handle
-      aria-label={t("quickNotes.action.reorder")}
-      title={t("quickNotes.action.reorderHint")}
-      onkeydown={handleReorderKeydown}
-    >
-      <span class="grid grid-cols-2 gap-0.5" aria-hidden="true">
-        {#each [1, 2, 3, 4, 5, 6] as _}<span class="size-0.5 rounded-full bg-current"></span>{/each}
-      </span>
-    </button>
-  {/if}
   <button
     type="button"
-    class={`block w-full px-3.5 pt-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-current ${mobileLayout ? "min-h-12 pb-3" : "pb-2"} ${showHandle ? "pr-9" : ""}`}
+    class={`block w-full px-3.5 pt-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-current ${mobileLayout ? "min-h-12 pb-3" : "pb-2"}`}
     onclick={onOpen}
-    onkeydown={reorderable && !showHandle ? handleReorderKeydown : undefined}
+    onkeydown={reorderable ? handleReorderKeydown : undefined}
   >
-    {#if note.title}
-      <h3 class="mb-1.5 wrap-break-word text-[0.92rem] font-semibold leading-snug">{note.title}</h3>
-    {/if}
     {#if note.hasConflict || tag}
-      <span class="mb-1.5 flex max-w-full flex-wrap items-center gap-1">
+      <span class={`flex max-w-full flex-wrap items-center gap-1 ${note.title || note.runs.length > 0 ? "mb-1.5" : ""}`}>
         {#if note.hasConflict}
           <span class="inline-flex items-center gap-1 rounded-md bg-black/8 px-1.5 py-0.5 text-[0.65rem] font-medium dark:bg-white/10" title={t("quickNotes.conflict.cardHint")}>
             <GitCompareArrows class="size-3" strokeWidth={1.75} aria-hidden="true" />{t("quickNotes.conflict.badge")}
@@ -102,6 +88,9 @@
         {/if}
         {#if tag}<span class="inline-flex max-w-full truncate rounded-md bg-black/8 px-1.5 py-0.5 text-[0.65rem] font-medium dark:bg-white/10">{tag.name}</span>{/if}
       </span>
+    {/if}
+    {#if note.title}
+      <h3 class="mb-1.5 wrap-break-word text-[0.92rem] font-semibold leading-snug">{note.title}</h3>
     {/if}
     {#if note.runs.length > 0}
       <div class="quick-note-preview relative max-h-65 overflow-hidden text-[0.82rem] leading-relaxed">
@@ -121,7 +110,7 @@
       {/if}
       {#if collection !== "trash"}
         <QuickNoteColorPicker color={note.color} {theme} onSelect={onColor} buttonClass={actionClass} />
-        <QuickNoteTagPicker tagId={note.tagId} {tags} onSelect={onTag} buttonClass={actionClass} />
+        <QuickNoteTagPicker tagId={note.tagId} {tags} {theme} defaultColor={untaggedColor} onSelect={onTag} onCreate={onCreateTag} buttonClass={actionClass} />
         <button class={actionClass} type="button" aria-label={collection === "archive" ? t("quickNotes.action.unarchive") : t("quickNotes.action.archive")} title={collection === "archive" ? t("quickNotes.action.unarchive") : t("quickNotes.action.archive")} onclick={collection === "archive" ? onUnarchive : onArchive}>
           {#if collection === "archive"}<ArchiveRestore class="size-3.5" strokeWidth={1.5} />{:else}<Archive class="size-3.5" strokeWidth={1.5} />{/if}
         </button>
@@ -156,8 +145,10 @@
       transition: opacity 120ms ease;
     }
 
+    /* An open color or tag picker covers the card with its backdrop and takes focus, so its expanded trigger keeps the actions shown. */
     .quick-note-card:hover .quick-note-actions,
-    .quick-note-card:focus-within .quick-note-actions {
+    .quick-note-card:focus-within .quick-note-actions,
+    .quick-note-actions:has(:global([aria-expanded="true"])) {
       opacity: 1;
     }
   }

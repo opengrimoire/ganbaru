@@ -39,7 +39,7 @@
   } = $props();
 
   const { t } = getLocalization();
-  let searchInputEl: HTMLInputElement | undefined = $state();
+  let dialogEl: HTMLDivElement | undefined = $state();
   let query = $state("");
   let apps = $state<MobileDistractionsAppCandidate[]>([]);
   let loading = $state(true);
@@ -95,7 +95,8 @@
 
   onMount(() => {
     void loadApps();
-    void tick().then(() => searchInputEl?.focus());
+    // The dialog takes focus rather than its search field, so picking apps does not open the keyboard.
+    void tick().then(() => dialogEl?.focus());
     window.addEventListener("keydown", handleKeydown, true);
     return () => window.removeEventListener("keydown", handleKeydown, true);
   });
@@ -108,6 +109,7 @@
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
+    bind:this={dialogEl}
     class="surface-dialog relative z-10 flex h-[min(36rem,calc(100vh-2rem))] w-full max-w-lg flex-col outline-none"
     role="dialog"
     aria-modal="true"
@@ -129,7 +131,7 @@
     <div class="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden px-4 pb-4 pt-3">
       <div class="field flex min-w-0 items-center gap-2 px-2.5 py-1.5">
         <Search size={14} class="shrink-0 text-muted-foreground" />
-        <input bind:this={searchInputEl} bind:value={query} placeholder={t("settings.distractions.appSelector.search")} class="field-bare h-7 text-[0.866667rem] text-foreground" />
+        <input bind:value={query} placeholder={t("settings.distractions.appSelector.search")} class="field-bare h-7 text-[0.866667rem] text-foreground" />
         <button type="button" onclick={loadApps} disabled={loading} aria-label={t("settings.distractions.appSelector.refresh")} class="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40">
           {#if loading}<LoaderCircle size={14} class="animate-spin" />{:else}<RefreshCw size={14} />{/if}
         </button>

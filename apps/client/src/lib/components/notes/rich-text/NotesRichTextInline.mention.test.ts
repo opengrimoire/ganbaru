@@ -20,8 +20,8 @@ const PROJECT_ID = "33333333-3333-4333-8333-333333333333";
 const PROJECT_EMOJI = "\u{1F34E}";
 const GROUP_ID = "44444444-4444-4444-8444-444444444444";
 
-vi.mock("$lib/stores/projects.svelte", () => ({
-  getProjects: () => ({
+vi.mock("$lib/stores/projects.svelte", () => {
+  const getProjects = () => ({
     customEmojis: [],
     projectById: (id: string) => (id === PROJECT_ID
       ? { id, groupId: GROUP_ID, name: "Eating plan", icon: `emoji:${PROJECT_EMOJI}` }
@@ -29,8 +29,10 @@ vi.mock("$lib/stores/projects.svelte", () => ({
     groupById: (id: string | undefined) => (id === GROUP_ID ? { id, name: "Health" } : undefined),
     taskById: () => undefined,
     selectProject: async () => undefined,
-  }),
-}));
+    showProjectView: () => undefined,
+  });
+  return { getProjects, useProjects: getProjects, getProjectsStore: getProjects };
+});
 
 const { loadTask } = vi.hoisted(() => ({
   loadTask: vi.fn<(taskId: string) => Promise<{ task: { projectId: string; title: string } }>>(),

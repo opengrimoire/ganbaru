@@ -157,12 +157,9 @@
 
 <div class={embedded ? "flex min-h-0 flex-col" : "fixed inset-0 z-90 flex items-center justify-center p-3"}>
   {#if !embedded}
-    <button
-      class="absolute inset-0 border-0 surface-backdrop p-0"
-      type="button"
-      aria-label={t("common.close")}
-      onclick={onCancel}
-    ></button>
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <div class="absolute inset-0 surface-backdrop" aria-hidden="true" onclick={onCancel}></div>
   {/if}
   <div
     bind:this={dialogEl}

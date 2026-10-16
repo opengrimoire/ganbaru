@@ -4,7 +4,7 @@ import {
   DEFAULT_TASK_LIST_COLUMNS,
   parseTaskListColumns,
   taskListColumnsMatch,
-  taskListColumnsForProject,
+  taskListColumnsForView,
   taskListColumnsPreferenceValue,
   TASK_LIST_COLUMNS_PREFERENCE_KEY,
 } from "./list-columns";
@@ -13,7 +13,7 @@ import type { ProjectViewPreference } from "$lib/projects/types";
 function preference(value: string): ProjectViewPreference {
   return {
     projectId: "project",
-    viewId: "list",
+    viewId: "view-list",
     preferenceKey: TASK_LIST_COLUMNS_PREFERENCE_KEY,
     preferenceValue: value,
     updatedAt: "2026-06-12T00:00:00.000Z",
@@ -62,7 +62,7 @@ describe("task list columns", () => {
       customTaskListColumn("deleted-field"),
     ]);
 
-    expect(taskListColumnsForProject([preference(columns)], "project", new Set(["field-risk"]))).toEqual([
+    expect(taskListColumnsForView([preference(columns)], "view-list", new Set(["field-risk"]))).toEqual([
       "status",
       customTaskListColumn("field-risk"),
     ]);
@@ -74,11 +74,13 @@ describe("task list columns", () => {
     expect(parseTaskListColumns(JSON.stringify({ visibleColumns: "status" }))).toEqual(DEFAULT_TASK_LIST_COLUMNS);
   });
 
-  it("loads the matching project list preference", () => {
-    expect(taskListColumnsForProject([
+  it("loads only the matching list view preference", () => {
+    const preferences = [
+      { ...preference(taskListColumnsPreferenceValue(["scheduled"])), viewId: "view-week" },
       preference(taskListColumnsPreferenceValue(["priority"])),
-      { ...preference(taskListColumnsPreferenceValue(["due"])), projectId: "other" },
-      { ...preference(taskListColumnsPreferenceValue(["scheduled"])), viewId: "kanban" },
-    ], "project")).toEqual(["priority"]);
+    ];
+    expect(taskListColumnsForView(preferences, "view-list")).toEqual(["priority"]);
+    expect(taskListColumnsForView(preferences, "view-week")).toEqual(["scheduled"]);
+    expect(taskListColumnsForView(preferences, null)).toEqual(DEFAULT_TASK_LIST_COLUMNS);
   });
 });

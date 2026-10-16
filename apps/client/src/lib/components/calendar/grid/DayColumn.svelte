@@ -17,7 +17,7 @@
   import { getPomodoro } from "$lib/stores/pomodoro.svelte";
   import EventBlock from "./EventBlock.svelte";
   import { getEventIndicatorState } from "./event-indicators";
-  import { CALENDAR_ZOOM_FRAME_EVENT, getCalendarZoom } from "$lib/stores/calendar-zoom.svelte";
+  import { CALENDAR_ZOOM_FRAME_EVENT, useCalendarZoom } from "$lib/stores/calendar-zoom.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { onMount } from "svelte";
   import Repeat from "@lucide/svelte/icons/repeat";
@@ -170,7 +170,7 @@
   });
 
   const pomodoro = getPomodoro();
-  const calendarZoom = getCalendarZoom();
+  const calendarZoom = useCalendarZoom();
   const railWidth = 6;
 
   // One rail segment per contiguous group of pomodoro events (merge overlapping/adjacent)

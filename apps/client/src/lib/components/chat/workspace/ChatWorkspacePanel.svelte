@@ -68,7 +68,8 @@
   } from "$lib/utils/select-popover-position";
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { getChat } from "$lib/stores/chat.svelte";
+  import { useChatPaneEvents } from "$lib/chat/pane-events";
+  import { useChat } from "$lib/stores/chat.svelte";
   import { portal } from "$lib/utils/portal";
   import ChatBrowserPanel from "./ChatBrowserPanel.svelte";
   import ChatFileIcon from "./ChatFileIcon.svelte";
@@ -94,7 +95,8 @@
 
   const localization = getLocalization();
   const { t } = localization;
-  const chat = getChat();
+  const chat = useChat();
+  const paneEvents = useChatPaneEvents();
   const DEFAULT_PICKER_GEOMETRY: SelectPopoverGeometry = {
     top: 0,
     left: 0,
@@ -187,9 +189,9 @@
         case "file": openFile(event.detail.detail); break;
       }
     };
-    window.addEventListener(CHAT_OPEN_WORKSPACE_PANEL_EVENT, openWorkspacePanel);
+    paneEvents.addEventListener(CHAT_OPEN_WORKSPACE_PANEL_EVENT, openWorkspacePanel);
     return () => {
-      window.removeEventListener(CHAT_OPEN_WORKSPACE_PANEL_EVENT, openWorkspacePanel);
+      paneEvents.removeEventListener(CHAT_OPEN_WORKSPACE_PANEL_EVENT, openWorkspacePanel);
     };
   });
 
@@ -960,7 +962,7 @@
   .workspace-panel { display: flex; height: 100%; min-height: 0; flex-direction: column; background: var(--cal-bg); }
   .retained-workspace-panel { height: 100%; min-height: 0; }
   .panel-tabbar { --workspace-panel-tab-width: 9.5rem; position: relative; display: flex; min-height: 2.65rem; flex: 0 0 auto; align-items: center; gap: 0.2rem; padding-inline: 0.45rem; }
-  .workspace-panel[data-placement="inspector"] .panel-tabbar { height: var(--cal-header-row-h); min-height: var(--cal-header-row-h); border-bottom: 1px solid var(--sidebar); background: var(--cal-header-bg); padding-right: var(--chat-global-actions-width); }
+  .workspace-panel[data-placement="inspector"] .panel-tabbar { height: var(--toolbar-h); min-height: var(--toolbar-h); background: var(--cal-bg); padding-right: var(--chat-global-actions-width); }
   .panel-tabbar.reordering { user-select: none; }
   .panel-tabbar > :global(.chat-icon-button) { flex: 0 0 auto; align-self: center; }
   .panel-add-button { display: grid; width: 1.75rem; height: 1.75rem; flex: 0 0 1.75rem; place-items: center; align-self: center; border-radius: 0.375rem; color: var(--foreground); transition: color 120ms ease, background-color 120ms ease; }

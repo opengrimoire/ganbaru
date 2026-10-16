@@ -14,7 +14,7 @@ import { invalidateNotesPageCoverAssetUrl } from "$lib/api/notes/page-covers";
 import { invalidateNotesPageIconAssetUrl } from "$lib/api/notes/page-icons";
 import { blockPlainText, createBlockUpdate } from "$lib/notes/blocks/factory";
 import { planNotesInsertedBlockFocus, planNotesPageLoadFocus } from "$lib/notes/editor/focus";
-import { nextSelectedNotesPageId } from "$lib/notes/pages/selection";
+import { nextSelectedNotesPageIdInProject } from "$lib/notes/pages/selection";
 import { notesPageCoverAssetPath } from "$lib/notes/pages/cover";
 import { notesPageIconAssetPath } from "$lib/notes/pages/icon";
 import { createProvisionalNotesPage } from "$lib/notes/pages/creation";
@@ -110,6 +110,13 @@ export function createNotesPageActions(context: NotesPageActionsContext) {
     return parentPage ? notesPageProjectId(parentPage) : null;
   }
 
+  /** A sub-note of the open note opens contextually, with the configured mode; any other new note opens full. */
+  function creationOpenMode(parent: NotesParent, projectId: string | null): NotesPageOpenMode {
+    return parent.type === "page_id" && parent.page_id === context.readSelectedPageId()
+      ? context.defaultOpenMode(projectId)
+      : "full";
+  }
+
   async function createPageWithParent(
     title: string,
     parent: NotesParent,
@@ -138,7 +145,7 @@ export function createNotesPageActions(context: NotesPageActionsContext) {
     if (provisional.page.folder_id) context.setFolderCollapsed(provisional.page.folder_id, false);
     await context.activateProvisionalPage(
       provisional,
-      options.openMode ?? context.defaultOpenMode(projectId),
+      options.openMode ?? creationOpenMode(parent, projectId),
     );
     context.requestBlockFocus(null);
     context.requestTitleFocus(provisional.page.id);
@@ -275,8 +282,18 @@ export function createNotesPageActions(context: NotesPageActionsContext) {
     context.applyPostMutation({ pages: [page] });
   }
 
+  /** The project of a page about to be removed, read while it is still in the loaded collections. */
+  function removedPageProjectId(pageId: string): string | null {
+    const loadedPage = context.readLoadedPage();
+    const page = context.readAllPages().find((candidate) => candidate.id === pageId)
+      ?? context.readPages().find((candidate) => candidate.id === pageId)
+      ?? (loadedPage?.id === pageId ? loadedPage : null);
+    return page ? notesPageProjectId(page) : null;
+  }
+
   async function trashPage(pageId: string): Promise<void> {
     const visiblePages = context.readPages();
+    const projectId = removedPageProjectId(pageId);
     const removedIds = context.beginPageRemoval(pageId);
     if (!removedIds) return;
     context.setTrashActionError(null);
@@ -319,7 +336,7 @@ export function createNotesPageActions(context: NotesPageActionsContext) {
         context.discardRemovedPageWrites();
       }
       for (const id of failedCreationIds) context.discardFailedPageCreation(id);
-      const preferred = nextSelectedNotesPageId(visiblePages, pageId);
+      const preferred = nextSelectedNotesPageIdInProject(visiblePages, pageId, projectId);
       if (trashed) {
         context.prependTrashedPage(trashed);
         context.removeArchivedPages(removedIds);
@@ -331,7 +348,7 @@ export function createNotesPageActions(context: NotesPageActionsContext) {
         const pages = context.readPages();
         const next = preferred && pages.some((page) => page.id === preferred)
           ? preferred
-          : pages[0]?.id ?? null;
+          : nextSelectedNotesPageIdInProject(pages, pageId, projectId);
         await context.selectPageAfterRemoval(next);
       }
     } catch (error) {
@@ -345,7 +362,7 @@ export function createNotesPageActions(context: NotesPageActionsContext) {
   async function archivePage(pageId: string): Promise<void> {
     const archived = await archiveNotesPage(pageId, true);
     context.prependArchivedPage(archived);
-    const next = nextSelectedNotesPageId(context.readPages(), pageId);
+    const next = nextSelectedNotesPageIdInProject(context.readPages(), pageId, removedPageProjectId(pageId));
     context.applyPostMutation({ removedPageIds: [pageId], sidebarImpact: "hierarchy" });
     await context.selectPage(next);
   }
@@ -364,6 +381,7 @@ export function createNotesPageActions(context: NotesPageActionsContext) {
 
   async function permanentlyDeletePage(pageId: string): Promise<void> {
     await context.flushPendingBlockSaves();
+    const projectId = removedPageProjectId(pageId);
     const deletedIds = new Set(await permanentlyDeleteNotesPage(pageId));
     context.removePagesFromActiveCollections(deletedIds);
     context.removeArchivedPages(deletedIds);
@@ -372,7 +390,7 @@ export function createNotesPageActions(context: NotesPageActionsContext) {
     context.scheduleHierarchyRefresh();
     const selectedPageId = context.readSelectedPageId();
     if (selectedPageId && deletedIds.has(selectedPageId)) {
-      await context.selectPage(context.readPages()[0]?.id ?? null);
+      await context.selectPage(nextSelectedNotesPageIdInProject(context.readPages(), pageId, projectId));
     }
   }
 

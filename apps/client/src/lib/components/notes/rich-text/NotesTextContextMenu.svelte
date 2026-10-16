@@ -44,6 +44,7 @@
   import Scissors from "@lucide/svelte/icons/scissors";
   import Sigma from "@lucide/svelte/icons/sigma";
   import SquareCheck from "@lucide/svelte/icons/square-check";
+  import UnderlineIcon from "$lib/components/ui/UnderlineIcon.svelte";
   import { onDestroy, tick } from "svelte";
   import NotesTextColorPalette from "./NotesTextColorPalette.svelte";
 
@@ -423,7 +424,7 @@
         <button class={itemClass} type="button" role="menuitemcheckbox" onmouseenter={hoverPlainSubmenuRow} aria-checked={annotations.bold} onclick={() => runAction(() => onToggleAnnotation("bold"))}><Bold class="size-4 shrink-0" aria-hidden="true" /><span class="flex-1">{t("notes.bold")}</span>{#if annotations.bold}<Check class="size-3.5 shrink-0" aria-hidden="true" />{/if}</button>
         <button class={itemClass} type="button" role="menuitemcheckbox" onmouseenter={hoverPlainSubmenuRow} aria-checked={annotations.italic} onclick={() => runAction(() => onToggleAnnotation("italic"))}><Italic class="size-4 shrink-0" aria-hidden="true" /><span class="flex-1">{t("notes.italic")}</span>{#if annotations.italic}<Check class="size-3.5 shrink-0" aria-hidden="true" />{/if}</button>
         <button class={itemClass} type="button" role="menuitemcheckbox" onmouseenter={hoverPlainSubmenuRow} aria-checked={annotations.underline} onclick={() => runAction(() => onToggleAnnotation("underline"))}>
-          <svg class="size-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M5.5 4.5v7.25c0 3.75 2.5 5.75 6.5 5.75s6.5-2 6.5-5.75V4.5" /><path d="M4.5 20.5h15" /></svg>
+          <UnderlineIcon class="size-4 shrink-0" />
           <span class="flex-1">{t("notes.underline")}</span>
           {#if annotations.underline}<Check class="size-3.5 shrink-0" aria-hidden="true" />{/if}
         </button>

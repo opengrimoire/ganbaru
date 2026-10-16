@@ -373,7 +373,8 @@ class MusicPlayerStore {
     this.currentSource = value.currentSource;
     this.snapshot = { status: value.status, positionMs: value.positionMs, durationMs: value.durationMs, volume: value.volume, rate: value.rate, error: value.error };
     const { t } = getLocalization();
-    this.playerError = value.error ?? (value.issue === "browser-host-unavailable" ? t("music.nativeSession.browserUnavailable")
+    this.playerError = value.error ?? (value.issue === "browser-host-unavailable"
+      ? t(this.decodesBrowserMedia ? "music.nativeSession.browserUnavailable" : "music.nativeSession.browserUnavailableOtherWindow")
       : value.issue === "interrupted" ? t("music.nativeSession.interrupted") : null);
     this.muted = value.muted; this.shuffleEnabled = value.order !== "in-order"; this.mixEnabled = value.order === "mix";
     this.pinSessionVolume(value.volume);

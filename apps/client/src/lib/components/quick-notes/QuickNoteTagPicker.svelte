@@ -32,8 +32,8 @@
     /** Color of untagged notes, which a new tag avoids. */
     defaultColor: EventColor;
     onSelect: (tagId: string | null) => void;
-    /** Creates a tag and resolves to it, or rejects with an error whose message is shown; without it the picker offers no new tag. */
-    onCreate?: (name: string, color: EventColor) => Promise<QuickNoteTag>;
+    /** Creates a tag and resolves to it, or rejects with an error whose message is shown. */
+    onCreate: (name: string, color: EventColor) => Promise<QuickNoteTag>;
     buttonClass?: string;
     mobileLayout?: boolean;
   } = $props();
@@ -54,7 +54,7 @@
   let createError = $state("");
   let nameInput = $state<HTMLInputElement | null>(null);
   let newTagButton = $state<HTMLButtonElement | null>(null);
-  const canCreate = $derived(onCreate !== undefined && tags.length < QUICK_NOTE_TAG_LIMIT);
+  const canCreate = $derived(tags.length < QUICK_NOTE_TAG_LIMIT);
 
   /** Places the picker against its button, above it when the rendered height does not fit below. */
   function place(): void {
@@ -109,7 +109,7 @@
   /** Creates the tag and assigns it, which also closes the picker. */
   async function submitCreate(): Promise<void> {
     const value = name.trim();
-    if (!onCreate || !value || busy) return;
+    if (!value || busy) return;
     busy = true;
     createError = "";
     let created: QuickNoteTag | null = null;
@@ -229,7 +229,7 @@
         {#if creating}
           <form class="flex flex-col gap-1.5" onsubmit={(event) => { event.preventDefault(); void submitCreate(); }}>
             <div class="flex items-center gap-1">
-              <label class="field flex min-w-0 flex-1 items-center gap-1.5" data-invalid={createError ? "" : undefined}>
+              <label class={mobileLayout ? "field flex min-h-12 min-w-0 flex-1 items-center gap-2 text-base" : "field flex min-w-0 flex-1 items-center gap-1.5"} data-invalid={createError ? "" : undefined}>
                 <span class="size-3 shrink-0 rounded-full border border-border" style="background-color: {newColors.bg};" aria-hidden="true"></span>
                 <input
                   bind:this={nameInput}

@@ -429,7 +429,7 @@
           {#if annotations.underline}<Check class="size-3.5 shrink-0" aria-hidden="true" />{/if}
         </button>
         <button class={itemClass} type="button" role="menuitemcheckbox" onmouseenter={hoverPlainSubmenuRow} aria-checked={annotations.strikethrough} onclick={() => runAction(() => onToggleAnnotation("strikethrough"))}>
-          <svg class="size-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M17.5 5.5c-1.3-1.2-3.1-1.8-5.5-1.8-3.6 0-5.9 1.7-5.9 4.4 0 2.2 1.9 3.5 5.9 4.3 4 .8 5.9 2 5.9 4.2 0 2.8-2.3 4.5-5.9 4.5-2.4 0-4.2-.6-5.5-1.8" /><path d="M3 12.25h18" stroke-width="1.2" /></svg>
+          <svg class="size-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M17.5 5.5c-1.3-1.2-3.1-1.8-5.5-1.8-3.6 0-5.9 1.7-5.9 4.4 0 2.2 1.9 3.5 5.9 4.3 4 .8 5.9 2 5.9 4.2 0 2.8-2.3 4.5-5.9 4.5-2.4 0-4.2-.6-5.5-1.8" /><path d="M3 12.25h18" stroke-width="1.2" /></svg>
           <span class="flex-1">{t("notes.strikethrough")}</span>
           {#if annotations.strikethrough}<Check class="size-3.5 shrink-0" aria-hidden="true" />{/if}
         </button>

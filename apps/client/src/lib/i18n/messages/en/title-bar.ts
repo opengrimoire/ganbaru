@@ -98,7 +98,7 @@ export const titleBar = {
   resetSequenceConfirm: "Continue",
   resetDatabaseTitle: "Reset local data?",
   resetDatabaseMessage:
-    "The active Ganbaru AI folder's local data file will be permanently deleted",
+    "The active Ganbaru folder's local data file will be permanently deleted",
   resetDatabaseConfirm: "Reset local data",
   closeAppTitle: "Close the app?",
   closeAppMessage: "All productivity features will stop working",

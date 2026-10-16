@@ -14,7 +14,7 @@ export const workingMarkdown = {
     openExternally: "Open externally",
     copyPath: "Copy relative path",
     saving: "Saving",
-    conflict: "This file changed outside Ganbaru AI. Your local text was not overwritten.",
+    conflict: "This file changed outside Ganbaru. Your local text was not overwritten.",
     reloadRemote: "Reload file",
     copyLocal: "Copy local text",
     discardConfirm: "Discard unsaved changes to this Markdown file?",

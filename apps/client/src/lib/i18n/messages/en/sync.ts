@@ -20,9 +20,9 @@ export const sync = {
   waiting: (count: number) => `${count} received ${count === 1 ? "change" : "changes"} waiting to apply`,
   heldHeading: "Changes this device cannot use yet",
   heldNewerFormat: (count: number) =>
-    `${count} ${count === 1 ? "change needs" : "changes need"} a newer version of Ganbaru AI`,
+    `${count} ${count === 1 ? "change needs" : "changes need"} a newer version of Ganbaru`,
   heldNewerManifest: (count: number) =>
-    `${count} ${count === 1 ? "change comes" : "changes come"} from a newer data layout. Update Ganbaru AI on this device.`,
+    `${count} ${count === 1 ? "change comes" : "changes come"} from a newer data layout. Update Ganbaru on this device.`,
   heldInvalid: (count: number) =>
     `${count} ${count === 1 ? "change was" : "changes were"} rejected because ${count === 1 ? "it was" : "they were"} invalid`,
   conflicts: (count: number) =>

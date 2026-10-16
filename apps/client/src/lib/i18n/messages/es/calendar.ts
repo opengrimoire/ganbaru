@@ -102,9 +102,9 @@ export const calendar = {
     custom: "Personalizada",
     removeCustom: "Eliminar notificación personalizada",
     androidChannelName: "Eventos del calendario",
-    androidChannelDescription: "Recordatorios de próximos eventos del calendario de Ganbaru AI",
+    androidChannelDescription: "Recordatorios de próximos eventos del calendario de Ganbaru",
     permissionRequired:
-      "Las notificaciones de Android están desactivadas. Permítelas para recibir recordatorios cuando Ganbaru AI esté cerrado.",
+      "Las notificaciones de Android están desactivadas. Permítelas para recibir recordatorios cuando Ganbaru esté cerrado.",
     exactAlarmRequired:
       "Las alarmas exactas de Android están desactivadas. Los recordatorios pueden llegar tarde hasta que permitas el acceso a Alarmas y recordatorios.",
     channelRestricted:

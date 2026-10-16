@@ -25,9 +25,9 @@ export const sync = {
     `${count} ${count === 1 ? "cambio recibido pendiente" : "cambios recibidos pendientes"} de aplicar`,
   heldHeading: "Cambios que este dispositivo aún no puede usar",
   heldNewerFormat: (count: number) =>
-    `${count} ${count === 1 ? "cambio necesita" : "cambios necesitan"} una versión más reciente de Ganbaru AI`,
+    `${count} ${count === 1 ? "cambio necesita" : "cambios necesitan"} una versión más reciente de Ganbaru`,
   heldNewerManifest: (count: number) =>
-    `${count} ${count === 1 ? "cambio viene" : "cambios vienen"} de una estructura de datos más reciente. Actualiza Ganbaru AI en este dispositivo.`,
+    `${count} ${count === 1 ? "cambio viene" : "cambios vienen"} de una estructura de datos más reciente. Actualiza Ganbaru en este dispositivo.`,
   heldInvalid: (count: number) =>
     `${count} ${count === 1 ? "cambio se rechazó por no ser válido" : "cambios se rechazaron por no ser válidos"}`,
   conflicts: (count: number) =>

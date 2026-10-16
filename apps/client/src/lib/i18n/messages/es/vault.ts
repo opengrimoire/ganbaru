@@ -12,11 +12,11 @@ export const vaultSetup = {
   welcomeTitle: "Gratis y de código abierto",
   licenseButton: "Licencia (AGPL 3.0)",
   sourceCode: "Código fuente",
-  sourceOpenError: "No se pudo abrir el código fuente. Visita github.com/opengrimoire/ganbaru-ai en tu navegador.",
+  sourceOpenError: "No se pudo abrir el código fuente. Visita github.com/opengrimoire/ganbaru en tu navegador.",
   continue: "Continuar",
   title: "Elige dónde guardar tus datos",
   intro:
-    "Si vienes de una instalación anterior, importa tu carpeta de Ganbaru AI existente.",
+    "Si vienes de una instalación anterior, importa tu carpeta de Ganbaru existente.",
   developmentBuildWarning: (folderName: string) =>
     `Compilación de desarrollo: usa la carpeta ${folderName} predeterminada, o elige una copia de tu carpeta de producción. No apuntes dev a tus datos reales de producción.`,
   defaultLocation: "Carpeta predeterminada",
@@ -34,7 +34,7 @@ export const dataFolderError = {
   default:
     "No se puede usar la carpeta predeterminada. Revisa sus permisos o elige otra.",
   change:
-    "No se puede usar esta carpeta. Elige una carpeta vacía o una de Ganbaru AI.",
+    "No se puede usar esta carpeta. Elige una carpeta vacía o una de Ganbaru.",
   import:
     "No se puede importar esta carpeta. Elige la de tu instalación anterior.",
   backup: "No se pudo crear la copia de seguridad.",
@@ -48,15 +48,15 @@ export const dataFolderError = {
   defaultNotValid:
     "La carpeta predeterminada contiene otros archivos. Muévelos o elige otra carpeta.",
   folderNotEmpty:
-    "Esta carpeta no está vacía. Elige una carpeta vacía o una de Ganbaru AI.",
+    "Esta carpeta no está vacía. Elige una carpeta vacía o una de Ganbaru.",
   missingMarker:
-    "No se reconoce esta carpeta. Elige la carpeta principal de Ganbaru AI.",
+    "No se reconoce esta carpeta. Elige la carpeta principal de Ganbaru.",
   damagedMarker:
     "La información de esta carpeta está dañada. Restaura una copia o elige otra.",
   newerSchema:
-    "Esta carpeta necesita una versión más nueva. Actualiza Ganbaru AI.",
+    "Esta carpeta necesita una versión más nueva. Actualiza Ganbaru.",
   notGanbaruFolder:
-    "No es una carpeta de Ganbaru AI. Elige la de tu instalación anterior.",
+    "No es una carpeta de Ganbaru. Elige la de tu instalación anterior.",
   notFound:
     "No se encontró la carpeta. Elige otra o importa una existente.",
 } as const satisfies MessageShape<typeof enDataFolderError>;
@@ -81,9 +81,9 @@ export const vaultOwnershipPrompt = {
   switching: "Cambiando a este dispositivo...",
   replacementTitle: "¿Reemplazar los datos actuales de este dispositivo?",
   replacementAndroid:
-    "Este teléfono tiene una bóveda de Ganbaru AI separada. Sus datos no se pueden combinar con la bóveda vinculada. Ganbaru AI guardará una copia completa en Descargas antes de reemplazarla.",
+    "Este teléfono tiene una bóveda de Ganbaru separada. Sus datos no se pueden combinar con la bóveda vinculada. Ganbaru guardará una copia completa en Descargas antes de reemplazarla.",
   replacementDesktop:
-    "Esta computadora tiene una bóveda de Ganbaru AI separada. Sus datos no se pueden combinar con la bóveda vinculada. Ganbaru AI conservará una copia de recuperación junto a la carpeta actual de Ganbaru AI antes de reemplazarla.",
+    "Esta computadora tiene una bóveda de Ganbaru separada. Sus datos no se pueden combinar con la bóveda vinculada. Ganbaru conservará una copia de recuperación junto a la carpeta actual de Ganbaru antes de reemplazarla.",
   replacementConfirm: "Reemplazar con la bóveda vinculada",
 } as const satisfies MessageShape<typeof enVaultOwnershipPrompt>;
 
@@ -92,21 +92,21 @@ export const vaultHandoff = {
   description: "Administra tus dispositivos conectados",
   desktopOnboardingTitle: "Conecta tu teléfono",
   desktopOnboardingDescription:
-    "Instala Ganbaru AI en tu teléfono y escanea este código QR en la aplicación para vincular tus dispositivos.",
+    "Instala Ganbaru en tu teléfono y escanea este código QR en la aplicación para vincular tus dispositivos.",
   androidOnboardingTitle: "Conecta con tu computadora",
   androidOnboardingDescription:
-    "Usa Ganbaru AI en este teléfono para escanear el código QR mostrado en tu computadora.",
+    "Usa Ganbaru en este teléfono para escanear el código QR mostrado en tu computadora.",
   stepOne: "Paso 1",
   stepTwo: "Paso 2",
   networkAccessDescription:
-    "Permite que Ganbaru AI reciba conexiones de tu teléfono en esta red.",
+    "Permite que Ganbaru reciba conexiones de tu teléfono en esta red.",
   allowNetworkAccess: "Permitir conexión del teléfono",
   networkAccessConfirmTitle: "¿Permitir la conexión del teléfono?",
   networkAccessConfirmMessage:
-    "El firewall de Linux protege tu computadora de conexiones no deseadas. Ganbaru AI necesita su permiso para vincular tu teléfono con esta computadora mediante tu red local. Linux te pedirá tu contraseña, que Ganbaru AI nunca ve ni guarda.",
+    "El firewall de Linux protege tu computadora de conexiones no deseadas. Ganbaru necesita su permiso para vincular tu teléfono con esta computadora mediante tu red local. Linux te pedirá tu contraseña, que Ganbaru nunca ve ni guarda.",
   networkAccessRevokeTitle: "¿Quitar el acceso a la red local?",
   networkAccessRevokeMessage:
-    "El firewall de Linux permite actualmente que los dispositivos vinculados se conecten con Ganbaru AI en esta red local. Linux te pedirá tu contraseña para quitar ese permiso. Ganbaru AI nunca ve ni guarda tu contraseña.",
+    "El firewall de Linux permite actualmente que los dispositivos vinculados se conecten con Ganbaru en esta red local. Linux te pedirá tu contraseña para quitar ese permiso. Ganbaru nunca ve ni guarda tu contraseña.",
   networkAccessRevokeAction: "Quitar acceso",
   networkAccessHeading: "Acceso a la red local",
   networkAccessAllowed: "Permite que los dispositivos vinculados se conecten a esta computadora",
@@ -114,7 +114,7 @@ export const vaultHandoff = {
   networkAccessGranted: "Las conexiones del teléfono están permitidas en esta red.",
   networkAccessRevoked: "Se quitó el acceso para conectar el teléfono.",
   networkAccessManual:
-    "Ganbaru AI no puede solicitar acceso a la red automáticamente en este sistema Linux.",
+    "Ganbaru no puede solicitar acceso a la red automáticamente en este sistema Linux.",
   networkAccessDevelopmentUnavailable:
     "Esta versión de desarrollo para Linux no puede usar el asistente de firewall empaquetado. Usa una versión empaquetada o configura el firewall manualmente para vincular un teléfono.",
   notLinked: "No hay dispositivos vinculados",
@@ -175,14 +175,14 @@ export const vaultHandoff = {
     "Este dispositivo fue desvinculado por la computadora coordinadora. Su copia local seguirá siendo de solo lectura a menos que la recuperes como una bóveda separada.",
   recovered: "Esta copia local ahora es una bóveda separada con escritura.",
   localBackup:
-    "Antes de que la bóveda de la computadora reemplace datos de Android por primera vez, Ganbaru AI guarda una copia recuperable en Descargas.",
+    "Antes de que la bóveda de la computadora reemplace datos de Android por primera vez, Ganbaru guarda una copia recuperable en Descargas.",
   sameNetwork: "Mantén ambas apps abiertas en la misma red local.",
   failed: (details: string) => `Falló la acción del dispositivo vinculado: ${details}`,
   blockerChat: "Termina o detén el trabajo activo de Chat antes de mover la bóveda.",
   blockerFocus: "Termina o detén la sesión activa de Pomodoro antes de mover la bóveda.",
   blockerTransfer: "Termina o reintenta primero la transferencia actual de la bóveda.",
   incompatibleVersions:
-    "Actualiza Ganbaru AI en ambos dispositivos antes de vincular o transferir datos. Sus formatos de datos son diferentes.",
+    "Actualiza Ganbaru en ambos dispositivos antes de vincular o transferir datos. Sus formatos de datos son diferentes.",
   differentCoordinator:
     "Este dispositivo está vinculado con otra computadora. Desvincúlalo antes de conectarlo con una computadora diferente.",
   unreachable:

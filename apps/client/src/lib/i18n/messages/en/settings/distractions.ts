@@ -71,7 +71,7 @@ export const distractions = {
     reselectForAndroid: "Reselect this app to enable Android enforcement",
     disclosureBlockingTitle: "Allow selected app blocking?",
     disclosureBlockingMessage:
-      "Ganbaru AI uses Android Accessibility to observe which app becomes active. It returns you Home when a selected rule or limit applies and stores only selected-app usage and block events on this device. This data is never shared. It does not read screen content, text, taps, passwords, or notifications. Android will open Ganbaru AI directly when supported. Otherwise, open Downloaded or Installed services, choose Ganbaru AI, and turn it on.",
+      "Ganbaru uses Android Accessibility to observe which app becomes active. It returns you Home when a selected rule or limit applies and stores only selected-app usage and block events on this device. This data is never shared. It does not read screen content, text, taps, passwords, or notifications. Android will open Ganbaru directly when supported. Otherwise, open Downloaded or Installed services, choose Ganbaru, and turn it on.",
     agreeAndReview: "Agree and review",
     notNow: "Not now",
     channelName: "Distraction blocks",
@@ -110,7 +110,7 @@ export const distractions = {
     usageLimitConfigurationHeading: "Usage limit configuration",
     enableUsageLimits: "Enable usage limits",
     enableUsageLimitsDescription:
-      "Apply daily and weekly budgets whenever Ganbaru AI is running",
+      "Apply daily and weekly budgets whenever Ganbaru is running",
     noUsageLimits: "No usage limits yet",
     turnOffTitle: "Turn off usage limits?",
     disableTitle: (name: string) => `Disable ${name}?`,
@@ -315,7 +315,7 @@ export const distractions = {
     add: "Add",
     remove: "Remove",
     blockTitle: (name: string) => `Block ${name}?`,
-    blockMessage: "Ganbaru AI will automatically close this app during focus sessions",
+    blockMessage: "Ganbaru will automatically close this app during focus sessions",
     blockAction: "Block",
   },
 } as const;

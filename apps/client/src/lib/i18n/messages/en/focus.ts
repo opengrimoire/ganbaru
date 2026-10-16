@@ -44,7 +44,7 @@ export const pomodoroNotification = {
   noCommitmentDue: "No focus session is due. Schedule one in Calendar.",
   startFailed: "The session could not be saved. Try starting it again.",
   commitmentDueTitle: "Focus session due",
-  commitmentDueText: "Your scheduled session is due. Open Ganbaru AI when you are ready to start.",
+  commitmentDueText: "Your scheduled session is due. Open Ganbaru when you are ready to start.",
   channelName: "Focus sessions",
   channelDescription: "Persistent progress for active focus sessions",
   alertsChannelName: "Focus alerts",
@@ -55,5 +55,5 @@ export const pomodoroNotification = {
   pausedText: "Paused",
   focusCompleteTitle: "Focus complete",
   breakCompleteTitle: "Ready to return",
-  sessionCompleteText: "Open Ganbaru AI to continue.",
+  sessionCompleteText: "Open Ganbaru to continue.",
 } as const;

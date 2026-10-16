@@ -36,14 +36,14 @@
   async function openPicker(): Promise<void> {
     if (!button) return;
     const rect = button.getBoundingClientRect();
-    const width = FLOATING_WIDTH.sm;
-    const height = Math.min(300, 44 + (tags.length + 1) * 34);
-    left = Math.min(Math.max(8, rect.left), Math.max(8, window.innerWidth - width - 8));
+    open = true;
+    await tick();
+    // Placement uses the rendered height, so a picker opened above the button sits right against it.
+    const height = picker?.getBoundingClientRect().height ?? 0;
+    left = Math.min(Math.max(8, rect.left), Math.max(8, window.innerWidth - FLOATING_WIDTH.sm - 8));
     top = rect.bottom + height + 8 <= window.innerHeight
       ? rect.bottom + 4
       : Math.max(8, rect.top - height - 4);
-    open = true;
-    await tick();
     firstOption?.focus();
   }
 

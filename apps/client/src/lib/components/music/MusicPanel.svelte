@@ -3,6 +3,7 @@
   import AlertCircle from "@lucide/svelte/icons/alert-circle";
   import FolderSearch from "@lucide/svelte/icons/folder-search";
   import ListMusic from "@lucide/svelte/icons/list-music";
+  import MonitorPlay from "@lucide/svelte/icons/monitor-play";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import CalendarClock from "@lucide/svelte/icons/calendar-clock";
   import Pause from "@lucide/svelte/icons/pause";
@@ -24,6 +25,7 @@
   import { getMusicInspectorDetail, removeMusicSnooze } from "$lib/api/music-library";
   import { notifyMusicLibraryChanged } from "$lib/music/library/events";
   import { formatPlaybackTime } from "$lib/music/playback";
+  import { openMusicInHostWindow } from "$lib/music/host-window";
   import { fittedSidePlaylistPanelHeight } from "$lib/music/panel-layout";
   import {
     MUSIC_PLAYLIST_ROW_HEIGHT_PX,
@@ -616,6 +618,12 @@
   }
 
 
+  function showMainWindow(): void {
+    void openMusicInHostWindow().catch((error: unknown) => {
+      console.error("Failed to show the main window for Music:", error);
+    });
+  }
+
   function handleMediaSurfaceClick(event: MouseEvent): void {
     event.preventDefault();
     if (event.button !== 0) return;
@@ -966,7 +974,19 @@
             {player.volumeFeedbackLabel}
           </div>
         {/if}
-        {#if player.currentSource?.kind === "local-file" && (!player.localHasVideo || player.snapshot.error)}
+        {#if player.playsInOtherWindow && !player.snapshot.error}
+          <div class="absolute inset-0 flex flex-col items-center justify-center gap-2 px-6 text-center text-[0.8rem] text-muted-foreground" style="background-color: var(--cal-bg);">
+            <MonitorPlay size={musicIconSize} strokeWidth={musicIconStrokeWidth} />
+            <span>{t("music.nativeSession.otherWindow")}</span>
+            <button
+              type="button"
+              onclick={(event) => { event.stopPropagation(); showMainWindow(); }}
+              ondblclick={(event) => event.stopPropagation()}
+              onkeydown={(event) => event.stopPropagation()}
+              class="text-[0.733333rem] font-medium text-primary hover:underline"
+            >{t("music.nativeSession.showMainWindow")}</button>
+          </div>
+        {:else if player.currentSource?.kind === "local-file" && (!player.localHasVideo || player.snapshot.error)}
           <div class="absolute inset-0 flex items-center justify-center text-muted-foreground" style="background-color: var(--cal-bg);">
             {#if player.currentArtworkUrl && !player.snapshot.error}
               <img

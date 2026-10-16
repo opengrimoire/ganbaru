@@ -7,6 +7,8 @@ export const music = {
   mediaPlayer: "Media player",
   nativeSession: {
     browserUnavailable: "Playback is paused because this source needs the visible player. Open the app and press Play to continue.",
+    otherWindow: "This video shows in the main window.",
+    showMainWindow: "Show main window",
     interrupted: "Playback was interrupted. Press Play to continue from the saved position.",
   },
   launcher: {

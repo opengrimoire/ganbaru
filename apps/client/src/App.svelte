@@ -1044,7 +1044,7 @@
     {/await}
   {/if}
 
-  <MusicPlaybackHost />
+  <MusicPlaybackHost decodes={isMainWindow} />
   {#if isMainWindow}
     <MusicSoundscapeCoordinator />
   {/if}

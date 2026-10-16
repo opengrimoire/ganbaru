@@ -103,6 +103,8 @@ class MusicPlayerStore {
   currentArtworkUrl = $state<string | null>(null);
   staleVisual = $state<MusicStaleVisual | null>(null);
   surfaceElement = $state<HTMLElement | null>(null);
+  /** Whether this window runs the browser decoders; other windows show the session without its video. */
+  decodesBrowserMedia = $state(true);
   sourceActionBusy = $state(false);
   volumeFeedbackId = $state(0);
   /** Platform media volume level that replaces the app volume, or null where the app volume applies. */
@@ -261,9 +263,16 @@ class MusicPlayerStore {
     return this.currentSource ? isYouTubeSource(this.currentSource) : false;
   }
 
-  init(): void {
+  /** Whether the current source plays through browser decoders that run in another window. */
+  get playsInOtherWindow(): boolean {
+    return !this.decodesBrowserMedia && this.currentSource !== null && this.native?.backend === "browser";
+  }
+
+  /** Connect to the native session; `decodesBrowserMedia` is false in a window that only presents it. */
+  init({ decodesBrowserMedia = true }: { decodesBrowserMedia?: boolean } = {}): void {
     if (this.initialized) return;
     this.initialized = true;
+    this.decodesBrowserMedia = decodesBrowserMedia;
     this.externalControls.init();
     window.addEventListener("online", this.handleConnectivityChange);
     window.addEventListener("offline", this.handleConnectivityChange);

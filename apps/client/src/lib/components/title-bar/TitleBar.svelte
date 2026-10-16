@@ -37,6 +37,7 @@
   import { flushQuickNoteEditors } from "$lib/quick-notes/persistence";
   import { flushBeforeWindowClose } from "$lib/windows/close-flush";
   import { MAIN_WINDOW_LABEL } from "$lib/windows/tab-windows";
+  import { MUSIC_HOST_OPEN_EVENT } from "$lib/music/host-window";
   import { preloadQuickNotesInitialSnapshot } from "$lib/quick-notes/initial-snapshot";
 
   let {
@@ -131,7 +132,6 @@
   }
 
   function openMusicPanel(): void {
-    if (!isHostWindow) return;
     showMusicPanel = true;
     showQuickNotes = false;
     showPomodoroMenu = false;
@@ -150,7 +150,7 @@
     openMusicPanel();
   }
 
-  async function openMusicPanelFromTray(): Promise<void> {
+  async function raiseWithMusicPanel(): Promise<void> {
     openMusicPanel();
     try {
       await appWindow.show();
@@ -163,24 +163,24 @@
 
   onMount(() => {
     if (!isHostWindow) return;
-    let unlisten: UnlistenFn | undefined;
+    const unlisteners: UnlistenFn[] = [];
     let disposed = false;
-    void listen("tray-music-open", () => {
-      if (!disposed) void openMusicPanelFromTray();
-    })
-      .then((nextUnlisten) => {
-        if (disposed) {
-          nextUnlisten();
-          return;
-        }
-        unlisten = nextUnlisten;
+    // The tray and other windows' Music panels both ask the window that shows Music video to come forward.
+    for (const event of ["tray-music-open", MUSIC_HOST_OPEN_EVENT]) {
+      void listen(event, () => {
+        if (!disposed) void raiseWithMusicPanel();
       })
-      .catch((error: unknown) => {
-        console.error("Failed to listen for Music panel opens:", error);
-      });
+        .then((unlisten) => {
+          if (disposed) unlisten();
+          else unlisteners.push(unlisten);
+        })
+        .catch((error: unknown) => {
+          console.error("Failed to listen for Music panel opens:", error);
+        });
+    }
     return () => {
       disposed = true;
-      unlisten?.();
+      for (const unlisten of unlisteners) unlisten();
     };
   });
 
@@ -280,7 +280,7 @@
     zoomIn: () => zoom.zoomIn(),
     zoomOut: () => zoom.zoomOut(),
     resetZoom: () => zoom.reset(),
-    toggleMusic: () => { if (isHostWindow) toggleMusicPanel(); },
+    toggleMusic: toggleMusicPanel,
     toggleDiagnostics: togglePerfMenu,
     openShortcutHelp: () => { if (!lockedByThemeEditor) openSettings("shortcuts"); },
   });
@@ -504,7 +504,6 @@
       quickNotesOpen={showQuickNotes}
       musicPanelOpen={showMusicPanel}
       bind:showMenu={showPomodoroMenu}
-      hostsMusic={isHostWindow}
       onMenuOpened={() => {
         showPerfMenu = false;
         showTitleBarMenu = false;

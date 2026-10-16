@@ -15,7 +15,6 @@
     quickNotesOpen,
     musicPanelOpen,
     showMenu = $bindable(),
-    hostsMusic,
     onMenuOpened,
     onToggleQuickNotes,
     onToggleMusic,
@@ -25,8 +24,6 @@
     quickNotesOpen: boolean;
     musicPanelOpen: boolean;
     showMenu: boolean;
-    /** Whether this window hosts Music playback, so it shows the Music controls. */
-    hostsMusic: boolean;
     onMenuOpened: () => void;
     onToggleQuickNotes: () => void;
     onToggleMusic: () => void;
@@ -125,7 +122,7 @@
             onwheel={handleVolumeWheel}
           >
             <PomodoroMenuContent
-              includeMusic={hostsMusic}
+              includeMusic
               onDismiss={() => { showMenu = false; }}
               onOpenMusic={onToggleMusic}
             />
@@ -158,7 +155,7 @@
       <StickyNote size={TITLE_BAR_ICON_SIZE} strokeWidth={TITLE_BAR_ICON_STROKE_WIDTH} />
     </button>
 
-    {#if hostsMusic && showMusic}
+    {#if showMusic}
       <button
         type="button"
         onclick={onToggleMusic}

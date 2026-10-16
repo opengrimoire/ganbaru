@@ -19,12 +19,13 @@ describe("shell shortcuts during editing", () => {
       ensureBenchmarkOverlay: vi.fn(async () => {}), showResetSequenceConfirmation: vi.fn(),
       closeOtherConfirmations: vi.fn(), requestClose: vi.fn(async () => {}),
       toggleTheme: vi.fn(), openThemeSwitcher: vi.fn(), zoomIn: vi.fn(), zoomOut: vi.fn(),
-      resetZoom: vi.fn(), toggleMusic: vi.fn(), toggleDiagnostics: vi.fn(), openShortcutHelp: vi.fn(),
+      resetZoom: vi.fn(), toggleMusic: vi.fn(), toggleQuickNotes: vi.fn(), toggleDiagnostics: vi.fn(), openShortcutHelp: vi.fn(),
     };
     component = mount(ShortcutHost, { target: document.body, props: { context } });
     await tick();
     const commands = [
       { key: "m", ctrlKey: true, action: context.toggleMusic },
+      { key: "n", ctrlKey: true, shiftKey: true, action: context.toggleQuickNotes },
       { key: "l", ctrlKey: true, shiftKey: true, action: context.toggleTheme },
       { key: "o", ctrlKey: true, shiftKey: true, action: context.openThemeSwitcher },
       { key: "d", ctrlKey: true, shiftKey: true, action: context.toggleDiagnostics },

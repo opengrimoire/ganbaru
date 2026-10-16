@@ -24,6 +24,7 @@ export const SHORTCUT_GROUPS: readonly ShortcutGroup[] = Object.freeze([
       { keys: ["Alt + 1-8"], action: "Go to tab by position" },
       { keys: ["Alt + 9"], action: "Go to last tab" },
       { keys: ["Mod + M"], action: "Toggle music panel" },
+      { keys: ["Mod + Shift + N"], action: "Toggle Quick notes" },
       { keys: ["Mod + ,"], action: "Open or close settings" },
       { keys: ["Mod + +"], action: "Zoom in" },
       { keys: ["Mod + -"], action: "Zoom out" },
@@ -151,6 +152,8 @@ function localizedAction(action: string, t: Translate): string {
       return t("settings.shortcuts.action.insertChatNewline");
     case "Open Chat command menu":
       return t("settings.shortcuts.action.openChatCommandMenu");
+    case "Toggle Quick notes":
+      return t("settings.shortcuts.action.toggleQuickNotes");
     case "Toggle music panel":
       return t("settings.shortcuts.action.toggleMusicPanel");
     case "Open or close settings":

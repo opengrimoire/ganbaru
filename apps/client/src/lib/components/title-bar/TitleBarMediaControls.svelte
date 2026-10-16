@@ -7,6 +7,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getMusicPlayer } from "$lib/stores/music-player.svelte";
   import { getPomodoro } from "$lib/stores/pomodoro.svelte";
+  import { formatShortcut } from "$lib/keyboard-shortcuts";
   import { cn } from "$lib/utils";
 
   let {
@@ -53,7 +54,7 @@
     `${isActive ? t("titleBar.pomodoro.remaining", pomodoro.formattedTime) : t("titleBar.control.pomodoro")}\n${musicVolumeTooltipLine}`,
   );
   const musicButtonTooltip = $derived(
-    `${t("titleBar.control.music")}\n${musicVolumeTooltipLine}${musicPlayer.contextPlayback && musicPlayer.contextPlayback.state !== "overridden" ? `\n${t("titleBar.music.contextual", t(`music.assignment.phase.${musicPlayer.contextPlayback.phase}`), musicPlayer.contextPlayback.eventTitle)}` : ""}`,
+    `${t("titleBar.tab.withShortcut", t("titleBar.control.music"), formatShortcut("Mod + M"))}\n${musicVolumeTooltipLine}${musicPlayer.contextPlayback && musicPlayer.contextPlayback.state !== "overridden" ? `\n${t("titleBar.music.contextual", t(`music.assignment.phase.${musicPlayer.contextPlayback.phase}`), musicPlayer.contextPlayback.eventTitle)}` : ""}`,
   );
 
   function toggleMenu(): void {
@@ -147,7 +148,7 @@
         "titlebar-icon-button flex items-center justify-center rounded-lg transition-colors",
         quickNotesOpen ? "bg-sidebar-accent text-foreground" : `${TITLE_BAR_ICON_COLOR_CLASS} hover:bg-sidebar-accent`,
       )}
-      title={t("titleBar.control.quickNotes")}
+      title={t("titleBar.tab.withShortcut", t("titleBar.control.quickNotes"), formatShortcut("Mod + Shift + N"))}
       aria-label={t("titleBar.control.quickNotes")}
       aria-haspopup="dialog"
       aria-expanded={quickNotesOpen}

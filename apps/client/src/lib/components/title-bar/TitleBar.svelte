@@ -281,6 +281,7 @@
     zoomOut: () => zoom.zoomOut(),
     resetZoom: () => zoom.reset(),
     toggleMusic: toggleMusicPanel,
+    toggleQuickNotes: () => { void toggleQuickNotes(); },
     toggleDiagnostics: togglePerfMenu,
     openShortcutHelp: () => { if (!lockedByThemeEditor) openSettings("shortcuts"); },
   });

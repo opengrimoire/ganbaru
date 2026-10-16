@@ -79,6 +79,7 @@ export const focusAndShortcuts = {
       insertChatNewline: "Insert Chat newline",
       openChatCommandMenu: "Open Chat command menu",
       toggleMusicPanel: "Open or close music panel",
+      toggleQuickNotes: "Open or close Quick notes",
       openOrCloseSettings: "Open or close settings",
       zoomIn: "Zoom in",
       zoomOut: "Zoom out",

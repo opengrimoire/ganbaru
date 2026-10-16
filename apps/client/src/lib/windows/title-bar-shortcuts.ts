@@ -25,6 +25,7 @@ export type TitleBarShortcutAction =
   | "zoom-out"
   | "zoom-reset"
   | "music-toggle"
+  | "quick-notes-toggle"
   | "diagnostics-toggle"
   | "shortcut-help";
 
@@ -80,6 +81,7 @@ export function titleBarShortcutAction(
     if (key === "l") return "theme-toggle";
     if (key === "o") return "theme-switcher";
     if (key === "d") return "diagnostics-toggle";
+    if (key === "n") return "quick-notes-toggle";
   }
   if (!hasOnlyShortcutModifier(event)) return null;
   if (key === "m") return "music-toggle";

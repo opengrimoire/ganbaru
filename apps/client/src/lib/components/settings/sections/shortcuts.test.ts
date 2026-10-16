@@ -36,6 +36,7 @@ describe("shortcut search", () => {
       "Go to tab by position",
       "Go to last tab",
       "Toggle music panel",
+      "Toggle Quick notes",
       "Open or close settings",
       "Zoom in",
       "Zoom out",

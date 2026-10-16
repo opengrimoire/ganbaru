@@ -1,7 +1,7 @@
 [package]
 name = "ganbaru-chat-providers"
 version = "0.1.5"
-description = "Ganbaru AI Chat provider drivers and transports"
+description = "Ganbaru Chat provider drivers and transports"
 authors.workspace = true
 license.workspace = true
 edition.workspace = true

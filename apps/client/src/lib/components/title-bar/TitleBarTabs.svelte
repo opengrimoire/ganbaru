@@ -86,7 +86,7 @@
     origin: TabOrigin | null;
   }
 
-  const TAB_REORDER_MIME = "application/x-ganbaru-ai-workspace-tab";
+  const TAB_REORDER_MIME = "application/x-ganbaru-workspace-tab";
   /** How long tabs take to slide into their new slots while one is dragged across them, and to settle when dropped. */
   const TAB_SLIDE_MS = 220;
   /** Ease-out curve of those slides, matching the cubic ease-out of the strip's reorder animation. */

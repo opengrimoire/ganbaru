@@ -1,4 +1,4 @@
-const USER_DB_URL = "sqlite:ganbaru-ai.sqlite";
+const USER_DB_URL = "sqlite:ganbaru.sqlite";
 
 let initialized = false;
 

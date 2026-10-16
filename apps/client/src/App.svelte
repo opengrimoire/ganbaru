@@ -340,12 +340,12 @@
       if (!eventId) return;
       nav.navigate("calendar");
       window.setTimeout(() => {
-        window.dispatchEvent(new CustomEvent("ganbaru-ai:inspect-music-assignment", {
+        window.dispatchEvent(new CustomEvent("ganbaru:inspect-music-assignment", {
           detail: { eventId, ready: true },
         }));
       }, 0);
     };
-    window.addEventListener("ganbaru-ai:inspect-music-assignment", handleMusicAssignmentInspection);
+    window.addEventListener("ganbaru:inspect-music-assignment", handleMusicAssignmentInspection);
     if (isMainWindow) {
       notesProjectHistoryScheduler.setEnabled(true);
       listen("calendar-notification-open", () => {
@@ -534,7 +534,7 @@
       window.removeEventListener("hashchange", navigateToNotesHash);
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("focus", onFocus);
-      window.removeEventListener("ganbaru-ai:inspect-music-assignment", handleMusicAssignmentInspection);
+      window.removeEventListener("ganbaru:inspect-music-assignment", handleMusicAssignmentInspection);
       if (automaticUpdateCheckTimerId) clearTimeout(automaticUpdateCheckTimerId);
       if (automaticUpdateCheckIntervalId) clearInterval(automaticUpdateCheckIntervalId);
       clearTimeout(startupMemoryTimerId);

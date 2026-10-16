@@ -17,7 +17,7 @@ export interface ResolvingYouTubePlaylist {
 interface YouTubeHostStateMessage {
   token: string;
   load: string;
-  type: "ganbaru-ai-youtube-state";
+  type: "ganbaru-youtube-state";
   status: PlaybackStatus;
   positionMs: number;
   durationMs: number | null;
@@ -29,20 +29,20 @@ interface YouTubeHostStateMessage {
 interface YouTubeHostReadyMessage {
   token: string;
   load: string;
-  type: "ganbaru-ai-youtube-ready";
+  type: "ganbaru-youtube-ready";
 }
 
 interface YouTubeHostErrorMessage {
   token: string;
   load: string;
-  type: "ganbaru-ai-youtube-error";
+  type: "ganbaru-youtube-error";
   code: number;
 }
 
 export interface YouTubeHostPlaylistMessage {
   token: string;
   load: string;
-  type: "ganbaru-ai-youtube-playlist";
+  type: "ganbaru-youtube-playlist";
   playlistId: string;
   videoIds: string[];
   index: number | null;
@@ -51,7 +51,7 @@ export interface YouTubeHostPlaylistMessage {
 interface YouTubeHostPlaylistErrorMessage {
   token: string;
   load: string;
-  type: "ganbaru-ai-youtube-playlist-error";
+  type: "ganbaru-youtube-playlist-error";
   playlistId: string;
 }
 
@@ -111,19 +111,19 @@ export function parseYouTubeHostMessage(value: unknown): YouTubeHostMessage | nu
     || typeof record.load !== "string"
     || typeof record.type !== "string"
   ) return null;
-  if (record.type === "ganbaru-ai-youtube-ready") {
-    return { token: record.token, load: record.load, type: "ganbaru-ai-youtube-ready" };
+  if (record.type === "ganbaru-youtube-ready") {
+    return { token: record.token, load: record.load, type: "ganbaru-youtube-ready" };
   }
-  if (record.type === "ganbaru-ai-youtube-error" && typeof record.code === "number") {
+  if (record.type === "ganbaru-youtube-error" && typeof record.code === "number") {
     return {
       token: record.token,
       load: record.load,
-      type: "ganbaru-ai-youtube-error",
+      type: "ganbaru-youtube-error",
       code: record.code,
     };
   }
   if (
-    record.type === "ganbaru-ai-youtube-playlist"
+    record.type === "ganbaru-youtube-playlist"
     && typeof record.playlistId === "string"
     && Array.isArray(record.videoIds)
     && record.videoIds.every((id) => typeof id === "string" && id.length > 0)
@@ -132,25 +132,25 @@ export function parseYouTubeHostMessage(value: unknown): YouTubeHostMessage | nu
     return {
       token: record.token,
       load: record.load,
-      type: "ganbaru-ai-youtube-playlist",
+      type: "ganbaru-youtube-playlist",
       playlistId: record.playlistId,
       videoIds: record.videoIds,
       index: record.index,
     };
   }
   if (
-    record.type === "ganbaru-ai-youtube-playlist-error"
+    record.type === "ganbaru-youtube-playlist-error"
     && typeof record.playlistId === "string"
   ) {
     return {
       token: record.token,
       load: record.load,
-      type: "ganbaru-ai-youtube-playlist-error",
+      type: "ganbaru-youtube-playlist-error",
       playlistId: record.playlistId,
     };
   }
   if (
-    record.type === "ganbaru-ai-youtube-state"
+    record.type === "ganbaru-youtube-state"
     && isPlaybackStatus(record.status)
     && typeof record.positionMs === "number"
     && (typeof record.durationMs === "number" || record.durationMs === null)
@@ -161,7 +161,7 @@ export function parseYouTubeHostMessage(value: unknown): YouTubeHostMessage | nu
     return {
       token: record.token,
       load: record.load,
-      type: "ganbaru-ai-youtube-state",
+      type: "ganbaru-youtube-state",
       status: record.status,
       positionMs: record.positionMs,
       durationMs: record.durationMs,

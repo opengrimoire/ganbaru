@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { touchHoverPostcss } from "./src/lib/build/touch-hover";
 
 const host = process.env.TAURI_DEV_HOST;
-const TAURI_DEV_READY_PATH = "/__ganbaru-ai_dev_ready";
+const TAURI_DEV_READY_PATH = "/__ganbaru_dev_ready";
 const TAURI_BUILD_PLATFORMS = ["linux", "windows", "macos", "android", "ios"] as const;
 const ANDROID_WEBVIEW_BUILD_TARGET = "chrome111";
 type TauriBuildPlatform = (typeof TAURI_BUILD_PLATFORMS)[number];
@@ -18,7 +18,7 @@ const configDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(configDir, "../..");
 const appVersion = readAppVersion();
 const buildRef = `${appVersion}+${readGitCommit()}${isGitDirty() ? "-dirty" : ""}`;
-const githubRepository = process.env.GANBARU_AI_RELEASE_REPOSITORY?.trim() || "opengrimoire/ganbaru-ai";
+const githubRepository = process.env.GANBARU_RELEASE_REPOSITORY?.trim() || "opengrimoire/ganbaru";
 const buildPlatform = resolveTauriBuildPlatform(process.env.TAURI_ENV_PLATFORM);
 const isMobileBuild = buildPlatform === "android" || buildPlatform === "ios";
 const isAndroidBuild = buildPlatform === "android";
@@ -188,7 +188,7 @@ async function warmTauriDevEntry(server: ViteDevServer): Promise<void> {
 function tauriDevReady(): Plugin {
   let readyPromise: Promise<void> | null = null;
   return {
-    name: "ganbaru-ai:tauri-dev-ready",
+    name: "ganbaru:tauri-dev-ready",
     apply: "serve",
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
@@ -223,7 +223,7 @@ function normalizedBundleModuleId(id: string): string {
 
 function firstUseBundleMetadata(): Plugin {
   return {
-    name: "ganbaru-ai:first-use-bundle-metadata",
+    name: "ganbaru:first-use-bundle-metadata",
     apply: "build",
     generateBundle(_options, bundle) {
       const chunks = Object.values(bundle)
@@ -269,7 +269,7 @@ function hasCompiledSvelteCss(meta: Record<string, unknown> | undefined): boolea
  */
 function compileSvelteStyleOwners(): Plugin {
   return {
-    name: "ganbaru-ai:compile-svelte-style-owners",
+    name: "ganbaru:compile-svelte-style-owners",
     apply: "serve",
     enforce: "pre",
     load: {
@@ -323,9 +323,9 @@ export default defineConfig({
     postcss: { plugins: [touchHoverPostcss()] },
   },
   define: {
-    __GANBARU_AI_BUILD_REF__: JSON.stringify(buildRef),
-    __GANBARU_AI_GITHUB_REPOSITORY__: JSON.stringify(githubRepository),
-    __GANBARU_AI_BUILD_PLATFORM__: JSON.stringify(buildPlatform),
+    __GANBARU_BUILD_REF__: JSON.stringify(buildRef),
+    __GANBARU_GITHUB_REPOSITORY__: JSON.stringify(githubRepository),
+    __GANBARU_BUILD_PLATFORM__: JSON.stringify(buildPlatform),
   },
   resolve: {
     alias: {
@@ -510,7 +510,7 @@ export default defineConfig({
           : "src/lib/components/notes/NotesProjectSettingsPanel.svelte",
       ),
       $lib: path.resolve("./src/lib"),
-      "virtual:ganbaru-ai-platform-entry": path.resolve(
+      "virtual:ganbaru-platform-entry": path.resolve(
         configDir,
         isMobileBuild
           ? "src/main-mobile.ts"

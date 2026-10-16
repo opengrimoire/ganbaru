@@ -72,7 +72,7 @@ pub async fn initialize_provider_session(
         )]));
     let initialize_request = InitializeRequest::new(ProtocolVersion::V1)
         .client_capabilities(capabilities)
-        .client_info(Implementation::new("ganbaru-ai", env!("CARGO_PKG_VERSION")));
+        .client_info(Implementation::new("ganbaru", env!("CARGO_PKG_VERSION")));
     let initialize_request = serde_json::to_value(initialize_request)
         .map_err(|_| protocol_error("ACP initialization request"))?;
     let initialize_value = client

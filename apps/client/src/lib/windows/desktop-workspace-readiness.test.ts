@@ -16,7 +16,7 @@ vi.mock("$lib/stores/chat.svelte", () => ({ getChat: () => ({ prewarmForProject:
 
 describe("desktop workspace readiness", () => {
   beforeEach(() => {
-    dependencies.database.mockReset().mockResolvedValue("sqlite:ganbaru-ai.sqlite");
+    dependencies.database.mockReset().mockResolvedValue("sqlite:ganbaru.sqlite");
     dependencies.projects.mockReset().mockResolvedValue();
     dependencies.notes.mockReset().mockResolvedValue();
     dependencies.chat.mockReset().mockResolvedValue();

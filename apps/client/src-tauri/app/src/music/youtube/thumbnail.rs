@@ -115,7 +115,7 @@ fn thumbnail_client() -> Result<&'static Client, String> {
             Client::builder()
                 .redirect(Policy::none())
                 .timeout(REQUEST_TIMEOUT)
-                .user_agent("Ganbaru-AI/0.1 YouTube thumbnails")
+                .user_agent("Ganbaru/0.1 YouTube thumbnails")
                 .build()
                 .map_err(|error| format!("prepare YouTube thumbnail client: {error}"))
         })

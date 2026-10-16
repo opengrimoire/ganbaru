@@ -11,8 +11,8 @@ const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CLIENT_ROOT = path.resolve(SCRIPT_DIR, "..");
 const DEV_CONFIG = path.join("src-tauri", "tauri.dev.conf.json");
 const TAURI_CLI_ENTRY = require.resolve("@tauri-apps/cli/tauri.js");
-const PRESERVE_GDK_BACKEND_ENV = "GANBARU_AI_DEV_PRESERVE_GDK_BACKEND";
-const ANDROID_JAVA_HOME_ENV = "GANBARU_AI_ANDROID_JAVA_HOME";
+const PRESERVE_GDK_BACKEND_ENV = "GANBARU_DEV_PRESERVE_GDK_BACKEND";
+const ANDROID_JAVA_HOME_ENV = "GANBARU_ANDROID_JAVA_HOME";
 const ANDROID_JAVA_MAJOR = 21;
 
 /**
@@ -44,7 +44,7 @@ function hasConfigOverride(args) {
 }
 
 /**
- * Adds Ganbaru AI's dev identity to desktop dev runs by default.
+ * Adds Ganbaru's dev identity to desktop dev runs by default.
  *
  * @param {string[]} args CLI arguments.
  * @returns {string[]} Arguments to pass to the Tauri CLI.
@@ -148,7 +148,7 @@ function androidJavaHome(environment) {
  * Development runs default to one Cargo build job, and Android runs use the
  * supported JDK as `JAVA_HOME`. Development terminals can inherit an X11 override while the desktop session
  * itself uses Wayland. Letting GTK select the native backend keeps development
- * rendering on the same path as an installed Ganbaru AI build.
+ * rendering on the same path as an installed Ganbaru build.
  *
  * @param {string[]} args CLI arguments.
  * @param {NodeJS.ProcessEnv} environment Parent process environment.

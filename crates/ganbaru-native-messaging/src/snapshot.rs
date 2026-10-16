@@ -12,7 +12,7 @@ const STATE_FILE: &str = "distractions-state.json";
 const LIMIT_STATE_FILE: &str = "distractions-limit-state.json";
 const APP_STATE_FILE: &str = "app-state.json";
 const CONFIG_FILE: &str = "config.json";
-const APP_SQLITE_FILE: &str = "ganbaru-ai.sqlite";
+const APP_SQLITE_FILE: &str = "ganbaru.sqlite";
 const STALE_STATE_SECONDS: i64 = 75;
 const ACTIVE_STATE_STALE_SECONDS: i64 = 45;
 const LIMIT_STATE_STALE_SECONDS: i64 = 20;
@@ -131,14 +131,11 @@ pub(super) fn load_snapshot() -> StateSnapshot {
 }
 
 pub(super) fn config_dir_candidates() -> Vec<PathBuf> {
-    if let Ok(dir) = std::env::var("GANBARU_AI_CONFIG_DIR") {
+    if let Ok(dir) = std::env::var("GANBARU_CONFIG_DIR") {
         return vec![PathBuf::from(dir)];
     }
 
-    let ids = [
-        "org.opengrimoire.ganbaruai",
-        "org.opengrimoire.ganbaruai.dev",
-    ];
+    let ids = ["org.opengrimoire.ganbaru", "org.opengrimoire.ganbaru.dev"];
     let mut candidates = Vec::new();
 
     #[cfg(target_os = "linux")]
@@ -430,7 +427,7 @@ mod tests {
             local_date: "2026-10-02".into(),
             week_start_local_date: "2026-09-28".into(),
             updated_at: checked_at.to_rfc3339(),
-            database_path: "/tmp/vault/ganbaru-ai.sqlite".into(),
+            database_path: "/tmp/vault/ganbaru.sqlite".into(),
             configuration_digest: None,
             limits: vec![LimitStateItem {
                 id: "habit".into(),

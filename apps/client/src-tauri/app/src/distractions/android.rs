@@ -13,7 +13,7 @@ use sqlx::SqlitePool;
 use tauri::Manager;
 use tauri::Runtime;
 
-const ACTIVE_DB_URL: &str = "sqlite:ganbaru-ai.sqlite";
+const ACTIVE_DB_URL: &str = "sqlite:ganbaru.sqlite";
 const MAX_BATCH: usize = 200;
 const MAX_JOURNAL_EVENTS: usize = 2_000;
 #[cfg(target_os = "android")]

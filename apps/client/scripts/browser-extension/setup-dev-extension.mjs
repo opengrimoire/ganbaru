@@ -8,9 +8,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../../../..");
 const extensionDir = join(repoRoot, "extensions", "chromium");
 const devExtensionDir = join(repoRoot, "extensions", "chromium-dev");
-const devHostName = "org.opengrimoire.ganbaru_ai.distractions_dev";
+const devHostName = "org.opengrimoire.ganbaru.distractions_dev";
 
-const build = spawnSync("cargo", ["build", "--bin", "ganbaru-ai-native-messaging"], {
+const build = spawnSync("cargo", ["build", "--bin", "ganbaru-native-messaging"], {
   cwd: repoRoot,
   stdio: "inherit",
 });
@@ -29,11 +29,11 @@ cpSync(extensionDir, devExtensionDir, { recursive: true });
 
 const devManifestPath = join(devExtensionDir, "manifest.json");
 const devManifest = JSON.parse(readFileSync(devManifestPath, "utf8"));
-devManifest.name = "Ganbaru AI dev";
-devManifest.description = "Development build of the Ganbaru AI anti-distraction extension.";
+devManifest.name = "Ganbaru dev";
+devManifest.description = "Development build of the Ganbaru anti-distraction extension.";
 devManifest.action = {
   ...devManifest.action,
-  default_title: "Ganbaru AI dev",
+  default_title: "Ganbaru dev",
 };
 writeFileSync(devManifestPath, `${JSON.stringify(devManifest, null, 2)}\n`);
 
@@ -65,8 +65,8 @@ console.log(extensionDir);
 console.log("4. Optionally click Load unpacked again for the dev-test extension.");
 console.log(devExtensionDir);
 console.log("");
-console.log("After the Ganbaru AI card appears, copy its extension id and run:");
+console.log("After the Ganbaru card appears, copy its extension id and run:");
 console.log("node apps/client/scripts/browser-extension/install-native-host.mjs <extension-id> <chrome|chromium|brave|edge> app");
 console.log("");
-console.log("After the Ganbaru AI dev card appears, copy its extension id and run:");
+console.log("After the Ganbaru dev card appears, copy its extension id and run:");
 console.log("node apps/client/scripts/browser-extension/install-native-host.mjs <extension-id> <chrome|chromium|brave|edge> dev");

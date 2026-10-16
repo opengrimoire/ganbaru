@@ -37,12 +37,12 @@ fn normalizes_desktop_app_candidate_names() {
 
 #[test]
 fn recognizes_protected_desktop_app_and_process_names() {
-    assert!(super::is_protected_desktop_app_name("Ganbaru AI"));
+    assert!(super::is_protected_desktop_app_name("Ganbaru"));
     assert!(super::is_protected_desktop_app_name(
-        "org.opengrimoire.ganbaruai"
+        "org.opengrimoire.ganbaru"
     ));
     assert!(super::is_protected_desktop_app_name(
-        "org.opengrimoire.ganbaruai.dev"
+        "org.opengrimoire.ganbaru.dev"
     ));
     assert!(super::is_protected_desktop_app_name("Terminal"));
     assert!(super::is_protected_desktop_app_name("gnome-shell"));

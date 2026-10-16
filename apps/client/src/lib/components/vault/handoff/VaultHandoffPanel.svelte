@@ -61,8 +61,8 @@
   } = $props();
 
   const { t } = getLocalization();
-  const desktopQrAvailable = __GANBARU_AI_BUILD_PLATFORM__ !== "android";
-  const developmentLinuxBuild = import.meta.env.DEV && __GANBARU_AI_BUILD_PLATFORM__ === "linux";
+  const desktopQrAvailable = __GANBARU_BUILD_PLATFORM__ !== "android";
+  const developmentLinuxBuild = import.meta.env.DEV && __GANBARU_BUILD_PLATFORM__ === "linux";
   let status = $state<PairingStatus | null>(
     untrack(() => initialStatus ?? getCachedPairingStatus() ?? null),
   );
@@ -102,7 +102,7 @@
   const desktopNetworkAccessSetting = $derived(
     presentation === "settings"
       && platform === "desktop"
-      && __GANBARU_AI_BUILD_PLATFORM__ === "linux"
+      && __GANBARU_BUILD_PLATFORM__ === "linux"
       && networkAccess !== null,
   );
   const controlsBusy = $derived(

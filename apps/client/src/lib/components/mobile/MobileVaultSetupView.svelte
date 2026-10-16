@@ -30,8 +30,8 @@
 
   const { t } = getLocalization();
   const fallbackDefaultPath = import.meta.env.DEV
-    ? "Android app storage/Ganbaru AI Dev"
-    : "Android app storage/Ganbaru AI";
+    ? "Android app storage/Ganbaru Dev"
+    : "Android app storage/Ganbaru";
   let defaultLocation = $state<VaultDefaultLocation | null>(null);
   let busy = $state<"default" | "restore" | "import" | null>(null);
   let setupError = $state<SetupError | null>(null);

@@ -62,7 +62,7 @@ pub fn validate_external_folder_outside_vault<R: Runtime>(
     if paths_overlap(&selected, &vault_root) {
         return Err(ChatError::validation(
             "workingFolderPath",
-            "External project working folders cannot overlap the active Ganbaru AI folder",
+            "External project working folders cannot overlap the active Ganbaru folder",
         ));
     }
     Ok(())
@@ -117,7 +117,7 @@ mod tests {
 
     #[test]
     fn external_folder_overlap_rejects_vault_ancestors_descendants_and_identity() {
-        let vault = Path::new("data").join("Ganbaru AI");
+        let vault = Path::new("data").join("Ganbaru");
         let vault = vault.as_path();
         assert!(paths_overlap(vault, vault));
         assert!(paths_overlap(Path::new("data"), vault));

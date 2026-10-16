@@ -191,7 +191,7 @@
 
   function createChannel(): void {
     navigatorOpen = false;
-    paneEvents.dispatchEvent(new Event("ganbaru-ai:chat-new-channel"));
+    paneEvents.dispatchEvent(new Event("ganbaru:chat-new-channel"));
   }
 
   const membersOpen = $derived(membersChannelId !== null && membersChannelId === chat.selectedChannelId);
@@ -294,7 +294,7 @@
           {/if}
           {#if selectedChannel.topic && !explorerExpanded}<span class="hidden max-w-80 truncate px-1 text-xs text-muted-foreground @min-[760px]:inline" data-chat-channel-topic>{selectedChannel.topic}</span>{/if}
         {/if}
-        <button type="button" class="chat-inline-new-button" aria-label={t("chat.channels.createTitle")} data-chat-new-channel-button onclick={() => paneEvents.dispatchEvent(new Event("ganbaru-ai:chat-new-channel"))}><WorkspaceBreadcrumbTerminalIcon kind="plus" /></button>
+        <button type="button" class="chat-inline-new-button" aria-label={t("chat.channels.createTitle")} data-chat-new-channel-button onclick={() => paneEvents.dispatchEvent(new Event("ganbaru:chat-new-channel"))}><WorkspaceBreadcrumbTerminalIcon kind="plus" /></button>
       {:else}
         <div class="chat-context-segment"><MessageSquare size={identityIconSize} /><span>{t("chat.title")}</span></div>
       {/if}

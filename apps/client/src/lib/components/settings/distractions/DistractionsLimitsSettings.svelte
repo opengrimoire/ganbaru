@@ -42,7 +42,7 @@
   const { t } = getLocalization();
 
   onMount(() => {
-    if (__GANBARU_AI_BUILD_PLATFORM__ !== "android") {
+    if (__GANBARU_BUILD_PLATFORM__ !== "android") {
       void usage.refresh();
       return;
     }
@@ -65,7 +65,7 @@
   );
   /** Wayland sessions without foreground tracking fall back to open-app matching, so they are not reported. */
   const desktopTrackingUnavailable = $derived(
-    __GANBARU_AI_BUILD_PLATFORM__ !== "android"
+    __GANBARU_BUILD_PLATFORM__ !== "android"
       && tracksDesktopApps
       && !usage.foregroundStatus.available
       && !usage.foregroundStatus.reason?.toLowerCase().includes("wayland"),

@@ -43,8 +43,8 @@
   const localization = getLocalization();
   const { t } = localization;
   const fallbackDefaultPath = import.meta.env.DEV
-    ? "Documents/Ganbaru AI Dev"
-    : "Documents/Ganbaru AI";
+    ? "Documents/Ganbaru Dev"
+    : "Documents/Ganbaru";
   type SetupError = { raw: unknown; action: VaultErrorAction };
 
   let defaultLocation = $state<VaultDefaultLocation | null>(null);

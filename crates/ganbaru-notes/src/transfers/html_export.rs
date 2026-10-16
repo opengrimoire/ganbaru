@@ -826,7 +826,7 @@ fn manifest_json(input: ManifestInput<'_>) -> Result<String, String> {
     let value = json!({
         "object": "notes_html_archive_manifest",
         "schema_version": 1,
-        "source": "ganbaru-ai-notes",
+        "source": "ganbaru-notes",
         "root_page_id": input.root_page_id,
         "options": {
             "include_page_tree": input.options.include_page_tree,

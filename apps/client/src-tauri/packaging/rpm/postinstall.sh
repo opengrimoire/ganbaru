@@ -1,18 +1,18 @@
 #!/bin/sh
 set -eu
 
-source_key="/usr/lib/ganbaru-ai/package-repo/ganbaru-ai-package-repo.asc"
-public_key="/etc/pki/rpm-gpg/RPM-GPG-KEY-ganbaru-ai"
-dnf_repo_file="/etc/yum.repos.d/ganbaru-ai.repo"
-zypper_repo_file="/etc/zypp/repos.d/ganbaru-ai.repo"
-repo_url="https://opengrimoire.github.io/ganbaru-ai/packages/rpm"
+source_key="/usr/lib/ganbaru/package-repo/ganbaru-package-repo.asc"
+public_key="/etc/pki/rpm-gpg/RPM-GPG-KEY-ganbaru"
+dnf_repo_file="/etc/yum.repos.d/ganbaru.repo"
+zypper_repo_file="/etc/zypp/repos.d/ganbaru.repo"
+repo_url="https://opengrimoire.github.io/ganbaru/packages/rpm"
 
 write_repo_file() {
   repo_file="$1"
   mkdir -p "$(dirname "$repo_file")"
   cat > "$repo_file" <<EOF
-[ganbaru-ai]
-name=Ganbaru AI
+[ganbaru]
+name=Ganbaru
 baseurl=$repo_url
 enabled=1
 type=rpm-md

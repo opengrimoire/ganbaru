@@ -1,7 +1,7 @@
 [package]
 name = "ganbaru-working-folders"
 version = "0.1.5"
-description = "Ganbaru AI working-folder contracts and device state"
+description = "Ganbaru working-folder contracts and device state"
 authors.workspace = true
 license.workspace = true
 edition.workspace = true

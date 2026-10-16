@@ -214,7 +214,7 @@ pub(super) fn validate_limit_state(state: &DistractionsLimitState) -> Result<(),
             return Err("database_path must be absolute".to_string());
         }
         if path.file_name().and_then(|name| name.to_str()) != Some(vault::APP_SQLITE_FILE) {
-            return Err("database_path must point to ganbaru-ai.sqlite".to_string());
+            return Err("database_path must point to ganbaru.sqlite".to_string());
         }
     }
     let mut identities = HashSet::new();

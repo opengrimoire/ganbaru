@@ -174,7 +174,7 @@
   }
 
   function openReview(mode: "staged" | "unstaged", relativePath: string): void {
-    paneEvents.dispatchEvent(new CustomEvent("ganbaru-ai:chat-open-review", {
+    paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-open-review", {
       detail: { source: { kind: "working_tree", mode }, relativePath },
     }));
   }

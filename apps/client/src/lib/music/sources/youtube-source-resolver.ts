@@ -168,18 +168,18 @@ export async function resolveMusicYouTubeSource(
       if (event.source !== frame.contentWindow) return;
       const message = parseYouTubeHostMessage(event.data);
       if (!message || message.token !== token || message.load !== load) return;
-      if (message.type === "ganbaru-ai-youtube-error") {
+      if (message.type === "ganbaru-youtube-error") {
         const reason = message.code === 101 || message.code === 150
           ? "This video does not allow embedded playback."
           : "This video is unavailable or private.";
         finish(new Error(reason));
         return;
       }
-      if (message.type === "ganbaru-ai-youtube-playlist-error") {
+      if (message.type === "ganbaru-youtube-playlist-error") {
         finish(new Error("This playlist is unavailable, private, or empty."));
         return;
       }
-      if (source.kind === "youtube-playlist" && message.type === "ganbaru-ai-youtube-playlist") {
+      if (source.kind === "youtube-playlist" && message.type === "ganbaru-youtube-playlist") {
         if (resolvingMetadata) return;
         resolvingMetadata = true;
         dependencies.clearTimer(timerId);
@@ -189,7 +189,7 @@ export async function resolveMusicYouTubeSource(
         });
         return;
       }
-      if (source.kind === "youtube-video" && message.type === "ganbaru-ai-youtube-state") {
+      if (source.kind === "youtube-video" && message.type === "ganbaru-youtube-state") {
         finish({
           kind: "youtube-video",
           videoId: source.videoId,

@@ -4,7 +4,7 @@ use tauri::{
     plugin::{PluginApi, PluginHandle},
 };
 
-const PLUGIN_IDENTIFIER: &str = "org.opengrimoire.ganbaruai.mobile.notifications";
+const PLUGIN_IDENTIFIER: &str = "org.opengrimoire.ganbaru.mobile.notifications";
 
 #[derive(Debug)]
 pub struct MobileNotifications<R: Runtime>(PluginHandle<R>);
@@ -257,7 +257,7 @@ impl<R: Runtime> MobileNotifications<R> {
     }
 }
 
-/// Access Ganbaru AI's Android notification capability bridge.
+/// Access Ganbaru's Android notification capability bridge.
 pub trait MobileNotificationsExt<R: Runtime> {
     fn mobile_notifications(&self) -> &MobileNotifications<R>;
 }

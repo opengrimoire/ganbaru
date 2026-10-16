@@ -3,8 +3,8 @@ set -eu
 
 case "${1:-}" in
   purge)
-    rm -f /etc/apt/sources.list.d/ganbaru-ai.sources
-    rm -f /usr/share/keyrings/ganbaru-ai-package-repo.asc
+    rm -f /etc/apt/sources.list.d/ganbaru.sources
+    rm -f /usr/share/keyrings/ganbaru-package-repo.asc
     ;;
 esac
 

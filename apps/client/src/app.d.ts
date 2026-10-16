@@ -38,9 +38,9 @@ declare global {
     GanbaruAndroidTransition?: GanbaruAndroidTransitionBridge;
   }
 
-  const __GANBARU_AI_BUILD_REF__: string;
-  const __GANBARU_AI_GITHUB_REPOSITORY__: string;
-  const __GANBARU_AI_BUILD_PLATFORM__: "linux" | "windows" | "macos" | "android" | "ios";
+  const __GANBARU_BUILD_REF__: string;
+  const __GANBARU_GITHUB_REPOSITORY__: string;
+  const __GANBARU_BUILD_PLATFORM__: "linux" | "windows" | "macos" | "android" | "ios";
 
   // eslint-disable-next-line no-var
   var Temporal: typeof TemporalPolyfill;

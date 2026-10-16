@@ -8,7 +8,7 @@ pub use ganbaru_db::DatabasePoolRegistry as DatabaseState;
 #[cfg(desktop)]
 pub const BENCHMARK_SQLITE_URL: &str = "sqlite:benchmark.sqlite";
 
-const ALLOWED_SQLITE_FILES: &[&str] = &["ganbaru-ai.sqlite", "benchmark.sqlite"];
+const ALLOWED_SQLITE_FILES: &[&str] = &["ganbaru.sqlite", "benchmark.sqlite"];
 static VAULT_CONNECTION_GATE: LazyLock<Arc<tokio::sync::RwLock<()>>> =
     LazyLock::new(|| Arc::new(tokio::sync::RwLock::new(())));
 

@@ -54,7 +54,7 @@ const keyAlias = requiredEnvironmentValue("ANDROID_KEY_ALIAS");
 const storePassword = requiredEnvironmentValue("ANDROID_KEYSTORE_PASSWORD");
 const keyPassword = requiredEnvironmentValue("ANDROID_KEY_PASSWORD");
 const keystore = decodeKeystore(requiredEnvironmentValue("ANDROID_KEYSTORE_BASE64"));
-const keystorePath = path.join(runnerTemp, "ganbaru-ai-android-release.jks");
+const keystorePath = path.join(runnerTemp, "ganbaru-android-release.jks");
 
 mkdirSync(ANDROID_ROOT, { recursive: true });
 writeFileSync(keystorePath, keystore, { mode: 0o600 });

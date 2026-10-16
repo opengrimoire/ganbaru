@@ -288,13 +288,13 @@
     };
     const stop = () => { void stopAssignment(); };
     document.addEventListener("selectionchange", selectionChanged);
-    paneEvents.addEventListener("ganbaru-ai:chat-stop-requested", stop);
+    paneEvents.addEventListener("ganbaru:chat-stop-requested", stop);
     if (focusEditorOnMount) {
       editorController.focus({ start: selectionStart, end: selectionEnd });
     }
     return () => {
       document.removeEventListener("selectionchange", selectionChanged);
-      paneEvents.removeEventListener("ganbaru-ai:chat-stop-requested", stop);
+      paneEvents.removeEventListener("ganbaru:chat-stop-requested", stop);
       editorController = null;
     };
   });
@@ -670,7 +670,7 @@
     if (candidate.kind === "participant" && candidate.needsMembership) {
       persist();
       closePicker();
-      paneEvents.dispatchEvent(new CustomEvent("ganbaru-ai:chat-configure-teammate", {
+      paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-configure-teammate", {
         detail: {
           participantId: candidate.participant.id,
           channelId: chat.selectedChannel?.id,
@@ -864,7 +864,7 @@
     const channelId = disclosureBlocker?.sourceChannelId;
     if (!channelId) return;
     persist();
-    paneEvents.dispatchEvent(new CustomEvent("ganbaru-ai:chat-manage-members", {
+    paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-manage-members", {
       detail: { channelId },
     }));
   }

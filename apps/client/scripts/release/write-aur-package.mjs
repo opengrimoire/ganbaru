@@ -9,12 +9,12 @@ const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CLIENT_ROOT = path.resolve(SCRIPT_DIR, "..", "..");
 const REPO_ROOT = path.resolve(CLIENT_ROOT, "..", "..");
 const ASSET_DIR = path.join(REPO_ROOT, "dist", "release-assets");
-const AUR_DIR = process.env.GANBARU_AI_AUR_DIR?.trim()
-  ? path.resolve(process.env.GANBARU_AI_AUR_DIR)
-  : path.join(REPO_ROOT, "dist", "aur", "ganbaru-ai-bin");
-const RELEASE_REPOSITORY = process.env.GANBARU_AI_RELEASE_REPOSITORY?.trim()
-  || "opengrimoire/ganbaru-ai";
-const PACKAGE_NAME = "ganbaru-ai-bin";
+const AUR_DIR = process.env.GANBARU_AUR_DIR?.trim()
+  ? path.resolve(process.env.GANBARU_AUR_DIR)
+  : path.join(REPO_ROOT, "dist", "aur", "ganbaru-bin");
+const RELEASE_REPOSITORY = process.env.GANBARU_RELEASE_REPOSITORY?.trim()
+  || "opengrimoire/ganbaru";
+const PACKAGE_NAME = "ganbaru-bin";
 const PACKAGE_DESCRIPTION =
   "Local, privacy-first productivity app for reducing procrastination and burnout";
 const MAINTAINER = "Victor Benito Garcia Rocha <victorbenitogr@gmail.com>";
@@ -64,7 +64,7 @@ function sha256(filePath) {
  * @returns {string} Absolute Debian package path.
  */
 function debPackage(version) {
-  const expectedName = `ganbaru-ai_${version}_amd64.deb`;
+  const expectedName = `ganbaru_${version}_amd64.deb`;
   const assetPath = path.join(ASSET_DIR, expectedName);
   if (statSync(assetPath, { throwIfNoEntry: false })?.isFile()) {
     return assetPath;
@@ -84,9 +84,9 @@ function writeAurFiles(version, checksum) {
   mkdirSync(AUR_DIR, { recursive: true });
 
   const sourceUrl =
-    `https://github.com/${RELEASE_REPOSITORY}/releases/download/app-v\${pkgver}/ganbaru-ai_\${pkgver}_amd64.deb`;
+    `https://github.com/${RELEASE_REPOSITORY}/releases/download/app-v\${pkgver}/ganbaru_\${pkgver}_amd64.deb`;
   const resolvedSourceUrl =
-    `https://github.com/${RELEASE_REPOSITORY}/releases/download/app-v${version}/ganbaru-ai_${version}_amd64.deb`;
+    `https://github.com/${RELEASE_REPOSITORY}/releases/download/app-v${version}/ganbaru_${version}_amd64.deb`;
 
   writeFileSync(
     path.join(AUR_DIR, "PKGBUILD"),
@@ -107,22 +107,22 @@ function writeAurFiles(version, checksum) {
       "  'webkit2gtk-4.1'",
       ")",
       "makedepends=('libarchive')",
-      "provides=('ganbaru-ai')",
-      "conflicts=('ganbaru-ai')",
+      "provides=('ganbaru')",
+      "conflicts=('ganbaru')",
       "options=('!strip' '!debug')",
-      `source_x86_64=("ganbaru-ai_\${pkgver}_amd64.deb::${sourceUrl}")`,
+      `source_x86_64=("ganbaru_\${pkgver}_amd64.deb::${sourceUrl}")`,
       `sha256sums_x86_64=('${checksum}')`,
-      `noextract=("ganbaru-ai_\${pkgver}_amd64.deb")`,
+      `noextract=("ganbaru_\${pkgver}_amd64.deb")`,
       "",
       "prepare() {",
-      '  bsdtar -xf "ganbaru-ai_${pkgver}_amd64.deb"',
+      '  bsdtar -xf "ganbaru_${pkgver}_amd64.deb"',
       "}",
       "",
       "package() {",
       '  bsdtar -xf data.tar.* -C "$pkgdir"',
       "",
-      '  rm -rf "$pkgdir/usr/lib/ganbaru-ai/package-repo"',
-      '  rmdir "$pkgdir/usr/lib/ganbaru-ai" 2>/dev/null || true',
+      '  rm -rf "$pkgdir/usr/lib/ganbaru/package-repo"',
+      '  rmdir "$pkgdir/usr/lib/ganbaru" 2>/dev/null || true',
       '  rmdir "$pkgdir/usr/lib" 2>/dev/null || true',
       "}",
       "",
@@ -146,12 +146,12 @@ function writeAurFiles(version, checksum) {
       "\tdepends = hicolor-icon-theme",
       "\tdepends = libayatana-appindicator",
       "\tdepends = webkit2gtk-4.1",
-      "\tprovides = ganbaru-ai",
-      "\tconflicts = ganbaru-ai",
-      `\tnoextract = ganbaru-ai_${version}_amd64.deb`,
+      "\tprovides = ganbaru",
+      "\tconflicts = ganbaru",
+      `\tnoextract = ganbaru_${version}_amd64.deb`,
       "\toptions = !strip",
       "\toptions = !debug",
-      `\tsource_x86_64 = ganbaru-ai_${version}_amd64.deb::${resolvedSourceUrl}`,
+      `\tsource_x86_64 = ganbaru_${version}_amd64.deb::${resolvedSourceUrl}`,
       `\tsha256sums_x86_64 = ${checksum}`,
       "",
       `pkgname = ${PACKAGE_NAME}`,

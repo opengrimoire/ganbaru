@@ -65,7 +65,7 @@
   const usage = getDistractionsUsage();
   const theme = getTheme();
   const { t } = getLocalization();
-  const isAndroid = __GANBARU_AI_BUILD_PLATFORM__ === "android";
+  const isAndroid = __GANBARU_BUILD_PLATFORM__ === "android";
   const SOURCE_COLOR_GRID_COLUMNS = 4;
   const SOURCE_COLOR_COLUMN_ORDER = [0, 3, 1, 2] as const;
   const SOURCE_COLOR_PICK_ORDER = createSourceColorPickOrder();

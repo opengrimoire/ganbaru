@@ -24,7 +24,7 @@
     license: () => string;
   }
 
-  const SOUND_FILE_BASE_URL = "https://github.com/opengrimoire/ganbaru-ai/blob/main/apps/client/static/sfx/";
+  const SOUND_FILE_BASE_URL = "https://github.com/opengrimoire/ganbaru/blob/main/apps/client/static/sfx/";
   const FREESOUND_URL = "https://freesound.org/";
   const linkButtonClass =
     "inline-flex min-w-0 max-w-full items-center gap-1 text-left text-primary underline-offset-2 transition-colors hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-ring";

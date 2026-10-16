@@ -137,7 +137,7 @@ export function createMusicYouTubeAdapter(
   ): void {
     if (!state.youtubeFrame?.contentWindow || !state.youtubeHostToken) return;
     state.youtubeFrame.contentWindow.postMessage({
-      type: "ganbaru-ai-youtube-command",
+      type: "ganbaru-youtube-command",
       token: state.youtubeHostToken,
       ...payload,
     }, state.youtubeHostUrl ? new URL(state.youtubeHostUrl).origin : "*");
@@ -314,11 +314,11 @@ export function createMusicYouTubeAdapter(
       || message.token !== state.youtubeHostToken
       || message.load !== hostLoadId
     ) return;
-    if (message.type === "ganbaru-ai-youtube-ready") {
+    if (message.type === "ganbaru-youtube-ready") {
       state.youtubeHostReady = true;
       return;
     }
-    if (message.type === "ganbaru-ai-youtube-error") {
+    if (message.type === "ganbaru-youtube-error") {
       context.setPlaybackStarting(false);
       const failedPlaylist = resolvingPlaylist;
       clearPlaylistResolution();
@@ -349,11 +349,11 @@ export function createMusicYouTubeAdapter(
       void context.persist();
       return;
     }
-    if (message.type === "ganbaru-ai-youtube-playlist") {
+    if (message.type === "ganbaru-youtube-playlist") {
       void applyPlaylist(message);
       return;
     }
-    if (message.type === "ganbaru-ai-youtube-playlist-error") {
+    if (message.type === "ganbaru-youtube-playlist-error") {
       failPlaylistResolution(message.playlistId);
       return;
     }

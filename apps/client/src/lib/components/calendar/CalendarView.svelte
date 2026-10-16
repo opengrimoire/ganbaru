@@ -883,7 +883,7 @@
       musicInspectionEventId = selected.id;
       void handleEventClick(selected, new DOMRect(window.innerWidth / 2, window.innerHeight / 3, 0, 0));
     };
-    window.addEventListener("ganbaru-ai:inspect-music-assignment", inspectMusicAssignment);
+    window.addEventListener("ganbaru:inspect-music-assignment", inspectMusicAssignment);
 
     tick().then(() => {
       requestAnimationFrame(() => {
@@ -915,7 +915,7 @@
       unregisterNav();
       unregisterMusicInspection();
       removeNavigationListeners();
-      window.removeEventListener("ganbaru-ai:inspect-music-assignment", inspectMusicAssignment);
+      window.removeEventListener("ganbaru:inspect-music-assignment", inspectMusicAssignment);
       targetController.clearPending();
     };
   });

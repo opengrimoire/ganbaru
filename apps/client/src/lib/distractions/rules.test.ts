@@ -109,11 +109,11 @@ describe("normalizeDistractionsAppName", () => {
     expect(normalizeDistractionsAppName("   ")).toBeNull();
   });
 
-  it("recognizes protected Ganbaru AI app names", () => {
-    expect(isProtectedDistractionsDesktopAppName("Ganbaru AI")).toBe(true);
-    expect(isProtectedDistractionsDesktopAppName("ganbaru-ai")).toBe(true);
-    expect(isProtectedDistractionsDesktopAppName("org.opengrimoire.ganbaruai")).toBe(true);
-    expect(isProtectedDistractionsDesktopAppName("org.opengrimoire.ganbaruai.dev")).toBe(true);
+  it("recognizes protected Ganbaru app names", () => {
+    expect(isProtectedDistractionsDesktopAppName("Ganbaru")).toBe(true);
+    expect(isProtectedDistractionsDesktopAppName("ganbaru")).toBe(true);
+    expect(isProtectedDistractionsDesktopAppName("org.opengrimoire.ganbaru")).toBe(true);
+    expect(isProtectedDistractionsDesktopAppName("org.opengrimoire.ganbaru.dev")).toBe(true);
     expect(isProtectedDistractionsDesktopAppName("Steam")).toBe(false);
   });
 
@@ -290,7 +290,7 @@ describe("normalizeDistractionsConfig", () => {
         blockDuringFocus: false,
         blockedApps: [
           { name: "Steam" },
-          { name: "Ganbaru AI" },
+          { name: "Ganbaru" },
           { name: " steam ", enabled: false },
           { name: "Discord", enabled: false },
           { name: "Calculator", matchNames: ["gnome-calculator"] },

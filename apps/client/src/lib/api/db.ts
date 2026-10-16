@@ -18,7 +18,7 @@ import {
  */
 let cachedUrl: string | null = null;
 
-const USER_DB_URL = "sqlite:ganbaru-ai.sqlite";
+const USER_DB_URL = "sqlite:ganbaru.sqlite";
 const BENCHMARK_DB_URL = "sqlite:benchmark.sqlite";
 
 /** Minimal shape needed for the URL decision. The full state lives in `benchmark/types.ts`. */

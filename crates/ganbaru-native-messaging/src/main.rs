@@ -27,8 +27,8 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
 }
 
 // Chromium native messaging host names allow underscores but not hyphens.
-const HOST_NAME: &str = "org.opengrimoire.ganbaru_ai.distractions";
-const DEV_HOST_NAME: &str = "org.opengrimoire.ganbaru_ai.distractions_dev";
+const HOST_NAME: &str = "org.opengrimoire.ganbaru.distractions";
+const DEV_HOST_NAME: &str = "org.opengrimoire.ganbaru.distractions_dev";
 const EXTENSION_CONNECTION_FILE: &str = "distractions-extension-status.json";
 
 #[derive(Debug, Deserialize)]
@@ -84,7 +84,7 @@ fn main() {
             host: None,
             matched_rule_name: None,
             reason: Some(reason),
-            environment_name: "Ganbaru AI",
+            environment_name: "Ganbaru",
         },
     };
 
@@ -94,7 +94,7 @@ fn main() {
 }
 
 fn native_host_name() -> String {
-    match std::env::var("GANBARU_AI_NATIVE_HOST_NAME") {
+    match std::env::var("GANBARU_NATIVE_HOST_NAME") {
         Ok(value) if value == DEV_HOST_NAME => value,
         _ => HOST_NAME.to_string(),
     }
@@ -245,7 +245,7 @@ fn response_from_snapshot(snapshot: &StateSnapshot) -> NativeResponse {
         host: None,
         matched_rule_name: None,
         reason,
-        environment_name: "Ganbaru AI",
+        environment_name: "Ganbaru",
     }
 }
 

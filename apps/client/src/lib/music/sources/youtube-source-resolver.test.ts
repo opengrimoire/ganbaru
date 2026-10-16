@@ -31,7 +31,7 @@ describe("YouTube source resolver", () => {
   it("resolves video metadata through the isolated trusted host", async () => {
     const source = youtubeVideoSourceFromId("abcDEF_1234");
     const preview = await resolveMusicYouTubeSource(source, new AbortController().signal, 1_000, dependencies({
-      type: "ganbaru-ai-youtube-state",
+      type: "ganbaru-youtube-state",
       status: "paused",
       positionMs: 0,
       durationMs: 95_000,
@@ -53,7 +53,7 @@ describe("YouTube source resolver", () => {
     if (parsed.source?.kind !== "youtube-playlist") throw new Error("Expected a playlist source");
     const preview = await resolveMusicYouTubeSource(parsed.source, new AbortController().signal, 1_000, {
       ...dependencies({
-        type: "ganbaru-ai-youtube-playlist",
+        type: "ganbaru-youtube-playlist",
         playlistId: "PLdR7m7PFLzQ5uOyE0psTM3pCleLxeKaCj",
         videoIds: ["01L4CFQdrWA", "O4iot2Jy_D0"],
         index: 0,
@@ -78,7 +78,7 @@ describe("YouTube source resolver", () => {
   it("reports embedding restrictions and always removes the resolver frame", async () => {
     const source = youtubeVideoSourceFromId("abcDEF_1234");
     await expect(resolveMusicYouTubeSource(source, new AbortController().signal, 1_000, dependencies({
-      type: "ganbaru-ai-youtube-error",
+      type: "ganbaru-youtube-error",
       code: 150,
     }))).rejects.toThrow("does not allow embedded playback");
     expect(document.querySelector("iframe")).toBeNull();

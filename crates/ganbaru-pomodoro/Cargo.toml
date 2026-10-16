@@ -1,7 +1,7 @@
 [package]
 name = "ganbaru-pomodoro"
 version = "0.1.5"
-description = "Ganbaru AI focus persistence, validation, and recovery"
+description = "Ganbaru focus persistence, validation, and recovery"
 authors.workspace = true
 license.workspace = true
 edition.workspace = true

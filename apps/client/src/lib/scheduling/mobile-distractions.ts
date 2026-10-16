@@ -6,7 +6,7 @@ const PLUGIN_COMMAND = "plugin:ganbaru-mobile-distractions";
 
 /** Persist settings and send localized text. Rust owns rule derivation and accounting. */
 export async function publishMobileDistractionsConfig(): Promise<void> {
-  if (__GANBARU_AI_BUILD_PLATFORM__ !== "android") return;
+  if (__GANBARU_BUILD_PLATFORM__ !== "android") return;
   await flushConfig();
   await invoke("distractions_mobile_update_copy", {
     copy: {

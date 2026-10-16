@@ -21,7 +21,7 @@ fn item(identity: &str) -> MusicInterchangeItem {
 pub(super) fn request(conflict: MusicImportPlaylistConflict) -> MusicInterchangeImportRequest {
     MusicInterchangeImportRequest {
         document: MusicInterchangeDocument {
-            format: "ganbaru-ai/music-playlists".to_string(),
+            format: "ganbaru/music-playlists".to_string(),
             version: 1,
             exported_at: 1_700_000_000_000,
             roots: vec![MusicInterchangeRoot {

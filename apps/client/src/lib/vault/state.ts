@@ -288,33 +288,33 @@ export function formatVaultError(
     return t("dataFolderError.database");
   }
 
-  if (lower.includes("selected folder is not empty and is not a ganbaru ai folder")) {
+  if (lower.includes("selected folder is not empty and is not a ganbaru folder")) {
     if (action === "default") {
       return t("dataFolderError.defaultNotValid");
     }
     return t("dataFolderError.folderNotEmpty");
   }
 
-  if (lower.includes("read ganbaru ai folder marker")) {
+  if (lower.includes("read ganbaru folder marker")) {
     return t("dataFolderError.missingMarker");
   }
 
-  if (lower.includes("parse ganbaru ai folder marker")) {
+  if (lower.includes("parse ganbaru folder marker")) {
     return t("dataFolderError.damagedMarker");
   }
 
-  if (lower.includes("unsupported ganbaru ai folder schema version")) {
+  if (lower.includes("unsupported ganbaru folder schema version")) {
     return t("dataFolderError.newerSchema");
   }
 
-  if (lower.includes("selected folder is not a ganbaru ai folder")) {
+  if (lower.includes("selected folder is not a ganbaru folder")) {
     return t("dataFolderError.notGanbaruFolder");
   }
 
   if (
     containsAny(lower, [
-      "failed to inspect ganbaru ai folder path",
-      "canonicalize ganbaru ai folder path",
+      "failed to inspect ganbaru folder path",
+      "canonicalize ganbaru folder path",
       "no such file",
       "not found",
     ])

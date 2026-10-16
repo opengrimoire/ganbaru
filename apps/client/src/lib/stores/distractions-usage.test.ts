@@ -42,7 +42,7 @@ describe("Distractions native totals presentation", () => {
   });
 
   it("renders Android totals through the shared reader without submitting Guardian rules or samples", async () => {
-    vi.stubGlobal("__GANBARU_AI_BUILD_PLATFORM__", "android");
+    vi.stubGlobal("__GANBARU_BUILD_PLATFORM__", "android");
     vi.mocked(invoke).mockResolvedValue(projection());
     const { getDistractionsUsage } = await import("./distractions-usage.svelte");
     const usage = getDistractionsUsage();

@@ -13,8 +13,8 @@ function getModule(): MobileUpdatesModule {
 }
 
 beforeAll(async () => {
-  vi.stubGlobal("__GANBARU_AI_BUILD_REF__", "0.1.5+abc123");
-  vi.stubGlobal("__GANBARU_AI_GITHUB_REPOSITORY__", "opengrimoire/ganbaru-ai");
+  vi.stubGlobal("__GANBARU_BUILD_REF__", "0.1.5+abc123");
+  vi.stubGlobal("__GANBARU_GITHUB_REPOSITORY__", "opengrimoire/ganbaru");
   module = await import("./mobile-updates.svelte");
 });
 
@@ -38,21 +38,21 @@ describe("mobile version parsing", () => {
     const release = getModule().parseReleasePayload(
       {
         tag_name: "app-v0.2.0",
-        html_url: "https://github.com/opengrimoire/ganbaru-ai/releases/tag/app-v0.2.0",
+        html_url: "https://github.com/opengrimoire/ganbaru/releases/tag/app-v0.2.0",
         published_at: "2026-09-12T12:00:00Z",
         assets: [
           {
-            name: "Ganbaru_AI_0.2.0_android_universal.apk",
+            name: "Ganbaru_0.2.0_android_universal.apk",
             browser_download_url:
-              "https://github.com/opengrimoire/ganbaru-ai/releases/download/app-v0.2.0/Ganbaru_AI_0.2.0_android_universal.apk",
+              "https://github.com/opengrimoire/ganbaru/releases/download/app-v0.2.0/Ganbaru_0.2.0_android_universal.apk",
           },
         ],
       },
-      "opengrimoire/ganbaru-ai",
+      "opengrimoire/ganbaru",
     );
 
     expect(release?.apkDownloadUrl).toBe(
-      "https://github.com/opengrimoire/ganbaru-ai/releases/download/app-v0.2.0/Ganbaru_AI_0.2.0_android_universal.apk",
+      "https://github.com/opengrimoire/ganbaru/releases/download/app-v0.2.0/Ganbaru_0.2.0_android_universal.apk",
     );
   });
 
@@ -62,12 +62,12 @@ describe("mobile version parsing", () => {
         tag_name: "app-v0.2.0",
         assets: [
           {
-            name: "Ganbaru_AI_0.2.0_android_universal.apk",
+            name: "Ganbaru_0.2.0_android_universal.apk",
             browser_download_url: "https://example.com/update.apk",
           },
         ],
       },
-      "opengrimoire/ganbaru-ai",
+      "opengrimoire/ganbaru",
     );
 
     expect(release?.apkDownloadUrl).toBeNull();

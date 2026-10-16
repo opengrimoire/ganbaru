@@ -298,7 +298,7 @@ pub(super) fn reload_application_shell_after_ownership_change(
         .ok_or_else(|| "main application window is unavailable".to_string())?;
     window
         .eval(
-            "if (window.dispatchEvent(new Event('ganbaru-ai:mobile-ownership-reload-requested', { cancelable: true }))) window.location.reload()",
+            "if (window.dispatchEvent(new Event('ganbaru:mobile-ownership-reload-requested', { cancelable: true }))) window.location.reload()",
         )
         .map_err(|error| format!("reload application after ownership change: {error}"))
 }

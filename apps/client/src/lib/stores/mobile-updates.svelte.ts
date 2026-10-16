@@ -130,7 +130,7 @@ function parseApkDownloadUrl(
 ): string | null {
   if (!Array.isArray(payload.assets)) return null;
 
-  const expectedName = `Ganbaru_AI_${version}_android_universal.apk`;
+  const expectedName = `Ganbaru_${version}_android_universal.apk`;
   const expectedUrl =
     `https://github.com/${repository}/releases/download/${encodeURIComponent(tagName)}/${encodeURIComponent(expectedName)}`;
 

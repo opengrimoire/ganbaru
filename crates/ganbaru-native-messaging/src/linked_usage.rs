@@ -40,14 +40,14 @@ pub(super) fn record_usage_sample(
     sample: UsageSample,
 ) -> Result<(), String> {
     let config_dir =
-        config_dir.ok_or_else(|| "Ganbaru AI device storage is unavailable".to_string())?;
+        config_dir.ok_or_else(|| "Ganbaru device storage is unavailable".to_string())?;
     let vault_path =
-        vault_path.ok_or_else(|| "active Ganbaru AI folder is unavailable".to_string())?;
+        vault_path.ok_or_else(|| "active Ganbaru folder is unavailable".to_string())?;
     let state: DeviceState = read_json(&config_dir.join(APP_STATE_FILE), "device state")?;
     let device_id = state
         .device_id
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| "Ganbaru AI device identity is unavailable".to_string())?;
+        .ok_or_else(|| "Ganbaru device identity is unavailable".to_string())?;
     let manifest: VaultManifest = read_json(&vault_path.join("vault.json"), "vault identity")?;
     if manifest.vault_id.trim().is_empty() {
         return Err("active vault identity is unavailable".to_string());

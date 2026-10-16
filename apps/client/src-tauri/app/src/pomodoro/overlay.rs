@@ -45,7 +45,7 @@ fn screensaver_inhibit() -> Option<u32> {
             "/org/freedesktop/ScreenSaver",
             "--method",
             "org.freedesktop.ScreenSaver.Inhibit",
-            "Ganbaru AI",
+            "Ganbaru",
             "Break timer active",
         ],
         1024,
@@ -915,7 +915,7 @@ fn reconcile_overlay_windows(
                 app,
                 &label,
                 blocker_url(visual_state),
-                "Ganbaru AI blocker",
+                "Ganbaru blocker",
                 monitor,
                 background_color,
                 false,
@@ -948,7 +948,7 @@ fn reconcile_overlay_windows(
                 app,
                 POMODORO_OVERLAY_MAIN_LABEL,
                 overlay_url(kind, context),
-                "Ganbaru AI pomodoro",
+                "Ganbaru pomodoro",
                 primary_monitor,
                 background_color,
                 true,
@@ -961,7 +961,7 @@ fn reconcile_overlay_windows(
                 app,
                 POMODORO_OVERLAY_MAIN_LABEL,
                 overlay_url(kind, context),
-                "Ganbaru AI pomodoro",
+                "Ganbaru pomodoro",
                 primary_monitor,
                 background_color,
                 true,
@@ -1032,7 +1032,7 @@ fn show_overlay(app: tauri::AppHandle, kind: OverlayKind, scope: (u64, i64)) -> 
                 &app_for_setup,
                 &label,
                 blocker_url(visual_state),
-                "Ganbaru AI blocker",
+                "Ganbaru blocker",
                 monitor,
                 background_color,
                 false,
@@ -1047,7 +1047,7 @@ fn show_overlay(app: tauri::AppHandle, kind: OverlayKind, scope: (u64, i64)) -> 
             &app_for_setup,
             POMODORO_OVERLAY_MAIN_LABEL,
             overlay_url(kind, &context),
-            "Ganbaru AI pomodoro",
+            "Ganbaru pomodoro",
             primary_monitor,
             background_color,
             true,
@@ -1425,10 +1425,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("system clock is before Unix epoch")
             .as_nanos();
-        std::env::temp_dir().join(format!(
-            "ganbaru-ai-{name}-{}-{now}.json",
-            std::process::id()
-        ))
+        std::env::temp_dir().join(format!("ganbaru-{name}-{}-{now}.json", std::process::id()))
     }
 
     #[test]

@@ -4,7 +4,7 @@ use tauri::{
     plugin::{PluginApi, PluginHandle},
 };
 
-const PLUGIN_IDENTIFIER: &str = "org.opengrimoire.ganbaruai.mobile.media";
+const PLUGIN_IDENTIFIER: &str = "org.opengrimoire.ganbaru.mobile.media";
 
 #[derive(Debug)]
 pub struct MobileMedia<R: Runtime>(PluginHandle<R>);
@@ -191,7 +191,7 @@ impl<R: Runtime> MobileMedia<R> {
     }
 }
 
-/// Access Ganbaru AI's Android media adapter from managed Tauri state.
+/// Access Ganbaru's Android media adapter from managed Tauri state.
 pub trait MobileMediaExt<R: Runtime> {
     fn mobile_media(&self) -> &MobileMedia<R>;
 }

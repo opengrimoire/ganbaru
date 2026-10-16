@@ -130,9 +130,9 @@
     const stop = () => void stopTurn();
     const continuePlan = () => preparePlanTurn("plan");
     const implementPlan = () => preparePlanTurn("build");
-    paneEvents.addEventListener("ganbaru-ai:chat-stop-requested", stop);
-    paneEvents.addEventListener("ganbaru-ai:chat-continue-plan", continuePlan);
-    paneEvents.addEventListener("ganbaru-ai:chat-implement-plan", implementPlan);
+    paneEvents.addEventListener("ganbaru:chat-stop-requested", stop);
+    paneEvents.addEventListener("ganbaru:chat-continue-plan", continuePlan);
+    paneEvents.addEventListener("ganbaru:chat-implement-plan", implementPlan);
     if (editorRoot) {
       editorController = new ChatComposerEditor(
         editorRoot,
@@ -161,9 +161,9 @@
       restoreProviderCommand = activeProviderCommand;
       document.removeEventListener("selectionchange", selectionChanged);
       editorController = undefined;
-      paneEvents.removeEventListener("ganbaru-ai:chat-stop-requested", stop);
-      paneEvents.removeEventListener("ganbaru-ai:chat-continue-plan", continuePlan);
-      paneEvents.removeEventListener("ganbaru-ai:chat-implement-plan", implementPlan);
+      paneEvents.removeEventListener("ganbaru:chat-stop-requested", stop);
+      paneEvents.removeEventListener("ganbaru:chat-continue-plan", continuePlan);
+      paneEvents.removeEventListener("ganbaru:chat-implement-plan", implementPlan);
       if (stopTimer !== null) clearTimeout(stopTimer);
       void chat.flushComposer().catch(() => undefined);
     };
@@ -382,7 +382,7 @@
         openComposerPanel("status");
         break;
       case "/changes":
-        paneEvents.dispatchEvent(new CustomEvent("ganbaru-ai:chat-open-review"));
+        paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-open-review"));
         break;
     }
     queueMicrotask(() => editorController?.focus());

@@ -39,7 +39,7 @@
 
   function openChanges(relativePath: string | null): void {
     if (!sourceThreadId || !sourceWorkingFolderId) return;
-    paneEvents.dispatchEvent(new CustomEvent("ganbaru-ai:chat-open-review", {
+    paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-open-review", {
       detail: {
         source: { kind: "provider_turn", turnId },
         relativePath,

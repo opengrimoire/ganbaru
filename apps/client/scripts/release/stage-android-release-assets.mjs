@@ -52,8 +52,8 @@ if (typeof packageJson.version !== "string" || !/^[0-9A-Za-z.+-]+$/u.test(packag
 
 mkdirSync(ASSET_DIR, { recursive: true });
 for (const [extension, targetName] of [
-  [".apk", `Ganbaru_AI_${packageJson.version}_android_universal.apk`],
-  [".aab", `Ganbaru_AI_${packageJson.version}_android_universal.aab`],
+  [".apk", `Ganbaru_${packageJson.version}_android_universal.apk`],
+  [".aab", `Ganbaru_${packageJson.version}_android_universal.aab`],
 ]) {
   const source = requireArtifact(extension);
   const target = path.join(ASSET_DIR, targetName);

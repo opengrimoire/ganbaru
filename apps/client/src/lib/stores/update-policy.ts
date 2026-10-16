@@ -153,7 +153,7 @@ function fallbackUpdateInstallContext(repository: string): UpdateInstallContext 
     packageManager: "fallback",
     copyCommand: null,
     releasePageUrl: latestReleasePageUrl(repository)
-      ?? "https://github.com/opengrimoire/ganbaru-ai/releases/latest",
+      ?? "https://github.com/opengrimoire/ganbaru/releases/latest",
   };
 }
 

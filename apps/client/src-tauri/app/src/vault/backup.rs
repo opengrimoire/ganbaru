@@ -70,7 +70,7 @@ fn backup_file_name() -> String {
     let timestamp = timestamp
         .to_rfc3339_opts(SecondsFormat::Secs, true)
         .replace(':', "-");
-    format!("ganbaru-ai-backup-{timestamp}.{BACKUP_EXTENSION}")
+    format!("ganbaru-backup-{timestamp}.{BACKUP_EXTENSION}")
 }
 
 #[cfg(target_os = "android")]
@@ -115,16 +115,16 @@ fn collect_archive_entries(
 
     for child in children {
         if entries.len() >= BACKUP_MAX_ENTRIES {
-            return Err("Ganbaru AI folder contains too many backup entries".to_string());
+            return Err("Ganbaru folder contains too many backup entries".to_string());
         }
         let source = child.path();
         let relative = source
             .strip_prefix(root)
-            .map_err(|_| "backup entry escaped the Ganbaru AI folder".to_string())?
+            .map_err(|_| "backup entry escaped the Ganbaru folder".to_string())?
             .to_path_buf();
         let depth = relative.components().count();
         if depth > BACKUP_MAX_DEPTH {
-            return Err("Ganbaru AI folder is nested too deeply to back up".to_string());
+            return Err("Ganbaru folder is nested too deeply to back up".to_string());
         }
         let metadata = fs::symlink_metadata(&source)
             .map_err(|error| format!("inspect backup entry '{}': {error}", source.display()))?;
@@ -143,15 +143,12 @@ fn collect_archive_entries(
             collect_archive_entries(root, &source, entries, total_bytes)?;
         } else if metadata.is_file() {
             let file_name = relative.file_name().and_then(|value| value.to_str());
-            if matches!(
-                file_name,
-                Some("ganbaru-ai.sqlite-wal" | "ganbaru-ai.sqlite-shm")
-            ) {
+            if matches!(file_name, Some("ganbaru.sqlite-wal" | "ganbaru.sqlite-shm")) {
                 continue;
             }
             *total_bytes = total_bytes.saturating_add(metadata.len());
             if *total_bytes > BACKUP_MAX_BYTES {
-                return Err("Ganbaru AI folder exceeds the backup size limit".to_string());
+                return Err("Ganbaru folder exceeds the backup size limit".to_string());
             }
             entries.push(ArchiveEntry {
                 source,
@@ -446,8 +443,8 @@ pub(crate) fn android_handoff_staging_path(
     let target = default_vault_path(app)?;
     let parent = target
         .parent()
-        .ok_or_else(|| "Ganbaru AI folder has no parent directory".to_string())?;
-    Ok(parent.join(format!(".ganbaru-ai.handoff-{transfer_id}.staging")))
+        .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?;
+    Ok(parent.join(format!(".ganbaru.handoff-{transfer_id}.staging")))
 }
 
 #[cfg(desktop)]
@@ -458,8 +455,8 @@ pub(crate) fn active_handoff_staging_path<R: Runtime>(
     let target = super::active_vault_path(app)?;
     let parent = target
         .parent()
-        .ok_or_else(|| "Ganbaru AI folder has no parent directory".to_string())?;
-    Ok(parent.join(format!(".ganbaru-ai.handoff-{transfer_id}.staging")))
+        .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?;
+    Ok(parent.join(format!(".ganbaru.handoff-{transfer_id}.staging")))
 }
 
 #[cfg(target_os = "android")]
@@ -547,12 +544,12 @@ async fn activate_handoff_at_path<R: Runtime>(
 ) -> Result<VaultInfo, String> {
     let parent = target
         .parent()
-        .ok_or_else(|| "Ganbaru AI folder has no parent directory".to_string())?;
+        .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?;
     fs::create_dir_all(parent).map_err(|error| format!("create app data directory: {error}"))?;
     let rollback = if preserve_previous {
         preserved_handoff_path(parent, target, transfer_id)
     } else {
-        parent.join(".ganbaru-ai.handoff-refresh-rollback")
+        parent.join(".ganbaru.handoff-refresh-rollback")
     };
     if rollback.exists() && staging.exists() {
         return Err("a previous handoff copy still requires recovery".to_string());
@@ -634,13 +631,13 @@ fn preserved_handoff_path(parent: &Path, target: &Path, transfer_id: &str) -> Pa
             .file_name()
             .and_then(|name| name.to_str())
             .filter(|name| !name.trim().is_empty())
-            .unwrap_or("Ganbaru AI");
+            .unwrap_or("Ganbaru");
         parent.join(format!("{folder_name} before linking {transfer_id}"))
     }
     #[cfg(mobile)]
     {
         let _ = target;
-        parent.join(format!(".ganbaru-ai.handoff-previous-{transfer_id}"))
+        parent.join(format!(".ganbaru.handoff-previous-{transfer_id}"))
     }
 }
 
@@ -681,8 +678,8 @@ pub(crate) fn recover_interrupted_restore_for_app(app: &tauri::AppHandle) -> Res
     let target = default_vault_path(app)?;
     let parent = target
         .parent()
-        .ok_or_else(|| "Ganbaru AI folder has no parent directory".to_string())?;
-    recover_interrupted_restore(&target, &parent.join(".ganbaru-ai.rollback"))
+        .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?;
+    recover_interrupted_restore(&target, &parent.join(".ganbaru.rollback"))
 }
 
 #[cfg(target_os = "android")]
@@ -706,7 +703,7 @@ pub async fn vault_backup_to_downloads(
             BACKUP_MAX_BYTES,
             &[BACKUP_EXTENSION],
             BACKUP_MIME_TYPE,
-            "Ganbaru AI backup",
+            "Ganbaru backup",
         )?;
         Ok(VaultBackupOutcome {
             file_name: saved_name,
@@ -742,11 +739,11 @@ pub async fn vault_pick_and_restore_backup(
                 let _transition = preparation_transition;
                 let parent = preparation_target
                     .parent()
-                    .ok_or_else(|| "Ganbaru AI folder has no parent directory".to_string())?;
+                    .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?;
                 fs::create_dir_all(parent)
                     .map_err(|error| format!("create app data directory: {error}"))?;
-                let staging = parent.join(".ganbaru-ai.restore");
-                let rollback = parent.join(".ganbaru-ai.rollback");
+                let staging = parent.join(".ganbaru.restore");
+                let rollback = parent.join(".ganbaru.rollback");
                 recover_interrupted_restore(&preparation_target, &rollback)?;
                 if staging.exists() {
                     fs::remove_dir_all(&staging)
@@ -758,7 +755,7 @@ pub async fn vault_pick_and_restore_backup(
                     BACKUP_MAX_BYTES,
                     &[BACKUP_EXTENSION],
                     &[BACKUP_MIME_TYPE, "application/octet-stream"],
-                    "Ganbaru AI backup",
+                    "Ganbaru backup",
                 )?;
                 if selected.is_none() {
                     return Ok(None);
@@ -805,8 +802,8 @@ pub async fn vault_pick_and_restore_backup(
         let target = default_vault_path(&app)?;
         let parent = target
             .parent()
-            .ok_or_else(|| "Ganbaru AI folder has no parent directory".to_string())?;
-        let staging = parent.join(".ganbaru-ai.restore");
+            .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?;
+        let staging = parent.join(".ganbaru.restore");
         if staging.exists() {
             fs::remove_dir_all(staging)
                 .map_err(|error| format!("remove backup restore staging: {error}"))?;
@@ -870,18 +867,18 @@ mod tests {
     #[test]
     fn first_link_preserves_desktop_data_in_a_visible_sibling_folder() {
         let parent = Path::new("/documents");
-        let preserved = preserved_handoff_path(parent, &parent.join("Ganbaru AI"), "transfer-123");
+        let preserved = preserved_handoff_path(parent, &parent.join("Ganbaru"), "transfer-123");
 
         assert_eq!(
             preserved,
-            parent.join("Ganbaru AI before linking transfer-123")
+            parent.join("Ganbaru before linking transfer-123")
         );
     }
 
     #[test]
     fn replaced_folder_is_independent_only_when_it_holds_another_or_unreadable_vault() {
         let parent = unique_test_path("independent");
-        let target = parent.join("Ganbaru AI");
+        let target = parent.join("Ganbaru");
         assert!(!replaces_independent_vault(&target, "vault-linked"));
 
         fs::create_dir_all(&target).unwrap();
@@ -902,7 +899,7 @@ mod tests {
         fs::create_dir_all(root.join("notes")).unwrap();
         fs::write(root.join("vault.json"), b"vault").unwrap();
         fs::write(root.join(APP_SQLITE_FILE), b"live database").unwrap();
-        fs::write(root.join("ganbaru-ai.sqlite-wal"), b"wal").unwrap();
+        fs::write(root.join("ganbaru.sqlite-wal"), b"wal").unwrap();
         fs::write(root.join("notes/page.md"), b"note").unwrap();
         fs::write(&snapshot, b"snapshot database").unwrap();
 
@@ -916,7 +913,7 @@ mod tests {
             .read_to_string(&mut database)
             .unwrap();
         assert_eq!(database, "snapshot database");
-        assert!(archive.by_name("ganbaru-ai.sqlite-wal").is_err());
+        assert!(archive.by_name("ganbaru.sqlite-wal").is_err());
 
         let _ = fs::remove_dir_all(root);
         let _ = fs::remove_file(snapshot);
@@ -944,8 +941,8 @@ mod tests {
     #[test]
     fn interrupted_restore_recovers_only_copy() {
         let parent = unique_test_path("interrupted");
-        let target = parent.join("Ganbaru AI");
-        let rollback = parent.join(".ganbaru-ai.rollback");
+        let target = parent.join("Ganbaru");
+        let rollback = parent.join(".ganbaru.rollback");
         fs::create_dir_all(&rollback).unwrap();
         fs::write(rollback.join("vault.json"), b"current").unwrap();
 
@@ -959,8 +956,8 @@ mod tests {
     #[test]
     fn completed_restore_discards_old_rollback() {
         let parent = unique_test_path("completed");
-        let target = parent.join("Ganbaru AI");
-        let rollback = parent.join(".ganbaru-ai.rollback");
+        let target = parent.join("Ganbaru");
+        let rollback = parent.join(".ganbaru.rollback");
         fs::create_dir_all(&target).unwrap();
         fs::create_dir_all(&rollback).unwrap();
         fs::write(target.join("vault.json"), b"restored").unwrap();

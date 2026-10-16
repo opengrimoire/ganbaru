@@ -53,7 +53,7 @@ pub struct KeyringStore;
 
 #[cfg(desktop)]
 impl KeyringStore {
-    const SERVICE: &'static str = "com.ganbaru-ai.sync";
+    const SERVICE: &'static str = "com.ganbaru.sync";
 
     fn entry(vault_id: &str, writer_id: &str) -> Result<keyring::Entry, String> {
         keyring::Entry::new(Self::SERVICE, &key_reference(vault_id, writer_id))

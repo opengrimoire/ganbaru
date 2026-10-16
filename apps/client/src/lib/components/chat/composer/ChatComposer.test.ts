@@ -112,7 +112,7 @@ describe("ChatComposer", () => {
 
     expect(api.promptCatalog).toHaveBeenCalledWith("workspace-1", "codex-local", null);
     const menu = target.querySelector(".composer-menu");
-    expect(menu?.textContent).not.toContain("Ganbaru AI");
+    expect(menu?.textContent).not.toContain("Ganbaru");
     expect(menu?.textContent).not.toContain("/plan");
     expect(menu?.textContent).not.toContain("/compact");
     expect(menu?.textContent).toContain("Plan");

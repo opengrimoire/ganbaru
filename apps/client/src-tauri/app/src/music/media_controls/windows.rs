@@ -371,10 +371,10 @@ fn update_display(
     }
 
     display.SetType(MediaPlaybackType::Music)?;
-    display.SetAppMediaId(&HSTRING::from("ganbaru-ai"))?;
+    display.SetAppMediaId(&HSTRING::from("ganbaru"))?;
     let properties = display.MusicProperties()?;
     properties.SetTitle(&HSTRING::from(
-        state.title.as_deref().unwrap_or("Ganbaru AI").trim(),
+        state.title.as_deref().unwrap_or("Ganbaru").trim(),
     ))?;
     properties.SetArtist(&HSTRING::from(
         state
@@ -382,7 +382,7 @@ fn update_display(
             .as_deref()
             .map(str::trim)
             .filter(|label| !label.is_empty())
-            .unwrap_or("Ganbaru AI"),
+            .unwrap_or("Ganbaru"),
     ))?;
     display.Update()?;
     Ok(())

@@ -83,7 +83,7 @@ pub fn ensure_compatible(
     remote.validate()?;
     if local.database_schema_sha256 != remote.database_schema_sha256 {
         return Err(format!(
-            "handoff compatibility mismatch between Ganbaru AI {} and {}; update Ganbaru AI on both devices",
+            "handoff compatibility mismatch between Ganbaru {} and {}; update Ganbaru on both devices",
             local.app_version, remote.app_version
         ));
     }

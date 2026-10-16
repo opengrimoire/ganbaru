@@ -178,7 +178,7 @@ function createLspClient(child) {
 
     if (message.method === "workspace/workspaceFolders") {
       respond(message.id, [{
-        name: "Ganbaru AI",
+        name: "Ganbaru",
         uri: pathToFileURL(WORKSPACE_ROOT).href,
       }]);
       return;
@@ -378,7 +378,7 @@ async function main() {
       rootPath: CLIENT_ROOT,
       rootUri: pathToFileURL(CLIENT_ROOT).href,
       workspaceFolders: [{
-        name: "@ganbaru-ai/client",
+        name: "@ganbaru/client",
         uri: pathToFileURL(CLIENT_ROOT).href,
       }],
       capabilities: {

@@ -101,7 +101,7 @@ pub fn process_environment(
         }
         environment.insert("OPENCODE_CONFIG_DIR".to_string(), home.to_string());
     }
-    environment.insert("OPENCODE_CLIENT".to_string(), "ganbaru-ai".to_string());
+    environment.insert("OPENCODE_CLIENT".to_string(), "ganbaru".to_string());
     Ok(environment)
 }
 

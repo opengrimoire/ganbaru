@@ -682,7 +682,7 @@ mod tests {
 
     #[test]
     fn artwork_lookup_uses_parent_album_front_image() {
-        let root = unique_temporary_dir("ganbaru-ai-artwork-parent");
+        let root = unique_temporary_dir("ganbaru-artwork-parent");
         let album_dir = root.join("Anime/Made in Abyss/2017 - Made in Abyss OST");
         let disc_dir = album_dir.join("CD 1");
         fs::create_dir_all(&disc_dir).unwrap();
@@ -700,7 +700,7 @@ mod tests {
 
     #[test]
     fn artwork_lookup_prefers_matching_sidecar_image() {
-        let root = unique_temporary_dir("ganbaru-ai-artwork-sidecar");
+        let root = unique_temporary_dir("ganbaru-artwork-sidecar");
         fs::create_dir_all(&root).unwrap();
         let track = root.join("02 - Focus.mp3");
         let sidecar = root.join("02 - Focus.jpg");
@@ -778,7 +778,7 @@ mod tests {
 
     #[test]
     fn mp4_cover_atom_parser_extracts_cover_art() {
-        let root = unique_temporary_dir("ganbaru-ai-artwork-mp4");
+        let root = unique_temporary_dir("ganbaru-artwork-mp4");
         fs::create_dir_all(&root).unwrap();
         let path = root.join("theme.m4a");
         let mut data_content = Vec::new();

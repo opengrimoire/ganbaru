@@ -72,7 +72,7 @@ fn contained(check: impl FnOnce() -> bool) -> bool {
 // Two opaque JNI pointers are ignored, one signed 64-bit jlong is inspected,
 // and the returned unsigned 8-bit jboolean is zero or one. This total check
 // invokes no callback, accesses no raw pointer, and cannot unwind.
-#[unsafe(export_name = "Java_org_opengrimoire_ganbaruai_mobile_notifications_NativeFocusAuthority_isProcessCurrent")]
+#[unsafe(export_name = "Java_org_opengrimoire_ganbaru_mobile_notifications_NativeFocusAuthority_isProcessCurrent")]
 pub extern "system" fn native_focus_process_is_current(
     _environment: *mut std::ffi::c_void,
     _class: *mut std::ffi::c_void,
@@ -89,7 +89,7 @@ pub extern "system" fn native_focus_process_is_current(
 // JNI supplies opaque environment/class pointers, three signed 64-bit jlong values,
 // and consumes an unsigned 8-bit jboolean. No pointer is accessed or retained.
 // The installed checker lives for the process and panics are contained below.
-#[unsafe(export_name = "Java_org_opengrimoire_ganbaruai_mobile_notifications_NativeFocusAuthority_isCurrent")]
+#[unsafe(export_name = "Java_org_opengrimoire_ganbaru_mobile_notifications_NativeFocusAuthority_isCurrent")]
 pub extern "system" fn native_focus_is_current(
     _environment: *mut std::ffi::c_void,
     _class: *mut std::ffi::c_void,

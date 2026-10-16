@@ -91,7 +91,7 @@ impl PlaybackController {
         let shutdown = Arc::new(AtomicBool::new(false));
         let worker_shutdown = shutdown.clone();
         let worker = match thread::Builder::new()
-            .name("ganbaru-ai-media-player".into())
+            .name("ganbaru-media-player".into())
             .spawn(move || run(receiver, core, worker_shutdown))
         {
             Ok(worker) => Some(worker),

@@ -54,7 +54,7 @@ describe("Music YouTube adapter", () => {
       data: {
         token: "test-token",
         load: String(generation),
-        type: "ganbaru-ai-youtube-state",
+        type: "ganbaru-youtube-state",
         status,
         positionMs: 0,
         durationMs,
@@ -76,7 +76,7 @@ describe("Music YouTube adapter", () => {
       data: {
         token: "test-token",
         load: String(generation),
-        type: "ganbaru-ai-youtube-error",
+        type: "ganbaru-youtube-error",
         code: 150,
       },
     } as unknown as MessageEvent<unknown>);
@@ -130,7 +130,7 @@ describe("Music YouTube adapter", () => {
       data: {
         token: "test-token",
         load: String(generation),
-        type: "ganbaru-ai-youtube-playlist",
+        type: "ganbaru-youtube-playlist",
         playlistId: parsed.source.playlistId,
         videoIds: ["video-a", "video-b", "video-c"],
         index: 0,
@@ -192,7 +192,7 @@ describe("Music YouTube adapter", () => {
     const message = {
       token: "test-token",
       load: String(generation),
-      type: "ganbaru-ai-youtube-state",
+      type: "ganbaru-youtube-state",
       status: "playing",
       positionMs: 500,
       durationMs: 10_000,
@@ -268,7 +268,7 @@ describe("Music YouTube adapter", () => {
       data: {
         token: "test-token",
         load: String(playlistGeneration),
-        type: "ganbaru-ai-youtube-playlist",
+        type: "ganbaru-youtube-playlist",
         playlistId: parsed.source.playlistId,
         videoIds: ["video-a", "video-b"],
         index: 0,
@@ -321,7 +321,7 @@ describe("Music YouTube adapter", () => {
       data: {
         token: "test-token",
         load: String(generation),
-        type: "ganbaru-ai-youtube-error",
+        type: "ganbaru-youtube-error",
         code: 150,
       },
     } as unknown as MessageEvent<unknown>);
@@ -374,7 +374,7 @@ describe("Music YouTube adapter", () => {
       data: {
         token: "test-token",
         load: String(generation),
-        type: "ganbaru-ai-youtube-error",
+        type: "ganbaru-youtube-error",
         code: 100,
       },
     } as unknown as MessageEvent<unknown>);

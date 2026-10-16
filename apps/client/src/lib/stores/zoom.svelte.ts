@@ -7,7 +7,7 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
  * to localStorage so zoom survives reloads.
  */
 
-const STORAGE_KEY = "ganbaru-ai-zoom";
+const STORAGE_KEY = "ganbaru-zoom";
 export const APP_ZOOM_LEVELS: readonly number[] = Object.freeze([
   0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3,
 ]);

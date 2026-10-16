@@ -10,7 +10,7 @@ vi.mock("$lib/i18n/translator.svelte", () => ({ translate: (key: string) => key 
 describe("Android native policy publication boundary", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.stubGlobal("__GANBARU_AI_BUILD_PLATFORM__", "android");
+    vi.stubGlobal("__GANBARU_BUILD_PLATFORM__", "android");
   });
   afterEach(() => { vi.unstubAllGlobals(); });
 
@@ -38,7 +38,7 @@ describe("Android native policy publication boundary", () => {
   });
 
   it("does not invoke the Android policy owner on another platform", async () => {
-    vi.stubGlobal("__GANBARU_AI_BUILD_PLATFORM__", "linux");
+    vi.stubGlobal("__GANBARU_BUILD_PLATFORM__", "linux");
     await publishMobileDistractionsConfig();
     expect(flushConfig).not.toHaveBeenCalled();
     expect(invoke).not.toHaveBeenCalled();

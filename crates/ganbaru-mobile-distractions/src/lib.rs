@@ -1,4 +1,4 @@
-//! Narrow Android Distractions enforcement bridge for Ganbaru AI.
+//! Narrow Android Distractions enforcement bridge for Ganbaru.
 
 #[cfg(target_os = "android")]
 mod mobile;
@@ -12,7 +12,7 @@ use tauri::{Runtime, plugin::TauriPlugin};
 
 const PLUGIN_NAME: &str = "ganbaru-mobile-distractions";
 
-/// Initialize Ganbaru AI's Android Distractions enforcement bridge.
+/// Initialize Ganbaru's Android Distractions enforcement bridge.
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
     let builder = tauri::plugin::Builder::new(PLUGIN_NAME);
 

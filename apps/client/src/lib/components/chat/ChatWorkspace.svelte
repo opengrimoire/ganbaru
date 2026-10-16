@@ -260,9 +260,9 @@
         chatChannelId: channelId,
       });
     };
-    paneEvents.addEventListener("ganbaru-ai:chat-revert-message", revertMessage);
-    paneEvents.addEventListener("ganbaru-ai:chat-open-review", openWorkspaceTool);
-    paneEvents.addEventListener("ganbaru-ai:chat-open-file", openWorkspaceTool);
+    paneEvents.addEventListener("ganbaru:chat-revert-message", revertMessage);
+    paneEvents.addEventListener("ganbaru:chat-open-review", openWorkspaceTool);
+    paneEvents.addEventListener("ganbaru:chat-open-file", openWorkspaceTool);
     const manageMembers = (event: Event) => {
       const channelId = event instanceof CustomEvent
         && typeof event.detail === "object"
@@ -272,10 +272,10 @@
         ? event.detail.channelId
         : chat.selectedChannelId;
       if (!channelId) return;
-      paneEvents.dispatchEvent(new CustomEvent("ganbaru-ai:chat-edit-channel", { detail: { channelId } }));
+      paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-edit-channel", { detail: { channelId } }));
     };
-    paneEvents.addEventListener("ganbaru-ai:chat-configure-teammate", openTeammates);
-    paneEvents.addEventListener("ganbaru-ai:chat-manage-members", manageMembers);
+    paneEvents.addEventListener("ganbaru:chat-configure-teammate", openTeammates);
+    paneEvents.addEventListener("ganbaru:chat-manage-members", manageMembers);
     return () => {
       observer.disconnect();
       headerGeometryObserver.disconnect();
@@ -289,11 +289,11 @@
         if (timer !== undefined) window.clearTimeout(timer);
       }
       motionQuery.removeEventListener("change", updateMotionPreference);
-      paneEvents.removeEventListener("ganbaru-ai:chat-revert-message", revertMessage);
-      paneEvents.removeEventListener("ganbaru-ai:chat-open-review", openWorkspaceTool);
-      paneEvents.removeEventListener("ganbaru-ai:chat-open-file", openWorkspaceTool);
-      paneEvents.removeEventListener("ganbaru-ai:chat-configure-teammate", openTeammates);
-      paneEvents.removeEventListener("ganbaru-ai:chat-manage-members", manageMembers);
+      paneEvents.removeEventListener("ganbaru:chat-revert-message", revertMessage);
+      paneEvents.removeEventListener("ganbaru:chat-open-review", openWorkspaceTool);
+      paneEvents.removeEventListener("ganbaru:chat-open-file", openWorkspaceTool);
+      paneEvents.removeEventListener("ganbaru:chat-configure-teammate", openTeammates);
+      paneEvents.removeEventListener("ganbaru:chat-manage-members", manageMembers);
       void unlisten.then((dispose) => dispose());
     };
   });
@@ -549,20 +549,20 @@
     }
     if (hasOnlyShortcutModifier(event) && event.key === ".") {
       event.preventDefault();
-      paneEvents.dispatchEvent(new Event("ganbaru-ai:chat-stop-requested"));
+      paneEvents.dispatchEvent(new Event("ganbaru:chat-stop-requested"));
       return;
     }
     if (isEditingTarget(event.target)) return;
     if (hasOnlyShortcutModifier(event) && event.key.toLowerCase() === "n") {
       event.preventDefault();
       openRail();
-      paneEvents.dispatchEvent(new Event("ganbaru-ai:chat-new-channel"));
+      paneEvents.dispatchEvent(new Event("ganbaru:chat-new-channel"));
       return;
     }
     if (hasOnlyShortcutModifier(event) && event.key.toLowerCase() === "f") {
       event.preventDefault();
       openRail();
-      paneEvents.dispatchEvent(new Event("ganbaru-ai:chat-focus-search"));
+      paneEvents.dispatchEvent(new Event("ganbaru:chat-focus-search"));
       return;
     }
     if (hasOnlyShortcutModifier(event) && event.key.toLowerCase() === "l") {
@@ -1093,8 +1093,8 @@
     <LocalCommandMenu
       {bottomPanelOpen}
       onClose={() => { commandMenuOpen = false; }}
-      onNewChannel={() => { openRail(); paneEvents.dispatchEvent(new Event("ganbaru-ai:chat-new-channel")); }}
-      onSearch={() => { openRail(); paneEvents.dispatchEvent(new Event("ganbaru-ai:chat-focus-search")); }}
+      onNewChannel={() => { openRail(); paneEvents.dispatchEvent(new Event("ganbaru:chat-new-channel")); }}
+      onSearch={() => { openRail(); paneEvents.dispatchEvent(new Event("ganbaru:chat-focus-search")); }}
       onToggleBottomPanel={toggleBottomPanel}
       onToggleInspector={() => { chat.inspectorOpen = !chat.inspectorOpen; }}
       onOpenSettings={() => settings.open("chat")}

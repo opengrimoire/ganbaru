@@ -835,11 +835,11 @@ mod tests {
     #[test]
     fn terminal_name_uses_the_local_identity_and_home_relative_workspace_path() {
         let home = PathBuf::from("home").join("alice");
-        let workspace = home.join("Documents").join("ganbaru-ai");
+        let workspace = home.join("Documents").join("ganbaru");
         let separator = std::path::MAIN_SEPARATOR;
         assert_eq!(
             format_terminal_name("alice", "workstation", &workspace, Some(&home)),
-            format!("alice@workstation: ~{separator}Documents{separator}ganbaru-ai")
+            format!("alice@workstation: ~{separator}Documents{separator}ganbaru")
         );
     }
 

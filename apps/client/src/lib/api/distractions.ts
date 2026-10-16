@@ -176,7 +176,7 @@ export function parseDistractionsUsageProjection(value: unknown): DistractionsUs
 
 /** Read native totals without sending frontend budgets, clock values, or exhaustion decisions. */
 export async function loadDistractionsUsageProjection(): Promise<DistractionsUsageProjection> {
-  const command = typeof __GANBARU_AI_BUILD_PLATFORM__ !== "undefined" && __GANBARU_AI_BUILD_PLATFORM__ === "android"
+  const command = typeof __GANBARU_BUILD_PLATFORM__ !== "undefined" && __GANBARU_BUILD_PLATFORM__ === "android"
     ? "distractions_mobile_load_usage_projection" : "distractions_load_usage_projection";
   return parseDistractionsUsageProjection(await invoke<unknown>(command));
 }

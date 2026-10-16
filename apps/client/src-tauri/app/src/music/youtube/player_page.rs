@@ -9,7 +9,7 @@ pub(crate) fn youtube_host_html() -> &'static str {
   <meta charset="utf-8">
   <meta name="referrer" content="strict-origin-when-cross-origin">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Ganbaru AI YouTube player</title>
+  <title>Ganbaru YouTube player</title>
   <style>
     html, body, #player-root, #player { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #000; }
   </style>
@@ -90,7 +90,7 @@ pub(crate) fn youtube_host_html() -> &'static str {
       const duration = player.getDuration();
       const metadata = videoMetadata();
       send({
-        type: "ganbaru-ai-youtube-state",
+        type: "ganbaru-youtube-state",
         status: status || playbackStatus(player.getPlayerState()),
         positionMs: Math.max(0, Math.round(player.getCurrentTime() * 1000)),
         durationMs: Number.isFinite(duration) && duration > 0 ? Math.round(duration * 1000) : null,
@@ -118,7 +118,7 @@ pub(crate) fn youtube_host_html() -> &'static str {
       const videoIds = currentPlaylistIds();
       if (videoIds.length > 0) {
         send({
-          type: "ganbaru-ai-youtube-playlist",
+          type: "ganbaru-youtube-playlist",
           playlistId: activeSource.playlistId,
           videoIds,
           index: currentPlaylistIndex()
@@ -140,7 +140,7 @@ pub(crate) fn youtube_host_html() -> &'static str {
       if (!activeSource || !activeSource.playlistId || playlistErrorSent) return;
       playlistErrorSent = true;
       send({
-        type: "ganbaru-ai-youtube-playlist-error",
+        type: "ganbaru-youtube-playlist-error",
         playlistId: activeSource.playlistId
       });
     }
@@ -258,7 +258,7 @@ pub(crate) fn youtube_host_html() -> &'static str {
           },
           onError(event) {
             playbackActive = false;
-            send({ type: "ganbaru-ai-youtube-error", code: event.data });
+            send({ type: "ganbaru-youtube-error", code: event.data });
           }
         }
       };
@@ -305,7 +305,7 @@ pub(crate) fn youtube_host_html() -> &'static str {
 
     window.onYouTubeIframeAPIReady = () => {
       apiReady = true;
-      send({ type: "ganbaru-ai-youtube-ready" });
+      send({ type: "ganbaru-youtube-ready" });
       const initialLoad = initialPayloadFromParams();
       if (initialLoad) {
         loadSource(initialLoad);
@@ -315,7 +315,7 @@ pub(crate) fn youtube_host_html() -> &'static str {
     window.addEventListener("message", (event) => {
       if (event.source !== parent) return;
       const data = event.data;
-      if (!data || data.token !== token || data.type !== "ganbaru-ai-youtube-command") return;
+      if (!data || data.token !== token || data.type !== "ganbaru-youtube-command") return;
       handleCommand(data);
     });
 

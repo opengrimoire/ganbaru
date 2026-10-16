@@ -1357,7 +1357,7 @@ fn cleanup_queue_survives_thread_deletion_and_requires_exact_refs() {
                 (id, working_folder_id, source_thread_id, cleanup_kind, exact_target,
                  repository_identity, available_at, created_at, updated_at)
              VALUES ('cleanup-1', 'working-folder-1', 'thread-1', 'checkpoint_ref',
-                     'refs/ganbaru-ai/chat/thread-1/checkpoint-1',
+                     'refs/ganbaru/chat/thread-1/checkpoint-1',
                      'git-sha256:repository', ?, ?, ?)",
         )
         .bind(NOW)
@@ -1376,6 +1376,6 @@ fn cleanup_queue_survives_thread_deletion_and_requires_exact_refs() {
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-        assert_eq!(target, "refs/ganbaru-ai/chat/thread-1/checkpoint-1");
+        assert_eq!(target, "refs/ganbaru/chat/thread-1/checkpoint-1");
     });
 }

@@ -23,7 +23,7 @@
       "identifier": "opener:allow-open-url",
       "allow": [
         {
-          "url": "https://github.com/opengrimoire/ganbaru-ai"
+          "url": "https://github.com/opengrimoire/ganbaru"
         },
         {
           "url": "https://github.com/lucide-icons/lucide"
@@ -38,13 +38,13 @@
           "url": "https://github.com/vscode-icons/vscode-icons/graphs/contributors"
         },
         {
-          "url": "https://github.com/opengrimoire/ganbaru-ai/releases/*"
+          "url": "https://github.com/opengrimoire/ganbaru/releases/*"
         },
         {
-          "url": "https://github.com/opengrimoire/ganbaru-ai/blob/main/LICENSE"
+          "url": "https://github.com/opengrimoire/ganbaru/blob/main/LICENSE"
         },
         {
-          "url": "https://github.com/opengrimoire/ganbaru-ai/blob/main/apps/client/static/sfx/*"
+          "url": "https://github.com/opengrimoire/ganbaru/blob/main/apps/client/static/sfx/*"
         },
         {
           "url": "https://freesound.org/"

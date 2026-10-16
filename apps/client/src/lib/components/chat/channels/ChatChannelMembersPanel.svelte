@@ -74,12 +74,12 @@
 
   function configureTeammate(participantId: string): void {
     onClose();
-    paneEvents.dispatchEvent(new CustomEvent("ganbaru-ai:chat-configure-teammate", { detail: { participantId, channelId: channel.id } }));
+    paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-configure-teammate", { detail: { participantId, channelId: channel.id } }));
   }
 
   function editChannel(): void {
     onClose();
-    paneEvents.dispatchEvent(new CustomEvent("ganbaru-ai:chat-edit-channel", { detail: { channelId: channel.id } }));
+    paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-edit-channel", { detail: { channelId: channel.id } }));
   }
 
   /** Settings covers the panel, so it closes now and asks the header to reopen it with the picker once Settings is gone. */

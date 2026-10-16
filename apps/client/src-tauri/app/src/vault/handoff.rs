@@ -724,7 +724,7 @@ mod tests {
 
     #[test]
     fn development_and_production_coordinators_use_distinct_ports() {
-        assert_eq!(coordinator_port("org.opengrimoire.ganbaruai"), 43_821);
-        assert_eq!(coordinator_port("org.opengrimoire.ganbaruai.dev"), 43_822);
+        assert_eq!(coordinator_port("org.opengrimoire.ganbaru"), 43_821);
+        assert_eq!(coordinator_port("org.opengrimoire.ganbaru.dev"), 43_822);
     }
 }

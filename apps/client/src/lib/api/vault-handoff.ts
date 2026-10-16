@@ -205,7 +205,7 @@ export async function grantDesktopNetworkAccess(): Promise<DesktopNetworkAccess>
   );
 }
 
-/** Removes Linux firewall rules previously created by Ganbaru AI. */
+/** Removes Linux firewall rules previously created by Ganbaru. */
 export async function revokeDesktopNetworkAccess(): Promise<DesktopNetworkAccess> {
   return parseDesktopNetworkAccess(
     await invoke<unknown>("handoff_revoke_network_access"),

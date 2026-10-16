@@ -455,9 +455,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 void sendNativeMessage({ type: "get_state" }).then(updateStatus);
 void refreshActiveUsage();
-chrome.alarms.create("ganbaru-ai-state-poll", { periodInMinutes: 0.5 });
+chrome.alarms.create("ganbaru-state-poll", { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name !== "ganbaru-ai-state-poll") return;
+  if (alarm.name !== "ganbaru-state-poll") return;
   void refreshActiveUsage({ forceFlush: true });
   void sendNativeMessage({ type: "get_state" }).then(updateStatus);
 });

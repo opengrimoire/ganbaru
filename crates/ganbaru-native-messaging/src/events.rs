@@ -51,7 +51,7 @@ pub(super) fn record_block_event_in_database(
     let vault_path = snapshot
         .vault_path
         .as_deref()
-        .ok_or_else(|| "active Ganbaru AI folder is unavailable".to_string())?;
+        .ok_or_else(|| "active Ganbaru folder is unavailable".to_string())?;
     let db_path = usage_db_path(vault_path, snapshot.limit_state.as_ref());
     if !db_path.exists() {
         return Err("usage database is unavailable".to_string());

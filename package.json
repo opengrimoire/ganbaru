@@ -1,12 +1,12 @@
 {
-  "name": "ganbaru-ai",
+  "name": "ganbaru",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "turbo dev",
     "build": "turbo build",
     "clean:rust": "cargo clean",
-    "build:native-host": "cargo build --bin ganbaru-ai-native-messaging",
+    "build:native-host": "cargo build --bin ganbaru-native-messaging",
     "setup:chromium-extension": "node apps/client/scripts/browser-extension/setup-dev-extension.mjs",
     "audit:deps": "pnpm audit --audit-level low",
     "audit:rust": "cargo audit",

@@ -1730,7 +1730,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ganbaru-ai"
+name = "ganbaru"
 version = "0.1.9"
 dependencies = [
  "ganbaru-mobile-distractions",

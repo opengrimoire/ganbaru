@@ -298,8 +298,8 @@ pub fn safety_settings(mode: SafetyMode) -> Option<CodexSafetySettings> {
 pub fn initialize_params() -> Value {
     json!({
         "clientInfo": {
-            "name": "ganbaru_ai_desktop",
-            "title": "Ganbaru AI",
+            "name": "ganbaru_desktop",
+            "title": "Ganbaru",
             "version": env!("CARGO_PKG_VERSION"),
         },
         "capabilities": {

@@ -4,7 +4,7 @@ import {
   type MusicReviewPlaybackCheckpoint,
 } from "$lib/stores/music-player.svelte";
 
-export const MUSIC_CONTEXT_BOUNDARY_EVENT = "ganbaru-ai-music-context-boundary";
+export const MUSIC_CONTEXT_BOUNDARY_EVENT = "ganbaru-music-context-boundary";
 
 export class MusicReviewAuditionController {
   active = $state(false);

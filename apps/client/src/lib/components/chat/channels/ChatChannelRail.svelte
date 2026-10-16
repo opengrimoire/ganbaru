@@ -836,9 +836,9 @@
         closeChannelContextMenu();
       }
     };
-    paneEvents.addEventListener("ganbaru-ai:chat-new-channel", createChannel);
-    paneEvents.addEventListener("ganbaru-ai:chat-edit-channel", editChannelFromEvent);
-    paneEvents.addEventListener("ganbaru-ai:chat-focus-search", focusSearch);
+    paneEvents.addEventListener("ganbaru:chat-new-channel", createChannel);
+    paneEvents.addEventListener("ganbaru:chat-edit-channel", editChannelFromEvent);
+    paneEvents.addEventListener("ganbaru:chat-focus-search", focusSearch);
     document.addEventListener("pointerdown", closeOpenMenus);
     const unsubscribeVault = onActiveVaultIdentityChange(() => {
       loadedProjectId = null;
@@ -847,9 +847,9 @@
       sectionNameDraft = "";
     });
     return () => {
-      paneEvents.removeEventListener("ganbaru-ai:chat-new-channel", createChannel);
-      paneEvents.removeEventListener("ganbaru-ai:chat-edit-channel", editChannelFromEvent);
-      paneEvents.removeEventListener("ganbaru-ai:chat-focus-search", focusSearch);
+      paneEvents.removeEventListener("ganbaru:chat-new-channel", createChannel);
+      paneEvents.removeEventListener("ganbaru:chat-edit-channel", editChannelFromEvent);
+      paneEvents.removeEventListener("ganbaru:chat-focus-search", focusSearch);
       document.removeEventListener("pointerdown", closeOpenMenus);
       unsubscribeVault();
       clearMoveMenuHoverTimer();

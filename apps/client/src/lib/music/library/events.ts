@@ -1,4 +1,4 @@
-const MUSIC_LIBRARY_CHANGED_EVENT = "ganbaru-ai-music-library-changed";
+const MUSIC_LIBRARY_CHANGED_EVENT = "ganbaru-music-library-changed";
 
 export function notifyMusicLibraryChanged(): void {
   if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent(MUSIC_LIBRARY_CHANGED_EVENT));

@@ -641,7 +641,7 @@
               bind:this={searchInput}
               type="search"
               value={searchText}
-              class={mobileLayout ? "field min-h-12 w-full pl-10 pr-12 text-base" : "field w-full pl-8 pr-7 text-xs"}
+              class={`field w-full [&::-webkit-search-cancel-button]:hidden ${mobileLayout ? "min-h-12 pl-10 pr-12 text-base" : "h-7 min-h-0 py-0 pl-8 pr-7 text-xs"}`}
               placeholder={t("quickNotes.search")}
               aria-label={t("quickNotes.search")}
               oninput={(event) => updateSearch(event.currentTarget.value)}

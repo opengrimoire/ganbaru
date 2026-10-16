@@ -444,13 +444,25 @@ function routeNavigation(kind: View): boolean {
   }
   const location = host.adapter.read(kind) ?? kindLocation(kind);
   const target = tabForLocation(location);
+  // The target takes the location first, so leaving a split, which restores the tabs shown next, keeps it.
   const next = target
-    ? activateWorkspaceTab(tabsState, target.id)
+    ? activateWorkspaceTab(updateWorkspaceTab(tabsState, target.id, { location }), target.id)
     : insertWorkspaceTab(tabsState, createWorkspaceTab(createTabId(), location), "after-active");
   if (currentTab().location.kind !== kind && next === tabsState) return false;
   cancelRestore();
   setState(next);
   return navigation?.commit(kind) ?? false;
+}
+
+/**
+ * The pane scope whose stores a navigation to `kind` shows: the shown tab of that kind, else the primary scope
+ * the tab it activates shows through.
+ */
+function navigationScope(kind: View): WorkspacePaneScope {
+  const tab = currentTab();
+  if (tab.location.kind === kind) return scopeOf(tab.id);
+  const partner = partnerTab();
+  return partner?.location.kind === kind ? scopeOf(partner.id) : "primary";
 }
 
 /** Where a tab is now: the live stores for a tab on screen, else its recorded location. */
@@ -1088,6 +1100,7 @@ export function getWorkspaceTabs() {
     },
     /** The view stores a shown tab reads and restores. */
     paneScope: scopeOf,
+    navigationScope,
     holds,
     connect,
     activate,

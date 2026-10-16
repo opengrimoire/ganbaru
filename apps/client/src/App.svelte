@@ -150,10 +150,17 @@
         displayName: entry.workingFolder.displayName,
       })),
     ensureLoaded: () => chat.ensureLoaded(),
+    // Selects in the stores of the pane Chat shows in, which may be the other side of a split.
     openProject: async (projectId, workingFolderId) => {
-      await chat.ensureLoaded();
-      if (workingFolderId) chat.selectWorkingFolder(workingFolderId);
-      else await chat.syncProjectSelection(projectId);
+      const scope = workspaceTabs.navigationScope("chat");
+      const target = scope === "secondary" ? secondaryChat : chat;
+      await target.ensureLoaded();
+      if (workingFolderId) {
+        target.selectWorkingFolder(workingFolderId);
+      } else {
+        await projectsIn(scope).selectProject(projectId);
+        await target.syncProjectSelection(projectId);
+      }
       nav.navigate("chat");
     },
   };

@@ -437,13 +437,15 @@ function meaningfulLocation(location: WorkspaceTabLocation): WorkspaceTabLocatio
 function routeNavigation(kind: View, scope?: WorkspacePaneScope): boolean {
   const host = connection;
   if (!host) return false;
-  if (currentTab().location.kind === kind) return navigation?.commit(kind) ?? false;
+  const inScope = (tab: WorkspaceTab): boolean => scope === undefined || scopeOf(tab.id) === scope;
+  const current = currentTab();
+  if (current.location.kind === kind && inScope(current)) return navigation?.commit(kind) ?? false;
   const partner = partnerTab();
-  if (partner?.location.kind === kind && (scope === undefined || scopeOf(partner.id) === scope)) {
+  if (partner?.location.kind === kind && inScope(partner)) {
     focusPane(partner.id);
     return true;
   }
-  const location = host.adapter.read(kind) ?? kindLocation(kind);
+  const location = host.adapter.read(kind, scope) ?? kindLocation(kind);
   const target = tabForLocation(location);
   // The target takes a meaningful location first, so leaving a split, which restores the tabs shown next, keeps
   // it; an empty read leaves the target's own place to restore.

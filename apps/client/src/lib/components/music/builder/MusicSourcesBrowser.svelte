@@ -4,6 +4,8 @@
   import type { LocalRootBinding, MusicItemListEntry } from "$lib/music/library/contracts";
   import type { MusicSourceBrowserNode } from "$lib/music/sources/browser";
   import type { MusicSnoozePreset } from "$lib/music/session/snooze";
+  import type { UnlinkedMusicSource } from "$lib/music/sources/controller.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import MusicSourceContentList from "./MusicSourceContentList.svelte";
 
   let {
@@ -11,6 +13,8 @@
     selectedNode,
     selectedPath,
     bindings,
+    unlinkedSources = [],
+    onChooseFolder,
     playingItemId = null,
     startingItemId = null,
     playbackActive = false,
@@ -25,6 +29,9 @@
     selectedNode: MusicSourceBrowserNode | null;
     selectedPath: MusicSourceBrowserNode[];
     bindings: readonly LocalRootBinding[];
+    /** Local sources in the current selection that have no usable folder on this device. */
+    unlinkedSources?: readonly UnlinkedMusicSource[];
+    onChooseFolder: (collectionId: string) => void;
     playingItemId?: string | null;
     startingItemId?: string | null;
     playbackActive?: boolean;
@@ -56,6 +63,20 @@
       <span class="shrink-0 text-[0.65rem] tabular-nums text-muted-foreground">{t("music.tracks", selectedNode?.itemIds.length ?? nodes.reduce((total, node) => total + node.itemIds.length, 0))}</span>
     </div>
   </header>
+
+  {#each unlinkedSources as unlinked (unlinked.collection.id)}
+    <Notice
+      class="shrink-0 border-b border-border/55 px-4 py-2 text-xs"
+      tone="warning"
+      role="status"
+      message={unlinked.status === "missing" ? t("music.builder.missingSourceFolder", unlinked.collection.name) : t("music.builder.unlinkedSourceFolder", unlinked.collection.name)}
+      copy={false}
+    >
+      {#snippet actions()}
+        <button type="button" class="notice-action-text" onclick={() => onChooseFolder(unlinked.collection.id)}>{t("music.builder.chooseFolder")}</button>
+      {/snippet}
+    </Notice>
+  {/each}
 
   {#if visibleNodes.length === 0 && visibleItems.length === 0}
     <div class="grid min-h-44 place-items-center px-5 text-center">

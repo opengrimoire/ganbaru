@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { MusicSourceCollection } from "$lib/music/library/contracts";
 import type { MusicSourceRefreshController } from "./refresh";
 import {
   createMusicSourcesController,
@@ -91,6 +92,27 @@ function api(overrides: Partial<MusicSourcesControllerApi> = {}): MusicSourcesCo
   };
 }
 
+function localCollection(id: string, localRootId: string): MusicSourceCollection {
+  return {
+    id,
+    kind: "local-root",
+    identityKey: `local-root:${localRootId}`,
+    name: id,
+    localRootId,
+    youtubePlaylistId: null,
+    discoveryEnabled: true,
+    refreshState: "idle",
+    lastSuccessfulRefreshAtMs: null,
+    previousSuccessfulRefreshAtMs: null,
+    lastRefreshErrorCode: null,
+    snapshotGeneration: 0,
+    createdAtMs: 1,
+    updatedAtMs: 1,
+    version: 1,
+    removedAtMs: null,
+  };
+}
+
 describe("MusicSourcesController", () => {
   it("loads roots, collections, and device bindings as one vault projection", async () => {
     const controller = createMusicSourcesController(api({
@@ -180,6 +202,66 @@ describe("MusicSourcesController", () => {
     expect(bindRoot).toHaveBeenCalledWith("vault-1", "root-1", "content://new-tree");
     expect(refresh.run).toHaveBeenCalledOnce();
     expect(refresh.prepare).toBeDefined();
+  });
+
+  it("lists only local sources whose folder is unusable on this device", () => {
+    const controller = createMusicSourcesController(api(), () => 20, () => "id", refreshStub());
+    controller.collections = [
+      localCollection("never-linked", "never-root"),
+      localCollection("moved", "moved-root"),
+      localCollection("ready", "ready-root"),
+      localCollection("loading", "loading-root"),
+    ];
+    controller.bindings = [
+      { rootId: "never-root", folderPath: null, status: "needs-relink" },
+      { rootId: "moved-root", folderPath: "/music/old", status: "missing" },
+      { rootId: "ready-root", folderPath: "/music/ready", status: "available" },
+    ];
+
+    expect(controller.unlinkedLocalSources().map(({ collection, status }) => [collection.id, status])).toEqual([
+      ["never-linked", "needs-relink"],
+      ["moved", "missing"],
+    ]);
+    expect(controller.unlinkedLocalSources(["moved", "ready"]).map(({ collection }) => collection.id)).toEqual(["moved"]);
+    expect(controller.prepareRefresh(["never-linked"]).targets).toEqual([]);
+  });
+
+  it("points this device at the relinked folder and scans it after applying the plan", async () => {
+    const collection = localCollection("collection-1", "root-1");
+    const bindRoot = vi.fn(async (_vaultId: string, rootId: string, folderPath: string) => ({
+      rootId,
+      folderPath,
+      status: "available" as const,
+    }));
+    const refresh = refreshStub();
+    const controller = createMusicSourcesController(api({
+      collections: vi.fn(async () => [collection]),
+      bindRoot,
+    }), () => 20, () => "plan-1", refresh);
+    controller.setVault("vault-1");
+
+    await controller.planRelink("root-1", "/music/moved");
+    await controller.applyRelink([]);
+
+    expect(bindRoot).toHaveBeenCalledWith("vault-1", "root-1", "/music/moved");
+    await vi.waitFor(() => expect(refresh.run).toHaveBeenCalledOnce());
+    const [plan] = vi.mocked(refresh.run).mock.calls[0];
+    expect(plan.targets).toEqual([expect.objectContaining({
+      collectionId: "collection-1",
+      request: expect.objectContaining({ rootId: "root-1", folderPath: "/music/moved" }),
+    })]);
+  });
+
+  it("does not bind a folder when the relink plan was cancelled", async () => {
+    const bindRoot = vi.fn();
+    const controller = createMusicSourcesController(api({ bindRoot }), () => 20, () => "plan-1", refreshStub());
+    controller.setVault("vault-1");
+
+    await controller.planRelink("root-1", "/music/moved");
+    await controller.cancelRelink();
+
+    await expect(controller.applyRelink([])).rejects.toThrow("No relink plan is ready.");
+    expect(bindRoot).not.toHaveBeenCalled();
   });
 
   it("surfaces a failed initial folder refresh instead of opening an empty review", async () => {

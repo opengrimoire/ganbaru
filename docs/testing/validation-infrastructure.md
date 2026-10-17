@@ -25,7 +25,7 @@ The complete normal gate runs in this order:
 
 Rust runs first because compiler and linker peaks are less predictable. Rust and frontend tools do not overlap. Sequential Vitest shards release transformed module graphs between groups.
 
-The hosted Linux pull request and merge-queue job runs `validate:ci` with the same complete gate and order. The CI-only Rust scripts allow two Cargo build jobs on its 16 GiB runner. Local `validate` retains explicit `-j 1` limits for machines with less memory. CI does not substitute static checks for regression tests or bundle contracts.
+Hosted Linux CI runs the same complete gate as two parallel jobs on separate 16 GiB runners: `validate:ci:rust` with four Cargo build jobs and four test threads, and `validate:ci:frontend` with two sequential two-worker Vitest shards. Each job reports the runner memory peak. The Rust job restores registry, Git, and dependency build artifacts from a cache keyed by the toolchain and `Cargo.lock`; only trusted pushes to `dev` save it, after removing workspace crate artifacts, and a push without an exact match builds cold so stale artifacts never accumulate. Local `validate` retains explicit `-j 1` limits for machines with less memory. CI does not substitute static checks for regression tests or bundle contracts.
 
 Benchmark fixture and harness contracts are deliberately outside `validate`. Run `pnpm -w run test:benchmark-contracts` when changing the harness. Performance measurement remains manual release-build work.
 

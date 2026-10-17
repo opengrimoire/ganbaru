@@ -277,7 +277,7 @@ export const calendar = {
     deleteUncertain: "No se pudo confirmar la eliminación o su reversión. Reintenta para comprobar la operación original.",
     deleteRefreshPending: "La operación se guardó. Reintenta para actualizar el calendario.",
     deleteFailed: (message: string) => `Error al eliminar o deshacer: ${message}`,
-    previewFailed: (message: string) => `Vista previa no disponible: ${message}`,
+    previewFailed: "No se pudo previsualizar este cambio",
     historyUnavailable: "No se pudo cargar la línea de tiempo de Focus. Prueba con un intervalo más corto del calendario o reintenta.",
     saved: "Guardado",
     unknownSaveError: "Error desconocido al guardar",

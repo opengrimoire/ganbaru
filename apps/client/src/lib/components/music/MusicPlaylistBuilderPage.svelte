@@ -202,6 +202,7 @@
   const selectedSourceCollection = $derived(selectedSourceNode?.collectionId
     ? sources.collections.find((collection) => collection.id === selectedSourceNode.collectionId) ?? null
     : null);
+  const unlinkedSelectedSources = $derived(sources.unlinkedLocalSources(sourceCollectionIdsForSelection()));
   const selectedSourceItems = $derived(selectedSourceNode
     ? musicSourceBrowserItems(selectedSourceNode)
     : allMusicSourceBrowserItems(sourceBrowserNodes));
@@ -521,6 +522,12 @@
 
   function requestSourceRefresh(collectionIds?: string[]): void {
     const plan = sources.prepareRefresh(collectionIds);
+    if (plan.targets.length === 0) {
+      // A source without a folder on this device cannot refresh, so offer to choose its folder instead.
+      const unlinked = sources.unlinkedLocalSources(collectionIds);
+      if (unlinked.length === 1) void openRelink(unlinked[0].collection.id);
+      return;
+    }
     if (plan.requiresNetworkConfirmation) pendingRefreshPlan = plan;
     else void runSourceRefresh(plan, false);
   }
@@ -565,7 +572,9 @@
   async function openRelink(collectionId: string): Promise<void> {
     const collection = collectionById(collectionId);
     if (!collection?.localRootId) return;
-    if (supportsRootReselection) {
+    // Without a folder on this device there are no prior locations to match, so the folder is chosen directly.
+    const neverLinked = sources.unlinkedLocalSources([collection.id])[0]?.status === "needs-relink";
+    if (supportsRootReselection || neverLinked) {
       try {
         if (await sources.reselectLocalRoot(collection)) await library.refreshAfterMutation();
       } catch (error) {
@@ -1115,7 +1124,7 @@
                   {#if toolbarMenuOpen}
                     <div class="toolbar-menu surface-floating surface-floating-body w-floating-sm">
                       <button type="button" class="menu-item" onclick={openSourceRename}>{t("music.builder.renameSource")}</button>
-                      {#if selectedSourceCollection?.kind === "local-root" && (library.sourceSummaries.find((summary) => summary.id === selectedSourceCollection.id)?.openIssueCount ?? 0) > 0}
+                      {#if selectedSourceCollection?.kind === "local-root" && (unlinkedSelectedSources.length > 0 || (library.sourceSummaries.find((summary) => summary.id === selectedSourceCollection.id)?.openIssueCount ?? 0) > 0)}
                         <button type="button" class="menu-item" onclick={() => { toolbarMenuOpen = false; void openRelink(selectedSourceCollection.id); }}>{t("music.builder.repair")}</button>
                       {/if}
                       {#if selectedSourceCollection}<button type="button" class="menu-item menu-item-destructive" onclick={() => { toolbarMenuOpen = false; void openRemoval(selectedSourceCollection.id); }}>{t("music.builder.removeSource")}</button>{/if}
@@ -1253,6 +1262,8 @@
           selectedNode={selectedSourceNode}
           selectedPath={selectedSourcePath}
           bindings={sources.bindings}
+          unlinkedSources={unlinkedSelectedSources}
+          onChooseFolder={(collectionId) => { void openRelink(collectionId); }}
           playingItemId={activeSourceQueueInPlayer ? playingItemId : null}
           startingItemId={pendingSourceItemId ?? (activeSourceQueueInPlayer && audition.musicPlayer.youtubePlaybackStarting ? playingItemId : null)}
           playbackActive={activeSourceQueuePlaying}

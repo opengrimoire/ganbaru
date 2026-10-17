@@ -327,6 +327,8 @@ export const music = {
     addLocalFolderHint: "Add a folder to browse its music here.",
     addYouTubeLinkHint: "Add a video or playlist link to browse it here.",
     noSourceItems: "Nothing here yet",
+    unlinkedSourceFolder: (name: string) => `${name} is not linked to a folder on this device yet.`,
+    missingSourceFolder: (name: string) => `The folder for ${name} cannot be found on this device.`,
     sourceLocation: "Source location",
     renameSource: "Rename source",
     refreshAll: "Refresh all",

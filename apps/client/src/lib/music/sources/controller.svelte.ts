@@ -22,6 +22,7 @@ import {
 } from "$lib/api/music-library";
 import {
   type LocalRootBinding,
+  type LocalRootBindingStatus,
   type MusicLocalRoot,
   type MusicItemRepairPreview,
   type MusicRelinkDecision,
@@ -48,6 +49,13 @@ import {
   resolveMusicYouTubeSource,
   type MusicYouTubeSourcePreview,
 } from "./youtube-source-resolver";
+
+/** A local source this device cannot scan until the user chooses its folder. */
+export interface UnlinkedMusicSource {
+  collection: MusicSourceCollection;
+  /** `needs-relink` when no folder was chosen on this device, `missing` when the chosen folder is gone. */
+  status: Exclude<LocalRootBindingStatus, "available">;
+}
 
 export interface MusicSourcesControllerApi {
   roots(offset: number, limit: number): Promise<MusicLocalRoot[]>;
@@ -121,6 +129,7 @@ export class MusicSourcesController {
   removalImpact = $state<MusicSourceRemovalImpact | null>(null);
   relinkPlan = $state<MusicRelinkPlanSummary | null>(null);
   relinkEntries = $state<MusicRelinkPlanEntry[]>([]);
+  private relinkFolderPath: string | null = null;
   itemRepairPreview = $state<MusicItemRepairPreview | null>(null);
   itemRepairApplied = $state<{ locationId: string; rootId: string } | null>(null);
   detectedDefaultFolder = $state<MediaFolderSelection | null>(null);
@@ -490,6 +499,18 @@ export class MusicSourcesController {
     return this.refresh.prepare(targets);
   }
 
+  /** Lists the local sources among `collectionIds` (all when omitted) whose folder is unavailable on this device. */
+  unlinkedLocalSources(collectionIds?: readonly string[]): UnlinkedMusicSource[] {
+    const selected = collectionIds ? new Set(collectionIds) : null;
+    const bindings = new Map(this.bindings.map((binding) => [binding.rootId, binding]));
+    return this.collections.flatMap((collection) => {
+      if (collection.kind !== "local-root" || !collection.localRootId) return [];
+      if (selected && !selected.has(collection.id)) return [];
+      const status = bindings.get(collection.localRootId)?.status;
+      return status && status !== "available" ? [{ collection, status }] : [];
+    });
+  }
+
   prepareUninitializedLocalRefresh(): MusicSourceRefreshPlan {
     const availableRootIds = new Set(this.bindings.flatMap((binding) =>
       binding.status === "available" && binding.folderPath ? [binding.rootId] : []));
@@ -524,7 +545,11 @@ export class MusicSourcesController {
     await this.load();
   }
 
-  /** Replace an Android document-tree grant while preserving the logical source identity. */
+  /**
+   * Chooses the folder for a local source on this device, then scans it, preserving the logical source identity.
+   *
+   * Covers an Android document-tree grant replacement and a desktop source that has no folder on this device yet.
+   */
   async reselectLocalRoot(collection: MusicSourceCollection): Promise<boolean> {
     if (!this.vaultId) throw new Error("The active Ganbaru folder is unavailable.");
     if (collection.kind !== "local-root" || !collection.localRootId) {
@@ -532,21 +557,8 @@ export class MusicSourcesController {
     }
     const selection = await this.api.pickFolder();
     if (!selection) return false;
-    await this.api.bindRoot(this.vaultId, collection.localRootId, selection.folderPath);
-    await this.load();
-    const target = this.localTarget(
-      collection.id,
-      collection.localRootId,
-      collection.name,
-      selection.folderPath,
-      this.now(),
-    );
-    const failure = refreshFailure(await this.runRefresh(this.refresh.prepare([target]), true));
-    if (failure) {
-      this.error = failure;
-      throw new Error(failure);
-    }
-    notifyMusicLibraryChanged();
+    await this.bindLocalRoot(collection.localRootId, selection.folderPath);
+    await this.refreshLocalRoot(collection, collection.localRootId, selection.folderPath);
     return true;
   }
 
@@ -617,17 +629,31 @@ export class MusicSourcesController {
     const entries = await this.api.relinkEntries(plan.id, 0, 500);
     this.relinkPlan = plan;
     this.relinkEntries = entries.entries;
+    this.relinkFolderPath = replacementFolderPath;
     return plan;
   }
 
+  /**
+   * Applies the ready relink plan and points this device at its replacement folder.
+   *
+   * The plan only moves known tracks, so a background refresh then adds new files and settles availability.
+   */
   async applyRelink(decisions: MusicRelinkDecision[]): Promise<void> {
-    if (!this.relinkPlan) throw new Error("No relink plan is ready.");
+    const plan = this.relinkPlan;
+    const folderPath = this.relinkFolderPath;
+    if (!plan || !folderPath) throw new Error("No relink plan is ready.");
     this.relinkPlan = await this.api.applyRelink({
-      planId: this.relinkPlan.id,
+      planId: plan.id,
       decisions,
       appliedAt: this.now(),
     });
-    await this.load();
+    this.relinkFolderPath = null;
+    await this.bindLocalRoot(plan.rootId, folderPath);
+    const collection = this.collections.find((entry) => entry.kind === "local-root" && entry.localRootId === plan.rootId);
+    if (!collection) return;
+    void this.refreshLocalRoot(collection, plan.rootId, folderPath).catch((error: unknown) => {
+      this.error = error instanceof Error ? error.message : String(error);
+    });
   }
 
   async cancelRelink(): Promise<void> {
@@ -635,6 +661,23 @@ export class MusicSourcesController {
     await this.api.cancelRelink(this.relinkPlan.id, this.now());
     this.relinkPlan = null;
     this.relinkEntries = [];
+    this.relinkFolderPath = null;
+  }
+
+  private async bindLocalRoot(rootId: string, folderPath: string): Promise<void> {
+    if (!this.vaultId) throw new Error("The active Ganbaru folder is unavailable.");
+    await this.api.bindRoot(this.vaultId, rootId, folderPath);
+    await this.load();
+  }
+
+  private async refreshLocalRoot(collection: MusicSourceCollection, rootId: string, folderPath: string): Promise<void> {
+    const target = this.localTarget(collection.id, rootId, collection.name, folderPath, this.now());
+    const failure = refreshFailure(await this.runRefresh(this.refresh.prepare([target]), true));
+    if (failure) {
+      this.error = failure;
+      throw new Error(failure);
+    }
+    notifyMusicLibraryChanged();
   }
 
   private localTarget(

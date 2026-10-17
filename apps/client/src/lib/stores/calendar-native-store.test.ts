@@ -121,11 +121,29 @@ describe("Calendar store native occurrence ownership", () => {
     await store.loadWindow(start, end);
     store.acceptNativeEdit();
     expect(store.isWindowCurrent(start, end)).toBe(false);
-    expect(store.eventsInWindow(start, end)).toEqual([]);
+    expect(store.hasWindow(start, end)).toBe(false);
     expect(publishCalendarWindowSync).toHaveBeenCalledOnce();
     vi.mocked(loadNativeCalendarWindow).mockRejectedValueOnce(new Error("Read unavailable"));
     await expect(store.refreshWindow(start, end)).rejects.toThrow("Read unavailable");
+    expect(store.eventsInWindow(start, end)).toEqual([]);
     expect(publishCalendarWindowSync).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the last window on screen until the reload after a committed change replaces it", async () => {
+    const { getCalendar } = await import("./calendar.svelte");
+    const store = getCalendar();
+    await store.loadWindow(start, end);
+    const shown = store.eventsInWindow(start, end);
+    const reload = deferred<MappedNativeCalendarWindow>();
+    vi.mocked(loadNativeCalendarWindow).mockReturnValueOnce(reload.promise);
+    store.acceptNativeEdit();
+    const refresh = store.refreshWindow(start, end);
+    expect(store.eventsInWindow(start, end)).toBe(shown);
+    expect(store.eventsInWindow(Temporal.PlainDate.from("2024-03-11"), Temporal.PlainDate.from("2024-03-11"))).toEqual([event()]);
+    expect(store.eventsInWindow(start, Temporal.PlainDate.from("2024-03-20"))).toEqual([]);
+    reload.resolve(snapshot([event("moved", "2024-03-12 09:00")]));
+    await refresh;
+    expect(store.eventsInWindow(start, end)).toEqual([event("moved", "2024-03-12 09:00")]);
   });
 
   it("does not report an old window as current after a failed canonical refresh", async () => {

@@ -2,7 +2,7 @@
 
 This file records reviewed Rust advisory exceptions and allowed warnings. Lockfiles and current command output are authoritative; an old date or prior clean result is not evidence for the current lockfile.
 
-As of 2026-10-04, `pnpm -w run audit:deps` reports no known npm vulnerabilities, and `pnpm -w run audit:rust` exits successfully with the three configured ignores and seven allowed warnings listed below.
+As of 2026-10-17, `pnpm -w run audit:deps` reports no known npm vulnerabilities, and `pnpm -w run audit:rust` exits successfully with the three configured ignores and ten allowed warnings listed below.
 
 A successful Rust audit exit does not mean warning-free. The cargo-audit output policy allows warnings, so maintainers must review new unsound, unmaintained, and yanked findings separately.
 
@@ -46,6 +46,14 @@ Both come through the Linux Tauri and Wry WebKit stack and native Linux integrat
 ### UNIC crates
 
 RUSTSEC-2025-0075, RUSTSEC-2025-0080, RUSTSEC-2025-0081, RUSTSEC-2025-0098, and RUSTSEC-2025-0100 report unmaintained unic crates reached through Tauri's URL pattern dependency. Remove them when the upstream graph no longer requires those crates.
+
+### D-Bus split crates
+
+RUSTSEC-2026-0370, RUSTSEC-2026-0371, and RUSTSEC-2026-0372 report zvariant, zbus_names, and zvariant_derive as unmaintained because zbus 6 absorbed them. They are reached through zbus 5 in notify-rust (Linux notifications) and secret-service (the Linux keyring store). Remove them when those dependencies move to zbus 6.
+
+## Updater archive extraction
+
+`tauri-plugin-updater` builds without its default `zip` feature. Released updater assets are a raw AppImage and Windows installers, so the plugin never needs to extract a zip or AppImage tarball, and the feature would only add an archive extraction path. Re-enable it only if the release feed starts shipping archived updater assets, and then only with a zip release free of extraction advisories.
 
 ## Review procedure
 

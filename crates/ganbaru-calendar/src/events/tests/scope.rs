@@ -191,3 +191,87 @@ fn history_and_recurrence_children_share_the_same_allocation_allowance() {
         tx.rollback().await.unwrap();
     });
 }
+
+struct FixedDeviceDate;
+
+impl crate::events::scope::DeviceDate for FixedDeviceDate {
+    fn local_date(&self, _epoch_ms: i64) -> Result<chrono::NaiveDate, String> {
+        parse_date("2026-05-01")
+    }
+}
+
+#[test]
+fn concurrent_scope_previews_wait_for_each_other_instead_of_failing() {
+    crate::test_support::block_on(async {
+        let pool = in_memory_pool().await;
+        insert_test_event_at(
+            &pool,
+            "event-1",
+            "2026-05-01T09:00:00Z",
+            "2026-05-01T10:00:00Z",
+            None,
+        )
+        .await;
+        let preview = |label: &'static str| {
+            crate::events::scope::prepare_request_with_clock(
+                &pool,
+                std::sync::Arc::new(FixedDeviceDate),
+                crate::events::scope::ScopeRequest {
+                    template_id: "event-1".into(),
+                    recurrence_date: "2026-05-01".into(),
+                    scope: EditScope::This,
+                },
+                0,
+                move |_, _, _, _| {
+                    // Hold the gate long enough that the other preview arrives while it is taken.
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    Ok(label)
+                },
+            )
+        };
+        let (edit, deletion) = tokio::join!(preview("edit"), preview("deletion"));
+        assert_eq!(edit, Ok("edit"));
+        assert_eq!(deletion, Ok("deletion"));
+    });
+}
+
+#[test]
+fn preview_waiting_for_the_connection_leaves_the_gate_to_the_save_holding_it() {
+    crate::test_support::block_on(async {
+        let pool = in_memory_pool().await;
+        insert_test_event_at(
+            &pool,
+            "event-1",
+            "2026-05-01T09:00:00Z",
+            "2026-05-01T10:00:00Z",
+            None,
+        )
+        .await;
+        // A Save holds the vault's only connection and needs the gate inside its transaction.
+        let save = pool.begin().await.unwrap();
+        let preview = crate::events::scope::prepare_request_with_clock(
+            &pool,
+            std::sync::Arc::new(FixedDeviceDate),
+            crate::events::scope::ScopeRequest {
+                template_id: "event-1".into(),
+                recurrence_date: "2026-05-01".into(),
+                scope: EditScope::This,
+            },
+            0,
+            |_, _, _, _| Ok("edit"),
+        );
+        tokio::pin!(preview);
+        let waiting =
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut preview).await;
+        assert!(waiting.is_err(), "preview should wait for the connection");
+        // Other tests may briefly hold the process-wide gate, so wait instead of requiring it free.
+        assert!(
+            crate::events::scope::SCOPE_GATE
+                .acquire_within(std::time::Duration::from_secs(5))
+                .await
+                .is_some()
+        );
+        save.rollback().await.unwrap();
+        assert_eq!(preview.await, Ok("edit"));
+    });
+}

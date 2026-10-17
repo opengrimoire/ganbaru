@@ -7,6 +7,7 @@ use std::time::Duration;
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use sqlx::{SqliteConnection, SqlitePool};
+use tokio::sync::OwnedSemaphorePermit;
 
 #[cfg(test)]
 use crate::recurrence::canonical::ScopePlan;
@@ -17,6 +18,19 @@ use super::occurrence::{Geometry, ReadBudget, read_geometry};
 
 pub static SCOPE_GATE: WorkGate = WorkGate::new();
 pub const SCOPE_WORKER_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Admits a preview's blocking worker after its SQLite snapshot is released.
+///
+/// Opening an event requests its edit and deletion previews together, so a preview waits for the
+/// other instead of failing. Admission follows the snapshot read because the vault has one SQLite
+/// connection: a permit held while waiting for it would stall every preview behind an unrelated
+/// Save or read, and Saves that need the gate inside their transaction would fail.
+pub(super) async fn admit_preview_worker() -> Result<OwnedSemaphorePermit, String> {
+    SCOPE_GATE
+        .acquire_within(SCOPE_WORKER_TIMEOUT)
+        .await
+        .ok_or_else(|| "A Calendar preview is being prepared; retry after it finishes".into())
+}
 
 /// The device-local date at an instant, which decides floating all-day protection.
 ///
@@ -377,9 +391,6 @@ where
         return Err("Calendar occurrence identity requires a YYYY-MM-DD date".into());
     }
     let selected = parse_date(&request.recurrence_date)?;
-    let permit = SCOPE_GATE
-        .try_acquire()
-        .map_err(|_| "A Calendar scope is being prepared; retry after it finishes")?;
     let mut tx = pool
         .begin()
         .await
@@ -398,6 +409,7 @@ where
     tx.commit()
         .await
         .map_err(|error| format!("finish Calendar scope snapshot: {error}"))?;
+    let permit = admit_preview_worker().await?;
     let worker = tokio::task::spawn_blocking(move || {
         // Keep admission closed until CPU work ends, even after waiter cancellation.
         let _permit = permit;

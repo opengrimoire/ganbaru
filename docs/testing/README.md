@@ -44,12 +44,12 @@ Always use the workspace flag for root scripts.
 | `pnpm -w run bundle-contracts` | Desktop and Android production-build contracts |
 | `pnpm -w run audit` | pnpm and Rust dependency audits |
 | `pnpm -w run validate` | Complete normal code gate |
-| `pnpm -w run validate:ci` | The same gate with two Cargo build jobs for the hosted Linux runner |
+| `pnpm -w run validate:ci` | The same gate with hosted-runner concurrency, split into `validate:ci:rust` and `validate:ci:frontend` |
 | `pnpm -w run validate:full` | Dependency audits followed by the normal code gate |
 
 `validate` is the normal comprehensive gate. `validate:full` is required for dependency or lockfile changes, security-sensitive dependency work, releases, and explicit full-security requests.
 
-The hosted `linux validation` job in `.github/workflows/check.yml` runs `validate:ci` for pull requests and the merge queue. It covers the same static checks, tests, editor diagnostics, and bundle contracts as local `validate`; only Cargo compilation uses two jobs instead of one. Rust tests use the same two test threads, and the frontend shards remain sequential and single-worker. The independent Android job builds an ARM64 debug APK, while the Windows job runs `cargo check -p ganbaru` without producing an installer.
+For pull requests and the merge queue, `.github/workflows/check.yml` runs `validate:ci:rust` and `validate:ci:frontend` as parallel Linux jobs, and the required `linux validation` check passes only when both pass. Together they cover the same static checks, tests, editor diagnostics, and bundle contracts as local `validate`. Rust uses four Cargo build jobs and four test threads, and Vitest runs two sequential two-worker shards. The Rust job restores a dependency cache that only pushes to `dev` save. The independent Android job builds an ARM64 debug APK, while the Windows job runs `cargo check -p ganbaru` without producing an installer.
 
 ## Choosing a gate
 

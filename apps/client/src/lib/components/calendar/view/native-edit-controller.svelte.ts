@@ -18,6 +18,11 @@ export interface CalendarEditDraft extends CalendarEditContext {
 }
 
 const PREVIEW_DELAY_MS = 200;
+/**
+ * Waits before reading a failed preview again. Previews are read-only, and their failures are usually brief native
+ * contention after another Save, so they retry silently before the panel reports an error.
+ */
+const PREVIEW_RETRY_DELAYS_MS = [250, 750, 1500] as const;
 
 interface PendingPreview {
   input: CalendarEditDraft;
@@ -50,6 +55,7 @@ export class NativeCalendarEditController {
   private desired: PendingPreview | null = null;
   private running: Promise<void> | null = null;
   private timer: ReturnType<typeof setTimeout> | undefined;
+  private wakeRetry: (() => void) | null = null;
   private failedGeneration: number | null = null;
   private lastError: unknown;
   private pendingCommit: PendingCommit | null = null;
@@ -93,6 +99,7 @@ export class NativeCalendarEditController {
     this.error = null;
     this.failedGeneration = null;
     this.loading = true;
+    this.wakeRetry?.();
     this.schedule();
   }
 
@@ -139,17 +146,38 @@ export class NativeCalendarEditController {
     return this.running;
   }
 
+  private isCurrentWork(work: PendingPreview): boolean {
+    return this.desired?.generation === work.generation && this.isCurrentContext(work.input);
+  }
+
+  /** Retry a failed read while its draft is still current; a newer draft or reset ends the wait early. */
+  private async loadWithRetry(work: PendingPreview): Promise<CalendarEditPreview> {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await this.loadPreview({ commandId: work.commandId, edit: work.input.edit, window: work.input.window });
+      } catch (error) {
+        const delay = PREVIEW_RETRY_DELAYS_MS[attempt];
+        if (delay === undefined || !this.isCurrentWork(work)) throw error;
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, delay);
+          this.wakeRetry = () => { clearTimeout(timer); resolve(); };
+        });
+        this.wakeRetry = null;
+        if (!this.isCurrentWork(work)) throw error;
+      }
+    }
+  }
+
   private async read(work: PendingPreview): Promise<void> {
     try {
-      const preview = await this.loadPreview({ commandId: work.commandId,
-        edit: work.input.edit, window: work.input.window });
-      if (this.desired?.generation !== work.generation || !this.isCurrentContext(work.input)) return;
+      const preview = await this.loadWithRetry(work);
+      if (!this.isCurrentWork(work)) return;
       if (preview.vaultId !== work.input.vaultId || preview.vaultGeneration !== work.input.vaultGeneration) {
         throw new Error("Calendar review belongs to a previous vault context");
       }
       this.preview = preview;
     } catch (error) {
-      if (this.desired?.generation !== work.generation || !this.isCurrentContext(work.input)) return;
+      if (!this.isCurrentWork(work)) return;
       this.lastError = error;
       this.failedGeneration = work.generation;
       this.error = error instanceof Error ? error.message : String(error);
@@ -318,6 +346,7 @@ export class NativeCalendarEditController {
     this.clearTimer();
     this.generation += 1;
     this.desired = null;
+    this.wakeRetry?.();
     this.commandId = this.newCommandId();
     this.preview = null;
     this.loading = false;

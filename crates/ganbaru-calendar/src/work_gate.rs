@@ -33,9 +33,10 @@ impl WorkGate {
 
     /// Waits up to `limit` for the permit, returning `None` when it is still held.
     ///
-    /// Callers must not hold a SQLite connection while waiting, because the holder may need the
-    /// connection before it releases the permit. The limit keeps a stalled holder from blocking
-    /// waiters forever.
+    /// Callers must not hold a SQLite connection while waiting, and should take the permit only
+    /// once their own SQLite work is done: the vault has one connection, so a holder that still
+    /// needs it makes waiters' limits depend on unrelated database work. The limit keeps a stalled
+    /// holder from blocking waiters forever.
     pub async fn acquire_within(&self, limit: Duration) -> Option<OwnedSemaphorePermit> {
         tokio::time::timeout(limit, self.semaphore().acquire_owned())
             .await

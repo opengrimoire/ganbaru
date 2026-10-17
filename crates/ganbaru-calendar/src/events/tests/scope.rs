@@ -234,3 +234,38 @@ fn concurrent_scope_previews_wait_for_each_other_instead_of_failing() {
         assert_eq!(deletion, Ok("deletion"));
     });
 }
+
+#[test]
+fn preview_waiting_for_the_connection_leaves_the_gate_to_the_save_holding_it() {
+    crate::test_support::block_on(async {
+        let pool = in_memory_pool().await;
+        insert_test_event_at(
+            &pool,
+            "event-1",
+            "2026-05-01T09:00:00Z",
+            "2026-05-01T10:00:00Z",
+            None,
+        )
+        .await;
+        // A Save holds the vault's only connection and needs the gate inside its transaction.
+        let save = pool.begin().await.unwrap();
+        let preview = crate::events::scope::prepare_request_with_clock(
+            &pool,
+            std::sync::Arc::new(FixedDeviceDate),
+            crate::events::scope::ScopeRequest {
+                template_id: "event-1".into(),
+                recurrence_date: "2026-05-01".into(),
+                scope: EditScope::This,
+            },
+            0,
+            |_, _, _, _| Ok("edit"),
+        );
+        tokio::pin!(preview);
+        let waiting =
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut preview).await;
+        assert!(waiting.is_err(), "preview should wait for the connection");
+        assert!(crate::events::scope::SCOPE_GATE.try_acquire().is_ok());
+        save.rollback().await.unwrap();
+        assert_eq!(preview.await, Ok("edit"));
+    });
+}

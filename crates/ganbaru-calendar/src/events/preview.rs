@@ -307,10 +307,6 @@ pub async fn preview_edit<H: PreviewHost>(
             });
         }
         CalendarIntent::ScheduleTasks(schedule) => {
-            let permit = super::scope::SCOPE_GATE
-                .acquire_within(super::scope::SCOPE_WORKER_TIMEOUT)
-                .await
-                .ok_or("A Calendar preview is being prepared; retry after it finishes")?;
             let pool = host.connect().await?;
             let mut tx = pool
                 .begin()
@@ -324,6 +320,7 @@ pub async fn preview_edit<H: PreviewHost>(
             tx.commit()
                 .await
                 .map_err(|error| format!("finish Project scheduling preview: {error}"))?;
+            let permit = super::scope::admit_preview_worker().await?;
             let expected_vault = vault_id.clone();
             let verify = host.clone();
             let worker = tokio::task::spawn_blocking(move || -> Result<VisiblePreview, String> {
@@ -352,10 +349,6 @@ pub async fn preview_edit<H: PreviewHost>(
             });
         }
         CalendarIntent::Create(create) => {
-            let permit = super::scope::SCOPE_GATE
-                .acquire_within(super::scope::SCOPE_WORKER_TIMEOUT)
-                .await
-                .ok_or("A Calendar preview is being prepared; retry after it finishes")?;
             // Authorize the supplied URL before doing CPU work. Creation has no
             // source snapshot, but its visible timestamps still use native time.
             let pool = host.connect().await?;
@@ -370,6 +363,7 @@ pub async fn preview_edit<H: PreviewHost>(
             tx.commit()
                 .await
                 .map_err(|error| format!("finish Calendar creation preview: {error}"))?;
+            let permit = super::scope::admit_preview_worker().await?;
             let expected_vault = vault_id.clone();
             let verify = host.clone();
             let worker = tokio::task::spawn_blocking(move || -> Result<VisiblePreview, String> {

@@ -15,14 +15,47 @@ export interface SaveToast {
 const DELETE_UNDO_TIMEOUT_MS = 5_000;
 const SAVE_SUCCESS_TOAST_TIMEOUT_MS = 3_000;
 const SAVE_ERROR_TOAST_TIMEOUT_MS = 8_000;
+/** Pending toasts appear only after this delay, so operations that settle quickly go straight to their outcome. */
+const PENDING_TOAST_REVEAL_DELAY_MS = 500;
+
+/** Track whether a pending toast has waited long enough to be shown. */
+function createPendingReveal() {
+  let revealed = $state(false);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  function stop(): void {
+    if (timer) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
+  }
+
+  return {
+    get revealed(): boolean {
+      return revealed;
+    },
+    start(): void {
+      stop();
+      revealed = false;
+      timer = setTimeout(() => {
+        revealed = true;
+        timer = undefined;
+      }, PENDING_TOAST_REVEAL_DELAY_MS);
+    },
+    stop,
+  };
+}
 
 export function createCalendarViewToastController() {
   let deleteUndoToast: DeleteUndoToast | null = $state(null);
   let deleteUndoTimer: ReturnType<typeof setTimeout> | undefined;
   let saveToast: SaveToast | null = $state(null);
   let saveToastTimer: ReturnType<typeof setTimeout> | undefined;
+  const deletePendingReveal = createPendingReveal();
+  const savePendingReveal = createPendingReveal();
 
   function clearDeleteUndoTimer(): void {
+    deletePendingReveal.stop();
     if (deleteUndoTimer) {
       clearTimeout(deleteUndoTimer);
       deleteUndoTimer = undefined;
@@ -38,6 +71,7 @@ export function createCalendarViewToastController() {
     clearDeleteUndoTimer();
     const id = crypto.randomUUID();
     deleteUndoToast = { id, pending: true, label };
+    deletePendingReveal.start();
     return id;
   }
 
@@ -65,6 +99,7 @@ export function createCalendarViewToastController() {
   }
 
   function clearSaveToastTimer(): void {
+    savePendingReveal.stop();
     if (saveToastTimer) {
       clearTimeout(saveToastTimer);
       saveToastTimer = undefined;
@@ -80,6 +115,7 @@ export function createCalendarViewToastController() {
     clearSaveToastTimer();
     const id = crypto.randomUUID();
     saveToast = { id, pending: true, message, variant: "success" };
+    savePendingReveal.start();
     return id;
   }
 
@@ -114,10 +150,10 @@ export function createCalendarViewToastController() {
 
   return {
     get deleteUndoToast() {
-      return deleteUndoToast;
+      return deleteUndoToast?.pending && !deletePendingReveal.revealed ? null : deleteUndoToast;
     },
     get saveToast() {
-      return saveToast;
+      return saveToast?.pending && !savePendingReveal.revealed ? null : saveToast;
     },
     dismissDeleteUndoToast,
     showDeletePendingToast,

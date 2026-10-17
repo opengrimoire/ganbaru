@@ -15,6 +15,7 @@ import {
 } from "$lib/projects/snapshot/optional-data";
 import { mergeProjectSnapshot } from "$lib/projects/snapshot/queries";
 import { listenForProjectChanges, publishProjectChanges } from "$lib/projects/window-sync";
+import { applyCalendarEventProjectAssignments } from "$lib/projects/calendar-assignments";
 import { configKeyChanged, onConfigChangedElsewhere } from "$lib/vault/config";
 import {
   loadSavedActiveProjectId,
@@ -736,10 +737,8 @@ const actions = createProjectStoreActions({
   readLoadGeneration: () => loadRequestId,
   updateSnapshot,
   async applyCalendarEventProjectAssignments(assignments) {
-    if (assignments.length === 0) return;
     try {
-      const { getCalendar } = await import("$lib/stores/calendar.svelte");
-      await getCalendar().applyProjectAssignments(assignments);
+      await applyCalendarEventProjectAssignments(assignments);
     } catch (error) {
       console.error("Failed to apply committed calendar event project assignments", error);
     }

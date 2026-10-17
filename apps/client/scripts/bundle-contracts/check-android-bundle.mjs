@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertBaselinePathsExist, baselineEntries, clientFileSystem } from "./baseline-paths.mjs";
+import { staticChunkCycleFailures } from "./chunk-cycles.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const clientDir = path.resolve(scriptDir, "..", "..");
@@ -208,7 +209,7 @@ const chunks = readChunks(await readJson(metadataPath));
 const chunksByFile = new Map(chunks.map((chunk) => [chunk.fileName, chunk]));
 const modules = new Set(chunks.flatMap((chunk) => chunk.modules));
 const sourceModules = new Set([...modules].filter((moduleId) => moduleId.startsWith("src/")));
-const failures = [];
+const failures = [...staticChunkCycleFailures(chunks)];
 const destinationResults = {};
 
 for (const destination of baseline.destinations) {

@@ -75,6 +75,7 @@ Panels were restyled one at a time, so radii, shadows, text sizes, input styles,
 
 - A floating surface stays inside the visible viewport. Panels positioned by script use the shared anchored helpers; panels placed by CSS beside their trigger use `keepInViewport`, which slides them back only as far as a narrow screen requires. Its `translate` makes the panel the containing block for fixed descendants, so nested fixed pickers portal out.
 - Touch screens keep `:hover` on the last tapped element, so the build moves every hand-written `:hover` rule behind `@media (hover: hover)`, as Tailwind's `hover:` already is. On touch, a trigger shows its highlight only through open, active, or keyboard focus states, so it clears as soon as its surface closes.
+- The workspace content area is one stacking layer below the shell. Floating panels inside a tab, such as the Calendar event panel, can never paint above shell overlays (Quick notes, Music, title bar menus, Settings) whatever their `z-index`, and surfaces portaled to the body keep their own order above both. Workspace dialogs still dim the title bar frame.
 - A second press on the trigger of an open surface only closes it. A full-screen backdrop closes on `click`, not on `pointerdown`, because a touch that closes on press lets the following click land on the trigger and reopen the surface. Outside-press handlers count the trigger as inside.
 
 ## Scrolling

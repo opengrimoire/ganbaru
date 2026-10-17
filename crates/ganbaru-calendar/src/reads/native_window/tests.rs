@@ -108,6 +108,16 @@ async fn pool() -> SqlitePool {
     pool
 }
 
+/// Count cached statements once the SQLite worker has finished the previous command.
+///
+/// The worker sends a query's rows before it publishes the new cache size, so a
+/// ping round trip orders the read after that update.
+async fn cached_statements(connection: &mut sqlx::SqliteConnection) -> usize {
+    use sqlx::Connection;
+    connection.ping().await.unwrap();
+    connection.cached_statements_size()
+}
+
 #[test]
 fn empty_native_windows_do_not_prepare_child_queries_and_preserve_requested_totals() {
     use sqlx::Connection;
@@ -122,12 +132,12 @@ fn empty_native_windows_do_not_prepare_child_queries_and_preserve_requested_tota
             .unwrap();
         assert!(source.events.is_empty());
         assert_eq!(source.total_event_count, None);
-        assert_eq!(tx.cached_statements_size(), 1);
+        assert_eq!(cached_statements(&mut tx).await, 1);
         let source = read(&mut tx, &window, WindowPurpose::Focus, true)
             .await
             .unwrap();
         assert_eq!(source.total_event_count, Some(1));
-        assert_eq!(tx.cached_statements_size(), 2);
+        assert_eq!(cached_statements(&mut tx).await, 2);
         let result = source.expand(&window).unwrap();
         assert!(result.occurrences.is_empty());
         assert!(result.overrides.is_empty());

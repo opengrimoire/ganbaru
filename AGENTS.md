@@ -34,7 +34,7 @@ Docs describe what the app is meant to be and why, not a transcript of the code.
 > Update this map when top-level or listed directories are created, renamed, or removed. Entries are existing paths unless marked as planned.
 
 ```
-.github/: issue forms, PR and release-notes templates, security policy, code of conduct, Actions workflows, release notes config
+.github/: issue forms, PR and release-notes templates, security policy, code of conduct, Actions workflows and their helper scripts, release notes config
 docs/: documentation (see above); assets/ holds documentation images
 apps/
   client/: Tauri app (Svelte frontend + Rust backend)
@@ -179,7 +179,7 @@ Read `docs/testing/README.md` when changing tests, validation scripts, task orde
 
 **Resource limits:** the machine is memory-limited, so validation is deliberately serialized.
 
-- Use the root `check`, `test`, and `validate` scripts for broad verification instead of direct full-suite `turbo`, `vitest`, or `cargo` commands. They run Rust before frontend work, use one Cargo build job and two Rust test threads, and split Vitest into sequential one-worker shards. `validate:ci` (two Cargo jobs) is for hosted Linux CI only. Do not raise concurrency, combine stages, or remove sharding without measuring peak memory and confirming coverage.
+- Use the root `check`, `test`, and `validate` scripts for broad verification instead of direct full-suite `turbo`, `vitest`, or `cargo` commands. They run Rust before frontend work, use one Cargo build job and two Rust test threads, and split Vitest into sequential one-worker shards. `validate:ci` and its `validate:ci:rust` and `validate:ci:frontend` halves (four Cargo jobs and test threads, two-worker Vitest shards) are for hosted Linux CI only. Do not raise concurrency, combine stages, or remove sharding without measuring peak memory and confirming coverage.
 - Never run Cargo work concurrently with Vitest, Svelte checks, Turbo, or another Node validation command, and never start another validation command while a root `check`, `test`, `validate`, or `validate:full` is running.
 - For focused checks, use one Vitest worker and one Cargo job and test thread. Add `--lib` when the filtered Rust test is in the library; use `--bin <name>` only when testing that binary. Confirm focused Vitest runs report only the requested files.
 - The workspace test profile inherits the development profile's line-tables-only debug information so both share dependency artifacts; do not restore full test debug information unless a debugger session needs it.

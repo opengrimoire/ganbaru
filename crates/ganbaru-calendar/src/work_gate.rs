@@ -1,6 +1,7 @@
 //! Single-flight admission for bounded Calendar workers.
 
 use std::sync::{Arc, LazyLock};
+use std::time::Duration;
 
 use tokio::sync::{AcquireError, OwnedSemaphorePermit, Semaphore, TryAcquireError};
 
@@ -28,6 +29,19 @@ impl WorkGate {
     /// Waits for the permit.
     pub async fn acquire(&self) -> Result<OwnedSemaphorePermit, AcquireError> {
         self.semaphore().acquire_owned().await
+    }
+
+    /// Waits up to `limit` for the permit, returning `None` when it is still held.
+    ///
+    /// Callers must not hold a SQLite connection while waiting, and should take the permit only
+    /// once their own SQLite work is done: the vault has one connection, so a holder that still
+    /// needs it makes waiters' limits depend on unrelated database work. The limit keeps a stalled
+    /// holder from blocking waiters forever.
+    pub async fn acquire_within(&self, limit: Duration) -> Option<OwnedSemaphorePermit> {
+        tokio::time::timeout(limit, self.semaphore().acquire_owned())
+            .await
+            .ok()?
+            .ok()
     }
 
     #[cfg(not(test))]
@@ -62,6 +76,8 @@ fn single_permit() -> Arc<Semaphore> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::WorkGate;
 
     static FIRST: WorkGate = WorkGate::new();
@@ -75,6 +91,40 @@ mod tests {
         drop(held);
         assert!(FIRST.try_acquire().is_ok());
         drop(other);
+    }
+
+    #[test]
+    fn bounded_wait_admits_once_the_holder_releases() {
+        crate::test_support::block_on(async {
+            let held = FIRST.try_acquire().unwrap();
+            let release = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                drop(held);
+            });
+            let permit = FIRST.acquire_within(Duration::from_secs(5)).await;
+            assert!(permit.is_some());
+            release.await.unwrap();
+        });
+    }
+
+    #[test]
+    fn bounded_wait_gives_up_while_the_holder_stalls() {
+        crate::test_support::block_on(async {
+            let held = FIRST.try_acquire().unwrap();
+            assert!(
+                FIRST
+                    .acquire_within(Duration::from_millis(20))
+                    .await
+                    .is_none()
+            );
+            drop(held);
+            assert!(
+                FIRST
+                    .acquire_within(Duration::from_millis(20))
+                    .await
+                    .is_some()
+            );
+        });
     }
 
     #[test]

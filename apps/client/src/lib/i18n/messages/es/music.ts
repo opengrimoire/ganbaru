@@ -330,6 +330,8 @@ export const music = {
     addLocalFolderHint: "Agrega una carpeta para explorar aquí su música.",
     addYouTubeLinkHint: "Agrega un enlace de vídeo o lista para explorarlo aquí.",
     noSourceItems: "Todavía no hay nada aquí",
+    unlinkedSourceFolder: (name: string) => `La fuente ${name} todavía no está vinculada a una carpeta en este dispositivo.`,
+    missingSourceFolder: (name: string) => `No se encuentra la carpeta de la fuente ${name} en este dispositivo.`,
     sourceLocation: "Ubicación de la fuente",
     renameSource: "Renombrar fuente",
     refreshAll: "Actualizar todo",

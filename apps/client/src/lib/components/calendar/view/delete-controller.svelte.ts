@@ -28,9 +28,12 @@ export interface CalendarViewDeleteControllerOptions {
 /** Present native deletion and Undo receipts without rebuilding domain snapshots. */
 export class CalendarViewDeleteController {
   private undo: { preview: CalendarEditPreview; receipt: CalendarCommitReceipt } | null = null;
-  private busy = false;
+  private busy = $state(false);
 
   constructor(private readonly options: CalendarViewDeleteControllerOptions) {}
+
+  /** Whether a deletion, Undo or retry is still committing or refreshing the visible window. */
+  get completing(): boolean { return this.busy; }
 
   async execute(input: CalendarEditDraft, review: CalendarEditPreview, stopActive: boolean): Promise<void> {
     if (this.busy) return;

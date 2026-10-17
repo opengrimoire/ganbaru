@@ -5,6 +5,10 @@ on:
     branches:
       - main
       - dev
+  # Pushes to dev only refresh the Rust dependency cache that pull requests restore.
+  push:
+    branches:
+      - dev
   merge_group:
     types:
       - checks_requested
@@ -21,12 +25,14 @@ defaults:
     shell: bash
 
 jobs:
-  linux:
-    name: linux validation
+  linux-rust:
+    name: linux Rust validation
     runs-on: ubuntu-22.04
     timeout-minutes: 60
     permissions:
       contents: read
+    env:
+      CARGO_INCREMENTAL: "0"
     steps:
       - name: checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
@@ -53,24 +59,100 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf libasound2-dev
 
-      - name: install workspace dependencies
-        run: pnpm install --frozen-lockfile --ignore-scripts
+      # Only trusted pushes to dev save this cache. Pull requests and the merge queue
+      # restore it read-only; a push without an exact match builds cold so stale
+      # artifacts never accumulate in the saved cache.
+      - name: restore Rust dependency cache
+        id: rust-cache
+        # actions/cache/restore v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: rust-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ github.event_name != 'push' && format('rust-{0}-{1}-', runner.os, hashFiles('rust-toolchain.toml')) || '' }}
 
       - name: fetch Rust dependencies
         run: cargo fetch --locked
 
-      - name: validate workspace
+      - name: validate Rust workspace
+        run: .github/scripts/with-memory-peak.sh pnpm -w run validate:ci:rust
+
+      - name: drop workspace build artifacts from the cache
+        if: github.event_name == 'push' && steps.rust-cache.outputs.cache-hit != 'true'
         run: |
-          report_memory_peak() {
-            if [ -r /sys/fs/cgroup/memory.peak ]; then
-              awk '{ printf "Runner memory peak: %.2f GiB\n", $1 / 1073741824 }' /sys/fs/cgroup/memory.peak
-            fi
-          }
-          trap report_memory_peak EXIT
-          pnpm -w run validate:ci
+          rm -rf target/debug/incremental
+          rm -rf target/debug/deps/*ganbaru* target/debug/.fingerprint/ganbaru* target/debug/build/ganbaru*
+          rm -f target/debug/ganbaru* target/debug/libganbaru*
+
+      - name: save Rust dependency cache
+        if: github.event_name == 'push' && steps.rust-cache.outputs.cache-hit != 'true'
+        # actions/cache/save v6.1.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
+
+  linux-frontend:
+    name: linux frontend validation
+    if: github.event_name != 'push'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: setup node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: "24"
+
+      - name: enable pnpm
+        env:
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+        run: |
+          corepack enable
+          corepack install
+
+      - name: install workspace dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: validate frontend workspace
+        run: .github/scripts/with-memory-peak.sh pnpm -w run validate:ci:frontend
+
+  # Required status check name in the branch rulesets; passes only when both Linux jobs pass.
+  linux:
+    name: linux validation
+    if: always() && github.event_name != 'push'
+    needs:
+      - linux-rust
+      - linux-frontend
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: require Rust and frontend validation
+        env:
+          RUST_RESULT: ${{ needs.linux-rust.result }}
+          FRONTEND_RESULT: ${{ needs.linux-frontend.result }}
+        run: |
+          echo "Rust: $RUST_RESULT, frontend: $FRONTEND_RESULT"
+          [ "$RUST_RESULT" = success ] && [ "$FRONTEND_RESULT" = success ]
 
   windows-rust:
     name: windows Rust check
+    if: github.event_name != 'push'
     runs-on: windows-2022
     timeout-minutes: 45
     permissions:
@@ -94,6 +176,7 @@ jobs:
 
   android:
     name: Android ARM64 build
+    if: github.event_name != 'push'
     runs-on: ubuntu-22.04
     timeout-minutes: 90
     permissions:

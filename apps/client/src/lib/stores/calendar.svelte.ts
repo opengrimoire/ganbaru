@@ -69,7 +69,7 @@ interface CalendarWindowLoadRequest {
 
 /** The part of a store that window-wide cache invalidation reaches, one per split pane scope. */
 interface CalendarWindowPane {
-  /** Drop queued loads and prefetches that read the cleared cache. */
+  /** Drop queued loads and prefetches that read the cleared cache, keeping the shown window until its reload settles. */
   supersedePending(): void;
   /** Read the pane's current window again from the database, if it shows one. */
   reloadCurrentWindow(): Promise<void>;
@@ -175,11 +175,15 @@ function createCalendarWindowStore({ bootsWithApp }: CalendarWindowStoreOptions)
   let foregroundWindowBusy = false;
   let foregroundWindowRequestId = 0;
   let foregroundWindowIdleWaiters: Array<() => void> = [];
+  // After a committed change clears the cache, the last window stays on screen until its reload settles, so the
+  // grid never paints empty between acceptance and the canonical read. A failed reload stops showing it.
+  let retainsStaleWindow = $state(false);
 
   const pane: CalendarWindowPane = {
     supersedePending: () => {
       prefetchGeneration++;
       windowLoadCoordinator.supersedePending();
+      retainsStaleWindow = loaded;
     },
     reloadCurrentWindow: async () => {
       if (!currentWindowStart || !currentWindowEnd) {
@@ -255,6 +259,7 @@ function createCalendarWindowStore({ bootsWithApp }: CalendarWindowStoreOptions)
     currentWindowStart = snapshot.windowStart;
     currentWindowEnd = snapshot.windowEnd;
     currentWindowSourceVersion = sourceVersion;
+    retainsStaleWindow = false;
     loaded = true;
     clearPanelEventCache();
     indexVersion++;
@@ -409,6 +414,9 @@ function createCalendarWindowStore({ bootsWithApp }: CalendarWindowStoreOptions)
         force,
         mode: "apply",
       });
+    } catch (error) {
+      retainsStaleWindow = false;
+      throw error;
     } finally {
       finishForegroundWindowLoad(foregroundId);
     }
@@ -521,6 +529,11 @@ function createCalendarWindowStore({ bootsWithApp }: CalendarWindowStoreOptions)
       const covering = findCachedWindowCovering(windowStart, windowEnd, renderZone);
       if (covering) {
         return nativeCalendarEventsInWindow(covering.windowEvents, windowStart, windowEnd);
+      }
+      if (retainsStaleWindow && currentWindowKey === key) return windowEvents;
+      if (retainsStaleWindow && currentWindowStart && currentWindowEnd && currentWindowRenderZone === renderZone
+        && calendarWindowCovers(currentWindowStart, currentWindowEnd, windowStart, windowEnd)) {
+        return nativeCalendarEventsInWindow(windowEvents, windowStart, windowEnd);
       }
       return [];
     },

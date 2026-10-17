@@ -1,7 +1,7 @@
 //! Durable send, steer, approval, and structured-input command facade.
 
-use super::agent_runs::TurnOrigin;
-use super::models::{
+use ganbaru_chat::agent_runs::TurnOrigin;
+use ganbaru_chat_contracts::models::{
     ApprovalDecision, ChatAttachmentId, ChatCommandContext, ChatError, ChatMessageId,
     ChatRequestId, ChatResult, ChatThreadId, ChatTurnId, DriverOperationReceipt, ModelId,
     ModelOptionSelection, ProjectWorkingFolderId, ProviderInstanceId, ProviderRequestId,
@@ -35,7 +35,7 @@ pub struct SendChatTurnCommand {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SendChatTurnResult {
-    pub thread: super::models::ChatThreadShellRead,
+    pub thread: ganbaru_chat_contracts::models::ChatThreadShellRead,
     pub dispatch: Option<TurnDispatchReceipt>,
     pub launch_error: Option<ChatError>,
 }

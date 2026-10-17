@@ -3,8 +3,8 @@
   import {
     channelCapabilityPreset,
     type ChatChannelCapabilityPreset,
-  } from "$lib/chat/teammate-access";
-  import ChatControlMenu, { type ChatControlOption } from "$lib/components/chat/ChatControlMenu.svelte";
+  } from "$lib/chat/teammates/access";
+  import ChatControlMenu, { type ChatControlOption } from "$lib/components/chat/composer/ChatControlMenu.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
 
   type SelectablePreset = Exclude<ChatChannelCapabilityPreset, "custom">;
@@ -20,15 +20,15 @@
   } = $props();
 
   const { t } = getLocalization();
-  const mixedValue = "__mixed__";
-  const customValue = "__custom__";
+  const MIXED_VALUE = "__mixed__";
+  const CUSTOM_VALUE = "__custom__";
   const presets = $derived(channels.map((channel) => channelCapabilityPreset(channel.capabilities)));
   const uniformPreset = $derived(presets.length > 0 && presets.every((preset) => preset === presets[0])
     ? presets[0]
     : null);
   const presetValue = $derived(uniformPreset === "custom"
-    ? customValue
-    : uniformPreset ?? mixedValue);
+    ? CUSTOM_VALUE
+    : uniformPreset ?? MIXED_VALUE);
   const presetPlaceholder = $derived<ChatControlOption>({
     value: presetValue,
     label: uniformPreset === "custom"

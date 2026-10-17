@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Calendar, CalendarEvent } from "$lib/components/calendar/types";
+import type { Calendar, CalendarEvent } from "$lib/calendar/types";
 import { serializeCalendarToIcs } from "./serializer";
 
 const baseCalendar: Calendar = {
@@ -19,7 +19,7 @@ function makeEvent(overrides: Partial<CalendarEvent> = {}): CalendarEvent {
 		end: "2026-06-01 15:00",
 		timezone: "UTC",
 		calendarId: "cal-1",
-		sourceUid: "sample-uid@ganbaru-ai",
+		sourceUid: "sample-uid@ganbaru",
 		...overrides,
 	};
 }
@@ -37,7 +37,7 @@ describe("serializeCalendarToIcs", () => {
 		it("emits BEGIN/END VCALENDAR with required headers", () => {
 			const ics = serializeCalendarToIcs(baseCalendar, [makeEvent()], "UTC");
 			expect(ics).toMatch(/^BEGIN:VCALENDAR\r\n/);
-			expect(ics).toContain("PRODID:-//Ganbaru AI//Calendar//EN");
+			expect(ics).toContain("PRODID:-//Ganbaru//Calendar//EN");
 			expect(ics).toContain("VERSION:2.0");
 			expect(ics).toContain("CALSCALE:GREGORIAN");
 			expect(ics).toContain("METHOD:PUBLISH");
@@ -485,7 +485,7 @@ describe("serializeCalendarToIcs", () => {
 						icalendarRawJcal: [
 							"vevent",
 							[
-								["uid", {}, "text", "sample-uid@ganbaru-ai"],
+								["uid", {}, "text", "sample-uid@ganbaru"],
 								["dtstamp", {}, "date-time", "20260101T000000Z"],
 								["dtstart", {}, "date-time", "20260601T140000Z"],
 								["dtend", {}, "date-time", "20260601T150000Z"],
@@ -560,7 +560,7 @@ describe("serializeCalendarToIcs", () => {
 						icalendarRawJcal: [
 							"vevent",
 							[
-								["uid", {}, "text", "sample-uid@ganbaru-ai"],
+								["uid", {}, "text", "sample-uid@ganbaru"],
 								["dtstamp", {}, "date-time", "20260101T000000Z"],
 								["dtstart", {}, "date-time", "20260601T140000Z"],
 								["dtend", {}, "date-time", "20260601T150000Z"],
@@ -596,7 +596,7 @@ describe("serializeCalendarToIcs", () => {
 						icalendarRawJcal: [
 							"vevent",
 							[
-								["uid", {}, "text", "sample-uid@ganbaru-ai"],
+								["uid", {}, "text", "sample-uid@ganbaru"],
 								["dtstamp", {}, "date-time", "20260101T000000Z"],
 								["dtstart", { tzid: "America/New_York" }, "date-time", "20260601T100000"],
 								["dtend", { tzid: "America/New_York" }, "date-time", "20260601T110000"],
@@ -623,7 +623,7 @@ describe("serializeCalendarToIcs", () => {
 						icalendarRawJcal: [
 							"vevent",
 							[
-								["uid", {}, "text", "sample-uid@ganbaru-ai"],
+								["uid", {}, "text", "sample-uid@ganbaru"],
 								["dtstamp", {}, "date-time", "20260101T000000Z"],
 								["dtstart", {}, "date-time", "20260601T140000Z"],
 								["duration", {}, "duration", "PT1H"],
@@ -651,7 +651,7 @@ describe("serializeCalendarToIcs", () => {
 						icalendarRawJcal: [
 							"vevent",
 							[
-								["uid", {}, "text", "sample-uid@ganbaru-ai"],
+								["uid", {}, "text", "sample-uid@ganbaru"],
 								["dtstamp", {}, "date-time", "20260101T000000Z"],
 								["dtstart", {}, "date-time", "2026-06-01T14:00:00"],
 								["dtend", {}, "date-time", "2026-06-01T15:00:00"],

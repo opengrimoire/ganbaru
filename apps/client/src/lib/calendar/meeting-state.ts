@@ -1,7 +1,7 @@
 import type {
   CalendarEvent,
   GuestPermissions,
-} from "$lib/components/calendar/types";
+} from "$lib/calendar/types";
 
 /** Return whether guest permissions differ from the calendar defaults. */
 export function hasNonDefaultGuestPermissions(

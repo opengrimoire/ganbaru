@@ -1,5 +1,6 @@
 <script lang="ts">
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import {
     roundTripCategoryCounts,
     visibleRoundTripCounts,
@@ -78,7 +79,7 @@
   </div>
 
   {#if diagnostics.length > 0}
-    <ul class="grid max-h-36 gap-1 overflow-auto text-[0.733333rem] text-muted-foreground">
+    <ul class="grid max-h-36 gap-1 overflow-auto text-[0.733333rem] text-muted-foreground" use:scrollEdgeFadeAction>
       {#each diagnostics as diagnostic, index (`${diagnostic.code}-${index}`)}
         <li class="grid gap-0.5 rounded border border-border/70 bg-muted/25 px-2 py-1">
           <div class="flex min-w-0 flex-wrap items-center gap-1">

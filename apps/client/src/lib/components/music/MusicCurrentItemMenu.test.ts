@@ -3,7 +3,7 @@
 import { mount, tick, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { localFileSourceFromPath } from "$lib/music/sources";
-import type { MusicPlaylistSummary } from "$lib/music/library-contracts";
+import type { MusicPlaylistSummary } from "$lib/music/library/contracts";
 import { getMusicPlayer } from "$lib/stores/music-player.svelte";
 
 const api = vi.hoisted(() => ({
@@ -39,15 +39,18 @@ describe("MusicCurrentItemMenu", () => {
     player.currentSource = null;
     player.queue = [];
     player.activeQueueItemIds = [];
+    vi.restoreAllMocks();
     vi.clearAllMocks();
   });
 
-  async function render(onOpenBuilder = vi.fn()): Promise<HTMLDivElement> {
+  async function render(onOpenBuilder = vi.fn(), nativeSelectedIndex = 0): Promise<HTMLDivElement> {
     const player = getMusicPlayer();
     const source = localFileSourceFromPath("/music/song.flac", "Song");
     player.currentSource = source;
     player.queue = [source];
     player.activeQueueItemIds = ["song"];
+    // The accepted native projection supplies selection independently of display rows.
+    vi.spyOn(player, "currentQueueIndex", "get").mockReturnValue(nativeSelectedIndex);
     api.getMusicPlaylistSummaries.mockResolvedValue([playlist("a", "Morning"), playlist("b", "Evening")]);
     target = document.createElement("div");
     document.body.append(target);
@@ -60,11 +63,11 @@ describe("MusicCurrentItemMenu", () => {
   it("stages additions and removals until Save and applies them together", async () => {
     const view = await render();
     view.querySelector<HTMLButtonElement>("button[aria-label='Current track playlists']")?.click();
-    await vi.waitFor(() => expect(view.querySelectorAll("[aria-pressed]")).toHaveLength(2));
-    const morning = view.querySelector<HTMLButtonElement>("button[aria-label='Remove from Morning']");
-    const evening = view.querySelector<HTMLButtonElement>("button[aria-label='Add to Evening']");
-    expect(morning?.getAttribute("aria-pressed")).toBe("true");
-    expect(evening?.getAttribute("aria-pressed")).toBe("false");
+    await vi.waitFor(() => expect(view.querySelectorAll("input[type='checkbox']")).toHaveLength(2));
+    const morning = view.querySelector<HTMLInputElement>("input[aria-label='Remove from Morning']");
+    const evening = view.querySelector<HTMLInputElement>("input[aria-label='Add to Evening']");
+    expect(morning?.checked).toBe(true);
+    expect(evening?.checked).toBe(false);
     expect(view.textContent).not.toContain("tracks");
     morning?.click();
     evening?.click();
@@ -84,15 +87,24 @@ describe("MusicCurrentItemMenu", () => {
     const view = await render(onOpenBuilder);
     const trigger = view.querySelector<HTMLButtonElement>("button[aria-label='Current track playlists']");
     trigger?.click();
-    await vi.waitFor(() => expect(view.querySelector("button[aria-label='Add to Evening']")).not.toBeNull());
-    view.querySelector<HTMLButtonElement>("button[aria-label='Add to Evening']")?.click();
+    await vi.waitFor(() => expect(view.querySelector("input[aria-label='Add to Evening']")).not.toBeNull());
+    view.querySelector<HTMLInputElement>("input[aria-label='Add to Evening']")?.click();
     trigger?.click();
     trigger?.click();
-    await vi.waitFor(() => expect(view.querySelector<HTMLButtonElement>("button[aria-label='Add to Evening']")?.getAttribute("aria-pressed")).toBe("false"));
+    await vi.waitFor(() => expect(view.querySelector<HTMLInputElement>("input[aria-label='Add to Evening']")?.checked).toBe(false));
     expect(api.bulkEditMusicMemberships).not.toHaveBeenCalled();
     const builder = [...view.querySelectorAll<HTMLButtonElement>("button")]
       .find((button) => button.textContent?.includes("Open in playlist builder"));
     builder?.click();
     expect(onOpenBuilder).toHaveBeenCalledExactlyOnceWith("song");
+  });
+
+  it("opens the builder without a selected item when native selection is absent", async () => {
+    const onOpenBuilder = vi.fn();
+    const view = await render(onOpenBuilder, -1);
+    view.querySelector<HTMLButtonElement>("button[aria-label='Playlist builder']")?.click();
+    expect(onOpenBuilder).toHaveBeenCalledExactlyOnceWith(null);
+    expect(api.getMusicMembershipMatrix).not.toHaveBeenCalled();
+    expect(api.bulkEditMusicMemberships).not.toHaveBeenCalled();
   });
 });

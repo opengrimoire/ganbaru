@@ -1,19 +1,20 @@
-const VAULT_HANDOFF_ONBOARDING_STORAGE_KEY = "ganbaru.vault-handoff-onboarding.v2";
+const VAULT_HANDOFF_ONBOARDING_STORAGE_KEY_PREFIX = "ganbaru.vault-handoff-onboarding.v3:";
 const INDEPENDENT_VAULT_USED_STORAGE_KEY = "ganbaru.vault-handoff-independent-vault.v1";
 
 type ReadableStorage = Pick<Storage, "getItem">;
 type WritableStorage = Pick<Storage, "setItem">;
 
-/** Return whether this installation has completed device-linking onboarding. */
+/** Return whether the active vault has completed device-linking onboarding. */
 export function vaultHandoffOnboardingCompleted(
   storage: ReadableStorage | undefined,
+  vaultId: string,
 ): boolean {
-  return storage?.getItem(VAULT_HANDOFF_ONBOARDING_STORAGE_KEY) === "complete";
+  return storage?.getItem(`${VAULT_HANDOFF_ONBOARDING_STORAGE_KEY_PREFIX}${vaultId}`) === "complete";
 }
 
-/** Persist completion of the current device-linking onboarding. */
-export function completeVaultHandoffOnboarding(storage: WritableStorage): void {
-  storage.setItem(VAULT_HANDOFF_ONBOARDING_STORAGE_KEY, "complete");
+/** Persist completion of device-linking onboarding for the active vault. */
+export function completeVaultHandoffOnboarding(storage: WritableStorage, vaultId: string): void {
+  storage.setItem(`${VAULT_HANDOFF_ONBOARDING_STORAGE_KEY_PREFIX}${vaultId}`, "complete");
 }
 
 /** Return whether first-run linking may replace the untouched starter vault. */

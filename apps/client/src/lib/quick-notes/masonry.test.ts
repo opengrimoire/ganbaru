@@ -3,7 +3,7 @@ import type { QuickNote } from "./types";
 import {
   applyQuickNoteGroupOrder,
   moveQuickNoteId,
-  quickNoteMobileMasonryMaxColumns,
+  quickNoteMobileMasonryDensity,
   quickNoteMasonryInsertion,
   quickNoteMasonryLayout,
 } from "./masonry";
@@ -23,12 +23,33 @@ describe("Quick note masonry layout", () => {
     expect(layout.height).toBe(102);
   });
 
-  it("limits mobile density by phone, tablet, and wide breakpoints", () => {
-    expect(quickNoteMobileMasonryMaxColumns(599)).toBe(1);
-    expect(quickNoteMobileMasonryMaxColumns(600)).toBe(2);
-    expect(quickNoteMobileMasonryMaxColumns(899)).toBe(2);
-    expect(quickNoteMobileMasonryMaxColumns(900)).toBe(3);
-    expect(quickNoteMobileMasonryMaxColumns(Number.NaN)).toBe(1);
+  it("limits mobile density to two columns below the wide breakpoint", () => {
+    expect(quickNoteMobileMasonryDensity(360).maximumColumns).toBe(2);
+    expect(quickNoteMobileMasonryDensity(899).maximumColumns).toBe(2);
+    expect(quickNoteMobileMasonryDensity(900).maximumColumns).toBe(3);
+    expect(quickNoteMobileMasonryDensity(Number.NaN).maximumColumns).toBe(2);
+  });
+
+  it("fits two compact mobile columns on phones and one at the recoverability floor", () => {
+    const layoutAt = (containerWidth: number) => {
+      const density = quickNoteMobileMasonryDensity(containerWidth);
+      return quickNoteMasonryLayout(containerWidth, [40, 40, 40], density.minimumCardWidth, 12, density.maximumColumns);
+    };
+    expect(layoutAt(296).columns).toBe(2);
+    expect(layoutAt(296).positions[1]?.width).toBe(142);
+    expect(layoutAt(700).columns).toBe(2);
+    expect(layoutAt(256).columns).toBe(1);
+    expect(quickNoteMasonryLayout(296, [40, 40, 40]).columns).toBe(1);
+  });
+
+  it("targets drag insertion against the same mobile layout it displays", () => {
+    const density = quickNoteMobileMasonryDensity(336);
+    const heights = [80, 120, 60, 90];
+    const target = quickNoteMasonryLayout(336, [80, 60, 120, 90], density.minimumCardWidth, 12, density.maximumColumns).positions[1];
+    const insertion = quickNoteMasonryInsertion(336, heights, 2, target?.left ?? 0, target?.top ?? 0, 2, density);
+    expect(target?.left).toBeGreaterThan(0);
+    expect(insertion.index).toBe(1);
+    expect(insertion.distanceSquared).toBe(0);
   });
 
   it("respects an explicit mobile column limit", () => {

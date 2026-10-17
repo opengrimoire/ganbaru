@@ -1,7 +1,7 @@
-import type { MobileBackLayer, MobileBackStack } from "./mobile-back-stack-contract";
+import type { MobileBackLayer, MobileBackStack } from "./mobile-back-stack-contracts";
 import { untrack } from "svelte";
 
-export type { MobileBackLayer, MobileBackStack } from "./mobile-back-stack-contract";
+export type { MobileBackLayer, MobileBackStack } from "./mobile-back-stack-contracts";
 
 interface RegisteredMobileBackLayer extends MobileBackLayer {
   id: symbol;

@@ -10,12 +10,13 @@
   import Plus from "@lucide/svelte/icons/plus";
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
   import Undo2 from "@lucide/svelte/icons/undo-2";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import { revealLocalFile } from "$lib/api/music";
   import { bulkEditMusicMemberships, bulkSnoozeMusicItems, getMusicInspectorDetail, removeMusicSnooze, reorderMusicPlaylists } from "$lib/api/music-library";
-  import { createMusicBuilderInspectorController } from "$lib/music/music-builder-inspector.svelte";
-  import { projectMusicBuilderLayout } from "$lib/music/music-builder-layout";
+  import { createMusicBuilderInspectorController } from "$lib/music/builder/inspector.svelte";
+  import { projectMusicBuilderLayout } from "$lib/music/builder/layout";
   import {
     backMusicBuilderRoute,
     initialMusicBuilderRoute,
@@ -23,64 +24,64 @@
     pushMusicBuilderRoute,
     type MusicBuilderDestination,
     type MusicBuilderHistory,
-  } from "$lib/music/music-builder-routing";
-  import { createMusicLibraryController, type MusicDestinationState } from "$lib/music/music-library-controller.svelte";
-  import { getMusicSourcesController } from "$lib/music/music-sources-controller.svelte";
-  import { createMusicReviewAuditionController, MUSIC_CONTEXT_BOUNDARY_EVENT } from "$lib/music/music-review-audition.svelte";
-  import { createMusicReviewController } from "$lib/music/music-review-controller.svelte";
-  import { createMusicPlaylistController } from "$lib/music/music-playlist-controller.svelte";
-  import { createMusicBulkEditController } from "$lib/music/music-bulk-edit-controller.svelte";
-  import { createMusicInterchangeController } from "$lib/music/music-interchange-controller.svelte";
+  } from "$lib/music/builder/routing";
+  import { createMusicLibraryController, type MusicDestinationState } from "$lib/music/library/controller.svelte";
+  import { getMusicSourcesController } from "$lib/music/sources/controller.svelte";
+  import { createMusicReviewAuditionController, MUSIC_CONTEXT_BOUNDARY_EVENT } from "$lib/music/review/audition.svelte";
+  import { createMusicReviewController } from "$lib/music/review/controller.svelte";
+  import { createMusicPlaylistController } from "$lib/music/playlists/controller.svelte";
+  import { createMusicBulkEditController } from "$lib/music/builder/bulk-edit-controller.svelte";
+  import { createMusicInterchangeController } from "$lib/music/library/interchange-controller.svelte";
   import {
     musicReviewArtworkDataUrl,
     parseMusicReviewAutoplay,
-  } from "$lib/music/music-review";
+  } from "$lib/music/review";
   import {
     firstMusicReviewTreeItemId,
     musicUnreviewedItemCount,
     musicReviewTreeItemIds,
-  } from "$lib/music/music-review-tree";
-  import type { MusicItemListEntry, MusicWeight } from "$lib/music/library-contracts";
-  import type { MusicIssue, MusicSourceCollection } from "$lib/music/library-contracts";
-  import type { MusicSourceRefreshPlan } from "$lib/music/music-source-refresh";
-  import { musicBuilderPlaybackDecision } from "$lib/music/music-builder-playback-transition";
-  import type { MusicAddSourceKind, MusicLocalSourceSelection } from "$lib/music/music-source-drafts";
-  import { musicSnoozeEndsAt, musicSnoozePreset, type MusicSnoozePreset } from "$lib/music/music-snooze";
+  } from "$lib/music/review/tree";
+  import type { MusicItemListEntry, MusicWeight } from "$lib/music/library/contracts";
+  import type { MusicIssue, MusicSourceCollection } from "$lib/music/library/contracts";
+  import type { MusicSourceRefreshPlan } from "$lib/music/sources/refresh";
+  import { musicBuilderPlaybackDecision } from "$lib/music/builder/playback-transition";
+  import type { MusicAddSourceKind, MusicLocalSourceSelection } from "$lib/music/sources/drafts";
+  import { musicSnoozeEndsAt, musicSnoozePreset, type MusicSnoozePreset } from "$lib/music/session/snooze";
   import {
     createMusicBuilderContextViewState,
     createMusicReviewTreeViewState,
     createMusicReviewWorkspaceViewState,
-  } from "$lib/music/music-builder-view-state";
-  import { notifyMusicLibraryChanged, onMusicLibraryChanged } from "$lib/music/music-library-events";
+  } from "$lib/music/builder/view-state";
+  import { notifyMusicLibraryChanged, onMusicLibraryChanged } from "$lib/music/library/events";
   import { onActiveVaultIdentityChange, requireActiveVaultIdentity } from "$lib/vault/active-vault";
   import { getConfigKey, setConfigKey } from "$lib/vault/config";
-  import MusicBuilderAsyncState from "./builder/MusicBuilderAsyncState.svelte";
-  import MusicBuilderFilterBar from "./builder/MusicBuilderFilterBar.svelte";
-  import MusicPreparationActivity from "./builder/MusicPreparationActivity.svelte";
-  import MusicBuilderOverview from "./builder/MusicBuilderOverview.svelte";
-  import MusicDetectedFolderCard from "./builder/MusicDetectedFolderCard.svelte";
-  import MusicVirtualItemList from "./builder/MusicVirtualItemList.svelte";
-  import MusicAddSourceDialog from "./builder/MusicAddSourceDialog.svelte";
-  import MusicReviewIssuesPanel from "./builder/MusicReviewIssuesPanel.svelte";
+  import MusicBuilderAsyncState from "$lib/components/music/builder/MusicBuilderAsyncState.svelte";
+  import MusicBuilderFilterBar from "$lib/components/music/builder/MusicBuilderFilterBar.svelte";
+  import MusicPreparationActivity from "$lib/components/music/builder/MusicPreparationActivity.svelte";
+  import MusicBuilderOverview from "$lib/components/music/builder/MusicBuilderOverview.svelte";
+  import MusicDetectedFolderCard from "$lib/components/music/builder/MusicDetectedFolderCard.svelte";
+  import MusicVirtualItemList from "$lib/components/music/builder/MusicVirtualItemList.svelte";
+  import MusicAddSourceDialog from "$lib/components/music/builder/MusicAddSourceDialog.svelte";
+  import MusicReviewIssuesPanel from "$lib/components/music/builder/MusicReviewIssuesPanel.svelte";
   import MusicItemRepairDialog from "$lib/components/music/builder/MusicItemRepairDialog.svelte";
-  import MusicNetworkRefreshDialog from "./builder/MusicNetworkRefreshDialog.svelte";
+  import MusicNetworkRefreshDialog from "$lib/components/music/builder/MusicNetworkRefreshDialog.svelte";
   import MusicRelinkWizard from "$lib/components/music/builder/MusicRelinkWizard.svelte";
-  import MusicSourceRemovalDialog from "./builder/MusicSourceRemovalDialog.svelte";
-  import MusicSourcesBrowser from "./builder/MusicSourcesBrowser.svelte";
-  import MusicSourcesTree from "./builder/MusicSourcesTree.svelte";
-  import MusicSourceNameDialog from "./builder/MusicSourceNameDialog.svelte";
-  import MusicReviewWorkspace from "./builder/MusicReviewWorkspace.svelte";
-  import MusicReviewTree from "./builder/MusicReviewTree.svelte";
-  import MusicBuilderContextPanel from "./builder/MusicBuilderContextPanel.svelte";
-  import MusicBuilderDock from "./builder/MusicBuilderDock.svelte";
-  import MusicBuilderToolbar from "./builder/MusicBuilderToolbar.svelte";
-  import MusicPlaylistManager from "./builder/MusicPlaylistManager.svelte";
-  import MusicSoundscapeBuilder from "$lib/components/music/MusicSoundscapeBuilder.svelte";
-  import MusicPlaylistDialog from "./builder/MusicPlaylistDialog.svelte";
-  import MusicInterchangeDialog from "./builder/MusicInterchangeDialog.svelte";
-  import type { MusicBuilderInitialAction } from "$lib/music/music-builder-loader";
-  import { musicIssueGroup } from "$lib/music/music-issue-presentation";
-  import { isSystemMusicPlaylistId, orderMusicPlaylists, systemMusicPlaylistName } from "$lib/music/music-system-playlists";
+  import MusicSourceRemovalDialog from "$lib/components/music/builder/MusicSourceRemovalDialog.svelte";
+  import MusicSourcesBrowser from "$lib/components/music/builder/MusicSourcesBrowser.svelte";
+  import MusicSourcesTree from "$lib/components/music/builder/MusicSourcesTree.svelte";
+  import MusicSourceNameDialog from "$lib/components/music/builder/MusicSourceNameDialog.svelte";
+  import MusicReviewWorkspace from "$lib/components/music/builder/MusicReviewWorkspace.svelte";
+  import MusicReviewTree from "$lib/components/music/builder/MusicReviewTree.svelte";
+  import MusicBuilderContextPanel from "$lib/components/music/builder/MusicBuilderContextPanel.svelte";
+  import MusicBuilderDock from "$lib/components/music/builder/MusicBuilderDock.svelte";
+  import MusicBuilderToolbar from "$lib/components/music/builder/MusicBuilderToolbar.svelte";
+  import MusicPlaylistManager from "$lib/components/music/builder/MusicPlaylistManager.svelte";
+  import MusicSoundscapeBuilder from "$lib/components/music/soundscape/MusicSoundscapeBuilder.svelte";
+  import MusicPlaylistDialog from "$lib/components/music/builder/MusicPlaylistDialog.svelte";
+  import MusicInterchangeDialog from "$lib/components/music/builder/MusicInterchangeDialog.svelte";
+  import type { MusicBuilderInitialAction } from "$lib/music/builder/loader";
+  import { musicIssueGroup } from "$lib/music/library/issue-presentation";
+  import { isSystemMusicPlaylistId, orderMusicPlaylists, systemMusicPlaylistName } from "$lib/music/playlists/system";
   import {
     buildMusicSourceBrowser,
     allMusicSourceBrowserItems,
@@ -89,8 +90,8 @@
     musicSourceBrowserItems,
     musicSourceBrowserPath,
     YOUTUBE_MUSIC_SOURCE_ID,
-  } from "$lib/music/music-source-browser";
-  import { projectMusicSourceQueue } from "$lib/music/music-source-playback";
+  } from "$lib/music/sources/browser";
+  import { projectMusicSourceQueue } from "$lib/music/sources/playback";
 
   let {
     onOpenPlayer,
@@ -176,7 +177,7 @@
   const playlistManagementActive = $derived(
     playlistManagementOpen || (destination.kind === "review" && reviewWorkspaceViewState.managingPlaylists),
   );
-  const hasList = $derived(destination.kind === "playlist");
+  const isPlaylistDestination = $derived(destination.kind === "playlist");
   const reviewItems = $derived(library.currentWindow.items.filter((item) =>
     showIgnoredReviewItems || item.reviewState !== "ignored"));
   const issueCount = $derived(library.issues.length);
@@ -723,7 +724,7 @@
     try {
       const receipts = await reorderMusicPlaylists({
         playlists: next.map((entry) => ({ playlistId: entry.id, expectedVersion: entry.version })),
-        updatedAt: Date.now(),
+        updatedAtMs: Date.now(),
       });
       const versions = new Map(receipts.map((receipt) => [receipt.id, receipt.version]));
       library.playlistSummaries = next.map((entry) => ({ ...entry, version: versions.get(entry.id) ?? entry.version }));
@@ -842,7 +843,7 @@
       removePlaylistIds: [destination.playlistId],
       weightPlaylistIds: [],
       weight: null,
-      updatedAt: Date.now(),
+      updatedAtMs: Date.now(),
     });
     await library.refreshAfterMutation();
     await playlist.refreshActivePlayback(sources.bindings);
@@ -857,7 +858,7 @@
       removePlaylistIds: [],
       weightPlaylistIds: [destination.playlistId],
       weight,
-      updatedAt: Date.now(),
+      updatedAtMs: Date.now(),
     });
     await library.refreshAfterMutation();
     await playlist.refreshActivePlayback(sources.bindings);
@@ -867,41 +868,35 @@
     const now = Date.now();
     const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     const existing = (await getMusicInspectorDetail(item.id)).snoozes;
-    const scoped = existing.filter((entry) => entry.startsAt <= now && (entry.endsAt === null || entry.endsAt > now)
+    const scoped = existing.filter((entry) => entry.startsAtMs <= now && (entry.endsAtMs === null || entry.endsAtMs > now)
       && (playlistId === null ? entry.scope === "all-playlists" : entry.scope === "playlist" && entry.playlistId === playlistId));
-    const turningOff = scoped.length === 1 && musicSnoozePreset(scoped[0].startsAt, scoped[0].endsAt, timeZone) === duration;
+    const turningOff = scoped.length === 1 && musicSnoozePreset(scoped[0].startsAtMs, scoped[0].endsAtMs, timeZone) === duration;
     await Promise.all(scoped.map((entry) => removeMusicSnooze(entry.id)));
-    const endsAt = musicSnoozeEndsAt(duration, now, timeZone);
+    const endsAtMs = musicSnoozeEndsAt(duration, now, timeZone);
     if (!turningOff) {
       await bulkSnoozeMusicItems({
         actionId: crypto.randomUUID(),
         itemIds: [item.id],
         scope: playlistId === null ? "all-playlists" : "playlist",
         playlistId,
-        startsAt: now,
-        endsAt,
+        startsAtMs: now,
+        endsAtMs,
         reason: "",
-        createdAt: now,
+        createdAtMs: now,
       });
     }
     const queueIndex = audition.musicPlayer.activeQueueItemIds.indexOf(item.id);
     if (queueIndex >= 0 && (playlistId === null || playlistId === audition.musicPlayer.activePlaylistId)) {
       if (turningOff) {
         const remaining = existing.filter((entry) => !scoped.some((removed) => removed.id === entry.id)
-          && entry.startsAt <= now && (entry.endsAt === null || entry.endsAt > now)
+          && entry.startsAtMs <= now && (entry.endsAtMs === null || entry.endsAtMs > now)
           && (audition.musicPlayer.activeSourceQueueId !== null
             || entry.scope === "all-playlists" || entry.playlistId === audition.musicPlayer.activePlaylistId));
         if (remaining.length === 0) audition.musicPlayer.clearQueueItemSnooze(queueIndex);
-        else audition.musicPlayer.applyQueueItemSnooze(queueIndex, remaining.some((entry) => entry.endsAt === null)
-          ? null : Math.max(...remaining.map((entry) => entry.endsAt ?? 0)));
+        else audition.musicPlayer.applyQueueItemSnooze(queueIndex, remaining.some((entry) => entry.endsAtMs === null)
+          ? null : Math.max(...remaining.map((entry) => entry.endsAtMs ?? 0)));
       } else {
-        audition.musicPlayer.applyQueueItemSnooze(queueIndex, endsAt);
-        if (queueIndex === audition.musicPlayer.currentQueueIndex) {
-          await audition.musicPlayer.playNextTrack();
-          if (audition.musicPlayer.activeQueueItemIds[audition.musicPlayer.currentQueueIndex] === item.id) {
-            await audition.musicPlayer.pausePlayback();
-          }
-        }
+        audition.musicPlayer.applyQueueItemSnooze(queueIndex, endsAtMs);
       }
     }
     await library.refreshAfterMutation();
@@ -920,7 +915,7 @@
   async function removeItemSnoozes(item: MusicItemListEntry, playlistId: string | null): Promise<void> {
     const now = Date.now();
     const active = (await getMusicInspectorDetail(item.id)).snoozes.filter((entry) =>
-      entry.startsAt <= now && (entry.endsAt === null || entry.endsAt > now)
+      entry.startsAtMs <= now && (entry.endsAtMs === null || entry.endsAtMs > now)
       && (playlistId === null || entry.scope === "all-playlists" || entry.playlistId === playlistId));
     await Promise.all(active.map((entry) => removeMusicSnooze(entry.id)));
     const queueIndex = audition.musicPlayer.activeQueueItemIds.indexOf(item.id);
@@ -968,7 +963,7 @@
     }
     if (event.key === "/" && !(event.target instanceof HTMLInputElement) && !(event.target instanceof HTMLTextAreaElement)) {
       if (destination.kind === "review") return;
-      if (!hasList) return;
+      if (!isPlaylistDestination) return;
       event.preventDefault();
       if (layout.contextPanelPresentation === "sheet") contextViewState.contextPanelOpen = true;
       void tick().then(() => root?.querySelector<HTMLInputElement>("[data-builder-context-search]")?.focus());
@@ -1097,13 +1092,13 @@
               <button type="button" onclick={() => { void playlistManager?.finishManaging(); }} disabled={playlistManagerActionsDisabled} class="h-8 rounded-lg bg-primary px-3 text-xs font-semibold text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50">{t("music.builder.doneManaging")}</button>
             {:else if destination.kind === "playlists"}
               <button type="button" onclick={createPlaylistFromWorkspace} class="toolbar-primary"><Plus size={13} />{t("music.builder.newPlaylist")}</button>
-              <div class="relative"><button type="button" onclick={() => toolbarMenuOpen = !toolbarMenuOpen} class="toolbar-icon" aria-label={t("music.builder.moreActions")}><MoreHorizontal size={15} /></button>{#if toolbarMenuOpen}<div class="toolbar-menu"><button type="button" onclick={() => { toolbarMenuOpen = false; interchange.show("import"); }}>{t("music.builder.importPlaylists")}</button><button type="button" disabled={library.playlistSummaries.length === 0} onclick={() => { toolbarMenuOpen = false; interchange.show("export", null); }}>{t("music.builder.exportPlaylists")}</button></div>{/if}</div>
+              <div class="relative"><button type="button" onclick={() => toolbarMenuOpen = !toolbarMenuOpen} class="toolbar-icon" aria-label={t("music.builder.moreActions")}><MoreHorizontal size={15} /></button>{#if toolbarMenuOpen}<div class="toolbar-menu surface-floating surface-floating-body w-floating-sm"><button type="button" class="menu-item" onclick={() => { toolbarMenuOpen = false; interchange.show("import"); }}>{t("music.builder.importPlaylists")}</button><button type="button" class="menu-item" disabled={library.playlistSummaries.length === 0} onclick={() => { toolbarMenuOpen = false; interchange.show("export", null); }}>{t("music.builder.exportPlaylists")}</button></div>{/if}</div>
             {:else if destination.kind === "playlist"}
               {#if library.undoCount > 0}<button type="button" onclick={() => { void library.undoLast(); }} class="toolbar-icon" aria-label={t("music.builder.undo")}><Undo2 size={14} /></button>{/if}
               <button type="button" onclick={() => { void toggleCurrentPlaylist(); }} disabled={!playlistPlaybackAvailable || audition.musicPlayer.youtubePlaybackStarting} class="toolbar-icon" aria-label={audition.musicPlayer.youtubePlaybackStarting ? t("music.builder.loading") : playlistPlaybackPlaying ? t("music.pause") : t("music.play")}>
                 {#if audition.musicPlayer.youtubePlaybackStarting}<LoaderCircle size={16} strokeWidth={3} class="animate-spin motion-reduce:animate-none" />{:else if playlistPlaybackPlaying}<Pause size={14} fill="currentColor" />{:else}<Play size={14} />{/if}
               </button>
-              <div class="relative"><button type="button" onclick={() => toolbarMenuOpen = !toolbarMenuOpen} class="toolbar-icon" aria-label={t("music.builder.moreActions")}><MoreHorizontal size={15} /></button>{#if toolbarMenuOpen}<div class="toolbar-menu"><button type="button" onclick={() => { toolbarMenuOpen = false; playlistSurface = "edit"; }}>{t("music.builder.editPlaylist")}</button><button type="button" onclick={() => { toolbarMenuOpen = false; playlistSurface = "duplicate"; }}>{t("music.builder.duplicatePlaylist")}</button><button type="button" onclick={() => { toolbarMenuOpen = false; interchange.show("export", destination.playlistId); }}>{t("music.builder.exportPlaylists")}</button><button type="button" class="text-destructive" disabled={isSystemMusicPlaylistId(destination.playlistId)} title={isSystemMusicPlaylistId(destination.playlistId) ? t("music.builder.defaultPlaylistDeleteProtected") : undefined} onclick={() => { toolbarMenuOpen = false; void playlist.inspectDelete().then((loaded) => { if (loaded) playlistSurface = "delete"; }); }}>{t("music.builder.deletePlaylist")}</button></div>{/if}</div>
+              <div class="relative"><button type="button" onclick={() => toolbarMenuOpen = !toolbarMenuOpen} class="toolbar-icon" aria-label={t("music.builder.moreActions")}><MoreHorizontal size={15} /></button>{#if toolbarMenuOpen}<div class="toolbar-menu surface-floating surface-floating-body w-floating-sm"><button type="button" class="menu-item" onclick={() => { toolbarMenuOpen = false; playlistSurface = "edit"; }}>{t("music.builder.editPlaylist")}</button><button type="button" class="menu-item" onclick={() => { toolbarMenuOpen = false; playlistSurface = "duplicate"; }}>{t("music.builder.duplicatePlaylist")}</button><button type="button" class="menu-item" onclick={() => { toolbarMenuOpen = false; interchange.show("export", destination.playlistId); }}>{t("music.builder.exportPlaylists")}</button><button type="button" class="menu-item menu-item-destructive" disabled={isSystemMusicPlaylistId(destination.playlistId)} title={isSystemMusicPlaylistId(destination.playlistId) ? t("music.builder.defaultPlaylistDeleteProtected") : undefined} onclick={() => { toolbarMenuOpen = false; void playlist.inspectDelete().then((loaded) => { if (loaded) playlistSurface = "delete"; }); }}>{t("music.builder.deletePlaylist")}</button></div>{/if}</div>
             {:else if destination.kind === "sources"}
               <button type="button" onclick={() => { void toggleCurrentSourceQueue(); }} disabled={!sourcePlaybackAvailable || audition.musicPlayer.youtubePlaybackStarting} class="toolbar-icon" aria-label={audition.musicPlayer.youtubePlaybackStarting ? t("music.builder.loading") : sourcePlaybackPlaying ? t("music.pause") : t("music.play")}>
                 {#if audition.musicPlayer.youtubePlaybackStarting}<LoaderCircle size={16} strokeWidth={3} class="animate-spin motion-reduce:animate-none" />{:else if sourcePlaybackPlaying}<Pause size={14} fill="currentColor" />{:else}<Play size={14} />{/if}
@@ -1118,12 +1113,12 @@
                 <div class="relative">
                   <button type="button" onclick={() => toolbarMenuOpen = !toolbarMenuOpen} class="toolbar-icon" aria-label={t("music.builder.moreActions")}><MoreHorizontal size={15} /></button>
                   {#if toolbarMenuOpen}
-                    <div class="toolbar-menu">
-                      <button type="button" onclick={openSourceRename}>{t("music.builder.renameSource")}</button>
+                    <div class="toolbar-menu surface-floating surface-floating-body w-floating-sm">
+                      <button type="button" class="menu-item" onclick={openSourceRename}>{t("music.builder.renameSource")}</button>
                       {#if selectedSourceCollection?.kind === "local-root" && (library.sourceSummaries.find((summary) => summary.id === selectedSourceCollection.id)?.openIssueCount ?? 0) > 0}
-                        <button type="button" onclick={() => { toolbarMenuOpen = false; void openRelink(selectedSourceCollection.id); }}>{t("music.builder.repair")}</button>
+                        <button type="button" class="menu-item" onclick={() => { toolbarMenuOpen = false; void openRelink(selectedSourceCollection.id); }}>{t("music.builder.repair")}</button>
                       {/if}
-                      {#if selectedSourceCollection}<button type="button" class="text-destructive" onclick={() => { toolbarMenuOpen = false; void openRemoval(selectedSourceCollection.id); }}>{t("music.builder.removeSource")}</button>{/if}
+                      {#if selectedSourceCollection}<button type="button" class="menu-item menu-item-destructive" onclick={() => { toolbarMenuOpen = false; void openRemoval(selectedSourceCollection.id); }}>{t("music.builder.removeSource")}</button>{/if}
                     </div>
                   {/if}
                 </div>
@@ -1161,11 +1156,11 @@
                 {#if choosingFirstUseFolder}<LoaderCircle class="animate-spin motion-reduce:animate-none" size={32} />{:else}<FolderSearch size={34} strokeWidth={1.35} />{/if}
               </button>
               <h1 class="mt-5 text-lg font-semibold tracking-tight">{t("music.builder.chooseMusicFolder")}</h1>
-              {#if firstUseFolderError || sources.defaultFolderPreparationError}<p class="mt-3 text-xs text-destructive" role="alert">{firstUseFolderError ?? sources.defaultFolderPreparationError}</p>{/if}
+              {#if firstUseFolderError || sources.defaultFolderPreparationError}<Notice class="mt-3 justify-center text-xs" message={firstUseFolderError || sources.defaultFolderPreparationError || ""} />{/if}
             </div>
           </div>
         {:else if library.error && library.currentWindow.items.length === 0}
-          <MusicBuilderAsyncState kind="error" title={library.error.message} onRetry={() => { void library.refresh(); }} />
+          <MusicBuilderAsyncState kind="error" title={library.error.message} onRetry={() => library.refresh()} />
         {:else if library.busy && library.currentWindow.items.length === 0}
           <MusicBuilderAsyncState kind="loading" />
         {:else if library.currentWindow.items.length === 0}
@@ -1191,7 +1186,7 @@
         {/if}
       {:else if playlistManagementOpen && (destination.kind === "playlists" || destination.kind === "playlist")}
         <div class="min-h-0 flex-1 overflow-y-auto p-3" data-music-scrollable="true"><MusicPlaylistManager bind:this={playlistManager} bind:actionsDisabled={playlistManagerActionsDisabled} playlists={library.playlistSummaries} onEdit={(playlistId) => { void openPlaylistManagementSurface(playlistId, "edit"); }} onDelete={(playlistId) => { void openPlaylistManagementSurface(playlistId, "delete"); }} onReorder={reorderPlaylistSummaries} onDone={() => playlistManagementOpen = false} showHeader={false} /></div>
-      {:else if hasList}
+      {:else if isPlaylistDestination}
         {#if destination.kind === "playlist" && playlist.detail && playlist.playbackIssue === "no-eligible-items"}
               <div class="mx-3 mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-warning/30 bg-warning/8 px-3 py-2 text-[0.68rem] text-warning" role="status">
                 <span class="min-w-0 flex-1">{t("music.builder.noEligiblePlaylistItems")}</span>
@@ -1210,7 +1205,7 @@
         />
         {/if}
         {#if library.error && library.currentWindow.items.length === 0}
-          <MusicBuilderAsyncState kind="error" title={library.error.message} onRetry={() => { void library.refresh(); }} />
+          <MusicBuilderAsyncState kind="error" title={library.error.message} onRetry={() => library.refresh()} />
         {:else if library.busy && library.currentWindow.items.length === 0}
           <MusicBuilderAsyncState kind="loading" />
         {:else if library.currentWindow.items.length === 0}
@@ -1356,10 +1351,7 @@
   :global(.toolbar-icon) { display: grid; height: 2rem; width: 2rem; flex: none; place-items: center; border-radius: 999px; color: var(--foreground); }
   :global(.toolbar-icon:hover:not(:disabled)) { background: var(--secondary); }
   :global(.toolbar-icon:disabled) { cursor: default; opacity: 0.32; }
-  :global(.toolbar-menu) { position: absolute; right: 0; top: calc(100% + 0.3rem); z-index: 55; min-width: 10rem; border: 1px solid color-mix(in srgb, var(--border) 80%, transparent); border-radius: 0.7rem; background: var(--popover); padding: 0.3rem; }
-  :global(.toolbar-menu button) { display: flex; min-height: 1.9rem; width: 100%; align-items: center; border-radius: 0.45rem; padding-inline: 0.6rem; font-size: calc(0.68rem * var(--type-scale)); text-align: left; }
-  :global(.toolbar-menu button:hover) { background: var(--accent); }
-  :global(.toolbar-menu button:disabled) { opacity: 0.4; }
+  :global(.toolbar-menu) { position: absolute; right: 0; top: calc(100% + 0.3rem); z-index: 55; }
   @container (width < 520px) { :global(.toolbar-primary), :global(.toolbar-secondary) { width: 2rem; gap: 0; padding-inline: 0; font-size: 0; } }
   @media (prefers-reduced-motion: reduce) { :global(.builder-root *) { scroll-behavior: auto; } }
   @media (prefers-reduced-motion: reduce) { .builder-narrow .builder-context-panel { transition: none; } }

@@ -1,32 +1,8 @@
-use super::*;
-use crate::db_path::connect_sqlite;
+use crate::db::connect_sqlite;
+use ganbaru_music_library::*;
 
 fn connection_error(error: String) -> MusicLibraryError {
     MusicLibraryError::runtime("open music library", error)
-}
-
-#[tauri::command]
-pub async fn music_library_upsert_item(
-    app: tauri::AppHandle,
-    db_url: String,
-    request: MusicLibraryItemWrite,
-) -> MusicLibraryResult<MusicWriteReceipt> {
-    let pool = connect_sqlite(app, db_url)
-        .await
-        .map_err(connection_error)?;
-    super::writes::upsert_library_item(&pool, request).await
-}
-
-#[tauri::command]
-pub async fn music_library_upsert_local_location(
-    app: tauri::AppHandle,
-    db_url: String,
-    request: MusicLocalLocationWrite,
-) -> MusicLibraryResult<()> {
-    let pool = connect_sqlite(app, db_url)
-        .await
-        .map_err(connection_error)?;
-    super::writes::upsert_local_location(&pool, request).await
 }
 
 #[tauri::command]
@@ -40,15 +16,14 @@ pub async fn music_library_start_local_refresh(
         .map_err(connection_error)?;
     #[cfg(target_os = "android")]
     return super::mobile_refresh::start(&app, &pool, request).await;
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    #[cfg(desktop)]
     {
-        let progress = super::local_refresh::prepare(&pool, &request).await?;
+        let progress = ganbaru_music_library::local_refresh::prepare(&pool, &request).await?;
         let refresh_pool = pool.clone();
         tauri::async_runtime::spawn_blocking(move || {
-            let _ = tauri::async_runtime::block_on(super::local_refresh::run_prepared(
-                &refresh_pool,
-                request,
-            ));
+            let _ = tauri::async_runtime::block_on(
+                ganbaru_music_library::local_refresh::run_prepared(&refresh_pool, request),
+            );
         });
         Ok(progress)
     }
@@ -65,8 +40,8 @@ pub async fn music_library_refresh_progress(
         .map_err(connection_error)?;
     #[cfg(target_os = "android")]
     return super::mobile_refresh::progress(&pool, &job_id).await;
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    super::local_refresh::progress(&pool, &job_id).await
+    #[cfg(desktop)]
+    ganbaru_music_library::local_refresh::progress(&pool, &job_id).await
 }
 
 #[tauri::command]
@@ -81,8 +56,8 @@ pub async fn music_library_cancel_refresh(
         .map_err(connection_error)?;
     #[cfg(target_os = "android")]
     return super::mobile_refresh::cancel(&pool, &job_id, cancelled_at).await;
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    super::local_refresh::cancel(&pool, &job_id, cancelled_at).await
+    #[cfg(desktop)]
+    ganbaru_music_library::local_refresh::cancel(&pool, &job_id, cancelled_at).await
 }
 
 #[tauri::command]
@@ -94,7 +69,7 @@ pub async fn music_library_upsert_youtube_video(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::youtube::upsert_video(&pool, request).await
+    ganbaru_music_library::youtube::upsert_video(&pool, request).await
 }
 
 #[tauri::command]
@@ -106,7 +81,7 @@ pub async fn music_library_youtube_duplicate_count(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::youtube::duplicate_video_count(&pool, video_ids).await
+    ganbaru_music_library::youtube::duplicate_video_count(&pool, video_ids).await
 }
 
 #[tauri::command]
@@ -118,7 +93,7 @@ pub async fn music_library_apply_youtube_playlist_snapshot(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::youtube::apply_playlist_snapshot(&pool, request).await
+    ganbaru_music_library::youtube::apply_playlist_snapshot(&pool, request).await
 }
 
 #[tauri::command]
@@ -130,10 +105,10 @@ pub async fn music_library_report_youtube_source_failure(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::youtube::report_source_failure(&pool, request).await
+    ganbaru_music_library::youtube::report_source_failure(&pool, request).await
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn music_library_create_relink_plan(
     app: tauri::AppHandle,
@@ -143,10 +118,10 @@ pub async fn music_library_create_relink_plan(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::relink::create_plan(&pool, request).await
+    ganbaru_music_library::relink::create_plan(&pool, request).await
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn music_library_relink_plan_entries(
     app: tauri::AppHandle,
@@ -158,10 +133,10 @@ pub async fn music_library_relink_plan_entries(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::relink::plan_entries(&pool, &plan_id, offset, limit).await
+    ganbaru_music_library::relink::plan_entries(&pool, &plan_id, offset, limit).await
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn music_library_apply_relink_plan(
     app: tauri::AppHandle,
@@ -171,10 +146,10 @@ pub async fn music_library_apply_relink_plan(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::relink::apply_plan(&pool, request).await
+    ganbaru_music_library::relink::apply_plan(&pool, request).await
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn music_library_cancel_relink_plan(
     app: tauri::AppHandle,
@@ -185,7 +160,7 @@ pub async fn music_library_cancel_relink_plan(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::relink::cancel_plan(&pool, &plan_id, cancelled_at).await
+    ganbaru_music_library::relink::cancel_plan(&pool, &plan_id, cancelled_at).await
 }
 
 #[tauri::command]
@@ -197,7 +172,7 @@ pub async fn music_library_source_removal_impact(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::source_lifecycle::removal_impact(&pool, &collection_id).await
+    ganbaru_music_library::source_lifecycle::removal_impact(&pool, &collection_id).await
 }
 
 #[tauri::command]
@@ -209,22 +184,7 @@ pub async fn music_library_remove_source(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::source_lifecycle::remove_source(&pool, request).await
-}
-
-#[tauri::command]
-pub async fn music_library_restore_source(
-    app: tauri::AppHandle,
-    db_url: String,
-    collection_id: String,
-    expected_version: i64,
-    restored_at: i64,
-) -> MusicLibraryResult<MusicWriteReceipt> {
-    let pool = connect_sqlite(app, db_url)
-        .await
-        .map_err(connection_error)?;
-    super::source_lifecycle::restore_source(&pool, &collection_id, expected_version, restored_at)
-        .await
+    ganbaru_music_library::source_lifecycle::remove_source(&pool, request).await
 }
 
 #[tauri::command]
@@ -236,7 +196,7 @@ pub async fn music_library_create_playlist(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::writes::create_playlist(&pool, request).await
+    ganbaru_music_library::writes::create_playlist(&pool, request).await
 }
 
 #[tauri::command]
@@ -248,7 +208,7 @@ pub async fn music_library_update_playlist(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::writes::update_playlist(&pool, request).await
+    ganbaru_music_library::writes::update_playlist(&pool, request).await
 }
 
 #[tauri::command]
@@ -260,7 +220,7 @@ pub async fn music_library_reorder_playlists(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::playlist_edits::reorder_playlists(&pool, request).await
+    ganbaru_music_library::playlist_edits::reorder_playlists(&pool, request).await
 }
 
 #[tauri::command]
@@ -272,7 +232,7 @@ pub async fn music_library_duplicate_playlist(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::writes::duplicate_playlist(&pool, request).await
+    ganbaru_music_library::writes::duplicate_playlist(&pool, request).await
 }
 
 #[tauri::command]
@@ -284,7 +244,7 @@ pub async fn music_library_playlist_delete_impact(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::writes::playlist_delete_impact(&pool, &playlist_id).await
+    ganbaru_music_library::writes::playlist_delete_impact(&pool, &playlist_id).await
 }
 
 #[tauri::command]
@@ -296,7 +256,7 @@ pub async fn music_library_delete_playlist(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::writes::delete_playlist(&pool, request).await
+    ganbaru_music_library::writes::delete_playlist(&pool, request).await
 }
 
 #[tauri::command]
@@ -308,7 +268,7 @@ pub async fn music_library_set_review_state(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::writes::set_review_state(&pool, request).await
+    ganbaru_music_library::writes::set_review_state(&pool, request).await
 }
 
 #[tauri::command]
@@ -320,7 +280,7 @@ pub async fn music_library_set_metadata_overrides(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::writes::set_metadata_overrides(&pool, request).await
+    ganbaru_music_library::writes::set_metadata_overrides(&pool, request).await
 }
 
 #[tauri::command]
@@ -332,7 +292,7 @@ pub async fn music_library_set_item_signals(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::writes::set_item_signals(&pool, request).await
+    ganbaru_music_library::writes::set_item_signals(&pool, request).await
 }
 
 #[tauri::command]
@@ -344,7 +304,7 @@ pub async fn music_library_upsert_memberships(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::writes::upsert_memberships(&pool, request).await
+    ganbaru_music_library::writes::upsert_memberships(&pool, request).await
 }
 
 #[tauri::command]
@@ -356,7 +316,7 @@ pub async fn music_library_bulk_edit_memberships(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::playlist_edits::bulk_edit_memberships(&pool, request).await
+    ganbaru_music_library::playlist_edits::bulk_edit_memberships(&pool, request).await
 }
 
 #[tauri::command]
@@ -368,7 +328,7 @@ pub async fn music_library_membership_matrix(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::queries::membership_matrix(&pool, item_ids).await
+    ganbaru_music_library::queries::membership_matrix(&pool, item_ids).await
 }
 
 #[tauri::command]
@@ -380,7 +340,7 @@ pub async fn music_library_reorder_playlist(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::playlist_edits::reorder_playlist(&pool, request).await
+    ganbaru_music_library::playlist_edits::reorder_playlist(&pool, request).await
 }
 
 #[tauri::command]
@@ -393,32 +353,7 @@ pub async fn music_library_playlist_playback_entries(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::queries::playlist_playback_entries(&pool, &playlist_id, now_ms).await
-}
-
-#[tauri::command]
-pub async fn music_library_record_listening(
-    app: tauri::AppHandle,
-    db_url: String,
-    request: MusicListeningUpdate,
-) -> MusicLibraryResult<()> {
-    let pool = connect_sqlite(app, db_url)
-        .await
-        .map_err(connection_error)?;
-    super::playback::record_listening(&pool, request).await
-}
-
-#[tauri::command]
-pub async fn music_library_recent_selections(
-    app: tauri::AppHandle,
-    db_url: String,
-    playlist_id: Option<String>,
-    limit: i64,
-) -> MusicLibraryResult<Vec<MusicRecentSelection>> {
-    let pool = connect_sqlite(app, db_url)
-        .await
-        .map_err(connection_error)?;
-    super::playback::recent_selections(&pool, playlist_id, limit).await
+    ganbaru_music_library::queries::playlist_playback_entries(&pool, &playlist_id, now_ms).await
 }
 
 #[tauri::command]
@@ -431,31 +366,7 @@ pub async fn music_library_context_assignments(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::contexts::assignments(&pool, owner_kind, &owner_id).await
-}
-
-#[tauri::command]
-pub async fn music_library_context_assignments_for_playlists(
-    app: tauri::AppHandle,
-    db_url: String,
-    playlist_ids: Vec<String>,
-) -> MusicLibraryResult<Vec<MusicContextAssignment>> {
-    let pool = connect_sqlite(app, db_url)
-        .await
-        .map_err(connection_error)?;
-    super::contexts::assignments_for_playlists(&pool, playlist_ids).await
-}
-
-#[tauri::command]
-pub async fn music_library_replace_context_assignments(
-    app: tauri::AppHandle,
-    db_url: String,
-    request: MusicContextAssignmentSet,
-) -> MusicLibraryResult<Vec<MusicContextAssignment>> {
-    let pool = connect_sqlite(app, db_url)
-        .await
-        .map_err(connection_error)?;
-    super::contexts::replace_assignments(&pool, request).await
+    ganbaru_music::assignments::load_assignments(&pool, owner_kind, &owner_id).await
 }
 
 #[tauri::command]
@@ -467,7 +378,7 @@ pub async fn music_library_bulk_set_review_state(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::playlist_edits::bulk_set_review_state(&pool, request).await
+    ganbaru_music_library::playlist_edits::bulk_set_review_state(&pool, request).await
 }
 
 #[tauri::command]
@@ -479,7 +390,7 @@ pub async fn music_library_apply_review_selection(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::playlist_edits::apply_review_selection(&pool, request).await
+    ganbaru_music_library::playlist_edits::apply_review_selection(&pool, request).await
 }
 
 #[tauri::command]
@@ -491,7 +402,7 @@ pub async fn music_library_bulk_snooze(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::playlist_edits::bulk_snooze(&pool, request).await
+    ganbaru_music_library::playlist_edits::bulk_snooze(&pool, request).await
 }
 
 #[tauri::command]
@@ -503,7 +414,7 @@ pub async fn music_library_save_advanced_membership(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::writes::save_advanced_membership(&pool, request).await
+    ganbaru_music_library::writes::save_advanced_membership(&pool, request).await
 }
 
 #[tauri::command]
@@ -515,19 +426,7 @@ pub async fn music_library_remove_memberships(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::writes::remove_memberships(&pool, request).await
-}
-
-#[tauri::command]
-pub async fn music_library_upsert_snooze(
-    app: tauri::AppHandle,
-    db_url: String,
-    request: MusicSnoozeWrite,
-) -> MusicLibraryResult<()> {
-    let pool = connect_sqlite(app, db_url)
-        .await
-        .map_err(connection_error)?;
-    super::writes::upsert_snooze(&pool, request).await
+    ganbaru_music_library::writes::remove_memberships(&pool, request).await
 }
 
 #[tauri::command]
@@ -539,31 +438,127 @@ pub async fn music_library_remove_snooze(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::writes::remove_snooze(&pool, request).await
+    ganbaru_music_library::writes::remove_snooze(&pool, request).await
+}
+
+/// Parsing and serialization run on one bounded native worker, never on a WebView thread.
+static MUSIC_TRANSFER_WORKERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+
+fn ensure_active_vault(app: &tauri::AppHandle, expected_id: &str) -> MusicLibraryResult<()> {
+    let active_vault_id = crate::vault::active_vault_id(app).map_err(connection_error)?;
+    if active_vault_id != expected_id {
+        return Err(MusicLibraryError::conflict(
+            "The active vault changed during Music transfer",
+        ));
+    }
+    Ok(())
+}
+
+/// Loads the active vault's device-local root bindings from native state.
+fn transfer_bindings(app: &tauri::AppHandle) -> MusicLibraryResult<Vec<transfer::TransferBinding>> {
+    let vault_id = crate::vault::active_vault_id(app)
+        .map_err(|error| MusicLibraryError::runtime("resolve transfer vault", error))?;
+    let state = crate::vault::read_app_state(app)
+        .map_err(|error| MusicLibraryError::runtime("read music root bindings", error))?;
+    transfer::bindings(
+        state
+            .music_root_bindings
+            .get(&vault_id)
+            .into_iter()
+            .flatten(),
+    )
 }
 
 #[tauri::command]
-pub async fn music_library_reset_statistics(
+pub async fn music_library_preview_transfer(
     app: tauri::AppHandle,
     db_url: String,
-    request: MusicStatisticsReset,
-) -> MusicLibraryResult<()> {
-    let pool = connect_sqlite(app, db_url)
+    vault_id: String,
+    source: MusicTransferSource,
+) -> MusicLibraryResult<MusicTransferPreview> {
+    let permit = MUSIC_TRANSFER_WORKERS
+        .try_acquire()
+        .map_err(|_| MusicLibraryError::conflict("Another Music transfer is being prepared"))?;
+    ensure_active_vault(&app, &vault_id)?;
+    let pool = connect_sqlite(app.clone(), db_url)
         .await
         .map_err(connection_error)?;
-    super::writes::reset_statistics(&pool, request).await
+    tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
+        ensure_active_vault(&app, &vault_id)?;
+        let bindings = transfer_bindings(&app)?;
+        tauri::async_runtime::block_on(ganbaru_music_library::transfer::preview(
+            &pool, &source, &bindings,
+        ))
+    })
+    .await
+    .map_err(|error| MusicLibraryError::runtime("prepare Music transfer", error))?
 }
 
 #[tauri::command]
-pub async fn music_library_import_interchange(
+pub async fn music_library_commit_transfer(
     app: tauri::AppHandle,
     db_url: String,
-    request: MusicInterchangeImportRequest,
+    vault_id: String,
+    request: MusicTransferCommit,
 ) -> MusicLibraryResult<MusicInterchangeImportResult> {
-    let pool = connect_sqlite(app, db_url)
+    let permit = MUSIC_TRANSFER_WORKERS
+        .try_acquire()
+        .map_err(|_| MusicLibraryError::conflict("Another Music transfer is being prepared"))?;
+    ensure_active_vault(&app, &vault_id)?;
+    let pool = connect_sqlite(app.clone(), db_url)
         .await
         .map_err(connection_error)?;
-    super::interchange::import(&pool, request).await
+    tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
+        ensure_active_vault(&app, &vault_id)?;
+        let bindings = transfer_bindings(&app)?;
+        tauri::async_runtime::block_on(ganbaru_music_library::transfer::commit(
+            &pool, request, &bindings,
+        ))
+    })
+    .await
+    .map_err(|error| MusicLibraryError::runtime("commit Music transfer", error))?
+}
+
+#[tauri::command]
+pub async fn music_library_export_transfer(
+    app: tauri::AppHandle,
+    db_url: String,
+    vault_id: String,
+    request: MusicTransferExport,
+) -> MusicLibraryResult<bool> {
+    let permit = MUSIC_TRANSFER_WORKERS
+        .try_acquire()
+        .map_err(|_| MusicLibraryError::conflict("Another Music transfer is being prepared"))?;
+    ensure_active_vault(&app, &vault_id)?;
+    let pool = connect_sqlite(app.clone(), db_url)
+        .await
+        .map_err(connection_error)?;
+    let format = request.format;
+    let worker_app = app.clone();
+    let contents = tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
+        ensure_active_vault(&worker_app, &vault_id)?;
+        let bindings = transfer_bindings(&worker_app)?;
+        tauri::async_runtime::block_on(ganbaru_music_library::transfer::export(
+            &pool, &request, &bindings,
+        ))
+    })
+    .await
+    .map_err(|error| MusicLibraryError::runtime("prepare Music export", error))??;
+    let extension = match format {
+        MusicTransferFormat::Json => "json",
+        MusicTransferFormat::M3u8 => "m3u8",
+    };
+    crate::music::music_pick_and_write_interchange_file(
+        app,
+        "ganbaru-music-playlists".to_string(),
+        contents,
+        extension.to_string(),
+    )
+    .await
+    .map_err(|error| MusicLibraryError::runtime("save Music export", error))
 }
 
 #[tauri::command]
@@ -575,7 +570,7 @@ pub async fn music_library_item_window(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::queries::item_window(&pool, request).await
+    ganbaru_music_library::queries::item_window(&pool, request).await
 }
 
 #[tauri::command]
@@ -589,7 +584,7 @@ pub async fn music_library_playlist_summaries(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::queries::playlist_summaries(&pool, now_ms, offset, limit).await
+    ganbaru_music_library::queries::playlist_summaries(&pool, now_ms, offset, limit).await
 }
 
 #[tauri::command]
@@ -603,7 +598,7 @@ pub async fn music_library_source_summaries(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::queries::source_summaries(&pool, now_ms, offset, limit).await
+    ganbaru_music_library::queries::source_summaries(&pool, now_ms, offset, limit).await
 }
 
 #[tauri::command]
@@ -616,7 +611,7 @@ pub async fn music_library_issues(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::queries::issues(&pool, offset, limit).await
+    ganbaru_music_library::queries::issues(&pool, offset, limit).await
 }
 
 #[tauri::command]
@@ -628,19 +623,7 @@ pub async fn music_library_inspector_detail(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::queries::inspector_detail(&pool, &item_id).await
-}
-
-#[tauri::command]
-pub async fn music_library_rebuild_search_index(
-    app: tauri::AppHandle,
-    db_url: String,
-    rebuilt_at: i64,
-) -> MusicLibraryResult<MusicSearchRebuildResult> {
-    let pool = connect_sqlite(app, db_url)
-        .await
-        .map_err(connection_error)?;
-    super::search::rebuild(&pool, rebuilt_at).await
+    ganbaru_music_library::queries::inspector_detail(&pool, &item_id).await
 }
 
 #[tauri::command]
@@ -653,7 +636,7 @@ pub async fn music_library_local_roots(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::queries::local_roots(&pool, offset, limit).await
+    ganbaru_music_library::queries::local_roots(&pool, offset, limit).await
 }
 
 #[tauri::command]
@@ -665,10 +648,10 @@ pub async fn music_library_create_local_root(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::writes::create_local_root(&pool, request).await
+    ganbaru_music_library::writes::create_local_root(&pool, request).await
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn music_library_preview_item_repair(
     app: tauri::AppHandle,
@@ -679,10 +662,10 @@ pub async fn music_library_preview_item_repair(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::item_repair::preview(&pool, &item_id, &file_path).await
+    ganbaru_music_library::item_repair::preview(&pool, &item_id, &file_path).await
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn music_library_apply_item_repair(
     app: tauri::AppHandle,
@@ -692,10 +675,10 @@ pub async fn music_library_apply_item_repair(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::item_repair::apply(&pool, request).await
+    ganbaru_music_library::item_repair::apply(&pool, request).await
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn music_library_undo_item_repair(
     app: tauri::AppHandle,
@@ -706,7 +689,7 @@ pub async fn music_library_undo_item_repair(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::item_repair::undo(&pool, &location_id, &root_id).await
+    ganbaru_music_library::item_repair::undo(&pool, &location_id, &root_id).await
 }
 
 #[tauri::command]
@@ -719,7 +702,7 @@ pub async fn music_library_source_collections(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::queries::source_collections(&pool, offset, limit).await
+    ganbaru_music_library::queries::source_collections(&pool, offset, limit).await
 }
 
 #[tauri::command]
@@ -731,7 +714,7 @@ pub async fn music_library_playlist_detail(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::queries::playlist_detail(&pool, &playlist_id).await
+    ganbaru_music_library::queries::playlist_detail(&pool, &playlist_id).await
 }
 
 #[tauri::command]
@@ -743,10 +726,10 @@ pub async fn music_library_upsert_source_collection(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::writes::upsert_source_collection(&pool, request).await
+    ganbaru_music_library::writes::upsert_source_collection(&pool, request).await
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn music_library_soundscapes(
     app: tauri::AppHandle,
@@ -756,10 +739,10 @@ pub async fn music_library_soundscapes(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::soundscapes::definitions(&pool, &device_id).await
+    ganbaru_music_library::soundscapes::definitions(&pool, &device_id).await
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn music_library_soundscape_groups(
     app: tauri::AppHandle,
@@ -768,10 +751,10 @@ pub async fn music_library_soundscape_groups(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::soundscape_groups::groups(&pool).await
+    ganbaru_music_library::soundscape_groups::groups(&pool).await
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn music_library_upsert_soundscape_group(
     app: tauri::AppHandle,
@@ -781,10 +764,10 @@ pub async fn music_library_upsert_soundscape_group(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::soundscape_groups::upsert(&pool, request).await
+    ganbaru_music_library::soundscape_groups::upsert(&pool, request).await
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn music_library_remove_soundscape_group(
     app: tauri::AppHandle,
@@ -795,10 +778,10 @@ pub async fn music_library_remove_soundscape_group(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::soundscape_groups::remove(&pool, &group_id, expected_version).await
+    ganbaru_music_library::soundscape_groups::remove(&pool, &group_id, expected_version).await
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn music_library_upsert_soundscape(
     app: tauri::AppHandle,
@@ -808,10 +791,10 @@ pub async fn music_library_upsert_soundscape(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::soundscapes::upsert(&pool, request).await
+    ganbaru_music_library::soundscapes::upsert(&pool, request).await
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn music_library_remove_soundscape(
     app: tauri::AppHandle,
@@ -822,10 +805,10 @@ pub async fn music_library_remove_soundscape(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::soundscapes::remove(&pool, &soundscape_id, expected_version).await
+    ganbaru_music_library::soundscapes::remove(&pool, &soundscape_id, expected_version).await
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn music_library_soundscape_state(
     app: tauri::AppHandle,
@@ -834,10 +817,10 @@ pub async fn music_library_soundscape_state(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::soundscapes::state(&pool).await
+    ganbaru_music_library::soundscapes::state(&pool).await
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn music_library_update_soundscape_state(
     app: tauri::AppHandle,
@@ -847,5 +830,5 @@ pub async fn music_library_update_soundscape_state(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    super::soundscapes::update_state(&pool, request).await
+    ganbaru_music_library::soundscapes::update_state(&pool, request).await
 }

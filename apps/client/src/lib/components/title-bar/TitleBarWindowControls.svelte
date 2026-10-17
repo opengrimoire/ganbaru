@@ -10,14 +10,12 @@
   let {
     isMaximized,
     lockedByBenchmark,
-    isMainWindow,
     onMinimize,
     onToggleMaximize,
     onClose,
   }: {
     isMaximized: boolean;
     lockedByBenchmark: boolean;
-    isMainWindow: boolean;
     onMinimize: () => void;
     onToggleMaximize: () => void;
     onClose: () => void;
@@ -68,9 +66,7 @@
     )}
     title={lockedByBenchmark
       ? t("titleBar.disabledBenchmark")
-      : isMainWindow
-        ? t("window.closeAppWithShortcut", formatShortcut("Mod + Shift + W"))
-        : t("window.closeWindowWithShortcut", formatShortcut("Mod + Shift + W"))}
+      : t("window.closeWindowWithShortcut", formatShortcut("Mod + Shift + W"))}
     aria-label={t("window.close")}
   >
     <X size={iconSize} strokeWidth={strokeWidth} />
@@ -79,7 +75,7 @@
 
 <style>
   .titlebar-icon-button {
-    width: 32px;
-    height: 32px;
+    width: 28px;
+    height: 28px;
   }
 </style>

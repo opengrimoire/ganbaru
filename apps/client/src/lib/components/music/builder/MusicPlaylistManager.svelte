@@ -3,16 +3,17 @@
   import Pencil from "@lucide/svelte/icons/pencil";
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import { onDestroy, onMount, tick, untrack } from "svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import type { MusicPlaylistSummary } from "$lib/music/library-contracts";
+  import type { MusicPlaylistSummary } from "$lib/music/library/contracts";
   import {
     moveMusicPlaylistOrder,
     musicPlaylistGridInsertion,
     musicPlaylistGridLayout,
     MUSIC_PLAYLIST_GRID_CARD_HEIGHT,
     type MusicPlaylistGridPosition,
-  } from "$lib/music/music-playlist-order";
-  import { isSystemMusicPlaylistId, orderMusicPlaylists, systemMusicPlaylistName } from "$lib/music/music-system-playlists";
+  } from "$lib/music/playlists/order";
+  import { isSystemMusicPlaylistId, orderMusicPlaylists, systemMusicPlaylistName } from "$lib/music/playlists/system";
   import MusicPlaylistIcon from "./MusicPlaylistIcon.svelte";
 
   let {
@@ -488,7 +489,7 @@
     {@const visualIndex = visualPlaylists.findIndex((entry) => entry.id === playlist.id)}
     {@const position = positions[playlist.id]}
     <div
-      class={`absolute left-0 top-0 min-w-0 will-change-transform ${drag?.playlistId === playlist.id ? "cursor-grabbing opacity-95 shadow-2xl" : settling?.playlistId === playlist.id ? "playlist-drop-settling opacity-95 shadow-2xl" : ""} ${(drag || keyboardPlaylistId) && drag?.playlistId !== playlist.id && settling?.playlistId !== playlist.id && handoffId !== playlist.id ? "motion-safe:transition-transform motion-safe:duration-150 motion-safe:ease-out" : ""}`}
+      class={`absolute left-0 top-0 min-w-0 will-change-transform ${drag?.playlistId === playlist.id ? "cursor-grabbing opacity-95 shadow-floating" : settling?.playlistId === playlist.id ? "playlist-drop-settling opacity-95 shadow-floating" : ""} ${(drag || keyboardPlaylistId) && drag?.playlistId !== playlist.id && settling?.playlistId !== playlist.id && handoffId !== playlist.id ? "motion-safe:transition-transform motion-safe:duration-150 motion-safe:ease-out" : ""}`}
       style={wrapperStyle(playlist.id, position)}
       data-playlist-manager-id={playlist.id}
       role="listitem"
@@ -520,12 +521,12 @@
     </div>
   {/each}
 </div>
-{#if reorderError}<p class="mt-2 text-xs text-destructive" role="alert">{t("music.builder.playlistReorderFailed")}</p>{/if}
+{#if reorderError}<Notice class="mt-2 text-xs" message={t("music.builder.playlistReorderFailed")} />{/if}
 <p class="sr-only" aria-live="polite">{announcement}</p>
 
 <style>
   .playlist-manager-row { border: 1px solid color-mix(in srgb, var(--border) 58%, transparent); background: color-mix(in srgb, var(--card) 68%, transparent); transition: background-color 140ms ease, border-color 140ms ease, box-shadow 140ms ease; }
-  .playlist-manager-row.is-reordering { border-color: color-mix(in srgb, var(--primary) 42%, var(--border)); background: color-mix(in srgb, var(--primary) 9%, var(--card)); box-shadow: 0 8px 24px color-mix(in srgb, black 12%, transparent); }
+  .playlist-manager-row.is-reordering { border-color: color-mix(in srgb, var(--primary) 42%, var(--border)); background: color-mix(in srgb, var(--primary) 9%, var(--card)); box-shadow: var(--floating-shadow); }
   .playlist-drop-settling { transition-property: left, top, width; transition-duration: 160ms; transition-timing-function: cubic-bezier(0.2, 0, 0, 1); }
   @media (prefers-reduced-motion: reduce) { .playlist-manager-row { transition: none; } .playlist-drop-settling { transition-duration: 0ms; } }
 </style>

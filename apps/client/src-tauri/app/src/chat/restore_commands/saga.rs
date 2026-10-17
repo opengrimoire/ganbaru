@@ -1,5 +1,5 @@
 use super::*;
-use crate::chat::models::ProviderSessionState;
+use ganbaru_chat_contracts::models::ProviderSessionState;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum RestoreFailurePhase {
@@ -87,7 +87,7 @@ pub(super) async fn execute_restore(
             .await?;
     }
     let _mutation_guard = app
-        .state::<crate::chat::workspace_mutation::ChatWorkspaceMutationRegistry>()
+        .state::<crate::chat::workspace::mutation::ChatWorkspaceMutationRegistry>()
         .mutation_with_timeout(&authorized.canonical_path, Duration::from_secs(30))
         .await?;
     let current = {
@@ -245,7 +245,7 @@ pub(super) async fn execute_restore(
         reverted_turn_ids,
         provider_history_action: provider_history_action.to_string(),
         recovery_state: "complete".to_string(),
-        thread_revision: u64::try_from(thread_revision).map_err(|_| corrupt_data())?,
+        thread_revision: u64::try_from(thread_revision).map_err(|_| corrupt_data_error())?,
     })
     }
     .await;

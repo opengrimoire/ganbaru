@@ -8,7 +8,7 @@ import {
 
 describe("provider setup", () => {
   it("creates stable editable instance IDs from labels", () => {
-    expect(providerInstanceIdFromLabel(" Víctor's Codex ")).toBe("victor-s-codex");
+    expect(providerInstanceIdFromLabel(" Chloé's Codex ")).toBe("chloe-s-codex");
   });
 
   it("reports duplicate IDs, environment conflicts, and missing secret references by field", () => {

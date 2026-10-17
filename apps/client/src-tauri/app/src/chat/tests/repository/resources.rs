@@ -117,8 +117,8 @@ fn attachment_cleanup_retries_and_never_removes_referenced_files() {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO chat_cleanup_queue
-                (id, cleanup_kind, exact_target, state, not_before, created_at, updated_at,
+            "INSERT INTO chat_cleanup_jobs
+                (id, cleanup_kind, exact_target, state, available_at, created_at, updated_at,
                  working_folder_id)
              VALUES ('cleanup-retained', 'attachment_file', ?, 'failed', ?, ?, ?, 'workspace-1')",
         )

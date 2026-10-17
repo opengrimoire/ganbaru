@@ -39,10 +39,10 @@ android {
     buildToolsVersion = "35.0.0"
     compileSdk = 36
     ndkVersion = "30.0.15729638"
-    namespace = "org.opengrimoire.ganbaruai"
+    namespace = "org.opengrimoire.ganbaru"
     defaultConfig {
         manifestPlaceholders["usesCleartextTraffic"] = "false"
-        applicationId = "org.opengrimoire.ganbaruai"
+        applicationId = "org.opengrimoire.ganbaru"
         minSdk = 29
         targetSdk = 36
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()

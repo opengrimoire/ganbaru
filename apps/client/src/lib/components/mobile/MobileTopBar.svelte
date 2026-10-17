@@ -1,19 +1,19 @@
 <script lang="ts">
+  import type { Snippet } from "svelte";
   import Settings from "@lucide/svelte/icons/settings";
   import Music from "@lucide/svelte/icons/music";
   import StickyNote from "@lucide/svelte/icons/sticky-note";
-  import type { View } from "$lib/navigation";
-  import { mobileCenteredPanelGeometry } from "$lib/mobile-layout";
-  import MobileNavigation from "$lib/components/mobile/MobileNavigation.svelte";
+  import { mobileCenteredPanelGeometry } from "$lib/mobile/layout";
   import PomodoroProgressRing from "$lib/components/pomodoro/PomodoroProgressRing.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { cn } from "$lib/utils";
+  import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
+  import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
 
   type PomodoroMenuComponent = typeof import("$lib/components/pomodoro/PomodoroMenuContent.svelte").default;
-  type LinkedDeviceControlComponent = typeof import("$lib/components/vault/LinkedDeviceControl.svelte").default;
+  type LinkedDeviceControlComponent = typeof import("$lib/components/vault/handoff/LinkedDeviceControl.svelte").default;
 
   let {
-    current,
     pomodoroTime,
     pomodoroActive,
     pomodoroRemainingSeconds,
@@ -28,15 +28,15 @@
     musicOpen,
     musicDisabled,
     musicVisible = true,
-    primaryNavigationVisible = true,
     onTogglePomodoro,
     onClosePomodoro,
     onOpenQuickNotes,
     onOpenMusic,
     onOpenSettings,
-    onNavigate,
+    identityTarget = $bindable(null),
+    identityLabel = null,
+    identityIcon,
   }: {
-    current: View;
     pomodoroTime: string;
     pomodoroActive: boolean;
     pomodoroRemainingSeconds: number;
@@ -51,22 +51,26 @@
     musicOpen: boolean;
     musicDisabled: boolean;
     musicVisible?: boolean;
-    primaryNavigationVisible?: boolean;
     onTogglePomodoro: () => void;
     onClosePomodoro: () => void;
     onOpenQuickNotes: () => void;
     onOpenMusic: () => void;
     onOpenSettings: () => void;
-    onNavigate: (view: View) => void;
+    /** The leading slot where the active destination places its context switcher. */
+    identityTarget?: HTMLElement | null;
+    /** Names a destination that has no context switcher, so the leading slot is not left empty. */
+    identityLabel?: string | null;
+    /** Icon shown before `identityLabel`. */
+    identityIcon?: Snippet;
   } = $props();
 
   const { t } = getLocalization();
-  const utilityButtonClass = "group flex h-full items-center justify-center text-muted-foreground transition-colors disabled:opacity-40";
-  const utilityIconClass = "grid h-8 w-8 place-items-center rounded-full transition-colors group-active:bg-accent/70";
+  const utilityButtonClass = "group flex h-full w-(--mobile-chrome-column) shrink-0 items-center justify-center text-muted-foreground transition-colors disabled:opacity-40";
+  const utilityIconClass = "grid size-(--mobile-chrome-highlight) place-items-center rounded-full transition-colors group-active:bg-accent/70";
   let pomodoroAnchorElement = $state<HTMLDivElement | null>(null);
   let pomodoroTriggerElement = $state<HTMLButtonElement | null>(null);
   let pomodoroMenuStyle = $state("left:50%;width:min(16rem,calc(100vw - 1rem));transform:translateX(-50%)");
-  const pomodoroMenuDesiredWidth = 256;
+  const pomodoroMenuDesiredWidth = FLOATING_WIDTH.sm;
   const pomodoroMenuViewportInset = 8;
 
   function rootPixelValue(property: string): number {
@@ -121,100 +125,110 @@
 </script>
 
 <header
-  class={cn(
-    "mobile-top-bar h-(--cal-header-row-h) shrink-0 items-center border-b px-0.5 text-foreground",
-    primaryNavigationVisible
-      ? musicVisible
-        ? "grid grid-cols-9"
-        : "grid grid-cols-8"
-      : "flex justify-end",
-  )}
-  style="background-color: var(--cal-header-bg); border-color: var(--sidebar);"
+  class="mobile-top-bar flex h-(--mobile-topbar-h) shrink-0 items-center justify-between gap-1 pr-(--mobile-chrome-inset) pl-2 text-foreground"
+  style="background-color: var(--cal-bg);"
 >
-  {#if primaryNavigationVisible}
-    <MobileNavigation {current} presentation="top" {onNavigate} />
-  {/if}
-  <div bind:this={pomodoroAnchorElement} class={cn("relative h-full", primaryNavigationVisible ? "min-w-0" : "w-11 shrink-0")}>
-    <button
-      bind:this={pomodoroTriggerElement}
-      type="button"
-      data-mobile-pomodoro-trigger
-      onclick={togglePomodoro}
-      aria-label={pomodoroActive
-        ? t("titleBar.pomodoro.remaining", pomodoroTime)
-        : t("titleBar.control.pomodoro")}
-      aria-haspopup="menu"
-      aria-expanded={pomodoroOpen}
-      class={cn(utilityButtonClass, primaryNavigationVisible ? "w-full min-w-0" : "w-11 shrink-0", pomodoroOpen && "text-foreground")}
-    >
-      <span class={cn(utilityIconClass, pomodoroOpen && "bg-accent/70")}>
-        <PomodoroProgressRing
-          active={pomodoroActive}
-          remainingSeconds={pomodoroRemainingSeconds}
-          totalSeconds={pomodoroTotalSeconds}
-          paused={pomodoroPaused}
-          pausedPulseAmount={pomodoroPausedPulseAmount}
-          size={20}
-          trackClass="stroke-muted-foreground/25"
-          progressClass="text-foreground/76 stroke-foreground/76"
-        />
+  <div bind:this={identityTarget} class="flex h-full min-w-0 flex-1 items-center" data-mobile-identity-slot>
+    {#if identityLabel}
+      <!-- Shaped like the context switcher pill, without its open affordance, since there is no context to switch. -->
+      <span class="flex h-9 min-w-0 max-w-full items-center gap-2 rounded-full bg-accent/55 pr-2.5 pl-2 text-identity font-medium text-foreground" data-mobile-identity-label>
+        {#if identityIcon}<span class="grid size-5 shrink-0 place-items-center" aria-hidden="true">{@render identityIcon()}</span>{/if}
+        <span class="min-w-0 truncate">{identityLabel}</span>
       </span>
-    </button>
-    {#if pomodoroOpen}
-      <button
-        type="button"
-        class="fixed inset-0 z-40 h-full w-full bg-transparent"
-        aria-label={t("common.close")}
-        onclick={onClosePomodoro}
-      ></button>
-      <div
-        role="menu"
-        class="absolute top-[calc(100%+0.25rem)] z-50 max-h-[calc(var(--visual-viewport-height)-var(--safe-area-top)-var(--mobile-topbar-h)-0.75rem)] overflow-y-auto rounded-xl border border-border bg-popover py-1 text-popover-foreground shadow-xl"
-        style={pomodoroMenuStyle}
-      >
-        <PomodoroMenuSurface
-          includeMusic={musicVisible}
-          touch
-          onDismiss={onClosePomodoro}
-          onOpenMusic={onOpenMusic}
-        />
-      </div>
     {/if}
   </div>
-  <LinkedDeviceControlSurface platform="android" presentation="mobile" onOpened={onClosePomodoro} />
-  <button
-    type="button"
-    data-mobile-quick-notes-trigger
-    disabled={quickNotesDisabled}
-    onclick={onOpenQuickNotes}
-    aria-label={t("titleBar.control.quickNotes")}
-    aria-haspopup="dialog"
-    aria-expanded={quickNotesOpen}
-    class={cn(utilityButtonClass, primaryNavigationVisible ? "w-full min-w-0" : "w-11 shrink-0", quickNotesOpen && "text-foreground")}
-  >
-    <span class={cn(utilityIconClass, quickNotesOpen && "bg-accent/70")}><StickyNote size={19} strokeWidth={1.8} aria-hidden="true" /></span>
-  </button>
-  {#if musicVisible}
+  <div class="flex h-full shrink-0 items-center">
+    <div bind:this={pomodoroAnchorElement} class="relative flex h-full shrink-0 items-center">
+      <button
+        bind:this={pomodoroTriggerElement}
+        type="button"
+        data-mobile-pomodoro-trigger
+        onclick={togglePomodoro}
+        aria-label={pomodoroActive
+          ? t("titleBar.pomodoro.remaining", pomodoroTime)
+          : t("titleBar.control.pomodoro")}
+        aria-haspopup="menu"
+        aria-expanded={pomodoroOpen}
+        class={cn(utilityButtonClass, pomodoroActive && "w-auto px-1", (pomodoroOpen || pomodoroActive) && "text-foreground")}
+      >
+        <span class={cn(
+          utilityIconClass,
+          pomodoroActive && "w-auto grid-flow-col gap-1.5 pr-2.5 pl-1.5 text-sm font-medium tabular-nums",
+          (pomodoroOpen || pomodoroActive) && "bg-accent/70",
+        )}>
+          <PomodoroProgressRing
+            active={pomodoroActive}
+            remainingSeconds={pomodoroRemainingSeconds}
+            totalSeconds={pomodoroTotalSeconds}
+            paused={pomodoroPaused}
+            pausedPulseAmount={pomodoroPausedPulseAmount}
+            size={20}
+            trackClass="stroke-muted-foreground/35"
+            progressClass="text-foreground/76 stroke-foreground/76"
+          />
+          {#if pomodoroActive}<span aria-hidden="true">{pomodoroTime}</span>{/if}
+        </span>
+      </button>
+      {#if pomodoroOpen}
+        <button
+          type="button"
+          class="fixed inset-0 z-40 h-full w-full bg-transparent"
+          aria-label={t("common.close")}
+          onclick={onClosePomodoro}
+        ></button>
+        <div
+          role="menu"
+          class="surface-floating absolute top-[calc(100%+0.25rem)] z-50 flex max-h-[calc(var(--visual-viewport-height)-var(--safe-area-top)-var(--mobile-topbar-h)-0.75rem)] flex-col overflow-hidden"
+          style={pomodoroMenuStyle}
+        >
+          <div use:scrollEdgeFadeAction class="surface-floating-body min-h-0 overflow-y-auto">
+            <PomodoroMenuSurface
+              includeMusic={musicVisible}
+              touch
+              onDismiss={onClosePomodoro}
+              onOpenMusic={onOpenMusic}
+            />
+          </div>
+        </div>
+      {/if}
+    </div>
+    <div class="flex h-full w-(--mobile-chrome-column) justify-center *:w-full">
+      <LinkedDeviceControlSurface platform="android" presentation="mobile" onOpened={onClosePomodoro} />
+    </div>
     <button
       type="button"
-      data-mobile-music-trigger
-      disabled={musicDisabled}
-      onclick={onOpenMusic}
-      aria-label={t("titleBar.control.music")}
+      data-mobile-quick-notes-trigger
+      disabled={quickNotesDisabled}
+      onclick={onOpenQuickNotes}
+      aria-label={t("titleBar.control.quickNotes")}
       aria-haspopup="dialog"
-      aria-expanded={musicOpen}
-      class={cn(utilityButtonClass, primaryNavigationVisible ? "w-full min-w-0" : "w-11 shrink-0", musicOpen && "text-foreground")}
+      aria-expanded={quickNotesOpen}
+      class={cn(utilityButtonClass, quickNotesOpen && "text-foreground")}
     >
-      <span class={cn(utilityIconClass, musicOpen && "bg-accent/70")}><Music size={19} strokeWidth={1.8} aria-hidden="true" /></span>
+      <span class={cn(utilityIconClass, quickNotesOpen && "bg-accent/70")}><StickyNote size={19} strokeWidth={1.8} aria-hidden="true" /></span>
     </button>
-  {/if}
-  <button
-    type="button"
-    onclick={onOpenSettings}
-    aria-label={t("titleBar.control.settings")}
-    aria-haspopup="dialog"
-    class={cn(utilityButtonClass, primaryNavigationVisible ? "w-full min-w-0" : "w-11 shrink-0")}
-  >
-    <span class={utilityIconClass}><Settings size={19} strokeWidth={1.8} aria-hidden="true" /></span>
-  </button>
+    {#if musicVisible}
+      <button
+        type="button"
+        data-mobile-music-trigger
+        disabled={musicDisabled}
+        onclick={onOpenMusic}
+        aria-label={t("titleBar.control.music")}
+        aria-haspopup="dialog"
+        aria-expanded={musicOpen}
+        class={cn(utilityButtonClass, musicOpen && "text-foreground")}
+      >
+        <span class={cn(utilityIconClass, musicOpen && "bg-accent/70")}><Music size={19} strokeWidth={1.8} aria-hidden="true" /></span>
+      </button>
+    {/if}
+    <button
+      type="button"
+      onclick={onOpenSettings}
+      aria-label={t("titleBar.control.settings")}
+      aria-haspopup="dialog"
+      class={utilityButtonClass}
+    >
+      <span class={utilityIconClass}><Settings size={19} strokeWidth={1.8} aria-hidden="true" /></span>
+    </button>
+  </div>
 </header>

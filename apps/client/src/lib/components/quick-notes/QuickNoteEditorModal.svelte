@@ -9,7 +9,6 @@
   import Redo2 from "@lucide/svelte/icons/redo-2";
   import RotateCcw from "@lucide/svelte/icons/rotate-ccw";
   import Trash2 from "@lucide/svelte/icons/trash-2";
-  import Underline from "@lucide/svelte/icons/underline";
   import Undo2 from "@lucide/svelte/icons/undo-2";
   import {
     createQuickNote,
@@ -17,12 +16,14 @@
     updateQuickNote,
     QuickNoteWriteError,
   } from "$lib/api/quick-notes";
-  import { FALLBACK_COLOR_INDEX } from "$lib/components/calendar/types";
+  import type { EventColor } from "$lib/calendar/types";
   import {
     notesPlainTextFromEditableRoot,
     notesTextSelectionFromEditableRoot,
     restoreNotesEditableSelection,
-  } from "$lib/notes/editor-selection";
+  } from "$lib/notes/editor/selection";
+  import Notice from "$lib/components/ui/Notice.svelte";
+  import UnderlineIcon from "$lib/components/ui/UnderlineIcon.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getQuickNoteColor } from "$lib/quick-notes/colors";
   import { registerQuickNotesFlusher } from "$lib/quick-notes/persistence";
@@ -51,44 +52,61 @@
     QUICK_NOTE_BODY_MAX_CHARS,
     QUICK_NOTE_TITLE_MAX_CHARS,
     type QuickNote,
+    type QuickNoteConflictResolved,
     type QuickNoteTag,
     type QuickNoteFormatting,
     type QuickNoteFormattingName,
     type QuickNoteTextRun,
   } from "$lib/quick-notes/types";
-  import { publishQuickNotesChanged } from "$lib/quick-notes/window-sync";
+  import {
+    quickNoteEditableFields,
+    rebaseQuickNoteEdits,
+    type QuickNoteEditableFields,
+  } from "$lib/quick-notes/rebase";
+  import { listenForQuickNotesChanges, publishQuickNotesChanged } from "$lib/quick-notes/window-sync";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
-  import type { Theme } from "$lib/stores/themes";
+  import type { Theme } from "$lib/themes";
   import QuickNoteColorPicker from "./QuickNoteColorPicker.svelte";
+  import QuickNoteConflictBanner from "./QuickNoteConflictBanner.svelte";
   import QuickNoteRichText from "./QuickNoteRichText.svelte";
   import QuickNoteTagPicker from "./QuickNoteTagPicker.svelte";
+  import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
+  import { OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
 
   let {
     note,
     tags,
     defaultTagId,
+    defaultColor,
+    untaggedColor,
+    onCreateTag,
     theme,
-    onclose,
-    onsaved,
-    onarchive,
-    onunarchive,
-    ontrash,
-    onrestore,
-    ondelete,
+    onClose,
+    onSaved,
+    onArchive,
+    onUnarchive,
+    onTrash,
+    onRestore,
+    onDelete,
     mobileLayout = false,
     obscured = false,
   }: {
     note: QuickNote | null;
     tags: readonly QuickNoteTag[];
     defaultTagId: string | null;
+    /** Color a new note starts with. */
+    defaultColor: EventColor;
+    /** Color of untagged notes, which a new tag avoids. */
+    untaggedColor: EventColor;
+    onCreateTag: (name: string, color: EventColor) => Promise<QuickNoteTag>;
     theme: Theme;
-    onclose: () => void;
-    onsaved: (note: QuickNote) => void;
-    onarchive: (note: QuickNote) => void;
-    onunarchive: (note: QuickNote) => void;
-    ontrash: (note: QuickNote) => void;
-    onrestore: (note: QuickNote) => void;
-    ondelete: (note: QuickNote) => void;
+    onClose: () => void;
+    onSaved: (note: QuickNote) => void;
+    onArchive: (note: QuickNote) => void;
+    onUnarchive: (note: QuickNote) => void;
+    onTrash: (note: QuickNote) => void;
+    onRestore: (note: QuickNote) => void;
+    onDelete: (note: QuickNote) => void;
     mobileLayout?: boolean;
     obscured?: boolean;
   } = $props();
@@ -97,11 +115,12 @@
   const mobileBackStack = getMobileBackStack();
   const initialNote = untrack(() => note);
   const initialTagId = untrack(() => defaultTagId);
+  const initialColor = untrack(() => defaultColor);
   const initialId = initialNote?.id ?? crypto.randomUUID();
   let id = $state(initialId);
   let title = $state(initialNote?.title ?? "");
   let runs = $state<QuickNoteTextRun[]>(initialNote?.runs.map((run) => ({ ...run })) ?? []);
-  let color = $state<QuickNote["color"]>(initialNote?.color ?? FALLBACK_COLOR_INDEX);
+  let color = $state<QuickNote["color"]>(initialNote?.color ?? initialColor);
   let tagId = $state(initialNote?.tagId ?? initialTagId);
   let pinned = $state(initialNote?.pinned ?? false);
   let persisted = $state<QuickNote | null>(initialNote);
@@ -161,11 +180,85 @@
     persisted = saved;
     revision = saved.revision;
     id = saved.id;
-    onsaved(saved);
+    onSaved(saved);
     publishQuickNotesChanged();
   }
 
-  async function persistCurrent(targetVersion: number): Promise<void> {
+  function currentFields(): QuickNoteEditableFields {
+    return quickNoteEditableFields({ title, runs, color, tagId, pinned });
+  }
+
+  /** Shows canonical or rebased values, keeping the caret inside the new body. */
+  function applyFields(fields: QuickNoteEditableFields): void {
+    title = fields.title;
+    color = fields.color;
+    tagId = fields.tagId;
+    pinned = fields.pinned;
+    if (runsEqual(runs, fields.runs)) return;
+    runs = fields.runs;
+    const length = quickNotePlainText(runs).length;
+    const nextSelection = { start: Math.min(selection.start, length), end: Math.min(selection.end, length) };
+    selection = nextSelection;
+    if (editor?.contains(document.activeElement)) void restoreEditorSelection(nextSelection);
+  }
+
+  /**
+   * Replays unsaved edits on the newer canonical note after a revision conflict.
+   *
+   * @returns Whether the edits were rebased and can be saved again.
+   */
+  async function rebaseOnCanonical(): Promise<boolean> {
+    const base = persisted;
+    if (!base) return false;
+    let fresh: QuickNote;
+    try {
+      fresh = await getQuickNote(base.id);
+    } catch (error: unknown) {
+      console.warn("quick note could not be reloaded for rebase", error);
+      return false;
+    }
+    if (fresh.trashedAt !== null || persisted !== base) return false;
+    const result = rebaseQuickNoteEdits(base, currentFields(), fresh);
+    if (result.kind === "conflict") return false;
+    applyFields(result.fields);
+    persisted = fresh;
+    revision = fresh.revision;
+    onSaved(fresh);
+    return true;
+  }
+
+  /** Shows changes from another window or device while the editor has nothing unsaved. */
+  async function refreshFromCanonical(): Promise<void> {
+    const shown = persisted;
+    if (!shown || saveTimer || savedVersion !== dirtyVersion || status === "saving" || composing) return;
+    const expectedVersion = dirtyVersion;
+    let fresh: QuickNote;
+    try {
+      fresh = await getQuickNote(shown.id);
+    } catch (error: unknown) {
+      console.warn("quick note could not be refreshed", error);
+      return;
+    }
+    if (persisted !== shown || dirtyVersion !== expectedVersion || savedVersion !== dirtyVersion || saveTimer) return;
+    if (fresh.revision === shown.revision && fresh.hasConflict === shown.hasConflict) return;
+    applyFields(quickNoteEditableFields(fresh));
+    persisted = fresh;
+    revision = fresh.revision;
+    if (status === "conflict") status = "saved";
+  }
+
+  function conflictResolved(result: QuickNoteConflictResolved): void {
+    const base = persisted;
+    const rebased = base
+      ? rebaseQuickNoteEdits(base, currentFields(), result.note)
+      : { kind: "rebased" as const, fields: quickNoteEditableFields(result.note) };
+    // A field edited here while resolving keeps the newer local value for the next save.
+    if (rebased.kind === "rebased") applyFields(rebased.fields);
+    applyCanonical(result.note);
+    if (result.copy) onSaved(result.copy);
+  }
+
+  async function persistCurrent(targetVersion: number, allowRebase = true): Promise<void> {
     if (!meaningful() && persisted === null) {
       savedVersion = targetVersion;
       status = "idle";
@@ -190,7 +283,12 @@
       status = dirtyVersion === targetVersion ? "saved" : "idle";
       if (dirtyVersion !== targetVersion) scheduleSave();
     } catch (error: unknown) {
-      status = error instanceof QuickNoteWriteError && error.code === "revision_conflict" ? "conflict" : "failed";
+      const revisionConflict = error instanceof QuickNoteWriteError && error.code === "revision_conflict";
+      if (revisionConflict && allowRebase && await rebaseOnCanonical()) {
+        await persistCurrent(targetVersion, false);
+        return;
+      }
+      status = revisionConflict ? "conflict" : "failed";
       throw error;
     }
   }
@@ -448,8 +546,11 @@
     markDirty();
   }
 
+  /** Tags the note, which also takes the tag's color; clearing the tag keeps the note's color. */
   function updateTag(next: string | null): void {
     tagId = next;
+    const tag = tags.find((current) => current.id === next);
+    if (tag) color = tag.color;
     markDirty();
   }
 
@@ -463,7 +564,7 @@
     transitionPending = true;
     try {
       await flush();
-      onclose();
+      onClose();
     } catch {
       // The visible save error keeps the editor open.
     } finally {
@@ -477,7 +578,7 @@
     try {
       await flush();
       if (persisted) action(persisted);
-      else onclose();
+      else onClose();
     } catch {
       // The visible save error keeps the editor open.
     } finally {
@@ -498,7 +599,7 @@
     dirtyVersion += 1;
     savedVersion = dirtyVersion;
     status = "saved";
-    onsaved(fresh);
+    onSaved(fresh);
   }
 
   async function saveAsCopy(): Promise<void> {
@@ -550,8 +651,21 @@
       ? mobileBackStack.activate({ handle: () => { void requestClose(); } })
       : () => undefined;
     window.addEventListener("keydown", handleDialogKeydown, true);
-    void tick().then(() => (titleInput ?? editor ?? dialog)?.focus());
+    // A new note starts typing in the body, since the title is optional; opening an existing one on a phone focuses the
+    // dialog so the keyboard stays closed.
+    const focusText = note === null || OPENING_MAY_FOCUS_TEXT;
+    void tick().then(() => (focusText ? editor ?? titleInput ?? dialog : dialog)?.focus());
+    let mounted = true;
+    let stopChanges: (() => void) | null = null;
+    void listenForQuickNotesChanges(() => { void refreshFromCanonical(); })
+      .then((stop) => {
+        if (mounted) stopChanges = stop;
+        else stop();
+      })
+      .catch((error: unknown) => console.warn("quick note changes could not be observed", error));
     return () => {
+      mounted = false;
+      stopChanges?.();
       unregister();
       deactivateMobileBack();
       if (saveTimer) clearTimeout(saveTimer);
@@ -567,13 +681,13 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <div
-  class={mobileLayout ? "fixed z-80 flex items-center justify-center bg-black/50" : "fixed inset-0 z-80 flex items-center justify-center bg-black/50 p-2 sm:p-4"}
+  class={mobileLayout ? "surface-backdrop fixed z-80 flex items-center justify-center" : "surface-backdrop fixed inset-0 z-80 flex items-center justify-center p-2 sm:p-4"}
   style={overlayStyle}
   onclick={(event) => { if (event.target === event.currentTarget) void requestClose(); }}
 >
   <div
     bind:this={dialog}
-    class={mobileLayout ? "quick-note-editor flex min-h-0 flex-col overflow-hidden outline-none" : "quick-note-editor flex min-h-0 w-[min(720px,calc(100vw-1rem))] flex-col overflow-hidden rounded-xl border border-black/15 shadow-2xl outline-none dark:border-white/10"}
+    class={mobileLayout ? "quick-note-editor flex min-h-0 flex-col overflow-hidden outline-none" : "quick-note-editor surface-dialog flex min-h-0 w-[min(720px,calc(100vw-1rem))] flex-col overflow-hidden outline-none"}
     style={dialogStyle}
     role="dialog"
     aria-modal="true"
@@ -610,6 +724,8 @@
       </div>
       <div
         bind:this={editor}
+        use:scrollEdgeFadeAction
+        data-selectable-content
         class="quick-note-content relative my-3 min-h-0 flex-1 overflow-y-auto rounded-md py-1 text-[0.92rem] leading-relaxed outline-none"
         class:cursor-default={readOnly}
         role="textbox"
@@ -632,16 +748,27 @@
         onclick={syncSelection}
       ><QuickNoteRichText {runs} /></div>
       {#if limitError}<p class="pb-2 text-xs text-destructive" role="alert">{limitError}</p>{/if}
+      {#if persisted?.hasConflict && !readOnly}
+        <QuickNoteConflictBanner
+          noteId={persisted.id}
+          revision={persisted.revision}
+          onResolved={conflictResolved}
+          onStale={() => void refreshFromCanonical()}
+          {mobileLayout}
+        />
+      {/if}
       {#if status === "conflict"}
-        <div class="mb-2 flex flex-wrap items-center gap-2 rounded-md bg-warning/15 px-2.5 py-2 text-xs">
-          <span>{t("quickNotes.editor.conflict")}</span>
-          <button class={mobileLayout ? "min-h-12 px-2 font-medium underline" : "font-medium underline"} type="button" onclick={() => void reloadConflict()}>{t("quickNotes.editor.reload")}</button>
-          <button class={mobileLayout ? "min-h-12 px-2 font-medium underline" : "font-medium underline"} type="button" onclick={() => void saveAsCopy()}>{t("quickNotes.editor.saveCopy")}</button>
+        <div class="mb-2 text-xs" data-quick-note-notice>
+          <Notice message={t("quickNotes.editor.conflict")} tone="warning" copy={false}>
+            {#snippet actions()}
+              <button class="notice-action-text" type="button" onclick={() => void reloadConflict()}>{t("quickNotes.editor.reload")}</button>
+              <button class="notice-action-text" type="button" onclick={() => void saveAsCopy()}>{t("quickNotes.editor.saveCopy")}</button>
+            {/snippet}
+          </Notice>
         </div>
       {:else if status === "failed"}
-        <div class="mb-2 flex items-center gap-2 rounded-md bg-destructive/10 px-2.5 py-2 text-xs text-destructive">
-          <span>{t("quickNotes.editor.failed")}</span>
-          <button class={mobileLayout ? "min-h-12 px-2 font-medium underline" : "font-medium underline"} type="button" onclick={() => void flush()}>{t("quickNotes.editor.retry")}</button>
+        <div class="mb-2 text-xs" data-quick-note-notice>
+          <Notice message={t("quickNotes.editor.failed")} retryLabel={t("quickNotes.editor.retry")} copy={false} onRetry={flush} />
         </div>
       {/if}
     </div>
@@ -651,28 +778,25 @@
       {#if !readOnly}
         <button class={`${toolbarButton} ${selectedFormatting.bold ? "bg-black/10 dark:bg-white/10" : ""}`} type="button" aria-label={t("quickNotes.formatting.bold")} title={t("quickNotes.formatting.bold")} aria-pressed={selectedFormatting.bold} onpointerdown={(event) => event.preventDefault()} onclick={() => toggleFormatting("bold")}><Bold class="size-4" strokeWidth={1.5} /></button>
         <button class={`${toolbarButton} ${selectedFormatting.italic ? "bg-black/10 dark:bg-white/10" : ""}`} type="button" aria-label={t("quickNotes.formatting.italic")} title={t("quickNotes.formatting.italic")} aria-pressed={selectedFormatting.italic} onpointerdown={(event) => event.preventDefault()} onclick={() => toggleFormatting("italic")}><Italic class="size-4" strokeWidth={1.5} /></button>
-        <button class={`${toolbarButton} ${selectedFormatting.underline ? "bg-black/10 dark:bg-white/10" : ""}`} type="button" aria-label={t("quickNotes.formatting.underline")} title={t("quickNotes.formatting.underline")} aria-pressed={selectedFormatting.underline} onpointerdown={(event) => event.preventDefault()} onclick={() => toggleFormatting("underline")}><Underline class="size-4" strokeWidth={1.5} /></button>
-        <QuickNoteColorPicker {color} {theme} onselect={updateColor} buttonClass={toolbarButton} {mobileLayout} />
-        <QuickNoteTagPicker {tagId} {tags} onselect={updateTag} buttonClass={toolbarButton} {mobileLayout} />
+        <button class={`${toolbarButton} ${selectedFormatting.underline ? "bg-black/10 dark:bg-white/10" : ""}`} type="button" aria-label={t("quickNotes.formatting.underline")} title={t("quickNotes.formatting.underline")} aria-pressed={selectedFormatting.underline} onpointerdown={(event) => event.preventDefault()} onclick={() => toggleFormatting("underline")}><UnderlineIcon class="size-4" /></button>
+        <QuickNoteColorPicker {color} {theme} onSelect={updateColor} buttonClass={toolbarButton} {mobileLayout} />
+        <QuickNoteTagPicker {tagId} {tags} {theme} defaultColor={untaggedColor} onSelect={updateTag} onCreate={onCreateTag} buttonClass={toolbarButton} {mobileLayout} />
         <button class={toolbarButton} type="button" disabled={history.undo.length === 0} aria-label={t("quickNotes.formatting.undo")} title={t("quickNotes.formatting.undo")} onclick={undo}><Undo2 class="size-4" strokeWidth={1.5} /></button>
         <button class={toolbarButton} type="button" disabled={history.redo.length === 0} aria-label={t("quickNotes.formatting.redo")} title={t("quickNotes.formatting.redo")} onclick={redo}><Redo2 class="size-4" strokeWidth={1.5} /></button>
         <span class="mx-1 h-5 w-px bg-current/15"></span>
         {#if persisted?.archived}
-          <button class={toolbarButton} type="button" disabled={transitionPending} aria-label={t("quickNotes.action.unarchive")} title={t("quickNotes.action.unarchive")} onclick={() => void requestLifecycle(onunarchive)}><ArchiveRestore class="size-4" strokeWidth={1.5} /></button>
+          <button class={toolbarButton} type="button" disabled={transitionPending} aria-label={t("quickNotes.action.unarchive")} title={t("quickNotes.action.unarchive")} onclick={() => void requestLifecycle(onUnarchive)}><ArchiveRestore class="size-4" strokeWidth={1.5} /></button>
         {:else}
-          <button class={toolbarButton} type="button" disabled={transitionPending} aria-label={t("quickNotes.action.archive")} title={t("quickNotes.action.archive")} onclick={() => void requestLifecycle(onarchive)}><Archive class="size-4" strokeWidth={1.5} /></button>
+          <button class={toolbarButton} type="button" disabled={transitionPending} aria-label={t("quickNotes.action.archive")} title={t("quickNotes.action.archive")} onclick={() => void requestLifecycle(onArchive)}><Archive class="size-4" strokeWidth={1.5} /></button>
         {/if}
-        <button class={toolbarButton} type="button" disabled={transitionPending} aria-label={t("quickNotes.action.trash")} title={t("quickNotes.action.trash")} onclick={() => void requestLifecycle(ontrash)}><Trash2 class="size-4" strokeWidth={1.5} /></button>
+        <button class={toolbarButton} type="button" disabled={transitionPending} aria-label={t("quickNotes.action.trash")} title={t("quickNotes.action.trash")} onclick={() => void requestLifecycle(onTrash)}><Trash2 class="size-4" strokeWidth={1.5} /></button>
       {:else if persisted}
-        <button class={toolbarButton} type="button" aria-label={t("quickNotes.action.restore")} title={t("quickNotes.action.restore")} onclick={() => onrestore(persisted!)}><RotateCcw class="size-4" strokeWidth={1.5} /></button>
-        <button class={toolbarButton} type="button" aria-label={t("quickNotes.action.deletePermanently")} title={t("quickNotes.action.deletePermanently")} onclick={() => ondelete(persisted!)}><Trash2 class="size-4" strokeWidth={1.5} /></button>
+        <button class={toolbarButton} type="button" aria-label={t("quickNotes.action.restore")} title={t("quickNotes.action.restore")} onclick={() => onRestore(persisted!)}><RotateCcw class="size-4" strokeWidth={1.5} /></button>
+        <button class={toolbarButton} type="button" aria-label={t("quickNotes.action.deletePermanently")} title={t("quickNotes.action.deletePermanently")} onclick={() => onDelete(persisted!)}><Trash2 class="size-4" strokeWidth={1.5} /></button>
       {/if}
       </div>
       <div class={mobileLayout ? "flex min-h-12 w-full items-center" : "contents"}>
-      <span class="ml-auto px-2 text-[0.72rem] opacity-65" aria-live="polite">
-        {status === "saving" ? t("quickNotes.editor.saving") : status === "saved" ? t("quickNotes.editor.saved") : ""}
-      </span>
-      <button class={mobileLayout ? "min-h-12 rounded-xl px-4 text-sm font-medium active:bg-black/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current disabled:opacity-40 dark:active:bg-white/10" : "rounded-md px-3 py-1.5 text-sm font-medium hover:bg-black/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current disabled:opacity-40 dark:hover:bg-white/10"} type="button" disabled={transitionPending} onclick={() => void requestClose()}>{t("quickNotes.editor.close")}</button>
+      <button class={mobileLayout ? "ml-auto min-h-12 rounded-xl px-4 text-sm font-medium active:bg-black/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current disabled:opacity-40 dark:active:bg-white/10" : "ml-auto rounded-md px-3 py-1.5 text-sm font-medium hover:bg-black/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current disabled:opacity-40 dark:hover:bg-white/10"} type="button" disabled={transitionPending} onclick={() => void requestClose()}>{t("quickNotes.editor.close")}</button>
       </div>
     </footer>
   </div>
@@ -686,6 +810,13 @@
 
   .quick-note-content {
     caret-color: var(--quick-editor-fg);
+  }
+
+  /* Notices sit on the note color, so they follow its contrasting text instead of the app foreground. */
+  .quick-note-editor :global([data-quick-note-notice]) {
+    --foreground: var(--quick-editor-fg);
+    --muted-foreground: color-mix(in srgb, var(--quick-editor-fg) 64%, transparent);
+    --accent: color-mix(in srgb, var(--quick-editor-fg) 10%, transparent);
   }
 
   .quick-note-content :global([data-notes-editor-sentinel="empty-line"]) {

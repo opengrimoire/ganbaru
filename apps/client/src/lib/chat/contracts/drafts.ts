@@ -9,24 +9,10 @@ import type {
   VersionedJson,
 } from "./common";
 
-export const CHAT_DRAFT_SCHEMA_VERSION = 1;
-
 export interface ChatDraftMention {
   relativePath: string;
   kind: "file" | "directory";
   ignored: boolean;
-}
-
-export interface ChatDraftModelSelection {
-  modelId: string | null;
-  providerManaged: boolean;
-  options: VersionedJson;
-}
-
-export interface ChatSentDraftSnapshot {
-  text: string;
-  attachmentIds: ChatAttachmentId[];
-  mentions: ChatDraftMention[];
 }
 
 export interface ChatDraftRead {
@@ -45,4 +31,10 @@ export interface ChatDraftRead {
   updatedAt: UtcTimestamp;
 }
 
-export type SaveChatDraftRequest = Omit<ChatDraftRead, "updatedAt">;
+/** The stored draft a save was based on, so a save cannot silently replace edits from another window. */
+export type ChatDraftBase =
+  | { kind: "any" }
+  | { kind: "none" }
+  | { kind: "saved"; updatedAt: UtcTimestamp };
+
+export type SaveChatDraftRequest = Omit<ChatDraftRead, "updatedAt"> & { base: ChatDraftBase };

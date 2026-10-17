@@ -26,8 +26,10 @@ describe("ChatHeaderActions", () => {
       target,
       props: {
         bottomPanelOpen: false,
+        projectName: "Ganbaru",
+        projectSettingsOpen: false,
         onToggleBottomPanel: vi.fn(),
-        onRename: vi.fn(),
+        onToggleProjectSettings: vi.fn(),
       },
     });
     mounted.push({ target, component });
@@ -38,5 +40,28 @@ describe("ChatHeaderActions", () => {
       .find((button) => button.getAttribute("aria-pressed") === "true");
     inspectorToggle?.click();
     expect(chat.inspectorOpen).toBe(false);
+  });
+
+  it("uses the project settings trigger instead of the Chat actions menu", () => {
+    const onToggleProjectSettings = vi.fn();
+    const target = document.createElement("div");
+    document.body.append(target);
+    const component = mount(ChatHeaderActions, {
+      target,
+      props: {
+        bottomPanelOpen: false,
+        projectName: "Ganbaru",
+        projectSettingsOpen: false,
+        onToggleBottomPanel: vi.fn(),
+        onToggleProjectSettings,
+      },
+    });
+    mounted.push({ target, component });
+
+    const trigger = target.querySelector<HTMLButtonElement>("[data-chat-project-settings-trigger]");
+    expect(trigger?.getAttribute("aria-label")).toBe("Chat settings for Ganbaru");
+    expect(target.querySelector("details")).toBeNull();
+    trigger?.click();
+    expect(onToggleProjectSettings).toHaveBeenCalledWith(trigger);
   });
 });

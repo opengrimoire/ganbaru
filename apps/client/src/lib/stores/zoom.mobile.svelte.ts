@@ -7,7 +7,7 @@ export const APP_ZOOM_LEVELS: readonly number[] = Object.freeze([
   0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5,
 ]);
 
-const STORAGE_KEY = "ganbaru-ai-zoom";
+const STORAGE_KEY = "ganbaru-zoom";
 const DEFAULT_INDEX = APP_ZOOM_LEVELS.indexOf(1);
 
 function findClosestIndex(level: number): number {

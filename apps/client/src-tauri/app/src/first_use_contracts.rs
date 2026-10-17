@@ -4,16 +4,17 @@ use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex};
 
-use crate::{db::run_migrations, notes, projects};
+use crate::notes;
+use ganbaru_db::run_migrations;
 
 const SQLITE_OK: c_int = 0;
 const SQLITE_TRACE_STMT: c_uint = 0x01;
-const EMPTY_PROJECTS_SQL_READS: usize = 6;
+const EMPTY_PROJECTS_SQL_READS: usize = 7;
 const EMPTY_PROJECTS_SQL_WRITES: usize = 0;
-const EMPTY_PROJECTS_RESPONSE_BYTES: usize = 13_142;
+const EMPTY_PROJECTS_RESPONSE_BYTES: usize = 23_355;
 const EMPTY_NOTES_SQL_READS: usize = 7;
 const EMPTY_NOTES_SQL_WRITES: usize = 0;
-const EMPTY_NOTES_RESPONSE_BYTES: usize = 323;
+const EMPTY_NOTES_RESPONSE_BYTES: usize = 349;
 
 // SAFETY: This declaration matches SQLite's public C ABI. SQLx links the same
 // SQLite library, and callers below pass the locked connection's native handle.
@@ -62,10 +63,10 @@ impl FirstUseContractMetrics {
     }
 }
 
-// Test-only async owner for the SQLite trace registration. Callers must use
-// `finish` before dropping it. Cancellation intentionally leaves the raw Arc
-// reference live because SQLite may still hold the callback context; leaking in
-// that exceptional test path is safer than reclaiming a potentially live pointer.
+/// Test-only async owner for the SQLite trace registration. Callers must use
+/// `finish` before dropping it. Cancellation intentionally leaves the raw Arc
+/// reference live because SQLite may still hold the callback context; leaking in
+/// that exceptional test path is safer than reclaiming a potentially live pointer.
 struct SqlTrace {
     pool: SqlitePool,
     state: Arc<Mutex<SqlTraceState>>,
@@ -324,12 +325,7 @@ async fn traced_projects_workspace(
 ) -> (serde_json::Value, FirstUseContractMetrics, Vec<String>) {
     let trace = SqlTrace::start(pool).await;
     let mut metrics = FirstUseContractMetrics::default();
-    let response = projects::load_projects_workspace_for_first_use_contract(
-        pool,
-        preferred_project_id,
-        projects::ProjectViewId::List,
-    )
-    .await;
+    let response = ganbaru_projects::workspace::load_workspace(pool, preferred_project_id).await;
     let trace = trace.finish().await;
     let response = response.expect("load Projects workspace");
     metrics.record_response(FirstUseIpcCommand::ProjectsLoadWorkspace, &response);
@@ -370,7 +366,6 @@ fn empty_projects_first_use_has_a_fixed_backend_contract() {
 
         let (response, metrics, statements) = traced_projects_workspace(&pool, None).await;
         assert_eq!(response["resolved_project_id"], "project-routine-learning");
-        assert_eq!(response["active_view"], "list");
         assert_eq!(response["snapshot"]["tasks"], serde_json::json!([]));
         assert_no_optional_project_queries(&statements);
         assert_eq!(
@@ -456,11 +451,22 @@ fn projects_first_use_repairs_a_missing_built_in_with_default_graph() {
         .fetch_one(&pool)
         .await
         .expect("count restored priorities");
+        let restored_views: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM project_views WHERE project_id = 'project-routine-reading'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count restored views");
         assert_eq!(
-            (restored_sections, restored_statuses, restored_priorities),
-            (1, 6, 4)
+            (
+                restored_sections,
+                restored_statuses,
+                restored_priorities,
+                restored_views
+            ),
+            (1, 6, 4, 4)
         );
-        assert_eq!(metrics.sql.writes, 19);
+        assert_eq!(metrics.sql.writes, 20);
         assert_no_optional_project_queries(&statements);
     });
 }
@@ -474,12 +480,9 @@ fn project_refresh_does_not_run_built_in_repair() {
             .await
             .expect("remove built-in Reading project");
         let trace = SqlTrace::start(&pool).await;
-        let refresh = projects::refresh_projects_workspace_for_first_use_contract(
-            &pool,
-            Some("project-routine-learning"),
-            projects::ProjectViewId::List,
-        )
-        .await;
+        let refresh =
+            ganbaru_projects::workspace::refresh_workspace(&pool, Some("project-routine-learning"))
+                .await;
         let trace = trace.finish().await;
         refresh.expect("refresh Projects workspace");
 
@@ -556,8 +559,13 @@ fn empty_notes_first_use_has_a_fixed_backend_contract() {
         let shell = shell.expect("load Notes workspace shell");
         metrics.record_response(FirstUseIpcCommand::NotesLoadWorkspaceShell, &shell);
         metrics.sql = trace.counts;
+        let response = serde_json::to_value(&shell).expect("serialize Notes workspace shell");
+        assert_eq!(response["navigation_databases"], serde_json::json!([]));
         for optional_table in [
             "notes_blocks",
+            "notes_databases",
+            "notes_data_sources",
+            "notes_database_views",
             "notes_page_templates",
             "notes_local_users",
             "notes_page_history",

@@ -43,7 +43,7 @@ jobs:
           COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
         run: |
           corepack enable
-          corepack prepare pnpm@11.1.1 --activate
+          corepack install
 
       - name: install pinned Rust toolchain
         run: rustup show
@@ -90,7 +90,7 @@ jobs:
         run: cargo fetch --locked
 
       - name: check Windows Rust
-        run: cargo check -p ganbaru-ai --locked
+        run: cargo check -p ganbaru --locked
 
   android:
     name: Android ARM64 build
@@ -123,7 +123,7 @@ jobs:
           COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
         run: |
           corepack enable
-          corepack prepare pnpm@11.1.1 --activate
+          corepack install
 
       - name: install pinned Rust toolchain and Android target
         run: |

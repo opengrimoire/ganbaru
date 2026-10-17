@@ -1,5 +1,4 @@
 import type {
-  ChatAttachmentId,
   ChatCheckpointId,
   ChatThreadId,
   ChatTurnId,
@@ -240,14 +239,14 @@ export interface CreateHostedChangeRequest {
   draft: boolean;
 }
 
-export interface PreviewBounds {
+export interface BrowserTabBounds {
   x: number;
   y: number;
   width: number;
   height: number;
 }
 
-export interface PreviewTabRead {
+export interface BrowserTabRead {
   threadId: ChatThreadId;
   tabId: string;
   currentUrl: string;
@@ -432,15 +431,4 @@ export interface ChatTerminalSnapshotRead {
 export interface ChatTerminalCloseResult {
   closed: boolean;
   confirmationRequired: boolean;
-}
-
-export interface ChatTerminalContextRead {
-  attachmentId: ChatAttachmentId;
-  terminalId: string;
-  terminalName: string;
-  capturedAt: UtcTimestamp;
-  byteSize: number;
-  lineCount: number;
-  preview: string;
-  truncated: boolean;
 }

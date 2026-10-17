@@ -123,9 +123,9 @@ export function platformHasCapability(
   return profile.capabilities.includes(capability);
 }
 
-const injectedBuildPlatform = typeof __GANBARU_AI_BUILD_PLATFORM__ === "undefined"
+const injectedBuildPlatform = typeof __GANBARU_BUILD_PLATFORM__ === "undefined"
   ? undefined
-  : __GANBARU_AI_BUILD_PLATFORM__;
+  : __GANBARU_BUILD_PLATFORM__;
 
 export const BUILD_PLATFORM = resolveBuildPlatform(injectedBuildPlatform);
 export const BUILD_PLATFORM_PROFILE = platformProfileFor(BUILD_PLATFORM);

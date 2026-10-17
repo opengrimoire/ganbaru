@@ -1,23 +1,52 @@
-import type { EventColor } from "$lib/components/calendar/types";
+import type { EventColor } from "$lib/calendar/types";
 import type {
   ProjectDefaultIdleSettingsSource,
   ProjectDefaultPomodoroMode,
-} from "$lib/projects/project-default-pomodoro";
+} from "./default-pomodoro";
 import type { PomodoroPresetKey } from "$lib/pomodoro/rhythm";
 import {
   DEFAULT_FOCUS_IDLE_PAUSE_ON_EVENT_CREATE,
   DEFAULT_FOCUS_IDLE_THRESHOLD_MINUTES,
   type FocusIdleThresholdMinutes,
-} from "$lib/stores/preferences";
-import type { MusicContextAssignmentDraft } from "$lib/music/music-context-assignment";
-import type { ProjectDefaultEventTimeMode } from "$lib/projects/project-settings-duration";
-import type { NotesPageOpenMode } from "$lib/notes/page-open-mode";
-import type { NotesHistoryRetentionDays } from "$lib/notes/history-retention";
+} from "$lib/stores/preference-options";
+import type { MusicContextAssignmentDraft } from "$lib/music/context-assignment";
+import type { ProjectDefaultEventTimeMode } from "$lib/projects/settings/duration";
+import type { NotesPageOpenMode } from "$lib/notes/pages/open-mode";
+import type { NotesHistoryRetentionDays } from "$lib/notes/history/retention";
 
+/** One step toward the start (-1) or the end (1) of a manual order. */
+export type MoveDirection = -1 | 1;
+
+/** View types that show the project's tasks. */
 export const PROJECT_VIEW_IDS = ["dashboard", "list", "kanban", "calendar", "gantt"] as const;
 export type ProjectViewId = (typeof PROJECT_VIEW_IDS)[number];
 
-export const PROJECT_PRIORITIES = ["low", "normal", "high", "urgent"] as const;
+/** View types that host another feature's workspace scoped to the project; a project holds at most one of each. */
+export const PROJECT_HOSTED_VIEW_TYPES = ["notes", "chat"] as const;
+export type ProjectHostedViewType = (typeof PROJECT_HOSTED_VIEW_TYPES)[number];
+
+/** Every type a project view can have, in the order the add menu offers them. */
+export const PROJECT_VIEW_TYPES = [...PROJECT_VIEW_IDS, ...PROJECT_HOSTED_VIEW_TYPES] as const;
+export type ProjectViewType = (typeof PROJECT_VIEW_TYPES)[number];
+
+/** One entry in a project's sidebar. A missing name shows the localized label of its type. */
+export interface ProjectView {
+  id: string;
+  projectId: string;
+  viewType: ProjectViewType;
+  name?: string;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectViewCreate {
+  id: string;
+  projectId: string;
+  viewType: ProjectViewType;
+  name: string | null;
+}
+
 export type ProjectPriority = string;
 export const PROJECT_TAG_DEFAULT_COLOR: EventColor = 13;
 
@@ -29,10 +58,12 @@ export type ProjectTaskTagFilter = string | "all" | "none";
 export type ProjectCustomFieldReference = `custom:${string}`;
 export const PROJECT_TASK_SORT_MODES = [
   "manual",
+  "title",
   "status",
   "section",
   "priority",
   "due",
+  "start",
   "scheduled",
   "created",
   "updated",
@@ -288,6 +319,8 @@ export interface ProjectPriorityConfig {
 }
 
 export interface ProjectTask {
+  /** Native monotonic row version. Local drafts can exist before persistence. */
+  revision?: number;
   id: string;
   projectId: string;
   sectionId: string;
@@ -302,8 +335,10 @@ export interface ProjectTask {
   estimateMinutes?: number;
   dueDate?: string;
   dueTime?: string;
+  dueReminderMinutes?: number;
   startDate?: string;
   startTime?: string;
+  startReminderMinutes?: number;
   targetEndDate?: string;
   completedAt?: string;
   archivedAt?: string;
@@ -368,6 +403,7 @@ export interface ProjectTaskViewPage {
   nextCursor?: string;
   columnCounts: ProjectTaskColumnCount[];
   aggregates?: ProjectDashboardTaskAggregates;
+  columnCalculations?: ProjectTaskColumnCalculations[];
   matchedEventIds: string[];
   taskTagLinks: ProjectTaskTagLink[];
   customFieldValues: ProjectCustomFieldValue[];
@@ -377,6 +413,17 @@ export interface ProjectTaskViewPage {
   tags: ProjectTag[];
   customFields: ProjectCustomField[];
   customFieldOptions: ProjectCustomFieldOption[];
+}
+
+/** Reductions over the complete filtered task set, independent of visible pages. */
+export interface ProjectTaskColumnCalculations {
+  column: "name" | ProjectTaskListColumn;
+  total: number;
+  filled: number;
+  sum?: number;
+  average?: number;
+  minimum?: number;
+  maximum?: number;
 }
 
 export interface ProjectTaskDetailData {
@@ -421,16 +468,22 @@ export interface ProjectTaskTagLink {
 }
 
 export interface ProjectCustomField {
+  /** Canonical revision is available after native persistence. */
+  revision?: number;
   id: string;
   projectId: string;
   name: string;
   fieldType: ProjectCustomFieldType;
   sortOrder: number;
+  /** Chosen `lucide:` icon value; null shows the field type icon. */
+  icon: string | null;
   createdAt: string;
   updatedAt: string;
 }
 
 export interface ProjectCustomFieldOption {
+  /** Canonical revision is available after native persistence. */
+  revision?: number;
   id: string;
   fieldId: string;
   name: string;
@@ -516,15 +569,14 @@ export interface ProjectLinkableEvent {
 
 export interface ProjectViewPreference {
   projectId: string;
-  viewId: ProjectViewId;
+  viewId: string;
   preferenceKey: string;
   preferenceValue: string;
   updatedAt: string;
 }
 
 export interface ProjectViewPreferenceUpsert {
-  projectId: string;
-  viewId: ProjectViewId;
+  viewId: string;
   preferenceKey: string;
   preferenceValue: string;
 }
@@ -543,31 +595,6 @@ export interface ProjectCustomEmojiCreate {
   name: string;
   assetPath: string;
   sortOrder: number;
-}
-
-export interface ProjectSavedTaskView {
-  id: string;
-  projectId: string;
-  name: string;
-  viewId: ProjectViewId;
-  search: string;
-  statusFilter: ProjectTaskStatusFilter;
-  sectionFilter: string | "all";
-  priorityFilter: ProjectPriority | "all";
-  dueFilter: ProjectTaskDueFilter;
-  dueRangeStart: string;
-  dueRangeEnd: string;
-  scheduleFilter: ProjectTaskScheduleFilter;
-  dependencyFilter: ProjectTaskDependencyFilter;
-  tagFilter: ProjectTaskTagFilter;
-  customFieldFilters: ProjectCustomFieldFilter[];
-  sortMode: ProjectTaskSortMode;
-  sortDirection: ProjectTaskSortDirection;
-  groupBy: ProjectTaskGroupMode;
-  collapsedSectionIds: string[];
-  showArchivedTasks: boolean;
-  visibleColumns: ProjectTaskListColumn[];
-  updatedAt: string;
 }
 
 export interface ProjectTaskEventLinkCreate {
@@ -623,12 +650,16 @@ export interface ProjectCustomFieldCreate {
   name: string;
   fieldType: ProjectCustomFieldType;
   sortOrder: number;
+  icon?: string | null;
+  duplicateSourceId?: string;
 }
 
+/** Full replacement of a field's editable definition; a null icon resets it to the type icon. */
 export interface ProjectCustomFieldUpdate {
   id: string;
   name: string;
   sortOrder: number;
+  icon: string | null;
 }
 
 export interface ProjectCustomFieldOptionCreate {
@@ -672,6 +703,7 @@ export interface ProjectsSnapshot {
   eventLinks: ProjectTaskEventLink[];
   taskChangeEvents: ProjectTaskChangeEvent[];
   viewPreferences: ProjectViewPreference[];
+  views: ProjectView[];
   customEmojis: ProjectCustomEmoji[];
 }
 
@@ -688,13 +720,8 @@ export type ProjectMutationRemoval =
   | { kind: "custom_field_value"; taskId: string; fieldId: string }
   | { kind: "dependency"; id: string }
   | { kind: "event_link"; taskId: string; eventId: string }
-  | {
-      kind: "view_preference";
-      projectId: string;
-      viewId: string;
-      preferenceKey: string;
-    }
-  | { kind: "custom_emoji"; id: string };
+  | { kind: "custom_emoji"; id: string }
+  | { kind: "view"; id: string };
 
 export interface ProjectMutation {
   changed: ProjectsSnapshot;
@@ -704,7 +731,6 @@ export interface ProjectMutation {
 
 export interface ProjectsWorkspaceSnapshot {
   resolvedProjectId: string | null;
-  activeView: ProjectViewId;
   snapshot: ProjectsSnapshot;
 }
 
@@ -713,7 +739,7 @@ export type ProjectOptionalDataKind =
   | "custom_fields"
   | "history"
   | "checklist"
-  | "saved_views"
+  | "view_preferences"
   | "custom_emojis";
 
 export interface ProjectsOptionalData {
@@ -874,11 +900,15 @@ export interface ProjectTaskUpdate {
   estimateMinutes: number | null;
   dueDate: string | null;
   dueTime: string | null;
+  dueReminderMinutes: number | null;
   startDate: string | null;
   startTime: string | null;
+  startReminderMinutes: number | null;
   targetEndDate: string | null;
   archivedAt: string | null;
   blockerReason: string | null;
   milestone: boolean;
   changeReason: string | null;
+  /** Revision the edit was based on; Rust refuses the update when the task changed since. */
+  expectedRevision: number | null;
 }

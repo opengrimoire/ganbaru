@@ -1,11 +1,11 @@
-import { NOTES_ICON_COLORS } from "../contracts/assets";
-import type { NotesCalloutIcon, NotesIconColor, NotesMediaBlockPayload, NotesPageCover } from "../contracts/assets";
+import { NOTES_COVER_DESIGNS, NOTES_ICON_COLORS } from "../contracts/assets";
+import type { NotesCalloutIcon, NotesFileObject, NotesIconColor, NotesMediaBlockPayload, NotesPageCover } from "../contracts/assets";
 import type { NotesBookmarkBlockPayload, NotesEmbedBlockPayload, NotesLinkPreviewBlockPayload, NotesPageIcon } from "../contracts/core";
-import type { NotesDatabaseGalleryCoverSource } from "../contracts/database";
-import { externalMediaUrlIsSupported } from "../media";
-import type { NotesMediaBlockType } from "../media";
-import { isNotesPageCoverAssetPath, isSupportedExternalPageCoverUrl } from "../page-cover";
-import { isNotesPageIconAssetPath, isProjectIconAssetPath, isSupportedExternalPageIconUrl } from "../page-icon";
+import type { NotesDatabaseGalleryCoverSource } from "$lib/notes/contracts/database";
+import { externalMediaUrlIsSupported } from "$lib/notes/block-types/media";
+import type { NotesMediaBlockType } from "$lib/notes/block-types/media";
+import { createNotesDesignCover, isNotesPageCoverAssetPath, isSupportedExternalPageCoverUrl } from "$lib/notes/pages/cover";
+import { isNotesPageIconAssetPath, isProjectIconAssetPath, isSupportedExternalPageIconUrl } from "$lib/notes/pages/icon";
 import { UUID_PATTERN, containsControlCharacters, readDisplayString, readInteger, readNotesIconColor, readOptionalDisplayString, readRecord, readString } from "./readers";
 import { parseNotesRichTextArray } from "./rich-text";
 
@@ -153,7 +153,7 @@ function parseFileObject(
   label: string,
   mediaType: NotesMediaBlockType,
   allowBlankExternalUrl = false,
-): NotesPageCover {
+): NotesFileObject {
   const record = readRecord(value, label);
   const fileType = readString(record.type, `${label}.type`);
   if (fileType === "external") {
@@ -251,12 +251,30 @@ function localMediaContentTypeMatchesBlock(
     && contentType !== "image/svg+xml";
 }
 
+/** Validate editable cover metadata without resolving theme colors or flattening image crops. */
 export function parseNullablePageCover(value: unknown, label: string): NotesPageCover | null {
   if (value === null) return null;
-  return parsePageCoverFileObject(value, label);
+  const record = readRecord(value, label);
+  if (record.type === "design") {
+    if (record.focal_point !== undefined) throw new Error(`${label}: designed covers cannot have an image focal point`);
+    const design = readRecord(record.design, `${label}.design`);
+    const pattern = NOTES_COVER_DESIGNS.find((candidate) => candidate === design.pattern);
+    if (!pattern) throw new Error(`${label}.design.pattern is unsupported`);
+    return createNotesDesignCover(pattern, design.color === "default" ? "default" : readInteger(design.color, `${label}.design.color`));
+  }
+  const cover = parsePageCoverFileObject(value, label);
+  if (record.focal_point === undefined) return cover;
+  const focal = readRecord(record.focal_point, `${label}.focal_point`);
+  const coordinate = (value: unknown): number => {
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) {
+      throw new Error(`${label}.focal_point coordinates must be between 0 and 1`);
+    }
+    return value;
+  };
+  return { ...cover, focal_point: { x: coordinate(focal.x), y: coordinate(focal.y) } };
 }
 
-function parsePageCoverFileObject(value: unknown, label: string): NotesPageCover {
+function parsePageCoverFileObject(value: unknown, label: string): Exclude<NotesPageCover, { type: "design" }> {
   const record = readRecord(value, label);
   const type = readString(record.type, `${label}.type`);
   if (type === "external") {

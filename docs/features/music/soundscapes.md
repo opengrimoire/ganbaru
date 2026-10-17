@@ -1,11 +1,21 @@
 # Background sounds
 
-**Implemented on desktop.** Background sounds play independently of Music. The player panel and builder put overall volume and playback on one row. Each sound section opens selection mode and volume adjustment in separate anchored panels from its heading. One sound at a time is the default; layered mode lets listeners toggle up to 16 sounds individually. The overall volume always changes every sound. Each section has a centered adjustment from -100% to +100%, with 0% leaving its level unchanged; this corresponds to a multiplier from 0 to 2. Simultaneous layers are normalized to reduce sudden loudness. The first-use overall volume is 10%, and later changes are retained.
+**Implemented on desktop.** Background sounds play through a native audio engine independently of Music playback. Platforms without the engine omit these controls.
 
-Three generated noise textures are presented as rain-like sounds from soft to bright: brown, pink, and white noise. Their real noise types remain visible in the builder. These are generated noise, not recordings of rain.
+## Playback
 
-Users may add their own local audio loops. Each custom sound has a chosen name and icon and appears as a selectable sound button in both the player and builder, like the generated rain sounds. The name and icon can be edited later through the same icon picker used for playlists. Groups also have a chosen name and picker-selected icon and organize individually selectable sounds. A sound can be moved between groups or left in Other sounds. Group membership does not force simultaneous playback. Original audio files remain in place. Missing files can be repaired by selecting a new location on the current device; editing its name, icon, or group does not require the file to be available.
+One sound at a time is the default; layered mode lets listeners toggle up to 16 sounds individually. An overall volume changes every sound, and each section has a relative adjustment from -100% to +100% (a multiplier from 0 to 2, with 0% leaving the level unchanged). Simultaneous layers are normalized to avoid sudden loudness. The first-use overall volume is 10%; later changes are retained.
 
-The vault stores sound definitions with their names and icons, groups, group membership, overall volume, section volume adjustments, ordered playback selections, and the layering preference. Local file locations remain device-specific. Removing a group moves its sounds to Other sounds without deleting their definitions or audio files. Removing a sound definition never deletes its original file; if selected, it is removed from playback selection.
+## Sounds
 
-Soundtrack automation still selects one specified background sound when its phase starts; it does not silently add a layer to the listener's current selection. Platforms without the background-sound engine omit these controls.
+Three generated noise textures are presented as rain-like sounds from soft to bright: brown, pink, and white noise. Their real noise types stay visible in the builder because they are generated noise, not rain recordings.
+
+Users can add their own local audio loops with a chosen name and icon (using the same icon picker as playlists). Sounds can be organized into named groups or left in Other sounds; a group organizes sounds but never forces them to play together. Original files stay in place. A missing file can be repaired by choosing a new location on the current device, and editing a sound's name, icon, or group never requires the file.
+
+## Storage
+
+The vault stores sound definitions, groups and membership, overall and section volumes, ordered playback selections, and the layering preference. Local file locations are device-specific. Removing a group moves its sounds to Other sounds. Removing a sound never deletes its file and removes it from the current selection.
+
+## Automation
+
+Phase automation selects one specified sound and never silently adds a layer to the listener's selection. Automatic and manual intent are tracked separately, and saved automatic intent alone never starts audio at startup. See [Music automation](automation.md).

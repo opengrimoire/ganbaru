@@ -1,38 +1,54 @@
 <script lang="ts">
+  import type { Snippet } from "svelte";
   import FolderOpen from "@lucide/svelte/icons/folder-open";
   import GitBranch from "@lucide/svelte/icons/git-branch";
   import Hash from "@lucide/svelte/icons/hash";
+  import PanelLeft from "@lucide/svelte/icons/panel-left";
   import Menu from "@lucide/svelte/icons/menu";
   import MessageSquare from "@lucide/svelte/icons/message-square";
+  import type { ChatChannelRead } from "$lib/chat/contracts";
+  import { summarizeChannelMembers } from "$lib/chat/teammates/channel-members";
   import {
     COMPACT_IDENTITY_EMOJI_SCALE,
     COMPACT_IDENTITY_ICON_SIZE,
     COMPACT_IDENTITY_ICON_STROKE_WIDTH,
   } from "$lib/icon-sizing";
+  import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { projectLifecycleBadgeClass, projectLifecycleLabel } from "$lib/projects/project-display";
-  import { projectNavigatorPanelGeometry, type ProjectNavigatorPanelMode } from "$lib/projects/project-toolbar";
-  import { getChat } from "$lib/stores/chat.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { projectNavigatorPanelGeometry, type ProjectNavigatorPanelMode } from "$lib/projects/toolbar";
+  import { useChatPaneEvents } from "$lib/chat/pane-events";
+  import { useChat } from "$lib/stores/chat.svelte";
+  import { getChatSidebarOrder } from "$lib/stores/chat/sidebar-order.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
+  import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
   import { getViewport } from "$lib/stores/viewport.svelte";
   import { cn } from "$lib/utils";
+  import type { OpenInNewTabIntent } from "$lib/workspace-tabs/gestures";
+  import ChatParticipantAvatar from "$lib/components/chat/identity/ChatParticipantAvatar.svelte";
+  import LocalPersonAvatar from "$lib/components/contacts/LocalPersonAvatar.svelte";
   import ProjectIcon from "$lib/components/projects/ProjectIcon.svelte";
-  import ProjectPickerMobileDialog from "$lib/components/projects/ProjectPickerMobileDialog.svelte";
-  import WorkspaceBreadcrumbTerminalIcon from "$lib/components/WorkspaceBreadcrumbTerminalIcon.svelte";
-  import ChatChannelPickerPanel from "./ChatChannelPickerPanel.svelte";
-  import ChatChannelRoster from "./ChatChannelRoster.svelte";
-  import ChatProjectNavigator from "./ChatProjectNavigator.svelte";
+  import ProjectPickerMobileDialog from "$lib/components/projects/pickers/ProjectPickerMobileDialog.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
+  import WorkspaceBreadcrumbTerminalIcon from "$lib/components/ui/WorkspaceBreadcrumbTerminalIcon.svelte";
+  import ChatChannelPickerPanel from "$lib/components/chat/channels/ChatChannelPickerPanel.svelte";
+  import ChatProjectNavigator from "$lib/components/chat/channels/ChatProjectNavigator.svelte";
+  import { createHoverMenu } from "$lib/utils/menu-aim";
+  import { CHAT_OPEN_MEMBERS_EVENT, readChatOpenMembersDetail } from "$lib/components/chat/channels/members-panel-events";
   import ChatTitleEditor from "./ChatTitleEditor.svelte";
+  import MobileContextSwitcher from "$lib/components/mobile/MobileContextSwitcher.svelte";
 
   type ChatNavigatorMode = ProjectNavigatorPanelMode | "channels";
 
   let {
-    explorerExpanded: _explorerExpanded,
+    explorerExpanded,
     showRailButton,
     onOpenRail,
     reserveGlobalActions,
     mobilePresentation = false,
     editingTitle = $bindable(false),
+    railButtonElement = $bindable(null),
+    trailingActions = undefined,
+    projectViewSwitcher = undefined,
   }: {
     explorerExpanded: boolean;
     showRailButton: boolean;
@@ -40,16 +56,37 @@
     reserveGlobalActions: boolean;
     mobilePresentation?: boolean;
     editingTitle?: boolean;
+    /** The rail button, kept for returning focus after the mobile channel list closes. */
+    railButtonElement?: HTMLButtonElement | null;
+    /** Workspace actions placed at the end of the row, used where they are not overlaid on the header. */
+    trailingActions?: Snippet;
+    /** Phone switcher between the views of the project that hosts Chat, shown in the mobile action row. */
+    projectViewSwitcher?: Snippet;
   } = $props();
 
-  const chat = getChat();
-  const projects = getProjects();
+  const chat = useChat();
+  const paneEvents = useChatPaneEvents();
+  const chatSidebarOrder = getChatSidebarOrder();
+  const projects = useProjects();
+  const tabs = getWorkspaceTabs();
   const viewport = getViewport();
-  const { t } = getLocalization();
+  const { t, locale } = getLocalization();
   const identityIconSize = COMPACT_IDENTITY_ICON_SIZE;
   const identityIconStrokeWidth = COMPACT_IDENTITY_ICON_STROKE_WIDTH;
+  const toolbarIconButtonClass = $derived(cn("chat-toolbar-icon-button", mobilePresentation && "mobile-chrome-button"));
+  const toolbarMembersTriggerClass = $derived(cn("chat-members-trigger", mobilePresentation && "mobile-chrome-button"));
   const identityEmojiScale = COMPACT_IDENTITY_EMOJI_SCALE;
+  /** Avatars shown in the header trigger before the count takes over. */
+  const MEMBER_STACK_LIMIT = 3;
+  const MEMBER_STACK_AVATAR_SIZE = 18;
+  type ChatChannelMembersPanelComponent =
+    typeof import("$lib/components/chat/channels/ChatChannelMembersPanel.svelte").default;
   let navigatorOpen = $state(false);
+  let membersChannelId = $state<string | null>(null);
+  let membersPickerOnOpen = $state(false);
+  let MembersPanel = $state<ChatChannelMembersPanelComponent | null>(null);
+  let membersPanelLoad: Promise<void> | null = null;
+  let membersTrigger = $state<HTMLButtonElement | null>(null);
   let navigatorMode = $state<ChatNavigatorMode>("groups");
   let navigatorAnchorElement = $state<HTMLButtonElement | null>(null);
   let groupTriggerElement = $state<HTMLButtonElement | null>(null);
@@ -60,19 +97,28 @@
   let navigatorPanelElement = $state<HTMLDivElement | null>(null);
   let navigatorPanelStyle = $state("");
   let navigatorPanelMaxHeight = $state(0);
-  let showInactiveProjects = $state(false);
+  const navigatorHover = createHoverMenu({
+    isOpen: () => navigatorOpen,
+    close: () => {
+      navigatorOpen = false;
+    },
+  });
+  $effect(() => {
+    if (!navigatorOpen) navigatorHover.cancel();
+  });
+  $effect(() => () => navigatorHover.cancel());
   let actionError = $state<string | null>(null);
   const selectedProject = $derived(projects.selectedProject);
   const selectedGroup = $derived(projects.selectedGroup);
   const selectedChannel = $derived(chat.selectedChannel);
   const selectedProjectChannels = $derived(
-    selectedProject ? chat.channelsForProject(selectedProject.id) : [],
+    selectedProject ? chatSidebarOrder.sortChannels(selectedProject.id, chat.channelsForProject(selectedProject.id)) : [],
   );
-  const channelNavigatorPanelHeight = $derived(Math.min(
-    navigatorPanelMaxHeight,
-    Math.max(124, selectedProjectChannels.length * 32 + 84),
-  ));
   const selectedFolder = $derived(chat.selectedWorkingFolder);
+  const memberSummary = $derived(summarizeChannelMembers(selectedChannel?.memberships ?? []));
+  const memberStackTeammates = $derived(chat.teammates
+    .filter((teammate) => memberSummary.teammateIds.has(teammate.participant.id))
+    .slice(0, MEMBER_STACK_LIMIT - 1));
 
   function triggerForMode(mode: ChatNavigatorMode): HTMLButtonElement | null {
     if (mode === "groups") return groupTriggerElement;
@@ -112,7 +158,9 @@
   }
 
   function toggleNavigator(mode: ChatNavigatorMode): void {
-    if (navigatorOpen && navigatorMode === mode) navigatorOpen = false;
+    const triggerPanelOpen = navigatorOpen && navigatorMode === mode;
+    if (navigatorHover.claimClick(triggerPanelOpen)) return;
+    if (triggerPanelOpen) navigatorOpen = false;
     else openNavigator(mode);
   }
 
@@ -132,10 +180,59 @@
     navigatorOpen = false;
   }
 
+  function openChannelInNewTab(channel: ChatChannelRead, intent: OpenInNewTabIntent): void {
+    tabs.openLocation("item", {
+      kind: "chat",
+      projectId: channel.projectId,
+      item: { type: "chat-channel", id: channel.id },
+    }, intent);
+    if (!intent.background) navigatorOpen = false;
+  }
+
   function createChannel(): void {
     navigatorOpen = false;
-    window.dispatchEvent(new Event("ganbaru-ai:chat-new-channel"));
+    paneEvents.dispatchEvent(new Event("ganbaru:chat-new-channel"));
   }
+
+  const membersOpen = $derived(membersChannelId !== null && membersChannelId === chat.selectedChannelId);
+
+  /** Load the members panel only when the trigger is approached or used. */
+  function loadMembersPanel(): Promise<void> {
+    if (MembersPanel) return Promise.resolve();
+    membersPanelLoad ??= import("$lib/components/chat/channels/ChatChannelMembersPanel.svelte")
+      .then((module) => { MembersPanel = module.default; })
+      .catch((error: unknown) => {
+        console.error("Load Chat members panel failed", error);
+        membersChannelId = null;
+      })
+      .finally(() => { membersPanelLoad = null; });
+    return membersPanelLoad;
+  }
+
+  function toggleChannelMembers(): void {
+    if (!selectedChannel) return;
+    membersPickerOnOpen = false;
+    membersChannelId = membersOpen ? null : selectedChannel.id;
+    if (membersChannelId) void loadMembersPanel();
+  }
+
+  function closeChannelMembers(): void {
+    membersChannelId = null;
+    membersPickerOnOpen = false;
+  }
+
+  /** Reopens the panel for a surface that had to close while Settings covered it. */
+  $effect(() => {
+    const openMembers = (event: Event): void => {
+      const detail = readChatOpenMembersDetail(event);
+      if (!detail || detail.channelId !== chat.selectedChannelId) return;
+      membersPickerOnOpen = detail.addMembers;
+      membersChannelId = detail.channelId;
+      void loadMembersPanel();
+    };
+    paneEvents.addEventListener(CHAT_OPEN_MEMBERS_EVENT, openMembers);
+    return () => paneEvents.removeEventListener(CHAT_OPEN_MEMBERS_EVENT, openMembers);
+  });
 
   async function commitTitle(title: string): Promise<void> {
     if (!selectedChannel || selectedChannel.isDefault || !editingTitle) return;
@@ -159,28 +256,50 @@
 
 <svelte:window onpointerdown={handleWindowPointerDown} />
 
-<div bind:this={headerElement} class={cn("chat-workspace-header flex min-w-0 items-center gap-1", mobilePresentation ? "overflow-hidden pl-3" : "overflow-x-auto pl-3")} class:mobilePresentation style={`height:var(--cal-header-row-h);background-color:var(--cal-header-bg);border-bottom:1px solid var(--sidebar);padding-right:${mobilePresentation ? "0.75rem" : `var(--chat-header-action-inset, ${reserveGlobalActions ? "6.5rem" : "0.75rem"})`}`} onscroll={refreshNavigatorGeometry} data-chat-workspace-header>
-  {#if showRailButton}<button type="button" class="chat-toolbar-icon-button" aria-label={t("chat.openRail")} onclick={onOpenRail}><Menu size={14} /></button>{/if}
+<div bind:this={headerElement} class={cn("chat-workspace-header flex min-w-0 items-center", mobilePresentation ? "gap-0 overflow-hidden pl-(--mobile-chrome-inset)" : "gap-1 overflow-x-auto pl-3")} class:mobilePresentation style={`height:var(--toolbar-h);padding-right:${mobilePresentation ? "var(--mobile-chrome-inset)" : `var(--chat-header-action-inset, ${reserveGlobalActions ? "6.5rem" : "0.75rem"})`}`} onscroll={refreshNavigatorGeometry} data-chat-workspace-header>
+  {#if showRailButton}<button bind:this={railButtonElement} type="button" class={toolbarIconButtonClass} aria-label={t("chat.openRail")} data-chat-rail-button onclick={onOpenRail}>{#if mobilePresentation}<PanelLeft size={16} strokeWidth={1.75} />{:else}<Menu size={14} />{/if}</button>{/if}
   <div bind:this={identityElement} class={cn("relative", mobilePresentation ? "min-w-0 flex-1 overflow-hidden" : "min-w-36 shrink-0 min-[760px]:max-w-3xl")}>
-    <div class={cn("flex min-w-0 max-w-full items-center gap-0.5 overflow-hidden text-identity font-medium", mobilePresentation ? "h-12" : "h-7")}>
+    {#if mobilePresentation}
+      <MobileContextSwitcher
+        title={selectedProject?.name ?? t("chat.title")}
+        expanded={navigatorOpen}
+        onclick={() => toggleNavigator(selectedProject ? "channels" : "projects")}
+      >
+        {#snippet icon()}
+          {#if selectedProject}
+            <ProjectIcon name={selectedProject.icon} size={identityIconSize} strokeWidth={identityIconStrokeWidth} emojiScale={identityEmojiScale} />
+          {:else}
+            <MessageSquare size={identityIconSize} strokeWidth={identityIconStrokeWidth} />
+          {/if}
+        {/snippet}
+      </MobileContextSwitcher>
+      <!-- The switcher opens at the project's channels, so the action row names the channel only while renaming it. -->
+      {#if selectedChannel && editingTitle && !selectedChannel.isDefault}
+        <div class="flex h-12 min-w-0 items-center px-1 text-identity font-medium"><div class="min-w-0 flex-1"><ChatTitleEditor title={selectedChannel.name} onCommit={commitTitle} onCancel={() => { editingTitle = false; }} /></div></div>
+      {:else if projectViewSwitcher}
+        <div class="flex h-12 min-w-0 items-center">{@render projectViewSwitcher()}</div>
+      {/if}
+    {:else}
+    <div class="flex h-7 min-w-0 max-w-full items-center gap-0.5 overflow-hidden text-identity font-medium">
       {#if selectedProject && selectedGroup}
-        <button bind:this={groupTriggerElement} type="button" class={cn("chat-context-segment", navigatorOpen && navigatorMode === "groups" && "bg-accent")} aria-label={t("projects.navigator.open")} aria-expanded={navigatorOpen && navigatorMode === "groups"} data-chat-group-trigger onpointerenter={() => { if (!mobilePresentation) openNavigator("groups"); }} onclick={() => toggleNavigator("groups")}>{#if !mobilePresentation}<ProjectIcon name={selectedGroup.icon} size={identityIconSize} strokeWidth={identityIconStrokeWidth} emojiScale={identityEmojiScale} />{/if}<span class="truncate">{selectedGroup.name}</span></button>
+        <button bind:this={groupTriggerElement} type="button" class={cn("chat-context-segment", navigatorOpen && navigatorMode === "groups" && "bg-accent")} aria-label={t("projects.navigator.open")} aria-expanded={navigatorOpen && navigatorMode === "groups"} data-chat-group-trigger onpointerenter={(event) => { navigatorHover.enterTrigger(event, () => openNavigator("groups")); }} onpointerleave={navigatorHover.leave} onclick={() => toggleNavigator("groups")}><ProjectIcon name={selectedGroup.icon} size={identityIconSize} strokeWidth={identityIconStrokeWidth} emojiScale={identityEmojiScale} /><span class="truncate">{selectedGroup.name}</span></button>
         <span class="chat-context-divider">/</span>
-        <button bind:this={projectTriggerElement} type="button" class={cn("chat-context-segment", navigatorOpen && navigatorMode === "projects" && "bg-accent")} aria-label={t("projects.navigator.open")} aria-expanded={navigatorOpen && navigatorMode === "projects"} data-chat-project-trigger onpointerenter={() => { if (!mobilePresentation) openNavigator("projects"); }} onclick={() => toggleNavigator("projects")}>{#if !mobilePresentation}<ProjectIcon name={selectedProject.icon} size={identityIconSize} strokeWidth={identityIconStrokeWidth} emojiScale={identityEmojiScale} />{/if}<span class="truncate">{selectedProject.name}</span>{#if selectedProject.status !== "active"}<span class={cn("rounded border px-1.5 py-0.5 text-[0.666667rem]", projectLifecycleBadgeClass(selectedProject.status))}>{projectLifecycleLabel(selectedProject.status, t)}</span>{/if}</button>
+        <button bind:this={projectTriggerElement} type="button" class={cn("chat-context-segment", navigatorOpen && navigatorMode === "projects" && "bg-accent")} aria-label={t("projects.navigator.open")} aria-expanded={navigatorOpen && navigatorMode === "projects"} data-chat-project-trigger onpointerenter={(event) => { navigatorHover.enterTrigger(event, () => openNavigator("projects")); }} onpointerleave={navigatorHover.leave} onclick={() => toggleNavigator("projects")}><ProjectIcon name={selectedProject.icon} size={identityIconSize} strokeWidth={identityIconStrokeWidth} emojiScale={identityEmojiScale} /><span class="truncate">{selectedProject.name}</span>{#if !selectedChannel}<WorkspaceBreadcrumbTerminalIcon kind="chevron" context="chat" class="shrink-0 text-muted-foreground" />{/if}</button>
         {#if selectedChannel}
           <span class="chat-context-divider">/</span>
           {#if editingTitle && !selectedChannel.isDefault}
             <div class="min-w-36 max-w-64 px-1"><ChatTitleEditor title={selectedChannel.name} onCommit={commitTitle} onCancel={() => { editingTitle = false; }} /></div>
           {:else}
-            <button bind:this={channelTriggerElement} type="button" class={cn("chat-context-segment", navigatorOpen && navigatorMode === "channels" && "bg-accent")} aria-label={t("chat.channels.navigatorLabel")} aria-expanded={navigatorOpen && navigatorMode === "channels"} data-chat-channel-trigger onpointerenter={() => { if (!mobilePresentation) openNavigator("channels"); }} onclick={() => toggleNavigator("channels")}>{#if !mobilePresentation}<Hash size={identityIconSize} strokeWidth={identityIconStrokeWidth} class="shrink-0" />{/if}<span class="truncate">{selectedChannel.name}</span><WorkspaceBreadcrumbTerminalIcon kind="chevron" class="shrink-0 text-muted-foreground" /></button>
+            <button bind:this={channelTriggerElement} type="button" class={cn("chat-context-segment", navigatorOpen && navigatorMode === "channels" && "bg-accent")} aria-label={t("chat.channels.navigatorLabel")} aria-expanded={navigatorOpen && navigatorMode === "channels"} data-chat-channel-trigger onpointerenter={(event) => { navigatorHover.enterTrigger(event, () => openNavigator("channels")); }} onpointerleave={navigatorHover.leave} onclick={() => toggleNavigator("channels")}><Hash size={identityIconSize} strokeWidth={identityIconStrokeWidth} class="shrink-0" /><span class="truncate">{selectedChannel.name}</span><WorkspaceBreadcrumbTerminalIcon kind="chevron" context="chat" class="shrink-0 text-muted-foreground" /></button>
           {/if}
-          {#if selectedChannel.topic}<span class="hidden max-w-80 truncate px-1 text-xs text-muted-foreground @min-[760px]:inline">{selectedChannel.topic}</span>{/if}
+          {#if selectedChannel.topic && !explorerExpanded}<span class="hidden max-w-80 truncate px-1 text-xs text-muted-foreground @min-[760px]:inline" data-chat-channel-topic>{selectedChannel.topic}</span>{/if}
         {/if}
-        <button type="button" class="chat-inline-new-button" aria-label={t("chat.channels.createTitle")} data-chat-new-channel-button onclick={() => window.dispatchEvent(new Event("ganbaru-ai:chat-new-channel"))}><WorkspaceBreadcrumbTerminalIcon kind="plus" /></button>
+        <button type="button" class="chat-inline-new-button" aria-label={t("chat.channels.createTitle")} data-chat-new-channel-button onclick={() => paneEvents.dispatchEvent(new Event("ganbaru:chat-new-channel"))}><WorkspaceBreadcrumbTerminalIcon kind="plus" /></button>
       {:else}
         <div class="chat-context-segment"><MessageSquare size={identityIconSize} /><span>{t("chat.title")}</span></div>
       {/if}
     </div>
+    {/if}
     {#if navigatorOpen}
       {#if mobilePresentation}
         <ProjectPickerMobileDialog
@@ -191,7 +310,9 @@
           {#if navigatorMode === "channels"}
             <ChatChannelPickerPanel
               channels={selectedProjectChannels}
+              orderProjectId={selectedProject?.id ?? null}
               selectedChannelId={selectedChannel?.id ?? null}
+              isChannelStarred={(channelId) => chatSidebarOrder.isChannelStarred(channelId)}
               frameStyle="height:100%;max-height:100%"
               iconStrokeWidth={identityIconStrokeWidth}
               onChannelSelected={(channel) => selectChannel(channel.id)}
@@ -206,9 +327,9 @@
               selectedProjectId={projects.selectedProjectId}
               selectedGroupId={selectedGroup?.id ?? null}
               iconStrokeWidth={identityIconStrokeWidth}
-              {showInactiveProjects}
+              showInactiveProjects={projects.showInactiveProjects}
               panelMode="groups"
-              onShowInactiveProjectsChange={(value) => { showInactiveProjects = value; }}
+              onShowInactiveProjectsChange={(value) => { projects.showInactiveProjects = value; }}
               onProjectSelected={selectProject}
               onChannelSelected={() => { navigatorOpen = false; }}
               onCreateChannel={() => { createChannel(); }}
@@ -220,14 +341,17 @@
           {/if}
         </ProjectPickerMobileDialog>
       {:else}
-        <div bind:this={navigatorPanelElement} class="fixed z-80" style={navigatorPanelStyle} role="dialog" tabindex="-1" aria-label={navigatorMode === "channels" ? t("chat.channels.navigatorLabel") : t("projects.navigator.pickerLabel")}>
+        <div bind:this={navigatorPanelElement} class="fixed z-80" style={navigatorPanelStyle} role="dialog" tabindex="-1" aria-label={navigatorMode === "channels" ? t("chat.channels.navigatorLabel") : t("projects.navigator.pickerLabel")} onpointerenter={navigatorHover.enterPanel} onpointerleave={navigatorHover.leave} onpointerdown={navigatorHover.pin} onkeydown={navigatorHover.pin}>
           {#if navigatorMode === "channels"}
             <ChatChannelPickerPanel
               channels={selectedProjectChannels}
+              orderProjectId={selectedProject?.id ?? null}
               selectedChannelId={selectedChannel?.id ?? null}
-              frameStyle={`width:100%;height:${channelNavigatorPanelHeight}px;max-height:${channelNavigatorPanelHeight}px`}
+              isChannelStarred={(channelId) => chatSidebarOrder.isChannelStarred(channelId)}
+              frameStyle={`width:100%;max-height:${navigatorPanelMaxHeight}px`}
               iconStrokeWidth={identityIconStrokeWidth}
               onChannelSelected={(channel) => selectChannel(channel.id)}
+              onChannelOpenInNewTab={tabs.canOpenTabs ? openChannelInNewTab : undefined}
               onCreateChannel={createChannel}
             />
           {:else}
@@ -235,13 +359,14 @@
               selectedProjectId={projects.selectedProjectId}
               selectedGroupId={selectedGroup?.id ?? null}
               iconStrokeWidth={identityIconStrokeWidth}
-              {showInactiveProjects}
+              showInactiveProjects={projects.showInactiveProjects}
               panelMode={navigatorMode}
               panelMaxHeight={navigatorPanelMaxHeight}
-              onShowInactiveProjectsChange={(value) => { showInactiveProjects = value; }}
+              onShowInactiveProjectsChange={(value) => { projects.showInactiveProjects = value; }}
               onProjectSelected={selectProject}
               onChannelSelected={() => { navigatorOpen = false; }}
               onCreateChannel={() => { createChannel(); }}
+              onClose={() => { navigatorOpen = false; }}
             />
           {/if}
         </div>
@@ -249,32 +374,53 @@
     {/if}
   </div>
   {#if !mobilePresentation}<div class="flex-1"></div>{/if}
-  {#if actionError}<p role="alert" class="max-w-40 truncate text-[0.666667rem] text-destructive">{actionError}</p>{/if}
-  <div class="flex shrink-0 items-center gap-1">
-    {#if selectedFolder?.bindingStatus === "available"}<button type="button" class="chat-toolbar-icon-button" title={t("chat.openFolder")} aria-label={t("chat.openFolder")} onclick={() => run(() => chat.openWorkingFolder(selectedFolder.workingFolder.id))}><FolderOpen size={14} /></button>{/if}
+  {#if actionError}<Notice class="header-action-error max-w-48 text-[0.666667rem]" message={actionError} />{/if}
+  <div class={cn("flex shrink-0 items-center", mobilePresentation ? "gap-0" : "gap-1")}>
+    {#if selectedFolder?.bindingStatus === "available"}<button type="button" class={toolbarIconButtonClass} title={t("chat.openFolder")} aria-label={t("chat.openFolder")} onclick={() => run(() => chat.openWorkingFolder(selectedFolder.workingFolder.id))}><FolderOpen size={mobilePresentation ? 16 : 14} strokeWidth={mobilePresentation ? 1.75 : undefined} /></button>{/if}
     {#if selectedChannel}
-      <ChatChannelRoster />
+      <button bind:this={membersTrigger} type="button" class={toolbarMembersTriggerClass} class:open={membersOpen} aria-label={t("chat.organization.membersPanel", memberSummary.count)} data-app-tooltip={t("chat.organization.members")} aria-haspopup="dialog" aria-expanded={membersOpen} data-chat-members-trigger onpointerenter={() => { void loadMembersPanel(); }} onfocus={() => { void loadMembersPanel(); }} onclick={toggleChannelMembers}>
+        <span class="chat-members-stack" aria-hidden="true">
+          <LocalPersonAvatar size={MEMBER_STACK_AVATAR_SIZE} />
+          {#each memberStackTeammates as teammate (teammate.participant.id)}<ChatParticipantAvatar participant={teammate.participant} {teammate} size={MEMBER_STACK_AVATAR_SIZE} />{/each}
+        </span>
+        <span class="chat-members-count tabular-nums">{formatNumber(locale, memberSummary.count)}</span>
+      </button>
     {/if}
     {#if selectedFolder?.currentBranch}<span class="chat-branch" title={t("chat.header.branch", selectedFolder.currentBranch)}><GitBranch size={13} /><span>{selectedFolder.currentBranch}</span></span>{/if}
+    {#if trailingActions}{@render trailingActions()}{/if}
   </div>
 </div>
 
+{#if membersOpen && selectedChannel && MembersPanel}
+  {@const LoadedMembersPanel = MembersPanel}
+  <LoadedMembersPanel anchor={membersTrigger} channel={selectedChannel} mobileLayout={mobilePresentation} initialPickerOpen={membersPickerOnOpen} onClose={closeChannelMembers} />
+{/if}
+
 <style>
+  .chat-workspace-header :global(.header-action-error .notice-message) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .chat-workspace-header.mobilePresentation { scrollbar-width: none; }
   .chat-workspace-header.mobilePresentation::-webkit-scrollbar { display: none; }
   .chat-context-segment { display:flex;height:1.75rem;min-width:0;align-items:center;gap:0.375rem;border-radius:0.375rem;padding-inline:0.375rem;text-align:left; }
   button.chat-context-segment:hover { background:var(--accent);color:var(--accent-foreground); }
   .chat-context-divider { flex:0 0 auto;padding-inline:0.125rem;font-weight:600;color:var(--muted-foreground); }
-  .chat-inline-new-button,.chat-toolbar-icon-button { display:flex;height:1.75rem;width:1.75rem;flex:0 0 auto;align-items:center;justify-content:center;border-radius:0.375rem;color:var(--foreground); }
-  .chat-inline-new-button:hover,.chat-toolbar-icon-button:hover { background:var(--accent); }
+  .chat-inline-new-button,.chat-toolbar-icon-button { display:flex;flex:0 0 auto;align-items:center;justify-content:center;color:var(--foreground); }
+  .chat-workspace-header:not(.mobilePresentation) :is(.chat-inline-new-button,.chat-toolbar-icon-button) { height:1.75rem;width:1.75rem;border-radius:0.375rem; }
+  .chat-members-trigger { display:flex;flex:0 0 auto;align-items:center;gap:0.3rem;padding-inline:0.3rem 0.5rem;color:var(--foreground); }
+  .chat-workspace-header:not(.mobilePresentation) .chat-members-trigger { height:1.75rem;border-radius:0.375rem; }
+  .chat-members-trigger.open { background-color:var(--accent); }
+  @media (hover: hover) {
+    .chat-inline-new-button:hover,.chat-toolbar-icon-button:hover,.chat-members-trigger:hover { background-color:var(--accent); }
+    .chat-members-trigger:hover .chat-members-stack > :global(span) { box-shadow:0 0 0 1.5px var(--accent); }
+  }
+  .chat-members-stack { display:flex;align-items:center; }
+  .chat-members-stack > :global(span) { flex:0 0 auto;border-radius:22%;box-shadow:0 0 0 1.5px var(--cal-bg); }
+  .chat-members-trigger.open .chat-members-stack > :global(span) { box-shadow:0 0 0 1.5px var(--accent); }
+  .chat-members-stack > :global(span + span) { margin-inline-start:-0.3rem; }
+  .chat-members-count { font-size: calc(0.733333rem * var(--type-scale));font-weight:500; }
   .chat-branch { display:none;min-width:0;max-width:9rem;align-items:center;gap:0.3rem;border-radius:0.375rem;padding:0.25rem 0.4rem;color:var(--muted-foreground);font-size: calc(0.666667rem * var(--type-scale)); }
   .chat-branch span { overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
   @container chat-shell (min-width:760px) { .chat-branch { display:inline-flex; } }
-  @container chat-shell (max-width: 560px) {
-    .chat-workspace-header.mobilePresentation { gap: 0; }
-    .chat-workspace-header.mobilePresentation > .relative { min-width: 0; flex: 1 1 auto; }
-    .mobilePresentation [data-chat-group-trigger], .mobilePresentation [data-chat-project-trigger], .mobilePresentation [data-chat-channel-trigger] { height: 3rem; min-width: 0; flex: 0 1 auto; font-size: calc(0.9rem * var(--type-scale)); }
-    .mobilePresentation .chat-inline-new-button { display: none; }
-    .mobilePresentation .chat-toolbar-icon-button { width: 2.5rem; height: 2.5rem; }
-  }
+  /* The phone action row uses the same touch targets and round highlights as the Projects and Notes rows. */
+  .mobilePresentation .chat-toolbar-icon-button { width: var(--mobile-chrome-column); }
+  .mobilePresentation .chat-members-trigger { padding-inline: 0.125rem 0.25rem; }
 </style>

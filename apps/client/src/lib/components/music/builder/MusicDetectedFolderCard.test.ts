@@ -2,7 +2,7 @@
 
 import { mount, tick, unmount } from "svelte";
 import { afterEach, describe, expect, it } from "vitest";
-import { createMusicSourcesController } from "$lib/music/music-sources-controller.svelte";
+import { createMusicSourcesController } from "$lib/music/sources/controller.svelte";
 import MusicDetectedFolderCard from "./MusicDetectedFolderCard.svelte";
 
 describe("MusicDetectedFolderCard", () => {

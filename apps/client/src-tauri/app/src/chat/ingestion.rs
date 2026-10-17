@@ -1,9 +1,11 @@
 //! Tauri change delivery for the core Chat event ingestor.
 
-use super::models::{ChatChangeNotification, ChatError, ChatErrorCode, ChatResult};
+use ganbaru_chat_contracts::models::{
+    ChatChangeNotification, ChatError, ChatErrorCode, ChatResult,
+};
 use tauri::{Emitter, Runtime};
 
-pub use ganbaru_chat::chat::ingestion::*;
+pub use ganbaru_chat::ingestion::*;
 
 pub struct TauriChatChangeEmitter<R: Runtime> {
     app: tauri::AppHandle<R>,

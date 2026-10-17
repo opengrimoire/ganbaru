@@ -1,15 +1,15 @@
 [package]
 name = "ganbaru-native-messaging"
 version = "0.1.5"
-description = "Ganbaru AI Chromium native messaging host"
+description = "Ganbaru Chromium native messaging host"
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-default-run = "ganbaru-ai-native-messaging"
+default-run = "ganbaru-native-messaging"
 
 [[bin]]
-name = "ganbaru-ai-native-messaging"
+name = "ganbaru-native-messaging"
 path = "src/main.rs"
 
 [lints]
@@ -17,7 +17,9 @@ workspace = true
 
 [dependencies]
 chrono = { workspace = true }
+jiff = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true }

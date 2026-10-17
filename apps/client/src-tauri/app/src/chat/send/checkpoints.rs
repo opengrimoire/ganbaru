@@ -1,10 +1,10 @@
 //! Best-effort pre-turn and post-turn checkpoint coordination.
 
-use super::support::{corrupt_data, persistence_error};
-use crate::chat::models::{
+use super::support::{corrupt_data_error, persistence_error};
+use crate::chat::workspace::AuthorizedWorkingFolder;
+use ganbaru_chat_contracts::models::{
     ChatError, ChatErrorCode, ChatResult, ChatThreadId, ChatTurnId, RepositoryKind, UtcTimestamp,
 };
-use crate::chat::workspace::AuthorizedWorkingFolder;
 use sqlx::SqlitePool;
 
 pub(super) async fn ensure_pre_turn_checkpoint(
@@ -47,11 +47,11 @@ pub(super) async fn ensure_pre_turn_checkpoint(
         return;
     }
     let kind = if ordinal == 0 {
-        crate::chat::checkpoints::CheckpointKind::Initial
+        ganbaru_chat::checkpoints::CheckpointKind::Initial
     } else {
-        crate::chat::checkpoints::CheckpointKind::PreTurn
+        ganbaru_chat::checkpoints::CheckpointKind::PreTurn
     };
-    match crate::chat::checkpoints::capture_and_store(
+    match ganbaru_chat::checkpoints::capture_and_store(
         pool,
         workspace,
         thread_id,
@@ -91,13 +91,13 @@ pub(super) async fn ensure_post_turn_checkpoint(
             return;
         }
     };
-    if let Err(error) = crate::chat::checkpoints::capture_and_store(
+    if let Err(error) = ganbaru_chat::checkpoints::capture_and_store(
         pool,
         workspace,
         thread_id,
         Some(turn_id),
         ordinal.saturating_add(1),
-        crate::chat::checkpoints::CheckpointKind::PostTurn,
+        ganbaru_chat::checkpoints::CheckpointKind::PostTurn,
         now,
     )
     .await
@@ -124,7 +124,7 @@ async fn turn_ordinal(
             .ok_or_else(|| {
                 ChatError::new(ChatErrorCode::NotFound, "Chat turn was not found", true)
             })?;
-    u64::try_from(ordinal).map_err(|_| corrupt_data())
+    u64::try_from(ordinal).map_err(|_| corrupt_data_error())
 }
 
 async fn update_user_checkpoint_context(

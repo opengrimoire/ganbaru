@@ -1,7 +1,5 @@
-import type { PomodoroPhase } from "@ganbaru-ai/shared-types";
-
 export type PomodoroBreakPhase = "short_break" | "long_break";
-export type PomodoroRhythmKind = "count" | "sequence";
+export type PomodoroPhase = "focus" | PomodoroBreakPhase;
 export type PomodoroRhythmSource = "preset" | "custom";
 export type PomodoroPresetKey = "adaptive" | "creative" | "balanced" | "deep" | "extended";
 

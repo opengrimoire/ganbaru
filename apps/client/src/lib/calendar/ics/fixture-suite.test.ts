@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Calendar, CalendarEvent, EventOverride } from "$lib/components/calendar/types";
+import type { Calendar, CalendarEvent, EventOverride } from "$lib/calendar/types";
 import type { IcsParseResult, IcsPreservedComponent } from "./types";
 import { parseIcs } from "./parser";
 import { serializeCalendarToIcs } from "./serializer";

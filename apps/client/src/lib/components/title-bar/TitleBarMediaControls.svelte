@@ -3,10 +3,11 @@
   import StickyNote from "@lucide/svelte/icons/sticky-note";
   import PomodoroMenuContent from "$lib/components/pomodoro/PomodoroMenuContent.svelte";
   import PomodoroProgressRing from "$lib/components/pomodoro/PomodoroProgressRing.svelte";
-  import LinkedDeviceControl from "$lib/components/vault/LinkedDeviceControl.svelte";
+  import LinkedDeviceControl from "$lib/components/vault/handoff/LinkedDeviceControl.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getMusicPlayer } from "$lib/stores/music-player.svelte";
   import { getPomodoro } from "$lib/stores/pomodoro.svelte";
+  import { formatShortcut } from "$lib/keyboard-shortcuts";
   import { cn } from "$lib/utils";
 
   let {
@@ -15,7 +16,6 @@
     quickNotesOpen,
     musicPanelOpen,
     showMenu = $bindable(),
-    isMainWindow,
     onMenuOpened,
     onToggleQuickNotes,
     onToggleMusic,
@@ -25,7 +25,6 @@
     quickNotesOpen: boolean;
     musicPanelOpen: boolean;
     showMenu: boolean;
-    isMainWindow: boolean;
     onMenuOpened: () => void;
     onToggleQuickNotes: () => void;
     onToggleMusic: () => void;
@@ -55,7 +54,7 @@
     `${isActive ? t("titleBar.pomodoro.remaining", pomodoro.formattedTime) : t("titleBar.control.pomodoro")}\n${musicVolumeTooltipLine}`,
   );
   const musicButtonTooltip = $derived(
-    `${t("titleBar.control.music")}\n${musicVolumeTooltipLine}${musicPlayer.contextPlayback && musicPlayer.contextPlayback.state !== "overridden" ? `\n${t("titleBar.music.contextual", t(`music.assignment.phase.${musicPlayer.contextPlayback.phase}`), musicPlayer.contextPlayback.eventTitle)}` : ""}`,
+    `${t("titleBar.tab.withShortcut", t("titleBar.control.music"), formatShortcut("Mod + Shift + M"))}\n${musicVolumeTooltipLine}${musicPlayer.contextPlayback && musicPlayer.contextPlayback.state !== "overridden" ? `\n${t("titleBar.music.contextual", t(`music.assignment.phase.${musicPlayer.contextPlayback.phase}`), musicPlayer.contextPlayback.eventTitle)}` : ""}`,
   );
 
   function toggleMenu(): void {
@@ -120,11 +119,11 @@
             onwheel={handleVolumeWheel}
           ></div>
           <div
-            class="absolute right-0 top-9 z-50 w-60 max-w-[calc(100vw-1rem)] rounded-lg border border-border bg-popover py-1 shadow-lg"
+            class="surface-floating surface-floating-body absolute right-0 top-9 z-50 w-floating-sm"
             onwheel={handleVolumeWheel}
           >
             <PomodoroMenuContent
-              includeMusic={isMainWindow}
+              includeMusic
               onDismiss={() => { showMenu = false; }}
               onOpenMusic={onToggleMusic}
             />
@@ -149,7 +148,7 @@
         "titlebar-icon-button flex items-center justify-center rounded-lg transition-colors",
         quickNotesOpen ? "bg-sidebar-accent text-foreground" : `${TITLE_BAR_ICON_COLOR_CLASS} hover:bg-sidebar-accent`,
       )}
-      title={t("titleBar.control.quickNotes")}
+      title={t("titleBar.tab.withShortcut", t("titleBar.control.quickNotes"), formatShortcut("Mod + Shift + N"))}
       aria-label={t("titleBar.control.quickNotes")}
       aria-haspopup="dialog"
       aria-expanded={quickNotesOpen}
@@ -157,16 +156,14 @@
       <StickyNote size={TITLE_BAR_ICON_SIZE} strokeWidth={TITLE_BAR_ICON_STROKE_WIDTH} />
     </button>
 
-    {#if isMainWindow && showMusic}
+    {#if showMusic}
       <button
         type="button"
         onclick={onToggleMusic}
         onwheel={handleVolumeWheel}
         class={cn(
           "titlebar-icon-button relative flex items-center justify-center rounded-lg transition-colors",
-          musicPanelOpen
-            ? "bg-background text-foreground dark:bg-accent dark:text-white"
-            : `${TITLE_BAR_ICON_COLOR_CLASS} hover:bg-sidebar-accent`,
+          musicPanelOpen ? "bg-sidebar-accent text-foreground" : `${TITLE_BAR_ICON_COLOR_CLASS} hover:bg-sidebar-accent`,
         )}
         title={musicButtonTooltip}
         aria-label={t("titleBar.control.music")}
@@ -182,7 +179,7 @@
 
 <style>
   .titlebar-icon-button {
-    width: 32px;
-    height: 32px;
+    width: 28px;
+    height: 28px;
   }
 </style>

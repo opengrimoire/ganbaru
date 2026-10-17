@@ -13,6 +13,7 @@
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { formatHandoffError } from "$lib/vault/handoff-workflow";
+  import { getVaultOwnershipStatus } from "$lib/vault/state";
   import {
     beginVaultOwnershipTransition,
     cancelVaultOwnershipTransition,
@@ -40,6 +41,7 @@
     "system.android-back",
   );
   let status = $state<PairingStatus | null>(null);
+  let replicatedWrites = $state(false);
   let dismissed = $state(false);
   let switching = $state(false);
   let replacementConfirmationOpen = $state(false);
@@ -58,6 +60,7 @@
     status?.peerLabel
       ?? t("vaultHandoff.anotherDevice"),
   );
+  const description = $derived(t(replicatedWrites ? "vaultOwnershipPrompt.replicaDescription" : "vaultOwnershipPrompt.description"));
   const continueLabel = $derived(
     platform === "desktop"
       ? `${t("vaultOwnershipPrompt.continueReadOnly")} (${t("common.escapeKey")})`
@@ -69,6 +72,7 @@
       const next = await readPairingStatus();
       if (previousCanWrite === true && next.canWrite === false) dismissed = false;
       previousCanWrite = next.canWrite;
+      replicatedWrites = shouldPresentVaultOwnershipPrompt(next) && await readReplicatedWrites();
       status = next;
     } catch (cause) {
       console.warn("Failed to check vault ownership:", cause);
@@ -77,6 +81,16 @@
         statusReadyReported = true;
         onStatusReady();
       }
+    }
+  }
+
+  /** Whether Quick notes stay editable here; the prompt falls back to the read-only copy. */
+  async function readReplicatedWrites(): Promise<boolean> {
+    try {
+      return (await getVaultOwnershipStatus()).replicatedWrites;
+    } catch (cause) {
+      console.warn("Failed to read replicated write access:", cause);
+      return false;
     }
   }
 
@@ -92,7 +106,7 @@
     error = null;
     beginVaultOwnershipTransition({
       title: t("vaultOwnershipPrompt.title", ownerLabel),
-      description: t("vaultOwnershipPrompt.description"),
+      description,
       actionLabel: t("vaultOwnershipPrompt.switching"),
       secondaryLabel: continueLabel,
     });
@@ -196,7 +210,7 @@
         {t("vaultOwnershipPrompt.title", ownerLabel)}
       </h2>
       <p id="vault-owner-description" class="vault-owner-legible mt-3 max-w-sm text-balance text-[0.933333rem] leading-6 text-white/78">
-        {t("vaultOwnershipPrompt.description")}
+        {description}
       </p>
 
       <div class="mt-7 flex w-full max-w-xs flex-col items-center gap-2">

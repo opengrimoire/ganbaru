@@ -3,7 +3,7 @@ import { Temporal } from "@js-temporal/polyfill";
 import { mount, tick, unmount } from "svelte";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { ensureConfigLoaded, flushConfig } from "./lib/vault/config";
+import { ensureConfigLoaded, flushConfig, startConfigWindowSync } from "./lib/vault/config";
 import { getActiveVaultInfo } from "./lib/vault/state";
 import {
   getLocalization,
@@ -20,10 +20,11 @@ import {
   pomodoroBlockedScreenPalette,
   pomodoroBlockedScreenStateFromOverlayKind,
   type PomodoroBlockedScreenState,
-} from "./lib/components/pomodoro/blocked-screen";
+} from "./lib/pomodoro/blocked-screen";
 import { applyPlatformProfileToDocument } from "./lib/platform";
 import { installModalKeyboardRouter } from "./lib/modal-focus";
 import { finishDesktopReadiness } from "./lib/windows/desktop-readiness";
+import { mark as perfMark } from "$lib/stores/perf-log.svelte";
 
 applyPlatformProfileToDocument();
 installModalKeyboardRouter();
@@ -99,12 +100,12 @@ async function applyPreVaultLanguagePreference(): Promise<void> {
   clearPreVaultLanguagePreference(storage);
 }
 
-// Boot order: validate the active Ganbaru AI folder, hydrate root
-// config.json, load user themes from SQLite, then mount App. Config and theme
-// reads block first paint so the initial render matches what the user has on
-// disk, with no flash of defaults.
+// Validate the active vault, hydrate preferences and themes, and prepare core
+// workspace data before mounting App. Onboarding starts preparation while the
+// pairing screen is visible and awaits it on Continue.
 const appPromise = (async () => {
   const target = document.getElementById("app")!;
+  const isMainWindow = getCurrentWindow().label === "main";
   type MountedRoot = ReturnType<typeof mount>;
 
   const preVaultPreference = readPreVaultLanguagePreference(safeStorage());
@@ -135,10 +136,10 @@ const appPromise = (async () => {
 
   async function mountVaultSetupView(initialError: string | null) {
     const handoffOnboardingModulePromise = import(
-      "$lib/components/vault/VaultHandoffOnboardingView.svelte"
+      "$lib/components/vault/handoff/VaultHandoffOnboardingView.svelte"
     );
     void handoffOnboardingModulePromise.catch(() => undefined);
-    const pairingQrModulePromise = import("$lib/components/vault/PairingQrCode.svelte");
+    const pairingQrModulePromise = import("$lib/components/vault/handoff/PairingQrCode.svelte");
     void pairingQrModulePromise.catch(() => undefined);
     const { default: VaultSetupView } = await import(
       "$lib/components/vault/VaultSetupView.svelte"
@@ -148,15 +149,16 @@ const appPromise = (async () => {
       target,
       props: {
         initialError,
-        onReady: async (_info, preferenceReady) => {
+        onReady: async (info, preferenceReady) => {
           const appRuntimeReady = preferenceReady.then(async () => {
             await ensureConfigLoaded();
+            startConfigWindowSync();
             await initializeLocalizationFromConfig();
             await applyPreVaultLanguagePreference();
             await hydrateUserThemes();
           });
           void appRuntimeReady.catch(() => undefined);
-          await mountVaultHandoffOnboarding(setupView, appRuntimeReady);
+          await mountVaultHandoffOnboarding(info.vaultId, setupView, appRuntimeReady);
         },
       },
     });
@@ -164,15 +166,27 @@ const appPromise = (async () => {
   }
 
   async function mountVaultHandoffOnboarding(
+    vaultId: string,
     currentView?: MountedRoot,
     appRuntimeReady: Promise<void> = Promise.resolve(),
   ) {
     const appModulePromise = import("./App.svelte");
     void appModulePromise.catch(() => undefined);
+    const prepareWorkspace = async () => {
+      await appRuntimeReady;
+      if (!isMainWindow) return;
+      const { prepareDesktopWorkspace } = await import("./lib/windows/desktop-workspace-readiness");
+      await prepareDesktopWorkspace();
+    };
+    // Start data preparation while pairing is visible; keep failures retryable on Continue.
+    const workspacePreparation = prepareWorkspace();
+    void workspacePreparation.catch((error: unknown) => {
+      console.warn("Desktop workspace preparation failed:", error);
+    });
     const [{ default: VaultHandoffOnboardingView }, handoffApi] = await Promise.all([
-      import("$lib/components/vault/VaultHandoffOnboardingView.svelte"),
+      import("$lib/components/vault/handoff/VaultHandoffOnboardingView.svelte"),
       import("$lib/api/vault-handoff"),
-      import("$lib/components/vault/PairingQrCode.svelte"),
+      import("$lib/components/vault/handoff/PairingQrCode.svelte"),
     ]);
     const initialStatus = await handoffApi.readPairingStatus();
     const initialInvitation = initialStatus.linked
@@ -185,7 +199,11 @@ const appPromise = (async () => {
     let transitionPromise: Promise<void> | null = null;
     const openApp = (): Promise<void> => {
       if (transitionPromise) return transitionPromise;
-      transitionPromise = Promise.all([appModulePromise, appRuntimeReady])
+      perfMark("boot.onboarding-continue");
+      transitionPromise = Promise.all([
+        appModulePromise,
+        workspacePreparation.catch(prepareWorkspace),
+      ])
         .then(async ([{ default: App }]) => {
           await unmount(onboardingView);
           mount(App, { target });
@@ -199,38 +217,50 @@ const appPromise = (async () => {
     onboardingView = mount(VaultHandoffOnboardingView, {
       target,
       props: {
+        vaultId,
         initialInvitation,
         initialStatus,
         onComplete: openApp,
       },
     });
+    perfMark("boot.onboarding-mounted");
     return onboardingView;
   }
 
+  let benchmarkResumePending = false;
   try {
     const activeVault = await getActiveVaultInfo();
     if (!activeVault) {
       return await mountVaultSetupView(null);
     }
     await ensureConfigLoaded();
+    startConfigWindowSync();
     await initializeLocalizationFromConfig();
     await applyPreVaultLanguagePreference();
-    const benchmarkResumePending = await hasFreshBenchmarkResumeState();
+    benchmarkResumePending = await hasFreshBenchmarkResumeState();
     if (!benchmarkResumePending) {
       await hydrateUserThemes();
       const { vaultHandoffOnboardingCompleted } = await import(
         "./lib/vault/handoff-onboarding"
       );
-      if (!vaultHandoffOnboardingCompleted(safeStorage())) {
-        return await mountVaultHandoffOnboarding();
+      if (!vaultHandoffOnboardingCompleted(safeStorage(), activeVault.vaultId)) {
+        return await mountVaultHandoffOnboarding(activeVault.vaultId);
       }
     }
   } catch (err) {
+    console.warn("Could not load the active vault:", err);
     const vaultError = err instanceof Error ? err.message : String(err);
     return await mountVaultSetupView(vaultError);
   }
 
   const { default: App } = await import("./App.svelte");
+  if (!benchmarkResumePending && isMainWindow) {
+    const { prepareDesktopWorkspace } = await import("./lib/windows/desktop-workspace-readiness");
+    await prepareDesktopWorkspace().catch((error: unknown) => {
+      // Mount the shell's error and retry surfaces if a workspace read fails.
+      console.error("Desktop workspace preparation failed:", error);
+    });
+  }
   return mount(App, {
     target,
   });

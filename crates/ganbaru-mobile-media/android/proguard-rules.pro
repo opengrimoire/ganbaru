@@ -1,1 +1,1 @@
-# Ganbaru AI does not minify Android libraries yet.
+# Release builds do not minify this library, so no rules are needed.

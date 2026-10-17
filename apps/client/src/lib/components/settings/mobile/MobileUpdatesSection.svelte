@@ -3,12 +3,13 @@
   import ExternalLink from "@lucide/svelte/icons/external-link";
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
   import { openUrl } from "@tauri-apps/plugin-opener";
-  import { BUILD_REF, GITHUB_REPOSITORY } from "$lib/buildInfo";
+  import { BUILD_REF, GITHUB_REPOSITORY } from "$lib/build-info";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { formatDateTime } from "$lib/i18n/formatters";
-  import { latestReleasePageUrl } from "$lib/stores/updates";
-  import { getMobileUpdateManager } from "$lib/stores/mobile-updates";
+  import { latestReleasePageUrl } from "$lib/stores/update-policy";
+  import { getMobileUpdateManager } from "$lib/stores/mobile-updates.svelte";
   import { cn } from "$lib/utils";
+  import Notice from "$lib/components/ui/Notice.svelte";
 
   const { t, locale } = getLocalization();
   const releasePageUrl = latestReleasePageUrl(GITHUB_REPOSITORY);
@@ -103,7 +104,7 @@
       </div>
 
       {#if updates.status === "error"}
-        <p class="px-1 text-[0.8rem] text-destructive" role="alert">{updates.statusCopy}</p>
+        <Notice class="px-1 text-[0.8rem]" message={updates.statusCopy} />
       {/if}
     </div>
   </section>
@@ -173,6 +174,6 @@
   {/if}
 
   {#if openPageError}
-    <p class="px-1 text-[0.8rem] text-destructive" role="alert">{openPageError}</p>
+    <Notice class="px-1 text-[0.8rem]" message={openPageError} />
   {/if}
 </div>

@@ -21,5 +21,5 @@ export interface NotesTabBlockItems {
 export interface NotesTableOfContentsItem {
   blockId: string;
   title: string;
-  level: 1 | 2 | 3 | 4;
+  level: 1 | 2 | 3 | 4 | 5 | 6;
 }

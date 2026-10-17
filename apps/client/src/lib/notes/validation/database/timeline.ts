@@ -1,4 +1,4 @@
-import type { NotesDataSourceTimelineView } from "../../contracts/database";
+import type { NotesDataSourceTimelineView } from "$lib/notes/contracts/database";
 import { isNotesTimelineRowOpenMode } from ".././blocks";
 import { readRecord, readString, readStringArray } from ".././readers";
 import { dateMentionBoundaryLooksIso } from ".././rich-text";

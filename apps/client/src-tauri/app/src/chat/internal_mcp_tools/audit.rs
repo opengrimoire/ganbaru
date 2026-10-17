@@ -1,10 +1,10 @@
 //! Durable invocation budgets and provenance accounting for host tools.
 
-use super::{generic_denial, persistence_error};
+use super::{generic_denial_error, persistence_error};
 use crate::chat::internal_mcp::{
     InternalMcpChannelSource, InternalMcpRunScope, generate_opaque_handle,
 };
-use crate::chat::models::{ChatError, ChatErrorCode, ChatResult};
+use ganbaru_chat_contracts::models::{ChatError, ChatErrorCode, ChatResult};
 use serde_json::Value;
 use sqlx::SqlitePool;
 
@@ -45,21 +45,21 @@ pub(super) async fn reserve_audit(
     .bind(scope.authorization_revision_id.as_str())
     .bind(tool_name)
     .bind(request_hash)
-    .bind(i64::try_from(response_reservation).map_err(|_| generic_denial())?)
+    .bind(i64::try_from(response_reservation).map_err(|_| generic_denial_error())?)
     .bind(created_at)
     .bind(scope.authorization_revision_id.as_str())
     .bind(scope.authorization_revision_id.as_str())
     .bind(i64::from(MAX_TOOL_CALLS))
-    .bind(i64::try_from(response_reservation).map_err(|_| generic_denial())?)
+    .bind(i64::try_from(response_reservation).map_err(|_| generic_denial_error())?)
     .bind(scope.authorization_revision_id.as_str())
-    .bind(i64::try_from(MAX_SCOPE_RESPONSE_BYTES).map_err(|_| generic_denial())?)
+    .bind(i64::try_from(MAX_SCOPE_RESPONSE_BYTES).map_err(|_| generic_denial_error())?)
     .execute(pool)
     .await
     .map_err(persistence_error)?;
     if inserted.rows_affected() == 1 {
         Ok(id)
     } else {
-        Err(generic_denial())
+        Err(generic_denial_error())
     }
 }
 
@@ -73,7 +73,7 @@ pub(super) async fn complete_audit_allowed(
     queried_channel_sources: &[&InternalMcpChannelSource],
 ) -> ChatResult<()> {
     let created_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    let response_bytes = i64::try_from(response_bytes).map_err(|_| generic_denial())?;
+    let response_bytes = i64::try_from(response_bytes).map_err(|_| generic_denial_error())?;
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
     let completed = sqlx::query(
         "UPDATE chat_host_tool_invocations
@@ -101,7 +101,7 @@ pub(super) async fn complete_audit_allowed(
     .bind(response_bytes)
     .bind(scope.authorization_revision_id.as_str())
     .bind(invocation_id)
-    .bind(i64::try_from(MAX_SCOPE_RESPONSE_BYTES).map_err(|_| generic_denial())?)
+    .bind(i64::try_from(MAX_SCOPE_RESPONSE_BYTES).map_err(|_| generic_denial_error())?)
     .execute(&mut *transaction)
     .await
     .map_err(persistence_error)?;
@@ -118,7 +118,7 @@ pub(super) async fn complete_audit_allowed(
         .await
         .map_err(persistence_error)?;
         transaction.commit().await.map_err(persistence_error)?;
-        return Err(generic_denial());
+        return Err(generic_denial_error());
     }
     for (ordinal, (revision_id, content_sha256)) in returned_revisions.iter().enumerate() {
         sqlx::query(
@@ -129,7 +129,7 @@ pub(super) async fn complete_audit_allowed(
         .bind(invocation_id)
         .bind(revision_id)
         .bind(content_sha256)
-        .bind(i64::try_from(ordinal).map_err(|_| generic_denial())?)
+        .bind(i64::try_from(ordinal).map_err(|_| generic_denial_error())?)
         .execute(&mut *transaction)
         .await
         .map_err(persistence_error)?;
@@ -154,8 +154,8 @@ pub(super) async fn complete_audit_allowed(
             )
             .bind(scratch_generation_id)
             .bind(&source.conversation_id)
-            .bind(i64::try_from(source.lower_ordinal).map_err(|_| generic_denial())?)
-            .bind(i64::try_from(source.high_ordinal).map_err(|_| generic_denial())?)
+            .bind(i64::try_from(source.lower_ordinal).map_err(|_| generic_denial_error())?)
+            .bind(i64::try_from(source.high_ordinal).map_err(|_| generic_denial_error())?)
             .bind(&created_at)
             .bind(scope.destination_conversation_id.as_str())
             .bind(scratch_generation_id)
@@ -163,7 +163,7 @@ pub(super) async fn complete_audit_allowed(
             .await
             .map_err(persistence_error)?;
             if recorded.rows_affected() != 1 {
-                return Err(generic_denial());
+                return Err(generic_denial_error());
             }
         }
     }
@@ -194,7 +194,7 @@ pub(super) async fn complete_audit_denied(
     if updated.rows_affected() == 1 {
         Ok(())
     } else {
-        Err(generic_denial())
+        Err(generic_denial_error())
     }
 }
 
@@ -204,19 +204,19 @@ pub(super) fn returned_message_revisions(value: &Value) -> ChatResult<Vec<(Strin
     };
     messages
         .as_array()
-        .ok_or_else(generic_denial)?
+        .ok_or_else(generic_denial_error)?
         .iter()
         .map(|message| {
             let revision_id = message
                 .get("revisionId")
                 .and_then(Value::as_str)
                 .filter(|value| !value.is_empty() && value.len() <= 1024)
-                .ok_or_else(generic_denial)?;
+                .ok_or_else(generic_denial_error)?;
             let content_hash = message
                 .get("contentHash")
                 .and_then(Value::as_str)
                 .filter(|value| value.len() == 64)
-                .ok_or_else(generic_denial)?;
+                .ok_or_else(generic_denial_error)?;
             Ok((revision_id.to_string(), content_hash.to_string()))
         })
         .collect()

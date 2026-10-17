@@ -2,12 +2,13 @@
 
 #[cfg(target_os = "android")]
 use super::active_vault_path;
-use super::select_vault;
+use super::select_quiesced_vault;
 use super::{APP_SQLITE_FILE, CONFIG_LOCK, VaultInfo};
 use super::{database_path, vault_info_from_path};
 #[cfg(target_os = "android")]
-use super::{default_data_folder_path, ensure_vault_skeleton, path_to_string};
-use crate::db_path;
+use super::{default_vault_path, ensure_vault_skeleton, path_to_string};
+#[cfg(target_os = "android")]
+use crate::db;
 #[cfg(target_os = "android")]
 use chrono::{SecondsFormat, Utc};
 #[cfg(target_os = "android")]
@@ -31,7 +32,7 @@ const BACKUP_MAX_BYTES: u64 = 100 * 1024 * 1024 * 1024;
 const BACKUP_MAX_DEPTH: usize = 64;
 const COPY_BUFFER_BYTES: usize = 64 * 1024;
 
-#[cfg(any(test, target_os = "android", target_os = "ios"))]
+#[cfg(any(test, mobile))]
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VaultBackupOutcome {
@@ -69,7 +70,7 @@ fn backup_file_name() -> String {
     let timestamp = timestamp
         .to_rfc3339_opts(SecondsFormat::Secs, true)
         .replace(':', "-");
-    format!("ganbaru-ai-backup-{timestamp}.{BACKUP_EXTENSION}")
+    format!("ganbaru-backup-{timestamp}.{BACKUP_EXTENSION}")
 }
 
 #[cfg(target_os = "android")]
@@ -77,7 +78,7 @@ async fn create_database_snapshot<R: Runtime>(
     app: &tauri::AppHandle<R>,
     destination: &Path,
 ) -> Result<(), String> {
-    let pool = db_path::connect_sqlite(app.clone(), format!("sqlite:{APP_SQLITE_FILE}")).await?;
+    let pool = db::connect_sqlite(app.clone(), format!("sqlite:{APP_SQLITE_FILE}")).await?;
     vacuum_database(&pool, destination).await
 }
 
@@ -114,16 +115,16 @@ fn collect_archive_entries(
 
     for child in children {
         if entries.len() >= BACKUP_MAX_ENTRIES {
-            return Err("Ganbaru AI folder contains too many backup entries".to_string());
+            return Err("Ganbaru folder contains too many backup entries".to_string());
         }
         let source = child.path();
         let relative = source
             .strip_prefix(root)
-            .map_err(|_| "backup entry escaped the Ganbaru AI folder".to_string())?
+            .map_err(|_| "backup entry escaped the Ganbaru folder".to_string())?
             .to_path_buf();
         let depth = relative.components().count();
         if depth > BACKUP_MAX_DEPTH {
-            return Err("Ganbaru AI folder is nested too deeply to back up".to_string());
+            return Err("Ganbaru folder is nested too deeply to back up".to_string());
         }
         let metadata = fs::symlink_metadata(&source)
             .map_err(|error| format!("inspect backup entry '{}': {error}", source.display()))?;
@@ -142,15 +143,12 @@ fn collect_archive_entries(
             collect_archive_entries(root, &source, entries, total_bytes)?;
         } else if metadata.is_file() {
             let file_name = relative.file_name().and_then(|value| value.to_str());
-            if matches!(
-                file_name,
-                Some("ganbaru-ai.sqlite-wal" | "ganbaru-ai.sqlite-shm")
-            ) {
+            if matches!(file_name, Some("ganbaru.sqlite-wal" | "ganbaru.sqlite-shm")) {
                 continue;
             }
             *total_bytes = total_bytes.saturating_add(metadata.len());
             if *total_bytes > BACKUP_MAX_BYTES {
-                return Err("Ganbaru AI folder exceeds the backup size limit".to_string());
+                return Err("Ganbaru folder exceeds the backup size limit".to_string());
             }
             entries.push(ArchiveEntry {
                 source,
@@ -261,6 +259,7 @@ pub(crate) async fn create_handoff_archive(
     let snapshot_result = vacuum_database(&pool, database_snapshot).await;
     registry.close_all().await?;
     snapshot_result?;
+    prepare_snapshot_copy(database_snapshot).await?;
     create_backup_archive(vault_root, database_snapshot, archive_path)
 }
 
@@ -441,14 +440,14 @@ pub(crate) fn android_handoff_staging_path(
     app: &tauri::AppHandle,
     transfer_id: &str,
 ) -> Result<PathBuf, String> {
-    let target = default_data_folder_path(app)?;
+    let target = default_vault_path(app)?;
     let parent = target
         .parent()
-        .ok_or_else(|| "Ganbaru AI folder has no parent directory".to_string())?;
-    Ok(parent.join(format!(".ganbaru-ai.handoff-{transfer_id}.staging")))
+        .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?;
+    Ok(parent.join(format!(".ganbaru.handoff-{transfer_id}.staging")))
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 pub(crate) fn active_handoff_staging_path<R: Runtime>(
     app: &tauri::AppHandle<R>,
     transfer_id: &str,
@@ -456,8 +455,8 @@ pub(crate) fn active_handoff_staging_path<R: Runtime>(
     let target = super::active_vault_path(app)?;
     let parent = target
         .parent()
-        .ok_or_else(|| "Ganbaru AI folder has no parent directory".to_string())?;
-    Ok(parent.join(format!(".ganbaru-ai.handoff-{transfer_id}.staging")))
+        .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?;
+    Ok(parent.join(format!(".ganbaru.handoff-{transfer_id}.staging")))
 }
 
 #[cfg(target_os = "android")]
@@ -468,7 +467,7 @@ pub(crate) async fn activate_android_handoff(
     expected_vault_id: &str,
     preserve_previous: bool,
 ) -> Result<VaultInfo, String> {
-    let target = default_data_folder_path(app)?;
+    let target = default_vault_path(app)?;
     activate_handoff_at_path(
         app,
         staging,
@@ -480,7 +479,7 @@ pub(crate) async fn activate_android_handoff(
     .await
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 pub(crate) async fn activate_active_handoff<R: Runtime>(
     app: &tauri::AppHandle<R>,
     staging: &Path,
@@ -500,6 +499,41 @@ pub(crate) async fn activate_active_handoff<R: Runtime>(
     .await
 }
 
+/// Activates an ownership snapshot a linked owner uploaded to this coordinator. The replaced
+/// folder is kept only when it holds a different vault: the coordinator's own copy of the linked
+/// vault is read-only while another device owns it, and its Quick notes changes carry forward.
+#[cfg(desktop)]
+pub(crate) async fn activate_uploaded_ownership<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    staging: &Path,
+    transfer_id: &str,
+    expected_vault_id: &str,
+) -> Result<VaultInfo, String> {
+    let target = super::active_vault_path(app)?;
+    let preserve_previous = replaces_independent_vault(&target, expected_vault_id);
+    activate_handoff_at_path(
+        app,
+        staging,
+        &target,
+        transfer_id,
+        expected_vault_id,
+        preserve_previous,
+    )
+    .await
+}
+
+/// Whether the folder at `path` is the vault `vault_id`.
+fn holds_vault(path: &Path, vault_id: &str) -> bool {
+    vault_info_from_path(path).is_ok_and(|info| info.vault_id == vault_id)
+}
+
+/// Whether replacing `target` discards a vault other than `vault_id`. A folder whose marker
+/// cannot be read counts as another vault, so it is kept.
+#[cfg(any(desktop, test))]
+fn replaces_independent_vault(target: &Path, vault_id: &str) -> bool {
+    target.exists() && !holds_vault(target, vault_id)
+}
+
 async fn activate_handoff_at_path<R: Runtime>(
     app: &tauri::AppHandle<R>,
     staging: &Path,
@@ -510,51 +544,100 @@ async fn activate_handoff_at_path<R: Runtime>(
 ) -> Result<VaultInfo, String> {
     let parent = target
         .parent()
-        .ok_or_else(|| "Ganbaru AI folder has no parent directory".to_string())?;
+        .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?;
     fs::create_dir_all(parent).map_err(|error| format!("create app data directory: {error}"))?;
     let rollback = if preserve_previous {
         preserved_handoff_path(parent, target, transfer_id)
     } else {
-        parent.join(".ganbaru-ai.handoff-refresh-rollback")
+        parent.join(".ganbaru.handoff-refresh-rollback")
     };
     if rollback.exists() && staging.exists() {
         return Err("a previous handoff copy still requires recovery".to_string());
     }
-    let restore_guard = db_path::begin_vault_restore().await;
-    db_path::close_all_sqlite_pools_for_restore(app).await?;
-    let activation = if !staging.exists() {
-        Ok(())
-    } else if preserve_previous {
-        replace_vault_preserving_previous(staging, target, &rollback)
-    } else {
-        replace_vault(staging, target, &rollback)
-    };
-    let result = activation.and_then(|()| {
-        let info = vault_info_from_path(target)?;
+    let quiescence = super::quiescence::begin_snapshot_quiescence(app).await?;
+    if let Err(error) = carry_forward_local_changes(app, staging, target, expected_vault_id).await {
+        return Err(match quiescence.finish() {
+            Ok(()) => error,
+            Err(resume) => format!("{error}; {resume}"),
+        });
+    }
+    let activation_app = app.clone();
+    let staging = staging.to_path_buf();
+    let target = target.to_path_buf();
+    let expected_vault_id = expected_vault_id.to_owned();
+    tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(desktop)]
+        if super::active_vault_path(&activation_app)? != target {
+            return Err("active vault changed while preparing handoff activation".to_string());
+        }
+        if staging.exists() {
+            if preserve_previous {
+                replace_vault_preserving_previous(&staging, &target, &rollback)?;
+            } else {
+                replace_vault(&staging, &target, &rollback)?;
+            }
+        }
+        let info = vault_info_from_path(&target)?;
         if info.vault_id != expected_vault_id {
             return Err("activated handoff belongs to a different vault".to_string());
         }
-        select_vault(app, &info)?;
+        select_quiesced_vault(&activation_app, &info, &quiescence)?;
+        quiescence.finish()?;
         Ok(info)
-    });
-    drop(restore_guard);
-    result
+    })
+    .await
+    .map_err(|error| format!("handoff activation worker failed: {error}"))?
+}
+
+/// Clears installation-local sync state from a snapshot copy before it leaves this device.
+async fn prepare_snapshot_copy(snapshot: &Path) -> Result<(), String> {
+    use sqlx::Connection;
+    let options = sqlx::sqlite::SqliteConnectOptions::new().filename(snapshot);
+    let mut conn = sqlx::SqliteConnection::connect_with(&options)
+        .await
+        .map_err(|error| format!("open handoff snapshot: {error}"))?;
+    let result = ganbaru_sync::local::prepare_snapshot_copy(&mut conn)
+        .await
+        .map_err(|error| format!("prepare handoff snapshot: {error}"));
+    let closed = conn
+        .close()
+        .await
+        .map_err(|error| format!("close handoff snapshot: {error}"));
+    result.and(closed)
+}
+
+/// Exports local sync operations the staged replacement lacks, so the next service start
+/// imports them into the replacement. Only a replacement of the same vault carries anything.
+async fn carry_forward_local_changes<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    staging: &Path,
+    target: &Path,
+    expected_vault_id: &str,
+) -> Result<(), String> {
+    if !staging.exists() || !holds_vault(target, expected_vault_id) {
+        return Ok(());
+    }
+    let files = crate::sync::sync_files(app, expected_vault_id)?;
+    crate::sync::export_for_replacement(&database_path(target), &database_path(staging), &files)
+        .await
+        .map(|_| ())
+        .map_err(|error| format!("keep local Quick notes changes: {error}"))
 }
 
 fn preserved_handoff_path(parent: &Path, target: &Path, transfer_id: &str) -> PathBuf {
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    #[cfg(desktop)]
     {
         let folder_name = target
             .file_name()
             .and_then(|name| name.to_str())
             .filter(|name| !name.trim().is_empty())
-            .unwrap_or("Ganbaru AI");
+            .unwrap_or("Ganbaru");
         parent.join(format!("{folder_name} before linking {transfer_id}"))
     }
-    #[cfg(any(target_os = "android", target_os = "ios"))]
+    #[cfg(mobile)]
     {
         let _ = target;
-        parent.join(format!(".ganbaru-ai.handoff-previous-{transfer_id}"))
+        parent.join(format!(".ganbaru.handoff-previous-{transfer_id}"))
     }
 }
 
@@ -592,11 +675,11 @@ fn recover_interrupted_restore(target: &Path, rollback: &Path) -> Result<(), Str
 
 #[cfg(target_os = "android")]
 pub(crate) fn recover_interrupted_restore_for_app(app: &tauri::AppHandle) -> Result<(), String> {
-    let target = default_data_folder_path(app)?;
+    let target = default_vault_path(app)?;
     let parent = target
         .parent()
-        .ok_or_else(|| "Ganbaru AI folder has no parent directory".to_string())?;
-    recover_interrupted_restore(&target, &parent.join(".ganbaru-ai.rollback"))
+        .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?;
+    recover_interrupted_restore(&target, &parent.join(".ganbaru.rollback"))
 }
 
 #[cfg(target_os = "android")]
@@ -620,7 +703,7 @@ pub async fn vault_backup_to_downloads(
             BACKUP_MAX_BYTES,
             &[BACKUP_EXTENSION],
             BACKUP_MIME_TYPE,
-            "Ganbaru AI backup",
+            "Ganbaru backup",
         )?;
         Ok(VaultBackupOutcome {
             file_name: saved_name,
@@ -638,57 +721,106 @@ pub async fn vault_backup_to_downloads(
 pub async fn vault_pick_and_restore_backup(
     app: tauri::AppHandle,
 ) -> Result<Option<VaultInfo>, String> {
-    let _write_permit = super::active_writable_vault_path(&app)?;
+    let transition = super::quiescence::reserve_vault_transition()?;
+    let expected_path = super::active_vault_path(&app)?;
+    let expected_vault_id = super::active_vault_id(&app)?;
+    let ownership_manager = app.state::<super::ownership::VaultOwnershipManager>();
+    ownership_manager.require_writable(&expected_vault_id)?;
+    let expected_ownership = ownership_manager.status(&expected_vault_id)?;
     let transfer = unique_transfer_directory(&app, "restore")?;
     let archive_path = transfer.join("selected.ganbaru-backup");
     let result = async {
-        let target = default_data_folder_path(&app)?;
-        let parent = target
-            .parent()
-            .ok_or_else(|| "Ganbaru AI folder has no parent directory".to_string())?;
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("create app data directory: {error}"))?;
-        let staging = parent.join(".ganbaru-ai.restore");
-        let rollback = parent.join(".ganbaru-ai.rollback");
-        recover_interrupted_restore(&target, &rollback)?;
-        if staging.exists() {
-            fs::remove_dir_all(&staging)
-                .map_err(|error| format!("remove stale restore staging: {error}"))?;
-        }
-
-        let archive_path_string = path_to_string(&archive_path, "selected backup")?;
-        let selected = app.mobile_documents().pick_document_to_path(
-            &archive_path_string,
-            BACKUP_MAX_BYTES,
-            &[BACKUP_EXTENSION],
-            &[BACKUP_MIME_TYPE, "application/octet-stream"],
-            "Ganbaru AI backup",
-        )?;
-        if selected.is_none() {
+        let target = default_vault_path(&app)?;
+        let preparation_app = app.clone();
+        let preparation_target = target.clone();
+        let preparation_transition = transition.clone();
+        let prepared = tauri::async_runtime::spawn_blocking(
+            move || -> Result<Option<(PathBuf, PathBuf)>, String> {
+                let _transition = preparation_transition;
+                let parent = preparation_target
+                    .parent()
+                    .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?;
+                fs::create_dir_all(parent)
+                    .map_err(|error| format!("create app data directory: {error}"))?;
+                let staging = parent.join(".ganbaru.restore");
+                let rollback = parent.join(".ganbaru.rollback");
+                recover_interrupted_restore(&preparation_target, &rollback)?;
+                if staging.exists() {
+                    fs::remove_dir_all(&staging)
+                        .map_err(|error| format!("remove stale restore staging: {error}"))?;
+                }
+                let archive_path_string = path_to_string(&archive_path, "selected backup")?;
+                let selected = preparation_app.mobile_documents().pick_document_to_path(
+                    &archive_path_string,
+                    BACKUP_MAX_BYTES,
+                    &[BACKUP_EXTENSION],
+                    &[BACKUP_MIME_TYPE, "application/octet-stream"],
+                    "Ganbaru backup",
+                )?;
+                if selected.is_none() {
+                    return Ok(None);
+                }
+                extract_backup_archive(&archive_path, &staging)?;
+                Ok(Some((staging, rollback)))
+            },
+        )
+        .await
+        .map_err(|error| format!("backup preparation worker failed: {error}"))??;
+        let Some((staging, rollback)) = prepared else {
             return Ok(None);
-        }
-        extract_backup_archive(&archive_path, &staging)?;
+        };
         validate_restored_vault(&staging).await?;
-        ensure_vault_skeleton(&staging)?;
-        let restore_guard = db_path::begin_vault_restore().await;
-        db_path::close_all_sqlite_pools_for_restore(&app).await?;
-        replace_vault(&staging, &target, &rollback)?;
-        let info = vault_info_from_path(&target)?;
-        select_vault(&app, &info)?;
-        drop(restore_guard);
-        Ok(Some(info))
+        let quiescence =
+            super::quiescence::begin_reserved_quiescence(&app, transition.clone()).await?;
+        let activation_app = app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let ownership_manager =
+                activation_app.state::<super::ownership::VaultOwnershipManager>();
+            ownership_manager.require_writable(&expected_vault_id)?;
+            let ownership = ownership_manager.status(&expected_vault_id)?;
+            if super::active_vault_path(&activation_app)? != expected_path
+                || super::active_vault_id(&activation_app)? != expected_vault_id
+                || ownership.generation != expected_ownership.generation
+            {
+                return Err(
+                    "active vault authority changed while preparing backup restore".to_string(),
+                );
+            }
+            ensure_vault_skeleton(&staging)?;
+            replace_vault(&staging, &target, &rollback)?;
+            let info = vault_info_from_path(&target)?;
+            select_quiesced_vault(&activation_app, &info, &quiescence)?;
+            quiescence.finish()?;
+            Ok(Some(info))
+        })
+        .await
+        .map_err(|error| format!("backup activation worker failed: {error}"))?
     }
     .await;
-    if let Ok(target) = default_data_folder_path(&app) {
-        if let Some(parent) = target.parent() {
-            let staging = parent.join(".ganbaru-ai.restore");
-            if staging.exists() {
-                let _ = fs::remove_dir_all(staging);
-            }
+    let cleanup = tauri::async_runtime::spawn_blocking(move || {
+        let _transition = transition;
+        let target = default_vault_path(&app)?;
+        let parent = target
+            .parent()
+            .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?;
+        let staging = parent.join(".ganbaru.restore");
+        if staging.exists() {
+            fs::remove_dir_all(staging)
+                .map_err(|error| format!("remove backup restore staging: {error}"))?;
+        }
+        fs::remove_dir_all(transfer)
+            .map_err(|error| format!("remove backup restore transfer: {error}"))
+    })
+    .await
+    .map_err(|error| format!("backup cleanup worker failed: {error}"))
+    .and_then(|cleanup| cleanup);
+    match (result, cleanup) {
+        (Ok(info), Ok(())) => Ok(info),
+        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+        (Err(error), Err(cleanup)) => {
+            Err(format!("{error}; backup cleanup also failed: {cleanup}"))
         }
     }
-    let _ = fs::remove_dir_all(&transfer);
-    result
 }
 
 #[cfg(all(not(target_os = "android"), any(test, target_os = "ios")))]
@@ -731,16 +863,32 @@ mod tests {
         assert!(safe_archive_path(Path::new(".")).is_err());
     }
 
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    #[cfg(desktop)]
     #[test]
     fn first_link_preserves_desktop_data_in_a_visible_sibling_folder() {
         let parent = Path::new("/documents");
-        let preserved = preserved_handoff_path(parent, &parent.join("Ganbaru AI"), "transfer-123");
+        let preserved = preserved_handoff_path(parent, &parent.join("Ganbaru"), "transfer-123");
 
         assert_eq!(
             preserved,
-            parent.join("Ganbaru AI before linking transfer-123")
+            parent.join("Ganbaru before linking transfer-123")
         );
+    }
+
+    #[test]
+    fn replaced_folder_is_independent_only_when_it_holds_another_or_unreadable_vault() {
+        let parent = unique_test_path("independent");
+        let target = parent.join("Ganbaru");
+        assert!(!replaces_independent_vault(&target, "vault-linked"));
+
+        fs::create_dir_all(&target).unwrap();
+        let linked = crate::vault::initialize_vault(&target).unwrap();
+        assert!(!replaces_independent_vault(&target, &linked.vault_id));
+        assert!(replaces_independent_vault(&target, "vault-other"));
+
+        fs::write(target.join("vault.json"), "invalid json").unwrap();
+        assert!(replaces_independent_vault(&target, &linked.vault_id));
+        let _ = fs::remove_dir_all(parent);
     }
 
     #[test]
@@ -751,7 +899,7 @@ mod tests {
         fs::create_dir_all(root.join("notes")).unwrap();
         fs::write(root.join("vault.json"), b"vault").unwrap();
         fs::write(root.join(APP_SQLITE_FILE), b"live database").unwrap();
-        fs::write(root.join("ganbaru-ai.sqlite-wal"), b"wal").unwrap();
+        fs::write(root.join("ganbaru.sqlite-wal"), b"wal").unwrap();
         fs::write(root.join("notes/page.md"), b"note").unwrap();
         fs::write(&snapshot, b"snapshot database").unwrap();
 
@@ -765,7 +913,7 @@ mod tests {
             .read_to_string(&mut database)
             .unwrap();
         assert_eq!(database, "snapshot database");
-        assert!(archive.by_name("ganbaru-ai.sqlite-wal").is_err());
+        assert!(archive.by_name("ganbaru.sqlite-wal").is_err());
 
         let _ = fs::remove_dir_all(root);
         let _ = fs::remove_file(snapshot);
@@ -793,8 +941,8 @@ mod tests {
     #[test]
     fn interrupted_restore_recovers_only_copy() {
         let parent = unique_test_path("interrupted");
-        let target = parent.join("Ganbaru AI");
-        let rollback = parent.join(".ganbaru-ai.rollback");
+        let target = parent.join("Ganbaru");
+        let rollback = parent.join(".ganbaru.rollback");
         fs::create_dir_all(&rollback).unwrap();
         fs::write(rollback.join("vault.json"), b"current").unwrap();
 
@@ -808,8 +956,8 @@ mod tests {
     #[test]
     fn completed_restore_discards_old_rollback() {
         let parent = unique_test_path("completed");
-        let target = parent.join("Ganbaru AI");
-        let rollback = parent.join(".ganbaru-ai.rollback");
+        let target = parent.join("Ganbaru");
+        let rollback = parent.join(".ganbaru.rollback");
         fs::create_dir_all(&target).unwrap();
         fs::create_dir_all(&rollback).unwrap();
         fs::write(target.join("vault.json"), b"restored").unwrap();
@@ -885,18 +1033,18 @@ mod tests {
         for statement in [
             "INSERT INTO calendar_events (id, title, start_time, end_time) VALUES ('handoff-calendar', 'Portable calendar', '2026-09-14T09:00:00Z', '2026-09-14T10:00:00Z')",
             "INSERT INTO calendar_event_alarms (id, event_id, trigger_value) VALUES ('handoff-alarm', 'handoff-calendar', '-PT10M')",
-            "INSERT INTO pomodoro_configs (event_id, rhythm_kind, rhythm_source, preset_key) VALUES ('handoff-calendar', 'count', 'preset', 'balanced')",
+            "INSERT INTO calendar_event_pomodoro_configs (event_id, rhythm_kind, rhythm_source, preset_key) VALUES ('handoff-calendar', 'count', 'preset', 'balanced')",
             "INSERT INTO pomodoro_runs (id, event_id, original_event_id, event_date, planned_start, planned_end, started_at, ended_at, end_reason, rhythm_kind, rhythm_source, preset_key, last_heartbeat) VALUES ('handoff-run', 'handoff-calendar', 'handoff-calendar', '2026-09-14', '2026-09-14T09:00:00Z', '2026-09-14T10:00:00Z', '2026-09-14T09:00:00Z', '2026-09-14T09:45:00Z', 'completed', 'count', 'preset', 'balanced', '2026-09-14T09:45:00Z')",
             "INSERT INTO project_tasks (id, project_id, section_id, status_id, title) VALUES ('handoff-task', 'project-routine-learning', 'section-routine-learning-general', 'status-routine-learning-todo', 'Portable project task')",
             "INSERT INTO notes_pages (id, parent_type, title) VALUES ('handoff-note', 'workspace', 'Portable note')",
             "INSERT INTO chat_conversations (id, project_id, conversation_kind, last_activity_at, created_at, updated_at) VALUES ('handoff-conversation', 'project-routine-learning', 'channel', '2026-09-14T09:00:00Z', '2026-09-14T09:00:00Z', '2026-09-14T09:00:00Z')",
             "INSERT INTO chat_channels (id, project_id, conversation_id, name, created_at, updated_at) VALUES ('handoff-channel', 'project-routine-learning', 'handoff-conversation', 'Portable chat', '2026-09-14T09:00:00Z', '2026-09-14T09:00:00Z')",
-            "INSERT INTO quick_notes (id, title, body_plain_text) VALUES ('handoff-quick-note', 'Portable quick note', 'Portable quick-note body')",
-            "INSERT INTO themes (id, display_name, blend_canvas, seed_blend_canvas, derivation_engine_version, created_at, updated_at, icon_label, seed_icon_label) VALUES ('handoff-theme', 'Portable theme', '{}', '{}', 1, 1, 1, 'dark', 'dark')",
-            "INSERT INTO doomscrolling_usage_samples (id, source_type, source_key, display_name, started_at, elapsed_seconds, local_date, created_at) VALUES ('handoff-usage', 'mobile-app', 'app.example', 'Portable usage', 1, 45, '2026-09-14', 1)",
-            "INSERT INTO music_playlists (id, name, created_at, updated_at) VALUES ('handoff-playlist', 'Portable playlist', 1, 1)",
-            "INSERT INTO music_library_items (id, identity_key, source_kind, original_title, discovered_at, updated_at) VALUES ('handoff-track', 'local:portable-track', 'local-file', 'Portable track', 1, 1)",
-            "INSERT INTO music_playlist_memberships (id, playlist_id, item_id, position, created_at, updated_at) VALUES ('handoff-membership', 'handoff-playlist', 'handoff-track', 0, 1, 1)",
+            "INSERT INTO quick_notes (id, title, body_plain_text, order_key) VALUES ('handoff-quick-note', 'Portable quick note', 'Portable quick-note body', 'a0')",
+            "INSERT INTO themes (id, display_name, blend_canvas, seed_blend_canvas, derivation_engine_version, created_at_ms, updated_at_ms, icon_label, seed_icon_label) VALUES ('handoff-theme', 'Portable theme', '{}', '{}', 1, 1, 1, 'dark', 'dark')",
+            "INSERT INTO distractions_usage_samples (id, source_type, source_key, display_name, started_at_ms, elapsed_seconds, local_date, created_at_ms) VALUES ('handoff-usage', 'mobile-app', 'app.example', 'Portable usage', 1, 45, '2026-09-14', 1)",
+            "INSERT INTO music_playlists (id, name, created_at_ms, updated_at_ms) VALUES ('handoff-playlist', 'Portable playlist', 1, 1)",
+            "INSERT INTO music_library_items (id, identity_key, source_kind, original_title, discovered_at_ms, updated_at_ms) VALUES ('handoff-track', 'local:portable-track', 'local-file', 'Portable track', 1, 1)",
+            "INSERT INTO music_playlist_memberships (id, playlist_id, item_id, position, created_at_ms, updated_at_ms) VALUES ('handoff-membership', 'handoff-playlist', 'handoff-track', 0, 1, 1)",
         ] {
             sqlx::query(statement).execute(&source_pool).await.unwrap();
         }
@@ -956,14 +1104,18 @@ mod tests {
         for (table, key, identifier) in [
             ("calendar_events", "id", "handoff-calendar"),
             ("calendar_event_alarms", "id", "handoff-alarm"),
-            ("pomodoro_configs", "event_id", "handoff-calendar"),
+            (
+                "calendar_event_pomodoro_configs",
+                "event_id",
+                "handoff-calendar",
+            ),
             ("pomodoro_runs", "id", "handoff-run"),
             ("project_tasks", "id", "handoff-task"),
             ("notes_pages", "id", "handoff-note"),
             ("chat_channels", "id", "handoff-channel"),
             ("quick_notes", "id", "handoff-quick-note"),
             ("themes", "id", "handoff-theme"),
-            ("doomscrolling_usage_samples", "id", "handoff-usage"),
+            ("distractions_usage_samples", "id", "handoff-usage"),
             ("music_playlists", "id", "handoff-playlist"),
             ("music_library_items", "id", "handoff-track"),
             ("music_playlist_memberships", "id", "handoff-membership"),

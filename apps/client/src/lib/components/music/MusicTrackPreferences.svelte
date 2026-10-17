@@ -2,7 +2,6 @@
   import { onMount, tick } from "svelte";
   import { formatNumber } from "$lib/i18n/formatters";
   import SlidersHorizontal from "@lucide/svelte/icons/sliders-horizontal";
-  import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import Dice1 from "@lucide/svelte/icons/dice-1";
   import Dice2 from "@lucide/svelte/icons/dice-2";
   import Dice3 from "@lucide/svelte/icons/dice-3";
@@ -10,7 +9,8 @@
   import Dice5 from "@lucide/svelte/icons/dice-5";
   import Shuffle from "@lucide/svelte/icons/shuffle";
   import ListOrdered from "@lucide/svelte/icons/list-ordered";
-  import CustomSelect from "$lib/components/settings/CustomSelect.svelte";
+  import Select from "$lib/components/ui/Select.svelte";
+  import { keepInViewport } from "$lib/utils/keep-in-viewport";
   import {
     bulkEditMusicMemberships,
     bulkSnoozeMusicItems,
@@ -19,14 +19,16 @@
     getMusicPlaylistSummaries,
     removeMusicSnooze,
   } from "$lib/api/music-library";
+  import Loading from "$lib/components/ui/Loading.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import type { MusicMembershipMatrixEntry, MusicPlaylistSummary, MusicSnooze, MusicWeight } from "$lib/music/library-contracts";
-  import { notifyMusicLibraryChanged } from "$lib/music/music-library-events";
-  import { musicSnoozeEndsAt, musicSnoozePreset, type MusicSnoozePreset } from "$lib/music/music-snooze";
-  import { MUSIC_WEIGHT_ORDER, musicMembershipsForScope, musicSnoozesForScope, musicWeightForScope } from "$lib/music/music-track-preferences";
-  import { MUSIC_MIX_WEIGHT_VALUES } from "$lib/music/music-playlist-playback";
-  import { pickMusicFrequencyTooltipPosition, type MusicFrequencyTooltipPosition } from "$lib/music/music-frequency-tooltip-position";
-  import { systemMusicPlaylistName } from "$lib/music/music-system-playlists";
+  import type { MusicMembershipMatrixEntry, MusicPlaylistSummary, MusicSnooze, MusicWeight } from "$lib/music/library/contracts";
+  import { notifyMusicLibraryChanged } from "$lib/music/library/events";
+  import { musicSnoozeEndsAt, musicSnoozePreset, type MusicSnoozePreset } from "$lib/music/session/snooze";
+  import { MUSIC_WEIGHT_ORDER, musicMembershipsForScope, musicSnoozesForScope, musicWeightForScope } from "$lib/music/library/track-preferences";
+  import { MUSIC_MIX_WEIGHT_VALUES } from "$lib/music/playlists/playback";
+  import { pickMusicFrequencyTooltipPosition, type MusicFrequencyTooltipPosition } from "$lib/music/library/frequency-tooltip-position";
+  import { systemMusicPlaylistName } from "$lib/music/playlists/system";
   import { getMusicPlayer } from "$lib/stores/music-player.svelte";
   import { portal } from "$lib/utils/portal";
 
@@ -63,12 +65,12 @@
   const itemId = $derived(queueIndex >= 0 ? player.activeQueueItemIds[queueIndex] ?? null : null);
   const targetMemberships = $derived(musicMembershipsForScope(memberships, scopePlaylistId));
   const currentWeight = $derived(musicWeightForScope(targetMemberships));
-  const scopeSnoozes = $derived(snoozes.filter((entry) => entry.startsAt <= Date.now()
-    && (entry.endsAt === null || entry.endsAt > Date.now())
+  const scopeSnoozes = $derived(snoozes.filter((entry) => entry.startsAtMs <= Date.now()
+    && (entry.endsAtMs === null || entry.endsAtMs > Date.now())
     && (scopePlaylistId === null ? entry.scope === "all-playlists"
       : entry.scope === "playlist" && entry.playlistId === scopePlaylistId)));
   const selectedSnooze = $derived(scopeSnoozes.length === 1
-    ? musicSnoozePreset(scopeSnoozes[0].startsAt, scopeSnoozes[0].endsAt, Intl.DateTimeFormat().resolvedOptions().timeZone)
+    ? musicSnoozePreset(scopeSnoozes[0].startsAtMs, scopeSnoozes[0].endsAtMs, Intl.DateTimeFormat().resolvedOptions().timeZone)
     : null);
   const scopeOptions = $derived([
     { value: "", label: t("music.preferences.everywhere") },
@@ -212,7 +214,7 @@
         removePlaylistIds: [],
         weightPlaylistIds: playlistIds,
         weight,
-        updatedAt: Date.now(),
+        updatedAtMs: Date.now(),
       });
       if (player.activePlaylistId && playlistIds.includes(player.activePlaylistId) && itemId === targetItemId) player.applyCurrentQueueWeight(weight);
       notifyMusicLibraryChanged();
@@ -233,7 +235,7 @@
     const activePlaylistId = player.activePlaylistId;
     const selectedPlaylistId = scopePlaylistId;
     const scope = selectedPlaylistId ? "playlist" : "all-playlists";
-    const endsAt = musicSnoozeEndsAt(duration, now, Intl.DateTimeFormat().resolvedOptions().timeZone);
+    const endsAtMs = musicSnoozeEndsAt(duration, now, Intl.DateTimeFormat().resolvedOptions().timeZone);
     const previousSnoozes = scopeSnoozes;
     const isTurningOff = selectedSnooze === duration;
     busy = true;
@@ -251,16 +253,14 @@
         itemIds: [targetItemId],
         scope,
         playlistId: selectedPlaylistId,
-        startsAt: now,
-        endsAt,
+        startsAtMs: now,
+        endsAtMs,
         reason: "",
-        createdAt: now,
+        createdAtMs: now,
       });
       if (itemId === targetItemId && player.activePlaylistId === activePlaylistId
         && (selectedPlaylistId === null || selectedPlaylistId === activePlaylistId)) {
-        player.applyCurrentQueueSnooze(endsAt);
-        await player.playNextTrack();
-        if (itemId === targetItemId) await player.pausePlayback();
+        player.applyCurrentQueueSnooze(endsAtMs);
       }
       notifyMusicLibraryChanged();
       close(false);
@@ -279,8 +279,8 @@
       .filter((entry) => player.activeSourceQueueId !== null
         || entry.scope === "all-playlists" || entry.playlistId === player.activePlaylistId);
     if (remaining.length === 0) player.clearCurrentQueueSnooze();
-    else player.applyCurrentQueueSnooze(remaining.some((entry) => entry.endsAt === null)
-      ? null : Math.max(...remaining.map((entry) => entry.endsAt ?? 0)));
+    else player.applyCurrentQueueSnooze(remaining.some((entry) => entry.endsAtMs === null)
+      ? null : Math.max(...remaining.map((entry) => entry.endsAtMs ?? 0)));
   }
 </script>
 
@@ -296,14 +296,14 @@
     aria-expanded={open}
   ><SlidersHorizontal size={14} strokeWidth={1.6} /></button>
   {#if open}
-    <div bind:this={panel} role="dialog" tabindex="-1" data-music-track-preferences-open data-app-shortcuts="ignore" aria-label={t("music.preferences.title")} class="absolute bottom-[calc(100%+0.5rem)] right-0 z-40 w-72 max-w-[calc(100vw-1rem)] rounded-xl border border-border/75 bg-popover p-4 text-popover-foreground shadow-md">
+    <div bind:this={panel} use:keepInViewport role="dialog" tabindex="-1" data-music-track-preferences-open data-app-shortcuts="ignore" aria-label={t("music.preferences.title")} class="surface-floating absolute bottom-[calc(100%+0.5rem)] right-0 z-40 w-floating p-4">
       {#if loading}
-        <div class="flex h-24 items-center justify-center" aria-label={t("music.itemMenu.loading")}><LoaderCircle size={17} strokeWidth={2.6} class="animate-spin motion-reduce:animate-none" /></div>
+        <Loading layout="fill" label={t("music.itemMenu.loading")} class="h-24" />
       {:else}
-        {#if error}<p class="mb-2 text-xs text-destructive" role="alert">{error}</p>{/if}
+        {#if error}<Notice class="mb-2 text-panel-detail" message={error} />{/if}
         <div class="flex items-center justify-between gap-3">
-          <span class="shrink-0 text-xs font-semibold">{t("music.preferences.applyTo")}</span>
-          <CustomSelect
+          <span class="shrink-0 font-semibold">{t("music.preferences.applyTo")}</span>
+          <Select
             value={scopePlaylistId ?? ""}
             options={scopeOptions}
             onChange={(value) => scopePlaylistId = value || null}
@@ -318,12 +318,12 @@
         <div class="mt-4">
           <div class="flex items-center justify-between gap-2">
             <div bind:this={frequencyHeader} class="relative flex min-w-0 items-center gap-1.5">
-              <span class="text-xs font-semibold">{t("music.preferences.likelihood")}</span>
+              <span class="font-semibold">{t("music.preferences.likelihood")}</span>
               {#if player.playbackMode !== "mix"}
                 <button type="button" data-music-frequency-warning-trigger class="group grid h-5 w-5 shrink-0 place-items-center rounded-full focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring" aria-label={frequencyInactiveText} onpointerenter={(event) => { void showFrequencyTooltip(event.currentTarget); }} onpointerleave={hideFrequencyTooltip} onfocus={(event) => { void showFrequencyTooltip(event.currentTarget); }} onblur={hideFrequencyTooltip}><span class="grid h-3.5 w-3.5 place-items-center rounded-full border border-muted-foreground/50 text-[0.55rem] leading-none font-bold text-muted-foreground group-hover:bg-secondary group-hover:text-foreground" aria-hidden="true">!</span></button>
               {/if}
             </div>
-            {#if targetMemberships.length > 0}<span class="text-[0.7rem] text-muted-foreground">{currentWeight ? t(`music.builder.weight.${currentWeight}`) : t("music.preferences.mixed")}</span>{/if}
+            {#if targetMemberships.length > 0}<span class="text-panel-detail text-muted-foreground">{currentWeight ? t(`music.builder.weight.${currentWeight}`) : t("music.preferences.mixed")}</span>{/if}
           </div>
           <div class="mt-2 flex items-center justify-between gap-1" role="group" aria-label={t("music.preferences.likelihood")}>
             {#each MUSIC_WEIGHT_ORDER as weight, index (weight)}
@@ -344,7 +344,7 @@
         </div>
 
         <div class="mt-3">
-          <span class="text-xs font-semibold">{t("music.preferences.snooze")}</span>
+          <span class="font-semibold">{t("music.preferences.snooze")}</span>
           <div class="mt-2 grid grid-cols-3 gap-1">
             {#each snoozePresets as duration (duration)}
               <button type="button" onclick={() => { void snooze(duration); }} aria-disabled={busy} aria-pressed={selectedSnooze === duration} class="snooze-choice">{t(`music.preferences.${duration}`)}</button>
@@ -363,7 +363,7 @@
     aria-hidden="true"
     data-music-frequency-tooltip={activeFrequencyTooltip}
     data-placement={frequencyTooltipPosition?.placement}
-    class="pointer-events-none fixed z-80 w-64 max-w-[calc(100vw-1rem)] rounded-md border border-border bg-popover p-3 text-left text-xs leading-4 text-popover-foreground shadow-md"
+    class="surface-floating pointer-events-none fixed z-80 w-64 p-3 text-left text-panel-detail"
     style={frequencyTooltipPosition ? `top: ${frequencyTooltipPosition.top}px; left: ${frequencyTooltipPosition.left}px;` : "top: -10000px; left: 0; visibility: hidden;"}
   >
     <p>
@@ -374,10 +374,10 @@
 {/if}
 
 <style>
-  .snooze-choice { min-height: 2rem; border-radius: 0.45rem; background: color-mix(in srgb, var(--accent) 45%, transparent); padding-inline: 0.15rem; font-size: calc(0.7rem * var(--type-scale)); color: var(--foreground); }
+  .snooze-choice { min-height: 2rem; border-radius: var(--floating-item-radius); background: color-mix(in srgb, var(--accent) 45%, transparent); padding-inline: 0.15rem; font-size: var(--panel-detail-font-size); color: var(--foreground); }
   .snooze-choice:hover { background: var(--accent); color: var(--foreground); }
   .snooze-choice[aria-pressed="true"] { background: color-mix(in srgb, var(--primary) 15%, var(--accent)); color: var(--foreground); }
-  .die-choice { display: inline-flex; height: 2.5rem; width: 2.5rem; align-items: center; justify-content: center; border-radius: 0.6rem; color: var(--muted-foreground); }
+  .die-choice { display: inline-flex; height: 2.5rem; width: 2.5rem; align-items: center; justify-content: center; border-radius: var(--floating-item-radius); color: var(--muted-foreground); }
   .die-choice:hover { background: var(--accent); color: var(--foreground); }
   .die-choice.active-die { background: color-mix(in srgb, var(--primary) 12%, transparent); color: var(--primary); }
   .die-choice:disabled { cursor: not-allowed; opacity: 0.35; }

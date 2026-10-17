@@ -1,5 +1,5 @@
-import { parentIdForBlock, type NotesTreeState } from "./block-tree";
-import { collectLoadedBlockSubtreeIds } from "./block-duplicate";
+import { parentIdForBlock, type NotesTreeState } from "$lib/notes/blocks/tree";
+import { collectLoadedBlockSubtreeIds } from "$lib/notes/blocks/duplicate";
 import type {
   NotesAppendBlockChildrenRequest,
   NotesBlock,
@@ -21,6 +21,8 @@ export interface NotesBlockPlacement {
 }
 
 export interface NotesPostMutationResult {
+  /** Project an accepted native operation without creating new local draft markers. */
+  canonical?: boolean;
   blocks?: readonly NotesBlock[];
   placements?: readonly NotesBlockPlacement[];
   removedBlockIds?: readonly string[];

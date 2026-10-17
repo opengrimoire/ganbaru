@@ -1,16 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { dbUrl } from "$lib/api/db";
-import type { PlaybackStatus } from "$lib/music/playback";
-import type { MusicSourceKind } from "$lib/music/sources";
-
-export interface PlaybackStateRow {
-  sourceIdentity: string;
-  sourceKind: MusicSourceKind;
-  positionMs: number;
-  durationMs: number | null;
-  status: PlaybackStatus;
-  updatedAt: number;
-}
 
 export interface MediaFolderTrack {
   path: string;
@@ -35,13 +23,6 @@ export interface MusicYouTubeMetadataResponse {
   playlist: MusicYouTubeMetadataItem | null;
   videos: MusicYouTubeMetadataItem[];
   truncated: boolean;
-}
-
-export async function getPlaybackState(sourceIdentity: string): Promise<PlaybackStateRow | null> {
-  return invoke("music_get_playback_state", {
-    dbUrl: dbUrl(),
-    sourceIdentity,
-  });
 }
 
 export async function pickMediaFolder(): Promise<MediaFolderSelection | null> {
@@ -69,15 +50,9 @@ export async function pickArtworkFile(): Promise<string | null> {
 }
 
 export async function pickAndReadMusicInterchangeFile(): Promise<string | null> {
-  return invoke<string | null>("music_pick_and_read_interchange_file");
-}
-
-export async function pickAndWriteMusicInterchangeFile(
-  defaultName: string,
-  contents: string,
-  format: "json" | "m3u8",
-): Promise<boolean> {
-  return invoke<boolean>("music_pick_and_write_interchange_file", { defaultName, contents, format });
+  const contents = await invoke<unknown>("music_pick_and_read_interchange_file");
+  if (contents !== null && typeof contents !== "string") throw new Error("Invalid Music import file response");
+  return contents;
 }
 
 export async function loadArtworkDataUrl(path: string): Promise<string> {
@@ -132,11 +107,4 @@ export async function getYouTubeMetadata(
 /** Loads a validated YouTube thumbnail from the device-local image cache. */
 export async function getYouTubeThumbnail(videoId: string): Promise<string | null> {
   return invoke("music_youtube_thumbnail", { videoId });
-}
-
-export async function savePlaybackState(state: PlaybackStateRow): Promise<void> {
-  await invoke("music_save_playback_state", {
-    dbUrl: dbUrl(),
-    state,
-  });
 }

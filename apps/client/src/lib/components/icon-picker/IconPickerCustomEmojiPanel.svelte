@@ -6,10 +6,12 @@
   import { cn } from "$lib/utils";
   import { portal } from "$lib/utils/portal";
   import ProjectIcon from "$lib/components/projects/ProjectIcon.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
 
   let {
     rootElement = $bindable<HTMLElement | undefined>(),
     style,
+    portalTarget = "body",
     customEmojiDraft,
     customEmojiName = $bindable(""),
     customEmojiError,
@@ -21,6 +23,8 @@
   }: {
     rootElement?: HTMLElement;
     style: string;
+    /** Where the panel is portaled; a picker nested in another floating surface keeps its panels inside it. */
+    portalTarget?: HTMLElement | string;
     customEmojiDraft: ProjectIconAsset | null;
     customEmojiName: string;
     customEmojiError: string | null;
@@ -37,17 +41,17 @@
 
 <section
   bind:this={rootElement}
-  use:portal
-  class="fixed z-90 flex min-h-0 flex-col overflow-hidden rounded-xl border border-border p-4 shadow-xl"
+  use:portal={portalTarget}
+  class="surface-floating fixed z-90 flex min-h-0 flex-col overflow-hidden p-4"
   {style}
   data-app-floating-surface
   onpaste={onPaste}
 >
   <div class="mb-1 text-[0.933333rem] font-semibold text-foreground">{t("projects.iconPicker.addCustomEmoji")}</div>
-  <div class="mb-5 text-[0.8rem] text-muted-foreground">{t("projects.iconPicker.customEmojiDescription")}</div>
+  <div class="mb-5 text-panel-detail text-muted-foreground">{t("projects.iconPicker.customEmojiDescription")}</div>
   <button
     type="button"
-    class="mb-4 flex min-h-16 w-full items-center justify-center gap-2 rounded-md bg-muted/50 text-[0.866667rem] text-muted-foreground hover:bg-accent hover:text-foreground"
+    class="mb-4 flex min-h-16 w-full items-center justify-center gap-2 rounded-floating-item bg-muted/50 text-muted-foreground hover:bg-accent hover:text-foreground"
     onclick={() => { void onChooseFile(); }}
   >
     {#if customEmojiDraft}
@@ -57,21 +61,21 @@
     {/if}
     {t("projects.iconPicker.uploadImage")}
   </button>
-  <label class="grid gap-1 text-[0.733333rem] text-muted-foreground">
+  <label class="grid gap-1 text-panel-detail text-muted-foreground">
     {t("projects.iconPicker.emojiName")}
     <input
       bind:value={customEmojiName}
-      class="h-9 rounded-md border border-border bg-background px-2 text-left text-[0.866667rem] text-foreground outline-none placeholder:text-muted-foreground focus:border-ring"
+      class="field h-9 text-left text-panel text-foreground"
       placeholder={t("projects.iconPicker.emojiNamePlaceholder")}
     />
   </label>
   {#if customEmojiError}
-    <div class="mt-2 rounded-md bg-destructive/10 px-2 py-1 text-[0.8rem] text-destructive">{customEmojiError}</div>
+    <Notice class="mt-2 text-panel-detail" message={customEmojiError} />
   {/if}
   <div class="mt-5 flex justify-between gap-2">
     <button
       type="button"
-      class="h-8 rounded-md px-2 text-[0.866667rem] text-muted-foreground hover:bg-accent hover:text-foreground"
+      class="h-8 rounded-floating-item px-2 text-muted-foreground hover:bg-accent hover:text-foreground"
       onclick={onClose}
     >
       {t("common.cancel")}
@@ -79,7 +83,7 @@
     <button
       type="button"
       class={cn(
-        "h-8 rounded-md bg-primary px-3 text-[0.866667rem] font-medium text-primary-foreground disabled:cursor-not-allowed",
+        "h-8 rounded-floating-item bg-primary px-3 font-medium text-primary-foreground disabled:cursor-not-allowed",
         canSaveCustomEmoji || customEmojiSaving ? "hover:bg-primary/90" : "opacity-50",
       )}
       disabled={!canSaveCustomEmoji || customEmojiSaving}
@@ -90,7 +94,7 @@
   </div>
   <button
     type="button"
-    class="absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+    class="absolute right-2 top-2 flex size-7 items-center justify-center rounded-floating-item text-muted-foreground hover:bg-accent hover:text-foreground"
     aria-label={t("common.close")}
     onclick={onClose}
   >

@@ -1,12 +1,19 @@
-import { createRichText } from "$lib/notes/block-factory";
+import { createRichText } from "$lib/notes/blocks/factory";
 import { NOTES_PAGE_PROJECT_ID_PROPERTY } from "$lib/notes/project-membership";
-import { mapNotesPageDto } from "$lib/notes/notion-mappers";
-import type { NotesPage } from "$lib/notes/types";
+import { mapNotesPageDto } from "$lib/notes/validation/response-mappers";
+import type { NotesNavigationDatabase, NotesPage } from "$lib/notes/types";
+import { isNotesUuid } from "$lib/notes/links/block-link";
 
-/** Require an object payload from a Notes workspace or summary command. */
-export function notesWorkspaceShellRecord(value: unknown): Record<string, unknown> {
+/**
+ * Require an object payload from a Notes workspace or summary command.
+ *
+ * @param value Untrusted command payload or nested row.
+ * @param context Command or field name reported when the payload is not an object.
+ * @returns The payload as a string-keyed record.
+ */
+export function notesWorkspaceShellRecord(value: unknown, context: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error("notes_load_workspace_shell returned an invalid payload");
+    throw new Error(`${context} must be an object`);
   }
   return value as Record<string, unknown>;
 }
@@ -14,6 +21,20 @@ export function notesWorkspaceShellRecord(value: unknown): Record<string, unknow
 function shellString(value: unknown, field: string): string {
   if (typeof value !== "string") throw new Error(`${field} must be a string`);
   return value;
+}
+
+/** Validate the compact identities used to open database hierarchy branches. */
+export function mapNavigationDatabase(value: unknown): NotesNavigationDatabase {
+  const record = notesWorkspaceShellRecord(value, "navigation database");
+  if (!isNotesUuid(record.id) || !isNotesUuid(record.page_id) || !isNotesUuid(record.data_source_id)) {
+    throw new Error("navigation database identities must be UUIDs");
+  }
+  return {
+    id: record.id,
+    page_id: record.page_id,
+    title: shellString(record.title, "navigation database.title"),
+    data_source_id: record.data_source_id,
+  };
 }
 
 /** Require a nullable string field from a Notes workspace payload. */
@@ -52,7 +73,7 @@ function parsePageSummaryIcon(value: string | null, pageId: string): unknown {
 
 /** Parse the compact persisted page row returned by Notes list commands. */
 export function mapPageSummary(value: unknown): NotesPage {
-  const row = notesWorkspaceShellRecord(value);
+  const row = notesWorkspaceShellRecord(value, "page");
   const parentType = shellString(row.parent_type, "page.parent_type");
   let parent: NotesPage["parent"];
   if (parentType === "workspace") {

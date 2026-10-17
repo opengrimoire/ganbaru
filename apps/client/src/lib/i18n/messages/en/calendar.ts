@@ -23,6 +23,7 @@ export const calendar = {
     durationHours: (hours: string, singular: boolean) => `${hours} ${singular ? "hr" : "hrs"}`,
   },
   moreEvents: (count: string) => `+${count} more`,
+  moreEventsCompact: (count: string) => `+${count}`,
   recurrence: {
     daily: "Daily",
     weekly: "Weekly",
@@ -109,9 +110,9 @@ export const calendar = {
     custom: "Custom",
     removeCustom: "Remove custom notification",
     androidChannelName: "Calendar events",
-    androidChannelDescription: "Reminders for upcoming Ganbaru AI calendar events",
+    androidChannelDescription: "Reminders for upcoming Ganbaru calendar events",
     permissionRequired:
-      "Android notifications are off. Allow them to receive event reminders when Ganbaru AI is closed.",
+      "Android notifications are off. Allow them to receive event reminders when Ganbaru is closed.",
     exactAlarmRequired:
       "Android exact alarms are off. Reminders can arrive late until Alarms and reminders access is allowed.",
     channelRestricted:
@@ -188,6 +189,7 @@ export const calendar = {
     markOptional: "Mark optional",
     removeAttendee: "Remove attendee",
     addEmail: "Add email...",
+    pickAttendees: "Add from contacts",
   },
   timezone: {
     title: "Timezones",
@@ -262,12 +264,16 @@ export const calendar = {
     readOnlyHyphen: "Read-only",
     actionEndEvent: "end event",
     actionArchive: "archive",
+    actionDelete: "delete",
+    actionRemove: "remove",
     deleteEndEvent: "End event",
     deleteArchive: "Archive",
     deleteDelete: "Delete",
+    deleteRemove: "Remove",
     pressAgainToEndEvent: (shortcut: string) => `Press again to end event (${shortcut})`,
     pressAgainToArchive: (shortcut: string) => `Press again to archive (${shortcut})`,
     pressAgainToDelete: (shortcut: string) => `Press again to delete (${shortcut})`,
+    pressAgainToRemove: (shortcut: string) => `Press again to remove (${shortcut})`,
     deleteShortcut: (label: string, shortcut: string) => `${label} (${shortcut})`,
     readOnlyShortcut: (shortcut: string, action: string) =>
       `Read-only (${shortcut} to ${action})`,
@@ -275,6 +281,12 @@ export const calendar = {
   },
   view: {
     saving: "Saving...",
+    saveUncertain: "Save could not be confirmed. Retry to check its result.",
+    deleteUncertain: "Delete or Undo could not be confirmed. Retry to check the original operation.",
+    deleteRefreshPending: "The operation was saved. Retry to refresh the calendar.",
+    deleteFailed: (message: string) => `Delete or Undo failed: ${message}`,
+    previewFailed: (message: string) => `Preview unavailable: ${message}`,
+    historyUnavailable: "The recorded Focus timeline could not be loaded. Try a shorter Calendar range or retry.",
     saved: "Saved",
     unknownSaveError: "Unknown save error",
     saveFailed: (message: string) => `Save failed: ${message}`,

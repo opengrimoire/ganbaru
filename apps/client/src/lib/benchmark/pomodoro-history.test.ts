@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { CalendarEvent } from "$lib/components/calendar/types";
+import type { CalendarEvent } from "$lib/calendar/types";
 import {
   buildDensePomodoroHistoryPayload,
   DENSE_TIMED_POMODORO_CONFIG,

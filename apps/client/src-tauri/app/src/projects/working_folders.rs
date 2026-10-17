@@ -3,7 +3,7 @@
 use crate::vault::{active_vault_id, read_app_state, update_app_state, vault_device_id};
 use tauri::Runtime;
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 pub use ganbaru_working_folders::ProjectWorkingFolderBindingState;
 pub use ganbaru_working_folders::{
     WORKING_FOLDER_DEVICE_STATE_SCHEMA_VERSION, WorkingFolderDeviceScope,

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { mount, tick, unmount } from "svelte";
+import { createRawSnippet, mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getChat } from "$lib/stores/chat.svelte";
 import ChatWorkspaceHeader from "./ChatWorkspaceHeader.svelte";
@@ -60,12 +60,15 @@ const projectState = vi.hoisted(() => {
     addGroup: vi.fn(async () => group),
     addProject: vi.fn(async () => project),
     ensureLoaded: vi.fn(async () => undefined),
+    isProjectStarred: () => false,
   };
   return { store };
 });
 
 vi.mock("$lib/stores/projects.svelte", () => ({
   getProjects: () => projectState.store,
+  useProjects: () => projectState.store,
+  getProjectsStore: () => projectState.store,
 }));
 
 class ResizeObserverMock implements ResizeObserver {
@@ -178,6 +181,7 @@ describe("ChatWorkspaceHeader", () => {
     explorerExpanded: boolean,
     reserveGlobalActions = true,
     editingTitle = false,
+    mobilePresentation = false,
   ): HTMLDivElement {
     const target = document.createElement("div");
     target.className = "chat-workspace";
@@ -189,6 +193,7 @@ describe("ChatWorkspaceHeader", () => {
         showRailButton: false,
         reserveGlobalActions,
         editingTitle,
+        mobilePresentation,
         onOpenRail: vi.fn(),
       },
     });
@@ -204,7 +209,7 @@ describe("ChatWorkspaceHeader", () => {
     groupTrigger?.click();
     await tick();
     expect(document.querySelector(".project-picker-panel")).not.toBeNull();
-    expect(document.querySelector<HTMLInputElement>('.project-picker-panel input')?.placeholder).toBe("Search projects...");
+    expect(document.querySelector<HTMLInputElement>('.project-picker-panel input')?.placeholder).toBe("Search channels");
 
     projectTrigger?.click();
     await tick();
@@ -228,34 +233,54 @@ describe("ChatWorkspaceHeader", () => {
     expect(syncProjectSelection).not.toHaveBeenCalled();
   });
 
-  it("keeps the organization and channel breadcrumb stable across explorer states", () => {
+  it("shows the channel breadcrumb whether the explorer is expanded or collapsed", () => {
     const expanded = setup(true);
     expect(expanded.querySelector("[data-chat-group-trigger]")?.textContent).toContain("Work");
     expect(expanded.querySelector("[data-chat-project-trigger]")?.textContent).toContain("Ganbaru");
     expect(expanded.querySelector("[data-chat-channel-trigger]")?.textContent).toContain("general");
+    expect(expanded.querySelector("[data-chat-channel-topic]")).toBeNull();
+    expect(expanded.querySelector("[data-chat-context-chevron]")?.closest("button")).toBe(expanded.querySelector("[data-chat-channel-trigger]"));
+    expect(expanded.querySelectorAll("[data-chat-context-chevron]")).toHaveLength(1);
+    expect(expanded.querySelector("[data-chat-new-channel-button]")).not.toBeNull();
 
     const collapsed = setup(false);
     expect(collapsed.querySelector("[data-chat-channel-trigger]")?.textContent).toContain("general");
+    expect(collapsed.querySelector("[data-chat-channel-topic]")?.textContent).toBe("Project coordination");
+    expect(collapsed.querySelector("[data-chat-context-chevron]")?.closest("button")).toBe(collapsed.querySelector("[data-chat-channel-trigger]"));
+    expect(collapsed.querySelectorAll("[data-chat-context-chevron]")).toHaveLength(1);
     expect(collapsed.querySelector("[data-chat-new-channel-button]")).not.toBeNull();
   });
 
-  it("uses one members icon and portals the roster outside the Chat header", async () => {
+  it("opens the selected channel's members panel from the avatar stack", async () => {
     const target = setup(true);
-    const rosterTrigger = target.querySelector<HTMLButtonElement>("[data-chat-roster-trigger]");
+    const membersTrigger = target.querySelector<HTMLButtonElement>("[data-chat-members-trigger]");
 
-    expect(rosterTrigger?.querySelectorAll("svg")).toHaveLength(1);
-    expect(rosterTrigger?.textContent?.trim()).toBe("");
+    expect(membersTrigger?.querySelector(".chat-members-count")?.textContent).toBe("1");
+    expect(membersTrigger?.querySelector(".chat-members-stack")?.getAttribute("aria-hidden")).toBe("true");
+    expect(membersTrigger?.getAttribute("aria-expanded")).toBe("false");
+    expect(document.querySelector("[data-chat-members-panel]")).toBeNull();
 
-    rosterTrigger?.click();
+    membersTrigger?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector("[data-chat-members-panel]")).not.toBeNull();
+    });
+
+    const panel = document.querySelector("[data-chat-members-panel]");
+    expect(membersTrigger?.getAttribute("aria-expanded")).toBe("true");
+    expect(panel?.getAttribute("role")).toBe("dialog");
+    expect(panel?.textContent).toContain("#general");
+    expect(panel?.textContent).toContain("Project coordination");
+    expect(panel?.textContent).toContain("Owner");
+
+    membersTrigger?.click();
     await tick();
 
-    const roster = document.querySelector("#chat-channel-roster");
-    expect(roster?.parentElement).toBe(document.body);
-    expect(roster?.classList.contains("roster-popover")).toBe(true);
+    expect(document.querySelector("[data-chat-members-panel]")).toBeNull();
+    expect(membersTrigger?.getAttribute("aria-expanded")).toBe("false");
   });
 
   it("opens the current project's complete channel navigator from the channel segment", async () => {
-    const target = setup(true);
+    const target = setup(false);
     const channelTrigger = target.querySelector("[data-chat-channel-trigger]");
 
     (channelTrigger as HTMLButtonElement | null)?.click();
@@ -266,6 +291,13 @@ describe("ChatWorkspaceHeader", () => {
     expect(channelPicker?.textContent).toContain("design");
     expect(channelPicker?.querySelectorAll("[data-chat-channel-option]")).toHaveLength(2);
     expect(channelTrigger?.querySelector("svg")?.getAttribute("stroke-width")).toBe("1.5");
+    const search = channelPicker?.querySelector<HTMLInputElement>("input");
+    expect(search).not.toBeNull();
+    search!.value = "design";
+    search!.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+    expect(channelPicker?.querySelectorAll("[data-chat-channel-option]")).toHaveLength(1);
+    expect(channelPicker?.querySelector("[data-chat-channel-option]")?.textContent).toContain("design");
   });
 
   it("cascades from a hovered project to that project's channels", async () => {
@@ -283,6 +315,8 @@ describe("ChatWorkspaceHeader", () => {
     const channelPicker = document.querySelector("[data-chat-channel-picker]");
     expect(channelPicker?.textContent).toContain("research");
     expect(channelPicker?.textContent).not.toContain("general");
+    expect(channelPicker?.querySelector("input")).toBeNull();
+    expect(target.querySelectorAll('[role="dialog"] input')).toHaveLength(1);
   });
 
   it("keeps the full group to project to channel hover hierarchy", async () => {
@@ -305,6 +339,8 @@ describe("ChatWorkspaceHeader", () => {
     await tick();
 
     expect(document.querySelector("[data-chat-channel-picker]")?.textContent).toContain("general");
+    expect(target.querySelectorAll('[role="dialog"] input')).toHaveLength(1);
+    expect(target.querySelectorAll('.project-picker-panel.fixed input, [data-chat-channel-picker] input')).toHaveLength(0);
   });
 
   it("reveals the chat segment editor when renaming from an expanded explorer", () => {
@@ -320,6 +356,75 @@ describe("ChatWorkspaceHeader", () => {
 
     expect(target.querySelector("[data-chat-title-editor]")).not.toBeNull();
     expect(target.querySelector("[data-chat-project-trigger]")).not.toBeNull();
+  });
+
+  it("names the mobile switcher after the project and opens it at the project's channels", async () => {
+    const target = setup(true, false, false, true);
+    const switchers = target.querySelectorAll<HTMLButtonElement>("[data-mobile-context-switcher]");
+
+    expect(switchers).toHaveLength(1);
+    expect(switchers[0].textContent).toContain("Ganbaru");
+    expect(switchers[0].textContent).not.toContain("general");
+    expect(target.querySelector("[data-chat-channel-trigger]")).toBeNull();
+    expect(target.querySelector("[data-chat-group-trigger]")).toBeNull();
+    expect(target.querySelector("[data-chat-project-trigger]")).toBeNull();
+
+    switchers[0].click();
+    await tick();
+    expect(switchers[0].getAttribute("aria-expanded")).toBe("true");
+    expect(document.querySelector("[data-chat-channel-picker]")).not.toBeNull();
+  });
+
+  it("names the mobile switcher after the project when no channel is selected", () => {
+    getChat().selectedChannelId = null;
+    const target = setup(true, false, false, true);
+
+    expect(target.querySelector("[data-mobile-context-switcher]")?.textContent).toContain("Ganbaru");
+  });
+
+  it("opens the mobile channel list from the channel action row", () => {
+    const onOpenRail = vi.fn();
+    const target = document.createElement("div");
+    document.body.append(target);
+    const component = mount(ChatWorkspaceHeader, {
+      target,
+      props: {
+        explorerExpanded: true,
+        showRailButton: true,
+        reserveGlobalActions: false,
+        editingTitle: false,
+        mobilePresentation: true,
+        onOpenRail,
+      },
+    });
+    mounted.push({ target, component });
+
+    const railButton = target.querySelector<HTMLButtonElement>("[data-chat-rail-button]");
+    expect(railButton?.closest("[data-chat-workspace-header]")).not.toBeNull();
+    railButton?.click();
+
+    expect(onOpenRail).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the channel list button beside the project view switcher while Projects hosts Chat", () => {
+    const target = document.createElement("div");
+    document.body.append(target);
+    const component = mount(ChatWorkspaceHeader, {
+      target,
+      props: {
+        explorerExpanded: false,
+        showRailButton: true,
+        reserveGlobalActions: false,
+        mobilePresentation: true,
+        onOpenRail: vi.fn(),
+        projectViewSwitcher: createRawSnippet(() => ({ render: () => "<button data-test-view-switcher>Views</button>" })),
+      },
+    });
+    mounted.push({ target, component });
+
+    const header = target.querySelector("[data-chat-workspace-header]");
+    expect(header?.querySelector("[data-chat-rail-button]")).not.toBeNull();
+    expect(header?.querySelector("[data-test-view-switcher]")).not.toBeNull();
   });
 
 });

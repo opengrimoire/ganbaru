@@ -1,3 +1,4 @@
+import { compareSidebarNames, mergeReorderedSubset, starredFirst, type SidebarSortOrder } from "$lib/utils/sidebar-order";
 import { requireActiveVaultIdentity } from "$lib/vault/active-vault";
 
 export interface ChatSidebarSection {
@@ -5,6 +6,8 @@ export interface ChatSidebarSection {
   name: string;
   collapsed: boolean;
   channelIds: string[];
+  /** Starred sections are listed before the other custom sections. */
+  starred?: boolean;
 }
 
 const STORAGE_PREFIX = "ganbaru.chat.channel-sections.v1";
@@ -83,6 +86,50 @@ export function moveChatChannelToSection(
   }));
 }
 
+/**
+ * Return custom sections in sidebar order with starred sections first. Name orders sort by section name; sections keep
+ * no timestamps, so created and modified orders both follow creation, which is the saved layout order.
+ */
+export function orderChatSidebarSections(
+  sections: readonly ChatSidebarSection[],
+  order: SidebarSortOrder,
+): ChatSidebarSection[] {
+  let ordered: ChatSidebarSection[];
+  if (order === "name-asc" || order === "name-desc") {
+    const direction = order === "name-asc" ? 1 : -1;
+    ordered = [...sections].sort((left, right) => direction * compareSidebarNames(left.name, right.name));
+  } else {
+    ordered = order.endsWith("desc") ? [...sections].reverse() : [...sections];
+  }
+  return starredFirst(ordered, (section) => section.starred === true);
+}
+
+/** Copy of `sections` with the sections of `orderedIds` in that order, keeping every other section in its slot. */
+export function reorderChatSidebarSections(
+  sections: readonly ChatSidebarSection[],
+  orderedIds: readonly string[],
+): ChatSidebarSection[] {
+  const byId = new Map(sections.map((section) => [section.id, section]));
+  return mergeReorderedSubset(sections.map((section) => section.id), orderedIds).flatMap((id) => byId.get(id) ?? []);
+}
+
+/** Star or unstar one custom section. */
+export function withChatSidebarSectionStarred(
+  sections: readonly ChatSidebarSection[],
+  sectionId: string,
+  starred: boolean,
+): ChatSidebarSection[] {
+  return sections.map((section) => section.id === sectionId
+    ? {
+      id: section.id,
+      name: section.name,
+      collapsed: section.collapsed,
+      channelIds: section.channelIds,
+      ...(starred ? { starred: true } : {}),
+    }
+    : section);
+}
+
 function parseSection(value: unknown): ChatSidebarSection[] {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return [];
   const record = value as Record<string, unknown>;
@@ -96,6 +143,7 @@ function parseSection(value: unknown): ChatSidebarSection[] {
     channelIds: record.channelIds
       .filter((entry): entry is string => typeof entry === "string" && entry.length > 0 && entry.length <= 1_024)
       .slice(0, MAX_CHANNELS_PER_SECTION),
+    ...(record.starred === true ? { starred: true } : {}),
   }];
 }
 

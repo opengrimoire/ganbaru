@@ -4,7 +4,7 @@ use tauri::{
     plugin::{PluginApi, PluginHandle},
 };
 
-const PLUGIN_IDENTIFIER: &str = "app.ganbaru.mobile_documents";
+const PLUGIN_IDENTIFIER: &str = "org.opengrimoire.ganbaru.mobile.documents";
 
 #[derive(Debug)]
 pub struct MobileDocuments<R: Runtime>(PluginHandle<R>);
@@ -58,7 +58,7 @@ struct SaveUtf8DownloadRequest<'a> {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SaveUtf8DownloadResponse {
+struct SaveDownloadResponse {
     display_name: String,
 }
 
@@ -116,7 +116,7 @@ impl<R: Runtime> MobileDocuments<R> {
                 },
             )
             .map(|response| response.display_name)
-            .map_err(|error| format!("import Ganbaru AI folder: {error}"))
+            .map_err(|error| format!("import Ganbaru folder: {error}"))
     }
 
     /// Ask Android to select and read one UTF-8 document within `max_bytes`.
@@ -210,7 +210,7 @@ impl<R: Runtime> MobileDocuments<R> {
         document_kind: &str,
     ) -> Result<String, String> {
         self.0
-            .run_mobile_plugin::<SaveUtf8DownloadResponse>(
+            .run_mobile_plugin::<SaveDownloadResponse>(
                 "saveUtf8Download",
                 SaveUtf8DownloadRequest {
                     file_name,
@@ -239,7 +239,7 @@ impl<R: Runtime> MobileDocuments<R> {
         document_kind: &str,
     ) -> Result<String, String> {
         self.0
-            .run_mobile_plugin::<SaveUtf8DownloadResponse>(
+            .run_mobile_plugin::<SaveDownloadResponse>(
                 "saveFileDownload",
                 SaveFileDownloadRequest {
                     source_path,
@@ -258,7 +258,7 @@ impl<R: Runtime> MobileDocuments<R> {
     }
 }
 
-/// Access Ganbaru AI's Android document adapter from managed Tauri state.
+/// Access Ganbaru's Android document adapter from managed Tauri state.
 pub trait MobileDocumentsExt<R: Runtime> {
     fn mobile_documents(&self) -> &MobileDocuments<R>;
 }

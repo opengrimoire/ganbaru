@@ -1,9 +1,7 @@
-use crate::chat::{
-    events::{CanonicalEvent, ContentDeltaEvent, ThreadRevertedEvent},
-    models::{
-        ChatCheckpointId, ChatThreadId, ChatTurnId, ContentStreamKind, ModelOptionDefinition,
-        SafetyMode, UtcTimestamp,
-    },
+use ganbaru_chat_contracts::events::{CanonicalEvent, ContentDeltaEvent, ThreadRevertedEvent};
+use ganbaru_chat_contracts::models::{
+    ChatCheckpointId, ChatThreadId, ChatTurnId, ContentStreamKind, ModelOptionDefinition,
+    SafetyMode, UtcTimestamp,
 };
 use serde_json::json;
 

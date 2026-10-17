@@ -1,12 +1,15 @@
 <script lang="ts">
   import type { PairingStatus } from "$lib/api/vault-handoff";
-  import VaultHandoffOnboardingContent from "$lib/components/vault/VaultHandoffOnboardingContent.svelte";
+  import VaultHandoffOnboardingContent from "$lib/components/vault/handoff/VaultHandoffOnboardingContent.svelte";
+  import { requireActiveVaultIdentity } from "$lib/vault/active-vault";
 
   let {
+    vaultId = requireActiveVaultIdentity(),
     initialStatus = null,
     bootstrapReplicaOnLink = false,
     onComplete,
   }: {
+    vaultId?: string;
     initialStatus?: PairingStatus | null;
     bootstrapReplicaOnLink?: boolean;
     onComplete: () => void | Promise<void>;
@@ -19,6 +22,7 @@
 >
   <VaultHandoffOnboardingContent
     platform="android"
+    {vaultId}
     {initialStatus}
     {bootstrapReplicaOnLink}
     {onComplete}

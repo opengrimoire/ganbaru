@@ -5,6 +5,10 @@ export interface MusicSourceBase {
   originalInput: string;
   identity: string;
   title: string;
+  /** Display artist from the library, when known; file tags apply otherwise. */
+  artist?: string | null;
+  /** Display album from the library, when known; file tags apply otherwise. */
+  album?: string | null;
   startMs: number | null;
   endMs: number | null;
 }

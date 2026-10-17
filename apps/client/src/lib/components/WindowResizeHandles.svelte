@@ -13,7 +13,7 @@
 
   let { disabled = false }: { disabled?: boolean } = $props();
 
-  const win = getCurrentWindow();
+  const appWindow = getCurrentWindow();
   const EDGE_HANDLE_PX = 10;
   const CORNER_HANDLE_PX = 20;
 
@@ -21,7 +21,7 @@
     if (disabled || !e.isPrimary || e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
-    void win.startResizeDragging(direction).catch((error) => {
+    void appWindow.startResizeDragging(direction).catch((error) => {
       console.error("Failed to start window resize:", error);
     });
   }

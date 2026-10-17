@@ -1,8 +1,9 @@
 <script lang="ts">
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import type { MusicSourceCollection } from "$lib/music/library-contracts";
-  import type { MusicSourcesController } from "$lib/music/music-sources-controller.svelte";
+  import type { MusicSourceCollection } from "$lib/music/library/contracts";
+  import type { MusicSourcesController } from "$lib/music/sources/controller.svelte";
   import MusicBuilderDialog from "./MusicBuilderDialog.svelte";
 
   let { controller, collection, onClose, onApplied }: { controller: MusicSourcesController; collection: MusicSourceCollection; onClose: () => void; onApplied: () => void } = $props();
@@ -65,7 +66,7 @@
           {#if !everyAmbiguityResolved}<p class="mt-2 text-xs text-destructive">{t("music.builder.unresolvedAmbiguities")}</p>{/if}
         {:else}<p class="mt-3 text-sm text-muted-foreground">{t("music.builder.dataPreserved")}</p>{/if}
       {/if}
-      {#if error}<p class="mt-3 text-sm text-destructive" role="alert">{error}</p>{/if}
+      {#if error}<Notice class="mt-3 text-sm" message={error} />{/if}
     </div>
     {#snippet footer()}
       <button type="button" onclick={() => { void close(); }} disabled={step === "applying"} class="min-h-10 rounded-md border border-border bg-card px-3.5 py-2 text-sm font-medium hover:bg-accent disabled:opacity-50">{t("music.builder.cancel")}</button>

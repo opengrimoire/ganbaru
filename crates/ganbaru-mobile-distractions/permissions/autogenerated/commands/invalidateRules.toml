@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-invalidateRules"
+description = "Enables the invalidateRules command without any pre-configured scope."
+commands.allow = ["invalidateRules"]
+
+[[permission]]
+identifier = "deny-invalidateRules"
+description = "Denies the invalidateRules command without any pre-configured scope."
+commands.deny = ["invalidateRules"]

@@ -1,7 +1,7 @@
 //! Whole-vault receive, activation, acknowledgement, and refresh lifecycle.
 
+use super::pairing::{PairingManager, PendingAcknowledgement};
 use super::protocol::BundlePurpose;
-use super::state::{PairingManager, PendingAcknowledgement};
 use super::transport::TransferCancellation;
 use crate::vault::ownership::{TransferPhase, VaultOwnershipManager};
 use serde::{Deserialize, Serialize};
@@ -298,7 +298,7 @@ pub(super) fn reload_application_shell_after_ownership_change(
         .ok_or_else(|| "main application window is unavailable".to_string())?;
     window
         .eval(
-            "if (window.dispatchEvent(new Event('ganbaru-ai:mobile-ownership-reload-requested', { cancelable: true }))) window.location.reload()",
+            "if (window.dispatchEvent(new Event('ganbaru:mobile-ownership-reload-requested', { cancelable: true }))) window.location.reload()",
         )
         .map_err(|error| format!("reload application after ownership change: {error}"))
 }
@@ -389,6 +389,9 @@ async fn refresh_after_reconnect(app: &tauri::AppHandle) -> bool {
     )
     .await;
     let reachable = poll.is_ok();
+    if reachable {
+        crate::contacts::identity::try_release(app).await;
+    }
     let was_connected = lifecycle.connected.swap(reachable, Ordering::AcqRel);
     if let Ok(Some(purpose)) = poll {
         if status.can_write {
@@ -434,7 +437,7 @@ fn handoff_staging_path(
     crate::vault::backup::android_handoff_staging_path(app, transfer_id)
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 fn handoff_staging_path(
     app: &tauri::AppHandle,
     transfer_id: &str,
@@ -468,7 +471,7 @@ async fn activate_handoff(
     .await
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 async fn activate_handoff(
     app: &tauri::AppHandle,
     staging: &std::path::Path,
@@ -506,6 +509,6 @@ mod tests {
         assert_eq!(ReceiveMode::Ownership.purpose(), BundlePurpose::Ownership);
         assert_eq!(ReceiveMode::Refresh.purpose(), BundlePurpose::Refresh);
         assert_eq!(ReceiveMode::Bootstrap.purpose(), BundlePurpose::Refresh);
-        assert_eq!(super::super::protocol::PROTOCOL_VERSION, 3);
+        assert_eq!(super::super::protocol::PROTOCOL_VERSION, 5);
     }
 }

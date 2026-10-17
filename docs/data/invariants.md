@@ -1,6 +1,6 @@
 # Data invariants
 
-These conditions must remain true across UI actions, imports, migrations, recovery, synchronization, and direct service calls. Each invariant names the rule, why it exists, its enforcement boundary, and the tests expected to protect it.
+These conditions must remain true across UI actions, imports, migrations, recovery, synchronization, and direct service calls. Each invariant names the rule, why it exists, its enforcement boundary, and the tests expected to protect it. Numbers are stable references from other documents; add new invariants at the end.
 
 ## Pomodoro and calendar
 
@@ -40,11 +40,9 @@ These conditions must remain true across UI actions, imports, migrations, recove
 
 **Why.** Duplicated bands imply simultaneous timers that cannot exist.
 
-**Enforcement.** The calendar conflict policy and timeline band projection.
+**Enforcement.** One active-first selector shared by the scheduler and the timeline rail, followed by earliest end, creation identity, and occurrence identity. Recorded older runs remain visible as history. See [Time conflict detection](../algorithms/calendar/time-conflict-detection.md).
 
 **Tests.** Partial overlap, full containment, equal windows, active nested events, and identical configuration.
-
-The scheduler and rail share an active-first selector, followed by earliest end, creation identity and occurrence identity. Recorded older runs remain visible as historical evidence. See [Time conflict detection](../algorithms/calendar/time-conflict-detection.md).
 
 ### 5. Persisted evidence owns the past
 
@@ -72,7 +70,7 @@ The scheduler and rail share an active-first selector, followed by earliest end,
 
 **Why.** Hard deletion would break history and interoperability identity.
 
-**Enforcement.** Rust calendar services and foreign-key or trigger constraints. The current app boundary implements this. Future CLI or external MCP surfaces must reuse the same service policy.
+**Enforcement.** Rust calendar services and foreign-key or trigger constraints. Planned CLI or external MCP surfaces must reuse the same service policy.
 
 **Tests.** Every protected relationship, recurrence templates and overrides, imported events, repeated delete commands, and restore from archive.
 
@@ -132,7 +130,7 @@ The scheduler and rail share an active-first selector, followed by earliest end,
 
 ### 13. A mention never expands authority
 
-**Rule.** Mentioning an AI teammate or resource does not add membership, history, folder, scratch, or runtime access. The mention resolves only within existing authority.
+**Rule.** Mentioning an AI agent or resource does not add membership, history, folder, scratch, or runtime access. The mention resolves only within existing authority.
 
 **Why.** User-authored text is not an authorization channel.
 
@@ -160,10 +158,19 @@ The scheduler and rail share an active-first selector, followed by earliest end,
 
 **Tests.** Membership, profile, folder, scratch, and audience reduction during active and idle continuations.
 
+## Focus evidence
+
+### 16. Plans and replicas never authorize execution
+
+**Rule.** A Calendar commitment, notification projection, or replicated history record cannot start a run or record a phase. Recovery consumes committed SQLite execution only and never creates projected runs or later phases. Desktop automatic admission requires a fresh local activity observation after the relevant boundary.
+
+**Why.** A plan or a copy is not evidence that work happened on this device.
+
+**Enforcement.** Native Focus owners and recovery services. See [Focus authority](../algorithms/pomodoro/focus-authority.md).
+
+**Tests.** Android reminders without a run, recovery after expired phases, replicated history, and admission without fresh activity.
+
 ## Adding an invariant
 
 A new invariant must include a rule, rationale, enforcement boundary, and meaningful failure tests. Prefer one durable assertion over a list of current helper or table names. If the assertion belongs to authorization, make [Chat access control](access-control.md) normative and reference it here.
 
-## Focus evidence and replication
-
-A Calendar commitment, notification projection, or replicated history record cannot authorize execution. Android recovery consumes committed SQLite state only and never creates projected runs or later phases. Desktop automatic admission requires a fresh local activity observation after the relevant boundary. [Focus authority](../algorithms/pomodoro/focus-authority.md) specifies the remaining device-controller and command fencing requirements.

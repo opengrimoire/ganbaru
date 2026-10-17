@@ -7,10 +7,9 @@ const FOCUSABLE_SELECTOR = [
   "[tabindex]:not([tabindex='-1'])",
 ].join(",");
 
-interface ModalKeyboardLayer {
-  id: symbol;
-  handle: (event: KeyboardEvent) => void;
-}
+type ModalKeyboardLayer =
+  | { id: symbol; kind: "exclusive"; handle: (event: KeyboardEvent) => void }
+  | { id: symbol; kind: "isolating"; handle: (event: KeyboardEvent) => boolean };
 
 let modalKeyboardLayers: ModalKeyboardLayer[] = [];
 let modalKeyboardRouterTarget: Window | null = null;
@@ -18,6 +17,10 @@ let modalKeyboardRouterTarget: Window | null = null;
 function routeModalKeyboardEvent(event: KeyboardEvent): void {
   const layer = modalKeyboardLayers.at(-1);
   if (!layer) return;
+  if (layer.kind === "isolating") {
+    if (layer.handle(event)) event.stopImmediatePropagation();
+    return;
+  }
   try {
     layer.handle(event);
   } finally {
@@ -44,13 +47,32 @@ export function installModalKeyboardRouter(target: Window = window): () => void 
 export function activateModalKeyboardLayer(
   handle: (event: KeyboardEvent) => void,
 ): () => void {
+  return pushModalKeyboardLayer({ id: Symbol("modal-keyboard-layer"), kind: "exclusive", handle });
+}
+
+/**
+ * Give a modal panel first look at keyboard input while the controls inside it keep receiving keys. `handle` returns
+ * whether it claimed the event, which then stops there. While the layer is active, window-wide app and view shortcuts
+ * stay inactive (see `isAppKeyboardIsolated`), so keys the panel leaves alone do not reach the app behind it.
+ */
+export function activateIsolatingKeyboardLayer(
+  handle: (event: KeyboardEvent) => boolean,
+): () => void {
+  return pushModalKeyboardLayer({ id: Symbol("isolating-keyboard-layer"), kind: "isolating", handle });
+}
+
+/** Whether a modal panel owns the keyboard, so window-wide app and view shortcuts must not act. */
+export function isAppKeyboardIsolated(): boolean {
+  return modalKeyboardLayers.some((layer) => layer.kind === "isolating");
+}
+
+function pushModalKeyboardLayer(layer: ModalKeyboardLayer): () => void {
   if (!modalKeyboardRouterTarget && typeof window !== "undefined") {
     installModalKeyboardRouter(window);
   }
-  const id = Symbol("modal-keyboard-layer");
-  modalKeyboardLayers = [...modalKeyboardLayers, { id, handle }];
+  modalKeyboardLayers = [...modalKeyboardLayers, layer];
   return () => {
-    modalKeyboardLayers = modalKeyboardLayers.filter((layer) => layer.id !== id);
+    modalKeyboardLayers = modalKeyboardLayers.filter((candidate) => candidate.id !== layer.id);
   };
 }
 
@@ -86,14 +108,49 @@ export function trapModalTabKey(container: HTMLElement, event: KeyboardEvent): b
   return false;
 }
 
-/** Focus a modal, contain Tab navigation, and restore the invoking control. */
+/**
+ * Capture the control that opens a surface so closing the surface can return focus.
+ *
+ * The returned function returns focus to the opener only when the opener had keyboard focus
+ * (`:focus-visible`). A pointer-opened surface does not leave a focused trigger behind, so Space
+ * or Enter cannot silently reopen it or activate a control in a hidden surface. Focus the user
+ * already moved outside the surface is left alone, and focus stranded in a hidden surface is
+ * released to the nearest dialog that contained the opener, or to the document.
+ *
+ * @returns A function to call when the surface closes, given the closing surface element.
+ */
+export function captureFocusReturn(): (surface?: HTMLElement | null) => void {
+  const active = document.activeElement;
+  const opener = active instanceof HTMLElement && active !== document.body ? active : null;
+  const restoreOpener = opener?.matches(":focus-visible") ?? false;
+  const openerDialog = opener?.parentElement?.closest<HTMLElement>("[role='dialog']") ?? null;
+
+  return (surface) => {
+    queueMicrotask(() => {
+      const current = document.activeElement;
+      const focusMovedElsewhere = current instanceof HTMLElement
+        && current !== document.body
+        && !(surface?.contains(current) ?? false);
+      if (focusMovedElsewhere) return;
+      if (restoreOpener && opener?.isConnected) {
+        opener.focus({ preventScroll: true });
+        return;
+      }
+      if (openerDialog?.isConnected) {
+        openerDialog.focus({ preventScroll: true });
+        if (document.activeElement === openerDialog) return;
+      }
+      if (current instanceof HTMLElement && current !== document.body) current.blur();
+    });
+  };
+}
+
+/** Focus a modal, contain Tab navigation, and return focus when it closes. */
 export function activateModalFocus(
   container: HTMLElement,
   initialFocus: HTMLElement | null = null,
 ): () => void {
-  const previousFocus = document.activeElement instanceof HTMLElement
-    ? document.activeElement
-    : null;
+  const returnFocus = captureFocusReturn();
   const handleKeydown = (event: KeyboardEvent): void => {
     trapModalTabKey(container, event);
   };
@@ -105,6 +162,6 @@ export function activateModalFocus(
 
   return () => {
     document.removeEventListener("keydown", handleKeydown, true);
-    if (previousFocus?.isConnected) queueMicrotask(() => previousFocus.focus());
+    returnFocus(container);
   };
 }

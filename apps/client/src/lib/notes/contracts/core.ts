@@ -7,6 +7,8 @@ export const NOTES_BLOCK_TYPES = [
   "heading_2",
   "heading_3",
   "heading_4",
+  "heading_5",
+  "heading_6",
   "bulleted_list_item",
   "numbered_list_item",
   "to_do",
@@ -64,18 +66,6 @@ export const NOTES_COLORS = [
 ] as const;
 
 export type NotesColor = (typeof NOTES_COLORS)[number];
-
-export type NotesTextBlockType =
-  | "paragraph"
-  | "heading_1"
-  | "heading_2"
-  | "heading_3"
-  | "heading_4"
-  | "bulleted_list_item"
-  | "numbered_list_item"
-  | "toggle"
-  | "callout"
-  | "quote";
 
 export type NotesParent =
   | { type: "workspace"; workspace: true }
@@ -138,8 +128,6 @@ export const NOTES_LOCAL_OBJECT_MENTION_TYPES = [
   "project",
   "project_task",
   "calendar_event",
-  "pomodoro_run",
-  "music_item",
 ] as const;
 
 export type NotesLocalObjectMentionType =
@@ -159,15 +147,27 @@ export interface NotesLocalObjectMentionRichText {
   href: string | null;
 }
 
+/** The longest a date mention can remind ahead of its date, four weeks. */
+export const NOTES_DATE_MENTION_MAX_REMINDER_MINUTES_BEFORE = 40_320;
+
 export interface NotesDateMentionReminder {
   enabled: boolean;
+  /** How long before the date the reminder fires; absent means at the date itself. */
+  minutes_before?: number | null;
 }
+
+/** How a date mention spells its date once edited. */
+export const NOTES_DATE_MENTION_FORMATS = ["full", "short", "numeric", "iso"] as const;
+
+export type NotesDateMentionFormat = (typeof NOTES_DATE_MENTION_FORMATS)[number];
 
 export interface NotesDateMentionValue {
   start: string;
   end?: string | null;
   time_zone?: string | null;
   ganbaru_reminder?: NotesDateMentionReminder | null;
+  /** The spelling chosen in the date editor; mentions without one keep the text they were inserted with. */
+  ganbaru_format?: NotesDateMentionFormat | null;
 }
 
 export interface NotesDateMentionRichText {
@@ -200,7 +200,12 @@ export type NotesRichText =
   | NotesDateMentionRichText
   | NotesEquationRichText;
 
-export interface NotesTextBlockPayload {
+/** Visual indentation relative to the structural parent, independent of block content. */
+export interface NotesBlockLayout {
+  ganbaru_indent?: number;
+}
+
+export interface NotesTextBlockPayload extends NotesBlockLayout {
   rich_text: NotesRichText[];
   color?: NotesColor;
   is_toggleable?: boolean;
@@ -222,38 +227,39 @@ export interface NotesCalloutBlockPayload extends NotesTextBlockPayload {
   icon: NotesCalloutIcon;
 }
 
-export interface NotesCodeBlockPayload {
+export interface NotesCodeBlockPayload extends NotesBlockLayout {
   rich_text: NotesRichText[];
   caption: NotesRichText[];
   language: string;
 }
 
-export interface NotesChildPageBlockPayload {
+export interface NotesChildPageBlockPayload extends NotesBlockLayout {
   title: string;
 }
 
-export interface NotesChildDatabaseBlockPayload {
+export interface NotesChildDatabaseBlockPayload extends NotesBlockLayout {
+  editing_locked?: boolean;
   title: string;
   database_id?: string;
   data_source_id?: string;
   view_id?: string;
 }
 
-export type NotesDividerBlockPayload = Record<string, unknown>;
+export type NotesDividerBlockPayload = NotesBlockLayout & Record<string, unknown>;
 
-export type NotesBreadcrumbBlockPayload = Record<string, unknown>;
+export type NotesBreadcrumbBlockPayload = NotesBlockLayout & Record<string, unknown>;
 
-export interface NotesTableOfContentsBlockPayload {
+export interface NotesTableOfContentsBlockPayload extends NotesBlockLayout {
   color?: NotesColor;
 }
 
-export type NotesColumnListBlockPayload = Record<string, unknown>;
+export type NotesColumnListBlockPayload = NotesBlockLayout & Record<string, unknown>;
 
-export interface NotesColumnBlockPayload {
+export interface NotesColumnBlockPayload extends NotesBlockLayout {
   width_ratio?: number;
 }
 
-export interface NotesTableBlockPayload {
+export interface NotesTableBlockPayload extends NotesBlockLayout {
   table_width: number;
   has_column_header: boolean;
   has_row_header: boolean;
@@ -261,18 +267,18 @@ export interface NotesTableBlockPayload {
 
 export type NotesTableCell = NotesRichText[];
 
-export interface NotesTableRowBlockPayload {
+export interface NotesTableRowBlockPayload extends NotesBlockLayout {
   cells: NotesTableCell[];
 }
 
-export type NotesTabBlockPayload = Record<string, unknown>;
+export type NotesTabBlockPayload = NotesBlockLayout & Record<string, unknown>;
 
-export interface NotesBookmarkBlockPayload {
+export interface NotesBookmarkBlockPayload extends NotesBlockLayout {
   caption: NotesRichText[];
   url: string;
 }
 
-export interface NotesLinkPreviewBlockPayload {
+export interface NotesLinkPreviewBlockPayload extends NotesBlockLayout {
   url: string;
 }
 
@@ -281,11 +287,11 @@ export interface NotesSyncedBlockReference {
   block_id: string;
 }
 
-export interface NotesSyncedBlockPayload {
+export interface NotesSyncedBlockPayload extends NotesBlockLayout {
   synced_from: NotesSyncedBlockReference | null;
 }
 
-export interface NotesTemplateBlockPayload {
+export interface NotesTemplateBlockPayload extends NotesBlockLayout {
   rich_text: NotesRichText[];
 }
 
@@ -306,21 +312,21 @@ export interface NotesButtonInsertBlocksAction {
 
 export type NotesButtonAction = NotesButtonInsertBlocksAction;
 
-export interface NotesButtonBlockPayload {
+export interface NotesButtonBlockPayload extends NotesBlockLayout {
   rich_text: NotesRichText[];
   icon: NotesIcon | null;
   actions: NotesButtonAction[];
 }
 
-export interface NotesEmbedBlockPayload {
+export interface NotesEmbedBlockPayload extends NotesBlockLayout {
   url: string;
 }
 
-export interface NotesEquationBlockPayload {
+export interface NotesEquationBlockPayload extends NotesBlockLayout {
   expression: string;
 }
 
-export type NotesUnsupportedBlockPayload = Record<string, unknown> & {
+export type NotesUnsupportedBlockPayload = NotesBlockLayout & Record<string, unknown> & {
   block_type?: string;
   source_type?: string;
   raw?: Record<string, unknown>;
@@ -373,6 +379,10 @@ export interface NotesPageTemplate {
 interface NotesBlockBase<Type extends NotesBlockType> {
   object: "block";
   id: string;
+  /** Opaque canonical revision. Optimistic blocks receive it after their first commit. */
+  edit_revision?: string;
+  /** Opaque revision of the canonical type and payload alone, which guards content saves against stale bases. */
+  content_revision?: string;
   parent: NotesParent;
   created_time: string;
   last_edited_time: string;
@@ -403,6 +413,14 @@ export type NotesHeading3Block = NotesBlockBase<"heading_3"> & {
 
 export type NotesHeading4Block = NotesBlockBase<"heading_4"> & {
   heading_4: NotesTextBlockPayload;
+};
+
+export type NotesHeading5Block = NotesBlockBase<"heading_5"> & {
+  heading_5: NotesTextBlockPayload;
+};
+
+export type NotesHeading6Block = NotesBlockBase<"heading_6"> & {
+  heading_6: NotesTextBlockPayload;
 };
 
 export type NotesBulletedListItemBlock = NotesBlockBase<"bulleted_list_item"> & {
@@ -531,6 +549,8 @@ export type NotesBlock =
   | NotesHeading2Block
   | NotesHeading3Block
   | NotesHeading4Block
+  | NotesHeading5Block
+  | NotesHeading6Block
   | NotesBulletedListItemBlock
   | NotesNumberedListItemBlock
   | NotesTodoBlock
@@ -568,6 +588,8 @@ export type NotesBlockWrite =
   | { id: string; type: "heading_2"; heading_2: NotesTextBlockPayload }
   | { id: string; type: "heading_3"; heading_3: NotesTextBlockPayload }
   | { id: string; type: "heading_4"; heading_4: NotesTextBlockPayload }
+  | { id: string; type: "heading_5"; heading_5: NotesTextBlockPayload }
+  | { id: string; type: "heading_6"; heading_6: NotesTextBlockPayload }
   | { id: string; type: "bulleted_list_item"; bulleted_list_item: NotesTextBlockPayload }
   | { id: string; type: "numbered_list_item"; numbered_list_item: NotesTextBlockPayload }
   | { id: string; type: "to_do"; to_do: NotesTodoBlockPayload }
@@ -680,6 +702,29 @@ export interface NotesLinkedDatabaseCreateRequest {
   view_id: string;
   source_block_id: string;
   title?: string | null;
+  parent?: NotesParent;
+  after_block_id?: string | null;
+  replace_block_id?: string | null;
+}
+
+export interface NotesDatabaseDuplicateRequest {
+  id: string;
+  source_block_id: string;
+  parent?: NotesParent;
+  after_block_id?: string | null;
+  replace_block_id?: string | null;
+}
+
+/** Minimal database ownership metadata without loading row pages or view contents. */
+export interface NotesDatabaseReference {
+  editing_locked: boolean;
+  block_id: string;
+  page_id: string;
+  source_block_id: string;
+  source_page_id: string;
+  title: string;
+  owned_data_source_count: number;
+  is_linked: boolean;
 }
 
 export interface NotesCreatedDatabase {

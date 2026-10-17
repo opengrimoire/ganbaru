@@ -3,7 +3,7 @@
   import Search from "@lucide/svelte/icons/search";
   import X from "@lucide/svelte/icons/x";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import type { MusicSourceBrowserNode } from "$lib/music/music-source-browser";
+  import type { MusicSourceBrowserNode } from "$lib/music/sources/browser";
   import { cn } from "$lib/utils";
 
   let {
@@ -59,9 +59,9 @@
 
 <section class="flex min-h-0 flex-1 flex-col" aria-label={t("music.builder.sources")}>
   <div class="shrink-0 p-2">
-    <div class="flex h-8 items-center gap-2 rounded-full bg-secondary/35 px-2.5">
+    <div class="field flex h-8 items-center gap-2 px-2.5">
       <Search size={13} class="shrink-0 text-muted-foreground" />
-      <input bind:value={search} type="search" autocomplete="off" aria-label={t("music.builder.searchSources")} placeholder={t("music.builder.searchSources")} class="min-w-0 flex-1 bg-transparent text-[0.7rem] outline-none placeholder:text-muted-foreground" />
+      <input bind:value={search} type="search" autocomplete="off" aria-label={t("music.builder.searchSources")} placeholder={t("music.builder.searchSources")} class="field-bare text-[0.7rem]" />
       {#if search}<button type="button" onclick={() => search = ""} class="grid h-6 w-6 place-items-center rounded-full text-muted-foreground hover:bg-background/60 hover:text-foreground" aria-label={t("music.builder.clearSearch")}><X size={12} /></button>{/if}
     </div>
   </div>

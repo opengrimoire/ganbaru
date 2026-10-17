@@ -1,14 +1,6 @@
 import type { NotesParent } from "./core";
 import type { NotesLoadedPage } from "./workspace";
 
-export interface NotesMarkdownImportRequest {
-  parent: NotesParent;
-  markdown: string;
-  title?: string | null;
-  source_name?: string | null;
-  after_block_id?: string | null;
-}
-
 export type NotesMarkdownImportDiagnosticSeverity = "info" | "warning" | "error";
 
 export interface NotesMarkdownImportDiagnostic {
@@ -134,13 +126,6 @@ export interface NotesNotionExportImportResult {
   imported_file_count: number;
   skipped_file_count: number;
   unsupported_block_count: number;
-}
-
-export interface NotesMarkdownExportRequest {
-  page_id: string;
-  include_page_title?: boolean | null;
-  include_comments?: boolean | null;
-  include_resolved_comments?: boolean | null;
 }
 
 export type NotesMarkdownExportDiagnosticSeverity = "info" | "warning" | "error";

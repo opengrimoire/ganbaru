@@ -1,19 +1,19 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "ganbaru-ai",
-  "mainBinaryName": "ganbaru-ai",
-  "version": "0.1.9",
-  "identifier": "org.opengrimoire.ganbaruai",
+  "productName": "ganbaru",
+  "mainBinaryName": "ganbaru",
+  "version": "0.1.10",
+  "identifier": "org.opengrimoire.ganbaru",
   "build": {
     "beforeDevCommand": "pnpm dev",
-    "devUrl": "http://localhost:1420/__ganbaru-ai_dev_ready",
+    "devUrl": "http://localhost:1420/__ganbaru_dev_ready",
     "beforeBuildCommand": "pnpm build",
     "frontendDist": "../dist"
   },
   "app": {
     "windows": [
       {
-        "title": "Ganbaru AI",
+        "title": "Ganbaru",
         "width": 1200,
         "height": 800,
         "minWidth": 280,
@@ -62,10 +62,10 @@
     "category": "Productivity",
     "linux": {
       "deb": {
-        "desktopTemplate": "deb.desktop.hbs"
+        "desktopTemplate": "packaging/linux/ganbaru.desktop.hbs"
       },
       "rpm": {
-        "desktopTemplate": "deb.desktop.hbs"
+        "desktopTemplate": "packaging/linux/ganbaru.desktop.hbs"
       }
     },
     "icon": [

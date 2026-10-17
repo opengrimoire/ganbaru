@@ -1,13 +1,14 @@
 //! Atomic turn persistence, attachment loading, and send receipt replay.
 
-use super::support::{corrupt_data, i64_value, json_error, persistence_error};
+use super::support::{corrupt_data_error, i64_value, json_error, persistence_error};
 use super::validation::{prompt_preview, prompt_title, wire_interaction, wire_safety};
-use crate::chat::agent_runs::{StartingAgentRun, TurnOrigin};
-use crate::chat::models::*;
-use crate::chat::repository::receipts::{CommandReceiptRead, CommandReceiptState};
-use crate::chat::repository::{attachments, reads};
+use crate::chat::interaction::MAX_IMAGE_COUNT;
 use crate::chat::send_commands::{SendChatTurnCommand, SendChatTurnResult, SteerChatTurnCommand};
 use crate::vault;
+use ganbaru_chat::agent_runs::{StartingAgentRun, TurnOrigin};
+use ganbaru_chat::repository::receipts::{CommandReceiptRead, CommandReceiptState};
+use ganbaru_chat::repository::{attachments, reads};
+use ganbaru_chat_contracts::models::*;
 use serde_json::json;
 use sqlx::{Row, SqlitePool};
 
@@ -46,10 +47,10 @@ pub(super) async fn read_thread_runtime_data(
     ) {
         (None, None) => None,
         (Some(version), Some(data)) => Some(VersionedJson {
-            schema_version: u32::try_from(version).map_err(|_| corrupt_data())?,
+            schema_version: u32::try_from(version).map_err(|_| corrupt_data_error())?,
             value: serde_json::from_str(&data).map_err(json_error)?,
         }),
-        _ => return Err(corrupt_data()),
+        _ => return Err(corrupt_data_error()),
     };
     Ok(ThreadRuntimeData {
         working_folder_id: row
@@ -57,7 +58,7 @@ pub(super) async fn read_thread_runtime_data(
             .map_err(persistence_error)?
             .map(ProjectWorkingFolderId::new)
             .transpose()
-            .map_err(|_| corrupt_data())?,
+            .map_err(|_| corrupt_data_error())?,
         scratch_generation_id: row
             .try_get("scratch_generation_id")
             .map_err(persistence_error)?,
@@ -65,24 +66,24 @@ pub(super) async fn read_thread_runtime_data(
             row.try_get::<String, _>("provider_instance_id")
                 .map_err(persistence_error)?,
         )
-        .map_err(|_| corrupt_data())?,
+        .map_err(|_| corrupt_data_error())?,
         continuation_group_id: ContinuationGroupId::new(
             row.try_get::<String, _>("continuation_group_id")
                 .map_err(persistence_error)?,
         )
-        .map_err(|_| corrupt_data())?,
+        .map_err(|_| corrupt_data_error())?,
         provider_thread_id: row
             .try_get::<Option<String>, _>("provider_thread_id")
             .map_err(persistence_error)?
             .map(ProviderThreadId::new)
             .transpose()
-            .map_err(|_| corrupt_data())?,
+            .map_err(|_| corrupt_data_error())?,
         resume_cursor,
         revision: u64::try_from(
             row.try_get::<i64, _>("revision")
                 .map_err(persistence_error)?,
         )
-        .map_err(|_| corrupt_data())?,
+        .map_err(|_| corrupt_data_error())?,
         execution_environment_id: row
             .try_get("execution_environment_id")
             .map_err(persistence_error)?,
@@ -95,7 +96,7 @@ pub(super) async fn read_attachment_references(
     working_folder_id: Option<&ProjectWorkingFolderId>,
     attachment_ids: &[ChatAttachmentId],
 ) -> ChatResult<Vec<PromptAttachmentReference>> {
-    if attachment_ids.len() > 8 {
+    if attachment_ids.len() > MAX_IMAGE_COUNT {
         return Err(ChatError::validation(
             "attachments",
             "Too many Chat attachments",
@@ -402,7 +403,7 @@ pub(super) async fn persist_user_turn(context: PersistUserTurnContext<'_>) -> Ch
     .await
     .map_err(persistence_error)?;
     if let Some(binding) = origin.run() {
-        crate::chat::agent_runs::insert_starting_run(
+        ganbaru_chat::agent_runs::insert_starting_run(
             &mut transaction,
             StartingAgentRun {
                 binding,
@@ -519,7 +520,7 @@ pub(super) async fn replay_send_receipt(
                 receipt
                     .result
                     .as_ref()
-                    .ok_or_else(corrupt_data)?
+                    .ok_or_else(corrupt_data_error)?
                     .value
                     .clone(),
             )
@@ -535,7 +536,7 @@ fn receipt_error(receipt: &CommandReceiptRead) -> ChatResult<ChatError> {
         receipt
             .error
             .as_ref()
-            .ok_or_else(corrupt_data)?
+            .ok_or_else(corrupt_data_error)?
             .value
             .clone(),
     )

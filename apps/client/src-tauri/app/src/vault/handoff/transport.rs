@@ -1,25 +1,21 @@
 //! Pinned client transport and shared resumable archive streaming.
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 mod server;
-#[cfg(all(test, not(any(target_os = "android", target_os = "ios"))))]
-use server::serve;
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[cfg(desktop)]
 pub(crate) use server::serve_with_coordinator;
 
+use super::pairing::{
+    CoordinatorPin, PairingManager, TlsIdentity, certificate_fingerprint, encode_certificate,
+};
 use super::protocol::{
     BundleMetadata, BundlePurpose, ControlMessage, PROTOCOL_VERSION, PairingInvitation,
     TRANSFER_CHUNK_BYTES, read_control, unix_time_ms, write_control,
-};
-use super::state::{
-    CoordinatorPin, PairingManager, TlsIdentity, certificate_fingerprint, encode_certificate,
 };
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::{WebPkiSupportedAlgorithms, verify_tls12_signature, verify_tls13_signature};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
-use sha2::{Digest, Sha256};
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -300,7 +296,7 @@ pub(crate) async fn cancel_prepared_transfer(
 
 pub(crate) async fn acknowledge_activation(
     manager: &PairingManager,
-    pending: &super::state::PendingAcknowledgement,
+    pending: &super::pairing::PendingAcknowledgement,
 ) -> Result<(), String> {
     match authenticated_exchange(
         manager,
@@ -437,16 +433,16 @@ pub(crate) async fn probe_coordinator(
 }
 
 #[cfg(any(target_os = "android", all(test, not(target_os = "ios"))))]
-pub(crate) async fn exchange_doomscrolling(
+pub(crate) async fn exchange_distractions(
     manager: &PairingManager,
-    samples: Vec<super::protocol::DoomscrollingSampleMessage>,
+    samples: Vec<super::protocol::DistractionsSampleMessage>,
     acknowledged_peer_sample_ids: Vec<String>,
-    owner_snapshot: Vec<super::protocol::DoomscrollingSampleMessage>,
+    owner_snapshot: Vec<super::protocol::DistractionsSampleMessage>,
 ) -> Result<
     (
         Vec<String>,
-        Vec<super::protocol::DoomscrollingSampleMessage>,
-        Vec<super::protocol::DoomscrollingSampleMessage>,
+        Vec<super::protocol::DistractionsSampleMessage>,
+        Vec<super::protocol::DistractionsSampleMessage>,
     ),
     String,
 > {
@@ -456,7 +452,7 @@ pub(crate) async fn exchange_doomscrolling(
     let (device_id, _) = manager.identity()?;
     match authenticated_exchange(
         manager,
-        ControlMessage::DoomscrollingExchange {
+        ControlMessage::DistractionsExchange {
             protocol_version: PROTOCOL_VERSION,
             vault_id: coordinator.vault_id,
             device_id,
@@ -467,14 +463,64 @@ pub(crate) async fn exchange_doomscrolling(
     )
     .await?
     {
-        ControlMessage::DoomscrollingAcknowledged {
+        ControlMessage::DistractionsAcknowledged {
             acknowledged_sample_ids,
             peer_samples,
             combined_samples,
         } => Ok((acknowledged_sample_ids, peer_samples, combined_samples)),
         ControlMessage::Error { message, .. } => Err(message),
-        _ => Err("coordinator returned an invalid Doomscrolling response".to_string()),
+        _ => Err("coordinator returned an invalid Distractions response".to_string()),
     }
+}
+
+/// Sends one Contacts message to a coordinator reached through a contact card hint. The
+/// connection pins the hinted certificate but presents no client identity.
+pub(crate) async fn unauthenticated_exchange(
+    endpoint: &str,
+    certificate_fingerprint: &str,
+    message: ControlMessage,
+) -> Result<ControlMessage, String> {
+    let endpoint = endpoint
+        .parse()
+        .map_err(|_| "contact endpoint is invalid".to_string())?;
+    let mut stream = connect_pinned(endpoint, certificate_fingerprint, None).await?;
+    timeout_control(write_control(&mut stream, &message)).await?;
+    timeout_control(read_control(&mut stream)).await
+}
+
+/// Asks the coordinator for the person's signing key over the linked-device identity.
+pub(crate) async fn request_person_key(manager: &PairingManager) -> Result<ControlMessage, String> {
+    let coordinator = manager
+        .coordinator_pin()?
+        .ok_or_else(|| "this device is not linked to a coordinator".to_string())?;
+    let (device_id, _) = manager.identity()?;
+    authenticated_exchange(
+        manager,
+        ControlMessage::PersonKeyRequest {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: coordinator.vault_id,
+            device_id,
+        },
+    )
+    .await
+}
+
+/// The vault and device ids a sync exchange presents, or `None` on a device that is not linked
+/// to a coordinator.
+pub(crate) fn sync_peer(manager: &PairingManager) -> Result<Option<(String, String)>, String> {
+    let Some(coordinator) = manager.coordinator_pin()? else {
+        return Ok(None);
+    };
+    let (device_id, _) = manager.identity()?;
+    Ok(Some((coordinator.vault_id, device_id)))
+}
+
+/// Sends one sync message to the coordinator over the linked-device identity.
+pub(crate) async fn sync_request(
+    manager: &PairingManager,
+    message: ControlMessage,
+) -> Result<ControlMessage, String> {
+    authenticated_exchange(manager, message).await
 }
 
 async fn authenticated_exchange(
@@ -525,7 +571,7 @@ pub(crate) async fn download_bundle(
     download_bundle_inner(manager, metadata, cancellation, None).await
 }
 
-#[cfg(all(test, not(any(target_os = "android", target_os = "ios"))))]
+#[cfg(all(test, desktop))]
 mod tests;
 
 async fn download_bundle_inner(
@@ -694,25 +740,4 @@ async fn timeout_control<T>(
 
 fn fs_rename(source: &Path, target: &Path) -> Result<(), String> {
     std::fs::rename(source, target).map_err(|error| format!("finalize staged transfer: {error}"))
-}
-
-pub(crate) fn sha256_file(path: &Path) -> Result<String, String> {
-    let mut file = std::fs::File::open(path)
-        .map_err(|error| format!("open file for SHA-256 digest: {error}"))?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; TRANSFER_CHUNK_BYTES];
-    loop {
-        let bytes = file
-            .read(&mut buffer)
-            .map_err(|error| format!("read file for SHA-256 digest: {error}"))?;
-        if bytes == 0 {
-            break;
-        }
-        hasher.update(&buffer[..bytes]);
-    }
-    Ok(hasher
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect())
 }

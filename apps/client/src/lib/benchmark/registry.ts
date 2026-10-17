@@ -68,7 +68,7 @@ export const BENCHMARK_SCENARIOS: BenchmarkScenarioMetadata[] = [
     id: "calendar-nav",
     label: "Calendar week-view nav",
     description:
-      "Dispatches initial and repeated ArrowRight keydown events plus keyup for a 3-second hold, using the same window keyboard handler and held-navigation controller as a physical right-arrow hold. It runs against the 1-year practical dense calendar.",
+      "Dispatches initial and repeated ArrowRight keydown events plus keyup for a 3-second hold, using the same window keyboard handler and held-navigation controller as a physical right-arrow hold. It runs against the default dense calendar dataset.",
     workload: {
       kind: "stress-memory",
       question: "How much memory does repeated week navigation use?",
@@ -144,6 +144,18 @@ const SCENARIO_LOADERS: Record<string, BenchmarkScenarioLoader> = {
 
 export function getScenarioMetadataById(id: string): BenchmarkScenarioMetadata | undefined {
   return BENCHMARK_SCENARIOS.find((scenario) => scenario.id === id);
+}
+
+/**
+ * Return registered metadata for a scenario module, so each module shares the registry's single
+ * definition of its label, description, workload, and datasets.
+ *
+ * @throws Error when the id is not registered.
+ */
+export function requireScenarioMetadata(id: string): BenchmarkScenarioMetadata {
+  const metadata = getScenarioMetadataById(id);
+  if (!metadata) throw new Error(`Benchmark scenario ${id} is not registered`);
+  return metadata;
 }
 
 export async function loadScenarioById(id: string): Promise<BenchmarkScenario | undefined> {

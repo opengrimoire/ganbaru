@@ -1,4 +1,4 @@
-import type { NotesDataSourceBoardGroup, NotesDataSourceBoardView } from "../../contracts/database";
+import type { NotesDataSourceBoardGroup, NotesDataSourceBoardView } from "$lib/notes/contracts/database";
 import { isNotesBoardRowOpenMode } from ".././blocks";
 import { readBoolean, readRecord, readString, readStringArray } from ".././readers";
 import { parseNotesPage } from ".././workspace";

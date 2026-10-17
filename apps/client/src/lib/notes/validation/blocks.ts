@@ -1,7 +1,7 @@
-import { isNotesCatalogRegisteredBlockType } from "../block-catalog";
+import { isNotesCatalogRegisteredBlockType } from "$lib/notes/blocks/catalog";
 import { NOTES_BUTTON_INSERT_POSITIONS, NOTES_COLORS } from "../contracts/core";
 import type { NotesBlock, NotesBlockType, NotesButtonAction, NotesButtonBlockPayload, NotesButtonInsertPosition, NotesCalloutBlockPayload, NotesCodeBlockPayload, NotesColor, NotesColumnBlockPayload, NotesEquationBlockPayload, NotesParent, NotesSyncedBlockPayload, NotesTabBlockPayload, NotesTableBlockPayload, NotesTableOfContentsBlockPayload, NotesTableRowBlockPayload, NotesTextBlockPayload, NotesTodoBlockPayload, NotesToggleBlockPayload, NotesUnsupportedBlockPayload } from "../contracts/core";
-import type { NotesDatabaseBoardRowOpenMode, NotesDatabaseCalendarRowOpenMode, NotesDatabaseGalleryCardSize, NotesDatabaseGalleryRowOpenMode, NotesDatabaseListRowOpenMode, NotesDatabaseTableRowOpenMode, NotesDatabaseTimelineRowOpenMode } from "../contracts/database";
+import type { NotesDatabaseBoardRowOpenMode, NotesDatabaseCalendarRowOpenMode, NotesDatabaseGalleryCardSize, NotesDatabaseGalleryRowOpenMode, NotesDatabaseListRowOpenMode, NotesDatabaseTableRowOpenMode, NotesDatabaseTimelineRowOpenMode } from "$lib/notes/contracts/database";
 import type { NotesPaginatedBlockList } from "../contracts/workspace";
 import { parseBookmarkPayload, parseEmbedPayload, parseLinkPreviewPayload, parseMediaPayload, parseNullableNotesIcon } from "./assets";
 import { parseChildDatabasePayload } from "./database";
@@ -175,7 +175,9 @@ function parseTableRowPayload(value: unknown, label: string): NotesTableRowBlock
 }
 
 function parseTabPayload(value: unknown, label: string): NotesTabBlockPayload {
-  return parseEmptyObjectPayload(value, label);
+  const record = { ...readRecord(value, label) };
+  delete record.ganbaru_indent;
+  return parseEmptyObjectPayload(record, label);
 }
 
 function parseSyncedBlockPayload(value: unknown, label: string): NotesSyncedBlockPayload {
@@ -268,14 +270,36 @@ export function isNotesTimelineRowOpenMode(value: unknown): value is NotesDataba
   return value === "full_page" || value === "side_panel";
 }
 
+/** Validate content and retain shared indentation for text and embedded blocks. */
 export function parseNotesBlock(value: unknown): NotesBlock {
+  const block = parseNotesBlockContent(value);
+  const record = readRecord(value, "block");
+  const payload = readRecord(record[block.type], `block.${block.type}`);
+  if (payload.ganbaru_indent === undefined) return block;
+  const indent = parseNotesIndent(payload.ganbaru_indent);
+  const parsed: Record<string, unknown> = { ...block };
+  return { ...block, [block.type]: { ...readRecord(parsed[block.type], `block.${block.type}`), ganbaru_indent: indent } };
+}
+
+/** Validate block content before attaching its shared layout metadata. */
+function parseNotesBlockContent(value: unknown): NotesBlock {
   const record = readRecord(value, "block");
   if (record.object !== "block") throw new Error("block.object must be block");
   const type = readString(record.type, "block.type");
   if (!isNotesBlockType(type)) throw new Error(`unsupported block type: ${type}`);
+  const revision = record.edit_revision;
+  if (revision !== undefined && (typeof revision !== "string" || !/^[a-f0-9]{64}$/u.test(revision))) {
+    throw new Error("block.edit_revision must be a canonical revision");
+  }
+  const contentRevision = record.content_revision;
+  if (contentRevision !== undefined && (typeof contentRevision !== "string" || !/^[a-f0-9]{64}$/u.test(contentRevision))) {
+    throw new Error("block.content_revision must be a canonical revision");
+  }
   const base = {
     object: "block" as const,
     id: readString(record.id, "block.id"),
+    edit_revision: revision as string | undefined,
+    content_revision: contentRevision as string | undefined,
     parent: parseNotesParent(record.parent),
     created_time: readString(record.created_time, "block.created_time"),
     last_edited_time: readString(record.last_edited_time, "block.last_edited_time"),
@@ -300,6 +324,10 @@ export function parseNotesBlock(value: unknown): NotesBlock {
       return { ...base, type, heading_3: parseTextPayload(record.heading_3, "block.heading_3") };
     case "heading_4":
       return { ...base, type, heading_4: parseTextPayload(record.heading_4, "block.heading_4") };
+    case "heading_5":
+      return { ...base, type, heading_5: parseTextPayload(record.heading_5, "block.heading_5") };
+    case "heading_6":
+      return { ...base, type, heading_6: parseTextPayload(record.heading_6, "block.heading_6") };
     case "bulleted_list_item":
       return {
         ...base,
@@ -424,4 +452,10 @@ export function parseNotesPaginatedBlockList(value: unknown): NotesPaginatedBloc
     next_cursor: readNullableString(record.next_cursor, "block list.next_cursor"),
     has_more: readBoolean(record.has_more, "block list.has_more"),
   };
+}
+
+/** Validate persisted indentation independently of any editor nesting limit. */
+export function parseNotesIndent(value: unknown): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw new Error("Notes indentation must be a nonnegative safe integer");
+  return value;
 }

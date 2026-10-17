@@ -1,6 +1,6 @@
 use super::{device_state_error, store::read_chat_config};
 use crate::chat::device_state::update_active_device_scope;
-use crate::chat::models::{ChatResult, CredentialReferenceId};
+use ganbaru_chat_contracts::models::{ChatResult, CredentialReferenceId};
 use std::collections::BTreeSet;
 
 pub(crate) fn invalidate_provider_state_for_credential(

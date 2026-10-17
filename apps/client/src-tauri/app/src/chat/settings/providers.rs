@@ -1,6 +1,8 @@
 use crate::chat::device_state::ChatProviderDeviceState;
-use crate::chat::models::{ModelId, ProbeState, ProviderModelCatalog, ProviderProbeResult};
-use crate::chat::providers::{DriverCancellation, DriverOperationContext};
+use ganbaru_chat_contracts::models::{
+    ModelId, ProbeState, ProviderModelCatalog, ProviderProbeResult,
+};
+use ganbaru_chat_providers::{DriverCancellation, DriverOperationContext};
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 

@@ -1,12 +1,12 @@
 //! Provider-neutral Chat commands, events, configuration, and wire models.
 
-pub mod chat;
-
-pub use chat::{config, events, models};
+pub mod config;
+pub mod events;
+pub mod models;
 
 #[cfg(test)]
 mod tests {
-    use crate::chat::models::{ChatError, ChatErrorCode};
+    use crate::models::{ChatError, ChatErrorCode};
     use serde_json::json;
 
     #[test]

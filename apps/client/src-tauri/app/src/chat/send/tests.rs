@@ -6,13 +6,13 @@ use super::validation::{
     validate_approval_decision, validate_model_options, validate_pending_request,
     validate_send_mentions,
 };
-use crate::chat::agent_runs::TurnOrigin;
-use crate::chat::events::{CanonicalEvent, ChangedFileSummary, DiffUpdatedEvent};
-use crate::chat::models::*;
-use crate::chat::repository::workspaces;
 use crate::chat::send_commands::SendChatTurnCommand;
 use crate::chat::tests::repository::pool_with_thread;
 use crate::chat::workspace::AuthorizedWorkingFolder;
+use ganbaru_chat::agent_runs::TurnOrigin;
+use ganbaru_chat::repository::workspaces;
+use ganbaru_chat_contracts::events::{CanonicalEvent, ChangedFileSummary, DiffUpdatedEvent};
+use ganbaru_chat_contracts::models::*;
 
 #[test]
 fn provider_changed_files_become_relative_bounded_and_deduplicated() {

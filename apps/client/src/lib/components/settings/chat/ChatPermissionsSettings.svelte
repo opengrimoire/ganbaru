@@ -5,7 +5,9 @@
   import { readChatProviderFiles, saveChatProviderFile } from "$lib/api/chat";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getChat } from "$lib/stores/chat.svelte";
-  import CustomSelect from "../CustomSelect.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
+  import Select from "$lib/components/ui/Select.svelte";
 
   const { t } = getLocalization();
   const chat = getChat();
@@ -117,6 +119,13 @@
     if (selectedInstanceId) void loadFiles(selectedInstanceId);
   }
 
+  /** Retries loading the selected provider's files and rejects when the load fails again. */
+  async function retryLoadFiles(): Promise<void> {
+    if (!selectedInstanceId) throw new Error("No Chat provider is selected to reload");
+    await loadFiles(selectedInstanceId);
+    if (error) throw new Error(error);
+  }
+
   function fileLabel(file: ProviderFileRead): string {
     return file.name;
   }
@@ -129,7 +138,6 @@
 <section class="flex min-h-0 flex-col gap-4">
   <div class="px-1">
     <h2 class="text-[0.866667rem] font-semibold text-foreground">{t("settings.chat.permissions.heading")}</h2>
-    <p class="mt-1 text-[0.8rem] text-muted-foreground">{t("settings.chat.permissions.description")}</p>
   </div>
 
   {#if providers.length === 0}
@@ -137,7 +145,7 @@
       {t("settings.chat.permissions.empty")}
     </p>
   {:else}
-    <CustomSelect
+    <Select
       label={t("settings.chat.permissions.providerLabel")}
       description={t("settings.chat.permissions.providerDescription")}
       value={selectedInstanceId ?? ""}
@@ -147,16 +155,16 @@
     />
 
     {#if error}
-      <p role="alert" class="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-[0.733333rem] text-destructive">{error}</p>
+      <Notice class="px-1 text-[0.733333rem]" message={error} onRetry={files.length === 0 && selectedInstanceId ? retryLoadFiles : undefined} />
     {/if}
 
     {#if loading}
-      <div class="rounded-lg border border-border p-8 text-center text-sm text-muted-foreground">{t("common.loading")}</div>
+      <Loading layout="fill" class="min-h-24" />
     {:else if selectedProvider && files.length > 0}
       <div class="flex min-h-0 flex-col gap-3">
         <div class="flex flex-wrap items-end justify-between gap-3 px-1">
           <div class="min-w-48 flex-1">
-            <CustomSelect
+            <Select
               inline
               class="w-full"
               value={selectedFileId ?? ""}
@@ -186,9 +194,9 @@
                 : t("settings.chat.permissions.newFile", selectedFile.format.toUpperCase())}
             </p>
           </div>
-          <div class="overflow-hidden rounded-md border border-border">
+          <div class="overflow-hidden rounded-floating-item border border-border">
             <textarea
-              class="h-[min(26rem,48vh)] min-h-48 w-full resize-y bg-background p-3 font-mono text-[0.766667rem] leading-5 text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
+              class="h-[min(26rem,48vh)] min-h-48 w-full resize-y bg-transparent p-3 font-mono text-[0.766667rem] leading-5 text-foreground outline-none placeholder:text-muted-foreground"
               value={draft}
               aria-label={fileLabel(selectedFile)}
               placeholder={selectedFile.kind === "instructions"

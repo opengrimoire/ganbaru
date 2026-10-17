@@ -6,7 +6,7 @@
   import Sun from "@lucide/svelte/icons/sun";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { formatShortcut } from "$lib/keyboard-shortcuts";
-  import type { TitleBarControlId } from "$lib/stores/preferences";
+  import type { TitleBarControlId } from "$lib/stores/preference-options";
   import { cn } from "$lib/utils";
 
   let {
@@ -48,7 +48,6 @@
   }
 </script>
 
-    <!-- Theme toggle -->
     {#if showTheme}
       <button
         onclick={onToggleTheme}
@@ -74,7 +73,6 @@
       </button>
     {/if}
 
-    <!-- Diagnostics monitor -->
     {#if showPerformance}
       <div class="relative">
         <button
@@ -90,7 +88,6 @@
       </div>
     {/if}
 
-    <!-- Settings -->
     {#if showSettings}
       <button
         onclick={onOpenSettings}
@@ -131,17 +128,12 @@
             onclick={() => { showOverflow = false; }}
             onkeydown={(e) => { if (e.key === "Escape") showOverflow = false; }}
           ></div>
-          <div class="absolute right-0 top-9 z-50 min-w-40 rounded-lg border border-border bg-popover py-1 shadow-lg">
+          <div class="surface-floating surface-floating-body absolute right-0 top-9 z-50 w-floating-sm">
             {#each overflowControls as control}
               <button
                 onclick={() => onActivateOverflow(control.id)}
                 disabled={control.disabled}
-                class={cn(
-                  "flex w-full items-center px-3 py-1.5 text-left text-sm transition-colors",
-                  control.disabled
-                    ? "cursor-not-allowed text-muted-foreground/50"
-                    : "text-foreground hover:bg-accent",
-                )}
+                class="menu-item"
               >
                 {control.label}
               </button>
@@ -153,7 +145,7 @@
 
 <style>
   .titlebar-icon-button {
-    width: 32px;
-    height: 32px;
+    width: 28px;
+    height: 28px;
   }
 </style>

@@ -18,15 +18,17 @@
     formatModelDisplayName,
     modelCompany,
     shouldShowModelId,
-  } from "$lib/chat/model-company";
-  import ChatModelAvatar from "$lib/components/chat/ChatModelAvatar.svelte";
+  } from "$lib/chat/composer/model-company";
+  import ChatModelAvatar from "$lib/components/chat/identity/ChatModelAvatar.svelte";
   import CalendarScrollbar from "$lib/components/calendar/CalendarScrollbar.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getChat } from "$lib/stores/chat.svelte";
-  import SettingSwitch from "../SettingSwitch.svelte";
-  import type { ChatProviderSetupTarget } from "../types";
+  import Loading from "$lib/components/ui/Loading.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
+  import Switch from "$lib/components/ui/Switch.svelte";
+  import type { ChatProviderSetupTarget } from "$lib/settings/types";
 
   let {
     onOpenProviderSetup,
@@ -395,7 +397,6 @@
   <header class="directory-header">
     <div>
       <h2>{t("settings.chat.providers.heading")}</h2>
-      <p>{t("settings.chat.providers.description")}</p>
     </div>
     <button type="button" class="settings-button" disabled={refreshingAll} onclick={() => void refreshAll()}>
       <RefreshCw size={13} class={refreshingAll ? "animate-spin" : undefined} />
@@ -404,7 +405,7 @@
   </header>
 
   {#if chat.loading}
-    <p class="empty-copy" role="status">{t("common.loading")}</p>
+    <Loading layout="rows" rows={3} />
   {:else if families.length === 0}
     <p class="empty-copy">{t("settings.chat.providers.noIntegrations")}</p>
   {:else}
@@ -499,7 +500,7 @@
                     {@const headerInstanceId = selectedProvider.configuration.instanceId}
                     {@const headerBusy = refreshingAll || busyIds.includes(headerInstanceId)}
                     <div class="header-actions">
-                      <SettingSwitch
+                      <Switch
                         checked={selectedProvider.configuration.enabled}
                         ariaLabel={selectedProvider.configuration.enabled
                           ? t("settings.chat.providers.disable")
@@ -546,7 +547,7 @@
                   {refreshSummary(refreshResult)}
                 </p>
               {/if}
-              {#if operationError}<p role="alert" class="operation-error">{operationError}</p>{/if}
+              {#if operationError}<Notice class="operation-error" message={operationError} />{/if}
 
               {#if selectedProvider}
                 {@const instanceId = selectedProvider.configuration.instanceId}
@@ -634,7 +635,7 @@
                               {/if}
                             </div>
                             <div class="model-actions">
-                              <SettingSwitch
+                              <Switch
                                 checked={isVisible(model.id)}
                                 ariaLabel={isVisible(model.id) ? t("settings.chat.models.hide") : t("settings.chat.models.show")}
                                 disabled={selectedBusy}
@@ -719,7 +720,6 @@
   .provider-settings { display:grid; height:100%; min-height:0; grid-template-rows:auto minmax(0,1fr); gap:0.8rem; }
   .directory-header { display:flex; flex-wrap:wrap; align-items:start; justify-content:space-between; gap:0.75rem; padding-inline:0.25rem; }
   .directory-header h2 { font-size:calc(0.866667rem * var(--type-scale)); font-weight:600; }
-  .directory-header p { margin-top:0.25rem; color:var(--muted-foreground); font-size:calc(0.8rem * var(--type-scale)); }
   .settings-button,.compact-action { display:inline-flex; min-height:1.9rem; align-items:center; justify-content:center; gap:0.35rem; border:1px solid var(--border); border-radius:0.42rem; background:var(--background); padding:0.3rem 0.65rem; color:var(--foreground); font-size:calc(0.733333rem * var(--type-scale)); font-weight:600; line-height:1; white-space:nowrap; }
   .settings-button:hover:not(:disabled),.compact-action:hover:not(:disabled) { background:var(--accent); }
   .empty-copy { padding:0.7rem 0.25rem; color:var(--muted-foreground); font-size:calc(0.72rem * var(--type-scale)); }
@@ -752,11 +752,12 @@
   .editor-account { display:inline-grid; width:1rem; height:1rem; flex:0 0 auto; place-items:center; border-radius:0.2rem; color:var(--muted-foreground); }
   .editor-account:hover,.editor-account:focus-visible { color:var(--foreground); }
   .header-actions { display:flex; flex-shrink:0; align-items:center; gap:0.3rem; }
-  .refresh-summary,.operation-error { border-left:2px solid var(--action-confirm); padding:0.15rem 0.25rem 0.15rem 0.65rem; font-size:calc(0.68rem * var(--type-scale)); }
+  .refresh-summary { border-left:2px solid var(--action-confirm); padding:0.15rem 0.25rem 0.15rem 0.65rem; font-size:calc(0.68rem * var(--type-scale)); }
+  .detail-scroll > :global(.operation-error) { padding:0.15rem 0.25rem 0.15rem 0.65rem; font-size:calc(0.68rem * var(--type-scale)); }
   .refresh-summary { color:var(--muted-foreground); }
   .refresh-summary.attention,.catalog-warning,.provider-notice { color:var(--status-tentative); }
-  .refresh-summary.attention,.operation-error { border-left-color:var(--destructive); }
-  .operation-error,.custom-model-editor p { color:var(--destructive); }
+  .refresh-summary.attention { border-left-color:var(--destructive); }
+  .custom-model-editor p { color:var(--destructive); }
   .editor-content { display:grid; align-content:start; gap:1rem; }
   .editor-section { display:grid; min-width:0; gap:0.65rem; }
   .catalog-section { gap:0; }
@@ -770,8 +771,7 @@
   .model-search:focus-within { color:var(--foreground); }
   .custom-model-editor { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto; align-items:end; gap:0.6rem; border-bottom:1px solid var(--border); padding:0.65rem 0.25rem; }
   .custom-model-editor label { display:grid; min-width:0; gap:0.3rem; color:var(--muted-foreground); font-size:calc(0.68rem * var(--type-scale)); }
-  .custom-model-editor input { min-width:0; height:2rem; border:1px solid var(--border); border-radius:0.375rem; background:var(--background); padding:0.3rem 0.55rem; color:var(--foreground); outline:none; }
-  .custom-model-editor input:focus { border-color:var(--ring); }
+  .custom-model-editor input { min-width:0; height:2rem; border:1px solid var(--border); border-radius:var(--floating-item-radius); background:transparent; padding:0.3rem 0.55rem; color:var(--foreground); outline:none; }
   .custom-model-editor p { grid-column:1/-1; font-size:calc(0.68rem * var(--type-scale)); }
   .model-list { display:grid; }
   .model-row { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:0.65rem; border-bottom:1px solid var(--border); padding:0.62rem 0.25rem; }

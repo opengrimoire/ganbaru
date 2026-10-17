@@ -4,5 +4,4 @@ import type { MessageShape } from "../types";
 export const window = {
   close: "Cerrar",
   closeWindowWithShortcut: (shortcut: string) => `Cerrar ventana (${shortcut})`,
-  closeAppWithShortcut: (shortcut: string) => `Cerrar app (${shortcut})`,
 } as const satisfies MessageShape<typeof enWindow>;

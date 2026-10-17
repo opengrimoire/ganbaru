@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "./ui-foundations.css";
 
 /* Register the application font before the static ownership transition can paint. */
 @font-face {
@@ -131,7 +132,14 @@
   --default-type-scale: 1.066667;
   --font-scale: 1;
   --type-scale: calc(var(--default-type-scale) * var(--font-scale));
+  /* Notes paragraph size. */
+  --paragraph-font-size: calc(1rem * var(--font-scale));
+  /* Collection tables and their panels read slightly smaller than paragraphs, keeping the proportion Notion uses for databases. */
+  --collection-font-size: calc(var(--paragraph-font-size) * 0.875);
+  /* Minimum height of collection table rows and headers; touch layouts raise it to a 44px target. */
+  --collection-table-row-height: 2.375rem;
   --radius: 0.5rem;
+  --explorer-width: 17rem;
   --icon-stroke-width: 1.6;
   --icon-stroke-width-compact: 1.5;
   --icon-stroke-width-delicate: 1;
@@ -139,19 +147,19 @@
 
   /* Content area */
   --background: #F4F4F7;
-  --foreground: #141420;
+  --foreground: #17171F;
   --card: #FFFFFF;
-  --card-foreground: #141420;
+  --card-foreground: #17171F;
   --popover: #FFFFFF;
-  --popover-foreground: #141420;
+  --popover-foreground: #17171F;
   --primary: #404048;
   --primary-foreground: #F4F4F7;
   --secondary: #E2E2E7;
-  --secondary-foreground: #141420;
+  --secondary-foreground: #17171F;
   --muted: #E2E2E7;
-  --muted-foreground: #646470;
+  --muted-foreground: #6F6F7A;
   --accent: #E8E8ED;
-  --accent-foreground: #141420;
+  --accent-foreground: #17171F;
   --destructive: #D93B3B;
   --destructive-foreground: #FFFFFF;
   --border: rgba(0, 0, 20, 0.10);
@@ -160,12 +168,13 @@
   --selection-background: rgba(37, 99, 235, 0.28);
   --app-scrollbar-thumb: color-mix(in srgb, var(--foreground) 18%, transparent);
   --app-scrollbar-thumb-hover: color-mix(in srgb, var(--foreground) 36%, transparent);
+  --app-scrollbar-size: 8px;
 
   /* Frame / contour (titlebar) */
-  --sidebar: #DCDCE2;
-  --sidebar-foreground: #141420;
-  --sidebar-accent: #CFCFD6;
-  --sidebar-accent-foreground: #141420;
+  --sidebar: #EEEEF1;
+  --sidebar-foreground: #17171F;
+  --sidebar-accent: #E0E0E5;
+  --sidebar-accent-foreground: #17171F;
   --sidebar-border: rgba(0, 0, 20, 0.08);
 
   /* Event panel surface + form controls (light) */
@@ -198,10 +207,11 @@
   --editor-chrome-checker-a: #CCCCCC;
   --editor-chrome-checker-b: #FFFFFF;
 
-  --shell-gap: 0.375rem;
-  --content-radius: 0.5rem;
-  --titlebar-h: 42px;
-  --toolbar-h: 42px;
+  /* Whole pixels: with the 15px root size, rem gaps put content edges between device pixels and blur their hairline. */
+  --shell-gap: 6px;
+  --content-radius: 8px;
+  --titlebar-h: 36px;
+  --toolbar-h: 40px;
   --panel-margin: 0.5rem;
   --safe-area-top: env(safe-area-inset-top, 0px);
   --safe-area-right: env(safe-area-inset-right, 0px);
@@ -212,20 +222,27 @@
   --visual-viewport-height: 100vh;
   --visual-viewport-offset-top: 0px;
   --visual-viewport-offset-left: 0px;
-  --mobile-topbar-h: 56px;
+  --mobile-topbar-h: 48px;
+  --mobile-bottom-nav-h: 64px;
+  --mobile-bottom-chrome-h: 0px;
   --mobile-nav-rail-w: 72px;
   --touch-target-min: 48px;
+  /* Phone chrome icon columns: the top bar and every action row share one button width and edge inset, so icons stack in columns from either edge, and the leading column centers under the top bar pill icon. */
+  --mobile-chrome-column: 2.75rem;
+  --mobile-chrome-inset: 0.25rem;
+  /* Diameter of the round pressed and open highlight inside a chrome column. */
+  --mobile-chrome-highlight: 2rem;
 }
 
-svg.lucide:not(.app-title-bar *) {
+svg.lucide:not(.app-title-bar *, .explorer-sidebar *) {
   stroke-width: var(--icon-stroke-width);
 }
 
-svg.lucide[stroke-width="1"]:not(.app-title-bar *) {
+svg.lucide[stroke-width="1"]:not(.app-title-bar *, .explorer-sidebar *) {
   stroke-width: var(--icon-stroke-width-delicate);
 }
 
-svg.lucide[stroke-width="1.5"]:not(.app-title-bar *) {
+svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
   stroke-width: var(--icon-stroke-width-compact);
 }
 
@@ -242,7 +259,7 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *) {
   --secondary: #333436;
   --secondary-foreground: #ECECF2;
   --muted: #333436;
-  --muted-foreground: #9494A0;
+  --muted-foreground: #9C9CA8;
   --accent: #3B3B3F;
   --accent-foreground: #ECECF2;
   --destructive: #E54545;
@@ -253,9 +270,9 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *) {
   --selection-background: rgba(96, 165, 250, 0.38);
 
   /* Frame / contour (titlebar) */
-  --sidebar: #1E1E23;
+  --sidebar: #151518;
   --sidebar-foreground: #FFFFFF;
-  --sidebar-accent: #3B3B3F;
+  --sidebar-accent: #2A2B2F;
   --sidebar-accent-foreground: #FFFFFF;
   --sidebar-border: rgba(255, 255, 255, 0.08);
 
@@ -297,6 +314,8 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *) {
   --text-sm--line-height: calc(1.25rem * var(--type-scale));
   --text-base: calc(1rem * var(--type-scale));
   --text-base--line-height: calc(1.5rem * var(--type-scale));
+  --text-collection: var(--collection-font-size);
+  --text-collection--line-height: 1.5;
   --text-identity: calc(0.875rem * var(--type-scale));
   --text-identity--line-height: calc(1.25rem * var(--type-scale));
   --text-lg: calc(1.125rem * var(--type-scale));
@@ -379,8 +398,8 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *) {
     @apply border-border outline-ring/50;
   }
   *::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
+    width: var(--app-scrollbar-size);
+    height: var(--app-scrollbar-size);
     background: transparent;
   }
   *::-webkit-scrollbar-track,
@@ -429,6 +448,10 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *) {
     outline: 2px solid var(--ring);
     outline-offset: 2px;
   }
+  /* Text entry shows focus through its caret, never a contour. */
+  html[data-focus-intent="keyboard"] :where(textarea, input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"], [type="button"], [type="submit"], [type="reset"])):focus {
+    outline: none;
+  }
   html:not([data-focus-intent="keyboard"]) :where(button, a, input, select, textarea, [tabindex]):focus,
   html:not([data-focus-intent="keyboard"]) :where(button, a, input, select, textarea, [tabindex]):focus-visible {
     box-shadow: none;
@@ -439,6 +462,21 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *) {
     line-height: 1.5;
     overscroll-behavior: none;
   }
+  body,
+  body * {
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  body :where(input, textarea, [contenteditable], [contenteditable] *, pre, pre *, code, code *, [data-selectable-content], [data-selectable-content] *, .chat-markdown, .chat-markdown *, .xterm .xterm-screen, .xterm .xterm-screen *) {
+    user-select: text;
+    -webkit-user-select: text;
+  }
+  /* A long press on a Chat message reveals its actions instead of starting a native selection. */
+  html[data-shell="mobile"] body [data-message-touch-actions] :where(:not(input, textarea, [contenteditable], [contenteditable] *)) {
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+  }
   html[data-shell="mobile"] body {
     touch-action: manipulation;
     -webkit-tap-highlight-color: transparent;
@@ -446,7 +484,8 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *) {
   }
   html[data-shell="mobile"] {
     --titlebar-h: var(--mobile-topbar-h);
-    --cal-header-row-h: 56px;
+    --toolbar-h: 56px;
+    --collection-table-row-height: 2.75rem;
   }
   .mobile-viewport-height {
     height: 100%;
@@ -454,6 +493,11 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *) {
   @supports (height: 100dvh) {
     .mobile-viewport-height {
       height: 100dvh;
+    }
+  }
+  @media (any-pointer: coarse) and (any-hover: none) {
+    :root {
+      --collection-table-row-height: 2.75rem;
     }
   }
   html[data-shell="mobile"] :where(button, a, input, select, textarea) {
@@ -477,7 +521,7 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *) {
 
 @layer utilities {
   /*
-   * Existing components use exact rem sizes for their relative hierarchy.
+   * Components use exact rem sizes for their relative hierarchy.
    * These aliases apply the font preference without resizing rem-based layout.
    */
   [class~="text-[0.52rem]"] { font-size: calc(0.52rem * var(--type-scale)); }
@@ -522,7 +566,18 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *) {
   [class~="text-[2.5rem]"] { font-size: calc(2.5rem * var(--type-scale)); }
 
   .notes-editor-body-text {
-    font-size: calc(1rem * var(--font-scale));
+    font-size: var(--paragraph-font-size);
+  }
+
+  .notes-heading-1 { --notes-heading-size: 1.875rem; }
+  .notes-heading-2 { --notes-heading-size: 1.5rem; }
+  .notes-heading-3 { --notes-heading-size: 1.375rem; }
+  .notes-heading-4 { --notes-heading-size: 1.25rem; }
+  .notes-heading-5 { --notes-heading-size: 1.125rem; }
+  .notes-heading-6 { --notes-heading-size: 1rem; }
+
+  .notes-heading-text {
+    font-size: calc(var(--notes-heading-size) * var(--font-scale));
   }
 
   .notes-editor-page-title {
@@ -576,24 +631,20 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *) {
 }
 
 .app-shell[data-size-class="compact"] {
-  --shell-gap: 0.25rem;
-  --content-radius: 0.375rem;
+  --shell-gap: 4px;
+  --content-radius: 6px;
   --panel-margin: 0.375rem;
 }
 
 .app-shell[data-size-class="narrow"] {
-  --shell-gap: 0.125rem;
-  --content-radius: 0.25rem;
-  --titlebar-h: 40px;
-  --toolbar-h: 40px;
+  --shell-gap: 2px;
+  --content-radius: 4px;
   --panel-margin: 0.25rem;
 }
 
 .app-shell[data-size-class="micro"] {
   --shell-gap: 0;
   --content-radius: 0;
-  --titlebar-h: 38px;
-  --toolbar-h: 38px;
   --panel-margin: 0.125rem;
 }
 
@@ -602,12 +653,20 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *) {
   border-radius: var(--content-radius);
 }
 
+/*
+ * After a sidebar toggle moves content under a resting pointer, tab content ignores the pointer until it moves
+ * (lib/utils/hover-suppression.ts). It must win over components that opt back into pointer events, hence !important.
+ */
+html[data-hover-suppressed] .content-panel,
+html[data-hover-suppressed] .content-panel * {
+  pointer-events: none !important;
+}
+
 /* Calendar theme variables */
 :root {
   --cal-bg: #FFFFFF;
-  --cal-header-bg: #F4F4F7;
-  --cal-gridline: #DDDDE3;
-  --cal-time-label: #646470;
+  --cal-gridline: #ECECF0;
+  --cal-time-label: #6F6F7A;
   --cal-current-time: #B83A3A;
   --cal-hover: rgba(0, 0, 20, 0.04);
   --cal-timeline-rail: #E5E7EB;
@@ -615,14 +674,12 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *) {
   --cal-timeline-focus: #39965c;
   --cal-scrollbar-thumb: var(--muted);
   --cal-scrollbar-thumb-hover: var(--muted-foreground);
-  --cal-header-row-h: 42px;
 }
 
 .dark {
-  --cal-bg: #131314;
-  --cal-header-bg: #27282A;
-  --cal-gridline: #333537;
-  --cal-time-label: #9494A0;
+  --cal-bg: #1F2023;
+  --cal-gridline: #2A2B2F;
+  --cal-time-label: #9C9CA8;
   --cal-current-time: #B83A3A;
   --cal-hover: rgba(255, 255, 255, 0.04);
   --cal-timeline-rail: #3F3F46;
@@ -636,4 +693,427 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *) {
 }
 .hide-scrollbar::-webkit-scrollbar {
   display: none;
+}
+
+/* Scroll containers using the scroll edge fade action fade the edges that have more content beyond them. */
+:root {
+  --scroll-fade-size: 1.5rem;
+}
+[data-scroll-fade="top"] {
+  -webkit-mask-image: linear-gradient(to bottom, transparent, black var(--scroll-fade-size), black);
+  mask-image: linear-gradient(to bottom, transparent, black var(--scroll-fade-size), black);
+}
+[data-scroll-fade="bottom"] {
+  -webkit-mask-image: linear-gradient(to bottom, black, black calc(100% - var(--scroll-fade-size)), transparent);
+  mask-image: linear-gradient(to bottom, black, black calc(100% - var(--scroll-fade-size)), transparent);
+}
+[data-scroll-fade="both"] {
+  -webkit-mask-image: linear-gradient(to bottom, transparent, black var(--scroll-fade-size), black calc(100% - var(--scroll-fade-size)), transparent);
+  mask-image: linear-gradient(to bottom, transparent, black var(--scroll-fade-size), black calc(100% - var(--scroll-fade-size)), transparent);
+}
+
+/*
+ * Collection tables highlight one surface at a time. Cells, column names, and standalone header controls share one
+ * square highlight. An open cell or column menu, a focused text field, a column resize, or a column drag suppresses
+ * hover feedback everywhere else, and a column name stays unhighlighted while its resize handle is under the pointer.
+ */
+:root {
+  --collection-highlight: color-mix(in srgb, var(--accent) 40%, transparent);
+  --collection-row-highlight: color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+[data-collection-hover-target] {
+  border-radius: 0;
+  background-color: transparent;
+}
+
+:root:not([data-collection-column-dragging]):not(:has(:is([data-collection-cell-primary], [data-collection-hover-target])[aria-expanded="true"], [data-collection-cell-primary]:is(textarea, input:not([type="checkbox"], [type="radio"])):focus, [data-collection-resize]:active)) :is(
+  .collection-cell:has([data-collection-cell-primary]:not(:disabled)):not(:has([data-collection-resize]:hover)),
+  [data-collection-hover-target]:not(:disabled)
+):hover,
+.collection-cell:has([data-collection-cell-primary][aria-expanded="true"], [data-collection-cell-primary]:is(textarea, input:not([type="checkbox"], [type="radio"])):focus, :focus-visible),
+[data-collection-hover-target]:is([aria-expanded="true"], :focus-visible) {
+  background-image: linear-gradient(var(--collection-highlight), var(--collection-highlight));
+}
+
+:root:not([data-collection-column-dragging]):not(:has(:is([data-collection-cell-primary], [data-collection-hover-target])[aria-expanded="true"], [data-collection-cell-primary]:is(textarea, input:not([type="checkbox"], [type="radio"])):focus, [data-collection-resize]:active)) .collection-row[data-collection-hoverable]:hover {
+  --collection-row-hover: var(--collection-row-highlight);
+}
+
+:root[data-collection-column-dragging] .collection-row :is(a, button, label):hover,
+:root:has(:is([data-collection-cell-primary], [data-collection-hover-target])[aria-expanded="true"], [data-collection-cell-primary]:is(textarea, input:not([type="checkbox"], [type="radio"])):focus, [data-collection-resize]:active) .collection-row :is(a, button, label):not([aria-expanded="true"], [data-collection-resize]):not(:is([role="menu"], [role="dialog"], [role="listbox"]) *):hover {
+  background-color: transparent;
+}
+
+/* A column drag owns the pointer: the grabbing cursor holds everywhere and pointer travel selects no text. */
+:root[data-collection-column-dragging],
+:root[data-collection-column-dragging] * {
+  cursor: grabbing !important;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Cover geometry follows the page container, including narrow page previews. */
+.notes-page-banner {
+  height: min(clamp(8rem, 20cqw, 15rem), 25svh);
+}
+
+/* Mentions read as one inline object; the chip paints the selection itself so its icon is covered too. */
+.notes-mention-chip {
+  border-radius: 0.2em;
+  padding: 0.02em 0.16em;
+  color: var(--notes-rich-text-color, inherit);
+  background: var(--notes-rich-text-bg, color-mix(in srgb, var(--muted-foreground) 7%, transparent));
+  box-shadow: inset 0 0 0 1px var(--notes-rich-text-border, transparent);
+  box-decoration-break: clone;
+  cursor: default;
+}
+.notes-mention-chip-link {
+  text-decoration-line: underline;
+  text-decoration-color: color-mix(in srgb, var(--muted-foreground) 40%, transparent);
+  text-underline-offset: 0.2em;
+  text-decoration-thickness: 0.06em;
+  cursor: pointer;
+}
+.notes-mention-chip-link:hover { background: var(--notes-rich-text-bg, color-mix(in srgb, var(--muted-foreground) 13%, transparent)); }
+.notes-mention-chip-link:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.notes-mention-chip[data-notes-strikethrough="true"] { text-decoration-line: line-through; }
+.notes-mention-chip-link[data-notes-strikethrough="true"] { text-decoration-line: underline line-through; }
+.notes-mention-chip-link[aria-disabled="true"] { cursor: default; }
+.notes-mention-chip-icon { display: inline-flex; margin-inline-end: 0.22em; vertical-align: -0.12em; color: var(--muted-foreground); }
+.notes-mention-chip.notes-rich-text-comment-anchor { background: color-mix(in srgb, var(--primary) 16%, transparent); box-shadow: inset 0 -0.12rem 0 color-mix(in srgb, var(--primary) 45%, transparent); }
+.notes-mention-chip.notes-rich-text-comment-anchor-resolved { background: color-mix(in srgb, var(--muted-foreground) 12%, transparent); box-shadow: inset 0 -0.12rem 0 color-mix(in srgb, var(--muted-foreground) 35%, transparent); }
+.notes-mention-chip.notes-rich-text-suggestion-anchor { background: color-mix(in srgb, var(--secondary) 38%, transparent); box-shadow: inset 0 -0.12rem 0 color-mix(in srgb, var(--primary) 70%, transparent); }
+.notes-mention-chip.notes-rich-text-suggestion-anchor-accepted { background: color-mix(in srgb, var(--primary) 12%, transparent); box-shadow: inset 0 -0.12rem 0 color-mix(in srgb, var(--primary) 45%, transparent); }
+.notes-mention-chip.notes-rich-text-suggestion-anchor-rejected { background: color-mix(in srgb, var(--destructive) 10%, transparent); box-shadow: inset 0 -0.12rem 0 color-mix(in srgb, var(--destructive) 35%, transparent); }
+.notes-mention-chip[data-notes-selected="true"] { background: var(--selection-background); }
+.notes-mention-chip[data-notes-selected="true"]::selection,
+.notes-mention-chip[data-notes-selected="true"] *::selection { background-color: transparent; }
+
+/* Projects, Notes, and Chat share explorer surfaces, controls, and navigation states. */
+.explorer-sidebar {
+  --explorer-toolbar-height: var(--toolbar-h);
+  --explorer-row-icon-size: 14px;
+  --explorer-toolbar-icon-size: var(--explorer-row-icon-size);
+  --explorer-action-size: 1.75rem;
+  --explorer-row-action-end-inset: 0.375rem;
+  --explorer-icon-stroke: var(--icon-stroke-width-compact);
+  --explorer-text-size: calc(0.866667rem * var(--type-scale));
+  --explorer-line-height: calc(1.3rem * var(--type-scale));
+  --explorer-row-padding: 0.375rem;
+  --explorer-row-height: max(2rem, calc(var(--explorer-line-height) + 2 * var(--explorer-row-padding)));
+  --explorer-text-weight: 400;
+  --explorer-heading-size: calc(var(--explorer-text-size) * 0.875);
+  --explorer-heading-weight: 500;
+  --explorer-background: color-mix(in oklab, var(--sidebar) 45%, var(--cal-bg));
+  background: var(--explorer-background);
+  color: var(--foreground);
+}
+
+/* A docked desktop explorer takes the window frame color, so it reads as part of the frame rather than the tab surface. */
+.explorer-chrome .explorer-sidebar {
+  --explorer-background: var(--sidebar);
+  --explorer-row-hover: color-mix(in oklab, var(--sidebar-accent) 60%, transparent);
+  --explorer-row-selected: var(--sidebar-accent);
+  --explorer-icon-hover: var(--sidebar-accent);
+  color: var(--sidebar-foreground);
+}
+
+/* A docked desktop explorer collapses to a rail by clipping fixed-width content, so its rows never reflow while the width animates. */
+.explorer-dock {
+  --explorer-dock-rail-width: 2.75rem;
+  --explorer-dock-duration: 180ms;
+  --explorer-dock-easing: cubic-bezier(0.2, 0, 0, 1);
+  position: relative;
+  width: var(--explorer-width);
+  flex-shrink: 0;
+  overflow: hidden;
+  transition: width var(--explorer-dock-duration) var(--explorer-dock-easing);
+}
+
+.explorer-dock-collapsed {
+  width: var(--explorer-dock-rail-width);
+}
+
+.explorer-dock-content {
+  width: var(--explorer-width);
+  min-width: var(--explorer-width);
+}
+
+/* The rail fades in once the panel has mostly closed and fades out at once when it reopens. */
+.explorer-dock-rail {
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  z-index: 10;
+  width: var(--explorer-dock-rail-width);
+  background-color: var(--explorer-background);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 60ms linear;
+}
+
+.explorer-dock-collapsed .explorer-dock-rail {
+  opacity: 1;
+  pointer-events: auto;
+  transition-delay: 100ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .explorer-dock,
+  .explorer-dock-rail {
+    transition: none;
+  }
+}
+
+.explorer-toolbar {
+  display: flex;
+  height: var(--explorer-toolbar-height);
+  min-height: var(--explorer-toolbar-height);
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.125rem;
+  padding-inline: 0.5rem;
+}
+
+/*
+ * Explorer lists always reserve the scrollbar gutter, which stands in for their end padding so rows end with the toolbar.
+ * While the content overflows, rows end a little earlier so highlights stay clear of the visible scrollbar.
+ */
+.explorer-list {
+  --explorer-list-end-padding: max(0px, 0.5rem - var(--app-scrollbar-size));
+  --explorer-list-scrollbar-gap: 0.375rem;
+  overflow-y: scroll;
+  padding-inline-start: 0.5rem;
+  padding-inline-end: var(--explorer-list-end-padding);
+}
+
+.explorer-list[data-scroll-overflow] {
+  padding-inline-end: calc(var(--explorer-list-end-padding) + var(--explorer-list-scrollbar-gap));
+}
+
+.explorer-icon {
+  display: inline-flex;
+  width: var(--explorer-action-size);
+  height: var(--explorer-action-size);
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.375rem;
+  color: var(--muted-foreground);
+}
+
+.explorer-icon:active,
+.explorer-icon[aria-pressed="true"],
+.explorer-icon.explorer-icon-active,
+.explorer-icon[aria-expanded="true"].explorer-row-action {
+  background: var(--explorer-icon-hover, var(--accent));
+  color: var(--foreground);
+}
+
+.explorer-icon:disabled {
+  pointer-events: none;
+  opacity: 0.45;
+}
+
+.explorer-sidebar .explorer-row-disclosure {
+  width: var(--explorer-action-size);
+  height: var(--explorer-action-size);
+  flex: 0 0 auto;
+}
+
+.explorer-sidebar :is(button, summary):focus-visible,
+.explorer-row :is(button, summary):focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
+/* Sidebar search fields match the toolbar buttons beside them; the `field` utility owns their look. */
+.explorer-sidebar .explorer-search {
+  min-height: var(--explorer-action-size);
+}
+
+.explorer-sidebar .explorer-search .explorer-icon {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+.explorer-touch .explorer-search {
+  min-height: var(--explorer-row-height);
+}
+
+.explorer-search input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.explorer-row {
+  --explorer-row-highlight: var(--explorer-row-hover, color-mix(in oklab, var(--accent) 50%, transparent));
+  min-height: var(--explorer-row-height, 2rem);
+  border-radius: 0.375rem;
+}
+
+/* Touch shows press feedback only while pressed; a tap would otherwise leave a sticky hover highlight. */
+.explorer-row:active {
+  background: var(--explorer-row-highlight);
+}
+
+@media (hover: hover) {
+  .explorer-icon:hover {
+    background: var(--explorer-icon-hover, var(--accent));
+    color: var(--foreground);
+  }
+
+  .explorer-row:hover {
+    background: var(--explorer-row-highlight);
+  }
+}
+
+.explorer-row.explorer-selected {
+  --explorer-row-highlight: var(--explorer-row-selected, var(--accent));
+  background: var(--explorer-row-highlight);
+}
+
+.explorer-row-action {
+  margin-inline-end: var(--explorer-row-action-end-inset);
+}
+
+/* A favorite star shares the actions slot so it lines up with the actions button on every row. */
+.explorer-row-trailing {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  margin-inline-end: var(--explorer-row-action-end-inset);
+}
+
+.explorer-row-trailing > .explorer-row-action {
+  margin-inline-end: 0;
+}
+
+.explorer-row-star {
+  display: inline-flex;
+  width: var(--explorer-action-size);
+  height: var(--explorer-action-size);
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.explorer-sidebar .explorer-row-action:is(:hover, :focus-visible, [aria-expanded="true"]) {
+  background: transparent;
+  color: var(--foreground);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .explorer-row-action {
+    opacity: 0;
+  }
+
+  :is(.explorer-row, .section-heading):hover .explorer-row-action,
+  :is(.explorer-row, .section-heading):has(:focus-visible) .explorer-row-action,
+  .explorer-row-action[aria-expanded="true"] {
+    opacity: 1;
+  }
+
+  /* While the actions button is hidden, the star takes its place; touch layouts keep both side by side. */
+  .explorer-sidebar:not(.explorer-touch) .explorer-row-trailing:has(> .explorer-row-star + .explorer-row-action) {
+    display: grid;
+  }
+
+  .explorer-sidebar:not(.explorer-touch) .explorer-row-trailing:has(> .explorer-row-star + .explorer-row-action) > * {
+    grid-area: 1 / 1;
+  }
+
+  .explorer-sidebar:not(.explorer-touch) .explorer-row:is(:hover, :has(:focus-visible)) .explorer-row-star:has(+ .explorer-row-action),
+  .explorer-sidebar:not(.explorer-touch) .explorer-row-star:has(+ .explorer-row-action[aria-expanded="true"]) {
+    visibility: hidden;
+  }
+}
+
+.explorer-touch .explorer-toolbar {
+  --explorer-toolbar-height: calc(var(--touch-target-min) + 0.5rem);
+  padding-block: 0.25rem;
+}
+
+.explorer-touch :is(.explorer-icon, .explorer-row-disclosure, .channel-row, .archive-button, .section-heading > button) {
+  min-height: var(--touch-target-min);
+}
+
+.explorer-touch :is(.explorer-icon, .explorer-row-disclosure, .section-heading > button) {
+  min-width: var(--touch-target-min);
+}
+
+.explorer-touch .explorer-row-action {
+  opacity: 1;
+}
+
+/* Explorer icons have one owner, independent of feature-specific SVG rules. */
+.explorer-sidebar svg.lucide {
+  stroke-width: var(--explorer-icon-stroke);
+  flex-shrink: 0;
+}
+
+.explorer-sidebar .explorer-toolbar > .explorer-icon svg,
+.explorer-sidebar .explorer-toolbar > div > .explorer-icon svg {
+  width: var(--explorer-toolbar-icon-size);
+  height: var(--explorer-toolbar-icon-size);
+}
+
+/* The starred badge keeps its own small size on top of a row icon. */
+.explorer-sidebar :is(.explorer-row, .section-heading, .explorer-section-title, .explorer-search) svg.lucide:not(.starred-icon-badge) {
+  width: var(--explorer-row-icon-size);
+  height: var(--explorer-row-icon-size);
+}
+
+.explorer-sidebar .explorer-row-label,
+.explorer-sidebar .archive-button,
+.explorer-sidebar .explorer-search input {
+  font-size: var(--explorer-text-size);
+  line-height: var(--explorer-line-height);
+  font-weight: var(--explorer-text-weight);
+}
+
+/* Section headings read as labels over their rows, so they sit a step below the row text. */
+.explorer-sidebar .section-toggle,
+.explorer-sidebar .section-heading,
+.explorer-sidebar .explorer-section-title {
+  font-size: var(--explorer-heading-size);
+  line-height: var(--explorer-line-height);
+  font-weight: var(--explorer-heading-weight);
+}
+
+/* Section headings occupy one navigation row, preserving the same baseline rhythm. */
+.explorer-sidebar .section-heading,
+.explorer-sidebar .explorer-section-title {
+  min-height: var(--explorer-row-height);
+}
+
+.explorer-sidebar .explorer-row-icon {
+  width: var(--explorer-row-icon-size);
+  height: var(--explorer-row-icon-size);
+  flex: 0 0 auto;
+}
+
+.explorer-sidebar svg.explorer-row-icon {
+  stroke-width: var(--explorer-icon-stroke);
+}
+
+.explorer-touch {
+  --explorer-row-height: max(var(--touch-target-min), calc(var(--explorer-line-height) + 2 * var(--explorer-row-padding)));
+}
+
+/* Phone explorers, in sidebar panels or the Notes landing list, lie on their surface with the picker row shape and icon size. */
+.explorer-panel {
+  --explorer-background: transparent;
+  --explorer-row-hover: var(--accent);
+  --explorer-row-icon-size: 18px;
+}
+
+.explorer-panel :is(.explorer-row, .section-heading > button, .explorer-icon) {
+  border-radius: 0.75rem;
+}
+
+.explorer-sidebar .explorer-row > button.explorer-row-label,
+.explorer-sidebar button.explorer-row.explorer-row-label {
+  padding-block: var(--explorer-row-padding);
 }

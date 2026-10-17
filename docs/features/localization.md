@@ -1,92 +1,52 @@
 # Localization
 
-Ganbaru AI supports a typed app language layer for all normal app chrome and main feature surfaces. English is the canonical catalog and Spanish is the first translated catalog. Unsupported or incomplete translations fall back to English at the individual message key level so the app stays usable while catalogs evolve.
+**Partial.** All normal app chrome and main feature surfaces use a typed message catalog. English is the canonical catalog and Spanish is the first translation. Missing translations fall back to English per message key, so the app stays usable while catalogs evolve.
 
-## Supported values
+## Language preference
 
-The app language preference is intentionally small and stable:
+The preference is `system`, `en`, or `es`, stored in active-vault `config.json` as `preferences.language` and edited in Appearance settings. `system` resolves from the operating system or browser language list: exact supported matches first, then the base language (`es-MX` resolves to `es`), then English. Invalid stored values are normalized and written back as `system` so a bad config does not fail every boot.
 
-- `system`: follow the operating system or browser language list.
-- `en`: force English.
-- `es`: force Spanish.
+## Language selectors
 
-`system` resolves from `navigator.languages` and then `navigator.language`. Exact supported locale matches win first; otherwise the base language is matched, so `es-MX` resolves to `es`. If no candidate is supported, the app resolves to English.
+Selectors are designed for someone looking for their language even when they cannot read the current UI.
 
-## User preference
+- Explicit languages always appear as autonyms (`English`, `Español`), never translated into the current UI language.
+- Non-language options are localized. The system option shows the resolved language in parentheses, such as `System language (Español)`.
+- Search matches the autonym, the name in the current UI language, locale IDs, and useful aliases, so both `Spanish` and `Español` find Spanish.
 
-The Appearance settings page exposes the persistent language selector. The selected value persists in the active Ganbaru AI folder root `config.json` as `preferences.language`. Invalid stored values normalize back to `system` on load and are written back as `system` so stale or hand-edited config does not keep failing every boot.
+## Before a vault exists
 
-## Language selector display
-
-Language selectors should optimize for the person trying to find their language, even when the current UI language is not readable to them.
-
-- Explicit language options use autonyms: `English`, `Español`, `Français`, and so on. They should not change to `Inglés` or `Spanish` just because the current UI language changed.
-- Non-language options are localized. The system option label should use the current UI language, then show the resolved explicit language in parentheses, such as `System language (Español)` or `Idioma del sistema (English)`.
-- Search should match the autonym, the current UI language name, supported locale ids, and useful aliases. For example, both `Spanish` and `Español` should find the Spanish option.
-- Option rows should be one line unless extra context is necessary. The resolved system language belongs in parentheses, not as a repeated second line.
-
-## Data folder setup
-
-The first-run "Choose where to store your data" screen shows a compact language dropdown above the heading. The trigger has no filled background and shows only the language icon, the active resolved language name, and the chevron. The dropdown includes a search field because this control will grow as more locales are added.
-
-The core folder-choice content remains vertically centered independently of the language selector above it and warnings or errors below it. Adding a language selector or an error message should not make the main setup content jump.
-
-The dropdown menu should feel compact and calm:
-
-- The search box sits at the top of the menu without a divider line between search and results.
-- Language rows use one-line labels.
-- The selected option uses a subtle inset rounded highlight aligned with the search box width, not a full-width block against the menu edge.
-
-This screen can appear before an active Ganbaru AI folder exists, so it cannot assume `config.json` is available. A language selected here is loaded and applied with `persist: false`, then stored as a temporary local setup preference. After the user creates or imports a Ganbaru AI folder, the temporary value is copied into `preferences.language`, flushed to the new active folder's `config.json`, and cleared. Main boot also checks for that temporary value before mounting so the setup screen and the main app never paint in the previous language during the handoff.
-
-The setup trigger displays the resolved locale name for `system`, such as `Español` for `es-MX`, and falls back to `English` when the system language is unsupported.
+The first-run data-folder screen has a compact searchable language selector. Because no `config.json` exists yet, the choice is applied without persisting and kept as a temporary setup preference. After the user creates or imports a folder, it is copied into `preferences.language` and cleared. Boot checks this temporary value before mounting so neither screen paints in the wrong language during the handoff. Adding the selector or an error message must not shift the main setup content.
 
 ## Runtime behavior
 
-The desktop and mobile platform bootstraps resolve the system or temporary setup language before mounting Svelte. They load active configuration, resolve the persisted preference, and await the selected catalog before mounting the platform shell. The shared `main.ts` module only selects the platform entry. English is the resident typed fallback. Every non-default catalog is a separate dynamic chunk with one cached catalog value and one in-flight import per locale.
+Platform bootstraps resolve and load the selected catalog before mounting the shell. English is always resident; every other catalog is a separate lazily loaded chunk.
 
-Language changes are atomic. The preference, active catalog, resolved locale, document language and direction, and persisted config value change together only after the requested catalog loads. A failed import retains the previous language and is retryable through the next selection. A slower obsolete import cannot replace a newer selection. System `languagechange` events follow the same load-before-commit path.
+Language changes are atomic: the preference, active catalog, resolved locale, document `lang` and `dir`, and persisted value change together only after the catalog loads. A failed load keeps the previous language and can be retried, and a slower obsolete load never replaces a newer choice. System language changes follow the same path. Text direction is part of locale metadata, so right-to-left support has a defined entry point even though current locales are left-to-right.
 
-The localization store exposes:
+English is typed as the canonical catalog shape and other catalogs must satisfy it partially, so adding an English key defines the key space for every translation.
 
-- `languagePreference`: the persisted selector value.
-- `locale`: the resolved app locale.
-- `direction`: the resolved text direction.
-- `t`: the typed translator.
-- `setLanguagePreference`: the asynchronous persistence-aware setter used by settings.
+## Formatting
 
-The translator reads from the resolved catalog first, then English. English is typed as the canonical `MessageCatalog`, and non-English catalogs must satisfy that shape partially. Adding a key to English therefore updates the allowed translation key space for every caller.
+User-facing dates, times, numbers, plurals, relative minutes, and lists use the locale-aware helpers in `apps/client/src/lib/i18n/formatters.ts`. Do not hardcode `"en"` or `"en-US"` in UI formatting except for external standards, stable interchange formats, or deliberate parsers.
 
-The app writes `document.documentElement.lang` and `document.documentElement.dir` whenever the resolved locale changes. Current supported locales are left-to-right, but the direction field is part of locale metadata so right-to-left support has a defined entry point later.
+Storage and interoperability stay canonical and untranslated:
 
-## Formatting rules
-
-User-facing date, time, number, plural, relative-minute, and list formatting should use `lib/i18n/formatters.ts` with the current resolved locale. Do not hardcode `"en"` or `"en-US"` in UI formatting unless the value is an external standard, a stable interchange format, or an intentional parser implementation detail.
-
-Storage and interoperability stay canonical:
-
-- Calendar event start and end values remain UTC ISO 8601 instants.
-- All-day values remain floating dates.
+- Calendar instants stay UTC ISO 8601; all-day values stay floating dates.
 - SQLite and config keys stay stable English identifiers.
-- iCalendar import and export preserve standards-defined values, not translated UI labels.
-- Benchmark markdown copied for [performance results](../performance/results.md) stays in the canonical English format so historical rows remain comparable.
+- iCalendar import and export use standards-defined values.
+- Benchmark markdown for [performance results](../performance/results.md) stays in English so recorded rows remain comparable.
 
 ## Translation scope
 
-Normal app chrome and main feature UI should use catalog keys directly or feature-local localization helpers. This includes settings, title bar controls, calendar panels, Pomodoro overlays, Music, doomscrolling, theme editor labels, diagnostics, and benchmark overlays.
+Settings, title bar, Calendar, Pomodoro, Music, distraction blocker, theme editor, diagnostics, and benchmark overlays all use catalog keys or feature-local helpers. Internal IDs, CSS tokens, config keys, SQL columns, generated benchmark output, and tests can stay English when they are not shown to users. If an internal English value is shown, localize it at the render boundary rather than changing the stored identity.
 
-Shared confirmation dialogs append their standard keyboard hints at the render boundary. The cancel action shows the localized Escape key label and the confirm action shows the localized Enter key label. Feature catalogs provide only the action text, without embedding shortcut suffixes, so every shared confirmation stays consistent and translations do not duplicate interaction behavior. A specialized confirmation surface that cannot use the shared dialog must render the same localized hints and implement the matching keys.
-
-Internal ids, CSS tokens, config keys, SQL columns, benchmark result identity fields, generated benchmark markdown, and tests can remain English when they are not rendered as user-facing text. If an internal English value is rendered, localize at the render boundary instead of changing the stored identity unless the identity itself is obsolete.
+Shared confirmation dialogs add localized Escape and Enter hints at render time, so feature catalogs provide only action text and translations never duplicate shortcut wording. A custom confirmation surface must render the same hints and keys.
 
 ## Adding a locale
 
-To add a locale:
-
-1. Add the locale metadata in `apps/client/src/lib/i18n/locales.ts`.
-2. Add a catalog under `apps/client/src/lib/i18n/messages/`.
-3. Register the non-default catalog importer in `catalog-loader.ts`.
-4. Add the option to `LANGUAGE_PREFERENCES` in `stores/preferences.ts`.
-5. Add the locale to setup language option generation in `apps/client/src/lib/i18n/pre-vault-language.ts` if it is not derived automatically.
-6. Add or update tests for locale resolution, translator fallback, setup search aliases, and any locale-specific formatter behavior.
-7. Review app surfaces for hardcoded user-facing text and add feature keys where needed.
+1. Add the locale to `APP_LOCALES` and `LOCALE_METADATA` in `apps/client/src/lib/i18n/locales.ts`. The language preference list and setup selector options derive from these.
+2. Add the catalog under `apps/client/src/lib/i18n/messages/`.
+3. Register its lazy importer in `apps/client/src/lib/i18n/catalog-loader.ts`.
+4. Add or update tests for locale resolution, fallback, setup search aliases, and locale-specific formatting.
+5. Review app surfaces for hardcoded user-facing text.

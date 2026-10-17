@@ -31,6 +31,13 @@ export interface CreateProjectWorkingFolderRequest {
   displayName: string;
 }
 
+/** Device-local folder selection authorized by the native picker and applied only when Settings is saved. */
+export interface ProjectWorkingFolderSelectionRead {
+  selectionId: string;
+  canonicalPath: string;
+  displayName: string;
+}
+
 export interface ProjectWorkingFolderRead {
   workingFolder: ProjectWorkingFolder;
   bindingStatus: WorkingFolderBindingStatus;

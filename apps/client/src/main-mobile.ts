@@ -1,6 +1,6 @@
 import { Temporal } from "@js-temporal/polyfill";
 import { mount, unmount } from "svelte";
-import { ensureConfigLoaded, flushConfig } from "$lib/vault/config";
+import { ensureConfigLoaded, flushConfig, startConfigWindowSync } from "$lib/vault/config";
 import { getActiveVaultInfo } from "$lib/vault/state";
 import {
   getLocalization,
@@ -23,7 +23,7 @@ installModalKeyboardRouter();
 type MountedRoot = ReturnType<typeof mount>;
 type MobileAppComponent = typeof import("./MobileApp.svelte").default;
 
-const MOBILE_OWNERSHIP_RELOAD_EVENT = "ganbaru-ai:mobile-ownership-reload-requested";
+const MOBILE_OWNERSHIP_RELOAD_EVENT = "ganbaru:mobile-ownership-reload-requested";
 const ANDROID_TRANSITION_FRAME_HELD_EVENT = "ganbaru:android-transition-frame-held";
 let mobileInitialSurfacePresented: Promise<void> = Promise.resolve();
 let ownershipReloadStarted = false;
@@ -196,7 +196,7 @@ async function mountMobileFocusOnboarding() {
   });
 }
 
-async function mountMobileVaultHandoffOnboarding() {
+async function mountMobileVaultHandoffOnboarding(vaultId: string) {
   const target = document.getElementById("app")!;
   const mobileAppModulePromise = import("./MobileApp.svelte");
   void mobileAppModulePromise.catch(() => undefined);
@@ -221,6 +221,7 @@ async function mountMobileVaultHandoffOnboarding() {
   onboardingView = mount(MobileVaultHandoffOnboarding, {
     target,
     props: {
+      vaultId,
       bootstrapReplicaOnLink: true,
       onComplete: openApp,
     },
@@ -239,6 +240,7 @@ const appPromise = (async () => {
     const activeVault = await getActiveVaultInfo();
     if (!activeVault) return mountMobileVaultSetup(null);
     await ensureConfigLoaded();
+    startConfigWindowSync();
     await initializeLocalizationFromConfig();
     await applyPreVaultLanguagePreference();
     await hydrateUserThemes();
@@ -251,8 +253,8 @@ const appPromise = (async () => {
     const { vaultHandoffOnboardingCompleted } = await import(
       "$lib/vault/handoff-onboarding"
     );
-    if (!vaultHandoffOnboardingCompleted(safeStorage())) {
-      return mountMobileVaultHandoffOnboarding();
+    if (!vaultHandoffOnboardingCompleted(safeStorage(), activeVault.vaultId)) {
+      return mountMobileVaultHandoffOnboarding(activeVault.vaultId);
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-attachSession"
+description = "Enables the attachSession command without any pre-configured scope."
+commands.allow = ["attachSession"]
+
+[[permission]]
+identifier = "deny-attachSession"
+description = "Denies the attachSession command without any pre-configured scope."
+commands.deny = ["attachSession"]

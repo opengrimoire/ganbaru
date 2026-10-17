@@ -1,4 +1,3 @@
-use super::super::models::{ProjectWorkingFolderId, RepositoryKind, UtcTimestamp};
 use super::super::workspace::{
     ProjectWorkingFolder, WorkingFolderAuthorizationOperation, WorkingFolderBindingStatus,
     WorkingFolderKind, authorize_workspace, filesystem_identity, initialized_repository_identity,
@@ -7,6 +6,7 @@ use super::super::workspace::{
 use crate::projects::working_folders::{
     ProjectWorkingFolderBindingState, WorkingFolderDeviceScope,
 };
+use ganbaru_chat_contracts::models::{ProjectWorkingFolderId, RepositoryKind, UtcTimestamp};
 use std::fs;
 use std::path::{Path, PathBuf};
 

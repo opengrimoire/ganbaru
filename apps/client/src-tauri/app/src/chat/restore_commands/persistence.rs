@@ -22,7 +22,7 @@ pub(super) async fn persist_restore(
         .into_iter()
         .map(|row| {
             ChatTurnId::new(row.try_get::<String, _>("id").map_err(persistence_error)?)
-                .map_err(|_| corrupt_data())
+                .map_err(|_| corrupt_data_error())
         })
         .collect::<ChatResult<Vec<_>>>()?;
     sqlx::query(
@@ -164,9 +164,9 @@ async fn enqueue_invalidated_checkpoints(
         let reference: String = row.try_get("hidden_ref_name").map_err(persistence_error)?;
         let object_id: String = row.try_get("git_object_id").map_err(persistence_error)?;
         sqlx::query(
-            "INSERT OR IGNORE INTO chat_cleanup_queue
+            "INSERT OR IGNORE INTO chat_cleanup_jobs
                 (id, source_thread_id, cleanup_kind, exact_target, repository_identity,
-                 state, not_before, created_at, updated_at, working_folder_id, expected_object_id)
+                 state, available_at, created_at, updated_at, working_folder_id, expected_object_id)
              VALUES (?, ?, 'checkpoint_ref', ?, ?, 'pending', ?, ?, ?, (
                 SELECT working_folder_id FROM chat_threads WHERE id = ?
              ), ?)",
@@ -221,7 +221,7 @@ async fn append_reverted_event(
             .try_get::<i64, _>("last_event_sequence")
             .map_err(persistence_error)?,
     )
-    .map_err(|_| corrupt_data())?
+    .map_err(|_| corrupt_data_error())?
     .saturating_add(1);
     let event = CanonicalEvent::ThreadReverted(ThreadRevertedEvent {
         checkpoint_id: target.id.clone(),
@@ -325,17 +325,17 @@ pub(super) async fn read_preview(
             row.try_get::<String, _>("thread_id")
                 .map_err(persistence_error)?,
         )
-        .map_err(|_| corrupt_data())?,
+        .map_err(|_| corrupt_data_error())?,
         checkpoint_id: ChatCheckpointId::new(
             row.try_get::<String, _>("checkpoint_id")
                 .map_err(persistence_error)?,
         )
-        .map_err(|_| corrupt_data())?,
+        .map_err(|_| corrupt_data_error())?,
         expected_thread_revision: u64::try_from(
             row.try_get::<i64, _>("expected_thread_revision")
                 .map_err(persistence_error)?,
         )
-        .map_err(|_| corrupt_data())?,
+        .map_err(|_| corrupt_data_error())?,
         repository_identity: row
             .try_get("repository_identity")
             .map_err(persistence_error)?,
@@ -357,7 +357,7 @@ pub(super) async fn read_preview(
             row.try_get::<String, _>("expires_at")
                 .map_err(persistence_error)?,
         )
-        .map_err(|_| corrupt_data())?,
+        .map_err(|_| corrupt_data_error())?,
     })
 }
 
@@ -454,31 +454,6 @@ pub(super) fn preview_state_after_failure(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn executing_preview_failures_never_remain_executing() {
-        assert_eq!(
-            preview_state_after_failure(false, RestoreFailurePhase::SafeRetry),
-            "ready"
-        );
-        assert_eq!(
-            preview_state_after_failure(false, RestoreFailurePhase::ProviderRollback),
-            "failed"
-        );
-        assert_eq!(
-            preview_state_after_failure(false, RestoreFailurePhase::WorkspaceRestore),
-            "failed"
-        );
-        assert_eq!(
-            preview_state_after_failure(true, RestoreFailurePhase::WorkspaceRestore),
-            "completed"
-        );
-    }
-}
-
 pub(super) async fn record_restore_operation(
     pool: &SqlitePool,
     request: &ExecuteChatRestoreRequest,
@@ -510,4 +485,29 @@ pub(super) async fn record_restore_operation(
     .await
     .map_err(persistence_error)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn executing_preview_failures_never_remain_executing() {
+        assert_eq!(
+            preview_state_after_failure(false, RestoreFailurePhase::SafeRetry),
+            "ready"
+        );
+        assert_eq!(
+            preview_state_after_failure(false, RestoreFailurePhase::ProviderRollback),
+            "failed"
+        );
+        assert_eq!(
+            preview_state_after_failure(false, RestoreFailurePhase::WorkspaceRestore),
+            "failed"
+        );
+        assert_eq!(
+            preview_state_after_failure(true, RestoreFailurePhase::WorkspaceRestore),
+            "completed"
+        );
+    }
 }

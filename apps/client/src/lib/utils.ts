@@ -1,11 +1,25 @@
 import { clsx, type ClassValue } from "clsx";
-import { twMerge } from "tailwind-merge";
+import { extendTailwindMerge } from "tailwind-merge";
 
+/** Class merging that knows the app's custom theme sizes, so they conflict with the built-in utilities they replace instead of being mistaken for colors. */
+const twMerge = extendTailwindMerge({
+	extend: {
+		theme: {
+			text: ["identity", "collection", "panel", "panel-detail"],
+			radius: ["floating", "floating-item"],
+			shadow: ["floating"],
+			container: ["floating-sm", "floating", "floating-lg"],
+		},
+	},
+});
+
+/** Join conditional class names, letting later Tailwind utilities override conflicting earlier ones. */
 export function cn(...inputs: ClassValue[]) {
 	return twMerge(clsx(inputs));
 }
 
-export type WithElementRef<T, U extends HTMLElement = HTMLElement> = T & { ref?: U | null };
+/** A callback result that may be returned directly or through a promise. */
+export type MaybePromise<T = void> = T | Promise<T>;
 
 export function isEditableKeyboardTarget(target: EventTarget | null): boolean {
 	if (!(target instanceof Element)) return false;

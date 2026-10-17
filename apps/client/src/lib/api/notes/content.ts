@@ -4,7 +4,7 @@ import {
   invalidateAssetUrlKind,
   invalidateNotesAssetUrls,
 } from "$lib/api/asset-url-cache";
-import { invalidateNotesNotificationSchedule } from "$lib/notes/notification-schedule.svelte";
+import { invalidateNotesNotificationSchedule } from "$lib/notes/collaboration/notification-schedule.svelte";
 import {
   mapNotesBlockDto,
   mapNotesBlockListDto,
@@ -13,14 +13,12 @@ import {
   mapNotesBlockFrontierDto,
   mapNotesBlockOutlineDto,
   mapNotesPageDto,
-} from "$lib/notes/notion-mappers";
+} from "$lib/notes/validation/response-mappers";
 import type {
   NotesAppendBlockChildrenRequest,
   NotesBlock,
   NotesChildPageFromBlockCreate,
   NotesDuplicatePageRequest,
-  NotesDuplicateBlockRequest,
-  NotesDuplicateBlocksRequest,
   NotesBlockUpdate,
   NotesLoadedPage,
   NotesPageOpenResponse,
@@ -29,7 +27,6 @@ import type {
   NotesBlockHydrationRequest,
   NotesMovePageRequest,
   NotesMoveBlockRequest,
-  NotesMoveBlocksRequest,
   NotesPage,
   NotesPageCreate,
   NotesPageUpdate,
@@ -74,7 +71,9 @@ export async function updateNotesPage(
   update: NotesPageUpdate,
 ): Promise<NotesPage> {
   const dbUrl = await ensureDbUrl();
-  return mapNotesPageDto(await invokeNotesMutation("notes_update_page", { dbUrl, pageId, update }));
+  const page = mapNotesPageDto(await invokeNotesMutation("notes_update_page", { dbUrl, pageId, update }));
+  if (update.properties !== undefined || update.title !== undefined) invalidateNotesNotificationSchedule();
+  return page;
 }
 
 export async function trashNotesPage(
@@ -130,7 +129,7 @@ export async function getNotesBlockFrontier(
 ): Promise<NotesBlockFrontier> {
   const dbUrl = await ensureDbUrl();
   return mapNotesBlockFrontierDto(
-    await invoke<unknown>("notes_get_block_frontier", { dbUrl, parentIds: [...parentIds] }),
+    await invoke<unknown>("notes_block_frontier", { dbUrl, parentIds: [...parentIds] }),
   );
 }
 
@@ -139,12 +138,12 @@ export async function getNotesBlockOutlineFrontier(
   parentIds: readonly string[],
 ): Promise<NotesBlockOutline[]> {
   const dbUrl = await ensureDbUrl();
-  const value = await invoke<unknown>("notes_get_block_outline_frontier", {
+  const value = await invoke<unknown>("notes_block_outline_frontier", {
     dbUrl,
     pageId,
     parentIds: [...parentIds],
   });
-  if (!Array.isArray(value)) throw new Error("notes_get_block_outline_frontier returned a non-array payload");
+  if (!Array.isArray(value)) throw new Error("notes_block_outline_frontier returned a non-array payload");
   return value.map(mapNotesBlockOutlineDto);
 }
 
@@ -164,7 +163,7 @@ export async function getNotesBlockChildren(
 ): Promise<NotesPaginatedBlockList> {
   const dbUrl = await ensureDbUrl();
   return mapNotesBlockListDto(
-    await invoke<unknown>("notes_get_block_children", {
+    await invoke<unknown>("notes_block_children", {
       dbUrl,
       parentId,
       startCursor,
@@ -184,13 +183,23 @@ export async function appendNotesBlockChildren(
   return blocks;
 }
 
+/**
+ * Save one block's content. With `expectedContentRevision`, the write is refused as a Notes edit conflict when the
+ * stored type and payload no longer match that revision, so a stale window cannot overwrite newer content.
+ */
 export async function updateNotesBlock(
   blockId: string,
   update: NotesBlockUpdate,
+  expectedContentRevision?: string,
 ): Promise<NotesBlock> {
   const dbUrl = await ensureDbUrl();
   const block = mapNotesBlockDto(
-    await invokeNotesMutation("notes_update_block", { dbUrl, blockId, update }),
+    await invokeNotesMutation("notes_update_block", {
+      dbUrl,
+      blockId,
+      update,
+      expectedContentRevision: expectedContentRevision ?? null,
+    }),
   );
   invalidateNotesNotificationSchedule();
   return block;
@@ -231,40 +240,6 @@ export async function moveNotesBlock(
   );
   invalidateNotesNotificationSchedule();
   return block;
-}
-
-export async function moveNotesBlocks(
-  request: NotesMoveBlocksRequest,
-): Promise<NotesPaginatedBlockList> {
-  const dbUrl = await ensureDbUrl();
-  const blocks = mapNotesBlockListDto(
-    await invokeNotesMutation("notes_move_blocks", { dbUrl, request }),
-  );
-  invalidateNotesNotificationSchedule();
-  return blocks;
-}
-
-export async function duplicateNotesBlock(
-  blockId: string,
-  request: NotesDuplicateBlockRequest,
-): Promise<NotesBlock> {
-  const dbUrl = await ensureDbUrl();
-  const block = mapNotesBlockDto(
-    await invokeNotesMutation("notes_duplicate_block", { dbUrl, blockId, request }),
-  );
-  invalidateNotesNotificationSchedule();
-  return block;
-}
-
-export async function duplicateNotesBlocks(
-  request: NotesDuplicateBlocksRequest,
-): Promise<NotesPaginatedBlockList> {
-  const dbUrl = await ensureDbUrl();
-  const blocks = mapNotesBlockListDto(
-    await invokeNotesMutation("notes_duplicate_blocks", { dbUrl, request }),
-  );
-  invalidateNotesNotificationSchedule();
-  return blocks;
 }
 
 export async function loadNotesUndoState(pageId: string): Promise<string | null> {

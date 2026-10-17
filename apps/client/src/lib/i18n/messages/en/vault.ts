@@ -1,7 +1,12 @@
 export const vaultSetup = {
+  welcomeTitle: "Free and open source",
+  licenseButton: "License (AGPL 3.0)",
+  sourceCode: "Source code",
+  sourceOpenError: "Could not open the source code. Visit github.com/opengrimoire/ganbaru in your browser.",
+  continue: "Continue",
   title: "Choose where to store your data",
   intro:
-    "If you are coming from a previous installation, import your existing Ganbaru AI folder.",
+    "If you are coming from a previous installation, import your existing Ganbaru folder.",
   developmentBuildWarning: (folderName: string) =>
     `Development build: use the default ${folderName} folder, or choose a copy of your production folder. Do not point dev at your real production data.`,
   defaultLocation: "Default folder",
@@ -15,36 +20,35 @@ export const vaultSetup = {
 
 export const dataFolderError = {
   startup:
-    "Ganbaru AI could not open the configured data folder. Choose another folder or import an existing Ganbaru AI folder.",
+    "Can't open this folder. Choose another or import an existing one.",
   default:
-    "Ganbaru AI could not use the default folder. Choose another folder or check folder permissions.",
+    "Can't use the default folder. Check its permissions or choose another.",
   change:
-    "Ganbaru AI could not use this folder. Choose an empty folder or an existing Ganbaru AI folder.",
+    "Can't use this folder. Choose an empty or existing Ganbaru folder.",
   import:
-    "Ganbaru AI could not import this folder. Select the folder from your previous installation.",
-  backup: "Ganbaru AI could not create the backup.",
-  restore: "Ganbaru AI could not restore this backup.",
-  general: "Ganbaru AI could not use this folder.",
-  unknown: "Unknown error",
+    "Can't import this folder. Choose your previous Ganbaru folder.",
+  backup: "Couldn't create a backup.",
+  restore: "Couldn't restore this backup.",
+  general: "Can't use this folder.",
+  unknown: "Unknown folder error.",
   permission:
-    "Ganbaru AI cannot access this folder. Check folder permissions or choose another location.",
+    "Can't access this folder. Check permissions or choose another.",
   database:
-    "The app found this Ganbaru AI folder, but its local data file could not be opened. Restore a backup or choose another folder.",
+    "Can't open this folder's data. Restore a backup or choose another.",
   defaultNotValid:
-    "The default Ganbaru AI folder already exists, but it is not a valid Ganbaru AI folder. Move those files somewhere else, choose another folder, or import an existing Ganbaru AI folder.",
+    "The default folder contains other files. Move them or choose another folder.",
   folderNotEmpty:
-    "This folder already contains other files. Choose an empty folder, an existing Ganbaru AI folder, or create a new folder.",
+    "This folder isn't empty. Choose an empty or existing Ganbaru folder.",
   missingMarker:
-    "This folder is missing the Ganbaru AI folder marker. Select the main Ganbaru AI folder, not one of its subfolders.",
+    "Can't identify this folder. Choose the main Ganbaru folder.",
   damagedMarker:
-    "This Ganbaru AI folder marker is damaged. The app cannot import this folder automatically.",
+    "This folder's information is damaged. Restore a backup or choose another.",
   newerSchema:
-    "This Ganbaru AI folder was created by a newer version of the app. Update Ganbaru AI before opening it.",
+    "This folder needs a newer app version. Update Ganbaru.",
   notGanbaruFolder:
-    "This does not look like a Ganbaru AI folder. Select the folder from your previous installation.",
+    "Not a Ganbaru folder. Choose your previous app folder.",
   notFound:
-    "This Ganbaru AI folder could not be found. Choose another folder or import an existing Ganbaru AI folder.",
-  withDetails: (fallback: string, raw: string) => `${fallback} Details: ${raw}`,
+    "Folder not found. Choose another or import an existing one.",
 } as const;
 
 export const language = {
@@ -62,13 +66,14 @@ export const vaultOwnership = {
 export const vaultOwnershipPrompt = {
   title: (device: string) => `${device} is the main device`,
   description: "Only the main device can make changes.",
+  replicaDescription: "Quick notes stay editable here and sync with your devices. Only the main device can change everything else.",
   continueReadOnly: "Continue in read-only",
   switching: "Switching to this device...",
   replacementTitle: "Replace this device's current data?",
   replacementAndroid:
-    "This phone has a separate Ganbaru AI vault. Its data cannot be merged with the linked vault. Ganbaru AI will save a complete backup to Downloads before replacing it.",
+    "This phone has a separate Ganbaru vault. Its data cannot be merged with the linked vault. Ganbaru will save a complete backup to Downloads before replacing it.",
   replacementDesktop:
-    "This computer has a separate Ganbaru AI vault. Its data cannot be merged with the linked vault. Ganbaru AI will preserve a recovery copy beside the current Ganbaru AI folder before replacing it.",
+    "This computer has a separate Ganbaru vault. Its data cannot be merged with the linked vault. Ganbaru will preserve a recovery copy beside the current Ganbaru folder before replacing it.",
   replacementConfirm: "Replace with linked vault",
 } as const;
 
@@ -77,21 +82,21 @@ export const vaultHandoff = {
   description: "Manage your connected devices",
   desktopOnboardingTitle: "Connect your phone",
   desktopOnboardingDescription:
-    "Install Ganbaru AI on your phone and scan this QR code in the app to link your devices.",
+    "Install Ganbaru on your phone and scan this QR code in the app to link your devices.",
   androidOnboardingTitle: "Connect to your computer",
   androidOnboardingDescription:
-    "Use Ganbaru AI on this phone to scan the QR code shown on your computer.",
+    "Use Ganbaru on this phone to scan the QR code shown on your computer.",
   stepOne: "Step 1",
   stepTwo: "Step 2",
   networkAccessDescription:
-    "Allow Ganbaru AI to receive connections from your phone on this network.",
+    "Allow Ganbaru to receive connections from your phone on this network.",
   allowNetworkAccess: "Allow phone connection",
   networkAccessConfirmTitle: "Allow phone connection?",
   networkAccessConfirmMessage:
-    "Your Linux firewall protects your computer from unwanted connections. Ganbaru AI needs its permission to link your phone with this computer over your local network. Linux will ask for your password, which Ganbaru AI never sees or stores.",
+    "Your Linux firewall protects your computer from unwanted connections. Ganbaru needs its permission to link your phone with this computer over your local network. Linux will ask for your password, which Ganbaru never sees or stores.",
   networkAccessRevokeTitle: "Remove local network access?",
   networkAccessRevokeMessage:
-    "Your Linux firewall currently allows linked devices to connect to Ganbaru AI on this local network. Linux will ask for your password to remove that permission. Ganbaru AI never sees or stores your password.",
+    "Your Linux firewall currently allows linked devices to connect to Ganbaru on this local network. Linux will ask for your password to remove that permission. Ganbaru never sees or stores your password.",
   networkAccessRevokeAction: "Remove access",
   networkAccessHeading: "Local network access",
   networkAccessAllowed: "Allow linked devices to connect to this computer",
@@ -99,7 +104,9 @@ export const vaultHandoff = {
   networkAccessGranted: "Phone connections are allowed on this network.",
   networkAccessRevoked: "Phone connection access was removed.",
   networkAccessManual:
-    "Ganbaru AI cannot request network access automatically on this Linux system.",
+    "Ganbaru cannot request network access automatically on this Linux system.",
+  networkAccessDevelopmentUnavailable:
+    "This Linux development build cannot use the packaged firewall helper. Use a packaged build or configure the firewall manually to link a phone.",
   notLinked: "No devices linked",
   devicesHeading: "Devices",
   linkedTo: (device: string) => `Linked to ${device}`,
@@ -112,10 +119,12 @@ export const vaultHandoff = {
   createQr: "Show pairing QR code",
   linkAnotherDevice: "Link another device",
   enterCode: "Enter pairing code",
-  linkThisComputer: "Link this computer to another",
+  linkThisComputer: "or link this computer to another",
   codeDialogTitle: "Link this computer",
-  codeInstructions: "Paste the pairing code shown on the coordinating computer.",
+  codeInstructions: "On the other computer, open Settings > Data and copy its pairing code. Paste it here.",
   codePlaceholder: "Pairing code",
+  codeInvalid: "That pairing code is not valid. Copy a new code from the other computer and try again.",
+  codeExpired: "That pairing code has expired. Get a new code from the other computer and try again.",
   linkDevice: "Link device",
   copyCode: "Copy pairing code",
   codeCopied: "Pairing code copied",
@@ -127,7 +136,7 @@ export const vaultHandoff = {
   refreshesIn: (time: string) => `Code refreshes in ${time}`,
   refreshingCode: "Refreshing code...",
   scanQr: "Scan desktop QR code",
-  cameraStarting: "Starting camera...",
+  cameraStarting: "Starting camera",
   notNow: "Not now",
   continue: "Continue",
   deviceLabel: "Phone",
@@ -145,7 +154,6 @@ export const vaultHandoff = {
     "Use this only if the owning device is permanently unavailable. Both copies are preserved, this device becomes writable, and the devices are unlinked. Later changes will not merge automatically.",
   workingOwnership: "Preparing this device...",
   workingRefresh: "Getting the latest changes...",
-  workingPairing: "Linking securely...",
   workingRequest: "Waiting for the other device...",
   linked: "Device linked.",
   linkedSuccessfully: (device: string) => `${device} was successfully linked.`,
@@ -157,14 +165,14 @@ export const vaultHandoff = {
     "This device was unlinked by the coordinating computer. Its local copy remains read-only unless you recover it as a separate vault.",
   recovered: "This local copy is now a separate writable vault.",
   localBackup:
-    "Before the first desktop vault replaces Android data, Ganbaru AI saves a recoverable backup to Downloads.",
+    "Before the first desktop vault replaces Android data, Ganbaru saves a recoverable backup to Downloads.",
   sameNetwork: "Keep both apps open on the same local network.",
   failed: (details: string) => `The linked-device action failed: ${details}`,
   blockerChat: "Finish or stop active Chat work before moving the vault.",
   blockerFocus: "Finish or stop the active Pomodoro session before moving the vault.",
   blockerTransfer: "Finish or retry the current vault transfer first.",
   incompatibleVersions:
-    "Update Ganbaru AI on both devices before linking or transferring data. Their data formats are different.",
+    "Update Ganbaru on both devices before linking or transferring data. Their data formats are different.",
   differentCoordinator:
     "This device is linked to another computer. Unlink it before connecting to a different computer.",
   unreachable:

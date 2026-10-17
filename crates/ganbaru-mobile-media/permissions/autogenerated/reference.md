@@ -36,25 +36,12 @@ Denies the artworkDataUrl command without any pre-configured scope.
 <tr>
 <td>
 
-`ganbaru-mobile-media:allow-load`
+`ganbaru-mobile-media:allow-attachSession`
 
 </td>
 <td>
 
-Enables the load command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`ganbaru-mobile-media:deny-load`
-
-</td>
-<td>
-
-Denies the load command without any pre-configured scope.
+Enables the attachSession command without any pre-configured scope.
 
 </td>
 </tr>
@@ -62,25 +49,12 @@ Denies the load command without any pre-configured scope.
 <tr>
 <td>
 
-`ganbaru-mobile-media:allow-pause`
+`ganbaru-mobile-media:deny-attachSession`
 
 </td>
 <td>
 
-Enables the pause command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`ganbaru-mobile-media:deny-pause`
-
-</td>
-<td>
-
-Denies the pause command without any pre-configured scope.
+Denies the attachSession command without any pre-configured scope.
 
 </td>
 </tr>
@@ -140,32 +114,6 @@ Denies the pickMediaTree command without any pre-configured scope.
 <tr>
 <td>
 
-`ganbaru-mobile-media:allow-play`
-
-</td>
-<td>
-
-Enables the play command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`ganbaru-mobile-media:deny-play`
-
-</td>
-<td>
-
-Denies the play command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
 `ganbaru-mobile-media:allow-probe`
 
 </td>
@@ -211,162 +159,6 @@ Enables the scanMediaTree command without any pre-configured scope.
 <td>
 
 Denies the scanMediaTree command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`ganbaru-mobile-media:allow-seek`
-
-</td>
-<td>
-
-Enables the seek command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`ganbaru-mobile-media:deny-seek`
-
-</td>
-<td>
-
-Denies the seek command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`ganbaru-mobile-media:allow-setMuted`
-
-</td>
-<td>
-
-Enables the setMuted command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`ganbaru-mobile-media:deny-setMuted`
-
-</td>
-<td>
-
-Denies the setMuted command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`ganbaru-mobile-media:allow-setRate`
-
-</td>
-<td>
-
-Enables the setRate command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`ganbaru-mobile-media:deny-setRate`
-
-</td>
-<td>
-
-Denies the setRate command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`ganbaru-mobile-media:allow-setVolume`
-
-</td>
-<td>
-
-Enables the setVolume command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`ganbaru-mobile-media:deny-setVolume`
-
-</td>
-<td>
-
-Denies the setVolume command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`ganbaru-mobile-media:allow-snapshot`
-
-</td>
-<td>
-
-Enables the snapshot command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`ganbaru-mobile-media:deny-snapshot`
-
-</td>
-<td>
-
-Denies the snapshot command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`ganbaru-mobile-media:allow-stop`
-
-</td>
-<td>
-
-Enables the stop command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`ganbaru-mobile-media:deny-stop`
-
-</td>
-<td>
-
-Denies the stop command without any pre-configured scope.
 
 </td>
 </tr>

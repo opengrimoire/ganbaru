@@ -83,7 +83,7 @@ export const benchmark = {
       label: "Calendar week-view nav",
       sectionTitle: "Calendar held navigation memory",
       description:
-        "Dispatches initial and repeated ArrowRight keydown events plus keyup for a 3-second hold, using the same window keyboard handler and held-navigation controller as a physical right-arrow hold. It runs against the 1-year practical dense calendar.",
+        "Dispatches initial and repeated ArrowRight keydown events plus keyup for a 3-second hold, using the same window keyboard handler and held-navigation controller as a physical right-arrow hold. It runs against the default dense calendar dataset.",
     },
     calendarPanelLatency: {
       label: "Calendar panel latency",

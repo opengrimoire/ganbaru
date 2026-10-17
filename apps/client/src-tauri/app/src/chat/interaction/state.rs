@@ -1,13 +1,13 @@
 //! Aggregate interaction-state reads and event projections.
 
 use super::followups::read_queued_followup;
-use super::support::{chat_pool, corrupt_data, json_error, persistence_error, versioned_row};
-use crate::chat::events::{
+use super::support::{chat_pool, corrupt_data_error, json_error, persistence_error, versioned_row};
+use crate::chat::interaction_commands::{ChatInteractionStateRead, ChatPendingRequestRead};
+use ganbaru_chat::runtime::ChatRuntimeRegistry;
+use ganbaru_chat_contracts::events::{
     AccountStatusEvent, CanonicalEvent, RateLimitStatusEvent, ThreadUsageUpdatedEvent,
 };
-use crate::chat::interaction_commands::{ChatInteractionStateRead, ChatPendingRequestRead};
-use crate::chat::models::{ChatResult, ChatThreadId, UtcTimestamp};
-use crate::chat::runtime::ChatRuntimeRegistry;
+use ganbaru_chat_contracts::models::{ChatResult, ChatThreadId, UtcTimestamp};
 use sqlx::{Row, SqlitePool};
 use tauri::Manager;
 
@@ -69,7 +69,7 @@ async fn read_pending_request(
                 row.try_get::<String, _>("opened_at")
                     .map_err(persistence_error)?,
             )
-            .map_err(|_| corrupt_data())?,
+            .map_err(|_| corrupt_data_error())?,
         })
     })
     .transpose()
@@ -102,7 +102,7 @@ async fn read_latest_usage(
     match read_latest_event(pool, thread_id, "thread_usage_updated").await? {
         Some(CanonicalEvent::ThreadUsageUpdated(value)) => Ok(Some(value)),
         None => Ok(None),
-        _ => Err(corrupt_data()),
+        _ => Err(corrupt_data_error()),
     }
 }
 
@@ -113,7 +113,7 @@ async fn read_latest_account_status(
     match read_latest_event(pool, thread_id, "account_status").await? {
         Some(CanonicalEvent::AccountStatus(value)) => Ok(Some(value)),
         None => Ok(None),
-        _ => Err(corrupt_data()),
+        _ => Err(corrupt_data_error()),
     }
 }
 
@@ -124,7 +124,7 @@ async fn read_latest_rate_limit_status(
     match read_latest_event(pool, thread_id, "rate_limit_status").await? {
         Some(CanonicalEvent::RateLimitStatus(value)) => Ok(Some(value)),
         None => Ok(None),
-        _ => Err(corrupt_data()),
+        _ => Err(corrupt_data_error()),
     }
 }
 

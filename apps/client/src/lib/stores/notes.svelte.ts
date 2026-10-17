@@ -1,1491 +1,302 @@
+import { untrack } from "svelte";
 import {
-  getNotesPageBreadcrumb,
-  openNotesPage,
-} from "$lib/api/notes";
-import { blockPlainText } from "$lib/notes/block-factory";
-import type { NotesBlockLinkTarget, NotesPageLinkTarget } from "$lib/notes/block-link";
-import {
-  parentIdForBlock,
-  type NotesTreeState,
-} from "$lib/notes/block-tree";
-import {
-  type NotesBlockOutlineItem,
-} from "$lib/notes/block-outline";
-import {
-  notesContextualPageOpenMode,
-  notesPageOpenModeForSelection,
-  notesDefaultOpenModeForProject,
-  type NotesPageOpenMode,
-} from "$lib/notes/page-open-mode";
-import {
-  notesPageProjectId,
-} from "$lib/notes/project-membership";
-import {
-  nextNotesFocusRequest,
-  planNotesPageLoadFocus,
-  type NotesFocusRequest,
-} from "$lib/notes/editor-focus";
-import type { NotesTextSelection } from "$lib/notes/editor-selection";
-import type { NotesUndoSnapshot } from "$lib/notes/undo-history";
-import {
-  type NotesPostMutationResult,
-  type NotesSidebarMetadataImpact,
-} from "$lib/notes/post-mutation";
-import { createNotesSidebarRefreshCoordinator } from "$lib/notes/sidebar-refresh-coordinator";
-import { createNotesBlockActions } from "./notes-store-block-actions";
-import { createNotesArchiveController } from "./notes-store-archive.svelte";
-import { createNotesSearchController } from "./notes-store-search.svelte";
-import { createNotesLinksController } from "./notes-store-links.svelte";
-import { createNotesCollaborationController } from "./notes-store-collaboration.svelte";
-import { createNotesTransferActions } from "./notes-store-transfer-actions";
-import { createNotesSidebarController } from "./notes-store-sidebar.svelte";
-import { createNotesPageTemplatesController } from "./notes-store-page-templates.svelte";
-import { createNotesFoldersController } from "./notes-store-folders.svelte";
-import { createNotesPageActions } from "./notes-store-page-actions";
-import { createNotesHydrationController } from "./notes-store-hydration";
-import { createNotesWorkspaceController } from "./notes-store-workspace.svelte";
-import {
-  createNotesOptionalSubsystemController,
-  type NotesOptionalSubsystem,
-  type NotesPagePanelSubsystem,
-} from "./notes-store-optional-subsystems";
-import { createNotesPageHistoryController } from "./notes-store-page-history.svelte";
-import { createNotesUndoController } from "./notes-store-undo";
-import { getPreferences } from "./preferences.svelte";
-import { getProjects } from "./projects.svelte";
-import {
-  flatNotesBlockItems,
-  flatNotesBlockItemsForContext,
-  isOnlyNotesBlockInContext,
-  notesColumnItemsForBlock,
-  notesTabItemsForBlock,
-  notesTableRowsForBlock,
-  notesTreeState,
-  previousNotesBlockType,
-  type NotesBlockTreeSnapshot,
-} from "./notes-store-block-tree";
-import {
-  initialNotesSelectedPageId,
-  saveNotesSelectedPageId,
-} from "./notes-store-page-state";
-import { createNotesBlockPersistence } from "./notes-store-persistence";
-import { NotesPageSessionController } from "./notes-store-page-session.svelte";
-import { NotesTreeProjectionController } from "./notes-store-tree-projection.svelte";
-import { createNotesPageCreationController } from "./notes-store-page-creation.svelte";
-import { invalidateNotesNotificationSchedule } from "$lib/notes/notification-schedule.svelte";
-import type {
-  NotesBlock,
-  NotesBlockOutline,
-  NotesColumnBlockItems,
-  NotesBlockTreeItem,
-  NotesBlockType,
-  NotesLoadedPage,
-  NotesPage,
-  NotesPageBreadcrumbItem,
-  NotesPageHistorySettings,
-  NotesPageHistorySnapshot,
-  NotesTabBlockItems,
-  NotesTableRowBlock,
-  NotesWorkspaceShell,
-} from "$lib/notes/types";
+  createNotesEditorStore,
+  createNotesWorkspaceUi,
+  type NotesEditorStore,
+  type NotesSelectPageOptions,
+} from "$lib/stores/notes/editor-session.svelte";
+import { initialNotesSelectedPageId, saveNotesSelectedPageId } from "$lib/stores/notes/page-state";
+import { getProjectsStore } from "./projects.svelte";
+import { notesPageProjectId } from "$lib/notes/project-membership";
+import type { NotesPageOpenMode } from "$lib/notes/pages/open-mode";
+import type { NotesLoadedPage } from "$lib/notes/types";
+import type { NotesSidebarMetadataImpact } from "$lib/notes/post-mutation";
+import { listenForNotesPageChanges } from "$lib/notes/pages/window-sync";
+import { registerWindowCloseFlusher } from "$lib/windows/close-flush";
+import type { WorkspacePaneScope } from "$lib/workspace-tabs/model";
+import { getWorkspacePaneScope } from "$lib/workspace-tabs/pane-scope";
 
-type NotesViewMode = "pages" | "archive" | "trash";
-interface NotesSelectPageOptions {
-  openMode?: NotesPageOpenMode;
-  focusBlockId?: string | null;
+export interface NotesEditorPane {
+  id: string;
+  store: NotesEditorStore;
 }
 
-interface NotesLoadPageTreeOptions {
-  focusOnLoad?: boolean;
-  focusBlockId?: string | null;
+interface NotesWorkspaceOptions {
+  /** The split pane scope whose Projects selection the workspace follows. */
+  scope: WorkspacePaneScope;
+  /** Whether the workspace opens on, and remembers, the window's last selected page. */
+  remembersSelection: boolean;
 }
 
-const BLOCK_SAVE_DEBOUNCE_MS = 350;
+/** Numbers editor panes across workspaces, so a pane id names one editor in the window. */
+let nextPaneId = 0;
 
-let pages = $state<NotesPage[]>([]);
-let allPages = $state<NotesPage[]>([]);
-let viewMode = $state<NotesViewMode>("pages");
-let contextualReturnPageId: string | null = null;
-let focusRequest = $state<NotesFocusRequest>({
-  blockId: null,
-  requestId: 0,
-  selection: null,
-});
-const pageSession = new NotesPageSessionController({
-  initialSelectedPageId: initialNotesSelectedPageId(),
-  persistSelectedPageId: saveNotesSelectedPageId,
-  recordRecentPage: (pageId) => sidebarController.recordRecentPage(pageId),
-});
-const treeProjection = new NotesTreeProjectionController({
-  readSelectedPageId: () => pageSession.selectedPageId,
-});
-const preferences = getPreferences();
-const projects = getProjects();
-const archiveController = createNotesArchiveController();
-const searchController = createNotesSearchController();
-const linksController = createNotesLinksController({
-  readSelectedPageId: () => pageSession.selectedPageId,
-  readSelectedProjectId: () => projects.selectedProjectId,
-  readAllPages: () => allPages,
-  reloadSelectedPage: async (pageId) => {
-    await loadPageTree(pageId);
-  },
-  scheduleVisibleMetadataRefresh: () => sidebarRefreshCoordinator.schedule("visible-metadata"),
-});
-const sidebarController = createNotesSidebarController({
-  reloadPages: () => reloadPages(),
-});
-const foldersController = createNotesFoldersController({
-  setFolderCollapsed: (folderId, collapsed) => sidebarController.setFolderCollapsed(folderId, collapsed),
-  scheduleHierarchyRefresh: () => sidebarRefreshCoordinator.schedule("hierarchy"),
-});
-const {
-  reloadArchivedPages,
-  loadMoreArchivedPages,
-  reloadTrashedPages,
-  loadMoreTrashedPages,
-} = archiveController;
+/** Coordinate live panes without replacing the main editor when a preview opens. */
+function createNotesWorkspace({ scope, remembersSelection }: NotesWorkspaceOptions) {
+  const projects = getProjectsStore(scope);
+  const ui = createNotesWorkspaceUi();
+  const persistSelectedPageId = remembersSelection ? saveNotesSelectedPageId : () => undefined;
+  let main = $state.raw<NotesEditorPane>(createPane(remembersSelection));
+  let preview = $state.raw<NotesEditorPane | null>(null);
+  let activePaneId = $state(untrack(() => main.id));
+  const active = $derived(preview?.id === activePaneId ? preview : main);
+  const panes = $derived(preview ? [main, preview] : [main]);
+  let previewsFollowProject = true;
 
-function blockTreeSnapshot(): NotesBlockTreeSnapshot {
-  return {
-    selectedPageId: pageSession.selectedPageId,
-    blocksById: treeProjection.blocksById,
-    childIdsByParentId: treeProjection.childIdsByParentId,
-  };
-}
-
-function defaultNotesPageOpenMode(projectId: string | null = projects.selectedProjectId): NotesPageOpenMode {
-  return notesDefaultOpenModeForProject(
-    preferences.notesDefaultOpenMode,
-    projects.projectById(projectId)?.notesDefaultOpenMode,
-  );
-}
-
-function projectIdForPage(pageId: string): string | null {
-  const page = allPages.find((candidate) => candidate.id === pageId)
-    ?? (treeProjection.loadedPage?.id === pageId ? treeProjection.loadedPage : null);
-  return page ? notesPageProjectId(page) : projects.selectedProjectId;
-}
-
-function treeState(): NotesTreeState {
-  return notesTreeState(blockTreeSnapshot());
-}
-
-function saveSelectedPageId(pageId: string | null): void {
-  pageSession.select(pageId);
-}
-
-function showSelectedPageAs(openMode: NotesPageOpenMode): void {
-  if (openMode === "full") contextualReturnPageId = null;
-  pageSession.pageOpenMode = openMode;
-}
-
-function openSelectedPage(pageId: string, openMode: NotesPageOpenMode): void {
-  viewMode = "pages";
-  pageSession.open(pageId, openMode);
-}
-
-function recordRecentPage(pageId: string): void {
-  pageSession.recordRecentIfCurrent(pageSession.generation, pageId);
-}
-
-function requestBlockFocus(
-  blockId: string | null,
-  selection: NotesTextSelection | null = null,
-): void {
-  focusRequest = nextNotesFocusRequest(focusRequest, blockId, selection);
-}
-
-function requestTitleFocus(pageId: string): void {
-  pageSession.requestTitleFocus(pageId);
-}
-
-function setPageTitleDraft(pageId: string, title: string): void {
-  pageSession.setTitleDraft(pageId, title);
-}
-
-function clearPageTitleDraft(pageId: string): void {
-  pageSession.clearTitleDraft(pageId);
-}
-
-function pageTitleDraftForPage(pageId: string): string | null {
-  return pageSession.titleDraftForPage(pageId);
-}
-
-function replacePages(nextPages: NotesPage[]): void {
-  pages = [...nextPages];
-}
-
-function replaceAllPages(nextPages: NotesPage[]): void {
-  allPages = [...nextPages];
-}
-
-function upsertPageInActiveCollections(page: NotesPage): void {
-  pages = pages.some((item) => item.id === page.id)
-    ? pages.map((item) => (item.id === page.id ? page : item))
-    : [page, ...pages];
-  allPages = allPages.some((item) => item.id === page.id)
-    ? allPages.map((item) => (item.id === page.id ? page : item))
-    : [page, ...allPages];
-  invalidateNotesNotificationSchedule();
-}
-
-function removePagesFromActiveCollections(pageIds: ReadonlySet<string>): void {
-  pages = pages.filter((page) => !pageIds.has(page.id));
-  allPages = allPages.filter((page) => !pageIds.has(page.id));
-  invalidateNotesNotificationSchedule();
-}
-
-function sidebarSeedPageIds(): string[] {
-  return sidebarController.seedPageIds();
-}
-
-function replaceBlock(block: NotesBlock): void {
-  treeProjection.replaceBlock(block);
-}
-
-function applyLocalUndoSnapshot(
-  target: NotesUndoSnapshot,
-  source: NotesUndoSnapshot,
-): void {
-  treeProjection.applyLocalUndoSnapshot(target, source);
-}
-
-function insertBlockAfter(block: NotesBlock, afterBlockId: string | null): void {
-  treeProjection.insertBlockAfter(block, afterBlockId);
-}
-
-function removeLeafBlockLocally(blockId: string): boolean {
-  return treeProjection.removeLeafBlock(blockId);
-}
-
-function setLoadedPageFromLoaded(loaded: NotesLoadedPage): void {
-  treeProjection.setLoadedPage(loaded);
-}
-
-function replaceBlockOutlines(outlines: readonly NotesBlockOutline[], pageId: string): void {
-  treeProjection.replaceOutlines(outlines, pageId);
-}
-
-function mergeBlockOutlines(outlines: readonly NotesBlockOutline[], pageId: string): void {
-  treeProjection.mergeOutlines(outlines, pageId);
-}
-
-function requestLoadedPageFocus(
-  loaded: NotesLoadedPage,
-  focusBlockId: string | null = null,
-): void {
-  requestBlockFocus(
-    planNotesPageLoadFocus(
-      loaded.blocks.results.map((block) => block.id),
-      focusBlockId,
-    ),
-  );
-}
-
-async function hydrateBlockRange(
-  blockIds: readonly string[],
-  generation = pageSession.generation,
-): Promise<void> {
-  await hydrationController.hydrateBlockRange(blockIds, generation);
-}
-
-function queueDescendantHydration(
-  pageId: string = pageSession.selectedPageId ?? "",
-  generation: number = pageSession.generation,
-): void {
-  hydrationController.queueDescendantHydration(pageId, generation);
-}
-
-async function reloadPages(selectedPageIdOverride: string | null = pageSession.selectedPageId): Promise<void> {
-  await workspaceController.reloadPages(selectedPageIdOverride);
-}
-
-async function loadNavigationChildren(pageId: string): Promise<void> {
-  const expandedPageIds = [...new Set([...sidebarController.expandedPageIds, pageId])];
-  await workspaceController.reloadPages(pageSession.selectedPageId, expandedPageIds);
-}
-
-function mergeReloadedWorkspaceShell(shell: NotesWorkspaceShell): void {
-  const mergedPages = [...new Map([...allPages, ...shell.pages].map((page) => [page.id, page])).values()];
-  replacePages(mergedPages);
-  replaceAllPages(mergedPages);
-  foldersController.merge(shell.folders);
-  sidebarController.mergeMetadata({
-    pageIdsWithChildren: shell.page_ids_with_children,
-    missingParentPageIds: shell.missing_parent_page_ids,
-    trashedParentPageIds: shell.trashed_parent_page_ids,
-  });
-}
-
-function prepareWorkspaceLoad(): void {
-  pageSession.invalidate();
-  hydrationController.invalidate();
-  treeProjection.resetOutlines();
-  optionalSubsystemController.resetAll();
-  linksController.resetAll();
-  collaborationController.resetPageState();
-  pageHistoryController.resetPageState();
-  sidebarRefreshCoordinator.cancel();
-}
-
-function applyInitialWorkspaceShell(
-  shell: NotesWorkspaceShell,
-  requestedSelection: string | null,
-): string | null {
-  replacePages(shell.pages);
-  replaceAllPages([...new Map(
-    [...shell.navigation_pages, ...shell.pages].map((page) => [page.id, page]),
-  ).values()]);
-  foldersController.replace([...new Map(
-    [...shell.navigation_folders, ...shell.folders].map((folder) => [folder.id, folder]),
-  ).values()]);
-  sidebarController.replaceMetadata({
-    pageIdsWithChildren: [...new Set([
-      ...shell.navigation_page_ids_with_children,
-      ...shell.page_ids_with_children,
-    ])],
-    missingParentPageIds: shell.missing_parent_page_ids,
-    trashedParentPageIds: shell.trashed_parent_page_ids,
-  });
-  const selectionUnchanged = pageSession.selectedPageId === requestedSelection;
-  const nextSelected = selectionUnchanged ? shell.resolved_selected_page_id : pageSession.selectedPageId;
-  if (selectionUnchanged) saveSelectedPageId(nextSelected);
-  return nextSelected;
-}
-
-function applyAdditionalWorkspaceShell(shell: NotesWorkspaceShell): void {
-  const mergedPages = [...new Map([...allPages, ...shell.pages].map((page) => [page.id, page])).values()];
-  replaceAllPages(mergedPages);
-  replacePages(mergedPages);
-  foldersController.merge(shell.folders);
-  sidebarController.mergeMetadata({
-    pageIdsWithChildren: shell.page_ids_with_children,
-    missingParentPageIds: shell.missing_parent_page_ids,
-    trashedParentPageIds: shell.trashed_parent_page_ids,
-  });
-}
-
-function clearSelectedPageState(): void {
-  treeProjection.clearLoadedTree();
-  pageSession.breadcrumbs = [];
-  pageHistoryController.resetPageState();
-}
-
-const sidebarRefreshCoordinator = createNotesSidebarRefreshCoordinator({
-  refresh: async (_impact: Exclude<NotesSidebarMetadataImpact, "none">) => {
-    await reloadPages();
-  },
-});
-
-function applyPostMutation(result: NotesPostMutationResult): void {
-  treeProjection.applyPostMutation(result);
-  for (const page of result.pages ?? []) upsertPageInActiveCollections(page);
-  if (result.removedPageIds?.length) {
-    removePagesFromActiveCollections(new Set(result.removedPageIds));
-  }
-  sidebarRefreshCoordinator.schedule(result.sidebarImpact ?? "none");
-}
-
-async function loadPageTree(pageId: string, options: NotesLoadPageTreeOptions = {}): Promise<boolean> {
-  const requestId = pageSession.invalidate();
-  treeProjection.primaryContentReady = false;
-  const loaded = await openNotesPage(pageId);
-  if (!pageSession.isCurrent(requestId, pageId)) return false;
-  if (options.focusOnLoad) {
-    requestLoadedPageFocus(loaded, options.focusBlockId ?? null);
-  }
-  setLoadedPageFromLoaded(loaded);
-  replaceBlockOutlines(loaded.outlines, pageId);
-  pageSession.applyBreadcrumbsIfCurrent(requestId, pageId, loaded.breadcrumb);
-  void hydrationController.loadOutlineDescendantFrontiers(pageId, requestId).catch((error) => {
-    if (pageSession.isCurrent(requestId, pageId)) {
-      workspaceController.setError(error instanceof Error ? error.message : String(error));
-    }
-  });
-  return true;
-}
-
-async function loadPageTreeForUndo(pageId: string): Promise<void> {
-  openSelectedPage(pageId, pageSession.pageOpenMode);
-  await loadPageTree(pageId);
-  recordRecentPage(pageId);
-}
-
-async function reloadPageBreadcrumb(pageId: string | null = pageSession.selectedPageId): Promise<void> {
-  if (!pageId) {
-    pageSession.breadcrumbs = [];
-    return;
-  }
-  const generation = pageSession.generation;
-  const breadcrumbs = await getNotesPageBreadcrumb(pageId);
-  pageSession.applyBreadcrumbsIfCurrent(generation, pageId, breadcrumbs);
-}
-
-async function loadOptionalSubsystem(
-  subsystem: NotesOptionalSubsystem,
-  pageId: string | null,
-): Promise<void> {
-  switch (subsystem) {
-    case "templates":
-      await pageTemplatesController.reloadPageTemplates();
-      break;
-    case "local-user":
-      await collaborationController.loadLocalUser();
-      break;
-    case "history-settings":
-      await pageHistoryController.loadSettings();
-      break;
-    case "undo":
-      await undoController.hydrate(pageId);
-      break;
-    case "links":
-      await Promise.all([
-        linksController.reloadBacklinks(pageId),
-        linksController.reloadPageAliases(pageId),
-        linksController.reloadUnresolvedLinks(pageId),
-        linksController.reloadLinkResolutionPages(),
-      ]);
-      break;
-    case "comments":
-      await Promise.all([
-        collaborationController.loadLocalUser(),
-        collaborationController.reloadComments(pageId),
-      ]);
-      break;
-    case "suggestions":
-      await collaborationController.reloadSuggestions(pageId);
-      break;
-    case "page-history":
-      if (pageId) await pageHistoryController.reloadSnapshots(pageId);
-      break;
-    case "destinations":
-      await linksController.reloadLinkResolutionPages();
-      break;
-  }
-}
-
-async function ensureOptionalSubsystem(
-  subsystem: NotesOptionalSubsystem,
-  pageId: string | null = pageSession.selectedPageId,
-): Promise<void> {
-  return optionalSubsystemController.ensure(subsystem, pageId);
-}
-
-function setPagePanelSubsystemOpen(
-  subsystem: NotesPagePanelSubsystem,
-  open: boolean,
-): void {
-  optionalSubsystemController.setPanelOpen(subsystem, open);
-}
-
-async function refreshOpenLinks(): Promise<void> {
-  const pageId = pageSession.selectedPageId;
-  if (!pageId || !optionalSubsystemController.isPanelOpen("links")) return;
-  const generation = pageSession.generation;
-  await Promise.all([
-    linksController.reloadBacklinks(pageId),
-    linksController.reloadPageAliases(pageId),
-    linksController.reloadUnresolvedLinks(pageId),
-    linksController.reloadLinkResolutionPages(),
-  ]);
-  if (!pageSession.isCurrent(generation, pageId)) return;
-  optionalSubsystemController.markPageSubsystemLoaded("links", pageId, generation);
-}
-
-async function selectPage(
-  pageId: string | null,
-  options: NotesSelectPageOptions = {},
-): Promise<void> {
-  const alreadyLoaded = pageSession.selectedPageId === pageId && (!pageId || treeProjection.loadedPage?.id === pageId);
-  const openMode = notesPageOpenModeForSelection({
-    requestedOpenMode: options.openMode,
-    currentOpenMode: pageSession.pageOpenMode,
-    defaultOpenMode: pageId
-      ? defaultNotesPageOpenMode(projectIdForPage(pageId))
-      : defaultNotesPageOpenMode(),
-    hasOpenPage: pageSession.selectedPageId !== null,
-  });
-  if (!pageId || openMode === "full") contextualReturnPageId = null;
-  if (pageId) {
-    openSelectedPage(pageId, openMode);
-  } else {
-    saveSelectedPageId(null);
-  }
-  if (alreadyLoaded) return;
-  pageSession.invalidate();
-  hydrationController.invalidate();
-  treeProjection.resetOutlines();
-  optionalSubsystemController.resetPageScoped();
-  undoController.reset(pageId);
-  pageHistoryController.resetPageState();
-  linksController.resetPageState();
-  collaborationController.resetPageState();
-  if (!pageId) {
-    treeProjection.clearSelection();
-    pageSession.breadcrumbs = [];
-    linksController.resetAll();
-    pageHistoryController.resetPageState();
-    return;
-  }
-  workspaceController.setLoading(true);
-  workspaceController.setError(null);
-  try {
-    const applied = await loadPageTree(pageId, {
-      focusOnLoad: true,
-      focusBlockId: options.focusBlockId ?? null,
+  function createPane(restoreSelection = false): NotesEditorPane {
+    const id = `notes-pane-${++nextPaneId}`;
+    const store = createNotesEditorStore({
+      select: (pageId, options) => selectFrom(id, pageId, options),
+      openLoaded: (loaded, impact, mode) => openLoadedFrom(id, loaded, impact, mode),
+      openProvisional: (loaded, mode) => openProvisionalFrom(id, loaded, mode),
+      close: () => closePane(id),
+      showAs: (mode) => { void showPaneAs(id, mode).catch(reportNavigationError); },
+      focusBlock: (blockId, selection, preventScroll) => {
+        const target = panes.find((pane) => pane.id !== id && pane.store.blockById(blockId));
+        if (!target) return false;
+        target.store.focusBlock(blockId, selection, preventScroll);
+        return true;
+      },
+      focusTitle: (pageId) => {
+        const target = panes.find((pane) => pane.id !== id && pane.store.selectedPageId === pageId);
+        if (!target) return false;
+        target.store.requestTitleFocus(pageId);
+        return true;
+      },
+      removePages: (pageIds) => {
+        const removed = new Set(pageIds);
+        if (preview?.store.selectedPageId && removed.has(preview.store.selectedPageId)) {
+          preview.store.clearRemovedPage();
+          preview.store.dispose();
+          preview = null;
+        }
+        if (main.store.selectedPageId && removed.has(main.store.selectedPageId)) main.store.clearRemovedPage();
+        if (!panes.some((pane) => pane.id === activePaneId)) activatePane(main.id);
+      },
+      afterRemoval: async (replacementId) => {
+        if (!main.store.selectedPageId) await main.store.selectPageLocally(replacementId, { openMode: "full" });
+        activatePane(main.id);
+      },
+      editors: () => panes.map((pane) => pane.store),
+    }, {
+      ui,
+      projects,
+      initialSelectedPageId: restoreSelection ? initialNotesSelectedPageId() : null,
+      persistSelectedPageId,
     });
-    if (applied) pageSession.recordRecentIfCurrent(pageSession.generation, pageId);
-  } catch (error) {
-    workspaceController.setError(error instanceof Error ? error.message : String(error));
-    throw error;
-  } finally {
-    workspaceController.setLoading(false);
+    return { id, store };
   }
-}
 
-async function openPageContextually(pageId: string): Promise<void> {
-  const sourcePageId = pageSession.selectedPageId;
-  const openMode = notesContextualPageOpenMode(
-    pageSession.pageOpenMode,
-    defaultNotesPageOpenMode(projectIdForPage(pageId)),
-  );
-  if (openMode !== "full" && pageSession.pageOpenMode === "full") {
-    contextualReturnPageId = sourcePageId;
+  function reportNavigationError(error: unknown): void {
+    console.warn("Notes pane navigation failed", error);
   }
-  await selectPage(pageId, { openMode });
-}
 
-async function closeContextualPage(): Promise<void> {
-  const returnPageId = contextualReturnPageId;
-  contextualReturnPageId = null;
-  await selectPage(returnPageId, { openMode: "full" });
-}
+  function paneById(id: string): NotesEditorPane {
+    const pane = panes.find((candidate) => candidate.id === id);
+    if (!pane) throw new Error("Notes editor is no longer open");
+    return pane;
+  }
 
-async function activateReturnedPage(
-  loaded: NotesLoadedPage,
-  sidebarImpact: Exclude<NotesSidebarMetadataImpact, "none">,
-  openMode: NotesPageOpenMode = defaultNotesPageOpenMode(notesPageProjectId(loaded.page)),
-): Promise<void> {
-  pageSession.invalidate();
-  treeProjection.resetOutlines();
-  undoController.reset(loaded.page.id);
-  pageHistoryController.resetPageState();
-  optionalSubsystemController.resetPageScoped();
-  openSelectedPage(loaded.page.id, openMode);
-  recordRecentPage(loaded.page.id);
-  applyPostMutation({
-    loadedPage: loaded,
-    pages: [loaded.page],
-    sidebarImpact,
-  });
-  await reloadPageBreadcrumb(loaded.page.id);
-}
+  function activatePane(id: string, restoreProjectContext = true): void {
+    if (!panes.some((pane) => pane.id === id)) return;
+    const pane = paneById(id);
+    if (activePaneId !== id) {
+      activePaneId = id;
+      persistSelectedPageId(pane.store.selectedPageId);
+    }
+    if (!restoreProjectContext) return;
+    void synchronizeProjectContext(pane).catch((error: unknown) => {
+      console.warn("Refresh Notes project context failed", error);
+    });
+  }
 
-function activateProvisionalPage(
-  loaded: NotesLoadedPage,
-  openMode: NotesPageOpenMode,
-): void {
-  pageSession.invalidate();
-  treeProjection.resetOutlines();
-  undoController.reset(loaded.page.id);
-  pageHistoryController.resetPageState();
-  optionalSubsystemController.resetPageScoped();
-  openSelectedPage(loaded.page.id, openMode);
-  recordRecentPage(loaded.page.id);
-  applyPostMutation({
-    loadedPage: loaded,
-    pages: [loaded.page],
-    sidebarImpact: "hierarchy",
-  });
-}
+  /** Follow the active document's owning project without reopening its content. */
+  async function synchronizeProjectContext(pane: NotesEditorPane): Promise<void> {
+    if (!previewsFollowProject && pane.id !== main.id) return;
+    const page = pane.store.loadedPage;
+    if (!page || page.id !== pane.store.selectedPageId) return;
+    const projectId = notesPageProjectId(page);
+    if (!projectId) return;
+    if (!projects.loaded) await projects.ensureLoaded();
+    if (activePaneId !== pane.id
+      || pane.store.selectedPageId !== page.id
+      || !pane.store.loadedPage
+      || notesPageProjectId(pane.store.loadedPage) !== projectId) return;
+    if (!projects.projectById(projectId) || projects.selectedProjectId === projectId) return;
+    projects.selectedProjectId = projectId;
+    await pane.store.refreshProjectNavigation();
+  }
 
-async function reconcileCreatedPage(loaded: NotesLoadedPage): Promise<void> {
-  const remainsSelected = pageSession.selectedPageId === loaded.page.id
-    && treeProjection.loadedPage?.id === loaded.page.id;
-  const reconciled = remainsSelected
-    ? {
-        ...loaded,
-        blocks: {
-          ...loaded.blocks,
-          results: loaded.blocks.results.map((block) => (
-            hasLocalChanges(block.id) ? treeProjection.blocksById[block.id] ?? block : block
-          )),
-        },
+  async function closePreview(restoreProjectContext = true): Promise<void> {
+    const closing = preview;
+    if (!closing) return;
+    const pageId = closing.store.selectedPageId;
+    await closing.store.prepareToClose();
+    if (preview !== closing || closing.store.selectedPageId !== pageId) return;
+    preview = null;
+    closing.store.dispose();
+    activatePane(main.id, restoreProjectContext);
+  }
+
+  async function closePane(id: string): Promise<void> {
+    if (preview?.id === id) await closePreview();
+    else if (main.id === id) {
+      await closePreview(false);
+      await main.store.selectPageLocally(null);
+      activatePane(main.id);
+    }
+  }
+
+  async function showPaneAs(id: string, mode: NotesPageOpenMode): Promise<void> {
+    const pane = paneById(id);
+    if (mode === "full" && pane === preview) {
+      const previousMain = main;
+      await previousMain.store.prepareToClose();
+      if (main !== previousMain || preview !== pane) return;
+      main = pane;
+      preview = null;
+      previousMain.store.dispose();
+    }
+    pane.store.setOpenMode(mode);
+    activatePane(pane.id);
+  }
+
+  async function destination(sourceId: string, pageId: string, mode: NotesPageOpenMode): Promise<NotesEditorPane> {
+    const source = paneById(sourceId);
+    const existing = panes.find((pane) => pane.store.selectedPageId === pageId);
+    if (existing) {
+      if (existing === main && preview && (mode === "full" || preview.store.pageOpenMode === "center")) await closePreview(false);
+      if (mode === "full") await showPaneAs(existing.id, mode);
+      activatePane(existing.id);
+      return existing;
+    }
+    if (mode === "full") {
+      await closePreview(false);
+      activatePane(main.id);
+      return main;
+    }
+    if (!main.store.selectedPageId) {
+      activatePane(main.id);
+      return main;
+    }
+    if (source === preview) return source;
+    if (preview) {
+      const replacing = preview;
+      await replacing.store.flushPendingWrites();
+      if (preview !== replacing) return destination(sourceId, pageId, mode);
+    } else preview = createPane();
+    main.store.setOpenMode("full");
+    activatePane(preview.id);
+    return preview;
+  }
+
+  async function selectFrom(sourceId: string, pageId: string | null, options: NotesSelectPageOptions = {}): Promise<void> {
+    if (!pageId) {
+      await closePreview(false);
+      await main.store.selectPageLocally(null, options);
+      activatePane(main.id);
+      return;
+    }
+    const source = paneById(sourceId);
+    if (options.databaseBlockId) {
+      const existing = panes.find((pane) => pane.store.selectedPageId === pageId);
+      const target = existing ?? await destination(sourceId, pageId, "side");
+      await target.store.selectPageLocally(pageId, {
+        ...options,
+        openMode: target.store.pageOpenMode,
+      });
+      if (target.store.selectedDatabaseBlockId === options.databaseBlockId) activatePane(target.id);
+      return;
+    }
+    const mode = options.openMode ?? (source.store.selectedPageId ? source.store.pageOpenMode : "full");
+    const target = await destination(sourceId, pageId, mode);
+    await target.store.selectPageLocally(pageId, { ...options, openMode: target === main && preview ? "full" : mode });
+    activatePane(target.id);
+  }
+
+  async function openLoadedFrom(sourceId: string, loaded: NotesLoadedPage, impact: Exclude<NotesSidebarMetadataImpact, "none">, mode: NotesPageOpenMode): Promise<void> {
+    const target = await destination(sourceId, loaded.page.id, mode);
+    await target.store.acceptLoadedPage(loaded, impact, mode);
+    activatePane(target.id);
+  }
+
+  async function openProvisionalFrom(sourceId: string, loaded: NotesLoadedPage, mode: NotesPageOpenMode): Promise<void> {
+    const target = await destination(sourceId, loaded.page.id, mode);
+    target.store.acceptProvisionalPage(loaded, mode);
+    activatePane(target.id);
+  }
+
+  let pageChangeListener: Promise<() => void> | null = null;
+
+  /** Refresh every pane showing a page another window changed; started once the workspace loads. */
+  function listenForOtherWindows(): void {
+    pageChangeListener ??= listenForNotesPageChanges((pageIds) => {
+      for (const pane of panes) {
+        const pageId = pane.store.selectedPageId;
+        if (!pageId || !pageIds.has(pageId)) continue;
+        void pane.store.refreshCanonicalPage()
+          .catch((error: unknown) => console.warn("Notes refresh from another window failed", error));
       }
-    : loaded;
-  applyPostMutation({
-    ...(remainsSelected ? { loadedPage: reconciled } : {}),
-    pages: [loaded.page],
-    sidebarImpact: "hierarchy",
-  });
-  if (remainsSelected) await reloadPageBreadcrumb(loaded.page.id);
-}
-
-async function activateRestoredPage(page: NotesPage): Promise<void> {
-  pageSession.invalidate();
-  undoController.reset(page.id);
-  pageHistoryController.resetPageState();
-  optionalSubsystemController.resetPageScoped();
-  openSelectedPage(page.id, defaultNotesPageOpenMode(notesPageProjectId(page)));
-  applyPostMutation({ pages: [page], sidebarImpact: "hierarchy" });
-  await loadPageTree(page.id);
-  recordRecentPage(page.id);
-  requestPageLoadFocus();
-}
-
-function setFolderCollapsed(folderId: string, collapsed: boolean): void {
-  sidebarController.setFolderCollapsed(folderId, collapsed);
-}
-
-function setSidebarPageCollapsed(pageId: string, collapsed: boolean): void {
-  sidebarController.setPageCollapsed(pageId, collapsed);
-}
-
-function setPageFavorited(pageId: string, favorited: boolean): void {
-  sidebarController.setPageFavorited(pageId, favorited);
-}
-
-async function openArchive(): Promise<void> {
-  viewMode = "archive";
-  if (!archiveController.archiveLoaded && !archiveController.archiveLoading) {
-    await reloadArchivedPages();
+    }).catch((error: unknown) => {
+      pageChangeListener = null;
+      console.warn("Notes window sync listener failed", error);
+      return () => undefined;
+    });
   }
-}
 
-function closeArchive(): void {
-  viewMode = "pages";
-}
-
-async function openTrash(): Promise<void> {
-  viewMode = "trash";
-  if (!archiveController.trashLoaded && !archiveController.trashLoading) {
-    await reloadTrashedPages();
-  }
-}
-
-function closeTrash(): void {
-  viewMode = "pages";
-}
-
-function flatBlockItems(): NotesBlockTreeItem[] {
-  return flatNotesBlockItems(blockTreeSnapshot());
-}
-
-function flatBlockItemsForBlockContext(blockId: string): NotesBlockTreeItem[] {
-  return flatNotesBlockItemsForContext(blockTreeSnapshot(), blockId);
-}
-
-function blockById(blockId: string): NotesBlock | undefined {
-  return treeProjection.blocksById[blockId];
-}
-
-function tableRowsForBlock(blockId: string): NotesTableRowBlock[] {
-  return notesTableRowsForBlock(blockTreeSnapshot(), blockId);
-}
-
-function columnItemsForBlock(blockId: string): NotesColumnBlockItems[] {
-  return notesColumnItemsForBlock(blockTreeSnapshot(), blockId);
-}
-
-function tabItemsForBlock(blockId: string): NotesTabBlockItems[] {
-  return notesTabItemsForBlock(blockTreeSnapshot(), blockId);
-}
-
-function previousBlockType(blockId: string): NotesBlockType | null {
-  return previousNotesBlockType(blockTreeSnapshot(), blockId);
-}
-
-function visibleBlockIds(): string[] {
-  return flatBlockItems().map((item) => item.block.id);
-}
-
-function outlineSubtreeIds(rootBlockIds: readonly string[]): string[] {
-  const roots = new Set(rootBlockIds);
-  const outlinesById = new Map(treeProjection.blockOutlines.map((outline) => [outline.id, outline]));
-  const included = new Set<string>();
-  for (const item of treeProjection.flatBlockOutlines) {
-    let current: NotesBlockOutline | undefined = item.outline;
-    while (current) {
-      if (roots.has(current.id)) {
-        included.add(item.outline.id);
-        break;
-      }
-      const parentId: string | null = current.parent.type === "block_id"
-        ? current.parent.block_id
-        : null;
-      current = parentId ? outlinesById.get(parentId) : undefined;
-    }
-  }
-  return [...included];
-}
-
-function requestPageLoadFocus(requestedBlockId: string | null = null): void {
-  requestBlockFocus(planNotesPageLoadFocus(visibleBlockIds(), requestedBlockId));
-}
-
-const pageCreationController = createNotesPageCreationController({
-  reconcile: reconcileCreatedPage,
-  afterPersisted: async () => {
-    try {
-      await flushPendingBlockSaves();
-    } catch (error) {
-      workspaceController.setError(error instanceof Error ? error.message : String(error));
-    }
-  },
-});
-
-const {
-  hasLocalChanges,
-  localApplyBlockUpdate,
-  markBlockLocallyChanged,
-  saveBlockNow,
-  scheduleBlockSave,
-  flushBlockSave,
-  flushPendingBlockSaves,
-} = createNotesBlockPersistence({
-  readBlock: (blockId) => treeProjection.blocksById[blockId],
-  beforeSave: () => pageCreationController.awaitReady(pageSession.selectedPageId),
-  replaceBlock,
-  setLoadError: (message) => {
-    workspaceController.setError(message);
-  },
-  debounceMs: BLOCK_SAVE_DEBOUNCE_MS,
-});
-treeProjection.setLocalChangeMarker(markBlockLocallyChanged);
-
-const undoController = createNotesUndoController({
-  readSelectedPageId: () => pageSession.selectedPageId,
-  readTreeState: treeState,
-  loadPageTreeForUndo,
-  requestBlockFocus,
-  flushPendingMutations: async () => {
-    await Promise.all([
-      flushPendingBlockSaves(),
-      blockActions.flushOptimisticBlockWrites(),
-    ]);
-  },
-  applyLocalSnapshot: applyLocalUndoSnapshot,
-});
-
-const pageHistoryController = createNotesPageHistoryController({
-  readSelectedPageId: () => pageSession.selectedPageId,
-  applyPostMutation,
-  requestPageLoadFocus,
-  flushPendingBlockSaves,
-  setLoadError: (message) => {
-    workspaceController.setError(message);
-  },
-});
-
-const optionalSubsystemController = createNotesOptionalSubsystemController({
-  readPageGeneration: () => pageSession.generation,
-  readSelectedPageId: () => pageSession.selectedPageId,
-  readSelectedProjectId: () => projects.selectedProjectId,
-  load: loadOptionalSubsystem,
-});
-
-const workspaceController = createNotesWorkspaceController({
-  readRequestState: () => ({
-    projectId: projects.selectedProjectId,
-    expandedPageIds: [...sidebarController.expandedPageIds],
-    seedPageIds: sidebarSeedPageIds(),
-    selectedPageId: pageSession.selectedPageId,
-  }),
-  prepareLoad: prepareWorkspaceLoad,
-  applyInitialShell: applyInitialWorkspaceShell,
-  applyAdditionalShell: applyAdditionalWorkspaceShell,
-  mergeReloadedShell: mergeReloadedWorkspaceShell,
-  loadSelectedPage: async (pageId) => {
-    await loadPageTree(pageId, { focusOnLoad: true });
-  },
-  clearSelectedPageState,
-  readSelectedPageId: () => pageSession.selectedPageId,
-});
-
-const transferActions = createNotesTransferActions({
-  readSelectedPageId: () => pageSession.selectedPageId,
-  activateReturnedPage: (nextLoadedPage) => activateReturnedPage(nextLoadedPage, "hierarchy"),
-  upsertPage: upsertPageInActiveCollections,
-  showPages: () => {
-    viewMode = "pages";
-  },
-  scheduleHierarchyRefresh: () => sidebarRefreshCoordinator.schedule("hierarchy"),
-  queueDescendantHydration: () => queueDescendantHydration(),
-  requestPageLoadFocus: () => requestPageLoadFocus(),
-});
-
-const pageTemplatesController = createNotesPageTemplatesController({
-  readLoadedPage: () => treeProjection.loadedPage,
-  flushPendingBlockSaves,
-  activateReturnedPage: (nextLoadedPage) => activateReturnedPage(nextLoadedPage, "hierarchy"),
-  queueDescendantHydration: () => queueDescendantHydration(),
-  requestPageLoadFocus: () => requestPageLoadFocus(),
-});
-
-const pageActions = createNotesPageActions({
-  readSelectedPageId: () => pageSession.selectedPageId,
-  readPages: () => pages,
-  readAllPages: () => allPages,
-  readLoadedPage: () => treeProjection.loadedPage,
-  readFolders: () => foldersController.folders,
-  readBlocksById: () => treeProjection.blocksById,
-  defaultOpenMode: defaultNotesPageOpenMode,
-  activateReturnedPage,
-  activateProvisionalPage,
-  beginPageCreation: pageCreationController.begin,
-  awaitPageReady: pageCreationController.awaitReady,
-  activateRestoredPage,
-  applyPostMutation,
-  selectPage: (pageId) => selectPage(pageId),
-  reloadPageBreadcrumb: (pageId) => reloadPageBreadcrumb(pageId),
-  flushBlockSave,
-  flushPendingBlockSaves,
-  requestBlockFocus,
-  requestTitleFocus,
-  requestPageLoadFocus: () => requestPageLoadFocus(),
-  queueDescendantHydration: () => queueDescendantHydration(),
-  setFolderCollapsed,
-  setSidebarPageCollapsed,
-  prependArchivedPage: archiveController.prependArchivedPage,
-  prependTrashedPage: archiveController.prependTrashedPage,
-  removeArchivedPages: archiveController.removeArchivedPages,
-  removeTrashedPages: archiveController.removeTrashedPages,
-  removePagesFromActiveCollections,
-  removeSidebarPageIds: sidebarController.removePageIds,
-  scheduleHierarchyRefresh: () => sidebarRefreshCoordinator.schedule("hierarchy"),
-});
-
-const blockActions = createNotesBlockActions({
-  readSelectedPageId: () => pageSession.selectedPageId,
-  readBlocksById: () => treeProjection.blocksById,
-  readChildIdsByParentId: () => treeProjection.childIdsByParentId,
-  treeState,
-  outlineSubtreeIds,
-  blockById,
-  flatBlockItemsForBlockContext,
-  tableRowsForBlock,
-  columnItemsForBlock,
-  tabItemsForBlock,
-  setSidebarPageCollapsed,
-  requestBlockFocus,
-  createChildPageFromBlock: pageActions.createChildPageFromBlock,
-  createChildPageAfterBlock: pageActions.createChildPageAfterBlock,
-  applyPostMutation,
-  loadPageTree: async (pageId) => {
-    await loadPageTree(pageId);
-  },
-  refreshOpenLinks,
-  localApplyBlockUpdate,
-  localInsertBlockAfter: insertBlockAfter,
-  localRemoveLeafBlock: removeLeafBlockLocally,
-  saveBlockNow,
-  scheduleBlockSave,
-  flushBlockSave,
-  flushPendingBlockSaves,
-  awaitSelectedPageReady: () => pageCreationController.awaitReady(pageSession.selectedPageId),
-  createUndoSnapshot: undoController.snapshot,
-  createUndoSnapshotForBlocks: undoController.snapshotBlocks,
-  recordUndo: undoController.record,
-});
-
-const collaborationController = createNotesCollaborationController({
-  readSelectedPageId: () => pageSession.selectedPageId,
-  readBlocksById: () => treeProjection.blocksById,
-  flushBlockSave,
-  requestBlockFocus: (blockId) => requestBlockFocus(blockId),
-  updateBlockRichText: blockActions.updateBlockRichText,
-  isPanelOpen: (panel) => optionalSubsystemController.isPanelOpen(panel),
-});
-
-const hydrationController = createNotesHydrationController({
-  readPageGeneration: () => pageSession.generation,
-  readSelectedPageId: () => pageSession.selectedPageId,
-  readBlockOutlines: () => treeProjection.blockOutlines,
-  readFlatBlockOutlines: () => treeProjection.flatBlockOutlines,
-  readBlocksById: () => treeProjection.blocksById,
-  readFocusRequest: () => focusRequest,
-  mergeBlockOutlines,
-  replaceHydratedBlocks: (nextBlocksById, nextChildIdsByParentId) => {
-    treeProjection.blocksById = nextBlocksById;
-    treeProjection.childIdsByParentId = nextChildIdsByParentId;
-  },
-  setLoadError: (message) => {
-    workspaceController.setError(message);
-  },
-  reloadOpenComments: (pageId) => {
-    if (optionalSubsystemController.isPanelOpen("comments")) {
-      void collaborationController.reloadComments(pageId);
-    }
-  },
-});
-
-const {
-  updateBlockText, updateBlockRichText,
-  insertPageMention,
-  insertDateMention,
-  insertObjectMention,
-  insertInlineEquation,
-  updateBlockTextLink,
-  updateBlockTextAnnotations,
-  updateBookmark,
-  updateEmbedUrl,
-  updateLinkPreviewUrl,
-  updateEquationExpression,
-  updateMedia,
-  updateTableCell,
-  updateTableCellRichText,
-  addTableRow,
-  removeTableRow,
-  addTableColumn,
-  removeTableColumn,
-  addColumn,
-  removeColumn,
-  moveColumn,
-  resizeColumn,
-  moveBlockToColumn,
-  updateTabLabel,
-  updateTabIcon,
-  addTab,
-  removeTab,
-  moveTab,
-  moveBlockToTab,
-  convertBlock,
-  toggleTodo,
-  updateCodeLanguage,
-  updateBlockColor,
-  updateToggleOpen,
-  convertBlockToToggleHeading,
-  createSiblingAfter,
-  splitTextBlockAtSelection,
-  pastePlainTextIntoBlock,
-  pasteRichHtmlIntoBlock,
-  pasteBlockSelection,
-  deleteBlock,
-  deleteBlockSelection,
-  mergeBlockWithPrevious,
-  nestBlock,
-  outdentBlock,
-  moveBlockUp,
-  moveBlockDown,
-  moveBlockSelection,
-  dropBlockWithinSiblings,
-  dropBlockOnBlock,
-  moveBlockToPage,
-  duplicateBlock,
-  duplicateBlockSelection,
-  addTemplateChild,
-  useTemplateBlock,
-  addButtonChild,
-  updateButtonIcon,
-  updateButtonInsertPosition,
-  useButtonBlock,
-  createLinkedDatabaseViewAfter,
-  convertUnsupportedBlock,
-} = blockActions;
-
-function isOnlyBlock(blockId: string): boolean {
-  return isOnlyNotesBlockInContext(blockTreeSnapshot(), blockId);
-}
-
-function focusBlock(blockId: string, selection: NotesTextSelection | null = null): void {
-  requestBlockFocus(blockId, selection);
-}
-
-async function undoNotesEdit(): Promise<boolean> {
-  try {
-    if (!undoController.canUndo() && pageSession.selectedPageId) {
-      await ensureOptionalSubsystem("undo", pageSession.selectedPageId);
-    }
-    return await undoController.undo();
-  } catch (error) {
-    workspaceController.setError(error instanceof Error ? error.message : String(error));
-    throw error;
-  }
-}
-
-async function redoNotesEdit(): Promise<boolean> {
-  try {
-    if (!undoController.canRedo() && pageSession.selectedPageId) {
-      await ensureOptionalSubsystem("undo", pageSession.selectedPageId);
-    }
-    return await undoController.redo();
-  } catch (error) {
-    workspaceController.setError(error instanceof Error ? error.message : String(error));
-    throw error;
-  }
-}
-
-async function openBlockLink(target: NotesBlockLinkTarget): Promise<boolean> {
-  return openNotesLink(target);
-}
-
-async function openNotesLink(target: NotesPageLinkTarget): Promise<boolean> {
-  viewMode = "pages";
-  await workspaceController.ensureLoaded();
-  if (!allPages.some((page) => page.id === target.pageId)) {
-    await reloadPages(target.pageId);
-  }
-  if (!allPages.some((page) => page.id === target.pageId)) return false;
-  if (treeProjection.loadedPage?.id !== target.pageId) {
-    await selectPage(target.pageId, { focusBlockId: target.blockId ?? null });
-  }
-  if (!target.blockId) {
-    requestPageLoadFocus();
-    return true;
-  }
-  if (!treeProjection.blocksById[target.blockId] || !visibleBlockIds().includes(target.blockId)) return false;
-  requestBlockFocus(planNotesPageLoadFocus(visibleBlockIds(), target.blockId));
-  return true;
-}
-
-async function flushPendingWrites(): Promise<void> {
-  await Promise.all([
-    flushPendingBlockSaves(),
-    blockActions.flushOptimisticBlockWrites(),
-  ]);
-}
-
-export function getNotes() {
-  return {
-    get pages(): NotesPage[] {
-      return pages;
+  const workspace = {
+    get editorPanes(): readonly NotesEditorPane[] { return panes; },
+    get mainPaneId(): string { return main.id; },
+    get previewPane(): NotesEditorPane | null { return preview; },
+    get activePaneId(): string { return activePaneId; },
+    activatePane,
+    /** Choose whether opening or focusing a preview moves the project selection to its note, as the Notes tab does. */
+    setPreviewsFollowProject(follow: boolean): void { previewsFollowProject = follow; },
+    closePane,
+    showPaneAs,
+    closeContextualPage: () => preview ? closePreview() : closePane(main.id),
+    // Workspace navigation always acts on the pane currently receiving user input.
+    selectPage: (pageId: string | null, options?: NotesSelectPageOptions) => selectFrom(active.id, pageId, options),
+    load: () => {
+      listenForOtherWindows();
+      return preview ? closePreview(false).then(() => main.store.load()) : main.store.load();
+    },
+    ensureLoaded: () => {
+      listenForOtherWindows();
+      return main.store.ensureLoaded();
+    },
+    loadMoreWorkspaceWindow: () => active.store.loadMoreWorkspaceWindow(),
+    flushPendingWrites: async () => {
+      for (const pane of panes) await pane.store.flushPendingWrites();
     },
-    get allPages(): NotesPage[] {
-      return allPages;
-    },
-    get folders() {
-      return foldersController.folders;
-    },
-    get archivedPages(): NotesPage[] {
-      return archiveController.archivedPages;
-    },
-    get archiveHasMore(): boolean {
-      return archiveController.archiveHasMore;
-    },
-    get pageTemplates() {
-      return pageTemplatesController.templates;
-    },
-    get workspacePages(): NotesPage[] {
-      return allPages.filter((page) => page.parent.type === "workspace");
-    },
-    get favoritePageIds(): readonly string[] {
-      return sidebarController.favoritePageIds;
-    },
-    get recentPageIds(): readonly string[] {
-      return sidebarController.recentPageIds;
-    },
-    get collapsedFolderIds(): readonly string[] {
-      return sidebarController.collapsedFolderIds;
-    },
-    get sidebarExpandedPageIds(): readonly string[] {
-      return sidebarController.expandedPageIds;
-    },
-    get sidebarPageIdsWithChildren(): readonly string[] {
-      return sidebarController.pageIdsWithChildren;
-    },
-    get sidebarMissingParentPageIds(): readonly string[] {
-      return sidebarController.missingParentPageIds;
-    },
-    get sidebarTrashedParentPageIds(): readonly string[] {
-      return sidebarController.trashedParentPageIds;
-    },
-    get trashedPages(): NotesPage[] {
-      return archiveController.trashedPages;
-    },
-    get trashHasMore(): boolean {
-      return archiveController.trashHasMore;
-    },
-    get selectedPageId(): string | null {
-      return pageSession.selectedPageId;
-    },
-    get pageOpenMode(): NotesPageOpenMode {
-      return pageSession.pageOpenMode;
-    },
-    get loadedPage(): NotesPage | null {
-      return treeProjection.loadedPage;
-    },
-    get primaryContentReady(): boolean {
-      return treeProjection.primaryContentReady;
-    },
-    get pageCreationPending(): boolean {
-      return pageCreationController.isPending(pageSession.selectedPageId);
-    },
-    get pageCreationError(): string | null {
-      return pageCreationController.errorFor(pageSession.selectedPageId);
-    },
-    get pageBreadcrumbItems(): NotesPageBreadcrumbItem[] {
-      return pageSession.breadcrumbs;
-    },
-    get backlinks() {
-      return linksController.backlinks;
-    },
-    get backlinksLoading(): boolean {
-      return linksController.backlinksLoading;
-    },
-    get backlinksError(): string | null {
-      return linksController.backlinksError;
-    },
-    get pageAliases() {
-      return linksController.aliases;
-    },
-    get pageAliasesLoading(): boolean {
-      return linksController.aliasesLoading;
-    },
-    get pageAliasesError(): string | null {
-      return linksController.aliasesError;
-    },
-    get unresolvedLinks() {
-      return linksController.unresolvedLinks;
-    },
-    get unresolvedLinksLoading(): boolean {
-      return linksController.unresolvedLoading;
-    },
-    get unresolvedLinksError(): string | null {
-      return linksController.unresolvedError;
-    },
-    get linkResolutionPages(): NotesPage[] {
-      return linksController.destinations;
-    },
-    get destinationHasMore(): boolean {
-      return linksController.destinationHasMore;
-    },
-    get commentThreads() {
-      return collaborationController.commentThreads;
-    },
-    get commentsLoading(): boolean {
-      return collaborationController.commentsLoading;
-    },
-    get commentsError(): string | null {
-      return collaborationController.commentsError;
-    },
-    get commentsIncludeResolved(): boolean {
-      return collaborationController.commentsIncludeResolved;
-    },
-    get activeCommentParent() {
-      return collaborationController.activeCommentParent;
-    },
-    get activeCommentAnchor() {
-      return collaborationController.activeCommentAnchor;
-    },
-    get suggestions() {
-      return collaborationController.suggestions;
-    },
-    get suggestionsLoading(): boolean {
-      return collaborationController.suggestionsLoading;
-    },
-    get suggestionsError(): string | null {
-      return collaborationController.suggestionsError;
-    },
-    get suggestionsIncludeDecided(): boolean {
-      return collaborationController.suggestionsIncludeDecided;
-    },
-    get activeSuggestionDraft() {
-      return collaborationController.activeSuggestionDraft;
-    },
-    get localUser() {
-      return collaborationController.localUser;
-    },
-    get localUserLoading(): boolean {
-      return collaborationController.localUserLoading;
-    },
-    get localUserError(): string | null {
-      return collaborationController.localUserError;
-    },
-    get searchResults() {
-      return searchController.results;
-    },
-    get searchHasMore(): boolean {
-      return searchController.hasMore;
-    },
-    get searchLoading(): boolean {
-      return searchController.loading;
-    },
-    get searchError(): string | null {
-      return searchController.error;
-    },
-    get searchIncludeResolvedComments(): boolean {
-      return searchController.includeResolvedComments;
-    },
-    get blocksById(): Record<string, NotesBlock> {
-      return treeProjection.blocksById;
-    },
-    get childIdsByParentId(): Record<string, string[]> {
-      return treeProjection.childIdsByParentId;
-    },
-    get flatBlockOutlines(): NotesBlockOutlineItem[] {
-      return treeProjection.flatBlockOutlines;
-    },
-    get flatBlocks(): NotesBlockTreeItem[] {
-      return flatBlockItems();
-    },
-    get loaded(): boolean {
-      return workspaceController.loaded;
-    },
-    get loading(): boolean {
-      return workspaceController.loading;
-    },
-    get loadError(): string | null {
-      return workspaceController.error;
-    },
-    get viewMode(): NotesViewMode {
-      return viewMode;
-    },
-    get archiveLoaded(): boolean {
-      return archiveController.archiveLoaded;
-    },
-    get archiveLoading(): boolean {
-      return archiveController.archiveLoading;
-    },
-    get archiveError(): string | null {
-      return archiveController.archiveError;
-    },
-    get trashLoaded(): boolean {
-      return archiveController.trashLoaded;
-    },
-    get trashLoading(): boolean {
-      return archiveController.trashLoading;
-    },
-    get trashError(): string | null {
-      return archiveController.trashError;
-    },
-    get pageTemplatesLoading(): boolean {
-      return pageTemplatesController.loading;
-    },
-    get pageTemplatesError(): string | null {
-      return pageTemplatesController.error;
-    },
-    get pageHistorySnapshots(): NotesPageHistorySnapshot[] {
-      return pageHistoryController.snapshots;
-    },
-    get pageHistorySnapshotsLoading(): boolean {
-      return pageHistoryController.snapshotsLoading;
-    },
-    get pageHistorySnapshotsError(): string | null {
-      return pageHistoryController.snapshotsError;
-    },
-    get pageHistoryVersion(): NotesLoadedPage | null {
-      return pageHistoryController.version;
-    },
-    get pageHistoryVersionLoading(): boolean {
-      return pageHistoryController.versionLoading;
-    },
-    get pageHistoryVersionError(): string | null {
-      return pageHistoryController.versionError;
-    },
-    get pageHistorySettings(): NotesPageHistorySettings | null {
-      return pageHistoryController.settings;
-    },
-    get pageHistorySettingsLoading(): boolean {
-      return pageHistoryController.settingsLoading;
-    },
-    get pageHistorySettingsError(): string | null {
-      return pageHistoryController.settingsError;
-    },
-    get pageHistoryActionLoading(): boolean {
-      return pageHistoryController.actionLoading;
-    },
-    get pageHistoryActionError(): string | null {
-      return pageHistoryController.actionError;
-    },
-    get focusBlockId(): string | null {
-      return focusRequest.blockId;
-    },
-    get focusRequestId(): number {
-      return focusRequest.requestId;
-    },
-    get focusSelection(): NotesTextSelection | null {
-      return focusRequest.selection;
-    },
-    get titleFocusPageId(): string | null {
-      return pageSession.titleFocus.pageId;
-    },
-    get titleFocusRequestId(): number {
-      return pageSession.titleFocus.requestId;
-    },
-    pageTitleDraftForPage,
-    get canUndoNotesEdit(): boolean {
-      return undoController.canUndo();
-    },
-    get canRedoNotesEdit(): boolean {
-      return undoController.canRedo();
-    },
-    load: workspaceController.load,
-    ensureLoaded: workspaceController.ensureLoaded,
-    loadMoreWorkspaceWindow: workspaceController.loadMoreWorkspaceWindow,
-    selectPage,
-    openPageContextually,
-    closeContextualPage,
-    showSelectedPageAs,
-    createPage: pageActions.createPage,
-    createSubpage: pageActions.createSubpage,
-    retryPageCreation: () => {
-      const pageId = pageSession.selectedPageId;
-      if (pageId) pageCreationController.retry(pageId);
-    },
-    createFolder: foldersController.createFolder,
-    renameFolder: foldersController.renameFolder,
-    moveFolder: foldersController.moveFolder,
-    deleteFolder: foldersController.deleteFolder,
-    importHtmlPage: transferActions.importHtmlPage,
-    importNotionApi: transferActions.importNotionApi,
-    importNotionExportFolder: transferActions.importNotionExportFolder,
-    exportHtmlArchive: transferActions.exportHtmlArchive,
-    exportJsonGraph: transferActions.exportJsonGraph,
-    exportAgentBridge: transferActions.exportAgentBridge,
-    createChildPageFromBlock: pageActions.createChildPageFromBlock,
-    applyPageTemplate: pageTemplatesController.applyPageTemplate,
-    createPageTemplateFromCurrentPage: pageTemplatesController.createPageTemplateFromCurrentPage,
-    updatePageTemplateFromCurrentPage: pageTemplatesController.updatePageTemplateFromCurrentPage,
-    renamePageTemplate: pageTemplatesController.renamePageTemplate,
-    duplicatePageTemplate: pageTemplatesController.duplicatePageTemplate,
-    deletePageTemplate: pageTemplatesController.deletePageTemplate,
-    reloadPageTemplates: pageTemplatesController.reloadPageTemplates,
-    ensureOptionalSubsystem,
-    setPagePanelSubsystemOpen,
-    loadLocalUser: collaborationController.loadLocalUser,
-    updateLocalUserDisplayName: collaborationController.updateLocalUserDisplayName,
-    loadPageHistorySettings: pageHistoryController.loadSettings,
-    updatePageHistoryRetention: pageHistoryController.updateRetention,
-    reloadPageHistory: pageHistoryController.reloadSnapshots,
-    loadPageHistoryVersion: pageHistoryController.loadVersion,
-    restorePageHistoryVersion: pageHistoryController.restoreVersion,
-    copyPageHistoryBlocks: pageHistoryController.copyBlocks,
-    renamePage: pageActions.renamePage,
-    duplicatePage: pageActions.duplicatePage,
-    movePage: pageActions.movePage,
-    movePageToFolder: pageActions.movePageToFolder,
-    archivePage: pageActions.archivePage,
-    unarchivePage: pageActions.unarchivePage,
-    trashPage: pageActions.trashPage,
-    restorePage: pageActions.restorePage,
-    permanentlyDeletePage: pageActions.permanentlyDeletePage,
-    openArchive,
-    closeArchive,
-    reloadArchivedPages,
-    loadMoreArchivedPages,
-    openTrash,
-    closeTrash,
-    reloadTrashedPages,
-    loadMoreTrashedPages,
-    reloadBacklinks: linksController.reloadBacklinks,
-    reloadPageAliases: linksController.reloadPageAliases,
-    reloadUnresolvedLinks: linksController.reloadUnresolvedLinks,
-    reloadLinkResolutionPages: linksController.reloadLinkResolutionPages,
-    loadMoreDestinationCandidates: linksController.loadMoreDestinationCandidates,
-    addPageAlias: linksController.addPageAlias,
-    deletePageAlias: linksController.deletePageAlias,
-    resolveUnresolvedLink: linksController.resolveUnresolvedLink,
-    reloadComments: collaborationController.reloadComments,
-    reloadSuggestions: collaborationController.reloadSuggestions,
-    setCommentsIncludeResolved: collaborationController.setCommentsIncludeResolved,
-    setSuggestionsIncludeDecided: collaborationController.setSuggestionsIncludeDecided,
-    setActiveCommentParent: collaborationController.setActiveCommentParent,
-    startBlockComment: collaborationController.startBlockComment,
-    startInlineComment: collaborationController.startInlineComment,
-    startInlineSuggestion: collaborationController.startInlineSuggestion,
-    cancelSuggestionDraft: collaborationController.cancelSuggestionDraft,
-    createSuggestion: collaborationController.createSuggestion,
-    acceptSuggestion: collaborationController.acceptSuggestion,
-    rejectSuggestion: collaborationController.rejectSuggestion,
-    createComment: collaborationController.createComment,
-    replyToCommentThread: collaborationController.replyToCommentThread,
-    updateComment: collaborationController.updateComment,
-    deleteComment: collaborationController.deleteComment,
-    setCommentThreadResolved: collaborationController.setCommentThreadResolved,
-    markCommentThreadsRead: collaborationController.markCommentThreadsRead,
-    markVisibleCommentThreadsRead: collaborationController.markVisibleCommentThreadsRead,
-    search: searchController.search,
-    loadMoreSearchResults: searchController.loadMoreSearchResults,
-    setSearchIncludeResolvedComments: searchController.setIncludeResolvedComments,
-    notesCommentParentKey: collaborationController.notesCommentParentKey,
-    blockById,
-    tableRowsForBlock,
-    columnItemsForBlock,
-    tabItemsForBlock,
-    parentIdForBlock,
-    previousBlockType,
-    isOnlyBlock,
-    focusBlock,
-    hydrateBlockRange,
-    setPageFavorited,
-    setFolderCollapsed,
-    setSidebarPageCollapsed,
-    loadNavigationChildren,
-    updatePageIcon: pageActions.updatePageIcon,
-    updatePageCover: pageActions.updatePageCover,
-    openBlockLink,
-    openNotesLink,
-    undoNotesEdit,
-    redoNotesEdit,
-    setPageTitleDraft,
-    clearPageTitleDraft,
-    updateBlockText, updateBlockRichText,
-    insertPageMention,
-    insertDateMention,
-    insertObjectMention,
-    insertInlineEquation,
-    updateBlockTextLink,
-    updateBlockTextAnnotations,
-    flushBlockSave,
-    flushPendingWrites,
-    convertBlock,
-    toggleTodo,
-    updateCodeLanguage,
-    updateBlockColor,
-    updateToggleOpen,
-    convertBlockToToggleHeading,
-    createSiblingAfter,
-    splitTextBlockAtSelection,
-    pastePlainTextIntoBlock,
-    pasteRichHtmlIntoBlock,
-    pasteBlockSelection,
-    deleteBlock,
-    deleteBlockSelection,
-    mergeBlockWithPrevious,
-    nestBlock,
-    outdentBlock,
-    moveBlockUp,
-    moveBlockDown,
-    moveBlockSelection,
-    dropBlockWithinSiblings,
-    dropBlockOnBlock,
-    moveBlockToPage,
-    duplicateBlock,
-    duplicateBlockSelection,
-    addTemplateChild,
-    useTemplateBlock,
-    addButtonChild,
-    updateButtonIcon,
-    updateButtonInsertPosition,
-    useButtonBlock,
-    createLinkedDatabaseViewAfter,
-    convertUnsupportedBlock,
-    blockPlainText,
-    updateBookmark,
-    updateLinkPreviewUrl,
-    updateEmbedUrl,
-    updateEquationExpression,
-    updateMedia,
-    updateTableCell,
-    updateTableCellRichText,
-    addTableRow,
-    removeTableRow,
-    addTableColumn,
-    removeTableColumn,
-    addColumn,
-    removeColumn,
-    moveColumn,
-    resizeColumn,
-    moveBlockToColumn,
-    updateTabLabel,
-    updateTabIcon,
-    addTab,
-    removeTab,
-    moveTab,
-    moveBlockToTab,
   };
+  return new Proxy(workspace as NotesEditorStore & typeof workspace, {
+    get(target, key): unknown {
+      return Object.hasOwn(workspace, key) ? Reflect.get(target, key) : Reflect.get(active.store, key);
+    },
+    set(_target, key, value: unknown): boolean {
+      return Reflect.set(active.store, key, value);
+    },
+  });
 }
 
-/** Stable public Notes store facade returned by {@link getNotes}. */
-export type NotesStoreFacade = ReturnType<typeof getNotes>;
+export type NotesWorkspace = ReturnType<typeof createNotesWorkspace>;
+
+// Both exist from the start, so neither is created inside, and owned by, a reactive effect that reads it.
+const workspaces: Record<WorkspacePaneScope, NotesWorkspace> = {
+  primary: createNotesWorkspace({ scope: "primary", remembersSelection: true }),
+  secondary: createNotesWorkspace({ scope: "secondary", remembersSelection: false }),
+};
+for (const workspace of Object.values(workspaces)) registerWindowCloseFlusher(() => workspace.flushPendingWrites());
+
+/**
+ * The window's primary Notes workspace: its shared workspace controls and the live editor that currently owns input
+ * focus. Outside a split view, every Notes surface shows through it.
+ */
+export function getNotes(): NotesWorkspace { return workspaces.primary; }
+
+/** The Notes workspace a split pane scope shows through. */
+export function getNotesWorkspace(scope: WorkspacePaneScope): NotesWorkspace { return workspaces[scope]; }
+
+/** The Notes workspace of the calling view's split pane. Call during component initialization. */
+export function useNotesWorkspace(): NotesWorkspace { return workspaces[getWorkspacePaneScope()]; }

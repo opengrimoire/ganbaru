@@ -14,7 +14,7 @@ import {
   type BenchmarkDatasetProfile,
   type BenchmarkEventDraft,
 } from "./types";
-import { PALETTE_SIZE } from "$lib/components/calendar/types";
+import { PALETTE_SIZE } from "$lib/calendar/types";
 
 const MS_PER_DAY = 86_400_000;
 const HOURS_PER_DAY = 24;
@@ -141,7 +141,7 @@ function daysBetween(start: DateParts, endExclusive: DateParts): number {
   return Math.round((dateToUtcMs(endExclusive) - dateToUtcMs(start)) / MS_PER_DAY);
 }
 
-function fmtDate(date: DateParts): string {
+function formatDate(date: DateParts): string {
   return `${date.year}-${pad2(date.month)}-${pad2(date.day)}`;
 }
 
@@ -158,8 +158,8 @@ export function denseCalendarDateRange(
   const startParts = addYears(anchorParts, -dataset.yearRadius);
   const endParts = addYears(anchorParts, dataset.yearRadius);
   return {
-    start: fmtDate(startParts),
-    endExclusive: fmtDate(endParts),
+    start: formatDate(startParts),
+    endExclusive: formatDate(endParts),
     days: daysBetween(startParts, endParts),
   };
 }
@@ -243,7 +243,7 @@ function buildDenseEvent(
   const project = projectFor(dayIndex, hour, stackIndex);
   const location = LOCATIONS[(dayIndex + stackIndex) % LOCATIONS.length];
   const start = `${date} ${pad2(hour)}:00`;
-  const endDate = hour === 23 ? fmtDate(addDays(parseDate(date), 1)) : date;
+  const endDate = hour === 23 ? formatDate(addDays(parseDate(date), 1)) : date;
   const end = `${endDate} ${pad2((hour + 1) % HOURS_PER_DAY)}:00`;
   const datasetId = benchmarkDatasetId(dataset);
   const stackLabel = stackIndex + 1;
@@ -338,7 +338,7 @@ function buildDenseAllDayEvent(
 
 /**
  * Generate a deterministic slice of a dense dataset. `offset` and `count`
- * let seeding stream the 10-year dataset in chunks without allocating every
+ * let seeding stream large datasets in chunks without allocating every
  * event in the browser at once.
  */
 export function generateDenseCalendarEvents(opts: {
@@ -363,7 +363,7 @@ export function generateDenseCalendarEvents(opts: {
   for (let index = offset; index < end; index++) {
     const dayIndex = Math.floor(index / perDay);
     const withinDay = index % perDay;
-    const date = fmtDate(addDays(startParts, dayIndex));
+    const date = formatDate(addDays(startParts, dayIndex));
 
     if (withinDay < timedPerDay) {
       const hour = Math.floor(withinDay / opts.dataset.stackCount);

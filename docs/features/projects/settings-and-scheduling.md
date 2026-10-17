@@ -5,74 +5,73 @@
 Project settings can define:
 
 - Name and managed icon or emoji.
-- Default event color and optional event name.
-- Default timed duration or all-day behavior.
-- Default Pomodoro mode and custom rhythm where applicable.
+- Default event color, optional event name, and timed duration or all-day behavior.
+- Default Pomodoro mode and custom rhythm.
 - Global or project-specific idle behavior.
-- Focus and break phase soundtrack assignments.
+- Focus, short break, and long break playlists.
 - Project-local statuses, priorities, tags, and custom fields.
-- Project templates and working-folder settings where the platform supports them.
+- Working folders where the platform supports them.
 
-New projects default to no event name, an adaptive Pomodoro choice, global focus-idle behavior, and no explicit soundtrack assignment unless a template says otherwise.
+New projects default to no event name, the adaptive Pomodoro preset, global idle behavior, and no playlists unless a template says otherwise.
 
-Playlist selectors load real Music playlists. They are not placeholder `None` controls. A missing or deleted playlist remains an explicit unavailable assignment with a repair path.
+Playlist selectors list real Music playlists. Choosing a playlist plays it automatically during that phase; choosing None means silence. A missing or deleted playlist remains an explicit unavailable assignment with a repair path. Track-level settings stay in Music playlist membership data; see [Music automation](../music/automation.md).
 
-Work-environment and Doomscrolling defaults remain planned and must not appear as functional selectors until their storage and runtime behavior exist.
+Work-environment and anti-distraction defaults are planned and must not appear as functional selectors until their storage and runtime behavior exist.
 
 ## Default application
 
 Defaults initialize a new event or task-originated schedule. They do not continuously inherit after creation.
 
-Selecting a project in an event draft can fill an empty title, color, Pomodoro mode, idle behavior, and soundtrack intent. It never replaces authored title text. Duration defaults do not resize an active event or an existing draft that already has deliberate timing.
+Selecting a project in an event draft can fill an empty title, color, Pomodoro mode, idle behavior, and soundtrack intent. It never replaces authored title text or resizes an event that already has deliberate timing. Created events keep a snapshot of the project's phase soundtrack assignments, so later default changes do not alter them.
 
-Event music uses phase assignment snapshots and overrides, not direct track settings. Per-track start, end, skip, rate, and volume remain Music playlist-membership data.
+## Statuses, priorities, and tags
 
-## Statuses and priorities
+Statuses and priorities are project-local, ordered, named, and colored with stable palette slots. Statuses also have a semantic category: not started, active, blocked, or done. Deleting an in-use value requires reassignment or is rejected. Reordering changes presentation, not task identity or history.
 
-Statuses and priorities are project-local, ordered, named, and colored with stable event-palette slots. Statuses also have semantic categories such as not started, active, blocked, and done.
-
-Deleting an in-use value requires reassignment or is rejected. Reordering changes presentation, not task identity or history.
-
-## Tags
-
-Tags are project-local labeled colors with stable identity and order. Deleting a tag removes its task associations while preserving tasks and task history.
+Tags are project-local labeled colors with stable identity and order. Deleting a tag removes its task associations while preserving tasks and their history.
 
 ## Custom fields
 
-Projects support text, number, select, multi-select, status, date, person, files, checkbox, URL, phone, and email custom fields. Select-like fields own stable options.
-
-Schema changes validate existing values and define migration or removal behavior. Deleting a field requires confirmation and removes obsolete values through an explicit cleanup path.
+Projects support text, number, select, multi-select, status, date, person, files, checkbox, URL, phone, and email custom fields. Select-like fields own stable options. Schema changes validate existing values, and deleting a field requires confirmation before its values are removed.
 
 ## Project templates
 
-Project templates can initialize sections, settings, statuses, priorities, tags, custom fields, and compatible planning defaults. Applying a template to a new project produces independent canonical rows.
+Built-in templates (Blank, Software, Course, Routine, Reading, and Chores) initialize sections plus the default statuses and priorities. Applying a template produces independent canonical rows; there is no ongoing inheritance.
 
-Templates do not create hidden ongoing inheritance. Later template edits do not rewrite existing projects.
+Planned: user-defined templates that can also carry settings, tags, custom fields, and planning defaults, with the same no-inheritance rule.
 
 ## Scheduling tasks
 
-Scheduling creates a Calendar event using the task title, project, color, duration, Pomodoro, idle, and soundtrack defaults. An all-day project default creates an all-day task event.
+Scheduling creates a Calendar event from the task title and the project's color, duration, Pomodoro, idle, and soundtrack defaults, and connects task and event through an explicit link. An all-day project default creates an all-day event without Focus configuration. Bulk scheduling creates one independent, linked event per selected task.
 
-The task and event are connected through an explicit link. Bulk quick scheduling creates separate events so every selected task remains independently visible and linked.
+The duration chosen in the scheduling form overrides the project default. Timed events in a batch run consecutively, and the task start and target end dates follow the scheduled day. Due dates, completion, status, and unrelated fields stay intact.
 
-Existing project events can also be linked from task detail. A link is valid only when task and event belong to the same project.
+A batch is one native transaction: it rejects entirely if any task is archived, missing, from another project, or changed since review, and a changed project default requires a new review. An uncertain response can be retried without creating duplicate events.
 
-Unlinking preserves both records. Archiving a task or event preserves the relationship as historical context according to each feature's lifecycle rules.
+Existing project events can also be linked from task detail; a link is valid only when task and event belong to the same project. Unlinking preserves both records, and archiving either side preserves the relationship as history.
 
 ## Dependency date proposals
 
-When a scheduled or dated task conflicts with finish-to-start dependencies, Ganbaru AI can propose downstream shifts. The preview lists every affected task, old and new dates, dependency reason, locks, and conflicts.
+When dated tasks conflict with finish-to-start dependencies, the native service reads the complete canonical project graph and proposes downstream shifts. Gantt filters, collapsed sections, and paging do not limit the proposal. The preview lists every affected task with original and proposed dates and the dependencies that require each change. Durations and the set of populated date fields are preserved, and a milestone remains a single date.
 
-Applying is explicit and transactional. Tasks outside the project, archived tasks, protected dates, and ambiguous constraints are never moved silently.
+Completed tasks, archived tasks, and tasks with scheduled Calendar links are protected. Cycles, missing or foreign endpoints, undated dependencies, and invalid dates produce explicit conflicts, and a proposal with a conflict cannot be partially applied.
+
+Applying is explicit and transactional. If any task, dependency, completion state, or scheduling commitment changed after review, the apply is rejected and a new preview is required; an accepted cascade never silently expands. Only task date fields change, together with their history, and retrying after an uncertain response returns the original result.
+
+Planned: explicit date locks and per-proposal protection overrides. The task schema has no date-lock field yet.
 
 ## Working folders
 
-A project can own a managed working folder and a device-local binding to an external folder where supported. Organizational Chat runs resolve their execution target through the authorized binding.
+A project can own a managed working folder (created inside the vault) and device-local bindings to external folders where supported. Organizational Chat runs resolve their execution target through the authorized binding; see [Chat execution and workspace](../chat/execution-and-workspace.md).
 
-Working-folder files remain filesystem-canonical. Project settings store identity and policy, not file contents. Mobile omits local coding execution and desktop path selection.
+Working-folder files remain filesystem-canonical. Project settings store identity, provider preference, and primary selection, not file contents. Mobile omits local coding execution and desktop path selection.
+
+Each folder can name a preferred Chat provider instance or Automatic. Unconfigured providers are visible with their setup status but cannot be saved, and a removed provider stays visibly unavailable until replaced. Missing bindings and repository mismatches are shown on the folder row.
+
+Folder changes are part of the settings draft. Choosing a path previews it without creating an association or changing a binding; Save applies it only to the authorized project and active vault after checking that the folder was not replaced. Removing an external folder requires confirmation and never deletes its files.
 
 ## Settings lifecycle
 
-The settings surface keeps one draft and uses Save, Cancel, outside-click, and Escape behavior consistently. Destructive schema actions receive separate confirmation and cannot hide inside ordinary Save.
+All settings changes, including deletions and reordering, are staged until Save settings; Discard restores the last saved state, and closing with unsaved changes prompts. Save validates the draft first and applies mutations sequentially. If a step fails, completed steps stay saved, the remaining changes stay in the draft for retry, and retry does not duplicate completed creations.
 
-Settings remain accessible on narrow layouts and do not require hover or drag as the only operation.
+Settings remain usable on narrow layouts without requiring hover or drag.

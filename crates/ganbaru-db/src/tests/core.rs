@@ -2,9 +2,20 @@ use super::helpers::{insert_event, insert_open_run, migrated_memory_pool};
 use crate::run_migrations;
 use sqlx::Row;
 
-const BASELINE_SCHEMA: &str =
-    include_str!("../../../../apps/client/src-tauri/migrations/20260830173211_baseline_schema.sql");
-const EXPECTED_MIGRATION_COUNT: i64 = 2;
+const BASELINE_SCHEMA: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/migrations/20261004220000_baseline_schema.sql"
+));
+/// Count the embedded forward migrations so fresh-install checks follow the actual registry.
+fn expected_migration_count() -> i64 {
+    i64::try_from(
+        crate::MIGRATOR
+            .iter()
+            .filter(|migration| !migration.migration_type.is_down_migration())
+            .count(),
+    )
+    .unwrap()
+}
 
 #[test]
 fn fresh_database_applies_clean_baseline() {
@@ -15,7 +26,7 @@ fn fresh_database_applies_clean_baseline() {
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-        assert_eq!(migration_count, EXPECTED_MIGRATION_COUNT);
+        assert_eq!(migration_count, expected_migration_count());
         let integrity: String = sqlx::query_scalar("PRAGMA integrity_check")
             .fetch_one(&pool)
             .await
@@ -46,9 +57,12 @@ fn fresh_database_applies_clean_baseline() {
             "chat_events",
             "chat_command_receipts",
             "chat_checkpoints",
-            "chat_cleanup_queue",
+            "chat_cleanup_jobs",
             "chat_channels",
             "chat_participants",
+            "contacts_local_identity",
+            "contacts",
+            "contact_requests",
             "chat_conversations",
             "chat_conversation_items",
             "chat_reply_threads",
@@ -75,6 +89,9 @@ fn fresh_database_applies_clean_baseline() {
             "music_search_fts",
             "notes_pages",
             "notes_blocks",
+            "notes_data_source_row_hierarchy",
+            "idx_notes_data_source_row_hierarchy_parent",
+            "notes_row_hierarchy_detach_moved_page",
             "notes_search_fts",
             "notes_folders_validate_parent_insert",
             "idx_notes_project_history_dirty_deadlines",
@@ -93,6 +110,7 @@ fn fresh_database_applies_clean_baseline() {
             "project_labels",
             "project_task_label_links",
             "project_view_preferences_new",
+            "project_view_preferences_rebuild",
             "notes_blocks_next",
             "notes_pages_next",
             "notes_page_history_settings_next",
@@ -135,7 +153,7 @@ fn fresh_database_applies_clean_baseline() {
 fn fresh_file_database_applies_clean_baseline() {
     super::block_on(async {
         let path = std::env::temp_dir().join(format!(
-            "ganbaru-ai-baseline-{}-{}.sqlite",
+            "ganbaru-baseline-{}-{}.sqlite",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -157,14 +175,14 @@ fn fresh_file_database_applies_clean_baseline() {
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-        assert_eq!(migration_count, EXPECTED_MIGRATION_COUNT);
+        assert_eq!(migration_count, expected_migration_count());
         pool.close().await;
         std::fs::remove_file(path).unwrap();
     });
 }
 
 #[test]
-fn schema_does_not_create_json_storage_columns() {
+fn schema_normalizes_domain_storage_with_explicit_receipt_and_runtime_envelopes() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
 
@@ -176,7 +194,7 @@ fn schema_does_not_create_json_storage_columns() {
         .fetch_all(&pool)
         .await
         .unwrap();
-        let forbidden = [
+        let forbidden_columns = [
             "pause_log",
             "raw_jcal",
             "skip_ranges_json",
@@ -190,6 +208,26 @@ fn schema_does_not_create_json_storage_columns() {
             "organizer",
         ];
         let forbidden_tables = ["pomodoro_sessions"];
+        // These bounded native control envelopes are not authoritative Calendar,
+        // Notes, Project, Music library or Focus history records. Keep the
+        // exception explicit per column so unrelated JSON storage still fails.
+        let control_envelopes = [
+            ("music_transfer_receipts", "result_json"),
+            ("notes_edit_receipts", "result_json"),
+            ("project_task_bulk_receipts", "request_json"),
+            ("project_task_bulk_receipts", "response_json"),
+            ("project_reorder_receipts", "request_json"),
+            ("project_reorder_receipts", "response_json"),
+            ("project_dependency_cascade_receipts", "request_json"),
+            ("project_dependency_cascade_receipts", "response_json"),
+            ("pomodoro_execution_state", "state_json"),
+            ("pomodoro_execution_receipts", "request_json"),
+            ("pomodoro_execution_receipts", "result_json"),
+            ("music_session_checkpoints", "checkpoint_json"),
+            ("music_session_receipts", "result_json"),
+            ("calendar_edit_receipts", "result_json"),
+        ];
+        let mut observed_envelopes = std::collections::BTreeSet::new();
         for row in rows {
             let table_name: String = row.try_get("table_name").unwrap();
             let column_name: String = row.try_get("column_name").unwrap();
@@ -197,11 +235,18 @@ fn schema_does_not_create_json_storage_columns() {
                 !forbidden_tables.contains(&table_name.as_str()),
                 "{table_name} should not be created as persisted storage",
             );
+            let is_control =
+                control_envelopes.contains(&(table_name.as_str(), column_name.as_str()));
+            if is_control {
+                observed_envelopes.insert((table_name.clone(), column_name.clone()));
+            }
             assert!(
-                !forbidden.contains(&column_name.as_str()) && !column_name.ends_with("_json"),
+                !forbidden_columns.contains(&column_name.as_str())
+                    && (!column_name.ends_with("_json") || is_control),
                 "{table_name}.{column_name} should be normalized, not JSON storage",
             );
         }
+        assert_eq!(observed_envelopes.len(), control_envelopes.len());
     });
 }
 

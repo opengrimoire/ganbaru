@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { onDestroy, onMount, tick } from "svelte";
+  import NotesLoadingSkeleton from "./NotesLoadingSkeleton.svelte";
+  import { onDestroy, onMount, tick, untrack } from "svelte";
   import {
     beginLazyComponentLoad,
     rejectLazyComponentLoad,
@@ -7,19 +8,21 @@
     type LazyComponentLoadState,
   } from "$lib/lazy-component-loader";
   import Archive from "@lucide/svelte/icons/archive";
-  import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import Copy from "@lucide/svelte/icons/copy";
   import Download from "@lucide/svelte/icons/download";
   import FolderInput from "@lucide/svelte/icons/folder-input";
   import FolderTree from "@lucide/svelte/icons/folder-tree";
   import GitBranch from "@lucide/svelte/icons/git-branch";
   import History from "@lucide/svelte/icons/history";
+  import { NOTES_COVER_DEFAULT_FOCAL_POINT } from "$lib/notes/pages/cover";
+  import type { NotesCoverFocalPoint, NotesPageCover as CoverValue } from "$lib/notes/contracts/assets";
   import ImagePlus from "@lucide/svelte/icons/image-plus";
   import Link2 from "@lucide/svelte/icons/link-2";
   import MessageSquare from "@lucide/svelte/icons/message-square";
   import MoreHorizontal from "@lucide/svelte/icons/more-horizontal";
   import Pencil from "@lucide/svelte/icons/pencil";
   import PencilLine from "@lucide/svelte/icons/pencil-line";
+  import Share2 from "@lucide/svelte/icons/share-2";
   import SmilePlus from "@lucide/svelte/icons/smile-plus";
   import Star from "@lucide/svelte/icons/star";
   import Trash2 from "@lucide/svelte/icons/trash-2";
@@ -28,56 +31,57 @@
     notesPageIconAssetUrl,
     pickNotesPageIconImageFile,
     saveNotesPageIconImageDataUrl,
-  } from "$lib/api/notes-page-icons";
+  } from "$lib/api/notes/page-icons";
   import type {
     IconPickerAsset,
     IconPickerUploadAdapter,
   } from "$lib/components/icon-picker/types";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
-  import { blockPlainText, isTextEditableBlock } from "$lib/notes/block-factory";
-  import { notesBlockAnchorId } from "$lib/notes/block-link";
-  import { notesEditorScrollTopForTarget } from "$lib/notes/editor-scroll";
+  import { blockPlainText, isTextEditableBlock } from "$lib/notes/blocks/factory";
+  import { notesBlockAnchorId } from "$lib/notes/links/block-link";
+  import { notesEditorScrollTopForTarget } from "$lib/notes/editor/scroll";
   import {
     notesBackgroundPointerTargetsDocumentEnd,
     notesDocumentEndFocusIsCurrent,
-  } from "$lib/notes/editor-focus";
-  import { notesTextSelectionFromEditableRoot } from "$lib/notes/editor-selection";
+  } from "$lib/notes/editor/focus";
+  import { notesTextSelectionFromEditableRoot } from "$lib/notes/editor/selection";
   import {
     formatNotesActivityDate,
     formatNotesActivityTime,
-  } from "$lib/notes/page-activity";
-  import { notesLocalUserDisplayName } from "$lib/notes/local-user";
-  import type { NotesPageOpenMode } from "$lib/notes/page-open-mode";
-  import {
-    notesCommentParentKey,
-    openNotesCommentThreadCount,
-    unreadNotesCommentThreadCount,
-  } from "$lib/notes/comments";
-  import { notesPageMoveTargets } from "$lib/notes/page-move";
+  } from "$lib/notes/pages/activity";
+  import { notesLocalUserDisplayName } from "$lib/notes/collaboration/local-user";
+  import type { NotesPageOpenMode } from "$lib/notes/pages/open-mode";
+  import { notesPageMoveTargets } from "$lib/notes/pages/move";
   import {
     notesPageIconFromPickerValue,
     notesPageIconPickerValue,
-  } from "$lib/notes/page-icon-picker";
+  } from "$lib/notes/pages/icon-picker";
   import {
     createNotesExternalPageIcon,
     createNotesLocalFilePageIcon,
     type NotesPageIconAssetMetadata,
-  } from "$lib/notes/page-icon";
+  } from "$lib/notes/pages/icon";
   import {
     notesFoldersForProject,
     notesPageFolderMoveTargets,
-  } from "$lib/notes/navigation-tree";
-  import { addNotesWorkspaceBreadcrumb, buildNotesPageBreadcrumb } from "$lib/notes/page-breadcrumb";
-  import { notesPageTitle } from "$lib/notes/page-title";
+  } from "$lib/notes/navigation/tree";
+  import { addNotesWorkspaceBreadcrumb, buildNotesPageBreadcrumb } from "$lib/notes/pages/breadcrumb";
+  import { notesPageTitle } from "$lib/notes/pages/title";
   import {
     notesPageProjectId,
     notesPagesForProject,
   } from "$lib/notes/project-membership";
-  import { openNotesSuggestionCount } from "$lib/notes/suggestions";
-  import { buildNotesTableOfContents } from "$lib/notes/table-of-contents";
+  import { openNotesSuggestionCount } from "$lib/notes/collaboration/suggestions";
+  import {
+    filterNotesDiscussions,
+    notesPageDiscussionsInReadingOrder,
+  } from "$lib/notes/collaboration/discussions";
+  import { unreadNotesCommentThreadCount } from "$lib/notes/collaboration/comments";
+  import type { NotesDiscussionsPanelFocus } from "./pages/comments/NotesDiscussionsPanel.svelte";
+  import { buildNotesTableOfContents } from "$lib/notes/block-types/table-of-contents";
   import { getPreferences } from "$lib/stores/preferences.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
+  import { useProjects } from "$lib/stores/projects.svelte";
   import type {
     NotesAgentBridgeExportRequest,
     NotesHtmlExportRequest,
@@ -85,47 +89,65 @@
     NotesPageIcon as NotesPageIconValue,
     NotesParent,
   } from "$lib/notes/types";
-  import { getNotes } from "$lib/stores/notes.svelte";
+  import { useNotesWorkspace } from "$lib/stores/notes.svelte";
+  import type { NotesEditorStore } from "$lib/stores/notes/editor-session.svelte";
+  import { provideNotesEditor } from "./editor-context";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { cn } from "$lib/utils";
+  import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";
+  import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import { dismissOnOutside } from "$lib/utils/dismiss-on-outside";
-  import NotesBlockList from "./NotesBlockList.svelte";
-  import NotesPageIcon from "./NotesPageIcon.svelte";
-  import NotesPeekModeIcon from "./NotesPeekModeIcon.svelte";
+  import { portal } from "$lib/utils/portal";
+  import NotesBlockList from "$lib/components/notes/blocks/NotesBlockList.svelte";
+  import NotesPageIcon from "$lib/components/notes/pages/NotesPageIcon.svelte";
+  import NotesPeekModeIcon from "$lib/components/notes/pages/NotesPeekModeIcon.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
+  import { OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
   import {
     loadNotesEditorPanel,
+    readNotesEditorPanel,
     retryNotesEditorPanel,
     type LoadedNotesEditorPanel,
     type NotesEditorPanelKind,
-  } from "./notes-editor-component-registry";
-  import {
-    EMPTY_NOTES_MUSIC_MENTION_CONTEXT,
-    type NotesMusicMentionContext,
-  } from "./notes-block-mention-targets";
+  } from "./editor-component-registry";
 
-  type NotesEditorPanel = "links" | "comments" | "suggestions";
+  type NotesEditorPanel = "links" | "suggestions";
 
   const FOCUSED_BLOCK_SCROLL_PADDING_PX = 16;
+  const PAGE_PANEL_VIEWPORT_MARGIN_PX = 8;
+  const PAGE_PANEL_TRIGGER_GAP_PX = 4;
+  const PAGE_MENU_WIDTH_PX = FLOATING_WIDTH.sm;
+  const PAGE_MENU_MAX_HEIGHT_PX = 640;
+  const ACTIVITY_PANEL_WIDTH_PX = FLOATING_WIDTH.lg;
+  const PAGE_DETAILS_PANEL_WIDTH_PX = 704;
+  const PAGE_DETAILS_PANEL_MAX_HEIGHT_PX = 512;
 
   let {
     projectId = null,
     openMode = "full",
     onClose,
     onOpenModeChange,
-    musicMentionContext = EMPTY_NOTES_MUSIC_MENTION_CONTEXT,
+    pageActionsTarget = null,
+    editorStore = null,
+    active = true,
   }: {
     projectId?: string | null;
     openMode?: NotesPageOpenMode;
     onClose?: () => void;
     onOpenModeChange?: (mode: NotesPageOpenMode) => void;
-    musicMentionContext?: NotesMusicMentionContext;
+    pageActionsTarget?: HTMLElement | null;
+    editorStore?: NotesEditorStore | null;
+    active?: boolean;
   } = $props();
 
-  const notes = getNotes();
+  // A pane keeps the same editor session for its entire mounted lifetime.
+  const notes = untrack(() => editorStore) ?? useNotesWorkspace();
+  provideNotesEditor(notes);
   const mobileBackStack = getMobileBackStack();
   const mobileLayout = BUILD_PLATFORM_PROFILE.shell === "mobile";
   const preferences = getPreferences();
-  const projects = getProjects();
+  const projects = useProjects();
   const fileExportAvailable = platformHasCapability(
     BUILD_PLATFORM_PROFILE,
     "notes.file-export",
@@ -137,10 +159,31 @@
   let titleDraft = $state("");
   let titleInput: HTMLInputElement | null = $state(null);
   let coverMenuOpen = $state(false);
+  let coverPosition = $state<{ pageId: string; cover: Exclude<CoverValue, { type: "design" }>; focal: NotesCoverFocalPoint } | null>(null);
+  let coverPositionSaving = $state(false);
+  let coverPositionError = $state<string | null>(null);
+  let coverStatus = $state<"loading" | "ready" | "error">("loading");
+  let repositionButton: HTMLButtonElement | null = $state(null);
+  let coverBanner: HTMLDivElement | null = $state(null);
+  let coverMenuButton: HTMLButtonElement | null = $state(null);
+  let inlineCommentsRequested = $state(false);
+  /** Page-scoped so a request from one page never focuses the composer of the next. */
+  let inlineCommentFocus = $state<{ pageId: string; request: number } | null>(null);
+  let editorRoot: HTMLElement | null = $state(null);
+  let discussionsButton: HTMLButtonElement | null = $state(null);
+  let discussionsPopoverOpen = $state(false);
+  let discussionsPanelOpen = $state(false);
+  /** Page-scoped like the inline comment focus, so a reveal never lands on the next page. */
+  let discussionsFocus = $state<(NotesDiscussionsPanelFocus & { pageId: string }) | null>(null);
+  let shareButton: HTMLButtonElement | null = $state(null);
+  let shareOpen = $state(false);
   let pageMenuOpen = $state(false);
   let moveMenuOpen = $state(false);
   let folderMoveMenuOpen = $state(false);
   let activityPanelOpen = $state(false);
+  let activityButton: HTMLButtonElement | null = $state(null);
+  let pageMenuButton: HTMLButtonElement | null = $state(null);
+  let floatingLayoutVersion = $state(0);
   let activePanel = $state<NotesEditorPanel | null>(null);
   let htmlExportOpen = $state(false);
   let agentBridgeExportOpen = $state(false);
@@ -148,6 +191,8 @@
   let pendingArchivePage = $state<NotesPage | null>(null);
   let pendingTrashPage = $state<NotesPage | null>(null);
   let requestedIconPicker = $state<"action" | "icon" | null>(null);
+  let iconPickerPanelAnchor: HTMLElement | null = $state(null);
+  let openingIconPickerFromMenu = false;
   let actionIconPickerTrigger: HTMLButtonElement | null = $state(null);
   let pageIconPickerTrigger: HTMLButtonElement | null = $state(null);
   let panelLoadStates = $state<Partial<Record<
@@ -167,7 +212,7 @@
   const pageIconLabel = $derived(pageIconScreenReaderText(page?.icon ?? null));
   const effectiveProjectId = $derived(page ? notesPageProjectId(page) ?? projectId : projectId);
   const projectPages = $derived(notesPagesForProject(
-    [...new Map([...notes.allPages, ...notes.linkResolutionPages].map((item) => [item.id, item])).values()],
+    notes.navigationPages,
     effectiveProjectId,
   ));
   const projectFolders = $derived(notesFoldersForProject(notes.folders, effectiveProjectId));
@@ -226,20 +271,97 @@
   const activityPanelLabel = $derived(
     page ? `${activityEditedByLabel}, ${editedDateLabel}` : t("notes.activity"),
   );
-  const openCommentCount = $derived(openNotesCommentThreadCount(notes.commentThreads));
-  const unreadCommentCount = $derived(unreadNotesCommentThreadCount(notes.commentThreads));
   const openSuggestionCount = $derived(openNotesSuggestionCount(notes.suggestions));
   const linksBadgeCount = $derived(notes.backlinks.length + notes.pageAliases.length + notes.unresolvedLinks.length);
-  const commentsBadgeCount = $derived(unreadCommentCount > 0 ? unreadCommentCount : openCommentCount);
-  const hasPanelMenuItems = $derived(
-    linksBadgeCount > 0 || openCommentCount > 0 || openSuggestionCount > 0,
+  const hasPanelMenuItems = $derived(linksBadgeCount > 0 || openSuggestionCount > 0);
+  const inlineCommentsId = $derived(page ? `notes-page-comments-${page.id}` : undefined);
+  const pageDiscussionCount = $derived(notesPageDiscussionsInReadingOrder(notes.allCommentThreads).length);
+  const inlineCommentsVisible = $derived(inlineCommentsRequested || pageDiscussionCount > 0);
+  const isPeekMode = $derived(openMode !== "full");
+  const pageCommentThreads = $derived(page
+    ? notes.allCommentThreads.filter((thread) => thread.page_id === page.id)
+    : []);
+  const openPageDiscussions = $derived(filterNotesDiscussions(pageCommentThreads, "open"));
+  const unreadPageDiscussionCount = $derived(unreadNotesCommentThreadCount(openPageDiscussions));
+  /** Resolved discussions keep the button so the All discussions panel stays reachable. */
+  const discussionsButtonVisible = $derived(
+    discussionsPanelOpen || pageCommentThreads.some((thread) => thread.comments.length > 0),
   );
-  const peekMode = $derived(openMode !== "full");
+  const discussionsButtonLabel = $derived(
+    t("notes.discussionsButton", openPageDiscussions.length, unreadPageDiscussionCount),
+  );
+  const discussionsPanelFocus = $derived<NotesDiscussionsPanelFocus | null>(
+    page && discussionsFocus?.pageId === page.id
+      ? { discussionId: discussionsFocus.discussionId, reply: discussionsFocus.reply, request: discussionsFocus.request }
+      : null,
+  );
+  const activityPanelStyle = $derived.by(() => {
+    void floatingLayoutVersion;
+    return floatingPagePanelStyle(activityButton, ACTIVITY_PANEL_WIDTH_PX);
+  });
+  const pageMenuStyle = $derived.by(() => {
+    void floatingLayoutVersion;
+    return floatingPagePanelStyle(pageMenuButton, PAGE_MENU_WIDTH_PX);
+  });
+  const pageDetailsPanelStyle = $derived.by(() => {
+    void floatingLayoutVersion;
+    return floatingPagePanelStyle(
+      pageMenuButton,
+      PAGE_DETAILS_PANEL_WIDTH_PX,
+      PAGE_DETAILS_PANEL_MAX_HEIGHT_PX,
+    );
+  });
+
+  /** Place a page popover below its toolbar trigger without clipping at viewport edges. */
+  function floatingPagePanelStyle(
+    anchor: HTMLElement | null,
+    preferredWidth: number,
+    preferredMaxHeight = PAGE_MENU_MAX_HEIGHT_PX,
+  ): string {
+    if (!anchor || typeof window === "undefined") return "visibility:hidden";
+    const rect = anchor.getBoundingClientRect();
+    const width = Math.max(0, Math.min(
+      preferredWidth,
+      window.innerWidth - PAGE_PANEL_VIEWPORT_MARGIN_PX * 2,
+    ));
+    const maxLeft = Math.max(
+      PAGE_PANEL_VIEWPORT_MARGIN_PX,
+      window.innerWidth - width - PAGE_PANEL_VIEWPORT_MARGIN_PX,
+    );
+    const left = Math.max(PAGE_PANEL_VIEWPORT_MARGIN_PX, Math.min(rect.right - width, maxLeft));
+    const top = Math.min(
+      rect.bottom + PAGE_PANEL_TRIGGER_GAP_PX,
+      window.innerHeight - PAGE_PANEL_VIEWPORT_MARGIN_PX,
+    );
+    const maxHeight = Math.max(0, Math.min(
+      preferredMaxHeight,
+      window.innerHeight - top - PAGE_PANEL_VIEWPORT_MARGIN_PX,
+    ));
+    return `left:${Math.round(left)}px;top:${Math.round(top)}px;width:${Math.round(width)}px;max-height:${Math.round(maxHeight)}px`;
+  }
+
+  $effect(() => {
+    if (!activityPanelOpen && !pageMenuOpen && !activePanel && !coverMenuOpen) return;
+    const update = () => {
+      floatingLayoutVersion += 1;
+    };
+    window.addEventListener("resize", update);
+    window.addEventListener("scroll", update, true);
+    return () => {
+      window.removeEventListener("resize", update);
+      window.removeEventListener("scroll", update, true);
+    };
+  });
 
   function requestEditorPanel(kind: NotesEditorPanelKind, retry = false): void {
     const current = panelLoadStates[kind] ?? null;
     if (!retry && current?.key === kind) return;
     const loadingState = beginLazyComponentLoad(current, kind);
+    const cached = retry ? null : readNotesEditorPanel(kind);
+    if (cached) {
+      panelLoadStates = { ...panelLoadStates, [kind]: resolveLazyComponentLoad(loadingState, kind, loadingState.requestId, cached) };
+      return;
+    }
     panelLoadStates = { ...panelLoadStates, [kind]: loadingState };
     const request = retry ? retryNotesEditorPanel(kind) : loadNotesEditorPanel(kind);
     void request.then((component) => {
@@ -260,7 +382,14 @@
     });
   }
 
-  function openIconPicker(kind: "action" | "icon"): void {
+  /** Toggle the share popover, loading its surface only on first use. */
+  function toggleSharePanel(): void {
+    shareOpen = !shareOpen;
+    if (shareOpen) requestEditorPanel("share");
+  }
+
+  function openIconPicker(kind: "action" | "icon", panelAnchor: HTMLElement | null = null): void {
+    if (kind === "action") iconPickerPanelAnchor = panelAnchor;
     requestedIconPicker = kind;
     requestEditorPanel("icon-picker", panelLoadStates["icon-picker"]?.status === "failed");
   }
@@ -269,14 +398,16 @@
     if (activePanel === "links") {
       requestEditorPanel("backlinks");
       requestEditorPanel("page-links");
-    } else if (activePanel === "comments") {
-      requestEditorPanel("comments");
     } else if (activePanel === "suggestions") {
       requestEditorPanel("suggestions");
     }
     if (moveMenuOpen || folderMoveMenuOpen) requestEditorPanel("destination-picker");
     if (coverMenuOpen) requestEditorPanel("cover-menu");
     if (page?.cover) requestEditorPanel("page-cover");
+    if (page?.parent.type === "data_source_id") requestEditorPanel("row-properties");
+    if (inlineCommentsVisible) requestEditorPanel("page-comments");
+    if (discussionsPopoverOpen) requestEditorPanel("discussions-popover");
+    if (discussionsPanelOpen) requestEditorPanel("discussions-panel");
     if (htmlExportOpen) requestEditorPanel("html-export");
     if (agentBridgeExportOpen) requestEditorPanel("agent-export");
     if (pageHistoryModalOpen) requestEditorPanel("page-history");
@@ -285,7 +416,12 @@
       const kind = requestedIconPicker;
       requestedIconPicker = null;
       void tick().then(() => {
-        (kind === "action" ? actionIconPickerTrigger : pageIconPickerTrigger)?.click();
+        openingIconPickerFromMenu = kind === "action" && iconPickerPanelAnchor !== null;
+        try {
+          (kind === "action" ? actionIconPickerTrigger : pageIconPickerTrigger)?.click();
+        } finally {
+          openingIconPickerFromMenu = false;
+        }
       });
     }
   });
@@ -297,12 +433,48 @@
     notes.clearPageTitleDraft(page.id);
     titleDraft = editablePageTitle;
     activePanel = null;
+    inlineCommentsRequested = false;
+    inlineCommentFocus = null;
+    discussionsPopoverOpen = false;
+    discussionsPanelOpen = false;
+    discussionsFocus = null;
+    const discussionRequest = untrack(() => notes.discussionRequest);
+    if (discussionRequest.pageId !== page.id) notes.completeDiscussionRequest(discussionRequest.requestId);
     pageMenuOpen = false;
     moveMenuOpen = false;
     folderMoveMenuOpen = false;
     activityPanelOpen = false;
     coverMenuOpen = false;
     pageHistoryModalOpen = false;
+    coverPosition = null;
+    coverPositionError = null;
+    coverPositionSaving = false;
+  });
+
+  $effect(() => {
+    const request = notes.discussionRequest;
+    const discussionId = request.discussionId;
+    if (!page || !discussionId || request.pageId !== page.id) return;
+    untrack(() => {
+      openDiscussionsPanel(discussionId, false);
+      notes.completeDiscussionRequest(request.requestId);
+    });
+  });
+
+  $effect(() => {
+    if (notes.activeCommentParent?.type !== "block_id") return;
+    untrack(() => {
+      discussionsPopoverOpen = false;
+      discussionsPanelOpen = true;
+    });
+  });
+
+  $effect(() => {
+    if (!page || page.id !== lastTitlePageId) return;
+    const storedTitle = editablePageTitle;
+    if (notes.pageTitleDraftForPage(page.id) !== null) return;
+    if (typeof document !== "undefined" && document.activeElement === titleInput) return;
+    titleDraft = storedTitle;
   });
 
   $effect(() => {
@@ -377,6 +549,21 @@
     };
   }
 
+  /** Restore the retained page's viewport before its virtualized rows settle. */
+  function editorViewport(node: HTMLDivElement): void {
+    $effect(() => {
+      const pageId = page?.id;
+      const top = untrack(() => notes.editorScrollTop);
+      let cancelled = false;
+      void tick().then(() => {
+        if (cancelled || page?.id !== pageId) return;
+        node.scrollTop = top;
+        node.dispatchEvent(new Event("scroll"));
+      });
+      return () => { cancelled = true; };
+    });
+  }
+
   onMount(() => {
     activityNowMs = Date.now();
     const intervalId = window.setInterval(() => {
@@ -386,6 +573,7 @@
   });
 
   $effect(() => {
+    if (!active) return;
     const titleFocusRequestId = notes.titleFocusRequestId;
     if (titleFocusRequestId === lastHandledTitleFocusRequestId) return;
     if (!page || notes.titleFocusPageId !== page.id) return;
@@ -393,9 +581,13 @@
     focusTitleInput(false);
   });
 
+  let lastScrolledFocusRequestId = 0;
   $effect(() => {
+    if (!active) return;
     const focusRequestId = notes.focusRequestId;
-    const focusSelection = notes.focusSelection;
+    if (focusRequestId === lastScrolledFocusRequestId) return;
+    lastScrolledFocusRequestId = focusRequestId;
+    const preventScroll = notes.focusPreventScroll;
     const blockId = notes.focusBlockId;
     if (!blockId) return;
     void tick().then(() => {
@@ -415,7 +607,8 @@
         targetTop: targetRect.top,
         targetBottom: targetRect.bottom,
         padding: FOCUSED_BLOCK_SCROLL_PADDING_PX,
-        alignment: focusSelection ? "nearest" : "center",
+        alignment: "nearest",
+        preventScroll,
       });
       if (nextScrollTop !== viewport.scrollTop) viewport.scrollTop = nextScrollTop;
     });
@@ -426,10 +619,16 @@
     if (activePanel) notes.setPagePanelSubsystemOpen(activePanel, false);
     if (pageHistoryModalOpen) notes.setPagePanelSubsystemOpen("page-history", false);
     if (lastTitlePageId) notes.clearPageTitleDraft(lastTitlePageId);
+    // Reopening this page on a phone, after Back, a database, or another tab, must not reopen the keyboard.
+    if (!OPENING_MAY_FOCUS_TEXT && page) notes.releaseTextFocusForPage(page.id);
   });
 
   async function saveTitle(): Promise<void> {
     if (!page) return;
+    if (notes.pageTitleDraftForPage(page.id) === null) {
+      titleDraft = editablePageTitle;
+      return;
+    }
     const title = titleDraft.trim();
     titleDraft = title;
     if (title === editablePageTitle) {
@@ -448,26 +647,23 @@
   }
 
   function handleTitleKeydown(event: KeyboardEvent): void {
-    if (event.key === "Enter") {
+    if (event.key === "Enter" && !event.isComposing && page && notes.primaryContentReady) {
       event.preventDefault();
-      event.currentTarget instanceof HTMLInputElement && event.currentTarget.blur();
+      const blockId = notes.ensurePageBody(page.id);
+      if (blockId) notes.focusBlock(blockId, { start: 0, end: 0 });
     }
   }
 
   function actionButtonClass(active = false): string {
     return cn(
-      "relative flex shrink-0 items-center justify-center rounded-md px-1.5 text-foreground transition-colors hover:bg-accent",
-      mobileLayout ? "h-12 min-w-12" : "h-7 min-w-7",
+      "relative flex shrink-0 items-center justify-center px-1.5 text-foreground transition-colors hover:bg-accent",
+      mobileLayout ? "mobile-chrome-button" : "h-7 min-w-7 rounded-md",
       active && "bg-accent",
     );
   }
 
   function menuItemClass(destructive = false): string {
-    return cn(
-      "flex w-full items-center gap-2 rounded px-2.5 text-left text-[0.8rem] hover:bg-accent",
-      mobileLayout ? "min-h-12 py-2" : "py-1.5",
-      destructive ? "text-destructive" : "text-popover-foreground",
-    );
+    return cn("menu-item", destructive && "menu-item-destructive");
   }
 
   $effect(() => {
@@ -499,6 +695,11 @@
   });
 
   $effect(() => {
+    if (!mobileLayout || !discussionsPanelOpen) return;
+    return mobileBackStack.activate({ handle: closeDiscussionsPanel });
+  });
+
+  $effect(() => {
     if (!mobileLayout || !activityPanelOpen) return;
     return mobileBackStack.activate({
       handle: () => {
@@ -516,6 +717,11 @@
       void notes.ensureOptionalSubsystem(nextPanel).catch((error) => {
         console.error(`load notes ${nextPanel} panel failed`, error);
       });
+      if (nextPanel === "links") {
+        void notes.reloadLinkResolutionPages().catch((error) => {
+          console.error("load notes link destinations failed", error);
+        });
+      }
     }
     pageMenuOpen = false;
     moveMenuOpen = false;
@@ -577,17 +783,90 @@
     hideActivityPanel();
   }
 
-  function toggleCoverMenu(): void {
-    const nextOpen = !coverMenuOpen;
-    coverMenuOpen = nextOpen;
-    if (nextOpen) {
-      if (panelLoadStates["cover-menu"]?.status === "failed") {
-        requestEditorPanel("cover-menu", true);
+  /** Open the cover picker from a trigger that remains mounted after the page menu closes. */
+  function openCoverMenu(trigger: HTMLButtonElement): void {
+    coverMenuButton = trigger;
+    coverMenuOpen = true;
+    if (panelLoadStates["cover-menu"]?.status === "failed") {
+      requestEditorPanel("cover-menu", true);
+    }
+    closePageMenu();
+    closeActionPanel();
+  }
+
+  /** Toggle the cover picker from the active trigger. */
+  function toggleCoverMenu(event: MouseEvent): void {
+    if (!(event.currentTarget instanceof HTMLButtonElement)) return;
+    if (coverMenuOpen) {
+      closeCoverMenu();
+      return;
+    }
+    openCoverMenu(event.currentTarget);
+  }
+
+  /** Start a local crop draft; pointer movements never write to storage. */
+  function startCoverPosition(): void {
+    if (!page?.cover || page.cover.type === "design" || coverStatus !== "ready") return;
+    coverMenuOpen = false;
+    coverPositionError = null;
+    coverPositionSaving = false;
+    closePageMenu();
+    closeActionPanel();
+    coverPosition = { pageId: page.id, cover: page.cover, focal: { ...(page.cover.focal_point ?? NOTES_COVER_DEFAULT_FOCAL_POINT) } };
+    void tick().then(() => coverBanner?.querySelector<HTMLButtonElement>("[data-cover-drag]")?.focus({ preventScroll: true }));
+  }
+
+  /** Discard the unsaved crop and restore the positioning trigger. */
+  function cancelCoverPosition(): void {
+    if (coverPositionSaving) return;
+    coverPosition = null;
+    coverPositionError = null;
+    void tick().then(() => repositionButton?.focus({ preventScroll: true }));
+  }
+
+  /** Persist one confirmed position and keep failed drafts available for retry. */
+  async function saveCoverPosition(): Promise<void> {
+    const draft = coverPosition;
+    if (!draft || coverPositionSaving) return;
+    coverPositionSaving = true;
+    coverPositionError = null;
+    try {
+      await notes.updatePageCover(draft.pageId, { ...draft.cover, focal_point: { ...draft.focal } });
+      if (coverPosition === draft) {
+        coverPosition = null;
+        void tick().then(() => repositionButton?.focus({ preventScroll: true }));
       }
-      closePageMenu();
-      closeActionPanel();
+    } catch (cause) {
+      if (coverPosition === draft) coverPositionError = t("notes.pageCoverSaveFailed", cause instanceof Error ? cause.message : String(cause));
+      else console.error("Could not save Notes cover position", cause);
+    } finally {
+      if (!coverPosition || coverPosition === draft) coverPositionSaving = false;
     }
   }
+
+  $effect(() => {
+    if (coverPosition && (coverPosition.pageId !== page?.id || !page.cover || page.cover.type === "design")) {
+      coverPosition = null;
+      coverPositionError = null;
+      coverPositionSaving = false;
+    }
+  });
+
+  $effect(() => {
+    if (!coverPosition) return;
+    const handleEscape = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      cancelCoverPosition();
+    };
+    document.addEventListener("keydown", handleEscape, true);
+    return () => document.removeEventListener("keydown", handleEscape, true);
+  });
+
+  $effect(() => {
+    if (mobileLayout && coverPosition) return mobileBackStack.activate({ handle: cancelCoverPosition });
+  });
 
   function closeCoverMenu(): void {
     coverMenuOpen = false;
@@ -686,7 +965,9 @@
   function confirmTrashPage(): void {
     const targetPage = pendingTrashPage;
     pendingTrashPage = null;
-    if (targetPage) void notes.trashPage(targetPage.id);
+    if (targetPage) void notes.trashPage(targetPage.id).catch((error) => {
+      console.error("trash Notes page failed", error);
+    });
   }
 
   function archiveCurrentPage(): void {
@@ -739,22 +1020,67 @@
     return notes.exportAgentBridge(request);
   }
 
-  function openPageDiscussion(): void {
+  /** Reveal the page's inline discussion and move focus into its composer. */
+  function revealInlineComments(): void {
     if (!page) return;
-    if (activePanel && activePanel !== "comments") {
-      notes.setPagePanelSubsystemOpen(activePanel, false);
+    inlineCommentsRequested = true;
+    inlineCommentFocus = {
+      pageId: page.id,
+      request: inlineCommentFocus?.pageId === page.id ? inlineCommentFocus.request + 1 : 1,
+    };
+    coverMenuOpen = false;
+    closePageMenu();
+  }
+
+  function preloadDiscussions(): void {
+    requestEditorPanel("discussions-popover");
+    requestEditorPanel("discussions-panel");
+  }
+
+  /** Close the All discussions panel from the header button, otherwise open the summary or, on mobile, the panel. */
+  function toggleDiscussions(): void {
+    if (discussionsPanelOpen) {
+      closeDiscussionsPanel();
+    } else if (mobileLayout) {
+      openDiscussionsPanel(null, false);
+    } else {
+      discussionsPopoverOpen = !discussionsPopoverOpen;
     }
-    const pageParent = { type: "page_id", page_id: page.id } satisfies NotesParent;
-    if (!notes.activeCommentParent || notesCommentParentKey(notes.activeCommentParent) !== notesCommentParentKey(pageParent)) {
-      notes.setActiveCommentParent(pageParent);
+  }
+
+  /** Open the All discussions panel on one discussion, or move focus into the panel when none is given. */
+  function openDiscussionsPanel(discussionId: string | null, reply: boolean): void {
+    if (!page) return;
+    discussionsPopoverOpen = false;
+    discussionsPanelOpen = true;
+    discussionsFocus = {
+      pageId: page.id,
+      discussionId,
+      reply,
+      request: discussionsFocus?.pageId === page.id ? discussionsFocus.request + 1 : 1,
+    };
+  }
+
+  /**
+   * Close the All discussions panel and drop a block comment that was being started. Focus that was inside the
+   * panel returns to the commented block, the header button, or the title, in that order.
+   */
+  function closeDiscussionsPanel(): void {
+    const panel = editorRoot?.querySelector("[data-notes-discussions-panel]");
+    const focusWasInside = typeof document !== "undefined" && !!panel?.contains(document.activeElement);
+    const pendingParent = notes.activeCommentParent;
+    discussionsPanelOpen = false;
+    discussionsFocus = null;
+    if (pendingParent?.type === "block_id") notes.setActiveCommentParent(null);
+    if (!focusWasInside) return;
+    if (pendingParent?.type === "block_id" && notes.blockById(pendingParent.block_id)) {
+      notes.focusBlock(pendingParent.block_id);
+      return;
     }
-    activePanel = "comments";
-    notes.setPagePanelSubsystemOpen("comments", true);
-    void notes.ensureOptionalSubsystem("comments").catch((error) => {
-      console.error("load notes comments failed", error);
+    void tick().then(() => {
+      if (discussionsButton?.isConnected) discussionsButton.focus({ preventScroll: true });
+      else if (!mobileLayout) titleInput?.focus({ preventScroll: true });
     });
-    pageMenuOpen = false;
-    moveMenuOpen = false;
   }
 
   function pageIconScreenReaderText(icon: NotesPageIconValue | null): string {
@@ -768,63 +1094,109 @@
 
 {#if page}
   <section
-    class="notes-editor-root flex h-full w-full min-w-0 flex-1 flex-col overflow-hidden"
+    bind:this={editorRoot}
+    class="notes-editor-root relative flex h-full w-full min-w-0 flex-1 flex-col overflow-hidden"
     data-mobile={mobileLayout || undefined}
   >
-    <div
-      class="relative z-40 shrink-0"
-      style="background-color: var(--cal-bg);"
-      use:dismissOnOutside={{ enabled: !!activePanel, onDismiss: closeActionPanel }}
-    >
-      <div class="flex items-center gap-1 px-3" style="height: var(--cal-header-row-h);">
-        <div class="group/open-mode flex shrink-0 items-center gap-0.5">
-          {#if mobileLayout && openMode === "full"}
-            <button
-              type="button"
-              class={actionButtonClass()}
-              aria-label={t("notes.showProjectHome")}
-              onclick={() => onClose?.()}
-            >
-              <ChevronLeft class="size-5" strokeWidth={noteActionIconStrokeWidth} />
-            </button>
-          {/if}
+    {#if notes.editorSaveError}
+      <Notice
+        class="shrink-0 border-b border-border px-4 py-2 text-sm"
+        message={t("notes.editorSaveFailed", notes.editorSaveError)}
+        onRetry={() => notes.retryEditorMutations()}
+      />
+    {:else if notes.editorConflict}
+      <Notice
+        class="shrink-0 border-b border-border px-4 py-2 text-sm"
+        role="status"
+        message={t("notes.editorChangedElsewhere")}
+        copy={false}
+        onDismiss={() => notes.dismissEditorConflict()}
+      />
+    {/if}
+    {#snippet discussionsTrigger()}
+      <button
+        bind:this={discussionsButton}
+        type="button"
+        class={actionButtonClass(discussionsPopoverOpen || discussionsPanelOpen)}
+        aria-label={discussionsButtonLabel}
+        data-app-tooltip={t("notes.discussions")}
+        aria-haspopup="dialog"
+        aria-expanded={discussionsPopoverOpen || discussionsPanelOpen}
+        data-notes-discussions-button
+        onpointerenter={preloadDiscussions}
+        onfocus={preloadDiscussions}
+        onclick={toggleDiscussions}
+      >
+        <MessageSquare class="size-4" strokeWidth={noteActionIconStrokeWidth} />
+        {#if unreadPageDiscussionCount > 0}
+          <span class="absolute top-1 right-1 size-1.5 rounded-full bg-primary" aria-hidden="true"></span>
+        {/if}
+      </button>
+      {#if discussionsPopoverOpen && discussionsButton}
+        {#if panelLoadStates["discussions-popover"]?.status === "ready" && panelLoadStates["discussions-popover"].component.kind === "discussions-popover"}
+          {@const NotesDiscussionsPopover = panelLoadStates["discussions-popover"].component.component}
+          <NotesDiscussionsPopover
+            anchor={discussionsButton}
+            pageId={page.id}
+            now={activityNow}
+            timeLabels={activityTimeLabels}
+            onClose={() => { discussionsPopoverOpen = false; }}
+            onSeeAll={() => openDiscussionsPanel(null, false)}
+            onOpenDiscussion={openDiscussionsPanel}
+          />
+        {:else if panelLoadStates["discussions-popover"]?.status === "failed"}
+          <Notice layout="floating" message={t("common.viewLoadFailed", t("notes.discussions"))} copy={false} onRetry={() => requestEditorPanel("discussions-popover", true)} onDismiss={() => { discussionsPopoverOpen = false; }} />
+        {/if}
+      {/if}
+    {/snippet}
+    {#if isPeekMode}
+      <div class="absolute right-3 top-2 z-40 flex items-center gap-0.5 rounded-md border border-border bg-popover/95 p-0.5 shadow-sm" data-notes-peek-controls>
+        {#if discussionsButtonVisible}
+          {@render discussionsTrigger()}
+        {/if}
+        <button
+          type="button"
+          class={actionButtonClass()}
+          aria-label={t("notes.closePeek")}
+          data-app-tooltip={t("notes.closePeek")}
+          onclick={() => onClose?.()}
+        >
+          <X class="size-4" strokeWidth={noteActionIconStrokeWidth} />
+        </button>
+        <button
+          type="button"
+          class={actionButtonClass()}
+          aria-label={t("notes.expandNote")}
+          data-app-tooltip={t("notes.expandNote")}
+          onclick={openAsFullPage}
+        >
+          <NotesPeekModeIcon mode="full" class="size-4" strokeWidth={noteActionIconStrokeWidth} />
+        </button>
+        <button
+          type="button"
+          class={actionButtonClass()}
+          aria-label={openMode === "side" ? t("notes.centerPeek") : t("notes.sidePeek")}
+          data-app-tooltip={openMode === "side" ? t("notes.centerPeek") : t("notes.sidePeek")}
+          onclick={() => selectOpenMode(openMode === "side" ? "center" : "side")}
+        >
           {#if openMode === "side"}
-            <button
-              type="button"
-              class={actionButtonClass()}
-              aria-label={t("notes.closePeek")}
-              data-app-tooltip={t("notes.closePeek")}
-              onclick={() => onClose?.()}
-            >
-              <X class="size-4" strokeWidth={noteActionIconStrokeWidth} />
-            </button>
+            <NotesPeekModeIcon mode="center" class="size-4" strokeWidth={noteActionIconStrokeWidth} />
+          {:else}
+            <NotesPeekModeIcon mode="side" class="size-4" strokeWidth={noteActionIconStrokeWidth} />
           {/if}
-          {#if peekMode}
-            <button
-              type="button"
-              class={actionButtonClass()}
-              aria-label={t("notes.expandNote")}
-              data-app-tooltip={t("notes.expandNote")}
-              onclick={openAsFullPage}
-            >
-              <NotesPeekModeIcon mode="full" class="size-4" strokeWidth={noteActionIconStrokeWidth} />
-            </button>
-            <button
-              type="button"
-              class={actionButtonClass()}
-              aria-label={openMode === "side" ? t("notes.centerPeek") : t("notes.sidePeek")}
-              data-app-tooltip={openMode === "side" ? t("notes.centerPeek") : t("notes.sidePeek")}
-              onclick={() => selectOpenMode(openMode === "side" ? "center" : "side")}
-            >
-              {#if openMode === "side"}
-                <NotesPeekModeIcon mode="center" class="size-4" strokeWidth={noteActionIconStrokeWidth} />
-              {:else}
-                <NotesPeekModeIcon mode="side" class="size-4" strokeWidth={noteActionIconStrokeWidth} />
-              {/if}
-            </button>
-          {/if}
-        </div>
-        <div class="min-w-0 flex-1"></div>
+        </button>
+      </div>
+    {/if}
+    {#if pageActionsTarget}
+      <div
+        class={cn("relative z-30 flex shrink-0 items-center", mobileLayout ? "gap-0" : "gap-1")}
+        data-notes-page-actions
+        use:portal={pageActionsTarget}
+        use:dismissOnOutside={{ enabled: !!activePanel, onDismiss: (reason) => {
+          closeActionPanel();
+          if (reason === "escape") pageMenuButton?.focus({ preventScroll: true });
+        } }}
+      >
         <div
           class="relative hidden shrink-0 min-[560px]:block"
           role="group"
@@ -835,8 +1207,9 @@
           onfocusout={handleActivityFocusOut}
         >
           <button
+            bind:this={activityButton}
             type="button"
-            class="flex h-7 max-w-40 items-center rounded-md px-2 text-[0.8rem] text-foreground transition-colors hover:bg-accent focus:bg-accent"
+            class="flex h-7 max-w-40 items-center rounded-md px-2 text-[0.8rem] text-foreground transition-colors hover:bg-accent focus-visible:bg-accent"
             aria-label={activityPanelLabel}
             aria-expanded={activityPanelOpen}
             aria-controls={activityPanelId}
@@ -844,18 +1217,18 @@
             <span class="truncate">{editedMetadataLabel}</span>
           </button>
           {#if activityPanelOpen}
-            <div class="absolute right-0 top-7 h-1 w-80" aria-hidden="true"></div>
             <div
               id={activityPanelId}
-              class="absolute right-0 top-8 z-50 w-80 overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-md"
+              class="surface-floating fixed z-80 overflow-hidden"
+              style={activityPanelStyle}
               role="dialog"
               aria-label={t("notes.activity")}
               data-app-floating-surface
             >
-              <div class="border-b border-border px-4 py-3 text-[0.8rem] font-medium text-muted-foreground">
+              <div class="border-b border-border px-4 py-3 text-panel-detail font-medium text-muted-foreground">
                 {t("notes.activity")}
               </div>
-              <div class="flex flex-col gap-3 px-4 py-3 text-[0.8rem]">
+              <div class="flex flex-col gap-3 px-4 py-3">
                 <div class="flex min-w-0 items-center justify-between gap-4">
                   <span class="min-w-0 truncate text-foreground">{activityEditedByLabel}</span>
                   <span class="shrink-0 text-muted-foreground">{editedDateLabel}</span>
@@ -868,22 +1241,49 @@
             </div>
           {/if}
         </div>
+        {#if discussionsButtonVisible && !isPeekMode}
+          {@render discussionsTrigger()}
+        {/if}
+        <button
+          bind:this={shareButton}
+          type="button"
+          class={actionButtonClass(shareOpen)}
+          aria-label={t("notes.share")}
+          data-app-tooltip={t("notes.share")}
+          aria-haspopup="dialog"
+          aria-expanded={shareOpen}
+          data-notes-share-button
+          onpointerenter={() => requestEditorPanel("share")}
+          onfocus={() => requestEditorPanel("share")}
+          onclick={toggleSharePanel}
+        >
+          <Share2 class="size-4" strokeWidth={noteActionIconStrokeWidth} />
+        </button>
+        {#if shareOpen}
+          {#if panelLoadStates.share?.status === "ready" && panelLoadStates.share.component.kind === "share"}
+            {@const NotesSharePopover = panelLoadStates.share.component.component}
+            <NotesSharePopover anchor={shareButton} pageTitle={currentPageTitle} {mobileLayout} onClose={() => { shareOpen = false; }} />
+          {:else if panelLoadStates.share?.status === "failed"}
+            <Notice layout="floating" message={t("common.viewLoadFailed", t("notes.share"))} copy={false} onRetry={() => requestEditorPanel("share", true)} onDismiss={() => { shareOpen = false; }} />
+          {/if}
+        {/if}
         <button
           type="button"
-          class={actionButtonClass(pageFavorited)}
-          aria-label={pageFavorited ? t("notes.removeFromFavorites") : t("notes.addToFavorites")}
-          data-app-tooltip={pageFavorited ? t("notes.removeFromFavorites") : t("notes.addToFavorites")}
+          class={actionButtonClass()}
+          aria-label={pageFavorited ? t("common.removeFromFavorites") : t("common.addToFavorites")}
+          data-app-tooltip={pageFavorited ? t("common.removeFromFavorites") : t("common.addToFavorites")}
           onclick={() => {
             notes.setPageFavorited(page.id, !pageFavorited);
           }}
         >
-          <Star class={`size-4 ${pageFavorited ? "fill-current" : ""}`} strokeWidth={noteActionIconStrokeWidth} />
+          <Star class={cn("size-4", pageFavorited && "fill-current text-primary")} strokeWidth={noteActionIconStrokeWidth} />
         </button>
         <div
           class="relative"
           use:dismissOnOutside={{ enabled: pageMenuOpen, onDismiss: closePageMenu }}
         >
           <button
+            bind:this={pageMenuButton}
             type="button"
             class={actionButtonClass(pageMenuOpen)}
             aria-label={t("notes.pageActions")}
@@ -892,6 +1292,7 @@
             onclick={() => {
               pageMenuOpen = !pageMenuOpen;
               closeActionPanel();
+              if (pageMenuOpen) coverMenuOpen = false;
               if (!pageMenuOpen) {
                 moveMenuOpen = false;
                 folderMoveMenuOpen = false;
@@ -902,251 +1303,334 @@
           </button>
           {#if pageMenuOpen}
             <div
-              class="absolute right-0 z-50 w-60 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-lg {mobileLayout ? 'top-12' : 'top-8'}"
+              class="surface-floating fixed z-80 flex flex-col overflow-hidden"
+              style={pageMenuStyle}
               role="menu"
               data-app-floating-surface
             >
-              <button class={menuItemClass()} type="button" role="menuitem" onclick={() => focusTitleInput()}>
-                <Pencil class="size-4" />
-                <span>{t("notes.renamePage")}</span>
-              </button>
-              <button class={menuItemClass()} type="button" role="menuitem" onclick={duplicateCurrentPage}>
-                <Copy class="size-4" />
-                <span>{t("notes.duplicatePage")}</span>
-              </button>
-              {#if hasPanelMenuItems}
-                <div class="my-1 border-t border-border" role="separator"></div>
-                {#if linksBadgeCount > 0}
-                  <button class={menuItemClass()} type="button" role="menuitem" onclick={() => togglePanel("links")}>
-                    <Link2 class="size-4" strokeWidth={noteActionIconStrokeWidth} />
-                    <span>{t("notes.noteLinks")}</span>
-                    <span class="ml-auto text-[0.7rem] text-muted-foreground">{linksBadgeCount}</span>
+              <div class="surface-floating-body flex min-h-0 flex-1 flex-col overflow-y-auto" use:scrollEdgeFadeAction>
+                {#if mobileLayout}
+                  <button class={menuItemClass()} type="button" role="menuitem" aria-haspopup="dialog" onclick={() => {
+                    openIconPicker("action", pageMenuButton);
+                    closePageMenu();
+                  }}>
+                    <SmilePlus class="size-4" strokeWidth={noteActionIconStrokeWidth} />
+                    <span>{page.icon ? t("notes.changePageIcon") : t("notes.addPageIcon")}</span>
                   </button>
-                {/if}
-                {#if openCommentCount > 0}
-                  <button class={menuItemClass()} type="button" role="menuitem" onclick={() => togglePanel("comments")}>
+                  <button class={menuItemClass()} type="button" role="menuitem" aria-haspopup="dialog" disabled={coverPosition !== null} onclick={() => {
+                    if (pageMenuButton) openCoverMenu(pageMenuButton);
+                  }}>
+                    <ImagePlus class="size-4" strokeWidth={noteActionIconStrokeWidth} />
+                    <span>{page.cover ? t("notes.changePageCover") : t("notes.addPageCover")}</span>
+                  </button>
+                  <button class={menuItemClass()} type="button" role="menuitem" onclick={revealInlineComments}>
                     <MessageSquare class="size-4" strokeWidth={noteActionIconStrokeWidth} />
-                    <span>{t("notes.commentsCount", openCommentCount)}</span>
-                    {#if unreadCommentCount > 0}
-                      <span class="ml-auto text-[0.7rem] font-semibold text-primary">{commentsBadgeCount}</span>
-                    {/if}
+                    <span>{t("notes.addComment")}</span>
                   </button>
+                  <div class="menu-separator" role="separator"></div>
                 {/if}
-                {#if openSuggestionCount > 0}
-                  <button class={menuItemClass()} type="button" role="menuitem" onclick={() => togglePanel("suggestions")}>
-                    <PencilLine class="size-4" strokeWidth={noteActionIconStrokeWidth} />
-                    <span>{t("notes.suggestionsCount", openSuggestionCount)}</span>
-                  </button>
-                {/if}
-                <div class="my-1 border-t border-border" role="separator"></div>
-              {/if}
-              <button
-                class={menuItemClass()}
-                type="button"
-                role="menuitem"
-                aria-expanded={moveMenuOpen}
-                onclick={() => {
-                  moveMenuOpen = !moveMenuOpen;
-                  if (moveMenuOpen) {
-                    void notes.ensureOptionalSubsystem("destinations").catch((error) => {
-                      console.error("load notes move destinations failed", error);
-                    });
-                  }
-                  folderMoveMenuOpen = false;
-                }}
-              >
-                <FolderInput class="size-4" />
-                <span>{t("notes.movePageTo")}</span>
-              </button>
-              {#if moveMenuOpen}
-                <div class="my-1 max-h-72 overflow-auto border-y border-border bg-muted/25 py-1">
-                  {#if panelLoadStates["destination-picker"]?.status === "ready" && panelLoadStates["destination-picker"].component.kind === "destination-picker"}
-                    {@const NotesDestinationPickerList = panelLoadStates["destination-picker"].component.component}
-                    <NotesDestinationPickerList
-                    targets={moveTargets}
-                    searchLabel={t("notes.moveDestinationSearch")}
-                    searchPlaceholder={t("notes.moveDestinationSearchPlaceholder")}
-                    recentLabel={t("notes.recentDestinations")}
-                    pagesLabel={t("notes.allPages")}
-                    emptyLabel={t("notes.noPageMoveTargets")}
-                    optionLabel={(target) => t("notes.movePageToTarget", target.title)}
-                    onSelect={moveToTarget}
-                    onClose={() => {
-                      moveMenuOpen = false;
-                    }}
-                    />
-                  {:else if panelLoadStates["destination-picker"]?.status === "failed"}
-                    <button class="m-2 min-h-8 rounded-md border border-border px-2 text-[0.8rem] hover:bg-accent" type="button" onclick={() => requestEditorPanel("destination-picker", true)}>{t("common.retry")}</button>
-                  {:else}
-                    <div class="p-2 text-[0.8rem] text-muted-foreground" aria-busy="true">{t("common.loading")}</div>
+                <button class={menuItemClass()} type="button" role="menuitem" onclick={() => focusTitleInput()}>
+                  <Pencil class="size-4" />
+                  <span>{t("notes.renamePage")}</span>
+                </button>
+                <button class={menuItemClass()} type="button" role="menuitem" onclick={duplicateCurrentPage}>
+                  <Copy class="size-4" />
+                  <span>{t("notes.duplicatePage")}</span>
+                </button>
+                {#if hasPanelMenuItems}
+                  <div class="menu-separator" role="separator"></div>
+                  {#if linksBadgeCount > 0}
+                    <button class={menuItemClass()} type="button" role="menuitem" onclick={() => togglePanel("links")}>
+                      <Link2 class="size-4" strokeWidth={noteActionIconStrokeWidth} />
+                      <span>{t("notes.noteLinks")}</span>
+                      <span class="ml-auto text-panel-detail text-muted-foreground">{linksBadgeCount}</span>
+                    </button>
                   {/if}
-                </div>
-              {/if}
-              {#if folderMoveTargets.length > 0}
+                  {#if openSuggestionCount > 0}
+                    <button class={menuItemClass()} type="button" role="menuitem" onclick={() => togglePanel("suggestions")}>
+                      <PencilLine class="size-4" strokeWidth={noteActionIconStrokeWidth} />
+                      <span>{t("notes.suggestionsCount", openSuggestionCount)}</span>
+                    </button>
+                  {/if}
+                  <div class="menu-separator" role="separator"></div>
+                {/if}
                 <button
                   class={menuItemClass()}
                   type="button"
                   role="menuitem"
-                  aria-expanded={folderMoveMenuOpen}
+                  aria-expanded={moveMenuOpen}
                   onclick={() => {
-                    folderMoveMenuOpen = !folderMoveMenuOpen;
-                    if (folderMoveMenuOpen) {
+                    moveMenuOpen = !moveMenuOpen;
+                    if (moveMenuOpen) {
                       void notes.ensureOptionalSubsystem("destinations").catch((error) => {
-                        console.error("load notes folder destinations failed", error);
+                        console.error("load notes move destinations failed", error);
                       });
                     }
-                    moveMenuOpen = false;
+                    folderMoveMenuOpen = false;
                   }}
                 >
-                  <FolderTree class="size-4" />
-                  <span>{t("notes.movePageToFolder")}</span>
+                  <FolderInput class="size-4" />
+                  <span>{t("notes.movePageTo")}</span>
                 </button>
-                {#if folderMoveMenuOpen}
-                  <div class="my-1 max-h-72 overflow-auto border-y border-border bg-muted/25 py-1">
+                {#if moveMenuOpen}
+                  <div class="my-1 max-h-72 overflow-auto border-y border-border bg-muted/25 py-1" use:scrollEdgeFadeAction>
                     {#if panelLoadStates["destination-picker"]?.status === "ready" && panelLoadStates["destination-picker"].component.kind === "destination-picker"}
                       {@const NotesDestinationPickerList = panelLoadStates["destination-picker"].component.component}
                       <NotesDestinationPickerList
-                      targets={folderMoveTargets}
+                      targets={moveTargets}
                       searchLabel={t("notes.moveDestinationSearch")}
                       searchPlaceholder={t("notes.moveDestinationSearchPlaceholder")}
                       recentLabel={t("notes.recentDestinations")}
-                      pagesLabel={t("notes.folders")}
-                      emptyLabel={t("notes.noFolderMoveTargets")}
-                      optionLabel={(target) => t("notes.movePageToFolderTarget", target.title)}
-                      onSelect={moveToFolderTarget}
+                      pagesLabel={t("notes.allPages")}
+                      emptyLabel={t("notes.noPageMoveTargets")}
+                      optionLabel={(target) => t("notes.movePageToTarget", target.title)}
+                      onSelect={moveToTarget}
                       onClose={() => {
-                        folderMoveMenuOpen = false;
+                        moveMenuOpen = false;
                       }}
                       />
                     {:else if panelLoadStates["destination-picker"]?.status === "failed"}
-                      <button class="m-2 min-h-8 rounded-md border border-border px-2 text-[0.8rem] hover:bg-accent" type="button" onclick={() => requestEditorPanel("destination-picker", true)}>{t("common.retry")}</button>
+                      <Notice class="p-2" message={t("common.viewLoadFailed", t("notes.movePageTo"))} copy={false} onRetry={() => requestEditorPanel("destination-picker", true)} />
                     {:else}
-                      <div class="p-2 text-[0.8rem] text-muted-foreground" aria-busy="true">{t("common.loading")}</div>
+                      <Loading layout="rows" rows={3} label={t("notes.movePageTo")} />
                     {/if}
                   </div>
                 {/if}
-              {/if}
-              {#if fileExportAvailable}
-                <button
-                  class={menuItemClass()}
-                  type="button"
-                  role="menuitem"
-                  onclick={() => {
-                    htmlExportOpen = true;
-                    closePageMenu();
-                  }}
-                >
-                  <Download class="size-4" />
-                  <span>{t("notes.htmlExportOpen")}</span>
+                {#if folderMoveTargets.length > 0}
+                  <button
+                    class={menuItemClass()}
+                    type="button"
+                    role="menuitem"
+                    aria-expanded={folderMoveMenuOpen}
+                    onclick={() => {
+                      folderMoveMenuOpen = !folderMoveMenuOpen;
+                      if (folderMoveMenuOpen) {
+                        void notes.ensureOptionalSubsystem("destinations").catch((error) => {
+                          console.error("load notes folder destinations failed", error);
+                        });
+                      }
+                      moveMenuOpen = false;
+                    }}
+                  >
+                    <FolderTree class="size-4" />
+                    <span>{t("notes.movePageToFolder")}</span>
+                  </button>
+                  {#if folderMoveMenuOpen}
+                    <div class="my-1 max-h-72 overflow-auto border-y border-border bg-muted/25 py-1" use:scrollEdgeFadeAction>
+                      {#if panelLoadStates["destination-picker"]?.status === "ready" && panelLoadStates["destination-picker"].component.kind === "destination-picker"}
+                        {@const NotesDestinationPickerList = panelLoadStates["destination-picker"].component.component}
+                        <NotesDestinationPickerList
+                        targets={folderMoveTargets}
+                        searchLabel={t("notes.moveDestinationSearch")}
+                        searchPlaceholder={t("notes.moveDestinationSearchPlaceholder")}
+                        recentLabel={t("notes.recentDestinations")}
+                        pagesLabel={t("notes.folders")}
+                        emptyLabel={t("notes.noFolderMoveTargets")}
+                        optionLabel={(target) => t("notes.movePageToFolderTarget", target.title)}
+                        onSelect={moveToFolderTarget}
+                        onClose={() => {
+                          folderMoveMenuOpen = false;
+                        }}
+                        />
+                      {:else if panelLoadStates["destination-picker"]?.status === "failed"}
+                        <Notice class="p-2" message={t("common.viewLoadFailed", t("notes.movePageToFolder"))} copy={false} onRetry={() => requestEditorPanel("destination-picker", true)} />
+                      {:else}
+                        <Loading layout="rows" rows={3} label={t("notes.movePageToFolder")} />
+                      {/if}
+                    </div>
+                  {/if}
+                {/if}
+                {#if fileExportAvailable}
+                  <button
+                    class={menuItemClass()}
+                    type="button"
+                    role="menuitem"
+                    onclick={() => {
+                      htmlExportOpen = true;
+                      closePageMenu();
+                    }}
+                  >
+                    <Download class="size-4" />
+                    <span>{t("notes.htmlExportOpen")}</span>
+                  </button>
+                  <button
+                    class={menuItemClass()}
+                    type="button"
+                    role="menuitem"
+                    onclick={() => {
+                      agentBridgeExportOpen = true;
+                      closePageMenu();
+                    }}
+                  >
+                    <GitBranch class="size-4" />
+                    <span>{t("notes.agentBridgeExportOpen")}</span>
+                  </button>
+                {/if}
+                <button class={menuItemClass()} type="button" role="menuitem" onclick={openPageHistory}>
+                  <History class="size-4" />
+                  <span>{t("notes.pageHistory")}</span>
                 </button>
-                <button
-                  class={menuItemClass()}
-                  type="button"
-                  role="menuitem"
-                  onclick={() => {
-                    agentBridgeExportOpen = true;
-                    closePageMenu();
-                  }}
-                >
-                  <GitBranch class="size-4" />
-                  <span>{t("notes.agentBridgeExportOpen")}</span>
+                <button class={menuItemClass()} type="button" role="menuitem" onclick={archiveCurrentPage}>
+                  <Archive class="size-4" />
+                  <span>{t("notes.archivePage")}</span>
                 </button>
-              {/if}
-              <button class={menuItemClass()} type="button" role="menuitem" onclick={openPageHistory}>
-                <History class="size-4" />
-                <span>{t("notes.pageHistory")}</span>
-              </button>
-              <button class={menuItemClass()} type="button" role="menuitem" onclick={archiveCurrentPage}>
-                <Archive class="size-4" />
-                <span>{t("notes.archivePage")}</span>
-              </button>
-              <button class={menuItemClass(true)} type="button" role="menuitem" onclick={trashCurrentPage}>
-                <Trash2 class="size-4" />
-                <span>{t("notes.moveToTrash")}</span>
-              </button>
+                <button class={menuItemClass(true)} type="button" role="menuitem" onclick={trashCurrentPage}>
+                  <Trash2 class="size-4" />
+                  <span>{t("notes.moveToTrash")}</span>
+                </button>
+              </div>
             </div>
           {/if}
         </div>
-      </div>
 
-      {#if activePanel}
-        <div
-          class="absolute right-3 top-full z-50 w-[min(44rem,calc(100vw-1.5rem))] overflow-auto rounded-md border border-border bg-popover p-2 text-popover-foreground shadow-lg"
-          style="max-height: min(32rem, calc(100dvh - 7rem));"
-          data-app-floating-surface
-        >
-          {#if activePanel === "links"}
-            <div class="flex min-w-0 flex-col gap-2">
-              {#if panelLoadStates.backlinks?.status === "ready" && panelLoadStates.backlinks.component.kind === "backlinks"}
-                {@const NotesBacklinks = panelLoadStates.backlinks.component.component}
-                <NotesBacklinks embedded />
-              {/if}
-              {#if panelLoadStates["page-links"]?.status === "ready" && panelLoadStates["page-links"].component.kind === "page-links"}
-                {@const NotesPageLinks = panelLoadStates["page-links"].component.component}
-                <NotesPageLinks embedded />
-              {/if}
-              {#if panelLoadStates.backlinks?.status === "failed" || panelLoadStates["page-links"]?.status === "failed"}
-                <button class="min-h-8 rounded-md border border-border px-2 text-[0.8rem] hover:bg-accent" type="button" onclick={() => { if (panelLoadStates.backlinks?.status === "failed") requestEditorPanel("backlinks", true); if (panelLoadStates["page-links"]?.status === "failed") requestEditorPanel("page-links", true); }}>{t("common.retry")}</button>
-              {/if}
-            </div>
-          {:else if activePanel === "comments"}
-            {#if panelLoadStates.comments?.status === "ready" && panelLoadStates.comments.component.kind === "comments"}
-              {@const NotesComments = panelLoadStates.comments.component.component}
-              <NotesComments embedded />
-            {:else if panelLoadStates.comments?.status === "failed"}
-              <button class="min-h-8 rounded-md border border-border px-2 text-[0.8rem] hover:bg-accent" type="button" onclick={() => requestEditorPanel("comments", true)}>{t("common.retry")}</button>
+        {#if activePanel}
+          <div
+            class="surface-floating fixed z-80 flex min-h-0 flex-col overflow-hidden"
+            style={pageDetailsPanelStyle}
+            role="dialog"
+            aria-label={activePanel === "links" ? t("notes.noteLinks") : t("notes.suggestedEdits")}
+            data-app-floating-surface
+          >
+            {#if activePanel === "links"}
+              <div class="min-h-0 flex-1 overflow-auto p-2" use:scrollEdgeFadeAction>
+                <div class="flex min-w-0 flex-col gap-2">
+                  {#if panelLoadStates.backlinks?.status === "ready" && panelLoadStates.backlinks.component.kind === "backlinks"}
+                    {@const NotesBacklinks = panelLoadStates.backlinks.component.component}
+                    <NotesBacklinks embedded />
+                  {/if}
+                  {#if panelLoadStates["page-links"]?.status === "ready" && panelLoadStates["page-links"].component.kind === "page-links"}
+                    {@const NotesPageLinks = panelLoadStates["page-links"].component.component}
+                    <NotesPageLinks embedded />
+                  {/if}
+                  {#if panelLoadStates.backlinks?.status === "failed" || panelLoadStates["page-links"]?.status === "failed"}
+                    <Notice
+                      message={t("common.viewLoadFailed", t("notes.noteLinks"))}
+                      copy={false}
+                      onRetry={() => { if (panelLoadStates.backlinks?.status === "failed") requestEditorPanel("backlinks", true); if (panelLoadStates["page-links"]?.status === "failed") requestEditorPanel("page-links", true); }}
+                    />
+                  {/if}
+                </div>
+              </div>
+            {:else if activePanel === "suggestions"}
+              <div class="min-h-0 flex-1 overflow-auto p-2" use:scrollEdgeFadeAction>
+                {#if panelLoadStates.suggestions?.status === "ready" && panelLoadStates.suggestions.component.kind === "suggestions"}
+                  {@const NotesSuggestions = panelLoadStates.suggestions.component.component}
+                  <NotesSuggestions embedded />
+                {:else if panelLoadStates.suggestions?.status === "failed"}
+                  <Notice message={t("common.viewLoadFailed", t("notes.suggestedEdits"))} copy={false} onRetry={() => requestEditorPanel("suggestions", true)} />
+                {/if}
+              </div>
             {/if}
-          {:else if activePanel === "suggestions"}
-            {#if panelLoadStates.suggestions?.status === "ready" && panelLoadStates.suggestions.component.kind === "suggestions"}
-              {@const NotesSuggestions = panelLoadStates.suggestions.component.component}
-              <NotesSuggestions embedded />
-            {:else if panelLoadStates.suggestions?.status === "failed"}
-              <button class="min-h-8 rounded-md border border-border px-2 text-[0.8rem] hover:bg-accent" type="button" onclick={() => requestEditorPanel("suggestions", true)}>{t("common.retry")}</button>
-            {/if}
-          {/if}
-        </div>
-      {/if}
-    </div>
-
-    {#if notes.pageCreationError}
-      <div class="flex shrink-0 items-center justify-between gap-3 border-b border-destructive/30 bg-destructive/10 px-3 py-2 text-[0.8rem] text-destructive" role="alert">
-        <span>{t("notes.pageCreationFailed", notes.pageCreationError)}</span>
-        <button class="min-h-7 shrink-0 rounded-md border border-destructive/40 px-2 font-medium hover:bg-destructive/10" type="button" onclick={notes.retryPageCreation}>
-          {t("common.retry")}
-        </button>
+          </div>
+        {/if}
       </div>
     {/if}
 
+    {#if notes.pageCreationError}
+      <Notice
+        class="shrink-0 border-b border-border px-3 py-2 text-[0.8rem]"
+        message={t("notes.pageCreationFailed", notes.pageCreationError)}
+        onRetry={notes.retryPageCreation}
+      />
+    {/if}
+
+    <div class="notes-editor-body relative flex min-h-0 flex-1">
     <div
       bind:this={blockScrollViewport}
       data-notes-editor-scroll
-      class="min-h-0 flex-1 overflow-auto"
+      use:editorViewport
+      onscroll={(event) => { if (page) notes.rememberEditorScroll(page.id, event.currentTarget.scrollTop); }}
+      style="container-type: inline-size;"
+      class="min-h-0 min-w-0 flex-1 overflow-x-auto overflow-y-scroll"
       use:documentEndPointer
     >
       {#if page.cover}
-        <div class="h-28 overflow-hidden bg-muted sm:h-44">
+        <div bind:this={coverBanner} class="notes-page-banner relative overflow-hidden bg-muted">
           {#if panelLoadStates["page-cover"]?.status === "ready" && panelLoadStates["page-cover"].component.kind === "page-cover"}
             {@const NotesPageCover = panelLoadStates["page-cover"].component.component}
-            <NotesPageCover cover={page.cover} unavailableLabel={t("notes.pageCoverUnavailable")} />
+            <NotesPageCover cover={page.cover} unavailableLabel={t("notes.pageCoverUnavailable")}
+              focalPoint={coverPosition?.focal} focalLabel={t("notes.pageCoverFocalHint")}
+              positioningDisabled={coverPositionSaving}
+              onFocalPoint={coverPosition ? (point) => { if (coverPosition && !coverPositionSaving) coverPosition.focal = point; } : undefined}
+              onStatus={(status) => { coverStatus = status; }} />
           {:else if panelLoadStates["page-cover"]?.status === "failed"}
-            <button class="m-2 min-h-8 rounded-md border border-border bg-popover px-2 text-[0.8rem]" type="button" onclick={() => requestEditorPanel("page-cover", true)}>{t("common.retry")}</button>
+            <div class="size-full text-[0.8rem]">
+              <Notice layout="fill" message={t("common.viewLoadFailed", t("notes.pageCover"))} copy={false} onRetry={() => requestEditorPanel("page-cover", true)} />
+            </div>
+          {:else}
+            <NotesLoadingSkeleton kind="cover" />
+          {/if}
+          <div
+            class="notes-cover-actions absolute right-3 top-3 flex items-center divide-x divide-border overflow-hidden rounded-md border border-border bg-popover text-popover-foreground shadow-sm"
+            data-open={coverMenuOpen || coverPosition !== null || undefined}
+          >
+            {#if coverPosition}
+              <button class="min-h-7 px-2 text-[0.733333rem] hover:bg-accent focus-visible:bg-accent disabled:opacity-50" type="button" disabled={coverPositionSaving} onclick={saveCoverPosition}>{t("notes.pageCoverSavePosition")}</button>
+              <button class="min-h-7 px-2 text-[0.733333rem] hover:bg-accent focus-visible:bg-accent disabled:opacity-50" type="button" disabled={coverPositionSaving} onclick={cancelCoverPosition}>{t("common.cancel")}</button>
+            {:else}
+              <button
+                class="min-h-7 px-2 text-[0.733333rem] hover:bg-accent focus-visible:bg-accent focus-visible:outline-none"
+                type="button"
+                aria-label={t("notes.changePageCover")}
+                aria-haspopup="dialog"
+                aria-expanded={coverMenuOpen}
+                onclick={(event) => toggleCoverMenu(event)}
+              >{t("notes.pageCoverChangeAction")}</button>
+              {#if page.cover.type !== "design"}
+                <button
+                  class="min-h-7 px-2 text-[0.733333rem] hover:bg-accent focus-visible:bg-accent focus-visible:outline-none"
+                  type="button"
+                  aria-label={t("notes.pageCoverReposition")}
+                  bind:this={repositionButton}
+                  disabled={coverStatus !== "ready"}
+                  onclick={startCoverPosition}
+                >{t("notes.pageCoverRepositionAction")}</button>
+              {/if}
+            {/if}
+          </div>
+          {#if coverPosition}
+            <p class="pointer-events-none absolute left-1/2 top-1/2 flex min-h-7 max-w-[calc(100%-1.5rem)] -translate-x-1/2 -translate-y-1/2 items-center rounded-md bg-popover/60 px-2 text-[0.733333rem] text-popover-foreground">{t("notes.pageCoverDragHint")}</p>
           {/if}
         </div>
+      {/if}
+
+      {#if coverPositionError}<Notice class="px-3 py-2 text-[0.8rem]" message={coverPositionError} />{/if}
+
+      {#if coverMenuOpen}
+        {#if panelLoadStates["cover-menu"]?.status === "ready" && panelLoadStates["cover-menu"].component.kind === "cover-menu"}
+          {@const NotesPageCoverMenu = panelLoadStates["cover-menu"].component.component}
+          {#key page.id}
+            {@const coverPageId = page.id}
+            <NotesPageCoverMenu
+              cover={page.cover}
+              trigger={coverMenuButton}
+              onClose={closeCoverMenu}
+              onSelect={(cover) => notes.updatePageCover(coverPageId, cover)}
+            />
+          {/key}
+        {:else if panelLoadStates["cover-menu"]?.status === "failed"}
+          <Notice layout="floating" message={t("common.viewLoadFailed", t("notes.changePageCover"))} copy={false} onRetry={() => requestEditorPanel("cover-menu", true)} onDismiss={closeCoverMenu} />
+        {/if}
       {/if}
 
       <div
         class={cn(
-          "mx-auto flex w-full max-w-208 flex-col pb-12 pt-8",
+          "mx-auto flex w-full max-w-208 flex-col pb-12 pt-3",
           openMode === "side" ? "pl-16 pr-4 sm:pr-8" : "px-4 sm:px-8",
         )}
       >
-        <div class="notes-page-title-surface group/title min-w-0 pb-5">
-          <div class="notes-page-title-actions -ml-1.5 mb-2 flex min-h-8 flex-wrap items-center gap-1.5 opacity-0 transition-opacity group-hover/title:opacity-100 group-focus-within/title:opacity-100">
+        <div class="notes-page-title-surface min-w-0 pb-5">
+          <div class={cn(
+            "notes-page-title-actions -ml-1.5 flex min-h-8 flex-wrap items-center gap-1.5",
+            isPeekMode && !page.cover && (discussionsButtonVisible ? "pr-36" : "pr-28"),
+          )}>
             {#if panelLoadStates["icon-picker"]?.status === "ready" && panelLoadStates["icon-picker"].component.kind === "icon-picker"}
               {@const IconPicker = panelLoadStates["icon-picker"].component.component}
               <IconPicker
                 value={notesPageIconPickerValue(page.icon)}
                 ariaLabel={page.icon ? t("notes.changePageIcon") : t("notes.addPageIcon")}
+                panelAlign="start"
+                panelAnchor={iconPickerPanelAnchor}
                 uploadAdapter={notesIconUploadAdapter}
                 onChange={updatePageIconFromPicker}
               >
@@ -1160,7 +1644,10 @@
                     aria-expanded={open}
                     aria-controls={panelId}
                     data-notes-icon-picker-open={open ? "true" : undefined}
-                    onclick={() => prepareIconPicker(toggle)}
+                    onclick={() => {
+                      if (!openingIconPickerFromMenu) iconPickerPanelAnchor = null;
+                      prepareIconPicker(toggle);
+                    }}
                   >
                     <SmilePlus class="size-3.5" />
                     <span class="truncate">{page.icon ? t("notes.changePageIcon") : t("notes.addPageIcon")}</span>
@@ -1178,40 +1665,26 @@
                 <span class="truncate">{page.icon ? t("notes.changePageIcon") : t("notes.addPageIcon")}</span>
               </button>
             {/if}
-            <div
-              class="relative"
-              use:dismissOnOutside={{ enabled: coverMenuOpen, onDismiss: closeCoverMenu }}
-            >
+            {#if !page.cover}
               <button
                 class="inline-flex max-w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-[0.8rem] text-muted-foreground hover:bg-accent hover:text-foreground"
                 type="button"
-                aria-label={page.cover ? t("notes.changePageCover") : t("notes.addPageCover")}
-                onclick={toggleCoverMenu}
+                aria-label={t("notes.addPageCover")}
+                aria-haspopup="dialog"
+                aria-expanded={coverMenuOpen}
+                data-notes-cover-open={coverMenuOpen ? "true" : undefined}
+                onclick={(event) => toggleCoverMenu(event)}
               >
                 <ImagePlus class="size-3.5" />
-                <span class="truncate">{page.cover ? t("notes.changePageCover") : t("notes.addPageCover")}</span>
+                <span class="truncate">{t("notes.addPageCover")}</span>
               </button>
-              {#if coverMenuOpen}
-                {#if panelLoadStates["cover-menu"]?.status === "ready" && panelLoadStates["cover-menu"].component.kind === "cover-menu"}
-                  {@const NotesPageCoverMenu = panelLoadStates["cover-menu"].component.component}
-                  <NotesPageCoverMenu
-                  cover={page.cover}
-                  onClose={closeCoverMenu}
-                  onSelect={(cover) => {
-                    coverMenuOpen = false;
-                    void notes.updatePageCover(page.id, cover);
-                  }}
-                  />
-                {:else if panelLoadStates["cover-menu"]?.status === "failed"}
-                  <button class="min-h-8 rounded-md border border-border px-2 text-[0.8rem] hover:bg-accent" type="button" onclick={() => requestEditorPanel("cover-menu", true)}>{t("common.retry")}</button>
-                {/if}
-              {/if}
-            </div>
+            {/if}
             <button
               class="inline-flex max-w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-[0.8rem] text-muted-foreground hover:bg-accent hover:text-foreground"
               type="button"
               aria-label={t("notes.addComment")}
-              onclick={openPageDiscussion}
+              aria-controls={inlineCommentsId}
+              onclick={revealInlineComments}
             >
               <MessageSquare class="size-3.5" />
               <span class="truncate">{t("notes.addComment")}</span>
@@ -1225,6 +1698,7 @@
                 <IconPicker
                   value={notesPageIconPickerValue(page.icon)}
                   ariaLabel={t("notes.changePageIcon")}
+                  panelAlign="start"
                   uploadAdapter={notesIconUploadAdapter}
                   onChange={updatePageIconFromPicker}
                 >
@@ -1274,21 +1748,85 @@
           />
         </div>
 
+        {#if page.parent.type === "data_source_id"}
+          {@const rowDataSourceId = page.parent.data_source_id}
+          <div class={cn("notes-page-header-extras", inlineCommentsVisible ? "mb-2" : "mb-4 border-b border-border/50 pb-3")}>
+            {#if panelLoadStates["row-properties"]?.status === "ready" && panelLoadStates["row-properties"].component.kind === "row-properties"}
+              {@const NotesDatabaseRowPageProperties = panelLoadStates["row-properties"].component.component}
+              {#key page.id}
+                <NotesDatabaseRowPageProperties
+                  dataSourceId={rowDataSourceId}
+                  pageId={page.id}
+                  onOpenPage={(pageId) => {
+                    void notes.openPageContextually(pageId).catch((error: unknown) => {
+                      console.warn("Open Notes preview failed", error);
+                    });
+                  }}
+                />
+              {/key}
+            {:else if panelLoadStates["row-properties"]?.status === "failed"}
+              <Notice class="text-sm" message={t("common.viewLoadFailed", t("notes.databaseRowPageProperties"))} copy={false} onRetry={() => requestEditorPanel("row-properties", true)} />
+            {/if}
+          </div>
+        {/if}
+
+        {#if inlineCommentsVisible && inlineCommentsId}
+          <div class="notes-page-header-extras mb-4 border-b border-border/50 pb-4">
+            {#if panelLoadStates["page-comments"]?.status === "ready" && panelLoadStates["page-comments"].component.kind === "page-comments"}
+              {@const NotesPageComments = panelLoadStates["page-comments"].component.component}
+              {#key page.id}
+                <NotesPageComments
+                  id={inlineCommentsId}
+                  pageId={page.id}
+                  now={activityNow}
+                  timeLabels={activityTimeLabels}
+                  focusRequest={inlineCommentFocus?.pageId === page.id ? inlineCommentFocus.request : 0}
+                  onLeaveEmpty={() => { inlineCommentsRequested = false; }}
+                />
+              {/key}
+            {:else if panelLoadStates["page-comments"]?.status === "failed"}
+              <Notice class="text-sm" message={t("common.viewLoadFailed", t("notes.commentsHeading"))} copy={false} onRetry={() => requestEditorPanel("page-comments", true)} />
+            {/if}
+          </div>
+        {/if}
+
         <NotesBlockList
           items={notes.flatBlocks}
           pageId={page.id}
           {breadcrumbItems}
           {tableOfContentsItems}
           onSelectPage={(pageId) => {
-            void notes.openPageContextually(pageId);
+            void notes.openPageContextually(pageId).catch((error: unknown) => {
+              console.warn("Open Notes preview failed", error);
+            });
           }}
-          onFocusBlock={(blockId) => {
-            notes.focusBlock(blockId);
+          onFocusBlock={(blockId, preventScroll) => {
+            notes.focusBlock(blockId, null, preventScroll);
           }}
           scrollViewport={blockScrollViewport}
-          {musicMentionContext}
         />
       </div>
+    </div>
+    {#if discussionsPanelOpen}
+      {#if panelLoadStates["discussions-panel"]?.status === "ready" && panelLoadStates["discussions-panel"].component.kind === "discussions-panel"}
+        {@const NotesDiscussionsPanel = panelLoadStates["discussions-panel"].component.component}
+        <NotesDiscussionsPanel
+          pageId={page.id}
+          pageTitle={currentPageTitle}
+          pageIcon={page.icon}
+          now={activityNow}
+          timeLabels={activityTimeLabels}
+          focus={discussionsPanelFocus}
+          mobile={mobileLayout}
+          topInset={isPeekMode}
+          onClose={closeDiscussionsPanel}
+        />
+      {:else if panelLoadStates["discussions-panel"]?.status === "failed"}
+        <div class="w-56 shrink-0 border-l border-border text-panel">
+          <Notice layout="fill" message={t("common.viewLoadFailed", t("notes.discussions"))} copy={false} onRetry={() => requestEditorPanel("discussions-panel", true)} />
+        </div>
+      {/if}
+    {/if}
     </div>
   </section>
 
@@ -1303,7 +1841,7 @@
       }}
       />
     {:else if panelLoadStates["html-export"]?.status === "failed"}
-      <button class="fixed inset-0 z-50 m-auto h-10 rounded-md border border-border bg-popover px-3" type="button" onclick={() => requestEditorPanel("html-export", true)}>{t("common.retry")}</button>
+      <Notice layout="floating" message={t("common.viewLoadFailed", t("notes.htmlExportOpen"))} copy={false} onRetry={() => requestEditorPanel("html-export", true)} onDismiss={() => { htmlExportOpen = false; }} />
     {/if}
   {/if}
 
@@ -1318,7 +1856,7 @@
       }}
       />
     {:else if panelLoadStates["agent-export"]?.status === "failed"}
-      <button class="fixed inset-0 z-50 m-auto h-10 rounded-md border border-border bg-popover px-3" type="button" onclick={() => requestEditorPanel("agent-export", true)}>{t("common.retry")}</button>
+      <Notice layout="floating" message={t("common.viewLoadFailed", t("notes.agentBridgeExportOpen"))} copy={false} onRetry={() => requestEditorPanel("agent-export", true)} onDismiss={() => { agentBridgeExportOpen = false; }} />
     {/if}
   {/if}
 
@@ -1333,7 +1871,7 @@
       }}
       />
     {:else if panelLoadStates["page-history"]?.status === "failed"}
-      <button class="fixed inset-0 z-50 m-auto h-10 rounded-md border border-border bg-popover px-3" type="button" onclick={() => requestEditorPanel("page-history", true)}>{t("common.retry")}</button>
+      <Notice layout="floating" message={t("common.viewLoadFailed", t("notes.pageHistory"))} copy={false} onRetry={() => requestEditorPanel("page-history", true)} onDismiss={() => { pageHistoryModalOpen = false; notes.setPagePanelSubsystemOpen("page-history", false); }} />
     {/if}
   {/if}
 
@@ -1351,7 +1889,7 @@
       }}
       />
     {:else if panelLoadStates["confirm-dialog"]?.status === "failed"}
-      <button class="fixed inset-0 z-50 m-auto h-10 rounded-md border border-border bg-popover px-3" type="button" onclick={() => requestEditorPanel("confirm-dialog", true)}>{t("common.retry")}</button>
+      <Notice layout="floating" message={t("common.viewLoadFailed", t("notes.archivePage"))} copy={false} onRetry={() => requestEditorPanel("confirm-dialog", true)} onDismiss={() => { pendingArchivePage = null; }} />
     {/if}
   {/if}
 
@@ -1369,7 +1907,7 @@
       }}
       />
     {:else if panelLoadStates["confirm-dialog"]?.status === "failed"}
-      <button class="fixed inset-0 z-50 m-auto h-10 rounded-md border border-border bg-popover px-3" type="button" onclick={() => requestEditorPanel("confirm-dialog", true)}>{t("common.retry")}</button>
+      <Notice layout="floating" message={t("common.viewLoadFailed", t("notes.moveToTrash"))} copy={false} onRetry={() => requestEditorPanel("confirm-dialog", true)} onDismiss={() => { pendingTrashPage = null; }} />
     {/if}
   {/if}
 {:else}
@@ -1379,12 +1917,53 @@
 {/if}
 
 <style>
-  .notes-page-title-actions:has([data-notes-icon-picker-open="true"]) {
-    opacity: 1;
+  .notes-editor-body {
+    container: notes-editor-body / inline-size;
   }
 
+  .notes-cover-actions,
+  .notes-page-title-actions {
+    opacity: 0;
+    pointer-events: none;
+    --notes-actions-enter-delay: 280ms;
+    --notes-actions-enter-duration: 180ms;
+    --notes-actions-exit-duration: 90ms;
+    transition: opacity var(--notes-actions-exit-duration) ease-out;
+  }
+
+  :where(.notes-page-banner:hover) .notes-cover-actions,
+  :where(.notes-page-title-surface:hover) .notes-page-title-actions {
+    opacity: 1;
+    pointer-events: auto;
+    transition: opacity var(--notes-actions-enter-duration) ease-out var(--notes-actions-enter-delay);
+  }
+
+  .notes-cover-actions:focus-within,
+  .notes-cover-actions[data-open="true"],
+  .notes-editor-root[data-mobile="true"] .notes-cover-actions,
+  :where(.notes-page-title-surface:focus-within) .notes-page-title-actions,
+  .notes-page-title-actions:has([data-notes-icon-picker-open="true"], [data-notes-cover-open="true"]),
   .notes-editor-root[data-mobile="true"] .notes-page-title-actions {
     opacity: 1;
+    pointer-events: auto;
+    transition: none;
+  }
+
+  .notes-editor-root[data-mobile="true"] .notes-cover-actions button {
+    min-height: 3rem;
+  }
+
+  @media (hover: none), (pointer: coarse) {
+    .notes-cover-actions,
+    .notes-page-title-actions {
+      opacity: 1;
+      pointer-events: auto;
+      transition: none;
+    }
+
+    .notes-cover-actions button {
+      min-height: 3rem;
+    }
   }
 
   .notes-editor-root[data-mobile="true"] .notes-page-title-actions :global(button) {

@@ -11,7 +11,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
 }));
 
-vi.mock("$lib/stores/perflog.svelte", () => ({
+vi.mock("$lib/stores/perf-log.svelte", () => ({
   perfLog: { entries: [], tracking: false },
   snapshot: () => [],
 }));

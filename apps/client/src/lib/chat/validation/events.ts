@@ -53,7 +53,7 @@ import {
   type UserInputRequestedEvent,
   type UserInputResolvedEvent,
 } from "../contracts";
-import { normalizeChangedFileSummaries } from "../changed-files";
+import { normalizeChangedFileSummaries } from "$lib/chat/review/changed-files";
 import { parseModelOptionSelection, parseProviderCapabilities } from "./provider";
 import {
   readArray,

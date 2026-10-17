@@ -2,7 +2,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const STORAGE_KEY = "ganbaru-ai-zoom";
+const STORAGE_KEY = "ganbaru-zoom";
 
 async function loadMobileZoom() {
   vi.resetModules();

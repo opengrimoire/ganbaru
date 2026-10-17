@@ -5,8 +5,8 @@ import type {
   MusicSoundscapeSnapshot,
   MusicSoundscapeState,
   MusicSoundscapeWrite,
-} from "$lib/music/soundscape-contracts";
-import { INITIAL_SOUNDSCAPE_VOLUME } from "$lib/music/soundscape-defaults";
+} from "$lib/music/soundscape/contracts";
+import { INITIAL_SOUNDSCAPE_VOLUME } from "$lib/music/soundscape/defaults";
 
 class MobileSoundscapeStore {
   definitions = $state<MusicSoundscapeDefinition[]>([]);

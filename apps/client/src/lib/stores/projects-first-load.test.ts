@@ -1,12 +1,16 @@
 // @vitest-environment jsdom
 
 import { describe, expect, it, vi } from "vitest";
+import { loadProjectTaskView, refreshProjectsWorkspace, updateProjectTask } from "$lib/api/projects";
+import { PROJECT_TASK_FILTER_DEFAULTS } from "$lib/projects/list/view";
 import type {
   ProjectOptionalDataKind,
   ProjectsOptionalData,
   ProjectsSnapshot,
   ProjectsWorkspaceSnapshot,
   ProjectTaskDetailData,
+  ProjectTaskViewPage,
+  ProjectMutation,
 } from "$lib/projects/types";
 
 const backend = vi.hoisted(() => {
@@ -59,6 +63,8 @@ vi.mock("$lib/api/projects", async (importOriginal) => {
     loadProjectsOptionalData: (kind: string, projectId: string | null) =>
       backend.optionalRequest(kind, projectId),
     loadProjectTaskDetail: () => backend.loadDetail(),
+    loadProjectTaskView: vi.fn(),
+    updateProjectTask: vi.fn(),
   };
 });
 
@@ -113,6 +119,7 @@ function emptySnapshot(): ProjectsSnapshot {
     eventLinks: [],
     taskChangeEvents: [],
     viewPreferences: [],
+    views: [],
     customEmojis: [],
   };
 }
@@ -149,29 +156,101 @@ describe("Projects initial loading", () => {
     expect(backend.workspaceCalls).toBe(1);
     backend.resolveWorkspace({
       resolvedProjectId: "project-1",
-      activeView: "list",
       snapshot: emptySnapshot(),
     } satisfies ProjectsWorkspaceSnapshot);
     await Promise.all([firstLoad, secondLoad]);
     expect(projects.selectedProjectId).toBe("project-1");
-    expect(projects.projectDataLoaded("project-1")).toBe(true);
+    expect(projects.isProjectDataLoaded("project-1")).toBe(true);
     expect(backend.workspaceCalls).toBe(1);
 
-    await Promise.all([
-      projects.ensureProjectViewData("project-1", "kanban"),
-      projects.ensureProjectViewData("project-1", "list"),
-    ]);
-
+    const kanban = projects.ensureProjectViewData("project-1", "kanban");
+    const list = projects.ensureProjectViewData("project-1", "list");
     const toolbar = projects.ensureProjectToolbarData("project-1");
-    expect(backend.optionalCalls).toEqual(["project-1:saved_views"]);
-    backend.resolveOptional("saved_views", "project-1", optionalData("saved_views"));
-    await toolbar;
+    expect(backend.optionalCalls).toEqual(["project-1:view_preferences"]);
+    expect(projects.isProjectViewDataLoaded("project-1", "list")).toBe(false);
+    backend.resolveOptional("view_preferences", "project-1", optionalData("view_preferences"));
+    await Promise.all([kanban, list, toolbar]);
+    expect(projects.isProjectViewDataLoaded("project-1", "kanban")).toBe(true);
+    expect(projects.isProjectViewDataLoaded("project-1", "list")).toBe(true);
 
     await Promise.all([
       projects.ensureTaskDetailData("project-1", "task-1"),
       projects.ensureTaskDetailData("project-1", "task-1"),
     ]);
     expect(backend.detailCalls).toBe(1);
-    expect(backend.optionalCalls).toEqual(["project-1:saved_views"]);
+    expect(backend.optionalCalls).toEqual(["project-1:view_preferences"]);
+  });
+
+  it("advances query revisions for applied writes but keeps page merges, failed writes, and stale responses neutral", async () => {
+    const { getProjects } = await import("./projects.svelte");
+    const projects = getProjects();
+    backend.resolveWorkspace({resolvedProjectId: "project-1", snapshot: emptySnapshot()} satisfies ProjectsWorkspaceSnapshot);
+    await projects.ensureLoaded();
+    const task = {...emptySnapshot().tasks[0], detailLoaded: true};
+    const page: ProjectTaskViewPage = {
+      projectId: "project-1", view: "list", tasks: [task], totalCount: 1, matchedCount: 1, archivedCount: 0,
+      columnCounts: [], matchedEventIds: [], taskTagLinks: [], customFieldValues: [], customFieldOptionValues: [],
+      dependencies: [], eventLinks: [], tags: [], customFields: [], customFieldOptions: [],
+    };
+    vi.mocked(loadProjectTaskView).mockResolvedValue(page);
+    const initialRevision = projects.taskMutationRevision;
+    await projects.loadTaskView({...PROJECT_TASK_FILTER_DEFAULTS, projectId: "project-1", view: "list", pageSize: 100, columnCursors: {}, showArchived: false,
+      visibleSectionIds: [], today: "2026-07-11", weekEnd: "2026-07-18", candidateEventIds: []});
+    expect(projects.taskMutationRevision).toBe(initialRevision);
+    const mutation = (title: string): ProjectMutation => ({changed: {...emptySnapshot(), groups: [], projects: [], tasks: [{...task, title}]}, removals: [], calendarEventProjectAssignments: []});
+    vi.mocked(updateProjectTask).mockResolvedValueOnce(mutation("Updated"));
+    await projects.updateTask(task, {title: "Updated"});
+    expect(projects.taskMutationRevision).toBe(initialRevision + 1);
+    vi.mocked(updateProjectTask).mockRejectedValueOnce(new Error("Transaction failed"));
+    await expect(projects.updateTask(task, {title: "Failed"})).rejects.toThrow("Transaction failed");
+    expect(projects.taskMutationRevision).toBe(initialRevision + 1);
+    let finishOlder!: (value: ProjectMutation) => void;
+    vi.mocked(updateProjectTask).mockImplementationOnce(() => new Promise<ProjectMutation>((resolve) => { finishOlder = resolve; }))
+      .mockResolvedValueOnce(mutation("Newest"));
+    const older = projects.updateTask(task, {title: "Older"});
+    await projects.updateTask(task, {title: "Newest"});
+    finishOlder(mutation("Older"));
+    await older;
+    expect(projects.taskById(task.id)?.title).toBe("Newest");
+    expect(projects.taskMutationRevision).toBe(initialRevision + 2);
+  });
+});
+
+describe("Projects split panes", () => {
+  it("lets each pane select its own project, task page, and sidebar while sharing the project data", async () => {
+    const { getProjects, getProjectsStore } = await import("./projects.svelte");
+    const primary = getProjects();
+    backend.resolveWorkspace({resolvedProjectId: "project-1", snapshot: emptySnapshot()} satisfies ProjectsWorkspaceSnapshot);
+    await primary.ensureLoaded();
+    const secondary = getProjectsStore("secondary");
+    expect(secondary.selectedProjectId).toBe(primary.selectedProjectId);
+
+    const base = emptySnapshot();
+    const otherProject = {...base.projects[0], id: "project-2", name: "Other"};
+    vi.mocked(refreshProjectsWorkspace).mockResolvedValueOnce({
+      resolvedProjectId: "project-2",
+      snapshot: {...base, projects: [...base.projects, otherProject], tasks: []},
+    } satisfies ProjectsWorkspaceSnapshot);
+    await secondary.selectProject("project-2");
+    expect(secondary.selectedProjectId).toBe("project-2");
+    expect(primary.selectedProjectId).toBe("project-1");
+    expect(primary.projectById("project-2")?.name).toBe("Other");
+
+    const page: ProjectTaskViewPage = {
+      projectId: "project-2", view: "list", tasks: [], totalCount: 0, matchedCount: 0, archivedCount: 0,
+      columnCounts: [], matchedEventIds: [], taskTagLinks: [], customFieldValues: [], customFieldOptionValues: [],
+      dependencies: [], eventLinks: [], tags: [], customFields: [], customFieldOptions: [],
+    };
+    const primaryPage = primary.taskViewPage;
+    vi.mocked(loadProjectTaskView).mockResolvedValueOnce(page);
+    await secondary.loadTaskView({...PROJECT_TASK_FILTER_DEFAULTS, projectId: "project-2", view: "list", pageSize: 100,
+      columnCursors: {}, showArchived: false, visibleSectionIds: [], today: "2026-07-11", weekEnd: "2026-07-18",
+      candidateEventIds: []});
+    expect(secondary.taskViewPage).toEqual(page);
+    expect(primary.taskViewPage).toBe(primaryPage);
+
+    const collapsed = primary.sidebarCollapsed;
+    secondary.sidebarCollapsed = !collapsed;
+    expect(primary.sidebarCollapsed).toBe(collapsed);
   });
 });

@@ -44,6 +44,7 @@ export interface NotesWorkspaceShell {
   navigation_pages: NotesPage[];
   navigation_folders: NotesFolder[];
   navigation_page_ids_with_children: string[];
+  navigation_databases: NotesNavigationDatabase[];
   page_ids_with_children: string[];
   missing_parent_page_ids: string[];
   trashed_parent_page_ids: string[];
@@ -52,6 +53,14 @@ export interface NotesWorkspaceShell {
   total_folder_count: number;
   next_page_cursor: string | null;
   next_folder_cursor: string | null;
+}
+
+/** Database identity used by hierarchy pickers without retaining rows or schemas. */
+export interface NotesNavigationDatabase {
+  id: string;
+  page_id: string;
+  title: string;
+  data_source_id: string;
 }
 
 export interface NotesPaginatedBlockList {
@@ -74,6 +83,7 @@ export interface NotesPageOpenResponse extends NotesLoadedPage {
 }
 
 export interface NotesBlockOutline {
+  ganbaru_indent?: number;
   id: string;
   page_id: string;
   parent: Extract<NotesParent, { type: "page_id" | "block_id" }>;

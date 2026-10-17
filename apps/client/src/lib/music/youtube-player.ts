@@ -10,7 +10,7 @@ export function youtubeErrorMessage(code: number): string {
     case 150:
       return "The owner does not allow this YouTube video to play in embedded players.";
     case 153:
-      return "YouTube rejected the embedded player request because it could not identify Ganbaru AI as the embedding client.";
+      return "YouTube rejected the embedded player request because it could not identify Ganbaru as the embedding client.";
     default:
       return `YouTube playback failed with error ${code}.`;
   }

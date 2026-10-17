@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) async fn persist_tab(pool: &SqlitePool, read: &PreviewTabRead) -> ChatResult<()> {
+pub(super) async fn persist_tab(pool: &SqlitePool, read: &BrowserTabRead) -> ChatResult<()> {
     sqlx::query(
         "INSERT INTO chat_preview_tabs
             (id, thread_id, position, current_url, title, viewport_kind, viewport_width,

@@ -1,10 +1,10 @@
 //! Interactive user-input draft persistence.
 
 use super::support::{
-    chat_pool, corrupt_data, json_error, now_timestamp, persistence_error, versioned_row,
+    chat_pool, corrupt_data_error, json_error, now_timestamp, persistence_error, versioned_row,
 };
 use crate::chat::interaction_commands::ChatUserInputDraftRead;
-use crate::chat::models::{ChatError, ChatResult, UtcTimestamp, VersionedJson};
+use ganbaru_chat_contracts::models::{ChatError, ChatResult, UtcTimestamp, VersionedJson};
 use sqlx::{Row, SqlitePool};
 
 pub(crate) async fn read_user_input_draft(
@@ -35,7 +35,7 @@ async fn read_user_input_draft_from_pool(
                 row.try_get::<String, _>("updated_at")
                     .map_err(persistence_error)?,
             )
-            .map_err(|_| corrupt_data())?,
+            .map_err(|_| corrupt_data_error())?,
         })
     })
     .transpose()
@@ -72,5 +72,5 @@ pub(crate) async fn save_user_input_draft(
     .map_err(persistence_error)?;
     read_user_input_draft_from_pool(&pool, &request_id)
         .await?
-        .ok_or_else(corrupt_data)
+        .ok_or_else(corrupt_data_error)
 }

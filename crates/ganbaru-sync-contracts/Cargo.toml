@@ -1,0 +1,19 @@
+[package]
+name = "ganbaru-sync-contracts"
+version = "0.1.0"
+description = "Ganbaru sync identifiers, clocks, version vectors, and the signed operation format"
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+ganbaru-contacts = { workspace = true }
+ring = { workspace = true }
+sha2 = { workspace = true }

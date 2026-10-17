@@ -1,6 +1,6 @@
 <div align="center">
-  <img src="apps/client/static/icon.png" alt="Ganbaru AI icon" width="20%" />
-  <h1>Ganbaru AI</h1>
+  <img src="apps/client/static/icon.png" alt="Ganbaru icon" width="20%" />
+  <h1>Ganbaru</h1>
 
 Anti-procrastination + anti-burnout productivity app.
 
@@ -20,11 +20,11 @@ Free, local, open-source, privacy-first, lightweight with opt-in AI.
 </p>
 
 <p align="center">
-  <img src="docs/assets/readme-screenshot-1.png" alt="Ganbaru AI calendar, Pomodoro, and music interface" width="100%" />
+  <img src="docs/assets/readme-screenshot-1.png" alt="Ganbaru calendar, Pomodoro, and music interface" width="100%" />
 </p>
 
 <p align="center">
-  <img src="docs/assets/readme-screenshot-2.png" alt="Ganbaru AI settings and productivity interface" width="100%" />
+  <img src="docs/assets/readme-screenshot-2.png" alt="Ganbaru settings and productivity interface" width="100%" />
 </p>
 
 > [!WARNING]
@@ -32,22 +32,22 @@ Free, local, open-source, privacy-first, lightweight with opt-in AI.
 
 ## Download
 
-Download the latest release from [GitHub Releases](https://github.com/opengrimoire/ganbaru-ai/releases/latest).
+Download the latest release from [GitHub Releases](https://github.com/opengrimoire/ganbaru/releases/latest).
 
 | Platform | Download |
 |---|---|
 | **Ubuntu, Debian, Linux Mint** | `.deb` package |
 | **Fedora, RHEL, openSUSE** | `.rpm` package |
-| **Arch Linux, Manjaro, EndeavourOS, Garuda** | `ganbaru-ai-bin` from the AUR |
+| **Arch Linux, Manjaro, EndeavourOS, Garuda** | `ganbaru-bin` from the AUR |
 | **Other Linux x64 desktops** | `.AppImage` |
 | **Windows 10 or Windows 11 x64** | `.msi` installer, or the `.exe` setup if preferred |
 | **macOS** | Not available yet. macOS builds are planned, but they need Apple hardware and signing before release. |
 | **Android** | Not available yet. A substantial Android implementation exists in source, but release validation and signing are incomplete. |
 | **iOS** | Not available yet. iOS depends on the same Apple build and signing path as macOS. |
 
-Arch-based distro users can install with `yay -S ganbaru-ai-bin` or another AUR helper.
+Arch-based distro users can install with `yay -S ganbaru-bin` or another AUR helper.
 
-Use `SHA256SUMS` if you want to check that your downloaded installer matches the checksum published with this release. The `.sig` files and `latest.json` are used by Ganbaru AI's built-in updater, not files you need to download.
+Use `SHA256SUMS` if you want to check that your downloaded installer matches the checksum published with this release. The `.sig` files and `latest.json` are used by Ganbaru's built-in updater, not files you need to download.
 
 ## Features
 
@@ -61,10 +61,10 @@ These statuses describe the current repository head. The latest published releas
 | **Notes** | SQLite-backed pages, blocks, databases, templates, links, comments, assets, history, and transfer workflows | Partial |
 | **Quick notes** | Lightweight rich-text capture with search, colors, and synchronized windows | Implemented |
 | **Chat** | Durable project channels with optional local Codex, Claude, Cursor, Grok, and OpenCode sessions, workspace tools, terminals, checkpoints, and review | Partial |
-| **Doomscrolling** | Chromium website blocking through a registered local host, desktop application blocking, and consent-based selected-application enforcement on Android | Partial |
+| **Distraction blocker** | Chromium website blocking through a registered local host, desktop application blocking, and consent-based selected-application enforcement on Android | Partial |
 | **Music** | Local libraries and playlists, desktop and Android playback, platform media controls, assignments, and YouTube integration | Partial |
 | **Themes and localization** | Custom themes plus typed English and Spanish interface catalogs | Partial |
-| **Android** | Adaptive Calendar, Projects, Notes, Chat, Pomodoro, Music, Settings, backup, notifications, and Doomscrolling surfaces | Pre-release |
+| **Android** | Adaptive Calendar, Projects, Notes, Chat, Pomodoro, Music, Settings, backup, notifications, and distraction blocker surfaces | Pre-release |
 | **Diary, sleep, and work environments** | Missing parts of the planned anti-burnout and context-preparation loop | Planned |
 | **Sync and BYOK assistants** | User-provisioned collaboration, external assistants, and explicit external access | Planned |
 | **Gamification** | Ethical progress systems that protect recovery and avoid paid chance mechanics | Deferred |
@@ -76,15 +76,15 @@ See the [documentation index](docs/README.md), [feature index](docs/features/REA
 ### Prerequisites
 
 - [Node.js](https://nodejs.org/) 24 LTS recommended. Node 22.12.0 or newer is also supported while Node 22 remains maintained.
-- [Corepack](https://nodejs.org/api/corepack.html) enabled for the pinned [pnpm](https://pnpm.io/) 11 version in `package.json`
+- [Corepack](https://nodejs.org/api/corepack.html) enabled for the pinned [pnpm](https://pnpm.io/) 12 version in `package.json`
 - [Rust](https://rustup.rs/) via rustup, using the toolchain pinned in [rust-toolchain.toml](rust-toolchain.toml) (edition 2024)
 - Tauri v2 system dependencies for your platform: [v2.tauri.app/start/prerequisites](https://v2.tauri.app/start/prerequisites/)
 
 ### Setup
 
 ```bash
-git clone https://github.com/opengrimoire/ganbaru-ai.git
-cd ganbaru-ai
+git clone https://github.com/opengrimoire/ganbaru.git
+cd ganbaru
 corepack enable
 pnpm install
 ```
@@ -97,7 +97,7 @@ pnpm --dir apps/client run tauri dev
 
 ### Android development on a physical device
 
-Android development requires [Tauri's mobile prerequisites](https://v2.tauri.app/start/prerequisites/#android), Android Studio or an equivalent SDK installation, and JDK 21. Install Android SDK Platform 36, Platform Tools, Build Tools 35.0.0, Command-line Tools, and NDK 30.0.15729638. Set `ANDROID_HOME` and `NDK_HOME`, and make `adb` from Platform Tools available on `PATH`. The repository wrapper resolves JDK 21 through `GANBARU_AI_ANDROID_JAVA_HOME`, `JAVA_HOME`, or a supported system installation.
+Android development requires [Tauri's mobile prerequisites](https://v2.tauri.app/start/prerequisites/#android), Android Studio or an equivalent SDK installation, and JDK 21. Install Android SDK Platform 36, Platform Tools, Build Tools 35.0.0, Command-line Tools, and NDK 30.0.15729638. Set `ANDROID_HOME` and `NDK_HOME`, and make `adb` from Platform Tools available on `PATH`. The repository wrapper resolves JDK 21 through `GANBARU_ANDROID_JAVA_HOME`, `JAVA_HOME`, or a supported system installation.
 
 For the usual ARM64 physical-device workflow, install the Rust target once:
 
@@ -121,11 +121,27 @@ pnpm --dir apps/client run tauri android dev --host 127.0.0.1
 
 This installs the separate `.dev` application identity and keeps the frontend development server on the USB and ADB loopback path instead of exposing it to the local network. Keep the terminal running for logs and hot reload. Native Rust or Android changes may trigger a rebuild and reinstall.
 
-For an ordinary contribution, test the changed flow on the physical device, including Android Back, background and resume, rotation or responsive layout, and relevant permission denial or recovery. A debug launch is not release acceptance. Use the complete [Android testing matrix](docs/testing/android.md) for lifecycle, storage, notifications, media, Doomscrolling, artifact, and release validation.
+To work without the cable, switch ADB to Wi-Fi once while the device is still connected by USB. The device and the computer must be on the same trusted network:
+
+```bash
+adb tcpip 5555
+adb shell ip -f inet addr show wlan0
+```
+
+The second command prints the device's address (also shown in its Wi-Fi settings). Unplug the cable, connect to that address, and confirm that `adb devices` lists it as `device`:
+
+```bash
+adb connect 192.168.1.50:5555
+adb devices
+```
+
+The same `tauri android dev` command then works over Wi-Fi, still through the ADB loopback path. Wi-Fi mode lasts until the device restarts, so repeat both steps after a device restart; after a computer restart or a dropped connection, `adb connect` alone is usually enough. If the router assigns a new address, connect to the new one. If `adb devices` lists the device both by USB and by address, unplug the cable so the build targets one device. `adb usb` returns the device to USB-only mode. On Android 11 and newer, Developer options also offer Wireless debugging, which pairs with `adb pair` without any cable but uses a different port each time.
+
+For an ordinary contribution, test the changed flow on the physical device, including Android Back, background and resume, rotation or responsive layout, and relevant permission denial or recovery. A debug launch is not release acceptance. Use the complete [Android testing matrix](docs/testing/android.md) for lifecycle, storage, notifications, media, distraction blocker, artifact, and release validation.
 
 ### Browser extension local testing
 
-The Doomscrolling extension is tested as an unpacked Chromium extension during development. The registration helper below supports Linux and macOS and applies to Chrome, Chromium, Brave, and Edge. It does not create the native-host manifest and registry key required on Windows, so Windows registration remains a manual tooling gap.
+The anti-distraction browser extension is tested as an unpacked Chromium extension during development. The registration helper below supports Linux and macOS and applies to Chrome, Chromium, Brave, and Edge. It does not create the native-host manifest and registry key required on Windows, so Windows registration remains a manual tooling gap.
 
 From the repo root, build the native messaging host and generate the dev extension folder:
 
@@ -133,19 +149,19 @@ From the repo root, build the native messaging host and generate the dev extensi
 pnpm -w run setup:chromium-extension
 ```
 
-Open the browser's extensions page, enable developer mode, load `extensions/chrome` as the normal unpacked extension, copy the extension id, then register the native host:
+Open the browser's extensions page, enable developer mode, load `extensions/chromium` as the normal unpacked extension, copy the extension id, then register the native host:
 
 ```bash
-node apps/client/scripts/install-chrome-native-host.mjs <extension-id> <chrome|chromium|brave|edge> app
+node apps/client/scripts/browser-extension/install-native-host.mjs <extension-id> <chrome|chromium|brave|edge> app
 ```
 
-To test the extension against `pnpm tauri dev` while keeping the normal extension connected, load the generated `extensions/chrome-dev` folder as a second unpacked extension, copy its extension id, then register the dev host:
+To test the extension against `pnpm tauri dev` while keeping the normal extension connected, load the generated `extensions/chromium-dev` folder as a second unpacked extension, copy its extension id, then register the dev host:
 
 ```bash
-node apps/client/scripts/install-chrome-native-host.mjs <dev-extension-id> <chrome|chromium|brave|edge> dev
+node apps/client/scripts/browser-extension/install-native-host.mjs <dev-extension-id> <chrome|chromium|brave|edge> dev
 ```
 
-After first setup, keep `pnpm tauri dev` running, configure Settings > Doomscrolling > Browser in the app, keep Blacklist mode selected, start a Pomodoro focus session, and open a blocked website such as `reddit.com`.
+After first setup, keep `pnpm tauri dev` running, configure Settings > Distractions > Browser in the app, keep Blacklist mode selected, start a Pomodoro focus session, and open a blocked website such as `reddit.com`.
 
 For repeat testing:
 
@@ -153,7 +169,7 @@ For repeat testing:
 - Rust command changes need `pnpm tauri dev` restarted.
 - Native host changes need `pnpm -w run build:native-host`.
 - Extension HTML, CSS, JS, manifest, or icon changes need the reload button on the extension card in the browser's extensions page.
-- Doomscrolling mode, category, or website list changes are picked up by already open browser tabs on the next extension state poll.
+- Anti-distraction mode, category, or website list changes are picked up by already open browser tabs on the next extension state poll.
 - Removing and adding the unpacked extension gives it a new id, so the native host registration command must be run again.
 
 ### Build
@@ -185,11 +201,11 @@ Contributions are welcome, but keep in mind:
 
 ## License
 
-Ganbaru AI is licensed under [AGPL-3.0](LICENSE). It's free and open source. You can use, modify, share, and sell Ganbaru AI. If you distribute or host a modified version, you must provide the source code and license that version under AGPL 3.0. Patent rights from contributors are included. The app is provided without warranty, and authors are not liable for damages.
+Ganbaru is licensed under [AGPL-3.0](LICENSE). It's free and open source. You can use, modify, share, and sell Ganbaru. If you distribute or host a modified version, you must provide the source code and license that version under AGPL 3.0. Patent rights from contributors are included. The app is provided without warranty, and authors are not liable for damages.
 
 ## Funding
 
-Ganbaru AI is donation-funded. Sponsorship will be set up after a minimum stable version is ready for Linux, Windows, and Android.
+Ganbaru is donation-funded. Sponsorship will be set up after a minimum stable version is ready for Linux, Windows, and Android.
 
 ## Acknowledgments
 
@@ -281,8 +297,9 @@ Sound effects live in `apps/client/static/sfx/`. App assets are stored as 48 kHz
   </tbody>
 </table>
 
-### File icons
+### Icons
 
 | App use | Source | Author | License |
 |---|---|---|---|
-| Chat file icons | [vscode-icons](https://github.com/vscode-icons/vscode-icons) | Roberto Huertas | [MIT](apps/client/static/file-icons/vscode-icons-LICENSE.txt) |
+| Interface icons | [Lucide](https://github.com/lucide-icons/lucide) | [Lucide contributors](https://github.com/lucide-icons/lucide/graphs/contributors) | [ISC; Feather-derived icons are MIT](https://github.com/lucide-icons/lucide/blob/main/LICENSE) |
+| Chat file icons | [vscode-icons](https://github.com/vscode-icons/vscode-icons) | [vscode-icons contributors](https://github.com/vscode-icons/vscode-icons/graphs/contributors) | [CC BY-SA for icons; branded icons retain separate rights](https://github.com/vscode-icons/vscode-icons#license) |

@@ -19,6 +19,8 @@ const backend = vi.hoisted(() => {
 });
 
 vi.mock("$lib/vault/config", () => ({
+  configKeyChanged: () => false,
+  onConfigChangedElsewhere: () => () => undefined,
   getConfigKey: (key: string, fallback: unknown) =>
     key === "notes.selectedPageId" ? "11111111-1111-4111-8111-111111111111" : fallback,
   setConfigKey: vi.fn(),
@@ -77,6 +79,7 @@ function shell(
     navigation_pages: navigationPages,
     navigation_folders: [],
     navigation_page_ids_with_children: [],
+    navigation_databases: [],
     page_ids_with_children: [],
     missing_parent_page_ids: [],
     trashed_parent_page_ids: [],

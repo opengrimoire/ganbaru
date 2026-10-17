@@ -1,19 +1,19 @@
 //! Workspace mention validation and prompt catalog operations.
 
 use super::support::{chat_pool, require_workspace};
-use crate::chat::composer::prompt_catalog::{merge_prompt_entries, read_static_prompt_catalog};
-use crate::chat::composer::workspace_mentions::{
+use crate::chat::interaction_commands::SearchWorkingFolderPathsRequest;
+use crate::chat::workspace::{
+    WorkingFolderAuthorizationOperation, resolve_workspace_relative_path,
+};
+use ganbaru_chat::composer::prompt_catalog::{merge_prompt_entries, read_static_prompt_catalog};
+use ganbaru_chat::composer::workspace_mentions::{
     ProjectWorkingFolderPathPage, search_workspace_paths,
     workspace_mention_is_safety_excluded as mention_is_safety_excluded,
 };
-use crate::chat::interaction_commands::SearchWorkingFolderPathsRequest;
-use crate::chat::models::{
+use ganbaru_chat::runtime::ChatRuntimeRegistry;
+use ganbaru_chat_contracts::models::{
     ChatError, ChatErrorCode, ChatPromptCatalogEntry, ChatResult, ChatThreadId,
     ProjectWorkingFolderId, ProviderInstanceId,
-};
-use crate::chat::runtime::ChatRuntimeRegistry;
-use crate::chat::workspace::{
-    WorkingFolderAuthorizationOperation, resolve_workspace_relative_path,
 };
 use tauri::Manager;
 
@@ -103,7 +103,7 @@ pub(crate) async fn list_prompt_catalog(
     let stale = settings
         .last_probe
         .as_ref()
-        .is_none_or(|probe| probe.state != crate::chat::models::ProbeState::Healthy);
+        .is_none_or(|probe| probe.state != ganbaru_chat_contracts::models::ProbeState::Healthy);
     let pool = chat_pool(app.clone(), db_url).await?;
     let workspace = require_workspace(
         &app,

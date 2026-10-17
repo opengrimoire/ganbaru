@@ -1,102 +1,116 @@
 <script lang="ts">
   import type {
     CalendarEvent, CalendarViewMode, EventSurfaceStatus, RecurringScope,
-  } from "./types";
+  } from "$lib/calendar/types";
   import {
-    computeViewWindow, formatCalendarDate, formatDatePart,
+    computeViewWindow, formatDatePart,
     getWeekDays, getWorkCycleDays,
     getLocalTimezone,
-  } from "./utils";
-  import { getCalendar } from "$lib/stores/calendar.svelte";
+  } from "$lib/calendar/utils";
+  import { useCalendar } from "$lib/stores/calendar.svelte";
   import { getCalendars } from "$lib/stores/calendars.svelte";
-  import { getProjects } from "$lib/stores/projects.svelte";
-  import { calendarIdentityEmail } from "$lib/calendar/calendar-display";
+  import { useProjects } from "$lib/stores/projects.svelte";
+  import { calendarIdentityEmail } from "$lib/calendar/display";
   import { getPomodoro } from "$lib/stores/pomodoro.svelte";
   import { getTheme } from "$lib/stores/theme.svelte";
-  import { getCalendarZoom } from "$lib/stores/calendarZoom.svelte";
+  import { useCalendarZoom } from "$lib/stores/calendar-zoom.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { onDestroy, onMount, tick } from "svelte";
+  import { onDestroy, onMount, tick, untrack } from "svelte";
+  import { getWorkspacePaneFocus } from "$lib/workspace-tabs/pane-focus";
+  import { getWorkspacePaneScope } from "$lib/workspace-tabs/pane-scope";
+  import {
+    handlesCalendarMusicInspection,
+    registerCalendarMusicInspectionTarget,
+  } from "$lib/components/calendar/view/music-inspection";
+  import { getNativeCalendarEditController } from "$lib/components/calendar/view/native-edit-controller.svelte";
+  import type { CalendarEditDraft } from "$lib/components/calendar/view/native-edit-controller.svelte";
+  import type { CalendarDeleteOutcome } from "$lib/api/calendar-edit";
+  import { activeVaultIdentity } from "$lib/vault/active-vault";
+  import CalendarX from "@lucide/svelte/icons/calendar-x";
   import Plus from "@lucide/svelte/icons/plus";
   import CalendarHeader from "./CalendarHeader.svelte";
-  import WeekView from "./WeekView.svelte";
-  import DayView from "./DayView.svelte";
-  import MonthView from "./MonthView.svelte";
+  import { portal } from "$lib/utils/portal";
+  import WeekView from "$lib/components/calendar/grid/WeekView.svelte";
+  import DayView from "$lib/components/calendar/grid/DayView.svelte";
+  import MonthView from "$lib/components/calendar/grid/MonthView.svelte";
   import ActionToast from "$lib/components/ui/ActionToast.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { createEditSession } from "./edit-session.svelte";
   import type { EditSessionState, PanelAnchor } from "./edit-session.svelte";
-  import { mark as perfMark } from "$lib/stores/perflog.svelte";
+  import { mark as perfMark } from "$lib/stores/perf-log.svelte";
   import { hasOnlyShortcutModifier } from "$lib/keyboard-shortcuts";
-  import { getCalendarNavHandle } from "./nav-handle.svelte";
+  import { getCalendarNavHandle } from "$lib/calendar/nav-handle.svelte";
   import { PENDING_CREATE_ID } from "./display-events";
   import {
     activePomodoroSaveWouldStopSession,
     endActiveEventWouldStopProductivity,
     isActiveTimedCalendarEvent,
-  } from "./active-event-end";
-  import { activeRootId } from "./occurrence-protection";
+  } from "$lib/components/calendar/view/active-event-end";
   import { getCalendarEventEditLock } from "./event-edit-permissions";
   import {
     DEFAULT_DAY_HEADER_RETURN_MODE,
     type DayHeaderReturnMode,
-  } from "./view-navigation";
-  import {
-    buildCalendarDeleteArchivePlan,
-    type CalendarDeleteArchiveOutcome,
-    type CalendarDeleteArchivePlan,
-  } from "./delete-archive-plan";
-  import { createCalendarViewToastController } from "./calendar-view-toasts.svelte";
-  import { createCalendarViewModelBuilder, calendarViewModelDays } from "./calendar-view-model";
-  import { createCalendarViewConfirmationController } from "./calendar-view-confirmation.svelte";
+  } from "$lib/components/calendar/view/view-navigation";
+  import { createCalendarViewToastController } from "$lib/components/calendar/view/toasts.svelte";
+  import { createCalendarViewModelBuilder, calendarViewModelDays } from "$lib/components/calendar/view/model";
+  import { createCalendarViewConfirmationController } from "$lib/components/calendar/view/confirmation.svelte";
   import {
     createCalendarOutsideCloseAction,
     panelAnchorFromRect,
     panelAnchorFromRenderedEvent as panelAnchorFromRenderedEventElement,
-  } from "./calendar-view-panel-dom";
-  import { createPersistedPomodoroSegmentsController } from "./calendar-view-persisted-segments.svelte";
-  import { createCalendarViewTargetController } from "./calendar-view-target.svelte";
+  } from "$lib/components/calendar/view/panel-dom";
+  import { createPersistedPomodoroSegmentsController } from "$lib/components/calendar/view/persisted-segments.svelte";
+  import { createCalendarViewTargetController } from "$lib/components/calendar/view/target.svelte";
   import {
     CalendarViewPanelLifecycle,
-  } from "./calendar-view-panel-lifecycle.svelte";
+  } from "$lib/components/calendar/view/panel-lifecycle.svelte";
   import {
     projectCalendarPanel,
+    resolvePersistedCalendarPanelEvent,
     snapshotCalendarPanel,
     type PanelEditProjection,
     type PanelRenderState,
-  } from "./calendar-view-panel-projection";
-  import { CalendarViewDragController } from "./calendar-view-drag-controller";
+  } from "$lib/components/calendar/view/panel-projection";
+  import { CalendarDragCommitController } from "$lib/components/calendar/view/drag-commit-controller";
   import {
     CalendarViewCommitService,
-  } from "./calendar-view-commit-service";
-  import type { PanelSaveData } from "./event-panel-payloads";
-  import { CalendarViewDeleteController } from "./calendar-view-delete-controller";
-  import { CalendarViewNavigationController } from "./calendar-view-navigation-controller";
-  import { CalendarViewViewportController } from "./calendar-view-viewport-controller.svelte";
-  import { CalendarViewSaveController } from "./calendar-view-save-controller.svelte";
+  } from "$lib/components/calendar/view/commit-service";
+  import type { PanelSaveData } from "$lib/components/calendar/event-panel/payloads";
+  import { CalendarViewDeleteController } from "$lib/components/calendar/view/delete-controller";
+  import { CalendarViewNavigationController } from "$lib/components/calendar/view/navigation-controller";
+  import { CalendarViewViewportController } from "$lib/components/calendar/view/viewport-controller.svelte";
+  import { CalendarViewSaveController } from "$lib/components/calendar/view/save-controller.svelte";
   import {
     buildCalendarSaveFreeze,
     projectCalendarDisplay,
     projectCalendarSurfaceStatuses,
     visibleCalendarEvents,
-  } from "./calendar-view-display-projection";
+  } from "$lib/components/calendar/view/display-projection";
   import {
     calendarSwipeAxis,
     calendarSwipeDirection,
     calendarSwipeNavigation,
     type CalendarSwipeAxis,
-  } from "./calendar-mobile-gestures";
+  } from "./mobile-gestures";
 
-  const calendarStore = getCalendar();
+  const paneScope = getWorkspacePaneScope();
+  const calendarStore = useCalendar();
   const calendarsStore = getCalendars();
-  const projects = getProjects();
+  const projects = useProjects();
   const pomodoro = getPomodoro();
-  const calZoom = getCalendarZoom();
+  const nativeEditor = getNativeCalendarEditController(() => pomodoro.vaultContext, "panel", paneScope);
+  const directEditor = getNativeCalendarEditController(() => pomodoro.vaultContext, "direct", paneScope);
+  const deleteEditor = getNativeCalendarEditController(() => pomodoro.vaultContext, "delete", paneScope);
+  let viewAlive = true;
+  const calendarZoom = useCalendarZoom();
   const theme = getTheme();
   const preferences = getPreferences();
   const mobileBackStack = getMobileBackStack();
   const { t } = getLocalization();
+  const calendarBannerClass = "shrink-0 border-b border-border bg-popover px-3 py-2 text-sm";
   const toasts = createCalendarViewToastController();
   const confirm = createCalendarViewConfirmationController({
     defaultYesLabel: () => t("common.yes"),
@@ -113,7 +127,7 @@
   const CREATE_CLOSE_GUARD_MS = 500;
 
   const panelLifecycle = new CalendarViewPanelLifecycle({
-    importPanel: () => import("./EventPanel.svelte"),
+    importPanel: () => import("$lib/components/calendar/event-panel/EventPanel.svelte"),
     mark: perfMark,
     afterRender: (callback) => { void tick().then(callback); },
     afterPaint: (callback) => { requestAnimationFrame(callback); },
@@ -124,12 +138,15 @@
     initialViewMode,
     onViewModeChange,
     mobileLayout = false,
+    headerTarget = null,
   }: {
     eventFilter?: (event: CalendarEvent) => boolean;
     createDefaults?: (input: CalendarCreateDefaultsInput) => CalendarCreateDefaults;
     initialViewMode?: CalendarViewMode;
     onViewModeChange?: (mode: CalendarViewMode) => void;
     mobileLayout?: boolean;
+    /** A host toolbar slot that shows the navigation and view controls in place of their own row. */
+    headerTarget?: HTMLElement | null;
   } = $props();
 
   function closeSession() {
@@ -139,13 +156,13 @@
   }
 
   function handlePanelSurfaceStatusChange(status: EventSurfaceStatus | undefined) {
-    const s = session.state;
-    if (s.mode === "create") {
+    const editState = session.state;
+    if (editState.mode === "create") {
       panelLifecycle.setSurfaceStatus(status, PENDING_CREATE_ID);
       return;
     }
-    if (s.mode === "edit") {
-      panelLifecycle.setSurfaceStatus(status, s.originalEvent.id);
+    if (editState.mode === "edit") {
+      panelLifecycle.setSurfaceStatus(status, editState.originalEvent.id);
       return;
     }
     panelLifecycle.setSurfaceStatus(undefined, undefined);
@@ -177,7 +194,6 @@
     };
   }
 
-  // Edit session (replaces panelState, panelDirty, lastPanelChanges, etc.)
   const session = createEditSession(getFocusIdleDefaults);
 
   $effect(() => {
@@ -186,9 +202,9 @@
     }
   });
 
-  // Display events (pure overlay, no store mutation)
-  // When saving edits, suppress preview computation to prevent flash
-  // (store updates before session closes, so preview would briefly conflict)
+  // Display events are a pure overlay with no store mutation. While edits are
+  // saving, preview computation is suppressed to prevent a flash: the store
+  // updates before the session closes, so the preview would briefly conflict.
   let suppressEditPreview = $state(false);
   let panelCommitHidden = $state(false);
   let saveDisplayFreeze = $state<CalendarEvent[] | null>(null);
@@ -203,9 +219,9 @@
   });
 
   // Keep the headless handle's cached view mode in sync so external drivers
-  // (the benchmark harness) read the current value without polling.
+  // (the benchmark harness) read the current value without polling. Only the primary pane drives the handle.
   $effect(() => {
-    getCalendarNavHandle().reportViewMode(viewMode);
+    if (paneScope === "primary") getCalendarNavHandle().reportViewMode(viewMode);
   });
 
   function visibleStoreEventsForWindow(window: typeof viewWindow): CalendarEvent[] {
@@ -217,106 +233,67 @@
   }
 
   const displayResult = $derived.by(() => {
-    const storeEvents = visibleStoreEventsForWindow(viewWindow);
-    const s = session.state;
-    const now = new Date();
-    return projectCalendarDisplay({
-      rawBlocks: calendarStore.rawBlocks,
-      storeEvents,
+    const projected = projectCalendarDisplay({
+      storeEvents: calendarStore.eventsInWindow(viewWindow.start, viewWindow.end),
       frozenEvents: saveDisplayFreeze,
-      state: s,
+      state: session.state,
       createPreview: session.createPreview,
       changes: session.changes,
       dirty: session.dirty,
-      scope: session.scope,
+      nativePreview: currentNativePreview(),
       window: viewWindow,
       suppressEditPreview,
-      activeDate: s.mode === "edit" ? activeDateForEditSession(s.templateId) : undefined,
-      currentDate: formatDatePart(now),
-      currentTime: formatCalendarDate(now).split(" ")[1],
-      activeBlockId: pomodoro.isActive ? pomodoro.activeBlockId ?? undefined : undefined,
     });
+    const events = visibleCalendarEvents({
+      events: projected.events, visibleCalendarIds: calendarsStore.visibleIds, filter: eventFilter,
+    });
+    const visibleIds = new Set(events.map((event) => event.id));
+    return { events, previewedIds: new Set([...projected.previewedIds].filter((id) => visibleIds.has(id))),
+      editingId: projected.editingId && visibleIds.has(projected.editingId) ? projected.editingId : undefined };
   });
 
   function currentVisibleStoreEvents(): CalendarEvent[] {
     return visibleStoreEventsForWindow(viewWindow);
   }
 
-  function activeBlockBelongsToTemplate(templateId: string, activeBlockId: string): boolean {
-    return activeRootId({ blockId: activeBlockId }) === templateId;
+  function currentNativePreview() {
+    if (session.state.mode === "closed" || !pomodoro.vaultContext) return null;
+    try {
+      return nativeEditor.previewFor(commitService.editDraft(session.changes));
+    } catch {
+      // The preview effect exposes serialization errors while the selected card stays visible.
+      return null;
+    }
   }
 
-  function activeDateForEditSession(templateId: string): string | undefined {
-    if (!pomodoro.isActive || !pomodoro.activeBlockId) return undefined;
-    if (!activeBlockBelongsToTemplate(templateId, pomodoro.activeBlockId)) return undefined;
-    const parts = pomodoro.activeBlockId.split("::");
-    return parts[1]
-      ?? activePomodoroDate(pomodoro.activeBlockId)
-      ?? currentVisibleStoreEvents().find((event) => event.id === pomodoro.activeBlockId)?.start.split(" ")[0];
+  /** Present only the review for the current selection, scope and vault. */
+  function currentDeletePreview() {
+    if (session.state.mode !== "edit" || !pomodoro.vaultContext) return null;
+    try {
+      return deleteEditor.previewFor(currentDeleteDraft());
+    } catch {
+      // The deletion preview effect publishes any missing-provenance error.
+      return null;
+    }
   }
 
-  function activePomodoroDate(activeId: string): string | undefined {
-    const [, syntheticDate] = activeId.split("::");
-    if (syntheticDate) return syntheticDate;
-    return pomodoro.segments.find((segment) => segment.status === "active")?.eventDate;
-  }
-
-  function buildDeleteArchivePlanForEvent(
-    id: string,
-    scope?: RecurringScope,
-    now = new Date(),
-  ): CalendarDeleteArchivePlan {
+  /** Send the original native identity, independently of moved display dates. */
+  function currentDeleteDraft(scope?: RecurringScope): CalendarEditDraft {
     const state = session.state;
-    const selectedEvent = state.mode === "edit"
-      ? state.instanceEvent
-      : currentVisibleStoreEvents().find((event) => event.id === id)
-        ?? calendarStore.getTemplate({ id } as CalendarEvent);
-    if (!selectedEvent) throw new Error(`Calendar event '${id}' not found.`);
-
-    const deleteScope = state.mode === "edit" && isRecurring(state.instanceEvent)
-      ? effectiveRecurringScope(state, scope)
-      : undefined;
-
-    const recurringTemplateId = deleteScope
-      ? (selectedEvent.recurringParentId ?? selectedEvent.id).split("::")[0]
-      : undefined;
-    const activeDate = recurringTemplateId ? activeDateForEditSession(recurringTemplateId) : undefined;
-    const activeBlockId = pomodoro.isActive && (!recurringTemplateId || activeDate)
-      ? pomodoro.activeBlockId
-      : null;
-
-    return buildCalendarDeleteArchivePlan({
-      rawBlocks: calendarStore.rawBlocks,
-      visibleEvents: currentVisibleStoreEvents(),
-      selectedEvent,
-      scope: deleteScope,
-      now,
-      activePomodoro: {
-        blockId: activeBlockId,
-        eventDate: activeDate ?? (activeBlockId ? activePomodoroDate(activeBlockId) : undefined),
-      },
-    });
+    const context = pomodoro.vaultContext;
+    if (state.mode !== "edit" || !context || !state.instanceEvent.recurrenceDate) {
+      throw new Error("Calendar deletion requires a loaded native occurrence");
+    }
+    const renderZone = getLocalTimezone();
+    return { ...context, sessionKey: state.sessionKey,
+      edit: { kind: "delete", selection: { templateId: state.templateId,
+        recurrenceDate: state.instanceEvent.recurrenceDate, scope: scope ?? session.scope }, stopActive: false },
+      window: { windowStartDate: viewWindow.start.toString(), windowEndDate: viewWindow.end.toString(),
+        renderZone, includeTotalEventCount: false } };
   }
 
-  function buildSaveDisplayFreeze(data: Partial<CalendarEvent>, scope?: RecurringScope): CalendarEvent[] {
-    const storeEvents = currentVisibleStoreEvents();
-    const state = session.state;
-    const now = new Date();
-    return buildCalendarSaveFreeze({
-      rawBlocks: calendarStore.rawBlocks,
-      storeEvents,
-      state,
-      createPreview: session.createPreview,
-      changes: data,
-      scope: state.mode === "edit" && isRecurring(state.instanceEvent)
-        ? effectiveRecurringScope(state, scope)
-        : scope ?? session.scope,
-      window: viewWindow,
-      activeDate: state.mode === "edit" ? activeDateForEditSession(state.templateId) : undefined,
-      currentDate: formatDatePart(now),
-      currentTime: formatCalendarDate(now).split(" ")[1],
-      activeBlockId: pomodoro.isActive ? pomodoro.activeBlockId ?? undefined : undefined,
-    });
+  function buildSaveDisplayFreeze(): CalendarEvent[] {
+    return buildCalendarSaveFreeze(displayResult.events);
   }
 
   const calendarIdentityById = $derived.by(() => {
@@ -354,7 +331,7 @@
     },
     setPreferredViewMode: (mode) => {
       if (onViewModeChange) onViewModeChange(mode);
-      else preferences.setCalendarViewMode(mode);
+      else if (paneScope === "primary") preferences.setCalendarViewMode(mode);
     },
     setViewMode: (mode) => {
       viewMode = mode;
@@ -415,15 +392,15 @@
     suppressEditingGlow ? undefined : (editingId ?? panelLifecycle.pendingEditEventId),
   );
 
-  const dragController = new CalendarViewDragController({
+  const dragController = new CalendarDragCommitController({
     session,
-    isCommitHidden: () => panelCommitHidden,
+    isCommitHidden: () => panelCommitHidden || saveController.saving || directEditor.committing,
     editingId: () => editingId,
     visibleEvents: () => visibleEvents,
     isRecurring,
     isActivePomodoroEvent: (event) => !isRecurring(event)
       && pomodoro.isActive
-      && pomodoro.activeBlockId === event.id,
+      && pomodoro.activeOccurrenceId === event.id,
     panelAnchor: panelAnchorFromRenderedEvent,
     loadPanel: () => panelLifecycle.load(),
     confirmDiscard: (action) => {
@@ -434,28 +411,102 @@
       });
     },
     getTemplate: calendarStore.getTemplate,
-    updateBlock: calendarStore.updateBlock,
+    updateEvent: persistDirectCalendarEdit,
   });
   const commitService = new CalendarViewCommitService({
     calendarStore,
-    pomodoro,
+    nativeEditor,
+    directEditor,
     getSessionState: () => session.state,
+    getBaseline: () => session.baseline,
+    getScope: () => session.scope,
     getViewWindow: () => viewWindow,
-    isRecurring,
-    effectiveScope: effectiveRecurringScope,
-    activeDate: activeDateForEditSession,
-    syncSavedActivePomodoro,
+    getContext: () => pomodoro.vaultContext,
+    getRenderZone: getLocalTimezone,
   });
+  $effect(() => {
+    const state = session.state;
+    const context = pomodoro.vaultContext;
+    if (state.mode === "closed" || !context) {
+      untrack(() => nativeEditor.update(null));
+      return;
+    }
+    try {
+      const draft = commitService.editDraft(session.changes);
+      untrack(() => nativeEditor.update(draft));
+    } catch (error) {
+      untrack(() => {
+        nativeEditor.update(null);
+        nativeEditor.error = saveErrorMessage(error);
+      });
+    }
+  });
+
+  async function persistDirectCalendarEdit(event: CalendarEvent): Promise<void> {
+    const toastId = toasts.showSavePendingToast(t("calendar.view.saving"));
+    try {
+      const original = calendarStore.eventsInWindow(viewWindow.start, viewWindow.end)
+        .find((candidate) => candidate.id === event.id);
+      if (!original) throw new Error("Calendar occurrence is no longer in the visible snapshot");
+      await commitService.persistDirect(event, original);
+      await calendarStore.refreshWindow(viewWindow.start, viewWindow.end);
+      toasts.showSaveSuccessToast(toastId, t("calendar.view.saved"));
+    } catch (error) {
+      logPanelSaveError("panel-save", error, { ...event, description: event.description ?? "" });
+      toasts.showSaveErrorToast(toastId, t("calendar.view.saveFailed", saveErrorMessage(error)));
+    }
+  }
+
+  async function retryCalendarSave(): Promise<void> {
+    const editor = nativeEditor.uncertain ? nativeEditor : directEditor;
+    const state = session.state;
+    const retryAction = editor.pendingAction;
+    let closingEdit: string | null = null;
+    let closeAfterRetry = false;
+    if (state.mode !== "closed" && editor === nativeEditor) {
+      try {
+        const draft = commitService.editDraft(session.changes, undefined, retryAction);
+        closeAfterRetry = editor.matchesPending(draft);
+        closingEdit = JSON.stringify(draft.edit);
+      } catch (error) {
+        console.warn("Calendar retry will preserve the selected draft", error);
+      }
+    }
+    const toastId = toasts.showSavePendingToast(t("calendar.view.saving"));
+    try {
+      await editor.retryPending();
+      calendarStore.acceptNativeEdit();
+      await calendarStore.refreshWindow(viewWindow.start, viewWindow.end);
+      if (closeAfterRetry && state.mode !== "closed" && session.state.mode !== "closed"
+        && session.state.sessionKey === state.sessionKey) {
+        try {
+          if (JSON.stringify(commitService.editDraft(session.changes, undefined, retryAction).edit) === closingEdit) closeSession();
+        } catch (error) {
+          console.warn("Calendar retry preserved a changed draft", error);
+        }
+      }
+      toasts.showSaveSuccessToast(toastId, t("calendar.view.saved"));
+    } catch (error) {
+      console.error("Calendar Save retry failed", error);
+      toasts.showSaveErrorToast(toastId, t("calendar.view.saveFailed", saveErrorMessage(error)));
+    }
+  }
+
+  async function retryCalendarPreview(): Promise<void> {
+    if (session.state.mode === "closed") return;
+    try {
+      await nativeEditor.review(commitService.editDraft(session.changes));
+    } catch (error) {
+      console.error("Calendar preview retry failed", error);
+    }
+  }
+
   const saveController = new CalendarViewSaveController({
-    calendarStore,
-    pomodoro,
     toasts,
     commitService,
     getSessionState: () => session.state,
     canEnablePomodoro: canEnablePomodoroForActiveCalendarEvent,
     isSelectedEndable: isSelectedEndableActiveOccurrence,
-    isSelectedActivePomodoro: isSelectedActivePomodoroOccurrence,
-    isRecurring,
     wouldSaveStopSession,
     endWouldStopProductivity: selectedActiveEndWouldStopProductivity,
     confirmSaveStop: (action) => {
@@ -499,9 +550,9 @@
 
   // Merged event for the panel (original + changes, so panel sees drag/resize updates)
   const panelEvent = $derived.by(() => {
-    const s = session.state;
-    if (s.mode === "edit") {
-      return { ...s.originalEvent, ...session.changes } as CalendarEvent;
+    const editState = session.state;
+    if (editState.mode === "edit") {
+      return { ...editState.originalEvent, ...session.changes } as CalendarEvent;
     }
     return undefined;
   });
@@ -517,37 +568,32 @@
   const deleteWouldStopSession = $derived.by(() => {
     if (session.state.mode !== "edit") return false;
     try {
-      return buildDeleteArchivePlanForEvent(
-        session.state.instanceEvent.id,
-        isRecurring(session.state.instanceEvent)
-          ? effectiveRecurringScope(session.state, session.scope)
-          : undefined,
-      ).requiresActiveStop;
+      return deleteEditor.previewFor(currentDeleteDraft())?.deletion?.requiresActiveStop ?? false;
     } catch {
       return false;
     }
   });
 
   const selectedEditLock = $derived.by(() => {
-    const s = session.state;
-    if (s.mode !== "edit") return { locked: false, allowArchive: false };
-    return getCalendarEventEditLock(s.instanceEvent, calendarsStore.list, {
-      isActivePomodoroEvent: isSelectedActivePomodoroOccurrence(s),
+    const editState = session.state;
+    if (editState.mode !== "edit") return { locked: false, allowArchive: false };
+    return getCalendarEventEditLock(editState.instanceEvent, calendarsStore.list, {
+      isActivePomodoroEvent: isSelectedActivePomodoroOccurrence(editState),
     });
   });
 
   function currentPanelEditProjection(): PanelEditProjection | undefined {
-    const s = session.state;
-    if (s.mode !== "edit") return undefined;
+    const editState = session.state;
+    if (editState.mode !== "edit") return undefined;
     return {
-      selectedActive: isSelectedEndableActiveOccurrence(s),
-      recurring: isRecurring(s.originalEvent),
+      selectedActive: isSelectedEndableActiveOccurrence(editState),
+      recurring: isRecurring(editState.originalEvent),
       detailsLoaded: panelDetailsLoaded,
       locked: selectedEditLock.locked,
       allowArchive: selectedEditLock.allowArchive,
-      allowPomodoroWhenReadOnly: canEnablePomodoroForActiveCalendarEvent(s),
+      allowPomodoroWhenReadOnly: canEnablePomodoroForActiveCalendarEvent(editState),
       deleteWouldStopSession,
-      endWouldStopProductivity: selectedActiveEndWouldStopProductivity(s),
+      endWouldStopProductivity: selectedActiveEndWouldStopProductivity(editState),
     };
   }
 
@@ -590,55 +636,53 @@
     return calendar?.source === "local" && calendar.readOnly !== true;
   }
 
-  function isSelectedActivePomodoroOccurrence(s: Extract<EditSessionState, { mode: "edit" }>): boolean {
-    if (!pomodoro.isActive || !pomodoro.activeBlockId) return false;
-    if (!isRecurring(s.originalEvent)) return s.originalEvent.id === pomodoro.activeBlockId;
-    return activeDateForEditSession(s.templateId) === s.instanceEvent.start.split(" ")[0];
+  function isSelectedActivePomodoroOccurrence(editState: Extract<EditSessionState, { mode: "edit" }>): boolean {
+    return pomodoro.isActive && editState.instanceEvent.id === pomodoro.activeOccurrenceId;
   }
 
-  function isSelectedActiveCalendarOccurrence(s: Extract<EditSessionState, { mode: "edit" }>): boolean {
-    return isLocalWritableEvent(s.originalEvent) && isActiveTimedCalendarEvent(s.instanceEvent);
+  function isSelectedActiveCalendarOccurrence(editState: Extract<EditSessionState, { mode: "edit" }>): boolean {
+    return isLocalWritableEvent(editState.originalEvent) && isActiveTimedCalendarEvent(editState.instanceEvent);
   }
 
-  function isSelectedEndableActiveOccurrence(s: Extract<EditSessionState, { mode: "edit" }>): boolean {
-    return isSelectedActivePomodoroOccurrence(s) || isSelectedActiveCalendarOccurrence(s);
+  function isSelectedEndableActiveOccurrence(editState: Extract<EditSessionState, { mode: "edit" }>): boolean {
+    return isSelectedActivePomodoroOccurrence(editState) || isSelectedActiveCalendarOccurrence(editState);
   }
 
   function canEnablePomodoroForActiveCalendarEvent(
-    s: Extract<EditSessionState, { mode: "edit" }>,
+    editState: Extract<EditSessionState, { mode: "edit" }>,
   ): boolean {
     return !pomodoro.isActive
-      && !isRecurring(s.originalEvent)
-      && !s.instanceEvent.pomodoroConfig
-      && isSelectedActiveCalendarOccurrence(s);
+      && !isRecurring(editState.originalEvent)
+      && !editState.instanceEvent.pomodoroConfig
+      && isSelectedActiveCalendarOccurrence(editState);
   }
 
   function selectedActiveEndWouldStopProductivity(
-    s: Extract<EditSessionState, { mode: "edit" }>,
+    editState: Extract<EditSessionState, { mode: "edit" }>,
   ): boolean {
-    if (!isSelectedActivePomodoroOccurrence(s)) return false;
+    if (!isSelectedActivePomodoroOccurrence(editState)) return false;
     return endActiveEventWouldStopProductivity(
-      s.instanceEvent,
+      editState.instanceEvent,
       currentVisibleStoreEvents(),
       new Date(),
     );
   }
 
   function effectiveRecurringScope(
-    s: Extract<EditSessionState, { mode: "edit" }>,
+    editState: Extract<EditSessionState, { mode: "edit" }>,
     requested?: RecurringScope,
   ): RecurringScope {
-    return isSelectedEndableActiveOccurrence(s) ? "this" : requested ?? session.scope;
+    return isSelectedEndableActiveOccurrence(editState) ? "this" : requested ?? session.scope;
   }
 
-  /** Would this save remove the active pomodoro or move it out of the current time window? */
+  /** Whether this save removes the active pomodoro or moves it out of the current time window. */
   function wouldSaveStopSession(data: PanelSaveData, _scope?: RecurringScope): boolean {
-    if (!pomodoro.isActive || !pomodoro.activeBlockId || session.state.mode !== "edit") return false;
+    if (!pomodoro.isActive || !pomodoro.activeOccurrenceId || session.state.mode !== "edit") return false;
 
-    const s = session.state;
+    const editState = session.state;
     // Active recurring occurrences are isolated to this occurrence. Future
     // "following" or "all" edits in the same series do not move the active run.
-    if (!isSelectedActivePomodoroOccurrence(s)) return false;
+    if (!isSelectedActivePomodoroOccurrence(editState)) return false;
     return activePomodoroSaveWouldStopSession(data);
   }
 
@@ -654,11 +698,11 @@
     data: PanelSaveData,
     scope?: RecurringScope,
   ): void {
-    const s = session.state;
+    const editState = session.state;
     console.error("[CalendarView] event save failed", {
       context,
-      mode: s.mode,
-      eventId: s.mode === "edit" ? s.originalEvent.id : undefined,
+      mode: editState.mode,
+      eventId: editState.mode === "edit" ? editState.originalEvent.id : undefined,
       scope,
       keys: Object.keys(data).sort(),
       hasPomodoroConfig: !!data.pomodoroConfig,
@@ -786,14 +830,21 @@
   }
 
   onDestroy(() => {
+    viewAlive = false;
     resetMobileSwipe();
+    nativeEditor.reset();
+    directEditor.reset();
+    deleteEditor.reset();
+    void deleteController.dismissUndo();
     toasts.destroy();
   });
 
   let containerEl: HTMLDivElement | undefined = $state();
 
+  const paneFocused = getWorkspacePaneFocus();
   const navigationController = new CalendarViewNavigationController({
     getViewMode: () => viewMode,
+    isFocused: paneFocused,
     getSessionClosed: () => session.state.mode === "closed",
     getConfirmOpen: () => !!confirm.action,
     getViewWrapper: () => viewportController.viewWrapper,
@@ -814,16 +865,25 @@
 
   onMount(() => {
     const removeNavigationListeners = navigationController.installWindowListeners();
+    void calendarStore.loadInitialWindow(viewWindow.start, viewWindow.end).catch((error: unknown) => {
+      console.error("[calendar] initial window load failed", error);
+    });
+    // A Calendar tab inspects music assignments, one per split; a calendar scoped to a project leaves them to it.
+    const musicInspectionTarget = { scope: paneScope, isFocused: paneFocused };
+    const unregisterMusicInspection = eventFilter
+      ? () => {}
+      : registerCalendarMusicInspectionTarget(musicInspectionTarget);
     const inspectMusicAssignment = (event: Event) => {
+      if (eventFilter || !handlesCalendarMusicInspection(musicInspectionTarget)) return;
       if (!(event instanceof CustomEvent) || typeof event.detail?.eventId !== "string") return;
       const eventId = event.detail.eventId;
       const selected = currentVisibleStoreEvents().find((candidate) => candidate.id === eventId)
-        ?? calendarStore.rawBlocks.find((candidate) => candidate.id === eventId);
+        ?? calendarStore.sourceEvents.find((candidate) => candidate.id === eventId);
       if (!selected) return;
       musicInspectionEventId = selected.id;
       void handleEventClick(selected, new DOMRect(window.innerWidth / 2, window.innerHeight / 3, 0, 0));
     };
-    window.addEventListener("ganbaru-ai:inspect-music-assignment", inspectMusicAssignment);
+    window.addEventListener("ganbaru:inspect-music-assignment", inspectMusicAssignment);
 
     tick().then(() => {
       requestAnimationFrame(() => {
@@ -833,8 +893,8 @@
 
     // Expose navigate / view-mode setters through the headless handle so the
     // benchmark harness (and any future scripted driver) can drive the
-    // calendar without reaching into component internals.
-    const unregisterNav = navigationController.registerBenchmark({
+    // calendar without reaching into component internals. Only the primary pane registers it.
+    const unregisterNav = paneScope !== "primary" ? () => {} : navigationController.registerBenchmark({
       navigate,
       setViewMode: (mode) => changeView(mode),
       setAnchorDate: (date) => {
@@ -853,8 +913,9 @@
 
     return () => {
       unregisterNav();
+      unregisterMusicInspection();
       removeNavigationListeners();
-      window.removeEventListener("ganbaru-ai:inspect-music-assignment", inspectMusicAssignment);
+      window.removeEventListener("ganbaru:inspect-music-assignment", inspectMusicAssignment);
       targetController.clearPending();
     };
   });
@@ -949,10 +1010,10 @@
 
   function openMobileEventCreate(target: HTMLButtonElement): void {
     const today = new Date();
-    const sameDay = formatDatePart(anchorDate) === formatDatePart(today);
+    const isAnchorToday = formatDatePart(anchorDate) === formatDatePart(today);
     const start = new Date(anchorDate);
     start.setHours(0, 0, 0, 0);
-    const startMinute = sameDay
+    const startMinute = isAnchorToday
       ? Math.ceil((today.getHours() * 60 + today.getMinutes()) / 30) * 30
       : 9 * 60;
     start.setMinutes(startMinute);
@@ -975,7 +1036,7 @@
     if (event.id === PENDING_CREATE_ID || event.id.startsWith(PENDING_CREATE_ID + "::")) return;
 
     // Already editing this exact event. A clean panel is just a peek and can
-    // be toggled closed. Dirty edits stay open so the block click does not
+    // be toggled closed. Dirty edits stay open so the event click does not
     // trigger discard confirmation.
     if (session.state.mode === "edit" && (
       session.state.originalEvent.id === event.id || editingId === event.id
@@ -984,6 +1045,11 @@
       return;
     }
 
+    const persistedEvent = resolvePersistedCalendarPanelEvent(
+      event.id,
+      calendarStore.eventsInWindow(viewWindow.start, viewWindow.end),
+    );
+    if (!persistedEvent) return;
     const anchor = panelAnchorFromRect(rect);
 
     const openEvent = async () => {
@@ -993,7 +1059,7 @@
         : "switch";
       const requestId = panelLifecycle.beginOpen("edit", panelState);
       try {
-        const lookupId = event.recurringParentId ?? event.id;
+        const lookupId = persistedEvent.recurringParentId ?? persistedEvent.id;
         const [fullEvent] = await Promise.all([
           calendarStore.loadPanelEvent(lookupId).then((full) => {
             panelLifecycle.markDetailsReady(requestId, !!full);
@@ -1002,10 +1068,16 @@
           panelLifecycle.ensureReady(requestId) ?? Promise.resolve(),
         ]);
         if (!panelLifecycle.isCurrent(requestId)) return;
-        const hydratedEvent = fullEvent
-          ? ({ ...fullEvent, ...event } as CalendarEvent)
-          : event;
-        if (isRecurring(event)) {
+        const hydratedEvent = resolvePersistedCalendarPanelEvent(
+          event.id,
+          calendarStore.eventsInWindow(viewWindow.start, viewWindow.end),
+          fullEvent,
+        );
+        if (!hydratedEvent) {
+          panelLifecycle.recoverFailedOpen(requestId);
+          return;
+        }
+        if (isRecurring(hydratedEvent)) {
           session.openEdit(hydratedEvent, anchor, hydratedEvent, !!fullEvent);
         } else {
           session.openEdit(hydratedEvent, anchor, undefined, !!fullEvent);
@@ -1038,7 +1110,13 @@
 
   function handleEventPrefetch(event: CalendarEvent) {
     if (event.id === PENDING_CREATE_ID || event.id.startsWith(PENDING_CREATE_ID + "::")) return;
-    calendarStore.prefetchPanelEvent(event.recurringParentId ?? event.id);
+    const persistedEvent = resolvePersistedCalendarPanelEvent(
+      event.id,
+      calendarStore.eventsInWindow(viewWindow.start, viewWindow.end),
+    );
+    if (persistedEvent) {
+      calendarStore.prefetchPanelEvent(persistedEvent.recurringParentId ?? persistedEvent.id);
+    }
   }
 
   async function openVisibleEventForBenchmark(index: number): Promise<boolean> {
@@ -1103,18 +1181,18 @@
     closeSession();
   }
 
-  const handlePanelSave = (data: PanelSaveData, scope?: RecurringScope): Promise<void> =>
+  const handlePanelSave = (data: PanelSaveData, scope?: RecurringScope): Promise<boolean> =>
     saveController.save(data, scope);
   const handleEndEvent = (data: PanelSaveData, scope?: RecurringScope): Promise<void> =>
     saveController.end(data, scope);
 
-  function eventDeleteOutcomeLabel(outcome: CalendarDeleteArchiveOutcome): string {
+  function eventDeleteOutcomeLabel(outcome: CalendarDeleteOutcome): string {
     if (outcome === "archive") return t("calendar.view.eventArchived");
     if (outcome === "mixed") return t("calendar.view.eventsDeletedAndArchived");
     return t("calendar.view.eventDeleted");
   }
 
-  function eventDeletePendingLabel(outcome: CalendarDeleteArchiveOutcome): string {
+  function eventDeletePendingLabel(outcome: CalendarDeleteOutcome): string {
     if (outcome === "archive") return t("calendar.view.archiving");
     if (outcome === "mixed") return t("calendar.view.deletingAndArchiving");
     return t("calendar.view.deleting");
@@ -1122,9 +1200,19 @@
 
   const deleteController = new CalendarViewDeleteController({
     calendarStore,
-    pomodoro,
+    nativeEditor: deleteEditor,
     toasts,
     getWindow: () => viewWindow,
+    getEvents: currentVisibleStoreEvents,
+    canPresent: (review) => viewAlive && (!review || activeVaultIdentity() === review.vaultId),
+    isCurrent: (input) => {
+      if (!viewAlive || session.state.mode !== "edit" || session.state.sessionKey !== input.sessionKey) return false;
+      try {
+        const current = currentDeleteDraft();
+        return current.vaultId === input.vaultId && current.vaultGeneration === input.vaultGeneration
+          && JSON.stringify(current.edit) === JSON.stringify(input.edit);
+      } catch { return false; }
+    },
     setCommitState: ({ hidden, suppressPreview, frozenEvents }) => {
       panelCommitHidden = hidden;
       suppressEditPreview = suppressPreview;
@@ -1133,50 +1221,65 @@
     closeSession,
     pendingLabel: eventDeletePendingLabel,
     outcomeLabel: eventDeleteOutcomeLabel,
+    errorLabel: (error) => t("calendar.view.deleteFailed", saveErrorMessage(error)),
   });
   const undoDeletedEvent = (): Promise<void> => deleteController.undoCurrent();
 
-  async function syncSavedActivePomodoro(event: CalendarEvent): Promise<void> {
-    const activeId = pomodoro.activeBlockId;
-    const config = event.pomodoroConfig;
-    if (!pomodoro.isActive || !activeId || event.id !== activeId || !config) return;
-    await pomodoro.startFromBlock(
-      activeId,
-      config,
-      event.title,
-      event.end,
-      event.start.split(" ")[0],
-      config.idleTimeoutMinutes,
-    );
+
+  function reportDeleteError(error: unknown): void {
+    const label = t("calendar.view.deleteFailed", saveErrorMessage(error));
+    const toastId = toasts.showSavePendingToast(label);
+    toasts.showSaveErrorToast(toastId, label);
   }
 
-  async function handleDelete(id: string, scope?: RecurringScope) {
-    const plan = buildDeleteArchivePlanForEvent(id, scope);
-    if (plan.requiresActiveStop) {
-      requestConfirm(
-        plan.outcome === "archive"
-          ? t("calendar.view.stopBeforeArchived")
-          : t("calendar.view.stopBeforeDeleted"),
-        async () => {
-          await deleteController.execute(plan, true);
-        },
-        {
-          title: plan.outcome === "archive"
-            ? t("calendar.view.stopAndArchiveEventTitle")
-            : t("calendar.view.stopAndDeleteEventTitle"),
-          yesLabel: plan.outcome === "archive"
-            ? t("calendar.view.stopAndArchive")
-            : t("calendar.view.stopAndDelete"),
-          noLabel: t("calendar.view.keepSession"),
-          extraConfirmShortcut: (e) =>
-            (e.key === "d" || e.key === "D") && hasOnlyShortcutModifier(e),
-        },
-      );
+  async function handleDelete(id: string, scope?: RecurringScope): Promise<void> {
+    try {
+      if (session.state.mode !== "edit" || session.state.instanceEvent.id !== id) throw new Error("Calendar deletion selection changed");
+      const input = currentDeleteDraft(scope);
+      const review = await deleteEditor.reviewDeletion(input);
+      if (!review.deletion) throw new Error("Native Calendar deletion review is unavailable");
+      const outcome = review.deletion.outcome;
+      if (review.deletion.requiresActiveStop) {
+        requestConfirm(
+          outcome === "archive"
+            ? t("calendar.view.stopBeforeArchived")
+            : t("calendar.view.stopBeforeDeleted"),
+          async () => {
+            try { await deleteController.execute(input, review, true); }
+            catch (error) { reportDeleteError(error); }
+          },
+          {
+            title: outcome === "archive"
+              ? t("calendar.view.stopAndArchiveEventTitle")
+              : t("calendar.view.stopAndDeleteEventTitle"),
+            yesLabel: outcome === "archive"
+              ? t("calendar.view.stopAndArchive")
+              : t("calendar.view.stopAndDelete"),
+            noLabel: t("calendar.view.keepSession"),
+            extraConfirmShortcut: (e) =>
+              (e.key === "d" || e.key === "D") && hasOnlyShortcutModifier(e),
+          },
+        );
+        return;
+      }
+
+      await deleteController.execute(input, review, false);
+    } catch (error) { reportDeleteError(error); }
+  }
+
+  $effect(() => {
+    if (deleteEditor.committing || deleteEditor.uncertain || deleteEditor.resultPending) return;
+    if (session.state.mode !== "edit" || !pomodoro.vaultContext) {
+      untrack(() => deleteEditor.update(null));
       return;
     }
-
-    await deleteController.execute(plan, false);
-  }
+    try {
+      const input = currentDeleteDraft();
+      untrack(() => deleteEditor.update(input));
+    } catch (error) {
+      untrack(() => { deleteEditor.update(null); deleteEditor.error = saveErrorMessage(error); });
+    }
+  });
 
   function handleDayClickFromMonth(date: Date) {
     void targetController.request({ mode: "day", date }, { history: true, reason: "view" });
@@ -1197,19 +1300,68 @@
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div bind:this={containerEl} use:outsideClose class="relative flex h-full flex-col select-none overflow-hidden">
-  <CalendarHeader
-    {anchorDate}
-    {viewMode}
-    {mobileLayout}
-    onNavigate={navigate}
-    onViewChange={changeView}
-    onDaySelect={(date) => {
-      void targetController.request({ mode: targetController.currentState().mode, date }, {
-        history: false,
-        reason: "programmatic",
-      });
-    }}
-  />
+  {#snippet header(embedded: boolean)}
+    <CalendarHeader
+      {anchorDate}
+      {viewMode}
+      {mobileLayout}
+      {embedded}
+      onNavigate={navigate}
+      onViewChange={changeView}
+      onDaySelect={(date) => {
+        void targetController.request({ mode: targetController.currentState().mode, date }, {
+          history: false,
+          reason: "programmatic",
+        });
+      }}
+    />
+  {/snippet}
+  {#if headerTarget}
+    <div class="flex shrink-0 select-none" use:portal={headerTarget}>
+      {@render header(true)}
+    </div>
+  {:else}
+    {@render header(false)}
+  {/if}
+
+  {#if deleteEditor.uncertain || deleteEditor.resultPending}
+    <Notice
+      class={calendarBannerClass}
+      role="status"
+      tone="warning"
+      copy={false}
+      message={t(deleteEditor.uncertain ? "calendar.view.deleteUncertain" : "calendar.view.deleteRefreshPending")}
+      onRetry={() => (deleteEditor.committing ? undefined : deleteController.retry())}
+    />
+  {:else if nativeEditor.uncertain || directEditor.uncertain}
+    <Notice
+      class={calendarBannerClass}
+      role="status"
+      tone="warning"
+      copy={false}
+      message={t("calendar.view.saveUncertain")}
+      onRetry={() => (nativeEditor.committing || directEditor.committing ? undefined : retryCalendarSave())}
+    />
+  {:else if nativeEditor.error && session.state.mode !== "closed" && !nativeEditor.committing}
+    <Notice
+      class={calendarBannerClass}
+      role="status"
+      message={t("calendar.view.previewFailed", nativeEditor.error)}
+      copy={nativeEditor.error}
+      onRetry={retryCalendarPreview}
+    />
+  {/if}
+
+  {#if persistedSegments.unavailable}
+    <Notice
+      class={calendarBannerClass}
+      role="status"
+      icon={CalendarX}
+      copy={false}
+      message={t("calendar.view.historyUnavailable")}
+      onRetry={() => persistedSegments.refreshForTarget({ mode: viewMode, date: new Date(anchorDate) })}
+    />
+  {/if}
 
   <div
     bind:this={viewportController.viewWrapper}
@@ -1229,7 +1381,7 @@
         positionedAllDayEvents={calendarViewModel.positionedAllDayEvents}
         theme={theme.current}
         timezones={viewportController.timezones}
-        tzAbbrMode={viewportController.timezoneAbbreviationMode}
+        timezoneAbbreviationMode={viewportController.timezoneAbbreviationMode}
         editingId={visualEditingId}
         {previewedIds}
         persistedSegmentsByEvent={persistedSegments.byEvent}
@@ -1242,7 +1394,7 @@
         onAddTimezone={(timezone) => viewportController.addTimezone(timezone)}
         onRemoveTimezone={(index) => viewportController.removeTimezone(index)}
         onReorderTimezone={(from, to) => viewportController.reorderTimezone(from, to)}
-        onTzAbbrModeChange={(mode) => { viewportController.timezoneAbbreviationMode = mode; }}
+        onTimezoneAbbreviationModeChange={(mode) => { viewportController.timezoneAbbreviationMode = mode; }}
         onWheelNavigate={handleWheelNavigate}
         onDayHeaderClick={handleWeekDayHeaderClick}
         {mobileLayout}
@@ -1257,7 +1409,7 @@
         allDayEventsByDay={calendarViewModel.allDayEventsByDay}
         theme={theme.current}
         timezones={viewportController.timezones}
-        tzAbbrMode={viewportController.timezoneAbbreviationMode}
+        timezoneAbbreviationMode={viewportController.timezoneAbbreviationMode}
         editingId={visualEditingId}
         {previewedIds}
         persistedSegmentsByEvent={persistedSegments.byEvent}
@@ -1270,7 +1422,7 @@
         onAddTimezone={(timezone) => viewportController.addTimezone(timezone)}
         onRemoveTimezone={(index) => viewportController.removeTimezone(index)}
         onReorderTimezone={(from, to) => viewportController.reorderTimezone(from, to)}
-        onTzAbbrModeChange={(mode) => { viewportController.timezoneAbbreviationMode = mode; }}
+        onTimezoneAbbreviationModeChange={(mode) => { viewportController.timezoneAbbreviationMode = mode; }}
         onWheelNavigate={handleWheelNavigate}
         onDayHeaderClick={handleDayHeaderClick}
         allowPointerEditing={true}
@@ -1298,7 +1450,7 @@
       type="button"
       aria-label={t("mobile.createEvent")}
       onclick={(event) => openMobileEventCreate(event.currentTarget)}
-      class="absolute bottom-4 right-4 z-50 flex min-h-14 min-w-14 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-lg active:opacity-85"
+      class="absolute bottom-4 right-4 z-50 flex min-h-14 min-w-14 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-floating active:opacity-85"
     >
       <Plus size={25} strokeWidth={2} aria-hidden="true" />
     </button>
@@ -1335,9 +1487,9 @@
       detailsLoaded={render.detailsLoaded}
       externalDirty={render.externalDirty}
       initialSyncSeeded
-      readOnly={render.readOnly}
-      allowDeleteWhenReadOnly={render.allowDeleteWhenReadOnly}
-      allowPomodoroWhenReadOnly={render.allowPomodoroWhenReadOnly}
+      readOnly={render.readOnly || saveController.saving}
+      allowDeleteWhenReadOnly={render.allowDeleteWhenReadOnly && !saveController.saving}
+      allowPomodoroWhenReadOnly={render.allowPomodoroWhenReadOnly && !saveController.saving}
       skipInlineDeleteConfirm={render.skipInlineDeleteConfirm}
       inlineEndEventConfirm={render.mode === "edit" ? render.inlineEndEventConfirm : false}
       lockStartControls={render.mode === "edit" ? render.endActiveEventAvailable : false}
@@ -1345,6 +1497,7 @@
       calendarIdentityEmail={panelCalendarIdentityEmail}
       loadFullEvent={calendarStore.loadPanelEvent}
       onSave={handlePanelSave}
+      deletionOutcome={currentDeletePreview()?.deletion?.outcome}
       onDelete={render.mode === "edit" && !render.parked ? handleDelete : undefined}
       onEndEvent={render.mode === "edit" && !render.parked && render.endActiveEventAvailable
         ? handleEndEvent
@@ -1366,12 +1519,13 @@
       controlsVisible={!deleteToast.pending}
       dismissLabel={t("calendar.view.dismissEventNotification")}
       onAction={undoDeletedEvent}
-      onDismiss={toasts.dismissDeleteUndoToast}
+      onDismiss={() => deleteController.dismissUndo()}
     />
   {/if}
 
-  {#if toasts.saveSuccessToast}
-    {@const saveToast = toasts.saveSuccessToast}
+
+  {#if toasts.saveToast}
+    {@const saveToast = toasts.saveToast}
     <ActionToast
       message={saveToast.message}
       variant={saveToast.variant}

@@ -89,3 +89,32 @@ export interface NotesPageBreadcrumbItem {
   current: boolean;
   status: NotesPageBreadcrumbStatus;
 }
+
+/** A task a page may mention, from a project in the page's project group. */
+export interface NotesMentionScopeTask {
+  id: string;
+  project_id: string;
+  title: string;
+  completed: boolean;
+}
+
+/**
+ * A Calendar event or recurring series a page may mention, from a project in the page's project group. Times keep
+ * the stored encoding: UTC instants for timed events and dates for all-day ones.
+ */
+export interface NotesMentionScopeEvent {
+  id: string;
+  title: string;
+  start_time: string;
+  end_time: string;
+  all_day: boolean;
+  recurring: boolean;
+  calendar_id: string;
+  project_id: string;
+}
+
+/** The tasks and Calendar events a page may mention; both are empty for a page outside every project. */
+export interface NotesMentionScope {
+  tasks: NotesMentionScopeTask[];
+  events: NotesMentionScopeEvent[];
+}

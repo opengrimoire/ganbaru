@@ -1,19 +1,12 @@
-import type { NotesDataSourceTableView, NotesDatabaseTableFilterCondition, NotesDatabaseTableSortDirection } from "../../contracts/database";
+import type { NotesDataSourceTableView, NotesDatabaseTableSortDirection } from "$lib/notes/contracts/database";
+import { notesDatabaseParseFilters } from "$lib/notes/database/filters";
 import { isNotesTableRowOpenMode } from ".././blocks";
-import { readBoolean, readInteger, readNullableString, readRecord, readRecordArray, readString, readStringArray } from ".././readers";
+import { readBoolean, readInteger, readNullableString, readRecord, readString, readStringArray } from ".././readers";
 import { parseNotesPage } from ".././workspace";
-import { parseNotesDataSource, parseNotesDatabaseView } from "./base";
-
-function isNotesTableFilterCondition(value: unknown): value is NotesDatabaseTableFilterCondition {
-  return (
-    value === "contains"
-    || value === "equals"
-    || value === "is_empty"
-    || value === "is_not_empty"
-    || value === "checked"
-    || value === "unchecked"
-  );
-}
+import { parseDataSourceGroupCounts, parseNotesDataSource, parseNotesDatabaseView } from "./base";
+import { parseNotesTablePresentation } from "./table-presentation";
+import { NOTES_DATABASE_MAX_COLLAPSED_ROWS, parseNotesDatabaseRowHierarchy } from "$lib/notes/database/row-hierarchy";
+import { isNotesUuid } from "$lib/notes/links/block-link";
 
 function isNotesTableSortDirection(value: unknown): value is NotesDatabaseTableSortDirection {
   return value === "ascending" || value === "descending";
@@ -39,33 +32,26 @@ function validateNotesTableConfiguration(value: Record<string, unknown> | null):
     }
   }
   const rowOpenMode = table.row_open_mode ?? "full_page";
+  parseNotesTablePresentation(table.presentation);
+  if (table.group_property_id !== undefined) readNullableString(table.group_property_id, "database table group_property_id");
+  for (const key of ["group_order", "collapsed_group_ids"]) {
+    if (table[key] !== undefined) {
+      const ids = readStringArray(table[key], `database table ${key}`);
+      if (ids.length > 500 || ids.some((id) => !id || id.length > 2000)) throw new Error("Table group identities exceed supported bounds");
+    }
+  }
+  if (table.hide_empty_groups !== undefined) readBoolean(table.hide_empty_groups, "database table hide_empty_groups");
+  if (table.collapsed_row_ids !== undefined) {
+    const ids = readStringArray(table.collapsed_row_ids, "database table collapsed_row_ids");
+    if (ids.length > NOTES_DATABASE_MAX_COLLAPSED_ROWS || ids.some((id) => !isNotesUuid(id))) throw new Error("Table collapsed row identities exceed supported bounds");
+  }
   if (!isNotesTableRowOpenMode(rowOpenMode)) {
     throw new Error("database table configuration.row_open_mode must be supported");
   }
 }
 
 export function validateNotesTableFilter(value: Record<string, unknown> | null): void {
-  if (value === null) return;
-  if (value.type !== undefined && value.type !== "and") {
-    throw new Error("database table filter.type must be and");
-  }
-  const filters = readRecordArray(value.filters ?? [], "database table filter.filters");
-  for (const [index, filter] of filters.entries()) {
-    readString(filter.property_id, `database table filter.filters[${index}].property_id`);
-    if (!isNotesTableFilterCondition(filter.condition)) {
-      throw new Error(`database table filter.filters[${index}].condition must be supported`);
-    }
-    const filterValue = filter.value;
-    if (
-      filterValue !== undefined
-      && filterValue !== null
-      && typeof filterValue !== "string"
-      && typeof filterValue !== "number"
-      && typeof filterValue !== "boolean"
-    ) {
-      throw new Error(`database table filter.filters[${index}].value must be scalar`);
-    }
-  }
+  notesDatabaseParseFilters(value);
 }
 
 export function validateNotesTableSorts(value: Record<string, unknown>[]): void {
@@ -98,5 +84,32 @@ export function parseNotesDataSourceTableView(value: unknown): NotesDataSourceTa
     total_row_count: readInteger(record.total_row_count, "data source table view.total_row_count"),
     next_cursor: readNullableString(record.next_cursor, "data source table view.next_cursor"),
     has_more: readBoolean(record.has_more, "data source table view.has_more"),
+    group_counts: parseDataSourceGroupCounts(record.group_counts ?? {}, "data source table view.group_counts"),
+    calculations: parseTableCalculations(record.calculations),
+    row_hierarchy: parseNotesDatabaseRowHierarchy(record.row_hierarchy),
   };
+}
+
+/** Validate complete-source numeric calculations at the IPC boundary. */
+function parseTableCalculationValues(value: unknown): Record<string, number | null> {
+  const values = readRecord(value, "table calculation values");
+  const parsed: Record<string, number | null> = {};
+  for (const [id, number] of Object.entries(values)) {
+    if (number !== null && (typeof number !== "number" || !Number.isFinite(number))) throw new Error("Table calculation must be finite or null");
+    Object.defineProperty(parsed, id, { value: number, enumerable: true, configurable: true, writable: true });
+  }
+  return parsed;
+}
+
+/** Keep overall results separate from arbitrary canonical group identities. */
+function parseTableCalculations(value: unknown): NonNullable<NotesDataSourceTableView["calculations"]> {
+  if (value === undefined) return { overall: {}, groups: {} };
+  const record = readRecord(value, "table calculations");
+  const groups = readRecord(record.groups, "table calculation groups");
+  const result: Record<string, Record<string, number | null>> = {};
+  for (const [groupId, properties] of Object.entries(groups)) {
+    const parsed = parseTableCalculationValues(properties);
+    Object.defineProperty(result, groupId, { value: parsed, enumerable: true, configurable: true, writable: true });
+  }
+  return { overall: parseTableCalculationValues(record.overall), groups: result };
 }

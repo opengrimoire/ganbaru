@@ -39,12 +39,12 @@ export const diagnostics = {
     unitMb: "MB",
     waiting: "Waiting for the memory report.",
     linuxPss: (fallback: string) =>
-      `In Linux, 'Total' uses PSS for Ganbaru AI plus WebKit.${fallback} PSS shares common RAM fairly, so it is closer to the real app cost. To compare with another app, measure that app's PSS too. If you use System Monitor's RSS, compare RSS with RSS, but that is less accurate.`,
+      `In Linux, 'Total' uses PSS for Ganbaru plus WebKit.${fallback} PSS shares common RAM fairly, so it is closer to the real app cost. To compare with another app, measure that app's PSS too. If you use System Monitor's RSS, compare RSS with RSS, but that is less accurate.`,
     linuxRssFallback: " Some processes used RSS fallback because PSS was unavailable.",
     windowsWorkingSet:
-      "In Windows, 'Total' uses Working Set for Ganbaru AI plus WebView2. Working Set includes private and shared RAM currently in memory. Task Manager's Memory shows private working set, so it leaves shared RAM out. To compare with another app, measure that app's Working Set too. If you use Task Manager's Memory, compare Task Manager with Task Manager, but that is less accurate.",
+      "In Windows, 'Total' uses Working Set for Ganbaru plus WebView2. Working Set includes private and shared RAM currently in memory. Task Manager's Memory shows private working set, so it leaves shared RAM out. To compare with another app, measure that app's Working Set too. If you use Task Manager's Memory, compare Task Manager with Task Manager, but that is less accurate.",
     macUnavailable:
-      "In macOS, 'Total' should be the physical footprint sum for Ganbaru AI plus WebView processes. It is not implemented yet.",
+      "In macOS, 'Total' should be the physical footprint sum for Ganbaru plus WebView processes. It is not implemented yet.",
     metricDescription: (name: string, description: string) => `${name}: ${description}`,
   },
 } as const;

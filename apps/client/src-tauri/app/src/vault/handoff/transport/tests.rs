@@ -1,6 +1,8 @@
 use super::*;
+use crate::vault::handoff::pairing::random_token;
 use crate::vault::handoff::protocol::{DeviceKind, MAX_ARCHIVE_BYTES, PROTOCOL_VERSION};
-use crate::vault::handoff::state::random_token;
+use crate::vault::handoff::sha256_file;
+use base64::Engine;
 use std::fs;
 use tokio::net::TcpListener;
 
@@ -38,6 +40,10 @@ struct LocalPair {
 
 impl LocalPair {
     async fn start() -> Self {
+        Self::start_with_hub(None).await
+    }
+
+    async fn start_with_hub(hub: Option<crate::sync::hub::SyncHub>) -> Self {
         let desktop_root = TestDirectory::new("desktop");
         let phone_root = TestDirectory::new("phone");
         let desktop = PairingManager::default();
@@ -65,7 +71,13 @@ impl LocalPair {
             )
             .expect("create invitation");
         let (shutdown, receiver) = tokio::sync::oneshot::channel();
-        tokio::spawn(serve(listener, desktop.clone(), receiver));
+        tokio::spawn(serve_with_coordinator(
+            listener,
+            desktop.clone(),
+            None,
+            hub,
+            receiver,
+        ));
         Self {
             _desktop_root: desktop_root,
             _phone_root: phone_root,
@@ -123,6 +135,7 @@ impl LocalPair {
             listener,
             desktop.clone(),
             Some(requests),
+            None,
             receiver,
         ));
         (
@@ -223,7 +236,7 @@ async fn revoked_phone_clears_its_stale_link_after_authenticated_reconnect() {
 #[tokio::test]
 async fn authenticated_control_flow_prepares_commits_and_acknowledges() {
     use super::super::coordinator::{CoordinatorOperation, CoordinatorResponse};
-    use super::super::state::PendingAcknowledgement;
+    use super::super::pairing::PendingAcknowledgement;
 
     let (pair, mut requests) = LocalPair::start_with_coordinator().await;
     pair.enroll().await;
@@ -325,29 +338,29 @@ async fn authenticated_control_flow_prepares_commits_and_acknowledges() {
 }
 
 #[tokio::test]
-async fn authenticated_doomscrolling_exchange_returns_acknowledged_and_combined_samples() {
+async fn authenticated_distractions_exchange_returns_acknowledged_and_combined_samples() {
     use super::super::coordinator::{CoordinatorOperation, CoordinatorResponse};
-    use super::super::protocol::DoomscrollingSampleMessage;
+    use super::super::protocol::DistractionsSampleMessage;
 
     let (pair, mut requests) = LocalPair::start_with_coordinator().await;
     pair.enroll().await;
-    let sample = DoomscrollingSampleMessage {
+    let sample = DistractionsSampleMessage {
         sample_id: "phone-sample".to_string(),
         device_id: "device-phone".to_string(),
         source_type: "mobile-app".to_string(),
         source_key: "com.example.video".to_string(),
         display_name: Some("Video".to_string()),
-        started_at_unix_ms: 1_700_000_000_000,
+        started_at_ms: 1_700_000_000_000,
         elapsed_seconds: 30,
         local_date: "2026-09-13".to_string(),
-        created_at_unix_ms: 1_700_000_030_000,
+        created_at_ms: 1_700_000_030_000,
     };
     let expected = sample.clone();
     let response_sample = sample.clone();
     let coordinator = tokio::spawn(async move {
-        let request = requests.recv().await.expect("Doomscrolling request");
+        let request = requests.recv().await.expect("Distractions request");
         match request.operation {
-            CoordinatorOperation::DoomscrollingExchange {
+            CoordinatorOperation::DistractionsExchange {
                 vault_id,
                 device_id,
                 samples,
@@ -364,18 +377,18 @@ async fn authenticated_doomscrolling_exchange_returns_acknowledged_and_combined_
         }
         request
             .response
-            .send(Ok(CoordinatorResponse::DoomscrollingAcknowledged {
+            .send(Ok(CoordinatorResponse::DistractionsAcknowledged {
                 acknowledged_sample_ids: vec!["phone-sample".to_string()],
                 peer_samples: Vec::new(),
                 combined_samples: vec![response_sample],
             }))
-            .expect("send Doomscrolling response");
+            .expect("send Distractions response");
     });
 
     let (acknowledged, peer, combined) =
-        exchange_doomscrolling(&pair.phone, vec![sample.clone()], Vec::new(), Vec::new())
+        exchange_distractions(&pair.phone, vec![sample.clone()], Vec::new(), Vec::new())
             .await
-            .expect("exchange Doomscrolling usage");
+            .expect("exchange Distractions usage");
     assert_eq!(acknowledged, vec![sample.sample_id]);
     assert!(peer.is_empty());
     assert_eq!(combined.len(), 1);
@@ -385,7 +398,7 @@ async fn authenticated_doomscrolling_exchange_returns_acknowledged_and_combined_
 #[tokio::test]
 async fn android_upload_resumes_from_durable_desktop_staging() {
     use super::super::coordinator::{CoordinatorOperation, CoordinatorResponse};
-    use super::super::state::StoredOutgoingTransfer;
+    use super::super::pairing::StoredOutgoingTransfer;
 
     let (pair, mut requests) = LocalPair::start_with_coordinator().await;
     pair.enroll().await;
@@ -804,4 +817,249 @@ fn oversized_bundle_metadata_is_rejected_before_network_work() {
         archive_sha256: "a".repeat(64),
     };
     assert!(metadata.validate().unwrap_err().contains("bundle size"));
+}
+
+fn sample_contact_card() -> (ganbaru_contacts::PersonKeyPair, String) {
+    let (_, key) = ganbaru_contacts::PersonKeyPair::generate().expect("person key");
+    let card = ganbaru_contacts::ContactCard {
+        public_key: key.public_key(),
+        display_name: "Requester".to_string(),
+        color: 3,
+        nonce: [4u8; ganbaru_contacts::CARD_NONCE_BYTES],
+        endpoint_hint: "127.0.0.1:43821".to_string(),
+        coordinator_fingerprint: Some([5u8; 32]),
+        issued_at_ms: unix_time_ms(),
+    };
+    let signed = ganbaru_contacts::sign_card(&card, &key).expect("sign card");
+    (key, signed.text())
+}
+
+fn base64url(bytes: &[u8]) -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+#[tokio::test]
+async fn unauthenticated_contact_request_is_forwarded_to_the_coordinator() {
+    use super::super::coordinator::{CoordinatorOperation, CoordinatorResponse};
+
+    let (pair, mut requests) = LocalPair::start_with_coordinator().await;
+    let (key, card) = sample_contact_card();
+    let recipient_nonce = [7u8; ganbaru_contacts::CARD_NONCE_BYTES];
+    let signature = key.sign(&ganbaru_contacts::request_signature_payload(
+        &recipient_nonce,
+        "contact-one",
+    ));
+    let expected_card = card.clone();
+    let coordinator = tokio::spawn(async move {
+        let request = requests.recv().await.expect("contact request");
+        match request.operation {
+            CoordinatorOperation::ContactRequest {
+                recipient_card_nonce,
+                requester_card,
+                request_id,
+                ..
+            } => {
+                assert_eq!(
+                    recipient_card_nonce,
+                    ganbaru_contacts::encode_nonce(&recipient_nonce)
+                );
+                assert_eq!(requester_card, expected_card);
+                assert_eq!(request_id, "contact-one");
+            }
+            operation => panic!("unexpected coordinator operation: {operation:?}"),
+        }
+        request
+            .response
+            .send(Ok(CoordinatorResponse::ContactRequestReceived {
+                request_id: "contact-one".to_string(),
+            }))
+            .expect("send contact response");
+    });
+
+    let response = unauthenticated_exchange(
+        &pair.invitation.endpoint,
+        &pair.invitation.coordinator_fingerprint,
+        ControlMessage::ContactRequest {
+            protocol_version: PROTOCOL_VERSION,
+            recipient_card_nonce: ganbaru_contacts::encode_nonce(&recipient_nonce),
+            requester_card: card,
+            request_id: "contact-one".to_string(),
+            signature: base64url(&signature),
+        },
+    )
+    .await
+    .expect("contact request exchange");
+    assert!(matches!(
+        response,
+        ControlMessage::ContactRequestReceived { request_id } if request_id == "contact-one"
+    ));
+    coordinator.await.expect("coordinator task");
+}
+
+#[tokio::test]
+async fn coordinator_rejection_reaches_the_requester_as_a_protocol_error() {
+    use super::super::coordinator::{CoordinatorOperation, CoordinatorResponse};
+
+    let (pair, mut requests) = LocalPair::start_with_coordinator().await;
+    let (key, _) = sample_contact_card();
+    let issued_at_ms = unix_time_ms();
+    let signature = key.sign(&ganbaru_contacts::status_signature_payload(
+        "contact-one",
+        issued_at_ms,
+    ));
+    let coordinator = tokio::spawn(async move {
+        let request = requests.recv().await.expect("status request");
+        assert!(matches!(
+            request.operation,
+            CoordinatorOperation::ContactRequestStatus { ref request_id, .. }
+                if request_id == "contact-one"
+        ));
+        request
+            .response
+            .send(Ok(CoordinatorResponse::Rejected {
+                code: "card_revoked".to_string(),
+                message: "the recipient regenerated their contact card".to_string(),
+                retryable: false,
+            }))
+            .expect("send rejection");
+    });
+
+    let response = unauthenticated_exchange(
+        &pair.invitation.endpoint,
+        &pair.invitation.coordinator_fingerprint,
+        ControlMessage::ContactRequestStatus {
+            protocol_version: PROTOCOL_VERSION,
+            request_id: "contact-one".to_string(),
+            requester_public_key: key.public_key().to_text(),
+            issued_at_ms,
+            signature: base64url(&signature),
+        },
+    )
+    .await
+    .expect("status exchange");
+    assert!(matches!(
+        response,
+        ControlMessage::Error { code, retryable: false, .. } if code == "card_revoked"
+    ));
+    coordinator.await.expect("coordinator task");
+}
+
+#[tokio::test]
+async fn person_key_is_released_only_to_an_enrolled_device() {
+    use super::super::coordinator::{CoordinatorOperation, CoordinatorResponse};
+
+    let (pair, mut requests) = LocalPair::start_with_coordinator().await;
+    let unauthenticated = unauthenticated_exchange(
+        &pair.invitation.endpoint,
+        &pair.invitation.coordinator_fingerprint,
+        ControlMessage::PersonKeyRequest {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: "vault-1".to_string(),
+            device_id: "device-phone".to_string(),
+        },
+    )
+    .await;
+    assert!(
+        unauthenticated.is_err(),
+        "a connection without a client certificate must not receive the key"
+    );
+
+    pair.enroll().await;
+    let (pkcs8, key) = ganbaru_contacts::PersonKeyPair::generate().expect("person key");
+    let public_key = key.public_key().to_text();
+    let released_key = public_key.clone();
+    let released_pkcs8 = base64url(&pkcs8);
+    let expected_pkcs8 = released_pkcs8.clone();
+    let coordinator = tokio::spawn(async move {
+        let request = requests.recv().await.expect("key request");
+        assert!(matches!(
+            request.operation,
+            CoordinatorOperation::ReleasePersonKey
+        ));
+        request
+            .response
+            .send(Ok(CoordinatorResponse::PersonKeyReleased {
+                public_key: released_key,
+                private_key_pkcs8: released_pkcs8,
+            }))
+            .expect("send key");
+    });
+
+    let response = request_person_key(&pair.phone).await.expect("key exchange");
+    match response {
+        ControlMessage::PersonKeyRelease {
+            public_key: released,
+            private_key_pkcs8,
+        } => {
+            assert_eq!(released, public_key);
+            assert_eq!(private_key_pkcs8, expected_pkcs8);
+        }
+        other => panic!("unexpected response: {other:?}"),
+    }
+    coordinator.await.expect("coordinator task");
+}
+
+#[tokio::test]
+async fn sync_requests_reach_the_hub_only_from_enrolled_devices() {
+    use crate::sync::hub::{OpenHubVault, SyncHub};
+
+    let open: OpenHubVault = std::sync::Arc::new(|| Box::pin(async { Ok(None) }));
+    let hub = SyncHub::new(open, tokio::sync::watch::Sender::new(0));
+    let pair = LocalPair::start_with_hub(Some(hub)).await;
+    let hello = |protocol_version| ControlMessage::SyncHello {
+        protocol_version,
+        vault_id: "vault-1".to_string(),
+        device_id: "device-phone".to_string(),
+        manifest_version: 1,
+        stored: Vec::new(),
+        probe: None,
+    };
+    let unauthenticated = unauthenticated_exchange(
+        &pair.invitation.endpoint,
+        &pair.invitation.coordinator_fingerprint,
+        hello(PROTOCOL_VERSION),
+    )
+    .await;
+    assert!(
+        unauthenticated.is_err(),
+        "a connection without a client certificate must not reach the hub"
+    );
+
+    pair.enroll().await;
+    assert_eq!(
+        sync_peer(&pair.phone).expect("sync peer"),
+        Some(("vault-1".to_string(), "device-phone".to_string()))
+    );
+    let response = sync_request(&pair.phone, hello(PROTOCOL_VERSION))
+        .await
+        .expect("sync exchange");
+    assert!(matches!(
+        response,
+        ControlMessage::Error { code, retryable: true, .. } if code == "sync_unavailable"
+    ));
+    assert!(
+        hello(PROTOCOL_VERSION - 1).validate().is_err(),
+        "sync messages of an older protocol are refused at the frame boundary"
+    );
+}
+
+#[tokio::test]
+async fn coordinator_without_a_hub_refuses_sync_requests() {
+    let pair = LocalPair::start().await;
+    pair.enroll().await;
+    let response = sync_request(
+        &pair.phone,
+        ControlMessage::SyncWait {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: "vault-1".to_string(),
+            device_id: "device-phone".to_string(),
+            known: Vec::new(),
+        },
+    )
+    .await
+    .expect("sync exchange");
+    assert!(matches!(
+        response,
+        ControlMessage::Error { code, retryable: false, .. } if code == "sync_unsupported"
+    ));
 }

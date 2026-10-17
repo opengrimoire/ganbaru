@@ -1,16 +1,10 @@
 # Adaptive Pomodoro experiments
 
-The current adaptive engine contains seven bounded run-level experiment lanes. Each lane compares a control rhythm with one treatment under narrow eligibility. Assignment, context, selected values, outcomes, analysis, terminal state, and cooldown are persisted locally.
-
-Stable objectives and shared guardrails are defined in [Adaptive policy](adaptive-policy.md). This document records the current experiment catalog so implementation and tests can remain discoverable without repeating the entire analysis pipeline in schema documentation.
+The adaptive engine has seven bounded run-level experiment lanes. Each lane compares a control rhythm with one treatment under narrow eligibility. Assignment, context, selected values, outcomes, analysis, terminal state, and cooldown are persisted locally. Shared objectives, statistics, and guardrails are defined in [Adaptive policy](adaptive-policy.md).
 
 ## Rhythm notation
 
-Compact rhythm notation uses:
-
-focus minutes / short-break minutes / long-break minutes / long-break cadence
-
-For example, 40/5/10/C4 means 40 minute focus, 5 minute short break, 10 minute long break, and a long break after four focus positions.
+`focus / short break / long break / cadence`, in minutes. For example, 40/5/10/C4 means 40 minute focus, 5 minute short break, 10 minute long break, and a long break after every fourth focus.
 
 ## Experiment catalog
 
@@ -24,116 +18,41 @@ For example, 40/5/10/C4 means 40 minute focus, 5 minute short break, 10 minute l
 | Focus plus short-break bundle | 40/5/10/C4 | 45/7/10/C4 | Strong clean momentum, stable short-break return, substantial completed focus and break history, comparable evidence, and low risk | Conservative clean-focus gain | Completion, stop rate, blockers, skipped breaks, short-break drift, missed planned work, next-day return |
 | Long-recovery bundle | 40/5/15/C4 | 40/5/15/C3 | Clean long-break drift, stable completed focus and break history, comparable evidence, no blocked attempt during overtime, and low risk | Reduced blocker pressure, reduced long-break drift, or conservative completion improvement | Clean focus, completion, stop rate, blockers, skipped breaks, missed planned work, next-day return |
 
-## Shared eligibility exclusions
+## Shared exclusions
 
-An experiment does not start when:
-
-- adaptive mode is not explicitly enabled;
-- the relevant lane is in cooldown;
-- the run is recovery, guardrail, or low-confidence posture;
-- context or history quality is insufficient;
-- the treatment would exceed product or user-pinned bounds;
-- another incompatible run-start experiment already owns the comparable short window;
-- current configuration does not match the lane's supported control family;
-- a required outcome cannot be observed without using disallowed data.
-
-Eligibility is evaluated before deterministic assignment. Failing eligibility keeps the current safe rhythm and creates no fake control observation.
+No experiment starts when adaptive mode is off, the lane is in cooldown, the posture is fallback, recovery, or guardrail, history quality is insufficient, the treatment would exceed the safe range, current configuration does not match the lane's control family, or a required outcome could only be observed with disallowed data. Failing eligibility keeps the current safe rhythm and records no control observation.
 
 ## Assignment lifecycle
 
-1. Build a coarse context and policy snapshot from canonical local history.
-2. Select the one eligible lane, if any, using deterministic policy priority.
-3. Reuse an existing assignment for the same command or run identity.
-4. Otherwise assign control or treatment from the persisted deterministic seed and exploration balance.
-5. Commit assignment, run snapshot, chosen values, and first active segment atomically.
-6. Attach later phase, run, same-day, and next-day outcomes only when each observation matures.
-7. Aggregate by experiment, variant, and coarse context for analysis.
-8. Persist terminal result and cooldown without creating a synthetic extra assignment.
+1. Build a coarse context and policy snapshot from local history.
+2. Select at most one eligible lane in fixed priority order: focus plus short-break bundle, focus duration, short break, long-recovery bundle, long break, earlier cadence, later cadence. Bundles precede their scalar alternatives.
+3. Reuse an existing assignment for the same command or run.
+4. Otherwise assign control or treatment from the persisted seed and exploration balance. Exploration is limited per context within a rolling seven-day window.
+5. Commit assignment, run snapshot, chosen values, and first segment atomically.
+6. Attach phase, run, same-day, and next-day outcomes as each matures.
+7. Aggregate by experiment, variant, and coarse context.
+8. Persist terminal result and cooldown without a synthetic extra assignment.
 
-A run participates in one run-start lane at a time. Component experiments and bundle experiments remain distinct evidence. A bundle result is not decomposed into causal claims about each component.
+Component and bundle experiments are distinct evidence. A bundle result makes no causal claim about its components.
 
 ## Outcome maturity
 
-Immediate phase outcomes can include completion, stop, focus failure, clean focus, break skip, break overtime, and blocker pressure.
-
-Run outcomes attach after the run closes. Same-day missed planned work and blocker pressure attach only after the relevant local day can no longer change under the outcome rule. Next-day return attaches only after the following observation window passes.
-
-Missing mature data remains unknown. A user who has not opened the app on the next day is interpreted only according to the explicit next-day observation rule, not automatically as treatment harm.
-
-Outcome writers are idempotent. Re-running maturation updates or inserts the same logical observation rather than increasing sample size.
-
-## Analysis contract
-
-Both variants require a minimum observation count before preference. Exact-context paired evidence is preferred. Sparse paired context may borrow a small discounted prior from similar neighboring contexts, then broader evidence for the same lane, then global lane evidence.
-
-Binary outcomes use conservative interval comparisons. Numeric outcomes use observation count, sum, and squared sum so variance affects confidence. Treatment preference requires meaningful primary improvement and preserved guardrails.
-
-Any severe direct harm can stop treatment before ordinary confidence is reached. Conservative guardrail harm also selects control. Otherwise the result stays inconclusive.
-
-The analyzer records which evidence tier supported the result. It does not silently combine unmatched contexts until a desired answer appears.
+Phase outcomes (completion, stop, focus failure, clean focus, break skip, break overtime, blocker pressure) attach immediately. Run outcomes attach after the run closes. Same-day missed work and blocker pressure attach once that local day can no longer change. Next-day return attaches only after its observation window passes. Missing data stays unknown; a user who does not open the app the next day is judged only by the explicit next-day rule, not automatically as harm. Outcome writers are idempotent, so re-running maturation never inflates sample size.
 
 ## Lane-specific result rules
 
-### Focus duration
+- **Focus duration:** 45 minutes wins only with conservative clean-focus gain and preserved completion and next-day behavior. Any completion decline or increase in stops, blockers, missed work, or avoidance returns to 40.
+- **Short break:** 7 minutes wins only when it materially reduces short-break overtime without more skipped breaks or broader risk. More break time without better return is not a win.
+- **Long break:** 15 minutes wins only when it reduces long-break overtime while preserving later completion and return. More drift or blocker pressure loses.
+- **Earlier cadence:** C3 wins when earlier recovery conservatively reduces late-cycle blocker pressure or improves completion without sacrificing clean focus. Increased skips, drift, missed work, or avoidance loses.
+- **Later cadence:** C5 wins only when delaying long recovery increases clean focus in already stable high-momentum contexts without degrading any guardrail.
+- **Focus plus short-break bundle:** 45/7 must improve clean focus while the longer short break keeps drift in check. Harm applies to the combined shape only.
+- **Long-recovery bundle:** C3 within the 15 minute long-break rhythm must reduce blocker pressure or long-break drift, or improve completion, while preserving clean focus. Harm blocks only the combined shape.
 
-Treatment wins only with conservative clean-focus gain and preserved completion and next-day behavior. Completion decline, increased stops, blockers, missed work, or next-day avoidance returns to 40 minutes.
+## Terminal states
 
-### Short break
+Treatment preference records completed; guardrail-forced control records abandoned. An inconclusive lane stays active only while eligibility and exploration budget allow more observations. Cooldown is 14 days per lane. Leaving adaptive mode stops new assignments; returning later respects the current version and any cooldown.
 
-Treatment wins only when 7 minutes materially reduces short-break overtime without increasing skipped breaks or broader risk. More allotted break time without improved return is not a win.
+## Diagnostic replay
 
-### Long break
-
-Treatment wins only when 15 minutes reduces long-break overtime while preserving later completion and return. A longer break that produces still more drift or blocker pressure loses.
-
-### Earlier long-break cadence
-
-C3 wins when earlier recovery conservatively reduces late-cycle blocker pressure or improves completion without sacrificing clean focus. More frequent long breaks that increase skips, drift, missed work, or next-day avoidance lose.
-
-### Later long-break cadence
-
-C5 wins only when delayed long recovery increases clean focus in already stable high-momentum contexts without degrading return, blockers, skips, missed work, or next-day behavior.
-
-### Focus plus short-break bundle
-
-The 45/7 treatment must improve clean focus while its longer short break prevents the support cost from becoming drift. A harmful result applies to the combined shape, not automatically to 45 minute focus or 7 minute breaks tested separately.
-
-### Long-recovery bundle
-
-The C3 treatment inside the shared 15 minute long-break rhythm must reduce blocker pressure, long-break drift, or improve completion while preserving clean focus and all shared guardrails. Harm blocks only the combined 15 minute plus C3 shape.
-
-## Terminal states and cooldown
-
-Treatment preference records completed. Guardrail-forced control records abandoned. An inconclusive analysis remains active only while exploration budget and eligibility permit more observations.
-
-Current terminal cooldown is 14 days per lane. Abandoned cooldown holds the control. Completed treatment may be selected in compatible contexts but does not become an unconditional global default.
-
-Leaving adaptive mode stops new assignments. Historical observations remain interpretable. Returning later respects current policy version and cooldown rather than pretending the old experiment never happened.
-
-## Deterministic replay
-
-Diagnostics may replay policy and analysis from persisted snapshots to explain a prior assignment or compare a candidate policy version. Replay must:
-
-- use the historical policy and experiment version unless explicitly evaluating a candidate version;
-- read canonical assignments and outcomes without rewriting them;
-- produce bounded reason codes, evidence tier, guardrails, and candidate result;
-- avoid raw diary, Notes, Chat, or calendar-title content;
-- distinguish a historical explanation from a hypothetical candidate result.
-
-Replay is a debugging and evaluation tool. It does not retroactively change the rhythm that a historical run used.
-
-## Required tests
-
-Each lane protects:
-
-- exact eligibility and every high-risk exclusion;
-- deterministic assignment and command replay;
-- control and treatment value snapshots;
-- outcome maturity and idempotence;
-- minimum samples in both arms;
-- exact, neighboring, broader, and global evidence order;
-- primary outcome improvement;
-- every named guardrail and severe-harm stop;
-- terminal result, 14-day cooldown, and abandoned control hold;
-- independence of component and bundle results;
-- versioned deterministic replay.
+Replay can explain a prior assignment or evaluate a candidate version from persisted snapshots. It uses the historical version unless explicitly evaluating a candidate, reads assignments and outcomes without rewriting them, produces bounded reason codes, evidence tier, and guardrail results, avoids diary, Notes, Chat, and Calendar title content, and keeps historical explanations distinct from hypothetical results. Replay never changes the rhythm a historical run used.

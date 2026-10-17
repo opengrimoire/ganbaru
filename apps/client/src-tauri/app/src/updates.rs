@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-const RELEASE_PAGE_URL: &str = "https://github.com/opengrimoire/ganbaru-ai/releases/latest";
+const RELEASE_PAGE_URL: &str = "https://github.com/opengrimoire/ganbaru/releases/latest";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RuntimePlatform {
@@ -99,13 +99,11 @@ fn detect_update_install_context(input: InstallDetectionInput<'_>) -> UpdateInst
 
 fn copy_command_for_package_manager(package_manager: UpdatePackageManager) -> Option<&'static str> {
     match package_manager {
-        UpdatePackageManager::Apt => Some("sudo apt update && sudo apt install ganbaru-ai"),
-        UpdatePackageManager::Dnf => Some("sudo dnf upgrade ganbaru-ai"),
-        UpdatePackageManager::Zypper => {
-            Some("sudo zypper refresh && sudo zypper update ganbaru-ai")
-        }
-        UpdatePackageManager::AurYay => Some("yay -Syu ganbaru-ai-bin"),
-        UpdatePackageManager::AurParu => Some("paru -Syu ganbaru-ai-bin"),
+        UpdatePackageManager::Apt => Some("sudo apt update && sudo apt install ganbaru"),
+        UpdatePackageManager::Dnf => Some("sudo dnf upgrade ganbaru"),
+        UpdatePackageManager::Zypper => Some("sudo zypper refresh && sudo zypper update ganbaru"),
+        UpdatePackageManager::AurYay => Some("yay -Syu ganbaru-bin"),
+        UpdatePackageManager::AurParu => Some("paru -Syu ganbaru-bin"),
         UpdatePackageManager::Fallback => None,
     }
 }
@@ -287,7 +285,7 @@ mod tests {
         );
         assert_eq!(
             copy_command_for_package_manager(UpdatePackageManager::Apt),
-            Some("sudo apt update && sudo apt install ganbaru-ai"),
+            Some("sudo apt update && sudo apt install ganbaru"),
         );
     }
 
@@ -299,7 +297,7 @@ mod tests {
         );
         assert_eq!(
             copy_command_for_package_manager(UpdatePackageManager::Dnf),
-            Some("sudo dnf upgrade ganbaru-ai"),
+            Some("sudo dnf upgrade ganbaru"),
         );
     }
 
@@ -314,7 +312,7 @@ mod tests {
         );
         assert_eq!(
             copy_command_for_package_manager(UpdatePackageManager::Zypper),
-            Some("sudo zypper refresh && sudo zypper update ganbaru-ai"),
+            Some("sudo zypper refresh && sudo zypper update ganbaru"),
         );
     }
 
@@ -330,11 +328,11 @@ mod tests {
         );
         assert_eq!(
             copy_command_for_package_manager(UpdatePackageManager::AurYay),
-            Some("yay -Syu ganbaru-ai-bin"),
+            Some("yay -Syu ganbaru-bin"),
         );
         assert_eq!(
             copy_command_for_package_manager(UpdatePackageManager::AurParu),
-            Some("paru -Syu ganbaru-ai-bin"),
+            Some("paru -Syu ganbaru-bin"),
         );
     }
 

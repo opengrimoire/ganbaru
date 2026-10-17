@@ -2,10 +2,10 @@
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import Folder from "@lucide/svelte/icons/folder";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import type { LocalRootBinding, MusicItemListEntry } from "$lib/music/library-contracts";
-  import type { MusicSourceBrowserNode } from "$lib/music/music-source-browser";
-  import type { MusicSnoozePreset } from "$lib/music/music-snooze";
-  import { musicVirtualWindow, revealMusicVirtualIndex } from "$lib/music/music-virtual-window";
+  import type { LocalRootBinding, MusicItemListEntry } from "$lib/music/library/contracts";
+  import type { MusicSourceBrowserNode } from "$lib/music/sources/browser";
+  import type { MusicSnoozePreset } from "$lib/music/session/snooze";
+  import { musicVirtualWindow, revealMusicVirtualIndex } from "$lib/music/builder/virtual-window";
   import MusicBuilderItemRow from "./MusicBuilderItemRow.svelte";
 
   type ContentEntry =

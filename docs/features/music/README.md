@@ -1,35 +1,33 @@
 # Music
 
-Music provides persistent local and YouTube playback, playlist organization, review, soundscapes, and phase-based soundtrack automation. It supports focus without classifying a listener's music as objectively productive or distracting.
+Music provides persistent local and YouTube playback, playlist organization, review, background sounds, and phase-based soundtrack automation. It supports focus without classifying a listener's music as productive or distracting.
 
 ## Current scope
 
 | Capability | Status |
 | --- | --- |
-| Persistent app-level player, transport, queue, shuffle, repeat, volume, rate, and resume | Implemented |
-| Canonical local and YouTube library, source refresh, repair, artwork, search, and import/export | Implemented |
+| Native app-level player with queue, order modes, repeat, volume, and resume | Implemented; physical platform acceptance pending |
+| Canonical local and YouTube library, refresh, repair, artwork, search, and JSON/M3U8 transfer | Implemented |
 | Playlist membership settings, review, snooze, and playlist management | Implemented |
-| Desktop local audio, local video, YouTube, soundscapes, tray, title-bar, and hardware controls | Implemented with platform codec limits |
-| Android selected-folder local audio through Media3 | Implemented in source, broader release validation pending |
+| Desktop local audio, local video, YouTube, background sounds, tray, title-bar, and hardware controls | Implemented with platform codec limits |
+| Android selected-folder local audio through Media3 | Implemented in source; release validation pending |
 | Project and Calendar event phase soundtrack assignments | Implemented |
 | Work-environment and sleep-alarm automation | Planned |
-| YouTube input-locking presentation | Redesign required |
+| YouTube player presentation that complies with embedding policy | Redesign required |
 
 ## Sources
 
-Ganbaru AI supports local media selected by the user and YouTube through an embedded player. Music files remain in the user's own library. The vault stores structured library identity, playlist membership, settings, and playback state, not duplicate music files.
+Ganbaru plays local media selected by the user and YouTube through an embedded player. Music files stay in the user's own library; the vault stores library identity, playlists, settings, and playback state, never copies of the media.
 
-Spotify is unsupported because the available integration model does not fit this local open-source product. This is a product boundary, not a promise tied to volatile quota numbers.
+Spotify is unsupported because its integration model does not fit a local open-source product. This is a product boundary, not a statement about current quotas.
 
 ## Player model
 
-Playback belongs to one app-level host rather than the visible Music panel. Closing the panel keeps the current queue, source, position, volume, and appropriate background playback alive. Opening the panel reconnects to that same state.
-
-The visible player can open above Calendar, Projects, or Notes. The playlist builder is a focused full workspace. Mobile uses the same canonical library and player contracts through an adaptive presentation.
+Playback belongs to one native session per device, not to the visible Music panel. Closing the panel keeps the queue, source, position, and appropriate background playback alive; reopening reconnects to the same state. The player can open above Calendar, Projects, or Notes, and the playlist builder is a full workspace. Mobile uses the same library and player contracts with an adaptive presentation.
 
 ## User control
 
-Ganbaru AI does not infer whether a track is distracting. The user chooses playlists, membership settings, snoozes, and phase behavior. Listening statistics can support recency and frequency behavior without becoming a productivity score.
+Ganbaru does not infer whether a track is distracting. The user chooses playlists, membership settings, snoozes, and phase behavior. Listening statistics support recency and frequency behavior without becoming a productivity score.
 
 ## Documentation map
 

@@ -1,0 +1,286 @@
+/*
+ * Shared chrome for floating surfaces (menus, popovers, pickers, nonmodal panels), their rows, and their fields.
+ * Database collection panels define the look; docs/architecture/ui-foundations.md owns the rules.
+ */
+
+:root {
+  /* Outer radius of floating surfaces. */
+  --floating-radius: calc(var(--radius) + 4px);
+  /* Inset between a floating surface edge and its rows. */
+  --floating-padding: 0.375rem;
+  /* Rows and fields stay concentric with the surface corner. */
+  --floating-item-radius: calc(var(--floating-radius) - var(--floating-padding));
+  /* One barely visible shadow for every floating surface; the border carries the separation. */
+  --floating-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+  /* Minimum gap between a floating surface and the viewport edge. */
+  --floating-viewport-margin: 0.5rem;
+  /* Dimming behind modal dialogs. */
+  --backdrop: rgb(0 0 0 / 0.45);
+  /* Panel text matches collection tables, slightly smaller than Notes paragraphs. */
+  --panel-font-size: var(--collection-font-size);
+  /* Secondary panel text such as section labels, descriptions, and shortcuts. */
+  --panel-detail-font-size: calc(var(--panel-font-size) * 0.875);
+  /* Row and field height inside panels; touch layouts raise it to a 44px target. */
+  --panel-row-height: calc(var(--panel-font-size) * 1.5 + 0.5rem);
+  /* Hairline that separates a tab's content surface from the window frame. It is opaque, the frame darkened slightly, so it reads the same over any content it covers. */
+  --content-edge: color-mix(in srgb, var(--sidebar) 93%, rgb(0 0 20));
+  /* Its width; content inside a surface starts past it. */
+  --content-edge-width: 1px;
+  /* The active title bar tab reads as a raised chip on the frame. */
+  --tab-active-shadow: 0 0 0 1px rgb(0 0 20 / 0.04), 0 1px 2px rgb(0 0 20 / 0.08);
+}
+
+.dark {
+  --content-edge: color-mix(in srgb, var(--sidebar) 94%, white);
+  --tab-active-shadow: 0 0 0 1px rgb(255 255 255 / 0.06);
+}
+
+html[data-shell="mobile"] {
+  --panel-row-height: 2.75rem;
+}
+
+@media (any-pointer: coarse) and (any-hover: none) {
+  :root {
+    --panel-row-height: 2.75rem;
+  }
+}
+
+@theme inline {
+  --text-panel: var(--panel-font-size);
+  --text-panel--line-height: 1.5;
+  --text-panel-detail: var(--panel-detail-font-size);
+  --text-panel-detail--line-height: 1.4;
+  /* Floating surface widths; keep in sync with lib/components/ui/floating-width.ts. The cap keeps a panel inside a narrow screen. */
+  --container-floating-sm: min(240px, 100vw - 1rem);
+  --container-floating: min(280px, 100vw - 1rem);
+  --container-floating-lg: min(320px, 100vw - 1rem);
+  --radius-floating: var(--floating-radius);
+  --radius-floating-item: var(--floating-item-radius);
+  --shadow-floating: var(--floating-shadow);
+}
+
+/* The surface of a menu, popover, picker, or nonmodal panel. Scroll an inner element so edge fades keep the border. */
+@utility surface-floating {
+  max-width: calc(100vw - 2 * var(--floating-viewport-margin));
+  border: 1px solid var(--border);
+  border-radius: var(--floating-radius);
+  background-color: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow: var(--floating-shadow);
+  font-size: var(--panel-font-size);
+  line-height: 1.5;
+}
+
+/* The surface of a modal dialog or a large nonmodal window. It shares the floating radius, border, and shadow. */
+@utility surface-dialog {
+  border: 1px solid var(--border);
+  border-radius: var(--floating-radius);
+  background-color: var(--card);
+  color: var(--card-foreground);
+  box-shadow: var(--floating-shadow);
+}
+
+/*
+ * Content surface edges are borders, not shadow rings: engines snap border widths and boxes to whole device pixels,
+ * while a 1px shadow ring at a fractional display scale spreads over one or two pixels depending on its position.
+ */
+
+/*
+ * A tab's content surface. It paints the content color itself so no other fill bleeds through the rounded clip, and
+ * with overflow clipping its own content stays inside the edge whatever that content's stacking order.
+ */
+@utility surface-content {
+  position: relative;
+  border: var(--content-edge-width) solid var(--content-edge);
+  border-radius: var(--content-radius);
+  background-color: var(--cal-bg);
+}
+
+/* The edge alone, laid over a content surface whose content is painted by sibling elements. */
+@utility surface-content-edge {
+  border: var(--content-edge-width) solid var(--content-edge);
+  border-radius: var(--content-radius);
+  pointer-events: none;
+}
+
+/* The dimmed layer behind a modal dialog. */
+@utility surface-backdrop {
+  background-color: var(--backdrop);
+}
+
+/* Padding between a floating surface and its rows. */
+@utility surface-floating-body {
+  padding: var(--floating-padding);
+}
+
+/*
+ * An actionable row inside a floating surface. Background highlight marks only the pointer, keyboard focus, and an open
+ * submenu; the current choice shows a trailing check instead.
+ */
+@utility menu-item {
+  display: flex;
+  width: 100%;
+  min-height: var(--panel-row-height);
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: var(--floating-item-radius);
+  text-align: start;
+  &:focus-visible {
+    outline: none;
+  }
+  &:is(:hover, :focus-visible, [aria-expanded="true"], [data-highlighted]):not(:disabled, [aria-disabled="true"]:not(.control-unavailable)) {
+    background-color: var(--accent);
+  }
+  &:is(:disabled, [aria-disabled="true"]):not(.control-unavailable) {
+    cursor: not-allowed;
+    color: color-mix(in srgb, var(--muted-foreground) 60%, transparent);
+  }
+  & > svg {
+    width: 1rem;
+    height: 1rem;
+    flex-shrink: 0;
+  }
+}
+
+/* A destructive row; pair it with `menu-item`. */
+@utility menu-item-destructive {
+  color: var(--destructive);
+  &:is(:hover, :focus-visible, [data-highlighted]):not(:disabled, [aria-disabled="true"]) {
+    background-color: color-mix(in srgb, var(--destructive) 10%, transparent);
+  }
+}
+
+/* A divider between groups of rows. */
+@utility menu-separator {
+  flex-shrink: 0;
+  height: 1px;
+  margin: 0.25rem;
+  border: 0;
+  background-color: var(--border);
+}
+
+/* A quiet heading above a group of rows. */
+@utility menu-label {
+  padding: 0.375rem 0.5rem 0.25rem;
+  color: var(--muted-foreground);
+  font-size: var(--panel-detail-font-size);
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+/*
+ * An icon button in a phone action row. The whole chrome column stays the touch target, while its transparent border
+ * insets every fill to a round highlight the size of the top bar one, so both bars highlight alike.
+ */
+@utility mobile-chrome-button {
+  height: 3rem;
+  min-width: var(--mobile-chrome-column);
+  border-style: solid;
+  border-color: transparent;
+  border-block-width: calc((3rem - var(--mobile-chrome-highlight)) / 2);
+  border-inline-width: calc((var(--mobile-chrome-column) - var(--mobile-chrome-highlight)) / 2);
+  border-radius: calc(infinity * 1px);
+  background-clip: padding-box;
+  &:active:not(:disabled) {
+    background-color: color-mix(in oklab, var(--accent) 70%, transparent);
+  }
+}
+
+/*
+ * A text field: transparent over its surface with a thin border. Focus never adds a contour, ring, or fill; the caret
+ * is enough. Use it on bare inputs, textareas, and on wrappers that hold a borderless input with icons.
+ */
+@utility field {
+  min-height: var(--panel-row-height);
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--floating-item-radius);
+  background-color: transparent;
+  &::placeholder {
+    color: var(--muted-foreground);
+  }
+  &:is(:focus, :focus-visible, :focus-within) {
+    outline: none;
+    box-shadow: none;
+  }
+  /* Invalid input keeps its signal while focused. */
+  &:is([aria-invalid="true"], [data-invalid], :has(> [aria-invalid="true"])) {
+    border-color: var(--destructive);
+  }
+  &:is(:disabled, [aria-disabled="true"]):not(.control-unavailable) {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+}
+
+/*
+ * A control whose behavior is not implemented yet. It keeps its final appearance and placement, shows the not-allowed
+ * cursor, and has no activation handler; pair it with `aria-disabled="true"`. It never dims or explains itself, so it
+ * stays distinguishable from a control disabled by state. docs/features/collaboration/README.md records the rule.
+ */
+@utility control-unavailable {
+  cursor: not-allowed;
+  & > * {
+    cursor: inherit;
+  }
+}
+
+/* A borderless input inside a `field` wrapper. */
+@utility field-bare {
+  min-width: 0;
+  flex: 1 1 0%;
+  border: 0;
+  background-color: transparent;
+  &::placeholder {
+    color: var(--muted-foreground);
+  }
+  &:is(:focus, :focus-visible) {
+    outline: none;
+    box-shadow: none;
+  }
+}
+
+/*
+ * Items of a list reordered with `createSortableDrag` (lib/utils/sortable-drag.svelte.ts). Siblings slide aside while one
+ * item is dragged; the dragged item lifts above them with the same look as the Projects sidebar drag card.
+ */
+[data-sortable-item] {
+  position: relative;
+}
+
+[data-sortable-item][data-sortable-animated] {
+  transition: translate var(--sortable-duration) cubic-bezier(0.2, 0, 0, 1);
+}
+
+[data-sortable-item][data-sortable-phase] {
+  z-index: 10;
+  border-radius: var(--radius-md);
+}
+
+[data-sortable-item][data-sortable-phase="lifted"] {
+  background-color: var(--popover);
+  box-shadow: 0 0 0 1px var(--border), 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+  scale: 1.01;
+  transition: scale 150ms ease-out, box-shadow 150ms ease-out;
+}
+
+[data-sortable-item][data-sortable-phase="settling"] {
+  transition-property: translate, scale, box-shadow, background-color;
+  transition-duration: var(--sortable-duration);
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+html.sortable-dragging,
+html.sortable-dragging * {
+  cursor: grabbing !important;
+  user-select: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-sortable-item],
+  [data-sortable-item][data-sortable-phase] {
+    transition: none;
+  }
+}

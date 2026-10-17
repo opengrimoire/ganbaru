@@ -1,14 +1,14 @@
 /**
- * Memory + boot-mark sampling for the benchmark harness.
+ * Memory and boot-mark sampling for the benchmark harness.
  *
- * Wraps `get_memory_report` (Tauri command in `lib.rs`) and the
- * `lib/stores/perflog.svelte.ts` ring buffer. Scenarios never call this
+ * Wraps `memory_report` (Tauri command in `src-tauri/app/src/benchmark/memory.rs`) and the
+ * `lib/stores/perf-log.svelte.ts` ring buffer. Scenarios never call this
  * directly: the runner orchestrates the post-state memory observation
  * schedule after `runWorkload`.
  */
 import { invoke } from "@tauri-apps/api/core";
-import { perfLog, snapshot as perfSnapshot, type PerfLogEntry } from "$lib/stores/perflog.svelte";
-import { categorizeMemoryProcessName } from "$lib/components/perf/memoryReport";
+import { perfLog, snapshot as perfSnapshot, type PerfLogEntry } from "$lib/stores/perf-log.svelte";
+import { categorizeMemoryProcessName } from "$lib/diagnostics/memory-report";
 import type { BootTimings, SampleLabel, SamplePoint } from "./types";
 import {
   MEMORY_OBSERVATION_INTERVAL_MS,
@@ -45,14 +45,14 @@ function clearSampleTimeout(id: TimeoutId): void {
 /**
  * Read one memory snapshot from the backend. Maps the Rust report into the
  * `SamplePoint` shape (backend / frontend / network split). Process names
- * come from `lib.rs`, while category mapping is shared with the live
+ * come from `benchmark/memory.rs`, while category mapping is shared with the live
  * diagnostics panel so both surfaces agree.
  */
 export async function readMemorySample(
   label: SampleLabel,
   tMs: number,
 ): Promise<SamplePoint> {
-  const report = await invoke<MemoryReport>("get_memory_report");
+  const report = await invoke<MemoryReport>("memory_report");
   let backend = 0;
   let frontend = 0;
   let network = 0;
@@ -164,37 +164,37 @@ const BOOT_MARKS_OF_INTEREST = new Set<string>([
 /**
  * Lift the boot marks from the perflog snapshot, expressed as ms relative
  * to `boot.script-start` (the first mark fired in `App.svelte`). If
- * `boot.script-start` is missing (very rare), falls back to the first mark
+ * `boot.script-start` is missing, falls back to the first mark
  * in the buffer so deltas stay consistent within the run.
  */
 export function captureBootTimings(): BootTimings {
   const entries = perfSnapshot();
-  const baseT = findBaseT(entries);
+  const baseMs = findBaseMs(entries);
   const marks: Record<string, number> = {};
-  let firstPaintT: number | undefined;
-  let usablePaintT: number | undefined;
+  let firstPaintMs: number | undefined;
+  let usablePaintMs: number | undefined;
   for (const e of entries) {
     if (BOOT_MARKS_OF_INTEREST.has(e.tag)) {
       // First write wins so a re-emitted mark does not overwrite the boot value.
       if (!(e.tag in marks)) {
-        marks[e.tag] = Math.max(0, e.t - baseT);
+        marks[e.tag] = Math.max(0, e.t - baseMs);
       }
-      if (e.tag === "boot.first-paint" && firstPaintT === undefined) {
-        firstPaintT = e.t;
+      if (e.tag === "boot.first-paint" && firstPaintMs === undefined) {
+        firstPaintMs = e.t;
       }
-      if (e.tag === "boot.usable-paint" && usablePaintT === undefined) {
-        usablePaintT = e.t;
+      if (e.tag === "boot.usable-paint" && usablePaintMs === undefined) {
+        usablePaintMs = e.t;
       }
     }
   }
-  const launchTargetT = usablePaintT ?? firstPaintT;
-  const launchTotalMs = launchTargetT === undefined || perfLog.shellStartupMs === null
+  const launchTargetMs = usablePaintMs ?? firstPaintMs;
+  const launchTotalMs = launchTargetMs === undefined || perfLog.shellStartupMs === null
     ? undefined
-    : Math.max(0, perfLog.shellStartupMs + launchTargetT - baseT);
+    : Math.max(0, perfLog.shellStartupMs + launchTargetMs - baseMs);
   return launchTotalMs === undefined ? { marks } : { marks, launchTotalMs };
 }
 
-function findBaseT(entries: readonly PerfLogEntry[]): number {
+function findBaseMs(entries: readonly PerfLogEntry[]): number {
   for (const e of entries) {
     if (e.tag === "boot.script-start") return e.t;
   }

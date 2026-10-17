@@ -1,9 +1,9 @@
 <script lang="ts">
   import Music2 from "@lucide/svelte/icons/music-2";
   import Youtube from "@lucide/svelte/icons/youtube";
-  import type { LocalRootBinding, MusicItemListEntry } from "$lib/music/library-contracts";
-  import { musicArtworkDataUrl, musicEmbeddedArtworkDataUrl, musicYouTubeThumbnailDataUrl } from "$lib/music/music-artwork-cache";
-  import { musicListArtworkSource } from "$lib/music/music-list-artwork";
+  import type { LocalRootBinding, MusicItemListEntry } from "$lib/music/library/contracts";
+  import { musicArtworkDataUrl, musicEmbeddedArtworkDataUrl, musicYouTubeThumbnailDataUrl } from "$lib/music/library/artwork-cache";
+  import { musicListArtworkSource } from "$lib/music/builder/list-artwork";
   import { youtubeVideoIdFromIdentity } from "$lib/music/sources";
 
   let {
@@ -25,7 +25,7 @@
       ? youtubeVideoIdFromIdentity(item.identityKey)
       : null;
     void refreshTick;
-    item.updatedAt;
+    item.updatedAtMs;
     const request = ++requestVersion;
     currentUrl = null;
     const load = source

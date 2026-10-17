@@ -1,10 +1,8 @@
-use crate::chat::{
-    models::{ChatErrorCode, ChatTurnState, ProviderSessionState},
-    state::{
-        SESSION_TRANSITIONS, TURN_TRANSITIONS, can_transition_session, can_transition_turn,
-        transition_session, transition_turn,
-    },
+use ganbaru_chat::state::{
+    SESSION_TRANSITIONS, TURN_TRANSITIONS, can_transition_session, can_transition_turn,
+    transition_session, transition_turn,
 };
+use ganbaru_chat_contracts::models::{ChatErrorCode, ChatTurnState, ProviderSessionState};
 
 #[test]
 fn session_transition_table_accepts_only_declared_pairs() {

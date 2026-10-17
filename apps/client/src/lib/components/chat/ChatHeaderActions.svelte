@@ -1,96 +1,91 @@
 <script lang="ts">
-  import Archive from "@lucide/svelte/icons/archive";
-  import EllipsisVertical from "@lucide/svelte/icons/ellipsis-vertical";
-  import FolderOpen from "@lucide/svelte/icons/folder-open";
   import PanelBottom from "@lucide/svelte/icons/panel-bottom";
   import PanelRight from "@lucide/svelte/icons/panel-right";
-  import Pencil from "@lucide/svelte/icons/pencil";
-  import Settings from "@lucide/svelte/icons/settings";
+  import Settings2 from "@lucide/svelte/icons/settings-2";
   import SquareArrowOutUpRight from "@lucide/svelte/icons/square-arrow-out-up-right";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { getChat } from "$lib/stores/chat.svelte";
-  import { getSettingsLauncher } from "$lib/stores/settingsLauncher.svelte";
-  import { cn } from "$lib/utils";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
-  import { openDetachedChatWindow } from "$lib/chat/local-execution-ui";
+  import { useChat } from "$lib/stores/chat.svelte";
+  import { getWorkspaceTabs } from "$lib/stores/workspace-tabs.svelte";
+  import { cn } from "$lib/utils";
+  import Notice from "$lib/components/ui/Notice.svelte";
 
   let {
     bottomPanelOpen,
+    projectName,
+    projectSettingsOpen,
     onToggleBottomPanel,
-    onRename,
+    onToggleProjectSettings,
   }: {
     bottomPanelOpen: boolean;
+    projectName: string | null;
+    projectSettingsOpen: boolean;
     onToggleBottomPanel: () => void;
-    onRename: () => void;
+    onToggleProjectSettings: (trigger: HTMLButtonElement) => void;
   } = $props();
 
-  const chat = getChat();
-  const settings = getSettingsLauncher();
+  const chat = useChat();
   const { t } = getLocalization();
   const localExecutionAvailable = platformHasCapability(
     BUILD_PLATFORM_PROFILE,
     "chat.local-execution",
   );
   const mobilePresentation = BUILD_PLATFORM_PROFILE.shell === "mobile";
-  let actionError = $state<string | null>(null);
-  let moreActions = $state<HTMLDetailsElement | null>(null);
-  const selectedFolder = $derived(chat.selectedWorkingFolder);
+  /** Phone action rows share 16 pixel icons in 3rem tall targets on the top bar icon columns across Projects, Notes, and Chat. */
+  const actionIconSize = mobilePresentation ? 16 : 14;
+  const iconButtonClass = cn("chat-header-icon-button", mobilePresentation && "mobile-chrome-button");
+  const tabs = getWorkspaceTabs();
   const selectedThread = $derived(chat.selectedThread);
-  const selectedChannel = $derived(chat.selectedChannel);
+  const detachBlock = $derived(tabs.detachBlock(tabs.activeTabId));
+  const detachTitle = $derived(
+    detachBlock === "last-tab" ? t("titleBar.onlyTabInWindow") : t("chat.detach"),
+  );
+  let actionError = $state<string | null>(null);
 
-  function run(action: () => Promise<unknown>): void {
+  function detachThread(): void {
     actionError = null;
-    void action().catch((error: unknown) => {
+    void tabs.detach(tabs.activeTabId).catch((error: unknown) => {
       actionError = error instanceof Error ? error.message : String(error);
     });
   }
-
-  function archiveSelectedChannel(): void {
-    const channel = selectedChannel;
-    if (!channel || !window.confirm(
-      `${t("chat.channels.archiveConfirmTitle", channel.name)}\n\n${t("chat.channels.archiveConfirmMessage")}`,
-    )) return;
-    run(() => chat.archiveChannel(channel));
-  }
-
-  function closeMoreActionsFromOutside(event: PointerEvent): void {
-    const target = event.target;
-    if (moreActions?.open && target instanceof Node && !moreActions.contains(target)) moreActions.open = false;
-  }
 </script>
 
-<svelte:window onpointerdown={closeMoreActionsFromOutside} />
-
-<div class="chat-header-actions flex min-w-0 shrink-0 items-center gap-1" class:mobilePresentation data-chat-header-actions>
-  {#if actionError}<p role="alert" class="max-w-40 truncate text-[0.666667rem] text-destructive">{actionError}</p>{/if}
+<div class={cn("chat-header-actions flex min-w-0 shrink-0 items-center", mobilePresentation ? "gap-0" : "gap-1")} class:mobilePresentation data-chat-header-actions>
+  {#if actionError}<Notice class="header-action-error max-w-48 text-[0.666667rem]" message={actionError} />{/if}
   {#if localExecutionAvailable}
-    <button type="button" class={cn("chat-header-icon-button", bottomPanelOpen && "bg-accent text-foreground")} aria-label={bottomPanelOpen ? t("chat.closeBottomPanel") : t("chat.openBottomPanel")} aria-pressed={bottomPanelOpen} data-chat-bottom-panel-action onclick={onToggleBottomPanel}>
-      <PanelBottom size={14} strokeWidth={1.75} />
+    <button type="button" class={cn(iconButtonClass, bottomPanelOpen && "bg-accent text-foreground")} aria-label={bottomPanelOpen ? t("chat.closeBottomPanel") : t("chat.openBottomPanel")} aria-pressed={bottomPanelOpen} data-chat-bottom-panel-action onclick={onToggleBottomPanel}>
+      <PanelBottom size={actionIconSize} strokeWidth={1.75} />
     </button>
-    <button type="button" class={cn("chat-header-icon-button", chat.inspectorOpen && "bg-accent text-foreground")} aria-label={chat.inspectorOpen ? t("chat.closeInspector") : t("chat.openInspector")} aria-pressed={chat.inspectorOpen} data-chat-inspector-action onclick={() => { chat.inspectorOpen = !chat.inspectorOpen; }}>
-      <PanelRight size={14} strokeWidth={1.75} />
+    <button type="button" class={cn(iconButtonClass, chat.inspectorOpen && "bg-accent text-foreground")} aria-label={chat.inspectorOpen ? t("chat.closeInspector") : t("chat.openInspector")} aria-pressed={chat.inspectorOpen} data-chat-inspector-action onclick={() => { chat.inspectorOpen = !chat.inspectorOpen; }}>
+      <PanelRight size={actionIconSize} strokeWidth={1.75} />
     </button>
   {/if}
-  <details bind:this={moreActions} class="relative">
-    <summary class="chat-header-icon-button list-none" aria-label={t("chat.moreActions")}><EllipsisVertical size={14} strokeWidth={1.75} /></summary>
-    <div class="chat-actions-menu right-0 top-8">
-      {#if selectedChannel && !selectedChannel.isDefault}<button type="button" onclick={onRename}><Pencil size={13} />{t("chat.rename")}</button>{/if}
-      {#if localExecutionAvailable && selectedFolder?.bindingStatus === "available"}<button type="button" onclick={() => run(() => chat.openWorkingFolder(selectedFolder.workingFolder.id))}><FolderOpen size={13} />{t("chat.openFolder")}</button>{/if}
-      {#if localExecutionAvailable && selectedThread}<button type="button" onclick={() => run(openDetachedChatWindow)}><SquareArrowOutUpRight size={13} />{t("chat.detach")}</button>{/if}
-      {#if selectedChannel && !selectedChannel.isDefault && !selectedChannel.archivedAt}<button type="button" onclick={archiveSelectedChannel}><Archive size={13} />{t("chat.archive")}</button>{/if}
-      <button type="button" onclick={() => settings.open("chat")}><Settings size={13} />{t("chat.settings")}</button>
-    </div>
-  </details>
+  {#if localExecutionAvailable && selectedThread && detachBlock !== "unsupported"}
+    <button type="button" class={cn(iconButtonClass, detachBlock !== null && "cursor-not-allowed opacity-40")} aria-label={t("chat.detach")} aria-disabled={detachBlock !== null} title={detachTitle} onclick={() => { if (detachBlock === null) detachThread(); }}>
+      <SquareArrowOutUpRight size={actionIconSize} strokeWidth={1.75} />
+    </button>
+  {/if}
+  {#if projectName}
+    <button
+      type="button"
+      class={cn(iconButtonClass, projectSettingsOpen && "bg-accent text-foreground")}
+      aria-label={t("chat.projectSettingsTitle", projectName)}
+      title={t("chat.projectSettingsTitle", projectName)}
+      aria-haspopup="dialog"
+      aria-expanded={projectSettingsOpen}
+      data-chat-project-settings-trigger
+      onclick={(event) => onToggleProjectSettings(event.currentTarget)}
+    >
+      <Settings2 size={actionIconSize} strokeWidth={1.75} />
+    </button>
+  {/if}
 </div>
 
 <style>
-  .chat-header-icon-button { display: flex; height: 1.75rem; width: 1.75rem; flex: 0 0 auto; align-items: center; justify-content: center; border-radius: 0.375rem; color: var(--foreground); transition: background-color 120ms ease; }
-  .chat-header-icon-button:hover { background: var(--accent); }
-  .chat-actions-menu { position: absolute; z-index: 90; display: grid; min-width: 11rem; overflow: hidden; border: 1px solid var(--border); border-radius: 0.5rem; background: var(--popover); padding: 0.25rem; color: var(--popover-foreground); box-shadow: 0 12px 30px rgb(0 0 0 / 0.2); }
-  .chat-actions-menu button { display: flex; min-height: 2rem; align-items: center; gap: 0.5rem; border-radius: 0.375rem; padding-inline: 0.5rem; text-align: left; font-size: calc(0.733333rem * var(--type-scale)); }
-  .chat-actions-menu button:hover { background: var(--accent); color: var(--accent-foreground); }
-  .chat-header-actions.mobilePresentation .chat-header-icon-button { width: 3rem; height: 3rem; }
-  .chat-header-actions.mobilePresentation .chat-actions-menu { top: 3rem; }
-  .chat-header-actions.mobilePresentation .chat-actions-menu button { min-height: 3rem; }
+  .chat-header-icon-button { display: flex; flex: 0 0 auto; align-items: center; justify-content: center; color: var(--foreground); transition: background-color 120ms ease; }
+  .chat-header-actions:not(.mobilePresentation) .chat-header-icon-button { height: 1.75rem; width: 1.75rem; border-radius: 0.375rem; }
+  @media (hover: hover) { .chat-header-icon-button:hover { background-color: var(--accent); } }
+  .chat-header-actions :global(.header-action-error .notice-message) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chat-header-actions.mobilePresentation .chat-header-icon-button { width: var(--mobile-chrome-column); }
   @media (prefers-reduced-motion: reduce) { .chat-header-icon-button { transition: none; } }
 </style>

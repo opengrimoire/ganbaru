@@ -17,6 +17,9 @@
     type LanguageOption,
   } from "$lib/i18n/pre-vault-language";
   import { cn } from "$lib/utils";
+  import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
+  import { keepInViewport } from "$lib/utils/keep-in-viewport";
+  import { OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
 
   const localization = getLocalization();
   const { t } = localization;
@@ -84,7 +87,7 @@
     if (!open) return;
     query = "";
     await tick();
-    searchInputEl?.focus();
+    if (OPENING_MAY_FOCUS_TEXT) searchInputEl?.focus();
   }
 
   async function selectLanguage(next: LanguageOption): Promise<void> {
@@ -135,23 +138,24 @@
 
   {#if open}
     <div
-      class="absolute left-0 top-full z-20 mt-1 w-72 max-w-[calc(100vw-2rem)] overflow-hidden rounded-md border border-border bg-popover shadow-lg"
+      use:keepInViewport
+      class="surface-floating absolute left-0 top-full z-20 mt-1 w-floating-lg overflow-hidden"
     >
-      <div class="p-2">
-        <label class="flex h-8 items-center gap-2 rounded-md border border-input bg-background px-2 text-muted-foreground">
-          <Search size={14} strokeWidth={2} class="shrink-0" />
+      <div class="px-1.5 pt-1.5">
+        <label class="field flex items-center gap-1.5">
+          <Search size={13} strokeWidth={1.5} class="shrink-0 text-popover-foreground/60" />
           <input
             bind:this={searchInputEl}
             bind:value={query}
             type="search"
             placeholder={t("vaultSetup.languageSearchPlaceholder")}
-            class="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
+            class="field-bare text-popover-foreground"
           />
         </label>
       </div>
-      <div role="listbox" class="max-h-56 overflow-y-auto px-2 pb-2">
+      <div role="listbox" use:scrollEdgeFadeAction class="surface-floating-body max-h-56 overflow-y-auto">
         {#if filteredOptions.length === 0}
-          <div class="px-3 py-2 text-sm text-muted-foreground">
+          <div class="px-2 py-1.5 text-panel-detail text-muted-foreground">
             {t("vaultSetup.noLanguagesFound")}
           </div>
         {:else}
@@ -162,10 +166,7 @@
               role="option"
               aria-selected={isActive}
               onclick={() => void selectLanguage(option)}
-              class={cn(
-                "flex w-full items-center justify-between gap-3 rounded-md px-2.5 py-2 text-left text-sm transition-colors",
-                isActive ? "bg-accent/35 text-foreground" : "text-foreground hover:bg-accent/25",
-              )}
+              class="menu-item justify-between gap-3 text-left text-foreground"
             >
               <span class="min-w-0 truncate font-medium">{option.label}</span>
               {#if isActive}

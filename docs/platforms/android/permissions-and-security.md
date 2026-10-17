@@ -22,7 +22,7 @@ Returning from settings refreshes actual platform state. Manufacturer autostart 
 
 ## Accessibility boundary
 
-The Doomscrolling service requests only the event stream needed to identify package window changes. It does not retrieve view content, text, gestures, keystrokes, notifications, screen images, or arbitrary browsing data.
+The anti-distraction service requests only the event stream needed to identify package window changes. It does not retrieve view content, text, gestures, keystrokes, notifications, screen images, or arbitrary browsing data.
 
 Enforcement uses the standard Home global action for a fresh explicitly selected package. It does not use overlays, gesture injection, screen capture, or device-owner authority.
 
@@ -32,7 +32,7 @@ This capability requires store-policy review and the appropriate Play declaratio
 
 The app uses targeted launchable-activity queries needed for the on-demand selected-app picker. It does not request `QUERY_ALL_PACKAGES`.
 
-Unknown packages, system UIDs, Ganbaru AI, Home, Settings, dialer, and protected apps are rejected.
+Unknown packages, system UIDs, Ganbaru, Home, Settings, dialer, and protected apps are rejected.
 
 ## Storage authority
 
@@ -42,7 +42,7 @@ Persisted document permissions are retained only for sources that require ongoin
 
 ## Other excluded permissions
 
-Current features do not request contacts, microphone, location, screen capture, system overlay, device-owner status, or VPN consent. Android exposes one camera permission for camera capture, so it cannot be narrowed to a separate still-photo-only permission. Ganbaru AI requests it only when the QR scanner is shown, requests no microphone access, processes preview frames in memory, and stops the stream after a code is decoded or the scanner closes. A future feature requires a new spec, localized disclosure, denial behavior, tests, and policy review before new authority enters the manifest.
+Current features do not request contacts, microphone, location, screen capture, system overlay, device-owner status, or VPN consent. The camera permission is requested only when the QR scanner is shown; preview frames are processed in memory and the stream stops once a code is decoded or the scanner closes. New authority enters the manifest only with a spec, localized disclosure, denial behavior, tests, and policy review.
 
 ## WebView and bridge
 

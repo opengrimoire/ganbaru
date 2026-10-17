@@ -1,4 +1,4 @@
-import type { Theme } from "$lib/stores/themes";
+import type { Theme } from "$lib/themes";
 import type { Translate } from "./translator.svelte";
 
 export function themeDisplayName(theme: Theme, t: Translate): string {

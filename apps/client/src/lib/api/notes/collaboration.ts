@@ -1,12 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { ensureDbUrl } from "$lib/api/db";
-import { invalidateNotesNotificationSchedule } from "$lib/notes/notification-schedule.svelte";
+import { invalidateNotesNotificationSchedule } from "$lib/notes/collaboration/notification-schedule.svelte";
 import {
   mapNotesCommentThreadDto,
   mapNotesLocalUserDto,
   mapNotesMentionNotificationDto,
+  mapNotesPageNotificationSettingsDto,
   mapNotesSuggestionDto,
-} from "$lib/notes/notion-mappers";
+} from "$lib/notes/validation/response-mappers";
 import type {
   NotesCommentCreate,
   NotesCommentThread,
@@ -16,6 +17,8 @@ import type {
   NotesLocalUserUpdate,
   NotesMentionNotification,
   NotesMentionNotificationDeliveryUpdate,
+  NotesPageNotificationLevel,
+  NotesPageNotificationSettings,
   NotesSuggestion,
   NotesSuggestionCreate,
 } from "$lib/notes/types";
@@ -23,7 +26,7 @@ import { invokeNotesMutation } from "./mutation";
 
 export async function getNotesLocalUser(): Promise<NotesLocalUser> {
   const dbUrl = await ensureDbUrl();
-  return mapNotesLocalUserDto(await invoke<unknown>("notes_get_local_user", { dbUrl }));
+  return mapNotesLocalUserDto(await invoke<unknown>("notes_local_user", { dbUrl }));
 }
 
 export async function updateNotesLocalUser(
@@ -33,16 +36,6 @@ export async function updateNotesLocalUser(
   return mapNotesLocalUserDto(
     await invoke<unknown>("notes_update_local_user", { dbUrl, update }),
   );
-}
-
-export async function refreshNotesMentionNotifications(): Promise<number> {
-  const dbUrl = await ensureDbUrl();
-  const refreshed = await invoke<unknown>("notes_refresh_mention_notifications", { dbUrl });
-  if (typeof refreshed !== "number" || !Number.isInteger(refreshed)) {
-    throw new Error("notes_refresh_mention_notifications returned an invalid count");
-  }
-  invalidateNotesNotificationSchedule();
-  return refreshed;
 }
 
 export async function listPendingNotesMentionNotifications():
@@ -171,4 +164,50 @@ export async function rejectNotesSuggestion(suggestionId: string): Promise<Notes
   return mapNotesSuggestionDto(
     await invokeNotesMutation("notes_reject_suggestion", { dbUrl, suggestionId }),
   );
+}
+
+/** Add the local user's emoji reaction to a comment, or remove it when it is already there. */
+export async function toggleNotesCommentReaction(
+  commentId: string,
+  emoji: string,
+): Promise<NotesCommentThread> {
+  const dbUrl = await ensureDbUrl();
+  return mapNotesCommentThreadDto(
+    await invokeNotesMutation("notes_toggle_comment_reaction", { dbUrl, commentId, emoji }),
+  );
+}
+
+/** Silence or restore notifications from replies in one discussion for this device's user. */
+export async function setNotesCommentThreadMuted(
+  discussionId: string,
+  muted: boolean,
+): Promise<NotesCommentThread> {
+  const dbUrl = await ensureDbUrl();
+  const thread = mapNotesCommentThreadDto(
+    await invoke<unknown>("notes_set_comment_thread_muted", { dbUrl, discussionId, muted }),
+  );
+  invalidateNotesNotificationSchedule();
+  return thread;
+}
+
+export async function getNotesPageNotificationSettings(
+  pageId: string,
+): Promise<NotesPageNotificationSettings> {
+  const dbUrl = await ensureDbUrl();
+  return mapNotesPageNotificationSettingsDto(
+    await invoke<unknown>("notes_get_page_notification_settings", { dbUrl, pageId }),
+  );
+}
+
+/** Choose which comment and mention notifications from one page reach this device's user. */
+export async function setNotesPageNotificationLevel(
+  pageId: string,
+  level: NotesPageNotificationLevel,
+): Promise<NotesPageNotificationSettings> {
+  const dbUrl = await ensureDbUrl();
+  const settings = mapNotesPageNotificationSettingsDto(
+    await invoke<unknown>("notes_set_page_notification_level", { dbUrl, pageId, level }),
+  );
+  invalidateNotesNotificationSchedule();
+  return settings;
 }

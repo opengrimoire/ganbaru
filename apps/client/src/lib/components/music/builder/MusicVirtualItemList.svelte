@@ -1,8 +1,8 @@
 <script lang="ts">
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import type { LocalRootBinding, MusicItemListEntry, MusicWeight } from "$lib/music/library-contracts";
-  import { musicVirtualWindow, revealMusicVirtualIndex } from "$lib/music/music-virtual-window";
-  import type { MusicSnoozePreset } from "$lib/music/music-snooze";
+  import type { LocalRootBinding, MusicItemListEntry, MusicWeight } from "$lib/music/library/contracts";
+  import { musicVirtualWindow, revealMusicVirtualIndex } from "$lib/music/builder/virtual-window";
+  import type { MusicSnoozePreset } from "$lib/music/session/snooze";
   import MusicBuilderItemRow from "./MusicBuilderItemRow.svelte";
 
   let {

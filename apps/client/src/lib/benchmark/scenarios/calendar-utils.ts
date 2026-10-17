@@ -2,13 +2,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { dbUrl } from "$lib/api/db";
 import { getCalendar } from "$lib/stores/calendar.svelte";
 import { getCalendars } from "$lib/stores/calendars.svelte";
-import type { CalendarEvent } from "$lib/components/calendar/types";
-import type { CalendarViewMode } from "$lib/components/calendar/types";
-import { computeViewWindow } from "$lib/components/calendar/utils";
+import type { CalendarEvent } from "$lib/calendar/types";
+import type { CalendarViewMode } from "$lib/calendar/types";
+import { computeViewWindow } from "$lib/calendar/utils";
 import {
   buildBulkImportPayload,
   type CalendarBulkImportResult,
-} from "$lib/stores/calendar-bulk-import";
+} from "$lib/stores/calendar/bulk-import";
 import { countDenseCalendarEvents, generateDenseCalendarEvents } from "../dense";
 import {
   buildDensePomodoroHistoryPayload,
@@ -72,8 +72,8 @@ function nowIso(): string {
 
 /**
  * Convert a deterministic benchmark draft into a full event ready for
- * `bulkImport`. The source UID lets re-seeds land as updates instead of
- * warning and skipping.
+ * `calendar_bulk_import`. The source UID doubles as the event id, so
+ * re-seeds land as updates instead of duplicates.
  */
 export function draftToEvent(
   draft: BenchmarkEventDraft,
@@ -156,7 +156,7 @@ export async function seedCalendarDataset(
   context: BenchmarkScenarioContext,
 ): Promise<BenchmarkSeedHandle> {
   const calendarsStore = getCalendars();
-  const cal = await calendarsStore.findOrCreateImported(denseCalendarFilename(dataset));
+  const calendar = await calendarsStore.findOrCreateImported(denseCalendarFilename(dataset));
   const anchor = parseCalendarBenchmarkAnchor(context.anchorDate);
   const totalEvents = countDenseCalendarEvents(dataset, anchor);
 
@@ -167,8 +167,8 @@ export async function seedCalendarDataset(
       offset,
       count: DENSE_SEED_CHUNK_SIZE,
     });
-    const events = drafts.map((d, i) => draftToEvent(d, offset + i, cal.id));
-    await bulkImportBenchmarkEvents(events, cal.id);
+    const events = drafts.map((d, i) => draftToEvent(d, offset + i, calendar.id));
+    await bulkImportBenchmarkEvents(events, calendar.id);
     await seedPomodoroHistory(
       buildDensePomodoroHistoryPayload(
         events,
@@ -178,7 +178,7 @@ export async function seedCalendarDataset(
   }
 
   return {
-    calendarId: cal.id,
+    calendarId: calendar.id,
     eventCount: totalEvents,
     datasetId: benchmarkDatasetId(dataset),
     dataset,

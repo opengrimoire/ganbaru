@@ -1,8 +1,8 @@
 //! Coordinator staging and activation of snapshots returned by the current owner.
 
 use super::{CoordinatorResponse, CoordinatorState};
+use crate::vault::handoff::pairing::{PendingAcknowledgement, StoredIncomingTransfer};
 use crate::vault::handoff::protocol::{BundleMetadata, BundlePurpose};
-use crate::vault::handoff::state::{PendingAcknowledgement, StoredIncomingTransfer};
 use crate::vault::handoff::{current_compatibility, protocol};
 use crate::vault::ownership::VaultOwnershipManager;
 use tauri::{Manager, Runtime};
@@ -236,12 +236,11 @@ impl<R: Runtime> CoordinatorState<R> {
         };
         let staging =
             crate::vault::backup::active_handoff_staging_path(&self.app, &metadata.transfer_id)?;
-        crate::vault::backup::activate_active_handoff(
+        crate::vault::backup::activate_uploaded_ownership(
             &self.app,
             &staging,
             &metadata.transfer_id,
             &metadata.vault_id,
-            true,
         )
         .await?;
         if needs_finalize {

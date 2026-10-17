@@ -7,7 +7,7 @@
  * without updating the tests and docs. Layout-only output changes do not bump
  * `HARNESS_VERSION`.
  *
- * See the spec doc for the rationale and a worked example.
+ * See `docs/performance/harness.md` for the rationale.
  */
 import type {
   BenchmarkMetric,
@@ -18,8 +18,8 @@ import type {
 } from "./types";
 
 /**
- * Boot marks used for startup summary stats. The headline launch stat uses
- * process spawn through usable calendar paint.
+ * Boot mark used for the usable paint startup column. The headline launch
+ * stat measures process spawn through usable calendar paint.
  */
 const USABLE_PAINT_MARK = "boot.usable-paint";
 

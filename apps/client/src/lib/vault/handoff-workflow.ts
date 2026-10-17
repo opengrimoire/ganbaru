@@ -45,6 +45,18 @@ export function formatHandoffError(cause: unknown, t: Translate): string {
   return t("vaultHandoff.failed", raw || t("vaultHandoff.unknownError"));
 }
 
+/** Explain invalid or expired pairing codes without exposing parser errors. */
+export function formatPairingCodeError(cause: unknown, t: Translate): string {
+  const lower = errorText(cause).toLowerCase();
+  if (lower.includes("pairing invitation has expired")) {
+    return t("vaultHandoff.codeExpired");
+  }
+  if (lower.includes("pairing invitation")) {
+    return t("vaultHandoff.codeInvalid");
+  }
+  return formatHandoffError(cause, t);
+}
+
 /** Converts ownership connectivity failures into main-device guidance. */
 export function formatOwnershipHandoffError(cause: unknown, t: Translate): string {
   const raw = errorText(cause);

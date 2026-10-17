@@ -1,5 +1,7 @@
 # Notes history and recovery
 
+Status: implemented. Sync-aware restoration is planned.
+
 Notes provides page-local history, project-wide versions, reusable page templates, Archive, Trash, and safety versions. These surfaces recover canonical data without turning history snapshots into a second live graph.
 
 ## Retention
@@ -15,6 +17,8 @@ Mutations to page details, placement, lifecycle, child links, or blocks record a
 Version history renders the selected snapshot without live editing controls and lists localized time and author. Users can copy blocks from a version or restore it.
 
 Copy creates fresh block IDs and valid paired child pages where needed. Restore saves the current page first when history is enabled, then replaces page details and body through one transaction. It does not move the page to an old parent, which prevents a content restore from unexpectedly changing current navigation and access.
+
+Copying a database block from page history creates an independent copy of its currently available database graph. A page snapshot does not contain historical database source and row graphs. Page-history restore therefore refuses pages or snapshots with local database content and directs users to project versions, preventing block replacement from deleting canonical database data.
 
 ## Project versions
 
@@ -51,6 +55,8 @@ Archive is reversible organization. Archived pages retain canonical content and 
 ## Trash and permanent deletion
 
 Trash is the recovery surface for deleted pages. Page subtrees move together, paired child blocks hide or restore consistently, and retained history and asset pins remain valid.
+
+Trashing a database block, containing block subtree, or containing note also trashes its owned database shells, sources, row pages, and nested row content in the same transaction. Trashing a linked shell leaves the shared source graph intact. The deletion records which active objects it changed. Restore recovers only objects still owned by that deletion, preserving rows and blocks individually trashed before it, as well as objects restored and deleted again afterward. Restoring an individual row or nested note uses the same ownership boundary and validates its placement.
 
 Permanent deletion requires confirmation or retention expiry. It removes canonical page closure transactionally. Asset bytes are collected only when no live record, history version, import record, comment, property, or other owner references them.
 

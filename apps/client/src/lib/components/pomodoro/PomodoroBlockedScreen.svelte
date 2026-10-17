@@ -11,13 +11,13 @@
     pomodoroBlockedScreenCopy,
     shouldShowBlockedScreenDateTime,
     type PomodoroBlockedScreenState,
-  } from "./blocked-screen";
+  } from "$lib/pomodoro/blocked-screen";
   import {
     DEFAULT_FOCUS_BREAK_END_ESC_PRESSES,
     DEFAULT_FOCUS_BREAK_EXTENSION_LIMIT,
     type FocusBreakEndEscPresses,
     type FocusBreakExtensionLimit,
-  } from "$lib/stores/preferences";
+  } from "$lib/stores/preference-options";
   import { getLocalization } from "$lib/i18n/translator.svelte";
 
   const localization = getLocalization();

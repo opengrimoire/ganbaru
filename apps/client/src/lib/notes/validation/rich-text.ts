@@ -1,6 +1,6 @@
-import type { NotesDateMentionReminder, NotesDateMentionValue, NotesRichText, NotesRichTextAnnotations } from "../contracts/core";
-import { normalizeRichTextEquationExpression, normalizeRichTextLinkUrl } from "../rich-text";
-import { readBoolean, readDateMentionBoundary, readLocalObjectMentionType, readMentionObjectId, readNotesColor, readNullableDateMentionBoundary, readNullableDisplayString, readNullableString, readRecord, readString, readUuidString } from "./readers";
+import { NOTES_DATE_MENTION_MAX_REMINDER_MINUTES_BEFORE, type NotesDateMentionReminder, type NotesDateMentionValue, type NotesRichText, type NotesRichTextAnnotations } from "../contracts/core";
+import { normalizeRichTextEquationExpression, normalizeRichTextLinkUrl } from "$lib/notes/rich-text/core";
+import { readBoolean, readDateMentionBoundary, readInteger, readNullableDateMentionFormat, readLocalObjectMentionType, readMentionObjectId, readNotesColor, readNullableDateMentionBoundary, readNullableDisplayString, readNullableString, readRecord, readString, readUuidString } from "./readers";
 
 export function parseNotesRichTextArray(value: unknown, label: string): NotesRichText[] {
   if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
@@ -81,9 +81,7 @@ function parseNotesRichText(value: unknown, label: string): NotesRichText {
         object.type,
         `${label}.mention.ganbaru_object.type`,
       );
-      const objectId = objectType === "music_item"
-        ? readMentionObjectId(object.id, `${label}.mention.ganbaru_object.id`)
-        : readUuidString(object.id, `${label}.mention.ganbaru_object.id`);
+      const objectId = readMentionObjectId(object.id, `${label}.mention.ganbaru_object.id`);
       return {
         type: "mention",
         mention: {
@@ -149,6 +147,9 @@ function parseDateMentionValue(value: unknown, label: string): NotesDateMentionV
             `${label}.ganbaru_reminder`,
           ),
         }),
+    ...(record.ganbaru_format === undefined
+      ? {}
+      : { ganbaru_format: readNullableDateMentionFormat(record.ganbaru_format, `${label}.ganbaru_format`) }),
   };
 }
 
@@ -158,9 +159,18 @@ function parseNullableDateMentionReminder(
 ): NotesDateMentionReminder | null {
   if (value === null) return null;
   const record = readRecord(value, label);
-  return {
-    enabled: readBoolean(record.enabled, `${label}.enabled`),
-  };
+  const enabled = readBoolean(record.enabled, `${label}.enabled`);
+  if (record.minutes_before === undefined) return { enabled };
+  return { enabled, minutes_before: readNullableReminderMinutes(record.minutes_before, `${label}.minutes_before`) };
+}
+
+function readNullableReminderMinutes(value: unknown, label: string): number | null {
+  if (value === null) return null;
+  const minutes = readInteger(value, label);
+  if (minutes < 0 || minutes > NOTES_DATE_MENTION_MAX_REMINDER_MINUTES_BEFORE) {
+    throw new Error(`${label} must be from 0 to ${NOTES_DATE_MENTION_MAX_REMINDER_MINUTES_BEFORE}`);
+  }
+  return minutes;
 }
 
 export function dateMentionBoundaryLooksIso(value: string): boolean {

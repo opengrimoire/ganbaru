@@ -13,23 +13,89 @@
     "ganbaru-mobile-notifications:allow-pendingCalendarNotifications",
     "ganbaru-mobile-notifications:allow-cancelCalendarNotifications",
     "ganbaru-mobile-notifications:allow-takeCalendarNotificationAction",
-    "ganbaru-mobile-notifications:allow-updatePomodoroNotification",
-    "ganbaru-mobile-notifications:allow-cancelPomodoroNotification",
-    "ganbaru-mobile-notifications:allow-pomodoroNotificationState",
     "ganbaru-mobile-notifications:allow-reconcilePomodoroSchedule",
-    "ganbaru-mobile-doomscrolling:allow-accessStatus",
-    "ganbaru-mobile-doomscrolling:allow-openUsageAccessSettings",
-    "ganbaru-mobile-doomscrolling:allow-openAccessibilitySettings",
-    "ganbaru-mobile-doomscrolling:allow-listLaunchableApps",
-    "ganbaru-mobile-doomscrolling:allow-applyRules",
-    "ganbaru-mobile-doomscrolling:allow-pendingEvents",
-    "ganbaru-mobile-doomscrolling:allow-acknowledgeEvents",
-    "ganbaru-mobile-doomscrolling:allow-takeNotificationAction",
+    "ganbaru-mobile-distractions:allow-accessStatus",
+    "ganbaru-mobile-distractions:allow-openUsageAccessSettings",
+    "ganbaru-mobile-distractions:allow-openAccessibilitySettings",
+    "ganbaru-mobile-distractions:allow-listLaunchableApps",
+    "ganbaru-mobile-distractions:allow-takeNotificationAction",
     {
       "identifier": "opener:allow-open-url",
       "allow": [
         {
-          "url": "https://github.com/opengrimoire/ganbaru-ai/releases/*"
+          "url": "https://github.com/opengrimoire/ganbaru"
+        },
+        {
+          "url": "https://github.com/lucide-icons/lucide"
+        },
+        {
+          "url": "https://github.com/lucide-icons/lucide/graphs/contributors"
+        },
+        {
+          "url": "https://github.com/vscode-icons/vscode-icons"
+        },
+        {
+          "url": "https://github.com/vscode-icons/vscode-icons/graphs/contributors"
+        },
+        {
+          "url": "https://github.com/opengrimoire/ganbaru/releases/*"
+        },
+        {
+          "url": "https://github.com/opengrimoire/ganbaru/blob/main/LICENSE"
+        },
+        {
+          "url": "https://github.com/opengrimoire/ganbaru/blob/main/apps/client/static/sfx/*"
+        },
+        {
+          "url": "https://freesound.org/"
+        },
+        {
+          "url": "https://freesound.org/people/FunWithSound/"
+        },
+        {
+          "url": "https://freesound.org/people/FunWithSound/sounds/456965/"
+        },
+        {
+          "url": "https://freesound.org/people/CogFireStudios/"
+        },
+        {
+          "url": "https://freesound.org/people/CogFireStudios/sounds/619837/"
+        },
+        {
+          "url": "https://freesound.org/people/CogFireStudios/sounds/619838/"
+        },
+        {
+          "url": "https://freesound.org/people/SilverIllusionist/"
+        },
+        {
+          "url": "https://freesound.org/people/SilverIllusionist/sounds/562103/"
+        },
+        {
+          "url": "https://freesound.org/people/SilverIllusionist/sounds/843310/"
+        },
+        {
+          "url": "https://freesound.org/people/SilverIllusionist/sounds/669323/"
+        },
+        {
+          "url": "https://freesound.org/people/SilverIllusionist/sounds/659751/"
+        },
+        {
+          "url": "https://freesound.org/people/MATUSTRM/"
+        },
+        {
+          "url": "https://freesound.org/people/MATUSTRM/sounds/848972/"
+        },
+        {
+          "url": "https://freesound.org/people/rhodesmas/"
+        },
+        {
+          "url": "https://freesound.org/people/rhodesmas/sounds/322930/"
+        },
+        {
+          "url": "https://freesound.org/people/eqylizer/"
+        },
+        {
+          "url": "https://freesound.org/people/eqylizer/sounds/624599/"
         }
       ]
     }

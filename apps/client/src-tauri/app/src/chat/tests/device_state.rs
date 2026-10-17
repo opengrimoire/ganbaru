@@ -1,11 +1,11 @@
-use crate::chat::{
-    device_state::{
-        ChatDeviceScope, ChatDeviceState, full_access_is_trusted, set_full_access_trust,
-    },
-    models::{ProjectWorkingFolderId, ProviderInstanceId, RepositoryKind, UtcTimestamp},
+use crate::chat::device_state::{
+    ChatDeviceScope, ChatDeviceState, full_access_is_trusted, set_full_access_trust,
 };
 use crate::projects::working_folders::{
     ProjectWorkingFolderBindingState, WORKING_FOLDER_DEVICE_STATE_SCHEMA_VERSION,
+};
+use ganbaru_chat_contracts::models::{
+    ProjectWorkingFolderId, ProviderInstanceId, RepositoryKind, UtcTimestamp,
 };
 use ganbaru_working_folders::WorkingFolderDeviceState;
 

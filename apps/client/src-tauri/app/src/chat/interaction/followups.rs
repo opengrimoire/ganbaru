@@ -2,14 +2,14 @@
 
 use super::attachments::MAX_IMAGE_COUNT;
 use super::support::{
-    chat_pool, corrupt_data, json_error, now_timestamp, persistence_error, versioned_row,
+    chat_pool, corrupt_data_error, json_error, now_timestamp, persistence_error, versioned_row,
 };
 use crate::chat::interaction_commands::{ChatQueuedFollowupRead, SaveQueuedFollowupRequest};
-use crate::chat::models::{
+use ganbaru_chat::repository::attachments;
+use ganbaru_chat_contracts::models::{
     ChatAttachmentId, ChatError, ChatErrorCode, ChatResult, ChatThreadId, InteractionMode,
     ProviderInstanceId, SafetyMode, UtcTimestamp,
 };
-use crate::chat::repository::attachments;
 use sqlx::{Row, SqlitePool};
 
 pub(crate) async fn save_queued_followup(
@@ -129,8 +129,8 @@ pub(crate) async fn save_queued_followup(
     .bind(request.provider_instance_id.as_str())
     .bind(i64::from(request.model_selection.schema_version))
     .bind(serde_json::to_string(&request.model_selection.value).map_err(json_error)?)
-    .bind(wire_safety_mode(request.safety_mode))
-    .bind(wire_interaction_mode(request.interaction_mode))
+    .bind(wire_safety(request.safety_mode))
+    .bind(wire_interaction(request.interaction_mode))
     .bind(attachment_ids)
     .bind(i64::from(request.mentions.schema_version))
     .bind(mentions)
@@ -159,7 +159,7 @@ pub(crate) async fn save_queued_followup(
     transaction.commit().await.map_err(persistence_error)?;
     read_queued_followup(&pool, &request.thread_id)
         .await?
-        .ok_or_else(corrupt_data)
+        .ok_or_else(corrupt_data_error)
 }
 
 pub(crate) async fn cancel_queued_followup(
@@ -252,20 +252,20 @@ pub(super) async fn read_queued_followup(
         .into_iter()
         .map(ChatAttachmentId::new)
         .collect::<Result<_, _>>()
-        .map_err(|_| corrupt_data())?;
+        .map_err(|_| corrupt_data_error())?;
         Ok(ChatQueuedFollowupRead {
             id: row.try_get("id").map_err(persistence_error)?,
             thread_id: ChatThreadId::new(
                 row.try_get::<String, _>("thread_id")
                     .map_err(persistence_error)?,
             )
-            .map_err(|_| corrupt_data())?,
+            .map_err(|_| corrupt_data_error())?,
             text: row.try_get("text").map_err(persistence_error)?,
             provider_instance_id: ProviderInstanceId::new(
                 row.try_get::<String, _>("provider_instance_id")
                     .map_err(persistence_error)?,
             )
-            .map_err(|_| corrupt_data())?,
+            .map_err(|_| corrupt_data_error())?,
             model_selection: versioned_row(
                 &row,
                 "model_selection_schema_version",
@@ -285,17 +285,17 @@ pub(super) async fn read_queued_followup(
                 row.try_get::<String, _>("created_at")
                     .map_err(persistence_error)?,
             )
-            .map_err(|_| corrupt_data())?,
+            .map_err(|_| corrupt_data_error())?,
             updated_at: UtcTimestamp::new(
                 row.try_get::<String, _>("updated_at")
                     .map_err(persistence_error)?,
             )
-            .map_err(|_| corrupt_data())?,
+            .map_err(|_| corrupt_data_error())?,
         })
     })
     .transpose()
 }
-fn wire_safety_mode(value: SafetyMode) -> &'static str {
+fn wire_safety(value: SafetyMode) -> &'static str {
     match value {
         SafetyMode::AskForApproval => "ask_for_approval",
         SafetyMode::ApproveForMe => "approve_for_me",
@@ -310,11 +310,11 @@ fn parse_safety_mode(value: &str) -> ChatResult<SafetyMode> {
         "approve_for_me" => Ok(SafetyMode::ApproveForMe),
         "full_access" => Ok(SafetyMode::FullAccess),
         "custom" => Ok(SafetyMode::Custom),
-        _ => Err(corrupt_data()),
+        _ => Err(corrupt_data_error()),
     }
 }
 
-fn wire_interaction_mode(value: InteractionMode) -> &'static str {
+fn wire_interaction(value: InteractionMode) -> &'static str {
     match value {
         InteractionMode::Build => "build",
         InteractionMode::Plan => "plan",
@@ -325,6 +325,6 @@ fn parse_interaction_mode(value: &str) -> ChatResult<InteractionMode> {
     match value {
         "build" => Ok(InteractionMode::Build),
         "plan" => Ok(InteractionMode::Plan),
-        _ => Err(corrupt_data()),
+        _ => Err(corrupt_data_error()),
     }
 }

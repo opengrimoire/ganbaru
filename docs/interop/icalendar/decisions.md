@@ -8,10 +8,10 @@ Status: accepted.
 
 Decision:
 
-Ganbaru AI will pursue broad `.ics` compatibility with two layers:
+Ganbaru will pursue broad `.ics` compatibility with two layers:
 
-- a structured iCalendar preservation layer
-- the existing normalized app projection layer
+- A structured iCalendar preservation layer
+- The existing normalized app projection layer
 
 Rationale:
 
@@ -23,7 +23,7 @@ Status: accepted.
 
 Decision:
 
-RFC 5546 scheduling fields are parsed and preserved as metadata. Ganbaru AI will not send replies, cancellations, invitations, or updates unless a future user-configured transport exists.
+RFC 5546 scheduling fields are parsed and preserved as metadata. Ganbaru will not send replies, cancellations, invitations, or updates unless a future user-configured transport exists.
 
 Rationale:
 
@@ -51,7 +51,7 @@ Client-specific docs record Google, Outlook, Apple Calendar, Thunderbird, Nextcl
 
 Rationale:
 
-Client behavior changes over time and may deviate from RFCs. Ganbaru AI should be standards-based while still testing real-world interoperability.
+Client behavior changes over time and may deviate from RFCs. Ganbaru should be standards-based while still testing real-world interoperability.
 
 ## 2026-05-14: use structured export merging, not raw text splicing
 

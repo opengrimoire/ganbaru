@@ -1,7 +1,7 @@
 [package]
 name = "ganbaru-chat"
 version = "0.1.5"
-description = "Ganbaru AI Chat application service"
+description = "Ganbaru Chat application service"
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
@@ -20,9 +20,9 @@ workspace = true
 
 [dependencies]
 chrono = { workspace = true }
-ganbaru-chat-contracts = { path = "../ganbaru-chat-contracts" }
-ganbaru-chat-providers = { path = "../ganbaru-chat-providers", optional = true }
-ganbaru-working-folders = { path = "../ganbaru-working-folders" }
+ganbaru-chat-contracts = { workspace = true }
+ganbaru-chat-providers = { workspace = true, optional = true }
+ganbaru-working-folders = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -37,4 +37,4 @@ libc = { workspace = true }
 windows = { workspace = true }
 
 [dev-dependencies]
-ganbaru-db = { path = "../ganbaru-db" }
+ganbaru-db = { workspace = true }

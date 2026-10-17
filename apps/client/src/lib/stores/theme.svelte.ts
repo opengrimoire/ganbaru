@@ -1,4 +1,4 @@
-import { PALETTE_SIZE } from "$lib/components/calendar/types";
+import { PALETTE_SIZE } from "$lib/calendar/types";
 import {
   type Theme,
   type ThemeId,
@@ -30,7 +30,7 @@ import {
   DEFAULT_CALENDAR_DEFAULT_CUSTOM,
   deriveCalendarColorDefaultBundle,
   type CalendarColorDefaultMode,
-} from "./themes";
+} from "$lib/themes";
 import {
   canResetTokenToSeed,
   cloneTheme,
@@ -39,7 +39,9 @@ import {
   normalizeDisplayName,
   themeIdCollisionError,
   toUserThemeSnapshot,
-} from "./themeOperations";
+} from "$lib/themes/operations";
+import { rgbToHex } from "$lib/color/math";
+import { readNativeBackground } from "$lib/themes/native-background";
 import { getConfigKey, setConfigKey } from "../vault/config";
 import {
   deleteTheme as dbDeleteTheme,
@@ -56,15 +58,17 @@ import {
   createWindowSyncEnvelope,
   isForeignWindowSyncEnvelope,
   isWindowSyncEnvelope,
-} from "$lib/window-sync";
+} from "$lib/windows/sync";
 import {
   emitWindowSync,
   listenWindowSync,
-} from "$lib/window-sync-transport";
+} from "$lib/windows/sync-transport";
 
 const ACTIVE_KEY = "theme.activeId";
 const QUICK_TOGGLE_LIGHT_KEY = "theme.quickToggleLightId";
 const QUICK_TOGGLE_DARK_KEY = "theme.quickToggleDarkId";
+/** Theme surface the Android shell paints behind the WebView before the page draws. */
+const ANDROID_WINDOW_BACKGROUND_TOKEN = "--background";
 const THEME_WINDOW_SYNC_EVENT = "theme-window-sync";
 
 interface ThemeWindowSyncPayload {
@@ -95,8 +99,8 @@ const freshThemes = new Set<ThemeId>();
 
 /**
  * Dismissals queued during an editor session for a fresh theme. The
- * `theme_upgrade_dismissals` table FKs back to `themes.id`, so we cannot
- * call `recordDismissal` until the parent row exists. `persistThemeToDb`
+ * `theme_upgrade_dismissals` table FKs back to `themes.id`, so
+ * `recordDismissal` cannot run until the parent row exists. `persistThemeToDb`
  * drains this map after the INSERT lands. For non-fresh themes the
  * dismissal goes straight to disk and never enters this map.
  */
@@ -123,7 +127,16 @@ function loadQuickToggleIdFromConfig(key: string, fallback: ThemeId): ThemeId {
 }
 
 function resolveActive(): Theme {
-  return getThemeById(activeId, combinedRegistry()) ?? lightTheme;
+  return getThemeById(activeId, combinedRegistry()) ?? BUILTIN_THEME_REGISTRY[DEFAULT_THEME_ID];
+}
+
+/** Tells the Android shell which surface color to paint behind the WebView and on the next cold start. */
+function syncAndroidWindowBackground(root: HTMLElement): void {
+  const bridge = window.GanbaruAndroidAppearance;
+  if (!bridge) return;
+  const background = readNativeBackground(root, ANDROID_WINDOW_BACKGROUND_TOKEN);
+  if (!background) return;
+  bridge.setWindowBackground(rgbToHex(background.r, background.g, background.b));
 }
 
 function beginInstantThemePaint(): (() => void) | undefined {
@@ -167,6 +180,11 @@ function applyThemeToDom(): void {
     for (const [key, value] of toSet) root.style.setProperty(key, value);
     for (const key of toClear) root.style.removeProperty(key);
     appliedTokenKeys = applied;
+    try {
+      syncAndroidWindowBackground(root);
+    } catch (error) {
+      console.warn("Android window background update failed", error);
+    }
   } finally {
     finishInstantPaint?.();
   }
@@ -195,9 +213,6 @@ function applyThemeSyncPayload(payload: ThemeWindowSyncPayload): void {
   quickToggleLightId = validThemeId(payload.quickToggleLightId, lightTheme.id);
   quickToggleDarkId = validThemeId(payload.quickToggleDarkId, darkTheme.id);
   applyThemeToDom();
-  setConfigKey(ACTIVE_KEY, activeId);
-  setConfigKey(QUICK_TOGGLE_LIGHT_KEY, quickToggleLightId);
-  setConfigKey(QUICK_TOGGLE_DARK_KEY, quickToggleDarkId);
 }
 
 function publishThemeSync(): void {
@@ -222,8 +237,9 @@ function initThemeSync(): void {
  * Boot-time hydration: load user themes from SQLite, resolve the active theme
  * from config, and paint the first frame.
  *
- * Idempotent. main.ts awaits this between `ensureConfigLoaded` and the App
- * import so first paint matches what the user has on disk (no FOUC).
+ * Idempotent. The platform bootstraps await this after `ensureConfigLoaded`
+ * and before mounting the app so first paint matches what the user has on
+ * disk (no FOUC).
  */
 export async function hydrateUserThemes(): Promise<void> {
   if (hydrated) return;
@@ -699,30 +715,30 @@ function updateSourceValue(
     current.calendarDefaultMode,
     current.calendarDefaultCustom,
   );
-  const derivedCal = calendarBundle.calendarTokens;
+  const derivedCalendarTokens = calendarBundle.calendarTokens;
   const nextAppIsolated = normalizeSemanticSignalAppIsolated(
     current.appIsolated,
   );
-  const calBgIsolated = current.calendarIsolated.has("--cal-bg");
+  const calendarBackgroundIsolated = current.calendarIsolated.has("--cal-bg");
   const nextBlendCanvas =
-    !calBgIsolated && derivedCal["--cal-bg"]
-      ? derivedCal["--cal-bg"]
+    !calendarBackgroundIsolated && derivedCalendarTokens["--cal-bg"]
+      ? derivedCalendarTokens["--cal-bg"]
       : undefined;
   const nextAppTokens: Record<string, string> = { ...current.appTokens };
   for (const key of APP_TOKEN_KEYS) {
     if (nextAppIsolated.has(key) && !isSemanticSignalAppToken(key)) continue;
     if (derivedApp[key] !== undefined) nextAppTokens[key] = derivedApp[key];
   }
-  const nextCalTokens: Record<string, string> = { ...current.calendarTokens };
+  const nextCalendarTokens: Record<string, string> = { ...current.calendarTokens };
   for (const key of CALENDAR_TOKEN_KEYS) {
     if (current.calendarIsolated.has(key)) continue;
-    if (derivedCal[key] !== undefined) nextCalTokens[key] = derivedCal[key];
+    if (derivedCalendarTokens[key] !== undefined) nextCalendarTokens[key] = derivedCalendarTokens[key];
   }
   customThemes[id] = {
     ...current,
     sources: nextSources,
     appTokens: syncSemanticSignalAppTokens(nextSources, nextAppTokens),
-    calendarTokens: nextCalTokens,
+    calendarTokens: nextCalendarTokens,
     appIsolated: nextAppIsolated,
     blendCanvas: nextBlendCanvas ?? current.blendCanvas,
   };
@@ -732,7 +748,8 @@ function updateSourceValue(
 
 /**
  * Pin a token against future derivations. The stored hex stays unchanged
- * (it already equals the current derived value); only the flag flips.
+ * (it already equals the current derived value); only the key joins the
+ * isolated set.
  */
 function isolateToken(
   id: ThemeId,
@@ -741,22 +758,22 @@ function isolateToken(
 ): boolean {
   const current = customThemes[id];
   if (!current) return false;
-  const set = kind === "app" ? current.appIsolated : current.calendarIsolated;
-  if (set.has(key)) return false;
-  const nextSet = new Set(set);
-  nextSet.add(key);
+  const isolatedKeys = kind === "app" ? current.appIsolated : current.calendarIsolated;
+  if (isolatedKeys.has(key)) return false;
+  const nextIsolatedKeys = new Set(isolatedKeys);
+  nextIsolatedKeys.add(key);
   customThemes[id] = {
     ...current,
-    appIsolated: kind === "app" ? nextSet : current.appIsolated,
+    appIsolated: kind === "app" ? nextIsolatedKeys : current.appIsolated,
     calendarIsolated:
-      kind === "calendar" ? nextSet : current.calendarIsolated,
+      kind === "calendar" ? nextIsolatedKeys : current.calendarIsolated,
   };
   return true;
 }
 
 /**
  * Re-run the current derivation for a token, write the result back, and
- * flip `isolated` to 0. Used by the "Link back" affordance.
+ * remove the key from the isolated set. Used by the "Link back" affordance.
  */
 function relinkToken(
   id: ThemeId,
@@ -765,8 +782,8 @@ function relinkToken(
 ): boolean {
   const current = customThemes[id];
   if (!current) return false;
-  const set = kind === "app" ? current.appIsolated : current.calendarIsolated;
-  if (!set.has(key)) return false;
+  const isolatedKeys = kind === "app" ? current.appIsolated : current.calendarIsolated;
+  if (!isolatedKeys.has(key)) return false;
   const derived =
     kind === "app"
       ? deriveAppTokens(current.sources)
@@ -781,8 +798,8 @@ function relinkToken(
   const derivedTokens = derived as Readonly<Record<string, string>>;
   const nextValue =
     derivedTokens[key] ?? (baseTokens as Readonly<Record<string, string>>)[key];
-  const nextSet = new Set(set);
-  nextSet.delete(key);
+  const nextIsolatedKeys = new Set(isolatedKeys);
+  nextIsolatedKeys.delete(key);
   const nextSnapshot =
     kind === "app"
       ? { ...current.appTokens, [key]: nextValue }
@@ -794,9 +811,9 @@ function relinkToken(
     appTokens: kind === "app" ? nextSnapshot : current.appTokens,
     calendarTokens:
       kind === "calendar" ? nextSnapshot : current.calendarTokens,
-    appIsolated: kind === "app" ? nextSet : current.appIsolated,
+    appIsolated: kind === "app" ? nextIsolatedKeys : current.appIsolated,
     calendarIsolated:
-      kind === "calendar" ? nextSet : current.calendarIsolated,
+      kind === "calendar" ? nextIsolatedKeys : current.calendarIsolated,
     blendCanvas: nextBlendCanvas,
   };
   if (id === activeId) applyThemeToDom();
@@ -1060,7 +1077,7 @@ function rebakeTheme(id: ThemeId): boolean {
   const current = customThemes[id];
   if (!current) return false;
   const derivedApp = deriveAppTokens(current.sources);
-  const derivedCal = deriveCalendarColorDefaultBundle(
+  const derivedCalendarTokens = deriveCalendarColorDefaultBundle(
     current.sources,
     current.calendarDefaultMode,
     current.calendarDefaultCustom,
@@ -1068,26 +1085,26 @@ function rebakeTheme(id: ThemeId): boolean {
   const nextAppIsolated = normalizeSemanticSignalAppIsolated(
     current.appIsolated,
   );
-  const calBgIsolated = current.calendarIsolated.has("--cal-bg");
+  const calendarBackgroundIsolated = current.calendarIsolated.has("--cal-bg");
   const nextBlendCanvas =
-    !calBgIsolated && derivedCal["--cal-bg"]
-      ? derivedCal["--cal-bg"]
+    !calendarBackgroundIsolated && derivedCalendarTokens["--cal-bg"]
+      ? derivedCalendarTokens["--cal-bg"]
       : undefined;
-  const nextApp: Record<string, string> = { ...current.appTokens };
+  const nextAppTokens: Record<string, string> = { ...current.appTokens };
   for (const key of APP_TOKEN_KEYS) {
     if (nextAppIsolated.has(key) && !isSemanticSignalAppToken(key)) continue;
-    if (derivedApp[key] !== undefined) nextApp[key] = derivedApp[key];
+    if (derivedApp[key] !== undefined) nextAppTokens[key] = derivedApp[key];
   }
-  const nextCal: Record<string, string> = { ...current.calendarTokens };
+  const nextCalendarTokens: Record<string, string> = { ...current.calendarTokens };
   for (const key of CALENDAR_TOKEN_KEYS) {
     if (current.calendarIsolated.has(key)) continue;
-    if (derivedCal[key] !== undefined) nextCal[key] = derivedCal[key];
+    if (derivedCalendarTokens[key] !== undefined) nextCalendarTokens[key] = derivedCalendarTokens[key];
   }
   customThemes[id] = {
     ...current,
-    appTokens: syncSemanticSignalAppTokens(current.sources, nextApp),
+    appTokens: syncSemanticSignalAppTokens(current.sources, nextAppTokens),
     appIsolated: nextAppIsolated,
-    calendarTokens: nextCal,
+    calendarTokens: nextCalendarTokens,
     blendCanvas: nextBlendCanvas ?? current.blendCanvas,
     derivationEngineVersion: DERIVATION_ENGINE_VERSION,
   };

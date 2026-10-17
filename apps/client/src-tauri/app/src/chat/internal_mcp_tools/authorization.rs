@@ -1,15 +1,15 @@
 //! Live authorization checks shared by host-tool calls and publication.
 
-use super::{generic_denial, persistence_error, wire_folder_capability};
+use super::{generic_denial_error, persistence_error, wire_folder_capability};
 use crate::chat::internal_mcp::{
     InternalMcpChannelSource, InternalMcpFolderSource, InternalMcpRunScope,
 };
-use crate::chat::models::{ChatResult, ChatRuntimeApprovalPolicy};
+use ganbaru_chat_contracts::models::{ChatResult, ChatRuntimeApprovalPolicy};
 use sqlx::SqlitePool;
 
 pub(crate) async fn verify_scope(
     pool: &SqlitePool,
-    thread_id: &crate::chat::models::ChatThreadId,
+    thread_id: &ganbaru_chat_contracts::models::ChatThreadId,
     scope: &InternalMcpRunScope,
 ) -> ChatResult<()> {
     let valid: bool = sqlx::query_scalar(
@@ -18,7 +18,7 @@ pub(crate) async fn verify_scope(
             FROM chat_assignment_authorization_revisions authorization
             JOIN chat_work_assignments assignment
               ON assignment.id = authorization.assignment_id
-            JOIN chat_ai_channel_memberships channel_access
+            JOIN chat_teammate_channel_memberships channel_access
               ON channel_access.conversation_id = authorization.destination_conversation_id
              AND channel_access.teammate_id = assignment.teammate_id
             JOIN chat_conversation_memberships membership
@@ -62,7 +62,7 @@ pub(crate) async fn verify_scope(
     .await
     .map_err(persistence_error)?;
     if !valid {
-        return Err(generic_denial());
+        return Err(generic_denial_error());
     }
     if let Some(scratch_generation_id) = scope.scratch_generation_id.as_deref() {
         crate::chat::scratch::require_reusable_generation(
@@ -71,14 +71,14 @@ pub(crate) async fn verify_scope(
             scope.authorization_revision_id.as_str(),
         )
         .await
-        .map_err(|_| generic_denial())?;
+        .map_err(|_| generic_denial_error())?;
     }
     Ok(())
 }
 
 pub(crate) async fn verify_publication_scope(
     pool: &SqlitePool,
-    thread_id: &crate::chat::models::ChatThreadId,
+    thread_id: &ganbaru_chat_contracts::models::ChatThreadId,
     scope: &InternalMcpRunScope,
 ) -> ChatResult<()> {
     verify_scope(pool, thread_id, scope).await?;
@@ -106,7 +106,7 @@ pub(super) async fn verify_channel_source(
              AND authorization.revoked_at IS NULL
             JOIN chat_work_assignments assignment
               ON assignment.id = authorization.assignment_id
-            JOIN chat_ai_channel_memberships channel_access
+            JOIN chat_teammate_channel_memberships channel_access
               ON channel_access.conversation_id = source.conversation_id
              AND channel_access.teammate_id = assignment.teammate_id
             JOIN chat_conversation_memberships membership
@@ -170,7 +170,7 @@ pub(super) async fn verify_channel_source(
                 requester_participant.participant_kind != 'ai_teammate'
                 OR EXISTS (
                   SELECT 1
-                  FROM chat_ai_channel_memberships requester_source_access
+                  FROM chat_teammate_channel_memberships requester_source_access
                   JOIN chat_access_profiles requester_profile
                     ON requester_profile.id = requester_source_access.access_profile_id
                   JOIN chat_access_profile_revisions requester_profile_revision
@@ -211,7 +211,7 @@ pub(super) async fn verify_channel_source(
                     destination_participant.participant_kind != 'ai_teammate'
                     OR EXISTS (
                       SELECT 1
-                      FROM chat_ai_channel_memberships destination_ai_access
+                      FROM chat_teammate_channel_memberships destination_ai_access
                       JOIN chat_access_profiles destination_profile
                         ON destination_profile.id = destination_ai_access.access_profile_id
                       JOIN chat_access_profile_revisions destination_profile_revision
@@ -253,7 +253,7 @@ pub(super) async fn verify_channel_source(
                       destination_participant.participant_kind = 'ai_teammate'
                       AND NOT EXISTS (
                         SELECT 1
-                        FROM chat_ai_channel_memberships source_ai_access
+                        FROM chat_teammate_channel_memberships source_ai_access
                         JOIN chat_access_profiles source_profile
                           ON source_profile.id = source_ai_access.access_profile_id
                         JOIN chat_access_profile_revisions source_profile_revision
@@ -291,14 +291,18 @@ pub(super) async fn verify_channel_source(
     .bind(&source.source_handle)
     .bind(&source.message_reference_id)
     .bind(&source.conversation_id)
-    .bind(i64::try_from(source.lower_ordinal).map_err(|_| generic_denial())?)
-    .bind(i64::try_from(source.high_ordinal).map_err(|_| generic_denial())?)
+    .bind(i64::try_from(source.lower_ordinal).map_err(|_| generic_denial_error())?)
+    .bind(i64::try_from(source.high_ordinal).map_err(|_| generic_denial_error())?)
     .bind(&source.source_revision_cutoff_id)
-    .bind(i64::try_from(source.destination_audience_revision).map_err(|_| generic_denial())?)
+    .bind(i64::try_from(source.destination_audience_revision).map_err(|_| generic_denial_error())?)
     .fetch_one(pool)
     .await
     .map_err(persistence_error)?;
-    if valid { Ok(()) } else { Err(generic_denial()) }
+    if valid {
+        Ok(())
+    } else {
+        Err(generic_denial_error())
+    }
 }
 
 pub(super) async fn verify_folder_source(
@@ -321,10 +325,10 @@ pub(super) async fn verify_folder_source(
               ON membership.conversation_id = authorization.destination_conversation_id
              AND membership.participant_id = assignment.teammate_id
              AND membership.removed_at IS NULL
-            JOIN chat_ai_channel_memberships channel_access
+            JOIN chat_teammate_channel_memberships channel_access
               ON channel_access.conversation_id = membership.conversation_id
              AND channel_access.teammate_id = membership.participant_id
-            JOIN chat_ai_teammate_access_state access_state
+            JOIN chat_teammate_access_state access_state
               ON access_state.teammate_id = membership.participant_id
             JOIN chat_access_profiles profile
               ON profile.id = channel_access.access_profile_id
@@ -387,7 +391,11 @@ pub(super) async fn verify_folder_source(
     .fetch_one(pool)
     .await
     .map_err(persistence_error)?;
-    if valid { Ok(()) } else { Err(generic_denial()) }
+    if valid {
+        Ok(())
+    } else {
+        Err(generic_denial_error())
+    }
 }
 
 fn wire_runtime_approval_policy(policy: ChatRuntimeApprovalPolicy) -> &'static str {

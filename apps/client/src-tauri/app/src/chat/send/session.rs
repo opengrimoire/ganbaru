@@ -4,23 +4,23 @@ use super::checkpoints::ensure_post_turn_checkpoint;
 use super::persistence::ThreadRuntimeData;
 use super::support::{PROVIDER_START_TIMEOUT, now_timestamp, operation_context};
 use super::validation::validate_modes;
-use crate::chat::agent_runs::AgentRunBinding;
 use crate::chat::credentials::{PlatformCredentialStore, materialize_provider_environment};
-use crate::chat::events::{CanonicalEvent, CanonicalRuntimeEvent, ChangedFileSummary};
 use crate::chat::ingestion::{ChatEventIngestor, TauriChatChangeEmitter};
-use crate::chat::models::{
+use crate::chat::send_commands::SendChatTurnCommand;
+use crate::chat::workspace::AuthorizedWorkingFolder;
+use ganbaru_chat::agent_runs::AgentRunBinding;
+use ganbaru_chat::repository::events::AppendCanonicalEventRequest;
+use ganbaru_chat::runtime::ThreadRuntimeOwner;
+use ganbaru_chat_contracts::events::{CanonicalEvent, CanonicalRuntimeEvent, ChangedFileSummary};
+use ganbaru_chat_contracts::models::{
     ChatAgentRunId, ChatAuthorizationRevisionId, ChatError, ChatErrorCode, ChatResult,
     ChatTeammatePolicyRevisionId, ChatThreadId, ChatTurnId, ChatWorkAssignmentId,
     ContinuationGroupId, ProviderInstanceConfig, ProviderSessionSnapshot, ProviderSessionState,
     ResumeSessionRequest, StartSessionRequest, VerifiedWorkspaceContext,
 };
-use crate::chat::providers::{
+use ganbaru_chat_providers::{
     DriverFuture, ProviderDriver, ProviderDriverFactory, ProviderDriverRegistry, ProviderEventSink,
 };
-use crate::chat::repository::events::AppendCanonicalEventRequest;
-use crate::chat::runtime::ThreadRuntimeOwner;
-use crate::chat::send_commands::SendChatTurnCommand;
-use crate::chat::workspace::AuthorizedWorkingFolder;
 use sqlx::{Row, SqlitePool};
 use std::sync::Arc;
 use tauri::Manager;
@@ -84,10 +84,9 @@ pub(super) async fn ensure_session_with_executable_recovery(
         request.provider_instance_id.clone(),
     )
     .await;
-    if !repaired_probe
-        .as_ref()
-        .is_ok_and(|probe| probe.state != crate::chat::models::ProbeState::ExecutableMissing)
-    {
+    if !repaired_probe.as_ref().is_ok_and(|probe| {
+        probe.state != ganbaru_chat_contracts::models::ProbeState::ExecutableMissing
+    }) {
         return Err(error);
     }
     let repaired_provider =
@@ -356,12 +355,12 @@ impl ProviderEventSink for DurableChatEventSink {
                     }
                 }
                 self.app
-                    .state::<crate::chat::workspace_mutation::ChatWorkspaceMutationRegistry>()
+                    .state::<crate::chat::workspace::mutation::ChatWorkspaceMutationRegistry>()
                     .finish_provider_turn(&thread_id, &turn_id);
             }
             if let Some(thread_id) = stopped_thread {
                 self.app
-                    .state::<crate::chat::workspace_mutation::ChatWorkspaceMutationRegistry>()
+                    .state::<crate::chat::workspace::mutation::ChatWorkspaceMutationRegistry>()
                     .finish_thread(&thread_id);
             }
             ingestion
@@ -401,7 +400,7 @@ async fn require_live_authorization(
            ON membership.conversation_id = authorization.destination_conversation_id
           AND membership.participant_id = assignment.teammate_id
           AND membership.removed_at IS NULL
-         JOIN chat_ai_channel_memberships channel_access
+         JOIN chat_teammate_channel_memberships channel_access
            ON channel_access.conversation_id = membership.conversation_id
           AND channel_access.teammate_id = membership.participant_id
          JOIN chat_access_profiles profile ON profile.id = channel_access.access_profile_id

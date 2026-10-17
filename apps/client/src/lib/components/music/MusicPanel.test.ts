@@ -3,9 +3,44 @@
 import { mount, tick, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { localFileSourceFromPath } from "$lib/music/sources";
-import { emptyMusicSkipBreakdown } from "$lib/music/music-playlist-playback";
+import { emptyMusicSkipBreakdown } from "$lib/music/playlists/playback";
 import { getMusicPlayer } from "$lib/stores/music-player.svelte";
-import { getMusicSourcesController } from "$lib/music/music-sources-controller.svelte";
+import { getMusicSourcesController } from "$lib/music/sources/controller.svelte";
+import type { NativeMusicCommand, NativeMusicSnapshot } from "$lib/music/session/native-session";
+
+const sessionApi = vi.hoisted(() => ({
+  command: vi.fn(), start: vi.fn(), subscribe: vi.fn().mockResolvedValue(undefined),
+  host: vi.fn().mockResolvedValue(undefined), acknowledge: vi.fn().mockResolvedValue(undefined),
+  unsubscribe: vi.fn().mockResolvedValue(undefined), readFrame: vi.fn(), observe: vi.fn(),
+}));
+
+vi.mock("$lib/api/music-session", () => ({
+  musicSessionCommand: sessionApi.command, musicSessionStart: sessionApi.start,
+  musicSessionSubscribe: sessionApi.subscribe, musicSessionHost: sessionApi.host,
+  musicSessionAcknowledge: sessionApi.acknowledge, musicSessionUnsubscribe: sessionApi.unsubscribe,
+  musicSessionReadFrame: sessionApi.readFrame, musicSessionObserve: sessionApi.observe,
+}));
+
+vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@tauri-apps/api/core")>(),
+  Channel: class {
+    constructor(public onmessage: (value: unknown) => void) {}
+  },
+}));
+
+let nativeRevision = 0;
+function nativeSnapshot(patch: Partial<NativeMusicSnapshot> = {}): NativeMusicSnapshot {
+  nativeRevision += 1;
+  return { sessionId: "panel-session", revision: nativeRevision, generation: 1, queueRevision: nativeRevision,
+    currentIndex: null, currentSource: null, backend: null, status: "idle", positionMs: 0, durationMs: null,
+    volume: 0.8, muted: false, rate: 1, order: "shuffle", repeatMode: "off", owner: "manual", context: null,
+    playlistId: null, queueName: "", canPrevious: false, canNext: false, issue: null, error: null,
+    reviewCheckpointId: null, queue: [], ...patch };
+}
+
+sessionApi.command.mockImplementation(async (request: NativeMusicCommand) => nativeSnapshot({
+  order: request.intent.kind === "order" ? request.intent.order : "shuffle",
+}));
 
 const snoozeApi = vi.hoisted(() => ({
   getMusicInspectorDetail: vi.fn(),
@@ -51,7 +86,7 @@ describe("MusicPanel", () => {
     target = undefined;
     vi.unstubAllGlobals();
     resizeObserverCallbacks.clear();
-    getMusicSourcesController().firstUseSession = false;
+    Object.assign(getMusicSourcesController(), { firstUseSession: false, preparingDefaultFolder: false, loaded: false });
     const player = getMusicPlayer();
     player.setPlaylistVisible(false);
     player.currentSource = null;
@@ -63,7 +98,8 @@ describe("MusicPanel", () => {
     player.activePlaylistName = null;
     player.activeSourceQueueId = null;
     player.savedQueueSkipBreakdown = emptyMusicSkipBreakdown();
-    player.setPlaybackMode("shuffle");
+    player.shuffleEnabled = true;
+    player.mixEnabled = false;
     vi.restoreAllMocks();
     vi.clearAllMocks();
   });
@@ -72,10 +108,10 @@ describe("MusicPanel", () => {
     vi.stubGlobal("ResizeObserver", ResizeObserverStub);
     target = document.createElement("div");
     document.body.append(target);
-    const onclose = vi.fn();
+    const onClose = vi.fn();
     const { default: MusicPanel } = await import("./MusicPanel.svelte");
 
-    component = mount(MusicPanel, { target, props: { onclose } });
+    component = mount(MusicPanel, { target, props: { onClose } });
     await tick();
 
     const dialog = target.querySelector<HTMLElement>("[role='dialog']");
@@ -83,7 +119,7 @@ describe("MusicPanel", () => {
     expect(dialog?.classList.contains("z-70")).toBe(true);
 
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
-    expect(onclose).toHaveBeenCalledOnce();
+    expect(onClose).toHaveBeenCalledOnce();
   });
 
   it("uses a square playlist launcher and no close button in the mobile player", async () => {
@@ -94,7 +130,7 @@ describe("MusicPanel", () => {
 
     component = mount(MusicPanel, {
       target,
-      props: { onclose: vi.fn(), presentation: "mobile" },
+      props: { onClose: vi.fn(), presentation: "mobile" },
     });
     await tick();
 
@@ -112,7 +148,7 @@ describe("MusicPanel", () => {
     document.body.append(target);
     const { default: MusicPanel } = await import("./MusicPanel.svelte");
 
-    component = mount(MusicPanel, { target, props: { onclose: vi.fn() } });
+    component = mount(MusicPanel, { target, props: { onClose: vi.fn() } });
     await tick();
 
     const preferences = target.querySelector<HTMLButtonElement>("button[aria-label='Mix and snooze']");
@@ -130,7 +166,7 @@ describe("MusicPanel", () => {
     target = document.createElement("div");
     document.body.append(target);
     const { default: MusicPanel } = await import("./MusicPanel.svelte");
-    component = mount(MusicPanel, { target, props: { onclose: vi.fn() } });
+    component = mount(MusicPanel, { target, props: { onClose: vi.fn() } });
     await tick();
 
     target.querySelector<HTMLButtonElement>(".music-transport-shuffle button")?.click();
@@ -145,7 +181,8 @@ describe("MusicPanel", () => {
     expect(player.playbackMode).toBe("shuffle");
     [...target.querySelectorAll<HTMLButtonElement>("[role='menuitemradio']")]
       .find((option) => option.textContent?.includes("Mix"))?.click();
-    expect(player.playbackMode).toBe("mix");
+    await vi.waitFor(() => expect(player.playbackMode).toBe("mix"));
+    expect(sessionApi.command).toHaveBeenLastCalledWith(expect.objectContaining({ intent: { kind: "order", order: "mix" } }));
   });
 
   it("places the side playlist summary in the desktop player header", async () => {
@@ -156,7 +193,7 @@ describe("MusicPanel", () => {
     player.setPlaylistVisible(true);
     const { default: MusicPanel } = await import("./MusicPanel.svelte");
 
-    component = mount(MusicPanel, { target, props: { onclose: vi.fn() } });
+    component = mount(MusicPanel, { target, props: { onClose: vi.fn() } });
     await tick();
     const emptyDesktopHeader = target.querySelector<HTMLElement>("[data-music-desktop-playlist-header]");
     expect(emptyDesktopHeader).not.toBeNull();
@@ -186,16 +223,22 @@ describe("MusicPanel", () => {
     player.activeQueueItemIds = ["snoozed"];
     player.activeSourceQueueId = "source:music";
     player.sourceQueueSnoozedItemIds = ["snoozed"];
+    sessionApi.command.mockResolvedValueOnce(nativeSnapshot({ queue: [{
+      itemId: "snoozed", membershipId: null, source: player.queue[0]!, backend: "native-audio",
+      availability: "available", enabled: true, weight: "normal", snoozedUntil: null,
+      snoozedIndefinitely: false, embeddingBlocked: false, bound: true, phaseAllowed: true,
+      skipRanges: [], volume: null, rate: null,
+    }] }));
     const play = vi.spyOn(player, "playQueueItem").mockResolvedValue(undefined);
     const now = Date.now();
     snoozeApi.getMusicInspectorDetail.mockResolvedValue({ snoozes: [{
       id: "active-snooze", itemId: "snoozed", scope: "all-playlists", playlistId: null,
-      startsAt: now - 1_000, endsAt: now + 86_400_000, reason: "", createdAt: now - 1_000,
+      startsAtMs: now - 1_000, endsAtMs: now + 86_400_000, reason: "", createdAtMs: now - 1_000,
     }] });
     target = document.createElement("div");
     document.body.append(target);
     const { default: MusicPanel } = await import("./MusicPanel.svelte");
-    component = mount(MusicPanel, { target, props: { onclose: vi.fn() } });
+    component = mount(MusicPanel, { target, props: { onClose: vi.fn() } });
     await tick();
 
     const button = target.querySelector<HTMLButtonElement>("#music-playlist button[aria-label='Remove snooze']");
@@ -203,6 +246,8 @@ describe("MusicPanel", () => {
     button?.click();
     await vi.waitFor(() => expect(snoozeApi.removeMusicSnooze).toHaveBeenCalledWith("active-snooze"));
     await vi.waitFor(() => expect(player.sourceQueueSnoozedItemIds).toEqual([]));
+    expect(sessionApi.command).toHaveBeenLastCalledWith(expect.objectContaining({ intent: { kind: "refresh" } }));
+    expect(player.queue.map((source) => source.title)).toEqual(["Snoozed"]);
     expect(play).not.toHaveBeenCalled();
   });
 
@@ -217,7 +262,7 @@ describe("MusicPanel", () => {
     target = document.createElement("div");
     document.body.append(target);
     const { default: MusicPanel } = await import("./MusicPanel.svelte");
-    component = mount(MusicPanel, { target, props: { onclose: vi.fn() } });
+    component = mount(MusicPanel, { target, props: { onClose: vi.fn() } });
     await tick();
 
     const rows = [...target.querySelectorAll<HTMLElement>("#music-playlist [data-music-queue-title]")];
@@ -251,7 +296,7 @@ describe("MusicPanel", () => {
     };
     const { default: MusicPanel } = await import("./MusicPanel.svelte");
 
-    component = mount(MusicPanel, { target, props: { onclose: vi.fn() } });
+    component = mount(MusicPanel, { target, props: { onClose: vi.fn() } });
     await tick();
 
     const unavailable = target.querySelector<HTMLElement>("[data-music-playlist-unavailable]");
@@ -272,7 +317,7 @@ describe("MusicPanel", () => {
     player.queue = [source];
     const { default: MusicPanel } = await import("./MusicPanel.svelte");
 
-    component = mount(MusicPanel, { target, props: { onclose: vi.fn() } });
+    component = mount(MusicPanel, { target, props: { onClose: vi.fn() } });
     await tick();
     await unmount(component);
     component = undefined;
@@ -294,7 +339,7 @@ describe("MusicPanel", () => {
     const underlyingKeydown = vi.fn();
     const { default: MusicPanel } = await import("./MusicPanel.svelte");
 
-    component = mount(MusicPanel, { target, props: { onclose: vi.fn() } });
+    component = mount(MusicPanel, { target, props: { onClose: vi.fn() } });
     await tick();
     window.addEventListener("keydown", underlyingKeydown);
     const event = new KeyboardEvent("keydown", {
@@ -315,10 +360,10 @@ describe("MusicPanel", () => {
     vi.stubGlobal("ResizeObserver", ResizeObserverStub);
     target = document.createElement("div");
     document.body.append(target);
-    const onclose = vi.fn();
+    const onClose = vi.fn();
     const { default: MusicPanel } = await import("./MusicPanel.svelte");
 
-    component = mount(MusicPanel, { target, props: { onclose } });
+    component = mount(MusicPanel, { target, props: { onClose } });
     await tick();
     target.querySelector<HTMLButtonElement>("[data-music-playlist-launcher]")?.click();
     await vi.waitFor(() => {
@@ -333,7 +378,7 @@ describe("MusicPanel", () => {
     await tick();
 
     expect(document.body.querySelector(".playlist-launcher-popover")).toBeNull();
-    expect(onclose).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it("keeps the initialized builder mounted but inactive while returning to the player", async () => {
@@ -343,7 +388,7 @@ describe("MusicPanel", () => {
     document.body.append(target);
     const { default: MusicPanel } = await import("./MusicPanel.svelte");
 
-    component = mount(MusicPanel, { target, props: { onclose: vi.fn() } });
+    component = mount(MusicPanel, { target, props: { onClose: vi.fn() } });
     await tick();
     const playerPage = target.querySelector<HTMLElement>("[data-music-player-page]");
     expect(playerPage).not.toBeNull();
@@ -408,7 +453,7 @@ describe("MusicPanel", () => {
     player.setPlaylistVisible(true);
     const { default: MusicPanel } = await import("./MusicPanel.svelte");
 
-    component = mount(MusicPanel, { target, props: { onclose: vi.fn() } });
+    component = mount(MusicPanel, { target, props: { onClose: vi.fn() } });
     await tick();
     const dialog = target.querySelector<HTMLElement>("[role='dialog']");
     expect(dialog?.style.height).toContain("503px");
@@ -441,12 +486,12 @@ describe("MusicPanel", () => {
   it("keeps first-use preparation pending when the panel closes before completion", async () => {
     vi.stubGlobal("ResizeObserver", ResizeObserverStub);
     vi.stubGlobal("matchMedia", matchMediaStub);
-    getMusicSourcesController().firstUseSession = true;
+    Object.assign(getMusicSourcesController(), { firstUseSession: true, preparingDefaultFolder: true });
     target = document.createElement("div");
     document.body.append(target);
     const { default: MusicPanel } = await import("./MusicPanel.svelte");
 
-    component = mount(MusicPanel, { target, props: { onclose: vi.fn() } });
+    component = mount(MusicPanel, { target, props: { onClose: vi.fn() } });
 
     await vi.waitFor(() => {
       expect(target?.querySelector(".builder-root"), target?.textContent ?? "").not.toBeNull();
@@ -457,5 +502,32 @@ describe("MusicPanel", () => {
     component = undefined;
 
     expect(getMusicSourcesController().firstUseSession).toBe(true);
+  });
+
+  it("asks for the first Music folder from the player instead of opening the Builder", async () => {
+    vi.stubGlobal("ResizeObserver", ResizeObserverStub);
+    vi.stubGlobal("matchMedia", matchMediaStub);
+    const sources = getMusicSourcesController();
+    Object.assign(sources, { firstUseSession: true, loaded: true, roots: [], collections: [] });
+    const choose = vi.spyOn(sources, "chooseLocalFolder").mockResolvedValue(null);
+    target = document.createElement("div");
+    document.body.append(target);
+    const { default: MusicPanel } = await import("./MusicPanel.svelte");
+
+    component = mount(MusicPanel, { target, props: { onClose: vi.fn() } });
+    await tick();
+
+    const prompt = target.querySelector<HTMLButtonElement>("[data-music-first-use-folder] button");
+    expect(prompt).not.toBeNull();
+    expect(target.querySelector(".builder-root")).toBeNull();
+    expect(target.querySelector("[data-music-player-page]")?.classList.contains("hidden")).toBe(false);
+
+    prompt?.click();
+    await vi.waitFor(() => expect(choose).toHaveBeenCalledOnce());
+    await tick();
+
+    expect(target.querySelector(".builder-root")).toBeNull();
+    expect(target.querySelector("[data-music-first-use-folder]")).not.toBeNull();
+    choose.mockRestore();
   });
 });

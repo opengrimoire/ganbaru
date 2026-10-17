@@ -1,7 +1,7 @@
-import type { NotesBacklink, NotesBacklinkReferenceType, NotesPageAlias, NotesPageBreadcrumbItem, NotesPageBreadcrumbStatus, NotesSearchResult, NotesSearchResultType, NotesUnresolvedLink, NotesUnresolvedLinkSourceType } from "../contracts/knowledge";
+import type { NotesBacklink, NotesBacklinkReferenceType, NotesMentionScope, NotesMentionScopeEvent, NotesMentionScopeTask, NotesPageAlias, NotesPageBreadcrumbItem, NotesPageBreadcrumbStatus, NotesSearchResult, NotesSearchResultType, NotesUnresolvedLink, NotesUnresolvedLinkSourceType } from "../contracts/knowledge";
 import { isNotesBlockType } from "./blocks";
 import { parseCommentThreadStatus, parseNotesCommentAnchor, parseNotesCommentDisplayName } from "./collaboration";
-import { readBoolean, readDisplayString, readNullableString, readRecord, readString } from "./readers";
+import { readBoolean, readDisplayString, readMentionObjectId, readNullableString, readRecord, readRecordArray, readString } from "./readers";
 import { parseNotesPage } from "./workspace";
 
 function parseBacklinkReferenceType(value: unknown): NotesBacklinkReferenceType {
@@ -162,5 +162,40 @@ export function parseNotesSearchResult(value: unknown): NotesSearchResult {
       : parseNotesCommentAnchor(record.comment_anchor),
     snippet: readString(record.snippet, "search_result.snippet"),
     last_edited_time: readString(record.last_edited_time, "search_result.last_edited_time"),
+  };
+}
+
+function parseNotesMentionScopeTask(value: unknown, index: number): NotesMentionScopeTask {
+  const label = `mention_scope.tasks[${index}]`;
+  const record = readRecord(value, label);
+  return {
+    id: readMentionObjectId(record.id, `${label}.id`),
+    project_id: readMentionObjectId(record.project_id, `${label}.project_id`),
+    title: readString(record.title, `${label}.title`),
+    completed: readBoolean(record.completed, `${label}.completed`),
+  };
+}
+
+function parseNotesMentionScopeEvent(value: unknown, index: number): NotesMentionScopeEvent {
+  const label = `mention_scope.events[${index}]`;
+  const record = readRecord(value, label);
+  return {
+    id: readMentionObjectId(record.id, `${label}.id`),
+    title: readString(record.title, `${label}.title`),
+    start_time: readString(record.start_time, `${label}.start_time`),
+    end_time: readString(record.end_time, `${label}.end_time`),
+    all_day: readBoolean(record.all_day, `${label}.all_day`),
+    recurring: readBoolean(record.recurring, `${label}.recurring`),
+    calendar_id: readString(record.calendar_id, `${label}.calendar_id`),
+    project_id: readMentionObjectId(record.project_id, `${label}.project_id`),
+  };
+}
+
+/** Validate the tasks and Calendar events a page may mention. */
+export function parseNotesMentionScope(value: unknown): NotesMentionScope {
+  const record = readRecord(value, "mention_scope");
+  return {
+    tasks: readRecordArray(record.tasks, "mention_scope.tasks").map(parseNotesMentionScopeTask),
+    events: readRecordArray(record.events, "mention_scope.events").map(parseNotesMentionScopeEvent),
   };
 }

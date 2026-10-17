@@ -3,11 +3,12 @@ import type { MessageShape } from "../types";
 
 export const updates = {
   checkingFeed: "Revisando el feed de versiones configurado",
-  current: "Ganbaru AI está actualizado",
+  current: "Ganbaru está actualizado",
   versionAvailable: (version: string) => `La versión ${version} está disponible`,
+  updateAvailable: "Hay una actualización disponible",
   downloadingBytes: (bytes: string) => `Descargando ${bytes}`,
   downloadingPercent: (percent: number) => `Descargando ${percent}%`,
-  installedRestarting: "Actualización instalada. Reiniciando Ganbaru AI",
+  installedRestarting: "Actualización instalada. Reiniciando Ganbaru",
   checkFailed: "Falló la revisión de actualizaciones",
   notChecked: "No se ha revisado si hay actualizaciones en esta ventana",
   promptAvailable: (version: string) => `Hay una actualización disponible: ${version}`,

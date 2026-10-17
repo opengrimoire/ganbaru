@@ -10,8 +10,13 @@ const DYNAMIC_IMPORT_FAILURE_MARKERS = [
   "failed to load module script",
 ] as const;
 
+/** Reads the message of an Error or of a native command error object such as `{ code, message }`. */
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  if (error instanceof Error) return error.message;
+  if (typeof error === "object" && error !== null && "message" in error && typeof error.message === "string") {
+    return error.message;
+  }
+  return String(error);
 }
 
 /** Classify a load failure without discarding the original diagnostic message. */

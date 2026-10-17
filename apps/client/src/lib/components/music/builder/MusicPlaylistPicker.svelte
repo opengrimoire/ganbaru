@@ -1,10 +1,11 @@
 <script lang="ts">
-  import Check from "@lucide/svelte/icons/check";
   import Search from "@lucide/svelte/icons/search";
+  import Checkbox from "$lib/components/ui/Checkbox.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { sortReviewPlaylists } from "$lib/music/music-review";
-  import { partitionMusicPlaylists, systemMusicPlaylistName } from "$lib/music/music-system-playlists";
-  import type { MusicPlaylistSummary } from "$lib/music/library-contracts";
+  import { sortReviewPlaylists } from "$lib/music/review";
+  import { partitionMusicPlaylists, systemMusicPlaylistName } from "$lib/music/playlists/system";
+  import type { MusicPlaylistSummary } from "$lib/music/library/contracts";
   import { cn } from "$lib/utils";
   import MusicPlaylistIcon from "./MusicPlaylistIcon.svelte";
 
@@ -51,11 +52,6 @@
       ]
     : [{ title: null, playlists: visible }]);
 
-  function triStateAction(node: HTMLInputElement, mixed: boolean): { update: (value: boolean) => void } {
-    node.indeterminate = mixed;
-    return { update: (value) => { node.indeterminate = value; } };
-  }
-
   function searchInputAction(node: HTMLInputElement): { destroy: () => void } {
     onSearchInput(node);
     return { destroy: () => onSearchInput(null) };
@@ -64,9 +60,9 @@
 
 <div class="flex min-h-0 flex-1 flex-col">
   {#if showSearch}
-    <label class="mx-3 mt-3 flex h-9 shrink-0 items-center gap-2 border-b border-border/55 px-1">
+    <label class="field mx-3 mt-3 flex h-9 shrink-0 items-center gap-2 px-2.5">
       <Search size={14} class="text-muted-foreground" />
-      <input use:searchInputAction value={search} oninput={(event) => onSearch(event.currentTarget.value)} aria-label={t("music.builder.searchPlaylists")} class="min-w-0 flex-1 bg-transparent text-xs outline-none" placeholder={t("music.builder.searchPlaylists")} />
+      <input use:searchInputAction value={search} oninput={(event) => onSearch(event.currentTarget.value)} aria-label={t("music.builder.searchPlaylists")} class="field-bare text-xs" placeholder={t("music.builder.searchPlaylists")} />
     </label>
   {/if}
   <div class="min-h-0 flex-1 overflow-y-auto p-3" data-music-scrollable="true">
@@ -89,14 +85,11 @@
           </span>
           <span class="min-w-0 flex-1"><strong class="block truncate text-xs font-medium">{playlistName}</strong><span class="block text-[0.62rem] tabular-nums text-muted-foreground">{mixed && selectionSize > 0 ? t("music.builder.bulkExistingMembership", mixedCounts[playlist.id] ?? 0, selectionSize) : t("music.tracks", playlist.totalCount)}</span></span>
         </span>
-        <span class="relative grid h-6 w-6 shrink-0 place-items-center">
-          <input type="checkbox" data-review-playlist-id={playlist.id} checked={checked} {disabled} use:triStateAction={mixed} onchange={() => onToggle(playlist)} aria-label={checked ? t("music.builder.removeFromPlaylist", playlist.name) : t("music.builder.addToPlaylist", playlist.name)} aria-describedby={errorId} class="peer absolute inset-0 opacity-0" />
-          <span class={cn("pointer-events-none grid h-5 w-5 place-items-center rounded border peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-ring", checked ? "border-primary bg-primary text-primary-foreground" : mixed ? "border-primary bg-background/80" : "border-border bg-background/80")}>
-            {#if checked}<Check size={13} strokeWidth={2.5} />{/if}
-          </span>
+        <span class="grid h-6 w-6 shrink-0 place-items-center">
+          <Checkbox data-review-playlist-id={playlist.id} {checked} indeterminate={mixed && !checked} {disabled} onChange={() => onToggle(playlist)} label={checked ? t("music.builder.removeFromPlaylist", playlist.name) : t("music.builder.addToPlaylist", playlist.name)} aria-describedby={errorId} />
         </span>
       </label>
-      {#if errors[playlist.id]}<p id={errorId} class="mb-1 px-2 text-[0.62rem] text-destructive" role="alert">{errors[playlist.id]}</p>{/if}
+      {#if errors[playlist.id]}<div id={errorId}><Notice class="mb-1 px-2 text-[0.62rem]" message={errors[playlist.id]} /></div>{/if}
     {/each}
         </div>
       {/if}

@@ -2,8 +2,9 @@ import { getCalendars } from "$lib/stores/calendars.svelte";
 import {
   buildBulkImportPayload,
   type CalendarBulkImportResult,
-} from "$lib/stores/calendar-bulk-import";
+} from "$lib/stores/calendar/bulk-import";
 import { generateDenseCalendarEvents } from "../dense";
+import { requireScenarioMetadata } from "../registry";
 import {
   DEFAULT_BENCHMARK_DATASET,
   type BenchmarkDatasetProfile,
@@ -139,19 +140,7 @@ async function largeImportMetrics(
 }
 
 export const calendarImportOpsScenario: BenchmarkScenario = {
-  id: "calendar-import-ops",
-  label: "Calendar import operations",
-  description:
-    "Measures the Rust calendar_bulk_import command for repeated 100-event imports and one 1000-event add/update pass.",
-  workload: {
-    kind: "operation-latency",
-    question: "How quickly does Rust apply typed calendar import payloads?",
-    label: "scripted calendar bulk import commands",
-    durationMs: 0,
-    memoryMode: "none",
-  },
-  defaultDataset: DEFAULT_BENCHMARK_DATASET,
-  runMode: "dense-only",
+  ...requireScenarioMetadata("calendar-import-ops"),
 
   async setup(): Promise<void> {
     await ensureBenchmarkDbReady();

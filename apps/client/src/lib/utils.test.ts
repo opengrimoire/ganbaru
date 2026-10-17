@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { shouldUseKeyboardFocusIntent, type FocusIntentKeydown } from "./utils";
+import { cn, shouldUseKeyboardFocusIntent, type FocusIntentKeydown } from "./utils";
 
 function keydown(overrides: Partial<FocusIntentKeydown>): FocusIntentKeydown {
 	return {
@@ -31,5 +31,17 @@ describe("shouldUseKeyboardFocusIntent", () => {
 
 	it("ignores non-tab keys", () => {
 		expect(shouldUseKeyboardFocusIntent(keydown({ key: "PageDown" }))).toBe(false);
+	});
+});
+
+describe("cn", () => {
+	it("keeps custom theme text sizes alongside text colors", () => {
+		expect(cn("text-collection", "text-muted-foreground")).toBe("text-collection text-muted-foreground");
+		expect(cn("text-identity font-medium", "text-foreground")).toBe("text-identity font-medium text-foreground");
+	});
+
+	it("lets a later custom text size replace an earlier size", () => {
+		expect(cn("text-[0.8rem]", "text-collection")).toBe("text-collection");
+		expect(cn("text-sm", "text-identity")).toBe("text-identity");
 	});
 });

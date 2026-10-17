@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { createBlockWrite } from "./block-factory";
-import { buildNotesChildIdsByParent, type NotesTreeState } from "./block-tree";
+import { createBlockWrite } from "$lib/notes/blocks/factory";
+import { buildNotesChildIdsByParent, type NotesTreeState } from "$lib/notes/blocks/tree";
 import { applyNotesPostMutationToTree, notesPostTrashResult } from "./post-mutation";
 import type { NotesBlock, NotesParent } from "./types";
 

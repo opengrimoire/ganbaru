@@ -3,9 +3,22 @@
 #![deny(clippy::undocumented_unsafe_blocks)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
-pub mod chat;
+pub(crate) use ganbaru_chat_contracts::{events, models};
 
-pub use chat::{process, providers};
+pub mod process;
+
+mod claude;
+mod codex;
+mod cursor;
+mod driver;
+mod opencode;
+mod registry;
+mod unsupported;
+
+pub use driver::*;
+pub use ganbaru_chat_contracts::models::ProviderAuthoritySupport;
+pub use registry::ProviderDriverRegistry;
+pub use unsupported::*;
 
 #[cfg(test)]
 pub(crate) fn test_block_on<F>(future: F) -> F::Output

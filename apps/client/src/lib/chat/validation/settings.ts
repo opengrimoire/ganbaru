@@ -15,7 +15,6 @@ import {
   parseProviderInstanceConfig,
   parseProviderModelCatalog,
   parseProviderProbeResult,
-  normalizeProviderModelCatalogForFamily,
 } from "./provider";
 import {
   readArray,
@@ -37,9 +36,7 @@ export function parseProviderInstanceRead(value: unknown, label = "provider inst
     configuration,
     lastProbe: readNullable(record.lastProbe, `${label}.lastProbe`, parseProviderProbeResult),
     lastSuccessfulProbeAt: readNullable(record.lastSuccessfulProbeAt, `${label}.lastSuccessfulProbeAt`, readUtcTimestamp),
-    modelCatalog: modelCatalog
-      ? normalizeProviderModelCatalogForFamily(modelCatalog, configuration.familyId)
-      : null,
+    modelCatalog,
   };
 }
 

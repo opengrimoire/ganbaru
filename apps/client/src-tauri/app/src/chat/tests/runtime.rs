@@ -1,21 +1,22 @@
 use crate::chat::ingestion::{ChatChangeEmitter, ChatEventIngestor};
-use crate::chat::models::{ChatChangeNotification, ChatError, ChatResult, UtcTimestamp};
-use crate::chat::models::{
-    ChatCheckpointId, ChatCommandContext, ChatCommandId, ChatErrorCode, ChatThreadId,
-    ProviderSessionState, RollbackRequest,
-};
-use crate::chat::repository::events::AppendCanonicalEventRequest;
-use crate::chat::repository::rebuild::rebuild_thread_projections;
-use crate::chat::repository::recovery::recover_orphaned_turns;
-use crate::chat::runtime::{ChatRuntimeRegistry, ThreadRuntimeCommand, ThreadRuntimeSnapshot};
 use crate::chat::tests::fake_driver::{
     FakeDriverControl, RecordingEventSink, approval_request, fake_driver, operation_context,
     send_request, start_request,
 };
-use crate::chat::workspace_mutation::{
+use crate::chat::workspace::mutation::{
     ChatWorkspaceMutationRegistry, ProviderTurnReservationHandoff,
 };
-use crate::chat::{events::CanonicalEvent, providers::ProviderEventSink};
+use ganbaru_chat::repository::events::AppendCanonicalEventRequest;
+use ganbaru_chat::repository::rebuild::rebuild_thread_projections;
+use ganbaru_chat::repository::recovery::recover_orphaned_turns;
+use ganbaru_chat::runtime::{ChatRuntimeRegistry, ThreadRuntimeCommand, ThreadRuntimeSnapshot};
+use ganbaru_chat_contracts::events::CanonicalEvent;
+use ganbaru_chat_contracts::models::{ChatChangeNotification, ChatError, ChatResult, UtcTimestamp};
+use ganbaru_chat_contracts::models::{
+    ChatCheckpointId, ChatCommandContext, ChatCommandId, ChatErrorCode, ChatThreadId,
+    ProviderSessionState, RollbackRequest,
+};
+use ganbaru_chat_providers::ProviderEventSink;
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
@@ -44,8 +45,8 @@ impl DurableTestSink {
 impl ProviderEventSink for DurableTestSink {
     fn emit<'a>(
         &'a self,
-        event: crate::chat::events::CanonicalRuntimeEvent,
-    ) -> crate::chat::providers::DriverFuture<'a, ()> {
+        event: ganbaru_chat_contracts::events::CanonicalRuntimeEvent,
+    ) -> ganbaru_chat_providers::DriverFuture<'a, ()> {
         Box::pin(async move {
             self.ingestor
                 .lock()
@@ -60,7 +61,7 @@ impl ProviderEventSink for DurableTestSink {
         })
     }
 
-    fn flush(&self) -> crate::chat::providers::DriverFuture<'_, ()> {
+    fn flush(&self) -> ganbaru_chat_providers::DriverFuture<'_, ()> {
         Box::pin(async move { self.ingestor.lock().await.flush().await })
     }
 }
@@ -71,7 +72,7 @@ fn turn_reservation(thread_id: &str, turn_id: &str) -> ProviderTurnReservationHa
         .begin_provider_turn(
             Path::new("/tmp/ganbaru-runtime-reservation-test"),
             &ChatThreadId::new(thread_id).unwrap(),
-            &crate::chat::models::ChatTurnId::new(turn_id).unwrap(),
+            &ganbaru_chat_contracts::models::ChatTurnId::new(turn_id).unwrap(),
         )
         .unwrap()
         .handoff_to_runtime()
@@ -130,7 +131,7 @@ fn idle_stop_requires_ready_unprotected_session_and_shutdown_is_visible() {
         let mut snapshot = ThreadRuntimeSnapshot {
             session_id: None,
             session_state: ProviderSessionState::Ready,
-            capabilities: crate::chat::models::ProviderCapabilities::default(),
+            capabilities: ganbaru_chat_contracts::models::ProviderCapabilities::default(),
             active_turn_id: None,
             turn_active: false,
             pending_request: false,
@@ -172,7 +173,7 @@ fn maintenance_stop_drains_owners_and_allows_new_sessions() {
             .begin_provider_turn(
                 Path::new("/tmp/ganbaru-runtime-maintenance-test"),
                 &thread_id,
-                &crate::chat::models::ChatTurnId::new("turn-maintenance").unwrap(),
+                &ganbaru_chat_contracts::models::ChatTurnId::new("turn-maintenance").unwrap(),
             )
             .unwrap()
             .handoff_to_runtime()
@@ -219,7 +220,7 @@ fn permanent_thread_shutdown_removes_the_owner_and_releases_its_workspace() {
             .begin_provider_turn(
                 root,
                 &thread_id,
-                &crate::chat::models::ChatTurnId::new("turn-delete").unwrap(),
+                &ganbaru_chat_contracts::models::ChatTurnId::new("turn-delete").unwrap(),
             )
             .unwrap()
             .handoff_to_runtime()

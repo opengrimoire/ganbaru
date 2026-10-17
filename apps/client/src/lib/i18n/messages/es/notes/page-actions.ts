@@ -41,6 +41,7 @@ export const pageActions = {
   trashConfirmMessage:
     "Esto quita la nota sin eliminarla. Se eliminará permanentemente después de 7 días, pero puedes restaurarla desde la papelera antes de eso.",
   trashConfirm: "Mover a la papelera",
+  trashFailed: (message: string) => `No se pudo mover la nota a la papelera: ${message}`,
   restorePage: (title: string) => `Restaurar ${title}`,
   restoreMovesToWorkspace:
     "Se restaurará en el espacio porque su nota principal está en la papelera.",
@@ -59,10 +60,14 @@ export const pageActions = {
     heading2: "Encabezado 2",
     heading3: "Encabezado 3",
     heading4: "Encabezado 4",
+    heading5: "Encabezado 5",
+    heading6: "Encabezado 6",
     toggleHeading1: "Encabezado desplegable 1",
     toggleHeading2: "Encabezado desplegable 2",
     toggleHeading3: "Encabezado desplegable 3",
     toggleHeading4: "Encabezado desplegable 4",
+    toggleHeading5: "Encabezado desplegable 5",
+    toggleHeading6: "Encabezado desplegable 6",
     bullet: "Lista con viñetas",
     numbered: "Lista numerada",
     todo: "Tarea",

@@ -1,6 +1,6 @@
 # Android testing
 
-Android testing distinguishes source checks, emulator coverage, physical-device behavior, and signed release acceptance.
+**Status: Reference.** Android testing distinguishes source checks, emulator coverage, physical-device behavior, and signed release acceptance. Platform contracts live in [Android](../platforms/android/README.md).
 
 ## Required targets
 
@@ -18,8 +18,7 @@ Android testing distinguishes source checks, emulator coverage, physical-device 
 - Fresh install and `Start from zero`.
 - Import a complete vault through a document tree.
 - Create a portable backup, uninstall, reinstall, and restore.
-- Cold and warm startup while offline.
-- During cold and warm startup, confirm the centered readiness indicator hands off to a usable Calendar before background preparation completes. Let preparation settle, then open every primary destination, every standard Project view, Settings, Quick notes, Music, Pomodoro, and linked-device controls without another top-level loading surface. Repeat while opening one destination immediately after Calendar appears and confirm only that destination shows loading until its existing preparation finishes.
+- Cold and warm offline startup: the readiness indicator hands off to a usable Calendar, and other destinations open without another app-wide loading surface.
 - Calendar creation, editing, recurrence, reminders, and project linkage.
 - Project task views, detail, settings, scheduling, and wide-view touch panning.
 - Notes pages, blocks, databases, history, assets, Archive, and Trash.
@@ -30,9 +29,8 @@ Android testing distinguishes source checks, emulator coverage, physical-device 
 ## Navigation and layout
 
 - Compact and wide primary navigation.
-- Portrait and landscape safe areas.
+- Portrait and landscape safe areas, cutouts, and system-bar contrast.
 - Three-button and gesture navigation.
-- Cutout and system-bar contrast.
 - Keyboard open, resize, rotate, dismiss, and focused-field recovery.
 - Android Back through dialogs, sheets, builders, hierarchy navigation, editors, task detail, and destination roots.
 - Predictive Back on a supported newer target.
@@ -51,46 +49,57 @@ Android testing distinguishes source checks, emulator coverage, physical-device 
 
 ## Calendar and Pomodoro
 
+The rule under test: Calendar alarms are reminders, and only committed native execution creates runs or focus history.
+
 - Notification permission grant, denial, revocation, and app-settings recovery.
 - Exact-alarm granted and denied fallback.
 - Calendar test notification and channel behavior.
 - Event edits cancel and rebuild native deliveries.
-- Due commitment while the Activity is absent or the PC is off produces a reminder and no run or focus history.
+- A due commitment while the Activity is absent or the PC is off produces a reminder and no run or focus history.
 - A late explicit start records its actual start, not the Calendar boundary.
-- Native phase deadline, missed break return, and repeated recovery create no additional focus phases.
-- Denied notification access, process death, reboot, and clock changes preserve reminder versus execution semantics.
+- Phase deadlines, missed break returns, and repeated recovery create no extra focus phases. A late alarm for a closed phase never replaces a newer phase's ongoing notification.
+- A delayed Guardian phase publication is rejected after the run stops or vault ownership changes, including after process death and in a minified release build.
+- Changing notification language never supplies execution state or recovers a run from notification storage.
 - Foreground-service start, ongoing notification, pause, resume, stop, process recreation, and event deadline.
 - Tap routing validates identifiers and opens the correct context.
 - Manufacturer battery or autostart guidance never claims an unobservable enabled state.
 
 ## Music
 
-- Select, retain, revoke, and reselect a Music document tree.
-- Scan supported audio outside the main thread and respect bounds.
-- Media3 playback while backgrounded, with audio focus, notification, lock-screen, headset, and trusted controller actions.
-- Queue, playlist, review, assignment, resume, missing item, and offline subset behavior.
-- Confirm desktop audio, soundscape, path reveal, and loopback media capabilities are absent.
+The native owner holds the queue and decoder; the WebView is only a projection.
 
-## Doomscrolling
+- Select, retain, revoke, and reselect a Music document tree. Scanning stays off the main thread and within bounds.
+- Media3 playback while backgrounded, with audio focus, notification, lock-screen, headset, and trusted controller actions. Controllers can play, pause, seek, and skip but cannot replace items, change repeat or shuffle, or release the player.
+- Queue, playlist, review, assignment, resume, missing item, and offline subset behavior.
+- Suspend the WebView while audio advances; on return the UI shows the current queue and position without replaying old effects or starting a second decoder.
+- A hidden browser source resumes paused after its host lease expires; only explicit Play restarts it.
+- During slow loads or a blocked document provider, pause, seek, stop, change items, switch vaults, change Focus phase, and destroy the service. The newest intent wins, old callbacks are ignored, a stopped decoder never reloads, and resolver work stays bounded.
+- After service loss, the selected track and position are retained and explicit Play resumes the same track.
+- A vault handoff waits for playback to actually stop or reports a timeout; the old vault's canceled playback never resumes.
+- Desktop audio, soundscapes, path reveal, and loopback media capabilities are absent.
+
+## Distraction blocker
 
 - Separate Usage Access and Accessibility disclosures.
 - Grant, deny, revoke, and recover each access independently.
 - Selected launchable-app filtering and protected package rejection.
 - Fresh phase and exhausted-limit Home redirection.
 - Paused phase, stale projection, vault switch, and rule removal stop enforcement.
-- Activity removal, guardian process recreation, reboot, package replacement, and low-memory recovery.
+- Activity removal, Guardian process recreation, reboot, package replacement, and low-memory recovery.
 - Daily and weekly rollover across local midnight and timezone changes.
 - Journal import accepts only current-vault rows and does not duplicate acknowledgements.
 - Notification deep links open the relevant settings.
 - Store-policy declaration matches observed behavior.
 
+Runtime cases without the WebView are in [Distraction blocker runtime acceptance](distractions.md).
+
 ## Vault handoff pairing
 
 - Grant and deny camera access from the user-initiated QR pairing scanner.
-- Confirm camera capture stops after a code is decoded, the scanner is canceled, or the pairing surface closes.
-- Confirm malformed, expired, replayed, and wrong-vault invitations cannot enroll the phone.
-- Confirm pairing and later authenticated reconnects work on a private LAN without internet access.
-- Run the complete [local vault handoff acceptance](vault-handoff.md) for ownership in both directions, read-only refresh, preserved local backup, native schedule reconciliation, offline Doomscrolling accounting, unlink, and explicit lost-device recovery.
+- Camera capture stops after a code is decoded, the scanner is canceled, or the pairing surface closes.
+- Malformed, expired, replayed, and wrong-vault invitations cannot enroll the phone.
+- Pairing and later authenticated reconnects work on a private LAN without internet access.
+- Run the complete [local vault handoff acceptance](vault-handoff.md).
 
 ## Security and artifact checks
 

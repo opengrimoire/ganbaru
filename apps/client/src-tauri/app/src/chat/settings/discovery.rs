@@ -6,16 +6,16 @@ use super::{
     providers::operation_context,
     store::{mutate_chat_config, read_chat_config},
 };
-use crate::chat::config::ChatVaultConfig;
 use crate::chat::device_state::{ChatProviderDeviceState, update_active_device_scope};
-use crate::chat::models::{
+use crate::chat::settings_commands::ChatSettingsState;
+use crate::vault;
+use ganbaru_chat_contracts::config::ChatVaultConfig;
+use ganbaru_chat_contracts::models::{
     ChatError, ChatErrorCode, ChatResult, ProbeState, ProviderFamilyId, ProviderFamilyMetadataRead,
     ProviderImplementationStatus, ProviderInstanceConfig, ProviderInstanceId, ProviderModelCatalog,
     ProviderProbeResult, VersionedJson,
 };
-use crate::chat::providers::{ProviderDriverFactory, ProviderDriverRegistry};
-use crate::chat::settings_commands::ChatSettingsState;
-use crate::vault;
+use ganbaru_chat_providers::{ProviderDriverFactory, ProviderDriverRegistry};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 

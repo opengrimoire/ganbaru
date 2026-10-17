@@ -1,9 +1,11 @@
 //! Shared time, operation, persistence, and error helpers for sends.
 
-use crate::chat::models::{ChatError, ChatErrorCode, ChatResult, UtcTimestamp, VersionedJson};
-use crate::chat::providers::{DriverCancellation, DriverOperationContext};
-use crate::db_path;
+use crate::db;
 use chrono::{SecondsFormat, Utc};
+use ganbaru_chat_contracts::models::{
+    ChatError, ChatErrorCode, ChatResult, UtcTimestamp, VersionedJson,
+};
+use ganbaru_chat_providers::{DriverCancellation, DriverOperationContext};
 use serde::Serialize;
 use sqlx::SqlitePool;
 use std::time::{Duration, Instant};
@@ -26,7 +28,7 @@ pub(super) fn now_timestamp() -> ChatResult<UtcTimestamp> {
 }
 
 pub(super) async fn chat_pool(app: tauri::AppHandle, db_url: String) -> ChatResult<SqlitePool> {
-    db_path::connect_sqlite(app, db_url)
+    db::connect_sqlite(app, db_url)
         .await
         .map_err(|_| ChatError::new(ChatErrorCode::Persistence, "open Chat database", true))
 }
@@ -43,7 +45,7 @@ pub(super) fn i64_value(value: u64) -> ChatResult<i64> {
         .map_err(|_| ChatError::validation("revision", "Chat revision is too large"))
 }
 
-pub(super) fn runtime_not_running() -> ChatError {
+pub(super) fn runtime_not_running_error() -> ChatError {
     ChatError::new(
         ChatErrorCode::InvalidStateTransition,
         "Chat provider session is not running",
@@ -75,7 +77,7 @@ pub(super) fn json_error<T>(_error: T) -> ChatError {
     )
 }
 
-pub(super) fn corrupt_data() -> ChatError {
+pub(super) fn corrupt_data_error() -> ChatError {
     ChatError::new(
         ChatErrorCode::Persistence,
         "Stored Chat send data is invalid",

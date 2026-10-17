@@ -1,6 +1,6 @@
 <script lang="ts">
   import Play from "@lucide/svelte/icons/play";
-  import type { MusicYouTubeSourcePreview } from "$lib/music/music-youtube-source-resolver";
+  import type { MusicYouTubeSourcePreview } from "$lib/music/sources/youtube-source-resolver";
 
   let { preview }: { preview: MusicYouTubeSourcePreview } = $props();
 

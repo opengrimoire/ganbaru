@@ -1,11 +1,19 @@
-//! Narrow Android notification capability bridge for Ganbaru AI.
+//! Narrow Android notification capability bridge for Ganbaru.
+
+#![deny(clippy::undocumented_unsafe_blocks, unsafe_op_in_unsafe_fn)]
+
+#[cfg(any(target_os = "android", test))]
+mod authority;
+#[cfg(target_os = "android")]
+pub use authority::set_focus_authority_checker;
 
 #[cfg(target_os = "android")]
 mod mobile;
 
 #[cfg(target_os = "android")]
 pub use mobile::{
-    BackgroundExecutionStatus, ExactAlarmStatus, MobileNotifications, MobileNotificationsExt,
+    BackgroundExecutionStatus, DeviceLocalTimeFact, ExactAlarmStatus, MobileNotifications,
+    MobileNotificationsExt, NativeFocusLifecycle,
 };
 
 #[cfg(target_os = "android")]
@@ -14,7 +22,7 @@ use tauri::{Runtime, plugin::TauriPlugin};
 
 const PLUGIN_NAME: &str = "ganbaru-mobile-notifications";
 
-/// Initialize Ganbaru AI's Android notification capability bridge.
+/// Initialize Ganbaru's Android notification capability bridge.
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
     let builder = tauri::plugin::Builder::new(PLUGIN_NAME);
 

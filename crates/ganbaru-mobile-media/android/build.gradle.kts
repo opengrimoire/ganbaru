@@ -6,7 +6,7 @@ plugins {
 }
 
 android {
-    namespace = "app.ganbaru.mobile_media"
+    namespace = "org.opengrimoire.ganbaru.mobile.media"
     compileSdk = 36
 
     defaultConfig {
@@ -41,4 +41,5 @@ dependencies {
     implementation("androidx.activity:activity-ktx:1.10.1")
     implementation("androidx.media3:media3-exoplayer:1.11.0")
     implementation("androidx.media3:media3-session:1.11.0")
+    testImplementation("junit:junit:4.13.2")
 }

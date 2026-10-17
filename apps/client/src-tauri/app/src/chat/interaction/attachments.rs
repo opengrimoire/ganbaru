@@ -4,19 +4,19 @@ use super::support::{chat_pool, now_timestamp, require_workspace};
 use crate::chat::interaction_commands::{
     ImportChatImageRequest, ImportChatTextSnippetRequest, PickChatImagesRequest,
 };
-use crate::chat::models::{
-    ChatAttachmentId, ChatError, ChatErrorCode, ChatResult, ProjectWorkingFolderId,
-};
-use crate::chat::repository::attachments;
 use crate::chat::workspace::WorkingFolderAuthorizationOperation;
 use crate::vault;
 use base64::{Engine as _, engine::general_purpose};
+use ganbaru_chat::repository::attachments;
+use ganbaru_chat_contracts::models::{
+    ChatAttachmentId, ChatError, ChatErrorCode, ChatResult, ProjectWorkingFolderId,
+};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use tauri_plugin_dialog::{DialogExt, FilePath};
 
 const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
-pub(super) const MAX_IMAGE_COUNT: usize = 8;
+pub(crate) const MAX_IMAGE_COUNT: usize = 8;
 
 pub(crate) async fn import_image(
     app: tauri::AppHandle,
@@ -81,7 +81,7 @@ pub(crate) async fn pick_images(
             let result = selection
                 .unwrap_or_default()
                 .into_iter()
-                .map(file_path_to_path)
+                .map(dialog_path)
                 .collect::<ChatResult<Vec<_>>>();
             let _ = sender.try_send(result);
         });
@@ -268,7 +268,7 @@ fn managed_attachment_path(app: &tauri::AppHandle, relative_path: &str) -> ChatR
         .join(relative))
 }
 
-fn file_path_to_path(value: FilePath) -> ChatResult<PathBuf> {
+fn dialog_path(value: FilePath) -> ChatResult<PathBuf> {
     value
         .into_path()
         .map_err(|_| ChatError::validation("image", "Selected image is not local"))

@@ -41,11 +41,17 @@ export const pomodoroOverlay = {
 } as const satisfies MessageShape<typeof enPomodoroOverlay>;
 
 export const pomodoroNotification = {
+  endingWarningTitle: "Tu sesión de enfoque está por terminar",
+  extendFocusLabel: "Extender el enfoque 3 minutos",
+  pausedReminderTitle: "La sesión de enfoque está pausada",
+  pausedReminderBody: "Tu sesión de enfoque sigue pausada.",
+  resumeFocusLabel: "Reanudar el enfoque",
+  dismissPromptsLabel: "Dejar de preguntar",
   startScheduledSession: "Iniciar sesión programada",
   noCommitmentDue: "No hay ninguna sesión de enfoque pendiente. Programa una en Calendario.",
   startFailed: "No se pudo guardar la sesión. Intenta iniciarla de nuevo.",
   commitmentDueTitle: "Sesión de enfoque pendiente",
-  commitmentDueText: "Tu sesión programada está pendiente. Abre Ganbaru AI cuando quieras comenzar.",
+  commitmentDueText: "Tu sesión programada está pendiente. Abre Ganbaru cuando quieras comenzar.",
   channelName: "Sesiones de enfoque",
   channelDescription: "Progreso persistente de las sesiones de enfoque activas",
   alertsChannelName: "Alertas de enfoque",
@@ -56,5 +62,5 @@ export const pomodoroNotification = {
   pausedText: "En pausa",
   focusCompleteTitle: "Enfoque completado",
   breakCompleteTitle: "Listo para volver",
-  sessionCompleteText: "Abre Ganbaru AI para continuar.",
+  sessionCompleteText: "Abre Ganbaru para continuar.",
 } as const satisfies MessageShape<typeof enPomodoroNotification>;

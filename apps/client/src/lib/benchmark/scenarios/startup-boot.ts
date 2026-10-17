@@ -1,7 +1,6 @@
-import { getCalendarNavHandle } from "$lib/components/calendar/nav-handle.svelte";
+import { getCalendarNavHandle } from "$lib/calendar/nav-handle.svelte";
+import { requireScenarioMetadata } from "../registry";
 import {
-  CORE_BENCHMARK_DATASETS,
-  DEFAULT_BENCHMARK_DATASET,
   type BenchmarkDatasetProfile,
   type BenchmarkScenario,
   type BenchmarkScenarioContext,
@@ -15,19 +14,7 @@ import {
 } from "./calendar-utils";
 
 export const startupBootScenario: BenchmarkScenario = {
-  id: "startup-boot",
-  label: "Startup boot",
-  description:
-    "Captures repeated process launch samples to usable calendar paint without adding a memory settling window. Use this for startup-time regressions.",
-  workload: {
-    kind: "startup",
-    question: "How fast does the app launch into the calendar?",
-    label: "calendar startup launch samples",
-    durationMs: 0,
-    memoryMode: "none",
-  },
-  defaultDataset: DEFAULT_BENCHMARK_DATASET,
-  benchmarkDatasets: [...CORE_BENCHMARK_DATASETS],
+  ...requireScenarioMetadata("startup-boot"),
 
   async setup(context: BenchmarkScenarioContext): Promise<void> {
     const handle = getCalendarNavHandle();

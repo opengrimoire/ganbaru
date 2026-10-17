@@ -1,9 +1,3 @@
-use super::models::{
-    ChatAgentRunId, ChatAuthorizationRevisionId, ChatConversationId, ChatError, ChatErrorCode,
-    ChatFolderCapability, ChatResult, ChatRuntimeApprovalPolicy, ChatThreadId, ChatTurnId,
-    ChatWorkAssignmentId, ProjectWorkingFolderId,
-};
-use super::repository::resources::{self, ChatResourceKind};
 use axum::Router;
 use axum::body::Body;
 use axum::extract::DefaultBodyLimit;
@@ -11,6 +5,12 @@ use axum::http::{Request, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use base64::{Engine as _, engine::general_purpose};
+use ganbaru_chat::repository::resources::{self, ChatResourceKind};
+use ganbaru_chat_contracts::models::{
+    ChatAgentRunId, ChatAuthorizationRevisionId, ChatConversationId, ChatError, ChatErrorCode,
+    ChatFolderCapability, ChatResult, ChatRuntimeApprovalPolicy, ChatThreadId, ChatTurnId,
+    ChatWorkAssignmentId, ProjectWorkingFolderId,
+};
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListResourcesResult,
     ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResponse,
@@ -527,14 +527,14 @@ impl ThreadMcpHandler {
         match name {
             "preview_status" => serde_json::to_value(
                 self.app
-                    .state::<super::preview::ChatPreviewManager>()
+                    .state::<super::preview::ChatBrowserManager>()
                     .thread_reads(&self.thread_id)?,
             )
             .map_err(|_| preview_tool_error("encode preview status")),
             "preview_open" | "preview_navigate" => {
                 let url = string_argument(arguments, "url")?;
                 serde_json::to_value(
-                    super::preview::mcp_navigate_preview(
+                    super::preview::mcp_navigate_browser(
                         &self.app,
                         &self.pool,
                         &self.thread_id,
@@ -548,7 +548,7 @@ impl ThreadMcpHandler {
                 let width = u32_argument(arguments, "width")?;
                 let height = u32_argument(arguments, "height")?;
                 serde_json::to_value(
-                    super::preview::mcp_resize_preview(
+                    super::preview::mcp_resize_browser(
                         &self.app,
                         &self.pool,
                         &self.thread_id,
@@ -560,7 +560,7 @@ impl ThreadMcpHandler {
                 .map_err(|_| preview_tool_error("encode preview viewport"))
             }
             "preview_snapshot" => {
-                let result = super::preview::chat_preview_snapshot(
+                let result = super::preview::chat_browser_snapshot(
                     self.app.clone(),
                     self.thread_id.clone(),
                     tab_id()?,
@@ -569,7 +569,7 @@ impl ThreadMcpHandler {
                 Ok(serde_json::json!({ "snapshot": result }))
             }
             "preview_screenshot" => {
-                let resource = super::preview::mcp_screenshot_preview(
+                let resource = super::preview::mcp_screenshot_browser(
                     &self.app,
                     &self.pool,
                     &self.vault_root,
@@ -580,7 +580,7 @@ impl ThreadMcpHandler {
                     .map_err(|_| preview_tool_error("encode browser screenshot"))?)
             }
             "preview_click" => {
-                super::preview::chat_preview_click(
+                super::preview::chat_browser_click(
                     self.app.clone(),
                     self.thread_id.clone(),
                     tab_id()?,
@@ -590,7 +590,7 @@ impl ThreadMcpHandler {
                 Ok(serde_json::json!({ "accepted": true }))
             }
             "preview_type" => {
-                super::preview::chat_preview_type(
+                super::preview::chat_browser_type(
                     self.app.clone(),
                     self.thread_id.clone(),
                     tab_id()?,
@@ -601,7 +601,7 @@ impl ThreadMcpHandler {
                 Ok(serde_json::json!({ "accepted": true }))
             }
             "preview_press" => {
-                super::preview::chat_preview_press(
+                super::preview::chat_browser_press(
                     self.app.clone(),
                     self.thread_id.clone(),
                     tab_id()?,
@@ -611,7 +611,7 @@ impl ThreadMcpHandler {
                 Ok(serde_json::json!({ "accepted": true }))
             }
             "preview_scroll" => {
-                super::preview::chat_preview_scroll(
+                super::preview::chat_browser_scroll(
                     self.app.clone(),
                     self.thread_id.clone(),
                     tab_id()?,

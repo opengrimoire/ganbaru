@@ -1,7 +1,8 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
-  import { containMusicDialogFocus } from "$lib/music/music-dialog-focus";
+  import { containMusicDialogFocus } from "$lib/music/builder/dialog-focus";
   import { portal } from "$lib/utils/portal";
+  import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
 
   type DialogSize = "small" | "medium" | "large";
 
@@ -50,7 +51,7 @@
   style="left: var(--visual-viewport-offset-left); top: var(--visual-viewport-offset-top); width: var(--visual-viewport-width); height: var(--visual-viewport-height); padding: calc(var(--safe-area-top) + 1rem) calc(var(--safe-area-right) + 1rem) calc(var(--safe-area-bottom) + 1rem) calc(var(--safe-area-left) + 1rem);"
   onclick={(event) => { event.stopPropagation(); dismiss(); }}
 >
-  <div class="absolute inset-0 bg-black/50"></div>
+  <div class="surface-backdrop absolute inset-0"></div>
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     use:containMusicDialogFocus={{
@@ -59,7 +60,7 @@
       onEnter: enterAction,
       enterDisabled,
     }}
-    class={`relative z-10 flex max-h-full w-full ${widthClass} flex-col overflow-hidden rounded-md border border-black/20 bg-card text-card-foreground outline-none dark:border-white/10 dark:bg-sidebar dark:text-sidebar-foreground`}
+    class={`relative z-10 flex max-h-full w-full ${widthClass} flex-col overflow-hidden surface-dialog outline-none`}
     style="--foreground: var(--card-foreground);"
     {role}
     aria-modal="true"
@@ -75,7 +76,7 @@
       </div>
     </header>
     {#if children}
-      <div class="min-h-0 flex-1 overflow-y-auto px-5 pb-5 sm:px-8" data-music-scrollable="true">
+      <div use:scrollEdgeFadeAction class="min-h-0 flex-1 overflow-y-auto px-5 pb-5 sm:px-8" data-music-scrollable="true">
         {@render children()}
       </div>
     {/if}

@@ -7,14 +7,20 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 use tauri::{Manager, Runtime};
 
 const OWNERSHIP_STATE_FILE: &str = "vault-ownership.json";
 const OWNERSHIP_STATE_SCHEMA_VERSION: u32 = 1;
-const READ_ONLY_ERROR: &str = "This vault is read-only on this device";
+pub(crate) const READ_ONLY_ERROR: &str = "This vault is read-only on this device";
+const MANAGED_WRITE_DRAIN_BUDGET: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase", tag = "kind")]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "kind"
+)]
 pub(crate) enum TransferPhase {
     Stable,
     PreparingOutgoing {
@@ -74,11 +80,15 @@ struct OwnershipManagerInner {
     fail_next_directory_sync: bool,
 }
 
+/// Reports whether this device is linked to other devices of a vault.
+pub(crate) type LinkProbe = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
 /// Process-local facade over the platform-private ownership state file.
 #[derive(Default)]
 pub(crate) struct VaultOwnershipManager {
     inner: Mutex<OwnershipManagerInner>,
     write_fence: Arc<ManagedWriteFenceControl>,
+    link_probe: Mutex<Option<LinkProbe>>,
 }
 
 #[derive(Default)]
@@ -125,6 +135,8 @@ impl Drop for ManagedVaultWriteFence {
 pub(crate) enum VaultDatabaseAccess {
     ReadOnly,
     ReadWrite,
+    /// Writable for replicated tables only, with read-only guards on every other table.
+    Guarded,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -136,6 +148,8 @@ pub(crate) struct VaultOwnershipStatus {
     pub generation: u64,
     pub role: &'static str,
     pub can_write: bool,
+    /// Replicated tables accept local writes while the rest of the vault is read-only.
+    pub replicated_writes: bool,
     pub transfer_phase: TransferPhase,
 }
 
@@ -181,16 +195,68 @@ impl VaultOwnershipManager {
         Ok(())
     }
 
+    /// Installs the probe that decides whether a stable replica is linked to its vault.
+    pub(crate) fn set_link_probe(&self, probe: Option<LinkProbe>) -> Result<(), String> {
+        *self
+            .link_probe
+            .lock()
+            .map_err(|_| "vault link probe lock is unavailable".to_string())? = probe;
+        Ok(())
+    }
+
+    /// Whether this device shares the vault with a linked peer or a pinned coordinator. Call it
+    /// outside the ownership lock, because the probe takes the pairing lock.
+    pub(crate) fn is_linked(&self, vault_id: &str) -> bool {
+        self.link_probe
+            .lock()
+            .ok()
+            .and_then(|probe| probe.clone())
+            .is_some_and(|probe| probe(vault_id))
+    }
+
+    /// Marks a stable, linked replica as able to write replicated tables. The probe runs
+    /// after the ownership lock is released so it never nests inside it.
+    fn with_replicated_writes(&self, mut status: VaultOwnershipStatus) -> VaultOwnershipStatus {
+        let replica = status.role == "read-only"
+            && !status.can_write
+            && status.transfer_phase == TransferPhase::Stable;
+        status.replicated_writes = replica && self.is_linked(&status.vault_id);
+        status
+    }
+
     pub(crate) fn status(&self, vault_id: &str) -> Result<VaultOwnershipStatus, String> {
-        self.with_record(vault_id, |device_id, record| {
+        let status = self.with_record(vault_id, |device_id, record| {
             Ok(status_from_record(device_id, record))
-        })
+        })?;
+        Ok(self.with_replicated_writes(status))
+    }
+
+    /// Read known committed authority without materializing a record or accessing storage.
+    pub(crate) fn cached_status(
+        &self,
+        vault_id: &str,
+    ) -> Result<Option<VaultOwnershipStatus>, String> {
+        let inner = self.inner.try_lock().map_err(|error| match error {
+            std::sync::TryLockError::WouldBlock => "vault ownership is busy".to_owned(),
+            std::sync::TryLockError::Poisoned(_) => {
+                "vault ownership lock is unavailable".to_owned()
+            }
+        })?;
+        let Some(record) = inner.state.vaults.get(vault_id) else {
+            return Ok(None);
+        };
+        let device_id = initialized_device_id(&inner)?;
+        let status = status_from_record(device_id, record);
+        drop(inner);
+        Ok(Some(self.with_replicated_writes(status)))
     }
 
     pub(crate) fn database_access(&self, vault_id: &str) -> Result<VaultDatabaseAccess, String> {
         let status = self.status(vault_id)?;
         Ok(if status.can_write {
             VaultDatabaseAccess::ReadWrite
+        } else if status.replicated_writes {
+            VaultDatabaseAccess::Guarded
         } else {
             VaultDatabaseAccess::ReadOnly
         })
@@ -354,6 +420,14 @@ impl VaultOwnershipManager {
     }
 
     pub(crate) fn fence_managed_writes(&self) -> Result<ManagedVaultWriteFence, String> {
+        self.fence_managed_writes_with_budget(MANAGED_WRITE_DRAIN_BUDGET)
+    }
+
+    fn fence_managed_writes_with_budget(
+        &self,
+        budget: Duration,
+    ) -> Result<ManagedVaultWriteFence, String> {
+        let started = Instant::now();
         let mut state = self
             .write_fence
             .state
@@ -364,11 +438,19 @@ impl VaultOwnershipManager {
         }
         state.fenced = true;
         while state.active_writers != 0 {
-            state = self
+            let Some(remaining) = budget.checked_sub(started.elapsed()) else {
+                state.fenced = false;
+                self.write_fence.drained.notify_all();
+                return Err(
+                    "Managed vault writes have not drained; vault operation cancelled".to_string(),
+                );
+            };
+            let (next_state, _) = self
                 .write_fence
                 .drained
-                .wait(state)
+                .wait_timeout(state, remaining)
                 .map_err(|_| "managed vault write fence is unavailable".to_string())?;
+            state = next_state;
         }
         Ok(ManagedVaultWriteFence {
             control: Arc::clone(&self.write_fence),
@@ -451,7 +533,7 @@ impl VaultOwnershipManager {
         })
     }
 
-    #[cfg(any(test, not(any(target_os = "android", target_os = "ios"))))]
+    #[cfg(any(test, desktop))]
     pub(crate) fn accept_incoming_grant(
         &self,
         vault_id: &str,
@@ -728,6 +810,7 @@ fn status_from_record(device_id: &str, record: &OwnershipRecord) -> VaultOwnersh
             "read-only"
         },
         can_write: local_owner && stable,
+        replicated_writes: false,
         transfer_phase: record.transfer_phase.clone(),
     }
 }
@@ -941,6 +1024,61 @@ mod tests {
     }
 
     #[test]
+    fn transfer_phase_serializes_variant_fields_in_camel_case() {
+        let phase = TransferPhase::PreparingOutgoing {
+            transfer_id: "transfer".into(),
+            receiver_device_id: "phone".into(),
+            next_generation: 3,
+        };
+        let json = serde_json::to_value(&phase).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "kind": "preparingOutgoing",
+                "transferId": "transfer",
+                "receiverDeviceId": "phone",
+                "nextGeneration": 3,
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<TransferPhase>(json).unwrap(),
+            phase
+        );
+    }
+
+    #[test]
+    fn native_callback_fails_closed_without_waiting_behind_ownership_io() {
+        let manager = VaultOwnershipManager::default();
+        let _io = manager.inner.lock().unwrap();
+        assert_eq!(
+            manager.cached_status("vault").unwrap_err(),
+            "vault ownership is busy"
+        );
+    }
+
+    #[test]
+    fn native_callback_cached_authority_never_materializes_unknown_vaults_and_tracks_revocation() {
+        let path = test_path("cached-callback");
+        let manager = load_manager(&path, "desktop");
+        assert_eq!(manager.cached_status("unknown").unwrap(), None);
+        assert!(manager.inner.lock().unwrap().state.vaults.is_empty());
+        let accepted = manager.status("vault").unwrap();
+        fs::remove_file(&path).unwrap();
+        assert_eq!(manager.cached_status("vault").unwrap(), Some(accepted));
+        assert!(!path.exists());
+        manager
+            .begin_outgoing("vault", 0, "transfer".into(), "phone".into())
+            .unwrap();
+        assert!(!manager.cached_status("vault").unwrap().unwrap().can_write);
+        manager.inner.lock().unwrap().persistence_uncertain = Some("uncertain ownership".into());
+        assert_eq!(
+            manager.cached_status("vault").unwrap_err(),
+            "uncertain ownership"
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
     fn failure_before_replacement_preserves_the_durable_owner() {
         let path = test_path("before-replacement");
         let manager = load_manager(&path, "desktop");
@@ -996,6 +1134,58 @@ mod tests {
         assert!(!status.can_write);
         assert_eq!(status.owner_device_id, "phone");
         assert_eq!(status.generation, 1);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn linked_stable_replicas_get_guarded_access_and_owners_stay_read_write() {
+        let path = test_path("guarded-access");
+        let replica = load_manager(&path, "phone");
+        replica
+            .register_remote_owner("vault", "desktop".into(), 0)
+            .unwrap();
+        assert_eq!(
+            replica.database_access("vault").unwrap(),
+            VaultDatabaseAccess::ReadOnly
+        );
+        replica
+            .set_link_probe(Some(Arc::new(|vault_id: &str| vault_id == "vault")))
+            .unwrap();
+        let status = replica.status("vault").unwrap();
+        assert!(status.replicated_writes && !status.can_write);
+        assert!(
+            replica
+                .cached_status("vault")
+                .unwrap()
+                .unwrap()
+                .replicated_writes
+        );
+        assert_eq!(
+            replica.database_access("vault").unwrap(),
+            VaultDatabaseAccess::Guarded
+        );
+        assert!(replica.require_writable("vault").is_err());
+
+        replica
+            .accept_incoming_grant("vault", "transfer".into(), "desktop".into(), 1)
+            .unwrap();
+        assert!(!replica.status("vault").unwrap().replicated_writes);
+        assert_eq!(
+            replica.database_access("vault").unwrap(),
+            VaultDatabaseAccess::ReadOnly
+        );
+        fs::remove_file(&path).unwrap();
+
+        let owner = load_manager(&path, "desktop");
+        owner
+            .set_link_probe(Some(Arc::new(|_: &str| true)))
+            .unwrap();
+        let status = owner.status("vault").unwrap();
+        assert!(status.can_write && !status.replicated_writes);
+        assert_eq!(
+            owner.database_access("vault").unwrap(),
+            VaultDatabaseAccess::ReadWrite
+        );
         fs::remove_file(path).unwrap();
     }
 
@@ -1175,6 +1365,25 @@ mod tests {
 
         drop(permit);
         let fence = waiter.join().unwrap();
+        assert!(manager.acquire_managed_write("vault").is_err());
+        drop(fence);
+        assert!(manager.acquire_managed_write("vault").is_ok());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn stalled_managed_writer_cancels_transition_and_restores_admission() {
+        let path = test_path("write-fence-timeout");
+        let manager = load_manager(&path, "desktop");
+        let permit = manager.acquire_managed_write("vault").unwrap();
+        let error = manager
+            .fence_managed_writes_with_budget(Duration::from_millis(1))
+            .err()
+            .unwrap();
+        assert!(error.contains("have not drained"));
+        assert!(manager.acquire_managed_write("vault").is_ok());
+        drop(permit);
+        let fence = manager.fence_managed_writes().unwrap();
         assert!(manager.acquire_managed_write("vault").is_err());
         drop(fence);
         assert!(manager.acquire_managed_write("vault").is_ok());

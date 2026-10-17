@@ -12,7 +12,7 @@ vi.mock("@tauri-apps/api/window", async (importOriginal) => {
   };
 });
 
-vi.mock("$lib/stores/themeEditor.svelte", () => ({
+vi.mock("$lib/stores/theme-editor.svelte", () => ({
   getThemeEditor: () => ({ editingId: null }),
 }));
 
@@ -20,13 +20,13 @@ vi.mock("$lib/stores/viewport.svelte", () => ({
   getViewport: () => ({ below: () => false }),
 }));
 
-vi.mock("$lib/buildInfo", () => ({
+vi.mock("$lib/build-info", () => ({
   BUILD_REF: "0.0.0+test",
-  GITHUB_REPOSITORY: "opengrimoire/ganbaru-ai",
+  GITHUB_REPOSITORY: "opengrimoire/ganbaru",
 }));
 
-vi.mock("$lib/components/settings/settings-detail-registry", async () => {
-  const { default: Stub } = await import("./SettingsSectionTestStub.test.svelte");
+vi.mock("$lib/components/settings/detail-registry", async () => {
+  const { default: Stub } = await import("./SettingsSectionStub.test.svelte");
   const load = async (kind: string) => ({ kind, component: Stub });
   return {
     loadSettingsDetail: load,
@@ -70,7 +70,7 @@ describe("SettingsModal remount state", () => {
     await tick();
     expect(target.querySelector("[data-settings-modal-panel]")?.getAttribute("data-settings-section"))
       .toBe("about");
-    expect(target.textContent).not.toContain("Loading");
+    expect(target.querySelector("[data-loading]")).toBeNull();
     await unmount(component);
     component = mount(SettingsModal, {
       target,
@@ -79,12 +79,12 @@ describe("SettingsModal remount state", () => {
     await tick();
     expect(target.querySelector("[data-settings-modal-panel]")?.getAttribute("data-settings-section"))
       .toBe("appearance");
-    expect(target.textContent).not.toContain("Loading");
+    expect(target.querySelector("[data-loading]")).toBeNull();
   });
 
   it("loads Data as one stable section on its first visit", async () => {
     vi.stubGlobal("ResizeObserver", ResizeObserverStub);
-    vi.stubGlobal("__GANBARU_AI_BUILD_PLATFORM__", "linux");
+    vi.stubGlobal("__GANBARU_BUILD_PLATFORM__", "linux");
     target = document.createElement("div");
     document.body.append(target);
 
@@ -136,7 +136,7 @@ describe("SettingsModal remount state", () => {
 
   it("renders and closes a nested detail in the mobile presentation", async () => {
     vi.stubGlobal("ResizeObserver", ResizeObserverStub);
-    vi.stubGlobal("__GANBARU_AI_BUILD_PLATFORM__", "android");
+    vi.stubGlobal("__GANBARU_BUILD_PLATFORM__", "android");
     originalScrollTo = HTMLElement.prototype.scrollTo;
     Object.defineProperty(HTMLElement.prototype, "scrollTo", {
       configurable: true,
@@ -149,8 +149,8 @@ describe("SettingsModal remount state", () => {
       target,
       props: {
         presentation: "mobile",
-        initialSection: "doomscrolling",
-        initialDoomscrollingTab: "limits",
+        initialSection: "distractions",
+        initialDistractionsTab: "limits",
         onClose: () => undefined,
       },
     });

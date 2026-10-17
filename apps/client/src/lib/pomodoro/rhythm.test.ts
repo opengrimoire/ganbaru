@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { isPomodoroWindowCommand } from "../stores/pomodoro-window-sync";
 import {
   breakAfterFocusPosition,
   configEquals,
@@ -33,10 +32,9 @@ describe("pomodoro rhythm engine", () => {
     { ...createPresetPomodoroConfig("adaptive"), idleTimeoutMinutes: Infinity },
   ])("rejects malformed configuration without throwing: %j", (value) => {
     expect(isValidPomodoroConfig(value)).toBe(false);
-    expect(isPomodoroWindowCommand({ kind: "start-from-block", blockId: "block", blockConfig: value })).toBe(false);
   });
 
-  it("accepts complete count and sequence configurations through window commands", () => {
+  it("accepts complete preset and sequence configurations", () => {
     for (const blockConfig of [
       createPresetPomodoroConfig("adaptive"),
       createCustomSequencePomodoroConfig([
@@ -44,7 +42,6 @@ describe("pomodoro rhythm engine", () => {
       ]),
     ]) {
       expect(isValidPomodoroConfig(blockConfig)).toBe(true);
-      expect(isPomodoroWindowCommand({ kind: "start-from-block", blockId: "block", blockConfig })).toBe(true);
     }
   });
 

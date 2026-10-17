@@ -1,6 +1,6 @@
-use crate::chat::events::{CanonicalEvent, CanonicalRuntimeEvent};
-use crate::chat::models::*;
-use crate::chat::providers::{
+use ganbaru_chat_contracts::events::{CanonicalEvent, CanonicalRuntimeEvent};
+use ganbaru_chat_contracts::models::*;
+use ganbaru_chat_providers::{
     DriverFuture, DriverOperationContext, ProviderDriver, ProviderEventSink,
 };
 use serde_json::json;
@@ -48,7 +48,7 @@ impl FakeDriverControl {
         sink.emit(event(
             "late-event",
             None,
-            CanonicalEvent::RuntimeWarning(crate::chat::events::NotificationEvent {
+            CanonicalEvent::RuntimeWarning(ganbaru_chat_contracts::events::NotificationEvent {
                 code: "stale_session_generation".to_string(),
                 title: "Late provider output".to_string(),
                 detail: Some("This output belongs to a stopped generation".to_string()),
@@ -68,7 +68,7 @@ impl FakeDriverControl {
         let mut runtime_event = event(
             "cross-thread-event",
             None,
-            CanonicalEvent::RuntimeWarning(crate::chat::events::NotificationEvent {
+            CanonicalEvent::RuntimeWarning(ganbaru_chat_contracts::events::NotificationEvent {
                 code: "provider_warning".to_string(),
                 title: "Provider warning".to_string(),
                 detail: None,

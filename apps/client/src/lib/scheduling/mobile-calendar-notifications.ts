@@ -1,17 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { Temporal } from "@js-temporal/polyfill";
-import type { CalendarEvent } from "$lib/components/calendar/types";
+import type { CalendarEvent } from "$lib/calendar/types";
 import {
   formatEventNotificationBody,
-} from "$lib/components/calendar/event-notifications";
-import { parseCalendarDate, wallClockToUtcIso } from "$lib/components/calendar/utils";
-import { ensureDbUrl } from "$lib/api/db";
+} from "$lib/calendar/event-notifications";
+import { parseCalendarDate } from "$lib/calendar/utils";
 import type { Translate } from "$lib/i18n/translator.svelte";
-import { localTimezone } from "$lib/stores/calendar-event-payloads";
-import {
-  mapWindowRows,
-  type CalendarNotificationSchedulerRows,
-} from "$lib/stores/calendar-event-hydration";
+import { localTimezone } from "$lib/stores/calendar/event-payloads";
+import { loadNativeCalendarWindow } from "$lib/stores/calendar/native-window";
 
 const CALENDAR_NOTIFICATION_ID_NAMESPACE = "calendar-notification";
 const CALENDAR_NOTIFICATION_ID_START = 1_000_000_000;
@@ -96,7 +92,8 @@ export function buildNativeCalendarNotifications(
 
   for (const event of events) {
     if (event.status === "cancelled" || !event.notifications?.length) continue;
-    const startMs = parseCalendarDate(event.start).getTime();
+    const startMs = event.startInstant
+      ? Date.parse(event.startInstant) : parseCalendarDate(event.start).getTime();
     if (!Number.isFinite(startMs)) continue;
     const offsets = [...new Set(event.notifications)]
       .filter((minutes) => Number.isSafeInteger(minutes) && minutes >= 0)
@@ -194,37 +191,19 @@ export async function resolveMobileCalendarNotificationStatus(
   }
 }
 
-/** Load and expand the bounded Calendar window shared by Android native schedulers. */
+/** Read native occurrences for the bounded Android reminder window. */
 export async function loadNotificationSchedulerEvents(): Promise<CalendarEvent[]> {
   const renderZone = localTimezone();
   const today = Temporal.Now.plainDateISO(renderZone);
   const windowStart = today.subtract({ days: 1 });
   const windowEnd = today.add({ months: SCHEDULING_HORIZON_MONTHS });
-  const windowEndExclusive = windowEnd.add({ days: 1 });
-  const rows = await invoke<CalendarNotificationSchedulerRows>(
-    "calendar_load_notification_scheduler_window",
-    {
-      dbUrl: await ensureDbUrl(),
-      windowStartDate: windowStart.toString(),
-      windowEndDate: windowEnd.toString(),
-      windowStartUtc: wallClockToUtcIso(`${windowStart} 00:00`, renderZone),
-      windowEndExclusiveUtc: wallClockToUtcIso(`${windowEndExclusive} 00:00`, renderZone),
-    },
-  );
-  const mapped = mapWindowRows(
-    {
-      events: rows.events,
-      overrides: rows.overrides,
-      attendees: [],
-      total_event_count: null,
-    },
-    renderZone,
-  );
-  return invoke<CalendarEvent[]>("calendar_expand_render_events", {
-    events: mapped,
+  const mapped = await loadNativeCalendarWindow({
     windowStartDate: windowStart.toString(),
     windowEndDate: windowEnd.toString(),
-  });
+    renderZone,
+    includeTotalEventCount: false,
+  }, "notifications");
+  return mapped.windowEvents;
 }
 
 async function reconcileNativeSchedule(

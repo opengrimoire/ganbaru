@@ -1,7 +1,5 @@
-use crate::chat::{
-    models::{ProviderImplementationStatus, ProviderInstanceConfig},
-    providers::{ProviderDriverFactory, ProviderDriverRegistry},
-};
+use ganbaru_chat_contracts::models::{ProviderImplementationStatus, ProviderInstanceConfig};
+use ganbaru_chat_providers::{ProviderDriverFactory, ProviderDriverRegistry};
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
@@ -28,7 +26,7 @@ impl CodexProbeFixture {
         let mut configuration = configuration("codex");
         configuration.provider_home = Some(home.to_str().unwrap().to_string());
         configuration.executable = home.join("missing-codex").to_str().unwrap().to_string();
-        configuration.provider_config = crate::chat::models::VersionedJson {
+        configuration.provider_config = ganbaru_chat_contracts::models::VersionedJson {
             schema_version: 1,
             value: json!({}),
         };
@@ -113,7 +111,7 @@ fn registry_lists_five_known_families_in_stable_order() {
 #[test]
 fn opencode_driver_is_available_with_a_version_floor() {
     let mut configuration = configuration("opencode");
-    configuration.provider_config = crate::chat::models::VersionedJson {
+    configuration.provider_config = ganbaru_chat_contracts::models::VersionedJson {
         schema_version: 1,
         value: json!({ "mode": "local" }),
     };
@@ -126,7 +124,7 @@ fn opencode_driver_is_available_with_a_version_floor() {
     assert!(
         driver
             .capabilities()
-            .supports(crate::chat::models::ProviderCapability::NativePlan)
+            .supports(ganbaru_chat_contracts::models::ProviderCapability::NativePlan)
     );
     assert!(
         driver
@@ -140,7 +138,7 @@ fn opencode_driver_is_available_with_a_version_floor() {
 #[test]
 fn cursor_driver_is_available_with_an_acp_version_floor() {
     let mut configuration = configuration("cursor");
-    configuration.provider_config = crate::chat::models::VersionedJson {
+    configuration.provider_config = ganbaru_chat_contracts::models::VersionedJson {
         schema_version: 1,
         value: json!({}),
     };
@@ -162,7 +160,7 @@ fn cursor_driver_is_available_with_an_acp_version_floor() {
 #[test]
 fn grok_driver_is_available_with_native_acp_models() {
     let mut configuration = configuration("grok");
-    configuration.provider_config = crate::chat::models::VersionedJson {
+    configuration.provider_config = ganbaru_chat_contracts::models::VersionedJson {
         schema_version: 1,
         value: json!({}),
     };
@@ -173,19 +171,19 @@ fn grok_driver_is_available_with_native_acp_models() {
     assert!(
         driver
             .capabilities()
-            .supports(crate::chat::models::ProviderCapability::DynamicModelChange)
+            .supports(ganbaru_chat_contracts::models::ProviderCapability::DynamicModelChange)
     );
     assert!(
         driver
             .capabilities()
-            .supports(crate::chat::models::ProviderCapability::StructuredQuestions)
+            .supports(ganbaru_chat_contracts::models::ProviderCapability::StructuredQuestions)
     );
 }
 
 #[test]
 fn claude_driver_is_available_with_a_version_floor() {
     let mut configuration = configuration("claude");
-    configuration.provider_config = crate::chat::models::VersionedJson {
+    configuration.provider_config = ganbaru_chat_contracts::models::VersionedJson {
         schema_version: 1,
         value: json!({}),
     };
@@ -245,7 +243,7 @@ fn codex_driver_is_available_with_declared_capabilities() {
             .all(|entry| entry.supported)
     );
 
-    let context = crate::chat::providers::DriverOperationContext {
+    let context = ganbaru_chat_providers::DriverOperationContext {
         operation_id: "probe-1".to_string(),
         deadline: Instant::now() + Duration::from_secs(1),
         cancellation: Default::default(),
@@ -253,7 +251,7 @@ fn codex_driver_is_available_with_declared_capabilities() {
     let result = tauri::async_runtime::block_on(driver.probe(&context)).unwrap();
     assert_eq!(
         result.state,
-        crate::chat::models::ProbeState::ExecutableMissing
+        ganbaru_chat_contracts::models::ProbeState::ExecutableMissing
     );
 }
 
@@ -264,7 +262,7 @@ fn codex_probe_reports_invalid_home_before_missing_executable() {
     configuration.provider_home =
         Some(fixture.0.join("missing-home").to_str().unwrap().to_string());
     let mut driver = ProviderDriverRegistry.create_driver(configuration).unwrap();
-    let context = crate::chat::providers::DriverOperationContext {
+    let context = ganbaru_chat_providers::DriverOperationContext {
         operation_id: "probe-invalid-home".to_string(),
         deadline: Instant::now() + Duration::from_secs(1),
         cancellation: Default::default(),
@@ -272,6 +270,6 @@ fn codex_probe_reports_invalid_home_before_missing_executable() {
     let result = tauri::async_runtime::block_on(driver.probe(&context)).unwrap();
     assert_eq!(
         result.state,
-        crate::chat::models::ProbeState::ConfigurationInvalid
+        ganbaru_chat_contracts::models::ProbeState::ConfigurationInvalid
     );
 }

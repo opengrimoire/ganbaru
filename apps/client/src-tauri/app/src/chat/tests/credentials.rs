@@ -1,11 +1,8 @@
-use crate::chat::{
-    credentials::{
-        CredentialStore, CredentialStoreAvailability, CredentialStoreError,
-        CredentialStoreErrorCode, CredentialStoreOperation, SecretValue,
-        materialize_provider_environment,
-    },
-    models::{CredentialReferenceId, ProviderInstanceConfig},
+use crate::chat::credentials::{
+    CredentialStore, CredentialStoreAvailability, CredentialStoreError, CredentialStoreErrorCode,
+    CredentialStoreOperation, SecretValue, materialize_provider_environment,
 };
+use ganbaru_chat_contracts::models::{CredentialReferenceId, ProviderInstanceConfig};
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},

@@ -1,7 +1,7 @@
 [package]
 name = "ganbaru-notes"
 version = "0.1.5"
-description = "Ganbaru AI Notes domain and persistence service"
+description = "Ganbaru Notes domain and persistence service"
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
@@ -27,5 +27,5 @@ sqlx = { workspace = true }
 zip = { workspace = true }
 
 [dev-dependencies]
-ganbaru-db = { path = "../ganbaru-db" }
+ganbaru-db = { workspace = true }
 tokio = { workspace = true }

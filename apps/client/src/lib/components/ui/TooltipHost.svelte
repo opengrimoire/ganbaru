@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { waitForPointerTravel } from "$lib/utils/hover-suppression";
   import {
     calculateTooltipContentWidth,
     calculateTooltipPosition,
@@ -17,6 +18,7 @@
 
   const tooltipId = "app-global-tooltip";
   const hoverDelayMs = 350;
+  const dragEventTypes = ["dragstart", "dragenter", "dragover"] as const;
   const maxSurfaceLookupDepth = 12;
   const maxTooltipWidthRem = 18;
   const tooltipViewportMarginPx = 8;
@@ -42,6 +44,8 @@
   let tooltipWidthStyle = $state("");
   let showTimer: ReturnType<typeof setTimeout> | undefined;
   let suppressedPointerTarget: HTMLElement | null = null;
+  /** Ends the quiet a drag started, which lasts until the pointer deliberately moves after the drag. */
+  let stopDragQuiet: (() => void) | null = null;
   const migratingTitleElements = new WeakSet<HTMLElement>();
   let measureCanvas: HTMLCanvasElement | undefined;
 
@@ -393,7 +397,20 @@
       subtree: true,
     });
 
+    const endDragQuiet = () => {
+      stopDragQuiet = null;
+    };
+
+    // No tooltip shows while something is dragged, nor for what a drag left under a resting pointer, which engines
+    // report as hovered after the drop. Each drag event restarts the wait, in case pointer moves arrive mid-drag.
+    const quietForDrag = () => {
+      if (anchor || visible) hideTooltip();
+      stopDragQuiet?.();
+      stopDragQuiet = waitForPointerTravel(window, endDragQuiet);
+    };
+
     const handlePointerOver = (event: PointerEvent) => {
+      if (stopDragQuiet) return;
       const target = findTooltipTarget(event.target);
       if (!target) return;
       if (isSuppressedPointerTarget(target)) return;
@@ -407,7 +424,12 @@
     };
 
     const handlePointerMove = (event: PointerEvent) => {
-      const scrollbar = horizontalScrollbarAtPointer(event);
+      // Disabled surfaces also opt out of scrollbar tooltip layout checks.
+      if (event.target instanceof Element && event.target.closest('[data-app-tooltip-disabled="true"]')) {
+        if (anchorTextOverride !== undefined) hideTooltip();
+        return;
+      }
+      const scrollbar = stopDragQuiet ? null : horizontalScrollbarAtPointer(event);
       if (scrollbar) {
         showTooltipFor(
           scrollbar.element,
@@ -465,9 +487,13 @@
     document.addEventListener("pointerdown", handlePointerDown, true);
     window.addEventListener("resize", refreshPosition);
     window.addEventListener("scroll", hideTooltip, true);
+    // On the window, because drag handlers there stop drags from reaching the document.
+    for (const type of dragEventTypes) window.addEventListener(type, quietForDrag, true);
 
     return () => {
       clearShowTimer();
+      stopDragQuiet?.();
+      for (const type of dragEventTypes) window.removeEventListener(type, quietForDrag, true);
       observer.disconnect();
       themeObserver.disconnect();
       document.removeEventListener("pointerover", handlePointerOver, true);

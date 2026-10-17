@@ -1,24 +1,24 @@
 //! Coordinated checkpoint restore preview and execution.
 
-use super::checkpoints::{
+use super::workspace::{AuthorizedWorkingFolder, WorkingFolderAuthorizationOperation};
+use crate::db;
+use chrono::{SecondsFormat, Utc};
+use ganbaru_chat::checkpoints::{
     ChatChangedFileRead, CurrentGitSnapshot, StoredCheckpoint, current_git_snapshot, diff_files,
     read_stored_checkpoint, restore_git_snapshot, verify_checkpoint,
 };
-use super::events::{CanonicalEvent, ThreadRevertedEvent};
-use super::models::{
+use ganbaru_chat::repository::receipts::{
+    CommandReceiptClaim, CommandReceiptRead, CommandReceiptState, claim_command_receipt,
+    complete_command_receipt,
+};
+use ganbaru_chat::runtime::ChatRuntimeRegistry;
+use ganbaru_chat_contracts::events::{CanonicalEvent, ThreadRevertedEvent};
+use ganbaru_chat_contracts::models::{
     ChatCheckpointId, ChatCommandContext, ChatError, ChatErrorCode, ChatResult, ChatThreadId,
     ChatTurnId, InterruptTurnRequest, ProjectWorkingFolderId, ProviderCapability, RollbackRequest,
     UtcTimestamp, VersionedJson,
 };
-use super::providers::{DriverCancellation, DriverOperationContext};
-use super::repository::receipts::{
-    CommandReceiptClaim, CommandReceiptRead, CommandReceiptState, claim_command_receipt,
-    complete_command_receipt,
-};
-use super::runtime::ChatRuntimeRegistry;
-use super::workspace::{AuthorizedWorkingFolder, WorkingFolderAuthorizationOperation};
-use crate::db_path;
-use chrono::{SecondsFormat, Utc};
+use ganbaru_chat_providers::{DriverCancellation, DriverOperationContext};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -257,7 +257,7 @@ async fn authorize_thread(
 fn replay_restore(receipt: CommandReceiptRead) -> ChatResult<ChatRestoreResultRead> {
     match receipt.state {
         CommandReceiptState::Completed => {
-            let result = receipt.result.ok_or_else(corrupt_data)?;
+            let result = receipt.result.ok_or_else(corrupt_data_error)?;
             serde_json::from_value(serde_json::to_value(result.value).map_err(json_error)?)
                 .map_err(json_error)
         }
@@ -304,7 +304,7 @@ fn now_timestamp() -> ChatResult<UtcTimestamp> {
 }
 
 async fn chat_pool(app: tauri::AppHandle, db_url: String) -> ChatResult<SqlitePool> {
-    db_path::connect_sqlite(app, db_url)
+    db::connect_sqlite(app, db_url)
         .await
         .map_err(|_| ChatError::new(ChatErrorCode::Persistence, "open Chat database", true))
 }
@@ -337,7 +337,7 @@ fn json_error<T>(_error: T) -> ChatError {
     )
 }
 
-fn corrupt_data() -> ChatError {
+fn corrupt_data_error() -> ChatError {
     ChatError::new(
         ChatErrorCode::Persistence,
         "Stored checkpoint restore data is invalid",

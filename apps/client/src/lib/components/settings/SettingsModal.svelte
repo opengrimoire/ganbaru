@@ -1,12 +1,13 @@
 <script lang="ts">
   import { onMount, untrack } from "svelte";
   import { cn } from "$lib/utils";
+  import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import ArrowLeft from "@lucide/svelte/icons/arrow-left";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import SettingsIcon from "@lucide/svelte/icons/settings";
   import X from "@lucide/svelte/icons/x";
-  import CalendarScrollbar from "../calendar/CalendarScrollbar.svelte";
-  import { getThemeEditor } from "$lib/stores/themeEditor.svelte";
+  import CalendarScrollbar from "$lib/components/calendar/CalendarScrollbar.svelte";
+  import { getThemeEditor } from "$lib/stores/theme-editor.svelte";
   import { getViewport } from "$lib/stores/viewport.svelte";
   import { hasOnlyShortcutModifier } from "$lib/keyboard-shortcuts";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -22,34 +23,40 @@
     loadSettingsDetail,
     retrySettingsDetail,
     type LoadedSettingsDetail,
-  } from "$lib/components/settings/settings-detail-registry";
+  } from "$lib/components/settings/detail-registry";
   import {
     loadMobileThemeEditor,
     retryMobileThemeEditor,
-  } from "$lib/components/settings/mobile-theme-editor-loader";
-  import type { MobileThemeEditorComponent } from "$lib/components/settings/mobile-theme-editor-loader-contract";
+  } from "$lib/components/themes/editor/mobile-editor-loader";
+  import type { MobileThemeEditorComponent } from "$lib/components/themes/editor/mobile-editor-loader-contracts";
   import type {
-    DoomscrollingLimitEditorTarget,
-    DoomscrollingSettingsTab,
+    DistractionsLimitEditorTarget,
+    DistractionsSettingsTab,
     NotesTransferOperation,
+    ContactsSettingsTab,
     ChatProviderSetupTarget,
     ChatSettingsSubsection,
     SectionId,
     SettingsDetailKind,
-  } from "./types";
-  import { settingsSectionsForShell } from "./settings-sections";
+    SettingsDraftKind,
+  } from "$lib/settings/types";
+  import { settingsSectionsForShell } from "./section-catalog";
   import SettingsSectionRenderer from "$lib/components/settings/SettingsSectionRenderer.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import Loading from "$lib/components/ui/Loading.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
+  import { captureFocusReturn } from "$lib/modal-focus";
 
   type SettingsDetailView =
-    | { kind: "doomscrolling-limit"; target: DoomscrollingLimitEditorTarget }
+    | { kind: "distractions-limit"; target: DistractionsLimitEditorTarget }
     | { kind: "notes-transfer"; operation: NotesTransferOperation }
     | { kind: "chat-provider"; target: ChatProviderSetupTarget };
 
   let {
     onClose,
     initialSection,
-    initialDoomscrollingTab,
+    initialDistractionsTab,
+    initialContactsTab,
     initialChatSubsection,
     initialChatTeammateId,
     initialChatChannelId,
@@ -58,7 +65,8 @@
   }: {
     onClose: () => void;
     initialSection?: SectionId;
-    initialDoomscrollingTab?: DoomscrollingSettingsTab;
+    initialDistractionsTab?: DistractionsSettingsTab;
+    initialContactsTab?: ContactsSettingsTab;
     initialChatSubsection?: ChatSettingsSubsection;
     initialChatTeammateId?: string;
     initialChatChannelId?: string;
@@ -75,13 +83,13 @@
       === "mobile",
   );
 
-  // When the user opens a theme in the floating editor, step out of the way
-  // so the modal backdrop does not block clicking through to the app.
+  // Close Settings while a theme is open in the floating editor so the modal
+  // backdrop does not block interaction with the app.
   $effect(() => {
     if (!mobilePresentation && themeEditor.editingId) requestSettingsClose();
   });
 
-  const SECTIONS = $derived(settingsSectionsForShell(mobilePresentation ? "mobile" : "desktop"));
+  const sections = $derived(settingsSectionsForShell(mobilePresentation ? "mobile" : "desktop"));
 
   const initialActiveSection = untrack(() => initialSection ?? "appearance");
   const initialActiveChatSubsection = untrack(() => initialChatSubsection ?? "teammates");
@@ -89,7 +97,7 @@
   let activeSection = $state<SectionId>(initialActiveSection);
   let mobileSectionOpen = $state(initialMobileSectionOpen);
   let activeChatSubsection = $state<ChatSettingsSubsection>(initialActiveChatSubsection);
-  let teammateDraftOpen = $state(false);
+  let openDraft = $state<SettingsDraftKind | null>(null);
   let pendingDraftNavigation = $state<(() => void) | null>(null);
   let detailView = $state<SettingsDetailView | null>(null);
   let detailLoadState = $state<LazyComponentLoadState<
@@ -119,7 +127,7 @@
   $effect(() => {
     if (!mobilePresentation || !mobileSectionOpen) return;
     return mobileBackStack.activate({
-      handle: detailView ? closeDetailView : closeMobileSection,
+      handle: detailView ? closeDetailView : requestMobileSectionClose,
     });
   });
 
@@ -153,13 +161,19 @@
     }
   }
 
+  /** Retries loading the mobile theme editor and rejects when it fails again. */
+  async function retryMobileThemeEditorLoad(): Promise<void> {
+    await prepareMobileThemeEditor(true);
+    if (mobileThemeEditorLoadError) throw new Error(mobileThemeEditorLoadError);
+  }
+
   async function cancelUnloadedThemeEditor(): Promise<void> {
     mobileThemeEditorLoadError = "";
     await themeEditor.cancel();
   }
 
   function requestSettingsNavigation(navigate: () => void): void {
-    if (!teammateDraftOpen) {
+    if (!openDraft) {
       navigate();
       return;
     }
@@ -177,21 +191,22 @@
   function discardDraftAndContinue(): void {
     const navigate = pendingDraftNavigation;
     pendingDraftNavigation = null;
-    teammateDraftOpen = false;
+    openDraft = null;
     navigate?.();
   }
 
-  function updateTeammateDraftState(open: boolean): void {
-    teammateDraftOpen = open;
-    if (!open) pendingDraftNavigation = null;
+  function updateDraftState(draft: SettingsDraftKind | null): void {
+    openDraft = draft;
+    if (!draft) pendingDraftNavigation = null;
   }
 
-  function requestSettingsDetail(kind: SettingsDetailKind, retry = false): void {
-    if (!retry && detailLoadState?.key === kind) return;
+  /** Loads a Settings detail component and resolves once the load state settles; failures land in the load state. */
+  function requestSettingsDetail(kind: SettingsDetailKind, retry = false): Promise<void> {
+    if (!retry && detailLoadState?.key === kind) return Promise.resolve();
     const loadingState = beginLazyComponentLoad(detailLoadState, kind);
     detailLoadState = loadingState;
     const request = retry ? retrySettingsDetail(kind) : loadSettingsDetail(kind);
-    void request
+    return request
       .then((component) => {
         if (!detailLoadState) return;
         const nextState = resolveLazyComponentLoad(
@@ -216,8 +231,16 @@
       });
   }
 
+  /** Retries a failed Settings detail load and rejects when it fails again, so the notice shows the outcome. */
+  async function retrySettingsDetailLoad(kind: SettingsDetailKind): Promise<void> {
+    await requestSettingsDetail(kind, true);
+    if (detailLoadState?.key === kind && detailLoadState.status === "failed") {
+      throw new Error(`The ${kind} Settings detail could not be loaded`);
+    }
+  }
+
   function activeSectionLabel(): string {
-    const section = SECTIONS.find((candidate) => candidate.id === activeSection);
+    const section = sections.find((candidate) => candidate.id === activeSection);
     return section ? t(section.labelKey) : t("settings.title");
   }
 
@@ -279,6 +302,10 @@
     });
   }
 
+  function requestMobileSectionClose(): void {
+    requestSettingsNavigation(closeMobileSection);
+  }
+
   function closeMobileSection(): void {
     detailView = null;
     detailLoadState = null;
@@ -286,13 +313,13 @@
     scrollSettingsToTop();
   }
 
-  function openDoomscrollingLimitEditor(target: DoomscrollingLimitEditorTarget): void {
-    activeSection = "doomscrolling";
-    detailView = { kind: "doomscrolling-limit", target };
+  function openDistractionsLimitEditor(target: DistractionsLimitEditorTarget): void {
+    activeSection = "distractions";
+    detailView = { kind: "distractions-limit", target };
     detailScrollEl = undefined;
     detailScrollbarInsetTop = 0;
     detailScrollbarInsetBottom = 0;
-    requestSettingsDetail("doomscrolling-limit");
+    void requestSettingsDetail("distractions-limit");
     scrollSettingsToTop();
   }
 
@@ -302,7 +329,7 @@
     detailScrollEl = undefined;
     detailScrollbarInsetTop = 0;
     detailScrollbarInsetBottom = 0;
-    requestSettingsDetail("notes-transfer");
+    void requestSettingsDetail("notes-transfer");
     scrollSettingsToTop();
   }
 
@@ -313,7 +340,7 @@
     detailScrollEl = undefined;
     detailScrollbarInsetTop = 0;
     detailScrollbarInsetBottom = 0;
-    requestSettingsDetail("chat-provider");
+    void requestSettingsDetail("chat-provider");
     scrollSettingsToTop();
   }
 
@@ -327,9 +354,7 @@
   }
 
   onMount(() => {
-    const returnFocus = document.activeElement instanceof HTMLElement
-      ? document.activeElement
-      : null;
+    const returnFocus = captureFocusReturn();
     queueMicrotask(() => {
       const first = modalPanel ? focusableElements(modalPanel)[0] : undefined;
       (first ?? modalPanel)?.focus();
@@ -363,21 +388,19 @@
           return;
         }
         if (mobilePresentation && mobileSectionOpen) {
-          closeMobileSection();
+          requestMobileSectionClose();
           return;
         }
         requestSettingsClose();
         return;
       }
-      // Keep the modal from leaking shortcuts to underlying panels
+      // Keep the modal from leaking shortcuts to underlying panels.
       e.stopPropagation();
     }
     window.addEventListener("keydown", handleKeydown, true);
     return () => {
       window.removeEventListener("keydown", handleKeydown, true);
-      queueMicrotask(() => {
-        if (returnFocus?.isConnected) returnFocus.focus();
-      });
+      returnFocus(modalPanel);
     };
   });
 </script>
@@ -398,7 +421,7 @@
       <header class="flex min-h-14 shrink-0 items-center gap-1 border-b border-border px-1">
         <button
           type="button"
-          onclick={detailView ? closeDetailView : closeMobileSection}
+          onclick={detailView ? closeDetailView : requestMobileSectionClose}
           aria-label={detailView
             ? t("mobile.settings.backToSection")
             : t("mobile.settings.backToCategories")}
@@ -422,6 +445,7 @@
       <section
         bind:this={settingsScrollEl}
         data-settings-content
+        use:scrollEdgeFadeAction
         class={cn(
           "mobile-settings-content min-h-0 flex-1",
           detailView ? "overflow-hidden" : "overflow-y-auto px-4 py-5",
@@ -430,7 +454,7 @@
         {#if detailView}
           {#if activeDetailLoadState?.status === "ready"}
             {@const loadedDetail = activeDetailLoadState.component}
-            {#if loadedDetail.kind === "doomscrolling-limit" && detailView.kind === "doomscrolling-limit"}
+            {#if loadedDetail.kind === "distractions-limit" && detailView.kind === "distractions-limit"}
               {@const DetailComponent = loadedDetail.component}
               <DetailComponent
                 target={detailView.target}
@@ -441,37 +465,27 @@
             {/if}
           {:else if activeDetailLoadState?.status === "failed"}
             {@const failedDetailKind = activeDetailLoadState.key}
-            <div
-              class="flex h-full flex-col items-center justify-center gap-3 p-4 text-center text-sm text-muted-foreground"
-              role="alert"
-            >
-              <p>{t("common.viewLoadFailed", activeSectionLabel())}</p>
-              <button
-                type="button"
-                class="min-h-9 rounded-md border border-border bg-background px-3 font-medium text-foreground active:bg-accent"
-                onclick={() => requestSettingsDetail(failedDetailKind, true)}
-              >
-                {t("common.retry")}
-              </button>
+            <div class="h-full text-sm">
+              <Notice
+                layout="fill"
+                message={t("common.viewLoadFailed", activeSectionLabel())}
+                onRetry={() => retrySettingsDetailLoad(failedDetailKind)}
+              />
             </div>
           {:else}
-            <div
-              class="flex h-full items-center justify-center p-4 text-sm text-muted-foreground"
-              aria-busy="true"
-            >
-              {t("common.loading")}
-            </div>
+            <Loading layout="fill" class="h-full" />
           {/if}
         {:else}
           <div class="mx-auto w-full max-w-xl">
             <SettingsSectionRenderer
               {activeSection}
-              {initialDoomscrollingTab}
+              {initialDistractionsTab}
+              {initialContactsTab}
               {activeChatSubsection}
               {initialChatTeammateId}
               {initialChatChannelId}
               {initialChatCreateTeammate}
-              onOpenDoomscrollingLimitEditor={openDoomscrollingLimitEditor}
+              onOpenDistractionsLimitEditor={openDistractionsLimitEditor}
               onOpenNotesTransferPanel={openNotesTransferPanel}
               onOpenChatProviderSetup={openChatProviderSetup}
               onChatSubsectionChange={(subsection: ChatSettingsSubsection) => {
@@ -479,7 +493,7 @@
                 scrollSettingsToTop();
               }}
               onRequestNavigation={requestSettingsNavigation}
-              onTeammateDraftStateChange={updateTeammateDraftState}
+              onDraftStateChange={updateDraftState}
             />
           </div>
         {/if}
@@ -501,10 +515,11 @@
 
       <nav
         aria-label={t("mobile.settings.categoriesLabel")}
+        use:scrollEdgeFadeAction
         class="min-h-0 flex-1 overflow-y-auto px-3 py-3"
       >
         <div class="mx-auto flex w-full max-w-xl flex-col gap-1">
-          {#each SECTIONS as section}
+          {#each sections as section}
             {@const Icon = section.icon}
             <button
               type="button"
@@ -535,7 +550,7 @@
     requestSettingsClose();
   }}
 >
-  <div class="absolute inset-0 bg-black/50"></div>
+  <div class="surface-backdrop absolute inset-0"></div>
   <div
     bind:this={modalPanel}
     data-settings-modal-panel
@@ -545,10 +560,10 @@
     tabindex="-1"
     data-settings-section={activeSection}
     class={cn(
-      "relative z-10 flex overflow-hidden border border-border bg-card shadow-2xl dark:bg-background",
+      "surface-dialog relative z-10 flex overflow-hidden",
       useTopNav
-        ? "h-[calc(100dvh-0.5rem)] w-full flex-col rounded-md"
-        : "h-[80vh] rounded-lg",
+        ? "h-[calc(100dvh-0.5rem)] w-full flex-col"
+        : "h-[80vh]",
       !useTopNav && useIconRail ? "w-[min(760px,94vw)]" : "",
       !useTopNav && !useIconRail ? "w-[min(900px,90vw)]" : "",
     )}
@@ -557,7 +572,7 @@
     {#if useTopNav}
       <header class="flex shrink-0 items-center gap-2 border-b border-border/70 bg-background/40 px-2 py-2 dark:bg-black/20">
         <nav class="flex min-w-0 flex-1 gap-1 overflow-x-auto rounded-md bg-card/60 p-0.5 dark:bg-background/60">
-          {#each SECTIONS as section}
+          {#each sections as section}
             {@const Icon = section.icon}
             <button
               onclick={() => {
@@ -586,7 +601,6 @@
         </button>
       </header>
     {:else}
-      <!-- Sidebar -->
       <aside
         class={cn(
           "flex shrink-0 flex-col gap-3 bg-background/40 dark:bg-black/20",
@@ -611,7 +625,7 @@
           </button>
         </div>
         <nav class="flex flex-col">
-          {#each SECTIONS as section}
+          {#each sections as section}
             {@const Icon = section.icon}
             <button
               onclick={() => {
@@ -638,7 +652,6 @@
     {/if}
 
     <div class="relative min-h-0 flex-1">
-      <!-- Content -->
       <section
         bind:this={settingsScrollEl}
         data-settings-content
@@ -653,7 +666,7 @@
         {#if detailView}
           {#if activeDetailLoadState?.status === "ready"}
             {@const loadedDetail = activeDetailLoadState.component}
-            {#if loadedDetail.kind === "doomscrolling-limit" && detailView.kind === "doomscrolling-limit"}
+            {#if loadedDetail.kind === "distractions-limit" && detailView.kind === "distractions-limit"}
               {@const DetailComponent = loadedDetail.component}
               <DetailComponent
                 target={detailView.target}
@@ -702,36 +715,26 @@
             {/if}
           {:else if activeDetailLoadState?.status === "failed"}
             {@const failedDetailKind = activeDetailLoadState.key}
-            <div
-              class="flex h-full flex-col items-center justify-center gap-3 p-4 text-center text-sm text-muted-foreground"
-              role="alert"
-            >
-              <p>{t("common.viewLoadFailed", activeSectionLabel())}</p>
-              <button
-                type="button"
-                class="min-h-9 rounded-md border border-border bg-background px-3 font-medium text-foreground hover:bg-accent"
-                onclick={() => requestSettingsDetail(failedDetailKind, true)}
-              >
-                {t("common.retry")}
-              </button>
+            <div class="h-full text-sm">
+              <Notice
+                layout="fill"
+                message={t("common.viewLoadFailed", activeSectionLabel())}
+                onRetry={() => retrySettingsDetailLoad(failedDetailKind)}
+              />
             </div>
           {:else}
-            <div
-              class="flex h-full items-center justify-center p-4 text-sm text-muted-foreground"
-              aria-busy="true"
-            >
-              {t("common.loading")}
-            </div>
+            <Loading layout="fill" class="h-full" />
           {/if}
         {:else}
           <SettingsSectionRenderer
             {activeSection}
-            {initialDoomscrollingTab}
+            {initialDistractionsTab}
+            {initialContactsTab}
             {activeChatSubsection}
             {initialChatTeammateId}
             {initialChatChannelId}
             {initialChatCreateTeammate}
-            onOpenDoomscrollingLimitEditor={openDoomscrollingLimitEditor}
+            onOpenDistractionsLimitEditor={openDistractionsLimitEditor}
             onOpenNotesTransferPanel={openNotesTransferPanel}
             onOpenChatProviderSetup={openChatProviderSetup}
             onChatSubsectionChange={(subsection: ChatSettingsSubsection) => {
@@ -739,7 +742,7 @@
               scrollSettingsToTop();
             }}
             onRequestNavigation={requestSettingsNavigation}
-            onTeammateDraftStateChange={updateTeammateDraftState}
+            onDraftStateChange={updateDraftState}
           />
         {/if}
       </section>
@@ -763,14 +766,25 @@
 </div>
 
 {#if pendingDraftNavigation}
-  <ConfirmDialog
-    title={t("settings.chat.teammates.discardDraftTitle")}
-    message={t("settings.chat.teammates.discardDraftMessage")}
-    confirmLabel={t("settings.chat.teammates.discardDraft")}
-    cancelLabel={t("settings.chat.teammates.keepEditing")}
-    onConfirm={discardDraftAndContinue}
-    onCancel={cancelDraftNavigation}
-  />
+  {#if openDraft === "profile"}
+    <ConfirmDialog
+      title={t("settings.profileIdentity.discardChangesTitle")}
+      message={t("settings.profileIdentity.discardChangesMessage")}
+      confirmLabel={t("settings.profileIdentity.discardChanges")}
+      cancelLabel={t("settings.profileIdentity.keepEditing")}
+      onConfirm={discardDraftAndContinue}
+      onCancel={cancelDraftNavigation}
+    />
+  {:else}
+    <ConfirmDialog
+      title={t("settings.chat.teammates.discardDraftTitle")}
+      message={t("settings.chat.teammates.discardDraftMessage")}
+      confirmLabel={t("settings.chat.teammates.discardDraft")}
+      cancelLabel={t("settings.chat.teammates.keepEditing")}
+      onConfirm={discardDraftAndContinue}
+      onCancel={cancelDraftNavigation}
+    />
+  {/if}
 {/if}
 
 {/if}
@@ -789,29 +803,23 @@
     >
       <div class="flex w-full max-w-sm flex-col items-center gap-3 text-center">
         {#if mobileThemeEditorLoadError}
-          <p class="text-sm font-medium" role="alert">
-            {t("common.viewLoadFailed", t("settings.theme.editor.dialogLabel"))}
-          </p>
-          <p class="max-w-full wrap-break-word text-xs text-muted-foreground">
-            {mobileThemeEditorLoadError}
-          </p>
+          <Notice
+            class="text-sm"
+            title={t("common.viewLoadFailed", t("settings.theme.editor.dialogLabel"))}
+            message={mobileThemeEditorLoadError}
+            onRetry={retryMobileThemeEditorLoad}
+            onDismiss={() => void cancelUnloadedThemeEditor()}
+          />
+        {:else}
+          <Loading layout="fill" />
           <button
             type="button"
-            class="min-h-12 w-full rounded-xl border border-border px-4 text-sm font-medium active:bg-accent"
-            onclick={() => void prepareMobileThemeEditor(true)}
+            class="min-h-12 w-full rounded-xl px-4 text-sm font-medium active:bg-accent"
+            onclick={() => void cancelUnloadedThemeEditor()}
           >
-            {t("common.retry")}
+            {t("common.cancel")}
           </button>
-        {:else}
-          <p class="text-sm text-muted-foreground" aria-busy="true">{t("common.loading")}</p>
         {/if}
-        <button
-          type="button"
-          class="min-h-12 w-full rounded-xl px-4 text-sm font-medium active:bg-accent"
-          onclick={() => void cancelUnloadedThemeEditor()}
-        >
-          {t("common.cancel")}
-        </button>
       </div>
     </div>
   {/if}

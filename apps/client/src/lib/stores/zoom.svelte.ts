@@ -7,7 +7,7 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
  * to localStorage so zoom survives reloads.
  */
 
-const STORAGE_KEY = "ganbaru-ai-zoom";
+const STORAGE_KEY = "ganbaru-zoom";
 export const APP_ZOOM_LEVELS: readonly number[] = Object.freeze([
   0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3,
 ]);
@@ -15,12 +15,12 @@ const DEFAULT_INDEX = APP_ZOOM_LEVELS.indexOf(1);
 
 function findClosestIndex(level: number): number {
   let best = 0;
-  let bestDist = Math.abs(APP_ZOOM_LEVELS[0] - level);
+  let bestDistance = Math.abs(APP_ZOOM_LEVELS[0] - level);
   for (let i = 1; i < APP_ZOOM_LEVELS.length; i++) {
-    const dist = Math.abs(APP_ZOOM_LEVELS[i] - level);
-    if (dist < bestDist) {
+    const distance = Math.abs(APP_ZOOM_LEVELS[i] - level);
+    if (distance < bestDistance) {
       best = i;
-      bestDist = dist;
+      bestDistance = distance;
     }
   }
   return best;

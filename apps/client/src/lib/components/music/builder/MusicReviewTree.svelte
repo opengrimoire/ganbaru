@@ -8,9 +8,10 @@
   import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
   import X from "@lucide/svelte/icons/x";
   import { tick, untrack } from "svelte";
+  import Checkbox from "$lib/components/ui/Checkbox.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import type { MusicItemListEntry } from "$lib/music/library-contracts";
-  import { createMusicReviewTreeViewState, type MusicReviewTreeViewState } from "$lib/music/music-builder-view-state";
+  import type { MusicItemListEntry } from "$lib/music/library/contracts";
+  import { createMusicReviewTreeViewState, type MusicReviewTreeViewState } from "$lib/music/builder/view-state";
   import {
     buildMusicReviewTree,
     flattenMusicReviewTree,
@@ -19,7 +20,7 @@
     musicReviewTreeRevealScrollTop,
     searchMusicReviewTree,
     type MusicReviewTreeNode,
-  } from "$lib/music/music-review-tree";
+  } from "$lib/music/review/tree";
   import { cn } from "$lib/utils";
 
   let {
@@ -200,9 +201,9 @@
 
 <section class="review-tree flex min-h-0 flex-1 flex-col" aria-label={t("music.builder.reviewFolders")}>
   <div class="shrink-0 p-2">
-    <div class="flex h-8 items-center gap-2 rounded-full bg-secondary/35 px-2.5 focus-within:bg-secondary/55">
+    <div class="field flex h-8 items-center gap-2 px-2.5">
       <Search size={13} class="shrink-0 text-muted-foreground" />
-      <input bind:value={search} onkeydown={handleSearchKeydown} type="text" inputmode="search" enterkeyhint="search" autocomplete="off" aria-label={t("music.builder.searchReviewTree")} placeholder={t("music.builder.searchReviewTree")} class="min-w-0 flex-1 bg-transparent text-[0.7rem] outline-none placeholder:text-muted-foreground" />
+      <input bind:value={search} onkeydown={handleSearchKeydown} type="text" inputmode="search" enterkeyhint="search" autocomplete="off" aria-label={t("music.builder.searchReviewTree")} placeholder={t("music.builder.searchReviewTree")} class="field-bare text-[0.7rem]" />
       {#if searching}
         <span class="shrink-0 text-[0.6rem] tabular-nums text-muted-foreground" aria-live="polite" aria-label={t("music.builder.reviewSearchMatchCount", searchResult.matchCount)} title={t("music.builder.reviewSearchMatchCount", searchResult.matchCount)}>{searchResult.matchCount}</span>
         <button type="button" onclick={() => search = ""} class="grid h-6 w-6 shrink-0 place-items-center rounded-full text-muted-foreground hover:bg-background/60 hover:text-foreground" aria-label={t("music.builder.clearReviewSearch")}><X size={12} /></button>
@@ -234,10 +235,7 @@
             <ChevronRight size={14} class={cn("transition-transform motion-reduce:transition-none", (searching || expandedIds.has(row.node.id)) && "rotate-90")} />
           </span>
           <label class="relative z-10 grid h-full w-7 shrink-0 cursor-pointer place-items-center">
-            <input type="checkbox" checked={checked} disabled={!folderSelectionReady || selectionDisabled} onchange={() => toggleFolder(row.node)} class="peer absolute h-4 w-4 opacity-0" aria-label={t("music.builder.selectFolder", row.node.name, row.node.itemIds.length)} />
-            <span class={cn("pointer-events-none grid h-4 w-4 place-items-center rounded border peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-ring", checked ? "border-primary bg-primary text-primary-foreground" : "border-border/80 bg-background/70", (!folderSelectionReady || selectionDisabled) && "opacity-35")}>
-              {#if checked}<Check size={11} strokeWidth={2.5} />{/if}
-            </span>
+            <Checkbox {checked} disabled={!folderSelectionReady || selectionDisabled} onChange={() => toggleFolder(row.node)} label={t("music.builder.selectFolder", row.node.name, row.node.itemIds.length)} />
           </label>
           <span class="pointer-events-none flex min-w-0 flex-1 items-center pr-2 text-left">
             <span class="min-w-0 flex-1 truncate text-[0.7rem] font-medium">{row.node.name}</span>
@@ -248,10 +246,7 @@
         <div data-review-item-id={row.item.id} class={cn("relative flex h-8 min-w-0 items-center rounded-lg", selectedIds.has(row.item.id) || activeItemId === row.item.id ? "bg-primary/10 text-foreground" : "hover:bg-accent/50")} style={`padding-left: ${row.depth * 0.75 + 1.75}rem`}>
           <button type="button" onclick={() => onActivate(row.item.id)} class="absolute inset-0 rounded-lg focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring" aria-label={row.item.reviewState === "reviewed" ? `${row.item.title}, ${t("music.builder.markReviewed")}` : row.item.reviewState === "ignored" ? `${row.item.title}, ${t("music.builder.ignored")}` : row.item.title} aria-current={activeItemId === row.item.id ? "true" : undefined}></button>
           <label class="relative z-10 grid h-full w-7 shrink-0 cursor-pointer place-items-center">
-            <input type="checkbox" checked={selectedIds.has(row.item.id)} disabled={selectionDisabled} onchange={() => toggleItem(row.item.id)} class="peer absolute h-4 w-4 opacity-0" aria-label={t("music.builder.selectTrack", row.item.title)} />
-            <span class={cn("pointer-events-none grid h-4 w-4 place-items-center rounded border peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-ring", selectedIds.has(row.item.id) ? "border-primary bg-primary text-primary-foreground" : "border-border/80 bg-background/70", selectionDisabled && "opacity-35")}>
-              {#if selectedIds.has(row.item.id)}<Check size={11} strokeWidth={2.5} />{/if}
-            </span>
+            <Checkbox checked={selectedIds.has(row.item.id)} disabled={selectionDisabled} onChange={() => toggleItem(row.item.id)} label={t("music.builder.selectTrack", row.item.title)} />
           </label>
           <span class="pointer-events-none flex min-w-0 flex-1 items-center pr-2 text-left">
             <span class="min-w-0 flex-1 truncate text-[0.68rem]">{row.item.title}</span>

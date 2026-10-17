@@ -1,7 +1,6 @@
-import { getCalendarNavHandle } from "$lib/components/calendar/nav-handle.svelte";
+import { getCalendarNavHandle } from "$lib/calendar/nav-handle.svelte";
+import { requireScenarioMetadata } from "../registry";
 import {
-  CORE_BENCHMARK_DATASETS,
-  DEFAULT_BENCHMARK_DATASET,
   type BenchmarkMetric,
   type BenchmarkDatasetProfile,
   type BenchmarkScenario,
@@ -16,19 +15,7 @@ import {
 } from "./calendar-utils";
 
 export const idleMemoryScenario: BenchmarkScenario = {
-  id: "idle-memory",
-  label: "Idle memory",
-  description:
-    "Boots into the calendar, loads the anchored week, and observes idle memory after the view is ready.",
-  workload: {
-    kind: "idle-memory",
-    question: "How much memory does the calendar hold while idle?",
-    label: "idle calendar baseline",
-    durationMs: 0,
-    memoryMode: "post-workload",
-  },
-  defaultDataset: DEFAULT_BENCHMARK_DATASET,
-  benchmarkDatasets: [...CORE_BENCHMARK_DATASETS],
+  ...requireScenarioMetadata("idle-memory"),
 
   async setup(context: BenchmarkScenarioContext): Promise<void> {
     const handle = getCalendarNavHandle();

@@ -8,6 +8,7 @@ export interface LazyComponentLoader<Key extends string, Component> {
   load: (key: Key) => Promise<Component>;
   retry: (key: Key) => Promise<Component>;
   hasLoaded: (key: Key) => boolean;
+  read: (key: Key) => Component | null;
 }
 
 interface LazyComponentLoadBase<Key extends string> {
@@ -75,6 +76,7 @@ export function createLazyComponentLoader<Key extends string, Component>(
     load,
     retry: load,
     hasLoaded: (key) => loaded.has(key),
+    read: (key) => loaded.get(key) ?? null,
   };
 }
 

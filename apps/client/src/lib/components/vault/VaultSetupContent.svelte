@@ -1,6 +1,7 @@
 <script lang="ts">
   import Folder from "@lucide/svelte/icons/folder";
   import type { Snippet } from "svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import VaultLanguageDropdown from "./VaultLanguageDropdown.svelte";
 
@@ -66,12 +67,7 @@
         {@render actions()}
 
         {#if error}
-          <p
-            role="alert"
-            class="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
-          >
-            {error}
-          </p>
+          <Notice message={error} class="text-sm" />
         {/if}
       </div>
     </div>

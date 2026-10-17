@@ -7,33 +7,43 @@
   import {
     getNotesHistoryRetentionImpact,
     pruneNotesProjectHistory,
-  } from "$lib/api/notes-project-history";
+  } from "$lib/api/notes/project-history";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
     isNotesPageOpenMode,
     type NotesPageOpenMode,
-  } from "$lib/notes/page-open-mode";
+  } from "$lib/notes/pages/open-mode";
   import {
     DEFAULT_NOTES_HISTORY_RETENTION_DAYS,
     effectiveNotesHistoryRetentionDays,
     isNotesHistoryRetentionDays,
     type NotesHistoryRetentionDays,
-  } from "$lib/notes/history-retention";
-  import { projectToolbarPanelGeometry } from "$lib/projects/project-toolbar";
-  import { getProjects } from "$lib/stores/projects.svelte";
-  import { getNotes } from "$lib/stores/notes.svelte";
+  } from "$lib/notes/history/retention";
+  import {
+    PROJECT_SETTINGS_PANEL_MAX_HEIGHT,
+    projectToolbarPanelGeometry,
+  } from "$lib/projects/toolbar";
+  import { useProjects } from "$lib/stores/projects.svelte";
+  import { useNotesWorkspace } from "$lib/stores/notes.svelte";
   import { getViewport } from "$lib/stores/viewport.svelte";
+  import {
+    isSidebarSortOrder,
+    SIDEBAR_SORT_ORDER_LABEL_KEYS,
+    SIDEBAR_SORT_ORDERS,
+    type SidebarSortOrder,
+  } from "$lib/utils/sidebar-order";
   import {
     APP_FLOATING_SURFACE_SELECTOR,
     isAppFloatingSurfaceTarget,
   } from "$lib/utils";
-  import CustomSelect from "$lib/components/settings/CustomSelect.svelte";
-  import ProjectSettingsPanelShell from "$lib/components/projects/ProjectSettingsPanelShell.svelte";
-  import ProjectSettingsSectionHeading from "$lib/components/projects/ProjectSettingsSectionHeading.svelte";
+  import Select from "$lib/components/ui/Select.svelte";
+  import ProjectSettingsPanelShell from "$lib/components/projects/settings/ProjectSettingsPanelShell.svelte";
+  import ProjectSettingsSectionHeading from "$lib/components/projects/settings/ProjectSettingsSectionHeading.svelte";
 
   type NotesProjectDefaultOpenMode = "default" | NotesPageOpenMode;
   type NotesProjectHistoryRetention = "global" | NotesHistoryRetentionDays;
+  type NotesProjectSidebarOrder = "global" | SidebarSortOrder;
 
   let {
     projectId,
@@ -53,8 +63,8 @@
     onOpenTrash: () => void;
   } = $props();
 
-  const projects = getProjects();
-  const notes = getNotes();
+  const projects = useProjects();
+  const notes = useNotesWorkspace();
   const viewport = getViewport();
   const { t } = getLocalization();
 
@@ -66,6 +76,8 @@
   let draftProjectUpdatedAt = $state<string | null>(null);
   let defaultOpenModeDraft = $state<NotesProjectDefaultOpenMode>("default");
   let historyRetentionDraft = $state<NotesProjectHistoryRetention>("global");
+  let sidebarOrderDraft = $state<NotesProjectSidebarOrder>("global");
+  let sidebarOrderDraftBase = $state<NotesProjectSidebarOrder>("global");
   let saving = $state(false);
   let error = $state<string | null>(null);
   let pruneConfirmationOpen = $state(false);
@@ -83,6 +95,9 @@
   const persistedHistoryRetention = $derived<NotesProjectHistoryRetention>(
     selectedProject?.notesHistoryRetentionDays ?? "global",
   );
+  const persistedSidebarOrder = $derived<NotesProjectSidebarOrder>(
+    notes.sidebarOrderOverride(selectedProject?.id ?? null) ?? "global",
+  );
   const globalHistoryRetention = $derived(
     notes.pageHistorySettings?.retention_days ?? DEFAULT_NOTES_HISTORY_RETENTION_DAYS,
   );
@@ -97,16 +112,21 @@
       && (
         defaultOpenModeDraft !== persistedDefaultOpenMode
         || historyRetentionDraft !== persistedHistoryRetention
+        || sidebarOrderDraft !== persistedSidebarOrder
       ),
   );
+  const sidebarOrderOptions = $derived([
+    { value: "global", label: t("common.useGlobalSetting") },
+    ...SIDEBAR_SORT_ORDERS.map((order) => ({ value: order, label: t(SIDEBAR_SORT_ORDER_LABEL_KEYS[order]) })),
+  ]);
   const openModeOptions = $derived([
-    { value: "default", label: t("notes.projectSettingsUseGlobal") },
+    { value: "default", label: t("common.useGlobalSetting") },
     { value: "center", label: t("notes.centerPeek") },
     { value: "side", label: t("notes.sidePeek") },
     { value: "full", label: t("notes.fullPage") },
   ]);
   const historyRetentionOptions = $derived([
-    { value: "global", label: t("notes.projectSettingsUseGlobal") },
+    { value: "global", label: t("common.useGlobalSetting") },
     { value: "0", label: t("notes.projectSettingsHistoryOff") },
     { value: "7", label: t("notes.projectSettingsHistory7") },
     { value: "30", label: t("notes.projectSettingsHistory30") },
@@ -121,6 +141,8 @@
     draftProjectUpdatedAt = selectedProject.updatedAt;
     defaultOpenModeDraft = selectedProject.notesDefaultOpenMode ?? "default";
     historyRetentionDraft = selectedProject.notesHistoryRetentionDays ?? "global";
+    sidebarOrderDraft = persistedSidebarOrder;
+    sidebarOrderDraftBase = persistedSidebarOrder;
     error = null;
   }
 
@@ -137,13 +159,12 @@
       viewportWidth: viewport.width,
       viewportHeight: viewport.height,
       preferredWidth: 430,
-      preferredHeight: 340,
+      preferredHeight: PROJECT_SETTINGS_PANEL_MAX_HEIGHT,
     });
     panelStyle = [
       `left: ${Math.round(geometry.left)}px`,
       `top: ${Math.round(geometry.top)}px`,
       `width: ${Math.round(geometry.width)}px`,
-      `height: ${Math.round(geometry.maxHeight)}px`,
       `max-height: ${Math.round(geometry.maxHeight)}px`,
     ].join("; ");
   }
@@ -165,6 +186,10 @@
     if (value === "default" || isNotesPageOpenMode(value)) {
       defaultOpenModeDraft = value;
     }
+  }
+
+  function selectSidebarOrder(value: string): void {
+    if (value === "global" || isSidebarSortOrder(value)) sidebarOrderDraft = value;
   }
 
   function selectHistoryRetention(value: string): void {
@@ -221,9 +246,17 @@
 
   async function saveConfirmed(pruneAfterSave: boolean): Promise<void> {
     if (!selectedProject) return;
-    const openMode = defaultOpenModeDraft === "default" ? null : defaultOpenModeDraft;
-    const retention = historyRetentionDraft === "global" ? null : historyRetentionDraft;
-    await projects.setNotesSettings(selectedProject.id, openMode, retention);
+    if (sidebarOrderDraft !== persistedSidebarOrder) {
+      notes.setProjectSidebarOrder(selectedProject.id, sidebarOrderDraft === "global" ? null : sidebarOrderDraft);
+    }
+    if (
+      defaultOpenModeDraft !== persistedDefaultOpenMode
+      || historyRetentionDraft !== persistedHistoryRetention
+    ) {
+      const openMode = defaultOpenModeDraft === "default" ? null : defaultOpenModeDraft;
+      const retention = historyRetentionDraft === "global" ? null : historyRetentionDraft;
+      await projects.setNotesSettings(selectedProject.id, openMode, retention);
+    }
     if (pruneAfterSave) await pruneNotesProjectHistory(selectedProject.id);
   }
 
@@ -255,6 +288,13 @@
     ) {
       loadDraft();
     }
+  });
+
+  $effect(() => {
+    if (!draftReady || sidebarOrderDraft !== sidebarOrderDraftBase) return;
+    if (persistedSidebarOrder === sidebarOrderDraftBase) return;
+    sidebarOrderDraft = persistedSidebarOrder;
+    sidebarOrderDraftBase = persistedSidebarOrder;
   });
 
   $effect(() => {
@@ -290,7 +330,7 @@
 {#if selectedProject}
   <div
     bind:this={panelElement}
-    class="fixed z-80 flex min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-card text-[0.8rem] text-foreground shadow-xl"
+    class="surface-floating fixed z-80 flex min-h-0 flex-col overflow-hidden"
     style={panelStyle}
     role="dialog"
     tabindex="-1"
@@ -316,11 +356,19 @@
         <div class="h-px bg-border/70" aria-hidden="true"></div>
         <div class="flex flex-col gap-1.5">
           <ProjectSettingsSectionHeading label={t("settings.section.appearance")} />
-          <CustomSelect
+          <Select
             label={t("notes.projectSettingsDefaultViewMode")}
             value={defaultOpenModeDraft}
             options={openModeOptions}
             onChange={selectDefaultOpenMode}
+            {popoverBoundaryElement}
+            class="w-44"
+          />
+          <Select
+            label={t("notes.projectSettingsSidebarOrder")}
+            value={sidebarOrderDraft}
+            options={sidebarOrderOptions}
+            onChange={selectSidebarOrder}
             {popoverBoundaryElement}
             class="w-44"
           />
@@ -331,7 +379,7 @@
 
       <section class="flex flex-col gap-1.5">
         <ProjectSettingsSectionHeading label={t("notes.projectSettingsRestore")} />
-        <CustomSelect
+        <Select
           label={t("notes.projectSettingsHistoryRetention")}
           value={String(historyRetentionDraft)}
           options={historyRetentionOptions}
@@ -341,7 +389,7 @@
           class="w-44"
         />
         {#if effectiveHistoryRetentionDraft === 365}
-          <div class="flex items-center gap-1.5 px-1 text-[0.733333rem] text-warning">
+          <div class="flex items-center gap-1.5 px-1 text-panel-detail text-warning">
             <TriangleAlert class="size-3.5 shrink-0" />
             <span>{t("settings.notesGeneral.historyRetention365Warning")}</span>
           </div>
@@ -349,7 +397,7 @@
         <div class="flex flex-wrap justify-start gap-2 px-1 py-1">
           <button
             type="button"
-            class="flex h-7 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent dark:bg-transparent"
+            class="flex min-h-(--panel-row-height) items-center gap-1.5 rounded-floating-item border border-border px-2.5 font-medium text-popover-foreground transition-colors hover:bg-accent"
             onclick={onOpenVersionHistory}
           >
             <History size={13} strokeWidth={1.75} />
@@ -357,7 +405,7 @@
           </button>
           <button
             type="button"
-            class="flex h-7 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent dark:bg-transparent"
+            class="flex min-h-(--panel-row-height) items-center gap-1.5 rounded-floating-item border border-border px-2.5 font-medium text-popover-foreground transition-colors hover:bg-accent"
             onclick={onOpenArchive}
           >
             <Archive size={13} strokeWidth={1.75} />
@@ -365,7 +413,7 @@
           </button>
           <button
             type="button"
-            class="flex h-7 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent dark:bg-transparent"
+            class="flex min-h-(--panel-row-height) items-center gap-1.5 rounded-floating-item border border-border px-2.5 font-medium text-popover-foreground transition-colors hover:bg-accent"
             onclick={onOpenTrash}
           >
             <Trash2 size={13} strokeWidth={1.75} />

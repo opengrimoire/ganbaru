@@ -1,11 +1,15 @@
-import { describe, expect, it } from "vitest";
-import type { CalendarEvent } from "$lib/components/calendar/types";
+import { describe, expect, it, vi } from "vitest";
+import type { CalendarEvent } from "$lib/calendar/types";
 import type { Translate } from "$lib/i18n/translator.svelte";
 import {
   buildNativeCalendarNotifications,
   calendarEventIdFromNativeAction,
   calendarNativeNotificationId,
+  loadNotificationSchedulerEvents,
 } from "./mobile-calendar-notifications";
+import { loadNativeCalendarWindow } from "$lib/stores/calendar/native-window";
+
+vi.mock("$lib/stores/calendar/native-window", () => ({ loadNativeCalendarWindow: vi.fn() }));
 
 const t = ((key: string) => key) as Translate;
 
@@ -23,6 +27,13 @@ function event(overrides: Partial<CalendarEvent> = {}): CalendarEvent {
 }
 
 describe("mobile Calendar notification delivery", () => {
+  it("uses the native reminder projection as its only occurrence source", async () => {
+    const nativeEvent = event({ id: "series::2024-03-11", recurringParentId: "series", recurrenceDate: "2024-03-11" });
+    vi.mocked(loadNativeCalendarWindow).mockResolvedValueOnce({ sourceEvents: [], windowEvents: [nativeEvent], totalEventCount: null, diagnostics: [] });
+    expect(await loadNotificationSchedulerEvents()).toEqual([nativeEvent]);
+    expect(loadNativeCalendarWindow).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ includeTotalEventCount: false }), "notifications");
+  });
+
   it("creates stable, ordered native deliveries and removes duplicate offsets", () => {
     const notifications = buildNativeCalendarNotifications(
       [event({ notifications: [30, 0, 30] })],
@@ -63,6 +74,16 @@ describe("mobile Calendar notification delivery", () => {
     );
 
     expect(notifications).toEqual([]);
+  });
+
+  it("uses the canonical instant for a repeated local time instead of resolving its wall label again", () => {
+    const startInstant = "2024-11-03T06:30:00.000Z";
+    const deliveries = buildNativeCalendarNotifications([event({
+      start: "2024-11-03 01:30", end: "2024-11-03 01:45", timezone: "America/New_York",
+      startInstant, endInstant: "2024-11-03T06:45:00.000Z", notifications: [10],
+    })], { nowMs: Date.parse("2024-11-03T05:00:00Z"), locale: "en-US", t, titleFallback: "Event" });
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0].scheduledAtEpochMs).toBe(Date.parse(startInstant) - 10 * 60_000);
   });
 
   it("uses the parent event ID for recurring occurrence actions", () => {

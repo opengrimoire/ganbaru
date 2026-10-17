@@ -1,0 +1,24 @@
+[package]
+name = "ganbaru-sync"
+version = "0.1.0"
+description = "Ganbaru sync engine: manifest, capture, sealing, storage, and merge"
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+ganbaru-contacts = { workspace = true }
+ganbaru-sync-contracts = { workspace = true }
+serde = { workspace = true }
+sqlx = { workspace = true }
+
+[dev-dependencies]
+ganbaru-db = { workspace = true }
+tokio = { workspace = true }

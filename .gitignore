@@ -4,7 +4,7 @@ node_modules/
 # build output
 dist/
 target/
-extensions/chrome-dev/
+extensions/chromium-dev/
 
 # turbo
 .turbo/
@@ -13,6 +13,8 @@ extensions/chrome-dev/
 .env
 .env.*
 !.env.example
+
+# generated release configuration and signing material
 apps/client/src-tauri/tauri.release.conf.json
 apps/client/src-tauri/gen/android/keystore.properties
 apps/client/src-tauri/gen/android/*.jks
@@ -40,16 +42,12 @@ Thumbs.db
 # test coverage
 coverage/
 
-# local scripts
-/scripts/
-
 # Local AI tool configuration
 .codex/
 .claude/
 
-# Goal
-goal/*
-goal/goal.md
+# Local goal plans
+goal/
 
 # Sample data
 sample/

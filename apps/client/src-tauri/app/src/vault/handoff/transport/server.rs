@@ -4,11 +4,12 @@ use super::{
     CHUNK_TIMEOUT, MEMBERSHIP_REVOKED_CODE, TLS_HANDSHAKE_TIMEOUT, prepare_partial, stream_file,
     timeout_control,
 };
+use crate::sync::hub::SyncHub;
+use crate::vault::handoff::pairing::{Enrollment, PairingManager};
 use crate::vault::handoff::protocol::{
     BundleMetadata, BundlePurpose, ControlMessage, PROTOCOL_VERSION, TRANSFER_CHUNK_BYTES,
     read_control, unix_time_ms, write_control,
 };
-use crate::vault::handoff::state::{Enrollment, PairingManager};
 use crate::vault::handoff::{coordinator, protocol, suggested_device_label};
 use rustls::RootCertStore;
 use std::fs;
@@ -21,19 +22,11 @@ use tokio_rustls::TlsAcceptor;
 const UPLOAD_REQUEST_WAIT: Duration = Duration::from_secs(10);
 const UPLOAD_REQUEST_POLL_INTERVAL: Duration = Duration::from_millis(200);
 
-#[cfg(test)]
-pub(crate) async fn serve(
-    listener: TcpListener,
-    manager: PairingManager,
-    shutdown: tokio::sync::oneshot::Receiver<()>,
-) {
-    serve_with_coordinator(listener, manager, None, shutdown).await;
-}
-
 pub(crate) async fn serve_with_coordinator(
     listener: TcpListener,
     manager: PairingManager,
     coordinator: Option<coordinator::CoordinatorSender>,
+    hub: Option<SyncHub>,
     mut shutdown: tokio::sync::oneshot::Receiver<()>,
 ) {
     loop {
@@ -44,8 +37,9 @@ pub(crate) async fn serve_with_coordinator(
                     Ok((socket, _)) => {
                         let manager = manager.clone();
                         let coordinator = coordinator.clone();
+                        let hub = hub.clone();
                         tokio::spawn(async move {
-                            if let Err(error) = handle_connection(socket, manager, coordinator).await {
+                            if let Err(error) = handle_connection(socket, manager, coordinator, hub).await {
                                 eprintln!("vault handoff connection failed: {error}");
                             }
                         });
@@ -64,6 +58,7 @@ async fn handle_connection(
     socket: TcpStream,
     manager: PairingManager,
     coordinator: Option<coordinator::CoordinatorSender>,
+    hub: Option<SyncHub>,
 ) -> Result<(), String> {
     let config = server_config(&manager)?;
     let mut stream = tokio::time::timeout(
@@ -94,6 +89,21 @@ async fn handle_connection(
             false,
         )
         .await;
+    }
+
+    if let Some((vault_id, device_id)) = request.sync_peer() {
+        manager.verify_authenticated_peer(device_id, peer_certificate.as_ref(), vault_id)?;
+        let Some(hub) = hub.as_ref() else {
+            return send_error(
+                &mut stream,
+                "sync_unsupported",
+                "this coordinator does not serve sync",
+                false,
+            )
+            .await;
+        };
+        let response = hub.respond(request).await;
+        return timeout_control(write_control(&mut stream, &response)).await;
     }
 
     match request {
@@ -140,6 +150,57 @@ async fn handle_connection(
                     coordinator_device_label: Some(coordinator_device_label),
                 },
             ))
+            .await
+        }
+        ControlMessage::ContactRequest {
+            recipient_card_nonce,
+            requester_card,
+            request_id,
+            signature,
+            ..
+        } => {
+            send_coordinator_response(
+                &mut stream,
+                coordinator.as_ref(),
+                coordinator::CoordinatorOperation::ContactRequest {
+                    recipient_card_nonce,
+                    requester_card,
+                    request_id,
+                    signature,
+                },
+            )
+            .await
+        }
+        ControlMessage::ContactRequestStatus {
+            request_id,
+            requester_public_key,
+            issued_at_ms,
+            signature,
+            ..
+        } => {
+            send_coordinator_response(
+                &mut stream,
+                coordinator.as_ref(),
+                coordinator::CoordinatorOperation::ContactRequestStatus {
+                    request_id,
+                    requester_public_key,
+                    issued_at_ms,
+                    signature,
+                },
+            )
+            .await
+        }
+        ControlMessage::PersonKeyRequest {
+            vault_id,
+            device_id,
+            ..
+        } => {
+            manager.verify_authenticated_peer(&device_id, peer_certificate.as_ref(), &vault_id)?;
+            send_coordinator_response(
+                &mut stream,
+                coordinator.as_ref(),
+                coordinator::CoordinatorOperation::ReleasePersonKey,
+            )
             .await
         }
         ControlMessage::DownloadBundle { metadata } => {
@@ -269,7 +330,7 @@ async fn handle_connection(
             )
             .await
         }
-        ControlMessage::DoomscrollingExchange {
+        ControlMessage::DistractionsExchange {
             vault_id,
             device_id,
             samples,
@@ -281,7 +342,7 @@ async fn handle_connection(
             send_coordinator_response(
                 &mut stream,
                 coordinator.as_ref(),
-                coordinator::CoordinatorOperation::DoomscrollingExchange {
+                coordinator::CoordinatorOperation::DistractionsExchange {
                     vault_id,
                     device_id,
                     samples,
@@ -421,15 +482,37 @@ async fn send_coordinator_response_value(
         coordinator::CoordinatorResponse::UploadAuthorized { .. } => {
             return Err("upload authorization cannot be sent as a control response".to_string());
         }
-        coordinator::CoordinatorResponse::DoomscrollingAcknowledged {
+        coordinator::CoordinatorResponse::DistractionsAcknowledged {
             acknowledged_sample_ids,
             peer_samples,
             combined_samples,
-        } => ControlMessage::DoomscrollingAcknowledged {
+        } => ControlMessage::DistractionsAcknowledged {
             acknowledged_sample_ids,
             peer_samples,
             combined_samples,
         },
+        coordinator::CoordinatorResponse::ContactRequestReceived { request_id } => {
+            ControlMessage::ContactRequestReceived { request_id }
+        }
+        coordinator::CoordinatorResponse::ContactRequestState {
+            state,
+            recipient_card,
+        } => ControlMessage::ContactRequestState {
+            state,
+            recipient_card,
+        },
+        coordinator::CoordinatorResponse::PersonKeyReleased {
+            public_key,
+            private_key_pkcs8,
+        } => ControlMessage::PersonKeyRelease {
+            public_key,
+            private_key_pkcs8,
+        },
+        coordinator::CoordinatorResponse::Rejected {
+            code,
+            message,
+            retryable,
+        } => return send_error(stream, &code, &message, retryable).await,
     };
     timeout_control(write_control(stream, &message)).await
 }

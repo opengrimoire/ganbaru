@@ -65,7 +65,7 @@ export const advancedBlocks = {
   mediaPreview: "Vista previa de medio",
   mediaLocalFile: "Archivo local gestionado",
   mediaLocalFileMetadata: (contentType: string, size: string) => `${contentType}, ${size}`,
-  mediaStoredOffline: "Guardado en Ganbaru AI y disponible sin conexión.",
+  mediaStoredOffline: "Guardado en Ganbaru y disponible sin conexión.",
   mediaExternalReference: "Referencia HTTPS externa. Se abre solo cuando lo eliges.",
   mediaImportedRemoteReference:
     "Referencia remota importada. Copia un archivo local para conservarla sin conexión.",
@@ -84,7 +84,7 @@ export const advancedBlocks = {
   mediaUrlInvalid: "Ingresa una URL válida.",
   mediaUrlRequiresHttps: "Usa una URL HTTPS.",
   mediaUrlUnsupported: (type: string) => `Usa una URL compatible para ${type}.`,
-  importFileChoiceCopy: "Copiar en Ganbaru AI",
+  importFileChoiceCopy: "Copiar en Ganbaru",
   importFileChoiceKeepExternal: "Conservar enlace HTTPS",
   importFileChoiceSkip: "Omitir archivo",
   importFileCopied: "El archivo se copió en los assets gestionados de Notas.",

@@ -1,11 +1,13 @@
 //! Device-local private scratch targets for organizational assignments.
 
+pub(crate) mod commands;
+
 use super::device_state::{read_active_device_scope, update_active_device_scope};
-use super::models::{
-    ChatError, ChatErrorCode, ChatResult, ChatThreadId, ProjectWorkingFolderId, RepositoryKind,
-};
 use super::workspace::AuthorizedWorkingFolder;
 use crate::vault;
+use ganbaru_chat_contracts::models::{
+    ChatError, ChatErrorCode, ChatResult, ChatThreadId, ProjectWorkingFolderId, RepositoryKind,
+};
 use sha2::{Digest, Sha256};
 use sqlx::{Row, SqliteConnection, SqlitePool};
 use std::fs;
@@ -42,7 +44,7 @@ pub(crate) fn authorize_conversation_runtime(
         "conversation-runtime:{}",
         hex_digest(thread_id.as_str(), 32)
     ))
-    .map_err(|_| scratch_unavailable())?;
+    .map_err(|_| scratch_unavailable_error())?;
     Ok(AuthorizedWorkingFolder {
         working_folder_id: synthetic_id,
         canonical_path: runtime_root,
@@ -70,7 +72,7 @@ pub(crate) async fn authorize_scratch_target(
             prepare_scratch_directory(app, &expected)?;
             let text = expected
                 .to_str()
-                .ok_or_else(scratch_unavailable)?
+                .ok_or_else(scratch_unavailable_error)?
                 .to_string();
             update_active_device_scope(app, |scope| {
                 scope
@@ -86,7 +88,7 @@ pub(crate) async fn authorize_scratch_target(
         "scratch-target:{}",
         hex_digest(scratch_generation_id, 32)
     ))
-    .map_err(|_| scratch_unavailable())?;
+    .map_err(|_| scratch_unavailable_error())?;
     Ok(AuthorizedWorkingFolder {
         working_folder_id: synthetic_id,
         canonical_path: path,
@@ -123,7 +125,7 @@ pub(crate) async fn resolve_managed_scratch_path_for_inspection(
     .await
     .map_err(persistence_error)?;
     if !valid {
-        return Err(scratch_unavailable());
+        return Err(scratch_unavailable_error());
     }
     let expected = scratch_path(app, scratch_generation_id)?;
     let paths = read_active_device_scope(app)
@@ -131,7 +133,7 @@ pub(crate) async fn resolve_managed_scratch_path_for_inspection(
         .execution_environment_paths;
     let stored = paths
         .get(execution_environment_id)
-        .ok_or_else(scratch_unavailable)?;
+        .ok_or_else(scratch_unavailable_error)?;
     validate_stored_scratch_path(&expected, stored)
 }
 
@@ -149,7 +151,7 @@ pub(crate) fn bounded_scratch_size(
             let entry = entry.map_err(io_error)?;
             let metadata = fs::symlink_metadata(entry.path()).map_err(io_error)?;
             if metadata.file_type().is_symlink() || metadata_is_reparse_point(&metadata) {
-                return Err(scratch_unavailable());
+                return Err(scratch_unavailable_error());
             }
             entries = entries.saturating_add(1);
             if entries > maximum_entries {
@@ -171,7 +173,7 @@ pub(crate) fn bounded_scratch_size(
                     });
                 }
             } else {
-                return Err(scratch_unavailable());
+                return Err(scratch_unavailable_error());
             }
         }
     }
@@ -195,7 +197,7 @@ pub(crate) fn remove_managed_scratch_generation(root: &Path) -> ChatResult<u64> 
             let path = entry.path();
             let metadata = fs::symlink_metadata(&path).map_err(io_error)?;
             if metadata.file_type().is_symlink() || metadata_is_reparse_point(&metadata) {
-                return Err(scratch_unavailable());
+                return Err(scratch_unavailable_error());
             }
             if metadata.is_dir() {
                 pending.push(path);
@@ -203,7 +205,7 @@ pub(crate) fn remove_managed_scratch_generation(root: &Path) -> ChatResult<u64> 
                 bytes = bytes.saturating_add(metadata.len());
                 files.push(path);
             } else {
-                return Err(scratch_unavailable());
+                return Err(scratch_unavailable_error());
             }
         }
     }
@@ -213,7 +215,7 @@ pub(crate) fn remove_managed_scratch_generation(root: &Path) -> ChatResult<u64> 
             || metadata.file_type().is_symlink()
             || metadata_is_reparse_point(&metadata)
         {
-            return Err(scratch_unavailable());
+            return Err(scratch_unavailable_error());
         }
         fs::remove_file(file).map_err(io_error)?;
     }
@@ -256,7 +258,7 @@ pub(crate) async fn require_reusable_generation(
     .fetch_optional(pool)
     .await
     .map_err(persistence_error)?
-    .ok_or_else(scratch_authority_unavailable)?;
+    .ok_or_else(scratch_authority_unavailable_error)?;
     let destination_conversation_id: String = authorization
         .try_get("destination_conversation_id")
         .map_err(persistence_error)?;
@@ -277,7 +279,7 @@ pub(crate) async fn require_reusable_generation(
     {
         Ok(())
     } else {
-        Err(scratch_authority_unavailable())
+        Err(scratch_authority_unavailable_error())
     }
 }
 
@@ -390,7 +392,7 @@ pub(crate) async fn generation_constraints_hold_in_connection(
         "SELECT participant.id, participant.participant_kind
          FROM chat_conversation_memberships membership
          JOIN chat_participants participant ON participant.id = membership.participant_id
-         LEFT JOIN chat_ai_channel_memberships channel_access
+         LEFT JOIN chat_teammate_channel_memberships channel_access
            ON channel_access.conversation_id = membership.conversation_id
           AND channel_access.teammate_id = membership.participant_id
          LEFT JOIN chat_access_profiles profile ON profile.id = channel_access.access_profile_id
@@ -466,7 +468,7 @@ async fn participant_can_read_source(
            SELECT 1
            FROM chat_conversation_memberships membership
            JOIN chat_participants participant ON participant.id = membership.participant_id
-           LEFT JOIN chat_ai_channel_memberships channel_access
+           LEFT JOIN chat_teammate_channel_memberships channel_access
              ON channel_access.conversation_id = membership.conversation_id
             AND channel_access.teammate_id = membership.participant_id
            LEFT JOIN chat_access_profiles profile ON profile.id = channel_access.access_profile_id
@@ -531,7 +533,7 @@ async fn require_active_scratch_target(
     .fetch_optional(pool)
     .await
     .map_err(persistence_error)?
-    .ok_or_else(scratch_unavailable)?;
+    .ok_or_else(scratch_unavailable_error)?;
     if row
         .try_get::<String, _>("generation_state")
         .map_err(persistence_error)?
@@ -541,7 +543,7 @@ async fn require_active_scratch_target(
             .map_err(persistence_error)?
             != "available"
     {
-        return Err(scratch_unavailable());
+        return Err(scratch_unavailable_error());
     }
     Ok(())
 }
@@ -549,7 +551,7 @@ async fn require_active_scratch_target(
 fn validate_stored_scratch_path(expected: &Path, stored: &str) -> ChatResult<PathBuf> {
     let stored = PathBuf::from(stored);
     if stored != expected || !managed_directory_is_available(&stored) {
-        return Err(scratch_unavailable());
+        return Err(scratch_unavailable_error());
     }
     Ok(stored)
 }
@@ -579,9 +581,9 @@ fn prepare_managed_directory(local_root: &Path, category: &str, target: &Path) -
     ensure_plain_directory(local_root)?;
     let root = local_root.join(category);
     create_plain_directory(&root)?;
-    let vault_root = target.parent().ok_or_else(scratch_unavailable)?;
+    let vault_root = target.parent().ok_or_else(scratch_unavailable_error)?;
     if vault_root.parent() != Some(root.as_path()) {
-        return Err(scratch_unavailable());
+        return Err(scratch_unavailable_error());
     }
     create_plain_directory(vault_root)?;
     create_plain_directory(target)?;
@@ -609,7 +611,7 @@ fn ensure_plain_directory(path: &Path) -> ChatResult<()> {
         || metadata_is_reparse_point(&metadata)
         || !metadata.is_dir()
     {
-        return Err(scratch_unavailable());
+        return Err(scratch_unavailable_error());
     }
     Ok(())
 }
@@ -636,7 +638,7 @@ fn hex_digest(value: &str, length: usize) -> String {
     digest[..length.min(digest.len())].to_string()
 }
 
-fn scratch_unavailable() -> ChatError {
+fn scratch_unavailable_error() -> ChatError {
     ChatError::new(
         ChatErrorCode::NotFound,
         "Private scratch is unavailable on this device",
@@ -644,7 +646,7 @@ fn scratch_unavailable() -> ChatError {
     )
 }
 
-fn scratch_authority_unavailable() -> ChatError {
+fn scratch_authority_unavailable_error() -> ChatError {
     ChatError::new(
         ChatErrorCode::Permission,
         "Private scratch authorization is no longer active",
@@ -712,7 +714,7 @@ mod tests {
             .await
             .unwrap();
             sqlx::query(
-                "INSERT INTO chat_ai_teammates
+                "INSERT INTO chat_teammates
                     (participant_id, role, created_at, updated_at)
                  VALUES (?, 'Test', ?, ?)",
             )
@@ -730,7 +732,7 @@ mod tests {
              INSERT INTO chat_conversation_memberships
                 (conversation_id, participant_id, membership_role, created_at, updated_at)
              VALUES ('conversation:scratch', '{TEAMMATE}', 'member', '{NOW}', '{NOW}');
-             INSERT INTO chat_ai_channel_memberships
+             INSERT INTO chat_teammate_channel_memberships
                 (conversation_id, teammate_id, access_profile_id,
                  read_history, participate, history_boundary, created_at, updated_at)
              VALUES ('conversation:scratch', '{TEAMMATE}', 'access-profile:conversation-only',
@@ -884,7 +886,7 @@ mod tests {
             .await
             .unwrap();
         sqlx::query(
-            "UPDATE chat_ai_channel_memberships SET read_history = 0 WHERE teammate_id = ?",
+            "UPDATE chat_teammate_channel_memberships SET read_history = 0 WHERE teammate_id = ?",
         )
         .bind(TEAMMATE)
         .execute(&pool)

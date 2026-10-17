@@ -1,11 +1,11 @@
 blank_issues_enabled: false
 contact_links:
   - name: Contribution guide
-    url: https://github.com/opengrimoire/ganbaru-ai/blob/main/CONTRIBUTING.md
+    url: https://github.com/opengrimoire/ganbaru/blob/main/CONTRIBUTING.md
     about: Read the branch, pull request, and release workflow before contributing.
   - name: Release and ruleset policy
-    url: https://github.com/opengrimoire/ganbaru-ai/blob/main/docs/operations/repository-policy.md
+    url: https://github.com/opengrimoire/ganbaru/blob/main/docs/operations/repository-policy.md
     about: Read how protected branches, release branches, and release tags are configured.
   - name: Report a security vulnerability
-    url: https://github.com/opengrimoire/ganbaru-ai/security/advisories/new
+    url: https://github.com/opengrimoire/ganbaru/security/advisories/new
     about: Report vulnerabilities privately through GitHub security advisories.

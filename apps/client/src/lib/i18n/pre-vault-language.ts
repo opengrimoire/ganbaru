@@ -9,7 +9,7 @@ import {
   type LanguagePreference,
 } from "./locales";
 
-export const PRE_VAULT_LANGUAGE_STORAGE_KEY = "ganbaru-ai.preVaultLanguagePreference";
+export const PRE_VAULT_LANGUAGE_STORAGE_KEY = "ganbaru.preVaultLanguagePreference";
 
 export interface LanguageOption {
   readonly value: LanguagePreference;

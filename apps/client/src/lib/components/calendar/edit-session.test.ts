@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import type { CalendarEvent } from "./types";
+import type { CalendarEvent } from "$lib/calendar/types";
 import {
   buildCreatePanelInitialChanges,
   buildEditPanelInitialChanges,
@@ -115,7 +115,7 @@ describe("isDirtyDiff", () => {
       start: "2026-04-16 09:00",
       end: "2026-04-16 10:00",
     };
-    // Drag moved the block an hour later but panel hasn't emitted title.
+    // The drag moved the event an hour later before the panel emitted a title.
     const changes = { start: "2026-04-16 10:00", end: "2026-04-16 11:00" };
     expect(isDirtyDiff(changes, baseline)).toBe(true);
   });
@@ -277,7 +277,7 @@ describe("panel initial changes", () => {
       false,
       undefined,
       {
-        title: "Ganbaru AI",
+        title: "Ganbaru",
         end: "2026-04-16 10:00",
         color: 14,
         projectId: "project-a",
@@ -287,7 +287,7 @@ describe("panel initial changes", () => {
       },
     );
 
-    expect(result.title).toBe("Ganbaru AI");
+    expect(result.title).toBe("Ganbaru");
     expect(result.start).toBe("2026-04-16 09:00");
     expect(result.end).toBe("2026-04-16 10:00");
     expect(result.color).toBe(14);

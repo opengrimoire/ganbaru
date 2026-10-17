@@ -1,4 +1,4 @@
-import type { NotesDataSourceCalendarView } from "../../contracts/database";
+import type { NotesDataSourceCalendarView } from "$lib/notes/contracts/database";
 import { isNotesCalendarRowOpenMode } from ".././blocks";
 import { readRecord, readString, readStringArray } from ".././readers";
 import { dateMentionBoundaryLooksIso } from ".././rich-text";

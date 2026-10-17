@@ -6,6 +6,7 @@ import {
 import {
   ANDROID_INSETS_EVENT_NAME,
   calculateKeyboardInset,
+  parseAndroidKeyboardHeight,
   parseAndroidSystemBarInsets,
   resolvePointerCapabilities,
   viewportOrientation,
@@ -23,6 +24,7 @@ let layoutHeight = $state(DEFAULT_HEIGHT);
 let offsetTop = $state(0);
 let offsetLeft = $state(0);
 let keyboardInset = $state(0);
+let nativeKeyboardHeight = $state(0);
 let coarsePointer = $state(false);
 let hoverAvailable = $state(true);
 let initialized = false;
@@ -31,6 +33,7 @@ const sizeClass = $derived(classifyViewport(width, height));
 const isShort = $derived(height < 480);
 const canShowDenseChrome = $derived(isSizeClassAtLeast(sizeClass, "regular") && !isShort);
 const orientation = $derived(viewportOrientation(width, height));
+const keyboardOpen = $derived(keyboardInset > 0 || nativeKeyboardHeight > 0);
 
 interface ViewportSnapshot {
   width: number;
@@ -98,6 +101,14 @@ function readAndroidSystemBarInsets(): SystemBarInsets | null {
   }
 }
 
+function readAndroidKeyboardHeight(): number {
+  try {
+    return parseAndroidKeyboardHeight(window.GanbaruAndroidInsets?.keyboard()) ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
 function applyAndroidSystemBarInsets(root: HTMLElement): void {
   const insets = readAndroidSystemBarInsets();
   if (insets === null) return;
@@ -116,6 +127,7 @@ function refreshViewport(): void {
   offsetTop = next.offsetTop;
   offsetLeft = next.offsetLeft;
   keyboardInset = next.keyboardInset;
+  nativeKeyboardHeight = readAndroidKeyboardHeight();
   coarsePointer = next.coarsePointer;
   hoverAvailable = next.hoverAvailable;
 
@@ -179,8 +191,13 @@ export function getViewport() {
     get offsetLeft(): number {
       return offsetLeft;
     },
+    /** Height of a soft keyboard that overlays the page without resizing it; zero where the shell resizes instead. */
     get keyboardInset(): number {
       return keyboardInset;
+    },
+    /** Whether a soft keyboard is open, whether it overlays the page or the shell resized the page above it. */
+    get keyboardOpen(): boolean {
+      return keyboardOpen;
     },
     get orientation(): ViewportOrientation {
       return orientation;

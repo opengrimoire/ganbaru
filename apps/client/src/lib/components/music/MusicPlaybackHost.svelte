@@ -2,7 +2,14 @@
   import { onDestroy, onMount } from "svelte";
   import { getMusicPlayer } from "$lib/stores/music-player.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { coverPlaybackHostRect } from "$lib/music/playback-host-layout";
+  import { coverPlaybackHostRect } from "$lib/music/session/playback-host-layout";
+
+  let {
+    decodes = true,
+  }: {
+    /** Whether this window runs the browser decoders; a window that does not shows no media surface. */
+    decodes?: boolean;
+  } = $props();
 
   const player = getMusicPlayer();
   const { t } = getLocalization();
@@ -17,15 +24,18 @@
   let volumeFeedbackTimeoutId: number | null = null;
   let lastVolumeFeedbackId = 0;
 
-  const mediaSurfaceFullscreenEvent = "ganbaru-ai-music-media-surface-fullscreen";
+  const mediaSurfaceFullscreenEvent = "ganbaru-music-media-surface-fullscreen";
   const hasVisualSurface = $derived(Boolean(
-    player.surfaceElement
+    decodes
+      && player.surfaceElement
       && player.currentSource
       && (player.isYouTubeActive || (player.currentSource.kind === "local-file" && player.localHasVideo)),
   ));
   const hasStaleVisual = $derived(Boolean(player.surfaceElement && player.staleVisual));
   const hasHostSurface = $derived(hasVisualSurface || hasStaleVisual);
-  const hasFullscreenSurface = $derived(Boolean(player.surfaceElement && player.currentSource));
+  const hasFullscreenSurface = $derived(Boolean(
+    player.surfaceElement && player.currentSource && !player.playsInOtherWindow,
+  ));
   const hostIsFullscreen = $derived(Boolean(
     surfaceFullscreen
       && hostElement
@@ -58,7 +68,7 @@
   const hostHasHitTarget = $derived(hasVisualSurface || (hostIsFullscreen && hasFullscreenSurface));
 
   onMount(() => {
-    player.init();
+    player.init({ decodesBrowserMedia: decodes });
   });
 
   onDestroy(() => {
@@ -250,7 +260,7 @@
   aria-hidden={!hasHostSurface && !hostIsFullscreen}
   onkeydown={handleFullscreenSurfaceKeydown}
 >
-  {#if player.currentSource && player.isYouTubeActive}
+  {#if decodes && player.currentSource && player.isYouTubeActive}
     {#key player.youtubeHostUrl}
       <iframe
         bind:this={youtubeFrame}

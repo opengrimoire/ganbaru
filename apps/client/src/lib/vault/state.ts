@@ -15,11 +15,9 @@ export interface VaultInfo {
   displayName: string;
 }
 
-export type DataFolderInfo = VaultInfo;
-
 let cachedActiveVaultInfo: VaultInfo | null | undefined;
 
-export interface DataFolderDefaultLocation {
+export interface VaultDefaultLocation {
   path: string;
   parentPath: string;
   folderName: string;
@@ -60,10 +58,12 @@ export interface VaultOwnershipStatus {
   generation: number;
   role: "owner" | "read-only" | "recovery";
   canWrite: boolean;
+  /** A linked replica that can write replicated tables, such as Quick notes, while the rest of the vault is read-only. */
+  replicatedWrites: boolean;
   transferPhase: VaultTransferPhase;
 }
 
-export type DataFolderErrorAction =
+export type VaultErrorAction =
   | "startup"
   | "default"
   | "change"
@@ -104,19 +104,19 @@ function parseVaultAppState(value: unknown): VaultAppState {
 }
 
 function parseVaultInfo(value: unknown): VaultInfo {
-  if (!isRecord(value)) throw new Error("data folder response is not an object");
+  if (!isRecord(value)) throw new Error("vault info response is not an object");
   const path = readString(value.path);
   const configPath = readString(value.configPath);
   const databasePath = readString(value.databasePath);
   const vaultId = readString(value.vaultId);
   const displayName = readString(value.displayName);
   if (!path || !configPath || !databasePath || !vaultId || !displayName) {
-    throw new Error("data folder response is incomplete");
+    throw new Error("vault info response is incomplete");
   }
   return { path, configPath, databasePath, vaultId, displayName };
 }
 
-function parseDataFolderDefaultLocation(value: unknown): DataFolderDefaultLocation {
+function parseVaultDefaultLocation(value: unknown): VaultDefaultLocation {
   if (!isRecord(value)) throw new Error("default folder response is not an object");
   const path = readString(value.path);
   const parentPath = readString(value.parentPath);
@@ -184,6 +184,7 @@ function parseVaultOwnershipStatus(value: unknown): VaultOwnershipStatus {
   const generation = readNonNegativeInteger(value.generation);
   const role = value.role;
   const canWrite = readBoolean(value.canWrite);
+  const replicatedWrites = readBoolean(value.replicatedWrites);
   if (
     !vaultId
     || !deviceId
@@ -191,11 +192,15 @@ function parseVaultOwnershipStatus(value: unknown): VaultOwnershipStatus {
     || generation === null
     || (role !== "owner" && role !== "read-only" && role !== "recovery")
     || canWrite === null
+    || replicatedWrites === null
   ) {
     throw new Error("vault ownership response is incomplete");
   }
   if (canWrite !== (role === "owner")) {
     throw new Error("vault ownership response has an inconsistent role");
+  }
+  if (replicatedWrites && role !== "read-only") {
+    throw new Error("vault ownership response has inconsistent replicated writes");
   }
   return {
     vaultId,
@@ -204,6 +209,7 @@ function parseVaultOwnershipStatus(value: unknown): VaultOwnershipStatus {
     generation,
     role,
     canWrite,
+    replicatedWrites,
     transferPhase: parseTransferPhase(value.transferPhase),
   };
 }
@@ -227,7 +233,7 @@ function containsAny(value: string, needles: readonly string[]): boolean {
 }
 
 function fallbackForAction(
-  action: DataFolderErrorAction,
+  action: VaultErrorAction,
   t: Translate,
 ): string {
   switch (action) {
@@ -248,9 +254,9 @@ function fallbackForAction(
   }
 }
 
-export function formatDataFolderError(
+export function formatVaultError(
   error: unknown,
-  action: DataFolderErrorAction = "general",
+  action: VaultErrorAction = "general",
   t: Translate = translate,
 ): string {
   const raw = errorMessage(error, t);
@@ -282,33 +288,33 @@ export function formatDataFolderError(
     return t("dataFolderError.database");
   }
 
-  if (lower.includes("selected folder is not empty and is not a ganbaru ai folder")) {
+  if (lower.includes("selected folder is not empty and is not a ganbaru folder")) {
     if (action === "default") {
       return t("dataFolderError.defaultNotValid");
     }
     return t("dataFolderError.folderNotEmpty");
   }
 
-  if (lower.includes("read ganbaru ai folder marker")) {
+  if (lower.includes("read ganbaru folder marker")) {
     return t("dataFolderError.missingMarker");
   }
 
-  if (lower.includes("parse ganbaru ai folder marker")) {
+  if (lower.includes("parse ganbaru folder marker")) {
     return t("dataFolderError.damagedMarker");
   }
 
-  if (lower.includes("unsupported ganbaru ai folder schema version")) {
+  if (lower.includes("unsupported ganbaru folder schema version")) {
     return t("dataFolderError.newerSchema");
   }
 
-  if (lower.includes("selected folder is not a ganbaru ai folder")) {
+  if (lower.includes("selected folder is not a ganbaru folder")) {
     return t("dataFolderError.notGanbaruFolder");
   }
 
   if (
     containsAny(lower, [
-      "failed to inspect ganbaru ai folder path",
-      "canonicalize ganbaru ai folder path",
+      "failed to inspect ganbaru folder path",
+      "canonicalize ganbaru folder path",
       "no such file",
       "not found",
     ])
@@ -316,7 +322,7 @@ export function formatDataFolderError(
     return t("dataFolderError.notFound");
   }
 
-  return t("dataFolderError.withDetails", fallbackForAction(action, t), raw);
+  return fallbackForAction(action, t);
 }
 
 export async function readVaultAppState(): Promise<VaultAppState> {
@@ -336,12 +342,12 @@ export async function getVaultOwnershipStatus(): Promise<VaultOwnershipStatus> {
   return parseVaultOwnershipStatus(await invoke<unknown>("vault_ownership_status"));
 }
 
-export async function getDefaultDataFolderLocation(): Promise<DataFolderDefaultLocation> {
-  return parseDataFolderDefaultLocation(await invoke<unknown>("vault_default_location"));
+export async function getDefaultVaultLocation(): Promise<VaultDefaultLocation> {
+  return parseVaultDefaultLocation(await invoke<unknown>("vault_default_location"));
 }
 
-export async function useDefaultDataFolder(): Promise<DataFolderInfo> {
-  return activateVaultInfo(parseVaultInfo(await invoke<unknown>("vault_use_default_folder")));
+export async function useDefaultVault(): Promise<VaultInfo> {
+  return activateVaultInfo(parseVaultInfo(await invoke<unknown>("vault_use_default")));
 }
 
 export async function pickCreateVault(): Promise<VaultInfo | null> {
@@ -352,20 +358,6 @@ export async function pickCreateVault(): Promise<VaultInfo | null> {
 export async function pickOpenVault(): Promise<VaultInfo | null> {
   const info = parseOptionalVaultInfo(await invoke<unknown>("vault_pick_open"));
   return info ? activateVaultInfo(info) : null;
-}
-
-export async function pickDataFolderLocation(): Promise<DataFolderInfo | null> {
-  return pickCreateVault();
-}
-
-export async function importDataFolder(): Promise<DataFolderInfo | null> {
-  return pickOpenVault();
-}
-
-export async function selectRecentVault(path: string): Promise<VaultInfo> {
-  return activateVaultInfo(
-    parseVaultInfo(await invoke<unknown>("vault_select_recent", { path })),
-  );
 }
 
 export async function revealActiveVault(): Promise<void> {

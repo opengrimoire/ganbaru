@@ -5,11 +5,10 @@
  * one or more dense calendar datasets, then emits compact markdown ready for
  * `docs/performance/results.md`. Each scenario declares whether it measures startup,
  * memory, or feature latency so the runner avoids unrelated waits. Both
- * passes run after a cold restart against an isolated
- * `benchmark.sqlite` so the user's real DB and Ganbaru AI folder are never
- * touched. The rationale lives in `docs/performance/harness.md`.
+ * passes run after a cold restart against an isolated `benchmark.sqlite`,
+ * so the user's vault and its database are never touched. The rationale lives in `docs/performance/harness.md`.
  */
-import type { CalendarEvent } from "$lib/components/calendar/types";
+import type { CalendarEvent } from "$lib/calendar/types";
 
 /** Fixed duration for the real held-arrow navigation benchmark action. */
 export const HELD_NAVIGATION_DURATION_MS = 3000;
@@ -30,7 +29,7 @@ export const STATE_TTL_MS = 60 * 60 * 1000;
 /**
  * Pending state exists only between an intentional benchmark restart and
  * the next boot claiming that pass. If it survives longer than this, treat
- * the relaunch as failed and fall back to the user's real DB.
+ * the relaunch as failed and fall back to the user's vault database.
  */
 export const PENDING_STATE_TTL_MS = 2 * 60 * 1000;
 
@@ -38,11 +37,10 @@ export const PENDING_STATE_TTL_MS = 2 * 60 * 1000;
  * Bumped manually when a recorded run uses a measurement methodology,
  * sampling cadence, scenario workload, or dataset generator that invalidates
  * numeric cross-build comparison with the previous recorded harness.
- * Iterating locally before a run is recorded does not bump this value.
- * Cosmetic markdown, rendered-preview, wording, and docs changes do not bump
- * this value.
- * Stored on the persisted state file so stale baseline data captured by an
- * old build cannot accidentally feed the dense pass on a new build.
+ * Local iteration before a run is recorded, cosmetic markdown, wording, and
+ * docs changes do not bump this value.
+ * Stored on the persisted state file so baseline data captured by a
+ * different build cannot feed the dense pass of the current build.
  *
  * v1 (2026-05-12): active baseline reset. Calendar benchmarks use a
  * run-persisted today anchor, skip normal current-week preload on benchmark
@@ -183,8 +181,8 @@ export interface BootTimings {
   marks: Record<string, number>;
   /**
    * Process-spawn to usable calendar paint time, derived from the boot
-   * baseline and `boot.usable-paint`. Optional when either input is
-   * unavailable. Older runs may fall back to first paint.
+   * baseline and `boot.usable-paint`, or `boot.first-paint` when the usable
+   * paint mark is missing. Omitted when no paint mark or boot baseline exists.
    */
   launchTotalMs?: number;
 }
@@ -214,8 +212,7 @@ export interface PhaseResult {
   boot: BootTimings;
   /**
    * End-to-end launch time, in ms, derived from Rust process spawn to the
-   * usable calendar paint mark. Optional because older runs may not have
-   * captured it.
+   * usable calendar paint mark. Omitted when boot timings lack a launch total.
    */
   startupMs?: number;
   /** Individual process-launch samples for startup benchmark phases. */
@@ -228,9 +225,9 @@ export interface PhaseResult {
 
 /**
  * Persisted across each restart in the benchmark sequence. Lives in
- * `app_config_dir/benchmark-state.json`, not the Ganbaru AI folder, so a
- * `reset_database` call does not blow it away mid-run, and the file never
- * pollutes the folder users back up.
+ * `app_config_dir/benchmark-state.json`, not the vault, so a
+ * `reset_database` call does not delete it mid-run and vault backups never
+ * include it.
  *
  * The harness writes this file before each intentional restart with a
  * `*-pending` stage, then flips that stage to `*-running` before the
@@ -248,7 +245,7 @@ export interface BenchmarkState {
   harnessVersion: string;
   /** Dense dataset version pinned at seed time. Currently `v1`. */
   datasetVersion: string;
-  /** Platform string at write time, just for the markdown header. */
+  /** Platform string at write time, used only for the markdown header. */
   platform: string;
   /** App version plus git ref at write time, e.g. `0.1.0+a7451de-dirty`. */
   buildRef?: string;
@@ -257,7 +254,7 @@ export interface BenchmarkState {
   /**
    * Which DB the next boot should open. `"benchmark"` routes
    * `db.ts:resolveUrl()` to the isolated `benchmark.sqlite`; the
-   * user's real DB stays untouched. Always `"benchmark"` for the current
+   * vault database stays untouched. Always `"benchmark"` for the current
    * harness; the field exists to make the boot path's decision explicit
    * and to leave room for future scenarios that need user-DB access.
    */
@@ -333,7 +330,7 @@ export function isFreshBenchmarkPendingAge(state: BenchmarkStateTimeProbe, nowMs
 export interface BenchmarkScenarioMetadata {
   /** Stable id used in the persisted state file and markdown output. */
   id: string;
-  /** Human label rendered on the perf-panel Run button. */
+  /** Human label rendered on the scenario Run button in the performance popover. */
   label: string;
   /** Short paragraph rendered as a tooltip on hover. Explain what the scenario stresses. */
   description: string;

@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Ganbaru AI",
+  "productName": "Ganbaru",
   "build": {
     "devUrl": "http://localhost:1420"
   },
@@ -8,7 +8,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Ganbaru AI",
+        "title": "Ganbaru",
         "visible": true
       }
     ],

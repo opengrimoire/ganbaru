@@ -1,0 +1,281 @@
+use super::helpers::*;
+
+#[test]
+fn timeline_database_view_uses_date_ranges_grouping_filters_sorts_and_configuration() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        databases::create_database(
+            &pool,
+            NoteDatabaseCreate {
+                id: DATABASE_A.to_string(),
+                data_source_id: DATA_SOURCE_A.to_string(),
+                view_id: DATABASE_VIEW_A.to_string(),
+                title: "Tasks".to_string(),
+                parent: Some(page_parent(PAGE_A)),
+                after_block_id: Some(BLOCK_A.to_string()),
+                replace_block_id: None,
+                icon: None,
+                cover: None,
+            },
+        )
+        .await
+        .unwrap();
+        data_sources::schema::update_data_source_schema(
+            &pool,
+            DATA_SOURCE_A,
+            None,
+            None,
+            NoteDataSourceSchemaUpdate {
+                properties: json!({
+                    "Name": {
+                        "id": "title",
+                        "name": "Name",
+                        "type": "title",
+                        "title": {}
+                    },
+                    "Window": {
+                        "id": "window",
+                        "name": "Window",
+                        "type": "date",
+                        "date": {}
+                    },
+                    "Estimate": {
+                        "id": "estimate",
+                        "name": "Estimate",
+                        "type": "number",
+                        "number": { "format": "number" }
+                    },
+                    "Status": {
+                        "id": "status",
+                        "name": "Status",
+                        "type": "status",
+                        "status": {
+                            "options": [
+                                { "id": "todo", "name": "To-do", "color": "gray" },
+                                { "id": "doing", "name": "Doing", "color": "blue" }
+                            ]
+                        }
+                    }
+                }),
+            },
+        )
+        .await
+        .unwrap();
+
+        data_sources::rows::create_data_source_row_page(
+            &pool,
+            DATA_SOURCE_A,
+            NoteDataSourceRowPageCreate {
+                id: PAGE_B.to_string(),
+                title: "Alpha".to_string(),
+                first_block_id: BLOCK_B.to_string(),
+                properties: None,
+            },
+        )
+        .await
+        .unwrap();
+        data_sources::rows::create_data_source_row_page(
+            &pool,
+            DATA_SOURCE_A,
+            NoteDataSourceRowPageCreate {
+                id: PAGE_C.to_string(),
+                title: "Beta".to_string(),
+                first_block_id: BLOCK_C.to_string(),
+                properties: None,
+            },
+        )
+        .await
+        .unwrap();
+        data_sources::layouts::table::update_data_source_row_property(
+            &pool,
+            DATA_SOURCE_A,
+            PAGE_B,
+            NoteDataSourceRowPropertyUpdate {
+                property_id: "window".to_string(),
+                value: json!({
+                    "start": "2026-07-10",
+                    "end": "2026-07-15",
+                    "time_zone": null
+                }),
+            },
+        )
+        .await
+        .unwrap();
+        data_sources::layouts::table::update_data_source_row_property(
+            &pool,
+            DATA_SOURCE_A,
+            PAGE_B,
+            NoteDataSourceRowPropertyUpdate {
+                property_id: "estimate".to_string(),
+                value: json!(2),
+            },
+        )
+        .await
+        .unwrap();
+        data_sources::layouts::table::update_data_source_row_property(
+            &pool,
+            DATA_SOURCE_A,
+            PAGE_C,
+            NoteDataSourceRowPropertyUpdate {
+                property_id: "window".to_string(),
+                value: json!({
+                    "start": "2026-07-30",
+                    "end": "2026-08-02",
+                    "time_zone": null
+                }),
+            },
+        )
+        .await
+        .unwrap();
+        data_sources::layouts::table::update_data_source_row_property(
+            &pool,
+            DATA_SOURCE_A,
+            PAGE_C,
+            NoteDataSourceRowPropertyUpdate {
+                property_id: "estimate".to_string(),
+                value: json!(5),
+            },
+        )
+        .await
+        .unwrap();
+        data_sources::layouts::table::update_data_source_row_property(
+            &pool,
+            DATA_SOURCE_A,
+            PAGE_C,
+            NoteDataSourceRowPropertyUpdate {
+                property_id: "status".to_string(),
+                value: json!("Doing"),
+            },
+        )
+        .await
+        .unwrap();
+
+        let default_timeline = data_sources::layouts::timeline::data_source_timeline_view(
+            &pool,
+            DATA_SOURCE_A,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let default_json = serde_json::to_value(default_timeline).unwrap();
+        assert_eq!(default_json["view"]["type"], "timeline");
+        assert_eq!(
+            default_json["view"]["configuration"]["timeline"]["date_property_id"],
+            "window"
+        );
+        assert_eq!(
+            default_json["view"]["configuration"]["timeline"]["group_property_id"],
+            serde_json::Value::Null
+        );
+
+        let invalid_group = data_sources::layouts::timeline::update_data_source_timeline_view(
+            &pool,
+            DATA_SOURCE_A,
+            None,
+            None,
+            NoteDataSourceTimelineViewUpdate {
+                filter: vec![],
+                sorts: vec![],
+                configuration: NoteDataSourceTimelineConfigurationUpdate {
+                    date_property_id: Some("window".to_string()),
+                    group_property_id: Some("estimate".to_string()),
+                    group_order: vec![],
+                    hidden_group_ids: vec![],
+                    range_start: "2026-07-01".to_string(),
+                    range_end: "2026-07-31".to_string(),
+                    visible_property_ids: vec![],
+                    row_open_mode: "side_panel".to_string(),
+                },
+            },
+        )
+        .await;
+        match invalid_group {
+            Ok(_) => panic!("timeline accepted a non-groupable property"),
+            Err(error) => assert!(error.contains("group property type")),
+        }
+
+        let updated = data_sources::layouts::timeline::update_data_source_timeline_view(
+            &pool,
+            DATA_SOURCE_A,
+            None,
+            None,
+            NoteDataSourceTimelineViewUpdate {
+                filter: vec![
+                    serde_json::from_value::<NoteDataSourceTableFilter>(json!({
+                        "property_id": "title", "condition": "contains", "value": "a"
+                    }))
+                    .unwrap(),
+                ],
+                sorts: vec![NoteDataSourceTableSort {
+                    property_id: "estimate".to_string(),
+                    direction: "descending".to_string(),
+                }],
+                configuration: NoteDataSourceTimelineConfigurationUpdate {
+                    date_property_id: Some("window".to_string()),
+                    group_property_id: Some("status".to_string()),
+                    group_order: vec!["doing".to_string(), "todo".to_string()],
+                    hidden_group_ids: vec!["todo".to_string()],
+                    range_start: "2026-07-01".to_string(),
+                    range_end: "2026-07-31".to_string(),
+                    visible_property_ids: vec![
+                        "estimate".to_string(),
+                        "window".to_string(),
+                        "status".to_string(),
+                        "title".to_string(),
+                        "estimate".to_string(),
+                    ],
+                    row_open_mode: "full_page".to_string(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+        let updated_json = serde_json::to_value(updated).unwrap();
+        assert_eq!(
+            updated_json["view"]["configuration"]["timeline"]["group_property_id"],
+            "status"
+        );
+        assert_eq!(
+            updated_json["view"]["configuration"]["timeline"]["hidden_group_ids"],
+            json!(["todo"])
+        );
+        assert_eq!(
+            updated_json["view"]["configuration"]["timeline"]["visible_property_ids"],
+            json!(["estimate"])
+        );
+        assert_eq!(
+            updated_json["view"]["configuration"]["timeline"]["row_open_mode"],
+            "full_page"
+        );
+        assert_eq!(updated_json["rows"][0]["id"], PAGE_C);
+        assert_eq!(updated_json["rows"][1]["id"], PAGE_B);
+
+        let august = data_sources::layouts::timeline::update_data_source_timeline_view(
+            &pool,
+            DATA_SOURCE_A,
+            None,
+            None,
+            NoteDataSourceTimelineViewUpdate {
+                filter: vec![],
+                sorts: vec![],
+                configuration: NoteDataSourceTimelineConfigurationUpdate {
+                    date_property_id: Some("window".to_string()),
+                    group_property_id: None,
+                    group_order: vec![],
+                    hidden_group_ids: vec![],
+                    range_start: "2026-08-01".to_string(),
+                    range_end: "2026-08-31".to_string(),
+                    visible_property_ids: vec![],
+                    row_open_mode: "side_panel".to_string(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+        let august_json = serde_json::to_value(august).unwrap();
+        assert_eq!(august_json["rows"].as_array().unwrap().len(), 1);
+        assert_eq!(august_json["rows"][0]["id"], PAGE_C);
+    });
+}

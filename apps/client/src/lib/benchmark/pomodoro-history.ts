@@ -1,7 +1,7 @@
-import type { CalendarEvent, PauseInterval, PomodoroConfig } from "$lib/components/calendar/types";
-import { wallClockToUtcIso } from "$lib/components/calendar/utils";
+import type { CalendarEvent, PauseInterval, PomodoroConfig } from "$lib/calendar/types";
+import { wallClockToUtcIso } from "$lib/calendar/utils";
 import { createPresetPomodoroConfig } from "$lib/pomodoro/rhythm";
-import { computePlannedSegments } from "$lib/utils/pomodoro-segments";
+import { computePlannedSegments } from "$lib/pomodoro/segments";
 
 export const DENSE_TIMED_POMODORO_CONFIG: PomodoroConfig = createPresetPomodoroConfig("adaptive");
 

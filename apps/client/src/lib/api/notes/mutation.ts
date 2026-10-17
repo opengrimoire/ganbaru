@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import { applyNotesProjectHistoryMutationDeadline } from "$lib/notes/project-history-scheduler";
+import { publishNotesDatabaseChange } from "$lib/notes/database/window-sync";
+import { applyNotesProjectHistoryMutationDeadline } from "$lib/notes/history/project-history-scheduler";
 
 /** Invoke a Notes mutation and apply its project-history checkpoint envelope. */
 export async function invokeNotesMutation(
@@ -7,6 +8,7 @@ export async function invokeNotesMutation(
   args: Record<string, unknown>,
 ): Promise<unknown> {
   const result = await invoke<unknown>(command, args);
+  publishNotesDatabaseChange();
   if (typeof result !== "object" || result === null || Array.isArray(result)) {
     throw new Error(`${command} returned an invalid Notes mutation envelope`);
   }
@@ -20,4 +22,10 @@ export async function invokeNotesMutation(
   }
   applyNotesProjectHistoryMutationDeadline(deadline);
   return record.value;
+}
+
+/** Whether a Notes write was refused because its canonical base changed after the caller read it. */
+export function isNotesEditConflict(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  return message.startsWith("Notes edit conflict:");
 }

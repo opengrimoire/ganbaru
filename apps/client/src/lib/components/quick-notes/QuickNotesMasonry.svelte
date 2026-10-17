@@ -1,14 +1,19 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
+  import type { EventColor } from "$lib/calendar/types";
   import type { QuickNote, QuickNotesCollection, QuickNoteTag } from "$lib/quick-notes/types";
   import {
+    QUICK_NOTE_DESKTOP_MASONRY_DENSITY,
+    QUICK_NOTE_MASONRY_MIN_CARD_WIDTH,
     quickNoteMasonryInsertion,
     quickNoteMasonryLayout,
-    quickNoteMobileMasonryMaxColumns,
+    quickNoteMobileMasonryDensity,
     moveQuickNoteId,
     type MasonryPosition,
+    type QuickNoteMasonryDensity,
   } from "$lib/quick-notes/masonry";
-  import type { Theme } from "$lib/stores/themes";
+  import type { Theme } from "$lib/themes";
+  import { TouchHoldArbiter } from "$lib/utils/touch-hold";
   import QuickNoteCard from "./QuickNoteCard.svelte";
 
   let {
@@ -18,16 +23,18 @@
     reorderable = false,
     theme,
     tags,
-    onopen,
-    onpin,
-    oncolor,
-    ontag,
-    onarchive,
-    onunarchive,
-    ontrash,
-    onrestore,
-    ondelete,
-    onreorder,
+    untaggedColor,
+    onOpen,
+    onPin,
+    onColor,
+    onTag,
+    onCreateTag,
+    onArchive,
+    onUnarchive,
+    onTrash,
+    onRestore,
+    onDelete,
+    onReorder,
     mobileLayout = false,
   }: {
     notes: readonly QuickNote[];
@@ -36,16 +43,19 @@
     reorderable?: boolean;
     theme: Theme;
     tags: readonly QuickNoteTag[];
-    onopen: (note: QuickNote) => void;
-    onpin: (note: QuickNote, pinned: boolean) => void;
-    oncolor: (note: QuickNote, color: QuickNote["color"]) => void;
-    ontag: (note: QuickNote, tagId: string | null) => void;
-    onarchive: (note: QuickNote) => void;
-    onunarchive: (note: QuickNote) => void;
-    ontrash: (note: QuickNote) => void;
-    onrestore: (note: QuickNote) => void;
-    ondelete: (note: QuickNote) => void;
-    onreorder: (orderedIds: readonly string[], movedId: string, position: number) => void;
+    /** Color of untagged notes, which a new tag avoids. */
+    untaggedColor: EventColor;
+    onOpen: (note: QuickNote) => void;
+    onPin: (note: QuickNote, pinned: boolean) => void;
+    onColor: (note: QuickNote, color: QuickNote["color"]) => void;
+    onTag: (note: QuickNote, tagId: string | null) => void;
+    onCreateTag: (name: string, color: EventColor) => Promise<QuickNoteTag>;
+    onArchive: (note: QuickNote) => void;
+    onUnarchive: (note: QuickNote) => void;
+    onTrash: (note: QuickNote) => void;
+    onRestore: (note: QuickNote) => void;
+    onDelete: (note: QuickNote) => void;
+    onReorder: (orderedIds: readonly string[], movedId: string, position: number) => void;
     mobileLayout?: boolean;
   } = $props();
 
@@ -60,6 +70,8 @@
     grabY: number;
     width: number;
     height: number;
+    /** Touch starts a drag only after a stationary hold, so swipes scroll. */
+    hold: boolean;
   }
 
   interface ActiveDrag extends PendingPointer {
@@ -90,27 +102,30 @@
   let settleTimer: ReturnType<typeof setTimeout> | null = null;
   let handoffFrame: number | null = null;
   let previousCursor = "";
+  const touchHold = new TouchHoldArbiter();
   const heights = new Map<string, number>();
   const observers = new Map<string, ResizeObserver>();
   const orderedNotes = $derived(visualOrder
     .map((id) => notes.find((note) => note.id === id))
     .filter((note): note is QuickNote => note !== undefined));
 
-  function maximumColumns(availableWidth: number): number {
+  function layoutWidth(): number {
+    return width || container?.clientWidth || QUICK_NOTE_MASONRY_MIN_CARD_WIDTH;
+  }
+
+  function density(availableWidth: number): QuickNoteMasonryDensity {
     return mobileLayout
-      ? quickNoteMobileMasonryMaxColumns(availableWidth)
-      : Number.POSITIVE_INFINITY;
+      ? quickNoteMobileMasonryDensity(availableWidth)
+      : QUICK_NOTE_DESKTOP_MASONRY_DENSITY;
+  }
+
+  function layoutFor(availableWidth: number, cardHeights: readonly number[]): ReturnType<typeof quickNoteMasonryLayout> {
+    const { minimumCardWidth, maximumColumns } = density(availableWidth);
+    return quickNoteMasonryLayout(availableWidth, cardHeights, minimumCardWidth, undefined, maximumColumns);
   }
 
   function applyLayout(): void {
-    const availableWidth = width || container?.clientWidth || 210;
-    const layout = quickNoteMasonryLayout(
-      availableWidth,
-      orderedNotes.map((note) => heights.get(note.id) ?? 120),
-      undefined,
-      undefined,
-      maximumColumns(availableWidth),
-    );
+    const layout = layoutFor(layoutWidth(), orderedNotes.map((note) => heights.get(note.id) ?? 120));
     positions = Object.fromEntries(orderedNotes.map((note, index) => [note.id, layout.positions[index]]));
     layoutHeight = layout.height;
   }
@@ -145,15 +160,14 @@
   function pointerCanStart(event: PointerEvent): boolean {
     if (!reorderable || event.button !== 0 || !event.isPrimary) return false;
     const target = event.target instanceof Element ? event.target : null;
-    if (target?.closest("[data-quick-note-no-drag]") !== null) return false;
-    return event.pointerType !== "touch" || target?.closest("[data-quick-note-drag-handle]") !== null;
+    return target?.closest("[data-quick-note-no-drag]") === null;
   }
 
   function startPointer(event: PointerEvent, noteId: string, node: HTMLDivElement): void {
     if (!pointerCanStart(event)) return;
     completeDropSettle();
     const rect = node.getBoundingClientRect();
-    pendingPointer = {
+    const pending: PendingPointer = {
       pointerId: event.pointerId,
       pointerType: event.pointerType,
       noteId,
@@ -164,19 +178,34 @@
       grabY: event.clientY - rect.top,
       width: rect.width,
       height: rect.height,
+      hold: event.pointerType === "touch",
     };
-    node.setPointerCapture(event.pointerId);
+    pendingPointer = pending;
+    if (pending.hold) {
+      touchHold.begin(event, () => {
+        if (pendingPointer !== pending || drag) {
+          touchHold.finish();
+          return;
+        }
+        activateDrag(pending, pending.startX, pending.startY);
+      });
+    }
   }
 
-  function activateDrag(event: PointerEvent, pending: PendingPointer): void {
+  /**
+   * Captures the pointer only once a drag starts: a captured pointer sends the click that follows
+   * to the card wrapper instead of the card's open button.
+   */
+  function activateDrag(pending: PendingPointer, clientX: number, clientY: number): void {
+    pending.node.setPointerCapture(pending.pointerId);
     previousCursor = document.documentElement.style.cursor;
     document.documentElement.style.cursor = "grabbing";
     document.documentElement.dataset.quickNoteDragging = "true";
     suppressClickFor = pending.noteId;
     drag = {
       ...pending,
-      clientX: event.clientX,
-      clientY: event.clientY,
+      clientX,
+      clientY,
       originalIndex: visualOrder.indexOf(pending.noteId),
     };
     scheduleDragFrame();
@@ -186,9 +215,17 @@
     const pending = pendingPointer;
     if (!pending || pending.pointerId !== event.pointerId) return;
     if (!drag) {
+      // An uncaptured press can be released outside the card, where its pointerup never arrives.
+      if ((event.buttons & 1) === 0) {
+        pendingPointer = null;
+        touchHold.finish();
+        return;
+      }
+      // A touch hold activates from its timer; earlier movement belongs to native scrolling.
+      if (pending.hold) return;
       const threshold = pending.pointerType === "touch" ? 3 : 5;
       if (Math.hypot(event.clientX - pending.startX, event.clientY - pending.startY) < threshold) return;
-      activateDrag(event, pending);
+      activateDrag(pending, event.clientX, event.clientY);
     } else {
       drag = { ...drag, clientX: event.clientX, clientY: event.clientY };
     }
@@ -214,22 +251,17 @@
     const cardHeights = visualOrder.map((id) => heights.get(id) ?? (id === drag?.noteId ? drag.height : 120));
     const targetLeft = drag.clientX - drag.grabX - rect.left;
     const targetTop = drag.clientY - drag.grabY - rect.top;
+    const availableWidth = layoutWidth();
     const insertion = quickNoteMasonryInsertion(
-      width || container.clientWidth || 210,
+      availableWidth,
       cardHeights,
       draggedIndex,
       targetLeft,
       targetTop,
       draggedIndex,
-      maximumColumns(width || container.clientWidth || 210),
+      density(availableWidth),
     );
-    const currentPosition = quickNoteMasonryLayout(
-      width || container.clientWidth || 210,
-      cardHeights,
-      undefined,
-      undefined,
-      maximumColumns(width || container.clientWidth || 210),
-    ).positions[draggedIndex];
+    const currentPosition = layoutFor(availableWidth, cardHeights).positions[draggedIndex];
     const currentDistance = currentPosition
       ? (currentPosition.left - targetLeft) ** 2 + (currentPosition.top - targetTop) ** 2
       : Number.POSITIVE_INFINITY;
@@ -276,6 +308,7 @@
     updateDragOrder();
     const active = drag;
     pendingPointer = null;
+    touchHold.finish();
     if (pending.node.hasPointerCapture(event.pointerId)) pending.node.releasePointerCapture(event.pointerId);
     if (!active) return;
     event.preventDefault();
@@ -289,7 +322,7 @@
       suppressLayoutTransition(active.noteId);
     } else {
       const position = visualOrder.indexOf(active.noteId);
-      if (position !== active.originalIndex) onreorder(visualOrder, active.noteId, position);
+      if (position !== active.originalIndex) onReorder(visualOrder, active.noteId, position);
       void settleDrop(active);
     }
     setTimeout(() => { if (suppressClickFor === active.noteId) suppressClickFor = null; }, 0);
@@ -349,6 +382,7 @@
     const active = drag;
     const pending = pendingPointer;
     pendingPointer = null;
+    touchHold.finish();
     if (pending.node.hasPointerCapture(pending.pointerId)) pending.node.releasePointerCapture(pending.pointerId);
     if (dragFrame !== null) cancelAnimationFrame(dragFrame);
     dragFrame = null;
@@ -372,7 +406,7 @@
     if (next.every((id, index) => id === visualOrder[index])) return;
     visualOrder = next;
     applyLayout();
-    onreorder(visualOrder, noteId, visualOrder.indexOf(noteId));
+    onReorder(visualOrder, noteId, visualOrder.indexOf(noteId));
   }
 
   function wrapperStyle(noteId: string, position: MasonryPosition | undefined): string {
@@ -384,22 +418,39 @@
     }
     return position
       ? `width: ${position.width}px; transform: translate(${position.left}px, ${position.top}px);`
-      : "width: 210px;";
+      : `width: ${QUICK_NOTE_MASONRY_MIN_CARD_WIDTH}px;`;
+  }
+
+  /**
+   * Keeps a dragged card from scrolling the list. The listener stays registered so the browser
+   * treats touches on cards as cancelable from their start.
+   */
+  function blockDraggedTouchScroll(event: TouchEvent): void {
+    if (drag && event.cancelable) event.preventDefault();
+  }
+
+  /** Android long presses open a context menu that would interrupt a touch hold. */
+  function blockMobileContextMenu(event: MouseEvent): void {
+    if (mobileLayout) event.preventDefault();
   }
 
   onMount(() => {
     if (!container) return;
+    const list = container;
     const observer = new ResizeObserver(([entry]) => {
       width = entry?.contentRect.width ?? container?.clientWidth ?? 0;
       applyLayout();
     });
-    observer.observe(container);
+    observer.observe(list);
     window.addEventListener("keydown", cancelDragFromKeyboard, true);
-    width = container.clientWidth;
+    list.addEventListener("touchmove", blockDraggedTouchScroll, { passive: false });
+    width = list.clientWidth;
     applyLayout();
     return () => {
       observer.disconnect();
       window.removeEventListener("keydown", cancelDragFromKeyboard, true);
+      list.removeEventListener("touchmove", blockDraggedTouchScroll);
+      touchHold.finish();
       for (const cardObserver of observers.values()) cardObserver.disconnect();
       if (dragFrame !== null) cancelAnimationFrame(dragFrame);
       if (settleTimer) clearTimeout(settleTimer);
@@ -421,7 +472,7 @@
   });
 </script>
 
-<div bind:this={container} class="relative w-full" style="height: {layoutHeight}px;" role="list">
+<div bind:this={container} class="relative w-full" style="height: {layoutHeight}px;" role="list" oncontextmenu={blockMobileContextMenu}>
   {#each orderedNotes as note (note.id)}
     {@const position = positions[note.id]}
     <div
@@ -441,17 +492,19 @@
         {reorderable}
         {theme}
         {tags}
+        {untaggedColor}
         {mobileLayout}
-        onopen={() => onopen(note)}
-        onmove={(direction) => keyboardMove(note.id, direction)}
-        onpin={(pinned) => onpin(note, pinned)}
-        oncolor={(color) => oncolor(note, color)}
-        ontag={(tagId) => ontag(note, tagId)}
-        onarchive={() => onarchive(note)}
-        onunarchive={() => onunarchive(note)}
-        ontrash={() => ontrash(note)}
-        onrestore={() => onrestore(note)}
-        ondelete={() => ondelete(note)}
+        onOpen={() => onOpen(note)}
+        onMove={(direction) => keyboardMove(note.id, direction)}
+        onPin={(pinned) => onPin(note, pinned)}
+        onColor={(color) => onColor(note, color)}
+        onTag={(tagId) => onTag(note, tagId)}
+        {onCreateTag}
+        onArchive={() => onArchive(note)}
+        onUnarchive={() => onUnarchive(note)}
+        onTrash={() => onTrash(note)}
+        onRestore={() => onRestore(note)}
+        onDelete={() => onDelete(note)}
       />
     </div>
   {/each}

@@ -1,16 +1,22 @@
 //! Tauri device-state integration for project working folders.
 
-use super::models::{ChatError, ChatErrorCode, ChatResult, ProjectWorkingFolderId};
+pub mod commands;
+pub mod files;
+pub mod observer;
+
 use crate::projects::working_folders::{
     ProjectWorkingFolderBindingState, read_active_working_folder_scope,
     update_active_working_folder_scope,
 };
 use crate::vault;
+use ganbaru_chat_contracts::models::{
+    ChatError, ChatErrorCode, ChatResult, ProjectWorkingFolderId,
+};
 use std::fs;
 use std::path::Path;
 use tauri::Runtime;
 
-pub use ganbaru_chat::chat::workspace::*;
+pub use ganbaru_chat::workspace::*;
 
 pub fn ensure_managed_working_folder_binding<R: Runtime>(
     app: &tauri::AppHandle<R>,
@@ -56,7 +62,7 @@ pub fn validate_external_folder_outside_vault<R: Runtime>(
     if paths_overlap(&selected, &vault_root) {
         return Err(ChatError::validation(
             "workingFolderPath",
-            "External project working folders cannot overlap the active Ganbaru AI folder",
+            "External project working folders cannot overlap the active Ganbaru folder",
         ));
     }
     Ok(())
@@ -111,7 +117,7 @@ mod tests {
 
     #[test]
     fn external_folder_overlap_rejects_vault_ancestors_descendants_and_identity() {
-        let vault = Path::new("data").join("Ganbaru AI");
+        let vault = Path::new("data").join("Ganbaru");
         let vault = vault.as_path();
         assert!(paths_overlap(vault, vault));
         assert!(paths_overlap(Path::new("data"), vault));

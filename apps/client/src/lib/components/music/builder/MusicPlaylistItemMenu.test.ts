@@ -2,8 +2,8 @@
 
 import { mount, tick, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { MusicItemListEntry } from "$lib/music/library-contracts";
-import { musicSnoozeEndsAt } from "$lib/music/music-snooze";
+import type { MusicItemListEntry } from "$lib/music/library/contracts";
+import { musicSnoozeEndsAt } from "$lib/music/session/snooze";
 
 const api = vi.hoisted(() => ({ getMusicInspectorDetail: vi.fn() }));
 
@@ -16,8 +16,8 @@ const item: MusicItemListEntry = {
   id: "song", identityKey: "local:song", sourceKind: "local-file", mediaKind: "audio",
   title: "Song", artist: "Artist", album: "Album", localRootId: "root", relativePath: "song.flac",
   sourceCollectionIds: [], originalArtworkIdentity: null, artworkOverride: null, durationMs: null,
-  availability: "available", reviewState: "reviewed", discoveredAt: 1, updatedAt: 1, version: 1,
-  playlistCount: 1, activeSnoozeCount: 1, lastPlayedAt: null, playCount: 0,
+  availability: "available", reviewState: "reviewed", discoveredAtMs: 1, updatedAtMs: 1, version: 1,
+  playlistCount: 1, activeSnoozeCount: 1, lastPlayedAtMs: null, playCount: 0,
   membershipId: "membership", membershipPosition: 0, membershipWeight: "normal",
   membershipEnabled: true, membershipVersion: 1,
 };
@@ -35,12 +35,12 @@ describe("MusicPlaylistItemMenu Snooze", () => {
   });
 
   it("shows the active duration without an indefinite choice and allows selecting it again", async () => {
-    const startsAt = Date.now() - 1_000;
+    const startsAtMs = Date.now() - 1_000;
     api.getMusicInspectorDetail.mockResolvedValue({
       memberships: [{ id: "membership", playlistId: "playlist" }],
       snoozes: [{ id: "snooze", itemId: "song", scope: "playlist", playlistId: "playlist",
-        startsAt, endsAt: musicSnoozeEndsAt("week", startsAt, Intl.DateTimeFormat().resolvedOptions().timeZone),
-        reason: "", createdAt: startsAt }],
+        startsAtMs, endsAtMs: musicSnoozeEndsAt("week", startsAtMs, Intl.DateTimeFormat().resolvedOptions().timeZone),
+        reason: "", createdAtMs: startsAtMs }],
     });
     const onSnooze = vi.fn().mockResolvedValue(undefined);
     target = document.createElement("div");

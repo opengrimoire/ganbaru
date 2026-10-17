@@ -1,125 +1,77 @@
 # Calendar recurrence editing
 
-Recurrence preview is a non-mutating projection of the current Save result. It shows what the visible calendar will contain if the current draft and scope are saved, but it never detaches, splits, collapses, deletes, archives, transfers sessions, or writes data before Save.
+**Status: Implemented.** Native preview, reviewed Save, creation, and Project bulk scheduling share one Rust boundary on desktop and Android; installed-app acceptance remains pending.
+
+Recurrence preview is a non-mutating projection of what Save would produce. It shows the visible calendar as it will look if the current draft and scope are saved, but never detaches, splits, deletes, archives, transfers sessions, or writes data before Save. The scope semantics themselves (`Only this`, `Following`, `All`, protection) are defined in [Recurrence model](recurrence.md).
 
 ## Product contract
 
-- Preview and Save use the same semantic plan.
-- Scope switching reprojects one shared draft immediately.
+- Preview and Save use the same native plan over the same prepared rows.
+- Switching scope re-projects one shared draft; it does not reset explicit edits.
 - Missing fields and explicitly cleared fields are distinct.
-- The selected occurrence stays visible unless the selected operation truly removes it.
-- Save commits the calendar mutation and Pomodoro reference transfers atomically.
-- Successful Save refreshes the visible window from canonical persisted expansion.
-- Preview contours refer only to rendered event identities and always clear on close or completion.
-- A visually absent block never retains an invisible hit area.
+- The selected occurrence stays visible unless the operation truly removes it.
+- Save commits the Calendar mutation and Pomodoro reference changes atomically.
+- After Save, the visible window refreshes from canonical persisted expansion. A preview or cache never becomes a second source of truth.
+- Preview contours refer only to rendered events and always clear on close or completion. A visually absent block never keeps an invisible hit area.
 
 ## Ownership
 
-The frontend owns pure draft normalization, edit planning, preview projection, affected-set presentation, and active-event interaction restrictions. These operations remain synchronous enough for typing, scope changes, drag, and resize.
+The frontend owns the draft, immediate pointer feedback, and rendering. While native review runs, the selected card moves immediately over cached occurrences; this overlay makes no recurrence or protection decisions.
 
-The backend owns durable validation, protected-history invariants, and atomic persistence. Persisted window expansion may be backend-owned, but canonical expansion and frontend preview must agree for supported recurrence rules.
+Rust owns expansion, scope and protection decisions, draft validation, the visible preview, and the atomic write. It accepts no frontend clock or execution evidence: acceptance time, the device date, and Focus history are read natively. Typed civil times carry their display zone separately from the event's home zone, and Rust resolves them without changing the home zone.
 
-Live preview should not require an asynchronous round trip. A future shared recurrence library is appropriate only if it preserves immediate deterministic projection across frontend and backend callers.
-
-## Edit-session input
-
-One edit session contains:
-
-- The selected template or occurrence.
-- The source template for a generated occurrence.
-- The selected recurrence date.
-- Baseline event values.
-- Normalized draft field operations.
-- Selected scope.
-- One captured edit time used by preview and Save.
-- Current visible window.
-- Relevant active Pomodoro metadata.
-
-Changing scope changes only the projection parameter. It does not create a separate draft or reset explicit edits.
+Why: protection decisions depend on recorded Focus history and the current time. Letting the frontend decide would allow a stale view or skewed clock to rewrite history.
 
 ## Field operations
 
 Nullable and structurally meaningful fields use explicit operations:
 
-- **Unchanged:** the user left the baseline value unchanged.
+- **Unchanged:** the user left the baseline value.
 - **Set:** the user supplied a new value.
 - **Cleared:** the user explicitly removed the value.
 
-For recurrence, a missing property never means that repeat was turned off. Turning repeat off and back on resolves from the final visible value compared with the baseline.
+For recurrence, a missing property never means repeat was turned off. Turning repeat off and back on resolves from the final value compared with the baseline. Equivalent rules normalize to unchanged, and equivalent metadata does not cause a split.
 
 ## Scope selector
 
-The selector appears only when the event belonged to a saved recurring series when the session opened. It appears for the template occurrence and generated occurrences.
+The selector appears only when the event belonged to a saved recurring series when the session opened, for both the template and generated occurrences. It is hidden for a standalone event (including one gaining recurrence) and for the selected active occurrence, where the effective scope is `Only this`.
 
-Adding recurrence to a non-recurring event does not show a scope selector. The event becomes one recurring template while retaining its base identity.
+## Preview
 
-The selector is hidden for the selected active occurrence, and the effective scope is `Only this`.
+Changes that affect recurrence meaning request a debounced native preview tagged with the edit generation; a stale result cannot replace a newer draft. The preview projects only the affected series and leaves other cached events untouched. Preview and committed results keep stable identities, and the selected occurrence is tracked by identity rather than geometry, since two overrides can share a displayed time.
 
-## Projection output
-
-Given the same saved rows, selected occurrence, normalized draft, scope, active-session metadata, captured edit time, and visible window, projection returns the same:
-
-- Visible events for the window.
-- Preview contour identities.
-- Editing identity used to anchor the panel.
-- Semantic commit plan.
-- Canonical-refresh requirement.
-
-Unrelated events remain unchanged. Virtual preview events use stable collision-free identities. Contour identities are always a subset of rendered identities.
-
-Delete and archive previews use the same affected-set model. Protected rows can retain their current geometry while a contour explains that the operation will archive them.
+Delete and archive previews use the same affected-set model: protected rows can keep their geometry while a contour explains that they will be archived.
 
 ## Save
 
-Save uses the current projection's semantic plan or recomputes the same plan from identical normalized input. It does not reinterpret the draft independently.
+Save revalidates against current data even if a preview was reviewed. The review is bound to the source rows, protection evidence, normalized intent, and scope; if any changed, Save is rejected rather than reinterpreted. One transaction applies template updates, exceptions, detachment, splitting, materialization, archive operations, active-run reference transfers, Focus reconciliation, and the retry receipt.
 
-The panel can close and the submitted projection can remain visually stable while persistence completes. That display state is not a mutation. One backend batch applies template updates, exceptions, detachment, splitting, materialization, archive operations, and active-run reference transfers.
+Detach and split copy the complete event: alarms, attendees, categories, extended properties, organizer, task links, Focus configuration, Music assignments, and an independent copy of imported iCalendar data. Mutations have explicit size limits (10,000 rows and 16 MiB) and fail rather than truncate.
 
-After success, the app clears preview state and reloads the visible range from canonical expansion. Older foreground or prefetched loads cannot replace that result. After failure, the user receives a retryable error and no partial recurrence mutation remains.
+## Retry and lost replies
 
-## Create and non-recurring edits
+Every Save carries a retry identity bound to the complete request. A retry returns the recorded result without re-executing; reusing the identity with different intent fails. If the outcome is uncertain (lost reply, uncertain commit), the request stays unresolved and the UI offers Retry with the exact original request, even across panel close and Calendar remounts. Only an authorized receipt lookup can conclude that a request was never accepted; this lookup also works after the vault becomes read-only. A failed visible-window refresh after a confirmed Save does not repeat the write.
 
-Creating a recurring event creates one template. Preview expands it only in the visible window.
+## Creation
 
-Adding recurrence to a saved non-recurring event converts that row into a template and preserves its ID as the first occurrence. Clearing recurrence on a non-recurring event is a no-op.
-
-## Only this
-
-If recurrence is unchanged or cleared, the selected occurrence detaches as a non-recurring standalone and the source template gains an exception for that date.
-
-If recurrence is set to a different rule, the selected occurrence becomes an independent recurring template and the source still gains one exception.
-
-Preview shows the source without the selected occurrence plus the detached result and any visible expansion of its independent rule.
-
-## Following
-
-The old template ends before the selected occurrence. If recurrence remains set, a new template begins at the selected occurrence. If recurrence is cleared, only one standalone survivor remains there.
-
-Exceptions relevant to the new side transfer so an occurrence previously detached, archived, or deleted cannot regenerate after a split.
-
-## All
-
-Without protected history, the template can be updated directly. With protected history, the old template is capped at the protected boundary and a new template begins at the first mutable occurrence. Individual protected occurrences detach only when a historical template cannot preserve them safely.
-
-Clearing recurrence collapses only the mutable side. The selected occurrence is the survivor even when it is not the original template date.
+Panel creation uses the same preview, Save, and receipt recovery. Rust validates the draft, canonicalizes recurrence, and assigns the event identity. The frontend shows one immediate card while review is pending; its temporary ID is presentation-only and never authorizes a write.
 
 ## Active Pomodoro sessions
 
-An active run survives every recurrence edit. When the active occurrence receives a new event identity, run and segment references transfer atomically. Original historical identity remains preserved.
+A continuing active run keeps its identity through recurrence edits. When its occurrence receives a new event identity, current references transfer atomically while the original run identity, timestamps, and segment facts stay unchanged. Removing Focus configuration stops the owned run in the same transaction.
 
-An active selected occurrence cannot edit the repeat chain or its recorded start. A different active occurrence in the affected series stays unchanged on the protected side or is materialized before the edit.
+`End now` applies to one ongoing timed occurrence: it keeps the recorded start, ends at the native acceptance time, and completes the run, including an open pause, without starting a later phase. `Enable Focus` applies to an ongoing standalone event without Focus configuration and starts a run only when no other run is active.
 
-## Rendering
+An earlier closed run also protects an ongoing occurrence: its start and date kind cannot change, its end cannot move before the current time, and its repeat chain cannot change.
 
-Preview affects only occurrences from the edited series and current window. The calendar rail, event status, and active-session presentation use the projected identities and geometry without writing history.
+## Opening other events during preview
 
-After commit, rendering comes from canonical persistence. A preview or cache never becomes a second source of truth.
+Opening another card during preview resolves its baseline from persisted occurrences and re-verifies the source after details load. A proposed-only card cannot open as a saved source, and discarding a preview never carries unsaved values into another editor.
 
 ## Quality requirements
 
-- Planning and projection remain pure and deterministic.
-- Protected-history decisions consider the complete affected range, not only visible dates.
-- Malformed or unsupported recurrence that cannot be enumerated safely stops with a diagnostic rather than rewriting history.
-- Preview and commit plans have focused parity tests.
-- Backend batches prove rollback across calendar and Pomodoro reference changes.
+- Planning and projection stay deterministic.
+- Protection decisions consider the complete affected range, not only visible dates.
+- Recurrence that cannot be enumerated safely stops with a diagnostic rather than rewriting history.
+- Preview and Save have parity tests, and transactions prove rollback across Calendar and Pomodoro changes.
 - Required user scenarios live in [Calendar recurrence testing](../../testing/calendar-recurrence.md).

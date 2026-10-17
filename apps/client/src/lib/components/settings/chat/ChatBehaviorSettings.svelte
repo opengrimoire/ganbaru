@@ -6,12 +6,25 @@
   import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getChat } from "$lib/stores/chat.svelte";
-  import CustomSelect from "../CustomSelect.svelte";
-  import ToggleSetting from "../ToggleSetting.svelte";
+  import { getPreferences } from "$lib/stores/preferences.svelte";
+  import {
+    DEFAULT_SIDEBAR_SORT_ORDER,
+    isSidebarSortOrder,
+    SIDEBAR_SORT_ORDER_LABEL_KEYS,
+    SIDEBAR_SORT_ORDERS,
+  } from "$lib/utils/sidebar-order";
+  import Loading from "$lib/components/ui/Loading.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
+  import Select from "$lib/components/ui/Select.svelte";
+  import SwitchField from "$lib/components/ui/SwitchField.svelte";
 
   const localization = getLocalization();
   const { t } = localization;
   const chat = getChat();
+  const preferences = getPreferences();
+  const sidebarOrderOptions = $derived(
+    SIDEBAR_SORT_ORDERS.map((order) => ({ value: order, label: t(SIDEBAR_SORT_ORDER_LABEL_KEYS[order]) })),
+  );
   let saving = $state(false);
   let error = $state<string | null>(null);
   let status = $state<string | null>(null);
@@ -56,6 +69,17 @@
 
   async function loadDiagnostics(): Promise<void> {
     diagnostics = await chatApi.readChatDiagnostics();
+  }
+
+  /** Retries loading Chat diagnostics and rejects when the load fails again. */
+  async function retryDiagnostics(): Promise<void> {
+    error = null;
+    try {
+      await loadDiagnostics();
+    } catch (cause: unknown) {
+      error = cause instanceof Error ? cause.message : String(cause);
+      throw cause;
+    }
   }
 
   async function updateDiagnosticPreferences(patch: Partial<ChatDiagnosticsRead["preferences"]>): Promise<string> {
@@ -128,13 +152,21 @@
 <section class="flex flex-col gap-4">
   <div class="px-1">
     <h2 class="text-[0.866667rem] font-semibold text-foreground">{t("settings.chat.behavior.heading")}</h2>
-    <p class="mt-1 text-[0.8rem] text-muted-foreground">{t("settings.chat.behavior.description")}</p>
   </div>
-  {#if error}<p role="alert" class="text-sm text-destructive">{error}</p>{/if}
+  {#if error}<Notice class="text-sm" message={error} onRetry={diagnostics ? undefined : retryDiagnostics} />{/if}
   {#if status}<p role="status" class="text-sm text-action-confirm">{status}</p>{/if}
+  <Select
+    label={t("settings.chat.behavior.sidebarOrder")}
+    description={t("settings.chat.behavior.sidebarOrderDescription")}
+    value={preferences.chatSidebarOrder}
+    options={sidebarOrderOptions}
+    onChange={(value) => { if (isSidebarSortOrder(value)) preferences.setChatSidebarOrder(value); }}
+    canReset={preferences.chatSidebarOrder !== DEFAULT_SIDEBAR_SORT_ORDER}
+    onReset={() => preferences.resetChatSidebarOrder()}
+  />
   {#if behavior}
     <div class="flex flex-col gap-3">
-      <CustomSelect
+      <Select
         label={t("settings.chat.behavior.sendKey")}
         description={t("settings.chat.behavior.sendKeyDescription")}
         value={behavior.sendKey}
@@ -142,15 +174,15 @@
         onChange={(value) => void update({ sendKey: value === "mod_enter" ? "mod_enter" : "enter" })}
         disabled={saving}
       />
-      <CustomSelect label={t("settings.chat.behavior.terminalScrollback")} description={t("settings.chat.behavior.terminalScrollbackDescription")} value={String(behavior.terminalScrollbackLines)} options={scrollbackOptions} onChange={(value) => void update({ terminalScrollbackLines: Number(value) })} disabled={saving} />
-      <CustomSelect label={t("settings.chat.behavior.idleTimeout")} description={t("settings.chat.behavior.idleTimeoutDescription")} value={String(behavior.idleSessionTimeoutSeconds)} options={idleTimeoutOptions} onChange={(value) => void update({ idleSessionTimeoutSeconds: Number(value) })} disabled={saving} />
+      <Select label={t("settings.chat.behavior.terminalScrollback")} description={t("settings.chat.behavior.terminalScrollbackDescription")} value={String(behavior.terminalScrollbackLines)} options={scrollbackOptions} onChange={(value) => void update({ terminalScrollbackLines: Number(value) })} disabled={saving} />
+      <Select label={t("settings.chat.behavior.idleTimeout")} description={t("settings.chat.behavior.idleTimeoutDescription")} value={String(behavior.idleSessionTimeoutSeconds)} options={idleTimeoutOptions} onChange={(value) => void update({ idleSessionTimeoutSeconds: Number(value) })} disabled={saving} />
     </div>
     <div class="h-px shrink-0 scale-y-50 bg-border" aria-hidden="true"></div>
     <div class="flex flex-col gap-3">
-      <ToggleSetting label={t("settings.chat.behavior.restoreThread")} description={t("settings.chat.behavior.restoreThreadDescription")} checked={behavior.restoreLastSelectedThread} disabled={saving} onChange={(value) => void update({ restoreLastSelectedThread: value })} />
-      <ToggleSetting label={t("settings.chat.behavior.reasoning")} description={t("settings.chat.behavior.reasoningDescription")} checked={behavior.showReasoningSummaries} disabled={saving} onChange={(value) => void update({ showReasoningSummaries: value })} />
-      <ToggleSetting label={t("settings.chat.behavior.foldWork")} description={t("settings.chat.behavior.foldWorkDescription")} checked={behavior.automaticallyFoldSettledWork} disabled={saving} onChange={(value) => void update({ automaticallyFoldSettledWork: value })} />
-      <ToggleSetting label={t("settings.chat.behavior.confirmPaste")} description={t("settings.chat.behavior.confirmPasteDescription")} checked={behavior.confirmMultilineTerminalPaste} disabled={saving} onChange={(value) => void update({ confirmMultilineTerminalPaste: value })} />
+      <SwitchField label={t("settings.chat.behavior.restoreThread")} description={t("settings.chat.behavior.restoreThreadDescription")} checked={behavior.restoreLastSelectedThread} disabled={saving} onChange={(value) => void update({ restoreLastSelectedThread: value })} />
+      <SwitchField label={t("settings.chat.behavior.reasoning")} description={t("settings.chat.behavior.reasoningDescription")} checked={behavior.showReasoningSummaries} disabled={saving} onChange={(value) => void update({ showReasoningSummaries: value })} />
+      <SwitchField label={t("settings.chat.behavior.foldWork")} description={t("settings.chat.behavior.foldWorkDescription")} checked={behavior.automaticallyFoldSettledWork} disabled={saving} onChange={(value) => void update({ automaticallyFoldSettledWork: value })} />
+      <SwitchField label={t("settings.chat.behavior.confirmPaste")} description={t("settings.chat.behavior.confirmPasteDescription")} checked={behavior.confirmMultilineTerminalPaste} disabled={saving} onChange={(value) => void update({ confirmMultilineTerminalPaste: value })} />
     </div>
   {/if}
   {#if diagnostics}
@@ -170,15 +202,15 @@
       <div><div class="text-xs text-muted-foreground">{t("settings.chat.behavior.credentialStore")}</div><div class="mt-1 text-sm font-medium">{diagnostics.credentialStoreAvailable ? t("settings.chat.behavior.credentialAvailable") : t("settings.chat.behavior.credentialUnavailable")}</div></div>
       <div><div class="text-xs text-muted-foreground">{t("settings.chat.behavior.projectionHealth")}</div><div class="mt-1 text-sm font-medium">{diagnostics.projectionHealthy ? t("settings.chat.behavior.projectionHealthy") : t("settings.chat.behavior.projectionUnhealthy", formatNumber(localization.locale, diagnostics.inconsistentProjectionCount))}</div></div>
       <div><div class="text-xs text-muted-foreground">{t("settings.chat.behavior.processes")}</div><div class="mt-1 text-sm">{t("settings.chat.behavior.processCounts", formatNumber(localization.locale, diagnostics.liveProviderProcesses), formatNumber(localization.locale, diagnostics.activeTurns), formatNumber(localization.locale, diagnostics.liveTerminals))}</div></div>
-      <div><div class="text-xs text-muted-foreground">{t("settings.chat.behavior.probes")}</div><div class="mt-1 text-sm">{t("settings.chat.behavior.probeCounts", formatNumber(localization.locale, diagnostics.providerProbeHealthy), formatNumber(localization.locale, diagnostics.providerProbeUnhealthy), formatNumber(localization.locale, diagnostics.providerProbeUnknown))}</div></div>
+      <div><div class="text-xs text-muted-foreground">{t("settings.chat.behavior.probes")}</div><div class="mt-1 text-sm">{t("settings.chat.behavior.probeCounts", formatNumber(localization.locale, diagnostics.healthyProviderProbes), formatNumber(localization.locale, diagnostics.unhealthyProviderProbes), formatNumber(localization.locale, diagnostics.unknownProviderProbes))}</div></div>
       <div><div class="text-xs text-muted-foreground">{t("settings.chat.behavior.attachments")}</div><div class="mt-1 text-sm">{t("settings.chat.behavior.storageCounts", formatNumber(localization.locale, diagnostics.counts.attachmentCount), formatNumber(localization.locale, diagnostics.counts.attachmentBytes))}</div><div class="text-xs text-muted-foreground">{t("settings.chat.behavior.cleanupCounts", formatNumber(localization.locale, diagnostics.counts.pendingAttachmentCleanup), formatNumber(localization.locale, diagnostics.counts.failedAttachmentCleanup))}</div></div>
       <div><div class="text-xs text-muted-foreground">{t("settings.chat.behavior.commandArtifacts")}</div><div class="mt-1 text-sm">{t("settings.chat.behavior.storageCounts", formatNumber(localization.locale, diagnostics.counts.commandOutputEvents), formatNumber(localization.locale, diagnostics.counts.commandOutputBytes))}</div><div class="text-xs text-muted-foreground">{t("settings.chat.behavior.outputBound")}</div></div>
       <div class="sm:col-span-2"><div class="text-xs text-muted-foreground">{t("settings.chat.behavior.checkpoints")}</div><div class="mt-1 text-sm">{t("settings.chat.behavior.checkpointCounts", formatNumber(localization.locale, diagnostics.counts.checkpointFailures), formatNumber(localization.locale, diagnostics.counts.pendingCheckpointCleanup), formatNumber(localization.locale, diagnostics.counts.failedCheckpointCleanup))}</div></div>
     </div>
 
     <div class="space-y-3 border-t border-border pt-4">
-      <ToggleSetting label={t("settings.chat.behavior.captureDiagnostics")} checked={diagnostics.preferences.captureEnabled} disabled={saving} onChange={(captureEnabled) => void run(() => updateDiagnosticPreferences({ captureEnabled }))} />
-      <CustomSelect label={t("settings.chat.behavior.retentionDays")} value={String(diagnostics.preferences.retentionDays)} options={retentionOptions} onChange={(value) => void run(() => updateDiagnosticPreferences({ retentionDays: Number(value) }))} disabled={saving} />
+      <SwitchField label={t("settings.chat.behavior.captureDiagnostics")} checked={diagnostics.preferences.captureEnabled} disabled={saving} onChange={(captureEnabled) => void run(() => updateDiagnosticPreferences({ captureEnabled }))} />
+      <Select label={t("settings.chat.behavior.retentionDays")} value={String(diagnostics.preferences.retentionDays)} options={retentionOptions} onChange={(value) => void run(() => updateDiagnosticPreferences({ retentionDays: Number(value) }))} disabled={saving} />
       <p class="text-xs text-muted-foreground">{t("settings.chat.behavior.captureFields", diagnostics.capturedFields.map(diagnosticFieldLabel).join(", "))}</p>
       <p class="text-xs text-muted-foreground">{t("settings.chat.behavior.excludeFields", diagnostics.excludedFields.map(diagnosticFieldLabel).join(", "))}</p>
       <p class="text-xs text-muted-foreground">{t("settings.chat.behavior.diagnosticStorage", diagnosticStorageLabel(diagnostics.storageLocation))}</p>
@@ -202,7 +234,7 @@
       {/if}
     </div>
   {:else}
-    <p class="text-sm text-muted-foreground">{t("common.loading")}</p>
+    <Loading layout="fill" class="min-h-40" />
   {/if}
 </section>
 

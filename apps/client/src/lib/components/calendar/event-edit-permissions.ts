@@ -1,5 +1,5 @@
-import type { Calendar, CalendarEvent } from "./types";
-import { formatDatePart, parseCalendarDate } from "./utils";
+import type { Calendar, CalendarEvent } from "$lib/calendar/types";
+import { formatDatePart, parseCalendarDate } from "$lib/calendar/utils";
 
 export type CalendarEventEditLockReason =
   | "read-only-calendar"

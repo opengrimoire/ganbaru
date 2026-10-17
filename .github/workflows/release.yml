@@ -39,8 +39,8 @@ jobs:
             artifact: windows-x64
     env:
       CARGO_TERM_COLOR: always
-      GANBARU_AI_RELEASE_REPOSITORY: ${{ github.repository }}
-      GANBARU_AI_PACKAGE_REPO_PUBLIC_KEY: ${{ vars.GANBARU_AI_PACKAGE_REPO_PUBLIC_KEY }}
+      GANBARU_RELEASE_REPOSITORY: ${{ github.repository }}
+      GANBARU_PACKAGE_REPO_PUBLIC_KEY: ${{ vars.GANBARU_PACKAGE_REPO_PUBLIC_KEY }}
       TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
     steps:
       - name: checkout
@@ -56,14 +56,14 @@ jobs:
           node-version: "24"
 
       - name: validate release metadata
-        run: node apps/client/scripts/release-metadata.mjs
+        run: node apps/client/scripts/release/resolve-release-metadata.mjs
 
       - name: enable pnpm
         env:
           COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
         run: |
           corepack enable
-          corepack prepare pnpm@11.1.1 --activate
+          corepack install
 
       - name: install pinned Rust toolchain
         run: rustup show
@@ -81,13 +81,13 @@ jobs:
         run: cargo fetch --locked
 
       - name: write release updater config
-        run: node apps/client/scripts/write-tauri-release-config.mjs
+        run: node apps/client/scripts/release/write-tauri-release-config.mjs
 
       - name: build release bundle
         run: pnpm --dir apps/client tauri build --config src-tauri/tauri.release.conf.json -- --locked
 
       - name: stage release assets
-        run: node apps/client/scripts/stage-tauri-release-assets.mjs
+        run: node apps/client/scripts/release/stage-tauri-release-assets.mjs
 
       - name: upload unsigned assets
         # actions/upload-artifact v7.0.1
@@ -133,7 +133,7 @@ jobs:
           COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
         run: |
           corepack enable
-          corepack prepare pnpm@11.1.1 --activate
+          corepack install
 
       - name: install pinned Rust toolchain and Android targets
         run: |
@@ -187,26 +187,26 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: node apps/client/scripts/write-android-signing-properties.mjs
+        run: node apps/client/scripts/release/write-android-signing-properties.mjs
 
       - name: build signed Android release
         run: pnpm --dir apps/client tauri android build --ci
 
       - name: stage Android release assets
-        run: node apps/client/scripts/stage-android-release-assets.mjs
+        run: node apps/client/scripts/release/stage-android-release-assets.mjs
 
       - name: verify Android release signatures
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
-          android_apk="$(find dist/release-assets -maxdepth 1 -type f -name 'Ganbaru_AI_*_android_universal.apk' -print -quit)"
-          android_aab="$(find dist/release-assets -maxdepth 1 -type f -name 'Ganbaru_AI_*_android_universal.aab' -print -quit)"
+          android_apk="$(find dist/release-assets -maxdepth 1 -type f -name 'Ganbaru_*_android_universal.apk' -print -quit)"
+          android_aab="$(find dist/release-assets -maxdepth 1 -type f -name 'Ganbaru_*_android_universal.aab' -print -quit)"
           test -n "$android_apk"
           test -n "$android_aab"
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$android_apk"
           jarsigner -verify -strict \
-            -keystore "$RUNNER_TEMP/ganbaru-ai-android-release.jks" \
+            -keystore "$RUNNER_TEMP/ganbaru-android-release.jks" \
             -storepass:env ANDROID_KEYSTORE_PASSWORD \
             "$android_aab" "$ANDROID_KEY_ALIAS"
 
@@ -214,13 +214,13 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: node apps/client/scripts/sign-tauri-release-assets.mjs
+        run: node apps/client/scripts/release/sign-tauri-release-assets.mjs
 
       - name: remove Android signing files
         if: always()
         run: |
           rm -f apps/client/src-tauri/gen/android/keystore.properties
-          rm -f "$RUNNER_TEMP/ganbaru-ai-android-release.jks"
+          rm -f "$RUNNER_TEMP/ganbaru-android-release.jks"
 
       - name: upload signed assets
         # actions/upload-artifact v7.0.1
@@ -257,7 +257,7 @@ jobs:
 
       - name: resolve release metadata
         id: release
-        run: node apps/client/scripts/release-metadata.mjs
+        run: node apps/client/scripts/release/resolve-release-metadata.mjs
 
       - name: download signed assets
         # actions/download-artifact v7.0.0
@@ -289,10 +289,10 @@ jobs:
 
       - name: write updater feed
         env:
-          GANBARU_AI_RELEASE_REPOSITORY: ${{ github.repository }}
-          GANBARU_AI_RELEASE_TAG: ${{ steps.release.outputs.tag_name }}
-          GANBARU_AI_RELEASE_NOTES_PATH: dist/generated-release-notes.md
-        run: node apps/client/scripts/write-tauri-latest-json.mjs
+          GANBARU_RELEASE_REPOSITORY: ${{ github.repository }}
+          GANBARU_RELEASE_TAG: ${{ steps.release.outputs.tag_name }}
+          GANBARU_RELEASE_NOTES_PATH: dist/generated-release-notes.md
+        run: node apps/client/scripts/release/write-tauri-latest-json.mjs
 
       - name: write checksums
         run: |
@@ -325,7 +325,7 @@ jobs:
       contents: write
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      GANBARU_AI_PACKAGE_REPO_PUBLIC_KEY: ${{ vars.GANBARU_AI_PACKAGE_REPO_PUBLIC_KEY }}
+      GANBARU_PACKAGE_REPO_PUBLIC_KEY: ${{ vars.GANBARU_PACKAGE_REPO_PUBLIC_KEY }}
       RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
     steps:
       - name: checkout
@@ -352,11 +352,11 @@ jobs:
 
       - name: import package repo signing key
         env:
-          GPG_PRIVATE_KEY: ${{ secrets.GANBARU_AI_PACKAGE_REPO_GPG_PRIVATE_KEY }}
-          GPG_PASSPHRASE: ${{ secrets.GANBARU_AI_PACKAGE_REPO_GPG_PASSPHRASE }}
+          GPG_PRIVATE_KEY: ${{ secrets.GANBARU_PACKAGE_REPO_GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GANBARU_PACKAGE_REPO_GPG_PASSPHRASE }}
         run: |
           if [ -z "$GPG_PRIVATE_KEY" ]; then
-            echo "GANBARU_AI_PACKAGE_REPO_GPG_PRIVATE_KEY must be set"
+            echo "GANBARU_PACKAGE_REPO_GPG_PRIVATE_KEY must be set"
             exit 1
           fi
 
@@ -377,8 +377,8 @@ jobs:
 
           {
             echo "GNUPGHOME=$GNUPGHOME"
-            echo "GANBARU_AI_PACKAGE_REPO_GPG_KEY_ID=$key_id"
-            echo "GANBARU_AI_PACKAGE_REPO_GPG_PASSPHRASE_FILE=$passphrase_file"
+            echo "GANBARU_PACKAGE_REPO_GPG_KEY_ID=$key_id"
+            echo "GANBARU_PACKAGE_REPO_GPG_PASSPHRASE_FILE=$passphrase_file"
           } >> "$GITHUB_ENV"
 
       - name: prepare Pages branch
@@ -401,8 +401,8 @@ jobs:
 
       - name: build package repo
         env:
-          GANBARU_AI_PACKAGE_PAGES_DIR: dist/pages
-        run: node apps/client/scripts/build-package-repo.mjs
+          GANBARU_PACKAGE_PAGES_DIR: dist/pages
+        run: node apps/client/scripts/release/build-package-repo.mjs
 
       - name: push package repo
         run: |
@@ -425,7 +425,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
-      GANBARU_AI_RELEASE_REPOSITORY: ${{ github.repository }}
+      GANBARU_RELEASE_REPOSITORY: ${{ github.repository }}
     steps:
       - name: checkout
         # actions/checkout v6
@@ -454,32 +454,32 @@ jobs:
           fi
 
           install -m 700 -d "$HOME/.ssh"
-          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > "$HOME/.ssh/ganbaru-ai-aur-publish"
-          chmod 600 "$HOME/.ssh/ganbaru-ai-aur-publish"
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > "$HOME/.ssh/ganbaru-aur-publish"
+          chmod 600 "$HOME/.ssh/ganbaru-aur-publish"
           printf '%s\n' "aur.archlinux.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEuBKrPzbawxA/k2g6NcyV5jmqwJ2s+zpgZGZ7tpLIcN" > "$HOME/.ssh/known_hosts"
-          ssh -i "$HOME/.ssh/ganbaru-ai-aur-publish" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes aur@aur.archlinux.org help >/dev/null
+          ssh -i "$HOME/.ssh/ganbaru-aur-publish" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes aur@aur.archlinux.org help >/dev/null
 
       - name: clone AUR package
         run: |
-          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/ganbaru-ai-aur-publish -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/ganbaru-aur-publish -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
           mkdir -p dist/aur
-          git clone ssh://aur@aur.archlinux.org/ganbaru-ai-bin.git dist/aur/ganbaru-ai-bin
-          git -C dist/aur/ganbaru-ai-bin config user.name "Victor Benito Garcia Rocha"
-          git -C dist/aur/ganbaru-ai-bin config user.email "victorbenitogr@gmail.com"
+          git clone ssh://aur@aur.archlinux.org/ganbaru-bin.git dist/aur/ganbaru-bin
+          git -C dist/aur/ganbaru-bin config user.name "Victor Benito Garcia Rocha"
+          git -C dist/aur/ganbaru-bin config user.email "victorbenitogr@gmail.com"
 
       - name: write AUR package files
         env:
-          GANBARU_AI_AUR_DIR: dist/aur/ganbaru-ai-bin
-        run: node apps/client/scripts/write-aur-package.mjs
+          GANBARU_AUR_DIR: dist/aur/ganbaru-bin
+        run: node apps/client/scripts/release/write-aur-package.mjs
 
       - name: push AUR package
         run: |
-          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/ganbaru-ai-aur-publish -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
-          git -C dist/aur/ganbaru-ai-bin add PKGBUILD .SRCINFO .gitignore
-          if git -C dist/aur/ganbaru-ai-bin diff --cached --quiet; then
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/ganbaru-aur-publish -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
+          git -C dist/aur/ganbaru-bin add PKGBUILD .SRCINFO .gitignore
+          if git -C dist/aur/ganbaru-bin diff --cached --quiet; then
             echo "AUR package is unchanged"
             exit 0
           fi
           version="${RELEASE_TAG_NAME#app-v}"
-          git -C dist/aur/ganbaru-ai-bin commit -m "update to $version"
-          git -C dist/aur/ganbaru-ai-bin push origin HEAD:master
+          git -C dist/aur/ganbaru-bin commit -m "update to $version"
+          git -C dist/aur/ganbaru-bin push origin HEAD:master

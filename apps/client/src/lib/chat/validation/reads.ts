@@ -2,23 +2,18 @@ import {
   CHAT_ERROR_CODES,
   CHAT_THREAD_STATES,
   CHAT_TURN_STATES,
-  PROVIDER_SESSION_STATES,
   type ChatChangeNotification,
   type ChatError,
   type ChatThreadShellRead,
-  type ChatProjectShellRead,
   type ChatTimelineItemRead,
   type ChatTimelinePageRead,
   type ChatTimelineTurnRead,
-  type DriverOperationReceipt,
   type ProviderHistoryItem,
-  type ProviderHistoryPage,
-  type ProviderSessionSnapshot,
   type TurnDispatchReceipt,
 } from "../contracts";
-import { normalizeChangedFileSummaries } from "../changed-files";
+import { normalizeChangedFileSummaries } from "$lib/chat/review/changed-files";
 import { parseChangedFile, parseThreadUsage } from "./events";
-import { parseModelOptionSelection, parseProviderCapabilities } from "./provider";
+import { parseModelOptionSelection } from "./provider";
 import {
   readArray,
   readBoolean,
@@ -50,36 +45,6 @@ export function parseChatThreadShells(value: unknown, label = "Chat thread shell
   return readArray(value, label, parseChatThreadShell);
 }
 
-export function parseChatProjectShell(value: unknown, label = "Chat project shell"): ChatProjectShellRead {
-  const record = readRecord(value, label);
-  return {
-    projectId: readIdentifier(record.projectId, `${label}.projectId`),
-    workingFolderId: readIdentifier(record.workingFolderId, `${label}.workingFolderId`),
-    workingFolderName: readString(record.workingFolderName, `${label}.workingFolderName`),
-    workingFolderArchivedAt: readNullable(record.workingFolderArchivedAt, `${label}.workingFolderArchivedAt`, readUtcTimestamp),
-    activeThreadCount: readNonNegativeSafeInteger(record.activeThreadCount, `${label}.activeThreadCount`),
-    archivedThreadCount: readNonNegativeSafeInteger(record.archivedThreadCount, `${label}.archivedThreadCount`),
-  };
-}
-
-export function parseChatProjectShells(value: unknown): ChatProjectShellRead[] {
-  return readArray(value, "Chat project shells", parseChatProjectShell);
-}
-
-export function parseProviderSessionSnapshot(value: unknown, label = "provider session"): ProviderSessionSnapshot {
-  const record = readRecord(value, label);
-  return {
-    sessionId: readIdentifier(record.sessionId, `${label}.sessionId`),
-    state: readEnum(record.state, PROVIDER_SESSION_STATES, `${label}.state`),
-    providerThreadId: readNullable(record.providerThreadId, `${label}.providerThreadId`, readIdentifier),
-    continuationGroupId: readIdentifier(record.continuationGroupId, `${label}.continuationGroupId`),
-    resumeCursor: readNullable(record.resumeCursor, `${label}.resumeCursor`, readVersionedJson),
-    effectiveModes: readTurnModeSnapshot(record.effectiveModes, `${label}.effectiveModes`),
-    capabilities: parseProviderCapabilities(record.capabilities, `${label}.capabilities`),
-    startedAt: readUtcTimestamp(record.startedAt, `${label}.startedAt`),
-  };
-}
-
 export function parseTurnDispatchReceipt(value: unknown, label = "turn receipt"): TurnDispatchReceipt {
   const record = readRecord(value, label);
   return {
@@ -87,33 +52,6 @@ export function parseTurnDispatchReceipt(value: unknown, label = "turn receipt")
     state: readEnum(record.state, CHAT_TURN_STATES, `${label}.state`),
     providerTurnId: readNullable(record.providerTurnId, `${label}.providerTurnId`, readIdentifier),
     acceptedAt: readUtcTimestamp(record.acceptedAt, `${label}.acceptedAt`),
-  };
-}
-
-export function parseDriverOperationReceipt(value: unknown, label = "driver receipt"): DriverOperationReceipt {
-  const record = readRecord(value, label);
-  return {
-    accepted: readBoolean(record.accepted, `${label}.accepted`),
-    operationId: readString(record.operationId, `${label}.operationId`),
-    detail: readNullable(record.detail, `${label}.detail`, readString),
-  };
-}
-
-function parseProviderHistoryItem(value: unknown, label: string): ProviderHistoryItem {
-  const record = readRecord(value, label);
-  return {
-    providerItemId: readNullable(record.providerItemId, `${label}.providerItemId`, readIdentifier),
-    providerTurnId: readNullable(record.providerTurnId, `${label}.providerTurnId`, readIdentifier),
-    kind: readString(record.kind, `${label}.kind`),
-    data: readVersionedJson(record.data, `${label}.data`),
-  };
-}
-
-export function parseProviderHistoryPage(value: unknown, label = "provider history"): ProviderHistoryPage {
-  const record = readRecord(value, label);
-  return {
-    items: readArray(record.items, `${label}.items`, parseProviderHistoryItem),
-    nextCursor: readNullable(record.nextCursor, `${label}.nextCursor`, readString),
   };
 }
 

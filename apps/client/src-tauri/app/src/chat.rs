@@ -1,58 +1,72 @@
-//! Desktop Chat command adapters, native execution, and workspace integrations.
+//! Chat command adapters. Desktop hosts native provider execution and workspace integrations;
+//! mobile exposes provider-free channels, coordination, and preferences.
 
-pub(crate) use ganbaru_chat::chat::agent_runs;
-pub mod channel_commands;
+pub mod channels;
+#[cfg(desktop)]
 pub mod checkpoint_commands;
+#[cfg(desktop)]
 pub mod checkpoints;
+#[cfg(desktop)]
 pub(crate) mod command_support;
-pub(crate) use ganbaru_chat::chat::composer;
-pub mod config;
-pub(crate) use ganbaru_chat::chat::coordination;
-pub mod coordination_commands;
+#[cfg(desktop)]
 pub mod credentials;
 pub mod device_state;
+#[cfg(desktop)]
 pub mod diagnostics_commands;
-pub mod draft_commands;
-pub(crate) use ganbaru_chat::chat::driver_operations;
-pub mod events;
+#[cfg(desktop)]
+pub mod drafts;
+#[cfg(desktop)]
 pub mod execution_environment;
-pub mod git_commands;
-pub use ganbaru_chat::chat::git_service;
+#[cfg(desktop)]
+pub mod git;
+#[cfg(desktop)]
 pub mod ingestion;
+#[cfg(desktop)]
 pub(crate) mod interaction;
+#[cfg(desktop)]
 pub mod interaction_commands;
+#[cfg(desktop)]
 pub mod internal_mcp;
+#[cfg(desktop)]
 mod internal_mcp_tools;
-pub mod models;
+pub mod organization;
+#[cfg(desktop)]
 pub mod preview;
-#[cfg(test)]
-pub mod process;
+#[cfg(desktop)]
 pub mod provider_files;
-pub mod providers;
-pub use ganbaru_chat::chat::repository;
-pub mod resource_commands;
+#[cfg(desktop)]
 pub mod restore_commands;
-pub mod review_commands;
-pub mod review_engine;
+#[cfg(desktop)]
+pub mod review;
+#[cfg(desktop)]
 pub(crate) mod revocation;
-pub use ganbaru_chat::chat::runtime;
+#[cfg(desktop)]
 pub(crate) mod scratch;
-pub mod scratch_commands;
+#[cfg(desktop)]
 pub(crate) mod send;
+#[cfg(desktop)]
 pub mod send_commands;
+#[cfg(desktop)]
 pub(crate) mod settings;
+#[cfg(desktop)]
 pub mod settings_commands;
+#[cfg(desktop)]
 pub mod source_control;
-pub mod state;
+#[cfg(desktop)]
 pub mod terminal;
+#[cfg(desktop)]
 pub mod terminal_commands;
-pub mod thread_commands;
+#[cfg(desktop)]
+pub mod threads;
+#[cfg(desktop)]
 pub(crate) mod turns;
+#[cfg(desktop)]
 pub mod workspace;
-pub mod workspace_commands;
-pub mod workspace_files;
-pub use ganbaru_chat::chat::workspace_mutation;
-pub mod workspace_observer;
+// Mobile registers provider-free settings under the same command path as desktop.
+#[cfg(mobile)]
+pub(crate) mod settings_commands_mobile;
+#[cfg(mobile)]
+pub(crate) use settings_commands_mobile as settings_commands;
 
-#[cfg(test)]
+#[cfg(all(test, desktop))]
 mod tests;

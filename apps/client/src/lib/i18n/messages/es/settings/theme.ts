@@ -66,7 +66,6 @@ export const theme = {
     discardChanges: "Descartar cambios",
     keepEditing: "Seguir editando",
     operationFailed: "La operación del tema falló. El editor permanece abierto.",
-    colorPicker: "Selector de color",
     jsonCopied: "JSON copiado al portapapeles",
     jsonCopyFailed: "No se pudo copiar el JSON",
     jsonSaving: "Guardando…",
@@ -150,10 +149,6 @@ export const theme = {
       appCanvas: {
         title: "Lienzo de app",
         description: "La mayoría de las vistas pintan su propia superficie encima",
-      },
-      calendarHeader: {
-        title: "Encabezado del calendario",
-        description: "Barra del calendario y encabezados de día y hora",
       },
       textColor: {
         title: "Color de texto",

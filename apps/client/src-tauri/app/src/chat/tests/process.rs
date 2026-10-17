@@ -1,6 +1,6 @@
 #![cfg(unix)]
 
-use crate::chat::process::{ProviderProcessConfig, spawn_provider_process};
+use ganbaru_chat_providers::process::{ProviderProcessConfig, spawn_provider_process};
 use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -38,10 +38,15 @@ impl Drop for FixtureDirectory {
     }
 }
 
-fn config(executable: &Path, working_directory: &Path) -> ProviderProcessConfig {
+/// Runs a fixture script through `/bin/sh` instead of executing it directly.
+///
+/// Concurrent tests that fork can briefly inherit the descriptor that wrote the
+/// script, and executing a file that is still open for writing fails with
+/// `ETXTBSY`. Reading the script as an interpreter argument avoids that race.
+fn config(script: &Path, working_directory: &Path) -> ProviderProcessConfig {
     ProviderProcessConfig {
-        executable: executable.to_path_buf(),
-        arguments: Vec::new(),
+        executable: PathBuf::from("/bin/sh"),
+        arguments: vec![script.to_string_lossy().into_owned()],
         working_directory: working_directory.to_path_buf(),
         environment: BTreeMap::new(),
         stderr_limit_bytes: 128,

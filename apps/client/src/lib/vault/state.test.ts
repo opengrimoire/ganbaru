@@ -15,49 +15,65 @@ beforeEach(() => {
   invokeMock.mockReset();
 });
 
-describe("data folder state api", () => {
+describe("vault state api", () => {
   it("formats non-empty default folder errors with default-specific guidance", async () => {
-    const { formatDataFolderError } = await loadModule();
+    const { formatVaultError } = await loadModule();
 
     expect(
-      formatDataFolderError(
-        "selected folder is not empty and is not a Ganbaru AI folder",
+      formatVaultError(
+        "selected folder is not empty and is not a Ganbaru folder",
         "default",
       ),
     ).toBe(
-      "The default Ganbaru AI folder already exists, but it is not a valid Ganbaru AI folder. Move those files somewhere else, choose another folder, or import an existing Ganbaru AI folder.",
+      "The default folder contains other files. Move them or choose another folder.",
     );
   });
 
   it("formats import and marker errors as user-facing folder guidance", async () => {
-    const { formatDataFolderError } = await loadModule();
+    const { formatVaultError } = await loadModule();
 
-    expect(formatDataFolderError("selected folder is not a Ganbaru AI folder", "import")).toBe(
-      "This does not look like a Ganbaru AI folder. Select the folder from your previous installation.",
+    expect(formatVaultError("selected folder is not a Ganbaru folder", "import")).toBe(
+      "Not a Ganbaru folder. Choose your previous app folder.",
     );
     expect(
-      formatDataFolderError(
-        "read Ganbaru AI folder marker: No such file or directory (os error 2)",
+      formatVaultError(
+        "read Ganbaru folder marker: No such file or directory (os error 2)",
         "import",
       ),
     ).toBe(
-      "This folder is missing the Ganbaru AI folder marker. Select the main Ganbaru AI folder, not one of its subfolders.",
+      "Can't identify this folder. Choose the main Ganbaru folder.",
     );
-    expect(formatDataFolderError("parse Ganbaru AI folder marker: expected value", "import")).toBe(
-      "This Ganbaru AI folder marker is damaged. The app cannot import this folder automatically.",
+    expect(formatVaultError("parse Ganbaru folder marker: expected value", "import")).toBe(
+      "This folder's information is damaged. Restore a backup or choose another.",
     );
   });
 
   it("formats permission and database errors without raw backend text", async () => {
-    const { formatDataFolderError } = await loadModule();
+    const { formatVaultError } = await loadModule();
 
-    expect(formatDataFolderError("read Ganbaru AI folder: Permission denied")).toBe(
-      "Ganbaru AI cannot access this folder. Check folder permissions or choose another location.",
+    expect(formatVaultError("read Ganbaru folder: Permission denied")).toBe(
+      "Can't access this folder. Check permissions or choose another.",
     );
     expect(
-      formatDataFolderError("run database migrations: file is not a database", "startup"),
+      formatVaultError("run database migrations: file is not a database", "startup"),
     ).toBe(
-      "The app found this Ganbaru AI folder, but its local data file could not be opened. Restore a backup or choose another folder.",
+      "Can't open this folder's data. Restore a backup or choose another.",
+    );
+  });
+
+  it("keeps unexpected backend details out of the setup message", async () => {
+    const { formatVaultError } = await loadModule();
+
+    expect(formatVaultError("unable to read /private/folder: internal error", "startup")).toBe(
+      "Can't open this folder. Choose another or import an existing one.",
+    );
+  });
+
+  it("gives a short recovery action for a missing folder", async () => {
+    const { formatVaultError } = await loadModule();
+
+    expect(formatVaultError("canonicalize Ganbaru folder path: No such file", "startup")).toBe(
+      "Folder not found. Choose another or import an existing one.",
     );
   });
 
@@ -71,59 +87,59 @@ describe("data folder state api", () => {
     });
   });
 
-  it("accepts complete data folder info responses", async () => {
+  it("accepts complete vault info responses", async () => {
     invokeMock.mockResolvedValue({
-      path: "/home/user/Documents/Ganbaru AI",
-      configPath: "/home/user/Documents/Ganbaru AI/config.json",
-      databasePath: "/home/user/Documents/Ganbaru AI/ganbaru-ai.sqlite",
+      path: "/home/user/Documents/Ganbaru",
+      configPath: "/home/user/Documents/Ganbaru/config.json",
+      databasePath: "/home/user/Documents/Ganbaru/ganbaru.sqlite",
       vaultId: "vault-1",
-      displayName: "Ganbaru AI",
+      displayName: "Ganbaru",
     });
     const { getActiveVaultInfo, getCachedActiveVaultInfo } = await loadModule();
 
     expect(getCachedActiveVaultInfo()).toBeUndefined();
 
     await expect(getActiveVaultInfo()).resolves.toEqual({
-      path: "/home/user/Documents/Ganbaru AI",
-      configPath: "/home/user/Documents/Ganbaru AI/config.json",
-      databasePath: "/home/user/Documents/Ganbaru AI/ganbaru-ai.sqlite",
+      path: "/home/user/Documents/Ganbaru",
+      configPath: "/home/user/Documents/Ganbaru/config.json",
+      databasePath: "/home/user/Documents/Ganbaru/ganbaru.sqlite",
       vaultId: "vault-1",
-      displayName: "Ganbaru AI",
+      displayName: "Ganbaru",
     });
     expect(getCachedActiveVaultInfo()).toEqual({
-      path: "/home/user/Documents/Ganbaru AI",
-      configPath: "/home/user/Documents/Ganbaru AI/config.json",
-      databasePath: "/home/user/Documents/Ganbaru AI/ganbaru-ai.sqlite",
+      path: "/home/user/Documents/Ganbaru",
+      configPath: "/home/user/Documents/Ganbaru/config.json",
+      databasePath: "/home/user/Documents/Ganbaru/ganbaru.sqlite",
       vaultId: "vault-1",
-      displayName: "Ganbaru AI",
+      displayName: "Ganbaru",
     });
   });
 
-  it("rejects incomplete data folder info responses", async () => {
+  it("rejects incomplete vault info responses", async () => {
     invokeMock.mockResolvedValue({
-      path: "/home/user/Documents/Ganbaru AI",
-      configPath: "/home/user/Documents/Ganbaru AI/config.json",
-      databasePath: "/home/user/Documents/Ganbaru AI/ganbaru-ai.sqlite",
+      path: "/home/user/Documents/Ganbaru",
+      configPath: "/home/user/Documents/Ganbaru/config.json",
+      databasePath: "/home/user/Documents/Ganbaru/ganbaru.sqlite",
       vaultId: "vault-1",
     });
     const { getActiveVaultInfo } = await loadModule();
 
-    await expect(getActiveVaultInfo()).rejects.toThrow("data folder response is incomplete");
+    await expect(getActiveVaultInfo()).rejects.toThrow("vault info response is incomplete");
   });
 
-  it("reads the default data folder location", async () => {
+  it("reads the default vault location", async () => {
     invokeMock.mockResolvedValue({
-      path: "/home/user/Documents/Ganbaru AI",
+      path: "/home/user/Documents/Ganbaru",
       parentPath: "/home/user/Documents",
-      folderName: "Ganbaru AI",
+      folderName: "Ganbaru",
       developmentBuild: false,
     });
-    const { getDefaultDataFolderLocation } = await loadModule();
+    const { getDefaultVaultLocation } = await loadModule();
 
-    await expect(getDefaultDataFolderLocation()).resolves.toEqual({
-      path: "/home/user/Documents/Ganbaru AI",
+    await expect(getDefaultVaultLocation()).resolves.toEqual({
+      path: "/home/user/Documents/Ganbaru",
       parentPath: "/home/user/Documents",
-      folderName: "Ganbaru AI",
+      folderName: "Ganbaru",
       developmentBuild: false,
     });
   });
@@ -136,6 +152,7 @@ describe("data folder state api", () => {
       generation: 4,
       role: "read-only",
       canWrite: false,
+      replicatedWrites: false,
       transferPhase: { kind: "stable" },
     });
     const { getVaultOwnershipStatus } = await loadModule();
@@ -147,6 +164,7 @@ describe("data folder state api", () => {
       generation: 4,
       role: "read-only",
       canWrite: false,
+      replicatedWrites: false,
       transferPhase: { kind: "stable" },
     });
   });
@@ -159,6 +177,7 @@ describe("data folder state api", () => {
       generation: 4,
       role: "read-only",
       canWrite: true,
+      replicatedWrites: false,
       transferPhase: { kind: "stable" },
     });
     const { getVaultOwnershipStatus } = await loadModule();
@@ -166,5 +185,27 @@ describe("data folder state api", () => {
     await expect(getVaultOwnershipStatus()).rejects.toThrow(
       "vault ownership response has an inconsistent role",
     );
+  });
+  it("accepts replicated writes only on read-only replicas", async () => {
+    const replica = {
+      vaultId: "vault-1",
+      deviceId: "phone",
+      ownerDeviceId: "desktop",
+      generation: 4,
+      role: "read-only",
+      canWrite: false,
+      replicatedWrites: true,
+      transferPhase: { kind: "stable" },
+    };
+    invokeMock.mockResolvedValueOnce(replica);
+    const { getVaultOwnershipStatus } = await loadModule();
+    await expect(getVaultOwnershipStatus()).resolves.toMatchObject({ replicatedWrites: true, canWrite: false });
+
+    invokeMock.mockResolvedValueOnce({ ...replica, role: "owner", canWrite: true });
+    await expect(getVaultOwnershipStatus()).rejects.toThrow("inconsistent replicated writes");
+
+    const { replicatedWrites: _omitted, ...withoutFlag } = replica;
+    invokeMock.mockResolvedValueOnce(withoutFlag);
+    await expect(getVaultOwnershipStatus()).rejects.toThrow("vault ownership response is incomplete");
   });
 });

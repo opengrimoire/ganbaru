@@ -3,7 +3,7 @@ import { Temporal } from "@js-temporal/polyfill";
 import { dismissCalendarDeleteUndo, type CalendarEditPreview, type CalendarCommitReceipt } from "$lib/api/calendar-edit";
 import type { CalendarEditDraft } from "./native-edit-controller.svelte";
 import type { CalendarEvent } from "$lib/calendar/types";
-import { CalendarViewDeleteController } from "./delete-controller";
+import { CalendarViewDeleteController } from "./delete-controller.svelte";
 
 vi.mock("$lib/api/calendar-edit", () => ({ dismissCalendarDeleteUndo: vi.fn(async () => {}) }));
 
@@ -59,6 +59,23 @@ describe("native Calendar deletion presentation", () => {
     expect(f.nativeEditor.undoDeletion).toHaveBeenCalledExactlyOnceWith(f.review, f.receipt);
     expect(f.calendarStore.refreshWindow).toHaveBeenCalledTimes(2);
     expect(f.nativeEditor.acknowledgeResult.mock.calls.map(([id]) => id)).toEqual(["delete", "undo"]);
+  });
+
+  it("reports completion in progress until the refresh after an accepted deletion settles", async () => {
+    const f = fixture();
+    let finishRefresh = (): void => {};
+    f.calendarStore.refreshWindow.mockImplementationOnce(() => new Promise<void>((resolve) => { finishRefresh = resolve; }));
+    const pending = f.controller.execute(f.input, f.review, false);
+    expect(f.controller.completing).toBe(true);
+    await vi.waitFor(() => expect(f.calendarStore.refreshWindow).toHaveBeenCalledOnce());
+    expect(f.nativeEditor.acknowledgeResult).not.toHaveBeenCalled();
+    expect(f.controller.completing).toBe(true);
+    finishRefresh();
+    await pending;
+    expect(f.controller.completing).toBe(false);
+    f.calendarStore.refreshWindow.mockRejectedValueOnce(new Error("refresh unavailable"));
+    await f.controller.retry();
+    expect(f.controller.completing).toBe(false);
   });
 
   it("retains acceptance after refresh failure and acknowledges only a successful refresh retry", async () => {

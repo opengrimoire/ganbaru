@@ -79,7 +79,7 @@
     CalendarViewCommitService,
   } from "$lib/components/calendar/view/commit-service";
   import type { PanelSaveData } from "$lib/components/calendar/event-panel/payloads";
-  import { CalendarViewDeleteController } from "$lib/components/calendar/view/delete-controller";
+  import { CalendarViewDeleteController } from "$lib/components/calendar/view/delete-controller.svelte";
   import { CalendarViewNavigationController } from "$lib/components/calendar/view/navigation-controller";
   import { CalendarViewViewportController } from "$lib/components/calendar/view/viewport-controller.svelte";
   import { CalendarViewSaveController } from "$lib/components/calendar/view/save-controller.svelte";
@@ -1324,7 +1324,7 @@
     {@render header(false)}
   {/if}
 
-  {#if deleteEditor.uncertain || deleteEditor.resultPending}
+  {#if (deleteEditor.uncertain || deleteEditor.resultPending) && !deleteController.completing}
     <Notice
       class={calendarBannerClass}
       role="status"

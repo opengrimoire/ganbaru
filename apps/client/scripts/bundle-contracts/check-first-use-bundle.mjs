@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertBaselinePathsExist, baselineEntries, clientFileSystem } from "./baseline-paths.mjs";
+import { staticChunkCycleFailures } from "./chunk-cycles.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const clientDir = path.resolve(scriptDir, "..", "..");
@@ -363,7 +364,7 @@ const allModules = new Set(chunks.flatMap((chunk) => chunk.modules));
 const entryModules = new Set(
   chunks.filter((chunk) => chunk.isEntry).flatMap((chunk) => chunk.modules),
 );
-const failures = [];
+const failures = [...staticChunkCycleFailures(chunks)];
 const chunksByFileName = new Map(chunks.map((chunk) => [chunk.fileName, chunk]));
 
 function staticChunkClosure(rootChunks) {

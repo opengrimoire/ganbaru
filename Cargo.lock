@@ -1731,7 +1731,7 @@ dependencies = [
 
 [[package]]
 name = "ganbaru"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "ganbaru-mobile-distractions",
  "ganbaru-mobile-documents",

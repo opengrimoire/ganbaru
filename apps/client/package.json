@@ -10,7 +10,7 @@
     "check:android-project": "node scripts/checks/check-android-project.mjs",
     "check:android-bundle": "pnpm run check:android-project && pnpm run build:android-bundle && node scripts/bundle-contracts/check-android-bundle.mjs",
     "bundle-contracts": "node scripts/bundle-contracts/check-first-use-bundle.mjs && pnpm run check:android-bundle",
-    "check": "pnpm run check:codex-protocol && pnpm run check:opencode-protocol && node --max-old-space-size=2048 ./node_modules/svelte-check/bin/svelte-check --tsconfig ./tsconfig.json && tsc -p tsconfig.node.json",
+    "check": "pnpm run check:codex-protocol && pnpm run check:opencode-protocol && node --max-old-space-size=3072 ./node_modules/svelte-check/bin/svelte-check --tsconfig ./tsconfig.json && tsc -p tsconfig.node.json",
     "check:codex-protocol": "node scripts/provider-protocols/codex-app-server.mjs",
     "check:codex-protocol-installed": "node scripts/provider-protocols/codex-app-server.mjs --check-installed",
     "check:opencode-protocol": "node scripts/provider-protocols/opencode-openapi.mjs",

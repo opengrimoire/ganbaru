@@ -264,7 +264,13 @@ fn preview_waiting_for_the_connection_leaves_the_gate_to_the_save_holding_it() {
         let waiting =
             tokio::time::timeout(std::time::Duration::from_millis(50), &mut preview).await;
         assert!(waiting.is_err(), "preview should wait for the connection");
-        assert!(crate::events::scope::SCOPE_GATE.try_acquire().is_ok());
+        // Other tests may briefly hold the process-wide gate, so wait instead of requiring it free.
+        assert!(
+            crate::events::scope::SCOPE_GATE
+                .acquire_within(std::time::Duration::from_secs(5))
+                .await
+                .is_some()
+        );
         save.rollback().await.unwrap();
         assert_eq!(preview.await, Ok("edit"));
     });

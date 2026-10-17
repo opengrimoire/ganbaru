@@ -40,6 +40,7 @@ import { calendarWindowIncludesGlobalCount } from "$lib/stores/calendar/window-c
 import { loadPomodoroSchedulerEventsFromDb } from "$lib/stores/calendar/pomodoro-window";
 import type { WorkspacePaneScope } from "$lib/workspace-tabs/model";
 import { getWorkspacePaneScope } from "$lib/workspace-tabs/pane-scope";
+import { registerCalendarEventProjectAssignmentHandler } from "$lib/projects/calendar-assignments";
 
 const WINDOW_CACHE_LIMIT = 12;
 
@@ -757,6 +758,9 @@ const stores: Record<WorkspacePaneScope, CalendarWindowStore> = {
   primary: createCalendarWindowStore({ bootsWithApp: true }),
   secondary: createCalendarWindowStore({ bootsWithApp: false }),
 };
+
+registerCalendarEventProjectAssignmentHandler((assignments) =>
+  getCalendar().applyProjectAssignments(assignments));
 
 function storeFor(scope: WorkspacePaneScope): CalendarWindowStore {
   initCalendarWindowSync(() => refreshPanes(panes[0]));

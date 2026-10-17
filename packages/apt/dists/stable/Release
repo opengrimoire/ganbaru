@@ -1,23 +1,23 @@
 Architectures: amd64
 Codename: stable
 Components: main
-Date: Tue, 22 Sep 2026 23:04:00 +0000
-Label: Ganbaru AI
-Origin: Ganbaru AI
+Date: Sat, 17 Oct 2026 13:59:11 +0000
+Label: Ganbaru
+Origin: Ganbaru
 Suite: stable
 MD5Sum:
- 6ebd3fe32cbdfe1ffcc60ca6dc492bff             1454 Release
- b88e63caef50cd4aa835d19cdb23be0c              448 main/binary-amd64/Packages
- 63f6a8131820f18d95db97d81cd3c9ab              346 main/binary-amd64/Packages.gz
+ 6028a8d911470f8f0380668dd3dc4a89             1454 Release
+ 1aedd15033402abfeb16592496619c9a              883 main/binary-amd64/Packages
+ 19986978be5bc45701a28e3713b82659              480 main/binary-amd64/Packages.gz
 SHA1:
- 2a478abcc0a2a9973296003c901666b4cf6c4cd0             1454 Release
- d2f5fc4ed477715d8d0153bfe3f5fd4e5c128d8c              448 main/binary-amd64/Packages
- 5d0e5a7c4ec1996e7c59dfb60f376f6f661e67f2              346 main/binary-amd64/Packages.gz
+ 0b7f8e6b29e9864db0b7f1a2f1a46b1e7517bb37             1454 Release
+ 71a39c3e61e590b2d723f2eb044b20bbd5e1ee2c              883 main/binary-amd64/Packages
+ 6120f8bf305a950a9d126bbec8f51ccc5d476079              480 main/binary-amd64/Packages.gz
 SHA256:
- b371d5ae1280c966c30f5ca4be779c1a45c8356cab11c7046ec38f282f0eb2dd             1454 Release
- 987bb65d0c5740bf44d9f893193ca08ce0db0e3940e23f0010beec7a8ab7edb9              448 main/binary-amd64/Packages
- e1ed514a969a46aab9741f82bc1d769bfe166aa094190856940503ed4ebf2b45              346 main/binary-amd64/Packages.gz
+ 410fb286d66e668589fe67f68e22a344fc20b93ddf5be8b834d33989f310e572             1454 Release
+ 08369aa4a3908629d71792c387917daef271003e76e8f4910300321855a2fe7d              883 main/binary-amd64/Packages
+ 0800b40d824309e8f5f8b782add6256fb7bc38307ba88c11717f3c1f7ca5593b              480 main/binary-amd64/Packages.gz
 SHA512:
- c949cfa16b756cf5cbc042cc41305d5d7fb426f2c0767475ff5e5877ab9fff09496c90cf4dc300d450bf41cee109deee0e512198e52ad4199ff54f0a6c0ab4b9             1454 Release
- d8def516f5477e3449237c1b624821862fa62e45cfa04ae4634c90880f057a429849c7505be87c6accc4e3a2ae76349fcfc96017fa356b2c2226b06167f6d57e              448 main/binary-amd64/Packages
- 44fe5b68eb93b12bf7ee5c6dc0c86ee0fce493349fc500c4353b068e7fc853fdbca1828ae516b81877f40fa9097afa0f494225e0c242dbe466e6108b33cadc48              346 main/binary-amd64/Packages.gz
+ bb79829d9ac2241bdb20e87f22300f9914c8f0252996c5f78892bd8d92d41ca5e83444a996b2b8bee9669162adf7652661913a052cd34dd05a27f854534c8822             1454 Release
+ 21acae9697d00ccce5db9139923bef809690bbb43d385c8ecc6d9ac0abe52054b6c122670bb0ab9d93a368c97f8aa6e39206657eb041bf4a6ad628da2066ca7b              883 main/binary-amd64/Packages
+ 12e7216715fbbf689d4dc749be54d6aeba516472664f1c8c65bc9d1eed18d74f9ad3687f41096e87e724314123c85edc373a0b7cfef3c98e918670b3e5dd32f9              480 main/binary-amd64/Packages.gz

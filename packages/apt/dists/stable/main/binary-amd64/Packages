@@ -1,3 +1,18 @@
+Package: ganbaru
+Version: 0.1.10
+Architecture: amd64
+Maintainer: Ganbaru
+Installed-Size: 137243
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Filename: pool/main/g/ganbaru/ganbaru_0.1.10_amd64.deb
+Size: 49097534
+MD5sum: 1f39f0af68fb839ce0ab59038b378158
+SHA1: 85ddd6574f03d952b38d0eae63b30ab24dd41614
+SHA256: 017a98e2da071be02359feee1301651b2117c35fa92c37d0b5be71a35094dbcb
+Priority: optional
+Description: Ganbaru Tauri application
+ (none)
+
 Package: ganbaru-ai
 Version: 0.1.9
 Architecture: amd64

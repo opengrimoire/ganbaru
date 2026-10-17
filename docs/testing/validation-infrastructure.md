@@ -18,7 +18,7 @@ The complete normal gate runs in this order:
 
 1. Rust formatting and Clippy with one Cargo build job locally, or two in Linux CI.
 2. Rust workspace tests with the same Cargo build limit and two runtime test threads. Running tests peaks far below compilation (under 500 MB), and a second thread cuts the stage by about a quarter; more Cargo build jobs make local builds slower because large crates compete for memory.
-3. Provider protocol snapshot checks, Svelte Check with a 2,048 MiB Node old-space limit, then TypeScript checking.
+3. Provider protocol snapshot checks, Svelte Check with a 3,072 MiB Node old-space limit, then TypeScript checking.
 4. Four sequential one-worker Vitest shards, excluding benchmark-harness tests.
 5. Tailwind diagnostics through Turbo.
 6. Desktop and Android production builds and bundle contracts through Turbo.
@@ -31,7 +31,7 @@ Benchmark fixture and harness contracts are deliberately outside `validate`. Run
 
 ## Resource policy
 
-The 2,048 MiB Svelte Check heap leaves headroom over the measured full-graph peak of about 1,750 MiB after Quick notes sync (whole-process resident peak about 2.35 GiB). Treat exhaustion as a controlled failure. Investigate graph growth and checker topology before raising it.
+The 3,072 MiB Svelte Check heap leaves headroom over the measured live heap of about 1,916 MiB after a full collection (whole-process resident peak about 2.5 GiB under this limit). A limit within a few hundred MiB of the live heap fails intermittently, because whether a run survives then depends on collection timing. The checked program holds only app source, tests, and the libraries they import, so the heap tracks ordinary codebase growth. Treat exhaustion as a controlled failure. Investigate graph growth and checker topology before raising it again.
 
 Cargo development builds keep only line tables as debug information, and the test profile inherits that setting so tests and development builds reuse the same dependency artifacts. One-job development builds prevent competing compiler or linker peaks, but they cannot bound a single crate: a cold rebuild of the Tauri app crate's test target peaks at about 4.4 GB in one compiler process, and an incremental rebuild at about 3 GB. Keep Tauri-free logic in workspace crates so that peak does not keep growing. Restore full native debug information only for a concrete debugging session:
 

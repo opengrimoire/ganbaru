@@ -370,7 +370,7 @@ pub fn spawn_acp_connection_process(
         }
         super::driver::AcpProviderFlavor::Grok => {
             let mut environment = process_environment_for(configuration, "Grok")?;
-            environment.insert("GROK_OAUTH2_REFERRER".to_string(), "ganbaru-ai".to_string());
+            environment.insert("GROK_OAUTH2_REFERRER".to_string(), "ganbaru".to_string());
             let executable = resolve_executable(&configuration.executable, &environment)
                 .map_err(|_| grok_executable_missing_error())?;
             let arguments = grok_launch_arguments(&configuration.launch_arguments)?;

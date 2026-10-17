@@ -40,7 +40,7 @@ describe("sync status presentation", () => {
     expect(syncHeldLines(t, status({}))).toEqual([]);
     const lines = syncHeldLines(t, status({ held: { newerFormat: 1, newerManifest: 0, invalid: 2 } }));
     expect(lines).toEqual([
-      "1 change needs a newer version of Ganbaru AI",
+      "1 change needs a newer version of Ganbaru",
       "2 changes were rejected because they were invalid",
     ]);
   });

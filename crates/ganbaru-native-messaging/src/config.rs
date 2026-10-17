@@ -425,8 +425,8 @@ pub(super) fn normalize_app_name(input: &str) -> Option<String> {
 pub(super) fn is_protected_app_name(name: &str) -> bool {
     let key = name.trim().to_lowercase();
     let protected_names = [
-        "ganbaru-ai",
-        "ganbaru-ai-dev",
+        "ganbaru",
+        "ganbaru-dev",
         "terminal",
         "gnome-terminal",
         "system monitor",

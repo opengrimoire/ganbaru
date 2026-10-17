@@ -5,7 +5,7 @@ Thunderbird is both a practical compatibility target and a useful reference, bec
 ## Source notes
 
 - Thunderbird's calendar item model leans heavily on iCalendar. It implements `VEVENT` events and `VTODO` tasks, but not `VJOURNAL`.
-- Thunderbird uses `ical.js`, the same library Ganbaru AI uses for parsing.
+- Thunderbird uses `ical.js`, the same library Ganbaru uses for parsing.
 - Thunderbird exports calendars as `.ics`.
 
 Sources:
@@ -21,8 +21,8 @@ Sources:
 ## Behavior to verify
 
 - The exact `VTODO` shape Thunderbird exports.
-- Whether Thunderbird accepts Ganbaru AI-generated `VTODO` once task support exists.
+- Whether Thunderbird accepts Ganbaru-generated `VTODO` once task support exists.
 
 ## Observed behavior log
 
-No manual Ganbaru AI compatibility run recorded yet.
+No manual Ganbaru compatibility run recorded yet.

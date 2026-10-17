@@ -14,7 +14,7 @@ use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const MAX_GIT_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
-const REF_PREFIX: &str = "refs/ganbaru-ai/chat/";
+const REF_PREFIX: &str = "refs/ganbaru/chat/";
 static TEMPORARY_INDEX_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 pub fn verify_checkpoint(
@@ -429,9 +429,9 @@ fn git_output_with_input_codes(
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GCM_INTERACTIVE", "never")
         .env("LC_ALL", "C")
-        .env("GIT_AUTHOR_NAME", "Ganbaru AI")
+        .env("GIT_AUTHOR_NAME", "Ganbaru")
         .env("GIT_AUTHOR_EMAIL", "local@ganbaru.invalid")
-        .env("GIT_COMMITTER_NAME", "Ganbaru AI")
+        .env("GIT_COMMITTER_NAME", "Ganbaru")
         .env("GIT_COMMITTER_EMAIL", "local@ganbaru.invalid")
         .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00Z")
         .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00Z")

@@ -405,7 +405,7 @@ impl OverlayReconcileGuard {
     {
         let (stop_tx, stop_rx) = mpsc::sync_channel(1);
         let worker = std::thread::Builder::new()
-            .name("ganbaru-ai-pomodoro-overlay-reconcile".to_string())
+            .name("ganbaru-pomodoro-overlay-reconcile".to_string())
             .spawn(move || {
                 loop {
                     match stop_rx.recv_timeout(interval) {
@@ -499,7 +499,7 @@ mod windows {
             let (ready_tx, ready_rx) = mpsc::sync_channel(1);
             let (stop_tx, stop_rx) = mpsc::sync_channel(1);
             let worker = std::thread::Builder::new()
-                .name("ganbaru-ai-overlay-windows-power".to_string())
+                .name("ganbaru-overlay-windows-power".to_string())
                 .spawn(move || {
                     let active_state = ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED;
                     // SAFETY: The flags are a documented execution-state
@@ -574,7 +574,7 @@ mod windows {
             let stop_requested = Arc::new(AtomicBool::new(false));
             let worker_stop_requested = Arc::clone(&stop_requested);
             let worker = std::thread::Builder::new()
-                .name("ganbaru-ai-overlay-keyboard-hook".to_string())
+                .name("ganbaru-overlay-keyboard-hook".to_string())
                 .spawn(move || {
                     run_shortcut_hook(worker_stop_event, worker_stop_requested, ready_tx)
                 })
@@ -963,7 +963,7 @@ mod macos {
         assertion_type: &CFRetained<CFString>,
     ) -> Result<IOPMAssertionId, String> {
         let assertion_type_ref = CFRetained::as_ptr(assertion_type).as_ptr().cast::<c_void>();
-        let name = CFString::from_static_str("Ganbaru AI Pomodoro overlay");
+        let name = CFString::from_static_str("Ganbaru Pomodoro overlay");
         let name_ref = CFRetained::as_ptr(&name).as_ptr().cast::<c_void>();
         let mut assertion_id = 0;
         // SAFETY: Both CFString pointers are non-null and remain alive for this

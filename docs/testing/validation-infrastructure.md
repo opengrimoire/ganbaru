@@ -39,7 +39,7 @@ Cargo development builds keep only line tables as debug information, and the tes
 CARGO_PROFILE_DEV_DEBUG=full CARGO_BUILD_JOBS=1 pnpm --dir apps/client tauri dev
 ```
 
-The repository-owned Tauri wrapper sets one Cargo build job for development commands when the caller has not supplied one. On Wayland it removes an inherited exact `GDK_BACKEND=x11` override unless `GANBARU_AI_DEV_PRESERVE_GDK_BACKEND=1` is set. Android commands select JDK 21, with `GANBARU_AI_ANDROID_JAVA_HOME` as the explicit override. The Android Gradle daemon stops after ten idle minutes so its heap does not stay resident during later gates.
+The repository-owned Tauri wrapper sets one Cargo build job for development commands when the caller has not supplied one. On Wayland it removes an inherited exact `GDK_BACKEND=x11` override unless `GANBARU_DEV_PRESERVE_GDK_BACKEND=1` is set. Android commands select JDK 21, with `GANBARU_ANDROID_JAVA_HOME` as the explicit override. The Android Gradle daemon stops after ten idle minutes so its heap does not stay resident during later gates.
 
 Persistent swap is a system safety margin, not a replacement for bounded jobs. Do not clear Cargo or Turbo caches as a routine memory fix. On Linux desktops where `systemd-oomd` kills by memory pressure, it kills a whole cgroup, usually the terminal that started the gate. Running a broad gate in its own scope, for example `systemd-run --user --scope pnpm -w run validate`, limits such a kill to the gate.
 

@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::io::Write;
 
-pub(super) const FORMAT: &str = "ganbaru-ai/music-playlists";
+pub(super) const FORMAT: &str = "ganbaru/music-playlists";
 pub(super) const MAX_BYTES: usize = 8 * 1024 * 1024;
 pub(super) const MAX_MEMBERSHIPS: usize = 10_000;
 pub(super) const MAX_PLAYLISTS: usize = 500;
@@ -75,7 +75,7 @@ pub(super) fn parse_json(contents: &str) -> MusicLibraryResult<MusicInterchangeD
     validate_shape(&value, 0)?;
     if value.get("format").and_then(Value::as_str) != Some(FORMAT) {
         return Err(validation(
-            "The selected JSON file is not a Ganbaru AI music export",
+            "The selected JSON file is not a Ganbaru music export",
         ));
     }
     if value.get("version").and_then(Value::as_i64) != Some(1) {

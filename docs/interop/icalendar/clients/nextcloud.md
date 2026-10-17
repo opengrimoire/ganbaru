@@ -25,4 +25,4 @@ Sources:
 
 ## Observed behavior log
 
-No manual Ganbaru AI compatibility run recorded yet.
+No manual Ganbaru compatibility run recorded yet.

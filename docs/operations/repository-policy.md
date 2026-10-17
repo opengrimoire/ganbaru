@@ -1,6 +1,6 @@
 # Repository policy
 
-**Status: Reference.** This is the normative GitHub policy for `opengrimoire/ganbaru-ai`: its rulesets, adjacent Actions settings, and protected release environment. Rulesets for a public repository are visible at <https://github.com/opengrimoire/ganbaru-ai/rules> and are not secrets.
+**Status: Reference.** This is the normative GitHub policy for `opengrimoire/ganbaru`: its rulesets, adjacent Actions settings, and protected release environment. Rulesets for a public repository are visible at <https://github.com/opengrimoire/ganbaru/rules> and are not secrets.
 
 Last verified against live GitHub settings: 2026-09-12, with no drift found.
 
@@ -81,11 +81,11 @@ Secret values cannot be read back through GitHub, so their presence does not rep
 Verify with read-only API calls from an authenticated maintainer session:
 
 ```sh
-gh api repos/opengrimoire/ganbaru-ai/rulesets
-gh api repos/opengrimoire/ganbaru-ai/environments/release
-gh api repos/opengrimoire/ganbaru-ai/environments/release/secrets
-gh api repos/opengrimoire/ganbaru-ai/actions/permissions
-gh api repos/opengrimoire/ganbaru-ai/actions/permissions/workflow
+gh api repos/opengrimoire/ganbaru/rulesets
+gh api repos/opengrimoire/ganbaru/environments/release
+gh api repos/opengrimoire/ganbaru/environments/release/secrets
+gh api repos/opengrimoire/ganbaru/actions/permissions
+gh api repos/opengrimoire/ganbaru/actions/permissions/workflow
 ```
 
 Inspect each ruleset detail endpoint returned by the first command and compare targets, bypass actors, pull request rules, merge queue, status checks, deletion and force-push protection, signed commits, and tag restrictions. Also compare workflow triggers and job environments in `.github/workflows/`. Changing live policy is a deliberate maintainer action reviewed alongside this file.

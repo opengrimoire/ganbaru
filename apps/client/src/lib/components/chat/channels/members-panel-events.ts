@@ -1,5 +1,5 @@
 /** Window event asking the Chat header to show the members panel of a channel. */
-export const CHAT_OPEN_MEMBERS_EVENT = "ganbaru-ai:chat-open-members";
+export const CHAT_OPEN_MEMBERS_EVENT = "ganbaru:chat-open-members";
 
 export interface ChatOpenMembersDetail {
   readonly channelId: string;

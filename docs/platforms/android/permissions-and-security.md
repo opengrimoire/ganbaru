@@ -32,7 +32,7 @@ This capability requires store-policy review and the appropriate Play declaratio
 
 The app uses targeted launchable-activity queries needed for the on-demand selected-app picker. It does not request `QUERY_ALL_PACKAGES`.
 
-Unknown packages, system UIDs, Ganbaru AI, Home, Settings, dialer, and protected apps are rejected.
+Unknown packages, system UIDs, Ganbaru, Home, Settings, dialer, and protected apps are rejected.
 
 ## Storage authority
 

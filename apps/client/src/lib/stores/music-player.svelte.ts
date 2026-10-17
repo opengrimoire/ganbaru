@@ -535,7 +535,7 @@ class MusicPlayerStore {
   }
   inspectContextAssignment(): void {
     if (!this.contextPlayback) return;
-    window.dispatchEvent(new CustomEvent("ganbaru-ai:inspect-music-assignment", { detail: { eventId: this.contextPlayback.eventId } }));
+    window.dispatchEvent(new CustomEvent("ganbaru:inspect-music-assignment", { detail: { eventId: this.contextPlayback.eventId } }));
     focusMusicWindow();
   }
   async retrySavedPlaylist(): Promise<void> { await this.command({ kind: "refresh" }, "system"); await this.command({ kind: "play" }); }

@@ -1,7 +1,7 @@
 [package]
 name = "ganbaru-music"
 version = "0.1.0"
-description = "Ganbaru AI Music context assignments and library errors"
+description = "Ganbaru Music context assignments and library errors"
 authors.workspace = true
 license.workspace = true
 edition.workspace = true

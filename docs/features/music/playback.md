@@ -65,7 +65,7 @@ Decoder and invalid-source errors may advance the queue. Worker, device, seek, e
 
 ## Local video
 
-Desktop local video uses the platform WebView media stack, served through an app-owned, token-gated loopback source that serves only registered files and supports byte ranges. Codec support therefore follows the installed WebView. Ganbaru AI does not ship a separate native video framework without measured evidence that the WebView path is inadequate. Registrations are bounded and released when no longer needed.
+Desktop local video uses the platform WebView media stack, served through an app-owned, token-gated loopback source that serves only registered files and supports byte ranges. Codec support therefore follows the installed WebView. Ganbaru does not ship a separate native video framework without measured evidence that the WebView path is inadequate. Registrations are bounded and released when no longer needed.
 
 ## Android playback
 
@@ -79,7 +79,7 @@ See the [Media3 background playback contract](https://developer.android.com/medi
 
 YouTube plays through an embedded IFrame player served by a local host that supplies the required HTTP embedding context. Embedding failures and owner restrictions are surfaced explicitly. If the queue reaches a browser-owned source while its host is unavailable, the item stays selected and playback pauses; the session does not skip it or promise background YouTube playback.
 
-The current presentation disables pointer input on the embedded frame and places a transparent Ganbaru AI hit target over it. [YouTube Required Minimum Functionality](https://developers.google.com/youtube/terms/required-minimum-functionality) forbids overlays over the embedded player, so this is an unresolved redesign gap and must not be described as compliant. A redesign must keep usable Ganbaru controls without covering required player interaction and be reviewed against the current policy. The gap never justifies scraping, proxying, downloading, or bypassing embedding restrictions.
+The current presentation disables pointer input on the embedded frame and places a transparent Ganbaru hit target over it. [YouTube Required Minimum Functionality](https://developers.google.com/youtube/terms/required-minimum-functionality) forbids overlays over the embedded player, so this is an unresolved redesign gap and must not be described as compliant. A redesign must keep usable Ganbaru controls without covering required player interaction and be reviewed against the current policy. The gap never justifies scraping, proxying, downloading, or bypassing embedding restrictions.
 
 ## Errors and recovery
 

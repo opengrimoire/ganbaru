@@ -17,12 +17,12 @@ const appTargetAliases = new Map([
   ["development", "dev"],
 ]);
 const appIdentifiers = {
-  app: "org.opengrimoire.ganbaruai",
-  dev: "org.opengrimoire.ganbaruai.dev",
+  app: "org.opengrimoire.ganbaru",
+  dev: "org.opengrimoire.ganbaru.dev",
 };
 const hostNames = {
-  app: "org.opengrimoire.ganbaru_ai.distractions",
-  dev: "org.opengrimoire.ganbaru_ai.distractions_dev",
+  app: "org.opengrimoire.ganbaru.distractions",
+  dev: "org.opengrimoire.ganbaru.distractions_dev",
 };
 
 let browser = "chrome";
@@ -30,7 +30,7 @@ let appTarget = "app";
 
 function printUsage() {
   console.error("Usage: node apps/client/scripts/browser-extension/install-native-host.mjs <extension-id> [chrome|chromium|brave|edge] [app|dev]");
-  console.error("Use app for the normal Ganbaru AI app. Use dev only when testing against pnpm tauri dev.");
+  console.error("Use app for the normal Ganbaru app. Use dev only when testing against pnpm tauri dev.");
 }
 
 if (!extensionId || !/^[a-p]{32}$/.test(extensionId)) {
@@ -57,8 +57,8 @@ for (const arg of args.slice(1)) {
 }
 
 const binaryName = process.platform === "win32"
-  ? "ganbaru-ai-native-messaging.exe"
-  : "ganbaru-ai-native-messaging";
+  ? "ganbaru-native-messaging.exe"
+  : "ganbaru-native-messaging";
 const hostPath = join(repoRoot, "target", "debug", binaryName);
 
 if (!existsSync(hostPath)) {
@@ -129,10 +129,10 @@ const launcherPath = join(hostManifestDir, hostName);
 const targetConfigDir = appConfigDir();
 const launcher = [
   "#!/usr/bin/env sh",
-  `GANBARU_AI_CONFIG_DIR=${shellQuote(targetConfigDir)}`,
-  "export GANBARU_AI_CONFIG_DIR",
-  `GANBARU_AI_NATIVE_HOST_NAME=${shellQuote(hostName)}`,
-  "export GANBARU_AI_NATIVE_HOST_NAME",
+  `GANBARU_CONFIG_DIR=${shellQuote(targetConfigDir)}`,
+  "export GANBARU_CONFIG_DIR",
+  `GANBARU_NATIVE_HOST_NAME=${shellQuote(hostName)}`,
+  "export GANBARU_NATIVE_HOST_NAME",
   `exec ${shellQuote(hostPath)} "$@"`,
   "",
 ].join("\n");
@@ -141,7 +141,7 @@ chmodSync(launcherPath, 0o755);
 
 const manifest = {
   name: hostName,
-  description: `Ganbaru AI anti-distraction native host (${appTarget})`,
+  description: `Ganbaru anti-distraction native host (${appTarget})`,
   path: launcherPath,
   type: "stdio",
   allowed_origins: [`chrome-extension://${extensionId}/`],
@@ -150,4 +150,4 @@ const manifest = {
 writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 console.log(`Installed ${hostName} for ${browser} ${appTarget} at ${manifestPath}`);
 console.log(`Native host launcher: ${launcherPath}`);
-console.log(`Ganbaru AI config: ${targetConfigDir}`);
+console.log(`Ganbaru config: ${targetConfigDir}`);

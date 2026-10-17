@@ -16,13 +16,13 @@ const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CLIENT_ROOT = path.resolve(SCRIPT_DIR, "..", "..");
 const REPO_ROOT = path.resolve(CLIENT_ROOT, "..", "..");
 const ASSET_DIR = path.join(REPO_ROOT, "dist", "release-assets");
-const PAGES_DIR = process.env.GANBARU_AI_PACKAGE_PAGES_DIR?.trim()
-  ? path.resolve(process.env.GANBARU_AI_PACKAGE_PAGES_DIR)
+const PAGES_DIR = process.env.GANBARU_PACKAGE_PAGES_DIR?.trim()
+  ? path.resolve(process.env.GANBARU_PACKAGE_PAGES_DIR)
   : path.join(REPO_ROOT, "dist", "pages");
 const PACKAGES_DIR = path.join(PAGES_DIR, "packages");
 const APT_ROOT = path.join(PACKAGES_DIR, "apt");
 const RPM_ROOT = path.join(PACKAGES_DIR, "rpm");
-const PUBLIC_KEY_FILE = path.join(PACKAGES_DIR, "ganbaru-ai-package-repo.asc");
+const PUBLIC_KEY_FILE = path.join(PACKAGES_DIR, "ganbaru-package-repo.asc");
 const APT_RELEASE_CONFIG = path.join(REPO_ROOT, "dist", "apt-release.conf");
 
 /**
@@ -45,9 +45,9 @@ function readRequiredEnv(name) {
  * @returns {string} ASCII-armored OpenPGP public key.
  */
 function packageRepoPublicKey() {
-  const key = readRequiredEnv("GANBARU_AI_PACKAGE_REPO_PUBLIC_KEY");
+  const key = readRequiredEnv("GANBARU_PACKAGE_REPO_PUBLIC_KEY");
   if (!key.includes("BEGIN PGP PUBLIC KEY BLOCK")) {
-    throw new Error("GANBARU_AI_PACKAGE_REPO_PUBLIC_KEY must be an ASCII-armored public key");
+    throw new Error("GANBARU_PACKAGE_REPO_PUBLIC_KEY must be an ASCII-armored public key");
   }
   return key.endsWith("\n") ? key : `${key}\n`;
 }
@@ -117,9 +117,9 @@ function gpgSign(args) {
       "--pinentry-mode",
       "loopback",
       "--passphrase-file",
-      readRequiredEnv("GANBARU_AI_PACKAGE_REPO_GPG_PASSPHRASE_FILE"),
+      readRequiredEnv("GANBARU_PACKAGE_REPO_GPG_PASSPHRASE_FILE"),
       "--local-user",
-      readRequiredEnv("GANBARU_AI_PACKAGE_REPO_GPG_KEY_ID"),
+      readRequiredEnv("GANBARU_PACKAGE_REPO_GPG_KEY_ID"),
       ...args,
     ],
     REPO_ROOT,
@@ -145,7 +145,7 @@ function copyPackage(assetPath, directory) {
  * @param {string} debAsset Release `.deb` path.
  */
 function buildAptRepo(debAsset) {
-  const poolDir = path.join(APT_ROOT, "pool", "main", "g", "ganbaru-ai");
+  const poolDir = path.join(APT_ROOT, "pool", "main", "g", "ganbaru");
   const binaryDir = path.join(APT_ROOT, "dists", "stable", "main", "binary-amd64");
   mkdirSync(binaryDir, { recursive: true });
   copyPackage(debAsset, poolDir);
@@ -157,8 +157,8 @@ function buildAptRepo(debAsset) {
   writeFileSync(
     APT_RELEASE_CONFIG,
     [
-      'APT::FTPArchive::Release::Origin "Ganbaru AI";',
-      'APT::FTPArchive::Release::Label "Ganbaru AI";',
+      'APT::FTPArchive::Release::Origin "Ganbaru";',
+      'APT::FTPArchive::Release::Label "Ganbaru";',
       'APT::FTPArchive::Release::Suite "stable";',
       'APT::FTPArchive::Release::Codename "stable";',
       'APT::FTPArchive::Release::Architectures "amd64";',

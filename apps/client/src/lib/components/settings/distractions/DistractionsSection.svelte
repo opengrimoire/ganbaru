@@ -16,7 +16,7 @@
   } = $props();
 
   const { t } = getLocalization();
-  const isAndroid = __GANBARU_AI_BUILD_PLATFORM__ === "android";
+  const isAndroid = __GANBARU_BUILD_PLATFORM__ === "android";
 
   const tabs: ReadonlyArray<{
     id: DistractionsSettingsTab;

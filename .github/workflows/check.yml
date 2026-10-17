@@ -90,7 +90,7 @@ jobs:
         run: cargo fetch --locked
 
       - name: check Windows Rust
-        run: cargo check -p ganbaru-ai --locked
+        run: cargo check -p ganbaru --locked
 
   android:
     name: Android ARM64 build

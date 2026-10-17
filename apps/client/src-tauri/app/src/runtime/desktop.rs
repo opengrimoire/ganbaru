@@ -6,7 +6,7 @@ use tauri::Manager;
 static PROCESS_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 static MAIN_WINDOW_FRONTEND_READY: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
-const DELAYED_RELAUNCH_MS_ENV: &str = "GANBARU_AI_DELAYED_RELAUNCH_MS";
+const DELAYED_RELAUNCH_MS_ENV: &str = "GANBARU_DELAYED_RELAUNCH_MS";
 const DELAYED_RELAUNCH_MAX_MS: u64 = 10 * 60 * 1000;
 const MAIN_WINDOW_REVEAL_FALLBACK_MS: u64 = 15_000;
 const EXIT_CLEANUP_IDLE: u8 = 0;
@@ -1005,7 +1005,7 @@ mod tests {
             "relative-binary"
         )));
         assert!(!is_valid_relaunch_target(std::path::Path::new(
-            "/definitely/not/ganbaru-ai"
+            "/definitely/not/ganbaru"
         )));
         let current_exe = std::env::current_exe().expect("test executable path should exist");
         assert!(is_valid_relaunch_target(&current_exe));

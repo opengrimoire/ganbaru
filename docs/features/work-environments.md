@@ -21,7 +21,7 @@ Desktop adapters may offer:
 - Open an explicitly selected application.
 - Open or focus approved browser task resources.
 - Minimize a previously activated environment window when safely identified.
-- Prepare Music and the relevant Ganbaru AI context.
+- Prepare Music and the relevant Ganbaru context.
 
 Closing an application is never a generic environment action. If supported, it uses the same on-demand selection, protected-app policy, exact process identity, fresh persisted authorization, confirmation, and fail-safe behavior as [anti-distraction native enforcement](distractions/native-apps.md). Process name or PID alone is insufficient.
 

@@ -1,6 +1,6 @@
 # Performance records
 
-This is the canonical performance record for Ganbaru AI. Rows are historical measurements, not claims about the current repository head. Preserve recorded rows and benchmark identifiers so later measurements remain comparable.
+This is the canonical performance record for Ganbaru. Rows are historical measurements, not claims about the current repository head. Preserve recorded rows and benchmark identifiers so later measurements remain comparable.
 
 Recording procedure, identifiers, dataset definitions, output shape, and versioning rules live in the [performance entry point](README.md) and [benchmark harness](harness.md).
 

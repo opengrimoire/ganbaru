@@ -6,7 +6,7 @@ import {
   type PlaybackStatus,
 } from "$lib/music/playback";
 
-const SETTINGS_KEY = "ganbaru-ai-music-player";
+const SETTINGS_KEY = "ganbaru-music-player";
 
 export interface MusicPlayerSettings {
   volume: number;

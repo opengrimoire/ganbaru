@@ -279,7 +279,7 @@ pub async fn close_pool(pool: &SqlitePool) -> Result<(), String> {
     Ok(())
 }
 
-/// Applies the embedded Ganbaru AI migration chain to a SQLite pool.
+/// Applies the embedded Ganbaru migration chain to a SQLite pool.
 pub async fn run_migrations(pool: &SqlitePool) -> Result<(), String> {
     MIGRATOR
         .run(pool)

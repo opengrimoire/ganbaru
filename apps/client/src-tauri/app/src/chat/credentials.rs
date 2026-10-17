@@ -4,7 +4,7 @@ use ganbaru_chat_contracts::models::CredentialReferenceId;
 
 pub use ganbaru_chat::credentials::*;
 
-const CHAT_CREDENTIAL_SERVICE: &str = "com.ganbaru-ai.chat";
+const CHAT_CREDENTIAL_SERVICE: &str = "com.ganbaru.chat";
 const AVAILABILITY_PROBE_REFERENCE: &str = "credential-store-availability-probe";
 
 fn native_availability() -> CredentialStoreAvailability {

@@ -5,7 +5,7 @@ Proton Calendar is a practical compatibility target. Its encryption and product 
 ## Source notes
 
 - Proton documents importing calendars from other services and exporting a calendar as `.ics`.
-- Proton's import and export flow is account-based, but Ganbaru AI's `.ics` compatibility never depends on Proton account access.
+- Proton's import and export flow is account-based, but Ganbaru's `.ics` compatibility never depends on Proton account access.
 
 Sources:
 
@@ -24,4 +24,4 @@ Sources:
 
 ## Observed behavior log
 
-No manual Ganbaru AI compatibility run recorded yet.
+No manual Ganbaru compatibility run recorded yet.

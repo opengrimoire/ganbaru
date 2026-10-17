@@ -15,7 +15,7 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Manager, Runtime};
 
 #[cfg(desktop)]
-const KEYRING_SERVICE: &str = "com.ganbaru-ai.contacts";
+const KEYRING_SERVICE: &str = "com.ganbaru.contacts";
 const KEY_REFERENCE_PREFIX: &str = "person-key:";
 #[cfg(mobile)]
 const KEY_DIRECTORY: &str = "contacts";

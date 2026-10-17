@@ -131,7 +131,7 @@ const ACTIVE_STATE_STALE_SECONDS: i64 = 45;
 static DESKTOP_APP_LIST_GENERATION: AtomicU64 = AtomicU64::new(0);
 #[cfg(desktop)]
 const EXTENSION_INSTALL_README_URL: &str =
-    "https://github.com/opengrimoire/ganbaru-ai/blob/dev/extensions/chromium/README.md";
+    "https://github.com/opengrimoire/ganbaru/blob/dev/extensions/chromium/README.md";
 
 #[cfg(desktop)]
 fn now_utc() -> DateTime<Utc> {

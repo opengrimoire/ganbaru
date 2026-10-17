@@ -34,7 +34,7 @@ describe("formatHandoffError", () => {
 
   it("turns schema mismatches into update guidance", () => {
     expect(formatHandoffError(
-      "handoff compatibility mismatch between Ganbaru AI 1.0 and 2.0",
+      "handoff compatibility mismatch between Ganbaru 1.0 and 2.0",
       t,
     )).toBe("vaultHandoff.incompatibleVersions");
     expect(formatHandoffError(

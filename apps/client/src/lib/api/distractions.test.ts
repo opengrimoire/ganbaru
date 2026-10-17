@@ -30,7 +30,7 @@ describe("native Distractions budget boundary", () => {
   });
 
   it("reads the same canonical budget contract from the Android native publisher", async () => {
-    vi.stubGlobal("__GANBARU_AI_BUILD_PLATFORM__", "android");
+    vi.stubGlobal("__GANBARU_BUILD_PLATFORM__", "android");
     vi.mocked(invoke).mockResolvedValue(projection());
     expect(await loadDistractionsUsageProjection()).toEqual(projection());
     expect(invoke).toHaveBeenCalledExactlyOnceWith("distractions_mobile_load_usage_projection");

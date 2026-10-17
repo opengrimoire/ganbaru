@@ -2,7 +2,7 @@ import type { common as enCommon } from "../en/common";
 import type { MessageShape } from "../types";
 
 export const common = {
-  appName: "Ganbaru AI",
+  appName: "Ganbaru",
   cancel: "Cancelar",
   close: "Cerrar",
   back: "Atrás",

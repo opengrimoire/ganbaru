@@ -1,6 +1,6 @@
 <div align="center">
-  <img src="apps/client/static/icon.png" alt="Ganbaru AI icon" width="20%" />
-  <h1>Ganbaru AI</h1>
+  <img src="apps/client/static/icon.png" alt="Ganbaru icon" width="20%" />
+  <h1>Ganbaru</h1>
 
 Anti-procrastination + anti-burnout productivity app.
 
@@ -20,11 +20,11 @@ Free, local, open-source, privacy-first, lightweight with opt-in AI.
 </p>
 
 <p align="center">
-  <img src="docs/assets/readme-screenshot-1.png" alt="Ganbaru AI calendar, Pomodoro, and music interface" width="100%" />
+  <img src="docs/assets/readme-screenshot-1.png" alt="Ganbaru calendar, Pomodoro, and music interface" width="100%" />
 </p>
 
 <p align="center">
-  <img src="docs/assets/readme-screenshot-2.png" alt="Ganbaru AI settings and productivity interface" width="100%" />
+  <img src="docs/assets/readme-screenshot-2.png" alt="Ganbaru settings and productivity interface" width="100%" />
 </p>
 
 > [!WARNING]
@@ -32,22 +32,22 @@ Free, local, open-source, privacy-first, lightweight with opt-in AI.
 
 ## Download
 
-Download the latest release from [GitHub Releases](https://github.com/opengrimoire/ganbaru-ai/releases/latest).
+Download the latest release from [GitHub Releases](https://github.com/opengrimoire/ganbaru/releases/latest).
 
 | Platform | Download |
 |---|---|
 | **Ubuntu, Debian, Linux Mint** | `.deb` package |
 | **Fedora, RHEL, openSUSE** | `.rpm` package |
-| **Arch Linux, Manjaro, EndeavourOS, Garuda** | `ganbaru-ai-bin` from the AUR |
+| **Arch Linux, Manjaro, EndeavourOS, Garuda** | `ganbaru-bin` from the AUR |
 | **Other Linux x64 desktops** | `.AppImage` |
 | **Windows 10 or Windows 11 x64** | `.msi` installer, or the `.exe` setup if preferred |
 | **macOS** | Not available yet. macOS builds are planned, but they need Apple hardware and signing before release. |
 | **Android** | Not available yet. A substantial Android implementation exists in source, but release validation and signing are incomplete. |
 | **iOS** | Not available yet. iOS depends on the same Apple build and signing path as macOS. |
 
-Arch-based distro users can install with `yay -S ganbaru-ai-bin` or another AUR helper.
+Arch-based distro users can install with `yay -S ganbaru-bin` or another AUR helper.
 
-Use `SHA256SUMS` if you want to check that your downloaded installer matches the checksum published with this release. The `.sig` files and `latest.json` are used by Ganbaru AI's built-in updater, not files you need to download.
+Use `SHA256SUMS` if you want to check that your downloaded installer matches the checksum published with this release. The `.sig` files and `latest.json` are used by Ganbaru's built-in updater, not files you need to download.
 
 ## Features
 
@@ -83,8 +83,8 @@ See the [documentation index](docs/README.md), [feature index](docs/features/REA
 ### Setup
 
 ```bash
-git clone https://github.com/opengrimoire/ganbaru-ai.git
-cd ganbaru-ai
+git clone https://github.com/opengrimoire/ganbaru.git
+cd ganbaru
 corepack enable
 pnpm install
 ```
@@ -97,7 +97,7 @@ pnpm --dir apps/client run tauri dev
 
 ### Android development on a physical device
 
-Android development requires [Tauri's mobile prerequisites](https://v2.tauri.app/start/prerequisites/#android), Android Studio or an equivalent SDK installation, and JDK 21. Install Android SDK Platform 36, Platform Tools, Build Tools 35.0.0, Command-line Tools, and NDK 30.0.15729638. Set `ANDROID_HOME` and `NDK_HOME`, and make `adb` from Platform Tools available on `PATH`. The repository wrapper resolves JDK 21 through `GANBARU_AI_ANDROID_JAVA_HOME`, `JAVA_HOME`, or a supported system installation.
+Android development requires [Tauri's mobile prerequisites](https://v2.tauri.app/start/prerequisites/#android), Android Studio or an equivalent SDK installation, and JDK 21. Install Android SDK Platform 36, Platform Tools, Build Tools 35.0.0, Command-line Tools, and NDK 30.0.15729638. Set `ANDROID_HOME` and `NDK_HOME`, and make `adb` from Platform Tools available on `PATH`. The repository wrapper resolves JDK 21 through `GANBARU_ANDROID_JAVA_HOME`, `JAVA_HOME`, or a supported system installation.
 
 For the usual ARM64 physical-device workflow, install the Rust target once:
 
@@ -201,11 +201,11 @@ Contributions are welcome, but keep in mind:
 
 ## License
 
-Ganbaru AI is licensed under [AGPL-3.0](LICENSE). It's free and open source. You can use, modify, share, and sell Ganbaru AI. If you distribute or host a modified version, you must provide the source code and license that version under AGPL 3.0. Patent rights from contributors are included. The app is provided without warranty, and authors are not liable for damages.
+Ganbaru is licensed under [AGPL-3.0](LICENSE). It's free and open source. You can use, modify, share, and sell Ganbaru. If you distribute or host a modified version, you must provide the source code and license that version under AGPL 3.0. Patent rights from contributors are included. The app is provided without warranty, and authors are not liable for damages.
 
 ## Funding
 
-Ganbaru AI is donation-funded. Sponsorship will be set up after a minimum stable version is ready for Linux, Windows, and Android.
+Ganbaru is donation-funded. Sponsorship will be set up after a minimum stable version is ready for Linux, Windows, and Android.
 
 ## Acknowledgments
 

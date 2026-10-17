@@ -2,7 +2,7 @@
 
 Status: Partial. AI agents, channel access profiles, mention-triggered assignments, frozen context packages, and assignment review states are implemented. Structured delegation, budgets, quiet periods, task-linked assignments, and human collaborators are planned.
 
-Ganbaru AI coordinates work through durable conversations, explicit assignments, and review. AI providers are execution mechanisms beneath that model, not organizational identities. There is no privileged manager agent or general vault agent, and no planning agent is seeded by default.
+Ganbaru coordinates work through durable conversations, explicit assignments, and review. AI providers are execution mechanisms beneath that model, not organizational identities. There is no privileged manager agent or general vault agent, and no planning agent is seeded by default.
 
 ## Participants and agents
 

@@ -44,7 +44,7 @@ fn registry_test_directory(name: &str) -> std::path::PathBuf {
 fn pool_registry_concurrent_startup_returns_one_initialized_pool() {
     block_on(async {
         let directory = registry_test_directory("concurrent");
-        let path = directory.join("ganbaru-ai.sqlite");
+        let path = directory.join("ganbaru.sqlite");
         let registry = crate::DatabasePoolRegistry::default();
         let mut requests = tokio::task::JoinSet::new();
         for _ in 0..8 {
@@ -69,7 +69,7 @@ fn pool_registry_concurrent_startup_returns_one_initialized_pool() {
 fn pool_registry_close_waits_for_an_in_progress_open() {
     block_on(async {
         let directory = registry_test_directory("close-opening");
-        let path = directory.join("ganbaru-ai.sqlite");
+        let path = directory.join("ganbaru.sqlite");
         let registry = crate::DatabasePoolRegistry::default();
         // Poll open first so close must also retire a pool whose initialization is pending.
         let (opened, closed) = tokio::join!(
@@ -91,7 +91,7 @@ fn pool_registry_close_waits_for_an_in_progress_open() {
 fn pool_registry_close_releases_a_connection_returned_during_close() {
     block_on(async {
         let directory = registry_test_directory("close-returning");
-        let path = directory.join("ganbaru-ai.sqlite");
+        let path = directory.join("ganbaru.sqlite");
         let registry = crate::DatabasePoolRegistry::default();
         let pool = registry.connect_path(&path).await.unwrap();
         drop(pool.acquire().await.unwrap());
@@ -100,7 +100,7 @@ fn pool_registry_close_releases_a_connection_returned_during_close() {
         registry.close_path(&path).await.unwrap();
         assert_eq!(pool.size(), 0, "close must not leave a connection open");
         for suffix in ["-wal", "-shm"] {
-            let sidecar = directory.join(format!("ganbaru-ai.sqlite{suffix}"));
+            let sidecar = directory.join(format!("ganbaru.sqlite{suffix}"));
             assert!(!sidecar.exists(), "{} must be released", sidecar.display());
         }
         std::fs::remove_dir_all(directory).unwrap();
@@ -111,7 +111,7 @@ fn pool_registry_close_releases_a_connection_returned_during_close() {
 fn pool_registry_failed_initialization_can_be_retried() {
     block_on(async {
         let directory = registry_test_directory("retry-opening");
-        let path = directory.join("ganbaru-ai.sqlite");
+        let path = directory.join("ganbaru.sqlite");
         let options = sqlx::sqlite::SqliteConnectOptions::new()
             .filename(&path)
             .create_if_missing(true);
@@ -157,7 +157,7 @@ fn pool_registry_reuses_and_closes_authorized_path() {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&directory).unwrap();
-        let path = directory.join("ganbaru-ai.sqlite");
+        let path = directory.join("ganbaru.sqlite");
         let registry = crate::DatabasePoolRegistry::default();
 
         let first = registry.connect_path(&path).await.unwrap();
@@ -220,7 +220,7 @@ fn read_only_pool_rejects_writes_and_mode_reuse() {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&directory).unwrap();
-        let path = directory.join("ganbaru-ai.sqlite");
+        let path = directory.join("ganbaru.sqlite");
         let registry = crate::DatabasePoolRegistry::default();
         let writable = registry.connect_path(&path).await.unwrap();
         sqlx::query("CREATE TABLE access_test (value TEXT NOT NULL)")
@@ -260,7 +260,7 @@ fn current_schema_validation_rejects_changed_migration_history() {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&directory).unwrap();
-        let path = directory.join("ganbaru-ai.sqlite");
+        let path = directory.join("ganbaru.sqlite");
         let registry = crate::DatabasePoolRegistry::default();
         let pool = registry.connect_path(&path).await.unwrap();
         crate::validate_current_schema(&pool).await.unwrap();

@@ -282,7 +282,7 @@ export const chat = {
     chooseProject: "Choose project",
     workingFolder: "Working folder",
     chooseWorkingFolder: "Choose folder",
-    managedFolder: "Ganbaru AI folder",
+    managedFolder: "Ganbaru folder",
     externalFolder: "External folder",
     contextNavigator: "Working folder and chat navigator",
   },

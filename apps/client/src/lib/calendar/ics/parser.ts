@@ -440,7 +440,7 @@ function projectionWarningsFor(component: JcalComponent): string[] {
 	}
 	pushUnique(
 		warnings,
-		`${componentType.toUpperCase()} is preserved without a Ganbaru AI projection.`,
+		`${componentType.toUpperCase()} is preserved without a Ganbaru projection.`,
 	);
 	return warnings;
 }

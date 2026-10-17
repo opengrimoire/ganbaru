@@ -33,7 +33,7 @@
       "identifier": "opener:allow-open-url",
       "allow": [
         {
-          "url": "https://github.com/opengrimoire/ganbaru-ai"
+          "url": "https://github.com/opengrimoire/ganbaru"
         },
         {
           "url": "https://github.com/lucide-icons/lucide"
@@ -48,16 +48,16 @@
           "url": "https://github.com/vscode-icons/vscode-icons/graphs/contributors"
         },
         {
-          "url": "https://github.com/opengrimoire/ganbaru-ai/releases/tag/app-v*"
+          "url": "https://github.com/opengrimoire/ganbaru/releases/tag/app-v*"
         },
         {
-          "url": "https://github.com/opengrimoire/ganbaru-ai/releases/latest"
+          "url": "https://github.com/opengrimoire/ganbaru/releases/latest"
         },
         {
-          "url": "https://github.com/opengrimoire/ganbaru-ai/blob/main/LICENSE"
+          "url": "https://github.com/opengrimoire/ganbaru/blob/main/LICENSE"
         },
         {
-          "url": "https://github.com/opengrimoire/ganbaru-ai/blob/main/apps/client/static/sfx/*"
+          "url": "https://github.com/opengrimoire/ganbaru/blob/main/apps/client/static/sfx/*"
         },
         {
           "url": "https://developers.notion.com/guides/get-started/authorization"

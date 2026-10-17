@@ -285,7 +285,7 @@ export const chat = {
     chooseProject: "Elegir proyecto",
     workingFolder: "Carpeta de trabajo",
     chooseWorkingFolder: "Elegir carpeta",
-    managedFolder: "Carpeta de Ganbaru AI",
+    managedFolder: "Carpeta de Ganbaru",
     externalFolder: "Carpeta externa",
     contextNavigator: "Navegador de carpeta de trabajo y chat",
   },

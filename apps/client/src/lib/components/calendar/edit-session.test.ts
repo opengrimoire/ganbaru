@@ -277,7 +277,7 @@ describe("panel initial changes", () => {
       false,
       undefined,
       {
-        title: "Ganbaru AI",
+        title: "Ganbaru",
         end: "2026-04-16 10:00",
         color: 14,
         projectId: "project-a",
@@ -287,7 +287,7 @@ describe("panel initial changes", () => {
       },
     );
 
-    expect(result.title).toBe("Ganbaru AI");
+    expect(result.title).toBe("Ganbaru");
     expect(result.start).toBe("2026-04-16 09:00");
     expect(result.end).toBe("2026-04-16 10:00");
     expect(result.color).toBe(14);

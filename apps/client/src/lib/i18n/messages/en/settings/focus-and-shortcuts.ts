@@ -19,9 +19,9 @@ export const focusAndShortcuts = {
     androidBackgroundUnavailable: "Android background settings are temporarily unavailable.",
     androidAutostart: "Background autostart",
     androidAutostartDescription:
-      "Allow scheduled Focus events to start while Ganbaru AI is closed",
+      "Allow scheduled Focus events to start while Ganbaru is closed",
     androidBattery: "Battery saver restrictions",
-    androidBatteryDescription: "Choose No restrictions for Ganbaru AI",
+    androidBatteryDescription: "Choose No restrictions for Ganbaru",
     pausedFocusWarning: "Paused focus warning",
     pausedFocusWarningDescription: "Remind you to resume paused focus sessions",
     breakScreenHeading: "Break screen",

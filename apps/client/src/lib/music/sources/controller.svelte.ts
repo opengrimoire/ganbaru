@@ -346,7 +346,7 @@ export class MusicSourcesController {
   }
 
   async addLocalFolder(selection: MediaFolderSelection, name: string, waitForRefresh = false): Promise<string> {
-    if (!this.vaultId) throw new Error("The active Ganbaru AI folder is unavailable.");
+    if (!this.vaultId) throw new Error("The active Ganbaru folder is unavailable.");
     const trimmedName = name.trim();
     if (!trimmedName) throw new Error("Enter a source name.");
     const rootId = this.id();
@@ -519,14 +519,14 @@ export class MusicSourcesController {
   }
 
   async forgetBinding(rootId: string): Promise<void> {
-    if (!this.vaultId) throw new Error("The active Ganbaru AI folder is unavailable.");
+    if (!this.vaultId) throw new Error("The active Ganbaru folder is unavailable.");
     await this.api.clearBinding(this.vaultId, rootId);
     await this.load();
   }
 
   /** Replace an Android document-tree grant while preserving the logical source identity. */
   async reselectLocalRoot(collection: MusicSourceCollection): Promise<boolean> {
-    if (!this.vaultId) throw new Error("The active Ganbaru AI folder is unavailable.");
+    if (!this.vaultId) throw new Error("The active Ganbaru folder is unavailable.");
     if (collection.kind !== "local-root" || !collection.localRootId) {
       throw new Error("The local music source is unavailable.");
     }

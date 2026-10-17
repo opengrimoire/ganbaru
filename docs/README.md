@@ -1,6 +1,6 @@
 # Documentation
 
-Ganbaru AI documentation describes what the app is supposed to be and why its important decisions were made. It is organized by the kind of decision it records. Start here instead of opening the largest specification directly.
+Ganbaru documentation describes what the app is supposed to be and why its important decisions were made. It is organized by the kind of decision it records. Start here instead of opening the largest specification directly.
 
 ## Start here
 
@@ -32,7 +32,7 @@ A feature's main document states its current status in one sentence near the beg
 
 ## Where information belongs
 
-- `product/` explains what Ganbaru AI is, why it exists, and which system owns each cross-feature responsibility.
+- `product/` explains what Ganbaru is, why it exists, and which system owns each cross-feature responsibility.
 - `features/` specifies user-facing behavior. Large domains have one `README.md` and a small set of focused supporting documents.
 - `architecture/` describes code boundaries and durable technology decisions. Exact dependency versions remain authoritative in manifests.
 - `data/` describes sources of truth, durable storage, authorization, and cross-domain invariants. Exact SQL remains authoritative in migrations.

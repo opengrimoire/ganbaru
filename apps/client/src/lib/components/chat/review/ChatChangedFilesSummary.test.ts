@@ -39,7 +39,7 @@ describe("ChatChangedFilesSummary", () => {
       },
     });
     const listener = vi.fn();
-    chatPaneEvents("primary").addEventListener("ganbaru-ai:chat-open-review", listener, { once: true });
+    chatPaneEvents("primary").addEventListener("ganbaru:chat-open-review", listener, { once: true });
 
     target.querySelector<HTMLButtonElement>(".changed-files-header")?.click();
 

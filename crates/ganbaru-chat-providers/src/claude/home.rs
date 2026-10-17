@@ -136,10 +136,7 @@ pub fn claude_process_environment(
         "CLAUDE_CONFIG_DIR".to_string(),
         home.config_directory.to_string_lossy().into_owned(),
     );
-    environment.insert(
-        "CLAUDE_CODE_ENTRYPOINT".to_string(),
-        "ganbaru-ai".to_string(),
-    );
+    environment.insert("CLAUDE_CODE_ENTRYPOINT".to_string(), "ganbaru".to_string());
     Ok(environment)
 }
 

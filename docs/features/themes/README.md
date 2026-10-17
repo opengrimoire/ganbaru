@@ -1,6 +1,6 @@
 # Themes
 
-Themes define Ganbaru AI's application shell, Calendar surfaces, event palette, and contrast behavior through a validated registry. A theme is not a light/dark boolean.
+Themes define Ganbaru's application shell, Calendar surfaces, event palette, and contrast behavior through a validated registry. A theme is not a light/dark boolean.
 
 ## Current scope
 

@@ -11,9 +11,9 @@ use crate::protocol::{COORDINATOR_PORT, DEVELOPMENT_COORDINATOR_PORT};
 
 const STATE_FILE: &str = "vault-handoff-network-access.json";
 const STATE_SCHEMA_VERSION: u32 = 2;
-const RULE_COMMENT: &str = "Ganbaru AI device linking";
+const RULE_COMMENT: &str = "Ganbaru device linking";
 const MAX_AUTHORIZED_SCOPES: usize = 32;
-const PACKAGED_HELPER_PATH: &str = "/usr/bin/ganbaru-ai";
+const PACKAGED_HELPER_PATH: &str = "/usr/bin/ganbaru";
 const PRIVILEGED_HELPER_ARGUMENT: &str = "--manage-linking-firewall";
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -361,14 +361,14 @@ fn apply_with_packaged_helper(
         .arg(scope.zone.as_deref().unwrap_or("-"));
     run_authorized(
         command,
-        "update the Ganbaru AI phone connection rule",
+        "update the Ganbaru phone connection rule",
         &[11, 12],
     )
 }
 
 /// Handles the narrowly scoped firewall helper mode used by packaged Linux builds.
 ///
-/// The package policy authorizes only the root-owned Ganbaru AI executable with
+/// The package policy authorizes only the root-owned Ganbaru executable with
 /// `--manage-linking-firewall` as its first argument. All remaining values are
 /// parsed and validated again before a fixed firewall executable is invoked.
 pub fn run_privileged_helper_if_requested() -> Option<Result<(), String>> {
@@ -732,7 +732,7 @@ bad/interface 0001A8C0 00000000 0001 0 0 600 00FFFFFF 0 0 0\n";
                 "port",
                 "43822",
                 "comment",
-                "Ganbaru AI device linking",
+                "Ganbaru device linking",
             ]
         );
     }

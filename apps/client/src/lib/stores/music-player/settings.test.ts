@@ -6,7 +6,7 @@ import {
   persistMusicPlayerSettings,
 } from "./settings";
 
-const settingsKey = "ganbaru-ai-music-player";
+const settingsKey = "ganbaru-music-player";
 
 describe("Music player settings", () => {
   afterEach(() => {

@@ -37,13 +37,13 @@ pub(crate) mod ownership;
 pub(crate) mod quiescence;
 pub(crate) mod runtime_lifecycle;
 
-pub const APP_SQLITE_FILE: &str = "ganbaru-ai.sqlite";
-const PRODUCTION_VAULT_NAME: &str = "Ganbaru AI";
-const DEVELOPMENT_VAULT_NAME: &str = "Ganbaru AI Dev";
+pub const APP_SQLITE_FILE: &str = "ganbaru.sqlite";
+const PRODUCTION_VAULT_NAME: &str = "Ganbaru";
+const DEVELOPMENT_VAULT_NAME: &str = "Ganbaru Dev";
 const APP_STATE_FILE: &str = "app-state.json";
 const VAULT_MANIFEST_FILE: &str = "vault.json";
 const CONFIG_FILE: &str = "config.json";
-const VAULT_APP_MARKER: &str = "ganbaru-ai";
+const VAULT_APP_MARKER: &str = "ganbaru";
 const VAULT_SCHEMA_VERSION: u32 = 1;
 const MAX_RECENT_VAULTS: usize = 8;
 #[cfg(target_os = "android")]
@@ -295,24 +295,24 @@ fn now_utc() -> DateTime<Utc> {
 
 fn require_absolute_directory(path: &Path) -> Result<(), String> {
     if !path.is_absolute() {
-        return Err("Ganbaru AI folder path must be absolute".to_string());
+        return Err("Ganbaru folder path must be absolute".to_string());
     }
     let metadata =
-        fs::metadata(path).map_err(|e| format!("failed to inspect Ganbaru AI folder path: {e}"))?;
+        fs::metadata(path).map_err(|e| format!("failed to inspect Ganbaru folder path: {e}"))?;
     if metadata.is_dir() {
         Ok(())
     } else {
-        Err("Ganbaru AI path must be a folder".to_string())
+        Err("Ganbaru path must be a folder".to_string())
     }
 }
 
 fn canonical_vault_path(path: PathBuf) -> Result<PathBuf, String> {
     require_absolute_directory(&path)?;
-    fs::canonicalize(&path).map_err(|e| format!("canonicalize Ganbaru AI folder path: {e}"))
+    fs::canonicalize(&path).map_err(|e| format!("canonicalize Ganbaru folder path: {e}"))
 }
 
 fn folder_is_empty(path: &Path) -> Result<bool, String> {
-    let mut entries = fs::read_dir(path).map_err(|e| format!("read Ganbaru AI folder: {e}"))?;
+    let mut entries = fs::read_dir(path).map_err(|e| format!("read Ganbaru folder: {e}"))?;
     Ok(entries.next().is_none())
 }
 
@@ -332,15 +332,15 @@ fn database_path(path: &Path) -> PathBuf {
 fn read_vault_manifest(path: &Path) -> Result<VaultManifest, String> {
     let manifest_path = manifest_path(path);
     let contents = fs::read_to_string(&manifest_path)
-        .map_err(|e| format!("read Ganbaru AI folder marker: {e}"))?;
-    let manifest: VaultManifest = serde_json::from_str(&contents)
-        .map_err(|e| format!("parse Ganbaru AI folder marker: {e}"))?;
+        .map_err(|e| format!("read Ganbaru folder marker: {e}"))?;
+    let manifest: VaultManifest =
+        serde_json::from_str(&contents).map_err(|e| format!("parse Ganbaru folder marker: {e}"))?;
     if manifest.app != VAULT_APP_MARKER {
-        return Err("selected folder is not a Ganbaru AI folder".to_string());
+        return Err("selected folder is not a Ganbaru folder".to_string());
     }
     if manifest.schema_version != VAULT_SCHEMA_VERSION {
         return Err(format!(
-            "unsupported Ganbaru AI folder schema version {}",
+            "unsupported Ganbaru folder schema version {}",
             manifest.schema_version
         ));
     }
@@ -349,7 +349,7 @@ fn read_vault_manifest(path: &Path) -> Result<VaultManifest, String> {
 
 fn vault_info_from_manifest(path: &Path, manifest: VaultManifest) -> Result<VaultInfo, String> {
     Ok(VaultInfo {
-        path: path_to_string(path, "Ganbaru AI folder")?,
+        path: path_to_string(path, "Ganbaru folder")?,
         config_path: path_to_string(&config_path(path), "config")?,
         database_path: path_to_string(&database_path(path), "database")?,
         vault_id: manifest.vault_id,
@@ -379,7 +379,7 @@ fn ensure_vault_skeleton(path: &Path) -> Result<(), String> {
         ".yjs",
     ] {
         fs::create_dir_all(path.join(relative))
-            .map_err(|e| format!("create Ganbaru AI folder path '{relative}': {e}"))?;
+            .map_err(|e| format!("create Ganbaru folder path '{relative}': {e}"))?;
     }
     if !config_path(path).exists() {
         write_text_file_atomically(&config_path(path), "{}\n")?;
@@ -389,7 +389,7 @@ fn ensure_vault_skeleton(path: &Path) -> Result<(), String> {
             .create(true)
             .append(true)
             .open(database_path(path))
-            .map_err(|e| format!("create ganbaru-ai.sqlite: {e}"))?;
+            .map_err(|e| format!("create ganbaru.sqlite: {e}"))?;
     }
     Ok(())
 }
@@ -401,7 +401,7 @@ fn initialize_vault(path: &Path) -> Result<VaultInfo, String> {
         return vault_info_from_path(&path);
     }
     if !folder_is_empty(&path)? {
-        return Err("selected folder is not empty and is not a Ganbaru AI folder".to_string());
+        return Err("selected folder is not empty and is not a Ganbaru folder".to_string());
     }
     let manifest = VaultManifest {
         app: VAULT_APP_MARKER.to_string(),
@@ -559,10 +559,10 @@ fn default_vault_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 fn default_location_from_path(path: PathBuf) -> Result<VaultDefaultLocation, String> {
     let parent = path
         .parent()
-        .ok_or_else(|| "Ganbaru AI folder has no parent directory".to_string())?;
+        .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?;
     Ok(VaultDefaultLocation {
-        path: path_to_string(&path, "Ganbaru AI folder")?,
-        parent_path: path_to_string(parent, "Ganbaru AI folder parent")?,
+        path: path_to_string(&path, "Ganbaru folder")?,
+        parent_path: path_to_string(parent, "Ganbaru folder parent")?,
         folder_name: default_vault_name().to_string(),
         development_build: is_development_build(),
     })
@@ -576,7 +576,7 @@ async fn create_and_select_vault(
     let creation_transition = transition.clone();
     let info = tauri::async_runtime::spawn_blocking(move || {
         let _transition = creation_transition;
-        fs::create_dir_all(&path).map_err(|e| format!("create Ganbaru AI folder: {e}"))?;
+        fs::create_dir_all(&path).map_err(|e| format!("create Ganbaru folder: {e}"))?;
         initialize_vault(&path)
     })
     .await
@@ -639,7 +639,7 @@ pub async fn vault_pick_create(app: tauri::AppHandle) -> Result<Option<VaultInfo
 pub async fn vault_pick_open(app: tauri::AppHandle) -> Result<Option<VaultInfo>, String> {
     let Some(path) = pick_folder(
         &app,
-        "Import Ganbaru AI folder",
+        "Import Ganbaru folder",
         existing_documents_directory(&app),
     )
     .await?
@@ -675,7 +675,7 @@ fn pick_mobile_vault(app: &tauri::AppHandle) -> Result<Option<VaultInfo>, String
     let target = default_vault_path(app)?;
     let parent = target
         .parent()
-        .ok_or_else(|| "Ganbaru AI folder has no parent directory".to_string())?;
+        .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?;
     fs::create_dir_all(parent).map_err(|error| format!("create app data directory: {error}"))?;
     let staging = parent.join(format!(".{}.import", default_vault_name()));
     if staging.exists() {
@@ -685,12 +685,11 @@ fn pick_mobile_vault(app: &tauri::AppHandle) -> Result<Option<VaultInfo>, String
     if target.exists() {
         if !folder_is_empty(&target)? {
             return Err(
-                "the private Ganbaru AI folder already exists; use it or remove its test data first"
+                "the private Ganbaru folder already exists; use it or remove its test data first"
                     .to_string(),
             );
         }
-        fs::remove_dir(&target)
-            .map_err(|error| format!("remove empty Ganbaru AI folder: {error}"))?;
+        fs::remove_dir(&target).map_err(|error| format!("remove empty Ganbaru folder: {error}"))?;
     }
 
     let staging_path = path_to_string(&staging, "folder import staging")?;
@@ -708,7 +707,7 @@ fn pick_mobile_vault(app: &tauri::AppHandle) -> Result<Option<VaultInfo>, String
         let imported = vault_info_from_path(&staging)?;
         ensure_vault_skeleton(Path::new(&imported.path))?;
         fs::rename(&staging, &target)
-            .map_err(|error| format!("activate imported Ganbaru AI folder: {error}"))?;
+            .map_err(|error| format!("activate imported Ganbaru folder: {error}"))?;
         let info = vault_info_from_path(&target)?;
         Ok(Some(info))
     })();
@@ -732,7 +731,7 @@ pub fn active_vault_path<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBu
 /// Resolve the active folder and its validated marker with one marker read.
 fn active_vault<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(PathBuf, VaultManifest), String> {
     let Some(path) = read_app_state(app)?.active_vault_path.clone() else {
-        return Err("no active Ganbaru AI folder selected".to_string());
+        return Err("no active Ganbaru folder selected".to_string());
     };
     let path = canonical_vault_path(PathBuf::from(path))?;
     let manifest = read_vault_manifest(&path)?;
@@ -758,7 +757,7 @@ fn available_vault_path(path: Option<PathBuf>) -> Result<Option<PathBuf>, String
     let Some(path) = path else { return Ok(None) };
     if !path
         .try_exists()
-        .map_err(|error| format!("inspect selected Ganbaru AI folder: {error}"))?
+        .map_err(|error| format!("inspect selected Ganbaru folder: {error}"))?
     {
         return Ok(None);
     }
@@ -875,7 +874,7 @@ fn reveal_vault_folder(path: &Path) -> Result<(), String> {
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 #[cfg(desktop)]
 fn reveal_vault_folder(_path: &Path) -> Result<(), String> {
-    Err("opening Ganbaru AI folders is not implemented for this platform".to_string())
+    Err("opening Ganbaru folders is not implemented for this platform".to_string())
 }
 
 #[cfg(desktop)]
@@ -891,7 +890,7 @@ where
         .stderr(std::process::Stdio::null())
         .spawn()
         .map(|_| ())
-        .map_err(|e| format!("open Ganbaru AI folder: {e}"))
+        .map_err(|e| format!("open Ganbaru folder: {e}"))
 }
 
 #[cfg(test)]
@@ -912,9 +911,7 @@ mod tests {
         let pid = std::process::id();
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
         let mut path = std::env::temp_dir();
-        path.push(format!(
-            "ganbaru-ai-vault-test-{pid}-{nanos}-{seq}-{suffix}"
-        ));
+        path.push(format!("ganbaru-vault-test-{pid}-{nanos}-{seq}-{suffix}"));
         path
     }
 
@@ -993,7 +990,7 @@ mod tests {
 
         assert_eq!(
             err,
-            "selected folder is not empty and is not a Ganbaru AI folder"
+            "selected folder is not empty and is not a Ganbaru folder"
         );
         let _ = fs::remove_dir_all(&path);
     }
@@ -1081,8 +1078,8 @@ mod tests {
         );
         let state = VaultAppState {
             device_id: Some("device-test".to_string()),
-            active_vault_path: Some("/tmp/ganbaru-ai-vault".to_string()),
-            recent_vault_paths: vec!["/tmp/ganbaru-ai-vault".to_string()],
+            active_vault_path: Some("/tmp/ganbaru-vault".to_string()),
+            recent_vault_paths: vec!["/tmp/ganbaru-vault".to_string()],
             music_root_bindings,
             project_working_folders: Default::default(),
             chat: Default::default(),
@@ -1117,7 +1114,7 @@ mod tests {
         assert!(Arc::ptr_eq(&first, &second));
 
         // A different length changes the stamp even on coarse-timestamp filesystems.
-        state.active_vault_path = Some("/tmp/ganbaru-ai-external-vault".to_string());
+        state.active_vault_path = Some("/tmp/ganbaru-external-vault".to_string());
         write_app_state_to_path(&path, &state).expect("write external change");
         let changed = cached_app_state(&mut cache, &path).expect("read changed app state");
         assert_eq!(changed.active_vault_path, state.active_vault_path);

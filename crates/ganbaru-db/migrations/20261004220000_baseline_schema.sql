@@ -1,4 +1,4 @@
--- Fresh-start schema created before Ganbaru AI had external users.
+-- Fresh-start schema created before Ganbaru had external users.
 -- Earlier development databases are intentionally unsupported and must be recreated.
 --
 -- Layout: one section per domain. Parent tables come before their children, each table is
@@ -4845,7 +4845,7 @@ CREATE TABLE chat_checkpoints (
     turn_count INTEGER NOT NULL CHECK (turn_count >= 0),
     repository_identity TEXT NOT NULL CHECK (length(repository_identity) BETWEEN 1 AND 1024),
     hidden_ref_name TEXT NOT NULL UNIQUE CHECK (
-        hidden_ref_name GLOB 'refs/ganbaru-ai/chat/*'
+        hidden_ref_name GLOB 'refs/ganbaru/chat/*'
         AND hidden_ref_name NOT GLOB '*[[:space:]]*'
     ),
     git_object_id TEXT NOT NULL CHECK (length(git_object_id) BETWEEN 40 AND 128),
@@ -6462,7 +6462,7 @@ END;
 -- Seed data.
 
 INSERT INTO calendars (id, name, color, source, visible, read_only)
-VALUES ('local', 'Ganbaru AI', '', 'local', 1, 0);
+VALUES ('local', 'Ganbaru', '', 'local', 1, 0);
 
 INSERT INTO project_groups (id, name, icon, color, sort_order)
 VALUES ('group-routine', 'Routine', 'lucide:repeat', 0, 0);

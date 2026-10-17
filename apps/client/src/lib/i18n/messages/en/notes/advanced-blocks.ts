@@ -60,7 +60,7 @@ export const advancedBlocks = {
   mediaPreview: "Media preview",
   mediaLocalFile: "Managed local file",
   mediaLocalFileMetadata: (contentType: string, size: string) => `${contentType}, ${size}`,
-  mediaStoredOffline: "Stored in Ganbaru AI and available offline.",
+  mediaStoredOffline: "Stored in Ganbaru and available offline.",
   mediaExternalReference: "External HTTPS reference. It opens only when you choose it.",
   mediaImportedRemoteReference:
     "Imported remote file reference. Copy a local file to keep it available offline.",
@@ -79,7 +79,7 @@ export const advancedBlocks = {
   mediaUrlInvalid: "Enter a valid URL.",
   mediaUrlRequiresHttps: "Use an HTTPS URL.",
   mediaUrlUnsupported: (type: string) => `Use a supported ${type} URL.`,
-  importFileChoiceCopy: "Copy into Ganbaru AI",
+  importFileChoiceCopy: "Copy into Ganbaru",
   importFileChoiceKeepExternal: "Keep HTTPS link",
   importFileChoiceSkip: "Skip file",
   importFileCopied: "The file was copied into managed Notes assets.",

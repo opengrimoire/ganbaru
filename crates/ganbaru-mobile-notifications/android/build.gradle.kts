@@ -6,7 +6,7 @@ plugins {
 }
 
 android {
-    namespace = "org.opengrimoire.ganbaruai.mobile.notifications"
+    namespace = "org.opengrimoire.ganbaru.mobile.notifications"
     compileSdk = 36
 
     defaultConfig {

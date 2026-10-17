@@ -1,6 +1,6 @@
 # Android
 
-Android is Ganbaru AI's current mobile target. It reuses shared domain contracts while replacing desktop filesystem, process, media, notification, and background-work assumptions with narrow Android adapters.
+Android is Ganbaru's current mobile target. It reuses shared domain contracts while replacing desktop filesystem, process, media, notification, and background-work assumptions with narrow Android adapters.
 
 ## Delivery status
 

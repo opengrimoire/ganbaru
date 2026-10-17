@@ -1,6 +1,6 @@
 import type { ReviewDiffSource } from "$lib/chat/contracts";
 
-export const CHAT_OPEN_WORKSPACE_PANEL_EVENT = "ganbaru-ai:chat-open-workspace-panel";
+export const CHAT_OPEN_WORKSPACE_PANEL_EVENT = "ganbaru:chat-open-workspace-panel";
 
 export interface ChatOpenReviewDetail {
   source: ReviewDiffSource;
@@ -18,8 +18,8 @@ export type ChatWorkspaceRequest =
   | { source: "file"; detail: ChatOpenFileDetail };
 
 const WORKSPACE_EVENT_SOURCES = {
-  "ganbaru-ai:chat-open-review": "review",
-  "ganbaru-ai:chat-open-file": "file",
+  "ganbaru:chat-open-review": "review",
+  "ganbaru:chat-open-file": "file",
 } as const;
 
 /** Converts a Chat workspace event into its validated panel request. */

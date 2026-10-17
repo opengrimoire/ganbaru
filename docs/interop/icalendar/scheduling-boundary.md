@@ -6,7 +6,7 @@ iCalendar scheduling metadata is data. Sending scheduling messages is a separate
 
 ## Offline compatibility
 
-Without any account, Ganbaru AI parses, preserves, and exports scheduling fields: `METHOD`, `ORGANIZER`, `ATTENDEE` with `PARTSTAT`, `RSVP`, `ROLE`, `CUTYPE`, `DELEGATED-FROM`, `DELEGATED-TO`, `SENT-BY`, and `MEMBER`, `REQUEST-STATUS`, `STATUS:CANCELLED`, and the recurrence overrides used for updates and cancellations.
+Without any account, Ganbaru parses, preserves, and exports scheduling fields: `METHOD`, `ORGANIZER`, `ATTENDEE` with `PARTSTAT`, `RSVP`, `ROLE`, `CUTYPE`, `DELEGATED-FROM`, `DELEGATED-TO`, `SENT-BY`, and `MEMBER`, `REQUEST-STATUS`, `STATUS:CANCELLED`, and the recurrence overrides used for updates and cancellations.
 
 ## Transport-backed actions (planned)
 
@@ -14,7 +14,7 @@ These require identity and a user-configured transport (email, CalDAV, Google, M
 
 ## UI policy
 
-Ganbaru AI has no identity model yet. Therefore:
+Ganbaru has no identity model yet. Therefore:
 
 - Imported attendee response status is read-only metadata, not proof that a reply was sent.
 - The user cannot accept, decline, or tentatively accept as another attendee.

@@ -1,10 +1,10 @@
 #!/bin/sh
 set -eu
 
-source_key="/usr/lib/ganbaru-ai/package-repo/ganbaru-ai-package-repo.asc"
-keyring="/usr/share/keyrings/ganbaru-ai-package-repo.asc"
-source_list="/etc/apt/sources.list.d/ganbaru-ai.sources"
-repo_url="https://opengrimoire.github.io/ganbaru-ai/packages/apt"
+source_key="/usr/lib/ganbaru/package-repo/ganbaru-package-repo.asc"
+keyring="/usr/share/keyrings/ganbaru-package-repo.asc"
+source_list="/etc/apt/sources.list.d/ganbaru.sources"
+repo_url="https://opengrimoire.github.io/ganbaru/packages/apt"
 
 if [ -r "$source_key" ]; then
   install -D -m 0644 "$source_key" "$keyring"

@@ -1,4 +1,4 @@
-//! Bounded native document transfer for Ganbaru AI mobile platforms.
+//! Bounded native document transfer for Ganbaru mobile platforms.
 
 #[cfg(target_os = "android")]
 mod mobile;
@@ -10,7 +10,7 @@ pub use mobile::{MobileDocuments, MobileDocumentsExt};
 use tauri::Manager;
 use tauri::{Runtime, plugin::TauriPlugin};
 
-/// Initialize Ganbaru AI's native mobile document adapter.
+/// Initialize Ganbaru's native mobile document adapter.
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
     let builder = tauri::plugin::Builder::new("mobile-documents");
 

@@ -1,6 +1,6 @@
 # Security
 
-Ganbaru AI stores calendar, work, Notes, browsing-control, focus, and AI conversation data. Security is a constraint on every storage and execution decision, not a feature that can be added after those decisions are made.
+Ganbaru stores calendar, work, Notes, browsing-control, focus, and AI conversation data. Security is a constraint on every storage and execution decision, not a feature that can be added after those decisions are made.
 
 ## Threat model
 
@@ -30,7 +30,7 @@ The active vault is user-owned durable storage. The platform app config director
 
 Local LAN device linking and single-writer whole-vault handoff are implemented in source: pinned certificates, mutual TLS, single-use invitations, and no relay or account. Concurrent operation sync, the end-to-end encrypted relay, and its key lifecycle remain planned. Both are specified in [Synchronization](../sync.md).
 
-Remote synchronization, hosted BYOK chat, an external MCP service, and the `ganbaru-ai` CLI are not implemented. Their security requirements are normative design constraints, not claims about current traffic or capability. Documents must label current behavior and planned requirements separately.
+Remote synchronization, hosted BYOK chat, an external MCP service, and the `ganbaru` CLI are not implemented. Their security requirements are normative design constraints, not claims about current traffic or capability. Documents must label current behavior and planned requirements separately.
 
 ## Required properties
 

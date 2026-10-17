@@ -1,20 +1,20 @@
 [package]
-name = "ganbaru-ai"
-version = "0.1.9"
-description = "Ganbaru AI Tauri application"
+name = "ganbaru"
+version = "0.1.10"
+description = "Ganbaru Tauri application"
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-default-run = "ganbaru-ai"
+default-run = "ganbaru"
 
 [lib]
-name = "ganbaru_ai_lib"
+name = "ganbaru_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 doctest = false
 
 [[bin]]
-name = "ganbaru-ai"
+name = "ganbaru"
 path = "src/main.rs"
 test = false
 bench = false

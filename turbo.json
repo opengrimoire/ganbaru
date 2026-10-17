@@ -7,7 +7,7 @@
     },
     "build": {
       "dependsOn": ["^build"],
-      "env": ["GANBARU_AI_RELEASE_REPOSITORY", "TAURI_ENV_PLATFORM"],
+      "env": ["GANBARU_RELEASE_REPOSITORY", "TAURI_ENV_PLATFORM"],
       "outputs": ["dist/**"]
     },
     "check": {
@@ -31,7 +31,7 @@
     },
     "bundle-contracts": {
       "dependsOn": ["build"],
-      "env": ["GANBARU_AI_RELEASE_REPOSITORY"],
+      "env": ["GANBARU_RELEASE_REPOSITORY"],
       "inputs": [
         "package.json",
         "scripts/bundle-contracts/**",

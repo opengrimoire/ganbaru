@@ -15,16 +15,16 @@ const PACKAGE_REPO_PUBLIC_KEY_PATH = path.join(
   CLIENT_ROOT,
   "src-tauri",
   "package-repo",
-  "ganbaru-ai-package-repo.asc",
+  "ganbaru-package-repo.asc",
 );
 const PACKAGE_REPO_PUBLIC_KEY_BUNDLE_SOURCE =
-  "package-repo/ganbaru-ai-package-repo.asc";
+  "package-repo/ganbaru-package-repo.asc";
 const PACKAGE_REPO_PUBLIC_KEY_INSTALL_PATH =
-  "/usr/lib/ganbaru-ai/package-repo/ganbaru-ai-package-repo.asc";
+  "/usr/lib/ganbaru/package-repo/ganbaru-package-repo.asc";
 const POLKIT_POLICY_BUNDLE_SOURCE =
-  "packaging/linux/org.opengrimoire.ganbaruai.policy";
+  "packaging/linux/org.opengrimoire.ganbaru.policy";
 const POLKIT_POLICY_INSTALL_PATH =
-  "/usr/share/polkit-1/actions/org.opengrimoire.ganbaruai.policy";
+  "/usr/share/polkit-1/actions/org.opengrimoire.ganbaru.policy";
 const GITHUB_REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
 
 /**
@@ -56,10 +56,10 @@ function updaterEndpoint() {
   }
 
   const repository =
-    process.env.GANBARU_AI_RELEASE_REPOSITORY?.trim() ||
+    process.env.GANBARU_RELEASE_REPOSITORY?.trim() ||
     process.env.GITHUB_REPOSITORY?.trim();
   if (!repository || !GITHUB_REPOSITORY_PATTERN.test(repository)) {
-    throw new Error("GANBARU_AI_RELEASE_REPOSITORY must be an owner/name repository");
+    throw new Error("GANBARU_RELEASE_REPOSITORY must be an owner/name repository");
   }
 
   return `https://github.com/${repository}/releases/latest/download/latest.json`;
@@ -71,9 +71,9 @@ function updaterEndpoint() {
  * @returns {string} ASCII-armored OpenPGP public key.
  */
 function packageRepoPublicKey() {
-  const key = readRequiredEnv("GANBARU_AI_PACKAGE_REPO_PUBLIC_KEY");
+  const key = readRequiredEnv("GANBARU_PACKAGE_REPO_PUBLIC_KEY");
   if (!key.includes("BEGIN PGP PUBLIC KEY BLOCK")) {
-    throw new Error("GANBARU_AI_PACKAGE_REPO_PUBLIC_KEY must be an ASCII-armored public key");
+    throw new Error("GANBARU_PACKAGE_REPO_PUBLIC_KEY must be an ASCII-armored public key");
   }
   return key.endsWith("\n") ? key : `${key}\n`;
 }

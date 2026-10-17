@@ -1,7 +1,7 @@
 [package]
 name = "ganbaru-calendar"
 version = "0.1.0"
-description = "Ganbaru AI Calendar persistence, iCalendar import and export, native reads, scoped edits, deletion and Undo, and recurrence expansion"
+description = "Ganbaru Calendar persistence, iCalendar import and export, native reads, scoped edits, deletion and Undo, and recurrence expansion"
 authors.workspace = true
 license.workspace = true
 edition.workspace = true

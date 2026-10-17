@@ -101,7 +101,7 @@ export const titleBar = {
   resetSequenceConfirm: "Continuar",
   resetDatabaseTitle: "¿Reiniciar datos locales?",
   resetDatabaseMessage:
-    "El archivo de datos local de la carpeta activa de Ganbaru AI se eliminará permanentemente",
+    "El archivo de datos local de la carpeta activa de Ganbaru se eliminará permanentemente",
   resetDatabaseConfirm: "Reiniciar datos locales",
   closeAppTitle: "¿Cerrar la app?",
   closeAppMessage: "Todas las funciones de productividad dejarán de funcionar",

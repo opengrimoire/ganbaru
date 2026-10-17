@@ -6,7 +6,7 @@ The break screen makes recovery harder to ignore than a normal notification with
 
 When a short or long break begins on desktop, the app presents a deliberate transition away from work. The surface shows the remaining break and only the controls needed to extend, deliberately end early, or return to focus.
 
-The screen blocks ordinary window switching and accidental dismissal where supported. A user can still terminate the process, power off, use operating-system security surfaces, or otherwise bypass the app. Ganbaru AI is not hostile lock-in or device-management software.
+The screen blocks ordinary window switching and accidental dismissal where supported. A user can still terminate the process, power off, use operating-system security surfaces, or otherwise bypass the app. Ganbaru is not hostile lock-in or device-management software.
 
 ## Surfaces and enforcement
 

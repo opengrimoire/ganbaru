@@ -1,8 +1,8 @@
 import type { WorkspacePaneScope } from "$lib/workspace-tabs/model";
 import { getWorkspacePaneScope } from "$lib/workspace-tabs/pane-scope";
 
-const STORAGE_KEY = "ganbaru-ai-calendar-zoom";
-export const CALENDAR_ZOOM_FRAME_EVENT = "ganbaru-ai-calendar-zoom-frame";
+const STORAGE_KEY = "ganbaru-calendar-zoom";
+export const CALENDAR_ZOOM_FRAME_EVENT = "ganbaru-calendar-zoom-frame";
 const DEFAULT_HOUR_HEIGHT = 50;
 export const CALENDAR_ZOOM_PERCENT_LEVELS = [50, 75, 100, 125, 150, 200, 300, 400] as const;
 const ZOOM_LEVELS: readonly number[] = CALENDAR_ZOOM_PERCENT_LEVELS.map(

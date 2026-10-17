@@ -24,7 +24,7 @@
   let volumeFeedbackTimeoutId: number | null = null;
   let lastVolumeFeedbackId = 0;
 
-  const mediaSurfaceFullscreenEvent = "ganbaru-ai-music-media-surface-fullscreen";
+  const mediaSurfaceFullscreenEvent = "ganbaru-music-media-surface-fullscreen";
   const hasVisualSurface = $derived(Boolean(
     decodes
       && player.surfaceElement

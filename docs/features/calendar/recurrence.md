@@ -4,7 +4,7 @@ Recurring events use a template-plus-occurrence model. The template is canonical
 
 ## Supported rules
 
-Ganbaru AI supports daily, weekly, monthly, and yearly frequency with interval, weekday, month-day, ordinal weekday, set-position, week-number, and year-day selection, count or end date, exception dates, and additional dates. Imported rule parts beyond that set are preserved according to the [iCalendar interoperability contract](../../interop/icalendar/README.md) even when the app cannot apply them. Exact expansion rules are in [Recurrence expansion](../../algorithms/calendar/recurrence-expansion.md).
+Ganbaru supports daily, weekly, monthly, and yearly frequency with interval, weekday, month-day, ordinal weekday, set-position, week-number, and year-day selection, count or end date, exception dates, and additional dates. Imported rule parts beyond that set are preserved according to the [iCalendar interoperability contract](../../interop/icalendar/README.md) even when the app cannot apply them. Exact expansion rules are in [Recurrence expansion](../../algorithms/calendar/recurrence-expansion.md).
 
 The editor offers common presets and a bounded advanced editor. It must not silently simplify an imported rule in a way that changes future occurrences. The current import path still violates this for sub-daily rules; see [critical compatibility gaps](../../interop/icalendar/conformance/README.md#critical-compatibility-gaps).
 

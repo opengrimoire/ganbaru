@@ -153,7 +153,7 @@ fn fresh_database_applies_clean_baseline() {
 fn fresh_file_database_applies_clean_baseline() {
     super::block_on(async {
         let path = std::env::temp_dir().join(format!(
-            "ganbaru-ai-baseline-{}-{}.sqlite",
+            "ganbaru-baseline-{}-{}.sqlite",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

@@ -9,7 +9,7 @@ Desktop and Android enforce selected applications through different operating-sy
 - Protected applications are rejected at selection and enforcement time.
 - Stale, disabled, removed, mismatched, or unauthorized rules perform no destructive action.
 - Enforcement is rate-limited and explains how to change the responsible setting.
-- Permission denial disables the affected adapter without disabling unrelated Ganbaru AI features.
+- Permission denial disables the affected adapter without disabling unrelated Ganbaru features.
 
 ## Desktop selection and matching
 
@@ -35,7 +35,7 @@ Android uses Usage Access to count explicitly selected packages and an opt-in Ac
 
 When a selected package matches a fresh phase rule or exhausted limit, the service performs the standard Home action. It does not draw overlays, inject input, capture the screen, or act as device owner.
 
-Ganbaru AI, Home, Settings, dialer, system UIDs, unknown packages, and stale projections are rejected.
+Ganbaru, Home, Settings, dialer, system UIDs, unknown packages, and stale projections are rejected.
 
 ## Android lifecycle
 

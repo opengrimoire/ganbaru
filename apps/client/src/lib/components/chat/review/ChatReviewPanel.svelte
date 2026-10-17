@@ -459,7 +459,7 @@
 
   function openInEditor(file: ChatReviewFileRead): void {
     if (commentDraft.trim()) return;
-    paneEvents.dispatchEvent(new CustomEvent("ganbaru-ai:chat-open-file", { detail: { relativePath: file.relativePath } }));
+    paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-open-file", { detail: { relativePath: file.relativePath } }));
   }
 
   function stepFile(direction: -1 | 1): void {
@@ -849,7 +849,7 @@
                 if (file) {
                   activateFile(file.fileId);
                   if (!reviewCommentIsOutdated(comment, snapshot)) requestAnimationFrame(() => viewport?.scrollToLine(file.fileId, comment.endLine, comment.selectionSide === "old" ? "deletions" : "additions"));
-                } else paneEvents.dispatchEvent(new CustomEvent("ganbaru-ai:chat-open-file", { detail: { relativePath: comment.relativePath } }));
+                } else paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-open-file", { detail: { relativePath: comment.relativePath } }));
               }}><strong title={comment.relativePath}>{comment.relativePath}</strong><span>{t("chat.review.lines", comment.startLine, comment.endLine)}</span></button>
               {#if reviewCommentIsOutdated(comment, snapshot)}<span class="comment-state">{t("chat.review.outdated")}</span>{/if}
               <p>{comment.commentText}</p>

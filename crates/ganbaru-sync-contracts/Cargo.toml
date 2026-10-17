@@ -1,7 +1,7 @@
 [package]
 name = "ganbaru-sync-contracts"
 version = "0.1.0"
-description = "Ganbaru AI sync identifiers, clocks, version vectors, and the signed operation format"
+description = "Ganbaru sync identifiers, clocks, version vectors, and the signed operation format"
 authors.workspace = true
 license.workspace = true
 edition.workspace = true

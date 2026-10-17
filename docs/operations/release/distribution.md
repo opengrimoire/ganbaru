@@ -10,14 +10,14 @@ The desktop build produces installers with the public updater configuration. A p
 
 Automatic checks run at most once per day by default and can be disabled. They never download or install without an explicit user action.
 
-AppImage and Windows installations can use Tauri's signed update path. Package-manager installations show the appropriate update command instead of trying to install an AppImage. Ganbaru AI copies, but never executes, privileged apt, dnf, zypper, yay, or paru commands.
+AppImage and Windows installations can use Tauri's signed update path. Package-manager installations show the appropriate update command instead of trying to install an AppImage. Ganbaru copies, but never executes, privileged apt, dnf, zypper, yay, or paru commands.
 
 ## Linux package repositories
 
 Published releases update:
 
-- APT: `https://opengrimoire.github.io/ganbaru-ai/packages/apt`
-- RPM: `https://opengrimoire.github.io/ganbaru-ai/packages/rpm`
+- APT: `https://opengrimoire.github.io/ganbaru/packages/apt`
+- RPM: `https://opengrimoire.github.io/ganbaru/packages/rpm`
 
 The published `.deb` can install a Deb822 source file and repository key. The published `.rpm` can install dnf or zypper repository configuration and its verification key. Package scripts remove configuration only on a full removal or purge, not during normal upgrades.
 
@@ -25,9 +25,9 @@ The package-repository job runs only after the GitHub Release is published. It d
 
 ## AUR
 
-`ganbaru-ai-bin` repackages the released `.deb` and removes Debian-specific repository files. A dedicated post-publication job updates the AUR package.
+`ganbaru-bin` repackages the released `.deb` and removes Debian-specific repository files. A dedicated post-publication job updates the AUR package.
 
-The app can suggest `yay -Syu ganbaru-ai-bin` or `paru -Syu ganbaru-ai-bin` based on the detected helper. It does not run the command.
+The app can suggest `yay -Syu ganbaru-bin` or `paru -Syu ganbaru-bin` based on the detected helper. It does not run the command.
 
 ## Android
 

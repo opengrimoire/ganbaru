@@ -30,6 +30,7 @@ impl TestRepository {
         run_git(&path, &["init", "-q"]);
         run_git(&path, &["config", "user.name", "Ganbaru Test"]);
         run_git(&path, &["config", "user.email", "test@ganbaru.invalid"]);
+        run_git(&path, &["config", "commit.gpgsign", "false"]);
         Self(fs::canonicalize(path).expect("test repository path should canonicalize"))
     }
 

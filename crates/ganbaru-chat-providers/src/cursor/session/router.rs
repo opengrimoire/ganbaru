@@ -199,7 +199,7 @@ async fn handle_request(
             resources.sink.emit(event).await?;
             resources
                 .client
-                .respond_error(rpc_id, -32601, "Method not supported by Ganbaru AI")
+                .respond_error(rpc_id, -32601, "Method not supported by Ganbaru")
                 .await
                 .map_err(|error| error.to_chat_error("extension rejection"))
         }

@@ -4,7 +4,7 @@
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { getLocalization } from "$lib/i18n/translator.svelte";
 
-  const LICENSE_URL = "https://github.com/opengrimoire/ganbaru-ai/blob/main/LICENSE";
+  const LICENSE_URL = "https://github.com/opengrimoire/ganbaru/blob/main/LICENSE";
   const actionButtonClass =
     "inline-flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent focus:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:bg-transparent";
   const { t } = getLocalization();

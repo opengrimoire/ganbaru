@@ -193,7 +193,7 @@ pub async fn music_youtube_metadata(
     let client = Client::builder()
         .redirect(Policy::none())
         .timeout(REQUEST_TIMEOUT)
-        .user_agent("Ganbaru-AI/0.1 YouTube metadata preview")
+        .user_agent("Ganbaru/0.1 YouTube metadata preview")
         .build()
         .map_err(|error| format!("Could not prepare the YouTube metadata request: {error}"))?;
     let truncated = request.video_ids.len() > MAX_METADATA_VIDEOS;

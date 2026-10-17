@@ -10,7 +10,7 @@ export function getSmoothScrollDelta(e: WheelEvent): number {
   return e.deltaY;
 }
 
-export const CALENDAR_FORWARDED_WHEEL_EVENT = "ganbaru-ai-calendar-forwarded-wheel";
+export const CALENDAR_FORWARDED_WHEEL_EVENT = "ganbaru-calendar-forwarded-wheel";
 
 export interface CalendarForwardedWheelDetail {
   deltaY: number;

@@ -541,7 +541,7 @@ mod tests {
                 .expect("system clock should follow the Unix epoch")
                 .as_nanos();
             let path = std::env::temp_dir().join(format!(
-                "ganbaru-ai-windows-artifact-{name}-{}-{nonce}",
+                "ganbaru-windows-artifact-{name}-{}-{nonce}",
                 std::process::id()
             ));
             std::fs::create_dir(&path).expect("test directory should be created");

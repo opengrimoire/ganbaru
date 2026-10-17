@@ -11,7 +11,7 @@ use gtk::glib::prelude::*;
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
-const BUS_NAME: &str = "org.mpris.MediaPlayer2.ganbaru-ai";
+const BUS_NAME: &str = "org.mpris.MediaPlayer2.ganbaru";
 const OBJECT_PATH: &str = "/org/mpris/MediaPlayer2";
 const CURRENT_TRACK_PATH: &str = "/org/mpris/MediaPlayer2/current";
 const PLAYER_INTERFACE: &str = "org.mpris.MediaPlayer2.Player";
@@ -371,8 +371,8 @@ fn root_property_variant(property_name: &str) -> glib::Variant {
         "CanQuit" => false.to_variant(),
         "CanRaise" => true.to_variant(),
         "HasTrackList" => false.to_variant(),
-        "Identity" => "Ganbaru AI".to_variant(),
-        "DesktopEntry" => "ganbaru-ai".to_variant(),
+        "Identity" => "Ganbaru".to_variant(),
+        "DesktopEntry" => "ganbaru".to_variant(),
         "SupportedUriSchemes" => Vec::<String>::new().to_variant(),
         "SupportedMimeTypes" => Vec::<String>::new().to_variant(),
         _ => ().to_variant(),

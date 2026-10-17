@@ -132,7 +132,7 @@ fn clears_shutdown_enforcement_state_files() {
         .unwrap()
         .as_nanos();
     let dir = std::env::temp_dir().join(format!(
-        "ganbaru-ai-distractions-cleanup-{}-{suffix}",
+        "ganbaru-distractions-cleanup-{}-{suffix}",
         std::process::id()
     ));
     std::fs::create_dir_all(&dir).unwrap();
@@ -158,7 +158,7 @@ fn future_runtime_and_budget_snapshots_cannot_authorize_execution() {
     std::fs::create_dir_all(&dir).unwrap();
     let runtime_path = dir.join("distractions-state.json");
     let limit_path = dir.join("distractions-limit-state.json");
-    let database_path = dir.join("ganbaru-ai.sqlite");
+    let database_path = dir.join("ganbaru.sqlite");
     std::fs::write(&runtime_path, serde_json::to_vec(&state("focus")).unwrap()).unwrap();
     let value = serde_json::json!({"localDate": "2026-05-26", "weekStartLocalDate": "2026-05-25",
         "updatedAt": "2026-05-26T00:00:00.000Z", "databasePath": database_path, "limits": []});
@@ -174,12 +174,12 @@ fn future_runtime_and_budget_snapshots_cannot_authorize_execution() {
 #[test]
 fn stale_limit_state_is_not_authoritative() {
     let dir = std::env::temp_dir().join(format!(
-        "ganbaru-ai-distractions-stale-limit-{}",
+        "ganbaru-distractions-stale-limit-{}",
         std::process::id()
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("distractions-limit-state.json");
-    let database_path = dir.join("ganbaru-ai.sqlite");
+    let database_path = dir.join("ganbaru.sqlite");
     let value = serde_json::json!({
         "localDate": "2026-05-26",
         "weekStartLocalDate": "2026-05-25",
@@ -202,7 +202,7 @@ fn atomic_state_write_does_not_follow_predictable_temp_symlinks() {
     use std::os::unix::fs::symlink;
 
     let dir = std::env::temp_dir().join(format!(
-        "ganbaru-ai-distractions-atomic-{}",
+        "ganbaru-distractions-atomic-{}",
         std::process::id()
     ));
     std::fs::create_dir_all(&dir).unwrap();
@@ -228,7 +228,7 @@ fn atomic_state_write_does_not_follow_predictable_temp_symlinks() {
 #[test]
 fn oversized_authorization_config_is_rejected() {
     let path = std::env::temp_dir().join(format!(
-        "ganbaru-ai-distractions-oversized-{}.json",
+        "ganbaru-distractions-oversized-{}.json",
         std::process::id()
     ));
     std::fs::write(

@@ -111,7 +111,7 @@ pub async fn export_graph(
             "warning",
             Some("notes_assets"),
             None::<String>,
-            "Managed asset metadata is exported, but binary file bytes stay in the Ganbaru AI assets folder.",
+            "Managed asset metadata is exported, but binary file bytes stay in the Ganbaru assets folder.",
         ));
     }
     let summary = build_summary(&exported_tables, &diagnostics);

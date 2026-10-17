@@ -1,5 +1,5 @@
 export const common = {
-  appName: "Ganbaru AI",
+  appName: "Ganbaru",
   cancel: "Cancel",
   close: "Close",
   back: "Back",

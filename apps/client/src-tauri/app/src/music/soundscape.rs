@@ -543,7 +543,7 @@ impl EngineController {
     fn new() -> Self {
         let (sender, receiver) = mpsc::channel();
         let worker = thread::Builder::new()
-            .name("ganbaru-ai-soundscape".into())
+            .name("ganbaru-soundscape".into())
             .spawn(move || {
                 let mut core = EngineCore::default();
                 while let Ok(message) = receiver.recv() {

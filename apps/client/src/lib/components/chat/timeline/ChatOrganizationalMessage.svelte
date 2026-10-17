@@ -71,7 +71,7 @@
       return;
     }
     if (reference.kind === "workspacePath") {
-      paneEvents.dispatchEvent(new CustomEvent("ganbaru-ai:chat-open-file", {
+      paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-open-file", {
         detail: {
           workingFolderId: reference.workingFolderId,
           relativePath: reference.relativePath,

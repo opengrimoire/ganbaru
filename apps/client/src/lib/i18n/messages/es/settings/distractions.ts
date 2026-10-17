@@ -74,7 +74,7 @@ export const distractions = {
     reselectForAndroid: "Vuelve a elegir esta app para activar el bloqueo en Android",
     disclosureBlockingTitle: "¿Permitir bloquear apps seleccionadas?",
     disclosureBlockingMessage:
-      "Ganbaru AI usa Accesibilidad de Android para observar qué app se activa. Te devuelve al inicio cuando aplica una regla o límite seleccionado y solo guarda en este dispositivo el uso y los bloqueos de las apps seleccionadas. Estos datos nunca se comparten. No lee contenido de pantalla, texto, toques, contraseñas ni notificaciones. Android abrirá Ganbaru AI directamente cuando sea compatible. Si no, abre Servicios descargados o instalados, elige Ganbaru AI y actívalo.",
+      "Ganbaru usa Accesibilidad de Android para observar qué app se activa. Te devuelve al inicio cuando aplica una regla o límite seleccionado y solo guarda en este dispositivo el uso y los bloqueos de las apps seleccionadas. Estos datos nunca se comparten. No lee contenido de pantalla, texto, toques, contraseñas ni notificaciones. Android abrirá Ganbaru directamente cuando sea compatible. Si no, abre Servicios descargados o instalados, elige Ganbaru y actívalo.",
     agreeAndReview: "Aceptar y revisar",
     notNow: "Ahora no",
     channelName: "Bloqueos de distracciones",
@@ -113,7 +113,7 @@ export const distractions = {
     usageLimitConfigurationHeading: "Configuración de límites de uso",
     enableUsageLimits: "Activar límites de uso",
     enableUsageLimitsDescription:
-      "Aplica presupuestos diarios y semanales cuando Ganbaru AI está ejecutándose",
+      "Aplica presupuestos diarios y semanales cuando Ganbaru está ejecutándose",
     noUsageLimits: "Aún no hay límites de uso",
     turnOffTitle: "¿Desactivar límites de uso?",
     disableTitle: (name: string) => `¿Desactivar ${name}?`,
@@ -320,7 +320,7 @@ export const distractions = {
     add: "Agregar",
     remove: "Eliminar",
     blockTitle: (name: string) => `¿Bloquear ${name}?`,
-    blockMessage: "Ganbaru AI cerrará automáticamente esta app durante sesiones de enfoque",
+    blockMessage: "Ganbaru cerrará automáticamente esta app durante sesiones de enfoque",
     blockAction: "Bloquear",
   },
 } as const satisfies MessageShape<typeof enDistractions>;

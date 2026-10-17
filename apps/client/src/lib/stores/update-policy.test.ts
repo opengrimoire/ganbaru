@@ -56,15 +56,15 @@ describe("update helpers", () => {
   });
 
   it("builds a GitHub release page URL from a valid updater version", () => {
-    expect(releasePageUrl("opengrimoire/ganbaru-ai", "0.1.0")).toBe(
-      "https://github.com/opengrimoire/ganbaru-ai/releases/tag/app-v0.1.0",
+    expect(releasePageUrl("opengrimoire/ganbaru", "0.1.0")).toBe(
+      "https://github.com/opengrimoire/ganbaru/releases/tag/app-v0.1.0",
     );
   });
 
   it("rejects release page inputs that should not open external URLs", () => {
-    expect(releasePageUrl("opengrimoire/ganbaru-ai", "../0.1.0")).toBeNull();
-    expect(releasePageUrl("https://github.com/opengrimoire/ganbaru-ai", "0.1.0")).toBeNull();
-    expect(releasePageUrl("opengrimoire/ganbaru-ai", null)).toBeNull();
+    expect(releasePageUrl("opengrimoire/ganbaru", "../0.1.0")).toBeNull();
+    expect(releasePageUrl("https://github.com/opengrimoire/ganbaru", "0.1.0")).toBeNull();
+    expect(releasePageUrl("opengrimoire/ganbaru", null)).toBeNull();
   });
 
   it("parses a self-updater install context", () => {
@@ -73,9 +73,9 @@ describe("update helpers", () => {
         selfUpdater: true,
         packageManager: null,
         copyCommand: "sudo apt update",
-        releasePageUrl: "https://github.com/opengrimoire/ganbaru-ai/releases/latest",
+        releasePageUrl: "https://github.com/opengrimoire/ganbaru/releases/latest",
       },
-      "opengrimoire/ganbaru-ai",
+      "opengrimoire/ganbaru",
     );
 
     expect(context.selfUpdater).toBe(true);
@@ -89,14 +89,14 @@ describe("update helpers", () => {
       {
         selfUpdater: false,
         packageManager: "apt",
-        copyCommand: " sudo apt update && sudo apt install ganbaru-ai ",
-        releasePageUrl: "https://github.com/opengrimoire/ganbaru-ai/releases/latest",
+        copyCommand: " sudo apt update && sudo apt install ganbaru ",
+        releasePageUrl: "https://github.com/opengrimoire/ganbaru/releases/latest",
       },
-      "opengrimoire/ganbaru-ai",
+      "opengrimoire/ganbaru",
     );
 
     expect(context.packageManager).toBe("apt");
-    expect(context.copyCommand).toBe("sudo apt update && sudo apt install ganbaru-ai");
+    expect(context.copyCommand).toBe("sudo apt update && sudo apt install ganbaru");
     expect(updatePrimaryAction(context)).toBe("copy-command");
   });
 
@@ -108,13 +108,13 @@ describe("update helpers", () => {
         copyCommand: "",
         releasePageUrl: "https://example.com/releases/latest",
       },
-      "opengrimoire/ganbaru-ai",
+      "opengrimoire/ganbaru",
     );
 
     expect(context.packageManager).toBeNull();
     expect(context.copyCommand).toBeNull();
     expect(context.releasePageUrl).toBe(
-      "https://github.com/opengrimoire/ganbaru-ai/releases/latest",
+      "https://github.com/opengrimoire/ganbaru/releases/latest",
     );
     expect(updatePrimaryAction(context)).toBe("release-page");
   });

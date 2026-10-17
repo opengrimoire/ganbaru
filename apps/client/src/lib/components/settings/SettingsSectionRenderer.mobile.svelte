@@ -28,7 +28,7 @@
 {:else if activeSection === "contacts"}
   <ContactsSection initialTab={initialContactsTab} />
 {:else if activeSection === "calendars"}
-  <CalendarsSection fileTransfersAvailable={__GANBARU_AI_BUILD_PLATFORM__ === "android"} />
+  <CalendarsSection fileTransfersAvailable={__GANBARU_BUILD_PLATFORM__ === "android"} />
 {:else if activeSection === "projects"}
   <ProjectsSection />
 {:else if activeSection === "notes"}

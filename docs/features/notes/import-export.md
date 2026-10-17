@@ -84,7 +84,7 @@ Agent bridge export creates deterministic readable Markdown for an explicitly se
 
 The output begins with a source-of-truth warning, does not create canonical export rows, and does not embed managed asset bytes. It never includes restricted page names, counts, backlinks, rows, comments, tasks, or derived facts merely because they share a project.
 
-This bridge is the current agent-readable Notes export. It is not the planned external `ganbaru-ai` CLI and does not authorize internal coding-agent access by itself.
+This bridge is the current agent-readable Notes export. It is not the planned external `ganbaru` CLI and does not authorize internal coding-agent access by itself.
 
 ## Round-trip diagnostics
 

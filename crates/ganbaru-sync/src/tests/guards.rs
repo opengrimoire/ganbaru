@@ -140,7 +140,7 @@ fn a_guarded_vault_pool_installs_guards_on_its_connection() {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&directory).unwrap();
-        let path = directory.join("ganbaru-ai.sqlite");
+        let path = directory.join("ganbaru.sqlite");
         let registry = ganbaru_db::DatabasePoolRegistry::default();
         registry.connect_path(&path).await.unwrap();
         registry.close_all().await.unwrap();

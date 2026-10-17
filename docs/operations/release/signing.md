@@ -12,21 +12,21 @@ Release credentials belong in the protected `release` GitHub environment. They m
 | `ANDROID_KEYSTORE_PASSWORD` | Android keystore password |
 | `ANDROID_KEY_ALIAS` | Release key alias |
 | `ANDROID_KEY_PASSWORD` | Release key password |
-| `GANBARU_AI_PACKAGE_REPO_GPG_PRIVATE_KEY` | ASCII-armored apt and RPM repository signing key |
-| `GANBARU_AI_PACKAGE_REPO_GPG_PASSPHRASE` | Package repository key passphrase |
+| `GANBARU_PACKAGE_REPO_GPG_PRIVATE_KEY` | ASCII-armored apt and RPM repository signing key |
+| `GANBARU_PACKAGE_REPO_GPG_PASSPHRASE` | Package repository key passphrase |
 | `AUR_SSH_PRIVATE_KEY` | Dedicated AUR publishing key |
 
 Repository variables hold public material:
 
 - `TAURI_UPDATER_PUBLIC_KEY`
-- `GANBARU_AI_PACKAGE_REPO_PUBLIC_KEY`
+- `GANBARU_PACKAGE_REPO_PUBLIC_KEY`
 
 ## Tauri updater key
 
 Generate the updater key pair on a trusted maintainer machine:
 
 ```sh
-pnpm -C apps/client tauri signer generate -w ~/.tauri/ganbaru-ai.key
+pnpm -C apps/client tauri signer generate -w ~/.tauri/ganbaru.key
 ```
 
 Back up the private key and password in a durable protected store. Losing the key prevents existing users from accepting later updates through the current updater identity. Rotating it requires an explicit user migration path.
@@ -40,8 +40,8 @@ The package identifier and signing certificate together form the permanent direc
 Generate the production keystore once on a trusted machine. The command is intentionally interactive so secrets do not enter shell history:
 
 ```sh
-mkdir -p ~/.config/ganbaru-ai
-keytool -genkeypair -v -keystore ~/.config/ganbaru-ai/android-release.jks -storetype PKCS12 -keyalg RSA -keysize 4096 -validity 10000 -alias ganbaru-ai
+mkdir -p ~/.config/ganbaru
+keytool -genkeypair -v -keystore ~/.config/ganbaru/android-release.jks -storetype PKCS12 -keyalg RSA -keysize 4096 -validity 10000 -alias ganbaru
 ```
 
 Back up the keystore and passwords in two access-controlled locations before distributing the first production APK. Losing a self-managed signing key prevents normal updates to direct installations.
@@ -51,7 +51,7 @@ For a local signed build, create the ignored `apps/client/src-tauri/gen/android/
 ```properties
 storeFile=/absolute/path/to/android-release.jks
 storePassword=replace-with-keystore-password
-keyAlias=ganbaru-ai
+keyAlias=ganbaru
 keyPassword=replace-with-key-password
 ```
 
@@ -66,7 +66,7 @@ Debug builds remain independent and use the `.dev` application identifier.
 For GitHub Actions, encode the keystore without line wrapping:
 
 ```sh
-base64 -w 0 ~/.config/ganbaru-ai/android-release.jks
+base64 -w 0 ~/.config/ganbaru/android-release.jks
 ```
 
 The protected job decodes it into temporary runner storage, writes restrictive Gradle properties, builds minified universal artifacts, verifies the APK and AAB signatures, and removes temporary signing files before artifact upload. Android release certificates are normally self-signed. Strict AAB verification therefore uses the same protected keystore as its explicit trust anchor and requires the configured signing alias; it does not rely on the public Java certificate-authority store.
@@ -81,4 +81,4 @@ Losing or rotating this key requires package-manager users to trust the replacem
 
 ## AUR key
 
-Use a dedicated SSH key with access only to `ssh://aur@aur.archlinux.org/ganbaru-ai-bin.git`. Do not reuse a personal general-purpose SSH key. Rotate it immediately if exposed.
+Use a dedicated SSH key with access only to `ssh://aur@aur.archlinux.org/ganbaru-bin.git`. Do not reuse a personal general-purpose SSH key. Rotate it immediately if exposed.

@@ -1,15 +1,15 @@
 [package]
 name = "ganbaru-native-messaging"
 version = "0.1.5"
-description = "Ganbaru AI Chromium native messaging host"
+description = "Ganbaru Chromium native messaging host"
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-default-run = "ganbaru-ai-native-messaging"
+default-run = "ganbaru-native-messaging"
 
 [[bin]]
-name = "ganbaru-ai-native-messaging"
+name = "ganbaru-native-messaging"
 path = "src/main.rs"
 
 [lints]

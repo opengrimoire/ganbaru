@@ -10,7 +10,7 @@
   let { onContinue }: { onContinue: () => void } = $props();
 
   const { t } = getLocalization();
-  const SOURCE_URL = "https://github.com/opengrimoire/ganbaru-ai";
+  const SOURCE_URL = "https://github.com/opengrimoire/ganbaru";
   let informationDialog = $state<"license" | "acknowledgments" | null>(null);
   let sourceError = $state(false);
 

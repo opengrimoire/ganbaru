@@ -21,7 +21,7 @@ These advisories are ignored in `.cargo/audit.toml` after path review. Each igno
 
 ### RUSTSEC-2023-0071, rsa timing side channel
 
-`Cargo.lock` contains rsa through SQLx's optional MySQL macro support. Ganbaru AI uses SQLite only, and no application dependency tree activates sqlx-mysql or rsa in the shipped database path.
+`Cargo.lock` contains rsa through SQLx's optional MySQL macro support. Ganbaru uses SQLite only, and no application dependency tree activates sqlx-mysql or rsa in the shipped database path.
 
 Remove the ignore before enabling MySQL, when SQLx no longer locks the affected optional path, or when a compatible fixed path is available.
 
@@ -41,7 +41,7 @@ The vulnerable parsing is not reachable from user-controlled runtime XML. Remove
 - RUSTSEC-2024-0429: unsound iteration in glib 0.18.
 - RUSTSEC-2024-0370: unmaintained proc-macro-error.
 
-Both come through the Linux Tauri and Wry WebKit stack and native Linux integrations. Ganbaru AI does not use the affected glib `VariantStrIter` API. Remove them when the upstream stack can move to maintained bindings without replacing them with a broader or less trustworthy runtime.
+Both come through the Linux Tauri and Wry WebKit stack and native Linux integrations. Ganbaru does not use the affected glib `VariantStrIter` API. Remove them when the upstream stack can move to maintained bindings without replacing them with a broader or less trustworthy runtime.
 
 ### UNIC crates
 

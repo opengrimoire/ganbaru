@@ -4,7 +4,7 @@ use tauri::{
     plugin::{PluginApi, PluginHandle},
 };
 
-const PLUGIN_IDENTIFIER: &str = "org.opengrimoire.ganbaruai.mobile.documents";
+const PLUGIN_IDENTIFIER: &str = "org.opengrimoire.ganbaru.mobile.documents";
 
 #[derive(Debug)]
 pub struct MobileDocuments<R: Runtime>(PluginHandle<R>);
@@ -116,7 +116,7 @@ impl<R: Runtime> MobileDocuments<R> {
                 },
             )
             .map(|response| response.display_name)
-            .map_err(|error| format!("import Ganbaru AI folder: {error}"))
+            .map_err(|error| format!("import Ganbaru folder: {error}"))
     }
 
     /// Ask Android to select and read one UTF-8 document within `max_bytes`.
@@ -258,7 +258,7 @@ impl<R: Runtime> MobileDocuments<R> {
     }
 }
 
-/// Access Ganbaru AI's Android document adapter from managed Tauri state.
+/// Access Ganbaru's Android document adapter from managed Tauri state.
 pub trait MobileDocumentsExt<R: Runtime> {
     fn mobile_documents(&self) -> &MobileDocuments<R>;
 }

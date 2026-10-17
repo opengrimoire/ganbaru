@@ -277,7 +277,7 @@ fn working_markdown_error(error: WorkingMarkdownError) -> ChatError {
         ),
         WorkingMarkdownError::StaleRevision => ChatError::new(
             ChatErrorCode::StaleRevision,
-            "The Markdown file changed outside Ganbaru AI",
+            "The Markdown file changed outside Ganbaru",
             true,
         ),
     }

@@ -99,7 +99,7 @@ if (appVersion !== tauriVersion || appVersion !== cargoVersion) {
 }
 
 const tagName = `app-v${appVersion}`;
-const releaseName = `Ganbaru AI v${appVersion}`;
+const releaseName = `Ganbaru v${appVersion}`;
 const refType = process.env.GITHUB_REF_TYPE;
 const refName = process.env.GITHUB_REF_NAME;
 

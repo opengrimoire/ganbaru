@@ -46,7 +46,7 @@ fn response_for_phase(phase: &str) -> NativeResponse {
         host: None,
         matched_rule_name: None,
         reason: None,
-        environment_name: "Ganbaru AI",
+        environment_name: "Ganbaru",
     }
 }
 
@@ -208,13 +208,13 @@ fn runtime_state_requires_current_nullable_fields() {
 #[test]
 fn records_block_event_to_sqlite_without_full_url() {
     let vault_path = std::env::temp_dir().join(format!(
-        "ganbaru-ai-native-block-event-{}-{}",
+        "ganbaru-native-block-event-{}-{}",
         std::process::id(),
         super::now_epoch_ms()
     ));
     let _ = std::fs::remove_dir_all(&vault_path);
     std::fs::create_dir_all(&vault_path).unwrap();
-    let db_path = vault_path.join("ganbaru-ai.sqlite");
+    let db_path = vault_path.join("ganbaru.sqlite");
     std::fs::File::create(&db_path).unwrap();
     let db_url = format!("sqlite:{}", db_path.to_string_lossy());
 
@@ -304,7 +304,7 @@ fn records_block_event_to_sqlite_without_full_url() {
 #[test]
 fn usage_samples_are_spooled_outside_the_vault_until_the_app_acknowledges_them() {
     let vault_path = std::env::temp_dir().join(format!(
-        "ganbaru-ai-native-usage-sample-{}-{}",
+        "ganbaru-native-usage-sample-{}-{}",
         std::process::id(),
         super::now_epoch_ms()
     ));
@@ -318,7 +318,7 @@ fn usage_samples_are_spooled_outside_the_vault_until_the_app_acknowledges_them()
         r#"{"deviceId":"desktop-test","activeVaultPath":null}"#,
     )
     .unwrap();
-    let db_path = vault_path.join("ganbaru-ai.sqlite");
+    let db_path = vault_path.join("ganbaru.sqlite");
     std::fs::File::create(&db_path).unwrap();
     let sample = || super::UsageSample {
         id: "sample-1".to_string(),
@@ -384,7 +384,7 @@ fn retried_browser_usage_keeps_the_same_device_sample_id() {
 #[test]
 fn native_vault_writes_require_stable_local_ownership() {
     let root = std::env::temp_dir().join(format!(
-        "ganbaru-ai-native-ownership-{}-{}",
+        "ganbaru-native-ownership-{}-{}",
         std::process::id(),
         super::now_epoch_ms()
     ));
@@ -646,7 +646,7 @@ fn blocks_exhausted_daily_website_limits_without_active_pomodoro_rules() {
         local_date: "2026-05-28".to_string(),
         week_start_local_date: "2026-05-25".to_string(),
         updated_at: super::now_utc().to_rfc3339_opts(SecondsFormat::Millis, true),
-        database_path: "/tmp/ganbaru-ai-vault/ganbaru-ai.sqlite".to_string(),
+        database_path: "/tmp/ganbaru-vault/ganbaru.sqlite".to_string(),
         configuration_digest: Some("native-test-digest".into()),
         limits: vec![super::snapshot::LimitStateItem {
             id: "youtube".to_string(),
@@ -730,7 +730,7 @@ fn active_focus_rules_win_over_limit_blocks() {
         local_date: "2026-05-28".to_string(),
         week_start_local_date: "2026-05-25".to_string(),
         updated_at: super::now_utc().to_rfc3339_opts(SecondsFormat::Millis, true),
-        database_path: "/tmp/ganbaru-ai-vault/ganbaru-ai.sqlite".to_string(),
+        database_path: "/tmp/ganbaru-vault/ganbaru.sqlite".to_string(),
         configuration_digest: Some("native-test-digest".into()),
         limits: vec![super::snapshot::LimitStateItem {
             id: "reddit".to_string(),
@@ -761,29 +761,29 @@ fn active_focus_rules_win_over_limit_blocks() {
 
 #[test]
 fn uses_limit_state_database_path_for_usage_samples() {
-    let vault_path = std::path::Path::new("/tmp/ganbaru-ai-vault");
+    let vault_path = std::path::Path::new("/tmp/ganbaru-vault");
     let limit_state = super::snapshot::LimitState {
         local_date: "2026-05-28".to_string(),
         week_start_local_date: "2026-05-25".to_string(),
         updated_at: super::now_utc().to_rfc3339_opts(SecondsFormat::Millis, true),
-        database_path: "/tmp/ganbaru-ai-vault/ganbaru-ai.sqlite".to_string(),
+        database_path: "/tmp/ganbaru-vault/ganbaru.sqlite".to_string(),
         configuration_digest: Some("native-test-digest".into()),
         limits: Vec::new(),
     };
 
     assert_eq!(
         super::snapshot::usage_db_path(vault_path, Some(&limit_state)),
-        vault_path.join("ganbaru-ai.sqlite")
+        vault_path.join("ganbaru.sqlite")
     );
 }
 
 #[test]
 fn uses_vault_database_path_without_limit_state() {
-    let vault_path = std::path::Path::new("/tmp/ganbaru-ai-vault");
+    let vault_path = std::path::Path::new("/tmp/ganbaru-vault");
 
     assert_eq!(
         super::snapshot::usage_db_path(vault_path, None),
-        vault_path.join("ganbaru-ai.sqlite")
+        vault_path.join("ganbaru.sqlite")
     );
 }
 
@@ -793,7 +793,7 @@ fn limit_state_requires_the_current_on_disk_shape() {
         "localDate": "2026-05-28",
         "weekStartLocalDate": "2026-05-25",
         "updatedAt": "2026-05-28T12:00:00Z",
-        "databasePath": "/tmp/ganbaru-ai-vault/ganbaru-ai.sqlite",
+        "databasePath": "/tmp/ganbaru-vault/ganbaru.sqlite",
         "limits": [{
             "id": "reddit",
             "period": "day",

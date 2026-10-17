@@ -116,7 +116,7 @@
   let returnFocus: ReturnType<typeof captureFocusReturn> | null = null;
   let previouslyVisible = false;
 
-  const mediaSurfaceFullscreenEvent = "ganbaru-ai-music-media-surface-fullscreen";
+  const mediaSurfaceFullscreenEvent = "ganbaru-music-media-surface-fullscreen";
   const volumeMax = $derived(player.volumeMax);
   const volumeSliderProgress = $derived(volumeMax > 0
     ? `${Math.min(100, Math.max(0, (player.volumeControlValue / volumeMax) * 100))}%`

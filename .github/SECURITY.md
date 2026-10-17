@@ -1,13 +1,13 @@
 # Security policy
 
-Ganbaru AI handles sensitive local data, including calendar entries, notes, diary content, work patterns, and optional AI conversations. Please do not report vulnerabilities through public GitHub issues.
+Ganbaru handles sensitive local data, including calendar entries, notes, diary content, work patterns, and optional AI conversations. Please do not report vulnerabilities through public GitHub issues.
 
 ## Reporting a vulnerability
 
 Use GitHub private vulnerability reporting:
 
 ```text
-https://github.com/opengrimoire/ganbaru-ai/security/advisories/new
+https://github.com/opengrimoire/ganbaru/security/advisories/new
 ```
 
 Include:
@@ -24,7 +24,7 @@ Do not include real private user data, API keys, signing keys, passwords, or unr
 
 Report these privately:
 
-- Data exposure, data loss, or unauthorized access to the Ganbaru AI folder.
+- Data exposure, data loss, or unauthorized access to the Ganbaru folder.
 - Bypass of Tauri permissions, filesystem restrictions, updater checks, signing, or release protections.
 - Dependency, build, CI, release, cache, or workflow behavior that could compromise published artifacts.
 - Remote code execution, command execution, path traversal, injection, or privilege escalation.

@@ -106,7 +106,7 @@ describe("ChatChannelRail", () => {
     expect(input).not.toBeNull();
     expect(document.activeElement).not.toBe(input);
     expect(target.querySelectorAll(".explorer-dock-content > .explorer-toolbar button")).toHaveLength(1);
-    chatPaneEvents("primary").dispatchEvent(new Event("ganbaru-ai:chat-focus-search"));
+    chatPaneEvents("primary").dispatchEvent(new Event("ganbaru:chat-focus-search"));
     await tick();
     await vi.waitFor(() => expect(document.activeElement).toBe(input));
     if (!input) throw new Error("Search input is missing");

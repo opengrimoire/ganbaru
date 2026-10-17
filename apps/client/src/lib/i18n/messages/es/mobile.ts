@@ -5,7 +5,7 @@ export const mobile = {
   primaryNavigation: "Navegación principal",
   createEvent: "Crear evento",
   theme: "Tema",
-  startupFailed: "Ganbaru AI no pudo abrir sus datos móviles privados",
+  startupFailed: "Ganbaru no pudo abrir sus datos móviles privados",
   pomodoroInactiveDescription:
     "Pomodoro comienza automáticamente cuando inicia un bloque de calendario con Pomodoro habilitado.",
   pomodoroOpenCalendar: "Abrir calendario",
@@ -21,7 +21,7 @@ export const mobile = {
   focusOnboarding: {
     title: "Mantén Enfoque en funcionamiento",
     description:
-      "Revisa estos ajustes de Android para iniciar eventos de Enfoque programados con Ganbaru AI cerrado.",
+      "Revisa estos ajustes de Android para iniciar eventos de Enfoque programados con Ganbaru cerrado.",
     notifications: "Notificaciones",
     notificationsDescription: "Muestra el progreso de Enfoque y las alertas de fase",
     exactAlarm: "Alarmas y recordatorios",
@@ -30,7 +30,7 @@ export const mobile = {
     usageAccessDescription: "Mide el tiempo en primer plano de las apps que elijas",
     appBlocking: "Bloqueo de apps",
     appBlockingDescription: "Vuelve al inicio cuando aplica una regla o límite seleccionado",
-    backgroundRestricted: "Android actualmente restringe Ganbaru AI en segundo plano",
+    backgroundRestricted: "Android actualmente restringe Ganbaru en segundo plano",
     review: "Revisar",
     continue: "Continuar",
     continueIn: (seconds: number) => `Continuar en ${seconds} s`,
@@ -44,7 +44,7 @@ export const mobile = {
     storageHeading: "Almacenamiento",
     privateStorage: "Privado",
     privateStorageDescription:
-      "Android conserva estos datos en el almacenamiento privado de Ganbaru AI. Desinstalar la app los elimina.",
+      "Android conserva estos datos en el almacenamiento privado de Ganbaru. Desinstalar la app los elimina.",
     androidUpdatesDescription: "Las actualizaciones de Android son APK firmados publicados con cada lanzamiento de GitHub.",
     androidLatestPublished: (date: string) => `Publicado ${date}`,
     downloadApk: "Descargar APK",

@@ -20,7 +20,7 @@ const TAB_WINDOW_DRAG_ENDED_EVENT = "tab-window-drag-ended";
 /** Sent by the native side with the label of a window it brought on screen. */
 const WINDOW_RAISED_EVENT = "app-window-raised";
 /** Drag data naming a tab another window can ask for. Only ids travel, so the tab leaves with its live location. */
-export const TAB_WINDOW_DRAG_MIME = "application/x-ganbaru-ai-window-tab";
+export const TAB_WINDOW_DRAG_MIME = "application/x-ganbaru-window-tab";
 /** Where the pointer sits on a torn-off window, so it lands over that window's tab strip. */
 const TEAR_OFF_GRAB_OFFSET = { x: 96, y: 16 } as const;
 /** Surface the desktop shell paints first, used as the native background of a new window. */
@@ -327,7 +327,7 @@ async function openTabWindow(
   const created = new WebviewWindow(label, {
     ...(background ? { backgroundColor: [background.r, background.g, background.b] } : {}),
     url: tabWindowUrl(tab),
-    title: "Ganbaru AI",
+    title: "Ganbaru",
     width: 960,
     height: 720,
     minWidth: 280,

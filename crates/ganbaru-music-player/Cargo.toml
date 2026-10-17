@@ -1,7 +1,7 @@
 [package]
 name = "ganbaru-music-player"
 version = "0.1.0"
-description = "Ganbaru AI desktop local media inspection and native playback for Music sessions"
+description = "Ganbaru desktop local media inspection and native playback for Music sessions"
 authors.workspace = true
 license.workspace = true
 edition.workspace = true

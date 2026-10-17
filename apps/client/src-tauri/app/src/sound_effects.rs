@@ -181,7 +181,7 @@ impl AppSoundController {
     fn new() -> Self {
         let (sender, receiver) = mpsc::sync_channel(APP_SOUND_COMMAND_QUEUE_LIMIT);
         let worker = std::thread::Builder::new()
-            .name("ganbaru-ai-app-sounds".to_string())
+            .name("ganbaru-app-sounds".to_string())
             .spawn(move || app_sound_worker(receiver))
             .expect("failed to start app sound worker thread");
         Self {

@@ -1,7 +1,7 @@
 [package]
 name = "ganbaru-projects"
 version = "0.1.0"
-description = "Ganbaru AI Projects persistence, structure, tasks, history, dependency cascades, scheduling, and validation"
+description = "Ganbaru Projects persistence, structure, tasks, history, dependency cascades, scheduling, and validation"
 authors.workspace = true
 license.workspace = true
 edition.workspace = true

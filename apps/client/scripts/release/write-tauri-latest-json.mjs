@@ -67,7 +67,7 @@ function readSignature(assetName) {
  * @returns {string} Updater release notes.
  */
 function releaseNotes() {
-  const notesPath = process.env.GANBARU_AI_RELEASE_NOTES_PATH?.trim();
+  const notesPath = process.env.GANBARU_RELEASE_NOTES_PATH?.trim();
   if (!notesPath) return DEFAULT_RELEASE_NOTES;
 
   const notes = readFileSync(notesPath, "utf8").trim();
@@ -90,12 +90,12 @@ function compareWindowsAsset(left, right) {
   return left.localeCompare(right);
 }
 
-const repository = readRequiredEnv("GANBARU_AI_RELEASE_REPOSITORY");
+const repository = readRequiredEnv("GANBARU_RELEASE_REPOSITORY");
 if (!GITHUB_REPOSITORY_PATTERN.test(repository)) {
-  throw new Error("GANBARU_AI_RELEASE_REPOSITORY must be an owner/name repository");
+  throw new Error("GANBARU_RELEASE_REPOSITORY must be an owner/name repository");
 }
 
-const tag = readRequiredEnv("GANBARU_AI_RELEASE_TAG");
+const tag = readRequiredEnv("GANBARU_RELEASE_TAG");
 const files = readdirSync(ASSET_DIR).sort();
 const signedAssets = files.filter((name) => files.includes(`${name}.sig`));
 const linuxAsset = signedAssets.find((name) => name.endsWith(".AppImage"));

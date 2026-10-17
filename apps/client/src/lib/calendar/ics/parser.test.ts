@@ -3,7 +3,7 @@ import { parseIcs } from "./parser";
 
 const HEADER = [
 	"BEGIN:VCALENDAR",
-	"PRODID:-//Ganbaru AI//Test//EN",
+	"PRODID:-//Ganbaru//Test//EN",
 	"VERSION:2.0",
 ].join("\r\n");
 

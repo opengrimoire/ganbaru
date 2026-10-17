@@ -5,7 +5,7 @@ Fastmail is a practical compatibility target and a useful provider because it su
 ## Source notes
 
 - Fastmail documents importing events from `.ics` files and exporting calendars as `.ics`.
-- Fastmail states that alarms and notification preferences are not imported or exported. Missing alarms in Fastmail exports are a client observation, not a Ganbaru AI rule.
+- Fastmail states that alarms and notification preferences are not imported or exported. Missing alarms in Fastmail exports are a client observation, not a Ganbaru rule.
 - Fastmail replaces existing event details when an uploaded file contains an event that already exists.
 
 Source: <https://www.fastmail.help/hc/en-us/articles/360060590773-Import-export-your-calendars>
@@ -22,4 +22,4 @@ Source: <https://www.fastmail.help/hc/en-us/articles/360060590773-Import-export-
 
 ## Observed behavior log
 
-No manual Ganbaru AI compatibility run recorded yet.
+No manual Ganbaru compatibility run recorded yet.

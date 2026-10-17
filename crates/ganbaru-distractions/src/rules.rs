@@ -10,13 +10,13 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 const PROTECTED_DESKTOP_APP_NAMES: &[&str] = &[
-    "Ganbaru AI",
-    "ganbaru-ai",
-    "ganbaru-ai-dev",
-    "Ganbaru AI Dev",
-    "Ganbaru AI (dev)",
-    "org.opengrimoire.ganbaruai",
-    "org.opengrimoire.ganbaruai.dev",
+    "Ganbaru",
+    "ganbaru",
+    "ganbaru-dev",
+    "Ganbaru Dev",
+    "Ganbaru (dev)",
+    "org.opengrimoire.ganbaru",
+    "org.opengrimoire.ganbaru.dev",
     "Activity Monitor",
     "Advanced Network Configuration",
     "Calculator",

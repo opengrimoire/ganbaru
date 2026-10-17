@@ -23,7 +23,7 @@ installModalKeyboardRouter();
 type MountedRoot = ReturnType<typeof mount>;
 type MobileAppComponent = typeof import("./MobileApp.svelte").default;
 
-const MOBILE_OWNERSHIP_RELOAD_EVENT = "ganbaru-ai:mobile-ownership-reload-requested";
+const MOBILE_OWNERSHIP_RELOAD_EVENT = "ganbaru:mobile-ownership-reload-requested";
 const ANDROID_TRANSITION_FRAME_HELD_EVENT = "ganbaru:android-transition-frame-held";
 let mobileInitialSurfacePresented: Promise<void> = Promise.resolve();
 let ownershipReloadStarted = false;

@@ -403,7 +403,7 @@ pub async fn music_pick_and_write_interchange_file(
         return Err("music export exceeds the 8 MB safety limit".to_string());
     }
     let (extension, label) = match format.as_str() {
-        "json" => ("json", "Ganbaru AI music JSON"),
+        "json" => ("json", "Ganbaru music JSON"),
         "m3u8" => ("m3u8", "UTF-8 M3U playlist"),
         _ => return Err("unsupported music export format".to_string()),
     };
@@ -775,7 +775,7 @@ mod tests {
         assert!(host.contains("params.get(\"playlistId\")"));
         assert!(host.contains("const initialLoad = initialPayloadFromParams()"));
         assert!(host.contains("load: loadId"));
-        assert!(host.contains("ganbaru-ai-youtube-playlist-error"));
+        assert!(host.contains("ganbaru-youtube-playlist-error"));
         assert!(host.contains("event.source !== parent"));
         assert!(host.contains("activeSource.kind !== \"youtube-playlist\""));
         assert!(host.contains("playbackActive = event.data === 1"));
@@ -833,7 +833,7 @@ mod tests {
 
     #[test]
     fn music_folder_start_directory_uses_only_existing_directories() {
-        let root = unique_temporary_dir("ganbaru-ai-music-start-dir");
+        let root = unique_temporary_dir("ganbaru-music-start-dir");
         let music_dir = root.join("localized-audio");
         let file_path = root.join("not-a-directory");
         fs::create_dir_all(&music_dir).unwrap();
@@ -851,7 +851,7 @@ mod tests {
 
     #[test]
     fn automatic_music_folder_detection_stops_after_the_first_supported_file() {
-        let root = unique_temporary_dir("ganbaru-ai-music-detection");
+        let root = unique_temporary_dir("ganbaru-music-detection");
         fs::create_dir_all(root.join("album")).unwrap();
         fs::write(root.join("notes.txt"), []).unwrap();
         assert!(detect_non_empty_media_folder(&root).unwrap().is_none());
@@ -870,7 +870,7 @@ mod tests {
     fn media_folder_scan_returns_deterministic_partial_results_on_cancellation() {
         use std::cell::Cell;
 
-        let root = unique_temporary_dir("ganbaru-ai-music-cancel");
+        let root = unique_temporary_dir("ganbaru-music-cancel");
         fs::create_dir_all(&root).unwrap();
         for name in ["c.mp3", "a.mp3", "b.mp3"] {
             fs::write(root.join(name), []).unwrap();
@@ -892,7 +892,7 @@ mod tests {
 
     #[test]
     fn media_folder_scan_handles_deep_trees_without_recursion() {
-        let root = unique_temporary_dir("ganbaru-ai-music-deep");
+        let root = unique_temporary_dir("ganbaru-music-deep");
         let mut directory = root.clone();
         for index in 0..128 {
             directory = directory.join(format!("d{index}"));
@@ -911,8 +911,8 @@ mod tests {
     fn media_folder_scan_does_not_follow_symlinks() {
         use std::os::unix::fs::symlink;
 
-        let root = unique_temporary_dir("ganbaru-ai-music-symlink");
-        let outside = unique_temporary_dir("ganbaru-ai-music-outside");
+        let root = unique_temporary_dir("ganbaru-music-symlink");
+        let outside = unique_temporary_dir("ganbaru-music-outside");
         fs::create_dir_all(&root).unwrap();
         fs::create_dir_all(&outside).unwrap();
         fs::write(outside.join("outside.mp3"), []).unwrap();
@@ -926,7 +926,7 @@ mod tests {
 
     #[test]
     fn media_folder_scan_stops_at_five_thousand_tracks() {
-        let root = unique_temporary_dir("ganbaru-ai-music-cap");
+        let root = unique_temporary_dir("ganbaru-music-cap");
         fs::create_dir_all(&root).unwrap();
         for index in 0..=MAX_MEDIA_FOLDER_FILES {
             fs::write(root.join(format!("{index:05}.mp3")), []).unwrap();

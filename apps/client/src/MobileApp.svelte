@@ -800,7 +800,7 @@
       if (!eventId) return;
       nav.navigate("calendar");
       window.setTimeout(() => {
-        window.dispatchEvent(new CustomEvent("ganbaru-ai:inspect-music-assignment", {
+        window.dispatchEvent(new CustomEvent("ganbaru:inspect-music-assignment", {
           detail: { eventId, ready: true },
         }));
       }, 0);
@@ -834,7 +834,7 @@
     syncNestedRoute();
     window.addEventListener("hashchange", syncNestedRoute);
     window.addEventListener("popstate", syncNestedRoute);
-    window.addEventListener("ganbaru-ai:inspect-music-assignment", handleMusicAssignmentInspection);
+    window.addEventListener("ganbaru:inspect-music-assignment", handleMusicAssignmentInspection);
     document.addEventListener("visibilitychange", handleVisibilityChange);
     window.addEventListener("focus", resumeLifecycleSchedulers);
 
@@ -844,7 +844,7 @@
       mobileAppDisposed = true;
       window.removeEventListener("hashchange", syncNestedRoute);
       window.removeEventListener("popstate", syncNestedRoute);
-      window.removeEventListener("ganbaru-ai:inspect-music-assignment", handleMusicAssignmentInspection);
+      window.removeEventListener("ganbaru:inspect-music-assignment", handleMusicAssignmentInspection);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       window.removeEventListener("focus", resumeLifecycleSchedulers);
       removePomodoroBackLayer();

@@ -21,4 +21,4 @@ Source: <https://support.apple.com/en-afri/guide/calendar/icl1023>
 
 ## Observed behavior log
 
-No manual Ganbaru AI compatibility run recorded yet.
+No manual Ganbaru compatibility run recorded yet.

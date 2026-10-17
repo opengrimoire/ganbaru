@@ -25,9 +25,9 @@ export const focusAndShortcuts = {
       "Los ajustes de segundo plano de Android no están disponibles temporalmente.",
     androidAutostart: "Inicio automático en segundo plano",
     androidAutostartDescription:
-      "Permite iniciar eventos de Enfoque programados con Ganbaru AI cerrado",
+      "Permite iniciar eventos de Enfoque programados con Ganbaru cerrado",
     androidBattery: "Restricciones del ahorro de batería",
-    androidBatteryDescription: "Elige Sin restricciones para Ganbaru AI",
+    androidBatteryDescription: "Elige Sin restricciones para Ganbaru",
     pausedFocusWarning: "Aviso de enfoque pausado",
     pausedFocusWarningDescription:
       "Recuérdate reanudar sesiones de enfoque pausadas",

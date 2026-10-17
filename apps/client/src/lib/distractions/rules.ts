@@ -27,13 +27,13 @@ interface DistractionsCategoryDefinition {
 }
 
 export const DISTRACTIONS_PROTECTED_DESKTOP_APP_NAMES = [
-  "Ganbaru AI",
-  "ganbaru-ai",
-  "ganbaru-ai-dev",
-  "Ganbaru AI Dev",
-  "Ganbaru AI (dev)",
-  "org.opengrimoire.ganbaruai",
-  "org.opengrimoire.ganbaruai.dev",
+  "Ganbaru",
+  "ganbaru",
+  "ganbaru-dev",
+  "Ganbaru Dev",
+  "Ganbaru (dev)",
+  "org.opengrimoire.ganbaru",
+  "org.opengrimoire.ganbaru.dev",
   "Activity Monitor",
   "Advanced Network Configuration",
   "Calculator",

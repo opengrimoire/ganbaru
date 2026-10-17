@@ -1,16 +1,16 @@
 # Data architecture
 
-Ganbaru AI uses three storage classes with deliberately different authority: user documents, structured application data, and device-local runtime state. Treating one class as another causes ambiguous recovery, unsafe sync, and data that cannot be inspected outside the app.
+Ganbaru uses three storage classes with deliberately different authority: user documents, structured application data, and device-local runtime state. Treating one class as another causes ambiguous recovery, unsafe sync, and data that cannot be inspected outside the app.
 
 ## Sources of truth
 
 ### User documents
 
-Diary entries, project working documents, generated reports, and attachments are files inside the active Ganbaru AI folder. When a document format is canonical, the file is the source of truth. SQLite may index its path, metadata, extracted text, tags, or links, but that index must be rebuildable.
+Diary entries, project working documents, generated reports, and attachments are files inside the active Ganbaru folder. When a document format is canonical, the file is the source of truth. SQLite may index its path, metadata, extracted text, tags, or links, but that index must be rebuildable.
 
 Project working-folder Markdown remains ordinary user-owned Markdown. Managed project folders live below the vault. External working folders stay at user-selected paths and are represented in the vault by durable logical identities, never by portable absolute paths.
 
-Keeping canonical documents as files means the user can inspect, edit, back up, and version them with ordinary tools, the folder stays useful without Ganbaru AI, and import or sync conflicts can be resolved at a visible document boundary.
+Keeping canonical documents as files means the user can inspect, edit, back up, and version them with ordinary tools, the folder stays useful without Ganbaru, and import or sync conflicts can be resolved at a visible document boundary.
 
 ### Structured data and document graphs
 
@@ -26,7 +26,7 @@ The platform application config directory stores state that is meaningful only o
 
 Portable rows may refer to a logical working-folder ID. Resolving it to an external absolute path requires a current device-local binding and filesystem identity check. A portable database never acquires authority merely because it contains a path copied from another device.
 
-## The active Ganbaru AI folder
+## The active Ganbaru folder
 
 The active folder contains the vault marker, portable configuration, SQLite database, managed project folders, reserved document directories, and managed assets. The canonical tree is maintained in [AGENTS.md](../../AGENTS.md).
 
@@ -56,7 +56,7 @@ The durable organization layer owns projects, channels, memberships, messages, o
 
 A run may be targetless while it plans or discusses. Before native filesystem, terminal, Git, preview, or process work begins, it resolves exactly one authorized execution target: a project working folder or a private scratch generation. Provider-native trust does not widen that target. See [Chat access control](access-control.md).
 
-Native Chat sessions use Rust application services and an ephemeral, assignment-scoped internal MCP endpoint for host tools. A separately authorized external MCP service and a `ganbaru-ai` CLI are planned. They must reuse service-layer validation and are not current authorization paths.
+Native Chat sessions use Rust application services and an ephemeral, assignment-scoped internal MCP endpoint for host tools. A separately authorized external MCP service and a `ganbaru` CLI are planned. They must reuse service-layer validation and are not current authorization paths.
 
 ## Transactions and filesystem work
 

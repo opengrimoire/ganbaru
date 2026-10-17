@@ -2,7 +2,7 @@ export const mobile = {
   primaryNavigation: "Primary navigation",
   createEvent: "Create event",
   theme: "Theme",
-  startupFailed: "Ganbaru AI could not open its private mobile data",
+  startupFailed: "Ganbaru could not open its private mobile data",
   pomodoroInactiveDescription:
     "Pomodoro starts automatically when a Pomodoro-enabled calendar block begins.",
   pomodoroOpenCalendar: "Open calendar",
@@ -18,7 +18,7 @@ export const mobile = {
   focusOnboarding: {
     title: "Keep Focus running",
     description:
-      "Review these Android settings so scheduled Focus events can start while Ganbaru AI is closed.",
+      "Review these Android settings so scheduled Focus events can start while Ganbaru is closed.",
     notifications: "Notifications",
     notificationsDescription: "Show ongoing Focus progress and phase alerts",
     exactAlarm: "Alarms and reminders",
@@ -27,7 +27,7 @@ export const mobile = {
     usageAccessDescription: "Measure foreground time for the apps you choose",
     appBlocking: "App blocking",
     appBlockingDescription: "Return Home when a selected app rule or limit applies",
-    backgroundRestricted: "Android currently restricts Ganbaru AI in the background",
+    backgroundRestricted: "Android currently restricts Ganbaru in the background",
     review: "Review",
     continue: "Continue",
     continueIn: (seconds: number) => `Continue in ${seconds}s`,
@@ -41,7 +41,7 @@ export const mobile = {
     storageHeading: "Storage",
     privateStorage: "Private",
     privateStorageDescription:
-      "Android keeps this data in Ganbaru AI's private app storage. Uninstalling the app removes it.",
+      "Android keeps this data in Ganbaru's private app storage. Uninstalling the app removes it.",
     androidUpdatesDescription: "Android updates are signed APKs published with each GitHub release.",
     androidLatestPublished: (date: string) => `Published ${date}`,
     downloadApk: "Download APK",

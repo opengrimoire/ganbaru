@@ -1,6 +1,6 @@
 # System map
 
-This document defines the ownership boundaries between Ganbaru AI systems. It is intentionally shorter than the feature specifications. Its purpose is to prevent integrations from creating competing sources of truth.
+This document defines the ownership boundaries between Ganbaru systems. It is intentionally shorter than the feature specifications. Its purpose is to prevent integrations from creating competing sources of truth.
 
 ## Canonical owners
 

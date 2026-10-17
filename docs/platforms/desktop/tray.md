@@ -1,6 +1,6 @@
 # Desktop tray
 
-The tray is Ganbaru AI's operating-system glance and control surface when the main window is hidden, minimized, or behind other windows. It answers whether a focus phase is active or paused, how much focus opportunity remains before the next transition, and what media is active. It is not a statistics, cycle-history, or productivity-score surface.
+The tray is Ganbaru's operating-system glance and control surface when the main window is hidden, minimized, or behind other windows. It answers whether a focus phase is active or paused, how much focus opportunity remains before the next transition, and what media is active. It is not a statistics, cycle-history, or productivity-score surface.
 
 ## Pomodoro ring
 
@@ -26,7 +26,7 @@ Unavailable controls stay visible but disabled so menu positions remain predicta
 
 ## Platform notes
 
-- **Linux:** tooltips are unreliable, so the menu is the accessible status surface. Dynamic icons go through Tauri's safe tray API, which owns the AppIndicator and its generated image files (platform cache, not vault data). Upstream currently deletes the previous image before publishing the next, so some desktops can briefly show a placeholder. Ganbaru AI must not work around this by casting AppIndicator's shared reference to a mutable one; a prewritten-image optimization can return only when upstream exposes a sound update operation. Tauri upgrades require explicit Linux tray verification.
+- **Linux:** tooltips are unreliable, so the menu is the accessible status surface. Dynamic icons go through Tauri's safe tray API, which owns the AppIndicator and its generated image files (platform cache, not vault data). Upstream currently deletes the previous image before publishing the next, so some desktops can briefly show a placeholder. Ganbaru must not work around this by casting AppIndicator's shared reference to a mutable one; a prewritten-image optimization can return only when upstream exposes a sound update operation. Tauri upgrades require explicit Linux tray verification.
 - **Windows:** the standard Tauri tray icon and tooltip apply.
 - **macOS (planned):** the menu-bar presentation and standard icon path, unless platform validation requires a specialized adapter.
 

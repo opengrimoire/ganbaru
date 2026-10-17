@@ -123,7 +123,7 @@ fn agent_bridge_export_renders_deterministic_derivative_context() {
         assert!(
             export
                 .markdown
-                .contains("Derivative markdown view generated from Ganbaru AI SQLite")
+                .contains("Derivative markdown view generated from Ganbaru SQLite")
         );
         assert!(
             export

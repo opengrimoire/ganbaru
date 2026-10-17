@@ -88,7 +88,7 @@ const [
     readAndroidFile("app/src/debug/res/values/strings.xml"),
     readAndroidFile("gradle/wrapper/gradle-wrapper.properties"),
     readAndroidFile("app/src/main/AndroidManifest.xml"),
-    readAndroidFile("app/src/main/java/org/opengrimoire/ganbaruai/MainActivity.kt"),
+    readAndroidFile("app/src/main/java/org/opengrimoire/ganbaru/MainActivity.kt"),
     readAndroidFile("app/src/main/res/values/themes.xml"),
     readAndroidFile("app/src/main/res/values-night/themes.xml"),
     readAndroidFile("app/src/main/res/xml/file_paths.xml"),
@@ -106,10 +106,10 @@ const [
     ),
     readClientFile("../../crates/ganbaru-mobile-notifications/src/lib.rs"),
     readAndroidFile(
-      "buildSrc/src/main/java/org/opengrimoire/ganbaruai/kotlin/BuildTask.kt",
+      "buildSrc/src/main/java/org/opengrimoire/ganbaru/kotlin/BuildTask.kt",
     ),
     readAndroidFile(
-      "buildSrc/src/main/java/org/opengrimoire/ganbaruai/kotlin/RustPlugin.kt",
+      "buildSrc/src/main/java/org/opengrimoire/ganbaru/kotlin/RustPlugin.kt",
     ),
     readClientFile("../../crates/ganbaru-mobile-documents/android/build.gradle.kts"),
     readClientFile("../../crates/ganbaru-mobile-media/android/build.gradle.kts"),
@@ -247,14 +247,14 @@ for (const [expected, label] of [
 }
 
 for (const expected of [
-  '<string name="app_name">Ganbaru AI</string>',
-  '<string name="main_activity_title">Ganbaru AI</string>',
+  '<string name="app_name">Ganbaru</string>',
+  '<string name="main_activity_title">Ganbaru</string>',
 ]) {
   requireText(productionStrings, expected, "production app identity", failures);
 }
 for (const expected of [
-  '<string name="app_name">Ganbaru AI Dev</string>',
-  '<string name="main_activity_title">Ganbaru AI Dev</string>',
+  '<string name="app_name">Ganbaru Dev</string>',
+  '<string name="main_activity_title">Ganbaru Dev</string>',
 ]) {
   requireText(developmentStrings, expected, "development app identity", failures);
 }
@@ -274,7 +274,7 @@ if (countText(manifest, "<uses-permission ") !== 2) {
 
 const launcherIconSha256 = createHash("sha256").update(launcherIcon).digest("hex");
 if (launcherIconSha256 !== "158362b7787a594e4bb007281d89bd9f0575e5c583ddbfa9c9398621f4828055") {
-  failures.push("xxxhdpi launcher icon must be regenerated from the Ganbaru AI icon manifest");
+  failures.push("xxxhdpi launcher icon must be regenerated from the Ganbaru icon manifest");
 }
 
 requireText(

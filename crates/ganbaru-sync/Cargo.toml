@@ -1,7 +1,7 @@
 [package]
 name = "ganbaru-sync"
 version = "0.1.0"
-description = "Ganbaru AI sync engine: manifest, capture, sealing, storage, and merge"
+description = "Ganbaru sync engine: manifest, capture, sealing, storage, and merge"
 authors.workspace = true
 license.workspace = true
 edition.workspace = true

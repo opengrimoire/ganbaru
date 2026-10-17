@@ -17,7 +17,7 @@ Music provides persistent local and YouTube playback, playlist organization, rev
 
 ## Sources
 
-Ganbaru AI plays local media selected by the user and YouTube through an embedded player. Music files stay in the user's own library; the vault stores library identity, playlists, settings, and playback state, never copies of the media.
+Ganbaru plays local media selected by the user and YouTube through an embedded player. Music files stay in the user's own library; the vault stores library identity, playlists, settings, and playback state, never copies of the media.
 
 Spotify is unsupported because its integration model does not fit a local open-source product. This is a product boundary, not a statement about current quotas.
 
@@ -27,7 +27,7 @@ Playback belongs to one native session per device, not to the visible Music pane
 
 ## User control
 
-Ganbaru AI does not infer whether a track is distracting. The user chooses playlists, membership settings, snoozes, and phase behavior. Listening statistics support recency and frequency behavior without becoming a productivity score.
+Ganbaru does not infer whether a track is distracting. The user chooses playlists, membership settings, snoozes, and phase behavior. Listening statistics support recency and frequency behavior without becoming a productivity score.
 
 ## Documentation map
 

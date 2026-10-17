@@ -93,8 +93,8 @@
       chatChannelId: channelId,
       chatCreateTeammate: true,
       onClosed: () => {
-        if (channelId) paneEvents.dispatchEvent(new CustomEvent("ganbaru-ai:chat-edit-channel", { detail: { channelId } }));
-        else paneEvents.dispatchEvent(new Event("ganbaru-ai:chat-new-channel"));
+        if (channelId) paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-edit-channel", { detail: { channelId } }));
+        else paneEvents.dispatchEvent(new Event("ganbaru:chat-new-channel"));
       },
     });
   }
@@ -131,7 +131,7 @@
 
   function configureMember(participantId: string): void {
     onCancel();
-    paneEvents.dispatchEvent(new CustomEvent("ganbaru-ai:chat-configure-teammate", {
+    paneEvents.dispatchEvent(new CustomEvent("ganbaru:chat-configure-teammate", {
       detail: { participantId, channelId: currentChannel?.id },
     }));
   }

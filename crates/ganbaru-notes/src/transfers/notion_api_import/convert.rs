@@ -682,7 +682,7 @@ fn notion_mention_rich_text(
         "external_mention_degraded",
         "warning",
         source_id.map(str::to_string),
-        "A Notion mention was imported as plain text because it points outside local Ganbaru AI data.",
+        "A Notion mention was imported as plain text because it points outside local Ganbaru data.",
     ));
     if plain_text.is_empty() {
         None

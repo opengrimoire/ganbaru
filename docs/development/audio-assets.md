@@ -1,6 +1,6 @@
 # Packaged audio assets
 
-Ganbaru AI uses short packaged sounds for Calendar reminders, Pomodoro attention and completion states, and future response-completion cues. This document defines development and maintenance rules for those assets.
+Ganbaru uses short packaged sounds for Calendar reminders, Pomodoro attention and completion states, and future response-completion cues. This document defines development and maintenance rules for those assets.
 
 ## Packaged format
 

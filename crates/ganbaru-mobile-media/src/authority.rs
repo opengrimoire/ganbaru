@@ -37,7 +37,7 @@ fn is_delivery_current(checker: Option<&Checker>, delivery_id: i64) -> bool {
 // JNI passes two ignored opaque pointers and one signed 64-bit jlong, and reads
 // an unsigned 8-bit jboolean. The process-lifetime checker uses safe cached reads.
 // All callback panics, including panic-on-drop payloads, are contained by is_delivery_current.
-#[unsafe(export_name = "Java_org_opengrimoire_ganbaruai_mobile_media_NativeMusicAuthority_isCurrent")]
+#[unsafe(export_name = "Java_org_opengrimoire_ganbaru_mobile_media_NativeMusicAuthority_isCurrent")]
 pub extern "system" fn native_music_is_current(
     _environment: *mut std::ffi::c_void,
     _class: *mut std::ffi::c_void,

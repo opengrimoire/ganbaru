@@ -334,8 +334,8 @@ fn tray_tooltip(state: &TrayState) -> String {
     };
     let music = music_status_text(&state.music);
     match state.music.context_label.as_deref() {
-        Some(context) => format!("Ganbaru AI\n{pomodoro}\n{music}\n{context}"),
-        None => format!("Ganbaru AI\n{pomodoro}\n{music}"),
+        Some(context) => format!("Ganbaru\n{pomodoro}\n{music}\n{context}"),
+        None => format!("Ganbaru\n{pomodoro}\n{music}"),
     }
 }
 
@@ -520,7 +520,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 
     let _tray = TrayIconBuilder::with_id("main")
         .icon(icon)
-        .tooltip("Ganbaru AI")
+        .tooltip("Ganbaru")
         .menu(&menu)
         .on_menu_event(move |app, event| match event.id().as_ref() {
             "pause_resume" => {

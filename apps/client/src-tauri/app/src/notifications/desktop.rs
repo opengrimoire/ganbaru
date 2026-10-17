@@ -32,7 +32,7 @@ fn apply_linux_notification_hints(
             notification.hint(Hint::Category(category.to_string()));
         }
         if desktop_entry {
-            notification.hint(Hint::DesktopEntry("ganbaru-ai".to_string()));
+            notification.hint(Hint::DesktopEntry("ganbaru".to_string()));
         }
         if transient {
             notification.hint(Hint::Transient(true));
@@ -144,11 +144,11 @@ pub fn show_event_notification(
         let action_label = if opens_calendar {
             "Open calendar"
         } else {
-            "Open Ganbaru AI"
+            "Open Ganbaru"
         };
         let mut notification = Notification::new();
         notification
-            .appname("Ganbaru AI")
+            .appname("Ganbaru")
             .summary(&summary)
             .body(&body)
             .action("open", action_label)
@@ -187,7 +187,7 @@ pub fn show_notes_notification(
         let body = escape_notification_markup(&body);
         let mut notification = Notification::new();
         notification
-            .appname("Ganbaru AI")
+            .appname("Ganbaru")
             .summary(&summary)
             .body(&body)
             .action("open", "Open note")
@@ -230,7 +230,7 @@ pub fn show_project_task_notification(
         let body = escape_notification_markup(&body);
         let mut notification = Notification::new();
         notification
-            .appname("Ganbaru AI")
+            .appname("Ganbaru")
             .summary(&summary)
             .body(&body)
             .action("open", "Open task")
@@ -310,8 +310,8 @@ pub fn show_distractions_desktop_block_notification(
         ));
         let mut notification = Notification::new();
         notification
-            .appname("Ganbaru AI")
-            .summary("App closed by Ganbaru AI")
+            .appname("Ganbaru")
+            .summary("App closed by Ganbaru")
             .body(&body)
             .action("default", "Open desktop apps")
             .timeout(10_000);
@@ -369,7 +369,7 @@ pub fn show_distractions_desktop_limit_notification(
         ));
         let mut notification = Notification::new();
         notification
-            .appname("Ganbaru AI")
+            .appname("Ganbaru")
             .summary("Usage limit reached")
             .body(&body)
             .action("default", "Open limits")
@@ -464,7 +464,7 @@ pub(crate) fn show_native_focus_alert(
         NativeFocusAlert::Paused { .. } => NativeFocusAlertActions::Paused,
     };
     let mut notification = Notification::new();
-    notification.appname("Ganbaru AI");
+    notification.appname("Ganbaru");
     let timeout_ms = match alert {
         NativeFocusAlert::Ending {
             title,

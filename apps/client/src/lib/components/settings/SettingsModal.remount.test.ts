@@ -22,7 +22,7 @@ vi.mock("$lib/stores/viewport.svelte", () => ({
 
 vi.mock("$lib/build-info", () => ({
   BUILD_REF: "0.0.0+test",
-  GITHUB_REPOSITORY: "opengrimoire/ganbaru-ai",
+  GITHUB_REPOSITORY: "opengrimoire/ganbaru",
 }));
 
 vi.mock("$lib/components/settings/detail-registry", async () => {
@@ -84,7 +84,7 @@ describe("SettingsModal remount state", () => {
 
   it("loads Data as one stable section on its first visit", async () => {
     vi.stubGlobal("ResizeObserver", ResizeObserverStub);
-    vi.stubGlobal("__GANBARU_AI_BUILD_PLATFORM__", "linux");
+    vi.stubGlobal("__GANBARU_BUILD_PLATFORM__", "linux");
     target = document.createElement("div");
     document.body.append(target);
 
@@ -136,7 +136,7 @@ describe("SettingsModal remount state", () => {
 
   it("renders and closes a nested detail in the mobile presentation", async () => {
     vi.stubGlobal("ResizeObserver", ResizeObserverStub);
-    vi.stubGlobal("__GANBARU_AI_BUILD_PLATFORM__", "android");
+    vi.stubGlobal("__GANBARU_BUILD_PLATFORM__", "android");
     originalScrollTo = HTMLElement.prototype.scrollTo;
     Object.defineProperty(HTMLElement.prototype, "scrollTo", {
       configurable: true,

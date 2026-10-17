@@ -121,7 +121,7 @@ describe("ics round-trip", () => {
 			const parsed = parseIcs(ics, TEST_CALENDAR.id);
 			const out = serializeCalendarToIcs(TEST_CALENDAR, parsed.events);
 			expect(out.startsWith("BEGIN:VCALENDAR\r\n"), name).toBe(true);
-			expect(out).toContain("PRODID:-//Ganbaru AI//Calendar//EN");
+			expect(out).toContain("PRODID:-//Ganbaru//Calendar//EN");
 			expect(out).toContain("VERSION:2.0");
 			expect(out.trimEnd().endsWith("END:VCALENDAR")).toBe(true);
 		}

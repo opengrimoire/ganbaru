@@ -42,7 +42,7 @@ fn recording_hook(calls: Arc<Mutex<Vec<DatabaseAccessMode>>>) -> ConnectionHook 
 
 /// A migrated vault database with one guarded and one open test table.
 async fn seeded_vault(directory: &Path) -> PathBuf {
-    let path = directory.join("ganbaru-ai.sqlite");
+    let path = directory.join("ganbaru.sqlite");
     let registry = DatabasePoolRegistry::default();
     let pool = registry.connect_path(&path).await.unwrap();
     sqlx::raw_sql(
@@ -160,7 +160,7 @@ fn guarded_open_degrades_to_read_only_on_schema_mismatch() {
 fn guarded_open_never_creates_or_migrates_a_database() {
     block_on(async {
         let directory = registry_test_directory("guarded-missing");
-        let path = directory.join("ganbaru-ai.sqlite");
+        let path = directory.join("ganbaru.sqlite");
         let registry = DatabasePoolRegistry::default();
         assert!(registry.connect_path_guarded(&path).await.is_err());
         assert!(!path.exists());

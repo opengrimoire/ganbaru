@@ -1,7 +1,7 @@
 [package]
 name = "ganbaru-music-library"
 version = "0.1.0"
-description = "Ganbaru AI Music library persistence, queries, playlists, review, transfer, soundscapes, local media inspection, and session policy"
+description = "Ganbaru Music library persistence, queries, playlists, review, transfer, soundscapes, local media inspection, and session policy"
 authors.workspace = true
 license.workspace = true
 edition.workspace = true

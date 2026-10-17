@@ -16,7 +16,7 @@ Cancellation targets the active run and its owned process tree. It never deletes
 
 ## Interactive requests and approvals
 
-Questions, permission requests, plan confirmations, and provider-native choices appear as validated interactive requests with a stable identity and exactly one terminal resolution. The UI states the requested operation and effective authority. Answering a provider request never bypasses Ganbaru AI's own access checks, and stale or duplicate responses are rejected.
+Questions, permission requests, plan confirmations, and provider-native choices appear as validated interactive requests with a stable identity and exactly one terminal resolution. The UI states the requested operation and effective authority. Answering a provider request never bypasses Ganbaru's own access checks, and stale or duplicate responses are rejected.
 
 ## Files and editor
 

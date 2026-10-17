@@ -4,7 +4,7 @@ use tauri::{
     plugin::{PluginApi, PluginHandle},
 };
 
-const PLUGIN_IDENTIFIER: &str = "org.opengrimoire.ganbaruai.mobile.distractions";
+const PLUGIN_IDENTIFIER: &str = "org.opengrimoire.ganbaru.mobile.distractions";
 
 #[derive(Debug)]
 pub struct MobileDistractions<R: Runtime>(PluginHandle<R>);
@@ -171,7 +171,7 @@ impl<R: Runtime> MobileDistractions<R> {
     }
 }
 
-/// Access Ganbaru AI's Android Distractions enforcement bridge.
+/// Access Ganbaru's Android Distractions enforcement bridge.
 pub trait MobileDistractionsExt<R: Runtime> {
     fn mobile_distractions(&self) -> &MobileDistractions<R>;
 }

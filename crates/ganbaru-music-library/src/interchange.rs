@@ -4,7 +4,7 @@ use sqlx::SqlitePool;
 use sqlx::{Sqlite, Transaction};
 use std::collections::{HashMap, HashSet};
 
-const INTERCHANGE_FORMAT: &str = "ganbaru-ai/music-playlists";
+const INTERCHANGE_FORMAT: &str = "ganbaru/music-playlists";
 const INTERCHANGE_VERSION: i64 = 1;
 const MAX_PLAYLISTS: usize = 500;
 const MAX_MEMBERSHIPS: usize = 10_000;
@@ -102,7 +102,7 @@ pub(super) fn validate_import(request: &MusicInterchangeImportRequest) -> MusicL
     {
         return Err(MusicLibraryError::validation(
             "document",
-            "must be a supported Ganbaru AI music export",
+            "must be a supported Ganbaru music export",
         ));
     }
     if request.imported_at <= 0 || request.document.exported_at <= 0 {

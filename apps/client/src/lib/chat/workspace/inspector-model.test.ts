@@ -73,10 +73,10 @@ describe("Chat inspector model", () => {
   });
 
   it("uses the terminal path as its default tab name and bounds custom names", () => {
-    expect(terminalWorkspacePanelDefaultLabel("alice@workstation: ~/Documents/ganbaru-ai"))
-      .toBe("~/Documents/ganbaru-ai");
-    expect(terminalWorkspacePanelDefaultLabel("alice@workstation: C:\\Code\\ganbaru-ai"))
-      .toBe("C:\\Code\\ganbaru-ai");
+    expect(terminalWorkspacePanelDefaultLabel("alice@workstation: ~/Documents/ganbaru"))
+      .toBe("~/Documents/ganbaru");
+    expect(terminalWorkspacePanelDefaultLabel("alice@workstation: C:\\Code\\ganbaru"))
+      .toBe("C:\\Code\\ganbaru");
     expect(terminalWorkspacePanelDefaultLabel("Terminal")).toBe("Terminal");
     expect(normalizeWorkspacePanelTabName("  Build logs  ")).toBe("Build logs");
     expect(normalizeWorkspacePanelTabName("   ")).toBeNull();

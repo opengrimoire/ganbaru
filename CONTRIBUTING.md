@@ -1,6 +1,6 @@
 # Contributing
 
-Ganbaru AI uses pull requests for review, CI history, and release notes. Keep changes focused and use the smallest branch that describes the work.
+Ganbaru uses pull requests for review, CI history, and release notes. Keep changes focused and use the smallest branch that describes the work.
 
 Participation in issues, pull requests, and other project spaces is governed by `.github/CODE_OF_CONDUCT.md`.
 

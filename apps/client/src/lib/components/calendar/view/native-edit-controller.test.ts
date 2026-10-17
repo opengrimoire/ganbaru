@@ -166,6 +166,51 @@ describe("native Calendar edit lifetime", () => {
     expect(controller.preview?.commandId).toBe(load.mock.calls[1][0].commandId);
   });
 
+  it("retries a briefly failing preview without ever reporting the failure", async () => {
+    const load = vi.fn(async (request: CalendarPreviewRequest) => preview(request))
+      .mockRejectedValueOnce(new Error("A Calendar preview is being prepared"))
+      .mockRejectedValueOnce(new Error("A Calendar preview is being prepared"));
+    const controller = new NativeCalendarEditController(() => authority, load, undefined, identifiers());
+    controller.update(draft());
+    await vi.advanceTimersByTimeAsync(200);
+    expect(controller.error).toBeNull();
+    expect(controller.loading).toBe(true);
+    await vi.advanceTimersByTimeAsync(250 + 750);
+    expect(load).toHaveBeenCalledTimes(3);
+    expect(controller.error).toBeNull();
+    expect(controller.loading).toBe(false);
+    expect(controller.previewFor(draft())?.commandId).toBe(load.mock.calls[2][0].commandId);
+  });
+
+  it("reports a persistent preview failure only after its retries run out", async () => {
+    const load = vi.fn().mockRejectedValue(new Error("Calendar source is unreadable"));
+    const controller = new NativeCalendarEditController(() => authority, load, undefined, identifiers());
+    controller.update(draft());
+    await vi.advanceTimersByTimeAsync(200 + 250 + 750);
+    expect(controller.error).toBeNull();
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(load).toHaveBeenCalledTimes(4);
+    expect(controller.error).toBe("Calendar source is unreadable");
+    expect(controller.loading).toBe(false);
+  });
+
+  it("drops a failed preview's retry as soon as the panel closes or the draft changes", async () => {
+    const load = vi.fn(async (request: CalendarPreviewRequest) => preview(request))
+      .mockRejectedValueOnce(new Error("Calendar event was deleted"));
+    const controller = new NativeCalendarEditController(() => authority, load, undefined, identifiers());
+    controller.update(draft("Deleted"));
+    await vi.advanceTimersByTimeAsync(200);
+    controller.reset();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.error).toBeNull();
+    controller.update(draft("Next"));
+    await vi.advanceTimersByTimeAsync(200);
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(load.mock.calls[1][0].edit).toEqual(draft("Next").edit);
+    expect(controller.error).toBeNull();
+    expect(controller.previewFor(draft("Next"))).not.toBeNull();
+  });
+
   it("rejects a late same-vault response after its native generation changes", async () => {
     let current = { ...authority };
     const delayed = deferred<CalendarEditPreview>();

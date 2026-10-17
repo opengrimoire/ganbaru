@@ -1342,11 +1342,11 @@
       message={t("calendar.view.saveUncertain")}
       onRetry={() => (nativeEditor.committing || directEditor.committing ? undefined : retryCalendarSave())}
     />
-  {:else if nativeEditor.error && session.state.mode !== "closed" && !nativeEditor.committing}
+  {:else if nativeEditor.error && session.state.mode !== "closed" && !nativeEditor.committing && !panelCommitHidden}
     <Notice
       class={calendarBannerClass}
       role="status"
-      message={t("calendar.view.previewFailed", nativeEditor.error)}
+      message={t("calendar.view.previewFailed")}
       copy={nativeEditor.error}
       onRetry={retryCalendarPreview}
     />

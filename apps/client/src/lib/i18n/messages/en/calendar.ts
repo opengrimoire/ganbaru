@@ -285,7 +285,7 @@ export const calendar = {
     deleteUncertain: "Delete or Undo could not be confirmed. Retry to check the original operation.",
     deleteRefreshPending: "The operation was saved. Retry to refresh the calendar.",
     deleteFailed: (message: string) => `Delete or Undo failed: ${message}`,
-    previewFailed: (message: string) => `Preview unavailable: ${message}`,
+    previewFailed: "Could not preview this change",
     historyUnavailable: "The recorded Focus timeline could not be loaded. Try a shorter Calendar range or retry.",
     saved: "Saved",
     unknownSaveError: "Unknown save error",

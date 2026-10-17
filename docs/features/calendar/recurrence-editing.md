@@ -38,7 +38,7 @@ The selector appears only when the event belonged to a saved recurring series wh
 
 ## Preview
 
-Changes that affect recurrence meaning request a debounced native preview tagged with the edit generation; a stale result cannot replace a newer draft. The preview projects only the affected series and leaves other cached events untouched. Preview and committed results keep stable identities, and the selected occurrence is tracked by identity rather than geometry, since two overrides can share a displayed time.
+Changes that affect recurrence meaning request a debounced native preview tagged with the edit generation; a stale result cannot replace a newer draft. Because previews never write, a failed preview retries silently a few times while its draft is current, and only a persistent failure shows a short notice with copyable details. The preview projects only the affected series and leaves other cached events untouched. Preview and committed results keep stable identities, and the selected occurrence is tracked by identity rather than geometry, since two overrides can share a displayed time.
 
 Delete and archive previews use the same affected-set model: protected rows can keep their geometry while a contour explains that they will be archived.
 

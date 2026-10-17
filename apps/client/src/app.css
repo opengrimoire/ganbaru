@@ -648,7 +648,13 @@ svg.lucide[stroke-width="1.5"]:not(.app-title-bar *, .explorer-sidebar *) {
   --panel-margin: 0.125rem;
 }
 
+/*
+ * The workspace is one stacking layer (a flex item, so z-index applies without positioning). Its floating panels
+ * stay inside it, so shell overlays opened from the title bar always paint above them, while workspace dialogs
+ * still cover the title bar's frame.
+ */
 .content-panel {
+  z-index: 1;
   margin: 0 var(--shell-gap) var(--shell-gap);
   border-radius: var(--content-radius);
 }

@@ -191,3 +191,46 @@ fn history_and_recurrence_children_share_the_same_allocation_allowance() {
         tx.rollback().await.unwrap();
     });
 }
+
+struct FixedDeviceDate;
+
+impl crate::events::scope::DeviceDate for FixedDeviceDate {
+    fn local_date(&self, _epoch_ms: i64) -> Result<chrono::NaiveDate, String> {
+        parse_date("2026-05-01")
+    }
+}
+
+#[test]
+fn concurrent_scope_previews_wait_for_each_other_instead_of_failing() {
+    crate::test_support::block_on(async {
+        let pool = in_memory_pool().await;
+        insert_test_event_at(
+            &pool,
+            "event-1",
+            "2026-05-01T09:00:00Z",
+            "2026-05-01T10:00:00Z",
+            None,
+        )
+        .await;
+        let preview = |label: &'static str| {
+            crate::events::scope::prepare_request_with_clock(
+                &pool,
+                std::sync::Arc::new(FixedDeviceDate),
+                crate::events::scope::ScopeRequest {
+                    template_id: "event-1".into(),
+                    recurrence_date: "2026-05-01".into(),
+                    scope: EditScope::This,
+                },
+                0,
+                move |_, _, _, _| {
+                    // Hold the gate long enough that the other preview arrives while it is taken.
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    Ok(label)
+                },
+            )
+        };
+        let (edit, deletion) = tokio::join!(preview("edit"), preview("deletion"));
+        assert_eq!(edit, Ok("edit"));
+        assert_eq!(deletion, Ok("deletion"));
+    });
+}

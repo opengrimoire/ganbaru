@@ -377,9 +377,12 @@ where
         return Err("Calendar occurrence identity requires a YYYY-MM-DD date".into());
     }
     let selected = parse_date(&request.recurrence_date)?;
+    // Opening an event requests its edit and deletion previews together, so a preview waits for
+    // the other instead of failing. No connection is held yet, so waiting cannot block the holder.
     let permit = SCOPE_GATE
-        .try_acquire()
-        .map_err(|_| "A Calendar scope is being prepared; retry after it finishes")?;
+        .acquire_within(SCOPE_WORKER_TIMEOUT)
+        .await
+        .ok_or("A Calendar scope is being prepared; retry after it finishes")?;
     let mut tx = pool
         .begin()
         .await

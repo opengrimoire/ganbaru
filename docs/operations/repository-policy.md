@@ -62,7 +62,7 @@ GitHub Actions:
 
 - Default workflow token permissions are read-only.
 - Actions may not create or approve pull requests unless a specific reviewed workflow requires it.
-- Third-party actions use selected actions and full SHA pins.
+- Actions are restricted to an explicit allowlist of exact SHA-pinned entries, with GitHub-owned and verified-creator actions not allowed by default. The list covers `actions/checkout`, `actions/setup-node`, `actions/upload-artifact`, `actions/download-artifact`, `actions/cache/restore`, and `actions/cache/save`; changing a pin in a workflow requires updating the allowlist in the same change.
 - Release jobs are cache-free. The `check` workflow restores its Rust dependency cache read-only in pull requests and the merge queue; only pushes to `dev` save it.
 - Required checks run on `merge_group` as well as `pull_request`, otherwise the merge queue cannot satisfy the ruleset.
 - On pushes to `dev`, the `check` workflow runs only the Linux Rust job to refresh that cache. It does not run on pushes to `main`, and push runs are not required checks because the pull request checks already gated the merge.

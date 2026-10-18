@@ -4,7 +4,9 @@ use super::{
     CHUNK_TIMEOUT, MEMBERSHIP_REVOKED_CODE, TLS_HANDSHAKE_TIMEOUT, prepare_partial, stream_file,
     timeout_control,
 };
+use crate::contacts::requests::PeerReply;
 use crate::sync::hub::SyncHub;
+use crate::vault::handoff::contact_requests::{ContactJob, ContactOperation, ContactSender};
 use crate::vault::handoff::pairing::{Enrollment, PairingManager};
 use crate::vault::handoff::protocol::{
     BundleMetadata, BundlePurpose, ControlMessage, PROTOCOL_VERSION, TRANSFER_CHUNK_BYTES,
@@ -15,7 +17,7 @@ use limits::{ConnectionLimits, PendingPermit};
 use rustls::RootCertStore;
 use rustls::pki_types::CertificateDer;
 use std::fs;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -66,6 +68,7 @@ pub(crate) async fn serve_with_coordinator(
     listener: TcpListener,
     manager: PairingManager,
     coordinator: Option<coordinator::CoordinatorSender>,
+    contacts: Option<ContactSender>,
     hub: Option<SyncHub>,
     shutdown: tokio::sync::oneshot::Receiver<()>,
 ) {
@@ -74,6 +77,7 @@ pub(crate) async fn serve_with_coordinator(
         ConnectionLimits::default(),
         manager,
         coordinator,
+        contacts,
         hub,
         shutdown,
     )
@@ -85,6 +89,7 @@ pub(super) async fn serve_with_limits(
     limits: ConnectionLimits,
     manager: PairingManager,
     coordinator: Option<coordinator::CoordinatorSender>,
+    contacts: Option<ContactSender>,
     hub: Option<SyncHub>,
     shutdown: tokio::sync::oneshot::Receiver<()>,
 ) {
@@ -101,10 +106,19 @@ pub(super) async fn serve_with_limits(
             let configs = configs.clone();
             let manager = manager.clone();
             let coordinator = coordinator.clone();
+            let contacts = contacts.clone();
+            let limits = limits.clone();
             let hub = hub.clone();
             tokio::spawn(async move {
+                let services = Services {
+                    manager,
+                    coordinator,
+                    contacts,
+                    hub,
+                    limits,
+                };
                 if let Err(error) =
-                    handle_connection(socket, permit, configs, manager, coordinator, hub).await
+                    handle_connection(socket, source.ip(), permit, configs, services).await
                 {
                     eprintln!("vault handoff connection failed: {error}");
                 }
@@ -146,14 +160,29 @@ pub(super) async fn accept_connections<S, A, F>(
     }
 }
 
-async fn handle_connection(
-    socket: TcpStream,
-    permit: PendingPermit,
-    configs: ServerConfigCache,
+/// What one connection may reach on the coordinator.
+struct Services {
     manager: PairingManager,
     coordinator: Option<coordinator::CoordinatorSender>,
+    contacts: Option<ContactSender>,
     hub: Option<SyncHub>,
+    limits: ConnectionLimits,
+}
+
+async fn handle_connection(
+    socket: TcpStream,
+    source: IpAddr,
+    permit: PendingPermit,
+    configs: ServerConfigCache,
+    services: Services,
 ) -> Result<(), String> {
+    let Services {
+        manager,
+        coordinator,
+        contacts,
+        hub,
+        limits,
+    } = services;
     let config = configs.current(&manager)?;
     let mut stream = tokio::time::timeout(
         TLS_HANDSHAKE_TIMEOUT,
@@ -275,17 +304,13 @@ async fn handle_connection(
             signature,
             ..
         } => {
-            send_coordinator_response(
-                &mut stream,
-                coordinator.as_ref(),
-                coordinator::CoordinatorOperation::ContactRequest {
-                    recipient_card_nonce,
-                    requester_card,
-                    request_id,
-                    signature,
-                },
-            )
-            .await
+            let operation = ContactOperation::Request {
+                recipient_card_nonce,
+                requester_card,
+                request_id,
+                signature,
+            };
+            send_contact_response(&mut stream, contacts.as_ref(), &limits, source, operation).await
         }
         ControlMessage::ContactRequestStatus {
             request_id,
@@ -294,17 +319,13 @@ async fn handle_connection(
             signature,
             ..
         } => {
-            send_coordinator_response(
-                &mut stream,
-                coordinator.as_ref(),
-                coordinator::CoordinatorOperation::ContactRequestStatus {
-                    request_id,
-                    requester_public_key,
-                    issued_at_ms,
-                    signature,
-                },
-            )
-            .await
+            let operation = ContactOperation::Status {
+                request_id,
+                requester_public_key,
+                issued_at_ms,
+                signature,
+            };
+            send_contact_response(&mut stream, contacts.as_ref(), &limits, source, operation).await
         }
         ControlMessage::PersonKeyRequest {
             vault_id,
@@ -504,6 +525,74 @@ async fn send_coordinator_response(
     send_coordinator_response_value(stream, response).await
 }
 
+/// Hands an unauthenticated contact message to the contact worker. A source past its contact
+/// budget, or a full worker queue, gets a retryable busy answer instead of waiting.
+async fn send_contact_response(
+    stream: &mut tokio_rustls::server::TlsStream<TcpStream>,
+    contacts: Option<&ContactSender>,
+    limits: &ConnectionLimits,
+    source: IpAddr,
+    operation: ContactOperation,
+) -> Result<(), String> {
+    let Some(contacts) = contacts else {
+        return send_error(
+            stream,
+            "coordinator_unavailable",
+            "contact requests are unavailable on this coordinator",
+            true,
+        )
+        .await;
+    };
+    if !limits.take_contact_message(source, std::time::Instant::now()) {
+        return send_peer_reply(stream, PeerReply::busy()).await;
+    }
+    let (response, receiver) = tokio::sync::oneshot::channel();
+    if contacts
+        .try_send(ContactJob {
+            operation,
+            response,
+        })
+        .is_err()
+    {
+        return send_peer_reply(stream, PeerReply::busy()).await;
+    }
+    match receiver.await {
+        Ok(Ok(reply)) => send_peer_reply(stream, reply).await,
+        Ok(Err(error)) => send_error(stream, "handoff_rejected", &error, true).await,
+        Err(_) => {
+            send_error(
+                stream,
+                "coordinator_unavailable",
+                "the contact request was not handled",
+                true,
+            )
+            .await
+        }
+    }
+}
+
+async fn send_peer_reply(
+    stream: &mut tokio_rustls::server::TlsStream<TcpStream>,
+    reply: PeerReply,
+) -> Result<(), String> {
+    let message = match reply {
+        PeerReply::Received { request_id } => ControlMessage::ContactRequestReceived { request_id },
+        PeerReply::State {
+            state,
+            recipient_card,
+        } => ControlMessage::ContactRequestState {
+            state,
+            recipient_card,
+        },
+        PeerReply::Rejected {
+            code,
+            message,
+            retryable,
+        } => return send_error(stream, code, message, retryable).await,
+    };
+    timeout_control(write_control(stream, &message)).await
+}
+
 async fn send_upload_status_response(
     stream: &mut tokio_rustls::server::TlsStream<TcpStream>,
     coordinator: Option<&coordinator::CoordinatorSender>,
@@ -609,16 +698,6 @@ async fn send_coordinator_response_value(
             acknowledged_sample_ids,
             peer_samples,
             combined_samples,
-        },
-        coordinator::CoordinatorResponse::ContactRequestReceived { request_id } => {
-            ControlMessage::ContactRequestReceived { request_id }
-        }
-        coordinator::CoordinatorResponse::ContactRequestState {
-            state,
-            recipient_card,
-        } => ControlMessage::ContactRequestState {
-            state,
-            recipient_card,
         },
         coordinator::CoordinatorResponse::PersonKeyReleased {
             public_key,

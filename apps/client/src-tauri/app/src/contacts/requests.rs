@@ -8,8 +8,6 @@ use super::store::{
     TrustGrant,
 };
 use super::{ContactsError, contacts_pool};
-#[cfg(desktop)]
-use crate::vault::handoff::coordinator::CoordinatorResponse;
 use crate::vault::handoff::pairing::random_token;
 use crate::vault::handoff::protocol::{
     ContactRequestOutcome, ControlMessage, PROTOCOL_VERSION, unix_time_ms,
@@ -39,6 +37,8 @@ const BACKOFF_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5 *
 pub(crate) const CARD_REVOKED_CODE: &str = "card_revoked";
 pub(crate) const INVALID_REQUEST_CODE: &str = "invalid_request";
 pub(crate) const RECIPIENT_UNAVAILABLE_CODE: &str = "recipient_unavailable";
+/// The recipient is handling too many contact messages; the requester retries later.
+pub(crate) const RECIPIENT_BUSY_CODE: &str = "recipient_busy";
 
 /// What the coordinator answers to an unauthenticated Contacts message.
 #[cfg(any(desktop, test))]
@@ -85,28 +85,13 @@ impl PeerReply {
         }
     }
 
+    /// The answer when the recipient is handling too many contact messages.
     #[cfg(desktop)]
-    fn into_coordinator_response(self) -> CoordinatorResponse {
-        match self {
-            Self::Received { request_id } => {
-                CoordinatorResponse::ContactRequestReceived { request_id }
-            }
-            Self::State {
-                state,
-                recipient_card,
-            } => CoordinatorResponse::ContactRequestState {
-                state,
-                recipient_card,
-            },
-            Self::Rejected {
-                code,
-                message,
-                retryable,
-            } => CoordinatorResponse::Rejected {
-                code: code.to_string(),
-                message: message.to_string(),
-                retryable,
-            },
+    pub(crate) fn busy() -> Self {
+        Self::Rejected {
+            code: RECIPIENT_BUSY_CODE,
+            message: "the recipient is handling too many contact requests; retry shortly",
+            retryable: true,
         }
     }
 }
@@ -260,6 +245,8 @@ pub(crate) async fn request_state(
     })
 }
 
+/// The person identity without its key, read from the vault alone. Unauthenticated contact
+/// messages never touch the credential store; only an accepted status reads the key.
 #[cfg(desktop)]
 async fn coordinator_identity<R: Runtime>(
     app: &AppHandle<R>,
@@ -268,76 +255,78 @@ async fn coordinator_identity<R: Runtime>(
     if !crate::vault::ownership::active_status(app)?.can_write {
         return Ok(None);
     }
-    super::identity::load_identity(app, pool).await
+    let Some(row) = super::identity::load_identity_row(pool).await? else {
+        return Ok(None);
+    };
+    super::identity::identity_from_row(row, None).map(Some)
 }
 
 #[cfg(desktop)]
 pub(crate) async fn receive_request_for_coordinator<R: Runtime>(
     app: &AppHandle<R>,
-    recipient_card_nonce: String,
-    requester_card: String,
-    request_id: String,
-    signature: String,
-) -> Result<CoordinatorResponse, String> {
+    recipient_card_nonce: &str,
+    requester_card: &str,
+    request_id: &str,
+    signature: &str,
+) -> Result<PeerReply, String> {
     let pool = contacts_pool(app).await?;
     let Some(identity) = coordinator_identity(app, &pool).await? else {
-        return Ok(PeerReply::unavailable().into_coordinator_response());
+        return Ok(PeerReply::unavailable());
     };
-    let reply = receive_request(
+    receive_request(
         &pool,
         &identity,
         store::now(),
-        &recipient_card_nonce,
-        &requester_card,
-        &request_id,
-        &signature,
+        recipient_card_nonce,
+        requester_card,
+        request_id,
+        signature,
     )
-    .await?;
-    Ok(reply.into_coordinator_response())
+    .await
 }
 
 #[cfg(desktop)]
 pub(crate) async fn request_state_for_coordinator<R: Runtime>(
     app: &AppHandle<R>,
-    request_id: String,
-    requester_public_key: String,
+    request_id: &str,
+    requester_public_key: &str,
     issued_at_ms: i64,
-    signature: String,
-) -> Result<CoordinatorResponse, String> {
+    signature: &str,
+) -> Result<PeerReply, String> {
     let pool = contacts_pool(app).await?;
-    let Some(identity) = coordinator_identity(app, &pool).await? else {
-        return Ok(PeerReply::unavailable().into_coordinator_response());
+    let Some(mut identity) = coordinator_identity(app, &pool).await? else {
+        return Ok(PeerReply::unavailable());
     };
     let outcome = request_state(
         &pool,
-        &request_id,
-        &requester_public_key,
+        request_id,
+        requester_public_key,
         issued_at_ms,
-        &signature,
+        signature,
     )
     .await?;
-    let reply = match outcome {
+    let pending = PeerReply::State {
+        state: ContactRequestOutcome::Pending,
+        recipient_card: None,
+    };
+    Ok(match outcome {
         StatusOutcome::Invalid => PeerReply::invalid(),
-        StatusOutcome::Pending => PeerReply::State {
-            state: ContactRequestOutcome::Pending,
-            recipient_card: None,
-        },
+        StatusOutcome::Pending => pending,
         StatusOutcome::Declined => PeerReply::State {
             state: ContactRequestOutcome::Declined,
             recipient_card: None,
         },
-        StatusOutcome::Accepted => match sign_local_card(app, &identity) {
-            Ok(card) => PeerReply::State {
-                state: ContactRequestOutcome::Accepted,
-                recipient_card: Some(card.text()),
-            },
-            Err(_) => PeerReply::State {
-                state: ContactRequestOutcome::Pending,
-                recipient_card: None,
-            },
-        },
-    };
-    Ok(reply.into_coordinator_response())
+        StatusOutcome::Accepted => {
+            identity.key = super::identity::person_key_matching(app, &identity.public_key).await?;
+            match sign_local_card(app, &identity) {
+                Ok(card) => PeerReply::State {
+                    state: ContactRequestOutcome::Accepted,
+                    recipient_card: Some(card.text()),
+                },
+                Err(_) => pending,
+            }
+        }
+    })
 }
 
 /// Delivers a request to the person whose card text was pasted or scanned, then records it.
@@ -437,7 +426,9 @@ pub(crate) async fn send_request<R: Runtime>(
 fn peer_error(code: &str, message: String) -> ContactsError {
     match code {
         CARD_REVOKED_CODE => ContactsError::CardRevoked(message),
-        RECIPIENT_UNAVAILABLE_CODE => ContactsError::RecipientUnreachable(message),
+        RECIPIENT_UNAVAILABLE_CODE | RECIPIENT_BUSY_CODE => {
+            ContactsError::RecipientUnreachable(message)
+        }
         _ => ContactsError::Failed(message),
     }
 }

@@ -5,8 +5,7 @@ mod outgoing;
 
 use super::pairing::{LinkedPeer, PairingManager};
 use super::protocol::{
-    BundleMetadata, BundlePurpose, ContactRequestOutcome, DistractionsSampleMessage,
-    HandoffCompatibility,
+    BundleMetadata, BundlePurpose, DistractionsSampleMessage, HandoffCompatibility,
 };
 use crate::vault::ownership::VaultOwnershipManager;
 use crate::vault::quiescence::SourceQuiescence;
@@ -67,20 +66,6 @@ pub(crate) enum CoordinatorOperation {
     Cancel {
         transfer_id: String,
     },
-    /// Unauthenticated contact request addressed to the person owning this vault.
-    ContactRequest {
-        recipient_card_nonce: String,
-        requester_card: String,
-        request_id: String,
-        signature: String,
-    },
-    /// Unauthenticated status poll for a contact request sent earlier.
-    ContactRequestStatus {
-        request_id: String,
-        requester_public_key: String,
-        issued_at_ms: i64,
-        signature: String,
-    },
     /// Authenticated request from a linked device for the person's signing key of the vault
     /// it is linked for.
     ReleasePersonKey {
@@ -130,13 +115,6 @@ pub(crate) enum CoordinatorResponse {
         acknowledged_sample_ids: Vec<String>,
         peer_samples: Vec<DistractionsSampleMessage>,
         combined_samples: Vec<DistractionsSampleMessage>,
-    },
-    ContactRequestReceived {
-        request_id: String,
-    },
-    ContactRequestState {
-        state: ContactRequestOutcome,
-        recipient_card: Option<String>,
     },
     PersonKeyReleased {
         public_key: String,
@@ -364,36 +342,6 @@ impl<R: Runtime> CoordinatorState<R> {
                     .await
             }
             CoordinatorOperation::Cancel { transfer_id } => self.cancel(transfer_id).await,
-            CoordinatorOperation::ContactRequest {
-                recipient_card_nonce,
-                requester_card,
-                request_id,
-                signature,
-            } => {
-                crate::contacts::requests::receive_request_for_coordinator(
-                    &self.app,
-                    recipient_card_nonce,
-                    requester_card,
-                    request_id,
-                    signature,
-                )
-                .await
-            }
-            CoordinatorOperation::ContactRequestStatus {
-                request_id,
-                requester_public_key,
-                issued_at_ms,
-                signature,
-            } => {
-                crate::contacts::requests::request_state_for_coordinator(
-                    &self.app,
-                    request_id,
-                    requester_public_key,
-                    issued_at_ms,
-                    signature,
-                )
-                .await
-            }
             CoordinatorOperation::ReleasePersonKey {
                 vault_id,
                 device_id,

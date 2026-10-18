@@ -1,4 +1,6 @@
 use super::*;
+use crate::contacts::requests::{PeerReply, RECIPIENT_BUSY_CODE};
+use crate::vault::handoff::contact_requests::{ContactJob, ContactOperation};
 use crate::vault::handoff::pairing::random_token;
 use crate::vault::handoff::protocol::{DeviceKind, MAX_ARCHIVE_BYTES, PROTOCOL_VERSION};
 use crate::vault::handoff::sha256_file;
@@ -83,6 +85,7 @@ impl LocalPair {
             limits,
             desktop.clone(),
             None,
+            None,
             hub,
             receiver,
         ));
@@ -111,6 +114,15 @@ impl LocalPair {
         Self,
         tokio::sync::mpsc::Receiver<super::super::coordinator::CoordinatorRequest>,
     ) {
+        let (pair, requests, _) = Self::start_with_services().await;
+        (pair, requests)
+    }
+
+    async fn start_with_services() -> (
+        Self,
+        tokio::sync::mpsc::Receiver<super::super::coordinator::CoordinatorRequest>,
+        tokio::sync::mpsc::Receiver<ContactJob>,
+    ) {
         let desktop_root = TestDirectory::new("controlled-desktop");
         let phone_root = TestDirectory::new("controlled-phone");
         let desktop = PairingManager::default();
@@ -138,11 +150,13 @@ impl LocalPair {
             )
             .expect("create invitation");
         let (requests, request_receiver) = tokio::sync::mpsc::channel(8);
+        let (contacts, contact_receiver) = super::super::contact_requests::channel();
         let (shutdown, receiver) = tokio::sync::oneshot::channel();
         tokio::spawn(serve_with_coordinator(
             listener,
             desktop.clone(),
             Some(requests),
+            Some(contacts),
             None,
             receiver,
         ));
@@ -156,6 +170,7 @@ impl LocalPair {
                 shutdown: Some(shutdown),
             },
             request_receiver,
+            contact_receiver,
         )
     }
 
@@ -895,10 +910,8 @@ fn base64url(bytes: &[u8]) -> String {
 }
 
 #[tokio::test]
-async fn unauthenticated_contact_request_is_forwarded_to_the_coordinator() {
-    use super::super::coordinator::{CoordinatorOperation, CoordinatorResponse};
-
-    let (pair, mut requests) = LocalPair::start_with_coordinator().await;
+async fn unauthenticated_contact_request_is_forwarded_to_the_contact_worker() {
+    let (pair, _requests, mut contacts) = LocalPair::start_with_services().await;
     let (key, card) = sample_contact_card();
     let recipient_nonce = [7u8; ganbaru_contacts::CARD_NONCE_BYTES];
     let signature = key.sign(&ganbaru_contacts::request_signature_payload(
@@ -907,9 +920,9 @@ async fn unauthenticated_contact_request_is_forwarded_to_the_coordinator() {
     ));
     let expected_card = card.clone();
     let coordinator = tokio::spawn(async move {
-        let request = requests.recv().await.expect("contact request");
-        match request.operation {
-            CoordinatorOperation::ContactRequest {
+        let job = contacts.recv().await.expect("contact request");
+        match job.operation {
+            ContactOperation::Request {
                 recipient_card_nonce,
                 requester_card,
                 request_id,
@@ -922,11 +935,10 @@ async fn unauthenticated_contact_request_is_forwarded_to_the_coordinator() {
                 assert_eq!(requester_card, expected_card);
                 assert_eq!(request_id, "contact-one");
             }
-            operation => panic!("unexpected coordinator operation: {operation:?}"),
+            operation => panic!("unexpected contact operation: {operation:?}"),
         }
-        request
-            .response
-            .send(Ok(CoordinatorResponse::ContactRequestReceived {
+        job.response
+            .send(Ok(PeerReply::Received {
                 request_id: "contact-one".to_string(),
             }))
             .expect("send contact response");
@@ -953,10 +965,8 @@ async fn unauthenticated_contact_request_is_forwarded_to_the_coordinator() {
 }
 
 #[tokio::test]
-async fn coordinator_rejection_reaches_the_requester_as_a_protocol_error() {
-    use super::super::coordinator::{CoordinatorOperation, CoordinatorResponse};
-
-    let (pair, mut requests) = LocalPair::start_with_coordinator().await;
+async fn contact_rejection_reaches_the_requester_as_a_protocol_error() {
+    let (pair, _requests, mut contacts) = LocalPair::start_with_services().await;
     let (key, _) = sample_contact_card();
     let issued_at_ms = unix_time_ms();
     let signature = key.sign(&ganbaru_contacts::status_signature_payload(
@@ -964,17 +974,15 @@ async fn coordinator_rejection_reaches_the_requester_as_a_protocol_error() {
         issued_at_ms,
     ));
     let coordinator = tokio::spawn(async move {
-        let request = requests.recv().await.expect("status request");
+        let job = contacts.recv().await.expect("status request");
         assert!(matches!(
-            request.operation,
-            CoordinatorOperation::ContactRequestStatus { ref request_id, .. }
-                if request_id == "contact-one"
+            job.operation,
+            ContactOperation::Status { ref request_id, .. } if request_id == "contact-one"
         ));
-        request
-            .response
-            .send(Ok(CoordinatorResponse::Rejected {
-                code: "card_revoked".to_string(),
-                message: "the recipient regenerated their contact card".to_string(),
+        job.response
+            .send(Ok(PeerReply::Rejected {
+                code: "card_revoked",
+                message: "the recipient regenerated their contact card",
                 retryable: false,
             }))
             .expect("send rejection");
@@ -998,6 +1006,135 @@ async fn coordinator_rejection_reaches_the_requester_as_a_protocol_error() {
         ControlMessage::Error { code, retryable: false, .. } if code == "card_revoked"
     ));
     coordinator.await.expect("coordinator task");
+}
+
+fn contact_request_message(request_id: &str) -> ControlMessage {
+    let (key, card) = sample_contact_card();
+    let recipient_nonce = [7u8; ganbaru_contacts::CARD_NONCE_BYTES];
+    let signature = key.sign(&ganbaru_contacts::request_signature_payload(
+        &recipient_nonce,
+        request_id,
+    ));
+    ControlMessage::ContactRequest {
+        protocol_version: PROTOCOL_VERSION,
+        recipient_card_nonce: ganbaru_contacts::encode_nonce(&recipient_nonce),
+        requester_card: card,
+        request_id: request_id.to_string(),
+        signature: base64url(&signature),
+    }
+}
+
+fn is_busy(message: &ControlMessage) -> bool {
+    matches!(
+        message,
+        ControlMessage::Error { code, retryable: true, .. } if code == RECIPIENT_BUSY_CODE
+    )
+}
+
+#[tokio::test]
+async fn contact_request_flood_does_not_delay_coordinator_polls() {
+    use super::super::coordinator::{CoordinatorOperation, CoordinatorResponse};
+
+    let (pair, mut requests, mut contacts) = LocalPair::start_with_services().await;
+    pair.enroll().await;
+    let slow_worker = tokio::spawn(async move {
+        while let Some(job) = contacts.recv().await {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let request_id = match job.operation {
+                ContactOperation::Request { request_id, .. } => request_id,
+                operation => panic!("unexpected contact operation: {operation:?}"),
+            };
+            let _ = job.response.send(Ok(PeerReply::Received { request_id }));
+        }
+    });
+    let coordinator = tokio::spawn(async move {
+        while let Some(request) = requests.recv().await {
+            let CoordinatorOperation::PollUpload { generation, .. } = request.operation else {
+                panic!("unexpected coordinator operation");
+            };
+            let _ = request.response.send(Ok(CoordinatorResponse::UploadStatus {
+                generation,
+                requested_upload: Some(BundlePurpose::Refresh),
+            }));
+        }
+    });
+
+    // Stays under the per-source pending connection cap so the poll can still connect.
+    let flood: Vec<_> = (0..6)
+        .map(|index| {
+            let endpoint = pair.invitation.endpoint.clone();
+            let fingerprint = pair.invitation.coordinator_fingerprint.clone();
+            tokio::spawn(async move {
+                unauthenticated_exchange(
+                    &endpoint,
+                    &fingerprint,
+                    contact_request_message(&format!("flood-{index}")),
+                )
+                .await
+            })
+        })
+        .collect();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let purpose = tokio::time::timeout(
+        Duration::from_secs(2),
+        probe_coordinator(&pair.phone, super::super::protocol::test_compatibility(), 0),
+    )
+    .await
+    .expect("coordinator polls stay responsive during a contact flood")
+    .expect("poll coordinator");
+    assert_eq!(purpose, Some(BundlePurpose::Refresh));
+
+    for exchange in flood {
+        let response = exchange.await.expect("flood task").expect("flood exchange");
+        assert!(
+            matches!(response, ControlMessage::ContactRequestReceived { .. }) || is_busy(&response),
+            "unexpected flood response: {response:?}"
+        );
+    }
+    slow_worker.abort();
+    coordinator.abort();
+}
+
+#[tokio::test]
+async fn contact_requests_past_the_source_budget_get_a_busy_answer() {
+    let (pair, _requests, mut contacts) = LocalPair::start_with_services().await;
+    let worker = tokio::spawn(async move {
+        while let Some(job) = contacts.recv().await {
+            let request_id = match job.operation {
+                ContactOperation::Request { request_id, .. } => request_id,
+                operation => panic!("unexpected contact operation: {operation:?}"),
+            };
+            let _ = job.response.send(Ok(PeerReply::Received { request_id }));
+        }
+    });
+
+    let mut received = 0;
+    let mut busy = 0;
+    for index in 0..24 {
+        let response = unauthenticated_exchange(
+            &pair.invitation.endpoint,
+            &pair.invitation.coordinator_fingerprint,
+            contact_request_message(&format!("burst-{index}")),
+        )
+        .await
+        .expect("burst exchange");
+        if is_busy(&response) {
+            busy += 1;
+        } else {
+            assert!(
+                matches!(response, ControlMessage::ContactRequestReceived { .. }),
+                "unexpected burst response: {response:?}"
+            );
+            received += 1;
+        }
+    }
+    assert!(
+        received >= server::limits::CONTACT_MESSAGE_BURST as usize,
+        "the burst allowance is honored"
+    );
+    assert!(busy > 0, "messages past the budget are refused as busy");
+    worker.abort();
 }
 
 #[tokio::test]

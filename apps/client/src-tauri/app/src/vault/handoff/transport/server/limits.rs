@@ -4,11 +4,14 @@
 //! certificate. Pending connections (handshakes, enrollment, contact requests, revoked devices)
 //! have a small global budget and a smaller per-source budget, so one LAN host cannot exhaust
 //! file descriptors or crowd out linked devices. Authenticated connections draw from their own
-//! larger budget. Every bound sits far above what a household of linked devices uses.
+//! larger budget. Contact messages, which reach the vault database without authentication, also
+//! spend a per-source token bucket. Every bound sits far above what a household of linked devices
+//! uses.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 /// Connections still in the handshake or without a linked certificate, across all sources.
 pub(in super::super) const MAX_PENDING_CONNECTIONS: usize = 32;
@@ -16,6 +19,14 @@ pub(in super::super) const MAX_PENDING_CONNECTIONS: usize = 32;
 pub(in super::super) const MAX_PENDING_CONNECTIONS_PER_SOURCE: usize = 8;
 /// Concurrent connections from linked devices, which are capped at 32 per vault.
 pub(in super::super) const MAX_AUTHENTICATED_CONNECTIONS: usize = 64;
+/// Contact messages one source may send at once. A requester sends one request and then polls
+/// about once a minute, so even a household behind one address stays far below it.
+pub(in super::super) const CONTACT_MESSAGE_BURST: u32 = 16;
+/// Time in which one source earns another contact message.
+pub(in super::super) const CONTACT_MESSAGE_REFILL: Duration = Duration::from_secs(1);
+/// Sources whose contact budget is tracked at once. Sources with a full budget are forgotten
+/// first, so the map only fills when that many sources are sending at the same time.
+const MAX_CONTACT_SOURCES: usize = 1_024;
 
 /// Groups addresses one host can cheaply rotate through: IPv6 hosts pick any address in their
 /// /64, and IPv4-mapped IPv6 addresses count as the IPv4 host.
@@ -41,11 +52,49 @@ impl SourceKey {
     }
 }
 
+/// Token bucket for the contact messages of one source.
+#[derive(Clone, Copy, Debug)]
+struct ContactBudget {
+    tokens: u32,
+    refilled_at: Instant,
+}
+
+impl ContactBudget {
+    fn full(now: Instant) -> Self {
+        Self {
+            tokens: CONTACT_MESSAGE_BURST,
+            refilled_at: now,
+        }
+    }
+
+    fn refill(&mut self, now: Instant) {
+        let elapsed = now.saturating_duration_since(self.refilled_at);
+        let earned = elapsed.as_nanos() / CONTACT_MESSAGE_REFILL.as_nanos();
+        if earned == 0 {
+            return;
+        }
+        let tokens = u128::from(self.tokens) + earned;
+        match u32::try_from(tokens) {
+            Ok(tokens) if tokens < CONTACT_MESSAGE_BURST => {
+                self.tokens = tokens;
+                // `earned` is below the burst here, so it fits a u32.
+                self.refilled_at += CONTACT_MESSAGE_REFILL * u32::try_from(earned).unwrap_or(0);
+            }
+            _ => *self = Self::full(now),
+        }
+    }
+
+    fn is_full(&self) -> bool {
+        self.tokens >= CONTACT_MESSAGE_BURST
+    }
+}
+
 #[derive(Default)]
 struct Counts {
     pending: usize,
     pending_by_source: HashMap<SourceKey, usize>,
     authenticated: usize,
+    contact_budgets: HashMap<SourceKey, ContactBudget>,
 }
 
 /// Shared admission state for one listener.
@@ -96,6 +145,33 @@ impl ConnectionLimits {
             limits: self.clone(),
             source,
         })
+    }
+
+    /// Spends one contact message from the budget of `source`. Returns false when the source
+    /// sent too many recently, or when too many sources are sending at once, and the requester
+    /// should be told to retry later.
+    pub(in super::super) fn take_contact_message(&self, source: IpAddr, now: Instant) -> bool {
+        let source = SourceKey::from_address(source);
+        let mut counts = self.lock();
+        let budgets = &mut counts.contact_budgets;
+        if !budgets.contains_key(&source) && budgets.len() >= MAX_CONTACT_SOURCES {
+            budgets.retain(|_, budget| {
+                budget.refill(now);
+                !budget.is_full()
+            });
+            if budgets.len() >= MAX_CONTACT_SOURCES {
+                return false;
+            }
+        }
+        let budget = budgets
+            .entry(source)
+            .or_insert_with(|| ContactBudget::full(now));
+        budget.refill(now);
+        if budget.tokens == 0 {
+            return false;
+        }
+        budget.tokens -= 1;
+        true
     }
 
     fn lock(&self) -> MutexGuard<'_, Counts> {
@@ -207,6 +283,58 @@ mod tests {
                 .is_none()
         );
         assert!(limits.admit(IpAddr::V6(Ipv6Addr::LOCALHOST)).is_some());
+    }
+
+    #[test]
+    fn contact_messages_spend_a_per_source_budget_that_refills() {
+        let limits = ConnectionLimits::default();
+        let start = Instant::now();
+        for _ in 0..CONTACT_MESSAGE_BURST {
+            assert!(limits.take_contact_message(v4(10), start));
+        }
+        assert!(!limits.take_contact_message(v4(10), start), "burst spent");
+        assert!(
+            limits.take_contact_message(v4(11), start),
+            "other sources keep their own budget"
+        );
+        let almost = start + CONTACT_MESSAGE_REFILL - Duration::from_millis(1);
+        assert!(!limits.take_contact_message(v4(10), almost));
+        let refilled = start + CONTACT_MESSAGE_REFILL;
+        assert!(limits.take_contact_message(v4(10), refilled));
+        assert!(!limits.take_contact_message(v4(10), refilled), "one earned");
+        let rested = refilled + CONTACT_MESSAGE_REFILL * (CONTACT_MESSAGE_BURST * 4);
+        for _ in 0..CONTACT_MESSAGE_BURST {
+            assert!(limits.take_contact_message(v4(10), rested));
+        }
+        assert!(
+            !limits.take_contact_message(v4(10), rested),
+            "a long rest refills only to the burst"
+        );
+    }
+
+    #[test]
+    fn contact_budgets_forget_rested_sources_when_many_are_tracked() {
+        let limits = ConnectionLimits::default();
+        let start = Instant::now();
+        let source = |index: usize| {
+            let [.., high, low] = u32::try_from(index).expect("index").to_be_bytes();
+            IpAddr::V4(Ipv4Addr::new(10, 1, high, low))
+        };
+        for index in 0..MAX_CONTACT_SOURCES {
+            assert!(limits.take_contact_message(source(index), start));
+        }
+        let newcomer = source(MAX_CONTACT_SOURCES);
+        assert!(
+            !limits.take_contact_message(newcomer, start),
+            "every tracked source is still active"
+        );
+        assert!(
+            limits.take_contact_message(source(0), start),
+            "tracked sources keep sending"
+        );
+        let rested = start + CONTACT_MESSAGE_REFILL;
+        assert!(limits.take_contact_message(newcomer, rested));
+        assert!(limits.lock().contact_budgets.len() <= MAX_CONTACT_SOURCES);
     }
 
     #[test]

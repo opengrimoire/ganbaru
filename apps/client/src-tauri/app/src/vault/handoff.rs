@@ -1,6 +1,8 @@
 //! Secure, LAN-only pairing and whole-vault bundle transport.
 
 #[cfg(desktop)]
+pub(crate) mod contact_requests;
+#[cfg(desktop)]
 pub(crate) mod coordinator;
 pub(crate) mod receiver;
 pub(crate) mod source;
@@ -121,11 +123,14 @@ impl CoordinatorLifecycle {
         let (shutdown, receiver) = tokio::sync::oneshot::channel();
         let (requests, request_receiver) = tokio::sync::mpsc::channel(8);
         let hub = crate::sync::sync_hub(&app);
+        let (contacts, contact_receiver) = contact_requests::channel();
+        tauri::async_runtime::spawn(contact_requests::run(app.clone(), contact_receiver));
         tauri::async_runtime::spawn(coordinator::run(app, manager.clone(), request_receiver));
         tauri::async_runtime::spawn(transport::serve_with_coordinator(
             listener,
             manager,
             Some(requests.clone()),
+            Some(contacts),
             Some(hub),
             receiver,
         ));

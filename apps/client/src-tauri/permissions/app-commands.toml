@@ -633,6 +633,8 @@ commands.allow = [
   "toggle_devtools",
   "update_music_tray",
   "updater_install_context",
+  "updates_check",
+  "updates_install",
   "vault_active_info",
   "vault_backup_to_downloads",
   "vault_default_location",

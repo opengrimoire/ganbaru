@@ -228,6 +228,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .manage(db::DatabaseState::default())
+        .manage(updates::PendingUpdate::default())
         .manage(vault::ownership::VaultOwnershipManager::default())
         .manage(vault::handoff::pairing::PairingManager::default())
         .manage(vault::handoff::CoordinatorLifecycle::default())
@@ -580,6 +581,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             benchmark::seed::benchmark_seed_dense_music_library,
             restart_app,
             updates::updater_install_context,
+            updates::updates_check,
+            updates::updates_install,
             restart_app_after_delay,
             toggle_devtools,
             benchmark::memory::memory_report,

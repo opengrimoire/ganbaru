@@ -208,3 +208,57 @@ export function errorText(error: unknown): string {
   if (typeof error === "string") return error;
   return String(error);
 }
+
+/** Newer release found by the Rust update check. */
+export interface AvailableUpdate {
+  version: string;
+  currentVersion: string;
+  body: string | null;
+}
+
+/** Download progress streamed by the Rust update install. */
+export type UpdateDownloadEvent =
+  | { event: "Started"; data: { contentLength: number | null } }
+  | { event: "Progress"; data: { chunkLength: number } }
+  | { event: "Finished" };
+
+/**
+ * Parse the update check result before exposing it to UI state.
+ *
+ * @param value Unknown IPC payload.
+ * @returns The offered update, or null when none is offered or the payload is unusable.
+ */
+export function parseAvailableUpdate(value: unknown): AvailableUpdate | null {
+  if (!isRecord(value)) return null;
+  const { version, currentVersion, body } = value;
+  if (typeof version !== "string" || !RELEASE_VERSION_PATTERN.test(version)) return null;
+  if (typeof currentVersion !== "string" || !RELEASE_VERSION_PATTERN.test(currentVersion)) return null;
+  return { version, currentVersion, body: typeof body === "string" ? body : null };
+}
+
+/**
+ * Parse one download progress event.
+ *
+ * @param value Unknown channel message.
+ * @returns The event, or null when the message is unusable.
+ */
+export function parseUpdateDownloadEvent(value: unknown): UpdateDownloadEvent | null {
+  if (!isRecord(value)) return null;
+  if (value.event === "Finished") return { event: "Finished" };
+  if (!isRecord(value.data)) return null;
+  if (value.event === "Started") {
+    const length = value.data.contentLength;
+    return {
+      event: "Started",
+      data: { contentLength: isByteCount(length) ? length : null },
+    };
+  }
+  if (value.event === "Progress" && isByteCount(value.data.chunkLength)) {
+    return { event: "Progress", data: { chunkLength: value.data.chunkLength } };
+  }
+  return null;
+}
+
+function isByteCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}

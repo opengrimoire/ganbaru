@@ -2,6 +2,25 @@ const MOBILE_RUNTIME: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/src/runtime/mobile.rs"
 ));
+const DESKTOP_RUNTIME: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/runtime/desktop.rs"
+));
+
+/// Commands removed because they turned a webview string into file authority.
+const REMOVED_PATH_AUTHORITY_COMMANDS: &[&str] = &["notes_prepare_import_file_reference"];
+
+#[test]
+fn no_runtime_registers_removed_path_authority_commands() {
+    for command in REMOVED_PATH_AUTHORITY_COMMANDS {
+        for (platform, runtime) in [("desktop", DESKTOP_RUNTIME), ("mobile", MOBILE_RUNTIME)] {
+            assert!(
+                !runtime.contains(command),
+                "{platform} runtime must not register {command}"
+            );
+        }
+    }
+}
 
 #[test]
 fn mobile_runtime_registers_portable_core_commands() {
@@ -105,7 +124,6 @@ fn mobile_runtime_excludes_desktop_only_commands() {
         "notes::notes_pick_",
         "notes::working_markdown::",
         "notes::notes_import_notion_export_folder",
-        "notes::notes_prepare_import_file_reference",
         "profile_images::profile_image_pick_file",
         "quick_notes::quick_notes_pick_images",
         "quick_notes::quick_notes_paste_clipboard_image",

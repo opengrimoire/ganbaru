@@ -818,7 +818,6 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             notes::notes_save_page_cover_data_url,
             notes::notes_page_cover_asset_data_url,
             notes::notes_pick_file_asset,
-            notes::notes_prepare_import_file_reference,
             notes::notes_file_asset_data_url,
             notes::notes_pick_page_icon_file,
             notes::notes_save_page_icon_data_url,

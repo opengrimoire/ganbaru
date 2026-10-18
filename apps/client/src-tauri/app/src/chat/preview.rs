@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{Manager, WebviewUrl};
 
+pub mod approvals;
 mod artifacts;
 mod capture;
 pub mod model_access;
@@ -124,6 +125,7 @@ struct BrowserArtifactPayload<'a> {
 pub struct ChatBrowserManager {
     tabs: Arc<Mutex<HashMap<String, RuntimeBrowserTab>>>,
     recording: Arc<Mutex<Option<ActiveRecording>>>,
+    pending_approvals: Arc<Mutex<HashMap<ChatThreadId, approvals::PendingPreviewApproval>>>,
 }
 
 impl ChatBrowserManager {
@@ -204,6 +206,9 @@ impl ChatBrowserManager {
         thread_id: &ChatThreadId,
     ) {
         self.cancel_recording(|recording| &recording.thread_id == thread_id);
+        if let Ok(mut pending) = self.pending_approvals.lock() {
+            pending.remove(thread_id);
+        }
         let labels = if let Ok(mut tabs) = self.tabs.lock() {
             let ids = tabs
                 .iter()
@@ -224,6 +229,9 @@ impl ChatBrowserManager {
 
     pub fn close_all<R: tauri::Runtime>(&self, app: &tauri::AppHandle<R>) {
         self.cancel_recording(|_| true);
+        if let Ok(mut pending) = self.pending_approvals.lock() {
+            pending.clear();
+        }
         let labels = if let Ok(mut tabs) = self.tabs.lock() {
             std::mem::take(&mut *tabs)
                 .into_values()
@@ -246,21 +254,43 @@ pub(crate) async fn mcp_navigate_browser(
     thread_id: &ChatThreadId,
     url: &str,
 ) -> ChatResult<BrowserTabRead> {
-    let url = validate_navigation(url, false)?;
-    let tab = app
-        .state::<ChatBrowserManager>()
-        .active_thread_tab(thread_id)?;
+    let manager = app.state::<ChatBrowserManager>();
+    let tab = manager.active_thread_tab(thread_id)?;
+    let grants = model_access::thread_grants(app, thread_id);
+    let url = match approvals::model_navigation(url, &grants)? {
+        approvals::ModelNavigation::Ready(url) => url,
+        approvals::ModelNavigation::NeedsApproval { url, origin } => {
+            manager.request_approval(
+                app,
+                thread_id,
+                approvals::PendingPreviewApproval::Navigation {
+                    tab_id: tab.read.tab_id.clone(),
+                    url,
+                },
+            );
+            return Err(approvals::approval_pending_error(&format!(
+                "Navigation to {origin}"
+            )));
+        }
+    };
     navigate_existing(app, &tab, url.clone())?;
-    app.state::<ChatBrowserManager>()
-        .update(&tab.read.tab_id, |read| {
-            read.current_url = url.to_string();
-            read.loading = true;
-            read.external_origin = false;
-        });
-    let read = app
-        .state::<ChatBrowserManager>()
-        .read(&tab.read.tab_id)?
-        .read;
+    navigated_read(app, pool, &tab.read.tab_id, &url).await
+}
+
+/// Records a navigation the tab just started and persists the tab.
+async fn navigated_read(
+    app: &tauri::AppHandle,
+    pool: &SqlitePool,
+    tab_id: &str,
+    url: &reqwest::Url,
+) -> ChatResult<BrowserTabRead> {
+    let manager = app.state::<ChatBrowserManager>();
+    manager.update(tab_id, |read| {
+        read.current_url = url.to_string();
+        read.loading = true;
+        read.external_origin = !is_loopback(url);
+    });
+    let read = manager.read(tab_id)?.read;
     persist_tab(pool, &read).await?;
     Ok(read)
 }
@@ -440,6 +470,7 @@ pub async fn chat_browser_open(
     validate_tab_id(&request.tab_id)?;
     let pool = chat_pool(&app, db_url).await?;
     require_thread(&pool, &request.thread_id).await?;
+    approvals::grant_loopback_origin(&app, &request.thread_id, &url)?;
     if let Ok(existing) = app.state::<ChatBrowserManager>().read(&request.tab_id) {
         if existing.read.thread_id != request.thread_id {
             return Err(ChatError::new(
@@ -487,15 +518,9 @@ pub async fn chat_browser_navigate(
 ) -> ChatResult<BrowserTabRead> {
     let url = validate_navigation(&url, external_navigation_confirmed)?;
     let tab = owned_tab(&app, &thread_id, &tab_id)?;
+    approvals::grant_loopback_origin(&app, &thread_id, &url)?;
     navigate_existing(&app, &tab, url.clone())?;
-    app.state::<ChatBrowserManager>().update(&tab_id, |read| {
-        read.current_url = url.to_string();
-        read.loading = true;
-        read.external_origin = !is_loopback(&url);
-    });
-    let read = app.state::<ChatBrowserManager>().read(&tab_id)?.read;
-    persist_tab(&chat_pool(&app, db_url).await?, &read).await?;
-    Ok(read)
+    navigated_read(&app, &chat_pool(&app, db_url).await?, &tab_id, &url).await
 }
 
 #[tauri::command]

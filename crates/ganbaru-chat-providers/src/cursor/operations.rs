@@ -378,6 +378,7 @@ impl ProviderDriver for CursorProviderDriver {
                 state: ChatTurnState::Active,
                 provider_turn_id: Some(provider_turn_id),
                 accepted_at: now_utc()?,
+                sandbox_network_access: None,
             })
         })
     }

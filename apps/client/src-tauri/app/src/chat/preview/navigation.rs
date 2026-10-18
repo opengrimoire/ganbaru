@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::BTreeSet;
 
 pub(super) fn validate_navigation(
     value: &str,
@@ -53,21 +54,55 @@ pub(super) fn is_loopback(url: &reqwest::Url) -> bool {
     url.host_str().is_some_and(|host| {
         host.eq_ignore_ascii_case("localhost")
             || host
+                .strip_prefix('[')
+                .and_then(|inner| inner.strip_suffix(']'))
+                .unwrap_or(host)
                 .parse::<std::net::IpAddr>()
                 .is_ok_and(|address| address.is_loopback())
     })
 }
 
-pub(super) fn navigation_allowed(allowed: &reqwest::Url, candidate: &reqwest::Url) -> bool {
+/// Grant key for a loopback origin. Every loopback host spelling (`localhost`, `127.0.0.1`,
+/// `[::1]`) shares one key per scheme and port, because development servers redirect between
+/// them and the port is what separates one local service from another.
+pub(super) fn loopback_origin_key(url: &reqwest::Url) -> Option<String> {
+    if !matches!(url.scheme(), "http" | "https") || !is_loopback(url) {
+        return None;
+    }
+    Some(format!(
+        "{}://localhost:{}",
+        url.scheme(),
+        url.port_or_known_default()?
+    ))
+}
+
+/// Decides whether a page may navigate away from the document the tab was sent to. Loopback
+/// tabs stay on their own loopback origin or move to one the thread allowed; external tabs
+/// stay on their exact origin.
+pub(super) fn navigation_allowed(
+    allowed: &reqwest::Url,
+    candidate: &reqwest::Url,
+    loopback_grants: &BTreeSet<String>,
+) -> bool {
     if !matches!(candidate.scheme(), "http" | "https") || is_app_protocol_host(candidate) {
         return false;
     }
-    if is_loopback(allowed) {
-        return is_loopback(candidate);
+    if let Some(current) = loopback_origin_key(allowed) {
+        return loopback_origin_key(candidate)
+            .is_some_and(|key| key == current || loopback_grants.contains(&key));
     }
     allowed.scheme() == candidate.scheme()
         && allowed.host_str() == candidate.host_str()
         && allowed.port_or_known_default() == candidate.port_or_known_default()
+}
+
+/// Returns the loopback origin a navigation still needs the user to approve, or `None` when
+/// the thread already allows it or the URL is not a loopback page.
+pub(super) fn loopback_approval_needed(
+    candidate: &reqwest::Url,
+    loopback_grants: &BTreeSet<String>,
+) -> Option<String> {
+    loopback_origin_key(candidate).filter(|key| !loopback_grants.contains(key))
 }
 
 pub(super) fn loopback_urls(bytes: &[u8]) -> Vec<String> {

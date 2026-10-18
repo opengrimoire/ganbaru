@@ -31,6 +31,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use std::time::Duration;
+use tauri::Manager;
 use tokio::sync::{Mutex, Notify, RwLock, Semaphore, oneshot};
 
 const MAX_MCP_REQUEST_BYTES: usize = 1024 * 1024;
@@ -38,6 +39,12 @@ const MAX_MCP_CONCURRENCY: usize = 8;
 const MCP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MCP_INITIALIZATION_TIMEOUT: Duration = Duration::from_secs(15);
 const RESOURCE_URI_PREFIX: &str = "ganbaru://chat/resource/";
+/// How long a preview tool waits for the turn being dispatched to report its network policy.
+const PREVIEW_NETWORK_SETTLE_TIMEOUT: Duration = Duration::from_secs(10);
+
+mod preview_network;
+
+use preview_network::{PreviewNetworkDecision, PreviewNetworkGate};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InternalMcpChannelSource {
@@ -81,6 +88,8 @@ struct EndpointState {
     initialized_notify: Notify,
     access: RwLock<EndpointAccessState>,
     tools: super::internal_mcp_tools::InternalMcpToolRuntime,
+    preview_network: Mutex<PreviewNetworkGate>,
+    preview_network_settled: Notify,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -103,6 +112,22 @@ impl EndpointState {
                 EndpointAccessState::DirectUnscoped
             }),
             tools: super::internal_mcp_tools::InternalMcpToolRuntime::default(),
+            preview_network: Mutex::new(PreviewNetworkGate::default()),
+            preview_network_settled: Notify::new(),
+        }
+    }
+
+    /// Waits briefly for a turn in dispatch to report its network policy, then decides.
+    async fn preview_network_decision(&self) -> PreviewNetworkDecision {
+        let deadline = tokio::time::Instant::now() + PREVIEW_NETWORK_SETTLE_TIMEOUT;
+        loop {
+            let settled = self.preview_network_settled.notified();
+            let decision = self.preview_network.lock().await.decision();
+            if decision != PreviewNetworkDecision::AwaitingTurn
+                || tokio::time::timeout_at(deadline, settled).await.is_err()
+            {
+                return decision;
+            }
         }
     }
 
@@ -317,6 +342,45 @@ impl InternalMcpRegistry {
         true
     }
 
+    async fn endpoint_state(&self, thread_id: &ChatThreadId) -> Option<Arc<EndpointState>> {
+        self.endpoints
+            .lock()
+            .await
+            .get(thread_id)
+            .map(|endpoint| Arc::clone(&endpoint.state))
+    }
+
+    /// Holds preview tools while a turn is dispatched, until `settle_turn_network` runs.
+    pub async fn begin_turn_network(&self, thread_id: &ChatThreadId) {
+        if let Some(state) = self.endpoint_state(thread_id).await {
+            state.preview_network.lock().await.begin_turn();
+        }
+    }
+
+    /// Records the dispatched turn's sandbox network policy and releases waiting preview tools.
+    pub async fn settle_turn_network(
+        &self,
+        thread_id: &ChatThreadId,
+        network_access: Option<bool>,
+    ) {
+        if let Some(state) = self.endpoint_state(thread_id).await {
+            state
+                .preview_network
+                .lock()
+                .await
+                .settle_turn(network_access);
+            state.preview_network_settled.notify_waiters();
+        }
+    }
+
+    /// Lets preview tools run for the rest of the thread's provider session even though its
+    /// sandbox denies network access.
+    pub async fn approve_preview_network(&self, thread_id: &ChatThreadId) {
+        if let Some(state) = self.endpoint_state(thread_id).await {
+            state.preview_network.lock().await.approve();
+        }
+    }
+
     pub async fn stop_thread_endpoint(&self, thread_id: &ChatThreadId) {
         if let Some(endpoint) = self.endpoints.lock().await.remove(thread_id) {
             let _ = endpoint.shutdown.send(());
@@ -517,11 +581,39 @@ impl ServerHandler for ThreadMcpHandler {
 }
 
 impl ThreadMcpHandler {
+    /// Refuses preview tools in a session whose sandbox denies network access until the user
+    /// approves them in the Browser panel, and asks for that approval.
+    async fn require_preview_network(&self) -> ChatResult<()> {
+        match self.state.preview_network_decision().await {
+            PreviewNetworkDecision::Allowed => Ok(()),
+            PreviewNetworkDecision::AwaitingTurn => Err(ChatError::new(
+                ChatErrorCode::Busy,
+                "Preview tools are available once the turn has started. Try again",
+                true,
+            )),
+            PreviewNetworkDecision::NeedsApproval => {
+                self.app
+                    .state::<super::preview::ChatBrowserManager>()
+                    .request_approval(
+                        &self.app,
+                        &self.thread_id,
+                        super::preview::approvals::PendingPreviewApproval::Network,
+                    );
+                Err(super::preview::approvals::approval_pending_error(
+                    "Using preview tools while this session's sandbox blocks network access",
+                ))
+            }
+        }
+    }
+
     async fn call_preview_tool(
         &self,
         name: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> ChatResult<serde_json::Value> {
+        if name != "preview_status" {
+            self.require_preview_network().await?;
+        }
         let tab_id = || super::preview::mcp_model_tab(&self.app, &self.thread_id);
         match name {
             "preview_status" => serde_json::to_value(super::preview::mcp_status_reads(

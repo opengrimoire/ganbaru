@@ -381,6 +381,27 @@ pub fn thread_open_params(
     Ok(Value::Object(params))
 }
 
+/// Reports whether turn parameters let sandboxed commands reach the network. Full access
+/// allows it, a sandbox policy states it, and a named permission profile counts as denied
+/// because its network rule is not visible here.
+pub fn sandbox_network_access(params: &Value) -> bool {
+    match params.get("sandboxPolicy") {
+        Some(policy) if policy.get("type").and_then(Value::as_str) == Some("dangerFullAccess") => {
+            true
+        }
+        Some(policy) => policy
+            .get("networkAccess")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        None => false,
+    }
+}
+
+/// Network access of a preset safety mode's sandbox, or `None` for a custom configuration.
+pub fn preset_network_access(mode: SafetyMode) -> Option<bool> {
+    safety_settings(mode).map(|settings| settings.turn_sandbox_type == "dangerFullAccess")
+}
+
 pub fn turn_start_params(
     provider_thread_id: &str,
     workspace: &Path,

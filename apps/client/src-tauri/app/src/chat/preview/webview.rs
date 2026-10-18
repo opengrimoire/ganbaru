@@ -1,6 +1,9 @@
+use super::approvals::PendingPreviewApproval;
+use super::model_access::thread_grants;
 use super::navigation::*;
 use super::persistence::{bounded_preview_title, bounded_preview_url, spawn_tab_persister};
 use super::*;
+use std::collections::BTreeSet;
 
 pub(super) async fn create_child_browser_webview(
     app: &tauri::AppHandle,
@@ -19,11 +22,35 @@ pub(super) async fn create_child_browser_webview(
     let loading_tab = request.tab_id.clone();
     let title_manager = manager.clone();
     let title_tab = request.tab_id.clone();
+    let navigation_manager = manager.clone();
+    let navigation_app = app.clone();
+    let navigation_thread = request.thread_id.clone();
+    let navigation_tab = request.tab_id.clone();
     let builder = WebviewBuilder::new(label.clone(), WebviewUrl::External(url.clone()))
         .on_navigation(move |candidate| {
-            navigation_url
-                .lock()
-                .is_ok_and(|allowed| navigation_allowed(&allowed, candidate))
+            let Ok(allowed) = navigation_url.lock().map(|allowed| allowed.clone()) else {
+                return false;
+            };
+            if navigation_allowed(&allowed, candidate, &BTreeSet::new()) {
+                return true;
+            }
+            let grants = thread_grants(&navigation_app, &navigation_thread);
+            if navigation_allowed(&allowed, candidate, &grants) {
+                return true;
+            }
+            if loopback_origin_key(&allowed).is_some()
+                && loopback_approval_needed(candidate, &grants).is_some()
+            {
+                navigation_manager.request_approval(
+                    &navigation_app,
+                    &navigation_thread,
+                    PendingPreviewApproval::Navigation {
+                        tab_id: navigation_tab.clone(),
+                        url: candidate.clone(),
+                    },
+                );
+            }
+            false
         })
         .on_new_window(|_, _| NewWindowResponse::Deny)
         .on_download(|_, _| false)

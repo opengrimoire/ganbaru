@@ -751,6 +751,10 @@ export const chat = {
     unavailable: "La vista previa del navegador no está disponible.",
     modelAccessAllow: (origin: string) => `Permitir que el agente de código use ${origin} en este hilo`,
     modelAccessRevoke: (origin: string) => `Impedir que el agente de código use ${origin} en este hilo`,
+    approvalNavigation: (origin: string) => `Esta vista previa quiere abrir ${origin}. ¿Permitirlo en este hilo?`,
+    approvalNetwork: "El agente de código quiere usar la vista previa del navegador, pero esta sesión bloquea su acceso a la red. Las páginas de vista previa sí pueden acceder a la red. ¿Permitir las herramientas de vista previa en esta sesión?",
+    approvalAllow: "Permitir",
+    approvalDismiss: "Descartar",
   },
   commandMenu: {
     title: "Comandos de Chat",

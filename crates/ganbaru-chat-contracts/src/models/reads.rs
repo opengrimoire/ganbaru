@@ -29,6 +29,10 @@ pub struct TurnDispatchReceipt {
     pub state: ChatTurnState,
     pub provider_turn_id: Option<super::ProviderTurnId>,
     pub accepted_at: UtcTimestamp,
+    /// Whether the provider sandbox lets this turn's commands reach the network, when the
+    /// adapter sets that policy itself. `None` means the adapter declares no network policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_network_access: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

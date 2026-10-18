@@ -262,6 +262,39 @@ export async function allowPreviewModelOrigin(threadId: ChatThreadId, tabId: str
   return origin;
 }
 
+/** Event emitted when a Chat thread gets a new pending browser preview approval. */
+export const CHAT_BROWSER_APPROVAL_EVENT = "chat://browser-approval";
+
+/** An approval the coding agent is waiting on in the Browser panel. */
+export type PreviewApproval =
+  | { kind: "navigation"; origin: string }
+  | { kind: "network" };
+
+function parsePreviewApproval(value: unknown): PreviewApproval | null {
+  if (value === null) return null;
+  if (typeof value !== "object") throw new Error("Invalid browser approval");
+  const { kind, origin } = value as Record<string, unknown>;
+  if (kind === "network") return { kind };
+  if (kind === "navigation" && typeof origin === "string") return { kind, origin };
+  throw new Error("Invalid browser approval");
+}
+
+/** Reads the approval a thread's Browser panel should show, if any. */
+export async function readPendingBrowserApproval(threadId: ChatThreadId): Promise<PreviewApproval | null> {
+  return parsePreviewApproval(await invoke<unknown>("chat_browser_pending_approval", { threadId }));
+}
+
+/**
+ * Allows or dismisses a thread's pending approval. Allowing a navigation opens it and returns
+ * the updated tab.
+ */
+export async function resolveBrowserApproval(threadId: ChatThreadId, allow: boolean): Promise<BrowserTabRead | null> {
+  const value = await invoke<unknown>("chat_browser_resolve_approval", {
+    dbUrl: await ensureDbUrl(), threadId, allow,
+  });
+  return value === null ? null : parseBrowserTabRead(value);
+}
+
 /** Stops the model from using a site in a thread. */
 export async function revokePreviewModelOrigin(threadId: string, origin: string): Promise<void> {
   await invoke("chat_browser_revoke_model_origin", { threadId, origin });

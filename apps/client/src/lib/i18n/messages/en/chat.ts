@@ -748,6 +748,10 @@ export const chat = {
     unavailable: "The browser preview is unavailable.",
     modelAccessAllow: (origin: string) => `Let the coding agent use ${origin} in this thread`,
     modelAccessRevoke: (origin: string) => `Stop the coding agent from using ${origin} in this thread`,
+    approvalNavigation: (origin: string) => `This preview wants to open ${origin}. Allow it for this thread?`,
+    approvalNetwork: "The coding agent wants to use the browser preview, but this session blocks its network access. Preview pages can still reach the network. Allow preview tools for this session?",
+    approvalAllow: "Allow",
+    approvalDismiss: "Dismiss",
   },
   commandMenu: {
     title: "Chat commands",

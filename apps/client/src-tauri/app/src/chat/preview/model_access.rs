@@ -1,16 +1,19 @@
-//! Model access to preview tabs: loopback pages, plus external origins the user allowed per thread.
+//! Model access to preview tabs: loopback pages, plus external origins the user allowed per
+//! thread. The same per-thread grants also hold the loopback origins a thread may navigate to,
+//! keyed by `loopback_origin_key`.
 
 use super::navigation::is_loopback;
 use super::*;
 use crate::chat::device_state::{read_active_device_scope, update_active_device_scope};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Most external origins one thread may hold for model access.
+/// Most origins one thread may hold, external and loopback together.
 pub(super) const MAX_PREVIEW_MODEL_ORIGINS_PER_THREAD: usize = 64;
-/// Most threads that may hold external origin grants on one device and vault.
+/// Most threads that may hold origin grants on one device and vault.
 pub(super) const MAX_PREVIEW_MODEL_ORIGIN_THREADS: usize = 512;
 
-/// One external origin the user let the model use in one thread.
+/// One origin the user allowed in one thread: an external site the model may use, or a
+/// loopback origin the thread may navigate to.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreviewModelOriginGrant {
@@ -45,7 +48,7 @@ fn denied_error() -> ChatError {
     )
 }
 
-fn grant_storage_error() -> ChatError {
+pub(super) fn grant_storage_error() -> ChatError {
     ChatError::new(
         ChatErrorCode::Internal,
         "Browser site access could not be read or saved",
@@ -53,7 +56,7 @@ fn grant_storage_error() -> ChatError {
     )
 }
 
-fn thread_grants(app: &tauri::AppHandle, thread_id: &ChatThreadId) -> BTreeSet<String> {
+pub(super) fn thread_grants(app: &tauri::AppHandle, thread_id: &ChatThreadId) -> BTreeSet<String> {
     read_active_device_scope(app)
         .ok()
         .and_then(|mut scope| scope.preview_model_origins.remove(thread_id.as_str()))
@@ -183,7 +186,7 @@ pub(super) fn remove_grant(
     }
 }
 
-/// Lists every external origin the model may use, for Settings.
+/// Lists every origin grant, external and loopback, for Settings.
 #[tauri::command]
 pub async fn chat_browser_model_origins(
     app: tauri::AppHandle,

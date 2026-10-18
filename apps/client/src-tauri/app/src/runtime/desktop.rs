@@ -435,6 +435,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::preview::model_access::chat_browser_model_origins,
             chat::preview::model_access::chat_browser_allow_model_origin,
             chat::preview::model_access::chat_browser_revoke_model_origin,
+            chat::preview::approvals::chat_browser_pending_approval,
+            chat::preview::approvals::chat_browser_resolve_approval,
             chat::drafts::chat_save_draft,
             chat::drafts::chat_read_draft,
             chat::drafts::chat_delete_draft,

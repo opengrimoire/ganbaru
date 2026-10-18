@@ -235,6 +235,9 @@ pub(crate) async fn send_turn(
             mcp_registry.wait_until_ready(&thread_id).await?;
         }
         let reservation = reservation.handoff_to_runtime()?;
+        if authority_support.internal_host_tools {
+            mcp_registry.begin_turn_network(&thread_id).await;
+        }
         owner
             .send_turn(
                 SendTurnRequest {
@@ -255,6 +258,15 @@ pub(crate) async fn send_turn(
             .await
     }
     .await;
+    if authority_support.internal_host_tools {
+        let network_access = operation
+            .as_ref()
+            .ok()
+            .and_then(|dispatch| dispatch.sandbox_network_access);
+        mcp_registry
+            .settle_turn_network(&thread_id, network_access)
+            .await;
+    }
     let (dispatch, launch_error) = match operation {
         Ok(dispatch) => (Some(dispatch), None),
         Err(error) => {

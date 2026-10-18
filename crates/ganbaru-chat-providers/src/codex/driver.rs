@@ -621,6 +621,7 @@ impl ProviderDriver for CodexProviderDriver {
                 custom_safety.as_ref(),
                 live.organizational,
             )?;
+            let network_access = sandbox_network_access(&params);
             {
                 let mut state = live.route.lock().map_err(|_| driver_state_error())?;
                 state.active_chat_turn_id = Some(request.turn_id.clone());
@@ -688,6 +689,7 @@ impl ProviderDriver for CodexProviderDriver {
                 state: ChatTurnState::Active,
                 provider_turn_id: Some(provider_turn_id),
                 accepted_at: now_utc()?,
+                sandbox_network_access: Some(network_access),
             })
         })
     }

@@ -205,8 +205,18 @@ pub async fn app_window_open_tab(
         return Ok(());
     }
 
+    let title = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|window| window.label == HOST_WINDOW_LABEL)
+        .map_or_else(
+            || app.package_info().name.clone(),
+            |window| window.title.clone(),
+        );
     let mut builder = WebviewWindowBuilder::new(&app, &request.label, url)
-        .title(app.package_info().name.clone())
+        .title(title)
         .inner_size(TAB_WINDOW_WIDTH, TAB_WINDOW_HEIGHT)
         .min_inner_size(TAB_WINDOW_MIN_WIDTH, TAB_WINDOW_MIN_HEIGHT)
         .decorations(false)

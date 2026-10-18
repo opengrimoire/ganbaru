@@ -91,6 +91,7 @@ apps/
         src/tray.rs, app_windows.rs, themes.rs, updates.rs, profile_images.rs: tray, window raising, theme command adapters, updates, and profile images
         src/benchmark.rs, benchmark/, first_use_contracts.rs: benchmark state, seed data, memory reports, and first-use query contracts
       capabilities/: permission declarations (desktop and mobile)
+      permissions/: app command permission sets granted by capabilities
       gen/android/: generated Android project and native platform integration
       gen/schemas/: generated Tauri schema files
       package-repo/: generated package repository public key staging (ignored)

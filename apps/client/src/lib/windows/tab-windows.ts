@@ -1,5 +1,6 @@
+import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
-import { getAllWebviewWindows, getCurrentWebviewWindow, WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { getAllWebviewWindows, getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import type { View } from "$lib/navigation";
 import { readNativeBackground } from "$lib/themes/native-background";
 import { parseWorkspaceTab, type WorkspaceTab } from "$lib/workspace-tabs/model";
@@ -291,12 +292,6 @@ function listenTabWindowMessages<T extends TabWindowMessage>(
   });
 }
 
-async function focusExistingWindow(window: WebviewWindow): Promise<void> {
-  await window.show();
-  await window.unminimize();
-  await window.setFocus();
-}
-
 /**
  * Count the other app windows on screen. Hidden windows do not count, so the window that hosts app-wide work
  * stays out of the count while it is hidden.
@@ -317,32 +312,15 @@ async function openTabWindow(
   tab: WorkspaceTab | null,
   { focus = true, position = null }: { focus?: boolean; position?: ScreenPoint | null } = {},
 ): Promise<void> {
-  const existing = await WebviewWindow.getByLabel(label);
-  if (existing) {
-    if (focus) await focusExistingWindow(existing);
-    return;
-  }
-
   const background = readNativeBackground(document.documentElement, TAB_WINDOW_BACKGROUND_TOKEN);
-  const created = new WebviewWindow(label, {
-    ...(background ? { backgroundColor: [background.r, background.g, background.b] } : {}),
-    url: tabWindowUrl(tab),
-    title: "Ganbaru",
-    width: 960,
-    height: 720,
-    minWidth: 280,
-    minHeight: 180,
-    ...(position ? { x: position.x, y: position.y } : { center: true }),
-    decorations: false,
-    visible: true,
-    focus,
-  });
-
-  await new Promise<void>((resolve, reject) => {
-    void created.once<void>("tauri://created", () => resolve());
-    void created.once<unknown>("tauri://error", (event) => {
-      reject(event.payload);
-    });
+  await invoke<void>("app_window_open_tab", {
+    request: {
+      label,
+      address: tabWindowUrl(tab),
+      focus,
+      position,
+      background: background ? [background.r, background.g, background.b] : null,
+    },
   });
 }
 

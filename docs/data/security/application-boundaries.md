@@ -4,7 +4,11 @@ Tauri webviews are presentation and orchestration clients. Rust owns database ac
 
 ## Tauri capabilities
 
-Capabilities grant only the plugin operations a window or platform needs. Neither desktop nor Android exposes generic filesystem or shell plugins to the webview. Desktop exposes scoped window, webview, event, zoom, and updater operations; Android exposes notification permission checks and the repository-owned mobile plugin commands.
+Capabilities grant only the plugin operations a window or platform needs. Neither desktop nor Android exposes generic filesystem or shell plugins to the webview. Desktop exposes scoped window, event, zoom, and updater operations; Android exposes notification permission checks and the repository-owned mobile plugin commands.
+
+Application commands are also ACL-checked, so a webview can call only the commands its capability allows and an unlisted command fails closed. `apps/client/src-tauri/permissions/app-commands.toml` defines two command sets: every registered command for the app-owned main and tab webviews, and a small Focus set for overlay and blocker windows. Desktop capabilities select webviews by label, never the main window, so Chat preview webviews attached to it receive no command or plugin grant. Functions that only Rust calls, such as Chat browser tools for the internal MCP endpoint, are not registered as commands. Runtime tests keep the permission file equal to the registered handlers, and a frontend test keeps the Focus set equal to what overlay code can reach.
+
+No webview may create windows or webviews. Detaching a tab asks Rust to open a tab window, and Rust accepts only a `view-` label, the app root with the tab query, a bounded position, and an opaque background color.
 
 URL opening is allowlisted on both platforms to specific product destinations (the repository, releases, license, icon and sound attributions, and the Notion authorization guide on desktop) rather than arbitrary web addresses. Feature-owned native commands, such as Notes hyperlink opening, parse and check their own URLs before delegation and do not widen this allowlist.
 

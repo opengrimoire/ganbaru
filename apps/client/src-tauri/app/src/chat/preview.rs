@@ -561,8 +561,7 @@ pub async fn chat_browser_refresh(
         .map_err(|_| browser_unavailable_error())
 }
 
-#[tauri::command]
-pub async fn chat_browser_snapshot(
+pub(crate) async fn chat_browser_snapshot(
     app: tauri::AppHandle,
     thread_id: ChatThreadId,
     tab_id: String,
@@ -705,8 +704,7 @@ pub async fn chat_browser_recording_stop(
     .await
 }
 
-#[tauri::command]
-pub async fn chat_browser_click(
+pub(crate) async fn chat_browser_click(
     app: tauri::AppHandle,
     thread_id: ChatThreadId,
     tab_id: String,
@@ -721,8 +719,7 @@ pub async fn chat_browser_click(
     )
 }
 
-#[tauri::command]
-pub async fn chat_browser_type(
+pub(crate) async fn chat_browser_type(
     app: tauri::AppHandle,
     thread_id: ChatThreadId,
     tab_id: String,
@@ -741,8 +738,7 @@ pub async fn chat_browser_type(
     )
 }
 
-#[tauri::command]
-pub async fn chat_browser_press(
+pub(crate) async fn chat_browser_press(
     app: tauri::AppHandle,
     thread_id: ChatThreadId,
     tab_id: String,
@@ -759,8 +755,7 @@ pub async fn chat_browser_press(
     )
 }
 
-#[tauri::command]
-pub async fn chat_browser_scroll(
+pub(crate) async fn chat_browser_scroll(
     app: tauri::AppHandle,
     thread_id: ChatThreadId,
     tab_id: String,

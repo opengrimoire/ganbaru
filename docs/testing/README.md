@@ -14,6 +14,7 @@ This document is the command and gate-selection reference. Supporting documents 
 - [Project dependency cascades](project-dependency-cascades.md): dependency date review, apply, retry, and Gantt acceptance.
 - [Distraction blocker runtime](distractions.md): desktop and Android runtime acceptance without the WebView.
 - [Music desktop](music.md): real audio, lifecycle, and automation acceptance.
+- [Desktop windows](desktop-windows.md): detached tab windows, Focus overlays, and Chat previews under per-window permissions.
 - [Performance harness](../performance/harness.md): benchmark-only contracts outside normal validation.
 
 ## Goals

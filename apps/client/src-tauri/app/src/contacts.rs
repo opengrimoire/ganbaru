@@ -288,8 +288,10 @@ pub async fn contacts_parse_card<R: Runtime>(
         color: signed.card.color,
         verification_code: signed.verification_code(),
         contact_id: signed.card.public_key.contact_id(),
-        has_endpoint: !signed.card.endpoint_hint.is_empty()
-            && signed.card.coordinator_fingerprint.is_some(),
+        has_endpoint: signed.card.coordinator_fingerprint.is_some()
+            && signed.card.endpoint_hint.parse().is_ok_and(|endpoint| {
+                ganbaru_handoff::dial::validate_dial_endpoint(endpoint).is_ok()
+            }),
         is_self: identity.is_some_and(|identity| identity.public_key == signed.card.public_key),
         existing_state: existing.and_then(|row| ContactState::parse(&row.state)),
         pending_sent,

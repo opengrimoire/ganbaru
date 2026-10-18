@@ -115,9 +115,12 @@ impl PairingInvitation {
         validate_identifier("coordinator fingerprint", &self.coordinator_fingerprint)?;
         validate_identifier("coordinator device id", &self.coordinator_device_id)?;
         validate_identifier("vault id", &self.vault_id)?;
-        self.endpoint
+        let endpoint = self
+            .endpoint
             .parse::<std::net::SocketAddr>()
             .map_err(|_| "pairing invitation endpoint is invalid".to_string())?;
+        crate::dial::validate_dial_endpoint(endpoint)
+            .map_err(|error| format!("pairing invitation endpoint is refused: {error}"))?;
         if self.expires_at_ms <= now_ms {
             return Err("pairing invitation has expired".to_string());
         }
@@ -1310,6 +1313,39 @@ mod tests {
             decode_pairing_qr_luma(image_width, image_width, &image, 1).expect("QR should decode"),
             invitation
         );
+    }
+
+    #[test]
+    fn invitations_with_non_lan_endpoints_fail_validation() {
+        for endpoint in [
+            "203.0.113.5:443",
+            "8.8.8.8:43821",
+            "224.0.0.251:43821",
+            "192.168.1.20:0",
+        ] {
+            let invitation = PairingInvitation {
+                endpoint: endpoint.to_string(),
+                ..qr_invitation()
+            };
+            assert!(invitation.validate(0).is_err(), "{endpoint}");
+            assert!(encode_invitation(&invitation).is_err(), "{endpoint}");
+            let crafted = base64::Engine::encode(
+                &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                serde_json::to_vec(&invitation).expect("invitation json"),
+            );
+            assert!(decode_invitation(&crafted, 0).is_err(), "{endpoint}");
+        }
+        for endpoint in [
+            "100.64.3.4:43821",
+            "[2a01:4f8:10:20::5]:43821",
+            "[fe80::1]:43821",
+        ] {
+            let invitation = PairingInvitation {
+                endpoint: endpoint.to_string(),
+                ..qr_invitation()
+            };
+            assert_eq!(invitation.validate(0), Ok(()), "{endpoint}");
+        }
     }
 
     #[test]

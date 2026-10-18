@@ -609,6 +609,54 @@ async fn invalid_device_identity_cannot_download_bundle() {
 }
 
 #[tokio::test]
+async fn non_lan_dial_targets_are_refused_before_connecting() {
+    for endpoint in [
+        "203.0.113.5:443",
+        "8.8.8.8:43821",
+        "224.0.0.251:43821",
+        "[2001:db8::5]:43821",
+    ] {
+        let started = std::time::Instant::now();
+        let Err(error) =
+            connect_pinned(endpoint.parse().expect("endpoint"), &"b".repeat(64), None).await
+        else {
+            panic!("{endpoint} must be refused");
+        };
+        assert!(
+            error.starts_with("refuse device connection"),
+            "{endpoint}: {error}"
+        );
+        let error = unauthenticated_exchange(
+            endpoint,
+            &"b".repeat(64),
+            ControlMessage::Error {
+                code: "test".to_string(),
+                message: "test".to_string(),
+                retryable: false,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error.starts_with("refuse device connection"),
+            "{endpoint}: {error}"
+        );
+        assert!(
+            started.elapsed() < TLS_HANDSHAKE_TIMEOUT,
+            "{endpoint} attempted a connection"
+        );
+    }
+    assert_eq!(
+        authorize_endpoint("100.64.3.4:43821".parse().expect("endpoint")),
+        Ok(())
+    );
+    assert_eq!(
+        authorize_endpoint("192.168.1.20:43821".parse().expect("endpoint")),
+        Ok(())
+    );
+}
+
+#[tokio::test]
 async fn invitation_replay_is_rejected_by_coordinator() {
     let pair = LocalPair::start().await;
     pair.enroll().await;

@@ -54,25 +54,29 @@ describe("Quick note image rows", () => {
       targetRowAspect: 0,
       maxPerRow: 0,
       minRowAspect: 0,
+      maxRowCrop: 0,
     });
     expect(rows).toEqual([[0], [1], [2]]);
   });
 });
 
 describe("Quick note image mosaic", () => {
-  it("widens a lone tall image so its tile is not taller than the minimum row shape", () => {
-    expect(quickNoteImageMosaic([size(500, 1000)], QUICK_NOTE_CARD_IMAGE_ROWS)).toEqual([[
-      { index: 0, aspect: 0.75, share: 1 },
-    ]]);
-    expect(quickNoteImageMosaic([size(500, 1000)], QUICK_NOTE_EDITOR_IMAGE_ROWS)).toEqual([[
-      { index: 0, aspect: 1, share: 1 },
-    ]]);
+  it("shows a lone portrait whole at the tallest row height instead of cropping it to fill the width", () => {
+    expect(quickNoteImageMosaic([size(750, 1000)], QUICK_NOTE_EDITOR_IMAGE_ROWS)).toEqual([{
+      tiles: [{ index: 0, aspect: 0.75, share: 1 }],
+      width: 0.75,
+    }]);
+    expect(quickNoteImageMosaic([size(1080, 2340)], QUICK_NOTE_CARD_IMAGE_ROWS)).toEqual([{
+      tiles: [{ index: 0, aspect: 1080 / 2340, share: 1 }],
+      width: expect.closeTo(1080 / 2340 / 0.75),
+    }]);
   });
 
-  it("lets a lone image narrower than square still span the whole row", () => {
-    expect(quickNoteImageMosaic([size(940, 1000)], QUICK_NOTE_CARD_IMAGE_ROWS)).toEqual([[
-      { index: 0, aspect: 0.94, share: 1 },
-    ]]);
+  it("crops a row only slightly to fill the width when that is enough", () => {
+    expect(quickNoteImageMosaic([size(940, 1000)], QUICK_NOTE_EDITOR_IMAGE_ROWS)).toEqual([{
+      tiles: [{ index: 0, aspect: expect.closeTo(1), share: 1 }],
+      width: 1,
+    }]);
   });
 
   it("splits every row width in proportion to its tile shapes", () => {
@@ -80,28 +84,38 @@ describe("Quick note image mosaic", () => {
       [size(500, 1000), size(1000, 4000), size(1600, 1200), size(900, 1000), size(3000, 1000)],
       QUICK_NOTE_CARD_IMAGE_ROWS,
     );
-    for (const row of rows) {
-      expect(row.reduce((sum, tile) => sum + tile.share, 0)).toBeCloseTo(1);
-      const first = row[0];
-      for (const tile of row) {
+    for (const { tiles } of rows) {
+      expect(tiles.reduce((sum, tile) => sum + tile.share, 0)).toBeCloseTo(1);
+      const first = tiles[0];
+      for (const tile of tiles) {
         if (first) expect(tile.share / tile.aspect).toBeCloseTo(first.share / first.aspect);
       }
     }
   });
 
-  it("widens every tile of a short row by the same factor", () => {
-    const [row] = quickNoteImageMosaic([size(500, 1000), size(1000, 4000)], QUICK_NOTE_EDITOR_IMAGE_ROWS);
-    expect(row?.map((tile) => tile.index)).toEqual([0, 1]);
-    const total = row?.reduce((sum, tile) => sum + tile.aspect, 0) ?? 0;
-    expect(total).toBeCloseTo(QUICK_NOTE_EDITOR_IMAGE_ROWS.minRowAspect);
-    expect(row?.[0]?.aspect).toBeCloseTo(row?.[1]?.aspect ?? 0);
+  it("never crops a tile by more than the allowance nor lets a row grow past the tallest height", () => {
+    const images = [size(500, 1000), size(1000, 4000), size(750, 1000), size(1600, 1200), size(1080, 2340)];
+    for (const options of [QUICK_NOTE_CARD_IMAGE_ROWS, QUICK_NOTE_EDITOR_IMAGE_ROWS]) {
+      for (const { tiles, width } of quickNoteImageMosaic(images, options)) {
+        expect(width).toBeLessThanOrEqual(1);
+        const rowAspect = tiles.reduce((sum, tile) => sum + tile.aspect, 0);
+        expect(rowAspect / width).toBeGreaterThanOrEqual(options.minRowAspect - 1e-9);
+        for (const tile of tiles) {
+          const image = images[tile.index];
+          if (image) expect(tile.aspect).toBeLessThanOrEqual(quickNoteImageAspect(image) / (1 - options.maxRowCrop) + 1e-9);
+        }
+      }
+    }
   });
 
   it("keeps the natural shapes of rows that are wide enough", () => {
-    expect(quickNoteImageMosaic([size(1600, 1200), size(1200, 1200)], QUICK_NOTE_CARD_IMAGE_ROWS)).toEqual([[
-      { index: 0, aspect: 4 / 3, share: expect.closeTo(4 / 7) },
-      { index: 1, aspect: 1, share: expect.closeTo(3 / 7) },
-    ]]);
+    expect(quickNoteImageMosaic([size(1600, 1200), size(1200, 1200)], QUICK_NOTE_CARD_IMAGE_ROWS)).toEqual([{
+      tiles: [
+        { index: 0, aspect: 4 / 3, share: expect.closeTo(4 / 7) },
+        { index: 1, aspect: 1, share: expect.closeTo(3 / 7) },
+      ],
+      width: 1,
+    }]);
   });
 });
 

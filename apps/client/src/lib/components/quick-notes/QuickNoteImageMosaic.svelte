@@ -39,8 +39,8 @@
 
 <div class="flex flex-col gap-0.5" data-quick-note-images>
   {#each rows as row, rowIndex (rowIndex)}
-    <div class="flex gap-0.5">
-      {#each row as tile (preview.shown[tile.index]?.sha256 ?? tile.index)}
+    <div class="mx-auto flex gap-0.5" style:width={`${row.width * 100}%`}>
+      {#each row.tiles as tile (preview.shown[tile.index]?.sha256 ?? tile.index)}
         {@const image = preview.shown[tile.index]}
         {#if image}
           <div class="quick-note-mosaic-tile relative min-w-0" style:flex={`${tile.share} ${tile.share} 0%`} style:aspect-ratio={tile.aspect}>

@@ -1,9 +1,9 @@
 import type { QuickNoteImage } from "$lib/quick-notes/types";
 
-/** Narrowest tile shape a mosaic shows; taller images are cropped to it. */
-export const QUICK_NOTE_IMAGE_MIN_ASPECT = 0.5;
-/** Widest tile shape a mosaic shows; wider images are cropped to it. */
-export const QUICK_NOTE_IMAGE_MAX_ASPECT = 3;
+/** Narrowest tile shape a mosaic shows, below phone screenshots; taller strips are cropped to it. */
+export const QUICK_NOTE_IMAGE_MIN_ASPECT = 0.4;
+/** Widest tile shape a mosaic shows, above phone panoramas; wider strips are cropped to it. */
+export const QUICK_NOTE_IMAGE_MAX_ASPECT = 4;
 /** Images a card shows before the last tile counts the rest. */
 export const QUICK_NOTE_CARD_IMAGE_LIMIT = 6;
 
@@ -12,8 +12,13 @@ export interface QuickNoteImageRowOptions {
   /** Summed width-to-height ratio a row aims for; higher values make shorter rows. */
   targetRowAspect: number;
   maxPerRow: number;
-  /** Lowest summed ratio a row is shown at; rows of tall images are cropped to it instead of growing taller. */
+  /**
+   * Width-to-height ratio of the mosaic's tallest row, so rows of tall images never grow taller than the mosaic
+   * width divided by it.
+   */
   minRowAspect: number;
+  /** Largest fraction of an image's height a too-tall row may crop to fill more of the width. */
+  maxRowCrop: number;
 }
 
 /** Cards are narrow, so their rows hold fewer, taller images. */
@@ -21,6 +26,7 @@ export const QUICK_NOTE_CARD_IMAGE_ROWS: QuickNoteImageRowOptions = Object.freez
   targetRowAspect: 2.4,
   maxPerRow: 3,
   minRowAspect: 0.75,
+  maxRowCrop: 0.1,
 });
 
 /** The editor is wider, so its rows hold more images. */
@@ -28,16 +34,23 @@ export const QUICK_NOTE_EDITOR_IMAGE_ROWS: QuickNoteImageRowOptions = Object.fre
   targetRowAspect: 2.8,
   maxPerRow: 3,
   minRowAspect: 1,
+  maxRowCrop: 0.1,
 });
 
 /**
  * One tile of a mosaic row: the image index, the width-to-height ratio its tile is shown at, and the fraction of
- * the row width it takes. The shares of a row sum to one, so the row always spans the full width.
+ * the row width it takes. The shares of a row sum to one.
  */
 export interface QuickNoteImageTileLayout {
   index: number;
   aspect: number;
   share: number;
+}
+
+/** One mosaic row: its tiles and the fraction of the mosaic width it spans, centered when below one. */
+export interface QuickNoteImageRowLayout {
+  tiles: QuickNoteImageTileLayout[];
+  width: number;
 }
 
 /** Width-to-height ratio of an image's tile, bounded so panoramas and tall strips still read as images. */
@@ -89,22 +102,28 @@ export function quickNoteImageRows(
 }
 
 /**
- * Lays out images as justified rows of tiles. A row whose summed ratio is below `minRowAspect` widens every tile by
- * the same factor, so one tall image fills the width at a bounded height and its tile crops it.
+ * Lays out images as justified rows of tiles that keep each image's shape. A row whose summed ratio is below
+ * `minRowAspect` would be taller than allowed at full width, so it is shown at the tallest allowed height instead.
+ * When cropping at most `maxRowCrop` of each tile's height lets it fill the width, its tiles crop that much;
+ * otherwise they stay uncropped and the row spans only part of the width.
  */
 export function quickNoteImageMosaic(
   images: readonly Pick<QuickNoteImage, "width" | "height">[],
   options: QuickNoteImageRowOptions,
-): QuickNoteImageTileLayout[][] {
+): QuickNoteImageRowLayout[] {
   const aspects = images.map(quickNoteImageAspect);
   const minimum = options.minRowAspect > 0 ? options.minRowAspect : 0;
+  const crop = Math.min(0.9, Math.max(0, Number.isFinite(options.maxRowCrop) ? options.maxRowCrop : 0));
   return quickNoteImageRows(aspects, options).map((row) => {
     const sum = row.reduce((total, index) => total + (aspects[index] ?? 1), 0);
-    const widen = sum > 0 && sum < minimum ? minimum / sum : 1;
-    return row.map((index) => {
+    const tooTall = sum > 0 && sum < minimum;
+    const fills = !tooTall || minimum / sum <= 1 / (1 - crop);
+    const widen = tooTall && fills ? minimum / sum : 1;
+    const tiles = row.map((index) => {
       const aspect = aspects[index] ?? 1;
       return { index, aspect: aspect * widen, share: sum > 0 ? aspect / sum : 1 / row.length };
     });
+    return { tiles, width: fills ? 1 : sum / minimum };
   });
 }
 

@@ -569,6 +569,13 @@ export const chatSettings = {
     save: "Guardar proveedor",
     testPassed: (models: string) => `La conexión funciona. Se encontraron ${models} modelos.`,
     testFailed: (message: string) => `La prueba falló: ${message}`,
+    runtimeReviewTitle: "¿Permitir la configuración del proveedor en este dispositivo?",
+    runtimeReviewMessage: "Esta configuración del proveedor puede ejecutar programas, cambiar permisos o enviar tráfico a otro lugar. Permítela solo si la configuraste tú.",
+    runtimeReviewAllow: "Permitir",
+    runtimeReviewCancel: "Cancelar",
+    runtimeReviewMore: "Y {count} más",
+    runtimeReviewNotice: "Esta configuración está en pausa en este dispositivo hasta que la permitas:",
+    runtimeReviewButton: "Revisar y permitir",
     operationFailed: "No se pudo actualizar la configuración del proveedor.",
     validation: {
       provider: "Elige una familia de proveedor.",

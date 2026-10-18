@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { ensureDbUrl } from "$lib/api/db";
+import { translate } from "$lib/i18n/translator.svelte";
 import type {
   ChatBehaviorPreferences,
   ChatDiagnosticPreferences,
@@ -99,10 +100,36 @@ export async function setLastSelectedChatThread(threadId: ChatThreadId | null): 
   await invoke("chat_set_last_selected_thread", { threadId });
 }
 
-export async function saveChatProvider(configuration: ProviderInstanceConfig): Promise<ProviderInstanceRead> {
-  return parseProviderInstanceRead(await invoke<unknown>("chat_save_provider", {
+/** Localized text for the native runtime confirmation; the listed values are resolved natively. */
+function providerRuntimePrompt() {
+  return {
+    title: translate("settings.chat.setup.runtimeReviewTitle"),
+    message: translate("settings.chat.setup.runtimeReviewMessage"),
+    allowLabel: translate("settings.chat.setup.runtimeReviewAllow"),
+    cancelLabel: translate("settings.chat.setup.runtimeReviewCancel"),
+    moreLabel: translate("settings.chat.setup.runtimeReviewMore"),
+  };
+}
+
+/**
+ * Saves a provider. Rust asks natively before applying runtime values that neither a picker nor
+ * this device vouched for, and returns `null` when the user cancels.
+ */
+export async function saveChatProvider(configuration: ProviderInstanceConfig): Promise<ProviderInstanceRead | null> {
+  const value = await invoke<unknown>("chat_save_provider", {
     request: { configuration },
-  }));
+    prompt: providerRuntimePrompt(),
+  });
+  return value === null ? null : parseProviderInstanceRead(value);
+}
+
+/** Confirms a stored provider's imported runtime values on this device; `null` when cancelled. */
+export async function confirmChatProviderRuntime(instanceId: ProviderInstanceId): Promise<ProviderInstanceRead | null> {
+  const value = await invoke<unknown>("chat_confirm_provider_runtime", {
+    instanceId,
+    prompt: providerRuntimePrompt(),
+  });
+  return value === null ? null : parseProviderInstanceRead(value);
 }
 
 export async function setChatProviderEnabled(instanceId: ProviderInstanceId, enabled: boolean): Promise<ProviderInstanceRead> {
@@ -113,10 +140,13 @@ export async function removeChatProvider(instanceId: ProviderInstanceId): Promis
   return parseRemoveProviderResult(await invoke<unknown>("chat_remove_provider", { instanceId }));
 }
 
-export async function testChatProvider(configuration: ProviderInstanceConfig): Promise<ProviderSetupTestRead> {
-  return parseProviderSetupTestRead(await invoke<unknown>("chat_test_provider", {
+/** Tests an unsaved provider after the same native confirmation as saving; `null` when cancelled. */
+export async function testChatProvider(configuration: ProviderInstanceConfig): Promise<ProviderSetupTestRead | null> {
+  const value = await invoke<unknown>("chat_test_provider", {
     request: { configuration },
-  }));
+    prompt: providerRuntimePrompt(),
+  });
+  return value === null ? null : parseProviderSetupTestRead(value);
 }
 
 export async function probeChatProvider(instanceId: ProviderInstanceId): Promise<ProviderProbeResult> {

@@ -7,7 +7,7 @@ use ganbaru_chat_contracts::models::{
     ProviderProbeResult, UtcTimestamp,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(desktop)]
 use tauri::Runtime;
 
@@ -21,6 +21,9 @@ pub struct ChatProviderDeviceState {
     pub last_probe: Option<ProviderProbeResult>,
     pub last_successful_probe_at: Option<UtcTimestamp>,
     pub model_catalog: Option<ProviderModelCatalog>,
+    /// Digests of portable runtime values this device confirmed for the instance.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub approved_runtime_items: BTreeSet<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

@@ -24,6 +24,8 @@ pub enum ChatErrorCode {
     /// A user Git action needs this device's trust decision for the folder's
     /// current repository configuration before it runs.
     TrustDecisionRequired,
+    /// A provider runtime carries portable settings this device has not confirmed.
+    RuntimeApprovalRequired,
     Timeout,
     Cancelled,
     Persistence,

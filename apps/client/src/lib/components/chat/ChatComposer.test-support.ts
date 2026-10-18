@@ -289,6 +289,7 @@ export function modelSettings(): ChatSettingsRead {
         favoriteModelIds: [],
         providerConfig: { schemaVersion: 1, value: {} },
       },
+      runtimeReview: [],
       lastProbe: {
         instanceId: "codex-local",
         state: "healthy",

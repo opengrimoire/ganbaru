@@ -2,7 +2,6 @@
 
 use super::workspace::WorkingFolderAuthorizationOperation;
 use super::workspace::commands::authorize_working_folder;
-use super::{credentials::PlatformCredentialStore, credentials::materialize_provider_environment};
 use crate::db;
 use chrono::{SecondsFormat, Utc};
 use ganbaru_chat::repository::provider_lifecycle::{
@@ -176,10 +175,8 @@ pub async fn chat_fork_thread(
             };
             let provider =
                 super::settings_commands::read_provider(&app, &source.provider_instance_id)?;
-            let configuration = materialize_provider_environment(
-                &provider.configuration,
-                &PlatformCredentialStore::default(),
-            )?;
+            let configuration =
+                crate::chat::settings::approved_runtime(&app, &provider.configuration)?;
             let mut driver = ProviderDriverRegistry.create_driver(configuration)?;
             let context = DriverOperationContext {
                 operation_id: format!("provider-thread-fork:{}", request.new_thread_id.as_str()),
@@ -475,10 +472,7 @@ async fn synchronize_provider_lifecycle(
     };
     let result = async {
         let provider = super::settings_commands::read_provider(app, &shell.provider_instance_id)?;
-        let configuration = materialize_provider_environment(
-            &provider.configuration,
-            &PlatformCredentialStore::default(),
-        )?;
+        let configuration = crate::chat::settings::approved_runtime(app, &provider.configuration)?;
         let mut driver = ProviderDriverRegistry.create_driver(configuration)?;
         let request = ProviderThreadLifecycleRequest {
             provider_thread_id: provider_thread_id.clone(),

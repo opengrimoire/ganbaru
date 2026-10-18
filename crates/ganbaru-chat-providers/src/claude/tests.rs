@@ -465,21 +465,34 @@ fn launch_arguments_preserve_native_safety_and_resume_semantics() {
 
 #[test]
 fn protected_transport_arguments_cannot_be_overridden() {
-    let error = launch_arguments(
-        Vec::new(),
-        &["--permission-mode=bypassPermissions".to_string()],
-        ClaudeLaunchOptions {
-            fresh_session_uuid: Some("11111111-1111-4111-8111-111111111111"),
-            resume_session_uuid: None,
-            last_assistant_uuid: None,
-            model: None,
-            effort: None,
-            fast_mode: None,
-            modes: modes(SafetyMode::AskForApproval, InteractionMode::Build),
-        },
-    )
-    .unwrap_err();
-    assert_eq!(error.code, ChatErrorCode::Validation);
+    for argument in [
+        "--permission-mode=bypassPermissions",
+        "--dangerously-skip-permissions",
+        "--output-format=text",
+        "--mcp-config",
+        "--settings",
+        "--continue",
+        "-c",
+        "-r",
+        "--fork-session",
+        "--session-id=11111111-1111-4111-8111-111111111111",
+    ] {
+        let error = launch_arguments(
+            Vec::new(),
+            &[argument.to_string()],
+            ClaudeLaunchOptions {
+                fresh_session_uuid: Some("11111111-1111-4111-8111-111111111111"),
+                resume_session_uuid: None,
+                last_assistant_uuid: None,
+                model: None,
+                effort: None,
+                fast_mode: None,
+                modes: modes(SafetyMode::AskForApproval, InteractionMode::Build),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::Validation, "{argument}");
+    }
 }
 
 #[test]

@@ -460,6 +460,19 @@ describe("Chat provider contracts", () => {
     });
 
     expect(provider.modelCatalog).toEqual(catalog);
+    expect(provider.runtimeReview).toEqual([]);
+
+    const reviewed = parseProviderInstanceRead({
+      ...provider,
+      runtimeReview: [{ label: "Environment: NODE_OPTIONS=--require ./x.js", widensPermissions: true }],
+    });
+    expect(reviewed.runtimeReview).toEqual([
+      { label: "Environment: NODE_OPTIONS=--require ./x.js", widensPermissions: true },
+    ]);
+    expect(() => parseProviderInstanceRead({
+      ...provider,
+      runtimeReview: [{ label: 3, widensPermissions: true }],
+    })).toThrow();
   });
 
   it("rejects partial metadata and unsupported capability values", () => {
@@ -678,6 +691,7 @@ describe("project working-folder contracts", () => {
       canonicalPath: "/home/user/project",
       lastVerifiedAt: timestamp,
       currentBranch: "feat/chat",
+      trust: "trusted",
     };
 
     expect(parseProjectWorkingFolderRead(fixture)).toEqual(fixture);

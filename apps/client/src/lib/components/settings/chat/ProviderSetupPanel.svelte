@@ -301,8 +301,10 @@
     testing = true;
     try {
       const configuration = configurationFromDraft();
-      testResult = await chat.testProvider(configuration);
-      testSucceeded = testResult.probe.state === "healthy"
+      const result = await chat.testProvider(configuration);
+      if (!result) return;
+      testResult = result;
+      testSucceeded = result.probe.state === "healthy"
         || testResult.probe.state === "authentication_required";
     } catch (error: unknown) {
       operationError = errorMessage(error);
@@ -316,8 +318,7 @@
     if (!validation.valid) return;
     saving = true;
     try {
-      await chat.saveProvider(configurationFromDraft());
-      onCancel();
+      if (await chat.saveProvider(configurationFromDraft())) onCancel();
     } catch (error: unknown) {
       operationError = errorMessage(error);
     } finally {

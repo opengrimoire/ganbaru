@@ -205,6 +205,7 @@ export const CHAT_ERROR_CODES = [
   "protocol",
   "permission",
   "trust_decision_required",
+  "runtime_approval_required",
   "timeout",
   "cancelled",
   "persistence",

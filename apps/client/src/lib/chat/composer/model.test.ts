@@ -52,6 +52,7 @@ function provider(
       favoriteModelIds: [],
       providerConfig: { schemaVersion: 1, value: {} },
     },
+    runtimeReview: [],
     lastProbe: {
       instanceId,
       state,

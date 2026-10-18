@@ -566,6 +566,13 @@ export const chatSettings = {
     save: "Save provider",
     testPassed: (models: string) => `Connection works. ${models} models found.`,
     testFailed: (message: string) => `Setup test failed: ${message}`,
+    runtimeReviewTitle: "Allow provider settings on this device?",
+    runtimeReviewMessage: "These provider settings can run programs, change permissions, or send traffic elsewhere. Allow them only if you set them yourself.",
+    runtimeReviewAllow: "Allow",
+    runtimeReviewCancel: "Cancel",
+    runtimeReviewMore: "And {count} more",
+    runtimeReviewNotice: "These settings are paused on this device until you allow them:",
+    runtimeReviewButton: "Review and allow",
     operationFailed: "The provider configuration could not be updated.",
     validation: {
       provider: "Choose a provider family.",

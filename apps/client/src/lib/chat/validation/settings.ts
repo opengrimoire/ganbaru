@@ -6,6 +6,7 @@ import {
   type ProviderFileRead,
   type ProviderInstanceRead,
   type ProviderRefreshResult,
+  type ProviderRuntimeReviewItem,
   type ProviderSetupTestRead,
   type RemoveProviderResult,
 } from "../contracts";
@@ -34,9 +35,20 @@ export function parseProviderInstanceRead(value: unknown, label = "provider inst
   const modelCatalog = readNullable(record.modelCatalog, `${label}.modelCatalog`, parseProviderModelCatalog);
   return {
     configuration,
+    runtimeReview: record.runtimeReview === undefined
+      ? []
+      : readArray(record.runtimeReview, `${label}.runtimeReview`, parseProviderRuntimeReviewItem),
     lastProbe: readNullable(record.lastProbe, `${label}.lastProbe`, parseProviderProbeResult),
     lastSuccessfulProbeAt: readNullable(record.lastSuccessfulProbeAt, `${label}.lastSuccessfulProbeAt`, readUtcTimestamp),
     modelCatalog,
+  };
+}
+
+function parseProviderRuntimeReviewItem(value: unknown, label: string): ProviderRuntimeReviewItem {
+  const record = readRecord(value, label);
+  return {
+    label: readString(record.label, `${label}.label`),
+    widensPermissions: readBoolean(record.widensPermissions, `${label}.widensPermissions`),
   };
 }
 

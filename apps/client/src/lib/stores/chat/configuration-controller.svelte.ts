@@ -114,13 +114,21 @@ export class ChatConfigurationController {
     return chatApi.readChatProjectPrimaryWorkingFolder(projectId);
   }
 
-  async saveProvider(configuration: ProviderInstanceConfig): Promise<ProviderInstanceRead> {
+  /** Saves a provider; `null` when the user cancels the native runtime confirmation. */
+  async saveProvider(configuration: ProviderInstanceConfig): Promise<ProviderInstanceRead | null> {
     const provider = await chatApi.saveChatProvider(configuration);
-    await this.refreshSettings();
+    if (provider) await this.refreshSettings();
     return provider;
   }
 
-  testProvider(configuration: ProviderInstanceConfig): Promise<ProviderSetupTestRead> {
+  /** Confirms imported runtime values on this device; `null` when the user cancels. */
+  async confirmProviderRuntime(instanceId: ProviderInstanceId): Promise<ProviderInstanceRead | null> {
+    const provider = await chatApi.confirmChatProviderRuntime(instanceId);
+    if (provider) await this.refreshSettings();
+    return provider;
+  }
+
+  testProvider(configuration: ProviderInstanceConfig): Promise<ProviderSetupTestRead | null> {
     return chatApi.testChatProvider(configuration);
   }
 

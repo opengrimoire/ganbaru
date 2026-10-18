@@ -74,6 +74,7 @@ pub fn chat_read_provider_files(
     instance_id: ProviderInstanceId,
 ) -> ChatResult<Vec<ProviderFileRead>> {
     let provider = read_provider(&app, &instance_id)?;
+    crate::chat::settings::require_runtime_approved_on_device(&app, &provider.configuration)?;
     provider_file_specs(&provider.configuration)?
         .into_iter()
         .map(read_provider_file)
@@ -92,6 +93,7 @@ pub fn chat_save_provider_file(
         .lock()
         .map_err(|_| provider_file_error())?;
     let provider = read_provider(&app, &request.instance_id)?;
+    crate::chat::settings::require_runtime_approved_on_device(&app, &provider.configuration)?;
     let spec = provider_file_specs(&provider.configuration)?
         .into_iter()
         .find(|spec| spec.file_id == request.file_id)

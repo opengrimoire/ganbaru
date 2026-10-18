@@ -58,6 +58,7 @@ function provider(state: ProviderInstanceRead["lastProbe"] extends infer _Probe 
       favoriteModelIds: [],
       providerConfig: { schemaVersion: 1, value: {} },
     },
+    runtimeReview: [],
     lastProbe: {
       instanceId: "codex",
       state,

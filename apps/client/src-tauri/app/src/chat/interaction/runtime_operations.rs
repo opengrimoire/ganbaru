@@ -1,7 +1,6 @@
 //! Provider runtime operations initiated by interaction controls.
 
 use super::support::{chat_pool, now_timestamp, persistence_error, require_workspace};
-use crate::chat::credentials::{PlatformCredentialStore, materialize_provider_environment};
 use crate::chat::device_state::{read_active_device_scope, update_active_device_scope};
 use crate::chat::workspace::WorkingFolderAuthorizationOperation;
 use ganbaru_chat::driver_operations::{complete_driver_operation, replay_driver_receipt};
@@ -122,10 +121,7 @@ pub(crate) async fn read_mcp_status(
         }
     }
 
-    let configuration = materialize_provider_environment(
-        &provider.configuration,
-        &PlatformCredentialStore::default(),
-    )?;
+    let configuration = crate::chat::settings::approved_runtime(&app, &provider.configuration)?;
     let mut driver = ProviderDriverRegistry.create_driver(configuration)?;
     driver
         .read_mcp_status(

@@ -14,7 +14,6 @@ use super::validation::{
     validate_explicit_model, validate_mentions, validate_modes, validate_prompt,
     validate_provider_selection, validate_send_mentions,
 };
-use crate::chat::credentials::{PlatformCredentialStore, materialize_provider_environment};
 use crate::chat::device_state::{full_access_is_trusted, read_active_device_scope};
 use crate::chat::send_commands::{SendChatTurnCommand, SendChatTurnResult};
 use crate::chat::workspace::WorkingFolderAuthorizationOperation;
@@ -69,10 +68,7 @@ pub(crate) async fn send_turn(
     let provider =
         crate::chat::settings_commands::read_provider(&app, &request.provider_instance_id)?;
     validate_provider_selection(&provider, &request)?;
-    let mut configuration = materialize_provider_environment(
-        &provider.configuration,
-        &PlatformCredentialStore::default(),
-    )?;
+    let mut configuration = crate::chat::settings::approved_runtime(&app, &provider.configuration)?;
     let inspection_driver = ProviderDriverRegistry.create_driver(configuration.clone())?;
     let authority_support = inspection_driver.authority_support();
     if let Some(binding) = origin.run() {

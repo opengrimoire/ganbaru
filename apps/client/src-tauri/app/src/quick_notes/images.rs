@@ -109,24 +109,54 @@ pub async fn quick_notes_pick_images<R: Runtime>(
                 .map_err(|error| format!("selected path is not a local file: {error}"))
         })
         .collect::<Result<Vec<_>, _>>()?;
+    import_paths(&app, paths, limit).await
+}
+
+/// Imports up to `limit` of the files last dropped on the calling window, in drop order. The
+/// paths come from the operating system's drop event, never from the webview, and a drop is
+/// imported once.
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn quick_notes_import_dropped_images<R: Runtime>(
+    app: AppHandle<R>,
+    window: tauri::Window<R>,
+    drops: tauri::State<'_, crate::file_drops::FileDrops>,
+    limit: usize,
+) -> Result<QuickNoteImagePick, QuickNoteImageError> {
+    let paths = drops.take(window.label(), std::time::Instant::now());
+    import_paths(&app, paths, limit).await
+}
+
+/// Imports up to `limit` local image files, reporting the rest as skipped.
+#[cfg(desktop)]
+async fn import_paths<R: Runtime>(
+    app: &AppHandle<R>,
+    paths: Vec<std::path::PathBuf>,
+    limit: usize,
+) -> Result<QuickNoteImagePick, QuickNoteImageError> {
     let limit = limit.min(images::MAX_IMAGES);
     let skipped = paths.len().saturating_sub(limit);
-    let vault_root = vault::active_replicated_asset_path(&app)?;
+    let mut pick = QuickNoteImagePick {
+        images: Vec::new(),
+        rejected: Vec::new(),
+        skipped,
+    };
+    if paths.is_empty() {
+        return Ok(pick);
+    }
+    let vault_root = vault::active_replicated_asset_path(app)?;
     blocking(move || {
-        let mut pick = QuickNoteImagePick {
-            images: Vec::new(),
-            rejected: Vec::new(),
-            skipped,
-        };
         for path in paths.iter().take(limit) {
-            match images::read_image_source(path)
-                .and_then(|bytes| images::import_image(&vault_root, &bytes))
-            {
-                Ok(image) => pick.images.push(image),
-                Err(QuickNoteImageError::Failed(message)) => {
+            // A file that cannot be read is reported like any other refused file; only a failed
+            // vault write stops the import.
+            let imported = images::read_image_source(path)
+                .map(|bytes| images::import_image(&vault_root, &bytes));
+            match imported {
+                Ok(Ok(image)) => pick.images.push(image),
+                Ok(Err(QuickNoteImageError::Failed(message))) => {
                     return Err(QuickNoteImageError::Failed(message));
                 }
-                Err(error) => pick.rejected.push(QuickNoteImageRejection {
+                Ok(Err(error)) | Err(error) => pick.rejected.push(QuickNoteImageRejection {
                     file_name: display_name(path),
                     error,
                 }),

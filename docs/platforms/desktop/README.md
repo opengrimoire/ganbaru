@@ -19,4 +19,4 @@ The linking protocol, ownership rules, firewall authorization, and data protecti
 
 ## File drops
 
-Desktop windows turn off Tauri's native drag-and-drop handler, so files dropped on the app reach the webview as HTML5 drops that feature drop targets handle. A window-level guard cancels file drops that no target handles, so a dropped file never replaces the app page.
+Desktop windows keep Tauri's native drag-and-drop handler, which takes file drops before the webview sees them: WebKitGTK reports a dropped file only as its address, so an HTML5 drop would insert that address as text or navigate the page to it. Rust records the paths of the latest drop on each window, and a feature that accepts drops listens for the drop event while its target is open and asks a command to import that drop. The command reads only paths the operating system delivered, claims a drop once, and refuses drops older than a minute, so the webview never names files to read. Quick note images accept drops this way; other HTML5 file drop targets, such as the Chat composer, do not receive desktop drops yet.

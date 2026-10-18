@@ -36,7 +36,7 @@ Revision-sensitive native writes return a stable `revision_conflict` code for st
 
 ## Images
 
-A note holds up to 24 PNG, JPEG, WebP, or GIF images of at most 25 MiB each. Images are added with the editor's Add images button (the native file picker on desktop, the system picker on Android), by pasting copied images, or by dropping files on the editor. A paste that carries copied text along with a picture of it, as office suites produce, inserts the text instead. Adding an image the note already has is skipped, and files that are too large, unsupported, or unreadable are reported without blocking the rest.
+A note holds up to 24 PNG, JPEG, WebP, or GIF images of at most 25 MiB each. Images are added with the editor's Add images button (the native file picker on desktop, the system picker on Android), by pasting copied images, or by dropping files on the editor (on desktop, anywhere on the window while the editor is open). A paste that carries copied text along with a picture of it, as office suites produce, inserts the text instead. Adding an image the note already has is skipped, and files that are too large, unsupported, or unreadable are reported without blocking the rest.
 
 Images sit above the title, flush with the top of the card and editor, as justified rows that keep each image's shape within bounds: panoramas and tall strips are cropped to a bounded tile, and a lone tall image fills the width at a bounded height. Cards show up to six images and count the rest on the last tile. A note with only images shows just the mosaic.
 

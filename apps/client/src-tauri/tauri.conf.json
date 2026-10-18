@@ -21,8 +21,7 @@
         "maximized": true,
         "decorations": false,
         "visible": false,
-        "zoomHotkeysEnabled": false,
-        "dragDropEnabled": false
+        "zoomHotkeysEnabled": false
       }
     ],
     "security": {

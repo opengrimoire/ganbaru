@@ -109,6 +109,7 @@ fn mobile_runtime_excludes_desktop_only_commands() {
         "profile_images::profile_image_pick_file",
         "quick_notes::quick_notes_pick_images",
         "quick_notes::quick_notes_paste_clipboard_image",
+        "quick_notes::quick_notes_import_dropped_images",
         "projects::icons::projects_icon_pick_image_file",
         "projects::icons::projects_icon_download_image_url",
         "projects::icons::projects_icon_asset_path",

@@ -250,14 +250,23 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         .manage(chat::workspace::commands::ProjectWorkingFolderSelections::default())
         .manage(chat::workspace::observer::ChatWorkspaceObserverRegistry::default())
         .plugin(tauri_plugin_dialog::init())
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+        .manage(file_drops::FileDrops::default())
+        .on_window_event(|window, event| match event {
+            tauri::WindowEvent::CloseRequested { api, .. } => {
                 let overlays = window.state::<pomodoro::overlay::PomodoroOverlayState>();
                 if overlays.is_active() {
                     api.prevent_close();
                     overlays.focus(window);
                 }
             }
+            tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) => {
+                window.state::<file_drops::FileDrops>().record(
+                    window.label(),
+                    paths.clone(),
+                    std::time::Instant::now(),
+                );
+            }
+            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             chat::workspace::commands::projects_list_working_folders,
@@ -851,6 +860,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             quick_notes::quick_notes_read_image,
             quick_notes::quick_notes_pick_images,
             quick_notes::quick_notes_paste_clipboard_image,
+            quick_notes::quick_notes_import_dropped_images,
             quick_notes::quick_notes_download_image,
             quick_notes::quick_notes_collect_images,
             crate::sync::commands::sync_status,

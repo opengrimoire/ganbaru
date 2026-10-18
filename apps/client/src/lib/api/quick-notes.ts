@@ -297,6 +297,15 @@ export async function pickQuickNoteImages(limit: number): Promise<QuickNoteImage
 }
 
 /**
+ * Imports up to `limit` of the files last dropped on this window. Rust reads the paths the operating system delivered
+ * with the drop, so a drop is imported once and only within a minute of it.
+ */
+export async function importDroppedQuickNoteImages(limit: number): Promise<QuickNoteImagePick> {
+  const bounded = Math.max(0, Math.min(Math.floor(limit), QUICK_NOTE_IMAGE_LIMIT));
+  return mapQuickNoteImagePick(await invokeImage<unknown>("quick_notes_import_dropped_images", { limit: bounded }));
+}
+
+/**
  * Imports the image on the system clipboard, for pastes the webview hands over without it. Resolves an empty pick
  * when the clipboard holds no image.
  */

@@ -10,6 +10,8 @@ mod chat;
 mod contacts;
 mod db;
 mod distractions;
+#[cfg(desktop)]
+mod file_drops;
 #[cfg(all(test, desktop))]
 mod first_use_contracts;
 mod music;

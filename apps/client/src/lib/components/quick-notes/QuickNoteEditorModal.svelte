@@ -14,6 +14,7 @@
   import Undo2 from "@lucide/svelte/icons/undo-2";
   import {
     createQuickNote,
+    importDroppedQuickNoteImages,
     getQuickNote,
     importQuickNoteImage,
     pasteQuickNoteClipboardImage,
@@ -88,6 +89,7 @@
     type QuickNoteEditableFields,
   } from "$lib/quick-notes/rebase";
   import { listenForQuickNotesChanges, publishQuickNotesChanged } from "$lib/quick-notes/window-sync";
+  import type { NativeFileDrag } from "$lib/windows/native-file-drops";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import type { Theme } from "$lib/themes";
   import QuickNoteColorPicker from "./QuickNoteColorPicker.svelte";
@@ -753,6 +755,20 @@
     importImageFiles([...(event.dataTransfer?.files ?? [])]);
   }
 
+  /** Files dragged anywhere over the window while the editor is open are added to the note, like the Add images button. */
+  function handleNativeFileDrag(drag: NativeFileDrag): void {
+    const accepting = !readOnly && !covered;
+    if (drag.kind === "hover") {
+      dropActive = accepting;
+      return;
+    }
+    dropActive = false;
+    if (drag.kind !== "drop" || !accepting) return;
+    queueImageImport((slots) => slots > 0
+      ? importDroppedQuickNoteImages(slots)
+      : Promise.resolve({ images: [], rejected: [], skipped: drag.count }));
+  }
+
   /** Waits for image imports before saving, so closing keeps images that were still being added. */
   async function flushAll(): Promise<void> {
     await imageImports;
@@ -864,9 +880,22 @@
         else stop();
       })
       .catch((error: unknown) => console.warn("quick note changes could not be observed", error));
+    let stopFileDrags: (() => void) | null = null;
+    // Desktop windows receive file drops natively. The build constant lets the Android build, which has none, leave the
+    // window event API out.
+    if (typeof __GANBARU_BUILD_PLATFORM__ === "undefined" || __GANBARU_BUILD_PLATFORM__ !== "android") {
+      void import("$lib/windows/native-file-drops")
+        .then(({ listenForNativeFileDrags }) => listenForNativeFileDrags(handleNativeFileDrag))
+        .then((stop) => {
+          if (mounted) stopFileDrags = stop;
+          else stop();
+        })
+        .catch((error: unknown) => console.warn("file drops could not be observed", error));
+    }
     return () => {
       mounted = false;
       stopChanges?.();
+      stopFileDrags?.();
       unregister();
       deactivateMobileBack();
       if (saveTimer) clearTimeout(saveTimer);

@@ -61,13 +61,18 @@ use domains::quick_notes::QuickNotesAdapter;
 use manifest::Manifest;
 use manifest::vault::VAULT_MANIFEST;
 
-/// The space an engine call works in and the person key every writer must be certified by.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The space an engine call works in, the person key every writer must be certified by, and the
+/// device allowed to revoke writers.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpaceContext {
     /// Replication space of the vault.
     pub space: SpaceId,
     /// Trust anchor: the person key of the vault owner.
     pub anchor: PersonPublicKey,
+    /// Device id of the coordinator, the only device whose writers may issue revocations.
+    /// A linked replica uses its pinned coordinator; the coordinator and an unlinked vault use
+    /// their own device id.
+    pub coordinator_device_id: String,
 }
 
 /// Makes a writer sequence durable before an operation with it is signed, so a restored or

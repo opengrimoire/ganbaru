@@ -168,6 +168,7 @@ async fn open_hub_vault<R: Runtime>(app: &AppHandle<R>) -> Result<Option<HubVaul
     let images: Arc<dyn ImageStore> = Arc::new(ActiveVaultImages::open(app, &vault_id)?);
     Ok(Some(HubVault {
         pool,
+        device_id: coordinator_device_id(app, &vault_id)?,
         vault_id,
         images,
     }))
@@ -783,12 +784,14 @@ async fn seal_quiesced_with<R: Runtime>(
 }
 
 /// Exports local operations the staged replacement lacks, before the replacement happens.
-pub(crate) async fn export_for_replacement(
+pub(crate) async fn export_for_replacement<R: Runtime>(
+    app: &AppHandle<R>,
     current: &std::path::Path,
     replacement: &std::path::Path,
     files: &SyncFiles,
 ) -> Result<usize, String> {
-    carry_forward::export(&Engine::vault(), current, replacement, files).await
+    let coordinator = coordinator_device_id(app, &files.vault_id)?;
+    carry_forward::export(&Engine::vault(), current, replacement, files, &coordinator).await
 }
 
 /// Whether a missing person key may be requested from the coordinator.
@@ -818,9 +821,10 @@ impl<'a, R: Runtime> Session<'a, R> {
         vault_id: &str,
         key_release: KeyRelease,
     ) -> Result<Option<Self>, String> {
+        let coordinator = coordinator_device_id(app, vault_id)?;
         let ctx = {
             let mut conn = acquire(&pool).await?;
-            local::space_context(&mut conn, vault_id)
+            local::space_context(&mut conn, vault_id, &coordinator)
                 .await
                 .map_err(|error| format!("read sync space: {error}"))?
         };
@@ -1176,6 +1180,20 @@ fn sync_directory<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     std::fs::create_dir_all(&directory)
         .map_err(|error| format!("create sync directory: {error}"))?;
     Ok(directory)
+}
+
+/// Device id of the coordinator whose writers may revoke in `vault_id`: the pinned coordinator
+/// when this device is linked to one for that vault, otherwise this device, which then hosts
+/// the hub or does not sync with others.
+pub(crate) fn coordinator_device_id<R: Runtime>(
+    app: &AppHandle<R>,
+    vault_id: &str,
+) -> Result<String, String> {
+    let pin = app.state::<PairingManager>().coordinator_pin()?;
+    match pin.filter(|pin| pin.vault_id == vault_id) {
+        Some(pin) => Ok(pin.device_id),
+        None => crate::vault::ensure_device_id(app),
+    }
 }
 
 /// Device-local sync files of a vault.

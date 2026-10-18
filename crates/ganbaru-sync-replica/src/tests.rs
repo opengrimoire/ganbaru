@@ -85,12 +85,13 @@ async fn create_vault(registry: &DatabasePoolRegistry, path: &Path) -> sqlx::Sql
     pool
 }
 
-async fn context(conn: &mut SqliteConnection) -> SpaceContext {
+/// Initializes the test space, coordinated by the device `coordinator`.
+async fn context(conn: &mut SqliteConnection, coordinator: &str) -> SpaceContext {
     Engine::vault()
         .init_space(conn, VAULT_ID, NOW_MS)
         .await
         .expect("initialize space");
-    local::space_context(conn, VAULT_ID)
+    local::space_context(conn, VAULT_ID, coordinator)
         .await
         .expect("read space")
         .expect("space context")
@@ -206,7 +207,7 @@ fn writer_survives_restarts_and_rotates_after_a_restore() {
 
         let first = create_vault(&registry, &directory.path().join("first.sqlite")).await;
         let mut conn = acquire(&first).await;
-        let ctx = context(&mut conn).await;
+        let ctx = context(&mut conn, DEVICE_ID).await;
         let WriterCheck::Successor(plan) = check(&engine, &mut conn, &ctx, &directory).await else {
             panic!("a vault without a record needs a writer");
         };
@@ -235,7 +236,7 @@ fn writer_survives_restarts_and_rotates_after_a_restore() {
         // A restored database lacks the committed chain of the recorded writer.
         let restored = create_vault(&registry, &directory.path().join("restored.sqlite")).await;
         let mut conn = acquire(&restored).await;
-        context(&mut conn).await;
+        context(&mut conn, DEVICE_ID).await;
         let WriterCheck::Successor(plan) = check(&engine, &mut conn, &ctx, &directory).await else {
             panic!("a restored database needs a successor");
         };
@@ -276,7 +277,7 @@ fn carried_operations_reach_the_replacement_once() {
         let current = create_vault(&registry, &current_path).await;
         create_vault(&registry, &replacement_path).await;
         let mut conn = acquire(&current).await;
-        let ctx = context(&mut conn).await;
+        let ctx = context(&mut conn, DEVICE_ID).await;
         let mut writer = create_writer(
             &files,
             &keys,
@@ -290,9 +291,10 @@ fn carried_operations_reach_the_replacement_once() {
         add_note(&mut conn, "note-unsealed").await;
         drop(conn);
         registry.close_all().await.expect("close pools");
-        let refused = carry_forward::export(&engine, &current_path, &replacement_path, &files)
-            .await
-            .expect_err("pending captures refuse the export");
+        let refused =
+            carry_forward::export(&engine, &current_path, &replacement_path, &files, DEVICE_ID)
+                .await
+                .expect_err("pending captures refuse the export");
         assert!(refused.contains("not sealed"));
 
         let current = registry.connect_path(&current_path).await.expect("reopen");
@@ -306,9 +308,10 @@ fn carried_operations_reach_the_replacement_once() {
         drop(conn);
         registry.close_all().await.expect("close pools");
 
-        let exported = carry_forward::export(&engine, &current_path, &replacement_path, &files)
-            .await
-            .expect("export");
+        let exported =
+            carry_forward::export(&engine, &current_path, &replacement_path, &files, DEVICE_ID)
+                .await
+                .expect("export");
         assert_eq!(u64::try_from(exported).expect("count"), last);
         assert!(files.carry_path().exists());
 

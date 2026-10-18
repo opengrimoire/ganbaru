@@ -4,7 +4,7 @@ use ganbaru_contacts::PersonKeyPair;
 use ganbaru_sync_contracts::{Envelope, Field, GroupMask, RevokeReason, VersionVector};
 
 use super::block_on;
-use super::replica::{Replica, VAULT_ID, converge, person};
+use super::replica::{Replica, VAULT_ID, converge, device_id, person};
 use crate::error::failpoints;
 use crate::manifest::vault::quick_notes::{NOTES_TABLE, note_group};
 use crate::{
@@ -286,7 +286,7 @@ fn concurrent_titles_surface_a_conflict_that_a_forced_choice_resolves() {
             );
             let details = replica
                 .engine
-                .conflict_details(&mut replica.conn, &replica.ctx, NOTES_TABLE, "note-1")
+                .conflict_details(&mut replica.conn, replica.ctx.space, NOTES_TABLE, "note-1")
                 .await
                 .unwrap();
             assert_eq!(details.len(), 1);
@@ -792,6 +792,56 @@ fn a_remote_revocation_below_applied_operations_is_blocked() {
 }
 
 #[test]
+fn revoke_from_non_coordinator_writer_is_not_applied() {
+    block_on(async {
+        let mut replicas = replicas(4).await;
+        seed_note(&mut replicas[1]).await;
+        replicas[1].seal().await.unwrap();
+        let (a, rest) = replicas.split_at_mut(1);
+        let (b, rest) = rest.split_at_mut(1);
+        let (c, d) = rest.split_at_mut(1);
+        let (a, b, c, d) = (&mut a[0], &mut b[0], &mut c[0], &mut d[0]);
+        a.pull(b).await;
+        c.pull(b).await;
+        d.pull(b).await;
+        let target = b.writer();
+        let cutoff = c.applied_vector().await.get(&target);
+        assert!(matches!(
+            seal_revoke(c, target, cutoff).await,
+            Err(SyncError::InvalidRevoke(_))
+        ));
+
+        // A modified build on C seals the revocation anyway.
+        c.ctx.coordinator_device_id = device_id(c.index);
+        seal_revoke(c, target, cutoff).await.unwrap();
+        let ops = c.ops_since(&a.stored_vector().await).await;
+        let outcomes = a.receive(&ops).await;
+        assert_eq!(
+            outcomes.last(),
+            Some(&StoreOutcome::Refused(StoreRefusal::UnauthorizedRevoke))
+        );
+        a.apply_all().await.unwrap();
+        assert_eq!(title(a, "note-1").await.as_deref(), Some("One"));
+
+        // D stored it while C coordinated; once A coordinates it waits without revoking.
+        d.ctx.coordinator_device_id = device_id(c.index);
+        let ops = c.ops_since(&d.stored_vector().await).await;
+        assert!(
+            d.receive(&ops)
+                .await
+                .iter()
+                .all(|outcome| *outcome == STORED)
+        );
+        d.ctx.coordinator_device_id = device_id(a.index);
+        let reports = d.apply_all().await.unwrap();
+        assert!(reports.iter().all(|report| report.held == 0));
+        let status = d.engine.status(&mut d.conn, &d.ctx).await.unwrap();
+        assert!(status.waiting > 0);
+        assert_eq!(title(d, "note-1").await.as_deref(), Some("One"));
+    });
+}
+
+#[test]
 fn a_reseal_is_refused_once_another_writer_saw_the_replaced_operations() {
     block_on(async {
         let mut replicas = replicas(2).await;
@@ -946,6 +996,9 @@ fn failpoints_roll_back_every_entry_point() {
         c.seal().await.unwrap();
         let target = c.writer();
         let cutoff = b.applied_vector().await.get(&target);
+        // B coordinates here, so it may revoke and C accepts the revocation.
+        b.ctx.coordinator_device_id = device_id(b.index);
+        c.ctx.coordinator_device_id = device_id(b.index);
         seal_revoke(b, target, cutoff).await.unwrap();
         let known = c.stored_vector().await;
         let ops = b.ops_since(&known).await;

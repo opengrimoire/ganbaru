@@ -65,7 +65,7 @@ impl Replica {
         pool: SqlitePool,
         device_id: &str,
     ) -> Self {
-        let ctx = context(&mut *acquire(&pool).await).await;
+        let ctx = context(&mut *acquire(&pool).await, HUB_DEVICE).await;
         let writer = create_writer(
             &directory.files(),
             &directory.keys(),
@@ -271,6 +271,7 @@ fn hub(replica: &Replica) -> (DirectTransport, watch::Sender<u64>) {
             Ok(Some(HubVault {
                 pool,
                 vault_id: VAULT_ID.to_string(),
+                device_id: HUB_DEVICE.to_string(),
                 images,
             }))
         })
@@ -495,6 +496,59 @@ fn hub_refuses_foreign_geneses_unlinked_writers_and_other_vaults() {
             "{refused:?}"
         );
         assert_eq!(hub_replica.stored().await.get(&phone.writer.id()), cutoff);
+        hub_replica.close().await;
+        phone.close().await;
+    });
+}
+
+#[test]
+fn hub_refuses_a_revocation_from_a_linked_device() {
+    block_on(async {
+        let mut hub_replica = Replica::new("hub-revoke", HUB_DEVICE).await;
+        let mut phone = Replica::new("phone-revoke", PHONE_DEVICE).await;
+        let (transport, _changes) = hub(&hub_replica);
+        hub_replica.seal_note("note-hub").await;
+        converge(&mut hub_replica, &mut phone, &transport).await;
+        let target = hub_replica.writer.id();
+        let cutoff = phone.stored().await.get(&target);
+        assert!(cutoff > 0);
+
+        // A modified build on the phone treats itself as the coordinator.
+        phone.ctx.coordinator_device_id = PHONE_DEVICE.to_string();
+        let seq = {
+            let mut conn = acquire(&phone.pool).await;
+            Engine::vault()
+                .seal_revoke(
+                    &mut conn,
+                    &phone.ctx,
+                    target,
+                    cutoff,
+                    RevokeReason::Revoked,
+                    &mut phone.writer.local(),
+                    NOW_MS,
+                )
+                .await
+                .expect("revoke")
+                .last_seq
+                .expect("revocation sealed")
+        };
+        phone.writer.committed(seq).expect("record commit");
+        let refused = done(
+            phone
+                .exchange(&transport, &phone_ids())
+                .await
+                .expect("exchange"),
+        );
+        assert!(
+            refused
+                .problem
+                .as_deref()
+                .is_some_and(|problem| problem.contains("Invalid")),
+            "{refused:?}"
+        );
+        assert_eq!(hub_replica.stored().await.get(&phone.writer.id()), seq - 1);
+        hub_replica.apply().await;
+        assert!(hub_replica.has_note("note-hub").await);
         hub_replica.close().await;
         phone.close().await;
     });

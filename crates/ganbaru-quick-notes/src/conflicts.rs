@@ -4,10 +4,8 @@
 
 use ganbaru_sync::domains::quick_notes::decode_runs;
 use ganbaru_sync::manifest::vault::quick_notes::{NOTES_TABLE, note_group};
-use ganbaru_sync::{
-    ConflictDetail, ConflictVersion, DeviceNames, DeviceRef, Engine, SpaceContext, local,
-};
-use ganbaru_sync_contracts::{Field, GroupId, Value, WriterId};
+use ganbaru_sync::{ConflictDetail, ConflictVersion, DeviceNames, DeviceRef, Engine, local};
+use ganbaru_sync_contracts::{Field, GroupId, SpaceId, Value, WriterId};
 use serde::{Deserialize, Serialize};
 use sqlx::{Sqlite, SqlitePool, Transaction};
 
@@ -172,13 +170,15 @@ fn version_read(
     })
 }
 
-async fn space_context(
+/// The sync space of a vault that has a person identity.
+async fn sync_space(
     tx: &mut Transaction<'_, Sqlite>,
     vault_id: &str,
-) -> Result<SpaceContext, QuickNoteConflictError> {
-    local::space_context(tx, vault_id)
+) -> Result<SpaceId, QuickNoteConflictError> {
+    local::space_anchor(tx)
         .await
         .map_err(|error| format!("read sync space: {error}"))?
+        .map(|_| SpaceId::personal(vault_id))
         .ok_or_else(|| QuickNoteConflictError::Resolved("this vault does not sync".to_string()))
 }
 
@@ -187,9 +187,9 @@ async fn details(
     vault_id: &str,
     id: &str,
 ) -> Result<Vec<ConflictDetail>, QuickNoteConflictError> {
-    let ctx = space_context(tx, vault_id).await?;
+    let space = sync_space(tx, vault_id).await?;
     Ok(Engine::vault()
-        .conflict_details(tx, &ctx, NOTES_TABLE, id)
+        .conflict_details(tx, space, NOTES_TABLE, id)
         .await
         .map_err(|error| format!("read quick note conflicts: {error}"))?)
 }

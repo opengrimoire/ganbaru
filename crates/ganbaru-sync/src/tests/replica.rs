@@ -173,6 +173,7 @@ impl Replica {
         let ctx = SpaceContext {
             space,
             anchor: person.public_key(),
+            coordinator_device_id: device_id(COORDINATOR_INDEX),
         };
         let identity = Identity::new(
             writer_seed(salt, index, 0),
@@ -200,7 +201,7 @@ impl Replica {
             index,
             conn: connection_from(&bytes).await,
             engine: Engine::vault(),
-            ctx: self.ctx,
+            ctx: self.ctx.clone(),
             identity: self.identity.duplicate(),
             person: person(),
             now_ms: self.now_ms,
@@ -215,6 +216,12 @@ impl Replica {
 
     /// Replaces the local writer with a new one, as the app does when its writer stops being
     /// active.
+    /// Makes the device of replica `index` the coordinator this replica accepts revocations from.
+    pub(super) fn coordinated_by(mut self, index: usize) -> Self {
+        self.ctx.coordinator_device_id = device_id(index);
+        self
+    }
+
     pub(super) fn rotate(&mut self) {
         let old = self.identity.id();
         self.generation += 1;
@@ -450,6 +457,9 @@ const DUMPED: &[(&str, &[&str])] = &[
     ("sync_register_versions", &[]),
     ("sync_tombstones", &[]),
 ];
+
+/// Index of the replica whose device coordinates every test space.
+pub(super) const COORDINATOR_INDEX: usize = 0;
 
 pub(super) fn device_id(index: usize) -> String {
     format!("device-{index}")

@@ -925,9 +925,14 @@ async fn carry_forward_local_changes<R: Runtime>(
         return Ok(());
     }
     let files = crate::sync::sync_files(app, expected_vault_id)?;
-    crate::sync::export_for_replacement(&database_path(target), &database_path(staging), &files)
-        .await
-        .map_err(|error| format!("keep local Quick notes changes: {error}"))?;
+    crate::sync::export_for_replacement(
+        app,
+        &database_path(target),
+        &database_path(staging),
+        &files,
+    )
+    .await
+    .map_err(|error| format!("keep local Quick notes changes: {error}"))?;
     let (current, replacement) = (target.to_path_buf(), staging.to_path_buf());
     tauri::async_runtime::spawn_blocking(move || {
         ganbaru_quick_notes::images::carry_images(&current, &replacement)

@@ -6,7 +6,8 @@
 
 use ganbaru_sync_contracts::op::FORMAT_VERSION;
 use ganbaru_sync_contracts::{
-    Content, Envelope, Hlc, Operation, OperationError, PayloadError, Seq, VersionVector, WriterId,
+    Content, Envelope, Hlc, Operation, OperationError, OperationKind, PayloadError, Seq,
+    VersionVector, WriterId,
 };
 use sqlx::{Connection, SqliteConnection};
 
@@ -81,6 +82,8 @@ pub enum StoreRefusal {
     },
     /// The writer was revoked, forked, or re-sealed and the operation is above its cutoff.
     Revoked,
+    /// A revocation issued by a writer of a device other than the coordinator.
+    UnauthorizedRevoke,
     /// Earlier operations of the writer are missing.
     Gap {
         /// Next sequence the writer's chain needs.
@@ -311,6 +314,13 @@ async fn store_genesis(
     Ok(StoreOutcome::Stored { held: None })
 }
 
+/// Whether `writer` may issue an operation of wire `kind`. Only writers of the coordinator device
+/// revoke, because the coordinator alone decides which devices stay linked. Wire kind 2 stays
+/// reserved for revocations in every format, so the check needs no payload decoding.
+pub(crate) fn may_issue(ctx: &SpaceContext, writer: &WriterRow, kind: u8) -> bool {
+    kind != OperationKind::Revoke.as_u8() || writer.device_id == ctx.coordinator_device_id
+}
+
 async fn store_next(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -351,6 +361,9 @@ async fn store_next(
         return Ok(StoreOutcome::Refused(StoreRefusal::Fork {
             seq: writer.stored,
         }));
+    }
+    if !may_issue(ctx, writer, envelope.kind) {
+        return Ok(StoreOutcome::Refused(StoreRefusal::UnauthorizedRevoke));
     }
     let classified = classify(engine, envelope);
     if matches!(classified, Classified::Malformed) {

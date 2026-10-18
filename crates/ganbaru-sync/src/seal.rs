@@ -909,6 +909,11 @@ impl Engine {
         if target == writer.id() {
             return Err(SyncError::InvalidRevoke("a writer cannot revoke itself"));
         }
+        if writer.certificate.certificate.device_id != ctx.coordinator_device_id {
+            return Err(SyncError::InvalidRevoke(
+                "only the coordinator revokes writers",
+            ));
+        }
         if cutoff < 1 {
             return Err(SyncError::InvalidRevoke("cutoff must keep the genesis"));
         }

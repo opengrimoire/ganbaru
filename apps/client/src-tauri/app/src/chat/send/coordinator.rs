@@ -14,7 +14,6 @@ use super::validation::{
     validate_explicit_model, validate_mentions, validate_modes, validate_prompt,
     validate_provider_selection, validate_send_mentions,
 };
-use crate::chat::credentials::{PlatformCredentialStore, materialize_provider_environment};
 use crate::chat::device_state::{full_access_is_trusted, read_active_device_scope};
 use crate::chat::send_commands::{SendChatTurnCommand, SendChatTurnResult};
 use crate::chat::workspace::WorkingFolderAuthorizationOperation;
@@ -69,10 +68,7 @@ pub(crate) async fn send_turn(
     let provider =
         crate::chat::settings_commands::read_provider(&app, &request.provider_instance_id)?;
     validate_provider_selection(&provider, &request)?;
-    let mut configuration = materialize_provider_environment(
-        &provider.configuration,
-        &PlatformCredentialStore::default(),
-    )?;
+    let mut configuration = crate::chat::settings::approved_runtime(&app, &provider.configuration)?;
     let inspection_driver = ProviderDriverRegistry.create_driver(configuration.clone())?;
     let authority_support = inspection_driver.authority_support();
     if let Some(binding) = origin.run() {
@@ -239,6 +235,9 @@ pub(crate) async fn send_turn(
             mcp_registry.wait_until_ready(&thread_id).await?;
         }
         let reservation = reservation.handoff_to_runtime()?;
+        if authority_support.internal_host_tools {
+            mcp_registry.begin_turn_network(&thread_id).await;
+        }
         owner
             .send_turn(
                 SendTurnRequest {
@@ -259,6 +258,15 @@ pub(crate) async fn send_turn(
             .await
     }
     .await;
+    if authority_support.internal_host_tools {
+        let network_access = operation
+            .as_ref()
+            .ok()
+            .and_then(|dispatch| dispatch.sandbox_network_access);
+        mcp_registry
+            .settle_turn_network(&thread_id, network_access)
+            .await;
+    }
     let (dispatch, launch_error) = match operation {
         Ok(dispatch) => (Some(dispatch), None),
         Err(error) => {
@@ -367,11 +375,23 @@ async fn resolve_turn_target(
             let selected_environment = existing
                 .and_then(|data| data.execution_environment_id.as_deref())
                 .or(request.execution_environment_id.as_deref());
+            let root_path = authorized.canonical_path.clone();
             let authorized = crate::chat::execution_environment::resolve_environment_workspace(
                 app,
                 pool,
                 authorized,
                 selected_environment,
+            )
+            .await?;
+            let authorized = crate::chat::workspace::commands::settle_project_configuration(
+                app,
+                &root_path,
+                authorized,
+                if origin.run().is_some() {
+                    crate::chat::workspace::commands::UndecidedProjectConfiguration::Restrict
+                } else {
+                    crate::chat::workspace::commands::UndecidedProjectConfiguration::Ask
+                },
             )
             .await?;
             if matches!(

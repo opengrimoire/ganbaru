@@ -64,6 +64,8 @@ Planned: explicit date locks and per-proposal protection overrides. The task sch
 
 A project can own a managed working folder (created inside the vault) and device-local bindings to external folders where supported. Organizational Chat runs resolve their execution target through the authorized binding; see [Chat execution and workspace](../chat/execution-and-workspace.md).
 
+Each folder shows whether this device trusts its repository programs, hooks, and provider settings, and its menu grants or revokes that trust immediately. Binding a folder through the picker asks once; see [Chat security](../../data/security/chat.md#git-and-hosted-clis).
+
 Working-folder files remain filesystem-canonical. Project settings store identity, provider preference, and primary selection, not file contents. Mobile omits local coding execution and desktop path selection.
 
 Each folder can name a preferred Chat provider instance or Automatic. Unconfigured providers are visible with their setup status but cannot be saved, and a removed provider stays visibly unavailable until replaced. Missing bindings and repository mismatches are shown on the folder row.

@@ -11,6 +11,7 @@ fn mcp_status_without_task_uses_standalone_app_server() {
                 McpStatusRequest {
                     session_id: None,
                     working_directory: Some(workspace.path().to_path_buf()),
+                    project_configuration: ProjectConfigurationAccess::Restricted,
                 },
                 &context("mcp-status-draft"),
             )
@@ -104,6 +105,7 @@ fn driver_fixture_covers_fresh_plan_interrupt_and_shutdown() {
                 McpStatusRequest {
                     session_id: Some(snapshot.session_id.clone()),
                     working_directory: None,
+                    project_configuration: ProjectConfigurationAccess::Restricted,
                 },
                 &context("mcp-status-live"),
             )

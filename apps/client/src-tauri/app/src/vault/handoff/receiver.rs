@@ -13,6 +13,36 @@ use tauri::Manager;
 const CONNECTED_REPOLL_DELAY: Duration = Duration::from_secs(1);
 const DISCONNECTED_RETRY_DELAY: Duration = Duration::from_secs(30);
 
+/// Error returned while a vault other than the linked one is active. The webview maps it to a
+/// localized status, so the text is stable.
+pub(crate) const LINKED_VAULT_INACTIVE: &str = "the linked vault is not active on this device";
+
+/// Refuses handoff work for the linked vault while another vault is active, so switching vaults
+/// suspends handoff instead of retargeting it. Before the linked vault has been activated here,
+/// the active vault is the one the first link replaces, and activation keeps it.
+pub(crate) fn ensure_linked_vault_active(
+    replica_ready: bool,
+    active_vault_id: &str,
+    linked_vault_id: &str,
+) -> Result<(), String> {
+    if replica_ready && active_vault_id != linked_vault_id {
+        return Err(LINKED_VAULT_INACTIVE.to_string());
+    }
+    Ok(())
+}
+
+fn ensure_linked_vault_active_for(
+    app: &tauri::AppHandle,
+    pairing: &PairingManager,
+    linked_vault_id: &str,
+) -> Result<(), String> {
+    ensure_linked_vault_active(
+        pairing.replica_ready()?,
+        &crate::vault::active_vault_id(app)?,
+        linked_vault_id,
+    )
+}
+
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum ReceiveMode {
@@ -118,6 +148,7 @@ async fn receive(
     let coordinator = pairing
         .coordinator_pin()?
         .ok_or_else(|| "this device is not linked to a coordinator".to_string())?;
+    ensure_linked_vault_active_for(app, &pairing, &coordinator.vault_id)?;
     let ownership = app.state::<VaultOwnershipManager>();
     let status = ownership.status(&coordinator.vault_id)?;
     if let TransferPhase::IncomingCommitted {
@@ -375,6 +406,8 @@ async fn refresh_after_reconnect(app: &tauri::AppHandle) -> bool {
     let Some(coordinator) = pairing.coordinator_pin().ok().flatten() else {
         return false;
     };
+    let linked_vault_active =
+        ensure_linked_vault_active_for(app, &pairing, &coordinator.vault_id).is_ok();
     let Some(status) = app
         .state::<VaultOwnershipManager>()
         .status(&coordinator.vault_id)
@@ -392,7 +425,14 @@ async fn refresh_after_reconnect(app: &tauri::AppHandle) -> bool {
     if reachable {
         crate::contacts::identity::try_release(app).await;
     }
-    let was_connected = lifecycle.connected.swap(reachable, Ordering::AcqRel);
+    // While another vault is active nothing is exchanged, and the stored state stays
+    // disconnected so switching back counts as a reconnect and refreshes.
+    let was_connected = lifecycle
+        .connected
+        .swap(reachable && linked_vault_active, Ordering::AcqRel);
+    if !linked_vault_active {
+        return reachable;
+    }
     if let Ok(Some(purpose)) = poll {
         if status.can_write {
             super::source::trigger_requested_upload(app.clone(), purpose);
@@ -510,5 +550,22 @@ mod tests {
         assert_eq!(ReceiveMode::Refresh.purpose(), BundlePurpose::Refresh);
         assert_eq!(ReceiveMode::Bootstrap.purpose(), BundlePurpose::Refresh);
         assert_eq!(super::super::protocol::PROTOCOL_VERSION, 6);
+    }
+
+    #[test]
+    fn handoff_is_refused_while_another_vault_is_active() {
+        assert_eq!(
+            ensure_linked_vault_active(true, "vault-other", "vault-linked"),
+            Err(LINKED_VAULT_INACTIVE.to_string())
+        );
+        assert_eq!(
+            ensure_linked_vault_active(true, "vault-linked", "vault-linked"),
+            Ok(())
+        );
+        // The first link replaces the active vault and keeps it beside the linked one.
+        assert_eq!(
+            ensure_linked_vault_active(false, "vault-other", "vault-linked"),
+            Ok(())
+        );
     }
 }

@@ -95,6 +95,7 @@ export function availableWorkingFolder() {
     canonicalPath: "/workspace/example",
     lastVerifiedAt: "2026-07-24T12:00:00.000Z",
     currentBranch: "feat/chat",
+    trust: "trusted" as const,
   };
 }
 
@@ -288,6 +289,7 @@ export function modelSettings(): ChatSettingsRead {
         favoriteModelIds: [],
         providerConfig: { schemaVersion: 1, value: {} },
       },
+      runtimeReview: [],
       lastProbe: {
         instanceId: "codex-local",
         state: "healthy",

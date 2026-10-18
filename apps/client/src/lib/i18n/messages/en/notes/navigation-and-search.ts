@@ -117,8 +117,6 @@ export const navigationAndSearch = {
     `${requests} ${requests === 1 ? "request" : "requests"}, ${retries} ${retries === 1 ? "retry" : "retries"}, ${rateLimits} rate ${rateLimits === 1 ? "limit" : "limits"}`,
   notionExportImportOpen: "Import Notion export folder",
   notionExportImportDialogTitle: "Notion export folder import",
-  notionExportImportFolderLabel: "Export folder path",
-  notionExportImportFolderDescription: "Path to the extracted Notion export folder",
   notionExportImportWorkspaceLabel: "Workspace ID",
   notionExportImportWorkspaceDescription: "Optional source workspace label",
   notionExportImportMarkdown: "Import Markdown notes",
@@ -131,7 +129,7 @@ export const navigationAndSearch = {
   notionExportImportCopyFilesDescription: "Copy accepted local files into managed Notes assets",
   notionExportImportKeepExternalFiles: "Keep external file references",
   notionExportImportKeepExternalFilesDescription: "Keep supported remote file URLs as references",
-  notionExportImportSubmit: "Import",
+  notionExportImportSubmit: "Choose folder and import",
   notionExportImportImporting: "Importing",
   notionExportImportFailed: (message: string) => `Could not import Notion export folder: ${message}`,
   notionExportImportComplete: (

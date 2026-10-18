@@ -27,6 +27,22 @@ pub(super) async fn persist_tab(pool: &SqlitePool, read: &BrowserTabRead) -> Cha
     Ok(())
 }
 
+pub(super) async fn thread_working_folder(
+    pool: &SqlitePool,
+    thread_id: &ChatThreadId,
+) -> ChatResult<ProjectWorkingFolderId> {
+    let working_folder_id =
+        sqlx::query_scalar::<_, String>("SELECT working_folder_id FROM chat_threads WHERE id = ?")
+            .bind(thread_id.as_str())
+            .fetch_optional(pool)
+            .await
+            .map_err(|_| persistence_error())?
+            .ok_or_else(|| {
+                ChatError::new(ChatErrorCode::NotFound, "Chat thread was not found", true)
+            })?;
+    ProjectWorkingFolderId::new(working_folder_id).map_err(|_| persistence_error())
+}
+
 pub(super) async fn require_thread(pool: &SqlitePool, thread_id: &ChatThreadId) -> ChatResult<()> {
     let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_threads WHERE id = ?)")
         .bind(thread_id.as_str())

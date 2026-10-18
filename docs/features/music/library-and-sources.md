@@ -12,7 +12,7 @@ Users select a folder and the app scans supported audio and video files without 
 
 The library stores a stable root plus relative location and file metadata to detect moved, missing, changed, or ambiguous media. Refresh preserves user-authored title, artist, album, artwork, review, snooze, and playlist choices when identity can still be established. Missing files stay visible with a repair path, and relinking previews its effect and never silently binds ambiguous matches.
 
-The folder chosen for a root is device-local state, not vault data. A source whose root has no folder on this device, or whose folder is gone, shows that state with a choose-folder action instead of an empty list, and Refresh offers the same action rather than skipping it silently. A root that was never linked on this device is bound directly and scanned; a moved folder goes through relink, which also binds the replacement folder.
+The folder chosen for a root is device-local state, not vault data. A source whose root has no folder on this device, or whose folder is gone, shows that state with a choose-folder action instead of an empty list, and Refresh offers the same action rather than skipping it silently. A root that was never linked on this device is bound directly and scanned; a moved folder goes through relink, which also binds the replacement folder. Folders, replacement files, and background audio files come from the native picker on this device; a typed or pasted local file plays after one native confirmation.
 
 ## Local sources on Android
 

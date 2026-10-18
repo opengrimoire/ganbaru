@@ -69,6 +69,14 @@ pub(super) async fn capture_browser_png(
     let webview = app
         .get_webview(&tab.webview_label)
         .ok_or_else(browser_unavailable_error)?;
+    let size = webview.size().map_err(|_| browser_unavailable_error())?;
+    if !capture_within_budget(size.width, size.height) {
+        return Err(ChatError::new(
+            ChatErrorCode::Protocol,
+            "Browser viewport is too large to capture",
+            true,
+        ));
+    }
     let (sender, receiver) = tokio::sync::oneshot::channel();
     capture_platform_png(&webview, sender)?;
     let bytes = tokio::time::timeout(BROWSER_CAPTURE_TIMEOUT, receiver)
@@ -83,6 +91,30 @@ pub(super) async fn capture_browser_png(
         ));
     }
     Ok(bytes)
+}
+
+/// Reports whether a physical viewport fits the capture pixel budget before any native snapshot allocates it.
+pub(super) fn capture_within_budget(width: u32, height: u32) -> bool {
+    width > 0
+        && height > 0
+        && u64::from(width)
+            .checked_mul(u64::from(height))
+            .is_some_and(|pixels| pixels <= MAX_CAPTURE_PIXELS)
+}
+
+/// Clamps a model-requested physical viewport to its window's inner size and the capture budget.
+///
+/// The window bound keeps desktop-width layouts testable from a narrow panel; anything larger
+/// would be clipped by the window anyway. Returns the size that is applied.
+pub(super) fn clamp_model_viewport(requested: (u32, u32), window: (u32, u32)) -> (u32, u32) {
+    let width = requested
+        .0
+        .min(window.0)
+        .min(u32::try_from(MAX_CAPTURE_PIXELS).unwrap_or(u32::MAX))
+        .max(1);
+    let height = requested.1.min(window.1).max(1);
+    let budget_height = u32::try_from(MAX_CAPTURE_PIXELS / u64::from(width)).unwrap_or(u32::MAX);
+    (width, height.min(budget_height).max(1))
 }
 
 #[cfg(any(target_os = "linux", windows, target_os = "macos", test))]
@@ -375,9 +407,46 @@ pub(super) fn capture_platform_png(
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_CAPTURE_BYTES, capture_stream_capacity, capture_stream_read_progress,
+        MAX_CAPTURE_BYTES, MAX_CAPTURE_PIXELS, capture_stream_capacity,
+        capture_stream_read_progress, capture_within_budget, clamp_model_viewport,
         run_native_capture_callback,
     };
+
+    #[test]
+    fn capture_budget_admits_high_density_displays_and_refuses_oversized_or_empty_viewports() {
+        assert!(capture_within_budget(3_840, 2_160));
+        assert!(capture_within_budget(5_120, 2_880));
+        assert!(capture_within_budget(7_680, 4_320));
+        assert!(!capture_within_budget(7_680, 4_321));
+        assert!(!capture_within_budget(16_384, 16_384));
+        assert!(!capture_within_budget(u32::MAX, u32::MAX));
+        assert!(!capture_within_budget(0, 720));
+        assert!(!capture_within_budget(1_280, 0));
+    }
+
+    #[test]
+    fn model_viewports_are_clamped_to_the_window_and_the_capture_budget() {
+        assert_eq!(clamp_model_viewport((390, 844), (1_920, 1_080)), (390, 844));
+        assert_eq!(
+            clamp_model_viewport((1_920, 1_080), (1_280, 800)),
+            (1_280, 800)
+        );
+        assert_eq!(
+            clamp_model_viewport((16_384, 16_384), (1_920, 1_080)),
+            (1_920, 1_080)
+        );
+        let (width, height) = clamp_model_viewport((16_384, 16_384), (16_384, 16_384));
+        assert_eq!(width, 16_384);
+        assert!(capture_within_budget(width, height));
+        assert_eq!(clamp_model_viewport((800, 600), (0, 0)), (1, 1));
+        let pixels = |(width, height): (u32, u32)| u64::from(width) * u64::from(height);
+        assert!(
+            pixels(clamp_model_viewport(
+                (u32::MAX, u32::MAX),
+                (u32::MAX, u32::MAX)
+            )) <= MAX_CAPTURE_PIXELS
+        );
+    }
 
     #[test]
     fn capture_stream_lengths_are_nonzero_bounded_and_representable() {

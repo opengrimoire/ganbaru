@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 /// below the control frame limit, and a single operation of the largest size always fits.
 pub const SYNC_PAGE_BYTES: usize = 600 * 1024;
 /// Entries of a version vector on the wire.
-const MAX_SYNC_WRITERS: usize = 4_096;
+const MAX_SYNC_WRITERS: usize = ganbaru_sync_contracts::bounds::MAX_WRITERS_PER_SPACE;
 /// Operations in one page; operations are never smaller than their signed header.
 const MAX_SYNC_PAGE_OPS: usize = 8_192;
 /// Hashes in one hash list.
@@ -57,6 +57,8 @@ pub enum SyncRefusalCode {
     UnknownWriter,
     /// The writer's genesis uses a newer format than the receiver reads.
     NewerFormat,
+    /// The writer's genesis would exceed the writers a device or the vault may have.
+    WriterLimit,
 }
 
 /// A refused push: the code and, when it concerns one writer, where its chain stopped.

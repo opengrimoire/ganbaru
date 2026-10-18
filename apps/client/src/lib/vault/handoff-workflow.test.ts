@@ -25,6 +25,31 @@ describe("formatHandoffError", () => {
     );
   });
 
+  it("explains the ownership churn limit instead of a connectivity failure", () => {
+    const message = "vault ownership changed too often; wait before switching devices again";
+    expect(formatHandoffError(message, t)).toBe("vaultHandoff.ownershipChurnLimit");
+    expect(formatOwnershipHandoffError(new Error(message), t)).toBe(
+      "vaultHandoff.ownershipChurnLimit",
+    );
+  });
+
+  it("explains disabled linking instead of a connectivity or transfer failure", () => {
+    const message =
+      "vault linking is disabled because its saved state could not be loaded: read pairing state: network transfer is active";
+    expect(formatHandoffError(message, t)).toBe("vaultHandoff.linkingDisabled");
+    expect(formatOwnershipHandoffError(new Error(message), t)).toBe(
+      "vaultHandoff.linkingDisabled",
+    );
+  });
+
+  it("explains a busy coordinator instead of a connectivity failure", () => {
+    const message = "the coordinator is handling too many connections; retry shortly";
+    expect(formatHandoffError(message, t)).toBe("vaultHandoff.coordinatorBusy");
+    expect(formatOwnershipHandoffError(new Error(message), t)).toBe(
+      "vaultHandoff.coordinatorBusy",
+    );
+  });
+
   it("identifies an unreachable main device during an ownership request", () => {
     expect(formatOwnershipHandoffError(
       new Error("the current vault owner is unreachable"),
@@ -48,6 +73,15 @@ describe("formatHandoffError", () => {
       "this device is already linked to another coordinator",
       t,
     )).toBe("vaultHandoff.differentCoordinator");
+  });
+
+  it("explains that handoff pauses while another vault is open", () => {
+    expect(formatHandoffError("the linked vault is not active on this device", t))
+      .toBe("vaultHandoff.linkedVaultInactive");
+    expect(formatHandoffError("uploaded vault is not active on the coordinator", t))
+      .toBe("vaultHandoff.coordinatorVaultInactive");
+    expect(formatHandoffError("requested vault is not active on the coordinator", t))
+      .toBe("vaultHandoff.coordinatorVaultInactive");
   });
 });
 

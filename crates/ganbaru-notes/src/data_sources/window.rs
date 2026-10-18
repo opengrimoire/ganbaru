@@ -184,8 +184,8 @@ pub(crate) async fn load_row_page_tx(
     }
     query.push("page.title COLLATE NOCASE ASC, page.id ASC LIMIT ");
     query.push_bind(page_size + 1);
+    let query_sql = query.sql().as_str().to_owned();
     let built_query = query.build_query_as::<NotePageRow>();
-    let query_sql = sqlx::Execute::sql(&built_query).to_string();
     let mut rows = built_query
         .fetch_all(&mut **tx)
         .await
@@ -273,7 +273,7 @@ async fn load_group_counts_tx(
 }
 
 fn push_date_range(
-    query: &mut QueryBuilder<'_, Sqlite>,
+    query: &mut QueryBuilder<Sqlite>,
     request: &NoteDataSourceViewWindowRequest,
     date_property: Option<&TableProperty>,
 ) {
@@ -318,7 +318,7 @@ fn sort_expressions<'a>(
 }
 
 fn push_filters(
-    query: &mut QueryBuilder<'_, Sqlite>,
+    query: &mut QueryBuilder<Sqlite>,
     schema: &[TableProperty],
     filters: &[NoteDataSourceTableFilter],
 ) {
@@ -329,7 +329,7 @@ fn push_filters(
 }
 
 fn push_filter_nodes(
-    query: &mut QueryBuilder<'_, Sqlite>,
+    query: &mut QueryBuilder<Sqlite>,
     schema: &[TableProperty],
     filters: &[NoteDataSourceTableFilter],
     operator: NoteDataSourceFilterOperator,
@@ -375,7 +375,7 @@ fn comparison_operator(condition: NoteDataSourceFilterCondition) -> &'static str
 }
 
 fn push_filter_predicate(
-    query: &mut QueryBuilder<'_, Sqlite>,
+    query: &mut QueryBuilder<Sqlite>,
     property: &TableProperty,
     predicate: &NoteDataSourceTableFilterPredicate,
 ) {
@@ -588,7 +588,7 @@ fn filter_date_number(value: &str, day_only: bool) -> Option<i64> {
 }
 
 fn push_cursor_condition(
-    query: &mut QueryBuilder<'_, Sqlite>,
+    query: &mut QueryBuilder<Sqlite>,
     sorts: &[SortExpression<'_>],
     cursor: &RowCursor,
 ) {
@@ -616,7 +616,7 @@ fn push_cursor_condition(
 }
 
 fn push_cursor_branch(
-    query: &mut QueryBuilder<'_, Sqlite>,
+    query: &mut QueryBuilder<Sqlite>,
     prior: &[(String, CursorValue)],
     expression: &str,
     descending: bool,
@@ -646,7 +646,7 @@ fn push_cursor_branch(
     query.push(")");
 }
 
-fn push_prior_equalities(query: &mut QueryBuilder<'_, Sqlite>, prior: &[(String, CursorValue)]) {
+fn push_prior_equalities(query: &mut QueryBuilder<Sqlite>, prior: &[(String, CursorValue)]) {
     for (index, (expression, value)) in prior.iter().enumerate() {
         if index > 0 {
             query.push(" AND ");
@@ -660,7 +660,7 @@ fn push_prior_equalities(query: &mut QueryBuilder<'_, Sqlite>, prior: &[(String,
     }
 }
 
-fn push_cursor_value(query: &mut QueryBuilder<'_, Sqlite>, value: &CursorValue) {
+fn push_cursor_value(query: &mut QueryBuilder<Sqlite>, value: &CursorValue) {
     match value {
         CursorValue::Null => {
             query.push("NULL");

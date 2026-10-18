@@ -30,6 +30,15 @@ pub(super) async fn persist_browser_artifact_with_pool(
         ProjectWorkingFolderId::new(working_folder_id).map_err(|_| persistence_error())?;
     let created_at = UtcTimestamp::new(Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true))
         .map_err(|_| persistence_error())?;
+    let quota_since = UtcTimestamp::new(
+        (Utc::now() - MODEL_ARTIFACT_WINDOW).to_rfc3339_opts(SecondsFormat::Millis, true),
+    )
+    .map_err(|_| persistence_error())?;
+    let quota = payload.model_quota.then_some(BrowserArtifactQuota {
+        since: &quota_since,
+        max_count: MODEL_ARTIFACT_MAX_COUNT,
+        max_bytes: MODEL_ARTIFACT_MAX_BYTES,
+    });
     let resource_id = new_artifact_id(&tab.read.thread_id, &tab.read.tab_id);
     resources::store_browser_artifact(
         pool,
@@ -49,6 +58,7 @@ pub(super) async fn persist_browser_artifact_with_pool(
             frame_count: payload.frame_count,
             created_at: &created_at,
             bytes: payload.bytes,
+            quota,
         },
     )
     .await

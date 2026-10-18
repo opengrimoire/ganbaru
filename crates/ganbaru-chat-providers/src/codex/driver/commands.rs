@@ -66,6 +66,7 @@ pub(super) async fn dispatch_codex_command(
                 state: ChatTurnState::Active,
                 provider_turn_id: None,
                 accepted_at: now_utc()?,
+                sandbox_network_access: None,
             })
         }
         CodexNativeCommand::Review(instructions) => {
@@ -127,6 +128,7 @@ pub(super) async fn dispatch_codex_command(
                 state: ChatTurnState::Active,
                 provider_turn_id: Some(provider_turn_id),
                 accepted_at: now_utc()?,
+                sandbox_network_access: preset_network_access(request.modes.safety_mode),
             })
         }
         CodexNativeCommand::Goal(arguments) => {
@@ -458,5 +460,6 @@ async fn emit_codex_command_result(
         state: ChatTurnState::Completed,
         provider_turn_id: Some(provider_turn_id),
         accepted_at: now_utc()?,
+        sandbox_network_access: None,
     })
 }

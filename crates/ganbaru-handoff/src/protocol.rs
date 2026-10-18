@@ -15,6 +15,9 @@ pub use sync::{
 
 pub const PROTOCOL_VERSION: u16 = 6;
 pub const MAX_CONTROL_BYTES: usize = 1024 * 1024;
+/// Frame bound before the peer presents a linked certificate. Enrollment (with its 8 KiB
+/// certificate) and contact requests fit well inside it.
+pub const MAX_UNAUTHENTICATED_CONTROL_BYTES: usize = 16 * 1024;
 pub const MAX_ARCHIVE_BYTES: u64 = 100 * 1024 * 1024 * 1024;
 pub const MAX_IDENTIFIER_BYTES: usize = 160;
 pub const MAX_DEVICE_LABEL_BYTES: usize = 128;
@@ -115,9 +118,12 @@ impl PairingInvitation {
         validate_identifier("coordinator fingerprint", &self.coordinator_fingerprint)?;
         validate_identifier("coordinator device id", &self.coordinator_device_id)?;
         validate_identifier("vault id", &self.vault_id)?;
-        self.endpoint
+        let endpoint = self
+            .endpoint
             .parse::<std::net::SocketAddr>()
             .map_err(|_| "pairing invitation endpoint is invalid".to_string())?;
+        crate::dial::validate_dial_endpoint(endpoint)
+            .map_err(|error| format!("pairing invitation endpoint is refused: {error}"))?;
         if self.expires_at_ms <= now_ms {
             return Err("pairing invitation has expired".to_string());
         }
@@ -490,9 +496,7 @@ impl ControlMessage {
                 validate_identifier("invitation secret", secret)?;
                 validate_identifier("vault id", vault_id)?;
                 validate_identifier("device id", device_id)?;
-                if device_label.trim().is_empty() || device_label.len() > MAX_DEVICE_LABEL_BYTES {
-                    return Err("device label is invalid".to_string());
-                }
+                validate_device_label("device label", device_label)?;
                 if device_certificate.is_empty() || device_certificate.len() > 8 * 1024 {
                     return Err("device certificate is invalid".to_string());
                 }
@@ -504,12 +508,8 @@ impl ControlMessage {
             } => {
                 validate_protocol(*protocol_version)?;
                 validate_identifier("coordinator device id", coordinator_device_id)?;
-                if coordinator_device_label.as_ref().is_some_and(|label| {
-                    label.trim().is_empty()
-                        || label.len() > MAX_DEVICE_LABEL_BYTES
-                        || label.chars().any(char::is_control)
-                }) {
-                    return Err("coordinator device label is invalid".to_string());
+                if let Some(label) = coordinator_device_label {
+                    validate_device_label("coordinator device label", label)?;
                 }
             }
             Self::RequestBundle {
@@ -953,12 +953,24 @@ pub async fn read_control<R>(reader: &mut R) -> Result<ControlMessage, String>
 where
     R: AsyncRead + Unpin,
 {
+    read_control_limited(reader, MAX_CONTROL_BYTES).await
+}
+
+/// Reads one control frame no larger than `max_bytes`, which never exceeds
+/// [`MAX_CONTROL_BYTES`].
+pub async fn read_control_limited<R>(
+    reader: &mut R,
+    max_bytes: usize,
+) -> Result<ControlMessage, String>
+where
+    R: AsyncRead + Unpin,
+{
     let length = reader
         .read_u32()
         .await
         .map_err(|error| format!("read handoff message length: {error}"))?
         as usize;
-    if length == 0 || length > MAX_CONTROL_BYTES {
+    if length == 0 || length > max_bytes.min(MAX_CONTROL_BYTES) {
         return Err("handoff control message has an invalid size".to_string());
     }
     let mut encoded = vec![0_u8; length];
@@ -1218,6 +1230,17 @@ pub fn sha256_file(path: &Path) -> Result<String, String> {
         .collect())
 }
 
+/// Validates a device label another device will display, with the shared display text rules.
+///
+/// # Errors
+///
+/// Returns a message naming `field` when the label is blank, too long, or holds a control,
+/// bidirectional override, or invisible character.
+pub fn validate_device_label(field: &str, label: &str) -> Result<(), String> {
+    ganbaru_contacts::validate_display_text(label, MAX_DEVICE_LABEL_BYTES)
+        .map_err(|error| format!("{field} is invalid: {error}"))
+}
+
 pub fn validate_identifier(label: &str, value: &str) -> Result<(), String> {
     if value.is_empty()
         || value.len() > MAX_IDENTIFIER_BYTES
@@ -1286,6 +1309,37 @@ mod tests {
     }
 
     #[test]
+    fn enrollment_messages_reject_control_and_bidi_labels() {
+        let enroll = |label: &str| ControlMessage::Enroll {
+            protocol_version: PROTOCOL_VERSION,
+            invitation_id: "invite-abcdefghijklmnopqrstuv".to_string(),
+            secret: "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG".to_string(),
+            vault_id: "vault-abcdefghijklmnopqrstuv".to_string(),
+            device_id: "device-phone".to_string(),
+            device_label: label.to_string(),
+            device_kind: DeviceKind::Phone,
+            device_certificate: "certificate".to_string(),
+        };
+        let enrolled = |label: &str| ControlMessage::Enrolled {
+            protocol_version: PROTOCOL_VERSION,
+            coordinator_device_id: "device-desktop".to_string(),
+            coordinator_device_label: Some(label.to_string()),
+        };
+        for label in ["phone\u{0007}", "a\u{202E}b", "a\u{200F}b", ""] {
+            assert!(enroll(label).validate().is_err(), "{label:?}");
+            assert!(enrolled(label).validate().is_err(), "{label:?}");
+        }
+        for label in [
+            "Phone",
+            "\u{1F469}\u{200D}\u{1F4BB}",
+            "\u{0645}\u{200C}\u{0627}",
+        ] {
+            assert_eq!(enroll(label).validate(), Ok(()), "{label:?}");
+            assert_eq!(enrolled(label).validate(), Ok(()), "{label:?}");
+        }
+    }
+
+    #[test]
     fn invitation_qr_round_trips_through_production_decoder() {
         let invitation = qr_invitation();
         let matrix = invitation_qr_matrix(&invitation).expect("QR should encode");
@@ -1310,6 +1364,39 @@ mod tests {
             decode_pairing_qr_luma(image_width, image_width, &image, 1).expect("QR should decode"),
             invitation
         );
+    }
+
+    #[test]
+    fn invitations_with_non_lan_endpoints_fail_validation() {
+        for endpoint in [
+            "203.0.113.5:443",
+            "8.8.8.8:43821",
+            "224.0.0.251:43821",
+            "192.168.1.20:0",
+        ] {
+            let invitation = PairingInvitation {
+                endpoint: endpoint.to_string(),
+                ..qr_invitation()
+            };
+            assert!(invitation.validate(0).is_err(), "{endpoint}");
+            assert!(encode_invitation(&invitation).is_err(), "{endpoint}");
+            let crafted = base64::Engine::encode(
+                &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                serde_json::to_vec(&invitation).expect("invitation json"),
+            );
+            assert!(decode_invitation(&crafted, 0).is_err(), "{endpoint}");
+        }
+        for endpoint in [
+            "100.64.3.4:43821",
+            "[2a01:4f8:10:20::5]:43821",
+            "[fe80::1]:43821",
+        ] {
+            let invitation = PairingInvitation {
+                endpoint: endpoint.to_string(),
+                ..qr_invitation()
+            };
+            assert_eq!(invitation.validate(0), Ok(()), "{endpoint}");
+        }
     }
 
     #[test]

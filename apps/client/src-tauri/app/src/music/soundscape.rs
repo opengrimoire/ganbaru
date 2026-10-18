@@ -12,13 +12,15 @@ use rodio::{
     ChannelCount, Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, SampleRate, Source,
 };
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::Manager;
 
 const OUTPUT_SAMPLE_RATE: u32 = 48_000;
 const OUTPUT_CHANNELS: u16 = 2;
 const RAMP_MILLIS: u64 = 40;
 const RAMP_STEPS: u64 = 8;
 const NOISE_AMPLITUDE: f32 = 0.22;
+/// Longest a command waits for the engine worker before reporting the engine unavailable.
+const ENGINE_REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -255,9 +257,13 @@ impl Source for StreamingLoopSource {
 
 fn open_decoder(path: &str) -> Result<Decoder<BufReader<File>>, SoundscapeError> {
     let path = Path::new(path);
-    if !path.is_absolute() {
-        return Err(SoundscapeError::local_file());
-    }
+    // `stat` first so a FIFO or device never blocks the worker in `open`.
+    crate::music::path_authority::path_key(path).map_err(|_| SoundscapeError::local_file())?;
+    crate::music::path_authority::require_kind(
+        path,
+        crate::music::path_authority::MusicPathKind::File,
+    )
+    .map_err(|_| SoundscapeError::local_file())?;
     let file = File::open(path).map_err(|_| SoundscapeError::local_file())?;
     Decoder::try_from(file).map_err(|_| SoundscapeError::local_file())
 }
@@ -570,8 +576,18 @@ impl EngineController {
         self.sender
             .send(EngineMessage::Command(command, reply))
             .map_err(|_| SoundscapeError::backend())?;
-        receiver.recv().map_err(|_| SoundscapeError::backend())?
+        await_reply(&receiver, ENGINE_REPLY_TIMEOUT)
     }
+}
+
+/// Waits a bounded time for the worker, which may be stuck on a slow file or audio device.
+fn await_reply(
+    receiver: &mpsc::Receiver<Result<SoundscapeSnapshot, SoundscapeError>>,
+    timeout: Duration,
+) -> Result<SoundscapeSnapshot, SoundscapeError> {
+    receiver
+        .recv_timeout(timeout)
+        .map_err(|_| SoundscapeError::backend())?
 }
 
 impl Default for EngineController {
@@ -607,89 +623,157 @@ fn check_output_guard(guard: Option<&OutputGuard>) -> Result<(), SoundscapeError
     Ok(())
 }
 
+/// Refuses a local loop that no grant or root binding on this device covers, so a webview
+/// request or a vault-sourced location cannot open a path the user never chose here.
+fn authorize_request(
+    app: &tauri::AppHandle,
+    request: &SoundscapeStartRequest,
+) -> Result<(), SoundscapeError> {
+    let paths = std::iter::once(request.local_path.as_deref())
+        .chain(
+            request
+                .extra_sources
+                .iter()
+                .map(|layer| layer.local_path.as_deref()),
+        )
+        .flatten();
+    for path in paths {
+        if !crate::music::is_soundscape_audio_path(Path::new(path)) {
+            return Err(SoundscapeError::local_file());
+        }
+        crate::music::path_authority::authorize(
+            app,
+            path,
+            crate::music::path_authority::MusicPathKind::File,
+        )
+        .map_err(|_| SoundscapeError::local_file())?;
+    }
+    Ok(())
+}
+
+/// Runs engine work off the main thread; the worker may open files and audio devices.
+async fn run_engine<T, F>(app: tauri::AppHandle, work: F) -> Result<T, SoundscapeError>
+where
+    T: Send + 'static,
+    F: FnOnce(&tauri::AppHandle, &EngineController) -> Result<T, SoundscapeError> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<SoundscapeEngineState>();
+        work(&app, &state.controller)
+    })
+    .await
+    .map_err(|_| SoundscapeError::backend())?
+}
+
 /// Execute a persisted automatic effect, checking its authority before audible output.
 pub(crate) fn apply_automatic(
-    state: State<'_, SoundscapeEngineState>,
+    app: &tauri::AppHandle,
     request: Option<SoundscapeStartRequest>,
     guard: OutputGuard,
 ) -> Result<SoundscapeSnapshot, SoundscapeError> {
-    state
+    if let Some(request) = &request {
+        authorize_request(app, request)?;
+    }
+    app.state::<SoundscapeEngineState>()
         .controller
         .dispatch(EngineCommand::Automatic(request, guard))
 }
 
+/// Stops background output from a blocking context.
+pub(crate) fn stop_blocking(app: &tauri::AppHandle) -> Result<SoundscapeSnapshot, SoundscapeError> {
+    app.state::<SoundscapeEngineState>()
+        .controller
+        .dispatch(EngineCommand::Stop)
+}
+
 #[tauri::command]
-pub(crate) fn music_soundscape_start(
+pub(crate) async fn music_soundscape_start(
     app: tauri::AppHandle,
-    state: State<'_, SoundscapeEngineState>,
     request: SoundscapeStartRequest,
 ) -> Result<SoundscapeSnapshot, SoundscapeError> {
-    let guard = crate::music::session::runtime::background_output_guard(&app)
-        .map_err(SoundscapeError::validation)?;
-    state
-        .controller
-        .dispatch(EngineCommand::Automatic(Some(request), guard))
+    run_engine(app, move |app, controller| {
+        authorize_request(app, &request)?;
+        let guard = crate::music::session::runtime::background_output_guard(app)
+            .map_err(SoundscapeError::validation)?;
+        controller.dispatch(EngineCommand::Automatic(Some(request), guard))
+    })
+    .await
 }
 
 #[tauri::command]
-pub(crate) fn music_soundscape_pause(
-    state: State<'_, SoundscapeEngineState>,
-) -> Result<SoundscapeSnapshot, SoundscapeError> {
-    state.controller.dispatch(EngineCommand::Pause)
-}
-
-#[tauri::command]
-pub(crate) fn music_soundscape_resume(
+pub(crate) async fn music_soundscape_pause(
     app: tauri::AppHandle,
-    state: State<'_, SoundscapeEngineState>,
 ) -> Result<SoundscapeSnapshot, SoundscapeError> {
-    let guard = crate::music::session::runtime::background_output_guard(&app)
-        .map_err(SoundscapeError::validation)?;
-    state
-        .controller
-        .dispatch(EngineCommand::ResumeGuarded(guard))
+    run_engine(app, |_, controller| {
+        controller.dispatch(EngineCommand::Pause)
+    })
+    .await
 }
 
 #[tauri::command]
-pub(crate) fn music_soundscape_stop(
-    state: State<'_, SoundscapeEngineState>,
+pub(crate) async fn music_soundscape_resume(
+    app: tauri::AppHandle,
 ) -> Result<SoundscapeSnapshot, SoundscapeError> {
-    state.controller.dispatch(EngineCommand::Stop)
+    run_engine(app, |app, controller| {
+        let guard = crate::music::session::runtime::background_output_guard(app)
+            .map_err(SoundscapeError::validation)?;
+        controller.dispatch(EngineCommand::ResumeGuarded(guard))
+    })
+    .await
 }
 
 #[tauri::command]
-pub(crate) fn music_soundscape_set_volume(
-    state: State<'_, SoundscapeEngineState>,
+pub(crate) async fn music_soundscape_stop(
+    app: tauri::AppHandle,
+) -> Result<SoundscapeSnapshot, SoundscapeError> {
+    run_engine(app, |_, controller| {
+        controller.dispatch(EngineCommand::Stop)
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn music_soundscape_set_volume(
+    app: tauri::AppHandle,
     volume: f64,
 ) -> Result<SoundscapeSnapshot, SoundscapeError> {
-    state.controller.dispatch(EngineCommand::SetVolume(volume))
+    run_engine(app, move |_, controller| {
+        controller.dispatch(EngineCommand::SetVolume(volume))
+    })
+    .await
 }
 
 #[tauri::command]
-pub(crate) fn music_soundscape_set_levels(
-    state: State<'_, SoundscapeEngineState>,
+pub(crate) async fn music_soundscape_set_levels(
+    app: tauri::AppHandle,
     levels: Vec<f64>,
 ) -> Result<SoundscapeSnapshot, SoundscapeError> {
-    state.controller.dispatch(EngineCommand::SetLevels(levels))
+    run_engine(app, move |_, controller| {
+        controller.dispatch(EngineCommand::SetLevels(levels))
+    })
+    .await
 }
 
 #[tauri::command]
-pub(crate) fn music_soundscape_recover(
+pub(crate) async fn music_soundscape_recover(
     app: tauri::AppHandle,
-    state: State<'_, SoundscapeEngineState>,
 ) -> Result<SoundscapeSnapshot, SoundscapeError> {
-    let guard = crate::music::session::runtime::background_output_guard(&app)
-        .map_err(SoundscapeError::validation)?;
-    state
-        .controller
-        .dispatch(EngineCommand::RecoverGuarded(guard))
+    run_engine(app, |app, controller| {
+        let guard = crate::music::session::runtime::background_output_guard(app)
+            .map_err(SoundscapeError::validation)?;
+        controller.dispatch(EngineCommand::RecoverGuarded(guard))
+    })
+    .await
 }
 
 #[tauri::command]
-pub(crate) fn music_soundscape_snapshot(
-    state: State<'_, SoundscapeEngineState>,
+pub(crate) async fn music_soundscape_snapshot(
+    app: tauri::AppHandle,
 ) -> Result<SoundscapeSnapshot, SoundscapeError> {
-    state.controller.dispatch(EngineCommand::Snapshot)
+    run_engine(app, |_, controller| {
+        controller.dispatch(EngineCommand::Snapshot)
+    })
+    .await
 }
 
 fn validate_request(request: &SoundscapeStartRequest) -> Result<(), SoundscapeError> {
@@ -796,6 +880,43 @@ fn nonzero_channels(value: u16) -> ChannelCount {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn local_loops_reject_fifos_and_folders_before_opening_them() {
+        let root = std::env::temp_dir().join(format!("soundscape-kind-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let fifo = root.join("rain.ogg");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()
+                .unwrap()
+                .success()
+        );
+        // Opening the FIFO would block this thread forever; a refusal proves `stat` ran first.
+        for path in [
+            fifo.as_path(),
+            root.as_path(),
+            Path::new("relative/rain.ogg"),
+        ] {
+            assert_eq!(
+                open_decoder(path.to_str().unwrap()).err(),
+                Some(SoundscapeError::local_file())
+            );
+        }
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn dispatch_reports_the_engine_unavailable_when_the_worker_does_not_reply() {
+        let (_reply, receiver) = mpsc::channel();
+        assert_eq!(
+            await_reply(&receiver, Duration::from_millis(20)),
+            Err(SoundscapeError::backend())
+        );
+    }
 
     #[test]
     fn native_music_background_rejects_revoked_automatic_start_before_opening_an_audio_device() {

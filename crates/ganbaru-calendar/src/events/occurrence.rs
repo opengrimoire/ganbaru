@@ -2,7 +2,7 @@
 
 use ganbaru_db::impl_sqlite_from_row;
 
-use sqlx::{FromRow, SqliteConnection, sqlite::SqliteRow};
+use sqlx::{AssertSqlSafe, FromRow, SqliteConnection, sqlite::SqliteRow};
 
 use crate::reads::native_window::utc;
 use crate::recurrence::canonical::{StoredOverride, StoredTemplate, Template, parse_date};
@@ -97,7 +97,7 @@ impl ReadBudget {
         let preflight = format!("SELECT COUNT(*), COALESCE(SUM(64 + {bytes}), 0) FROM ({limited})");
         let limit = i64::try_from(self.records + 1)
             .map_err(|_| "Calendar occurrence read limit overflow")?;
-        let (records, bytes): (i64, i64) = sqlx::query_as(&preflight)
+        let (records, bytes): (i64, i64) = sqlx::query_as(AssertSqlSafe(preflight.as_str()))
             .bind(id)
             .bind(limit)
             .fetch_one(&mut *connection)
@@ -110,7 +110,7 @@ impl ReadBudget {
         }
         self.records -= records;
         self.bytes -= bytes;
-        sqlx::query_as(&limited)
+        sqlx::query_as(AssertSqlSafe(limited.as_str()))
             .bind(id)
             .bind(limit)
             .fetch_all(connection)

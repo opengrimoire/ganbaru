@@ -27,6 +27,16 @@ pub struct StoreBrowserArtifact<'a> {
     pub frame_count: Option<u64>,
     pub created_at: &'a UtcTimestamp,
     pub bytes: &'a [u8],
+    /// Rolling per-thread limit applied before anything is written; `None` stores unconditionally.
+    pub quota: Option<BrowserArtifactQuota<'a>>,
+}
+
+/// Rolling per-thread limit on browser artifacts created since `since`, counting the artifact being stored.
+#[derive(Clone, Copy, Debug)]
+pub struct BrowserArtifactQuota<'a> {
+    pub since: &'a UtcTimestamp,
+    pub max_count: u64,
+    pub max_bytes: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -160,6 +170,10 @@ pub async fn store_browser_artifact(
         ChatResourceKind::BrowserRecording if input.mime_type == "application/zip" => "zip",
         _ => return Err(invalid_resource_error()),
     };
+    if let Some(quota) = input.quota {
+        enforce_browser_artifact_quota(pool, input.thread_id, input.bytes.len() as u64, quota)
+            .await?;
+    }
     let relative_path = format!(
         "assets/chat/browser-artifacts/{}.{}",
         input.resource_id, extension
@@ -271,6 +285,36 @@ pub async fn store_browser_artifact(
         resource_uri,
         created_at: input.created_at.clone(),
     })
+}
+
+async fn enforce_browser_artifact_quota(
+    pool: &SqlitePool,
+    thread_id: &ChatThreadId,
+    pending_bytes: u64,
+    quota: BrowserArtifactQuota<'_>,
+) -> ChatResult<()> {
+    let (count, bytes) = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT COUNT(*), COALESCE(SUM(resource.byte_size), 0)
+         FROM chat_browser_artifacts artifact
+         JOIN chat_resources resource ON resource.id = artifact.resource_id
+         WHERE artifact.thread_id = ? AND julianday(artifact.created_at) >= julianday(?)",
+    )
+    .bind(thread_id.as_str())
+    .bind(quota.since.as_str())
+    .fetch_one(pool)
+    .await
+    .map_err(persistence_error)?;
+    let count = u64::try_from(count).map_err(|_| corrupt_data_error())?;
+    let bytes = u64::try_from(bytes).map_err(|_| corrupt_data_error())?;
+    if count.saturating_add(1) > quota.max_count
+        || bytes.saturating_add(pending_bytes) > quota.max_bytes
+    {
+        return Err(ChatError::validation(
+            "artifact",
+            "Browser artifact quota for this thread is reached; try again later",
+        ));
+    }
+    Ok(())
 }
 
 fn read_browser_artifact_bytes(

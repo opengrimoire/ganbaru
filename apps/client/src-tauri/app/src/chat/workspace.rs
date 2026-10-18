@@ -74,7 +74,19 @@ pub fn store_active_device_binding<R: Runtime>(
     binding: ProjectWorkingFolderBindingState,
 ) -> ChatResult<()> {
     update_active_working_folder_scope(app, |scope| {
-        scope.bindings.insert(working_folder_id.clone(), binding);
+        let previous = scope.bindings.insert(working_folder_id.clone(), binding);
+        let rebound = previous.is_some_and(|previous| {
+            scope
+                .bindings
+                .get(working_folder_id)
+                .is_some_and(|current| {
+                    current.canonical_path != previous.canonical_path
+                        || current.filesystem_identity != previous.filesystem_identity
+                })
+        });
+        if rebound {
+            scope.trust.remove(working_folder_id);
+        }
         Ok(())
     })
     .map_err(device_state_error)
@@ -86,9 +98,23 @@ pub fn remove_active_device_binding<R: Runtime>(
 ) -> ChatResult<()> {
     update_active_working_folder_scope(app, |scope| {
         scope.bindings.remove(working_folder_id);
+        scope.trust.remove(working_folder_id);
         Ok(())
     })
-    .map_err(device_state_error)
+    .map_err(device_state_error)?;
+    // An unbound folder's preview logins and site data go with its binding. The unbind has
+    // already happened, so a cleanup failure is reported without undoing it.
+    #[cfg(desktop)]
+    if let Err(error) = crate::chat::preview::data_store::discard_preview_data(
+        app,
+        Some(std::slice::from_ref(working_folder_id)),
+    ) {
+        eprintln!(
+            "Could not discard Chat preview data for an unbound working folder: {}",
+            error.message
+        );
+    }
+    Ok(())
 }
 
 fn paths_overlap(left: &Path, right: &Path) -> bool {

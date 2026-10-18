@@ -4,6 +4,7 @@
   "windows": ["main"],
   "platforms": ["android"],
   "permissions": [
+    "app-commands",
     "core:app:allow-register-listener",
     "core:app:allow-remove-listener",
     "notification:allow-is-permission-granted",

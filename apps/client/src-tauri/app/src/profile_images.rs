@@ -5,7 +5,6 @@ use ganbaru_notes::assets::image_metadata::{
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::io::Write;
 use std::{
     fs,
     path::{Component, Path, PathBuf},
@@ -42,14 +41,6 @@ fn profile_image_start_directory<R: Runtime>(app: &AppHandle<R>) -> Option<PathB
 
 fn active_profile_image_dir<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     Ok(vault::active_vault_path(app)?
-        .join("assets")
-        .join(PROFILE_IMAGE_DIR))
-}
-
-fn active_writable_profile_image_dir<R: Runtime>(
-    app: &AppHandle<R>,
-) -> Result<vault::WritableVaultPath, String> {
-    Ok(vault::active_writable_vault_path(app)?
         .join("assets")
         .join(PROFILE_IMAGE_DIR))
 }
@@ -145,27 +136,18 @@ fn content_hash(bytes: &[u8]) -> String {
     output
 }
 
-fn write_binary_file_atomically(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| "profile image target has no parent".to_string())?;
-    fs::create_dir_all(parent)
-        .map_err(|error| format!("create profile image directory: {error}"))?;
-    let file_name = path
-        .file_name()
-        .ok_or_else(|| "profile image target has no file name".to_string())?
-        .to_string_lossy()
-        .into_owned();
-    let temporary_path = parent.join(format!("{file_name}.tmp"));
-    {
-        let mut file = fs::File::create(&temporary_path)
-            .map_err(|error| format!("write profile image: {error}"))?;
-        file.write_all(bytes)
-            .map_err(|error| format!("write profile image: {error}"))?;
-        file.sync_all()
-            .map_err(|error| format!("sync profile image: {error}"))?;
-    }
-    fs::rename(&temporary_path, path).map_err(|error| format!("save profile image: {error}"))
+fn write_binary_file_atomically(
+    vault_root: &Path,
+    path: &Path,
+    bytes: &[u8],
+) -> Result<(), String> {
+    ganbaru_atomic_files::write_file_atomically_within(
+        vault_root,
+        path,
+        bytes,
+        ganbaru_atomic_files::FileAccess::Default,
+    )
+    .map_err(|error| format!("save profile image: {error}"))
 }
 
 fn save_profile_image_bytes<R: Runtime>(
@@ -176,9 +158,14 @@ fn save_profile_image_bytes<R: Runtime>(
     let kind = validate_profile_image(&bytes)?.kind;
     let file_name = format!("{}.{}", content_hash(&bytes), kind.extension());
     let relative_path = format!("{PROFILE_IMAGE_DIR}/{file_name}");
-    let path = active_writable_profile_image_dir(app)?.join(file_name);
-    if !path.exists() {
-        write_binary_file_atomically(&path, &bytes)?;
+    let writable_root = vault::active_writable_vault_path(app)?;
+    let vault_root = writable_root.to_path_buf();
+    let path = writable_root
+        .join("assets")
+        .join(PROFILE_IMAGE_DIR)
+        .join(file_name);
+    if !ganbaru_atomic_files::is_regular_file(&path) {
+        write_binary_file_atomically(&vault_root, &path, &bytes)?;
     }
     Ok(ProfileImageAsset { relative_path })
 }

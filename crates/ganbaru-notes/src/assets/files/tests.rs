@@ -72,35 +72,6 @@ fn rejects_unsafe_or_mismatched_local_media_files() {
 }
 
 #[test]
-fn keeps_only_supported_https_external_import_references() {
-    let image = prepare_external_import_reference("https://example.com/image.png", Some("image"));
-    assert_eq!(image.action, "external_reference");
-    assert_eq!(
-        image.external_url,
-        Some("https://example.com/image.png".to_string())
-    );
-
-    let youtube =
-        prepare_external_import_reference("https://www.youtube.com/watch?v=abc123", Some("video"));
-    assert_eq!(youtube.action, "external_reference");
-
-    let http = prepare_external_import_reference("http://example.com/image.png", Some("image"));
-    assert_eq!(http.action, "blocked");
-    assert_eq!(
-        http.diagnostics[0].code,
-        "import_reference_external_requires_https"
-    );
-
-    let mismatched =
-        prepare_external_import_reference("https://example.com/image.txt", Some("image"));
-    assert_eq!(mismatched.action, "blocked");
-    assert_eq!(
-        mismatched.diagnostics[0].code,
-        "import_reference_external_unsupported_type"
-    );
-}
-
-#[test]
 fn resolves_local_import_paths_only_inside_import_root() {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -122,23 +93,4 @@ fn resolves_local_import_paths_only_inside_import_root() {
     assert_eq!(escaped.code, "import_reference_path_escape");
 
     let _ = fs::remove_dir_all(&base);
-}
-
-#[test]
-fn import_file_policy_requires_supported_contexts_and_explicit_choices() {
-    assert!(import_context_is_supported("notion_export"));
-    assert!(import_context_is_supported("html_import"));
-    assert!(import_context_is_supported("markdown_import"));
-    assert!(!import_context_is_supported("unknown"));
-
-    assert!(import_choice_is_supported("copy_local_file"));
-    assert!(import_choice_is_supported("keep_external_reference"));
-    assert!(import_choice_is_supported("skip"));
-    assert!(!import_choice_is_supported(""));
-
-    assert!(is_url_like_import_reference("https://example.com/file.pdf"));
-    assert!(is_url_like_import_reference(
-        "ganbaru-asset:notes/files/a.pdf"
-    ));
-    assert!(!is_url_like_import_reference("files/a.pdf"));
 }

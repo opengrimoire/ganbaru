@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { ensureDbUrl } from "$lib/api/db";
+import { decideTrustAfterBinding } from "$lib/api/working-folder-trust";
 import type {
   CreateProjectWorkingFolderRequest,
   ProjectWorkingFolderId,
@@ -28,16 +29,16 @@ export async function pickProjectWorkingFolder(projectId: string, title: string,
 
 /** Persist only a selection authorized by the native picker for this project. */
 export async function addSelectedProjectWorkingFolder(request: CreateProjectWorkingFolderRequest, selection: ProjectWorkingFolderSelectionRead): Promise<ProjectWorkingFolderRead> {
-  return parseProjectWorkingFolderRead(await invoke<unknown>("projects_add_selected_working_folder", {
+  return decideTrustAfterBinding(parseProjectWorkingFolderRead(await invoke<unknown>("projects_add_selected_working_folder", {
     dbUrl: await ensureDbUrl(), request, selectionId: selection.selectionId,
-  }));
+  })));
 }
 
 /** Apply a previously authorized selection to its existing external folder. */
 export async function bindSelectedProjectWorkingFolder(workingFolderId: string, selection: ProjectWorkingFolderSelectionRead): Promise<ProjectWorkingFolderRead> {
-  return parseProjectWorkingFolderRead(await invoke<unknown>("projects_bind_selected_working_folder", {
+  return decideTrustAfterBinding(parseProjectWorkingFolderRead(await invoke<unknown>("projects_bind_selected_working_folder", {
     dbUrl: await ensureDbUrl(), workingFolderId, selectionId: selection.selectionId,
-  }));
+  })));
 }
 
 export async function listProjectWorkingFolders(): Promise<ProjectWorkingFolderRead[]> {
@@ -63,7 +64,7 @@ export async function addExternalProjectWorkingFolder(
     request,
     title,
   });
-  return value === null ? null : parseProjectWorkingFolderRead(value);
+  return value === null ? null : decideTrustAfterBinding(parseProjectWorkingFolderRead(value));
 }
 
 export async function renameProjectWorkingFolder(
@@ -86,7 +87,7 @@ export async function locateProjectWorkingFolder(
     workingFolderId,
     title,
   });
-  return value === null ? null : parseProjectWorkingFolderRead(value);
+  return value === null ? null : decideTrustAfterBinding(parseProjectWorkingFolderRead(value));
 }
 
 export async function rebindProjectWorkingFolder(
@@ -98,7 +99,7 @@ export async function rebindProjectWorkingFolder(
     workingFolderId,
     title,
   });
-  return value === null ? null : parseProjectWorkingFolderRead(value);
+  return value === null ? null : decideTrustAfterBinding(parseProjectWorkingFolderRead(value));
 }
 
 export async function unbindProjectWorkingFolder(

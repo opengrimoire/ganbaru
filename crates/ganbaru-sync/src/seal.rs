@@ -291,8 +291,8 @@ impl Sealer {
         })
     }
 
-    /// Dependencies of the next operation: what the target context, everything applied unless
-    /// a replay names one, adds to the head context.
+    /// Every dependency the next operation needs: what the target context, everything applied
+    /// unless a replay names one, adds to the head context, in writer id order.
     fn dependencies(
         &self,
         batch: &Batch,
@@ -308,11 +308,82 @@ impl Sealer {
                 "an operation context must lie between its head and the applied state",
             ));
         }
-        let dependencies = target.delta_since(&self.head_context);
-        if dependencies.len() > MAX_DEPENDENCIES {
-            return Err(SyncError::TooManyWriters);
+        Ok(target.delta_since(&self.head_context))
+    }
+
+    /// Dependencies of the next operation once they fit one header. While more writers
+    /// advanced than a header lists, this seals operations without changes, each taking the
+    /// next [`MAX_DEPENDENCIES`] writers in id order.
+    #[allow(clippy::too_many_arguments)]
+    async fn catch_up(
+        &mut self,
+        engine: &Engine,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        batch: &mut Batch,
+        writer: &mut LocalWriter<'_>,
+        replay: Option<&Replay>,
+        now_ms: u64,
+        report: &mut SealReport,
+    ) -> SyncResult<Vec<(WriterId, Seq)>> {
+        loop {
+            let mut dependencies = self.dependencies(batch, replay)?;
+            if dependencies.len() <= MAX_DEPENDENCIES {
+                return Ok(dependencies);
+            }
+            dependencies.truncate(MAX_DEPENDENCIES);
+            let (seq, _, _) = self
+                .seal_operation(
+                    engine,
+                    conn,
+                    ctx,
+                    batch,
+                    writer,
+                    dependencies,
+                    Content::Changes(Vec::new()),
+                    replay,
+                    now_ms,
+                )
+                .await?;
+            report.sealed_ops += 1;
+            report.last_seq = Some(seq);
         }
-        Ok(dependencies)
+    }
+
+    /// Seals an operation without changes that advances to the replay context, replaying one
+    /// such operation of a replaced chain.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn seal_advance(
+        &mut self,
+        engine: &Engine,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        batch: &mut Batch,
+        writer: &mut LocalWriter<'_>,
+        replay: &Replay,
+        now_ms: u64,
+        report: &mut SealReport,
+    ) -> SyncResult<()> {
+        let replay = Some(replay);
+        let dependencies = self
+            .catch_up(engine, conn, ctx, batch, writer, replay, now_ms, report)
+            .await?;
+        let (seq, _, _) = self
+            .seal_operation(
+                engine,
+                conn,
+                ctx,
+                batch,
+                writer,
+                dependencies,
+                Content::Changes(Vec::new()),
+                replay,
+                now_ms,
+            )
+            .await?;
+        report.sealed_ops += 1;
+        report.last_seq = Some(seq);
+        Ok(())
     }
 
     /// Seals one operation with `content`, returning its sequence, clock, and context. Changes
@@ -412,7 +483,9 @@ impl Sealer {
     ) -> SyncResult<()> {
         let mut pending = changes.into_iter().peekable();
         while pending.peek().is_some() {
-            let dependencies = self.dependencies(batch, replay)?;
+            let dependencies = self
+                .catch_up(engine, conn, ctx, batch, writer, replay, now_ms, report)
+                .await?;
             let mut header = header_base(dependencies.len());
             let mut body = 0;
             let mut chunk = Vec::new();
@@ -471,8 +544,11 @@ impl Sealer {
         revocation: Revocation,
         replay: Option<&Replay>,
         now_ms: u64,
-    ) -> SyncResult<Seq> {
-        let dependencies = self.dependencies(batch, replay)?;
+        report: &mut SealReport,
+    ) -> SyncResult<()> {
+        let dependencies = self
+            .catch_up(engine, conn, ctx, batch, writer, replay, now_ms, report)
+            .await?;
         let (target, cutoff, reason) = (revocation.writer, revocation.cutoff, revocation.reason);
         let (seq, _, _) = self
             .seal_operation(
@@ -488,7 +564,9 @@ impl Sealer {
             )
             .await?;
         merge::revoke_effects(conn, ctx.space, target, cutoff, reason).await?;
-        Ok(seq)
+        report.sealed_ops += 1;
+        report.last_seq = Some(seq);
+        Ok(())
     }
 
     /// Seals every valid capture and deletes the captures it consumed.
@@ -909,6 +987,11 @@ impl Engine {
         if target == writer.id() {
             return Err(SyncError::InvalidRevoke("a writer cannot revoke itself"));
         }
+        if writer.certificate.certificate.device_id != ctx.coordinator_device_id {
+            return Err(SyncError::InvalidRevoke(
+                "only the coordinator revokes writers",
+            ));
+        }
         if cutoff < 1 {
             return Err(SyncError::InvalidRevoke("cutoff must keep the genesis"));
         }
@@ -938,7 +1021,7 @@ impl Engine {
                 .seal_captures(self, &mut tx, ctx, &mut batch, writer, now_ms)
                 .await?,
         );
-        let seq = sealer
+        sealer
             .seal_revoke(
                 self,
                 &mut tx,
@@ -952,10 +1035,9 @@ impl Engine {
                 },
                 None,
                 now_ms,
+                &mut report,
             )
             .await?;
-        report.sealed_ops += 1;
-        report.last_seq = Some(seq);
         report.changed_tables = finish(
             self,
             &mut tx,
@@ -984,7 +1066,8 @@ async fn delete_captures(
     for chunk in consumed.chunks(CAPTURE_DELETE_CHUNK) {
         let rows = vec!["(?, ?)"; chunk.len()].join(", ");
         let sql = format!("DELETE FROM sync_capture WHERE (table_id, row_key) IN (VALUES {rows})");
-        let mut query = sqlx::query(&sql).persistent(chunk.len() == CAPTURE_DELETE_CHUNK);
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+            .persistent(chunk.len() == CAPTURE_DELETE_CHUNK);
         for (table, key) in chunk {
             query = query.bind(*table).bind(key.as_str());
         }

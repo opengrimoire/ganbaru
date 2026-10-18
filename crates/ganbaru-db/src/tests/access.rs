@@ -12,7 +12,7 @@ use crate::{
 
 const GUARD_MESSAGE: &str = "guarded table";
 const GUARD_SQL: &str =
-    "CREATE TEMP TRIGGER IF NOT EXISTS access_guard BEFORE INSERT ON main.access_guarded
+    "CREATE TEMP TRIGGER IF NOT EXISTS access_guard BEFORE INSERT ON main.notes_link_facts_state
      BEGIN SELECT RAISE(ABORT, 'guarded table'); END;";
 
 /// Boxing the statement erases the reborrowed connection lifetime from the hook future, which
@@ -26,7 +26,7 @@ fn install_guard(conn: &mut SqliteConnection) -> ConnectionHookFuture<'_> {
     })
 }
 
-/// A hook that records each call and guards `access_guarded` on guarded connections.
+/// A hook that records each call and guards `notes_link_facts_state` on guarded connections.
 fn recording_hook(calls: Arc<Mutex<Vec<DatabaseAccessMode>>>) -> ConnectionHook {
     connection_hook(move |conn, access| {
         let calls = calls.clone();
@@ -40,28 +40,23 @@ fn recording_hook(calls: Arc<Mutex<Vec<DatabaseAccessMode>>>) -> ConnectionHook 
     })
 }
 
-/// A migrated vault database with one guarded and one open test table.
+/// A migrated vault database. The hook guards one of its tables and leaves another open.
 async fn seeded_vault(directory: &Path) -> PathBuf {
     let path = directory.join("ganbaru.sqlite");
     let registry = DatabasePoolRegistry::default();
-    let pool = registry.connect_path(&path).await.unwrap();
-    sqlx::raw_sql(
-        "CREATE TABLE access_guarded (value TEXT NOT NULL);
-         CREATE TABLE access_open (value TEXT NOT NULL);",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
+    registry.connect_path(&path).await.unwrap();
     registry.close_all().await.unwrap();
     path
 }
 
 async fn insert(pool: &SqlitePool, table: &str) -> Result<(), String> {
-    sqlx::query(&format!("INSERT INTO {table} (value) VALUES ('x')"))
-        .execute(pool)
-        .await
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "INSERT OR REPLACE INTO {table} (key, value) VALUES ('x', 'x')"
+    )))
+    .execute(pool)
+    .await
+    .map(|_| ())
+    .map_err(|error| error.to_string())
 }
 
 #[test]
@@ -79,9 +74,9 @@ fn guarded_pool_runs_the_hook_on_every_connection() {
             registry.access(&path).await,
             Some(DatabaseAccessMode::Guarded)
         );
-        insert(&pool, "access_open").await.unwrap();
+        insert(&pool, "notes_backlink_index_state").await.unwrap();
         assert!(
-            insert(&pool, "access_guarded")
+            insert(&pool, "notes_link_facts_state")
                 .await
                 .unwrap_err()
                 .contains(GUARD_MESSAGE)
@@ -90,7 +85,7 @@ fn guarded_pool_runs_the_hook_on_every_connection() {
         // A recycled connection must carry the guard again.
         pool.acquire().await.unwrap().close().await.unwrap();
         assert!(
-            insert(&pool, "access_guarded")
+            insert(&pool, "notes_link_facts_state")
                 .await
                 .unwrap_err()
                 .contains(GUARD_MESSAGE)
@@ -115,7 +110,7 @@ fn read_only_requests_reuse_an_open_guarded_pool() {
         registry.connect_path_guarded(&path).await.unwrap();
 
         let reader = registry.connect_path_read_only(&path).await.unwrap();
-        insert(&reader, "access_open").await.unwrap();
+        insert(&reader, "notes_backlink_index_state").await.unwrap();
         assert_eq!(
             registry.access(&path).await,
             Some(DatabaseAccessMode::Guarded)
@@ -145,7 +140,7 @@ fn guarded_open_degrades_to_read_only_on_schema_mismatch() {
         registry.set_connection_hook(Some(recording_hook(calls.clone())));
         let (pool, access) = registry.connect_path_guarded(&path).await.unwrap();
         assert_eq!(access, DatabaseAccessMode::ReadOnly);
-        assert!(insert(&pool, "access_open").await.is_err());
+        assert!(insert(&pool, "notes_backlink_index_state").await.is_err());
         let (_, again) = registry.connect_path_guarded(&path).await.unwrap();
         assert_eq!(again, DatabaseAccessMode::ReadOnly);
         // Read-only connections never run the hook.
@@ -178,7 +173,7 @@ fn read_write_pools_run_the_hook_and_a_plain_read_only_pool_refuses_guarded_reus
         let registry = DatabasePoolRegistry::default();
         registry.set_connection_hook(Some(recording_hook(calls.clone())));
         let pool = registry.connect_path(&path).await.unwrap();
-        insert(&pool, "access_guarded").await.unwrap();
+        insert(&pool, "notes_link_facts_state").await.unwrap();
         assert_eq!(*calls.lock().unwrap(), vec![DatabaseAccessMode::ReadWrite]);
         registry.close_all().await.unwrap();
 

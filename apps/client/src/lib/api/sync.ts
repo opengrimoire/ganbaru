@@ -15,6 +15,10 @@ export type SyncState = (typeof SYNC_STATES)[number];
 export const SYNC_ROLES = ["hub", "client"] as const;
 export type SyncRole = (typeof SYNC_ROLES)[number];
 
+/** Sync problems the interface explains in its own words. */
+export const SYNC_ERROR_CODES = ["writerLimit"] as const;
+export type SyncErrorCode = (typeof SYNC_ERROR_CODES)[number];
+
 /** Stored operations this device cannot apply, by reason. */
 export interface SyncHeldCounts {
   newerFormat: number;
@@ -34,6 +38,8 @@ export interface SyncStatusView {
   paused: boolean;
   lastExchangeAtMs: number | null;
   lastError: string | null;
+  /** Set when the interface has its own explanation of the last error. */
+  lastErrorCode: SyncErrorCode | null;
   /** Local rows with changes that are not sealed yet. */
   pendingLocalChanges: number;
   /** Stored operations waiting to be applied. */
@@ -72,6 +78,7 @@ export const OFF_SYNC_STATUS: SyncStatusView = {
   paused: false,
   lastExchangeAtMs: null,
   lastError: null,
+  lastErrorCode: null,
   pendingLocalChanges: 0,
   waiting: 0,
   held: { newerFormat: 0, newerManifest: 0, invalid: 0 },
@@ -105,6 +112,9 @@ export function mapSyncStatus(value: unknown): SyncStatusView {
     paused: readBoolean(row.paused, "sync status.paused"),
     lastExchangeAtMs: readNullable(row.lastExchangeAtMs, "sync status.lastExchangeAtMs", readNonNegativeSafeInteger),
     lastError: readNullable(row.lastError, "sync status.lastError", readString),
+    lastErrorCode: readNullable(row.lastErrorCode, "sync status.lastErrorCode", (code, label) =>
+      readEnum(code, SYNC_ERROR_CODES, label),
+    ),
     pendingLocalChanges: readNonNegativeSafeInteger(row.pendingLocalChanges, "sync status.pendingLocalChanges"),
     waiting: readNonNegativeSafeInteger(row.waiting, "sync status.waiting"),
     held: readHeld(row.held, "sync status.held"),

@@ -8,7 +8,7 @@ mod replica;
 mod sim;
 mod values;
 
-use sqlx::SqlitePool;
+use sqlx::{AssertSqlSafe, SqlitePool};
 
 fn block_on<F: std::future::Future>(future: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()
@@ -34,14 +34,17 @@ async fn migrated_pool() -> SqlitePool {
 }
 
 async fn execute(pool: &SqlitePool, sql: &str) {
-    sqlx::raw_sql(sql)
+    sqlx::raw_sql(AssertSqlSafe(sql))
         .execute(pool)
         .await
         .unwrap_or_else(|error| panic!("{sql}: {error}"));
 }
 
 async fn rejects(pool: &SqlitePool, sql: &str) -> bool {
-    sqlx::raw_sql(sql).execute(pool).await.is_err()
+    sqlx::raw_sql(AssertSqlSafe(sql))
+        .execute(pool)
+        .await
+        .is_err()
 }
 
 async fn set_applying(pool: &SqlitePool, applying: bool) {

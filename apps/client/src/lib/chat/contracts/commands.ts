@@ -29,7 +29,11 @@ export interface VerifiedWorkspaceContext {
   canonicalPath: string;
   repositoryKind: RepositoryKind;
   repositoryIdentity: string | null;
+  projectConfiguration: ProjectConfigurationAccess;
 }
+
+/** Whether a provider loads the workspace's project configuration that can run commands. */
+export type ProjectConfigurationAccess = "trusted" | "restricted";
 
 export interface PromptAttachmentReference {
   attachmentId: ChatAttachmentId;

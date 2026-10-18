@@ -24,11 +24,11 @@ Rust application services are the policy boundary for filesystem, process, crede
 
 Provider-native trust never widens organizational authority. Portable IDs do not authorize a device path. User-authored text, mentions, URLs, repository instructions, and provider events are data, not commands or grants.
 
-The active vault is user-owned durable storage. The platform app config directory is trusted only for device-local bootstrap, binding, and pairing state. Secrets are resolved through native credential storage and are not copied into ordinary config, SQLite, diagnostics, or provider DTOs.
+The active vault is user-owned durable storage and may come from another device, so its database schema is untrusted until it matches the catalog its migration history produces ([Application boundaries](application-boundaries.md#vault-and-configuration)). The platform app config directory is trusted only for device-local bootstrap, binding, and pairing state. Secrets are resolved through native credential storage and are not copied into ordinary config, SQLite, diagnostics, or provider DTOs.
 
 ## Status
 
-Local LAN device linking and single-writer whole-vault handoff are implemented in source: pinned certificates, mutual TLS, single-use invitations, and no relay or account. Concurrent operation sync, the end-to-end encrypted relay, and its key lifecycle remain planned. Both are specified in [Synchronization](../sync.md).
+Local LAN device linking and single-writer whole-vault handoff are implemented in source: pinned certificates, mutual TLS, single-use invitations, and no relay or account. Received bundles are allow-listed to the vault layout, and repository and provider configuration inside received project folders stays inert until this device trusts its digest. Concurrent operation sync, the end-to-end encrypted relay, and its key lifecycle remain planned. Both are specified in [Synchronization](../sync.md).
 
 Remote synchronization, hosted BYOK chat, an external MCP service, and the `ganbaru` CLI are not implemented. Their security requirements are normative design constraints, not claims about current traffic or capability. Documents must label current behavior and planned requirements separately.
 

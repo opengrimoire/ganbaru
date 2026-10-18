@@ -410,6 +410,8 @@ pub(in crate::repository) async fn apply_projection(
                     "detail": event.detail,
                     "kind": event.kind,
                     "payload": event.safe_payload,
+                    "subject": event.subject,
+                    "sessionGrants": event.session_grants,
                 }))
                 .map_err(serialization_error)?,
             )

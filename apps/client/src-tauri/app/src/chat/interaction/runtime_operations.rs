@@ -1,7 +1,6 @@
 //! Provider runtime operations initiated by interaction controls.
 
 use super::support::{chat_pool, now_timestamp, persistence_error, require_workspace};
-use crate::chat::credentials::{PlatformCredentialStore, materialize_provider_environment};
 use crate::chat::device_state::{read_active_device_scope, update_active_device_scope};
 use crate::chat::workspace::WorkingFolderAuthorizationOperation;
 use ganbaru_chat::driver_operations::{complete_driver_operation, replay_driver_receipt};
@@ -10,7 +9,7 @@ use ganbaru_chat::runtime::ChatRuntimeRegistry;
 use ganbaru_chat_contracts::models::{
     ChatCommandContext, ChatCommandId, ChatError, ChatErrorCode, ChatResult, ChatThreadId,
     ChatTurnId, CompactContextRequest, DriverOperationReceipt, InterruptTurnRequest, McpStatusRead,
-    McpStatusRequest, ProjectWorkingFolderId, ProviderInstanceId,
+    McpStatusRequest, ProjectConfigurationAccess, ProjectWorkingFolderId, ProviderInstanceId,
 };
 use ganbaru_chat_providers::{
     DriverCancellation, DriverOperationContext, ProviderDriverFactory, ProviderDriverRegistry,
@@ -115,6 +114,7 @@ pub(crate) async fn read_mcp_status(
                     McpStatusRequest {
                         session_id: Some(session_id),
                         working_directory: None,
+                        project_configuration: ProjectConfigurationAccess::Restricted,
                     },
                     context,
                 )
@@ -122,16 +122,22 @@ pub(crate) async fn read_mcp_status(
         }
     }
 
-    let configuration = materialize_provider_environment(
-        &provider.configuration,
-        &PlatformCredentialStore::default(),
-    )?;
+    let root = workspace.canonical_path.clone();
+    let workspace = crate::chat::workspace::commands::settle_project_configuration(
+        &app,
+        &root,
+        workspace,
+        crate::chat::workspace::commands::UndecidedProjectConfiguration::Restrict,
+    )
+    .await?;
+    let configuration = crate::chat::settings::approved_runtime(&app, &provider.configuration)?;
     let mut driver = ProviderDriverRegistry.create_driver(configuration)?;
     driver
         .read_mcp_status(
             McpStatusRequest {
                 session_id: None,
                 working_directory: Some(workspace.canonical_path),
+                project_configuration: workspace.project_configuration,
             },
             &context,
         )

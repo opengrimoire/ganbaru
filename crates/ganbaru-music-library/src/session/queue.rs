@@ -268,7 +268,7 @@ fn row_entry(
     })
 }
 
-fn row_query<'a>(playlist_id: Option<&'a str>, now_ms: i64) -> QueryBuilder<'a, Sqlite> {
+fn row_query(playlist_id: Option<&str>, now_ms: i64) -> QueryBuilder<Sqlite> {
     let mut query = QueryBuilder::new(
         "SELECT item.id AS item_id, item.identity_key, item.source_kind, item.media_kind,
          item.youtube_video_id, item.youtube_resolution_state,

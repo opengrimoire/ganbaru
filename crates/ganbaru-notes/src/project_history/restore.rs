@@ -4,7 +4,7 @@ use super::{
 };
 use crate::{collaboration_operations, links, local_user, search, writes};
 use serde_json::{Value, json};
-use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
+use sqlx::{AssertSqlSafe, QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 const RESTORE_TABLE_ORDER: [&str; 20] = [
@@ -420,7 +420,7 @@ async fn set_entity_sync_version_tx(
         return Err("unsupported Notes collaboration restore table".to_string());
     }
     let sql = format!("UPDATE {table} SET sync_version = ? WHERE id = ?");
-    sqlx::query(&sql)
+    sqlx::query(AssertSqlSafe(sql.as_str()))
         .bind(version)
         .bind(entity_id)
         .execute(&mut **tx)
@@ -886,7 +886,7 @@ async fn insert_json_row_tx(
     let sql = format!("{verb} INTO \"{table}\" ({column_sql}) VALUES ({value_sql})");
     let row_json = serde_json::to_string(row)
         .map_err(|e| format!("serialize Notes history {table} row: {e}"))?;
-    let mut query = sqlx::query(&sql);
+    let mut query = sqlx::query(AssertSqlSafe(sql.as_str()));
     for _ in &columns {
         query = query.bind(&row_json);
     }

@@ -1,6 +1,6 @@
 //! Shared admission for complete Music transfer snapshots before payload loading.
 
-use sqlx::{FromRow, Sqlite, Transaction, sqlite::SqliteRow};
+use sqlx::{AssertSqlSafe, FromRow, Sqlite, Transaction, sqlite::SqliteRow};
 
 use super::{MusicLibraryError, MusicLibraryResult, transfer_codec::validation};
 
@@ -66,7 +66,7 @@ impl TransferReadBudget {
         // Reserve row containers and escaped/decoded text without materializing JSON.
         let probe =
             format!("SELECT COUNT(*), COALESCE(SUM(256 + 4 * ({text_bytes})), 0) FROM ({sql})");
-        let mut query = sqlx::query_as::<_, (i64, i64)>(&probe);
+        let mut query = sqlx::query_as::<_, (i64, i64)>(AssertSqlSafe(probe.as_str()));
         for binding in bindings {
             query = query.bind(*binding);
         }
@@ -86,7 +86,7 @@ impl TransferReadBudget {
         }
         self.records -= records;
         self.bytes -= bytes;
-        let mut query = sqlx::query_as::<_, T>(&sql);
+        let mut query = sqlx::query_as::<_, T>(AssertSqlSafe(sql.as_str()));
         for binding in bindings {
             query = query.bind(*binding);
         }

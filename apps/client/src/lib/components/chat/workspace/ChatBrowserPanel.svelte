@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount, tick } from "svelte";
+  import { listen } from "@tauri-apps/api/event";
   import ArrowLeft from "@lucide/svelte/icons/arrow-left";
   import ArrowRight from "@lucide/svelte/icons/arrow-right";
   import Camera from "@lucide/svelte/icons/camera";
@@ -7,6 +8,8 @@
   import Monitor from "@lucide/svelte/icons/monitor";
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
   import Search from "@lucide/svelte/icons/search";
+  import ShieldCheck from "@lucide/svelte/icons/shield-check";
+  import ShieldOff from "@lucide/svelte/icons/shield-off";
   import Smartphone from "@lucide/svelte/icons/smartphone";
   import Tablet from "@lucide/svelte/icons/tablet";
   import Video from "@lucide/svelte/icons/video";
@@ -32,16 +35,65 @@
   let recording = $state(false);
   let artifactStatus: string | null = $state(null);
   let discoveredServers: chatApi.DiscoveredPreviewServer[] = $state([]);
+  let modelOrigins = $state<string[]>([]);
+  let approval = $state<chatApi.PreviewApproval | null>(null);
   let error: string | null = $state(null);
   let preset: ViewportPreset = $state("responsive");
   let resizeObserver: ResizeObserver | null = null;
   let resizeFrame: number | null = null;
   const threadId = $derived(chat.selectedThreadId ?? chat.draftThreadId);
+  const currentOrigin = $derived(externalOrigin(browserTab));
+  const modelAllowed = $derived(currentOrigin !== null && modelOrigins.includes(currentOrigin));
 
   onMount(() => {
     resizeObserver = new ResizeObserver(() => queueResize());
     if (viewport) resizeObserver.observe(viewport);
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listen<unknown>(chatApi.CHAT_BROWSER_APPROVAL_EVENT, (event) => {
+      const payload = event.payload;
+      if (typeof payload !== "object" || payload === null) return;
+      const notified = (payload as Record<string, unknown>).threadId;
+      if (typeof notified === "string" && notified === loadedThreadId) void loadApproval(notified);
+    }).then((stop) => {
+      if (disposed) stop();
+      else unlisten = stop;
+    }).catch((reason: unknown) => {
+      error = message(reason);
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   });
+
+  async function loadApproval(selectedThreadId: string): Promise<void> {
+    try {
+      const pending = await chatApi.readPendingBrowserApproval(selectedThreadId);
+      if (selectedThreadId === loadedThreadId) approval = pending;
+    } catch (reason) {
+      error = message(reason);
+    }
+  }
+
+  async function resolveApproval(allow: boolean): Promise<void> {
+    if (!threadId || !approval) return;
+    const selectedThread = threadId;
+    approval = null;
+    error = null;
+    try {
+      const navigated = await chatApi.resolveBrowserApproval(selectedThread, allow);
+      if (navigated && selectedThread === threadId) {
+        tabs = tabs.map((tab) => tab.tabId === navigated.tabId ? navigated : tab);
+        if (navigated.tabId === tabId) {
+          browserTab = navigated;
+          url = navigated.currentUrl;
+        }
+      }
+    } catch (reason) {
+      error = message(reason);
+    }
+  }
 
   $effect(() => {
     const selectedThreadId = threadId;
@@ -85,12 +137,19 @@
     browserTab = null;
     tabs = [];
     url = "";
+    modelOrigins = [];
+    approval = null;
     tabId = selectedThreadId ? `preview:${selectedThreadId}:main` : null;
     if (!selectedThreadId) return;
+    void loadApproval(selectedThreadId);
     try {
-      const stored = await chatApi.readBrowserStatus(selectedThreadId);
+      const [stored, grants] = await Promise.all([
+        chatApi.readBrowserStatus(selectedThreadId),
+        chatApi.readPreviewModelOrigins(),
+      ]);
       if (selectedThreadId !== loadedThreadId) return;
       tabs = stored;
+      modelOrigins = grants.filter((grant) => grant.threadId === selectedThreadId).map((grant) => grant.origin);
       const selected = stored.find((tab) => tab.visible) ?? stored[0] ?? null;
       if (selected) {
         tabId = selected.tabId;
@@ -113,6 +172,38 @@
       return host !== "localhost" && host !== "127.0.0.1" && host !== "::1";
     } catch {
       return false;
+    }
+  }
+
+  function externalOrigin(tab: BrowserTabRead | null): string | null {
+    return tab?.visible && isExternal(tab.currentUrl) ? originOf(tab.currentUrl) : null;
+  }
+
+  function originOf(value: string): string | null {
+    try {
+      return new URL(value).origin;
+    } catch {
+      return null;
+    }
+  }
+
+  async function toggleModelAccess(): Promise<void> {
+    if (!threadId || !tabId || !currentOrigin || loading) return;
+    const selectedThread = threadId;
+    loading = true;
+    error = null;
+    try {
+      if (modelAllowed) {
+        await chatApi.revokePreviewModelOrigin(selectedThread, currentOrigin);
+        modelOrigins = modelOrigins.filter((origin) => origin !== currentOrigin);
+      } else {
+        const origin = await chatApi.allowPreviewModelOrigin(selectedThread, tabId);
+        if (selectedThread === threadId && !modelOrigins.includes(origin)) modelOrigins = [...modelOrigins, origin];
+      }
+    } catch (reason) {
+      error = message(reason);
+    } finally {
+      loading = false;
     }
   }
 
@@ -348,8 +439,18 @@
     <button type="button" class:active={preset === "desktop"} aria-label={t("chat.browser.desktop")} title={t("chat.browser.desktop")} onclick={() => setPreset("desktop")}><Monitor size={13} /></button>
     <button type="button" disabled={!browserTab?.visible || loading} aria-label={t("chat.browser.screenshot")} title={t("chat.browser.screenshot")} onclick={() => void captureScreenshot()}><Camera size={13} /></button>
     <button type="button" class:active={recording} disabled={!browserTab?.visible || loading} aria-label={recording ? t("chat.browser.recordingStop") : t("chat.browser.recordingStart")} title={recording ? t("chat.browser.recordingStop") : t("chat.browser.recordingStart")} onclick={() => void toggleRecording()}><Video size={13} /></button>
+    {#if currentOrigin}<button type="button" class:active={modelAllowed} disabled={loading} aria-pressed={modelAllowed} aria-label={modelAllowed ? t("chat.browser.modelAccessRevoke", currentOrigin) : t("chat.browser.modelAccessAllow", currentOrigin)} title={modelAllowed ? t("chat.browser.modelAccessRevoke", currentOrigin) : t("chat.browser.modelAccessAllow", currentOrigin)} onclick={() => void toggleModelAccess()}>{#if modelAllowed}<ShieldCheck size={13} />{:else}<ShieldOff size={13} />{/if}</button>{/if}
     {#if browserTab}<span>{browserTab.viewportWidth} × {browserTab.viewportHeight}</span>{/if}
   </div>
+  {#if approval}
+    <div class="approval" role="alert">
+      <p>{approval.kind === "navigation" ? t("chat.browser.approvalNavigation", approval.origin) : t("chat.browser.approvalNetwork")}</p>
+      <div>
+        <button type="button" class="chat-secondary-button" onclick={() => void resolveApproval(false)}>{t("chat.browser.approvalDismiss")}</button>
+        <button type="button" class="chat-primary-button" onclick={() => void resolveApproval(true)}>{t("chat.browser.approvalAllow")}</button>
+      </div>
+    </div>
+  {/if}
   {#if artifactStatus}<p role="status" class="artifact-status">{artifactStatus}</p>{/if}
   {#if error}<Notice class="error" message={error} />{/if}
   <div bind:this={viewport} class="browser-viewport">
@@ -384,5 +485,8 @@
   .browser-viewport { position: relative; min-height: 0; flex: 1; overflow: hidden; background: color-mix(in srgb, var(--muted) 28%, var(--background)); }
   .empty { display: grid; height: 100%; place-items: center; align-content: center; gap: 0.55rem; padding: 1rem; color: var(--muted-foreground); text-align: center; font-size: calc(0.72rem * var(--type-scale)); }
   .browser-panel > :global(.error) { border-bottom: 1px solid var(--border); padding: 0.45rem 0.65rem; font-size: calc(0.68rem * var(--type-scale)); }
+  .approval { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 0.6rem; border-bottom: 1px solid var(--border); padding: 0.45rem 0.65rem; font-size: calc(0.68rem * var(--type-scale)); }
+  .approval p { min-width: 12rem; flex: 1; }
+  .approval div { display: flex; margin-left: auto; gap: 0.35rem; }
   .artifact-status { border-bottom: 1px solid var(--border); padding: 0.35rem 0.65rem; color: var(--muted-foreground); font-size: calc(0.66rem * var(--type-scale)); }
 </style>

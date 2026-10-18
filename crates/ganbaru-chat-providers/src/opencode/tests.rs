@@ -2,6 +2,7 @@
 
 use super::cli::*;
 use super::config::*;
+use super::driver::registers_internal_mcp;
 use super::event_stream::*;
 use super::http_client::*;
 use super::local_server::*;
@@ -593,22 +594,20 @@ fn owned_server_fixture_stops_its_process_tree() {
         let executable = directory.path().join("opencode-fixture");
         std::fs::write(
             &executable,
-            "#!/bin/sh\nif [ \"$OPENCODE_SERVER_PASSWORD\" != \"sentinel-secret\" ]; then exit 12; fi\ntrap '' TERM\necho 'opencode server listening on http://127.0.0.1:43123'\nwhile :; do /bin/sleep 1; done\n",
+            "#!/bin/sh\nif [ -z \"$OPENCODE_SERVER_PASSWORD\" ]; then exit 12; fi\ntrap '' TERM\necho \"opencode server listening on $FIXTURE_ORIGIN\"\nwhile :; do /bin/sleep 1; done\n",
         )
         .unwrap();
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let fixture = HttpFixture::start(UNAUTHORIZED_RESPONSE);
         let mut configuration = configuration(json!({ "mode": "local" }));
         configuration.executable = executable.to_string_lossy().into_owned();
-        configuration.environment.insert(
-            OPENCODE_PASSWORD_ENVIRONMENT.to_string(),
-            "sentinel-secret".to_string(),
-        );
-        let password = take_server_password(&mut configuration).unwrap();
-        let mut server =
-            OwnedOpenCodeServer::start(&configuration, directory.path(), Some(&password))
-                .await
-                .unwrap();
-        assert_eq!(server.origin, "http://127.0.0.1:43123");
+        configuration
+            .environment
+            .insert("FIXTURE_ORIGIN".to_string(), fixture.origin.clone());
+        let mut server = OwnedOpenCodeServer::start(&configuration, directory.path())
+            .await
+            .unwrap();
+        assert_eq!(server.origin, fixture.origin);
         let process_group_id = libc::pid_t::try_from(server.process_id().unwrap())
             .ok()
             .filter(|pid| *pid > 1)
@@ -635,6 +634,121 @@ fn owned_server_fixture_stops_its_process_tree() {
         }
     });
 }
+
+#[cfg(unix)]
+#[test]
+fn owned_server_always_receives_generated_password() {
+    use std::os::unix::fs::PermissionsExt;
+
+    crate::test_block_on(async {
+        let directory = TestDirectory::new("owned-server-password");
+        let executable = directory.path().join("opencode-fixture");
+        let recorded = directory.path().join("password");
+        std::fs::write(
+            &executable,
+            "#!/bin/sh\nprintf '%s' \"$OPENCODE_SERVER_PASSWORD\" > \"$FIXTURE_PASSWORD_FILE\"\necho \"opencode server listening on $FIXTURE_ORIGIN\"\nwhile :; do /bin/sleep 1; done\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut passwords = Vec::new();
+        for _ in 0..2 {
+            let fixture = HttpFixture::start(UNAUTHORIZED_RESPONSE);
+            let mut configuration = configuration(json!({ "mode": "local" }));
+            configuration.executable = executable.to_string_lossy().into_owned();
+            configuration
+                .environment
+                .insert("FIXTURE_ORIGIN".to_string(), fixture.origin.clone());
+            configuration.environment.insert(
+                "FIXTURE_PASSWORD_FILE".to_string(),
+                recorded.to_string_lossy().into_owned(),
+            );
+            let mut server = OwnedOpenCodeServer::start(&configuration, directory.path())
+                .await
+                .unwrap();
+            let received = std::fs::read_to_string(&recorded).unwrap();
+            server.stop().await.unwrap();
+
+            assert_eq!(received, server.password().expose());
+            assert_eq!(received.len(), OWNED_SERVER_SECRET_BYTES * 2);
+            assert!(received.bytes().all(|byte| byte.is_ascii_hexdigit()));
+            let probe = fixture.request();
+            assert!(probe.starts_with("GET /agent?directory="));
+            assert!(!probe.to_ascii_lowercase().contains("authorization:"));
+            passwords.push(received);
+        }
+        assert_ne!(
+            passwords[0], passwords[1],
+            "every owned start uses a fresh secret"
+        );
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn owned_server_fails_closed_when_it_accepts_unauthenticated_requests() {
+    use std::os::unix::fs::PermissionsExt;
+
+    crate::test_block_on(async {
+        let directory = TestDirectory::new("owned-server-open");
+        let executable = directory.path().join("opencode-fixture");
+        std::fs::write(
+            &executable,
+            "#!/bin/sh\necho \"opencode server listening on $FIXTURE_ORIGIN\"\nwhile :; do /bin/sleep 1; done\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let fixture = HttpFixture::start(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n[]",
+        );
+        let mut configuration = configuration(json!({ "mode": "local" }));
+        configuration.executable = executable.to_string_lossy().into_owned();
+        configuration
+            .environment
+            .insert("FIXTURE_ORIGIN".to_string(), fixture.origin.clone());
+        let error = match OwnedOpenCodeServer::start(&configuration, directory.path()).await {
+            Ok(mut server) => {
+                server.stop().await.unwrap();
+                panic!("an unauthenticated server must not be used")
+            }
+            Err(error) => error,
+        };
+        assert_eq!(error.code, ChatErrorCode::Permission);
+        fixture.request();
+    });
+}
+
+#[test]
+fn internal_mcp_not_registered_for_unauthenticated_external_server() {
+    let mut external = configuration(json!({
+        "mode": "external",
+        "serverUrl": "http://127.0.0.1:4096",
+        "allowInsecureExternalHttp": true,
+        "confirmExternalWorkspaceAccess": true
+    }));
+    let external_settings = OpenCodeProviderSettings::parse(&external).unwrap();
+    assert!(!registers_internal_mcp(
+        &external_settings.connection,
+        take_server_password(&mut external).as_ref()
+    ));
+    external.environment.insert(
+        OPENCODE_PASSWORD_ENVIRONMENT.to_string(),
+        "external-secret".to_string(),
+    );
+    assert!(
+        !registers_internal_mcp(
+            &external_settings.connection,
+            take_server_password(&mut external).as_ref()
+        ),
+        "external servers are outside Ganbaru's ownership and never receive the token"
+    );
+
+    let local = settings(json!({ "mode": "local" }));
+    assert!(!registers_internal_mcp(&local.connection, None));
+    let generated = OpenCodeSecret::generate().unwrap();
+    assert!(registers_internal_mcp(&local.connection, Some(&generated)));
+}
+
+const UNAUTHORIZED_RESPONSE: &str = "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
 
 #[cfg(unix)]
 #[test]
@@ -669,7 +783,6 @@ fn owned_server_reports_early_exit_timeout_and_oversized_output() {
             let result = OwnedOpenCodeServer::start_with_timeout(
                 &configuration,
                 directory.path(),
-                None,
                 Duration::from_millis(75),
             )
             .await;
@@ -1011,4 +1124,59 @@ pub(super) fn complete_request_length(request: &[u8]) -> Option<usize> {
         })
         .unwrap_or(0);
     Some(header_end + content_length)
+}
+
+/// Mirrors OpenCode's rule evaluation: the last rule whose permission and
+/// pattern match decides, and `*` spans path separators.
+fn evaluated_action(
+    rules: &[OpenCodePermissionRule],
+    permission: &str,
+    target: &str,
+) -> OpenCodePermissionAction {
+    fn wildcard(input: &str, pattern: &str) -> bool {
+        match pattern.split_once('*') {
+            None => input == pattern,
+            Some((prefix, rest)) => {
+                input.starts_with(prefix)
+                    && (prefix.len()..=input.len())
+                        .filter(|index| input.is_char_boundary(*index))
+                        .any(|index| wildcard(&input[index..], rest))
+            }
+        }
+    }
+    rules
+        .iter()
+        .rev()
+        .find(|rule| wildcard(permission, &rule.permission) && wildcard(target, &rule.pattern))
+        .map_or(OpenCodePermissionAction::Ask, |rule| rule.action)
+}
+
+#[test]
+fn ask_rules_keep_repository_metadata_edits_reviewed() {
+    let rules = permission_rules(SafetyMode::AskForApproval);
+    for target in [
+        ".git/config",
+        ".git/hooks/pre-commit",
+        "vendor/lib/.git/config",
+        "/home/user/project/.git/config",
+        "sub/.git",
+    ] {
+        assert_eq!(
+            evaluated_action(&rules, "edit", target),
+            OpenCodePermissionAction::Ask,
+            "{target} must ask"
+        );
+    }
+    for target in [
+        "src/lib.rs",
+        ".github/workflows/ci.yml",
+        ".gitignore",
+        "/home/user/project/.gitattributes",
+    ] {
+        assert_eq!(
+            evaluated_action(&rules, "edit", target),
+            OpenCodePermissionAction::Allow,
+            "{target} must stay automatic"
+        );
+    }
 }

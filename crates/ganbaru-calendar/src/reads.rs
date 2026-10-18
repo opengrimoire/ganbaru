@@ -3,7 +3,7 @@
 use crate::description::sanitize_calendar_description_html;
 use ganbaru_db::impl_sqlite_from_row;
 use serde::Serialize;
-use sqlx::SqlitePool;
+use sqlx::{AssertSqlSafe, SqlitePool};
 
 mod export;
 mod export_preservation;
@@ -692,7 +692,7 @@ pub async fn load_panel_event(
     id: String,
 ) -> Result<CalendarPanelEventRows, String> {
     let query = format!("{FULL_EVENT_SELECT_SQL} WHERE ce.id = ?");
-    let mut event = sqlx::query_as::<_, DbFullEventRow>(&query)
+    let mut event = sqlx::query_as::<_, DbFullEventRow>(AssertSqlSafe(query.as_str()))
         .bind(&id)
         .fetch_optional(pool)
         .await
@@ -716,7 +716,7 @@ pub async fn load_full_event(
     id: String,
 ) -> Result<CalendarFullEventRows, String> {
     let query = format!("{FULL_EVENT_SELECT_SQL} WHERE ce.id = ?");
-    let mut event = sqlx::query_as::<_, DbFullEventRow>(&query)
+    let mut event = sqlx::query_as::<_, DbFullEventRow>(AssertSqlSafe(query.as_str()))
         .bind(&id)
         .fetch_optional(pool)
         .await
@@ -883,7 +883,7 @@ mod tests {
                 ),
             ] {
                 let plan_sql = format!("EXPLAIN QUERY PLAN {sql}");
-                let rows = sqlx::query(&plan_sql)
+                let rows = sqlx::query(sqlx::AssertSqlSafe(plan_sql.as_str()))
                     .bind(bounds[0])
                     .bind(bounds[1])
                     .bind(bounds[2])
@@ -918,7 +918,10 @@ mod tests {
                 let sql = format!(
                     "EXPLAIN QUERY PLAN SELECT event_id FROM {table} WHERE event_id IN ('event-a', 'event-b') ORDER BY event_id, sort_order"
                 );
-                let rows = sqlx::query(&sql).fetch_all(&pool).await.unwrap();
+                let rows = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
                 let details = rows
                     .iter()
                     .map(|row| sqlx::Row::get::<String, _>(row, "detail"))

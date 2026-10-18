@@ -28,3 +28,10 @@ pub const MAX_GROUPS: u8 = 64;
 pub const MAX_DEVICE_ID_BYTES: usize = 160;
 /// Largest order key in bytes.
 pub const MAX_ORDER_KEY_BYTES: usize = 128;
+/// Writers of one space, every state included: the entries a version vector carries on the
+/// wire. Stores refuse geneses past it, so vector exchange keeps working.
+pub const MAX_WRITERS_PER_SPACE: usize = 4_096;
+/// Writers one device may certify in a space over its lifetime. An installation mints a
+/// successor only after a restore, a copied database, a lost key, or a clone, so this is far
+/// above honest use while it keeps one linked device from flooding the space.
+pub const MAX_WRITERS_PER_DEVICE: usize = 64;

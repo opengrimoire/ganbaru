@@ -5,7 +5,7 @@ use super::dependency_cascade::{
 };
 use ganbaru_db::impl_sqlite_from_row;
 use serde::Serialize;
-use sqlx::{Sqlite, Transaction};
+use sqlx::{AssertSqlSafe, Sqlite, Transaction};
 
 #[derive(Serialize)]
 pub(super) struct CascadeTask {
@@ -95,7 +95,7 @@ pub(super) async fn load_graph(
     if count > MAX_TASKS || bytes > (MAX_BYTES / 6) as i64 || max_id > MAX_ID_BYTES as i64 {
         return Err("dependency task graph exceeds its count or byte limit".into());
     }
-    let (edges, edge_bytes, edge_id): (i64, i64, i64) = sqlx::query_as(&format!("SELECT count(*), coalesce(sum(length(CAST(id AS BLOB)) + length(CAST(blocking_task_id AS BLOB)) + length(CAST(blocked_task_id AS BLOB))), 0), coalesce(max(max(length(CAST(id AS BLOB)), length(CAST(blocking_task_id AS BLOB)), length(CAST(blocked_task_id AS BLOB)))), 0) FROM (SELECT id, blocking_task_id, blocked_task_id FROM project_task_dependencies d WHERE {DEPENDENCY_SCOPE} LIMIT ?)"))
+    let (edges, edge_bytes, edge_id): (i64, i64, i64) = sqlx::query_as(AssertSqlSafe(format!("SELECT count(*), coalesce(sum(length(CAST(id AS BLOB)) + length(CAST(blocking_task_id AS BLOB)) + length(CAST(blocked_task_id AS BLOB))), 0), coalesce(max(max(length(CAST(id AS BLOB)), length(CAST(blocking_task_id AS BLOB)), length(CAST(blocked_task_id AS BLOB)))), 0) FROM (SELECT id, blocking_task_id, blocked_task_id FROM project_task_dependencies d WHERE {DEPENDENCY_SCOPE} LIMIT ?)")))
         .bind(project_id).bind(project_id).bind(MAX_DEPENDENCIES + 1).fetch_one(&mut **tx).await.map_err(|error| format!("bound cascade dependency graph: {error}"))?;
     if edges > MAX_DEPENDENCIES
         || bytes + edge_bytes > (MAX_BYTES / 6) as i64
@@ -113,7 +113,7 @@ pub(super) async fn load_graph(
     if tasks.len() as i64 != count {
         return Err("dependency graph contains a task without its status".into());
     }
-    let dependencies = sqlx::query_as::<_, CascadeDependency>(&format!("SELECT d.id, d.blocking_task_id, d.blocked_task_id FROM project_task_dependencies d WHERE {DEPENDENCY_SCOPE} ORDER BY d.id"))
+    let dependencies = sqlx::query_as::<_, CascadeDependency>(AssertSqlSafe(format!("SELECT d.id, d.blocking_task_id, d.blocked_task_id FROM project_task_dependencies d WHERE {DEPENDENCY_SCOPE} ORDER BY d.id")))
         .bind(project_id).bind(project_id).fetch_all(&mut **tx).await.map_err(|error| format!("read cascade dependencies: {error}"))?;
     Ok(CascadeGraph {
         tasks,
@@ -133,7 +133,7 @@ pub(super) async fn bound_changed_rows(
         .map(|column| format!("length(CAST(coalesce({column}, '') AS BLOB))"))
         .collect::<Vec<_>>()
         .join(" + ");
-    let bytes: i64 = sqlx::query_scalar(&format!("SELECT coalesce(sum({terms}), 0) FROM project_tasks WHERE id IN (SELECT value FROM json_each(?))"))
+    let bytes: i64 = sqlx::query_scalar(AssertSqlSafe(format!("SELECT coalesce(sum({terms}), 0) FROM project_tasks WHERE id IN (SELECT value FROM json_each(?))")))
         .bind(ids).fetch_one(&mut **tx).await.map_err(|error| format!("bound shifted task receipt: {error}"))?;
     // JSON escaping can multiply text by six; three date history rows add bounded overhead.
     if bytes < 0 || bytes as usize * 6 + items.len() * 4096 > MAX_BYTES {

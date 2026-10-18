@@ -2,6 +2,7 @@
 
 use super::cli::{process_environment, resolve_executable};
 use super::config::{OPENCODE_PASSWORD_ENVIRONMENT, OpenCodeSecret};
+use super::http_client::OpenCodeHttpClient;
 use crate::models::{ChatError, ChatErrorCode, ChatResult, ProviderInstanceConfig};
 use crate::process::{ProviderProcessConfig, ProviderProcessHandle, spawn_provider_process};
 use reqwest::Url;
@@ -19,34 +20,34 @@ const STDERR_LIMIT_BYTES: usize = 256 * 1024;
 const STDOUT_LIMIT_BYTES: usize = 256 * 1024;
 const LINE_LIMIT_BYTES: usize = 16 * 1024;
 
+/// A loopback OpenCode server owned by one Chat session, authenticated with an ephemeral password.
 pub struct OwnedOpenCodeServer {
     pub origin: String,
+    password: OpenCodeSecret,
     process: ProviderProcessHandle,
     stdout_task: JoinHandle<()>,
 }
 
 impl OwnedOpenCodeServer {
+    /// Starts the server with a freshly generated password and confirms it rejects unauthenticated requests.
     pub async fn start(
         configuration: &ProviderInstanceConfig,
         workspace: &Path,
-        password: Option<&OpenCodeSecret>,
     ) -> ChatResult<Self> {
-        Self::start_with_timeout(configuration, workspace, password, STARTUP_TIMEOUT).await
+        Self::start_with_timeout(configuration, workspace, STARTUP_TIMEOUT).await
     }
 
     pub(super) async fn start_with_timeout(
         configuration: &ProviderInstanceConfig,
         workspace: &Path,
-        password: Option<&OpenCodeSecret>,
         startup_timeout: Duration,
     ) -> ChatResult<Self> {
+        let password = OpenCodeSecret::generate()?;
         let mut environment = process_environment(configuration)?;
-        if let Some(password) = password {
-            environment.insert(
-                OPENCODE_PASSWORD_ENVIRONMENT.to_string(),
-                password.expose().to_string(),
-            );
-        }
+        environment.insert(
+            OPENCODE_PASSWORD_ENVIRONMENT.to_string(),
+            password.expose().to_string(),
+        );
         let executable = resolve_executable(&configuration.executable, &environment)?;
         let arguments = launch_arguments(&configuration.launch_arguments)?;
         let mut process = spawn_provider_process(ProviderProcessConfig {
@@ -91,11 +92,28 @@ impl OwnedOpenCodeServer {
                 ));
             }
         };
-        Ok(Self {
+        let mut server = Self {
             origin,
+            password,
             process,
             stdout_task,
-        })
+        };
+        let probe = async {
+            OpenCodeHttpClient::new(&server.origin, workspace, None)?
+                .require_authentication()
+                .await
+        }
+        .await;
+        if let Err(error) = probe {
+            let _ = server.stop().await;
+            return Err(error);
+        }
+        Ok(server)
+    }
+
+    /// Password that clients of this server send with basic authentication.
+    pub fn password(&self) -> &OpenCodeSecret {
+        &self.password
     }
 
     pub async fn stop(&mut self) -> ChatResult<()> {

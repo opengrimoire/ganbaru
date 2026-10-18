@@ -14,6 +14,7 @@
     createProviderSetupDraft,
     providerConfigurationFromDraft,
     providerInstanceIdFromLabel,
+    storesPlaintextSecret,
     validateProviderSetup,
     type ProviderEnvironmentDraft,
     type ProviderEnvironmentValueType,
@@ -187,7 +188,8 @@
   function updateLabel(value: string): void {
     const previousGenerated = providerInstanceIdFromLabel(draft.label);
     draft.label = value;
-    if (!draft.instanceId || draft.instanceId === previousGenerated) {
+    const secretBound = draft.environment.some((row) => row.credentialReference);
+    if (!secretBound && (!draft.instanceId || draft.instanceId === previousGenerated)) {
       draft.instanceId = uniqueInstanceId(value);
     }
   }
@@ -255,10 +257,8 @@
   async function storeSecret(row: ProviderEnvironmentDraft): Promise<void> {
     const secret = pendingSecrets[row.key]?.trim();
     if (!secret || !row.name) return;
-    const reference = `provider:${draft.instanceId}:environment:${row.name}`;
     try {
-      await chatApi.replaceChatCredential(reference, secret);
-      row.credentialReference = reference;
+      row.credentialReference = await chatApi.replaceChatCredential(draft.instanceId, row.name, secret);
       pendingSecrets[row.key] = "";
       operationError = null;
     } catch (error: unknown) {
@@ -266,9 +266,16 @@
     }
   }
 
+  async function moveToCredentialStore(row: ProviderEnvironmentDraft): Promise<void> {
+    pendingSecrets[row.key] = row.value;
+    row.valueType = "secret";
+    row.value = "";
+    await storeSecret(row);
+  }
+
   async function removeSecret(row: ProviderEnvironmentDraft): Promise<void> {
     try {
-      if (row.credentialReference) await chatApi.removeChatCredential(row.credentialReference);
+      if (row.credentialReference) await chatApi.removeChatCredential(draft.instanceId, row.name);
       row.credentialReference = "";
       operationError = null;
     } catch (error: unknown) {
@@ -302,8 +309,10 @@
     testing = true;
     try {
       const configuration = configurationFromDraft();
-      testResult = await chat.testProvider(configuration);
-      testSucceeded = testResult.probe.state === "healthy"
+      const result = await chat.testProvider(configuration);
+      if (!result) return;
+      testResult = result;
+      testSucceeded = result.probe.state === "healthy"
         || testResult.probe.state === "authentication_required";
     } catch (error: unknown) {
       operationError = errorMessage(error);
@@ -317,8 +326,7 @@
     if (!validation.valid) return;
     saving = true;
     try {
-      await chat.saveProvider(configurationFromDraft());
-      onCancel();
+      if (await chat.saveProvider(configurationFromDraft())) onCancel();
     } catch (error: unknown) {
       operationError = errorMessage(error);
     } finally {
@@ -728,7 +736,7 @@
                   </div>
                   {#each draft.environment.filter((row) => row.name !== "OPENCODE_SERVER_PASSWORD") as row (row.key)}
                     <div class="environment-row">
-                      <input aria-label={t("settings.chat.setup.variableName")} bind:value={row.name} />
+                      <input aria-label={t("settings.chat.setup.variableName")} bind:value={row.name} readonly={row.credentialReference !== ""} />
                       <div class="environment-kind" aria-label={t("settings.chat.setup.valueType") }>
                         {#each ["text", "secret", "inherit"] as valueType}
                           <button
@@ -773,6 +781,12 @@
                           removeEnvironment(row.key);
                         }}
                       ><Trash2 size={13} /></button>
+                      {#if storesPlaintextSecret(row)}
+                        <p class="environment-warning">
+                          {t("settings.chat.setup.plaintextSecretWarning")}
+                          <button type="button" onclick={() => void moveToCredentialStore(row)}>{t("settings.chat.setup.storeAsSecret")}</button>
+                        </p>
+                      {/if}
                       {#if fieldError(`environment.${row.key}.name`) || fieldError(`environment.${row.key}.value`)}
                         <small class="environment-error">
                           {fieldError(`environment.${row.key}.name`) ?? fieldError(`environment.${row.key}.value`)}
@@ -871,6 +885,8 @@
   .environment-kind button.active { background:var(--accent); color:var(--accent-foreground); }
   .inherit-value { display:flex; min-height:1.75rem; align-items:center; padding-inline:0.5rem; color:var(--muted-foreground); font-size:calc(0.72rem * var(--type-scale)); }
   .environment-error { grid-column:1/-1; }
+  .environment-warning { display:flex; flex-wrap:wrap; grid-column:1/-1; align-items:center; gap:0.4rem; color:var(--muted-foreground); font-size:calc(0.68rem * var(--type-scale)); }
+  .environment-warning button { color:var(--foreground); text-decoration:underline; }
   .test-result { display:flex; flex-wrap:wrap; align-items:center; gap:0.4rem 0.65rem; border-block:1px solid var(--border); padding:0.65rem 0.25rem; color:var(--status-tentative); font-size:calc(0.75rem * var(--type-scale)); }
   .test-result[data-state="success"] { color:var(--action-confirm); }
   .test-result > i { display:grid; width:1rem; height:1rem; place-items:center; border:1px solid currentColor; border-radius:999px; }

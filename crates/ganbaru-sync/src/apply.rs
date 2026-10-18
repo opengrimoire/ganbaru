@@ -410,6 +410,14 @@ async fn apply_one(
             Ok(Outcome::Applied)
         }
         Content::Revoke(revocation) => {
+            // Store refuses these already. One stored while another device was the coordinator
+            // stays waiting without revoking, so it applies only if that device coordinates again.
+            let issuer = log::writer(conn, ctx.space, candidate.writer)
+                .await?
+                .ok_or_else(|| corrupt("operation of an unknown writer reached apply"))?;
+            if !store::may_issue(ctx, &issuer, envelope.kind) {
+                return Ok(Outcome::Blocked);
+            }
             apply_revoke(
                 conn,
                 batch,

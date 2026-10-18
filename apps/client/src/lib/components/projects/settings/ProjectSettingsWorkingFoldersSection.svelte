@@ -6,6 +6,8 @@
   import Link2 from "@lucide/svelte/icons/link-2";
   import Pencil from "@lucide/svelte/icons/pencil";
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
+  import ShieldCheck from "@lucide/svelte/icons/shield-check";
+  import ShieldOff from "@lucide/svelte/icons/shield-off";
   import Star from "@lucide/svelte/icons/star";
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import Unplug from "@lucide/svelte/icons/unplug";
@@ -17,6 +19,7 @@
   import { adoptChatProjectPrimaryWorkingFolder, getChat } from "$lib/stores/chat.svelte";
   import * as chatApi from "$lib/api/chat";
   import * as folderApi from "$lib/api/project-working-folders";
+  import * as trustApi from "$lib/api/working-folder-trust";
   import { createProjectSettingsWorkingFoldersDraft } from "$lib/projects/settings/working-folders-draft.svelte";
   import { orderProjectWorkingFolders } from "$lib/projects/working-folder-order";
   import { cn } from "$lib/utils";
@@ -205,6 +208,26 @@
     });
   }
 
+  /** Describe this device's trust decision for the folder's repository programs and hooks. */
+  function trustLabel(folder: ProjectWorkingFolderRead): string {
+    if (folder.trust === "trusted") return t("projects.settings.workingFolders.trustStateTrusted");
+    if (folder.trust === "untrusted") return t("projects.settings.workingFolders.trustStateUntrusted");
+    return t("projects.settings.workingFolders.trustStateUndecided");
+  }
+
+  /** Apply a device-local trust change immediately; it is not part of the Settings draft. */
+  function changeTrust(folder: ProjectWorkingFolderRead): void {
+    const id = folder.workingFolder.id;
+    void run(id, async () => {
+      const result = folder.trust === "trusted"
+        ? await trustApi.revokeProjectWorkingFolderTrust(id)
+        : await trustApi.decideProjectWorkingFolderTrust(id);
+      if (!result) return;
+      await persist(Promise.resolve(result));
+      draft.adoptTrust(result);
+    });
+  }
+
   /** Rename an external folder after collecting a nonempty display name. */
   function rename(folder: ProjectWorkingFolderRead): void {
     const name = window.prompt(
@@ -276,6 +299,9 @@
               {#if folder.workingFolder.repositoryKind === "git"}
                 <p>{folder.currentBranch ? t("projects.settings.workingFolders.gitBranch", folder.currentBranch) : t("projects.settings.workingFolders.gitRepository")}</p>
               {/if}
+              {#if draft.canOpen(folder)}
+                <p>{trustLabel(folder)}</p>
+              {/if}
             </div>
             <div class="menu-separator" aria-hidden="true"></div>
             <button
@@ -301,6 +327,15 @@
             >
               {#if needsRecreate}<RefreshCw size={14} />{:else}<Link2 size={14} />{/if}
               <span class="min-w-0 truncate">{needsRecreate ? t("projects.settings.workingFolders.recreate") : folder.bindingStatus === "unbound" || folder.bindingStatus === "missing" ? t("projects.settings.workingFolders.locate") : t("projects.settings.workingFolders.rebind")}</span>
+            </button>
+            <button
+              type="button"
+              class="menu-item"
+              disabled={busy || !draft.canOpen(folder)}
+              onclick={() => changeTrust(folder)}
+            >
+              {#if folder.trust === "trusted"}<ShieldOff size={14} />{:else}<ShieldCheck size={14} />{/if}
+              <span class="min-w-0 truncate">{folder.trust === "trusted" ? t("projects.settings.workingFolders.trustRevoke") : t("projects.settings.workingFolders.trustGrant")}</span>
             </button>
             <button type="button" class="menu-item" disabled={busy || !isExternal} onclick={() => rename(folder)}><Pencil size={14} /><span class="min-w-0 truncate">{t("projects.settings.workingFolders.rename")}</span></button>
             {#if folder.workingFolder.archivedAt}

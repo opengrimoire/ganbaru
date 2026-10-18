@@ -18,7 +18,7 @@ All transfers preserve the source-of-truth boundary. Imports create canonical SQ
 
 Markdown import creates a new page and normal blocks. It preserves heading levels 1 through 6 and supports paragraphs, safe inline links, lists, to-dos, quotes, dividers, fenced code, supported images, and simple tables. Safe frontmatter can provide a title.
 
-Unknown frontmatter, unsafe or local file references, unsupported HTML, reference definitions, and syntax that cannot be represented return diagnostics. Unsupported source can become a visible preservation block when useful.
+Unknown frontmatter, unsafe or local file references, unsupported HTML, reference definitions, and syntax that cannot be represented return diagnostics. Unsupported source can become a visible preservation block when useful. A page import accepts up to 1,000 blocks, counted while parsing so oversized tables stop early, and a table wider than the 100 column Notes limit becomes an unsupported block with a note instead of failing the import. HTML import follows the same limits.
 
 Imported Markdown records provenance, but the source text is not retained as editable authority.
 
@@ -26,7 +26,7 @@ Imported Markdown records provenance, but the source text is not retained as edi
 
 HTML import sanitizes before conversion. It supports common text formatting, heading levels 1 through 6, links, lists, checkbox items, quotes, preformatted code, dividers, callouts, toggles, simple tables, and explicitly retained supported HTTPS media.
 
-Scripts, styles, event attributes, unsafe URLs, SVG, iframes, and unapproved embedded content are removed and reported. Local and relative media references require the managed import-file flow.
+Scripts, styles, event attributes, unsafe URLs, SVG, iframes, and unapproved embedded content are removed and reported. Local and relative media references require the managed import-file flow. Documents that nest elements more than 256 levels deep are rejected with an error before sanitizing or conversion, which keeps deep markup from exhausting the stack or stalling the HTML parser.
 
 ## Notion API import
 
@@ -40,11 +40,11 @@ Supported objects convert to local Notion-shaped contracts. Unsupported blocks b
 
 ## Notion export-folder import
 
-An already downloaded Notion export directory is scanned within bounded depth and entry counts. Hidden files, unsafe paths, symbolic links, and workspace sitemap artifacts are excluded.
+The user chooses an already downloaded Notion export directory with the native folder picker; the webview cannot name the folder, and canceling the picker is an ordinary outcome. The filesystem root, the home folder or any folder containing it, and folders inside the active vault are rejected so a broad selection cannot import unrelated documents. The chosen folder is scanned within bounded depth, a total budget of visited files and folders, and a cap on importable files; reaching a budget stops the import with an error. Hidden files, unsafe paths, symbolic links (including Windows junctions), special files, and workspace sitemap artifacts are excluded, each skipped link is reported, and files are read only when they resolve inside the chosen folder. Import notes are capped and the rest summarized.
 
-Markdown and HTML reuse the canonical importers. Local links between exported files are rewritten to local Notes targets where identity can be established. Local assets are copied only when the user enables copying and the shared boundary validates the source.
+Markdown and HTML reuse the canonical importers. Local links between exported files are rewritten to local Notes targets where identity can be established. Local assets are copied only when the user enables copying (off by default) and the shared boundary validates the source.
 
-CSV files can reconstruct data sources. The first column becomes title, remaining columns become compatible properties, and non-empty rows become row pages. A matching Markdown or HTML file can supply a row page body rather than creating a duplicate page.
+CSV files can reconstruct data sources. The first column becomes title, remaining columns become compatible properties, and non-empty rows become row pages. A matching Markdown or HTML file can supply a row page body rather than creating a duplicate page. Each exported page or row body accepts up to 5,000 blocks, matching Notion API import, and one folder import accepts up to 500,000 blocks in total. A file that cannot be read or parsed, such as one over the size or nesting limits, or one that would pass the folder total, is skipped with a note while the rest of the folder imports. Each referenced local file is copied once per import, and copying stops with a note after about 1 GiB of files.
 
 ## CSV database import
 

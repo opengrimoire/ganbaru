@@ -284,8 +284,7 @@ pub fn show_benchmark_notification(
     });
 }
 
-#[tauri::command]
-pub fn show_distractions_desktop_block_notification(
+pub(crate) fn show_distractions_desktop_block_notification(
     app: tauri::AppHandle,
     app_name: String,
     app_sounds: State<'_, AppSoundState>,
@@ -329,8 +328,7 @@ pub fn show_distractions_desktop_block_notification(
     });
 }
 
-#[tauri::command]
-pub fn show_distractions_desktop_limit_notification(
+pub(crate) fn show_distractions_desktop_limit_notification(
     app: tauri::AppHandle,
     app_name: String,
     limit_name: String,

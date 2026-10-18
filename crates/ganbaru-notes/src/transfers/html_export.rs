@@ -14,7 +14,7 @@ use crate::models::{
 };
 use crate::validation::require_uuid;
 use serde_json::{Value, json};
-use sqlx::{FromRow, SqlitePool};
+use sqlx::{AssertSqlSafe, FromRow, SqlitePool};
 use std::collections::{HashMap, HashSet};
 
 const EXPORT_CSS_PATH: &str = "assets/ganbaru-notes-export.css";
@@ -338,7 +338,7 @@ async fn load_blocks(pool: &SqlitePool, page_ids: &[String]) -> Result<Vec<NoteB
            AND in_trash = 0
          ORDER BY page_id ASC, sort_order ASC, id ASC"
     );
-    let mut query = sqlx::query_as::<_, NoteBlockRow>(&sql);
+    let mut query = sqlx::query_as::<_, NoteBlockRow>(AssertSqlSafe(sql.as_str()));
     for page_id in page_ids {
         query = query.bind(page_id);
     }
@@ -482,7 +482,7 @@ async fn load_page_comments(
            )
          ORDER BY created_time ASC, id ASC"
     );
-    let thread_rows = sqlx::query_as::<_, NoteCommentThreadRow>(&sql)
+    let thread_rows = sqlx::query_as::<_, NoteCommentThreadRow>(AssertSqlSafe(sql.as_str()))
         .bind(page_id)
         .fetch_all(pool)
         .await
@@ -611,7 +611,7 @@ async fn load_assets(
          ORDER BY asset_path ASC",
         placeholders(sorted_paths.len())
     );
-    let mut query = sqlx::query_as::<_, AssetRow>(&sql);
+    let mut query = sqlx::query_as::<_, AssetRow>(AssertSqlSafe(sql.as_str()));
     for path in &sorted_paths {
         query = query.bind(path);
     }

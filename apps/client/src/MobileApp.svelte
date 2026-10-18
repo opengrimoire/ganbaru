@@ -1166,4 +1166,8 @@
     {@const VaultOwnershipPrompt = module.default}
     <VaultOwnershipPrompt platform="android" onStatusReady={reportOwnershipStatusReady} />
   {/await}
+  {#await import("$lib/components/vault/FlaggedRollbackToast.svelte") then module}
+    {@const FlaggedRollbackToast = module.default}
+    <FlaggedRollbackToast />
+  {/await}
 </div>

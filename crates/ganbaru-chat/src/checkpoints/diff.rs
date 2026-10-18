@@ -3,6 +3,7 @@
 use super::git::git_output;
 use super::{StoredCheckpoint, checkpoint_error};
 use crate::events::ChangedFileSummary;
+use crate::git::GitFolder;
 use crate::models::{ChatResult, ChatThreadId};
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -37,12 +38,12 @@ pub(super) struct ChatCheckpointFileDiffRead {
 }
 
 pub fn diff_files(
-    root: &Path,
+    folder: GitFolder<'_>,
     pre: &StoredCheckpoint,
     post: &StoredCheckpoint,
 ) -> ChatResult<Vec<ChatChangedFileRead>> {
     let status = git_output(
-        root,
+        folder,
         &[
             "diff-tree",
             "-r",
@@ -56,13 +57,13 @@ pub fn diff_files(
         None,
         None,
     )?;
-    let stats = diff_numstat(root, &pre.git_object_id, &post.git_object_id)?;
+    let stats = diff_numstat(folder, &pre.git_object_id, &post.git_object_id)?;
     parse_name_status(&status.stdout, &stats)
 }
 
 #[cfg(test)]
 pub(super) fn file_diff(
-    root: &Path,
+    folder: GitFolder<'_>,
     pre: &StoredCheckpoint,
     post: &StoredCheckpoint,
     relative_path: &str,
@@ -88,7 +89,7 @@ pub(super) fn file_diff(
         "--",
         relative_path,
     ]);
-    let output = git_output(root, &arguments, None, None)?;
+    let output = git_output(folder, &arguments, None, None)?;
     let byte_size = output.stdout.len() as u64;
     let truncated = output.stdout.len() > MAX_DIFF_BYTES;
     let patch = String::from_utf8(output.stdout)
@@ -109,7 +110,7 @@ pub(super) fn file_diff(
 }
 
 pub(super) fn changed_file_summaries(
-    root: &Path,
+    folder: GitFolder<'_>,
     pre_oid: &str,
     post_oid: &str,
 ) -> ChatResult<Vec<ChangedFileSummary>> {
@@ -129,7 +130,7 @@ pub(super) fn changed_file_summaries(
         git_object_id: post_oid.to_string(),
         ..pre.clone()
     };
-    Ok(diff_files(root, &pre, &post)?
+    Ok(diff_files(folder, &pre, &post)?
         .into_iter()
         .map(|file| ChangedFileSummary {
             relative_path: file.relative_path,
@@ -170,9 +171,13 @@ fn truncate_patch_at_hunk_boundary(patch: &str, maximum_bytes: usize) -> String 
     patch[..end].to_string()
 }
 
-fn diff_numstat(root: &Path, pre_oid: &str, post_oid: &str) -> ChatResult<DiffLineCounts> {
+fn diff_numstat(
+    folder: GitFolder<'_>,
+    pre_oid: &str,
+    post_oid: &str,
+) -> ChatResult<DiffLineCounts> {
     let output = git_output(
-        root,
+        folder,
         &[
             "diff",
             "--no-ext-diff",

@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   createProviderSetupDraft,
+  isSecretLikeEnvironmentName,
   providerConfigurationFromDraft,
   providerInstanceIdFromLabel,
+  storesPlaintextSecret,
   validateProviderSetup,
 } from "./provider-setup";
 
@@ -162,5 +164,27 @@ describe("provider setup", () => {
       providerConfig: { schemaVersion: 1, value: { serverUrl: "https://example.com" } },
     });
     expect(validateProviderSetup(draft, new Set()).fields["providerConfig.mode"]).toBeDefined();
+  });
+});
+
+describe("plaintext secret warning", () => {
+  it("matches credential names by whole segment and ignores ordinary limits", () => {
+    for (const name of ["OPENAI_API_KEY", "ANTHROPIC_AUTH_TOKEN", "GITHUB_PAT", "client_secret", "DEEPSEEK_APIKEY"]) {
+      expect(isSecretLikeEnvironmentName(name)).toBe(true);
+    }
+    for (const name of ["MAX_THINKING_TOKENS", "CLAUDE_CODE_MAX_OUTPUT_TOKENS", "KEYBOARD_LAYOUT", "AUTHOR_NAME", "PATH", ""]) {
+      expect(isSecretLikeEnvironmentName(name)).toBe(false);
+    }
+  });
+
+  it("warns only for plaintext values and keeps them valid", () => {
+    const row = { key: "row-1", name: "OPENAI_API_KEY", valueType: "text" as const, value: "sk-1", credentialReference: "" };
+    expect(storesPlaintextSecret(row)).toBe(true);
+    expect(storesPlaintextSecret({ ...row, valueType: "inherit" })).toBe(false);
+    expect(storesPlaintextSecret({ ...row, valueType: "secret", value: "" })).toBe(false);
+    expect(storesPlaintextSecret({ ...row, name: "MAX_THINKING_TOKENS" })).toBe(false);
+
+    const draft = { ...createProviderSetupDraft(), familyId: "cursor", label: "Cursor", instanceId: "cursor", executable: "cursor-agent", environment: [row] };
+    expect(validateProviderSetup(draft, new Set()).fields["environment.row-1.value"]).toBeUndefined();
   });
 });

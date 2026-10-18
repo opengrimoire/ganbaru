@@ -70,6 +70,8 @@ impl OpenCodeEventNormalizer {
                 detail: (!detail.is_empty()).then_some(detail),
                 allowed_decisions: decisions,
                 safe_payload: safe_shape(&Value::Object(properties.clone())),
+                subject: None,
+                session_grants: Vec::new(),
             }),
         )?])
     }

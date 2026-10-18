@@ -1,4 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
+import { translate } from "$lib/i18n/translator.svelte";
 
 export interface MediaFolderTrack {
   path: string;
@@ -95,6 +96,47 @@ export async function getYouTubeHostUrl(): Promise<string> {
   return invoke("music_youtube_host_url");
 }
 
+/** Android native YouTube host instance: the visible player or the hidden source resolver. */
+export type NativeYouTubeHostInstance = "playback" | "resolver";
+
+/** Native YouTube host placement in CSS pixels of the app WebView. */
+export interface NativeYouTubeHostBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  scale: number;
+  visible: boolean;
+}
+
+/** Opens a separate Android WebView for the YouTube host page; its messages arrive on `channel`. */
+export async function openNativeYouTubeHost(
+  instance: NativeYouTubeHostInstance,
+  url: string,
+  bounds: NativeYouTubeHostBounds,
+  channel: Channel<unknown>,
+): Promise<void> {
+  await invoke("music_youtube_native_open", { instance, url, bounds, channel });
+}
+
+export async function setNativeYouTubeHostBounds(
+  instance: NativeYouTubeHostInstance,
+  bounds: NativeYouTubeHostBounds,
+): Promise<void> {
+  await invoke("music_youtube_native_bounds", { instance, bounds });
+}
+
+export async function postNativeYouTubeHostMessage(
+  instance: NativeYouTubeHostInstance,
+  message: Record<string, unknown>,
+): Promise<void> {
+  await invoke("music_youtube_native_post", { instance, message });
+}
+
+export async function closeNativeYouTubeHost(instance: NativeYouTubeHostInstance): Promise<void> {
+  await invoke("music_youtube_native_close", { instance });
+}
+
 export async function getYouTubeMetadata(
   playlistId: string | null,
   videoIds: string[],
@@ -107,4 +149,21 @@ export async function getYouTubeMetadata(
 /** Loads a validated YouTube thumbnail from the device-local image cache. */
 export async function getYouTubeThumbnail(videoId: string): Promise<string | null> {
   return invoke("music_youtube_thumbnail", { videoId });
+}
+
+/**
+ * Asks natively before playing local files that no picker or root binding on this device
+ * granted. Resolves `false` when the user cancels; granted files never show the dialog.
+ */
+export async function confirmLocalMusicSources(paths: readonly string[]): Promise<boolean> {
+  return invoke<boolean>("music_confirm_local_sources", {
+    paths,
+    prompt: {
+      title: translate("music.nativeSession.localSourceReviewTitle"),
+      message: translate("music.nativeSession.localSourceReviewMessage"),
+      allowLabel: translate("music.nativeSession.localSourceReviewAllow"),
+      cancelLabel: translate("music.nativeSession.localSourceReviewCancel"),
+      moreLabel: translate("music.nativeSession.localSourceReviewMore"),
+    },
+  });
 }

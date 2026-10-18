@@ -136,6 +136,7 @@ impl ClaudeProviderDriver {
                         safety_mode: SafetyMode::AskForApproval,
                         interaction_mode: InteractionMode::Build,
                     },
+                    project_configuration: ProjectConfigurationAccess::Restricted,
                 },
             )
             .await?;
@@ -260,6 +261,7 @@ impl ClaudeProviderDriver {
                     effort: effort.as_deref(),
                     fast_mode,
                     modes: input.modes(),
+                    project_configuration: input.workspace().project_configuration,
                 },
             )
             .await?;

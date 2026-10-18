@@ -46,6 +46,7 @@ fn browser_artifacts_are_managed_thread_resources() {
                 frame_count: Some(1),
                 created_at: &UtcTimestamp::new(NOW).unwrap(),
                 bytes,
+                quota: None,
             },
         )
         .await
@@ -85,6 +86,132 @@ fn browser_artifacts_are_managed_thread_resources() {
             1
         );
         assert!(!artifact_path.exists());
+        fs::remove_dir_all(vault_root).unwrap();
+    });
+}
+
+#[test]
+fn browser_artifacts_beyond_the_rolling_quota_are_refused_without_writing() {
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        let vault_root = std::env::temp_dir().join(format!(
+            "ganbaru-chat-browser-quota-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&vault_root).unwrap();
+        let thread_id = ChatThreadId::new("thread-1").unwrap();
+        let working_folder_id = ProjectWorkingFolderId::new("workspace-1").unwrap();
+        sqlx::query(
+            "INSERT INTO chat_preview_tabs
+                (id, thread_id, position, current_url, title, viewport_kind, viewport_width,
+                 viewport_height, visible, loading_state, created_at, updated_at)
+             VALUES ('preview-1', 'thread-1', 0, 'http://localhost:5173', 'Preview',
+                 'freeform', 1280, 720, 1, 'loaded', ?, ?)",
+        )
+        .bind(NOW)
+        .bind(NOW)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let created_at = UtcTimestamp::new(NOW).unwrap();
+        let window_start = UtcTimestamp::new("2026-01-01T00:00:00.000Z").unwrap();
+        let after_window = UtcTimestamp::new("2099-01-01T00:00:00.000Z").unwrap();
+        let store = |resource_id: &'static str, bytes: &'static [u8], quota| {
+            store_browser_artifact(
+                &pool,
+                &vault_root,
+                StoreBrowserArtifact {
+                    resource_id,
+                    thread_id: &thread_id,
+                    working_folder_id: &working_folder_id,
+                    preview_tab_id: "preview-1",
+                    kind: ChatResourceKind::BrowserScreenshot,
+                    display_name: "Browser screenshot",
+                    mime_type: "image/png",
+                    source_url: "http://localhost:5173",
+                    viewport_width: 1280,
+                    viewport_height: 720,
+                    duration_milliseconds: None,
+                    frame_count: Some(1),
+                    created_at: &created_at,
+                    bytes,
+                    quota,
+                },
+            )
+        };
+        let count_quota = BrowserArtifactQuota {
+            since: &window_start,
+            max_count: 2,
+            max_bytes: 1_024,
+        };
+        store("browser-quota-1", b"first", Some(count_quota))
+            .await
+            .unwrap();
+        store("browser-quota-2", b"second", Some(count_quota))
+            .await
+            .unwrap();
+        let artifact_directory = vault_root.join("assets/chat/browser-artifacts");
+        let files = || {
+            let mut names = fs::read_dir(&artifact_directory)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect::<Vec<_>>();
+            names.sort();
+            names
+        };
+        let rows = || async {
+            (
+                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM chat_resources")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap(),
+                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM chat_browser_artifacts")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap(),
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM chat_resource_thread_references",
+                )
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            )
+        };
+        let files_before = files();
+        let rows_before = rows().await;
+        assert_eq!(files_before.len(), 2);
+
+        let over_count = store("browser-quota-3", b"third", Some(count_quota))
+            .await
+            .unwrap_err();
+        assert_eq!(over_count.code, ChatErrorCode::Validation);
+        let byte_quota = BrowserArtifactQuota {
+            since: &window_start,
+            max_count: 10,
+            max_bytes: 15,
+        };
+        let over_bytes = store("browser-quota-4", b"sixth", Some(byte_quota))
+            .await
+            .unwrap_err();
+        assert_eq!(over_bytes.code, ChatErrorCode::Validation);
+        assert_eq!(files(), files_before);
+        assert_eq!(rows().await, rows_before);
+
+        let next_window = BrowserArtifactQuota {
+            since: &after_window,
+            ..count_quota
+        };
+        store("browser-quota-5", b"later", Some(next_window))
+            .await
+            .unwrap();
+        store("browser-quota-6", b"user capture", None)
+            .await
+            .unwrap();
+        assert_eq!(files().len(), 4);
         fs::remove_dir_all(vault_root).unwrap();
     });
 }

@@ -44,7 +44,7 @@ pub(super) async fn insert_open_run(
 }
 
 pub(super) async fn query_plan(pool: &SqlitePool, sql: &str) -> String {
-    sqlx::query(&format!("EXPLAIN QUERY PLAN {sql}"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("EXPLAIN QUERY PLAN {sql}")))
         .fetch_all(pool)
         .await
         .unwrap()

@@ -209,3 +209,59 @@ describe("vault state api", () => {
     await expect(getVaultOwnershipStatus()).rejects.toThrow("vault ownership response is incomplete");
   });
 });
+
+describe("database rollbacks", () => {
+  const rollback = {
+    id: "20261018T070005000Z",
+    createdAt: "2026-10-18T07:00:05.000Z",
+    sizeBytes: 4096,
+    origin: "reset",
+    flagged: false,
+    dismissed: false,
+  };
+
+  it("lists rollbacks in the order Rust returned", async () => {
+    const { listDatabaseRollbacks } = await loadModule();
+    const older = { ...rollback, id: "20261017T070005000Z", createdAt: "2026-10-17T07:00:05.000Z" };
+    invokeMock.mockResolvedValueOnce([rollback, older]);
+    await expect(listDatabaseRollbacks()).resolves.toEqual([rollback, older]);
+    expect(invokeMock).toHaveBeenCalledWith("vault_database_rollbacks");
+  });
+
+  it("rejects malformed rollback entries", async () => {
+    const { parseDatabaseRollbacks } = await loadModule();
+    expect(() => parseDatabaseRollbacks(null)).toThrow("not a list");
+    expect(() => parseDatabaseRollbacks(["x"])).toThrow("not an object");
+    expect(() => parseDatabaseRollbacks([{ ...rollback, id: "" }])).toThrow("incomplete");
+    expect(() => parseDatabaseRollbacks([{ ...rollback, createdAt: "yesterday" }])).toThrow("incomplete");
+    expect(() => parseDatabaseRollbacks([{ ...rollback, sizeBytes: -1 }])).toThrow("incomplete");
+    expect(() => parseDatabaseRollbacks([{ ...rollback, sizeBytes: 1.5 }])).toThrow("incomplete");
+    expect(() => parseDatabaseRollbacks([{ ...rollback, origin: "handoff" }])).toThrow("incomplete");
+    expect(() => parseDatabaseRollbacks([{ ...rollback, flagged: "yes" }])).toThrow("incomplete");
+    const { dismissed: _omitted, ...withoutDismissed } = rollback;
+    expect(() => parseDatabaseRollbacks([withoutDismissed])).toThrow("incomplete");
+  });
+
+  it("reports only undismissed flagged replacement copies", async () => {
+    const { parseDatabaseRollbacks, pendingFlaggedRollbacks } = await loadModule();
+    const flagged = { ...rollback, id: "20261018T080005000Z", origin: "replacement", flagged: true };
+    const dismissed = { ...flagged, id: "20261018T090005000Z", dismissed: true };
+    const plain = { ...rollback, origin: "replacement" };
+    const parsed = parseDatabaseRollbacks([dismissed, flagged, plain, rollback]);
+    expect(pendingFlaggedRollbacks(parsed).map((entry) => entry.id)).toEqual([flagged.id]);
+  });
+
+  it("dismisses a flagged rollback by its ID only", async () => {
+    const { dismissDatabaseRollback } = await loadModule();
+    invokeMock.mockResolvedValueOnce(undefined);
+    await dismissDatabaseRollback(rollback.id);
+    expect(invokeMock).toHaveBeenCalledWith("vault_dismiss_database_rollback", { id: rollback.id });
+  });
+
+  it("restores a rollback by its ID only", async () => {
+    const { restoreDatabaseRollback } = await loadModule();
+    invokeMock.mockResolvedValueOnce(undefined);
+    await restoreDatabaseRollback(rollback.id);
+    expect(invokeMock).toHaveBeenCalledWith("vault_restore_database_rollback", { id: rollback.id });
+  });
+});

@@ -8,11 +8,13 @@ This document is the command and gate-selection reference. Supporting documents 
 - [Test authoring](test-authoring.md): useful frontend, Rust, SQLite, authorization, and UI tests.
 - [Android acceptance](android.md): physical-device, emulator, permission, lifecycle, and release cases.
 - [Local vault handoff](vault-handoff.md): physical desktop and Android round-trip acceptance and result record.
+- [Chat provider trust](chat-provider-trust.md): project provider configuration in trusted and untrusted folders, with marker hooks.
 - [Calendar recurrence](calendar-recurrence.md): recurrence edit, protection, deletion, and Undo matrices.
 - [Notes editor](notes-editor.md): editor, database, transfer, clipboard, and recovery acceptance.
 - [Project dependency cascades](project-dependency-cascades.md): dependency date review, apply, retry, and Gantt acceptance.
 - [Distraction blocker runtime](distractions.md): desktop and Android runtime acceptance without the WebView.
 - [Music desktop](music.md): real audio, lifecycle, and automation acceptance.
+- [Desktop windows](desktop-windows.md): detached tab windows, Focus overlays, and Chat previews under per-window permissions.
 - [Performance harness](../performance/harness.md): benchmark-only contracts outside normal validation.
 
 ## Goals
@@ -37,7 +39,7 @@ Always use the workspace flag for root scripts.
 
 | Command | Purpose |
 | --- | --- |
-| `pnpm -w run check` | Rust formatting and Clippy, then provider protocol snapshots, Svelte Check, and TypeScript |
+| `pnpm -w run check` | Rust formatting and Clippy, then the workflow signing-isolation check, provider protocol snapshots, Svelte Check, and TypeScript |
 | `pnpm -w run test` | Rust tests, then normal frontend tests in four sequential shards |
 | `pnpm -w run test:benchmark-contracts` | Explicit benchmark fixture and harness contracts, excluded from normal validation |
 | `pnpm -w run editor-check` | Tailwind editor-style diagnostics |

@@ -3,7 +3,7 @@
 use crate::vault::handoff::protocol::{DistractionsSampleMessage, MAX_DISTRACTIONS_SAMPLES};
 use sha2::{Digest, Sha256};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use sqlx::{Row, SqlitePool};
+use sqlx::{AssertSqlSafe, Row, SqlitePool};
 use std::path::{Path, PathBuf};
 use tauri::{Manager, Runtime};
 
@@ -720,7 +720,7 @@ async fn accounting_source_days_at(
                 SELECT 1 FROM accepted_usage_samples a WHERE a.vault_id = p.vault_id
                   AND a.device_id = p.device_id AND a.sample_id = p.sample_id)";
         let count_sql = format!("SELECT COUNT(*) FROM ({source_sql} LIMIT ?)");
-        let count: i64 = sqlx::query_scalar(&count_sql)
+        let count: i64 = sqlx::query_scalar(AssertSqlSafe(count_sql.as_str()))
             .bind(vault_id)
             .bind(week)
             .bind(local_date)
@@ -740,7 +740,7 @@ async fn accounting_source_days_at(
             FROM ({source_sql}) GROUP BY source_type, source_key, local_date
             ORDER BY local_date, source_type, source_key LIMIT ?"
         );
-        let rows = sqlx::query(&query)
+        let rows = sqlx::query(AssertSqlSafe(query.as_str()))
             .bind(vault_id)
             .bind(week)
             .bind(local_date)
@@ -933,7 +933,7 @@ async fn insert_message_executor(
              started_at_ms, elapsed_seconds, local_date, created_at_ms)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     );
-    sqlx::query(&query)
+    sqlx::query(AssertSqlSafe(query.as_str()))
         .bind(&sample.sample_id)
         .bind(vault_id)
         .bind(&sample.device_id)
@@ -985,7 +985,7 @@ async fn read_messages_with_limit(
          WHERE vault_id = ? AND (? IS NULL OR device_id = ?)
          ORDER BY created_at_ms ASC, sample_id ASC LIMIT ?"
     );
-    let rows = sqlx::query(&query)
+    let rows = sqlx::query(AssertSqlSafe(query.as_str()))
         .bind(vault_id)
         .bind(device_id)
         .bind(device_id)

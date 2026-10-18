@@ -50,6 +50,10 @@ The mobile capability grants only commands required by shared features and Andro
 
 Untrusted file and native responses are validated before becoming typed frontend state. External URL opening is limited to supported safe schemes and explicit user action. Production content policy does not allow arbitrary remote script or image authority.
 
+The app WebView denies every frame source in production and development CSP, so no remote or loopback page loads inside the WebView that holds the Tauri bridge. YouTube playback and link resolution run in separate native WebViews owned by the mobile media plugin. Those views have no JavaScript interface or document-start scripts, deny file, content, geolocation, pop-up, and permission access, and load only the Rust-built player page from an app-asset origin. They reach the app only through a web message listener restricted to that origin and the main frame, and Rust validates every command before it reaches the page. Android does not start the loopback Music server, and the playlist builder's inline YouTube embed is not available on Android.
+
+Release builds restrict Tauri's generated document-start scripts to the `tauri.localhost` origins through a Gradle task that fails the build if the generated source changes shape. Debug builds keep every origin so the development server works; frame denial keeps those scripts out of embedded content there.
+
 ## Native component exposure
 
 Services, receivers, providers, and activities are non-exported unless an operating-system integration requires exposure. Internal broadcasts use an app-signature permission. Notification taps and document results are validated before routing.

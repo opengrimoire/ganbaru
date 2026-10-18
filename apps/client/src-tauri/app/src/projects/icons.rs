@@ -15,7 +15,6 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
     fs,
-    io::Write,
     path::{Component, Path, PathBuf},
 };
 #[cfg(desktop)]
@@ -64,14 +63,6 @@ fn project_icon_start_directory<R: Runtime>(app: &AppHandle<R>) -> Option<PathBu
 
 fn active_project_icon_dir<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     Ok(vault::active_vault_path(app)?
-        .join("assets")
-        .join(PROJECT_ICON_DIR))
-}
-
-fn active_writable_project_icon_dir<R: Runtime>(
-    app: &AppHandle<R>,
-) -> Result<vault::WritableVaultPath, String> {
-    Ok(vault::active_writable_vault_path(app)?
         .join("assets")
         .join(PROJECT_ICON_DIR))
 }
@@ -169,26 +160,18 @@ fn hex_hash(bytes: &[u8]) -> String {
     output
 }
 
-fn write_binary_file_atomically(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| "project icon target has no parent".to_string())?;
-    fs::create_dir_all(parent).map_err(|e| format!("create project icon directory: {e}"))?;
-    let file_name = path
-        .file_name()
-        .ok_or_else(|| "project icon target has no file name".to_string())?
-        .to_string_lossy()
-        .into_owned();
-    let temporary_path = parent.join(format!("{file_name}.tmp"));
-    {
-        let mut file =
-            fs::File::create(&temporary_path).map_err(|e| format!("write project icon: {e}"))?;
-        file.write_all(bytes)
-            .map_err(|e| format!("write project icon: {e}"))?;
-        file.sync_all()
-            .map_err(|e| format!("sync project icon: {e}"))?;
-    }
-    fs::rename(&temporary_path, path).map_err(|e| format!("save project icon: {e}"))
+fn write_binary_file_atomically(
+    vault_root: &Path,
+    path: &Path,
+    bytes: &[u8],
+) -> Result<(), String> {
+    ganbaru_atomic_files::write_file_atomically_within(
+        vault_root,
+        path,
+        bytes,
+        ganbaru_atomic_files::FileAccess::Default,
+    )
+    .map_err(|error| format!("save project icon: {error}"))
 }
 
 fn save_project_icon_bytes<R: Runtime>(
@@ -199,9 +182,14 @@ fn save_project_icon_bytes<R: Runtime>(
     let kind = validate_project_icon_image(&bytes)?.kind;
     let file_name = format!("{}.{}", hex_hash(&bytes), kind.extension());
     let relative_path = format!("{PROJECT_ICON_DIR}/{file_name}");
-    let path = active_writable_project_icon_dir(app)?.join(file_name);
-    if !path.exists() {
-        write_binary_file_atomically(&path, &bytes)?;
+    let writable_root = vault::active_writable_vault_path(app)?;
+    let vault_root = writable_root.to_path_buf();
+    let path = writable_root
+        .join("assets")
+        .join(PROJECT_ICON_DIR)
+        .join(file_name);
+    if !ganbaru_atomic_files::is_regular_file(&path) {
+        write_binary_file_atomically(&vault_root, &path, &bytes)?;
     }
     Ok(ProjectIconAsset { relative_path })
 }

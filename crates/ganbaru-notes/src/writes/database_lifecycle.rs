@@ -3,7 +3,7 @@
 use crate::{data_sources, page_history, project_history};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sqlx::{Sqlite, Transaction};
+use sqlx::{AssertSqlSafe, Sqlite, Transaction};
 use std::collections::{HashSet, VecDeque};
 
 const JOURNAL_KEY: &str = "__ganbaru_trash";
@@ -58,7 +58,7 @@ pub(super) async fn adopt_block_project(
             None => "json_remove(properties, '$.__ganbaru_project_id')",
         };
         let statement = format!("UPDATE notes_pages SET properties = {properties} WHERE id = ?");
-        let mut query = sqlx::query(&statement);
+        let mut query = sqlx::query(AssertSqlSafe(statement.as_str()));
         if let Some(project_id) = project_id {
             query = query.bind(project_id);
         }
@@ -78,9 +78,9 @@ async fn set_graph_trash(
     in_trash: bool,
 ) -> Result<(), String> {
     let (table, column, id) = root_location(&root);
-    let (state, raw): (i64, String) = sqlx::query_as(&format!(
+    let (state, raw): (i64, String) = sqlx::query_as(AssertSqlSafe(format!(
         "SELECT in_trash, {column} FROM {table} WHERE id = ?"
-    ))
+    )))
     .bind(id)
     .fetch_optional(&mut **tx)
     .await
@@ -135,12 +135,13 @@ async fn set_graph_trash(
         if let Some(journal) = journal {
             validate_journal(&journal)?;
             restore_journal(tx, &journal).await?;
-            let raw: String =
-                sqlx::query_scalar(&format!("SELECT {column} FROM {table} WHERE id = ?"))
-                    .bind(id)
-                    .fetch_one(&mut **tx)
-                    .await
-                    .map_err(|e| format!("reload restored Notes metadata: {e}"))?;
+            let raw: String = sqlx::query_scalar(AssertSqlSafe(format!(
+                "SELECT {column} FROM {table} WHERE id = ?"
+            )))
+            .bind(id)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(|e| format!("reload restored Notes metadata: {e}"))?;
             metadata = serde_json::from_str(&raw)
                 .map_err(|e| format!("parse restored Notes metadata: {e}"))?;
             if let Some(object) = metadata.as_object_mut() {
@@ -155,10 +156,10 @@ async fn set_graph_trash(
         } else {
             // History restoration and page moves can trash individual records without a graph journal.
             // Restore only that record, preserving independently trashed descendants.
-            sqlx::query(&format!(
+            sqlx::query(AssertSqlSafe(format!(
                 "UPDATE {table} SET in_trash = 0,
                 last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?"
-            ))
+            )))
             .bind(id)
             .execute(&mut **tx)
             .await
@@ -191,12 +192,14 @@ async fn write_metadata(
     id: &str,
     value: &Value,
 ) -> Result<(), String> {
-    sqlx::query(&format!("UPDATE {table} SET {column} = ? WHERE id = ?"))
-        .bind(value.to_string())
-        .bind(id)
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| format!("save Notes trash metadata: {e}"))?;
+    sqlx::query(AssertSqlSafe(format!(
+        "UPDATE {table} SET {column} = ? WHERE id = ?"
+    )))
+    .bind(value.to_string())
+    .bind(id)
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| format!("save Notes trash metadata: {e}"))?;
     Ok(())
 }
 
@@ -225,7 +228,7 @@ async fn collect_graph(
         };
         let statement =
             format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE id = ? AND {state_query})");
-        let mut query = sqlx::query_scalar::<_, bool>(&statement).bind(id);
+        let mut query = sqlx::query_scalar::<_, bool>(AssertSqlSafe(statement.as_str())).bind(id);
         if owner {
             query = query.bind(token);
         }
@@ -291,7 +294,7 @@ async fn bounded_ids(
     } else {
         query.to_string()
     };
-    let mut request = sqlx::query_scalar::<_, String>(&query).bind(id);
+    let mut request = sqlx::query_scalar::<_, String>(AssertSqlSafe(query.as_str())).bind(id);
     if query.contains("OR id = ?") {
         request = request.bind(id);
     }

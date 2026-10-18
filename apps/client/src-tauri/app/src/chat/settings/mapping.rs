@@ -1,3 +1,4 @@
+use super::runtime_approval::{pending_portable_items, runtime_review_reads};
 use super::{device_state_error, provider_not_found_error, store::read_chat_config};
 use crate::chat::device_state::{ChatProviderDeviceState, read_active_device_scope};
 use crate::chat::settings_commands::ProviderInstanceRead;
@@ -26,26 +27,29 @@ pub(crate) fn provider_instance_read(
     device_instances: &BTreeMap<ProviderInstanceId, ChatProviderDeviceState>,
 ) -> ProviderInstanceRead {
     let device = device_instances.get(&portable.instance_id);
+    let configuration = ProviderInstanceConfig {
+        schema_version: portable.schema_version,
+        instance_id: portable.instance_id.clone(),
+        family_id: portable.family_id.clone(),
+        label: portable.label.clone(),
+        enabled: portable.enabled,
+        executable: device
+            .and_then(|entry| entry.executable_path.clone())
+            .unwrap_or_default(),
+        provider_home: device.and_then(|entry| entry.provider_home_path.clone()),
+        launch_arguments: portable.launch_arguments.clone(),
+        environment: portable.environment.clone(),
+        credential_references: portable.credential_references.clone(),
+        visible_model_ids: portable.visible_model_ids.clone(),
+        favorite_model_ids: portable.favorite_model_ids.clone(),
+        provider_config: portable.provider_config.clone(),
+        internal_mcp: None,
+        unknown_fields: portable.unknown_fields.clone(),
+    };
+    let runtime_review = runtime_review_reads(&pending_portable_items(&configuration, device));
     ProviderInstanceRead {
-        configuration: ProviderInstanceConfig {
-            schema_version: portable.schema_version,
-            instance_id: portable.instance_id.clone(),
-            family_id: portable.family_id.clone(),
-            label: portable.label.clone(),
-            enabled: portable.enabled,
-            executable: device
-                .and_then(|entry| entry.executable_path.clone())
-                .unwrap_or_default(),
-            provider_home: device.and_then(|entry| entry.provider_home_path.clone()),
-            launch_arguments: portable.launch_arguments.clone(),
-            environment: portable.environment.clone(),
-            credential_references: portable.credential_references.clone(),
-            visible_model_ids: portable.visible_model_ids.clone(),
-            favorite_model_ids: portable.favorite_model_ids.clone(),
-            provider_config: portable.provider_config.clone(),
-            internal_mcp: None,
-            unknown_fields: portable.unknown_fields.clone(),
-        },
+        configuration,
+        runtime_review,
         last_probe: device.and_then(|entry| entry.last_probe.clone()),
         last_successful_probe_at: device.and_then(|entry| entry.last_successful_probe_at.clone()),
         model_catalog: device
@@ -86,6 +90,7 @@ pub(crate) fn device_configuration(config: &ProviderInstanceConfig) -> ChatProvi
         last_probe: None,
         last_successful_probe_at: None,
         model_catalog: None,
+        approved_runtime_items: Default::default(),
     }
 }
 

@@ -56,6 +56,15 @@ pub(crate) struct ConflictCount {
     pub count: usize,
 }
 
+/// A sync problem the interface explains in its own words rather than with `last_error`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum SyncErrorCode {
+    /// The hub refused a new writer of this device, which reached the writers a device or the
+    /// vault may have.
+    WriterLimit,
+}
+
 /// The sync status of the active vault.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -65,6 +74,7 @@ pub(crate) struct SyncStatusView {
     pub paused: bool,
     pub last_exchange_at_ms: Option<u64>,
     pub last_error: Option<String>,
+    pub last_error_code: Option<SyncErrorCode>,
     pub pending_local_changes: usize,
     pub waiting: usize,
     pub held: HeldView,

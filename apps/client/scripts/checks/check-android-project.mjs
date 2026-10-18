@@ -80,6 +80,7 @@ const [
   mobileDocumentsBuild,
   mobileMediaBuild,
   mobileNotificationsBuild,
+  youTubeHostViews,
 ] =
   await Promise.all([
     readAndroidFile("build.gradle.kts"),
@@ -114,6 +115,9 @@ const [
     readClientFile("../../crates/ganbaru-mobile-documents/android/build.gradle.kts"),
     readClientFile("../../crates/ganbaru-mobile-media/android/build.gradle.kts"),
     readClientFile("../../crates/ganbaru-mobile-notifications/android/build.gradle.kts"),
+    readClientFile(
+      "../../crates/ganbaru-mobile-media/android/src/main/java/org/opengrimoire/ganbaru/mobile/media/YouTubeHostViews.kt",
+    ),
   ]);
 
 const failures = [];
@@ -191,6 +195,30 @@ rejectText(
   failures,
 );
 
+for (const key of ["csp", "devCsp"]) {
+  if (androidConfig.app?.security?.[key]?.["frame-src"] !== "'none'") {
+    failures.push(`Android ${key} must deny every frame source because YouTube runs in a separate native WebView`);
+  }
+}
+for (const forbidden of ["addJavascriptInterface", "addDocumentStartJavaScript", "evaluateJavascript"]) {
+  rejectText(youTubeHostViews, forbidden, "native YouTube host WebView", failures);
+}
+for (const expected of [
+  "WebViewCompat.addWebMessageListener(",
+  "allowFileAccess = false",
+  "allowContentAccess = false",
+]) {
+  requireText(youTubeHostViews, expected, "native YouTube host WebView", failures);
+}
+for (const expected of [
+  'val appOriginInitScriptRule = "setOf(\\"http://tauri.localhost\\", \\"https://tauri.localhost\\")"',
+  'registerInitScriptOriginTask("Release", appOriginInitScriptRule)',
+  'it.name.endsWith("ReleaseKotlin")',
+  "dependsOn(releaseInitScriptOrigins)",
+]) {
+  requireText(appBuild, expected, "release init script origin restriction", failures);
+}
+
 requireText(rootBuild, 'classpath("com.android.tools.build:gradle:8.11.0")', "root build", failures);
 requireText(
   rootBuild,
@@ -238,6 +266,11 @@ for (const [expected, label] of [
   ['applicationIdSuffix = ".dev"', "debug application ID suffix"],
   ['rootProject.file("keystore.properties")', "release signing properties"],
   ['signingConfig = signingConfigs.findByName("release")', "release signing configuration"],
+  [
+    "if (releaseTaskRequested && !releaseSigningPropertiesFile.isFile && !unsignedReleaseRequested) {",
+    "explicit unsigned release opt-in",
+  ],
+  ['providers.environmentVariable("GANBARU_ANDROID_UNSIGNED_RELEASE").orNull == "true"', "unsigned release flag"],
   ['manifestPlaceholders["usesCleartextTraffic"] = "false"', "production cleartext policy"],
   ["sourceCompatibility = JavaVersion.VERSION_17", "Java source compatibility"],
   ["targetCompatibility = JavaVersion.VERSION_17", "Java target compatibility"],

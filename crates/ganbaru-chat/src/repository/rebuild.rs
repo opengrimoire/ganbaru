@@ -36,7 +36,7 @@ pub async fn rebuild_thread_projections(
     .map_err(persistence_error)?;
     for table in ["chat_pending_requests", "chat_activities", "chat_plans"] {
         let statement = format!("DELETE FROM {table} WHERE thread_id = ?");
-        sqlx::query(&statement)
+        sqlx::query(sqlx::AssertSqlSafe(statement.as_str()))
             .bind(thread_id.as_str())
             .execute(&mut *transaction)
             .await

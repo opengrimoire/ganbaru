@@ -25,7 +25,7 @@
       }
     ],
     "security": {
-      "capabilities": ["desktop"],
+      "capabilities": ["desktop", "focus-overlays"],
       "csp": {
         "default-src": "'self'",
         "script-src": "'self' https://www.youtube.com https://s.ytimg.com",
@@ -38,7 +38,8 @@
         "object-src": "'none'",
         "frame-src": "http://127.0.0.1:* http://localhost:* https://www.youtube.com https://www.youtube-nocookie.com",
         "base-uri": "'none'",
-        "form-action": "'none'"
+        "form-action": "'none'",
+        "frame-ancestors": "'none'"
       },
       "devCsp": {
         "default-src": "'self' http://localhost:1420 http://127.0.0.1:1420",
@@ -52,7 +53,8 @@
         "object-src": "'none'",
         "frame-src": "http://127.0.0.1:* http://localhost:* https://www.youtube.com https://www.youtube-nocookie.com",
         "base-uri": "'none'",
-        "form-action": "'none'"
+        "form-action": "'none'",
+        "frame-ancestors": "'none'"
       }
     }
   },

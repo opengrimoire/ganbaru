@@ -613,6 +613,7 @@ fn verified_workspace(workspace: &std::path::Path) -> VerifiedWorkspaceContext {
         canonical_path: workspace.to_string_lossy().into_owned(),
         repository_kind: RepositoryKind::None,
         repository_identity: None,
+        project_configuration: ProjectConfigurationAccess::Trusted,
     }
 }
 

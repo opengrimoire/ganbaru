@@ -1,10 +1,13 @@
 //! Engine entry points across replicas of the vault manifest.
 
 use ganbaru_contacts::PersonKeyPair;
-use ganbaru_sync_contracts::{Envelope, Field, GroupMask, RevokeReason, VersionVector};
+use ganbaru_sync_contracts::bounds::{MAX_DEPENDENCIES, MAX_WRITERS_PER_DEVICE};
+use ganbaru_sync_contracts::{
+    Content, Envelope, Field, GroupMask, RevokeReason, VersionVector, WriterId,
+};
 
 use super::block_on;
-use super::replica::{Replica, VAULT_ID, converge, person};
+use super::replica::{Identity, Replica, VAULT_ID, converge, device_id, person};
 use crate::error::failpoints;
 use crate::manifest::vault::quick_notes::{NOTES_TABLE, note_group};
 use crate::{
@@ -286,7 +289,7 @@ fn concurrent_titles_surface_a_conflict_that_a_forced_choice_resolves() {
             );
             let details = replica
                 .engine
-                .conflict_details(&mut replica.conn, &replica.ctx, NOTES_TABLE, "note-1")
+                .conflict_details(&mut replica.conn, replica.ctx.space, NOTES_TABLE, "note-1")
                 .await
                 .unwrap();
             assert_eq!(details.len(), 1);
@@ -792,6 +795,56 @@ fn a_remote_revocation_below_applied_operations_is_blocked() {
 }
 
 #[test]
+fn revoke_from_non_coordinator_writer_is_not_applied() {
+    block_on(async {
+        let mut replicas = replicas(4).await;
+        seed_note(&mut replicas[1]).await;
+        replicas[1].seal().await.unwrap();
+        let (a, rest) = replicas.split_at_mut(1);
+        let (b, rest) = rest.split_at_mut(1);
+        let (c, d) = rest.split_at_mut(1);
+        let (a, b, c, d) = (&mut a[0], &mut b[0], &mut c[0], &mut d[0]);
+        a.pull(b).await;
+        c.pull(b).await;
+        d.pull(b).await;
+        let target = b.writer();
+        let cutoff = c.applied_vector().await.get(&target);
+        assert!(matches!(
+            seal_revoke(c, target, cutoff).await,
+            Err(SyncError::InvalidRevoke(_))
+        ));
+
+        // A modified build on C seals the revocation anyway.
+        c.ctx.coordinator_device_id = device_id(c.index);
+        seal_revoke(c, target, cutoff).await.unwrap();
+        let ops = c.ops_since(&a.stored_vector().await).await;
+        let outcomes = a.receive(&ops).await;
+        assert_eq!(
+            outcomes.last(),
+            Some(&StoreOutcome::Refused(StoreRefusal::UnauthorizedRevoke))
+        );
+        a.apply_all().await.unwrap();
+        assert_eq!(title(a, "note-1").await.as_deref(), Some("One"));
+
+        // D stored it while C coordinated; once A coordinates it waits without revoking.
+        d.ctx.coordinator_device_id = device_id(c.index);
+        let ops = c.ops_since(&d.stored_vector().await).await;
+        assert!(
+            d.receive(&ops)
+                .await
+                .iter()
+                .all(|outcome| *outcome == STORED)
+        );
+        d.ctx.coordinator_device_id = device_id(a.index);
+        let reports = d.apply_all().await.unwrap();
+        assert!(reports.iter().all(|report| report.held == 0));
+        let status = d.engine.status(&mut d.conn, &d.ctx).await.unwrap();
+        assert!(status.waiting > 0);
+        assert_eq!(title(d, "note-1").await.as_deref(), Some("One"));
+    });
+}
+
+#[test]
 fn a_reseal_is_refused_once_another_writer_saw_the_replaced_operations() {
     block_on(async {
         let mut replicas = replicas(2).await;
@@ -946,6 +999,9 @@ fn failpoints_roll_back_every_entry_point() {
         c.seal().await.unwrap();
         let target = c.writer();
         let cutoff = b.applied_vector().await.get(&target);
+        // B coordinates here, so it may revoke and C accepts the revocation.
+        b.ctx.coordinator_device_id = device_id(b.index);
+        c.ctx.coordinator_device_id = device_id(b.index);
         seal_revoke(b, target, cutoff).await.unwrap();
         let known = c.stored_vector().await;
         let ops = b.ops_since(&known).await;
@@ -963,5 +1019,164 @@ fn failpoints_roll_back_every_entry_point() {
             r.reseal(needed).await
         })
         .await;
+    });
+}
+
+/// Index of the replica that seals geneses for other installations.
+const MINTER_INDEX: usize = 9;
+
+/// Geneses of new writers numbered `writers`, each on `device(writer)`, as other installations
+/// would seal them.
+async fn mint_writers(
+    writers: std::ops::Range<usize>,
+    device: impl Fn(usize) -> String,
+) -> Vec<Vec<u8>> {
+    let mut minter = Replica::new(MINTER_INDEX, 1).await;
+    for writer in writers {
+        let mut seed = [0u8; 32];
+        seed[..8].copy_from_slice(&(writer as u64).to_le_bytes());
+        seed[31] = 2;
+        minter.identity = Identity::new(seed, &minter.person, &device(writer), None);
+        minter.seal().await.unwrap();
+    }
+    minter.ops_since(&VersionVector::new()).await
+}
+
+/// Dependency counts of every stored operation of `writer`, in chain order, with whether
+/// each carries no changes.
+async fn chain_shape(replica: &mut Replica, writer: WriterId) -> Vec<(usize, bool)> {
+    let mut shape = Vec::new();
+    for bytes in replica.ops_since(&VersionVector::new()).await {
+        let operation = Envelope::decode(&bytes).unwrap().operation().unwrap();
+        if operation.writer == writer {
+            let empty =
+                matches!(&operation.content, Content::Changes(changes) if changes.is_empty());
+            shape.push((operation.header.dependencies.len(), empty));
+        }
+    }
+    shape
+}
+
+#[test]
+fn seal_succeeds_when_more_than_max_dependencies_writers_advanced() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        let minted = MAX_DEPENDENCIES + MAX_DEPENDENCIES / 2;
+        let geneses = mint_writers(0..minted, |writer| device_id(100 + writer)).await;
+        let (a, b) = replicas.split_at_mut(1);
+        let (a, b) = (&mut a[0], &mut b[0]);
+        assert_eq!(a.receive(&geneses).await, vec![STORED; minted]);
+        a.apply_all().await.unwrap();
+
+        seed_note(a).await;
+        let report = a.seal().await.unwrap();
+        let shape = chain_shape(a, a.writer()).await;
+        // The genesis, one operation that only advances dependencies, then the note with the
+        // rest.
+        assert_eq!(report.last_seq, Some(3));
+        assert_eq!(
+            shape,
+            vec![
+                (0, false),
+                (MAX_DEPENDENCIES, true),
+                (minted - MAX_DEPENDENCIES, false)
+            ]
+        );
+        assert_eq!(a.applied_vector().await.len(), minted + 1);
+
+        b.pull(a).await;
+        assert_eq!(title(b, "note-1").await.as_deref(), Some("One"));
+        assert_converged(&mut replicas).await;
+    });
+}
+
+#[test]
+fn a_fork_reseals_operations_that_only_advance_dependencies() {
+    block_on(async {
+        let mut a = Replica::new(0, 1).await;
+        let mut hub = Replica::new(1, 1).await;
+        a.exec("INSERT INTO quick_note_tags (id, name, order_key) VALUES ('tag-1', 'Work', 'a0')")
+            .await;
+        a.seal().await.unwrap();
+        let mut clone = a.clone_installation(2).await;
+        a.exec("UPDATE quick_note_tags SET name = 'Original' WHERE id = 'tag-1'")
+            .await;
+        a.seal().await.unwrap();
+        let geneses = mint_writers(0..MAX_DEPENDENCIES + 1, |writer| device_id(100 + writer)).await;
+        clone.receive(&geneses).await;
+        clone.apply_all().await.unwrap();
+        clone
+            .exec(
+                "INSERT INTO quick_note_tags (id, name, order_key) VALUES ('tag-2', 'Home', 'a1')",
+            )
+            .await;
+        clone.seal().await.unwrap();
+        let old = clone.writer();
+        assert!(
+            chain_shape(&mut clone, old)
+                .await
+                .iter()
+                .any(|(_, empty)| *empty)
+        );
+        hub.pull(&mut a).await;
+        let forked = clone.ops_since(&hub.stored_vector().await).await;
+        assert!(
+            hub.receive(&forked)
+                .await
+                .contains(&StoreOutcome::Refused(StoreRefusal::Fork { seq: 3 }))
+        );
+
+        clone.rotate();
+        let report = clone
+            .engine
+            .reseal_fork(
+                &mut clone.conn,
+                &clone.ctx,
+                old,
+                2,
+                &mut clone.identity.local(),
+                clone.now_ms,
+            )
+            .await
+            .unwrap();
+        assert_eq!(report.replaced_ops, 2);
+        let new = clone.writer();
+        let shape = chain_shape(&mut clone, new).await;
+        assert!(
+            shape
+                .iter()
+                .all(|(dependencies, _)| *dependencies <= MAX_DEPENDENCIES)
+        );
+        assert!(shape.iter().any(|(_, empty)| *empty));
+        hub.pull(&mut clone).await;
+        a.pull(&mut hub).await;
+        let mut replicas = vec![a, hub, clone];
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        assert_eq!(
+            replicas[0]
+                .count("SELECT count(*) FROM quick_note_tags WHERE id = 'tag-2'")
+                .await,
+            1
+        );
+    });
+}
+
+#[test]
+fn store_refuses_geneses_past_the_writers_of_one_device() {
+    block_on(async {
+        let mut a = Replica::new(0, 1).await;
+        let geneses = mint_writers(0..MAX_WRITERS_PER_DEVICE + 1, |_| device_id(100)).await;
+        let mut expected = vec![STORED; MAX_WRITERS_PER_DEVICE];
+        expected.push(StoreOutcome::Refused(StoreRefusal::WriterLimit));
+        assert_eq!(a.receive(&geneses).await, expected);
+        assert_eq!(a.stored_vector().await.len(), MAX_WRITERS_PER_DEVICE);
+
+        let other_device = mint_writers(
+            MAX_WRITERS_PER_DEVICE + 1..MAX_WRITERS_PER_DEVICE + 2,
+            |_| device_id(101),
+        )
+        .await;
+        assert_eq!(a.receive(&other_device).await, vec![STORED]);
     });
 }

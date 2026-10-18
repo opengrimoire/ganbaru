@@ -53,6 +53,12 @@ async fn upload(app: &tauri::AppHandle, purpose: BundlePurpose) -> Result<(), St
         if !status.can_write {
             return Err("this device is not the stable vault owner".to_string());
         }
+        // Only the linked vault is ever uploaded, even before this device marked it ready.
+        super::receiver::ensure_linked_vault_active(
+            true,
+            &crate::vault::active_vault_id(app)?,
+            &coordinator.vault_id,
+        )?;
         prepare(
             app,
             &pairing,

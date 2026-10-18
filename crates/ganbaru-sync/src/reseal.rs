@@ -145,9 +145,9 @@ async fn remove_effects(
     .fetch_all(&mut *conn)
     .await?;
     for table in ["sync_register_versions", "sync_tombstones"] {
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             "DELETE FROM {table} WHERE writer_id = ? AND seq > ?"
-        ))
+        )))
         .bind(old.as_bytes().as_slice())
         .bind(keep)
         .execute(&mut *conn)
@@ -349,6 +349,20 @@ impl Engine {
                 context: remap(&op.context, old, keep_through, new, &renamed)?,
             };
             match op.operation.content {
+                Content::Changes(changes) if changes.is_empty() => {
+                    sealer
+                        .seal_advance(
+                            self,
+                            &mut tx,
+                            ctx,
+                            &mut batch,
+                            writer,
+                            &replay,
+                            now_ms,
+                            &mut report.seal,
+                        )
+                        .await?;
+                }
                 Content::Changes(changes) => {
                     sealer
                         .seal_changes(
@@ -365,7 +379,7 @@ impl Engine {
                         .await?;
                 }
                 Content::Revoke(revocation) => {
-                    let seq = sealer
+                    sealer
                         .seal_revoke(
                             self,
                             &mut tx,
@@ -375,10 +389,9 @@ impl Engine {
                             revocation,
                             Some(&replay),
                             now_ms,
+                            &mut report.seal,
                         )
                         .await?;
-                    report.seal.sealed_ops += 1;
-                    report.seal.last_seq = Some(seq);
                 }
                 Content::Genesis(_) => {
                     return Err(corrupt("a genesis follows the start of a chain"));

@@ -338,7 +338,7 @@ async fn upsert_versions(
     );
     let seq = seq_i64(seq)?;
     let clock = log::clamp_ms(clock.as_u64());
-    let mut query = sqlx::query(&sql);
+    let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
     for (group, reference) in upserts {
         query = query
             .bind(table_param(change.table))

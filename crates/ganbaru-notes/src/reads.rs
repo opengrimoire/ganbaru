@@ -6,7 +6,7 @@ use crate::models::{
 };
 use crate::validation::{require_uuid, validate_page_size};
 use serde::{Deserialize, Serialize};
-use sqlx::{QueryBuilder, Sqlite, SqlitePool};
+use sqlx::{AssertSqlSafe, QueryBuilder, Sqlite, SqlitePool};
 use std::collections::{HashMap, HashSet};
 
 const DEFAULT_PAGE_SIZE: i64 = 50;
@@ -140,7 +140,7 @@ async fn list_page_summary_window(
     ))
 }
 
-fn push_page_summary_cursor(query: &mut QueryBuilder<'_, Sqlite>, cursor: &PageSummaryCursor) {
+fn push_page_summary_cursor(query: &mut QueryBuilder<Sqlite>, cursor: &PageSummaryCursor) {
     query
         .push(" AND (last_edited_time < ")
         .push_bind(cursor.last_edited_time.clone());
@@ -501,7 +501,7 @@ fn sort_page_rows(rows: &mut [NotePageSummaryDto]) {
 }
 
 async fn load_sidebar_root_page_rows(pool: &SqlitePool) -> Result<Vec<NotePageSummaryDto>, String> {
-    sqlx::query_as::<_, NotePageSummaryDto>(&format!(
+    sqlx::query_as::<_, NotePageSummaryDto>(AssertSqlSafe(format!(
         "SELECT {}
          FROM notes_pages
          WHERE in_trash = 0
@@ -510,7 +510,7 @@ async fn load_sidebar_root_page_rows(pool: &SqlitePool) -> Result<Vec<NotePageSu
            AND parent_type <> 'data_source_id'
          ORDER BY last_edited_time DESC, title COLLATE NOCASE ASC, id ASC LIMIT 50",
         crate::workspace_shell::page_projection()
-    ))
+    )))
     .fetch_all(pool)
     .await
     .map_err(|e| format!("list notes sidebar root pages: {e}"))
@@ -589,7 +589,7 @@ async fn load_active_ancestor_page_rows(
          LIMIT 64",
         crate::workspace_shell::page_projection()
     );
-    sqlx::query_as::<_, NotePageSummaryDto>(&query)
+    sqlx::query_as::<_, NotePageSummaryDto>(AssertSqlSafe(query.as_str()))
         .bind(page_id)
         .fetch_all(pool)
         .await

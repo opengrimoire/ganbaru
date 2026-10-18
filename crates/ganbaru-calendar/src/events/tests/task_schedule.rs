@@ -130,14 +130,14 @@ fn scheduling_rolls_back_every_event_task_link_date_history_and_receipt_after_la
         );
         tx.rollback().await.unwrap();
         for table in ["calendar_events", "calendar_event_pomodoro_configs"] {
-            let count: i64 = sqlx::query_scalar(&format!(
+            let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
                 "SELECT COUNT(*) FROM {table} WHERE {} LIKE 'calendar-schedule-%'",
                 if table == "calendar_events" {
                     "id"
                 } else {
                     "event_id"
                 }
-            ))
+            )))
             .fetch_one(&pool)
             .await
             .unwrap();

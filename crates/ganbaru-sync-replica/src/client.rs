@@ -56,6 +56,8 @@ pub struct Exchanged {
     pub known: VersionVector,
     /// Why part of the exchange stopped, when the hub or this replica refused operations.
     pub problem: Option<String>,
+    /// Code of the hub's refusal of a pushed page, when the hub refused one.
+    pub refusal: Option<SyncRefusalCode>,
     /// A direction stopped at its byte bound with operations left to move.
     pub more: bool,
 }
@@ -181,6 +183,7 @@ impl<T: SyncTransport> ClientSession<'_, T> {
                     return Ok(Some(fork));
                 }
                 exchanged.problem = Some(describe_refusal("the hub", &refusal));
+                exchanged.refusal = Some(refusal.code);
                 return Ok(None);
             }
             if !page.more {

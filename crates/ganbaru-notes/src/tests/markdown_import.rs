@@ -272,3 +272,38 @@ fn six_heading_levels_survive_markdown_html_import_and_export() {
         }
     });
 }
+
+#[test]
+fn markdown_import_skips_tables_wider_than_notes_supports_without_padding_rows() {
+    let markdown = format!(
+        "{}|\n|---|\n{}After\n",
+        "|a".repeat(250_000),
+        "|\n".repeat(200_000)
+    );
+    let started = std::time::Instant::now();
+    let plan = transfers::markdown_import::parse_markdown(&markdown, 1_000).unwrap();
+    assert!(started.elapsed() < ADVERSARIAL_PARSE_LIMIT);
+    assert!(plan.blocks.len() <= 2, "{}", plan.blocks.len());
+    assert_eq!(plan.blocks[0].block_type, "unsupported");
+    let diagnostics = serde_json::to_value(&plan.diagnostics).unwrap();
+    assert!(
+        diagnostics
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == "table_too_wide")
+    );
+}
+
+#[test]
+fn markdown_import_stops_table_rows_at_the_block_budget() {
+    let header = format!("{}|\n", "| h ".repeat(100));
+    let delimiter = format!("{}|\n", "|---".repeat(100));
+    let markdown = format!("{header}{delimiter}{}", "|\n".repeat(400_000));
+    let started = std::time::Instant::now();
+    let error = transfers::markdown_import::parse_markdown(&markdown, 1_000)
+        .err()
+        .expect("rows beyond the block budget must be rejected");
+    assert!(started.elapsed() < ADVERSARIAL_PARSE_LIMIT);
+    assert!(error.contains("up to 1000 blocks"), "{error}");
+}

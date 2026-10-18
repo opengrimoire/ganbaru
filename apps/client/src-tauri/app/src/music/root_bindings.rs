@@ -168,6 +168,14 @@ pub fn music_set_local_root_binding(
 ) -> Result<LocalRootBindingRead, String> {
     let vault_id = require_active_vault(&app, &vault_id)?;
     let root_id = validate_root_id(&root_id)?.to_string();
+    // Only a folder chosen on this device may become a root; this runs before the app state
+    // update because both take the same lock.
+    #[cfg(desktop)]
+    super::path_authority::authorize(
+        &app,
+        folder_path.trim(),
+        super::path_authority::MusicPathKind::Folder,
+    )?;
     let folder_path = canonical_existing_directory(&folder_path)?;
     update_app_state(&app, |state| {
         set_binding(state, &vault_id, &root_id, folder_path);
@@ -201,6 +209,7 @@ mod tests {
             music_root_bindings: BTreeMap::new(),
             project_working_folders: Default::default(),
             chat: Default::default(),
+            music_path_grants: Default::default(),
         }
     }
 

@@ -4,7 +4,11 @@ Tauri webviews are presentation and orchestration clients. Rust owns database ac
 
 ## Tauri capabilities
 
-Capabilities grant only the plugin operations a window or platform needs. Neither desktop nor Android exposes generic filesystem or shell plugins to the webview. Desktop exposes scoped window, webview, event, zoom, and updater operations; Android exposes notification permission checks and the repository-owned mobile plugin commands.
+Capabilities grant only the plugin operations a window or platform needs. Neither desktop nor Android exposes generic filesystem or shell plugins to the webview. Desktop exposes scoped window, event, and zoom operations; Android exposes notification permission checks and the repository-owned mobile plugin commands.
+
+Application commands are also ACL-checked, so a webview can call only the commands its capability allows and an unlisted command fails closed. `apps/client/src-tauri/permissions/app-commands.toml` defines two command sets: every registered command for the app-owned main and tab webviews, and a small Focus set for overlay and blocker windows. Desktop capabilities select webviews by label, never the main window, so Chat preview webviews attached to it receive no command or plugin grant. Functions that only Rust calls, such as Chat browser tools for the internal MCP endpoint, are not registered as commands. Runtime tests keep the permission file equal to the registered handlers, and a frontend test keeps the Focus set equal to what overlay code can reach.
+
+No webview may create windows or webviews. Detaching a tab asks Rust to open a tab window, and Rust accepts only a `view-` label, the app root with the tab query, a bounded position, and an opaque background color.
 
 URL opening is allowlisted on both platforms to specific product destinations (the repository, releases, license, icon and sound attributions, and the Notion authorization guide on desktop) rather than arbitrary web addresses. Feature-owned native commands, such as Notes hyperlink opening, parse and check their own URLs before delegation and do not widen this allowlist.
 
@@ -12,7 +16,7 @@ Capability files in `apps/client/src-tauri/capabilities/` are authoritative for 
 
 ## Content security policy
 
-Production CSP permits bundled application assets, Tauri IPC, and the origins required by current features. Desktop permits YouTube player scripts and frames plus ephemeral loopback media, image, and frame sources for Music and Chat previews. Android omits YouTube and additionally permits a connection to the GitHub releases API for its in-app update check. These are scoped exceptions, not a generic permission for remote scripts or frames.
+Production CSP permits bundled application assets, Tauri IPC, and the origins required by current features. Desktop permits YouTube player scripts and frames plus ephemeral loopback media, image, and frame sources for Music and Chat previews. Android denies every frame source, hosts YouTube in a separate bridgeless native WebView (see [Android permissions and security](../../platforms/android/permissions-and-security.md#webview-and-bridge)), and additionally permits a connection to the GitHub releases API for its in-app update check. These are scoped exceptions, not a generic permission for remote scripts or frames.
 
 Development CSP additionally supports Vite and hot reload, including `unsafe-eval`. A development exception must not be copied into production configuration.
 
@@ -20,7 +24,9 @@ Inline styles are allowed for dynamic Svelte layout, theme, and calendar geometr
 
 ## Native dialogs and document transfer
 
-File import and export flows are Rust-owned. Desktop commands open native dialogs, apply extension and size constraints, validate the selected path, and return bounded parsed data or a narrow result. The webview never receives a reusable filesystem grant.
+File import and export flows are Rust-owned. Desktop commands open native dialogs, apply extension and size constraints, validate the selected path, and return bounded parsed data or a narrow result. Import roots such as a Notion export folder come only from the native picker inside the same command, never from a webview-supplied path, and broad roots (filesystem root, home, the active vault) are rejected. The webview never receives a reusable filesystem grant.
+
+Music is the exception that keeps paths in the webview, so Rust holds the authority instead. Music pickers record a grant in Rust when they return a folder or file, and a typed or pasted local file needs one native confirmation. Every desktop Music command that takes a path (artwork, embedded artwork, media hosting, probing, reveal, root binding, relink, item repair, and background audio) acts only on a path that such a grant or a root binding on this device covers. Refresh scans the folder bound natively for the root, whatever the request names. Coverage is lexical: `..` segments are rejected before any filesystem call, and symlinks the user placed inside a chosen folder keep working, which matches how libraries on mounted shares are commonly linked. Windows device namespaces are always rejected, and network shares are reachable only through a picker grant or root binding. Grants are kept in device-local app state with a cap that evicts the oldest first, so restored sessions and background audio keep playing after a restart. Background audio checks the file type with `stat` before opening it, and its commands run off the main thread with a bounded wait for the audio engine. Refusals never echo the path.
 
 Android uses system document providers and MediaStore through repository-owned plugins. The native layer validates display names, MIME ambiguity, size, UTF-8 where required, and operation mode. It exposes selected content or a bounded export result, not a generic content URI or storage API.
 
@@ -30,7 +36,11 @@ User cancellation is an ordinary typed outcome, not a path or permission error.
 
 Vault selection validates the marker, schema version, directory relationship, permissions, and database availability before changing the active pointer. The application never treats an unrelated non-empty folder as a new vault and never silently deletes a damaged configured vault.
 
+A vault database is untrusted input. Read-write opens (selection, import, and startup), restore and handoff validation, and the guarded sync open first compare its `sqlite_schema` with the catalog an empty database gets from the same applied migrations, and reject any extra, missing, or changed table, index, trigger, or view, including FTS5 shadow tables and a migration history that is not a table. Restore runs this check before the SQLite integrity check, so integrity checking never reaches virtual tables the file reshaped. Every connection disables `trusted_schema`, enables `cell_size_check`, and runs in SQLite defensive mode. Read-only opens skip the catalog comparison because a replica may read a newer schema; they rely on query-only access and those connection settings.
+
 Portable config writes occur in Rust through validated patching and atomic replacement, so independent windows cannot rewrite the whole config from stale frontend copies. Unknown persistent values are rejected or dropped by explicit rules.
+
+A vault can come from someone else, so its contents must not redirect app writes. Vault files, managed assets, and Notes, calendar, and theme exports are written through `ganbaru-atomic-files`: a randomly named temporary file created exclusively next to the target (which refuses any existing entry, a symlink included), synced, and renamed over the target, so a planted link at the temporary or final name is replaced rather than followed. Managed asset writes create their folders one level at a time below the vault root and refuse a symlinked folder on the way. Opening or selecting a vault refuses one whose `vault.json`, `config.json`, database or SQLite companion files, `assets/`, or `projects/` is a symlink. The vault root itself may be reached through a link the user made. App state, the vault marker, and config are owner-only on Unix; assets and exports keep the default permissions so other tools can read them.
 
 The active vault path is configuration, not a hardcoded Documents location. Managed child paths are derived below the validated active root.
 
@@ -70,7 +80,7 @@ Mobile enforcement plugins expose only launchable-app discovery, selected settin
 
 ## Music loopback service
 
-Music uses an ephemeral loopback service for selected local media and the YouTube player. It binds to 127.0.0.1 on an ephemeral port and protects routes with a per-process random token that is not logged, persisted, or returned in errors. Being local does not make the origin trusted.
+Desktop Music uses an ephemeral loopback service for selected local media and the YouTube player; Android does not start it. It binds to 127.0.0.1 on an ephemeral port and protects routes with a per-process random token that is not logged, persisted, or returned in errors. Being local does not make the origin trusted.
 
 The server accepts a small allowlisted HTTP subset with bounded headers, deadlines, worker count, registrations, and resident artwork. Responses disable caching and MIME sniffing and apply route-specific CSP: media and text routes deny active content, and YouTube routes permit only the origins the embedded player requires.
 
@@ -82,4 +92,4 @@ Each network-capable feature uses its own adapter and allowlist. Do not add a sh
 
 ## Blocking native work
 
-Filesystem, process, media, Git, and operating-system work that may block runs outside the async database executor and never holds a SQL transaction or shared async mutex while waiting. Cancellation, output, time, and concurrency are bounded. See [Native backend](../../architecture/native-backend.md#asynchronous-and-blocking-work).
+Filesystem, process, media, Git, and operating-system work that may block runs outside the async database executor and never holds a SQL transaction or shared async mutex while waiting. Cancellation, output, time, and concurrency are bounded, and Git and hosted CLI runs stop their whole process tree on timeout or cancellation. See [Native backend](../../architecture/native-backend.md#asynchronous-and-blocking-work).

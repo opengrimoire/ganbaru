@@ -3,7 +3,7 @@ import type { MusicPlaybackMode, MusicRepeatMode, MusicWeight } from "$lib/music
 import type { MusicActivityPhase, MusicAssignmentBehavior, MusicAssignmentSource } from "$lib/music/context-assignment";
 import { emptyMusicSkipBreakdown, type MusicPlaylistSkipReason, type MusicSavedQueueEntry } from "$lib/music/playlists/playback";
 import { probeLocalMedia, type LocalBackendKind } from "$lib/api/media-player";
-import { pickMediaFolder, registerEmbeddedArtwork, registerMediaFile } from "$lib/api/music";
+import { confirmLocalMusicSources, pickMediaFolder, registerEmbeddedArtwork, registerMediaFile } from "$lib/api/music";
 import { clampRate, clampVolume, formatVolumePercent, MAX_VOLUME, type PlaybackSnapshot } from "$lib/music/playback";
 import { formatSourceKind, isYouTubeSource, localFileSourceFromPath, parseMusicSourceInput, sourceDisplayLabel, type MusicSource } from "$lib/music/sources";
 import { NativeMusicSessionClient } from "$lib/music/session/native-session-client";
@@ -18,6 +18,7 @@ import { createMusicHostedMediaController, type MusicStaleVisual } from "$lib/st
 import { createDeviceVolume } from "$lib/stores/music-player/device-volume";
 import { createMusicExternalControls } from "$lib/stores/music-player/external-controls";
 import { createMusicYouTubeAdapter } from "$lib/stores/music-player/youtube-adapter";
+import type { NativeYouTubeHost } from "$lib/music/youtube-native-host";
 import { createMusicWebviewLocalAdapter } from "$lib/stores/music-player/webview-local-adapter";
 
 export type { MusicStaleVisual } from "$lib/stores/music-player/hosted-media-controller";
@@ -498,6 +499,7 @@ class MusicPlayerStore {
     } finally { this.sourceActionBusy = false; }
   }
   async loadSource(source: MusicSource, options: LoadSourceOptions = {}): Promise<void> {
+    if (source.kind === "local-file" && !(await confirmLocalMusicSources([source.path, ...(source.artworkPath ? [source.artworkPath] : [])]))) return;
     await this.start({ kind: "sources", sources: [source], selectedIndex: 0, name: source.title }, options.autoplay ?? false, options.resume ?? true);
   }
   async loadReviewItem(itemId: string, autoplay: boolean): Promise<void> { await this.start({ kind: "review-item", itemId }, autoplay); }
@@ -579,6 +581,8 @@ class MusicPlayerStore {
   applyLibraryMetadata(_itemId: string, _identityKey: string, _title: string, _artworkUrl?: string | null): void { this.refreshQueue(); }
   claimSurface(owner: string, element: HTMLElement, priority = 0): () => void { return this.surfaceClaims.claim(owner, element, priority); }
   registerYouTubeFrame(frame: HTMLIFrameElement | null): void { this.youtubeAdapter.registerFrame(frame); }
+  registerYouTubeNativeHost(host: NativeYouTubeHost | null): void { this.youtubeAdapter.registerNativeHost(host); }
+  handleYouTubeNativeData(data: unknown): void { this.youtubeAdapter.handleNativeData(data); }
   registerLocalMedia(element: HTMLMediaElement | null): void { this.webviewLocalAdapter.register(element); }
   resumeSnapshotScheduler(): void { void this.heartbeat(); if (this.isYouTubeActive) this.youtubeAdapter.post({ action: "snapshot" }); }
   handleVolumeWheel(event: WheelEvent): void {

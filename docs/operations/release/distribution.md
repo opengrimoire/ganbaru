@@ -10,6 +10,8 @@ The desktop build produces installers with the public updater configuration. A p
 
 Automatic checks run at most once per day by default and can be disabled. They never download or install without an explicit user action.
 
+Rust owns the update check, download, and install; webviews have no updater plugin access and can only ask Rust to check or to install the update it already offered. Before installing, Rust requires the verified signature's trusted comment to name an asset file carrying the offered version (`_<version>_`), so a validly signed older asset cannot be served under a newer version in `latest.json`.
+
 AppImage and Windows installations can use Tauri's signed update path. Package-manager installations show the appropriate update command instead of trying to install an AppImage. Ganbaru copies, but never executes, privileged apt, dnf, zypper, yay, or paru commands.
 
 ## Linux package repositories

@@ -17,10 +17,23 @@ function isConnectivityFailure(message: string): boolean {
     || message.includes("network");
 }
 
+/** Whether startup disabled linking because saved pairing state could not be loaded. */
+function isLinkingDisabled(message: string): boolean {
+  return message.includes("vault linking is disabled");
+}
+
+/** Whether the coordinator refused the connection because its connection budget is full. */
+function isCoordinatorBusy(message: string): boolean {
+  return message.includes("handling too many connections");
+}
+
 /** Converts native handoff failures into concise localized recovery guidance. */
 export function formatHandoffError(cause: unknown, t: Translate): string {
   const raw = errorText(cause);
   const lower = raw.toLowerCase();
+  if (isLinkingDisabled(lower)) {
+    return t("vaultHandoff.linkingDisabled");
+  }
   if (lower.includes("chat") && (lower.includes("active") || lower.includes("running"))) {
     return t("vaultHandoff.blockerChat");
   }
@@ -38,6 +51,18 @@ export function formatHandoffError(cause: unknown, t: Translate): string {
   }
   if (lower.includes("already linked to another coordinator")) {
     return t("vaultHandoff.differentCoordinator");
+  }
+  if (lower.includes("linked vault is not active on this device")) {
+    return t("vaultHandoff.linkedVaultInactive");
+  }
+  if (lower.includes("vault ownership changed too often")) {
+    return t("vaultHandoff.ownershipChurnLimit");
+  }
+  if (isCoordinatorBusy(lower)) {
+    return t("vaultHandoff.coordinatorBusy");
+  }
+  if (lower.includes("vault is not active on the coordinator")) {
+    return t("vaultHandoff.coordinatorVaultInactive");
   }
   if (isConnectivityFailure(lower)) {
     return t("vaultHandoff.unreachable");
@@ -59,8 +84,8 @@ export function formatPairingCodeError(cause: unknown, t: Translate): string {
 
 /** Converts ownership connectivity failures into main-device guidance. */
 export function formatOwnershipHandoffError(cause: unknown, t: Translate): string {
-  const raw = errorText(cause);
-  if (isConnectivityFailure(raw.toLowerCase())) {
+  const lower = errorText(cause).toLowerCase();
+  if (!isLinkingDisabled(lower) && !isCoordinatorBusy(lower) && isConnectivityFailure(lower)) {
     return t("vaultHandoff.ownerUnreachable");
   }
   return formatHandoffError(cause, t);

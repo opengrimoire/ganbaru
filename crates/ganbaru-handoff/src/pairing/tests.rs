@@ -818,3 +818,124 @@ fn incoming_transfer_and_completion_survive_restart() {
         None
     );
 }
+
+#[test]
+fn enrollment_rejects_control_and_bidi_labels_without_spending_the_invitation() {
+    let temporary = TestDirectory::new("label-rejection");
+    let manager = PairingManager::default();
+    manager
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+        .expect("initialize");
+    let invitation = manager
+        .create_invitation(
+            "127.0.0.1:41000".parse().expect("endpoint"),
+            "vault-1".to_string(),
+            0,
+            crate::protocol::test_compatibility(),
+            100,
+        )
+        .expect("invitation");
+    let phone = create_identity("device-phone".to_string()).expect("phone identity");
+    for label in [
+        "phone\u{0007}",
+        "a\u{202E}b",
+        "a\u{2066}b\u{2069}",
+        "\u{200B}",
+    ] {
+        let error = manager
+            .enroll_peer(
+                Enrollment {
+                    device_label: label,
+                    ..enrollment(&invitation, &phone)
+                },
+                101,
+            )
+            .expect_err("label must be rejected");
+        assert!(error.contains("device label"), "{label:?}: {error}");
+    }
+    let peer = manager
+        .enroll_peer(
+            Enrollment {
+                device_label: "\u{1F469}\u{200D}\u{1F4BB} Phone",
+                ..enrollment(&invitation, &phone)
+            },
+            102,
+        )
+        .expect("joiners stay valid and the invitation is still usable");
+    assert_eq!(peer.device_label, "\u{1F469}\u{200D}\u{1F4BB} Phone");
+}
+
+#[test]
+fn stored_invalid_labels_are_quarantined_on_load_and_keep_the_link() {
+    let temporary = TestDirectory::new("label-quarantine");
+    let manager = PairingManager::default();
+    manager
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+        .expect("initialize");
+    enroll_device(&manager, "device-phone", "Phone", 100);
+    enroll_device(&manager, "device-laptop", "Laptop", 200);
+    drop(manager);
+
+    let state_path = temporary.path().join(PAIRING_STATE_FILE);
+    let mut stored: serde_json::Value =
+        serde_json::from_slice(&fs::read(&state_path).expect("read state")).expect("decode state");
+    stored["linkedPeers"]["device-phone"]["deviceLabel"] =
+        serde_json::Value::from("Ph\u{202E}one\u{0007}");
+    stored["linkedPeers"]["device-laptop"]["deviceLabel"] =
+        serde_json::Value::from("\u{202E}\u{0007}");
+    fs::write(
+        &state_path,
+        serde_json::to_vec(&stored).expect("encode state"),
+    )
+    .expect("write state");
+
+    let restarted = PairingManager::default();
+    restarted
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+        .expect("an invalid stored label must not block startup");
+    let labels: BTreeMap<String, String> = restarted
+        .linked_peers_for("vault-1")
+        .expect("linked peers")
+        .into_iter()
+        .map(|peer| (peer.device_id, peer.device_label))
+        .collect();
+    assert_eq!(
+        labels.get("device-phone").map(String::as_str),
+        Some("Phone")
+    );
+    assert_eq!(
+        labels.get("device-laptop").map(String::as_str),
+        Some("device-laptop")
+    );
+    let persisted = read_state(&state_path).expect("quarantined state is persisted");
+    assert_eq!(persisted.linked_peers["device-phone"].device_label, "Phone");
+}
+
+#[test]
+fn disabled_linking_reports_why_instead_of_running() {
+    let temporary = TestDirectory::new("linking-disabled");
+    let manager = PairingManager::default();
+    manager
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+        .expect("initialize");
+    manager
+        .disable("decode pairing state: broken".to_string())
+        .expect("disable");
+    for error in [
+        manager.identity().map(|_| ()).expect_err("identity"),
+        manager
+            .coordinator_pin()
+            .map(|_| ())
+            .expect_err("coordinator pin"),
+        manager
+            .linked_peers_for("vault-1")
+            .map(|_| ())
+            .expect_err("linked peers"),
+    ] {
+        assert_eq!(
+            error,
+            format!("{LINKING_DISABLED_ERROR}: decode pairing state: broken")
+        );
+    }
+    assert!(!manager.is_linked_for("vault-1").unwrap_or(false));
+}

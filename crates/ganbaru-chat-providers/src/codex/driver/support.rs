@@ -45,6 +45,39 @@ pub(crate) fn validated_app_server_arguments(arguments: &[String]) -> ChatResult
     Ok(output)
 }
 
+/// Project configuration directory Codex reads from a trusted folder.
+const CODEX_PROJECT_DIRECTORY: &str = ".codex";
+
+/// Keeps a restricted launch from loading the folder's `.codex` project
+/// configuration. Codex loads it only for folders its own configuration marks
+/// trusted by path, including worktrees of a trusted repository, and an entry
+/// keyed on the exact launch directory takes precedence over both. Folders
+/// without a `.codex` entry keep Codex's own trust so its defaults do not
+/// change where there is nothing to hold back.
+pub(crate) fn append_project_configuration_arguments(
+    arguments: &mut Vec<String>,
+    working_directory: &Path,
+    project_configuration: ProjectConfigurationAccess,
+) -> ChatResult<()> {
+    if project_configuration == ProjectConfigurationAccess::Trusted
+        || std::fs::symlink_metadata(working_directory.join(CODEX_PROJECT_DIRECTORY)).is_err()
+    {
+        return Ok(());
+    }
+    let key = working_directory
+        .to_str()
+        .and_then(|path| serde_json::to_string(path).ok())
+        .ok_or_else(|| {
+            ChatError::validation(
+                "workspace",
+                "Codex workspace path cannot be expressed in Codex configuration",
+            )
+        })?;
+    arguments.push("-c".to_string());
+    arguments.push(format!("projects={{{key}={{trust_level=\"untrusted\"}}}}"));
+    Ok(())
+}
+
 pub(super) async fn interrupt_live_turn(
     live: &mut CodexLiveSession,
     context: &DriverOperationContext,

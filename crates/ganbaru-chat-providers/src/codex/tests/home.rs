@@ -24,6 +24,28 @@ fn launch_arguments_are_configuration_only() {
 }
 
 #[test]
+fn restricted_launches_mark_folders_with_codex_configuration_untrusted() {
+    let workspace = TestDirectory::new("codex-project-configuration");
+    let arguments_for = |access| {
+        let mut arguments = Vec::new();
+        append_project_configuration_arguments(&mut arguments, workspace.path(), access).unwrap();
+        arguments
+    };
+    assert!(arguments_for(ProjectConfigurationAccess::Restricted).is_empty());
+
+    std::fs::create_dir_all(workspace.path().join(".codex")).unwrap();
+    assert!(arguments_for(ProjectConfigurationAccess::Trusted).is_empty());
+    let key = serde_json::to_string(workspace.path().to_str().unwrap()).unwrap();
+    assert_eq!(
+        arguments_for(ProjectConfigurationAccess::Restricted),
+        vec![
+            "-c".to_string(),
+            format!("projects={{{key}={{trust_level=\"untrusted\"}}}}"),
+        ]
+    );
+}
+
+#[test]
 fn only_confirmed_thread_not_found_errors_allow_fresh_fallback() {
     assert!(confirmed_resume_not_found(&CodexRpcFailure::Remote {
         code: -32602,

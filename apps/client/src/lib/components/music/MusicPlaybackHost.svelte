@@ -1,8 +1,14 @@
 <script lang="ts">
-  import { onDestroy, onMount } from "svelte";
+  import { onDestroy, onMount, untrack } from "svelte";
   import { getMusicPlayer } from "$lib/stores/music-player.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { coverPlaybackHostRect } from "$lib/music/session/playback-host-layout";
+  import {
+    createNativeYouTubeHost,
+    HIDDEN_NATIVE_YOUTUBE_BOUNDS,
+    usesNativeYouTubeHost,
+  } from "$lib/music/youtube-native-host";
+  import type { NativeYouTubeHostBounds } from "$lib/api/music";
 
   let {
     decodes = true,
@@ -25,6 +31,7 @@
   let lastVolumeFeedbackId = 0;
 
   const mediaSurfaceFullscreenEvent = "ganbaru-music-media-surface-fullscreen";
+  const NATIVE_YOUTUBE_OCCLUSION_INTERVAL_MS = 250;
   const hasVisualSurface = $derived(Boolean(
     decodes
       && player.surfaceElement
@@ -67,7 +74,21 @@
     : "background-color: var(--cal-bg);");
   const hostHasHitTarget = $derived(hasVisualSurface || (hostIsFullscreen && hasFullscreenSurface));
 
+  const nativeYouTubeHost = usesNativeYouTubeHost
+    ? createNativeYouTubeHost("playback", (data) => player.handleYouTubeNativeData(data))
+    : null;
+  const nativeYouTubeUrl = $derived(
+    nativeYouTubeHost && decodes && player.currentSource && player.isYouTubeActive
+      ? player.youtubeHostUrl
+      : null,
+  );
+  let nativeYouTubeUnobscured = $state(false);
+  const nativeYouTubeVisible = $derived(Boolean(
+    nativeYouTubeUrl && hostHasHitTarget && !player.staleVisual && nativeYouTubeUnobscured,
+  ));
+
   onMount(() => {
+    player.registerYouTubeNativeHost(nativeYouTubeHost);
     player.init({ decodesBrowserMedia: decodes });
   });
 
@@ -75,10 +96,85 @@
     clearSurfaceClickTimeout();
     clearVolumeFeedbackTimeout();
     player.destroy();
+    player.registerYouTubeNativeHost(null);
+    if (nativeYouTubeHost) void nativeYouTubeHost.close().catch(reportNativeYouTubeHostError);
   });
 
   $effect(() => {
     player.registerYouTubeFrame(youtubeFrame);
+  });
+
+  function reportNativeYouTubeHostError(error: unknown): void {
+    console.warn("Unable to update the YouTube host.", error);
+  }
+
+  /** Current host placement; the native view sits above the app WebView, so it shows only while nothing covers it. */
+  function nativeYouTubeBounds(visible: boolean): NativeYouTubeHostBounds {
+    const rect = hostElement?.getBoundingClientRect();
+    if (!visible || !rect || rect.width < 1 || rect.height < 1) return HIDDEN_NATIVE_YOUTUBE_BOUNDS;
+    return {
+      x: rect.left,
+      y: rect.top,
+      width: rect.width,
+      height: rect.height,
+      scale: window.devicePixelRatio || 1,
+      visible: true,
+    };
+  }
+
+  function hostSurfaceUnobscured(): boolean {
+    if (!hostElement || document.visibilityState !== "visible") return false;
+    const rect = hostElement.getBoundingClientRect();
+    if (rect.width < 1 || rect.height < 1) return false;
+    const inset = Math.min(4, rect.width / 4, rect.height / 4);
+    const points: Array<[number, number]> = [
+      [rect.left + rect.width / 2, rect.top + rect.height / 2],
+      [rect.left + inset, rect.top + inset],
+      [rect.right - inset, rect.top + inset],
+      [rect.left + inset, rect.bottom - inset],
+      [rect.right - inset, rect.bottom - inset],
+    ];
+    const host = hostElement;
+    return points.every(([x, y]) => {
+      const element = document.elementFromPoint(x, y);
+      return element !== null && host.contains(element);
+    });
+  }
+
+  $effect(() => {
+    if (!nativeYouTubeHost) return;
+    const url = nativeYouTubeUrl;
+    if (!url) {
+      void nativeYouTubeHost.close().catch(reportNativeYouTubeHostError);
+      return;
+    }
+    const bounds = untrack(() => nativeYouTubeBounds(nativeYouTubeVisible));
+    void nativeYouTubeHost.open(url, bounds).catch(reportNativeYouTubeHostError);
+  });
+
+  $effect(() => {
+    if (!nativeYouTubeHost || !nativeYouTubeUrl || !hostHasHitTarget) {
+      nativeYouTubeUnobscured = false;
+      return;
+    }
+    const update = () => {
+      nativeYouTubeUnobscured = hostSurfaceUnobscured();
+    };
+    update();
+    const intervalId = window.setInterval(update, NATIVE_YOUTUBE_OCCLUSION_INTERVAL_MS);
+    document.addEventListener("visibilitychange", update);
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener("visibilitychange", update);
+    };
+  });
+
+  $effect(() => {
+    if (!nativeYouTubeHost || !nativeYouTubeUrl) return;
+    void hostStyle;
+    void surfaceRect;
+    const bounds = nativeYouTubeBounds(nativeYouTubeVisible);
+    void nativeYouTubeHost.setBounds(bounds).catch(reportNativeYouTubeHostError);
   });
 
   $effect(() => {
@@ -260,7 +356,7 @@
   aria-hidden={!hasHostSurface && !hostIsFullscreen}
   onkeydown={handleFullscreenSurfaceKeydown}
 >
-  {#if decodes && player.currentSource && player.isYouTubeActive}
+  {#if decodes && player.currentSource && player.isYouTubeActive && !usesNativeYouTubeHost}
     {#key player.youtubeHostUrl}
       <iframe
         bind:this={youtubeFrame}

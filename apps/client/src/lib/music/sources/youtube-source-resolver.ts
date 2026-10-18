@@ -5,6 +5,12 @@ import {
 } from "$lib/api/music";
 import { buildYouTubeHostUrl, parseYouTubeHostMessage } from "$lib/stores/music-player/youtube-host";
 import type { YouTubePlaylistSource, YouTubeVideoSource } from "$lib/music/sources";
+import {
+  createNativeYouTubeHost,
+  HIDDEN_NATIVE_YOUTUBE_BOUNDS,
+  usesNativeYouTubeHost,
+  type NativeYouTubeHost,
+} from "$lib/music/youtube-native-host";
 
 export type MusicYouTubeResolutionSource = YouTubeVideoSource | YouTubePlaylistSource;
 
@@ -40,6 +46,8 @@ export interface MusicYouTubeResolverDependencies {
   clearTimer(id: number): void;
   token(): string;
   metadata(playlistId: string | null, videoIds: string[]): Promise<MusicYouTubeMetadataResponse>;
+  /** Opens the host in a separate native WebView instead of an iframe when set. */
+  nativeHost: ((onData: (data: unknown) => void) => NativeYouTubeHost) | null;
 }
 
 const defaultDependencies: MusicYouTubeResolverDependencies = {
@@ -53,6 +61,9 @@ const defaultDependencies: MusicYouTubeResolverDependencies = {
   clearTimer: (id) => window.clearTimeout(id),
   token: () => crypto.randomUUID(),
   metadata: getYouTubeMetadata,
+  nativeHost: usesNativeYouTubeHost
+    ? (onData) => createNativeYouTubeHost("resolver", onData)
+    : null,
 };
 
 function fallbackPlaylistVideos(videoIds: readonly string[]): MusicYouTubePreviewVideo[] {
@@ -153,20 +164,31 @@ export async function resolveMusicYouTubeSource(
   return new Promise<MusicYouTubeSourcePreview>((resolve, reject) => {
     let settled = false;
     let resolvingMetadata = false;
+    let nativeHost: NativeYouTubeHost | null = null;
     const finish = (result: MusicYouTubeSourcePreview | Error): void => {
       if (settled) return;
       settled = true;
       dependencies.clearTimer(timerId);
-      dependencies.removeMessageListener(onMessage);
       signal.removeEventListener("abort", onAbort);
-      dependencies.removeFrame(frame);
+      if (nativeHost) {
+        void nativeHost.close().catch((error: unknown) => {
+          console.warn("Unable to close the YouTube resolver host.", error);
+        });
+      } else {
+        dependencies.removeMessageListener(onMessage);
+        dependencies.removeFrame(frame);
+      }
       if (result instanceof Error) reject(result);
       else resolve(result);
     };
     const onAbort = () => finish(new DOMException("Resolution cancelled", "AbortError"));
     const onMessage = (event: MessageEvent<unknown>): void => {
       if (event.source !== frame.contentWindow) return;
-      const message = parseYouTubeHostMessage(event.data);
+      handleData(event.data);
+    };
+    const handleData = (data: unknown): void => {
+      if (settled) return;
+      const message = parseYouTubeHostMessage(data);
       if (!message || message.token !== token || message.load !== load) return;
       if (message.type === "ganbaru-youtube-error") {
         const reason = message.code === 101 || message.code === 150
@@ -215,6 +237,13 @@ export async function resolveMusicYouTubeSource(
       timeoutMs,
     );
     signal.addEventListener("abort", onAbort, { once: true });
+    if (dependencies.nativeHost) {
+      nativeHost = dependencies.nativeHost(handleData);
+      nativeHost.open(url.toString(), HIDDEN_NATIVE_YOUTUBE_BOUNDS).catch((error: unknown) => {
+        finish(error instanceof Error ? error : new Error(String(error)));
+      });
+      return;
+    }
     dependencies.addMessageListener(onMessage);
     dependencies.mountFrame(frame);
   });

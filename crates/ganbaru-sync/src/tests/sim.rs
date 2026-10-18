@@ -231,7 +231,7 @@ async fn send(rng: &mut Rng, from: &mut Replica, to: &mut Replica, reliable: boo
 }
 
 async fn ids(replica: &mut Replica, sql: &str) -> Vec<String> {
-    sqlx::query_scalar(sql)
+    sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
         .fetch_all(&mut replica.conn)
         .await
         .unwrap_or_else(|error| panic!("{sql}: {error}"))
@@ -248,7 +248,7 @@ impl Sim {
         let mut replicas = Vec::with_capacity(count);
         let mut skew_ms = Vec::with_capacity(count);
         for index in 0..count {
-            replicas.push(Replica::new(index, seed).await);
+            replicas.push(Replica::new(index, seed).await.coordinated_by(count));
             // Clocks run up to a day ahead of the hub's.
             skew_ms.push(if rng.chance(30) {
                 rng.next() % ONE_DAY_MS
@@ -256,7 +256,7 @@ impl Sim {
                 0
             });
         }
-        let hub = Replica::new(count, seed).await;
+        let hub = Replica::new(count, seed).await.coordinated_by(count);
         Self {
             rng,
             replicas,
@@ -466,7 +466,12 @@ impl Sim {
         };
         let details = replica
             .engine
-            .conflict_details(&mut replica.conn, &replica.ctx, row.table, &row.row_key)
+            .conflict_details(
+                &mut replica.conn,
+                replica.ctx.space,
+                row.table,
+                &row.row_key,
+            )
             .await
             .unwrap();
         let Some(detail) = self.rng.pick(&details).cloned() else {

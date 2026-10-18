@@ -20,6 +20,7 @@ import {
   type MusicSource,
 } from "$lib/music/sources";
 import { youtubeErrorMessage } from "$lib/music/youtube-player";
+import type { NativeYouTubeHost } from "$lib/music/youtube-native-host";
 import type { MusicLoadRuntime } from "./load-runtime";
 import {
   buildYouTubeHostUrl,
@@ -66,6 +67,8 @@ interface MusicYouTubeAdapterContext {
 
 export interface MusicYouTubeAdapter {
   registerFrame(frame: HTMLIFrameElement | null): void;
+  /** Routes commands through an Android native host instead of the iframe while one is registered. */
+  registerNativeHost(host: NativeYouTubeHost | null): void;
   load(
     source: YouTubeSource,
     positionMs: number | null,
@@ -73,6 +76,8 @@ export interface MusicYouTubeAdapter {
     autoplay: boolean,
   ): Promise<void>;
   handleMessage(event: MessageEvent<unknown>): void;
+  /** Handles a message the native host already scoped to its own page. */
+  handleNativeData(data: unknown): void;
   post(payload: Record<string, unknown> & { action: YouTubeCommandAction | "snapshot" }): void;
   beginOptimisticPause(): void;
   clearOptimisticPause(): void;
@@ -91,6 +96,7 @@ export function createMusicYouTubeAdapter(
   const reportYouTubeFailure = context.reportYouTubeFailure ?? reportMusicYouTubeSourceFailure;
   const currentTime = context.now ?? Date.now;
   let hostBaseUrl: string | null = null;
+  let nativeHost: NativeYouTubeHost | null = null;
   let hostLoadId: string | null = null;
   let resolvingPlaylist: ResolvingYouTubePlaylist | null = null;
   let playlistTimeoutId: number | null = null;
@@ -132,15 +138,28 @@ export function createMusicYouTubeAdapter(
     state.youtubeFrame = frame;
   }
 
+  function registerNativeHost(host: NativeYouTubeHost | null): void {
+    nativeHost = host;
+  }
+
   function post(
     payload: Record<string, unknown> & { action: YouTubeCommandAction | "snapshot" },
   ): void {
-    if (!state.youtubeFrame?.contentWindow || !state.youtubeHostToken) return;
-    state.youtubeFrame.contentWindow.postMessage({
+    if (!state.youtubeHostToken) return;
+    const message = {
       type: "ganbaru-youtube-command",
       token: state.youtubeHostToken,
       ...payload,
-    }, state.youtubeHostUrl ? new URL(state.youtubeHostUrl).origin : "*");
+    };
+    if (nativeHost) {
+      nativeHost.post(message);
+      return;
+    }
+    if (!state.youtubeFrame?.contentWindow) return;
+    state.youtubeFrame.contentWindow.postMessage(
+      message,
+      state.youtubeHostUrl ? new URL(state.youtubeHostUrl).origin : "*",
+    );
   }
 
   function clearPlaylistTimeout(): void {
@@ -307,8 +326,18 @@ export function createMusicYouTubeAdapter(
   }
 
   function handleMessage(event: MessageEvent<unknown>): void {
+    if (nativeHost) return;
     if (!state.youtubeFrame?.contentWindow || event.source !== state.youtubeFrame.contentWindow) return;
-    const message = parseYouTubeHostMessage(event.data);
+    handleHostData(event.data);
+  }
+
+  function handleNativeData(data: unknown): void {
+    if (!nativeHost) return;
+    handleHostData(data);
+  }
+
+  function handleHostData(data: unknown): void {
+    const message = parseYouTubeHostMessage(data);
     if (
       !message
       || message.token !== state.youtubeHostToken
@@ -414,8 +443,10 @@ export function createMusicYouTubeAdapter(
 
   return {
     registerFrame,
+    registerNativeHost,
     load,
     handleMessage,
+    handleNativeData,
     post,
     beginOptimisticPause,
     clearOptimisticPause,

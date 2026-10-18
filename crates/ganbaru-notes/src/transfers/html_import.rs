@@ -1,6 +1,9 @@
 pub mod syntax;
 
-use self::syntax::{HtmlElement, HtmlNode, decode_html_entities, parse_html_nodes};
+use self::syntax::{
+    HtmlElement, HtmlNode, check_raw_html_depth, count_newlines, decode_html_entities,
+    parse_html_nodes,
+};
 use crate::models::{
     NoteHtmlImportDiagnosticDto, NoteHtmlImportDto, NoteHtmlImportRequest, NoteParent,
 };
@@ -8,7 +11,7 @@ use crate::transfers::import_writer::{
     ImportBlock, ImportedPageCreate, count_import_blocks, create_imported_page,
     normalized_import_project_id,
 };
-use crate::validation::{validate_block_payload, validate_parent};
+use crate::validation::{MAX_TABLE_WIDTH, validate_block_payload, validate_parent};
 use ammonia::{Builder, UrlRelative};
 use serde_json::{Value, json};
 use sqlx::SqlitePool;
@@ -18,7 +21,9 @@ use std::{
 };
 
 const MAX_HTML_IMPORT_CHARS: usize = 1_000_000;
-const MAX_HTML_IMPORT_BLOCKS: usize = 1_000;
+pub(crate) const MAX_HTML_IMPORT_BLOCKS: usize = 1_000;
+/// Raw `<title>` bytes decoded for a page title; titles keep 240 characters.
+const MAX_RAW_TITLE_BYTES: usize = 4 * 1024;
 
 const ALLOWED_TAGS: &[&str] = &[
     "a",
@@ -95,7 +100,11 @@ pub async fn import_page(
         .map(str::to_string);
     let keep_external_file_references = request.keep_external_file_references.unwrap_or(false);
     let project_id = normalized_import_project_id(request.project_id);
-    let mut plan = parse_html(&request.html, keep_external_file_references);
+    let mut plan = parse_html(
+        &request.html,
+        keep_external_file_references,
+        MAX_HTML_IMPORT_BLOCKS,
+    )?;
     let title = import_title(
         request.title.as_deref(),
         plan.title.as_deref(),
@@ -106,11 +115,6 @@ pub async fn import_page(
             .push(html_block("paragraph", text_payload(""), 1, Vec::new()));
     }
     let imported_block_count = count_import_blocks(&plan.blocks);
-    if imported_block_count > MAX_HTML_IMPORT_BLOCKS {
-        return Err(format!(
-            "HTML import supports up to {MAX_HTML_IMPORT_BLOCKS} blocks"
-        ));
-    }
 
     let page = create_imported_page(
         pool,
@@ -144,8 +148,22 @@ pub(crate) struct HtmlPlan {
     pub(crate) diagnostics: Vec<NoteHtmlImportDiagnosticDto>,
 }
 
-pub(crate) fn parse_html(html: &str, keep_external_file_references: bool) -> HtmlPlan {
+/// Converts an HTML document into an import plan of at most `max_blocks` blocks.
+///
+/// Table rows count against the budget while they are converted, so padded rows
+/// cannot grow past it before the final count.
+///
+/// # Errors
+///
+/// Returns an error when the markup nests deeper than the import limit or the
+/// document needs more than `max_blocks` blocks.
+pub(crate) fn parse_html(
+    html: &str,
+    keep_external_file_references: bool,
+    max_blocks: usize,
+) -> Result<HtmlPlan, String> {
     let normalized = html.replace("\r\n", "\n").replace('\r', "\n");
+    check_raw_html_depth(&normalized)?;
     let mut diagnostics = scan_html_diagnostics(&normalized);
     let title = extract_title(&normalized);
     let sanitized = sanitize_html_import(&normalized);
@@ -157,18 +175,24 @@ pub(crate) fn parse_html(html: &str, keep_external_file_references: bool) -> Htm
             "Unsafe or unsupported HTML markup was removed before import.",
         ));
     }
-    let nodes = parse_html_nodes(&sanitized);
+    let nodes = parse_html_nodes(&sanitized)?;
     let mut parser = HtmlImportParser {
         keep_external_file_references,
         diagnostics,
         first_heading: None,
+        max_blocks,
+        table_rows: 0,
+        over_budget: false,
     };
     let blocks = parser.blocks_from_nodes(&nodes);
-    HtmlPlan {
+    if parser.over_budget || count_import_blocks(&blocks) > max_blocks {
+        return Err(format!("HTML import supports up to {max_blocks} blocks"));
+    }
+    Ok(HtmlPlan {
         title: title.or(parser.first_heading),
         blocks,
         diagnostics: parser.diagnostics,
-    }
+    })
 }
 
 fn sanitize_html_import(html: &str) -> String {
@@ -199,6 +223,9 @@ struct HtmlImportParser {
     keep_external_file_references: bool,
     diagnostics: Vec<NoteHtmlImportDiagnosticDto>,
     first_heading: Option<String>,
+    max_blocks: usize,
+    table_rows: usize,
+    over_budget: bool,
 }
 
 impl HtmlImportParser {
@@ -440,6 +467,27 @@ impl HtmlImportParser {
             return unsupported_block(element.line, "table", "HTML table had no rows.");
         }
         let width = rows.iter().map(Vec::len).max().unwrap_or(1).max(1);
+        if width > MAX_TABLE_WIDTH {
+            let warning = format!(
+                "A table with {width} columns exceeds the {MAX_TABLE_WIDTH} column limit and was not imported."
+            );
+            self.diagnostic(
+                "table_too_wide",
+                "warning",
+                Some(element.line),
+                warning.clone(),
+            );
+            return unsupported_block(element.line, "table", &warning);
+        }
+        if rows.len() > self.max_blocks.saturating_sub(self.table_rows) {
+            self.over_budget = true;
+            return unsupported_block(
+                element.line,
+                "table",
+                "HTML table exceeded the block limit.",
+            );
+        }
+        self.table_rows += rows.len();
         let has_column_header = rows
             .first()
             .map(|row| row.iter().any(|cell| cell.header))
@@ -879,7 +927,11 @@ fn extract_title(html: &str) -> Option<String> {
     let title_start = lower.find("<title")?;
     let content_start = lower[title_start..].find('>')? + title_start + 1;
     let content_end = lower[content_start..].find("</title>")? + content_start;
-    let text = strip_tags(&decode_html_entities(&html[content_start..content_end]));
+    let mut capped_end = content_end.min(content_start + MAX_RAW_TITLE_BYTES);
+    while !html.is_char_boundary(capped_end) {
+        capped_end -= 1;
+    }
+    let text = strip_tags(&decode_html_entities(&html[content_start..capped_end]));
     let trimmed = text.trim();
     (!trimmed.is_empty()).then(|| trimmed.chars().take(240).collect())
 }
@@ -962,6 +1014,8 @@ fn unsupported_tag_diagnostics(html: &str) -> Vec<NoteHtmlImportDiagnosticDto> {
     let mut seen = HashSet::new();
     let mut diagnostics = Vec::new();
     let mut cursor = 0;
+    let mut line = 1;
+    let mut line_offset = 0;
     while let Some(relative_start) = html[cursor..].find('<') {
         let start = cursor + relative_start;
         cursor = start + 1;
@@ -980,10 +1034,12 @@ fn unsupported_tag_diagnostics(html: &str) -> Vec<NoteHtmlImportDiagnosticDto> {
             continue;
         }
         if seen.insert(name.clone()) {
+            line += count_newlines(&html[line_offset..start]);
+            line_offset = start;
             diagnostics.push(NoteHtmlImportDiagnosticDto::new(
                 "html_element_unsupported",
                 "warning",
-                Some(line_for_offset(html, start)),
+                Some(line),
                 format!("HTML <{name}> elements are not mapped to editable Notes blocks."),
             ));
         }

@@ -91,7 +91,7 @@ fn token_values(rows: &[TokenRowRead]) -> Vec<(&str, &str, &str, i64)> {
 }
 
 async fn count_rows(pool: &SqlitePool, table: &str) -> i64 {
-    sqlx::query_scalar::<_, i64>(&format!("SELECT COUNT(*) FROM {table}"))
+    sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}")))
         .fetch_one(pool)
         .await
         .unwrap()

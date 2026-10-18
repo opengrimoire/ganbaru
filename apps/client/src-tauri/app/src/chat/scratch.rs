@@ -51,6 +51,9 @@ pub(crate) fn authorize_conversation_runtime(
         repository_kind: RepositoryKind::None,
         repository_identity: None,
         repository_storage_identity: None,
+        git_trust: ganbaru_chat::git::hardened::GitFolderTrust::Untrusted,
+        project_configuration:
+            ganbaru_chat_contracts::models::ProjectConfigurationAccess::Restricted,
     })
 }
 
@@ -95,6 +98,9 @@ pub(crate) async fn authorize_scratch_target(
         repository_kind: RepositoryKind::None,
         repository_identity: None,
         repository_storage_identity: None,
+        git_trust: ganbaru_chat::git::hardened::GitFolderTrust::Untrusted,
+        project_configuration:
+            ganbaru_chat_contracts::models::ProjectConfigurationAccess::Restricted,
     })
 }
 
@@ -725,7 +731,7 @@ mod tests {
             .await
             .unwrap();
         }
-        sqlx::raw_sql(&format!(
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
             "INSERT INTO chat_teammate_policy_revisions
                 (id, teammate_id, revision, provider_instance_id, model_selection_data, created_at)
              VALUES ('policy:scratch', '{TEAMMATE}', 1, 'codex-personal', '{{}}', '{NOW}');
@@ -750,7 +756,7 @@ mod tests {
                 (id, reply_thread_id, teammate_id, triggering_message_item_id, state, created_at, updated_at)
              VALUES ('assignment:scratch', 'reply:scratch', '{TEAMMATE}', 'item:scratch',
                      'working', '{NOW}', '{NOW}');"
-        ))
+        )))
         .execute(&pool).await.unwrap();
         sqlx::query(
             "INSERT INTO chat_scratch_scopes
@@ -763,7 +769,7 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        sqlx::raw_sql(&format!(
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
             "INSERT INTO chat_scratch_generations
                 (id, scratch_scope_id, generation, created_at, updated_at)
              VALUES ('{GENERATION}', 'scope:scratch', 1, '{NOW}', '{NOW}');
@@ -791,7 +797,7 @@ mod tests {
              VALUES ('run:scratch', 'assignment:scratch', 'project-chat', 'environment:scratch',
                      '{GENERATION}', 'policy:scratch', '{AUTHORIZATION}', printf('%064d', 0),
                      'turn:scratch', 'thread-1', 'working', 1, '{NOW}', '{NOW}');"
-        ))
+        )))
         .execute(&pool).await.unwrap();
         pool
     }

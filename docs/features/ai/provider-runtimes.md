@@ -10,6 +10,8 @@ Each adapter supports exactly the capabilities its metadata advertises; anything
 
 All transports apply bounded parsing, payload limits, timeouts, cancellation, process-tree cleanup, redaction, and stable error categories. Provider output is untrusted input: unknown events may be kept for diagnostics but never become typed application state without validation.
 
+Users may set any launch arguments, environment variables, and provider settings their CLI accepts. Values on a per-family allowlist (formatting and locale variables, telemetry and timeout switches, inherited API key variables, and a few cosmetic flags) apply immediately. Anything else, including values typed in settings, applies after one native confirmation on this device, and arguments that duplicate options Ganbaru manages (protocol mode, output format, session continuation, permission and approval transport) are always rejected. Executables and provider homes chosen with the native picker, or the family default command, apply without asking. See [Chat security](../../data/security/chat.md#provider-configuration-and-secrets).
+
 ## Discovery and model catalogs
 
 Native discovery owns provider readiness, model identities, and capability options, including cached catalogs. The frontend validates the catalog and never infers capabilities from model IDs or labels; distinct routing aliases stay selectable even when they share a display name.

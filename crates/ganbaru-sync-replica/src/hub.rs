@@ -33,6 +33,8 @@ const UPLOAD_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 pub struct HubVault {
     pub pool: SqlitePool,
     pub vault_id: String,
+    /// Device id of the coordinator whose writers may revoke: the hub's own device.
+    pub device_id: String,
     /// The vault's Quick note image files.
     pub images: Arc<dyn ImageStore>,
 }
@@ -147,7 +149,7 @@ impl SyncHub {
         }
         let ctx = {
             let mut conn = acquire(&vault.pool).await?;
-            local::space_context(&mut conn, &vault_id)
+            local::space_context(&mut conn, &vault_id, &vault.device_id)
                 .await
                 .map_err(|error| HubError::failed(format!("read sync space: {error}")))?
         };
@@ -591,7 +593,9 @@ fn refusal_to_wire(refusal: StoreRefusal, writer: WriterId, seq: Seq) -> SyncRef
         StoreRefusal::Malformed
         | StoreRefusal::WrongSpace
         | StoreRefusal::BadSignature
-        | StoreRefusal::Untrusted => (SyncRefusalCode::Invalid, seq),
+        | StoreRefusal::Untrusted
+        | StoreRefusal::UnauthorizedRevoke => (SyncRefusalCode::Invalid, seq),
+        StoreRefusal::WriterLimit => (SyncRefusalCode::WriterLimit, seq),
     };
     SyncRefusal {
         code,

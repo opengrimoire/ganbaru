@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ganbaru_sync_contracts::{Field, TableId};
-use sqlx::SqliteConnection;
+use sqlx::{AssertSqlSafe, SqliteConnection};
 
 use crate::Engine;
 use crate::error::{SyncResult, corrupt};
@@ -189,7 +189,7 @@ async fn domain_referrers(
                 ident(referrer.name),
                 ident(column.name)
             );
-            let found: Vec<String> = sqlx::query_scalar(&sql)
+            let found: Vec<String> = sqlx::query_scalar(AssertSqlSafe(sql.as_str()))
                 .bind(key)
                 .fetch_all(&mut *conn)
                 .await?;
@@ -330,7 +330,7 @@ async fn move_aside(
                     .placeholder(next)
                     .ok_or_else(|| corrupt("placeholders are exhausted"))?;
                 next += 1;
-                let taken: i64 = sqlx::query_scalar(&probe)
+                let taken: i64 = sqlx::query_scalar(AssertSqlSafe(probe.as_str()))
                     .bind(&candidate)
                     .fetch_one(&mut *conn)
                     .await?;
@@ -344,7 +344,7 @@ async fn move_aside(
                 ident(spec.name),
                 ident(table.key_column)
             );
-            sqlx::query(&sql)
+            sqlx::query(AssertSqlSafe(sql.as_str()))
                 .bind(placeholder)
                 .bind(key.as_str())
                 .execute(&mut *conn)
@@ -377,7 +377,7 @@ async fn execute_update(
             assignments.join(", "),
             ident(table.key_column)
         );
-        let mut query = sqlx::query(&sql);
+        let mut query = sqlx::query(AssertSqlSafe(sql.as_str()));
         for (_, field) in &update.columns {
             query = sql::bind_field(query, field);
         }
@@ -411,7 +411,7 @@ async fn execute_insert(
         columns.join(", "),
         vec!["?"; columns.len()].join(", ")
     );
-    let mut query = sqlx::query(&sql).bind(key);
+    let mut query = sqlx::query(AssertSqlSafe(sql.as_str())).bind(key);
     for field in present
         .columns
         .iter()
@@ -480,14 +480,20 @@ pub(crate) async fn materialize(
                     ident(owned.table),
                     ident(owned.parent_column)
                 );
-                sqlx::query(&sql).bind(key).execute(&mut *conn).await?;
+                sqlx::query(AssertSqlSafe(sql.as_str()))
+                    .bind(key)
+                    .execute(&mut *conn)
+                    .await?;
             }
             let sql = format!(
                 "DELETE FROM {} WHERE {} = ?",
                 ident(table.name),
                 ident(table.key_column)
             );
-            sqlx::query(&sql).bind(key).execute(&mut *conn).await?;
+            sqlx::query(AssertSqlSafe(sql.as_str()))
+                .bind(key)
+                .execute(&mut *conn)
+                .await?;
             changed[index] = true;
         }
     }

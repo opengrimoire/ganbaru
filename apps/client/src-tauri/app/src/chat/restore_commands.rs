@@ -104,11 +104,11 @@ pub async fn chat_preview_checkpoint_restore(
     let target_for_git = target.clone();
     let (current, files) = tauri::async_runtime::spawn_blocking(move || {
         verify_checkpoint(&authorized_for_git, &target_for_git)?;
-        let current = current_git_snapshot(&authorized_for_git.canonical_path)?;
+        let current = current_git_snapshot(authorized_for_git.git_folder())?;
         require_head_context(&current, &target_for_git)?;
         let current_checkpoint = transient_checkpoint(&target_for_git, &current);
         let files = diff_files(
-            &authorized_for_git.canonical_path,
+            authorized_for_git.git_folder(),
             &current_checkpoint,
             &target_for_git,
         )?;

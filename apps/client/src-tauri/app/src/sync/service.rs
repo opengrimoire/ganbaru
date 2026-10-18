@@ -11,7 +11,9 @@ use super::client::{ClientSession, Exchange, ForkPoint, PeerIds};
 use super::hub::{HubVault, OpenHubVault, SyncHub};
 use super::images::ActiveVaultImages;
 use super::recovery::{RecoveryChoice, RecoveryRequest};
-use super::status::{SyncRole, SyncState, SyncStatusView, emit_applied, emit_status};
+use super::status::{
+    SyncErrorCode, SyncRole, SyncState, SyncStatusView, emit_applied, emit_status,
+};
 use super::transport::PairedTransport;
 use super::writer::{
     ActiveWriter, SuccessorPlan, SyncFiles, WriterCheck, WriterKeyStore, check_writer,
@@ -20,6 +22,7 @@ use super::writer::{
 use crate::db::DatabaseState;
 use crate::vault::handoff::pairing::PairingManager;
 use ganbaru_db::{DatabaseAccessMode, DatabasePoolRegistry};
+use ganbaru_handoff::protocol::SyncRefusalCode;
 use ganbaru_sync::{Engine, SealReport, SpaceContext, SyncError, WriterState, local};
 use ganbaru_sync_contracts::VersionVector;
 use ganbaru_sync_contracts::op::RevokeReason;
@@ -168,6 +171,7 @@ async fn open_hub_vault<R: Runtime>(app: &AppHandle<R>) -> Result<Option<HubVaul
     let images: Arc<dyn ImageStore> = Arc::new(ActiveVaultImages::open(app, &vault_id)?);
     Ok(Some(HubVault {
         pool,
+        device_id: coordinator_device_id(app, &vault_id)?,
         vault_id,
         images,
     }))
@@ -563,6 +567,9 @@ impl ServiceState {
                         Some(problem) => {
                             view.state = SyncState::Error;
                             view.last_error = Some(problem);
+                            view.last_error_code = (done.refusal
+                                == Some(SyncRefusalCode::WriterLimit))
+                            .then_some(SyncErrorCode::WriterLimit);
                         }
                         None if done.more => return Ok(Next::Continue),
                         None => {}
@@ -783,12 +790,14 @@ async fn seal_quiesced_with<R: Runtime>(
 }
 
 /// Exports local operations the staged replacement lacks, before the replacement happens.
-pub(crate) async fn export_for_replacement(
+pub(crate) async fn export_for_replacement<R: Runtime>(
+    app: &AppHandle<R>,
     current: &std::path::Path,
     replacement: &std::path::Path,
     files: &SyncFiles,
 ) -> Result<usize, String> {
-    carry_forward::export(&Engine::vault(), current, replacement, files).await
+    let coordinator = coordinator_device_id(app, &files.vault_id)?;
+    carry_forward::export(&Engine::vault(), current, replacement, files, &coordinator).await
 }
 
 /// Whether a missing person key may be requested from the coordinator.
@@ -818,9 +827,10 @@ impl<'a, R: Runtime> Session<'a, R> {
         vault_id: &str,
         key_release: KeyRelease,
     ) -> Result<Option<Self>, String> {
+        let coordinator = coordinator_device_id(app, vault_id)?;
         let ctx = {
             let mut conn = acquire(&pool).await?;
-            local::space_context(&mut conn, vault_id)
+            local::space_context(&mut conn, vault_id, &coordinator)
                 .await
                 .map_err(|error| format!("read sync space: {error}"))?
         };
@@ -1176,6 +1186,20 @@ fn sync_directory<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     std::fs::create_dir_all(&directory)
         .map_err(|error| format!("create sync directory: {error}"))?;
     Ok(directory)
+}
+
+/// Device id of the coordinator whose writers may revoke in `vault_id`: the pinned coordinator
+/// when this device is linked to one for that vault, otherwise this device, which then hosts
+/// the hub or does not sync with others.
+pub(crate) fn coordinator_device_id<R: Runtime>(
+    app: &AppHandle<R>,
+    vault_id: &str,
+) -> Result<String, String> {
+    let pin = app.state::<PairingManager>().coordinator_pin()?;
+    match pin.filter(|pin| pin.vault_id == vault_id) {
+        Some(pin) => Ok(pin.device_id),
+        None => crate::vault::ensure_device_id(app),
+    }
 }
 
 /// Device-local sync files of a vault.

@@ -8,7 +8,8 @@ impl CodexProviderDriver {
         context: &DriverOperationContext,
     ) -> ChatResult<ProbeSnapshot> {
         let working_directory = canonical_current_directory()?;
-        let (mut connection, layout) = self.open_connection(&working_directory)?;
+        let (mut connection, layout) =
+            self.open_connection(&working_directory, ProjectConfigurationAccess::Restricted)?;
         let client = connection.client();
         let result = async {
             let initialize = client
@@ -63,10 +64,19 @@ impl CodexProviderDriver {
         context: &DriverOperationContext,
     ) -> ChatResult<ProviderAuthoritySupport> {
         let disabled_mcp_servers = self
-            .organizational_mcp_server_names(working_directory, context)
+            .organizational_mcp_server_names(
+                working_directory,
+                ProjectConfigurationAccess::Restricted,
+                context,
+            )
             .await?;
-        let (mut connection, layout) =
-            self.spawn_connection(working_directory, true, &disabled_mcp_servers, false)?;
+        let (mut connection, layout) = self.spawn_connection(
+            working_directory,
+            ProjectConfigurationAccess::Restricted,
+            true,
+            &disabled_mcp_servers,
+            false,
+        )?;
         let client = connection.client();
         let result = async {
             let initialize = client
@@ -215,11 +225,13 @@ impl CodexProviderDriver {
     pub(super) async fn execute_thread_request(
         &self,
         working_directory: &Path,
+        project_configuration: ProjectConfigurationAccess,
         method: &str,
         params: Value,
         context: &DriverOperationContext,
     ) -> ChatResult<Value> {
-        let (mut connection, layout) = self.open_connection(working_directory)?;
+        let (mut connection, layout) =
+            self.open_connection(working_directory, project_configuration)?;
         let client = connection.client();
         let result = async {
             let initialize = client
@@ -296,6 +308,7 @@ impl CodexProviderDriver {
     pub(super) async fn read_standalone_mcp_status(
         &self,
         working_directory: &Path,
+        project_configuration: ProjectConfigurationAccess,
         context: &DriverOperationContext,
     ) -> ChatResult<McpStatusRead> {
         if !working_directory.is_absolute() || !working_directory.is_dir() {
@@ -310,7 +323,8 @@ impl CodexProviderDriver {
                 "Codex MCP status working directory could not be canonicalized",
             )
         })?;
-        let (mut connection, layout) = self.open_connection(&working_directory)?;
+        let (mut connection, layout) =
+            self.open_connection(&working_directory, project_configuration)?;
         let client = connection.client();
         let result = async {
             let initialize = client

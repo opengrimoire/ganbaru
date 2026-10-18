@@ -11,6 +11,11 @@ export const music = {
     otherWindow: "This video shows in the main window.",
     showMainWindow: "Show main window",
     interrupted: "Playback was interrupted. Press Play to continue from the saved position.",
+    localSourceReviewTitle: "Play local files?",
+    localSourceReviewMessage: "These files were typed or pasted instead of chosen with the file picker. Play them only if you entered them yourself.",
+    localSourceReviewAllow: "Play",
+    localSourceReviewCancel: "Cancel",
+    localSourceReviewMore: "And {count} more",
   },
   launcher: {
     playlists: "Playlists",

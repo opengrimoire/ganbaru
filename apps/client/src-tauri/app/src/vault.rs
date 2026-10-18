@@ -3,16 +3,17 @@
 //! The vault holds portable user data. The Tauri app config directory stores
 //! only the active vault pointer and device-local runtime files.
 //!
-//! Writes are atomic: serialize to `.tmp`, fsync, rename. A crash mid-write
-//! leaves either the previous good file or the temp file, which is ignored
-//! on next read.
+//! Writes are atomic: serialize to an exclusively created, randomly named
+//! temporary file, fsync, rename. A crash mid-write leaves either the previous
+//! good file or an ignored temporary file. Vault entries the app manages must
+//! not be symlinks; see `reject_symlinked_vault_entries`.
 
 use chrono::{DateTime, SecondsFormat, Utc};
+use ganbaru_atomic_files::FileAccess;
 #[cfg(target_os = "android")]
 use ganbaru_mobile_documents::MobileDocumentsExt;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{Manager, Runtime};
@@ -32,6 +33,7 @@ pub use config::*;
 pub use documents::*;
 
 pub(crate) mod backup;
+pub(crate) mod database_rollback;
 pub(crate) mod handoff;
 pub(crate) mod ownership;
 pub(crate) mod quiescence;
@@ -64,6 +66,8 @@ pub struct VaultAppState {
     pub music_root_bindings: BTreeMap<String, BTreeMap<String, String>>,
     pub project_working_folders: ganbaru_working_folders::WorkingFolderDeviceState,
     pub chat: crate::chat::device_state::ChatDeviceState,
+    #[serde(default)]
+    pub music_path_grants: crate::music::path_authority::MusicPathGrantState,
 }
 
 fn required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
@@ -213,7 +217,7 @@ fn write_app_state_json(path: &Path, json: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("create app config dir: {e}"))?;
     }
-    write_text_file_atomically(path, json)
+    write_text_file_atomically(path, json, FileAccess::OwnerOnly)
 }
 
 pub(crate) fn read_app_state<R: Runtime>(
@@ -289,7 +293,7 @@ fn new_vault_id() -> String {
     format!("vault-{:x}-{:x}", std::process::id(), nanos)
 }
 
-fn now_utc() -> DateTime<Utc> {
+pub(crate) fn now_utc() -> DateTime<Utc> {
     std::time::SystemTime::now().into()
 }
 
@@ -363,39 +367,76 @@ fn vault_info_from_manifest(path: &Path, manifest: VaultManifest) -> Result<Vaul
 
 fn vault_info_from_path(path: &Path) -> Result<VaultInfo, String> {
     let path = canonical_vault_path(path.to_path_buf())?;
+    reject_symlinked_vault_entries(&path)?;
     vault_info_from_manifest(&path, read_vault_manifest(&path)?)
 }
 
-fn ensure_vault_skeleton(path: &Path) -> Result<(), String> {
-    for relative in [
-        "notes/daily",
-        "notes/projects",
-        "diary/morning",
-        "diary/evening",
-        "projects",
-        "reports",
-        "assets",
-        "templates",
-        ".yjs",
-    ] {
-        fs::create_dir_all(path.join(relative))
-            .map_err(|e| format!("create Ganbaru folder path '{relative}': {e}"))?;
-    }
-    if !config_path(path).exists() {
-        write_text_file_atomically(&config_path(path), "{}\n")?;
-    }
-    if !database_path(path).exists() {
-        fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(database_path(path))
-            .map_err(|e| format!("create ganbaru.sqlite: {e}"))?;
+/// SQLite companion files that live next to the vault database.
+const DATABASE_COMPANION_SUFFIXES: &[&str] = &["-wal", "-shm", "-journal"];
+
+/// Directories under the vault root that the app writes into by fixed name.
+const MANAGED_VAULT_DIRECTORIES: &[&str] = &["assets", "projects"];
+
+/// Refuse a vault whose fixed entries are symlinks. A link shipped inside a
+/// shared or restored vault could otherwise redirect app writes to any file
+/// the user can write. The vault root itself may be reached through a link.
+fn reject_symlinked_vault_entries(path: &Path) -> Result<(), String> {
+    let database = APP_SQLITE_FILE.to_string();
+    let entries = [VAULT_MANIFEST_FILE.to_string(), CONFIG_FILE.to_string()]
+        .into_iter()
+        .chain(
+            DATABASE_COMPANION_SUFFIXES
+                .iter()
+                .map(|suffix| format!("{database}{suffix}")),
+        )
+        .chain(std::iter::once(database.clone()))
+        .chain(
+            MANAGED_VAULT_DIRECTORIES
+                .iter()
+                .map(|name| name.to_string()),
+        );
+    for entry in entries {
+        ganbaru_atomic_files::reject_symlink(&path.join(&entry))
+            .map_err(|error| format!("check Ganbaru folder entry '{entry}': {error}"))?;
     }
     Ok(())
 }
 
+/// Directories every vault holds, relative to its root.
+const VAULT_SKELETON_DIRECTORIES: &[&str] = &[
+    "notes/daily",
+    "notes/projects",
+    "diary/morning",
+    "diary/evening",
+    "projects",
+    "reports",
+    "assets",
+    "templates",
+    ".yjs",
+];
+
+fn ensure_vault_skeleton(path: &Path) -> Result<(), String> {
+    for relative in VAULT_SKELETON_DIRECTORIES {
+        ganbaru_atomic_files::create_directories_within(path, &path.join(relative))
+            .map_err(|e| format!("create Ganbaru folder path '{relative}': {e}"))?;
+    }
+    if !config_path(path).exists() {
+        write_text_file_atomically(&config_path(path), "{}\n", FileAccess::OwnerOnly)?;
+    }
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(database_path(path))
+    {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(format!("create ganbaru.sqlite: {e}")),
+    }
+}
+
 fn initialize_vault(path: &Path) -> Result<VaultInfo, String> {
     let path = canonical_vault_path(path.to_path_buf())?;
+    reject_symlinked_vault_entries(&path)?;
     if manifest_path(&path).exists() {
         ensure_vault_skeleton(&path)?;
         return vault_info_from_path(&path);
@@ -412,7 +453,7 @@ fn initialize_vault(path: &Path) -> Result<VaultInfo, String> {
     };
     ensure_vault_skeleton(&path)?;
     let json = serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?;
-    write_text_file_atomically(&manifest_path(&path), &json)?;
+    write_text_file_atomically(&manifest_path(&path), &json, FileAccess::OwnerOnly)?;
     vault_info_from_manifest(&path, manifest)
 }
 
@@ -734,6 +775,7 @@ fn active_vault<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(PathBuf, Vault
         return Err("no active Ganbaru folder selected".to_string());
     };
     let path = canonical_vault_path(PathBuf::from(path))?;
+    reject_symlinked_vault_entries(&path)?;
     let manifest = read_vault_manifest(&path)?;
     Ok((path, manifest))
 }
@@ -762,6 +804,7 @@ fn available_vault_path(path: Option<PathBuf>) -> Result<Option<PathBuf>, String
         return Ok(None);
     }
     let path = canonical_vault_path(path)?;
+    reject_symlinked_vault_entries(&path)?;
     read_vault_manifest(&path)?;
     Ok(Some(path))
 }
@@ -843,29 +886,17 @@ fn dialog_path(path: FilePath) -> Result<PathBuf, String> {
         .map_err(|e| format!("selected path is not a local file: {e}"))
 }
 
-/// Write a UTF-8 text file atomically via `.tmp` plus rename so an
-/// interrupted write cannot leave the target file truncated.
-fn write_text_file_atomically(path: &Path, contents: &str) -> Result<(), String> {
+/// Replace a UTF-8 text file through a synced, exclusively created temporary
+/// file and a rename, so an interrupted write cannot truncate the target and a
+/// symlink planted next to it cannot redirect the bytes.
+fn write_text_file_atomically(
+    path: &Path,
+    contents: &str,
+    access: FileAccess,
+) -> Result<(), String> {
     require_absolute_path(path)?;
-    let target = path;
-    let parent = target
-        .parent()
-        .ok_or_else(|| "target has no parent directory".to_string())?
-        .to_path_buf();
-    let file_name = target
-        .file_name()
-        .ok_or_else(|| "target has no file name".to_string())?
-        .to_string_lossy()
-        .into_owned();
-    let temporary_path = parent.join(format!("{file_name}.tmp"));
-    {
-        let mut file = fs::File::create(&temporary_path).map_err(|e| e.to_string())?;
-        file.write_all(contents.as_bytes())
-            .map_err(|e| e.to_string())?;
-        file.sync_all().map_err(|e| e.to_string())?;
-    }
-    fs::rename(&temporary_path, target).map_err(|e| e.to_string())?;
-    Ok(())
+    ganbaru_atomic_files::write_file_atomically(path, contents.as_bytes(), access)
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(target_os = "linux")]
@@ -932,28 +963,102 @@ mod tests {
 
     #[test]
     fn write_text_file_atomically_rejects_relative_paths() {
-        let err = write_text_file_atomically(Path::new("relative/path.txt"), "data").unwrap_err();
+        let err = write_text_file_atomically(
+            Path::new("relative/path.txt"),
+            "data",
+            FileAccess::OwnerOnly,
+        )
+        .unwrap_err();
         assert_eq!(err, "path must be absolute");
     }
 
     #[test]
-    fn write_text_file_atomically_writes_atomically_to_absolute_path() {
-        let path = unique_path("write.txt");
-        let parent = path.parent().unwrap().to_path_buf();
-        let file_name = path.file_name().unwrap().to_string_lossy().into_owned();
-        let temporary_sibling = parent.join(format!("{file_name}.tmp"));
+    fn write_text_file_atomically_leaves_only_the_target() {
+        let parent = unique_path("write");
+        fs::create_dir_all(&parent).unwrap();
+        let path = parent.join("write.txt");
 
-        write_text_file_atomically(&path, "payload").expect("write should succeed");
+        write_text_file_atomically(&path, "payload", FileAccess::OwnerOnly)
+            .expect("write should succeed");
 
-        let on_disk = fs::read_to_string(&path).expect("file should exist");
-        assert_eq!(on_disk, "payload");
-        // The .tmp sibling must not survive a successful write.
-        assert!(
-            !temporary_sibling.exists(),
-            "tmp file should have been renamed away"
-        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "payload");
+        let names = fs::read_dir(&parent)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec![std::ffi::OsString::from("write.txt")]);
+        fs::remove_dir_all(parent).unwrap();
+    }
 
-        let _ = fs::remove_file(&path);
+    /// The config writer used by `mutate_active_vault_config` never writes
+    /// through a temporary-name link planted in a shared vault.
+    #[cfg(unix)]
+    #[test]
+    fn config_writes_ignore_a_planted_temporary_symlink() {
+        let vault = unique_path("planted-temporary");
+        fs::create_dir_all(&vault).unwrap();
+        initialize_vault(&vault).unwrap();
+        let sentinel = unique_path("planted-temporary-sentinel");
+        fs::write(&sentinel, "untouched").unwrap();
+        std::os::unix::fs::symlink(&sentinel, vault.join("config.json.tmp")).unwrap();
+
+        write_text_file_atomically(
+            &config_path(&vault),
+            "{\"preferences\":{}}",
+            FileAccess::OwnerOnly,
+        )
+        .unwrap();
+
+        assert_eq!(fs::read_to_string(&sentinel).unwrap(), "untouched");
+        let metadata = fs::symlink_metadata(config_path(&vault)).unwrap();
+        assert!(metadata.file_type().is_file());
+        fs::remove_dir_all(vault).unwrap();
+        fs::remove_file(sentinel).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn opening_a_vault_rejects_symlinked_fixed_entries() {
+        for entry in [
+            "config.json",
+            "ganbaru.sqlite",
+            "ganbaru.sqlite-wal",
+            "assets",
+        ] {
+            let vault = unique_path("symlinked-entry");
+            fs::create_dir_all(&vault).unwrap();
+            initialize_vault(&vault).unwrap();
+            let target = unique_path("symlinked-entry-target");
+            fs::create_dir_all(&target).unwrap();
+            let link = vault.join(entry);
+            if link.is_dir() {
+                fs::remove_dir_all(&link).unwrap();
+            } else if link.exists() {
+                fs::remove_file(&link).unwrap();
+            }
+            std::os::unix::fs::symlink(target.join("elsewhere"), &link).unwrap();
+
+            let error = vault_info_from_path(&vault).unwrap_err();
+            assert!(error.contains(entry), "{entry}: {error}");
+            assert!(initialize_vault(&vault).is_err(), "{entry}");
+            fs::remove_dir_all(vault).unwrap();
+            fs::remove_dir_all(target).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn opening_a_vault_through_a_symlinked_root_still_works() {
+        let vault = unique_path("linked-root");
+        fs::create_dir_all(&vault).unwrap();
+        let created = initialize_vault(&vault).unwrap();
+        let alias = unique_path("linked-root-alias");
+        std::os::unix::fs::symlink(&vault, &alias).unwrap();
+
+        let opened = vault_info_from_path(&alias).unwrap();
+        assert_eq!(opened.vault_id, created.vault_id);
+        fs::remove_file(alias).unwrap();
+        fs::remove_dir_all(vault).unwrap();
     }
 
     #[test]
@@ -1098,6 +1203,7 @@ mod tests {
             music_root_bindings,
             project_working_folders: Default::default(),
             chat: Default::default(),
+            music_path_grants: Default::default(),
         };
 
         write_app_state_to_path(&path, &state).expect("write app state");

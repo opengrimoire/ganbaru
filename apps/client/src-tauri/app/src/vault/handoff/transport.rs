@@ -12,10 +12,12 @@ use super::protocol::{
     BundleMetadata, BundlePurpose, ControlMessage, PROTOCOL_VERSION, PairingInvitation,
     TRANSFER_CHUNK_BYTES, read_control, unix_time_ms, write_control,
 };
+use ganbaru_handoff::dial::{LoopbackPolicy, authorize_dial_target};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::{WebPkiSupportedAlgorithms, verify_tls12_signature, verify_tls13_signature};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -700,11 +702,41 @@ fn prepare_partial(
     Ok(0)
 }
 
+/// Loopback peers exist only when two development instances link on one machine.
+const LOOPBACK_DIAL: LoopbackPolicy = if cfg!(debug_assertions) {
+    LoopbackPolicy::Allow
+} else {
+    LoopbackPolicy::Reject
+};
+
+/// Refuses dial targets outside the local network before any packet is sent. Invitations,
+/// cards, and coordinator pins all reach the network through [`connect_pinned`].
+fn authorize_endpoint(endpoint: SocketAddr) -> Result<(), String> {
+    let on_link_source = match endpoint.ip() {
+        IpAddr::V6(target) => ipv6_source_for(target),
+        IpAddr::V4(_) => None,
+    };
+    authorize_dial_target(endpoint, LOOPBACK_DIAL, on_link_source)
+        .map_err(|error| format!("refuse device connection: {error}"))
+}
+
+/// Returns the IPv6 source address the operating system selects to reach `target`. Connecting
+/// a UDP socket only selects a route; it sends nothing.
+fn ipv6_source_for(target: Ipv6Addr) -> Option<Ipv6Addr> {
+    let socket = std::net::UdpSocket::bind((Ipv6Addr::UNSPECIFIED, 0)).ok()?;
+    socket.connect((target, 9)).ok()?;
+    match socket.local_addr().ok()?.ip() {
+        IpAddr::V6(source) => Some(source),
+        IpAddr::V4(_) => None,
+    }
+}
+
 async fn connect_pinned(
-    endpoint: std::net::SocketAddr,
+    endpoint: SocketAddr,
     fingerprint: &str,
     identity: Option<TlsIdentity>,
 ) -> Result<tokio_rustls::client::TlsStream<TcpStream>, String> {
+    authorize_endpoint(endpoint)?;
     let verifier = Arc::new(PinnedServerVerifier::new(fingerprint.to_string()));
     let builder = rustls::ClientConfig::builder()
         .dangerous()

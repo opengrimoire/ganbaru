@@ -88,6 +88,7 @@ pub(super) async fn apply(
     {
         let app = app.clone();
         tauri::async_runtime::spawn_blocking(move || {
+            authorize_local_source(&app, &effect)?;
             crate::music::player::apply_session_effect(
                 app.state::<crate::music::player::MediaPlayerState>()
                     .inner(),
@@ -111,6 +112,27 @@ pub(super) async fn apply(
         let _ = effect;
         Err("Native Music sessions are not supported on iOS".into())
     }
+}
+
+/// Refuses a local file that no grant or root binding on this device covers. Every native
+/// load passes here, so a webview queue, a restored checkpoint, or an automatic Focus context
+/// cannot open a path the user never chose. A refusal skips the source like a missing file.
+#[cfg(desktop)]
+fn authorize_local_source(app: &tauri::AppHandle, effect: &SessionEffect) -> Result<(), Failure> {
+    let SessionEffect::Load { source, .. } = effect else {
+        return Ok(());
+    };
+    if source.kind != SourceKind::LocalFile {
+        return Ok(());
+    }
+    let path = source.path.as_deref().unwrap_or_default();
+    crate::music::path_authority::authorize(
+        app,
+        path,
+        crate::music::path_authority::MusicPathKind::File,
+    )
+    .map(|_| ())
+    .map_err(|error| Failure::Source(error.message().to_string()))
 }
 
 pub(super) fn effect_generation(effect: &SessionEffect) -> u64 {

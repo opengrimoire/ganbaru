@@ -17,7 +17,8 @@
       "csp": {
         "script-src": "'self'",
         "connect-src": "ipc: http://ipc.localhost https://api.github.com",
-        "frame-src": "http://127.0.0.1:* http://localhost:*"
+        "frame-src": "'none'",
+        "frame-ancestors": "'none'"
       },
       "devCsp": {
         "default-src": "'self' http://*:*",
@@ -27,7 +28,8 @@
         "media-src": "'self' http://127.0.0.1:* http://localhost:* http://*:*",
         "font-src": "'self' http://*:*",
         "connect-src": "ipc: http://ipc.localhost http://*:* ws://*:*",
-        "frame-src": "http://127.0.0.1:* http://localhost:*"
+        "frame-src": "'none'",
+        "frame-ancestors": "'none'"
       }
     }
   },

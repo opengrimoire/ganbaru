@@ -6,7 +6,7 @@ use crate::models::{
 use crate::validation::require_uuid;
 use crate::{page_history, project_history};
 use serde_json::Value;
-use sqlx::{Sqlite, SqlitePool, Transaction};
+use sqlx::{AssertSqlSafe, Sqlite, SqlitePool, Transaction};
 
 const VIEW_COLUMNS: &str = "id, database_id, data_source_id, name, type AS view_type, filter, sorts, configuration, source_provider, source_object_id, source_workspace_id, source_last_edited_time, url, created_time, last_edited_time";
 const MAX_VIEW_NAME_CHARS: usize = 200;
@@ -47,7 +47,7 @@ async fn load_view_tx(
     let query = format!(
         "SELECT {VIEW_COLUMNS} FROM notes_database_views WHERE database_id = ? AND id = ?",
     );
-    sqlx::query_as::<_, NoteDatabaseViewRow>(&query)
+    sqlx::query_as::<_, NoteDatabaseViewRow>(AssertSqlSafe(query.as_str()))
         .bind(database_id)
         .bind(view_id)
         .fetch_optional(&mut **tx)
@@ -63,7 +63,7 @@ async fn list_views_tx(
     let query = format!(
         "SELECT {VIEW_COLUMNS} FROM notes_database_views WHERE database_id = ? ORDER BY sort_order ASC, created_time ASC, id ASC",
     );
-    sqlx::query_as::<_, NoteDatabaseViewRow>(&query)
+    sqlx::query_as::<_, NoteDatabaseViewRow>(AssertSqlSafe(query.as_str()))
         .bind(database_id)
         .fetch_all(&mut **tx)
         .await

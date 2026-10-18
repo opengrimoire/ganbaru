@@ -3,6 +3,12 @@
 use crate::models::{ApprovalDecisionKind, SafetyMode};
 use serde::{Deserialize, Serialize};
 
+/// Edit targets that keep asking while workspace edits are approved
+/// automatically. OpenCode applies the last matching rule, `*` spans path
+/// separators, and matching folds case on Windows. Edits to repository
+/// metadata can make later Git runs execute programs, so they stay reviewed.
+pub const REPOSITORY_METADATA_EDIT_PATTERNS: &[&str] = &[".git", ".git/*", "*/.git", "*/.git/*"];
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenCodePermissionRule {
@@ -32,6 +38,13 @@ pub fn permission_rules(mode: SafetyMode) -> Vec<OpenCodePermissionRule> {
     let mut rules = vec![rule("*", broad_action)];
     if mode == SafetyMode::AskForApproval {
         rules.push(rule("edit", OpenCodePermissionAction::Allow));
+        rules.extend(REPOSITORY_METADATA_EDIT_PATTERNS.iter().map(|pattern| {
+            OpenCodePermissionRule {
+                permission: "edit".to_string(),
+                pattern: (*pattern).to_string(),
+                action: OpenCodePermissionAction::Ask,
+            }
+        }));
     }
     if mode != SafetyMode::FullAccess {
         for permission in [

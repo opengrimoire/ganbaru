@@ -4,7 +4,6 @@ use super::checkpoints::ensure_post_turn_checkpoint;
 use super::persistence::ThreadRuntimeData;
 use super::support::{PROVIDER_START_TIMEOUT, now_timestamp, operation_context};
 use super::validation::validate_modes;
-use crate::chat::credentials::{PlatformCredentialStore, materialize_provider_environment};
 use crate::chat::ingestion::{ChatEventIngestor, TauriChatChangeEmitter};
 use crate::chat::send_commands::SendChatTurnCommand;
 use crate::chat::workspace::AuthorizedWorkingFolder;
@@ -91,10 +90,8 @@ pub(super) async fn ensure_session_with_executable_recovery(
     }
     let repaired_provider =
         crate::chat::settings_commands::read_provider(app, &request.provider_instance_id)?;
-    let mut repaired_configuration = materialize_provider_environment(
-        &repaired_provider.configuration,
-        &PlatformCredentialStore::default(),
-    )?;
+    let mut repaired_configuration =
+        crate::chat::settings::approved_runtime(app, &repaired_provider.configuration)?;
     repaired_configuration.internal_mcp = internal_mcp;
     let retry = ensure_session(EnsureSessionContext {
         app,
@@ -174,6 +171,7 @@ pub(super) async fn ensure_session(
             .to_string(),
         repository_kind: workspace.repository_kind,
         repository_identity: workspace.repository_identity.clone(),
+        project_configuration: workspace.project_configuration,
     };
     let native_workspace_authorized =
         request.working_folder_id.is_some() || request.scratch_generation_id.is_some();

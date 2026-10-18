@@ -135,7 +135,10 @@ export const CANONICAL_REQUEST_KINDS = [
 ] as const;
 export type CanonicalRequestKind = (typeof CANONICAL_REQUEST_KINDS)[number];
 
-export const REQUEST_RESOLUTION_STATES = ["open", "resolved", "stale", "interrupted"] as const;
+export const APPROVAL_SUBJECT_KINDS = ["command", "path", "url", "pattern", "query", "tool"] as const;
+export type ApprovalSubjectKind = (typeof APPROVAL_SUBJECT_KINDS)[number];
+
+export const REQUEST_RESOLUTION_STATES =["open", "resolved", "stale", "interrupted"] as const;
 export type RequestResolutionState = (typeof REQUEST_RESOLUTION_STATES)[number];
 
 export const APPROVAL_DECISION_KINDS = ["allow_once", "allow_session", "deny", "cancel"] as const;
@@ -204,6 +207,8 @@ export const CHAT_ERROR_CODES = [
   "resume_not_found",
   "protocol",
   "permission",
+  "trust_decision_required",
+  "runtime_approval_required",
   "timeout",
   "cancelled",
   "persistence",

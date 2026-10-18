@@ -4,7 +4,7 @@ use super::{ContactRequestView, ContactView};
 use chrono::{DateTime, Utc};
 use ganbaru_contacts::{PersonPublicKey, TrustKind};
 use serde::{Deserialize, Serialize};
-use sqlx::{Executor, FromRow, Sqlite};
+use sqlx::{AssertSqlSafe, Executor, FromRow, Sqlite};
 
 const TIME_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%.3fZ";
 
@@ -244,9 +244,9 @@ pub(crate) async fn list_contacts<'e, E>(executor: E) -> Result<Vec<ContactRow>,
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query_as(&format!(
+    sqlx::query_as(AssertSqlSafe(format!(
         "SELECT {CONTACT_COLUMNS} FROM contacts ORDER BY state, lower(display_name), id"
-    ))
+    )))
     .fetch_all(executor)
     .await
     .map_err(|error| db_error("list contacts", error))
@@ -259,9 +259,9 @@ pub(crate) async fn contact_by_key<'e, E>(
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query_as(&format!(
+    sqlx::query_as(AssertSqlSafe(format!(
         "SELECT {CONTACT_COLUMNS} FROM contacts WHERE public_key = ?"
-    ))
+    )))
     .bind(public_key)
     .fetch_optional(executor)
     .await
@@ -276,9 +276,9 @@ pub(crate) async fn contact_by_id<'e, E>(
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query_as(&format!(
+    sqlx::query_as(AssertSqlSafe(format!(
         "SELECT {CONTACT_COLUMNS} FROM contacts WHERE id = ?"
-    ))
+    )))
     .bind(id)
     .fetch_optional(executor)
     .await
@@ -428,13 +428,29 @@ where
     Ok(result.rows_affected() == 1)
 }
 
+#[cfg(test)]
 pub(crate) async fn list_requests<'e, E>(executor: E) -> Result<Vec<RequestRow>, String>
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query_as(&format!(
+    sqlx::query_as(AssertSqlSafe(format!(
         "SELECT {REQUEST_COLUMNS} FROM contact_requests ORDER BY created_at DESC, id"
-    ))
+    )))
+    .fetch_all(executor)
+    .await
+    .map_err(|error| db_error("list contact requests", error))
+}
+
+/// Pending requests in both directions, newest first. Handled requests are never listed.
+pub(crate) async fn list_pending_requests<'e, E>(executor: E) -> Result<Vec<RequestRow>, String>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as(AssertSqlSafe(format!(
+        "SELECT {REQUEST_COLUMNS} FROM contact_requests
+         WHERE state = 'pending'
+         ORDER BY created_at DESC, id"
+    )))
     .fetch_all(executor)
     .await
     .map_err(|error| db_error("list contact requests", error))
@@ -447,9 +463,9 @@ pub(crate) async fn request_by_id<'e, E>(
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query_as(&format!(
+    sqlx::query_as(AssertSqlSafe(format!(
         "SELECT {REQUEST_COLUMNS} FROM contact_requests WHERE id = ?"
-    ))
+    )))
     .bind(id)
     .fetch_optional(executor)
     .await
@@ -464,10 +480,10 @@ pub(crate) async fn pending_request<'e, E>(
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query_as(&format!(
+    sqlx::query_as(AssertSqlSafe(format!(
         "SELECT {REQUEST_COLUMNS} FROM contact_requests
          WHERE direction = ? AND public_key = ? AND state = 'pending'"
-    ))
+    )))
     .bind(direction.as_str())
     .bind(public_key)
     .fetch_optional(executor)
@@ -482,10 +498,10 @@ pub(crate) async fn pending_requests<'e, E>(
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query_as(&format!(
+    sqlx::query_as(AssertSqlSafe(format!(
         "SELECT {REQUEST_COLUMNS} FROM contact_requests
          WHERE direction = ? AND state = 'pending' ORDER BY created_at, id"
-    ))
+    )))
     .bind(direction.as_str())
     .fetch_all(executor)
     .await
@@ -500,10 +516,10 @@ pub(crate) async fn latest_request_from<'e, E>(
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query_as(&format!(
+    sqlx::query_as(AssertSqlSafe(format!(
         "SELECT {REQUEST_COLUMNS} FROM contact_requests
          WHERE public_key = ? ORDER BY created_at DESC, id LIMIT 1"
-    ))
+    )))
     .bind(public_key)
     .fetch_optional(executor)
     .await
@@ -652,19 +668,18 @@ where
     .map_err(|error| db_error("count pending contact requests", error))
 }
 
-/// Expires the oldest pending received requests until at most `keep` remain.
+/// Deletes the oldest pending received requests until at most `keep` remain. A deleted request
+/// looks pending to its requester until it expires on their side.
 #[cfg(any(desktop, test))]
-pub(crate) async fn expire_oldest_pending_received<'e, E>(
+pub(crate) async fn delete_oldest_pending_received<'e, E>(
     executor: E,
     keep: i64,
-    now: DateTime<Utc>,
 ) -> Result<(), String>
 where
     E: Executor<'e, Database = Sqlite>,
 {
     sqlx::query(
-        "UPDATE contact_requests
-         SET state = 'expired', updated_at = ?
+        "DELETE FROM contact_requests
          WHERE id IN (
             SELECT id FROM contact_requests
             WHERE direction = 'received' AND state = 'pending'
@@ -672,11 +687,40 @@ where
             LIMIT -1 OFFSET ?
          )",
     )
-    .bind(format_time(now))
     .bind(keep)
     .execute(executor)
     .await
-    .map_err(|error| db_error("expire oldest contact requests", error))?;
+    .map_err(|error| db_error("delete oldest contact requests", error))?;
+    Ok(())
+}
+
+/// Deletes handled (accepted, declined, or expired) requests last changed before `cutoff`,
+/// and the oldest handled requests beyond the newest `keep`.
+pub(crate) async fn prune_handled_requests<'e, E>(
+    executor: E,
+    cutoff: DateTime<Utc>,
+    keep: i64,
+) -> Result<(), String>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "DELETE FROM contact_requests
+         WHERE state <> 'pending' AND (
+            updated_at < ?
+            OR id IN (
+                SELECT id FROM contact_requests
+                WHERE state <> 'pending'
+                ORDER BY updated_at DESC, id DESC
+                LIMIT -1 OFFSET ?
+            )
+         )",
+    )
+    .bind(format_time(cutoff))
+    .bind(keep)
+    .execute(executor)
+    .await
+    .map_err(|error| db_error("prune handled contact requests", error))?;
     Ok(())
 }
 

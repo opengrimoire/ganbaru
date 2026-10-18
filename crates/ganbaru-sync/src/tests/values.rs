@@ -2,7 +2,7 @@
 
 use ganbaru_sync_contracts::bounds::{MAX_ORDER_KEY_BYTES, MAX_ROW_KEY_BYTES};
 use ganbaru_sync_contracts::{OrderKey, RowKey};
-use sqlx::SqlitePool;
+use sqlx::{AssertSqlSafe, SqlitePool};
 
 use super::{block_on, execute, migrated_pool, rejects, set_applying};
 use crate::manifest::vault::VAULT_MANIFEST;
@@ -10,7 +10,7 @@ use crate::manifest::{ColumnType, MAX_TIMESTAMP_BYTES};
 use crate::triggers::{row_key_rule, value_rule};
 
 async fn rule_accepts(pool: &SqlitePool, rule: &str, value: &str) -> bool {
-    let accepted: Option<i64> = sqlx::query_scalar(&format!("SELECT ({rule}) IS 1"))
+    let accepted: Option<i64> = sqlx::query_scalar(AssertSqlSafe(format!("SELECT ({rule}) IS 1")))
         .bind(value)
         .fetch_one(pool)
         .await
@@ -180,7 +180,10 @@ fn rules_reject_values_of_other_types() {
             let rule = value_rule("?1", ty);
             for value in ["12", "x'6130'"] {
                 let sql = format!("SELECT ({}) IS 1", rule.replace("?1", value));
-                let accepted: i64 = sqlx::query_scalar(&sql).fetch_one(&pool).await.unwrap();
+                let accepted: i64 = sqlx::query_scalar(AssertSqlSafe(sql.as_str()))
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
                 assert_eq!(accepted, 0, "{ty:?} accepted {value}");
             }
         }
@@ -188,7 +191,10 @@ fn rules_reject_values_of_other_types() {
             let rule = value_rule("?1", ty);
             for value in ["'1'", "1.0", "NULL", "x'01'"] {
                 let sql = format!("SELECT ({}) IS 1", rule.replace("?1", value));
-                let accepted: i64 = sqlx::query_scalar(&sql).fetch_one(&pool).await.unwrap();
+                let accepted: i64 = sqlx::query_scalar(AssertSqlSafe(sql.as_str()))
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
                 assert_eq!(accepted, 0, "{ty:?} accepted {value}");
             }
         }
@@ -272,7 +278,9 @@ fn schema_accepts_every_manifest_boundary_value() {
                             .execute(&mut *transaction)
                             .await
                             .unwrap();
-                        let result = sqlx::raw_sql(&sql).execute(&mut *transaction).await;
+                        let result = sqlx::raw_sql(AssertSqlSafe(sql.as_str()))
+                            .execute(&mut *transaction)
+                            .await;
                         transaction.rollback().await.unwrap();
                         assert!(result.is_ok(), "{sql}: {result:?}");
                     }

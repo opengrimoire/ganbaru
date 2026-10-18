@@ -7,7 +7,7 @@ use ganbaru_chat_contracts::models::{
     ChatWorkAssignmentState, UtcTimestamp,
 };
 use serde::Deserialize;
-use sqlx::{Row, SqlitePool};
+use sqlx::{AssertSqlSafe, Row, SqlitePool};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -230,7 +230,7 @@ pub(crate) async fn read_channel(
     pool: &SqlitePool,
     channel_id: &ChatChannelId,
 ) -> ChatResult<ChatChannelRead> {
-    let row = sqlx::query(&channel_read_query("channel.id = ?", None))
+    let row = sqlx::query(AssertSqlSafe(channel_read_query("channel.id = ?", None)))
         .bind(channel_id.as_str())
         .fetch_optional(pool)
         .await
@@ -272,7 +272,7 @@ async fn read_channels(
         &format!("{archive_clause}{project_clause}{search_clause}"),
         Some("channel.is_default DESC, channel.name COLLATE NOCASE, channel.id LIMIT ?"),
     );
-    let mut prepared = sqlx::query(&query);
+    let mut prepared = sqlx::query(AssertSqlSafe(query.as_str()));
     if let Some(project_id) = project_id {
         prepared = prepared.bind(project_id);
     }

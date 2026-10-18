@@ -300,6 +300,7 @@ pub(crate) async fn discover_default_providers(
                         .then(|| probe.checked_at.clone()),
                     last_probe: Some(probe.clone()),
                     model_catalog,
+                    approved_runtime_items: Default::default(),
                 },
             );
             Ok(())

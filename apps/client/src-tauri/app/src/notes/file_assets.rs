@@ -9,10 +9,6 @@ use tauri_plugin_dialog::{DialogExt, FilePath};
 
 #[cfg(desktop)]
 pub use ganbaru_notes::assets::files::NotesFileAssetDto;
-#[cfg(desktop)]
-pub use ganbaru_notes::assets::files::{
-    NotesImportFileReferenceDto, NotesImportFileReferenceRequest,
-};
 
 #[cfg(desktop)]
 #[tauri::command]
@@ -38,18 +34,6 @@ pub async fn notes_pick_file_asset<R: Runtime>(
     ganbaru_notes::assets::files::save_selected_file(&pool, &vault_root, block_type, &path)
         .await
         .map(Some)
-}
-
-#[cfg(desktop)]
-#[tauri::command]
-pub async fn notes_prepare_import_file_reference<R: Runtime>(
-    app: AppHandle<R>,
-    db_url: String,
-    request: NotesImportFileReferenceRequest,
-) -> Result<NotesImportFileReferenceDto, String> {
-    let pool = connect_sqlite(app.clone(), db_url).await?;
-    let vault_root = vault::active_writable_vault_path(&app)?;
-    ganbaru_notes::assets::files::prepare_import_file_reference(&pool, &vault_root, request).await
 }
 
 #[tauri::command]

@@ -251,6 +251,8 @@ fn terminal_lifecycle_events_expire_open_interaction_requests() {
                         schema_version: 1,
                         value: serde_json::json!({}),
                     },
+                    subject: None,
+                    session_grants: Vec::new(),
                 }),
             ),
         )
@@ -355,6 +357,8 @@ fn terminal_lifecycle_events_expire_open_interaction_requests() {
                         schema_version: 1,
                         value: serde_json::json!({}),
                     },
+                    subject: None,
+                    session_grants: Vec::new(),
                 }),
             ),
         )

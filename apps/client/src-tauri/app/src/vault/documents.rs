@@ -1,7 +1,7 @@
 //! Native Calendar and theme document transfer, independent of vault selection.
 
 #[cfg(desktop)]
-use super::{dialog_path, require_absolute_path, write_text_file_atomically};
+use super::{FileAccess, dialog_path, require_absolute_path, write_text_file_atomically};
 #[cfg(target_os = "android")]
 use ganbaru_mobile_documents::MobileDocumentsExt;
 #[cfg(desktop)]
@@ -145,25 +145,27 @@ pub(crate) fn existing_downloads_directory(app: &tauri::AppHandle) -> Option<Pat
     app.path().download_dir().ok().filter(|path| path.is_dir())
 }
 
-/// Hard cap on the number of entries inspected inside a single zip.
-/// 1024 is well above the realistic count for an export from Google
-/// Calendar (one .ics per calendar a user owns or subscribes to is usually
-/// < 50) and protects against pathological inputs that could DoS the read
-/// loop.
+/// Size and count limits for one ICS zip import.
 #[cfg(desktop)]
-const ICS_ZIP_MAX_ENTRIES: usize = 1024;
+#[derive(Clone, Copy, Debug)]
+struct IcsZipLimits {
+    /// Entries inspected inside one zip, far above the one `.ics` per calendar
+    /// that Google and Apple exports contain.
+    max_entries: usize,
+    /// Decompressed bytes of one entry, enough for a multi-decade calendar with
+    /// thousands of events (text-only iCalendar averages about 1 KiB per event).
+    max_entry_bytes: u64,
+    /// Decompressed bytes across all entries, counted from bytes actually read,
+    /// and sized for what the import comfortably sends over IPC.
+    max_total_bytes: u64,
+}
 
-/// Hard cap on the uncompressed size of a single entry, in bytes. 25 MiB
-/// is large enough for a multi-decade calendar with thousands of events
-/// (text-only iCalendar averages ~1 KiB per event) while clearly rejecting
-/// decompression bombs.
 #[cfg(desktop)]
-const ICS_ZIP_MAX_ENTRY_BYTES: u64 = 25 * 1024 * 1024;
-
-/// Hard cap on the aggregate uncompressed size across every entry. Keeps a
-/// zip with many oversized entries from defeating the per-entry guard.
-#[cfg(desktop)]
-const ICS_ZIP_MAX_TOTAL_BYTES: u64 = 250 * 1024 * 1024;
+const ICS_ZIP_LIMITS: IcsZipLimits = IcsZipLimits {
+    max_entries: 1024,
+    max_entry_bytes: 25 * 1024 * 1024,
+    max_total_bytes: 64 * 1024 * 1024,
+};
 
 /// Plain `.ics` imports share the zip per-entry cap so the import flow has
 /// one clear maximum payload size regardless of container.
@@ -235,29 +237,39 @@ pub struct IcsZipEntry {
 /// - Entry paths are validated through `enclosed_name`, which rejects any
 ///   entry that tries to escape (zip-slip via `..` or absolute paths).
 /// - Encrypted entries are refused; only the deflate feature is enabled.
-/// - Per-entry and aggregate decompressed-size caps reject decompression
-///   bombs even if the zip header lies about uncompressed size (the read
-///   itself is wrapped in a `Take` adapter so the cap holds at I/O level).
+/// - Declared sizes are an early reject only. The zip reader does not enforce
+///   them, so every read goes through a `Take` adapter bounded by the per-entry
+///   cap and the bytes left in the aggregate budget, counted from real bytes.
 /// - Only entries whose extension matches `.ics` are returned. Anything
 ///   else (`__MACOSX/`, `.DS_Store`, signature files, archived metadata)
 ///   is silently skipped so the importer never sees them.
 #[cfg(desktop)]
 fn read_ics_zip_entries_from_path(path: &Path) -> Result<Vec<IcsZipEntry>, String> {
+    read_ics_zip_entries_with_limits(path, ICS_ZIP_LIMITS)
+}
+
+#[cfg(desktop)]
+fn read_ics_zip_entries_with_limits(
+    path: &Path,
+    limits: IcsZipLimits,
+) -> Result<Vec<IcsZipEntry>, String> {
     require_extension(path, &["zip"], "ICS zip import")?;
 
     let file = fs::File::open(path).map_err(|e| format!("failed to open zip: {e}"))?;
     let mut archive =
         zip::ZipArchive::new(file).map_err(|e| format!("not a valid zip archive: {e}"))?;
 
-    if archive.len() > ICS_ZIP_MAX_ENTRIES {
+    if archive.len() > limits.max_entries {
         return Err(format!(
-            "zip has {} entries, exceeding the limit of {ICS_ZIP_MAX_ENTRIES}",
-            archive.len()
+            "zip has {} entries, exceeding the limit of {}",
+            archive.len(),
+            limits.max_entries
         ));
     }
 
     let mut entries: Vec<IcsZipEntry> = Vec::new();
-    let mut total_uncompressed: u64 = 0;
+    let mut total_declared: u64 = 0;
+    let mut total_read: u64 = 0;
 
     for i in 0..archive.len() {
         let mut entry = archive
@@ -294,17 +306,16 @@ fn read_ics_zip_entries_from_path(path: &Path) -> Result<Vec<IcsZipEntry>, Strin
         }
 
         let reported_size = entry.size();
-        if reported_size > ICS_ZIP_MAX_ENTRY_BYTES {
+        if reported_size > limits.max_entry_bytes {
             return Err(format!(
-                "zip entry '{}' uncompressed size ({reported_size} bytes) exceeds the per-entry limit of {ICS_ZIP_MAX_ENTRY_BYTES} bytes",
-                enclosed.display()
+                "zip entry '{}' uncompressed size ({reported_size} bytes) exceeds the per-entry limit of {} bytes",
+                enclosed.display(),
+                limits.max_entry_bytes
             ));
         }
-        total_uncompressed = total_uncompressed.saturating_add(reported_size);
-        if total_uncompressed > ICS_ZIP_MAX_TOTAL_BYTES {
-            return Err(format!(
-                "zip total uncompressed size exceeds the limit of {ICS_ZIP_MAX_TOTAL_BYTES} bytes"
-            ));
+        total_declared = total_declared.saturating_add(reported_size);
+        if total_declared > limits.max_total_bytes || total_read >= limits.max_total_bytes {
+            return Err(aggregate_limit_error(limits));
         }
 
         let display_name = enclosed
@@ -316,19 +327,28 @@ fn read_ics_zip_entries_from_path(path: &Path) -> Result<Vec<IcsZipEntry>, Strin
         // entry mutably for the read.
         drop(enclosed);
 
-        // The `Take` adapter is the real defense against a lying header:
-        // even if `entry.size()` claims a small value, reading stops one
-        // byte past the cap and the entry is rejected.
-        let mut contents = String::new();
-        let mut limited = entry.by_ref().take(ICS_ZIP_MAX_ENTRY_BYTES + 1);
-        limited
-            .read_to_string(&mut contents)
-            .map_err(|e| format!("failed to read zip entry '{display_name}' as UTF-8: {e}"))?;
-        if contents.len() as u64 > ICS_ZIP_MAX_ENTRY_BYTES {
+        // Header sizes can lie, so the read stops one byte past whichever
+        // budget is smaller and real byte counts decide which limit failed.
+        let remaining_total = limits.max_total_bytes - total_read;
+        let read_limit = limits.max_entry_bytes.min(remaining_total);
+        let mut bytes = Vec::new();
+        entry
+            .by_ref()
+            .take(read_limit + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| format!("failed to read zip entry '{display_name}': {e}"))?;
+        let read = bytes.len() as u64;
+        if read > limits.max_entry_bytes {
             return Err(format!(
                 "zip entry '{display_name}' exceeds the per-entry size limit during decompression"
             ));
         }
+        if read > remaining_total {
+            return Err(aggregate_limit_error(limits));
+        }
+        total_read += read;
+        let contents = String::from_utf8(bytes)
+            .map_err(|e| format!("failed to read zip entry '{display_name}' as UTF-8: {e}"))?;
 
         entries.push(IcsZipEntry {
             name: display_name,
@@ -337,6 +357,14 @@ fn read_ics_zip_entries_from_path(path: &Path) -> Result<Vec<IcsZipEntry>, Strin
     }
 
     Ok(entries)
+}
+
+#[cfg(desktop)]
+fn aggregate_limit_error(limits: IcsZipLimits) -> String {
+    format!(
+        "zip total uncompressed size exceeds the limit of {} bytes",
+        limits.max_total_bytes
+    )
 }
 
 #[cfg(desktop)]
@@ -403,7 +431,7 @@ pub async fn vault_pick_and_write_ics_export(
         return Ok(false);
     };
     require_extension(&path, &["ics"], "ICS export")?;
-    write_text_file_atomically(&path, &contents)?;
+    write_text_file_atomically(&path, &contents, FileAccess::Default)?;
     Ok(true)
 }
 
@@ -503,7 +531,7 @@ pub async fn vault_pick_and_write_theme_json(
         return Ok(ThemeJsonWriteOutcome::cancelled());
     };
     require_extension(&path, &["json"], "theme export")?;
-    write_text_file_atomically(&path, &contents)?;
+    write_text_file_atomically(&path, &contents, FileAccess::Default)?;
     Ok(ThemeJsonWriteOutcome::saved_to_selected_file())
 }
 
@@ -807,5 +835,85 @@ mod tests {
         let result = read_ics_zip_entries_from_path(&path);
         let _ = fs::remove_file(&path);
         assert!(result.unwrap().is_empty());
+    }
+
+    /// Rewrites every local and central directory uncompressed size to zero so
+    /// declared sizes stop matching the decompressed bytes.
+    fn zero_declared_sizes(path: &Path) {
+        const LOCAL_HEADER: [u8; 4] = [0x50, 0x4b, 0x03, 0x04];
+        const CENTRAL_HEADER: [u8; 4] = [0x50, 0x4b, 0x01, 0x02];
+        const LOCAL_SIZE_OFFSET: usize = 22;
+        const CENTRAL_SIZE_OFFSET: usize = 24;
+        let mut bytes = fs::read(path).expect("read zip");
+        let mut patched = 0;
+        for index in 0..bytes.len().saturating_sub(4) {
+            let header = &bytes[index..index + 4];
+            let offset = if header == LOCAL_HEADER {
+                LOCAL_SIZE_OFFSET
+            } else if header == CENTRAL_HEADER {
+                CENTRAL_SIZE_OFFSET
+            } else {
+                continue;
+            };
+            bytes[index + offset..index + offset + 4].fill(0);
+            patched += 1;
+        }
+        assert!(patched >= 2, "expected zip headers to patch");
+        fs::write(path, bytes).expect("write patched zip");
+    }
+
+    #[test]
+    fn read_ics_zip_entries_rejects_archives_over_the_aggregate_limit() {
+        let path = unique_path("aggregate.zip");
+        let calendar = vec![b'A'; 800];
+        write_zip(
+            &path,
+            &[
+                ("one.ics", calendar.as_slice()),
+                ("two.ics", calendar.as_slice()),
+                ("three.ics", calendar.as_slice()),
+            ],
+        );
+        let limits = IcsZipLimits {
+            max_entries: 16,
+            max_entry_bytes: 1_000,
+            max_total_bytes: 1_500,
+        };
+        let result = read_ics_zip_entries_with_limits(&path, limits);
+        let generous = read_ics_zip_entries_with_limits(
+            &path,
+            IcsZipLimits {
+                max_total_bytes: 10_000,
+                ..limits
+            },
+        );
+        let _ = fs::remove_file(&path);
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("total uncompressed size exceeds the limit of 1500 bytes"),
+            "unexpected error: {err}"
+        );
+        let entries = generous.expect("sizes within the limits must import");
+        assert_eq!(entries.len(), 3);
+        assert!(entries.iter().all(|entry| entry.contents.len() == 800));
+    }
+
+    #[test]
+    fn read_ics_zip_entries_rejects_entries_larger_than_their_declared_size() {
+        let path = unique_path("lying-entry.zip");
+        let big = vec![b'A'; 2_000];
+        write_zip(&path, &[("big.ics", big.as_slice())]);
+        zero_declared_sizes(&path);
+        let result = read_ics_zip_entries_with_limits(
+            &path,
+            IcsZipLimits {
+                max_entries: 16,
+                max_entry_bytes: 1_000,
+                max_total_bytes: 10_000,
+            },
+        );
+        let _ = fs::remove_file(&path);
+        let err = result.unwrap_err();
+        assert!(err.contains("big.ics"), "unexpected error: {err}");
     }
 }

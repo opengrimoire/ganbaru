@@ -21,7 +21,7 @@ use media::*;
 use rich_text::*;
 
 pub use assets::{validate_icon_value, validate_native_icon, validate_page_cover_value};
-pub use block::validate_block_payload;
+pub use block::{MAX_TABLE_WIDTH, validate_block_payload};
 #[allow(unused_imports)]
 pub use catalog::{
     NOTE_BLOCK_TYPES, block_payload_supports_children, block_type_supports_children,

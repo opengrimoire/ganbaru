@@ -110,7 +110,7 @@ macro_rules! archive_row {
     ($tx:expr, $table:literal, {$($field:ident: $value:expr),+ $(,)?}) => {{
         let columns = &[$(stringify!($field)),+];
         let sql = format!("INSERT INTO {} ({}) VALUES ({})", $table, columns.join(", "), vec!["?"; columns.len()].join(", "));
-        sqlx::query(&sql)$(.bind($value))+.execute(&mut **$tx).await
+        sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))$(.bind($value))+.execute(&mut **$tx).await
             .map_err(|error| format!("write Calendar archive {}: {error}", $table))?;
     }};
 }

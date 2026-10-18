@@ -462,6 +462,15 @@ impl ChatTerminalRegistry {
         Ok(())
     }
 
+    /// Returns the threads that currently own at least one terminal.
+    pub fn thread_ids(&self) -> ChatResult<std::collections::BTreeSet<ChatThreadId>> {
+        let sessions = self.sessions.lock().map_err(|_| terminal_state_error())?;
+        Ok(sessions
+            .values()
+            .map(|session| session.thread_id.clone())
+            .collect())
+    }
+
     pub fn shutdown_thread(&self, thread_id: &ChatThreadId) -> ChatResult<()> {
         let mut sessions = self.sessions.lock().map_err(|_| terminal_state_error())?;
         let terminal_ids = sessions
@@ -620,7 +629,7 @@ fn shell_command(workspace_path: &Path) -> CommandBuilder {
     command
 }
 
-fn default_shell_label() -> String {
+pub(crate) fn default_shell_label() -> String {
     #[cfg(windows)]
     let key = "ComSpec";
     #[cfg(not(windows))]

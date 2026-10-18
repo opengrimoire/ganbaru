@@ -1,3 +1,6 @@
+// Android hosts YouTube natively and never starts the loopback server, so only its shared state is used there.
+#![cfg_attr(mobile, allow(dead_code, unused_imports))]
+
 use std::{
     io::{self, Read, Write},
     net::{TcpListener, TcpStream},
@@ -22,7 +25,7 @@ use std::{
 use tauri::{Manager, State};
 
 #[cfg(desktop)]
-use super::require_absolute_file;
+use super::path_authority::{MusicPathKind, authorize};
 use super::youtube::player_page::{youtube_host_content_security_policy, youtube_host_html};
 #[cfg(desktop)]
 use ganbaru_music_library::artwork::{embedded_artwork_id, extract_embedded_artwork};
@@ -31,7 +34,6 @@ pub struct MusicHostState {
     pub youtube_url: String,
     #[cfg(desktop)]
     media_base_url: String,
-    #[cfg(desktop)]
     token: String,
     #[cfg(desktop)]
     registry: Arc<Mutex<MusicMediaRegistry>>,
@@ -281,31 +283,47 @@ const BASIC_RESPONSE_CSP: &str =
 
 #[tauri::command]
 #[cfg(desktop)]
-pub fn music_register_media_file(
-    state: State<'_, MusicHostState>,
+pub async fn music_register_media_file(
+    app: tauri::AppHandle,
     path: String,
     generation: u64,
 ) -> Result<String, String> {
-    let path = PathBuf::from(path);
-    require_absolute_file(&path)?;
-    let id = media_file_id(&path);
-    state
-        .registry
-        .lock()
-        .map_err(|_| "media host registry is temporarily unavailable".to_string())?
-        .register(id.clone(), HostedMedia::File(path), generation)?;
-    Ok(hosted_media_url(&state, &id))
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = authorize(&app, &path, MusicPathKind::File)?;
+        let state = app.state::<MusicHostState>();
+        let id = media_file_id(&path);
+        state
+            .registry
+            .lock()
+            .map_err(|_| "media host registry is temporarily unavailable".to_string())?
+            .register(id.clone(), HostedMedia::File(path), generation)?;
+        Ok(hosted_media_url(&state, &id))
+    })
+    .await
+    .map_err(|error| format!("media registration task failed: {error}"))?
 }
 
 #[tauri::command]
 #[cfg(desktop)]
-pub fn music_register_embedded_artwork(
-    state: State<'_, MusicHostState>,
+pub async fn music_register_embedded_artwork(
+    app: tauri::AppHandle,
     path: String,
     generation: u64,
 ) -> Result<Option<String>, String> {
-    let path = PathBuf::from(path);
-    require_absolute_file(&path)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = authorize(&app, &path, MusicPathKind::File)?;
+        register_embedded_artwork(&app.state::<MusicHostState>(), &path, generation)
+    })
+    .await
+    .map_err(|error| format!("embedded artwork registration task failed: {error}"))?
+}
+
+#[cfg(desktop)]
+fn register_embedded_artwork(
+    state: &MusicHostState,
+    path: &Path,
+    generation: u64,
+) -> Result<Option<String>, String> {
     if !state
         .registry
         .lock()
@@ -314,10 +332,10 @@ pub fn music_register_embedded_artwork(
     {
         return Err("hosted media registration is stale".to_string());
     }
-    let Some(artwork) = extract_embedded_artwork(&path)? else {
+    let Some(artwork) = extract_embedded_artwork(path)? else {
         return Ok(None);
     };
-    let id = embedded_artwork_id(&path, &artwork);
+    let id = embedded_artwork_id(path, &artwork);
     state
         .registry
         .lock()
@@ -330,7 +348,7 @@ pub fn music_register_embedded_artwork(
             },
             generation,
         )?;
-    Ok(Some(hosted_media_url(&state, &id)))
+    Ok(Some(hosted_media_url(state, &id)))
 }
 
 #[tauri::command]
@@ -382,9 +400,31 @@ pub fn music_youtube_host_url(state: State<'_, MusicHostState>) -> String {
     state.youtube_url.clone()
 }
 
+impl MusicHostState {
+    /// Per-launch secret that authorizes YouTube host pages and hosted media.
+    #[cfg_attr(desktop, allow(dead_code))]
+    pub(crate) fn token(&self) -> &str {
+        &self.token
+    }
+}
+
+/// Starts the YouTube host. Desktop serves the player page from a loopback
+/// server; Android serves it from a separate native WebView, so no port opens.
 pub fn setup_youtube_host(app: &tauri::AppHandle) -> Result<(), String> {
+    #[cfg(desktop)]
     app.manage(spawn_music_host()?);
+    #[cfg(mobile)]
+    app.manage(native_music_host()?);
     Ok(())
+}
+
+#[cfg(mobile)]
+fn native_music_host() -> Result<MusicHostState, String> {
+    let token = make_music_host_token()?;
+    Ok(MusicHostState {
+        youtube_url: super::youtube::native_host::native_youtube_host_url(&token),
+        token,
+    })
 }
 
 #[cfg(desktop)]
@@ -476,6 +516,7 @@ impl Drop for MusicHostConnectionPermit {
     }
 }
 
+#[cfg(desktop)]
 fn spawn_music_host() -> Result<MusicHostState, String> {
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .map_err(|e| format!("failed to bind music player host: {e}"))?;
@@ -523,7 +564,6 @@ fn spawn_music_host() -> Result<MusicHostState, String> {
         youtube_url: format!("{base_url}/youtube-player.html?token={token}"),
         #[cfg(desktop)]
         media_base_url: base_url,
-        #[cfg(desktop)]
         token,
         #[cfg(desktop)]
         registry,
@@ -746,7 +786,7 @@ fn request_token(path: &str) -> Option<&str> {
     token
 }
 
-fn constant_time_token_eq(expected: &str, candidate: &str) -> bool {
+pub(super) fn constant_time_token_eq(expected: &str, candidate: &str) -> bool {
     let expected = expected.as_bytes();
     let candidate = candidate.as_bytes();
     let mut difference = expected.len() ^ candidate.len();

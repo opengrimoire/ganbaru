@@ -11,6 +11,7 @@ mod pomodoro;
 mod projects;
 mod query_plans;
 mod quick_notes;
+mod schema_catalog;
 
 fn block_on<F: std::future::Future>(future: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()
@@ -120,7 +121,7 @@ fn pool_registry_failed_initialization_can_be_retried() {
             .connect_with(options)
             .await
             .unwrap();
-        // Force migration failure after connection succeeds.
+        // A schema without migration history fails initialization after connection succeeds.
         sqlx::query("CREATE TABLE projects (unexpected TEXT)")
             .execute(&seed)
             .await
@@ -131,7 +132,7 @@ fn pool_registry_failed_initialization_can_be_retried() {
                 .connect_path(&path)
                 .await
                 .unwrap_err()
-                .contains("migrations")
+                .contains("migration history")
         );
         sqlx::query("DROP TABLE projects")
             .execute(&seed)
@@ -166,7 +167,7 @@ fn pool_registry_reuses_and_closes_authorized_path() {
             ("foreign_keys", 1),
             ("busy_timeout", 5_000),
         ] {
-            let value: i64 = sqlx::query_scalar(&format!("PRAGMA {pragma}"))
+            let value: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("PRAGMA {pragma}")))
                 .fetch_one(&first)
                 .await
                 .unwrap();

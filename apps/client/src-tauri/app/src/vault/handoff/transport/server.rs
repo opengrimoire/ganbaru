@@ -4,66 +4,189 @@ use super::{
     CHUNK_TIMEOUT, MEMBERSHIP_REVOKED_CODE, TLS_HANDSHAKE_TIMEOUT, prepare_partial, stream_file,
     timeout_control,
 };
+use crate::contacts::requests::PeerReply;
 use crate::sync::hub::SyncHub;
+use crate::vault::handoff::contact_requests::{ContactJob, ContactOperation, ContactSender};
 use crate::vault::handoff::pairing::{Enrollment, PairingManager};
 use crate::vault::handoff::protocol::{
     BundleMetadata, BundlePurpose, ControlMessage, PROTOCOL_VERSION, TRANSFER_CHUNK_BYTES,
-    read_control, unix_time_ms, write_control,
+    read_control, read_control_limited, unix_time_ms, write_control,
 };
 use crate::vault::handoff::{coordinator, protocol, suggested_device_label};
+use limits::{ConnectionLimits, PendingPermit};
 use rustls::RootCertStore;
+use rustls::pki_types::CertificateDer;
 use std::fs;
-use std::sync::Arc;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
 
+pub(super) mod limits;
+
 const UPLOAD_REQUEST_WAIT: Duration = Duration::from_secs(10);
 const UPLOAD_REQUEST_POLL_INTERVAL: Duration = Duration::from_millis(200);
+const ACCEPT_BACKOFF_MIN: Duration = Duration::from_millis(10);
+const ACCEPT_BACKOFF_MAX: Duration = Duration::from_secs(1);
+/// Error code for a linked device turned away because the authenticated budget is full.
+pub(super) const COORDINATOR_BUSY_CODE: &str = "coordinator_busy";
+
+/// TLS server configuration built once per set of trusted device certificates, so connections
+/// reuse it until enrollment or revocation changes the set.
+#[derive(Clone, Default)]
+struct ServerConfigCache(Arc<Mutex<Option<CachedServerConfig>>>);
+
+struct CachedServerConfig {
+    client_certificates: Vec<CertificateDer<'static>>,
+    config: Arc<rustls::ServerConfig>,
+}
+
+impl ServerConfigCache {
+    fn current(&self, manager: &PairingManager) -> Result<Arc<rustls::ServerConfig>, String> {
+        let client_certificates = manager.client_auth_certificates()?;
+        let mut cached = self
+            .0
+            .lock()
+            .map_err(|_| "coordinator TLS configuration lock is unavailable".to_string())?;
+        if let Some(cached) = cached.as_ref()
+            && cached.client_certificates == client_certificates
+        {
+            return Ok(cached.config.clone());
+        }
+        let config = Arc::new(server_config(manager, client_certificates.clone())?);
+        *cached = Some(CachedServerConfig {
+            client_certificates,
+            config: config.clone(),
+        });
+        Ok(config)
+    }
+}
 
 pub(crate) async fn serve_with_coordinator(
     listener: TcpListener,
     manager: PairingManager,
     coordinator: Option<coordinator::CoordinatorSender>,
+    contacts: Option<ContactSender>,
     hub: Option<SyncHub>,
-    mut shutdown: tokio::sync::oneshot::Receiver<()>,
+    shutdown: tokio::sync::oneshot::Receiver<()>,
 ) {
+    serve_with_limits(
+        listener,
+        ConnectionLimits::default(),
+        manager,
+        coordinator,
+        contacts,
+        hub,
+        shutdown,
+    )
+    .await;
+}
+
+pub(super) async fn serve_with_limits(
+    listener: TcpListener,
+    limits: ConnectionLimits,
+    manager: PairingManager,
+    coordinator: Option<coordinator::CoordinatorSender>,
+    contacts: Option<ContactSender>,
+    hub: Option<SyncHub>,
+    shutdown: tokio::sync::oneshot::Receiver<()>,
+) {
+    let configs = ServerConfigCache::default();
+    accept_connections(
+        || listener.accept(),
+        shutdown,
+        |socket, source: SocketAddr| {
+            let Some(permit) = limits.admit(source.ip()) else {
+                // Closing at once keeps a flood from holding descriptors or handshakes.
+                drop(socket);
+                return;
+            };
+            let configs = configs.clone();
+            let manager = manager.clone();
+            let coordinator = coordinator.clone();
+            let contacts = contacts.clone();
+            let limits = limits.clone();
+            let hub = hub.clone();
+            tokio::spawn(async move {
+                let services = Services {
+                    manager,
+                    coordinator,
+                    contacts,
+                    hub,
+                    limits,
+                };
+                if let Err(error) =
+                    handle_connection(socket, source.ip(), permit, configs, services).await
+                {
+                    eprintln!("vault handoff connection failed: {error}");
+                }
+            });
+        },
+    )
+    .await;
+}
+
+/// Accepts until shutdown. Accept errors such as descriptor or buffer exhaustion and aborted
+/// handshakes are transient, so the loop logs them and backs off instead of stopping linking.
+pub(super) async fn accept_connections<S, A, F>(
+    mut accept: A,
+    mut shutdown: tokio::sync::oneshot::Receiver<()>,
+    mut on_accepted: impl FnMut(S, SocketAddr),
+) where
+    A: FnMut() -> F,
+    F: Future<Output = std::io::Result<(S, SocketAddr)>>,
+{
+    let mut backoff = ACCEPT_BACKOFF_MIN;
     loop {
         tokio::select! {
             _ = &mut shutdown => break,
-            accepted = listener.accept() => {
-                match accepted {
-                    Ok((socket, _)) => {
-                        let manager = manager.clone();
-                        let coordinator = coordinator.clone();
-                        let hub = hub.clone();
-                        tokio::spawn(async move {
-                            if let Err(error) = handle_connection(socket, manager, coordinator, hub).await {
-                                eprintln!("vault handoff connection failed: {error}");
-                            }
-                        });
-                    }
-                    Err(error) => {
-                        eprintln!("vault handoff coordinator accept failed: {error}");
-                        break;
-                    }
+            accepted = accept() => match accepted {
+                Ok((socket, source)) => {
+                    backoff = ACCEPT_BACKOFF_MIN;
+                    on_accepted(socket, source);
                 }
-            }
+                Err(error) => {
+                    eprintln!("vault handoff coordinator accept failed, retrying: {error}");
+                    tokio::select! {
+                        _ = &mut shutdown => break,
+                        () = tokio::time::sleep(backoff) => {}
+                    }
+                    backoff = (backoff * 2).min(ACCEPT_BACKOFF_MAX);
+                }
+            },
         }
     }
 }
 
-async fn handle_connection(
-    socket: TcpStream,
+/// What one connection may reach on the coordinator.
+struct Services {
     manager: PairingManager,
     coordinator: Option<coordinator::CoordinatorSender>,
+    contacts: Option<ContactSender>,
     hub: Option<SyncHub>,
+    limits: ConnectionLimits,
+}
+
+async fn handle_connection(
+    socket: TcpStream,
+    source: IpAddr,
+    permit: PendingPermit,
+    configs: ServerConfigCache,
+    services: Services,
 ) -> Result<(), String> {
-    let config = server_config(&manager)?;
+    let Services {
+        manager,
+        coordinator,
+        contacts,
+        hub,
+        limits,
+    } = services;
+    let config = configs.current(&manager)?;
     let mut stream = tokio::time::timeout(
         TLS_HANDSHAKE_TIMEOUT,
-        TlsAcceptor::from(Arc::new(config)).accept(socket),
+        TlsAcceptor::from(config).accept(socket),
     )
     .await
     .map_err(|_| "TLS handshake timed out".to_string())?
@@ -74,14 +197,36 @@ async fn handle_connection(
         .peer_certificates()
         .and_then(|certificates| certificates.first())
         .cloned();
-    let request = match timeout_control(read_control(&mut stream)).await {
+    let revoked = manager.is_revoked_certificate(peer_certificate.as_ref())?;
+    // A linked certificate moves the connection to the authenticated budget; anything else keeps
+    // its pending slot and the small frame bound until it closes.
+    let (_pending, authenticated) = if peer_certificate.is_some() && !revoked {
+        let Some(authenticated) = permit.authenticate() else {
+            return send_error(
+                &mut stream,
+                COORDINATOR_BUSY_CODE,
+                "the coordinator is handling too many connections; retry shortly",
+                true,
+            )
+            .await;
+        };
+        (None, Some(authenticated))
+    } else {
+        (Some(permit), None)
+    };
+    let control_limit = if authenticated.is_some() {
+        protocol::MAX_CONTROL_BYTES
+    } else {
+        protocol::MAX_UNAUTHENTICATED_CONTROL_BYTES
+    };
+    let request = match timeout_control(read_control_limited(&mut stream, control_limit)).await {
         Ok(request) => request,
         Err(error) => {
             return send_error(&mut stream, "malformed_control", &error, false).await;
         }
     };
 
-    if manager.is_revoked_certificate(peer_certificate.as_ref())? {
+    if revoked {
         return send_error(
             &mut stream,
             MEMBERSHIP_REVOKED_CODE,
@@ -159,17 +304,13 @@ async fn handle_connection(
             signature,
             ..
         } => {
-            send_coordinator_response(
-                &mut stream,
-                coordinator.as_ref(),
-                coordinator::CoordinatorOperation::ContactRequest {
-                    recipient_card_nonce,
-                    requester_card,
-                    request_id,
-                    signature,
-                },
-            )
-            .await
+            let operation = ContactOperation::Request {
+                recipient_card_nonce,
+                requester_card,
+                request_id,
+                signature,
+            };
+            send_contact_response(&mut stream, contacts.as_ref(), &limits, source, operation).await
         }
         ControlMessage::ContactRequestStatus {
             request_id,
@@ -178,17 +319,13 @@ async fn handle_connection(
             signature,
             ..
         } => {
-            send_coordinator_response(
-                &mut stream,
-                coordinator.as_ref(),
-                coordinator::CoordinatorOperation::ContactRequestStatus {
-                    request_id,
-                    requester_public_key,
-                    issued_at_ms,
-                    signature,
-                },
-            )
-            .await
+            let operation = ContactOperation::Status {
+                request_id,
+                requester_public_key,
+                issued_at_ms,
+                signature,
+            };
+            send_contact_response(&mut stream, contacts.as_ref(), &limits, source, operation).await
         }
         ControlMessage::PersonKeyRequest {
             vault_id,
@@ -199,7 +336,10 @@ async fn handle_connection(
             send_coordinator_response(
                 &mut stream,
                 coordinator.as_ref(),
-                coordinator::CoordinatorOperation::ReleasePersonKey,
+                coordinator::CoordinatorOperation::ReleasePersonKey {
+                    vault_id,
+                    device_id,
+                },
             )
             .await
         }
@@ -385,6 +525,74 @@ async fn send_coordinator_response(
     send_coordinator_response_value(stream, response).await
 }
 
+/// Hands an unauthenticated contact message to the contact worker. A source past its contact
+/// budget, or a full worker queue, gets a retryable busy answer instead of waiting.
+async fn send_contact_response(
+    stream: &mut tokio_rustls::server::TlsStream<TcpStream>,
+    contacts: Option<&ContactSender>,
+    limits: &ConnectionLimits,
+    source: IpAddr,
+    operation: ContactOperation,
+) -> Result<(), String> {
+    let Some(contacts) = contacts else {
+        return send_error(
+            stream,
+            "coordinator_unavailable",
+            "contact requests are unavailable on this coordinator",
+            true,
+        )
+        .await;
+    };
+    if !limits.take_contact_message(source, std::time::Instant::now()) {
+        return send_peer_reply(stream, PeerReply::busy()).await;
+    }
+    let (response, receiver) = tokio::sync::oneshot::channel();
+    if contacts
+        .try_send(ContactJob {
+            operation,
+            response,
+        })
+        .is_err()
+    {
+        return send_peer_reply(stream, PeerReply::busy()).await;
+    }
+    match receiver.await {
+        Ok(Ok(reply)) => send_peer_reply(stream, reply).await,
+        Ok(Err(error)) => send_error(stream, "handoff_rejected", &error, true).await,
+        Err(_) => {
+            send_error(
+                stream,
+                "coordinator_unavailable",
+                "the contact request was not handled",
+                true,
+            )
+            .await
+        }
+    }
+}
+
+async fn send_peer_reply(
+    stream: &mut tokio_rustls::server::TlsStream<TcpStream>,
+    reply: PeerReply,
+) -> Result<(), String> {
+    let message = match reply {
+        PeerReply::Received { request_id } => ControlMessage::ContactRequestReceived { request_id },
+        PeerReply::State {
+            state,
+            recipient_card,
+        } => ControlMessage::ContactRequestState {
+            state,
+            recipient_card,
+        },
+        PeerReply::Rejected {
+            code,
+            message,
+            retryable,
+        } => return send_error(stream, code, message, retryable).await,
+    };
+    timeout_control(write_control(stream, &message)).await
+}
+
 async fn send_upload_status_response(
     stream: &mut tokio_rustls::server::TlsStream<TcpStream>,
     coordinator: Option<&coordinator::CoordinatorSender>,
@@ -490,16 +698,6 @@ async fn send_coordinator_response_value(
             acknowledged_sample_ids,
             peer_samples,
             combined_samples,
-        },
-        coordinator::CoordinatorResponse::ContactRequestReceived { request_id } => {
-            ControlMessage::ContactRequestReceived { request_id }
-        }
-        coordinator::CoordinatorResponse::ContactRequestState {
-            state,
-            recipient_card,
-        } => ControlMessage::ContactRequestState {
-            state,
-            recipient_card,
         },
         coordinator::CoordinatorResponse::PersonKeyReleased {
             public_key,
@@ -695,10 +893,12 @@ async fn serve_upload(
     .await
 }
 
-fn server_config(manager: &PairingManager) -> Result<rustls::ServerConfig, String> {
+fn server_config(
+    manager: &PairingManager,
+    client_certificates: Vec<CertificateDer<'static>>,
+) -> Result<rustls::ServerConfig, String> {
     let (_, identity) = manager.identity()?;
     let builder = rustls::ServerConfig::builder();
-    let client_certificates = manager.client_auth_certificates()?;
     let config = if !client_certificates.is_empty() {
         let mut roots = RootCertStore::empty();
         for certificate in client_certificates {

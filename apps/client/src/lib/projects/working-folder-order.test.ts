@@ -25,7 +25,7 @@ function folder(
     bindingStatus: "available",
     canonicalPath: "/folder",
     lastVerifiedAt: "2026-07-25T12:00:00.000Z",
-    currentBranch: null,
+    currentBranch: null, trust: "undecided",
   };
 }
 

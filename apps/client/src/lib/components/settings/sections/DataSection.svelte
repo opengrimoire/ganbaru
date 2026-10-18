@@ -3,6 +3,7 @@
   import FolderInput from "@lucide/svelte/icons/folder-input";
   import FolderOpen from "@lucide/svelte/icons/folder-open";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
+  import DatabaseRollbacks from "$lib/components/vault/DatabaseRollbacks.svelte";
   import VaultHandoffPanel from "$lib/components/vault/handoff/VaultHandoffPanel.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
@@ -30,7 +31,7 @@
     "inline-flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border px-2.5 text-[0.8rem] font-medium transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-55";
   const secondaryButtonClass = `${actionButtonClass} bg-card text-foreground hover:bg-accent dark:bg-transparent`;
 
-  const currentFolderPath = $derived(activeVault?.path ?? t("settings.data.noActiveFolder"));
+  const currentFolderPath =$derived(activeVault?.path ?? t("settings.data.noActiveFolder"));
 
   async function loadVaultState(): Promise<void> {
     const showLoadingState = !folderStateLoaded;
@@ -170,6 +171,8 @@
       </div>
     </div>
   </section>
+
+  <DatabaseRollbacks onRestored={restartApp} />
 
   {#if error}
     <div class="h-px shrink-0 scale-y-50 bg-border" aria-hidden="true"></div>

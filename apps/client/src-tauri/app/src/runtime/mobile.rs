@@ -53,6 +53,9 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             vault::vault_pick_and_write_theme_json,
             vault::backup::vault_backup_to_downloads,
             vault::backup::vault_pick_and_restore_backup,
+            vault::database_rollback::vault_database_rollbacks,
+            vault::database_rollback::vault_restore_database_rollback,
+            vault::database_rollback::vault_dismiss_database_rollback,
             chat::settings_commands::chat_read_settings,
             chat::settings_commands::chat_discover_default_providers,
             chat::settings_commands::chat_update_behavior,
@@ -79,6 +82,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::organization::chat_read_reply_thread_page,
             chat::organization::chat_search_messages,
             music::player::media_player_probe,
+            music::path_authority::music_confirm_local_sources,
             music::session::runtime::music_session_start,
             music::session::runtime::music_session_command,
             music::session::runtime::music_session_snapshot,
@@ -98,6 +102,10 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             music::media_server::music_retain_hosted_media,
             music::media_server::music_unregister_hosted_media,
             music::media_server::music_youtube_host_url,
+            music::youtube::native_host::commands::music_youtube_native_open,
+            music::youtube::native_host::commands::music_youtube_native_bounds,
+            music::youtube::native_host::commands::music_youtube_native_post,
+            music::youtube::native_host::commands::music_youtube_native_close,
             music::youtube::metadata::music_youtube_metadata,
             music::youtube::thumbnail::music_youtube_thumbnail,
             music::root_bindings::music_local_root_bindings,
@@ -429,7 +437,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         ])
         .setup(|app| {
             vault::ownership::initialize(app.handle())?;
-            vault::handoff::initialize(app.handle())?;
+            vault::handoff::initialize(app.handle());
             #[cfg(target_os = "android")]
             vault::backup::recover_interrupted_restore_for_app(app.handle())?;
             crate::sync::setup(app.handle());

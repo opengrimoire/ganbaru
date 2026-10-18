@@ -311,10 +311,9 @@ pub async fn notes_import_notion_export_folder<R: Runtime>(
     app: AppHandle<R>,
     db_url: String,
     request: NoteNotionExportImportRequest,
-) -> Result<project_history::NotesMutationResultDto<NoteNotionExportImportDto>, String> {
+) -> Result<project_history::NotesMutationResultDto<Option<NoteNotionExportImportDto>>, String> {
     let pool = connect_sqlite(app.clone(), db_url).await?;
-    let vault_root = crate::vault::active_writable_vault_path(&app)?;
-    let value = transfers::notion_export_import::import_folder(&pool, &vault_root, request).await?;
+    let value = export_dialogs::pick_and_import_notion_export(&app, &pool, request).await?;
     project_history::mutation_result(&pool, value).await
 }
 

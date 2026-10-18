@@ -63,9 +63,8 @@ pub(crate) async fn run_checkpoint_cleanup(
                         true,
                     ))
                 } else {
-                    let root = authorized.canonical_path;
                     tauri::async_runtime::spawn_blocking(move || {
-                        delete_exact_ref(&root, &reference, &expected_object_id)
+                        delete_exact_ref(authorized.git_folder(), &reference, &expected_object_id)
                     })
                     .await
                     .map_err(|_| checkpoint_command_error())?

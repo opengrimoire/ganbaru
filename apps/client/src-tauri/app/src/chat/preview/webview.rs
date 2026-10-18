@@ -1,5 +1,9 @@
+use super::approvals::PendingPreviewApproval;
+use super::model_access::thread_grants;
 use super::navigation::*;
+use super::persistence::{bounded_preview_title, bounded_preview_url, spawn_tab_persister};
 use super::*;
+use std::collections::BTreeSet;
 
 pub(super) async fn create_child_browser_webview(
     app: &tauri::AppHandle,
@@ -10,33 +14,65 @@ pub(super) async fn create_child_browser_webview(
 ) -> ChatResult<BrowserTabRead> {
     use tauri::webview::{NewWindowResponse, PageLoadEvent, WebviewBuilder};
     let label = preview_label(&request.tab_id);
+    let (working_folder_id, data_directory) =
+        super::data_store::preview_data_directory(app, pool, &request.thread_id).await?;
     let allowed_url = Arc::new(Mutex::new(url.clone()));
     let navigation_url = allowed_url.clone();
+    let committed_url = Arc::new(Mutex::new(url.clone()));
+    let loaded_url = committed_url.clone();
     let manager = app.state::<ChatBrowserManager>().inner().clone();
     let loading_tab = request.tab_id.clone();
-    let loading_pool = pool.clone();
     let title_manager = manager.clone();
     let title_tab = request.tab_id.clone();
-    let title_pool = pool.clone();
+    let navigation_manager = manager.clone();
+    let navigation_app = app.clone();
+    let navigation_thread = request.thread_id.clone();
+    let navigation_tab = request.tab_id.clone();
     let builder = WebviewBuilder::new(label.clone(), WebviewUrl::External(url.clone()))
+        .data_directory(data_directory)
         .on_navigation(move |candidate| {
-            navigation_url
-                .lock()
-                .is_ok_and(|allowed| navigation_allowed(&allowed, candidate))
+            let Ok(allowed) = navigation_url.lock().map(|allowed| allowed.clone()) else {
+                return false;
+            };
+            if navigation_allowed(&allowed, candidate, &BTreeSet::new()) {
+                return true;
+            }
+            let grants = thread_grants(&navigation_app, &navigation_thread);
+            if navigation_allowed(&allowed, candidate, &grants) {
+                return true;
+            }
+            if loopback_origin_key(&allowed).is_some()
+                && loopback_approval_needed(candidate, &grants).is_some()
+            {
+                navigation_manager.request_approval(
+                    &navigation_app,
+                    &navigation_thread,
+                    PendingPreviewApproval::Navigation {
+                        tab_id: navigation_tab.clone(),
+                        url: candidate.clone(),
+                    },
+                );
+            }
+            false
         })
         .on_new_window(|_, _| NewWindowResponse::Deny)
         .on_download(|_, _| false)
         .on_page_load(move |_, payload| {
-            manager.update(&loading_tab, |read| {
-                read.current_url = payload.url().to_string();
+            if payload.event() == PageLoadEvent::Finished
+                && let Ok(mut committed) = loaded_url.lock()
+            {
+                *committed = payload.url().clone();
+            }
+            manager.update_from_page(&loading_tab, |read| {
+                read.current_url = bounded_preview_url(payload.url());
                 read.loading = payload.event() == PageLoadEvent::Started;
                 read.external_origin = !is_loopback(payload.url());
             });
-            persist_runtime_tab(&manager, &loading_pool, &loading_tab);
         })
         .on_document_title_changed(move |_, title| {
-            title_manager.update(&title_tab, |read| read.title = title);
-            persist_runtime_tab(&title_manager, &title_pool, &title_tab);
+            title_manager.update_from_page(&title_tab, |read| {
+                read.title = bounded_preview_title(&title);
+            });
         });
     let main = app
         .get_window("main")
@@ -68,20 +104,13 @@ pub(super) async fn create_child_browser_webview(
                 read: read.clone(),
                 webview_label: label,
                 allowed_url,
+                committed_url,
+                persister: spawn_tab_persister(pool.clone(), read.clone()),
+                working_folder_id,
             },
         );
     persist_tab(pool, &read).await?;
     Ok(read)
-}
-
-pub(super) fn persist_runtime_tab(manager: &ChatBrowserManager, pool: &SqlitePool, tab_id: &str) {
-    let Ok(tab) = manager.read(tab_id) else {
-        return;
-    };
-    let pool = pool.clone();
-    tauri::async_runtime::spawn(async move {
-        let _ = persist_tab(&pool, &tab.read).await;
-    });
 }
 
 #[cfg(mobile)]

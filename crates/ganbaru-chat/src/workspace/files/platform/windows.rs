@@ -100,6 +100,11 @@ fn windows_workspace_directory_chain(
 ) -> ChatResult<(PathBuf, Vec<File>)> {
     let mut path = root.to_path_buf();
     let mut handles = vec![windows_open_directory(&path)?];
+    // A case or short-name alias of the Git directory resolves to the same
+    // file identity even when its spelling passes the protected path check.
+    let git_identity = windows_open_directory(&root.join(".git"))
+        .ok()
+        .and_then(|git| windows_file_identity(&git).ok());
     for component in Path::new(relative_path).components() {
         let Component::Normal(name) = component else {
             return Err(ChatError::validation(
@@ -108,7 +113,17 @@ fn windows_workspace_directory_chain(
             ));
         };
         path.push(name);
-        handles.push(windows_open_directory(&path)?);
+        let directory = windows_open_directory(&path)?;
+        if let Some(git_identity) = git_identity
+            && windows_file_identity(&directory).map_err(file_error)? == git_identity
+        {
+            return Err(ChatError::new(
+                ChatErrorCode::Permission,
+                "Workspace path is protected",
+                false,
+            ));
+        }
+        handles.push(directory);
     }
     Ok((path, handles))
 }

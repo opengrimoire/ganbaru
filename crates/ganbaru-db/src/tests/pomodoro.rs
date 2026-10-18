@@ -98,7 +98,10 @@ fn schema_keeps_pomodoro_foreign_key_targets() {
                  FROM pragma_foreign_key_list('{child_table}')
                  WHERE \"table\" = '{target_table}'",
             );
-            let count: i64 = sqlx::query_scalar(&query).fetch_one(&pool).await.unwrap();
+            let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(query.as_str()))
+                .fetch_one(&pool)
+                .await
+                .unwrap();
             assert!(count > 0, "{child_table} should reference {target_table}",);
         }
     });

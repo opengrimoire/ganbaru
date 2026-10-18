@@ -2,7 +2,6 @@
 
 use super::workspace::WorkingFolderAuthorizationOperation;
 use super::workspace::commands::authorize_working_folder;
-use super::{credentials::PlatformCredentialStore, credentials::materialize_provider_environment};
 use crate::db;
 use chrono::{SecondsFormat, Utc};
 use ganbaru_chat::repository::provider_lifecycle::{
@@ -155,11 +154,19 @@ pub async fn chat_fork_thread(
                 WorkingFolderAuthorizationOperation::ProviderStart,
             )
             .await?;
+            let root_path = authorized.canonical_path.clone();
             let authorized = super::execution_environment::resolve_environment_workspace(
                 &app,
                 &pool,
                 authorized,
                 execution_environment_id.as_deref(),
+            )
+            .await?;
+            let authorized = super::workspace::commands::settle_project_configuration(
+                &app,
+                &root_path,
+                authorized,
+                super::workspace::commands::UndecidedProjectConfiguration::Ask,
             )
             .await?;
             let verified = ganbaru_chat_contracts::models::VerifiedWorkspaceContext {
@@ -173,13 +180,12 @@ pub async fn chat_fork_thread(
                     .to_string(),
                 repository_kind: authorized.repository_kind,
                 repository_identity: authorized.repository_identity,
+                project_configuration: authorized.project_configuration,
             };
             let provider =
                 super::settings_commands::read_provider(&app, &source.provider_instance_id)?;
-            let configuration = materialize_provider_environment(
-                &provider.configuration,
-                &PlatformCredentialStore::default(),
-            )?;
+            let configuration =
+                crate::chat::settings::approved_runtime(&app, &provider.configuration)?;
             let mut driver = ProviderDriverRegistry.create_driver(configuration)?;
             let context = DriverOperationContext {
                 operation_id: format!("provider-thread-fork:{}", request.new_thread_id.as_str()),
@@ -475,10 +481,7 @@ async fn synchronize_provider_lifecycle(
     };
     let result = async {
         let provider = super::settings_commands::read_provider(app, &shell.provider_instance_id)?;
-        let configuration = materialize_provider_environment(
-            &provider.configuration,
-            &PlatformCredentialStore::default(),
-        )?;
+        let configuration = crate::chat::settings::approved_runtime(app, &provider.configuration)?;
         let mut driver = ProviderDriverRegistry.create_driver(configuration)?;
         let request = ProviderThreadLifecycleRequest {
             provider_thread_id: provider_thread_id.clone(),
@@ -549,6 +552,9 @@ mod tests {
         assert!(validate_external_url("http://localhost:3000/path").is_ok());
         assert!(validate_external_url("file:///etc/passwd").is_err());
         assert!(validate_external_url("javascript:alert(1)").is_err());
+        assert!(validate_external_url("mailto:someone@example.com").is_err());
+        assert!(validate_external_url("vscode://file/tmp/x").is_err());
+        assert!(validate_external_url("data:text/html,<p>x</p>").is_err());
         assert!(validate_external_url("https://token@example.com").is_err());
         assert!(validate_external_url("https://example.com/\nheader").is_err());
     }

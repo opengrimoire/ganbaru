@@ -6,6 +6,10 @@ fn main() {
         "scanMediaTree",
         "pickArtworkFile",
         "artworkDataUrl",
+        "youtubeOpen",
+        "youtubeBounds",
+        "youtubePost",
+        "youtubeClose",
     ])
     .android_path("android")
     .build();

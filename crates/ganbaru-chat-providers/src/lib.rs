@@ -13,6 +13,7 @@ mod cursor;
 mod driver;
 mod opencode;
 mod registry;
+pub mod runtime_review;
 mod unsupported;
 
 pub use driver::*;

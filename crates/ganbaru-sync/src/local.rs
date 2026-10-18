@@ -35,24 +35,33 @@ pub enum LocalWriterHead {
     Mismatch,
 }
 
-/// The space context of a vault: its personal space anchored at the person key of
-/// `contacts_local_identity`, or `None` while the vault has no person identity.
-pub async fn space_context(
-    conn: &mut SqliteConnection,
-    vault_id: &str,
-) -> SyncResult<Option<SpaceContext>> {
+/// The person key of `contacts_local_identity` that anchors the vault's space, or `None` while
+/// the vault has no person identity and therefore does not sync.
+pub async fn space_anchor(conn: &mut SqliteConnection) -> SyncResult<Option<PersonPublicKey>> {
     let public_key: Option<String> =
         sqlx::query_scalar("SELECT public_key FROM contacts_local_identity WHERE singleton = 1")
             .fetch_optional(&mut *conn)
             .await?;
-    let Some(public_key) = public_key else {
-        return Ok(None);
-    };
-    let anchor = PersonPublicKey::from_text(&public_key)
-        .map_err(|_| corrupt("stored person public key is invalid"))?;
-    Ok(Some(SpaceContext {
+    public_key
+        .map(|public_key| {
+            PersonPublicKey::from_text(&public_key)
+                .map_err(|_| corrupt("stored person public key is invalid"))
+        })
+        .transpose()
+}
+
+/// The space context of a vault: its personal space anchored at the person key of
+/// `contacts_local_identity`, with revocations authorized for `coordinator_device_id`, or
+/// `None` while the vault has no person identity.
+pub async fn space_context(
+    conn: &mut SqliteConnection,
+    vault_id: &str,
+    coordinator_device_id: &str,
+) -> SyncResult<Option<SpaceContext>> {
+    Ok(space_anchor(conn).await?.map(|anchor| SpaceContext {
         space: SpaceId::personal(vault_id),
         anchor,
+        coordinator_device_id: coordinator_device_id.to_string(),
     }))
 }
 

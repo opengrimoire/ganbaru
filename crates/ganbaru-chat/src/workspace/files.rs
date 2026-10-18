@@ -1,6 +1,7 @@
 //! Bounded, workspace-authorized file browsing and preview commands.
 
 use super::AuthorizedWorkingFolder;
+use super::protected_paths;
 use crate::models::{ChatError, ChatErrorCode, ChatResult, ProjectWorkingFolderId, RepositoryKind};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -10,7 +11,6 @@ use std::io::{Read, Seek, SeekFrom, Write};
 #[cfg(windows)]
 use std::path::PathBuf;
 use std::path::{Component, Path};
-use std::process::{Command, Stdio};
 use std::sync::{
     Mutex,
     atomic::{AtomicU64, Ordering},
@@ -519,6 +519,10 @@ fn validate_required_relative_path(value: &str) -> ChatResult<()> {
             .components()
             .any(|part| !matches!(part, Component::Normal(_)))
         || value.chars().any(char::is_control)
+        || (cfg!(windows)
+            && value
+                .split('/')
+                .any(protected_paths::component_is_windows_reserved))
     {
         return Err(ChatError::validation(
             "relativePath",
@@ -561,8 +565,9 @@ fn common_ignored(relative_path: &str) -> bool {
     relative_path.split('/').any(|segment| {
         matches!(
             segment,
-            ".git" | ".cache" | ".turbo" | "node_modules" | "target" | "dist" | "build"
-        ) || ganbaru_internal_artifact_segment(segment)
+            ".cache" | ".turbo" | "node_modules" | "target" | "dist" | "build"
+        ) || protected_paths::component_is_git_metadata(segment)
+            || ganbaru_internal_artifact_segment(segment)
     })
 }
 
@@ -579,31 +584,15 @@ fn git_ignored_paths<'a>(root: &Path, paths: impl Iterator<Item = &'a str>) -> H
     if input.is_empty() {
         return HashSet::new();
     }
-    let mut child = match Command::new("git")
-        .args(["-C"])
-        .arg(root)
-        .args(["check-ignore", "-z", "--stdin"])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(_) => return HashSet::new(),
-    };
-    if child
-        .stdin
-        .take()
-        .is_none_or(|mut stdin| stdin.write_all(&input).is_err())
-    {
-        return HashSet::new();
-    }
-    let Ok(output) = child.wait_with_output() else {
+    let Ok(output) = crate::git::hardened::internal_read_blocking(
+        root,
+        &["check-ignore", "-z", "--stdin"],
+        Some(&input),
+        input.len(),
+    ) else {
         return HashSet::new();
     };
-    if !matches!(output.status.code(), Some(0 | 1)) || output.stdout.len() > input.len() {
+    if !matches!(output.status.code(), Some(0 | 1)) {
         return HashSet::new();
     }
     output

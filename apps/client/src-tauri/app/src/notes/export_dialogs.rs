@@ -1,16 +1,17 @@
-//! Desktop save dialogs for Notes exports. Export content comes from `ganbaru-notes`; this
-//! module only picks the destination and hands it to the core writer.
+//! Desktop dialogs for Notes exports and folder imports. Content comes from `ganbaru-notes`; this
+//! module only picks the native path and hands it to the core reader or writer.
 
 use super::{
     NoteAgentBridgeExportRequest, NoteAgentBridgeExportSaveDto, NoteDataSourceCsvExportRequest,
     NoteDataSourceCsvExportSaveDto, NoteHtmlArchiveSaveDto, NoteHtmlExportRequest,
-    NoteJsonGraphExportRequest, NoteJsonGraphExportSaveDto,
+    NoteJsonGraphExportRequest, NoteJsonGraphExportSaveDto, NoteNotionExportImportDto,
+    NoteNotionExportImportRequest,
 };
 use crate::vault;
 use ganbaru_notes::{data_sources::csv_export, transfers};
 use sqlx::SqlitePool;
 use std::path::PathBuf;
-use tauri::{AppHandle, Runtime};
+use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_dialog::{DialogExt, FilePath};
 
 /// Save file dialog settings for one export format.
@@ -39,6 +40,40 @@ fn pick_save_path<R: Runtime>(
 fn dialog_path(path: FilePath) -> Result<PathBuf, String> {
     path.into_path()
         .map_err(|error| format!("selected path is not a local file: {error}"))
+}
+
+/// Resolve a folder picker result; `None` means the user canceled.
+fn picked_folder(selection: Option<FilePath>) -> Result<Option<PathBuf>, String> {
+    selection.map(dialog_path).transpose()
+}
+
+/// Ask for a Notion export folder and import it; `None` means the user canceled the picker.
+///
+/// The folder comes only from the native picker, so the webview cannot name a path to read.
+pub(super) async fn pick_and_import_notion_export<R: Runtime>(
+    app: &AppHandle<R>,
+    pool: &SqlitePool,
+    request: NoteNotionExportImportRequest,
+) -> Result<Option<NoteNotionExportImportDto>, String> {
+    let selection = app
+        .dialog()
+        .file()
+        .set_title("Import Notion export folder")
+        .blocking_pick_folder();
+    let Some(export_root) = picked_folder(selection)? else {
+        return Ok(None);
+    };
+    let vault_root = vault::active_writable_vault_path(app)?;
+    let home = app.path().home_dir().ok();
+    transfers::notion_export_import::import_folder(
+        pool,
+        &vault_root,
+        &export_root,
+        home.as_deref(),
+        request,
+    )
+    .await
+    .map(Some)
 }
 
 /// Export the agent bridge Markdown and write it to a user-selected file.
@@ -117,4 +152,19 @@ pub(super) async fn pick_and_write_archive<R: Runtime>(
     };
     let asset_root = vault::active_vault_path(app)?.join("assets");
     transfers::html_export::archive::write_archive(&asset_root, &path, &mut archive)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canceled_folder_picker_is_a_canceled_outcome() {
+        assert_eq!(picked_folder(None), Ok(None));
+        let chosen = std::env::temp_dir().join("Notion export");
+        assert_eq!(
+            picked_folder(Some(FilePath::Path(chosen.clone()))),
+            Ok(Some(chosen))
+        );
+    }
 }

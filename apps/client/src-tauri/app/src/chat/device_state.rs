@@ -7,7 +7,7 @@ use ganbaru_chat_contracts::models::{
     ProviderProbeResult, UtcTimestamp,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(desktop)]
 use tauri::Runtime;
 
@@ -21,6 +21,9 @@ pub struct ChatProviderDeviceState {
     pub last_probe: Option<ProviderProbeResult>,
     pub last_successful_probe_at: Option<UtcTimestamp>,
     pub model_catalog: Option<ProviderModelCatalog>,
+    /// Digests of portable runtime values this device confirmed for the instance.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub approved_runtime_items: BTreeSet<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -58,6 +61,14 @@ pub struct ChatDeviceScope {
     pub preferences: ChatMachinePreferences,
     pub diagnostics: ChatDiagnosticPreferences,
     pub execution_environment_paths: BTreeMap<String, String>,
+    /// Preview origins the user allowed, keyed by Chat thread ID: external sites the model may
+    /// use and loopback origins the thread may navigate to.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub preview_model_origins: BTreeMap<String, BTreeSet<String>>,
+    /// Generation token naming each working folder's preview web data directory under the app
+    /// config directory. Discarding the data replaces the token.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub preview_data_stores: BTreeMap<ProjectWorkingFolderId, String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

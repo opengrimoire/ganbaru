@@ -4,7 +4,7 @@ use super::internal_mcp::generate_opaque_handle;
 use ganbaru_chat::runtime::ChatRuntimeRegistry;
 use ganbaru_chat_contracts::models::{
     ChatAgentRunId, ChatAuthorizationRevisionId, ChatError, ChatErrorCode, ChatResult,
-    ChatThreadId, ChatTurnId,
+    ChatThreadId, ChatTurnId, ProjectWorkingFolderId,
 };
 use sqlx::{Row, SqlitePool};
 use std::time::Duration;
@@ -239,7 +239,36 @@ async fn drain_claimed_job(
                 .await?;
         }
     }
+    clear_revoked_terminal_grants(app, pool, authorization_revision_id.as_deref()).await?;
     mark_claim_completed(pool, job_id, claim_token).await
+}
+
+/// Drops terminal start grants for the folders a revoked authorization ran in,
+/// so the next terminal there asks again.
+async fn clear_revoked_terminal_grants(
+    app: &tauri::AppHandle,
+    pool: &SqlitePool,
+    authorization_revision_id: Option<&str>,
+) -> ChatResult<()> {
+    let Some(authorization_revision_id) = authorization_revision_id else {
+        return Ok(());
+    };
+    let folders: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT thread.working_folder_id
+         FROM chat_agent_runs run
+         JOIN chat_threads thread ON thread.id = run.provider_thread_id
+         WHERE run.authorization_revision_id = ?",
+    )
+    .bind(authorization_revision_id)
+    .fetch_all(pool)
+    .await
+    .map_err(persistence_error)?;
+    let access = app.state::<super::terminal_access::ChatTerminalAccess>();
+    for folder in folders {
+        let folder = ProjectWorkingFolderId::new(folder).map_err(|_| revocation_error())?;
+        access.clear_folder(&folder)?;
+    }
+    Ok(())
 }
 
 async fn read_revoked_runs(

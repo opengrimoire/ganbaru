@@ -157,6 +157,7 @@ pub async fn commit(root: &Path, message: &str) -> ChatResult<()> {
 pub async fn fetch(root: &Path, remote: Option<&str>) -> ChatResult<()> {
     let mut arguments = vec!["fetch", "--prune"];
     if let Some(remote) = remote {
+        require_configured_remote(root, remote).await?;
         arguments.push(remote);
     }
     run(root, &arguments, GitCall::UserNetwork)
@@ -167,9 +168,17 @@ pub async fn fetch(root: &Path, remote: Option<&str>) -> ChatResult<()> {
 pub async fn pull(root: &Path, remote: Option<&str>, branch: Option<&str>) -> ChatResult<()> {
     let mut arguments = vec!["pull", "--ff-only"];
     if let Some(remote) = remote {
+        require_configured_remote(root, remote).await?;
         arguments.push(remote);
     }
     if let Some(branch) = branch {
+        if remote.is_none() {
+            return Err(ChatError::validation(
+                "remote",
+                "A Git branch needs its remote",
+            ));
+        }
+        validate_branch_name(branch)?;
         arguments.push(branch);
     }
     run(root, &arguments, GitCall::UserNetwork)
@@ -188,9 +197,17 @@ pub async fn push(
         arguments.push("--force-with-lease");
     }
     if let Some(remote) = remote {
+        require_configured_remote(root, remote).await?;
         arguments.push(remote);
     }
     if let Some(branch) = branch {
+        if remote.is_none() {
+            return Err(ChatError::validation(
+                "remote",
+                "A Git branch needs its remote",
+            ));
+        }
+        validate_branch_name(branch)?;
         arguments.push(branch);
     }
     run(root, &arguments, GitCall::UserNetwork)
@@ -423,7 +440,7 @@ pub async fn checkout_bitbucket_pull_request(
     remote_name: &str,
     reference: &str,
 ) -> ChatResult<()> {
-    validate_git_argument(remote_name)?;
+    require_configured_remote(root, remote_name).await?;
     if reference.is_empty()
         || reference.len() > 64
         || !reference
@@ -453,6 +470,54 @@ pub async fn checkout_bitbucket_pull_request(
     .map(|_| ())
 }
 
+/// Longest branch name accepted from the webview.
+const MAX_BRANCH_NAME_BYTES: usize = 1_024;
+
+/// Validates a branch name with `git check-ref-format --branch` rules, and
+/// additionally refuses refspec syntax so a name can never force-push, map to
+/// another ref, or match several refs.
+pub fn validate_branch_name(value: &str) -> ChatResult<()> {
+    let invalid = || ChatError::validation("branch", "Git branch name is invalid");
+    if value.is_empty()
+        || value.len() > MAX_BRANCH_NAME_BYTES
+        || value == "@"
+        || value.starts_with(['-', '+', '/'])
+        || value.ends_with(['/', '.'])
+        || value.ends_with(".lock")
+        || value.contains("..")
+        || value.contains("//")
+        || value.contains("@{")
+        || value.chars().any(|character| {
+            character.is_control()
+                || character.is_whitespace()
+                || matches!(character, '~' | '^' | ':' | '?' | '*' | '[' | '\\')
+        })
+        || value
+            .split('/')
+            .any(|component| component.starts_with('.') || component.ends_with(".lock"))
+    {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
+/// Accepts only the name of a remote already configured in the repository, so
+/// a URL or path cannot redirect a push, pull, or fetch.
+async fn require_configured_remote(root: &Path, remote: &str) -> ChatResult<()> {
+    validate_git_argument(remote)?;
+    if remotes(root)
+        .await?
+        .iter()
+        .any(|configured| configured.name == remote)
+    {
+        Ok(())
+    } else {
+        Err(ChatError::validation(
+            "remote",
+            "Git remote is not configured in this repository",
+        ))
+    }
+}
 fn validate_git_argument(value: &str) -> ChatResult<()> {
     if value.is_empty()
         || value.len() > 1_024
@@ -786,7 +851,10 @@ fn git_protocol_error(message: &str) -> ChatError {
 
 #[cfg(test)]
 mod tests {
-    use super::{GitCall, discard_paths, initialize, parse_status, run};
+    use super::{
+        GitCall, discard_paths, fetch, initialize, parse_status, pull, push, run,
+        validate_branch_name,
+    };
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -882,5 +950,100 @@ mod tests {
             "base\n"
         );
         assert!(!root.join("untracked.txt").exists());
+    }
+
+    #[test]
+    fn branch_names_follow_ref_rules_and_refuse_refspec_syntax() {
+        for name in [
+            "main",
+            "feature/login",
+            "release-1.2",
+            "user/fix_bug",
+            "v2",
+            "c++-port",
+            "été",
+        ] {
+            assert!(
+                validate_branch_name(name).is_ok(),
+                "{name} should be accepted"
+            );
+        }
+        for name in [
+            "",
+            "+main",
+            "main:other",
+            "refs/*",
+            "main^",
+            "main~1",
+            "a..b",
+            "-delete",
+            "/main",
+            "main/",
+            "main.",
+            "main.lock",
+            "feature/.hidden",
+            "a//b",
+            "@",
+            "main@{1}",
+            "a b",
+            "a?b",
+            "a[b",
+            "a\\b",
+            "a\u{7}b",
+        ] {
+            assert!(
+                validate_branch_name(name).is_err(),
+                "{name:?} should be refused"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn network_operations_accept_only_configured_remotes() {
+        let directory = TestDirectory::new();
+        let root = directory.path();
+        initialize(root, Some("main"))
+            .await
+            .expect("repository should initialize");
+        let target = TestDirectory::new();
+        let target_path = target
+            .path()
+            .to_str()
+            .expect("temporary path should be UTF-8");
+
+        for remote in [target_path, "https://example.invalid/repo.git", "origin"] {
+            assert!(fetch(root, Some(remote)).await.is_err(), "{remote} fetch");
+            assert!(
+                pull(root, Some(remote), None).await.is_err(),
+                "{remote} pull"
+            );
+            assert!(
+                push(root, Some(remote), Some("main"), false).await.is_err(),
+                "{remote} push"
+            );
+        }
+        assert!(push(root, None, Some("main"), false).await.is_err());
+        assert!(pull(root, None, Some("main")).await.is_err());
+        assert!(
+            fs::read_dir(target.path())
+                .expect("target should list")
+                .next()
+                .is_none(),
+            "nothing should reach the unconfigured target"
+        );
+
+        run(target.path(), &["init", "--bare", "--quiet"], GitCall::User)
+            .await
+            .expect("target repository should initialize");
+        run(
+            root,
+            &["remote", "add", "origin", target_path],
+            GitCall::User,
+        )
+        .await
+        .expect("remote should be configured");
+        fetch(root, Some("origin"))
+            .await
+            .expect("configured remotes should fetch");
     }
 }

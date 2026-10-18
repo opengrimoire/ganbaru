@@ -84,7 +84,7 @@ Every Git and hosted CLI spawn goes through one hardened runner with a named dea
 - User-initiated commands in trusted folders apply repository configuration and hooks exactly as the user's terminal does.
 - In untrusted folders, programs defined in local or worktree configuration (pagers, editors, diff and merge tools, filters other than standard LFS, credential helpers, SSH commands, proxies) are replaced by the user's global value or a neutral value. System and global configuration always stays, so results match the terminal.
 
-Hosted CLIs (`gh`, `glab`, `az`) list and view change requests from a private empty directory with explicit repository coordinates, so repository content cannot steer them. Creation and checkout run where they need Git context. Their Git children inherit the same hardening through the environment, and `az` runs with Python path isolation.
+Hosted CLIs (`gh`, `glab`, `az`) list and view change requests from a private empty directory with explicit repository coordinates, so repository content cannot steer them. Creation and checkout run where they need Git context. Their Git children inherit the same hardening through the environment, and `az` runs with Python path isolation. Push, pull, and fetch accept only remotes already configured in the repository and branch names that follow Git ref rules without refspec syntax, so a request cannot redirect to a URL or force-push through a `+` refspec.
 
 Current behavior treats every authorized folder as trusted. Planned: a device-local, revocable trust record per folder, keyed by a digest of `.git/config`, `.gitattributes`, hooks, and provider settings; managed folders start trusted, picker-bound folders ask once, and received folders with an unknown digest start untrusted.
 

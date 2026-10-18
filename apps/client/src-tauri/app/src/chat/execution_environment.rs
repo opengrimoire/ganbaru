@@ -105,6 +105,7 @@ pub async fn chat_create_worktree_environment(
     validate_id(&request.environment_id)?;
     validate_label(&request.display_name, "displayName", 240)?;
     validate_ref(&request.branch_name, "branchName")?;
+    git::validate_branch_name(&request.branch_name)?;
     validate_ref(&request.base_reference, "baseReference")?;
     if let Some(remote) = request.remote_name.as_deref() {
         validate_ref(remote, "remoteName")?;

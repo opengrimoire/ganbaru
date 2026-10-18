@@ -49,6 +49,15 @@ describe("formatHandoffError", () => {
       t,
     )).toBe("vaultHandoff.differentCoordinator");
   });
+
+  it("explains that handoff pauses while another vault is open", () => {
+    expect(formatHandoffError("the linked vault is not active on this device", t))
+      .toBe("vaultHandoff.linkedVaultInactive");
+    expect(formatHandoffError("uploaded vault is not active on the coordinator", t))
+      .toBe("vaultHandoff.coordinatorVaultInactive");
+    expect(formatHandoffError("requested vault is not active on the coordinator", t))
+      .toBe("vaultHandoff.coordinatorVaultInactive");
+  });
 });
 
 describe("formatPairingCodeError", () => {

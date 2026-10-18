@@ -658,9 +658,9 @@ pub(crate) async fn activate_active_handoff<R: Runtime>(
     .await
 }
 
-/// Activates an ownership snapshot a linked owner uploaded to this coordinator. The replaced
-/// folder is kept only when it holds a different vault: the coordinator's own copy of the linked
-/// vault is read-only while another device owns it, and its Quick notes changes carry forward.
+/// Activates an ownership snapshot a linked owner uploaded to this coordinator. The coordinator's
+/// own copy of the linked vault is read-only while another device owns it, and its Quick notes
+/// changes carry forward.
 #[cfg(desktop)]
 pub(crate) async fn activate_uploaded_ownership<R: Runtime>(
     app: &tauri::AppHandle<R>,
@@ -669,16 +669,7 @@ pub(crate) async fn activate_uploaded_ownership<R: Runtime>(
     expected_vault_id: &str,
 ) -> Result<VaultInfo, String> {
     let target = super::active_vault_path(app)?;
-    let preserve_previous = replaces_independent_vault(&target, expected_vault_id);
-    activate_handoff_at_path(
-        app,
-        staging,
-        &target,
-        transfer_id,
-        expected_vault_id,
-        preserve_previous,
-    )
-    .await
+    activate_handoff_at_path(app, staging, &target, transfer_id, expected_vault_id, false).await
 }
 
 /// Whether the folder at `path` is the vault `vault_id`.
@@ -688,11 +679,13 @@ fn holds_vault(path: &Path, vault_id: &str) -> bool {
 
 /// Whether replacing `target` discards a vault other than `vault_id`. A folder whose marker
 /// cannot be read counts as another vault, so it is kept.
-#[cfg(any(desktop, test))]
 fn replaces_independent_vault(target: &Path, vault_id: &str) -> bool {
     target.exists() && !holds_vault(target, vault_id)
 }
 
+/// Replaces `target` with the staged handoff. A folder that holds any vault other than
+/// `expected_vault_id` is always kept whole beside it, whatever the caller asked, so a handoff can
+/// never delete an unrelated vault.
 async fn activate_handoff_at_path<R: Runtime>(
     app: &tauri::AppHandle<R>,
     staging: &Path,
@@ -705,6 +698,8 @@ async fn activate_handoff_at_path<R: Runtime>(
         .parent()
         .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?;
     fs::create_dir_all(parent).map_err(|error| format!("create app data directory: {error}"))?;
+    let preserve_previous =
+        preserve_previous || replaces_independent_vault(target, expected_vault_id);
     let rollback = if preserve_previous {
         preserved_handoff_path(parent, target, transfer_id)
     } else {

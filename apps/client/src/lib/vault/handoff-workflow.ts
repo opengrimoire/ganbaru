@@ -39,6 +39,12 @@ export function formatHandoffError(cause: unknown, t: Translate): string {
   if (lower.includes("already linked to another coordinator")) {
     return t("vaultHandoff.differentCoordinator");
   }
+  if (lower.includes("linked vault is not active on this device")) {
+    return t("vaultHandoff.linkedVaultInactive");
+  }
+  if (lower.includes("vault is not active on the coordinator")) {
+    return t("vaultHandoff.coordinatorVaultInactive");
+  }
   if (isConnectivityFailure(lower)) {
     return t("vaultHandoff.unreachable");
   }

@@ -175,6 +175,10 @@ export const vaultHandoff = {
     "Update Ganbaru on both devices before linking or transferring data. Their data formats are different.",
   differentCoordinator:
     "This device is linked to another computer. Unlink it before connecting to a different computer.",
+  linkedVaultInactive:
+    "Another vault is open on this device, so linking is paused. Open the linked vault again to resume.",
+  coordinatorVaultInactive:
+    "The coordinating computer has another vault open. Open the linked vault there, then retry.",
   unreachable:
     "This device could not reach the coordinating computer. Keep both apps open on the same local network, then retry.",
   ownerUnreachable:

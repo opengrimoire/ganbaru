@@ -42,13 +42,13 @@ export async function importNotesNotionApi(
   );
 }
 
+/** Pick a Notion export folder natively and import it; `null` means the picker was canceled. */
 export async function importNotesNotionExportFolder(
   request: NotesNotionExportImportRequest,
-): Promise<NotesNotionExportImportResult> {
+): Promise<NotesNotionExportImportResult | null> {
   const dbUrl = await ensureDbUrl();
-  return mapNotesNotionExportImportDto(
-    await invokeNotesMutation("notes_import_notion_export_folder", { dbUrl, request }),
-  );
+  const value = await invokeNotesMutation("notes_import_notion_export_folder", { dbUrl, request });
+  return value === null ? null : mapNotesNotionExportImportDto(value);
 }
 
 export async function saveNotesHtmlArchive(

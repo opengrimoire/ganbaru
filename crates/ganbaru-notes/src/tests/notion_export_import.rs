@@ -50,9 +50,9 @@ fn notion_export_import_reconstructs_pages_database_rows_links_and_provenance() 
 
         let result = transfers::notion_export_import::import_folder_without_file_copy(
             &pool,
+            &root,
             NoteNotionExportImportRequest {
                 parent: workspace_parent(),
-                export_root_path: root.to_string_lossy().to_string(),
                 source_workspace_id: Some("workspace-a".to_string()),
                 keep_external_file_references: Some(false),
                 copy_local_file_references: Some(false),
@@ -149,4 +149,47 @@ fn unique_export_folder() -> PathBuf {
         "ganbaru-notion-export-import-test-{}-{nanos}",
         std::process::id()
     ))
+}
+
+#[test]
+fn notion_export_request_rejects_a_webview_supplied_folder_path() {
+    let error = serde_json::from_value::<NoteNotionExportImportRequest>(serde_json::json!({
+        "parent": { "type": "workspace", "workspace": true },
+        "export_root_path": "/home/user",
+    }))
+    .err()
+    .expect("export_root_path must not deserialize");
+    assert!(error.to_string().contains("export_root_path"));
+}
+
+#[test]
+fn notion_export_root_rejects_home_its_ancestors_root_and_vault_folders() {
+    let base = unique_export_folder();
+    let home = base.join("home");
+    let vault = home.join("Documents").join("Ganbaru");
+    let export = home.join("Downloads").join("Notion export");
+    fs::create_dir_all(vault.join("notes")).unwrap();
+    fs::create_dir_all(&export).unwrap();
+    let validate = |selected: &std::path::Path| {
+        transfers::notion_export_import::validated_export_root(selected, Some(&home), Some(&vault))
+    };
+
+    assert!(validate(&home).unwrap_err().contains("home folder"));
+    assert!(validate(&base).unwrap_err().contains("home folder"));
+    let filesystem_root = home.ancestors().last().unwrap();
+    assert!(validate(filesystem_root).is_err());
+    assert!(validate(&vault).unwrap_err().contains("inside the vault"));
+    assert!(
+        validate(&vault.join("notes"))
+            .unwrap_err()
+            .contains("inside the vault")
+    );
+    assert!(validate(std::path::Path::new("relative/export")).is_err());
+    assert_eq!(
+        validate(&export).unwrap(),
+        fs::canonicalize(&export).unwrap()
+    );
+    assert!(validate(&home.join("Downloads")).is_ok());
+
+    fs::remove_dir_all(base).unwrap();
 }

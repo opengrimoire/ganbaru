@@ -96,7 +96,6 @@ export interface NotesNotionApiImportResult {
 
 export interface NotesNotionExportImportRequest {
   parent: NotesParent;
-  export_root_path: string;
   source_workspace_id?: string | null;
   keep_external_file_references?: boolean | null;
   copy_local_file_references?: boolean | null;

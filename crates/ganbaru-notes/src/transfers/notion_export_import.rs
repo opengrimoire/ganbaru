@@ -37,28 +37,77 @@ const MAX_EXPORT_DEPTH: usize = 16;
 const MAX_TEXT_BYTES: u64 = 1_000_000;
 const MAX_CSV_BYTES: u64 = 512 * 1024;
 
+/// Import a picker-selected Notion export folder into the active vault.
+///
+/// `export_root` must come from a native folder picker. `home` is the user's home folder, which is
+/// rejected together with its ancestors so a broad selection cannot import unrelated documents.
 pub async fn import_folder(
     pool: &SqlitePool,
     vault_root: &Path,
+    export_root: &Path,
+    home: Option<&Path>,
     request: NoteNotionExportImportRequest,
 ) -> Result<NoteNotionExportImportDto, String> {
-    import_folder_inner(pool, Some(vault_root), request).await
+    let root = validated_export_root(export_root, home, Some(vault_root))?;
+    import_folder_inner(pool, Some(vault_root), root, request).await
 }
 
 #[cfg(test)]
 pub(crate) async fn import_folder_without_file_copy(
     pool: &SqlitePool,
+    export_root: &Path,
     request: NoteNotionExportImportRequest,
 ) -> Result<NoteNotionExportImportDto, String> {
-    import_folder_inner(pool, None, request).await
+    let root = validated_export_root(export_root, None, None)?;
+    import_folder_inner(pool, None, root, request).await
+}
+
+/// Canonicalize a selected export folder and reject roots that would expose unrelated data: the
+/// filesystem root, the home folder or any of its ancestors, and the active vault or anything
+/// inside it.
+pub fn validated_export_root(
+    selected: &Path,
+    home: Option<&Path>,
+    vault_root: Option<&Path>,
+) -> Result<PathBuf, String> {
+    if !selected.is_absolute() {
+        return Err("Notion export folder path must be absolute".to_string());
+    }
+    let root =
+        fs::canonicalize(selected).map_err(|e| format!("inspect Notion export folder: {e}"))?;
+    if !root.is_dir() {
+        return Err("Notion export path must point to a folder".to_string());
+    }
+    if root.parent().is_none() {
+        return Err("Choose the extracted Notion export folder, not a drive root".to_string());
+    }
+    if let Some(home) = home.map(canonical_or_input)
+        && home.starts_with(&root)
+    {
+        return Err(
+            "Choose the extracted Notion export folder, not the home folder or one that contains it"
+                .to_string(),
+        );
+    }
+    if let Some(vault_root) = vault_root.map(canonical_or_input)
+        && root.starts_with(&vault_root)
+    {
+        return Err("Notion export folders cannot be imported from inside the vault".to_string());
+    }
+    Ok(root)
+}
+
+fn canonical_or_input(path: &Path) -> PathBuf {
+    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 async fn import_folder_inner(
     pool: &SqlitePool,
     vault_root: Option<&Path>,
+    root: PathBuf,
     request: NoteNotionExportImportRequest,
 ) -> Result<NoteNotionExportImportDto, String> {
-    let prepared = PreparedExportImport::new(request)?;
+    let prepared = PreparedExportImport::new(request, root)?;
     let mut diagnostics = Vec::new();
     let entries = scan_export_entries(&prepared.root, &prepared, &mut diagnostics)?;
     if entries.is_empty() {
@@ -183,21 +232,12 @@ struct PreparedExportImport {
 }
 
 impl PreparedExportImport {
-    fn new(request: NoteNotionExportImportRequest) -> Result<Self, String> {
+    fn new(request: NoteNotionExportImportRequest, root: PathBuf) -> Result<Self, String> {
         validate_parent(&request.parent)?;
         if matches!(request.parent, NoteParent::DataSourceId { .. }) {
             return Err(
                 "Notion export folders cannot be imported into a database row page".to_string(),
             );
-        }
-        let root_input = PathBuf::from(request.export_root_path.trim());
-        if !root_input.is_absolute() {
-            return Err("Notion export folder path must be absolute".to_string());
-        }
-        let root = fs::canonicalize(&root_input)
-            .map_err(|e| format!("inspect Notion export folder: {e}"))?;
-        if !root.is_dir() {
-            return Err("Notion export path must point to a folder".to_string());
         }
         Ok(Self {
             parent: request.parent,
@@ -207,7 +247,7 @@ impl PreparedExportImport {
                 .and_then(|value| trimmed_non_empty(&value)),
             project_id: normalized_import_project_id(request.project_id),
             keep_external_file_references: request.keep_external_file_references.unwrap_or(false),
-            copy_local_file_references: request.copy_local_file_references.unwrap_or(true),
+            copy_local_file_references: request.copy_local_file_references.unwrap_or(false),
             import_markdown: request.import_markdown.unwrap_or(true),
             import_html: request.import_html.unwrap_or(true),
             import_csv: request.import_csv.unwrap_or(true),

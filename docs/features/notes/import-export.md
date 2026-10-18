@@ -40,9 +40,9 @@ Supported objects convert to local Notion-shaped contracts. Unsupported blocks b
 
 ## Notion export-folder import
 
-An already downloaded Notion export directory is scanned within bounded depth and entry counts. Hidden files, unsafe paths, symbolic links, and workspace sitemap artifacts are excluded.
+The user chooses an already downloaded Notion export directory with the native folder picker; the webview cannot name the folder, and canceling the picker is an ordinary outcome. The filesystem root, the home folder or any folder containing it, and folders inside the active vault are rejected so a broad selection cannot import unrelated documents. The chosen folder is scanned within bounded depth and entry counts. Hidden files, unsafe paths, symbolic links, and workspace sitemap artifacts are excluded.
 
-Markdown and HTML reuse the canonical importers. Local links between exported files are rewritten to local Notes targets where identity can be established. Local assets are copied only when the user enables copying and the shared boundary validates the source.
+Markdown and HTML reuse the canonical importers. Local links between exported files are rewritten to local Notes targets where identity can be established. Local assets are copied only when the user enables copying (off by default) and the shared boundary validates the source.
 
 CSV files can reconstruct data sources. The first column becomes title, remaining columns become compatible properties, and non-empty rows become row pages. A matching Markdown or HTML file can supply a row page body rather than creating a duplicate page.
 

@@ -75,12 +75,12 @@ export function createNotesTransferActions(context: NotesTransferActionsContext)
 
   async function importNotionExportFolder(
     input: Omit<NotesNotionExportImportRequest, "parent"> & { parent?: NotesParent },
-  ): Promise<NotesNotionExportImportResult> {
+  ): Promise<NotesNotionExportImportResult | null> {
     const result = await importNotesNotionExportFolder({
       ...input,
       parent: input.parent ?? { type: "workspace", workspace: true },
     });
-    await refreshAfterMultiPageImport(result.imported_pages);
+    if (result) await refreshAfterMultiPageImport(result.imported_pages);
     return result;
   }
 

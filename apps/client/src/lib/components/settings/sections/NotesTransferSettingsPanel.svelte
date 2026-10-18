@@ -189,7 +189,6 @@
   }
 
   function importNotionExportFolder(input: {
-    exportRootPath: string;
     sourceWorkspaceId: string | null;
     keepExternalFileReferences: boolean;
     copyLocalFileReferences: boolean;
@@ -199,7 +198,6 @@
     projectId: string | null;
   }) {
     const request: Omit<NotesNotionExportImportRequest, "parent"> = {
-      export_root_path: input.exportRootPath,
       source_workspace_id: input.sourceWorkspaceId,
       keep_external_file_references: input.keepExternalFileReferences,
       copy_local_file_references: input.copyLocalFileReferences,

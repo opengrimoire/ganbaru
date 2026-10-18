@@ -20,7 +20,7 @@ Inline styles are allowed for dynamic Svelte layout, theme, and calendar geometr
 
 ## Native dialogs and document transfer
 
-File import and export flows are Rust-owned. Desktop commands open native dialogs, apply extension and size constraints, validate the selected path, and return bounded parsed data or a narrow result. The webview never receives a reusable filesystem grant.
+File import and export flows are Rust-owned. Desktop commands open native dialogs, apply extension and size constraints, validate the selected path, and return bounded parsed data or a narrow result. Import roots such as a Notion export folder come only from the native picker inside the same command, never from a webview-supplied path, and broad roots (filesystem root, home, the active vault) are rejected. The webview never receives a reusable filesystem grant.
 
 Android uses system document providers and MediaStore through repository-owned plugins. The native layer validates display names, MIME ambiguity, size, UTF-8 where required, and operation mode. It exposes selected content or a bounded export result, not a generic content URI or storage API.
 

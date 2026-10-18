@@ -1,9 +1,10 @@
 //! Tauri commands for project-owned working-folder management.
 
 use super::{
-    AuthorizedWorkingFolder, CreateProjectWorkingFolderRequest, ProjectWorkingFolder,
-    ProjectWorkingFolderRead, TrustDecisionCheck, WorkingFolderAuthorizationOperation,
-    WorkingFolderKind, authorize_workspace, automatic_trust_record, check_trust_decision,
+    AuthorizedWorkingFolder, CreateProjectWorkingFolderRequest, ProjectConfigurationCheck,
+    ProjectWorkingFolder, ProjectWorkingFolderRead, TrustDecisionCheck,
+    WorkingFolderAuthorizationOperation, WorkingFolderKind, authorize_workspace,
+    automatic_trust_record, check_project_configuration, check_trust_decision,
     ensure_managed_working_folder_binding, filesystem_identity, initialized_repository_identity,
     open_authorized_workspace, prepare_workspace_binding, probe_repository,
     remove_active_device_binding, store_active_device_binding, trust_decision_required_error,
@@ -14,10 +15,13 @@ use crate::projects::working_folders::{
     WorkingFolderDeviceScope, read_active_working_folder_scope, update_active_working_folder_scope,
 };
 use chrono::{SecondsFormat, Utc};
-use ganbaru_chat::git::hardened::{GitFolderTrust, folder_configuration};
+use ganbaru_chat::git::hardened::{
+    GitFolderTrust, folder_configuration, provider_configuration_entries,
+};
 use ganbaru_chat::repository::workspaces as repository;
 use ganbaru_chat_contracts::models::{
-    ChatError, ChatErrorCode, ChatResult, ProjectWorkingFolderId, UtcTimestamp,
+    ChatError, ChatErrorCode, ChatResult, ProjectConfigurationAccess, ProjectWorkingFolderId,
+    UtcTimestamp,
 };
 use ganbaru_working_folders::WorkingFolderTrustRecord;
 use sqlx::SqlitePool;
@@ -305,6 +309,57 @@ async fn require_trust_decision<R: Runtime>(
             Ok(authorized)
         }
     }
+}
+
+/// Settles whether a provider started in `launch` may load project provider
+/// configuration. `root` is the bound folder the trust record describes; for a
+/// worktree environment `launch` differs from it. When no decision covers the
+/// folder's current provider configuration, `undecided` chooses between
+/// failing with [`trust_decision_required_error`] so the user can decide and
+/// retry, and starting restricted for turns nobody is present to answer.
+pub async fn settle_project_configuration<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    root: &Path,
+    mut launch: AuthorizedWorkingFolder,
+    undecided: UndecidedProjectConfiguration,
+) -> ChatResult<AuthorizedWorkingFolder> {
+    let root_entries = provider_configuration_entries(root.to_path_buf()).await?;
+    let launch_entries = if launch.canonical_path == root {
+        root_entries.clone()
+    } else {
+        provider_configuration_entries(launch.canonical_path.clone()).await?
+    };
+    let scope = read_active_working_folder_scope(app).map_err(device_state_error)?;
+    match check_project_configuration(
+        &scope,
+        &launch.working_folder_id,
+        &root_entries,
+        &launch_entries,
+    ) {
+        ProjectConfigurationCheck::Decided(access) => {
+            launch.project_configuration = access;
+            Ok(launch)
+        }
+        ProjectConfigurationCheck::Required => match undecided {
+            UndecidedProjectConfiguration::Ask => {
+                Err(trust_decision_required_error(&launch.working_folder_id))
+            }
+            UndecidedProjectConfiguration::Restrict => {
+                launch.project_configuration = ProjectConfigurationAccess::Restricted;
+                Ok(launch)
+            }
+        },
+    }
+}
+
+/// What a provider start does when no decision covers the folder's project
+/// provider configuration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UndecidedProjectConfiguration {
+    /// A user started the turn and can decide before it retries.
+    Ask,
+    /// An unattended turn starts without project configuration.
+    Restrict,
 }
 
 fn store_trust_record<R: Runtime>(

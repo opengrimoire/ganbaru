@@ -154,11 +154,19 @@ pub async fn chat_fork_thread(
                 WorkingFolderAuthorizationOperation::ProviderStart,
             )
             .await?;
+            let root_path = authorized.canonical_path.clone();
             let authorized = super::execution_environment::resolve_environment_workspace(
                 &app,
                 &pool,
                 authorized,
                 execution_environment_id.as_deref(),
+            )
+            .await?;
+            let authorized = super::workspace::commands::settle_project_configuration(
+                &app,
+                &root_path,
+                authorized,
+                super::workspace::commands::UndecidedProjectConfiguration::Ask,
             )
             .await?;
             let verified = ganbaru_chat_contracts::models::VerifiedWorkspaceContext {
@@ -172,6 +180,7 @@ pub async fn chat_fork_thread(
                     .to_string(),
                 repository_kind: authorized.repository_kind,
                 repository_identity: authorized.repository_identity,
+                project_configuration: authorized.project_configuration,
             };
             let provider =
                 super::settings_commands::read_provider(&app, &source.provider_instance_id)?;

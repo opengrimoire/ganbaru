@@ -21,6 +21,21 @@ pub struct VerifiedWorkspaceContext {
     pub canonical_path: String,
     pub repository_kind: RepositoryKind,
     pub repository_identity: Option<String>,
+    /// Whether the provider may load project configuration that can run commands.
+    #[serde(default)]
+    pub project_configuration: ProjectConfigurationAccess,
+}
+
+/// Whether a provider loads the workspace's project configuration, such as
+/// Claude project settings, hooks, skills, and MCP servers.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectConfigurationAccess {
+    /// This device trusts the folder's current project provider configuration.
+    Trusted,
+    /// Project configuration that can run commands stays unloaded.
+    #[default]
+    Restricted,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

@@ -9,7 +9,10 @@
 //! touches it must not ask again.
 //!
 //! The provider digest covers project provider configuration that can run
-//! commands, such as Claude settings with hooks.
+//! commands: Claude project settings, project MCP servers, and the skills,
+//! agents, and commands whose definitions can carry hooks or shell steps.
+//! Instructions such as `CLAUDE.md` are left out. Entries are digested per
+//! file so a worktree can be checked against the folder decision.
 
 use super::{
     GIT_CONFIG_READ_DEADLINE, GitConfigEntry, GitConfigScope, GitFolderTrust, GitPolicy,
@@ -17,6 +20,7 @@ use super::{
     hardening_for, read_effective_config,
 };
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -28,16 +32,26 @@ use std::time::Duration;
 pub const MAX_TRUST_DIGEST_HOOK_FILES: usize = 1_024;
 /// Largest single file a digest reads.
 pub const MAX_TRUST_DIGEST_FILE_BYTES: u64 = 16 * 1024 * 1024;
-/// Deepest hooks subdirectory a digest walks.
-const MAX_HOOK_DIRECTORY_DEPTH: usize = 8;
+/// Most files a digest reads from project provider directories, kept far
+/// above realistic skill and agent collections.
+pub const MAX_TRUST_DIGEST_PROVIDER_FILES: usize = 8_192;
+/// Deepest subdirectory a digest walks.
+const MAX_DIGEST_DIRECTORY_DEPTH: usize = 8;
 /// Upper bound on the repository location output.
 const MAX_LOCATION_OUTPUT_BYTES: usize = 64 * 1024;
 /// Provider configuration files, relative to the folder root, that can run
 /// commands when the provider starts there.
-const PROVIDER_CONFIGURATION_FILES: &[&str] =
-    &[".claude/settings.json", ".claude/settings.local.json"];
+const PROVIDER_CONFIGURATION_FILES: &[&str] = &[
+    ".claude/settings.json",
+    ".claude/settings.local.json",
+    ".mcp.json",
+];
+/// Provider directories, relative to the folder root, whose definitions can
+/// carry hooks or shell steps.
+const PROVIDER_CONFIGURATION_DIRECTORIES: &[&str] =
+    &[".claude/skills", ".claude/agents", ".claude/commands"];
 const GIT_DIGEST_DOMAIN: &[u8] = b"ganbaru-folder-trust-git-v1";
-const PROVIDER_DIGEST_DOMAIN: &[u8] = b"ganbaru-folder-trust-provider-v1";
+const PROVIDER_DIGEST_DOMAIN: &[u8] = b"ganbaru-folder-trust-provider-v2";
 
 /// SHA-256 digest of folder configuration covered by a trust decision.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -143,22 +157,98 @@ pub(super) fn git_configuration(
 }
 
 fn provider_configuration(root: &Path) -> Result<DigestOutcome, GitRunError> {
-    let mut hasher = DigestWriter::new(PROVIDER_DIGEST_DOMAIN);
-    let mut is_empty = true;
+    let entries = provider_configuration_entries_blocking(root)?;
+    Ok(DigestOutcome {
+        digest: entries.digest(),
+        is_empty: entries.is_empty(),
+    })
+}
+
+/// Content digests of a folder's project provider configuration, keyed by
+/// path relative to the folder root.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ProviderConfigurationEntries(BTreeMap<String, [u8; 32]>);
+
+impl ProviderConfigurationEntries {
+    /// True when the folder has no project provider configuration.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// True when every entry here exists in `other` with the same content, so
+    /// a decision about `other` already covers it.
+    pub fn is_covered_by(&self, other: &Self) -> bool {
+        self.0
+            .iter()
+            .all(|(path, digest)| other.0.get(path) == Some(digest))
+    }
+
+    /// The digest a folder trust record stores for these entries.
+    pub fn digest(&self) -> FolderConfigDigest {
+        let mut hasher = DigestWriter::new(PROVIDER_DIGEST_DOMAIN);
+        for (path, digest) in &self.0 {
+            hasher.field(path.as_bytes());
+            hasher.field(digest);
+        }
+        hasher.finish()
+    }
+
+    fn insert(&mut self, path: String, bytes: &[u8]) {
+        self.0.insert(path, Sha256::digest(bytes).into());
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_files(files: &[(&str, &str)]) -> Self {
+        let mut entries = Self::default();
+        for (path, contents) in files {
+            entries.insert((*path).to_string(), contents.as_bytes());
+        }
+        entries
+    }
+}
+
+/// Reads the project provider configuration of the folder at `root`.
+pub fn provider_configuration_entries_blocking(
+    root: &Path,
+) -> Result<ProviderConfigurationEntries, GitRunError> {
+    let mut entries = ProviderConfigurationEntries::default();
     for relative in PROVIDER_CONFIGURATION_FILES {
-        hasher.field(relative.as_bytes());
-        match read_bounded(&root.join(relative))? {
-            Some(bytes) => {
-                is_empty = false;
-                hasher.field(&bytes);
-            }
-            None => hasher.field(b"\0absent"),
+        if let Some(bytes) = read_bounded(&root.join(relative))? {
+            entries.insert((*relative).to_string(), &bytes);
         }
     }
-    Ok(DigestOutcome {
-        digest: hasher.finish(),
-        is_empty,
-    })
+    let mut files = 0;
+    for relative in PROVIDER_CONFIGURATION_DIRECTORIES {
+        let walk = DirectoryWalk {
+            limit: MAX_TRUST_DIGEST_PROVIDER_FILES,
+            skip_samples: false,
+        };
+        walk.visit(
+            &root.join(relative),
+            Path::new(relative),
+            0,
+            &mut files,
+            &mut |path, bytes| entries.insert(portable_path(path), bytes),
+        )?;
+    }
+    Ok(entries)
+}
+
+/// Async form of [`provider_configuration_entries_blocking`].
+pub async fn provider_configuration_entries(
+    root: PathBuf,
+) -> Result<ProviderConfigurationEntries, GitRunError> {
+    tokio::task::spawn_blocking(move || provider_configuration_entries_blocking(&root))
+        .await
+        .map_err(|_| GitRunError::Unavailable)?
+}
+
+/// Relative path with `/` separators, so digests match across platforms.
+fn portable_path(path: &Path) -> String {
+    path.components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 struct RepositoryLocations {
@@ -256,67 +346,89 @@ fn home_directory() -> Option<PathBuf> {
 /// `*.sample` templates. Returns how many files were hashed.
 fn hash_directory(hasher: &mut DigestWriter, directory: &Path) -> Result<usize, GitRunError> {
     let mut files = 0;
-    hash_directory_level(hasher, directory, Path::new(""), 0, &mut files)?;
+    let walk = DirectoryWalk {
+        limit: MAX_TRUST_DIGEST_HOOK_FILES,
+        skip_samples: true,
+    };
+    walk.visit(
+        directory,
+        Path::new(""),
+        0,
+        &mut files,
+        &mut |path, bytes| {
+            hasher.field(path.to_string_lossy().as_bytes());
+            hasher.field(bytes);
+        },
+    )?;
     if files == 0 {
         hasher.field(b"\0empty");
     }
     Ok(files)
 }
 
-fn hash_directory_level(
-    hasher: &mut DigestWriter,
-    directory: &Path,
-    relative: &Path,
-    depth: usize,
-    files: &mut usize,
-) -> Result<(), GitRunError> {
-    let reader = match fs::read_dir(directory) {
-        Ok(reader) => reader,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotADirectory => return Ok(()),
-        Err(_) => return Err(GitRunError::Configuration),
-    };
-    let mut names = Vec::new();
-    for entry in reader {
-        let entry = entry.map_err(|_| GitRunError::Configuration)?;
-        names.push(entry.file_name());
-        if names.len() > MAX_TRUST_DIGEST_HOOK_FILES {
-            return Err(GitRunError::Configuration);
-        }
-    }
-    names.sort();
-    for name in names {
-        let path = directory.join(&name);
-        let relative = relative.join(&name);
-        let Ok(metadata) = fs::metadata(&path) else {
-            continue;
+/// Bounded walk over the regular files of one directory tree in name order.
+struct DirectoryWalk {
+    /// Most files, and most entries in one directory, before the walk fails.
+    limit: usize,
+    /// Skips Git's `*.sample` templates at the top level.
+    skip_samples: bool,
+}
+
+impl DirectoryWalk {
+    fn visit(
+        &self,
+        directory: &Path,
+        relative: &Path,
+        depth: usize,
+        files: &mut usize,
+        visit: &mut dyn FnMut(&Path, &[u8]),
+    ) -> Result<(), GitRunError> {
+        let reader = match fs::read_dir(directory) {
+            Ok(reader) => reader,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotADirectory => return Ok(()),
+            Err(_) => return Err(GitRunError::Configuration),
         };
-        if metadata.is_dir() {
-            if depth + 1 >= MAX_HOOK_DIRECTORY_DEPTH {
+        let mut names = Vec::new();
+        for entry in reader {
+            let entry = entry.map_err(|_| GitRunError::Configuration)?;
+            names.push(entry.file_name());
+            if names.len() > self.limit {
                 return Err(GitRunError::Configuration);
             }
-            hash_directory_level(hasher, &path, &relative, depth + 1, files)?;
-            continue;
         }
-        if !metadata.is_file()
-            || (depth == 0
+        names.sort();
+        for name in names {
+            let path = directory.join(&name);
+            let relative = relative.join(&name);
+            let Ok(metadata) = fs::metadata(&path) else {
+                continue;
+            };
+            if metadata.is_dir() {
+                if depth + 1 >= MAX_DIGEST_DIRECTORY_DEPTH {
+                    return Err(GitRunError::Configuration);
+                }
+                self.visit(&path, &relative, depth + 1, files, visit)?;
+                continue;
+            }
+            let sample = self.skip_samples
+                && depth == 0
                 && Path::new(&name)
                     .extension()
-                    .is_some_and(|ext| ext == "sample"))
-        {
-            continue;
+                    .is_some_and(|ext| ext == "sample");
+            if !metadata.is_file() || sample {
+                continue;
+            }
+            *files += 1;
+            if *files > self.limit {
+                return Err(GitRunError::Configuration);
+            }
+            if let Some(bytes) = read_bounded(&path)? {
+                visit(&relative, &bytes);
+            }
         }
-        *files += 1;
-        if *files > MAX_TRUST_DIGEST_HOOK_FILES {
-            return Err(GitRunError::Configuration);
-        }
-        let Some(bytes) = read_bounded(&path)? else {
-            continue;
-        };
-        hasher.field(relative.to_string_lossy().as_bytes());
-        hasher.field(&bytes);
+        Ok(())
     }
-    Ok(())
 }
 
 /// Reads a whole file of at most [`MAX_TRUST_DIGEST_FILE_BYTES`]. Missing

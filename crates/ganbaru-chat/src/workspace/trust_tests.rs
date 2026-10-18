@@ -148,3 +148,102 @@ fn trust_records_round_trip_through_device_state() {
     let parsed: WorkingFolderTrustRecord = serde_json::from_value(json).unwrap();
     assert_eq!(parsed, record);
 }
+
+fn provider_entries(files: &[(&str, &str)]) -> ProviderConfigurationEntries {
+    ProviderConfigurationEntries::from_files(files)
+}
+
+fn provider_record(
+    entries: &ProviderConfigurationEntries,
+    trusted: bool,
+) -> WorkingFolderTrustRecord {
+    WorkingFolderTrustRecord {
+        git_configuration_digest: digest('a').to_hex(),
+        provider_configuration_digest: entries.digest().to_hex(),
+        trusted,
+        decided_at: timestamp(),
+    }
+}
+
+#[test]
+fn folders_without_project_provider_configuration_load_everything_without_asking() {
+    let empty = ProviderConfigurationEntries::default();
+    let check = check_project_configuration(
+        &WorkingFolderDeviceScope::default(),
+        &folder_id(),
+        &empty,
+        &empty,
+    );
+    assert_eq!(
+        check,
+        ProjectConfigurationCheck::Decided(ProjectConfigurationAccess::Trusted)
+    );
+}
+
+#[test]
+fn undecided_project_provider_configuration_requires_a_decision() {
+    let hooks = provider_entries(&[(".claude/settings.json", "{\"hooks\":{}}")]);
+    let scope = WorkingFolderDeviceScope::default();
+    assert_eq!(
+        check_project_configuration(&scope, &folder_id(), &hooks, &hooks),
+        ProjectConfigurationCheck::Required
+    );
+    let mut automatic = provider_record(&hooks, true);
+    automatic.provider_configuration_digest = String::new();
+    assert_eq!(
+        check_project_configuration(&scope_with(automatic), &folder_id(), &hooks, &hooks),
+        ProjectConfigurationCheck::Required
+    );
+}
+
+#[test]
+fn trusted_and_declined_decisions_apply_until_the_configuration_changes() {
+    let hooks = provider_entries(&[(".claude/settings.json", "{\"hooks\":{}}")]);
+    let trusted = scope_with(provider_record(&hooks, true));
+    let declined = scope_with(provider_record(&hooks, false));
+    assert_eq!(
+        check_project_configuration(&trusted, &folder_id(), &hooks, &hooks),
+        ProjectConfigurationCheck::Decided(ProjectConfigurationAccess::Trusted)
+    );
+    assert_eq!(
+        check_project_configuration(&declined, &folder_id(), &hooks, &hooks),
+        ProjectConfigurationCheck::Decided(ProjectConfigurationAccess::Restricted)
+    );
+    let changed = provider_entries(&[
+        (".claude/settings.json", "{\"hooks\":{}}"),
+        (".claude/skills/marker/SKILL.md", "hooks"),
+    ]);
+    assert_eq!(
+        check_project_configuration(&trusted, &folder_id(), &changed, &changed),
+        ProjectConfigurationCheck::Required
+    );
+}
+
+#[test]
+fn worktrees_load_project_configuration_only_when_the_folder_decision_covers_it() {
+    let root = provider_entries(&[
+        (".claude/settings.json", "{\"hooks\":{}}"),
+        (".claude/settings.local.json", "{}"),
+    ]);
+    let scope = scope_with(provider_record(&root, true));
+    let subset = provider_entries(&[(".claude/settings.json", "{\"hooks\":{}}")]);
+    assert_eq!(
+        check_project_configuration(&scope, &folder_id(), &root, &subset),
+        ProjectConfigurationCheck::Decided(ProjectConfigurationAccess::Trusted)
+    );
+    let edited = provider_entries(&[(".claude/settings.json", "{\"hooks\":{\"x\":1}}")]);
+    assert_eq!(
+        check_project_configuration(&scope, &folder_id(), &root, &edited),
+        ProjectConfigurationCheck::Decided(ProjectConfigurationAccess::Restricted)
+    );
+    let empty = ProviderConfigurationEntries::default();
+    assert_eq!(
+        check_project_configuration(
+            &WorkingFolderDeviceScope::default(),
+            &folder_id(),
+            &empty,
+            &edited
+        ),
+        ProjectConfigurationCheck::Decided(ProjectConfigurationAccess::Restricted)
+    );
+}

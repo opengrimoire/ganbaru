@@ -1,7 +1,8 @@
 use super::{
     FolderConfigDigest, GitConfigEntry, GitConfigScope, GitFolderTrust, GitHardening,
     GitInheritedEnvironment, GitPolicy, GitRun, GitRunError, GitStdout, empty_hooks_directory,
-    folder_configuration_blocking, hardening_for, parse_config_listing, run_blocking,
+    folder_configuration_blocking, hardening_for, parse_config_listing,
+    provider_configuration_entries_blocking, run_blocking,
 };
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -884,6 +885,37 @@ fn digest_follows_includes_hook_files_and_provider_settings() {
     assert_eq!(after_provider.git, before_provider.git);
     assert_ne!(after_provider.provider, before_provider.provider);
     assert!(!after_provider.provider_is_empty);
+}
+
+#[test]
+fn provider_digest_covers_project_mcp_skills_agents_and_commands_but_not_instructions() {
+    let repository = TestRepository::new();
+    let root = repository.root.as_path();
+    let entries = || provider_configuration_entries_blocking(root).expect("entries should read");
+    assert!(entries().is_empty());
+    fs::write(root.join("CLAUDE.md"), "Instructions\n").expect("instructions should write");
+    assert!(
+        entries().is_empty(),
+        "instructions are not executable configuration"
+    );
+
+    let mut previous = entries();
+    for (relative, contents) in [
+        (".mcp.json", "{\"mcpServers\":{}}"),
+        (".claude/skills/marker/SKILL.md", "---\nhooks: {}\n---\n"),
+        (".claude/agents/reviewer.md", "---\nname: reviewer\n---\n"),
+        (".claude/commands/deploy.md", "!`true`\n"),
+    ] {
+        let path = root.join(relative);
+        fs::create_dir_all(path.parent().expect("entry should have a parent"))
+            .expect("entry folder should exist");
+        fs::write(&path, contents).expect("entry should write");
+        let current = entries();
+        assert_ne!(current.digest(), previous.digest(), "{relative} must count");
+        assert!(previous.is_covered_by(&current));
+        assert!(!current.is_covered_by(&previous));
+        previous = current;
+    }
 }
 
 #[cfg(unix)]

@@ -75,3 +75,32 @@ export async function withWorkingFolderTrust<T>(
     return action();
   }
 }
+
+/**
+ * Starts a provider turn or fork. When Rust reports that the folder named in the error needs a
+ * decision about its project provider configuration, asks once natively and retries; a
+ * cancelled dialog surfaces the original failure.
+ */
+export async function withProviderStartTrust<T>(
+  action: () => Promise<T>,
+  decide: (id: ProjectWorkingFolderId) => Promise<unknown> = decideProjectWorkingFolderTrust,
+): Promise<T> {
+  try {
+    return await action();
+  } catch (reason) {
+    const workingFolderId = trustDecisionFolder(reason);
+    if (workingFolderId === null) throw reason;
+    if (await decide(workingFolderId) === null) throw reason;
+    return action();
+  }
+}
+
+/** The folder a `trust_decision_required` failure names, or `null` for any other failure. */
+function trustDecisionFolder(reason: unknown): ProjectWorkingFolderId | null {
+  if (chatErrorCode(reason) !== "trust_decision_required") return null;
+  if (typeof reason !== "object" || reason === null || !("details" in reason)) return null;
+  const details = reason.details;
+  if (typeof details !== "object" || details === null || !("workingFolderId" in details)) return null;
+  const workingFolderId = details.workingFolderId;
+  return typeof workingFolderId === "string" && workingFolderId.trim() ? workingFolderId : null;
+}

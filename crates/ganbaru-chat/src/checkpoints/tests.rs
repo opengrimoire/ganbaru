@@ -58,6 +58,8 @@ impl TestRepository {
             repository_identity: Some(identity.to_string()),
             repository_storage_identity: Some(identity.to_string()),
             git_trust: GitFolderTrust::Untrusted,
+            project_configuration:
+                ganbaru_chat_contracts::models::ProjectConfigurationAccess::Restricted,
         }
     }
 

@@ -10,8 +10,11 @@ use super::models::{
     ChatError, ChatErrorCode, ChatResult, ProjectWorkingFolderId, RepositoryKind, UtcTimestamp,
 };
 use crate::git::GitFolder;
-use crate::git::hardened::{FolderConfigDigest, FolderConfiguration, GitFolderTrust};
+use crate::git::hardened::{
+    FolderConfigDigest, FolderConfiguration, GitFolderTrust, ProviderConfigurationEntries,
+};
 use chrono::{SecondsFormat, Utc};
+use ganbaru_chat_contracts::models::ProjectConfigurationAccess;
 use ganbaru_working_folders::{
     ProjectWorkingFolderBindingState, WorkingFolderDeviceScope, WorkingFolderTrustRecord,
 };
@@ -149,6 +152,10 @@ pub struct AuthorizedWorkingFolder {
     pub repository_storage_identity: Option<String>,
     /// Device-local trust decision for repository programs and hooks.
     pub git_trust: GitFolderTrust,
+    /// Whether a provider started here may load project provider
+    /// configuration. Restricted until a provider start settles it against the
+    /// folder trust decision.
+    pub project_configuration: ProjectConfigurationAccess,
 }
 
 impl AuthorizedWorkingFolder {
@@ -229,6 +236,7 @@ pub fn authorize_workspace(
             .flatten(),
         repository_storage_identity,
         git_trust: folder_git_trust(scope, &workspace.id),
+        project_configuration: ProjectConfigurationAccess::Restricted,
     })
 }
 
@@ -274,6 +282,46 @@ pub fn check_trust_decision(
     }
 }
 
+/// What a provider start may load from project provider configuration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProjectConfigurationCheck {
+    /// The recorded decision, or the absence of configuration, settles it.
+    Decided(ProjectConfigurationAccess),
+    /// No decision covers the folder's current provider configuration; the
+    /// user decides before the provider starts.
+    Required,
+}
+
+/// Decides whether a provider started in a folder may load its project
+/// configuration. `root` is the bound folder the trust record describes and
+/// `launch` is the directory the provider starts in, which is a worktree for
+/// isolated environments. A worktree loads project configuration only when
+/// every entry it has is one the folder decision already covers.
+pub fn check_project_configuration(
+    scope: &WorkingFolderDeviceScope,
+    working_folder_id: &ProjectWorkingFolderId,
+    root: &ProviderConfigurationEntries,
+    launch: &ProviderConfigurationEntries,
+) -> ProjectConfigurationCheck {
+    let access = |trusted: bool| {
+        if trusted && launch.is_covered_by(root) {
+            ProjectConfigurationAccess::Trusted
+        } else {
+            ProjectConfigurationAccess::Restricted
+        }
+    };
+    if root.is_empty() {
+        return ProjectConfigurationCheck::Decided(access(true));
+    }
+    let current = root.digest().to_hex();
+    match scope.trust.get(working_folder_id) {
+        Some(record) if record.provider_configuration_digest == current => {
+            ProjectConfigurationCheck::Decided(access(record.trusted))
+        }
+        _ => ProjectConfigurationCheck::Required,
+    }
+}
+
 /// Builds the record of a decision about `configuration`.
 pub fn trust_record(
     configuration: &FolderConfiguration,
@@ -302,12 +350,13 @@ pub fn automatic_trust_record(
     record
 }
 
-/// Error returned when a user Git action needs a trust decision first. The
-/// details carry the folder so the caller can ask and retry.
+/// Error returned when a user Git action or a provider start needs a trust
+/// decision first. The details carry the folder so the caller can ask and
+/// retry.
 pub fn trust_decision_required_error(working_folder_id: &ProjectWorkingFolderId) -> ChatError {
     let mut error = ChatError::new(
         ChatErrorCode::TrustDecisionRequired,
-        "Decide whether to trust this folder's repository configuration",
+        "Decide whether to trust this folder's repository and provider configuration",
         true,
     );
     error.details = Some(Box::new(serde_json::json!({

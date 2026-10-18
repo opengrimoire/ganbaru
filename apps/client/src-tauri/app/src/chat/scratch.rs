@@ -52,6 +52,8 @@ pub(crate) fn authorize_conversation_runtime(
         repository_identity: None,
         repository_storage_identity: None,
         git_trust: ganbaru_chat::git::hardened::GitFolderTrust::Untrusted,
+        project_configuration:
+            ganbaru_chat_contracts::models::ProjectConfigurationAccess::Restricted,
     })
 }
 
@@ -97,6 +99,8 @@ pub(crate) async fn authorize_scratch_target(
         repository_identity: None,
         repository_storage_identity: None,
         git_trust: ganbaru_chat::git::hardened::GitFolderTrust::Untrusted,
+        project_configuration:
+            ganbaru_chat_contracts::models::ProjectConfigurationAccess::Restricted,
     })
 }
 

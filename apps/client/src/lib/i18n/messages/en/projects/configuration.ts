@@ -49,7 +49,7 @@ export const configuration = {
       addExisting: "Add folder",
       pickerTitle: "Choose a project working folder",
       trustTitle: "Trust this folder's repository settings?",
-      trustMessage: "This folder defines Git hooks, programs, or AI provider settings that can run code on this device. Trust it only if you trust where it came from. You can change this later in Project settings.",
+      trustMessage: "This folder defines Git hooks, programs, or AI provider settings that can run code on this device. Trust it only if you trust where it came from. Without trust, Git skips the folder's hooks and programs, and Claude skips its project settings, hooks, skills, commands, agents, MCP servers, and CLAUDE.md. You can change this later in Project settings.",
       trustAccept: "Trust",
       trustDecline: "Run without them",
       trustCancel: "Cancel",

@@ -175,7 +175,7 @@ fn approval_resolution_returns_only_the_selected_native_behavior() {
                         "type": "addRules",
                         "rules": [{ "toolName": "Bash", "ruleContent": "printf:*" }],
                         "behavior": "allow",
-                        "destination": "session"
+                        "destination": "localSettings"
                     }])),
                 },
             },
@@ -209,7 +209,13 @@ fn approval_resolution_returns_only_the_selected_native_behavior() {
             payload.get("behavior").and_then(Value::as_str),
             Some("allow")
         );
-        assert!(payload.get("updatedPermissions").is_some());
+        assert_eq!(
+            payload
+                .pointer("/updatedPermissions/0/destination")
+                .and_then(Value::as_str),
+            Some("session"),
+            "session approvals never rewrite folder settings"
+        );
         assert!(pending.lock().unwrap().is_empty());
     });
 }
@@ -306,6 +312,7 @@ fn driver_starts_dispatches_and_stops_a_native_session() {
                         canonical_path: workspace.path().to_string_lossy().into_owned(),
                         repository_kind: RepositoryKind::None,
                         repository_identity: None,
+                        project_configuration: ProjectConfigurationAccess::Trusted,
                     },
                     provider_instance_id: ProviderInstanceId::new("claude-instance-1".to_string())
                         .unwrap(),
@@ -421,6 +428,7 @@ fn failed_turn_started_emit_releases_the_active_turn() {
                         canonical_path: workspace.path().to_string_lossy().into_owned(),
                         repository_kind: RepositoryKind::None,
                         repository_identity: None,
+                        project_configuration: ProjectConfigurationAccess::Trusted,
                     },
                     provider_instance_id: ProviderInstanceId::new("claude-instance-1".to_string())
                         .unwrap(),

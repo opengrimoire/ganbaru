@@ -387,6 +387,7 @@ fn launch_arguments_preserve_native_safety_and_resume_semantics() {
             effort: Some("high"),
             fast_mode: Some(true),
             modes: modes(SafetyMode::FullAccess, InteractionMode::Build),
+            project_configuration: ProjectConfigurationAccess::Trusted,
         },
     )
     .unwrap();
@@ -423,6 +424,7 @@ fn launch_arguments_preserve_native_safety_and_resume_semantics() {
             effort: None,
             fast_mode: None,
             modes: modes(SafetyMode::Custom, InteractionMode::Build),
+            project_configuration: ProjectConfigurationAccess::Trusted,
         },
     )
     .unwrap();
@@ -443,6 +445,7 @@ fn launch_arguments_preserve_native_safety_and_resume_semantics() {
             effort: None,
             fast_mode: None,
             modes: modes(SafetyMode::AskForApproval, InteractionMode::Plan),
+            project_configuration: ProjectConfigurationAccess::Trusted,
         },
     )
     .unwrap();
@@ -460,6 +463,53 @@ fn launch_arguments_preserve_native_safety_and_resume_semantics() {
         resumed
             .windows(2)
             .any(|pair| pair == ["--permission-mode", "plan"])
+    );
+}
+
+#[test]
+fn claude_launch_arguments_restrict_project_setting_sources() {
+    let launch = |project_configuration| {
+        launch_arguments(
+            Vec::new(),
+            &[],
+            ClaudeLaunchOptions {
+                fresh_session_uuid: None,
+                resume_session_uuid: None,
+                last_assistant_uuid: None,
+                model: None,
+                effort: None,
+                fast_mode: Some(false),
+                modes: modes(SafetyMode::AskForApproval, InteractionMode::Build),
+                project_configuration,
+            },
+        )
+        .unwrap()
+    };
+    let untrusted = launch(ProjectConfigurationAccess::Restricted);
+    assert!(
+        untrusted
+            .windows(2)
+            .any(|pair| pair == ["--setting-sources", "user"])
+    );
+    assert!(
+        !untrusted
+            .iter()
+            .any(|argument| argument == "--strict-mcp-config"),
+        "the user's own MCP servers stay available"
+    );
+    assert_eq!(
+        untrusted
+            .iter()
+            .filter(|argument| *argument == "--settings")
+            .count(),
+        1
+    );
+
+    let trusted = launch(ProjectConfigurationAccess::Trusted);
+    assert!(
+        !trusted
+            .iter()
+            .any(|argument| argument == "--setting-sources" || argument == "--strict-mcp-config")
     );
 }
 
@@ -488,6 +538,7 @@ fn protected_transport_arguments_cannot_be_overridden() {
                 effort: None,
                 fast_mode: None,
                 modes: modes(SafetyMode::AskForApproval, InteractionMode::Build),
+                project_configuration: ProjectConfigurationAccess::Trusted,
             },
         )
         .unwrap_err();

@@ -499,7 +499,7 @@ fn approval_response(
             };
             response.insert(
                 "updatedPermissions".to_string(),
-                Value::Array(suggestions.clone()),
+                Value::Array(session_scoped_suggestions(suggestions)),
             );
             Value::Object(response)
         }
@@ -687,4 +687,25 @@ fn state_error() -> ChatError {
         "Claude pending request state is unavailable",
         false,
     )
+}
+
+/// Keeps Claude's suggested permission updates for the running session only,
+/// matching the "Allow for session" choice. Persisting them would rewrite the
+/// folder's Claude settings and invalidate its trust decision.
+fn session_scoped_suggestions(suggestions: &[Value]) -> Vec<Value> {
+    suggestions
+        .iter()
+        .cloned()
+        .map(|mut suggestion| {
+            if let Some(update) = suggestion.as_object_mut()
+                && update.contains_key("destination")
+            {
+                update.insert(
+                    "destination".to_string(),
+                    Value::String("session".to_string()),
+                );
+            }
+            suggestion
+        })
+        .collect()
 }

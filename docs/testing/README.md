@@ -8,6 +8,7 @@ This document is the command and gate-selection reference. Supporting documents 
 - [Test authoring](test-authoring.md): useful frontend, Rust, SQLite, authorization, and UI tests.
 - [Android acceptance](android.md): physical-device, emulator, permission, lifecycle, and release cases.
 - [Local vault handoff](vault-handoff.md): physical desktop and Android round-trip acceptance and result record.
+- [Chat provider trust](chat-provider-trust.md): project provider configuration in trusted and untrusted folders, with marker hooks.
 - [Calendar recurrence](calendar-recurrence.md): recurrence edit, protection, deletion, and Undo matrices.
 - [Notes editor](notes-editor.md): editor, database, transfer, clipboard, and recovery acceptance.
 - [Project dependency cascades](project-dependency-cascades.md): dependency date review, apply, retry, and Gantt acceptance.

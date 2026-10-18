@@ -171,6 +171,7 @@ pub(super) async fn ensure_session(
             .to_string(),
         repository_kind: workspace.repository_kind,
         repository_identity: workspace.repository_identity.clone(),
+        project_configuration: workspace.project_configuration,
     };
     let native_workspace_authorized =
         request.working_folder_id.is_some() || request.scratch_generation_id.is_some();

@@ -23,7 +23,9 @@ mod digest;
 
 pub use digest::{
     FolderConfigDigest, FolderConfiguration, MAX_TRUST_DIGEST_FILE_BYTES,
-    MAX_TRUST_DIGEST_HOOK_FILES, folder_configuration, folder_configuration_blocking,
+    MAX_TRUST_DIGEST_HOOK_FILES, MAX_TRUST_DIGEST_PROVIDER_FILES, ProviderConfigurationEntries,
+    folder_configuration, folder_configuration_blocking, provider_configuration_entries,
+    provider_configuration_entries_blocking,
 };
 
 /// Deadline for interactive Git reads such as status, listings, and review.

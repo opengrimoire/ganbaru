@@ -52,7 +52,7 @@ export const configuration = {
       addExisting: "Agregar carpeta",
       pickerTitle: "Elige una carpeta de trabajo del proyecto",
       trustTitle: "¿Confiar en la configuración del repositorio de esta carpeta?",
-      trustMessage: "Esta carpeta define hooks de Git, programas o ajustes de proveedores de IA que pueden ejecutar código en este dispositivo. Confía en ella solo si confías en su origen. Puedes cambiarlo después en los ajustes del proyecto.",
+      trustMessage: "Esta carpeta define hooks de Git, programas o ajustes de proveedores de IA que pueden ejecutar código en este dispositivo. Confía en ella solo si confías en su origen. Sin confianza, Git omite los hooks y programas de la carpeta, y Claude omite sus ajustes de proyecto, hooks, skills, comandos, agentes, servidores MCP y CLAUDE.md. Puedes cambiarlo después en los ajustes del proyecto.",
       trustAccept: "Confiar",
       trustDecline: "Ejecutar sin ellos",
       trustCancel: "Cancelar",

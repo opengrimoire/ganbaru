@@ -29,6 +29,8 @@ impl TestDirectory {
             repository_identity: None,
             repository_storage_identity: None,
             git_trust: GitFolderTrust::Untrusted,
+            project_configuration:
+                ganbaru_chat_contracts::models::ProjectConfigurationAccess::Restricted,
         }
     }
 }

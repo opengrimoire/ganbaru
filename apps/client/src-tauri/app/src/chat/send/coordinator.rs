@@ -363,11 +363,23 @@ async fn resolve_turn_target(
             let selected_environment = existing
                 .and_then(|data| data.execution_environment_id.as_deref())
                 .or(request.execution_environment_id.as_deref());
+            let root_path = authorized.canonical_path.clone();
             let authorized = crate::chat::execution_environment::resolve_environment_workspace(
                 app,
                 pool,
                 authorized,
                 selected_environment,
+            )
+            .await?;
+            let authorized = crate::chat::workspace::commands::settle_project_configuration(
+                app,
+                &root_path,
+                authorized,
+                if origin.run().is_some() {
+                    crate::chat::workspace::commands::UndecidedProjectConfiguration::Restrict
+                } else {
+                    crate::chat::workspace::commands::UndecidedProjectConfiguration::Ask
+                },
             )
             .await?;
             if matches!(

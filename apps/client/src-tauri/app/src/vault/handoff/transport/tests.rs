@@ -1030,7 +1030,8 @@ async fn person_key_is_released_only_to_an_enrolled_device() {
         let request = requests.recv().await.expect("key request");
         assert!(matches!(
             request.operation,
-            CoordinatorOperation::ReleasePersonKey
+            CoordinatorOperation::ReleasePersonKey { ref vault_id, ref device_id }
+                if vault_id == "vault-1" && device_id == "device-phone"
         ));
         request
             .response

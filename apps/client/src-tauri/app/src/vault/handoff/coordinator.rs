@@ -3,7 +3,7 @@
 mod incoming;
 mod outgoing;
 
-use super::pairing::PairingManager;
+use super::pairing::{LinkedPeer, PairingManager};
 use super::protocol::{
     BundleMetadata, BundlePurpose, ContactRequestOutcome, DistractionsSampleMessage,
     HandoffCompatibility,
@@ -81,8 +81,12 @@ pub(crate) enum CoordinatorOperation {
         issued_at_ms: i64,
         signature: String,
     },
-    /// Authenticated request from a linked device for the person's signing key.
-    ReleasePersonKey,
+    /// Authenticated request from a linked device for the person's signing key of the vault
+    /// it is linked for.
+    ReleasePersonKey {
+        vault_id: String,
+        device_id: String,
+    },
     Shutdown,
 }
 
@@ -390,11 +394,23 @@ impl<R: Runtime> CoordinatorState<R> {
                 )
                 .await
             }
-            CoordinatorOperation::ReleasePersonKey => {
-                crate::contacts::identity::release_key_for_coordinator(&self.app).await
-            }
+            CoordinatorOperation::ReleasePersonKey {
+                vault_id,
+                device_id,
+            } => self.release_person_key(vault_id, device_id).await,
             CoordinatorOperation::Shutdown => unreachable!("shutdown is handled by the run loop"),
         }
+    }
+
+    /// Releases the person key only for the vault open here and only to a device linked for it.
+    async fn release_person_key(
+        &mut self,
+        vault_id: String,
+        device_id: String,
+    ) -> Result<CoordinatorResponse, String> {
+        require_active_vault(&crate::vault::active_vault_id(&self.app)?, &vault_id)?;
+        require_linked_for(self.pairing.linked_peer(&device_id)?.as_ref(), &vault_id)?;
+        crate::contacts::identity::release_key_for_coordinator(&self.app, &vault_id).await
     }
 
     fn poll_upload(
@@ -403,9 +419,7 @@ impl<R: Runtime> CoordinatorState<R> {
         device_id: String,
         generation: u64,
     ) -> Result<CoordinatorResponse, String> {
-        if crate::vault::active_vault_id(&self.app)? != vault_id {
-            return Err("requested vault is not active on the coordinator".to_string());
-        }
+        require_active_vault(&crate::vault::active_vault_id(&self.app)?, &vault_id)?;
         let status = self
             .app
             .state::<VaultOwnershipManager>()
@@ -618,11 +632,53 @@ pub(crate) async fn request(
         .map_err(|_| "vault handoff coordinator did not return a response".to_string())?
 }
 
+/// Refuses a request that names a vault other than the one open on the coordinator.
+fn require_active_vault(active_vault_id: &str, requested_vault_id: &str) -> Result<(), String> {
+    if active_vault_id == requested_vault_id {
+        Ok(())
+    } else {
+        Err("requested vault is not active on the coordinator".to_string())
+    }
+}
+
+/// Refuses a device that is not, or is no longer, linked for `vault_id`.
+fn require_linked_for(peer: Option<&LinkedPeer>, vault_id: &str) -> Result<(), String> {
+    match peer {
+        Some(peer) if peer.vault_id == vault_id => Ok(()),
+        Some(_) => Err("requesting device is linked for a different vault".to_string()),
+        None => Err("requesting device is not linked to this coordinator".to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::vault::handoff::pairing::{StoredOutgoingTransfer, random_token};
     use crate::vault::handoff::protocol::PROTOCOL_VERSION;
+
+    fn peer_linked_for(vault_id: &str) -> LinkedPeer {
+        LinkedPeer {
+            device_id: "phone".to_string(),
+            device_label: "Phone".to_string(),
+            device_kind: Default::default(),
+            vault_id: vault_id.to_string(),
+            certificate: String::new(),
+            certificate_fingerprint: String::new(),
+            linked_at_ms: 0,
+        }
+    }
+
+    #[test]
+    fn person_key_release_is_refused_for_a_vault_that_is_not_open_or_not_linked() {
+        require_active_vault("vault-a", "vault-a").unwrap();
+        require_linked_for(Some(&peer_linked_for("vault-a")), "vault-a").unwrap();
+
+        // A peer linked for vault A asks for the key while vault B is open on the coordinator.
+        let inactive = require_active_vault("vault-b", "vault-a").unwrap_err();
+        assert!(inactive.contains("not active on the coordinator"));
+        assert!(require_linked_for(Some(&peer_linked_for("vault-a")), "vault-b").is_err());
+        assert!(require_linked_for(None, "vault-a").is_err());
+    }
 
     #[test]
     fn ownership_grants_are_limited_per_sliding_window() {

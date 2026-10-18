@@ -245,7 +245,14 @@ fn remove_key_sync(path: &std::path::Path) -> Result<(), String> {
 }
 
 async fn load_key<R: Runtime>(app: &AppHandle<R>) -> Result<Option<Vec<u8>>, String> {
-    let vault_id = crate::vault::active_vault_id(app)?;
+    load_key_for_vault(app, &crate::vault::active_vault_id(app)?).await
+}
+
+async fn load_key_for_vault<R: Runtime>(
+    #[cfg_attr(desktop, allow(unused_variables))] app: &AppHandle<R>,
+    vault_id: &str,
+) -> Result<Option<Vec<u8>>, String> {
+    let vault_id = vault_id.to_string();
     #[cfg(desktop)]
     let task = tauri::async_runtime::spawn_blocking(move || read_key_sync(&vault_id));
     #[cfg(mobile)]
@@ -283,21 +290,40 @@ async fn remove_key<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
         .map_err(|error| format!("person key task: {error}"))?
 }
 
-/// Coordinator side: hands the key to a linked device that already proved its membership.
+/// Coordinator side: hands the key of `vault_id` to a device that already proved its
+/// membership of that vault. The caller checks that `vault_id` is the active vault; the key is
+/// still read for `vault_id` itself and must match the identity row, so a vault switch in
+/// between yields a refusal instead of another vault's key.
 #[cfg(desktop)]
 pub(crate) async fn release_key_for_coordinator<R: Runtime>(
     app: &AppHandle<R>,
+    vault_id: &str,
+) -> Result<CoordinatorResponse, String> {
+    let pool = super::contacts_pool(app).await?;
+    let row = load_identity_row(&pool).await?;
+    let pkcs8 = match row {
+        Some(_) => load_key_for_vault(app, vault_id).await?,
+        None => None,
+    };
+    key_release_response(row, pkcs8)
+}
+
+/// The coordinator's answer to a key request, given the active identity row and the key copy
+/// stored for the requested vault.
+#[cfg(desktop)]
+fn key_release_response(
+    row: Option<IdentityRow>,
+    pkcs8: Option<Vec<u8>>,
 ) -> Result<CoordinatorResponse, String> {
     let unavailable = |message: &str| CoordinatorResponse::Rejected {
         code: KEY_UNAVAILABLE_CODE.to_string(),
         message: message.to_string(),
         retryable: true,
     };
-    let pool = super::contacts_pool(app).await?;
-    let Some(row) = load_identity_row(&pool).await? else {
+    let Some(row) = row else {
         return Ok(unavailable("the vault has no person identity yet"));
     };
-    let Some(pkcs8) = load_key(app).await? else {
+    let Some(pkcs8) = pkcs8 else {
         return Ok(unavailable("the coordinator holds no person key copy"));
     };
     let identity = identity_from_row(row, Some(&pkcs8))?;
@@ -371,5 +397,50 @@ pub(crate) async fn try_release<R: Runtime>(app: &AppHandle<R>) -> bool {
 fn confirm_key(vault_id: String) {
     if let Ok(mut confirmed) = KEY_CONFIRMED_FOR_VAULT.lock() {
         *confirmed = Some(vault_id);
+    }
+}
+
+#[cfg(all(test, desktop))]
+mod tests {
+    use super::*;
+
+    fn row_for(public_key: &PersonPublicKey) -> IdentityRow {
+        IdentityRow {
+            public_key: public_key.to_text(),
+            card_nonce: encode_nonce(&[7; CARD_NONCE_BYTES]),
+            card_revision: 1,
+        }
+    }
+
+    #[test]
+    fn key_release_refuses_a_key_copy_that_does_not_match_the_open_vault() {
+        let (pkcs8, key) = PersonKeyPair::generate().unwrap();
+        let (_, other) = PersonKeyPair::generate().unwrap();
+
+        let released =
+            key_release_response(Some(row_for(&key.public_key())), Some(pkcs8.clone())).unwrap();
+        assert!(matches!(
+            released,
+            CoordinatorResponse::PersonKeyReleased { ref public_key, .. }
+                if *public_key == key.public_key().to_text()
+        ));
+
+        // The key stored for the requested vault belongs to another identity than the open one.
+        let mismatched =
+            key_release_response(Some(row_for(&other.public_key())), Some(pkcs8)).unwrap();
+        assert!(matches!(
+            mismatched,
+            CoordinatorResponse::Rejected { ref code, .. } if code == KEY_UNAVAILABLE_CODE
+        ));
+
+        for refused in [
+            key_release_response(None, None).unwrap(),
+            key_release_response(Some(row_for(&key.public_key())), None).unwrap(),
+        ] {
+            assert!(matches!(
+                refused,
+                CoordinatorResponse::Rejected { ref code, .. } if code == KEY_UNAVAILABLE_CODE
+            ));
+        }
     }
 }

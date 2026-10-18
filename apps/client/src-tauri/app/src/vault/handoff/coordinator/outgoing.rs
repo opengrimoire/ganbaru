@@ -42,9 +42,7 @@ impl<R: Runtime> CoordinatorState<R> {
                 generation: status.generation,
             });
         }
-        if crate::vault::active_vault_id(&self.app)? != vault_id {
-            return Err("requested vault is not active on the coordinator".to_string());
-        }
+        super::require_active_vault(&crate::vault::active_vault_id(&self.app)?, &vault_id)?;
         if purpose == BundlePurpose::Ownership {
             self.ownership_grants.check(Instant::now())?;
         }

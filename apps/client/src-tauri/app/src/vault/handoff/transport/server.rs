@@ -315,7 +315,10 @@ async fn handle_connection(
             send_coordinator_response(
                 &mut stream,
                 coordinator.as_ref(),
-                coordinator::CoordinatorOperation::ReleasePersonKey,
+                coordinator::CoordinatorOperation::ReleasePersonKey {
+                    vault_id,
+                    device_id,
+                },
             )
             .await
         }

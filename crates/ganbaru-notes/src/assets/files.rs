@@ -3,7 +3,6 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
     fs,
-    io::Write,
     path::{Component, Path, PathBuf},
 };
 
@@ -169,26 +168,18 @@ fn read_preview_file_capped(path: &Path, byte_size: i64) -> Result<Vec<u8>, Stri
     Ok(bytes)
 }
 
-fn write_binary_file_atomically(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| "notes file target has no parent".to_string())?;
-    fs::create_dir_all(parent).map_err(|e| format!("create notes file directory: {e}"))?;
-    let file_name = path
-        .file_name()
-        .ok_or_else(|| "notes file target has no file name".to_string())?
-        .to_string_lossy()
-        .into_owned();
-    let temporary_path = parent.join(format!("{file_name}.tmp"));
-    {
-        let mut file =
-            fs::File::create(&temporary_path).map_err(|e| format!("write notes file: {e}"))?;
-        file.write_all(bytes)
-            .map_err(|e| format!("write notes file: {e}"))?;
-        file.sync_all()
-            .map_err(|e| format!("sync notes file: {e}"))?;
-    }
-    fs::rename(&temporary_path, path).map_err(|e| format!("save notes file: {e}"))
+fn write_binary_file_atomically(
+    vault_root: &Path,
+    path: &Path,
+    bytes: &[u8],
+) -> Result<(), String> {
+    ganbaru_atomic_files::write_file_atomically_within(
+        vault_root,
+        path,
+        bytes,
+        ganbaru_atomic_files::FileAccess::Default,
+    )
+    .map_err(|e| format!("save notes file: {e}"))
 }
 
 fn hex_hash(bytes: &[u8]) -> String {
@@ -576,8 +567,8 @@ async fn save_notes_file_bytes(
     let file_name = format!("{sha256}.{extension}");
     let relative_path = format!("{NOTES_FILE_DIR}/{file_name}");
     let path = active_notes_file_dir(vault_root).join(file_name);
-    if !path.exists() {
-        write_binary_file_atomically(&path, &bytes)?;
+    if !ganbaru_atomic_files::is_regular_file(&path) {
+        write_binary_file_atomically(vault_root, &path, &bytes)?;
     }
     let original_name = original_name
         .map(|name| name.trim().to_string())

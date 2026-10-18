@@ -1,7 +1,7 @@
 //! Native Calendar and theme document transfer, independent of vault selection.
 
 #[cfg(desktop)]
-use super::{dialog_path, require_absolute_path, write_text_file_atomically};
+use super::{FileAccess, dialog_path, require_absolute_path, write_text_file_atomically};
 #[cfg(target_os = "android")]
 use ganbaru_mobile_documents::MobileDocumentsExt;
 #[cfg(desktop)]
@@ -431,7 +431,7 @@ pub async fn vault_pick_and_write_ics_export(
         return Ok(false);
     };
     require_extension(&path, &["ics"], "ICS export")?;
-    write_text_file_atomically(&path, &contents)?;
+    write_text_file_atomically(&path, &contents, FileAccess::Default)?;
     Ok(true)
 }
 
@@ -531,7 +531,7 @@ pub async fn vault_pick_and_write_theme_json(
         return Ok(ThemeJsonWriteOutcome::cancelled());
     };
     require_extension(&path, &["json"], "theme export")?;
-    write_text_file_atomically(&path, &contents)?;
+    write_text_file_atomically(&path, &contents, FileAccess::Default)?;
     Ok(ThemeJsonWriteOutcome::saved_to_selected_file())
 }
 

@@ -1,7 +1,7 @@
 //! Serialized, bounded mutations of portable vault configuration.
 
 use super::{
-    CONFIG_LOCK, active_vault_path, active_writable_vault_path, config_path,
+    CONFIG_LOCK, FileAccess, active_vault_path, active_writable_vault_path, config_path,
     write_text_file_atomically,
 };
 use std::fs;
@@ -92,7 +92,7 @@ pub(crate) fn mutate_active_vault_config<R: Runtime, T, E>(
         .map_err(|error| map_storage_error(format!("config Chat branch is invalid: {error}")))?;
     let serialized = serde_json::to_string_pretty(&root)
         .map_err(|error| map_storage_error(error.to_string()))?;
-    let write = || write_text_file_atomically(&path, &serialized);
+    let write = || write_text_file_atomically(&path, &serialized, FileAccess::OwnerOnly);
     #[cfg(desktop)]
     let write_result = if previous_distractions.as_ref() != root.get("distractions") {
         crate::distractions::runtime::commit_configuration(app, write)

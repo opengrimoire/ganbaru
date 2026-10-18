@@ -21,25 +21,22 @@ fn write_zip_archive(
     path: &Path,
     archive: &mut HtmlArchive,
 ) -> Result<(), String> {
-    let temporary_path = temporary_zip_path(path)?;
-    let result = write_zip_archive_inner(asset_root, &temporary_path, archive).and_then(|()| {
-        fs::rename(&temporary_path, path).map_err(|e| format!("save HTML archive: {e}"))
-    });
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary_path);
-    }
-    result
+    ganbaru_atomic_files::write_file_atomically_with(
+        path,
+        ganbaru_atomic_files::FileAccess::Default,
+        |file| write_zip_archive_inner(asset_root, file, archive).map_err(std::io::Error::other),
+    )
+    .map_err(|e| format!("save HTML archive: {e}"))
 }
 
 fn write_zip_archive_inner(
     asset_root: &Path,
-    path: &Path,
+    file: &mut fs::File,
     archive: &mut HtmlArchive,
 ) -> Result<(), String> {
     use zip::CompressionMethod;
     use zip::write::{SimpleFileOptions, ZipWriter};
 
-    let file = fs::File::create(path).map_err(|e| format!("create HTML archive: {e}"))?;
     let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
     let mut writer = ZipWriter::new(file);
     for file in &archive.dto.files {
@@ -80,11 +77,9 @@ fn write_zip_archive_inner(
                 )),
         }
     }
-    let file = writer
+    writer
         .finish()
         .map_err(|e| format!("finish HTML archive: {e}"))?;
-    file.sync_all()
-        .map_err(|e| format!("sync HTML archive: {e}"))?;
     Ok(())
 }
 
@@ -125,12 +120,4 @@ fn require_zip_extension(path: &Path) -> Result<(), String> {
     } else {
         Err("HTML archive export path must end in .zip".to_string())
     }
-}
-
-fn temporary_zip_path(path: &Path) -> Result<PathBuf, String> {
-    let file_name = path
-        .file_name()
-        .ok_or_else(|| "HTML archive path has no file name".to_string())?
-        .to_string_lossy();
-    Ok(path.with_file_name(format!("{file_name}.tmp")))
 }

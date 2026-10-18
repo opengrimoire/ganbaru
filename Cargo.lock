@@ -1755,6 +1755,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ganbaru-atomic-files"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "ring",
+]
+
+[[package]]
 name = "ganbaru-calendar"
 version = "0.1.0"
 dependencies = [
@@ -1977,6 +1985,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "flate2",
+ "ganbaru-atomic-files",
  "ganbaru-db",
  "ganbaru-image-metadata",
  "reqwest",
@@ -2078,6 +2087,7 @@ dependencies = [
  "cairo-rs",
  "chrono",
  "flate2",
+ "ganbaru-atomic-files",
  "ganbaru-calendar",
  "ganbaru-chat",
  "ganbaru-chat-contracts",

@@ -3,6 +3,7 @@ resolver = "3"
 members = [
   "apps/client/src-tauri",
   "apps/client/src-tauri/app",
+  "crates/ganbaru-atomic-files",
   "crates/ganbaru-calendar",
   "crates/ganbaru-chat",
   "crates/ganbaru-chat-contracts",
@@ -51,6 +52,7 @@ block2 = "0.6.2"
 cairo-rs = { version = "0.18.5", features = ["png"] }
 chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
 flate2 = "1.1.9"
+ganbaru-atomic-files = { path = "crates/ganbaru-atomic-files" }
 ganbaru-calendar = { path = "crates/ganbaru-calendar" }
 ganbaru-chat = { path = "crates/ganbaru-chat", default-features = false }
 ganbaru-chat-contracts = { path = "crates/ganbaru-chat-contracts" }

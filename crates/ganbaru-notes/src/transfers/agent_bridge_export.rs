@@ -8,9 +8,7 @@ use serde_json::Value;
 use sqlx::{AssertSqlSafe, Row, SqlitePool};
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
-    fs,
-    io::Write,
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 mod render;
@@ -824,26 +822,10 @@ fn require_markdown_extension(path: &Path) -> Result<(), String> {
 }
 
 fn write_markdown_file(path: &Path, contents: &str) -> Result<(), String> {
-    let temporary_path = temporary_markdown_path(path)?;
-    let result = fs::File::create(&temporary_path)
-        .map_err(|e| format!("create agent bridge export: {e}"))
-        .and_then(|mut file| {
-            file.write_all(contents.as_bytes())
-                .map_err(|e| format!("write agent bridge export: {e}"))
-        })
-        .and_then(|()| {
-            fs::rename(&temporary_path, path).map_err(|e| format!("save agent bridge export: {e}"))
-        });
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary_path);
-    }
-    result
-}
-
-fn temporary_markdown_path(path: &Path) -> Result<PathBuf, String> {
-    let file_name = path
-        .file_name()
-        .ok_or_else(|| "agent bridge export path has no file name".to_string())?
-        .to_string_lossy();
-    Ok(path.with_file_name(format!("{file_name}.tmp")))
+    ganbaru_atomic_files::write_file_atomically(
+        path,
+        contents.as_bytes(),
+        ganbaru_atomic_files::FileAccess::Default,
+    )
+    .map_err(|e| format!("save agent bridge export: {e}"))
 }

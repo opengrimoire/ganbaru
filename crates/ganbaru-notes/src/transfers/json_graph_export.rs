@@ -5,12 +5,7 @@ use crate::models::{
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 use sqlx::{AssertSqlSafe, Row, SqlitePool};
-use std::{
-    collections::BTreeMap,
-    fs,
-    io::Write,
-    path::{Path, PathBuf},
-};
+use std::{collections::BTreeMap, path::Path};
 
 const EXPORT_VERSION: i64 = 1;
 const GRAPH_SCHEMA_VERSION: &str = "notes-json-graph.v1";
@@ -638,29 +633,10 @@ fn require_json_extension(path: &Path) -> Result<(), String> {
 }
 
 fn write_json_file(path: &Path, contents: &str) -> Result<(), String> {
-    let temporary_path = temporary_json_path(path)?;
-    let result = write_json_file_inner(&temporary_path, contents).and_then(|()| {
-        fs::rename(&temporary_path, path).map_err(|e| format!("save JSON graph: {e}"))
-    });
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary_path);
-    }
-    result
-}
-
-fn write_json_file_inner(path: &Path, contents: &str) -> Result<(), String> {
-    let mut file = fs::File::create(path).map_err(|e| format!("create JSON graph: {e}"))?;
-    file.write_all(contents.as_bytes())
-        .map_err(|e| format!("write JSON graph: {e}"))?;
-    file.sync_all()
-        .map_err(|e| format!("sync JSON graph: {e}"))?;
-    Ok(())
-}
-
-fn temporary_json_path(path: &Path) -> Result<PathBuf, String> {
-    let file_name = path
-        .file_name()
-        .ok_or_else(|| "JSON graph path has no file name".to_string())?
-        .to_string_lossy();
-    Ok(path.with_file_name(format!("{file_name}.tmp")))
+    ganbaru_atomic_files::write_file_atomically(
+        path,
+        contents.as_bytes(),
+        ganbaru_atomic_files::FileAccess::Default,
+    )
+    .map_err(|e| format!("save JSON graph: {e}"))
 }

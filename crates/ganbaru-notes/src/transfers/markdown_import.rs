@@ -11,13 +11,13 @@ use crate::models::{
 use crate::transfers::import_writer::{
     ImportBlock, ImportedPageCreate, count_import_blocks, create_imported_page,
 };
-use crate::validation::{validate_block_payload, validate_parent};
+use crate::validation::{MAX_TABLE_WIDTH, validate_block_payload, validate_parent};
 use serde_json::{Value, json};
 use sqlx::SqlitePool;
 use std::path::Path;
 
 const MAX_MARKDOWN_IMPORT_CHARS: usize = 1_000_000;
-const MAX_MARKDOWN_IMPORT_BLOCKS: usize = 1_000;
+pub(crate) const MAX_MARKDOWN_IMPORT_BLOCKS: usize = 1_000;
 
 pub async fn import_page(
     pool: &SqlitePool,
@@ -36,7 +36,7 @@ pub async fn import_page(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
-    let mut plan = parse_markdown(&request.markdown);
+    let mut plan = parse_markdown(&request.markdown, MAX_MARKDOWN_IMPORT_BLOCKS)?;
     let title = import_title(
         request.title.as_deref(),
         plan.title.as_deref(),
@@ -47,11 +47,6 @@ pub async fn import_page(
             .push(markdown_block("paragraph", text_payload(""), 1, Vec::new()));
     }
     let imported_block_count = count_import_blocks(&plan.blocks);
-    if imported_block_count > MAX_MARKDOWN_IMPORT_BLOCKS {
-        return Err(format!(
-            "markdown import supports up to {MAX_MARKDOWN_IMPORT_BLOCKS} blocks"
-        ));
-    }
 
     let page = create_imported_page(
         pool,
@@ -99,7 +94,15 @@ fn markdown_block(
     )
 }
 
-pub(crate) fn parse_markdown(markdown: &str) -> MarkdownPlan {
+/// Converts Markdown into an import plan of at most `max_blocks` blocks.
+///
+/// Table rows count against the budget while they are parsed, so padded rows
+/// cannot grow past it before the final count.
+///
+/// # Errors
+///
+/// Returns an error when the document needs more than `max_blocks` blocks.
+pub(crate) fn parse_markdown(markdown: &str, max_blocks: usize) -> Result<MarkdownPlan, String> {
     let normalized = markdown.replace("\r\n", "\n").replace('\r', "\n");
     let (frontmatter_title, body, mut diagnostics) = strip_frontmatter(&normalized);
     let lines = body
@@ -117,14 +120,22 @@ pub(crate) fn parse_markdown(markdown: &str) -> MarkdownPlan {
         paragraph: Vec::new(),
         blocks: Vec::new(),
         first_heading: None,
+        max_blocks,
+        table_rows: 0,
+        over_budget: false,
     };
     parser.parse();
+    if parser.over_budget || count_import_blocks(&parser.blocks) > max_blocks {
+        return Err(format!(
+            "markdown import supports up to {max_blocks} blocks"
+        ));
+    }
     diagnostics.extend(parser.diagnostics);
-    MarkdownPlan {
+    Ok(MarkdownPlan {
         title: frontmatter_title.or(parser.first_heading),
         blocks: parser.blocks,
         diagnostics,
-    }
+    })
 }
 
 struct MarkdownLine {
@@ -139,11 +150,14 @@ struct MarkdownParser<'a> {
     paragraph: Vec<MarkdownLine>,
     blocks: Vec<ImportBlock>,
     first_heading: Option<String>,
+    max_blocks: usize,
+    table_rows: usize,
+    over_budget: bool,
 }
 
 impl MarkdownParser<'_> {
     fn parse(&mut self) {
-        while self.index < self.lines.len() {
+        while self.index < self.lines.len() && !self.over_budget {
             let line = &self.lines[self.index];
             let trimmed = line.text.trim();
             if trimmed.is_empty() {
@@ -303,7 +317,11 @@ impl MarkdownParser<'_> {
         let header = parse_table_cells(&self.lines[self.index].text).unwrap_or_default();
         let width = header.len().max(1);
         self.index += 2;
+        if width > MAX_TABLE_WIDTH {
+            return self.skip_wide_table(start_line, width);
+        }
         let mut rows = vec![header];
+        self.table_rows += 1;
         while self.index < self.lines.len() {
             let line = &self.lines[self.index];
             if line.text.trim().is_empty() || is_table_delimiter(&line.text) {
@@ -312,7 +330,12 @@ impl MarkdownParser<'_> {
             let Some(cells) = parse_table_cells(&line.text) else {
                 break;
             };
+            if self.table_rows >= self.max_blocks {
+                self.over_budget = true;
+                break;
+            }
             rows.push(normalize_table_cells(cells, width));
+            self.table_rows += 1;
             self.index += 1;
         }
         let children = rows
@@ -340,6 +363,23 @@ impl MarkdownParser<'_> {
             start_line,
             children,
         )
+    }
+
+    /// Consumes a table wider than Notes supports without building its cells and
+    /// leaves a visible unsupported block in its place.
+    fn skip_wide_table(&mut self, start_line: i64, width: usize) -> ImportBlock {
+        while self.index < self.lines.len() {
+            let text = &self.lines[self.index].text;
+            if text.trim().is_empty() || is_table_delimiter(text) || !text.contains('|') {
+                break;
+            }
+            self.index += 1;
+        }
+        let warning = format!(
+            "A table with {width} columns exceeds the {MAX_TABLE_WIDTH} column limit and was not imported."
+        );
+        self.diagnostic("table_too_wide", "warning", Some(start_line), &warning);
+        unsupported_block(start_line, "", &warning)
     }
 
     fn parse_quote(&mut self) -> Option<ImportBlock> {

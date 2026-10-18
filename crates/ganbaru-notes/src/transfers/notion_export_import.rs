@@ -19,13 +19,15 @@ use csv::{
     parse_csv,
 };
 use links::{
-    decoded_link_reference, entry_parent_relative, html_media_block_type, is_external_url,
-    local_page_link, normalize_title, relative_path, title_and_source_id, trimmed_non_empty,
+    MAX_TAG_NAME_BYTES, decoded_link_reference, entry_parent_relative, html_media_block_type,
+    is_external_url, local_page_link, normalize_title, relative_path, title_and_source_id,
+    trimmed_non_empty,
 };
 use serde_json::{Value, json};
 use sqlx::SqlitePool;
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 mod csv;
@@ -34,6 +36,18 @@ mod links;
 const SOURCE_PROVIDER: &str = "notion_export";
 const MAX_EXPORT_FILES: usize = 2_000;
 const MAX_EXPORT_DEPTH: usize = 16;
+/// Files and folders visited while scanning, including skipped ones, so link-free trees stay bounded too.
+const MAX_EXPORT_ENTRIES: usize = 20_000;
+/// Diagnostics kept per import; the rest are summarized in one entry.
+const MAX_EXPORT_DIAGNOSTICS: usize = 500;
+/// Blocks one exported page or row body may produce, matching the Notion API import.
+const MAX_EXPORT_DOCUMENT_BLOCKS: usize = 5_000;
+/// Blocks one folder import may produce across pages and row bodies; later files are skipped with a note.
+const MAX_EXPORT_IMPORT_BLOCKS: usize = 500_000;
+/// Bytes of local files one folder import may copy; later references stay unchanged with a note.
+const MAX_EXPORT_COPIED_BYTES: u64 = 1024 * 1024 * 1024;
+/// Characters inside `[` and `](` considered a Markdown link label.
+const MAX_MARKDOWN_LINK_LABEL_BYTES: usize = 2 * 1024;
 const MAX_TEXT_BYTES: u64 = 1_000_000;
 const MAX_CSV_BYTES: u64 = 512 * 1024;
 
@@ -132,9 +146,16 @@ async fn import_folder_inner(
         .iter()
         .filter(|entry| entry.kind == ExportEntryKind::Csv)
     {
-        let csv = read_text_entry(entry, MAX_CSV_BYTES)?;
-        let parsed = parse_csv(&csv)?;
-        let (data_source, rows, consumed) = csv_data_source_from_export(
+        let parsed = match read_text_entry(&prepared.root, entry, MAX_CSV_BYTES)
+            .and_then(|csv| parse_csv(&csv))
+        {
+            Ok(parsed) => parsed,
+            Err(message) => {
+                push_skipped_entry(entry, message, &mut diagnostics);
+                continue;
+            }
+        };
+        let converted = csv_data_source_from_export(
             &runtime,
             &prepared,
             entry,
@@ -143,7 +164,14 @@ async fn import_folder_inner(
             &lookup,
             &mut stats,
         )
-        .await?;
+        .await;
+        let (data_source, rows, consumed) = match converted {
+            Ok(converted) => converted,
+            Err(message) => {
+                push_skipped_entry(entry, message, &mut diagnostics);
+                continue;
+            }
+        };
         consumed_documents.extend(consumed);
         let (pages, data_source_object, block_count) = create_imported_notion_data_source(
             pool,
@@ -169,11 +197,7 @@ async fn import_folder_inner(
         if consumed_documents.contains(&entry.relative) {
             continue;
         }
-        let ParsedDocument {
-            title,
-            blocks,
-            block_count,
-        } = parse_document_entry(
+        let parsed = parse_document_entry(
             &runtime,
             &prepared,
             entry,
@@ -181,7 +205,21 @@ async fn import_folder_inner(
             &mut diagnostics,
             &mut stats,
         )
-        .await?;
+        .await;
+        let ParsedDocument {
+            title,
+            blocks,
+            block_count,
+        } = match parsed.and_then(|parsed| {
+            stats.charge_blocks(count_import_blocks(&parsed.blocks))?;
+            Ok(parsed)
+        }) {
+            Ok(parsed) => parsed,
+            Err(message) => {
+                push_skipped_entry(entry, message, &mut diagnostics);
+                continue;
+            }
+        };
         let page = create_imported_page(
             pool,
             ImportedPageCreate {
@@ -206,6 +244,7 @@ async fn import_folder_inner(
     }
 
     rebuild_indexes_after_import(pool).await?;
+    cap_diagnostics(&mut diagnostics);
     Ok(NoteNotionExportImportDto::new(
         NoteNotionExportImportSummary {
             imported_pages,
@@ -292,16 +331,37 @@ struct ImportLookup<'a> {
     target_map: &'a HashMap<String, ExportTarget>,
 }
 
+/// Per-import counters, the aggregate block budget, and copied assets.
 #[derive(Default)]
 struct ImportStats {
     imported_file_count: i64,
     skipped_file_count: i64,
     unsupported_block_count: i64,
+    charged_blocks: usize,
+    assets: AssetRewrite,
 }
 
+impl ImportStats {
+    /// Charges a page or row body against the per-import block budget.
+    fn charge_blocks(&mut self, blocks: usize) -> Result<(), String> {
+        let total = self.charged_blocks.saturating_add(blocks);
+        if total > MAX_EXPORT_IMPORT_BLOCKS {
+            return Err(format!(
+                "Skipped because the import reached its limit of {MAX_EXPORT_IMPORT_BLOCKS} blocks."
+            ));
+        }
+        self.charged_blocks = total;
+        Ok(())
+    }
+}
+
+/// Local files copied during one import. Each reference is copied once and
+/// later uses reuse its placeholder URL.
 #[derive(Default)]
 struct AssetRewrite {
     by_url: HashMap<String, NotesFileAssetDto>,
+    by_reference: HashMap<(String, String), Option<String>>,
+    copied_bytes: u64,
     counter: usize,
 }
 
@@ -330,8 +390,7 @@ async fn parse_document_entry(
     diagnostics: &mut Vec<NoteNotionExportImportDiagnosticDto>,
     stats: &mut ImportStats,
 ) -> Result<ParsedDocument, String> {
-    let text = read_text_entry(entry, MAX_TEXT_BYTES)?;
-    let mut assets = AssetRewrite::default();
+    let text = read_text_entry(&prepared.root, entry, MAX_TEXT_BYTES)?;
     let rewritten = match entry.kind {
         ExportEntryKind::Markdown => {
             rewrite_markdown_references(
@@ -340,7 +399,8 @@ async fn parse_document_entry(
                 entry,
                 target_map,
                 diagnostics,
-                &mut assets,
+                &mut stats.assets,
+                &text,
             )
             .await
         }
@@ -351,7 +411,8 @@ async fn parse_document_entry(
                 entry,
                 target_map,
                 diagnostics,
-                &mut assets,
+                &mut stats.assets,
+                &text,
             )
             .await
         }
@@ -359,7 +420,7 @@ async fn parse_document_entry(
     };
     let (title, mut blocks) = match entry.kind {
         ExportEntryKind::Markdown => {
-            let plan = parse_markdown(&rewritten);
+            let plan = parse_markdown(&rewritten, MAX_EXPORT_DOCUMENT_BLOCKS)?;
             push_markdown_diagnostics(&entry.relative, plan.diagnostics, diagnostics);
             (
                 plan.title.unwrap_or_else(|| entry.title.clone()),
@@ -367,7 +428,11 @@ async fn parse_document_entry(
             )
         }
         ExportEntryKind::Html => {
-            let plan = parse_html(&rewritten, prepared.keep_external_file_references);
+            let plan = parse_html(
+                &rewritten,
+                prepared.keep_external_file_references,
+                MAX_EXPORT_DOCUMENT_BLOCKS,
+            )?;
             push_html_diagnostics(&entry.relative, plan.diagnostics, diagnostics);
             (
                 plan.title.unwrap_or_else(|| entry.title.clone()),
@@ -376,7 +441,7 @@ async fn parse_document_entry(
         }
         ExportEntryKind::Csv => unreachable!("CSV entries are not parsed as document pages"),
     };
-    let copied = apply_asset_rewrites(&mut blocks, &assets.by_url);
+    let copied = apply_asset_rewrites(&mut blocks, &stats.assets.by_url);
     stats.imported_file_count += copied;
     stats.unsupported_block_count += count_unsupported_blocks(&blocks);
     stats.skipped_file_count += skipped_local_file_count(diagnostics, &entry.relative);
@@ -426,6 +491,7 @@ async fn csv_data_source_from_export(
     let property_order = csv_property_order(&headers);
     let body_candidates = markdown_or_html_entries_near(entry, lookup.entries);
     let mut consumed = HashSet::new();
+    let mut parsed_bodies: HashMap<String, Vec<ImportBlock>> = HashMap::new();
     let mut converted_rows = Vec::new();
     for (index, row) in rows.iter().skip(1).enumerate() {
         if row.iter().all(|cell| cell.trim().is_empty()) {
@@ -445,16 +511,35 @@ async fn csv_data_source_from_export(
             .to_string();
         let row_blocks = if let Some(body_entry) = matching_body_entry(&title, &body_candidates) {
             consumed.insert(body_entry.relative.clone());
-            parse_document_entry(
-                runtime,
-                prepared,
-                body_entry,
-                lookup.target_map,
-                diagnostics,
-                stats,
-            )
-            .await?
-            .blocks
+            if !parsed_bodies.contains_key(&body_entry.relative) {
+                let parsed = parse_document_entry(
+                    runtime,
+                    prepared,
+                    body_entry,
+                    lookup.target_map,
+                    diagnostics,
+                    stats,
+                )
+                .await;
+                let blocks = parsed
+                    .map(|parsed| parsed.blocks)
+                    .unwrap_or_else(|message| {
+                        push_skipped_entry(body_entry, message, diagnostics);
+                        Vec::new()
+                    });
+                parsed_bodies.insert(body_entry.relative.clone(), blocks);
+            }
+            let blocks = parsed_bodies
+                .get(&body_entry.relative)
+                .cloned()
+                .unwrap_or_default();
+            match stats.charge_blocks(count_import_blocks(&blocks)) {
+                Ok(()) => blocks,
+                Err(message) => {
+                    push_skipped_entry(body_entry, message, diagnostics);
+                    Vec::new()
+                }
+            }
         } else {
             Vec::new()
         };
@@ -487,10 +572,17 @@ fn scan_export_entries(
     prepared: &PreparedExportImport,
     diagnostics: &mut Vec<NoteNotionExportImportDiagnosticDto>,
 ) -> Result<Vec<ExportEntry>, String> {
-    let mut entries = Vec::new();
-    collect_export_entries(root, root, prepared, diagnostics, 0, &mut entries)?;
+    let mut scan = ExportScan::default();
+    collect_export_entries(root, root, prepared, diagnostics, 0, &mut scan)?;
+    let mut entries = scan.entries;
     entries.sort_by(|left, right| left.relative.cmp(&right.relative));
     Ok(entries)
+}
+
+#[derive(Default)]
+struct ExportScan {
+    entries: Vec<ExportEntry>,
+    visited: usize,
 }
 
 fn collect_export_entries(
@@ -499,7 +591,7 @@ fn collect_export_entries(
     prepared: &PreparedExportImport,
     diagnostics: &mut Vec<NoteNotionExportImportDiagnosticDto>,
     depth: usize,
-    entries: &mut Vec<ExportEntry>,
+    scan: &mut ExportScan,
 ) -> Result<(), String> {
     if depth > MAX_EXPORT_DEPTH {
         diagnostics.push(NoteNotionExportImportDiagnosticDto::new(
@@ -511,6 +603,12 @@ fn collect_export_entries(
         return Ok(());
     }
     for entry in fs::read_dir(dir).map_err(|e| format!("read Notion export folder: {e}"))? {
+        scan.visited += 1;
+        if scan.visited > MAX_EXPORT_ENTRIES {
+            return Err(format!(
+                "Notion export folder import supports up to {MAX_EXPORT_ENTRIES} files and folders"
+            ));
+        }
         let entry = entry.map_err(|e| format!("read Notion export entry: {e}"))?;
         let path = entry.path();
         let name = path
@@ -526,11 +624,27 @@ fn collect_export_entries(
             ));
             continue;
         }
-        if path.is_dir() {
-            collect_export_entries(root, &path, prepared, diagnostics, depth + 1, entries)?;
+        // `DirEntry::file_type` does not follow links, and reports Windows junctions as links.
+        let file_type = entry
+            .file_type()
+            .map_err(|e| format!("inspect Notion export entry: {e}"))?;
+        if file_type.is_symlink() {
+            diagnostics.push(NoteNotionExportImportDiagnosticDto::new(
+                "symlink_skipped",
+                "warning",
+                Some(relative_path(root, &path)),
+                "A symbolic link was skipped because Notion export import reads only regular files and folders.",
+            ));
             continue;
         }
-        if entries.len() >= MAX_EXPORT_FILES {
+        if file_type.is_dir() {
+            collect_export_entries(root, &path, prepared, diagnostics, depth + 1, scan)?;
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+        if scan.entries.len() >= MAX_EXPORT_FILES {
             return Err(format!(
                 "Notion export folder import supports up to {MAX_EXPORT_FILES} importable files"
             ));
@@ -557,7 +671,7 @@ fn collect_export_entries(
             .and_then(|value| value.to_str())
             .unwrap_or("Untitled");
         let (title, source_id) = title_and_source_id(stem, &relative);
-        entries.push(ExportEntry {
+        scan.entries.push(ExportEntry {
             path,
             relative,
             source_id,
@@ -592,23 +706,67 @@ fn export_target_map(entries: &[ExportEntry]) -> HashMap<String, ExportTarget> {
         .collect()
 }
 
-fn read_text_entry(entry: &ExportEntry, max_bytes: u64) -> Result<String, String> {
-    let metadata = fs::metadata(&entry.path)
-        .map_err(|e| format!("inspect Notion export file {}: {e}", entry.relative))?;
+/// Read one scanned text entry, refusing links and anything that resolves outside the canonical
+/// export root, and bounding the read by the bytes actually read rather than reported metadata.
+fn read_text_entry(root: &Path, entry: &ExportEntry, max_bytes: u64) -> Result<String, String> {
+    let inspect_error =
+        |e: std::io::Error| format!("inspect Notion export file {}: {e}", entry.relative);
+    let link = fs::symlink_metadata(&entry.path).map_err(inspect_error)?;
+    if link.file_type().is_symlink() || !link.is_file() {
+        return Err(format!(
+            "Notion export entry {} is not a regular file",
+            entry.relative
+        ));
+    }
+    let canonical = fs::canonicalize(&entry.path).map_err(inspect_error)?;
+    if !canonical.starts_with(root) {
+        return Err(format!(
+            "Notion export entry {} resolves outside the selected folder",
+            entry.relative
+        ));
+    }
+    let file = fs::File::open(&canonical)
+        .map_err(|e| format!("read Notion export file {}: {e}", entry.relative))?;
+    let metadata = file.metadata().map_err(inspect_error)?;
+    let too_large = || {
+        format!(
+            "Notion export file {} exceeds the import size limit",
+            entry.relative
+        )
+    };
     if !metadata.is_file() {
         return Err(format!(
-            "Notion export entry {} is not a file",
+            "Notion export entry {} is not a regular file",
             entry.relative
         ));
     }
     if metadata.len() > max_bytes {
-        return Err(format!(
-            "Notion export file {} exceeds the import size limit",
-            entry.relative
-        ));
+        return Err(too_large());
     }
-    fs::read_to_string(&entry.path)
-        .map_err(|e| format!("read Notion export file {}: {e}", entry.relative))
+    let mut text = String::new();
+    file.take(max_bytes.saturating_add(1))
+        .read_to_string(&mut text)
+        .map_err(|e| format!("read Notion export file {}: {e}", entry.relative))?;
+    if text.len() as u64 > max_bytes {
+        return Err(too_large());
+    }
+    Ok(text)
+}
+
+/// Keep the first diagnostics and replace the rest with one summary so a hostile export cannot
+/// produce an unbounded result.
+fn cap_diagnostics(diagnostics: &mut Vec<NoteNotionExportImportDiagnosticDto>) {
+    if diagnostics.len() <= MAX_EXPORT_DIAGNOSTICS {
+        return;
+    }
+    let omitted = diagnostics.len() - MAX_EXPORT_DIAGNOSTICS;
+    diagnostics.truncate(MAX_EXPORT_DIAGNOSTICS);
+    diagnostics.push(NoteNotionExportImportDiagnosticDto::new(
+        "diagnostics_truncated",
+        "info",
+        None::<String>,
+        format!("{omitted} more import notes were omitted."),
+    ));
 }
 
 async fn rewrite_markdown_references(
@@ -618,35 +776,36 @@ async fn rewrite_markdown_references(
     target_map: &HashMap<String, ExportTarget>,
     diagnostics: &mut Vec<NoteNotionExportImportDiagnosticDto>,
     assets: &mut AssetRewrite,
+    text: &str,
 ) -> String {
-    let Ok(text) = read_text_entry(entry, MAX_TEXT_BYTES) else {
-        return String::new();
-    };
     let mut output = String::with_capacity(text.len());
     let mut cursor = 0;
+    let mut next_label_end = None;
+    let mut next_url_end = None;
     while let Some(open_bracket) = text[cursor..].find('[') {
         let start = cursor + open_bracket;
         output.push_str(&text[cursor..start]);
-        let is_image = start > 0 && text.as_bytes()[start - 1] == b'!';
-        if is_image && output.ends_with('!') {
-            output.pop();
+        cursor = start;
+        // No later `[` can complete a link once either delimiter is missing.
+        let Some(label_end) = find_from(text, "](", start, &mut next_label_end) else {
+            break;
+        };
+        if label_end - start > MAX_MARKDOWN_LINK_LABEL_BYTES {
+            output.push('[');
+            cursor = start + 1;
+            continue;
         }
-        let Some(label_end_offset) = text[start..].find("](") else {
-            output.push_str(&text[start..start + 1]);
-            cursor = start + 1;
-            continue;
-        };
-        let label_end = start + label_end_offset;
         let url_start = label_end + 2;
-        let Some(url_end_offset) = text[url_start..].find(')') else {
-            output.push_str(&text[start..start + 1]);
-            cursor = start + 1;
-            continue;
+        let Some(url_end) = find_from(text, ")", url_start, &mut next_url_end) else {
+            break;
         };
-        let url_end = url_start + url_end_offset;
+        let is_image = start > 0 && text.as_bytes()[start - 1] == b'!';
         let label = &text[start + 1..label_end];
         let url = text[url_start..url_end].trim();
         if is_image {
+            if output.ends_with('!') {
+                output.pop();
+            }
             let next = rewrite_media_reference(
                 runtime,
                 prepared,
@@ -672,6 +831,37 @@ async fn rewrite_markdown_references(
     output
 }
 
+/// Finds `needle` at or after `from`, reusing the previous match while it is
+/// still ahead so scans that restart at every `[` stay linear.
+fn find_from(text: &str, needle: &str, from: usize, cached: &mut Option<usize>) -> Option<usize> {
+    if cached.is_none_or(|found| found < from) {
+        *cached = text[from..].find(needle).map(|offset| from + offset);
+    }
+    *cached
+}
+
+/// Updates the start of the tag that encloses the scanned text, using the
+/// last `<` or `>` in a segment outside attribute values.
+fn track_open_tag(segment: &str, segment_start: usize, open_tag: &mut Option<usize>) {
+    let last_open = segment.rfind('<');
+    let last_close = segment.rfind('>');
+    match (last_open, last_close) {
+        (Some(open), Some(close)) if open > close => *open_tag = Some(segment_start + open),
+        (Some(open), None) => *open_tag = Some(segment_start + open),
+        (_, Some(_)) => *open_tag = None,
+        (None, None) => {}
+    }
+}
+
+/// Returns the bounded tag text after `<` for the tag that owns an attribute.
+fn open_tag_text(text: &str, open_tag: usize, attr_start: usize) -> &str {
+    let mut end = (open_tag + 1 + MAX_TAG_NAME_BYTES + 1).min(attr_start);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[open_tag + 1..end]
+}
+
 async fn rewrite_html_references(
     runtime: &RuntimeImportContext<'_>,
     prepared: &PreparedExportImport,
@@ -679,18 +869,18 @@ async fn rewrite_html_references(
     target_map: &HashMap<String, ExportTarget>,
     diagnostics: &mut Vec<NoteNotionExportImportDiagnosticDto>,
     assets: &mut AssetRewrite,
+    text: &str,
 ) -> String {
-    let Ok(text) = read_text_entry(entry, MAX_TEXT_BYTES) else {
-        return String::new();
-    };
     let mut output = String::with_capacity(text.len());
     let mut index = 0;
+    let mut open_tag = None;
     while index < text.len() {
         let Some(attr_start_offset) = text[index..].find(['h', 's']) else {
             output.push_str(&text[index..]);
             break;
         };
         let attr_start = index + attr_start_offset;
+        track_open_tag(&text[index..attr_start], index, &mut open_tag);
         output.push_str(&text[index..attr_start]);
         let rest = &text[attr_start..];
         let attr = if rest.starts_with("href=") {
@@ -722,7 +912,8 @@ async fn rewrite_html_references(
         let rewritten = if attr == "href" {
             local_page_link(entry, target_map, value)
         } else {
-            let block_type = html_media_block_type(&text[..attr_start]);
+            let block_type = open_tag
+                .and_then(|tag| html_media_block_type(open_tag_text(text, tag, attr_start)));
             match block_type {
                 Some(block_type) => {
                     rewrite_media_reference(
@@ -771,11 +962,31 @@ async fn rewrite_media_reference(
         return None;
     };
     let reference = decoded_link_reference(reference);
+    let key = (
+        block_type.to_string(),
+        entry_parent_relative(entry, &reference),
+    );
+    if let Some(placeholder) = assets.by_reference.get(&key) {
+        return placeholder.clone();
+    }
+    if assets.copied_bytes >= MAX_EXPORT_COPIED_BYTES {
+        diagnostics.push(NoteNotionExportImportDiagnosticDto::new(
+            "local_file_reference_skipped",
+            "warning",
+            Some(entry.relative.clone()),
+            format!(
+                "A local file reference was skipped because the import already copied {} MB of files.",
+                MAX_EXPORT_COPIED_BYTES / (1024 * 1024)
+            ),
+        ));
+        assets.by_reference.insert(key, None);
+        return None;
+    }
     let copied = copy_local_import_file_for_block(
         runtime.pool,
         vault_root,
         &prepared.root,
-        &entry_parent_relative(entry, &reference),
+        &key.1,
         block_type,
         Path::new(&reference)
             .file_name()
@@ -791,11 +1002,18 @@ async fn rewrite_media_reference(
             diagnostic.message.clone(),
         ));
     }
-    if copied.action == "copied_asset" {
-        copied.asset.map(|asset| assets.placeholder_url(asset))
+    let placeholder = if copied.action == "copied_asset" {
+        copied.asset.map(|asset| {
+            assets.copied_bytes = assets
+                .copied_bytes
+                .saturating_add(u64::try_from(asset.byte_size).unwrap_or(0));
+            assets.placeholder_url(asset)
+        })
     } else {
         None
-    }
+    };
+    assets.by_reference.insert(key, placeholder.clone());
+    placeholder
 }
 
 fn apply_asset_rewrites(
@@ -873,6 +1091,21 @@ fn push_markdown_diagnostics(
     for diagnostic in diagnostics {
         push_serialized_diagnostic(source_path, "markdown", diagnostic, output);
     }
+}
+
+/// Records an export file that could not be read or parsed so the rest of the
+/// folder still imports.
+fn push_skipped_entry(
+    entry: &ExportEntry,
+    message: String,
+    diagnostics: &mut Vec<NoteNotionExportImportDiagnosticDto>,
+) {
+    diagnostics.push(NoteNotionExportImportDiagnosticDto::new(
+        "file_skipped",
+        "warning",
+        Some(entry.relative.clone()),
+        message,
+    ));
 }
 
 fn push_html_diagnostics(

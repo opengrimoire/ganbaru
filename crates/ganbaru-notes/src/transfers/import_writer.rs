@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 use sqlx::{Sqlite, SqlitePool, Transaction};
 use std::collections::HashSet;
 
+#[derive(Clone)]
 pub(crate) struct ImportBlock {
     pub(crate) id: String,
     pub(crate) block_type: &'static str,

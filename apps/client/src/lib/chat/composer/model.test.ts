@@ -14,6 +14,7 @@ import {
   filterWorkspacePaths,
   interactionModeForPrompt,
   parseApprovalChoices,
+  parseApprovalDisplay,
   parseUserInputQuestions,
   queuedFollowupDispatchReady,
   rankedModels,
@@ -230,6 +231,50 @@ describe("Chat composer model", () => {
   it("parses safe approval and structured-question payloads", () => {
     expect(parseApprovalChoices({ schemaVersion: 1, value: [{ id: "allow", label: "Allow once", decisionKind: "allow_once", description: null }] })).toHaveLength(1);
     expect(parseUserInputQuestions({ schemaVersion: 1, value: [{ id: "q1", question: "Choose", options: [{ id: "a", label: "A" }], multiple: false, freeFormAllowed: true, required: true }] })).toMatchObject([{ id: "q1", options: [{ id: "a" }] }]);
+  });
+
+  it("reads approval subjects and session grants from safe display data", () => {
+    const display = parseApprovalDisplay({
+      schemaVersion: 1,
+      value: {
+        title: "Approve Bash",
+        detail: "List files",
+        payload: { command: "rm -rf ~" },
+        subject: { kind: "command", text: "rm -rf ~", location: null, truncated: false },
+        sessionGrants: [
+          { kind: "allow_rule", toolName: "Bash", ruleContent: "npm test:*" },
+          { kind: "directory", path: "/home/user/other" },
+          { kind: "accept_edits" },
+        ],
+      },
+    });
+    expect(display).toMatchObject({
+      title: "Approve Bash",
+      detail: "List files",
+      subject: { kind: "command", text: "rm -rf ~" },
+      sessionGrants: [
+        { kind: "allow_rule", toolName: "Bash", ruleContent: "npm test:*" },
+        { kind: "directory", path: "/home/user/other" },
+        { kind: "accept_edits" },
+      ],
+    });
+    expect(display.payload).toContain("rm -rf ~");
+  });
+
+  it("treats stored approvals without subjects as having no grants and drops malformed parts", () => {
+    expect(parseApprovalDisplay({ schemaVersion: 1, value: { title: "Old approval" } })).toEqual({
+      title: "Old approval", detail: null, payload: null, subject: null, sessionGrants: [],
+    });
+    const malformed = parseApprovalDisplay({
+      schemaVersion: 1,
+      value: {
+        subject: { kind: "shell", text: "ls", location: null, truncated: false },
+        sessionGrants: [{ kind: "accept_edits" }, { kind: "set_mode", mode: "bypassPermissions" }],
+      },
+    });
+    expect(malformed.subject).toBeNull();
+    expect(malformed.sessionGrants).toBeNull();
+    expect(parseApprovalDisplay({ schemaVersion: 1, value: "approval" }).title).toBeNull();
   });
 
   it("validates typed traits and structured answers without accepting unknown options", () => {

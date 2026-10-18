@@ -1,6 +1,7 @@
 import type {
   ActivityStatus,
   ApprovalDecisionKind,
+  ApprovalSubjectKind,
   CanonicalItemKind,
   CanonicalRequestKind,
   ChatEventId,
@@ -202,6 +203,20 @@ export interface ApprovalDecisionOption {
   description: string | null;
 }
 
+/** Concrete target of an approval, such as the exact command or path, shown before the decision. */
+export interface ApprovalSubject {
+  kind: ApprovalSubjectKind;
+  text: string;
+  location: string | null;
+  truncated: boolean;
+}
+
+/** Permission that an allow-for-session decision forwards to the running provider session. */
+export type SessionPermissionGrant =
+  | { kind: "allow_rule"; toolName: string; ruleContent: string | null }
+  | { kind: "directory"; path: string }
+  | { kind: "accept_edits" };
+
 export interface RequestOpenedEvent {
   requestId: ProviderRequestId;
   kind: CanonicalRequestKind;
@@ -209,6 +224,8 @@ export interface RequestOpenedEvent {
   detail: string | null;
   allowedDecisions: ApprovalDecisionOption[];
   safePayload: VersionedJson;
+  subject: ApprovalSubject | null;
+  sessionGrants: SessionPermissionGrant[];
 }
 
 export interface RequestResolvedEvent {

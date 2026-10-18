@@ -139,7 +139,7 @@ describe("canonical timeline projection", () => {
       stored(2, { type: "content_delta", payload: { itemId: "command", streamKind: "command_output", contentIndex: 0, delta: "Passed" } }),
       stored(3, { type: "item_completed", payload: { itemId: "command", kind: "command_execution", status: "completed", title: "Run tests", detail: null, safeMetadata: null } }),
       stored(4, { type: "plan_updated", payload: { markdown: "Plan", steps: [{ id: "one", text: "Test", status: "completed" }] } }),
-      stored(5, { type: "request_opened", payload: { requestId: "request-1", kind: "command_execution", title: "Run command?", detail: null, allowedDecisions: [], safePayload: { schemaVersion: 1, value: {} } } }),
+      stored(5, { type: "request_opened", payload: { requestId: "request-1", kind: "command_execution", title: "Run command?", detail: null, allowedDecisions: [], safePayload: { schemaVersion: 1, value: {} }, subject: null, sessionGrants: [] } }),
       stored(6, { type: "request_resolved", payload: { requestId: "request-1", state: "resolved", decision: null } }),
     ];
 

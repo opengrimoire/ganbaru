@@ -391,6 +391,8 @@ fn approval_request(
                 schema_version: 1,
                 value: safe_payload,
             },
+            subject: None,
+            session_grants: Vec::new(),
         }),
     )
 }

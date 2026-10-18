@@ -19,6 +19,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+mod approvals;
 mod transport;
 
 static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(1);

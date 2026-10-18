@@ -108,6 +108,8 @@ pub fn parse_permission(params: &Value, workspace: &Path) -> ChatResult<ParsedPe
             detail,
             allowed_decisions,
             safe_payload: safe_shape(params),
+            subject: None,
+            session_grants: Vec::new(),
         },
         safely_in_workspace_edit: tool_kind == "edit"
             && tool_paths_are_in_workspace(tool, workspace),

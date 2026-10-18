@@ -1,5 +1,6 @@
 //! Claude Code provider over the bounded SDK JSONL protocol.
 
+mod approvals;
 mod driver;
 mod home;
 mod normalizer;

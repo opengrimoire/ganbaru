@@ -1,4 +1,5 @@
 import type {
+  ApprovalSubject,
   ChatPromptCatalogEntry,
   ChatSendKey,
   ProjectWorkingFolderPathRead,
@@ -12,9 +13,12 @@ import type {
   ProviderSessionState,
   RateLimitStatusEvent,
   SafetyMode,
+  SessionPermissionGrant,
   UserInputQuestion,
   VersionedJson,
 } from "$lib/chat/contracts";
+import { parseApprovalSubject, parseSessionPermissionGrant } from "$lib/chat/validation/events";
+import { readArray } from "$lib/utils/readers";
 import { compareCompanyModels, integrationCompany, modelCompany } from "./model-company";
 export { clipboardImageFiles } from "$lib/utils/clipboard-images";
 
@@ -305,6 +309,16 @@ export interface ApprovalChoiceRead {
   description: string | null;
 }
 
+/** Approval panel content read from a pending request's safe display data. */
+export interface ApprovalDisplayRead {
+  title: string | null;
+  detail: string | null;
+  payload: string | null;
+  subject: ApprovalSubject | null;
+  /** Grants an allow-for-session decision forwards, or null when they cannot be read. */
+  sessionGrants: SessionPermissionGrant[] | null;
+}
+
 const ACTIVE_SESSION_STATES: ProviderSessionState[] = [
   "active",
   "waiting_for_approval",
@@ -503,6 +517,36 @@ export function parseApprovalChoices(value: VersionedJson): ApprovalChoiceRead[]
     if (description !== null && typeof description !== "string") return [];
     return [{ id, label, decisionKind: decisionKind as ApprovalChoiceRead["decisionKind"], description }];
   });
+}
+
+/**
+ * Reads the approval panel content from untrusted safe display data.
+ *
+ * A malformed subject is dropped. Unreadable session grants yield null, and the panel then
+ * withholds allow-for-session because it cannot show what that decision forwards.
+ */
+export function parseApprovalDisplay(value: VersionedJson): ApprovalDisplayRead {
+  const record = value.value;
+  if (typeof record !== "object" || record === null || Array.isArray(record)) {
+    return { title: null, detail: null, payload: null, subject: null, sessionGrants: [] };
+  }
+  return {
+    title: typeof record.title === "string" ? record.title : null,
+    detail: typeof record.detail === "string" ? record.detail : null,
+    payload: record.payload === undefined ? null : JSON.stringify(record.payload, null, 2),
+    subject: readOrNull(() => record.subject == null ? null : parseApprovalSubject(record.subject, "subject")),
+    sessionGrants: readOrNull(() => record.sessionGrants === undefined
+      ? []
+      : readArray(record.sessionGrants, "sessionGrants", parseSessionPermissionGrant)),
+  };
+}
+
+function readOrNull<T>(read: () => T): T | null {
+  try {
+    return read();
+  } catch {
+    return null;
+  }
 }
 
 export function parseUserInputQuestions(value: VersionedJson): UserInputQuestion[] {

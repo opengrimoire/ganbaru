@@ -12,7 +12,7 @@ use crate::claude::transport::read_bounded_line;
 use crate::claude::transport::{
     ClaudeInboundMessage, ClaudeJsonlConnection, ClaudeTransportFailure,
 };
-use crate::events::CanonicalEvent;
+use crate::events::{CanonicalEvent, SessionPermissionGrant};
 use crate::models::*;
 use crate::{DriverCancellation, DriverOperationContext, ProviderDriver};
 use serde_json::{Value, json};
@@ -171,12 +171,10 @@ fn approval_resolution_returns_only_the_selected_native_behavior() {
                 provider_request_id: provider_request_id.clone(),
                 kind: PendingClaudeRequestKind::Approval {
                     tool_input: json!({ "command": "printf redacted" }),
-                    permission_suggestions: Some(json!([{
-                        "type": "addRules",
-                        "rules": [{ "toolName": "Bash", "ruleContent": "printf:*" }],
-                        "behavior": "allow",
-                        "destination": "localSettings"
-                    }])),
+                    session_grants: vec![SessionPermissionGrant::AllowRule {
+                        tool_name: "Bash".to_string(),
+                        rule_content: Some("printf:*".to_string()),
+                    }],
                 },
             },
         )])));
@@ -228,7 +226,7 @@ fn approval_rejects_webview_replacement_tool_input() {
         provider_request_id: ProviderRequestId::new("approval-1".to_string()).unwrap(),
         kind: PendingClaudeRequestKind::Approval {
             tool_input: tool_input.clone(),
-            permission_suggestions: None,
+            session_grants: Vec::new(),
         },
     };
     let request = |updated: Option<Value>| ResolveApprovalRequest {

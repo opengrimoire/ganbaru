@@ -1,5 +1,6 @@
 //! Claude inbound message routing, permission callbacks, structured questions, and pending request state.
 
+use super::approvals::{approval_subject, session_grants, session_permission_updates};
 use super::normalizer::{ClaudeEventNormalizer, ClaudeRouteState};
 use super::protocol::{control_success, protocol_error};
 use super::transport::{ClaudeInboundMessage, ClaudeJsonlClient};
@@ -22,7 +23,7 @@ const MAX_TEXT_BYTES: usize = 64 * 1024;
 pub enum PendingClaudeRequestKind {
     Approval {
         tool_input: Value,
-        permission_suggestions: Option<Value>,
+        session_grants: Vec<SessionPermissionGrant>,
     },
     UserInput {
         questions: Value,
@@ -291,16 +292,13 @@ pub fn route_control_request(
         .and_then(Value::as_str)
         .or_else(|| request.get("decision_reason").and_then(Value::as_str))
         .map(|value| bounded_text(value, MAX_TEXT_BYTES));
+    let session_grants = session_grants(request.get("permission_suggestions"));
     let mut allowed_decisions = vec![approval_option(
         "allow_once",
         "Allow once",
         ApprovalDecisionKind::AllowOnce,
     )];
-    if request
-        .get("permission_suggestions")
-        .and_then(Value::as_array)
-        .is_some_and(|suggestions| !suggestions.is_empty())
-    {
+    if !session_grants.is_empty() {
         allowed_decisions.push(approval_option(
             "allow_session",
             "Allow for session",
@@ -316,7 +314,7 @@ pub fn route_control_request(
         provider_request_id: provider_request_id.clone(),
         kind: PendingClaudeRequestKind::Approval {
             tool_input: tool_input.clone(),
-            permission_suggestions: request.get("permission_suggestions").cloned(),
+            session_grants: session_grants.clone(),
         },
     };
     Ok(RoutedClaudeRequest {
@@ -336,6 +334,8 @@ pub fn route_control_request(
                     "input": tool_input,
                 }),
             },
+            subject: approval_subject(tool_name, &tool_input),
+            session_grants,
         }),
         immediate_response: None,
     })
@@ -464,7 +464,7 @@ pub(crate) fn approval_response(
 ) -> ChatResult<Value> {
     let PendingClaudeRequestKind::Approval {
         tool_input,
-        permission_suggestions,
+        session_grants,
     } = &pending.kind
     else {
         return Err(ChatError::invalid_transition(
@@ -498,19 +498,15 @@ pub(crate) fn approval_response(
                 ("behavior".to_string(), Value::String("allow".to_string())),
                 ("updatedInput".to_string(), updated_input),
             ]);
-            let Some(suggestions) = permission_suggestions
-                .as_ref()
-                .and_then(Value::as_array)
-                .filter(|suggestions| !suggestions.is_empty())
-            else {
+            if session_grants.is_empty() {
                 return Err(ChatError::validation(
                     "decision",
                     "Claude did not offer a session permission update",
                 ));
-            };
+            }
             response.insert(
                 "updatedPermissions".to_string(),
-                Value::Array(session_scoped_suggestions(suggestions)),
+                Value::Array(session_permission_updates(session_grants)),
             );
             Value::Object(response)
         }
@@ -698,25 +694,4 @@ fn state_error() -> ChatError {
         "Claude pending request state is unavailable",
         false,
     )
-}
-
-/// Keeps Claude's suggested permission updates for the running session only,
-/// matching the "Allow for session" choice. Persisting them would rewrite the
-/// folder's Claude settings and invalidate its trust decision.
-fn session_scoped_suggestions(suggestions: &[Value]) -> Vec<Value> {
-    suggestions
-        .iter()
-        .cloned()
-        .map(|mut suggestion| {
-            if let Some(update) = suggestion.as_object_mut()
-                && update.contains_key("destination")
-            {
-                update.insert(
-                    "destination".to_string(),
-                    Value::String("session".to_string()),
-                );
-            }
-            suggestion
-        })
-        .collect()
 }

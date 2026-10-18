@@ -1,4 +1,5 @@
 use super::navigation::*;
+use super::persistence::{bounded_preview_title, bounded_preview_url, spawn_tab_persister};
 use super::*;
 
 pub(super) async fn create_child_browser_webview(
@@ -16,10 +17,8 @@ pub(super) async fn create_child_browser_webview(
     let loaded_url = committed_url.clone();
     let manager = app.state::<ChatBrowserManager>().inner().clone();
     let loading_tab = request.tab_id.clone();
-    let loading_pool = pool.clone();
     let title_manager = manager.clone();
     let title_tab = request.tab_id.clone();
-    let title_pool = pool.clone();
     let builder = WebviewBuilder::new(label.clone(), WebviewUrl::External(url.clone()))
         .on_navigation(move |candidate| {
             navigation_url
@@ -34,16 +33,16 @@ pub(super) async fn create_child_browser_webview(
             {
                 *committed = payload.url().clone();
             }
-            manager.update(&loading_tab, |read| {
-                read.current_url = payload.url().to_string();
+            manager.update_from_page(&loading_tab, |read| {
+                read.current_url = bounded_preview_url(payload.url());
                 read.loading = payload.event() == PageLoadEvent::Started;
                 read.external_origin = !is_loopback(payload.url());
             });
-            persist_runtime_tab(&manager, &loading_pool, &loading_tab);
         })
         .on_document_title_changed(move |_, title| {
-            title_manager.update(&title_tab, |read| read.title = title);
-            persist_runtime_tab(&title_manager, &title_pool, &title_tab);
+            title_manager.update_from_page(&title_tab, |read| {
+                read.title = bounded_preview_title(&title);
+            });
         });
     let main = app
         .get_window("main")
@@ -76,20 +75,11 @@ pub(super) async fn create_child_browser_webview(
                 webview_label: label,
                 allowed_url,
                 committed_url,
+                persister: spawn_tab_persister(pool.clone(), read.clone()),
             },
         );
     persist_tab(pool, &read).await?;
     Ok(read)
-}
-
-pub(super) fn persist_runtime_tab(manager: &ChatBrowserManager, pool: &SqlitePool, tab_id: &str) {
-    let Ok(tab) = manager.read(tab_id) else {
-        return;
-    };
-    let pool = pool.clone();
-    tauri::async_runtime::spawn(async move {
-        let _ = persist_tab(&pool, &tab.read).await;
-    });
 }
 
 #[cfg(mobile)]

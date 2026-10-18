@@ -23,6 +23,7 @@ mod artifacts;
 mod capture;
 pub mod model_access;
 mod navigation;
+mod persistence;
 mod repository;
 mod webview;
 
@@ -69,7 +70,7 @@ pub struct OpenBrowserTabRequest {
     pub external_navigation_confirmed: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowserTabRead {
     pub thread_id: ChatThreadId,
@@ -98,6 +99,8 @@ struct RuntimeBrowserTab {
     /// URL of the last document that finished loading, which is what the page still shows
     /// while a navigation is in flight.
     committed_url: Arc<Mutex<reqwest::Url>>,
+    /// Coalescing persister for page-driven URL, title, and loading changes.
+    persister: Arc<tokio::sync::watch::Sender<BrowserTabRead>>,
 }
 
 struct ActiveRecording {
@@ -154,6 +157,16 @@ impl ChatBrowserManager {
             if let Some(tab) = tabs.get_mut(tab_id) {
                 update(&mut tab.read);
             }
+        }
+    }
+
+    /// Applies a page-driven change and queues it for the tab's coalescing persister.
+    fn update_from_page(&self, tab_id: &str, update: impl FnOnce(&mut BrowserTabRead)) {
+        if let Ok(mut tabs) = self.tabs.lock()
+            && let Some(tab) = tabs.get_mut(tab_id)
+        {
+            update(&mut tab.read);
+            tab.persister.send_replace(tab.read.clone());
         }
     }
 
@@ -345,8 +358,8 @@ pub async fn chat_browser_status(
         reads.push(BrowserTabRead {
             thread_id: thread_id.clone(),
             tab_id,
-            current_url,
-            title,
+            current_url: persistence::bounded_stored_preview_url(&current_url),
+            title: persistence::bounded_preview_title(&title),
             visible: false,
             loading: false,
             viewport_width: u32::try_from(width.unwrap_or(800)).unwrap_or(800),

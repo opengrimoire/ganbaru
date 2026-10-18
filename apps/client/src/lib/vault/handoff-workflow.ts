@@ -17,10 +17,18 @@ function isConnectivityFailure(message: string): boolean {
     || message.includes("network");
 }
 
+/** Whether startup disabled linking because saved pairing state could not be loaded. */
+function isLinkingDisabled(message: string): boolean {
+  return message.includes("vault linking is disabled");
+}
+
 /** Converts native handoff failures into concise localized recovery guidance. */
 export function formatHandoffError(cause: unknown, t: Translate): string {
   const raw = errorText(cause);
   const lower = raw.toLowerCase();
+  if (isLinkingDisabled(lower)) {
+    return t("vaultHandoff.linkingDisabled");
+  }
   if (lower.includes("chat") && (lower.includes("active") || lower.includes("running"))) {
     return t("vaultHandoff.blockerChat");
   }
@@ -68,8 +76,8 @@ export function formatPairingCodeError(cause: unknown, t: Translate): string {
 
 /** Converts ownership connectivity failures into main-device guidance. */
 export function formatOwnershipHandoffError(cause: unknown, t: Translate): string {
-  const raw = errorText(cause);
-  if (isConnectivityFailure(raw.toLowerCase())) {
+  const lower = errorText(cause).toLowerCase();
+  if (!isLinkingDisabled(lower) && isConnectivityFailure(lower)) {
     return t("vaultHandoff.ownerUnreachable");
   }
   return formatHandoffError(cause, t);

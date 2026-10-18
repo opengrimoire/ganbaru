@@ -919,7 +919,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         ])
         .setup(|app| {
             vault::ownership::initialize(app.handle())?;
-            vault::handoff::initialize(app.handle())?;
+            vault::handoff::initialize(app.handle());
             crate::sync::setup(app.handle());
             if let Err(error) = vault::handoff::start_desktop(app.handle()) {
                 eprintln!("vault handoff coordinator is unavailable: {error}");

@@ -437,7 +437,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         ])
         .setup(|app| {
             vault::ownership::initialize(app.handle())?;
-            vault::handoff::initialize(app.handle())?;
+            vault::handoff::initialize(app.handle());
             #[cfg(target_os = "android")]
             vault::backup::recover_interrupted_restore_for_app(app.handle())?;
             crate::sync::setup(app.handle());

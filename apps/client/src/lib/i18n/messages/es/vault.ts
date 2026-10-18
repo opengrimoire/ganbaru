@@ -191,6 +191,8 @@ export const vaultHandoff = {
     "La computadora coordinadora tiene otra bóveda abierta. Abre allí la bóveda vinculada y reintenta.",
   ownershipChurnLimit:
     "La edición cambió de dispositivo demasiadas veces en la última hora. Espera un rato y vuelve a cambiar de dispositivo.",
+  linkingDisabled:
+    "La vinculación de dispositivos está desactivada en este dispositivo porque no se pudieron leer sus datos de vinculación guardados. Tu bóveda sigue funcionando aquí; reinicia la aplicación y, si continúa, vuelve a vincular el dispositivo.",
   unreachable:
     "Este dispositivo no pudo comunicarse con la computadora coordinadora. Mantén ambas aplicaciones abiertas en la misma red local y reintenta.",
   ownerUnreachable:

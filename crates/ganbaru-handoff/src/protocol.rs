@@ -493,9 +493,7 @@ impl ControlMessage {
                 validate_identifier("invitation secret", secret)?;
                 validate_identifier("vault id", vault_id)?;
                 validate_identifier("device id", device_id)?;
-                if device_label.trim().is_empty() || device_label.len() > MAX_DEVICE_LABEL_BYTES {
-                    return Err("device label is invalid".to_string());
-                }
+                validate_device_label("device label", device_label)?;
                 if device_certificate.is_empty() || device_certificate.len() > 8 * 1024 {
                     return Err("device certificate is invalid".to_string());
                 }
@@ -507,12 +505,8 @@ impl ControlMessage {
             } => {
                 validate_protocol(*protocol_version)?;
                 validate_identifier("coordinator device id", coordinator_device_id)?;
-                if coordinator_device_label.as_ref().is_some_and(|label| {
-                    label.trim().is_empty()
-                        || label.len() > MAX_DEVICE_LABEL_BYTES
-                        || label.chars().any(char::is_control)
-                }) {
-                    return Err("coordinator device label is invalid".to_string());
+                if let Some(label) = coordinator_device_label {
+                    validate_device_label("coordinator device label", label)?;
                 }
             }
             Self::RequestBundle {
@@ -1221,6 +1215,17 @@ pub fn sha256_file(path: &Path) -> Result<String, String> {
         .collect())
 }
 
+/// Validates a device label another device will display, with the shared display text rules.
+///
+/// # Errors
+///
+/// Returns a message naming `field` when the label is blank, too long, or holds a control,
+/// bidirectional override, or invisible character.
+pub fn validate_device_label(field: &str, label: &str) -> Result<(), String> {
+    ganbaru_contacts::validate_display_text(label, MAX_DEVICE_LABEL_BYTES)
+        .map_err(|error| format!("{field} is invalid: {error}"))
+}
+
 pub fn validate_identifier(label: &str, value: &str) -> Result<(), String> {
     if value.is_empty()
         || value.len() > MAX_IDENTIFIER_BYTES
@@ -1285,6 +1290,37 @@ mod tests {
             vault_id: "vault-abcdefghijklmnopqrstuv".to_string(),
             generation: 7,
             expires_at_ms: i64::MAX,
+        }
+    }
+
+    #[test]
+    fn enrollment_messages_reject_control_and_bidi_labels() {
+        let enroll = |label: &str| ControlMessage::Enroll {
+            protocol_version: PROTOCOL_VERSION,
+            invitation_id: "invite-abcdefghijklmnopqrstuv".to_string(),
+            secret: "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG".to_string(),
+            vault_id: "vault-abcdefghijklmnopqrstuv".to_string(),
+            device_id: "device-phone".to_string(),
+            device_label: label.to_string(),
+            device_kind: DeviceKind::Phone,
+            device_certificate: "certificate".to_string(),
+        };
+        let enrolled = |label: &str| ControlMessage::Enrolled {
+            protocol_version: PROTOCOL_VERSION,
+            coordinator_device_id: "device-desktop".to_string(),
+            coordinator_device_label: Some(label.to_string()),
+        };
+        for label in ["phone\u{0007}", "a\u{202E}b", "a\u{200F}b", ""] {
+            assert!(enroll(label).validate().is_err(), "{label:?}");
+            assert!(enrolled(label).validate().is_err(), "{label:?}");
+        }
+        for label in [
+            "Phone",
+            "\u{1F469}\u{200D}\u{1F4BB}",
+            "\u{0645}\u{200C}\u{0627}",
+        ] {
+            assert_eq!(enroll(label).validate(), Ok(()), "{label:?}");
+            assert_eq!(enrolled(label).validate(), Ok(()), "{label:?}");
         }
     }
 

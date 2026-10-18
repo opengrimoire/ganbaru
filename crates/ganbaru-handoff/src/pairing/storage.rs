@@ -5,7 +5,7 @@ use super::{
     PairingStateFile, PendingAcknowledgement, StoredIncomingTransfer, StoredOutgoingTransfer,
     certificate_fingerprint, decode_certificate, decode_identity, initialized_state, random_token,
 };
-use crate::protocol::{self, BundlePurpose, validate_identifier};
+use crate::protocol::{self, BundlePurpose, validate_device_label, validate_identifier};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -59,6 +59,54 @@ pub(super) fn validate_activation_record(record: &PendingAcknowledgement) -> Res
     Ok(())
 }
 
+/// Replaces stored device labels that fail the display text rules, so one bad label cannot block
+/// startup or drop a working link. A linked peer keeps its label with the offending characters
+/// removed, or its device ID when nothing displayable remains; an invalid coordinator label is
+/// forgotten. Labels are local display data, never signed, so rewriting them is safe.
+///
+/// Returns whether anything changed.
+pub(super) fn quarantine_invalid_labels(state: &mut PairingStateFile) -> bool {
+    let mut changed = false;
+    for peer in state.linked_peers.values_mut() {
+        if validate_device_label("linked device label", &peer.device_label).is_ok() {
+            continue;
+        }
+        let cleaned = displayable_label(&peer.device_label);
+        peer.device_label = if validate_device_label("linked device label", &cleaned).is_ok() {
+            cleaned
+        } else {
+            displayable_label(&peer.device_id)
+        };
+        changed = true;
+    }
+    if let Some(coordinator) = state.coordinator.as_mut()
+        && coordinator
+            .device_label
+            .as_deref()
+            .is_some_and(|label| validate_device_label("coordinator device label", label).is_err())
+    {
+        coordinator.device_label = None;
+        changed = true;
+    }
+    changed
+}
+
+/// Removes disallowed characters and keeps whole characters within the label byte bound.
+fn displayable_label(label: &str) -> String {
+    let mut cleaned = String::new();
+    for character in label
+        .trim()
+        .chars()
+        .filter(|character| !ganbaru_contacts::is_disallowed_display_character(*character))
+    {
+        if cleaned.len() + character.len_utf8() > protocol::MAX_DEVICE_LABEL_BYTES {
+            break;
+        }
+        cleaned.push(character);
+    }
+    cleaned
+}
+
 pub(super) fn validate_state(
     state: &PairingStateFile,
     expected_device_id: &str,
@@ -94,12 +142,7 @@ pub(super) fn validate_state(
         }
         validate_identifier("peer device id", &peer.device_id)?;
         validate_identifier("peer vault id", &peer.vault_id)?;
-        if peer.device_label.trim().is_empty()
-            || peer.device_label.len() > protocol::MAX_DEVICE_LABEL_BYTES
-            || peer.device_label.chars().any(char::is_control)
-        {
-            return Err("linked device label is invalid".to_string());
-        }
+        validate_device_label("linked device label", &peer.device_label)?;
         if peer_vault_id.is_some_and(|vault_id| vault_id != peer.vault_id) {
             return Err("linked devices belong to different vaults".to_string());
         }
@@ -138,6 +181,9 @@ pub(super) fn validate_state(
             .map_err(|_| "coordinator endpoint is invalid".to_string())?;
         if coordinator.certificate_fingerprint.len() != 64 {
             return Err("coordinator certificate fingerprint is invalid".to_string());
+        }
+        if let Some(label) = coordinator.device_label.as_deref() {
+            validate_device_label("coordinator device label", label)?;
         }
     }
     if let Some(pending) = state.pending_acknowledgement.as_ref() {

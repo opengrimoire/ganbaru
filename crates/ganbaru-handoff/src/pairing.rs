@@ -10,7 +10,8 @@ mod transfers;
 
 pub use storage::write_private_file_atomically;
 use storage::{
-    persist_initialized_state, persist_state, read_state, recover_private_state, validate_state,
+    persist_initialized_state, persist_state, quarantine_invalid_labels, read_state,
+    recover_private_state, validate_state,
 };
 
 #[cfg(desktop)]
@@ -18,7 +19,8 @@ use super::protocol::HandoffCompatibility;
 #[cfg(desktop)]
 use super::protocol::PROTOCOL_VERSION;
 use super::protocol::{
-    BundleMetadata, BundlePurpose, DeviceKind, PairingInvitation, validate_identifier,
+    BundleMetadata, BundlePurpose, DeviceKind, PairingInvitation, validate_device_label,
+    validate_identifier,
 };
 use base64::Engine;
 use rcgen::{CertificateParams, KeyPair};
@@ -189,6 +191,8 @@ struct PairingManagerInner {
     state_path: Option<PathBuf>,
     staging_root: Option<PathBuf>,
     state: Option<PairingStateFile>,
+    /// Why startup disabled linking; pairing operations report it instead of running.
+    disabled_reason: Option<String>,
     #[cfg(desktop)]
     invitations: BTreeMap<String, PendingInvitation>,
     #[cfg(desktop)]
@@ -213,7 +217,12 @@ impl PairingManager {
             .map_err(|error| format!("create handoff staging directory: {error}"))?;
 
         let state = if state_path.exists() {
-            read_state(&state_path)?
+            let mut state = read_state(&state_path)?;
+            if quarantine_invalid_labels(&mut state) {
+                eprintln!("pairing state held invalid device labels; they were replaced");
+                persist_state(&state_path, &state)?;
+            }
+            state
         } else {
             let state = PairingStateFile {
                 schema_version: PAIRING_STATE_SCHEMA_VERSION,
@@ -241,6 +250,24 @@ impl PairingManager {
         inner.state_path = Some(state_path);
         inner.staging_root = Some(staging_root);
         inner.state = Some(state);
+        inner.disabled_reason = None;
+        #[cfg(desktop)]
+        {
+            inner.invitations.clear();
+            inner.outgoing_bundles.clear();
+        }
+        Ok(())
+    }
+
+    /// Turns linking off for this run after startup could not load or reconcile pairing state.
+    /// The state file is left untouched for diagnosis, and every pairing operation then fails
+    /// with [`LINKING_DISABLED_ERROR`], so the rest of the app still starts.
+    pub fn disable(&self, reason: String) -> Result<(), String> {
+        let mut inner = self.lock()?;
+        inner.state = None;
+        inner.state_path = None;
+        inner.staging_root = None;
+        inner.disabled_reason = Some(reason);
         #[cfg(desktop)]
         {
             inner.invitations.clear();
@@ -515,6 +542,7 @@ impl PairingManager {
         now_ms: i64,
     ) -> Result<LinkedPeer, String> {
         validate_identifier("device id", enrollment.device_id)?;
+        validate_device_label("device label", enrollment.device_label)?;
         let certificate = decode_certificate(enrollment.certificate_b64)?;
         let mut inner = self.lock()?;
         let pending = inner
@@ -605,6 +633,9 @@ impl PairingManager {
         if fingerprint != invitation.coordinator_fingerprint {
             return Err("coordinator certificate does not match the QR invitation".to_string());
         }
+        if let Some(label) = coordinator_device_label.as_deref() {
+            validate_device_label("coordinator device label", label)?;
+        }
         let mut inner = self.lock()?;
         let state = initialized_state_mut(&mut inner)?;
         ensure_enrollment_target(state, invitation)?;
@@ -667,14 +698,28 @@ impl PairingManager {
     }
 }
 
+/// Prefix of the error every pairing operation returns after [`PairingManager::disable`].
+pub const LINKING_DISABLED_ERROR: &str =
+    "vault linking is disabled because its saved state could not be loaded";
+
+fn uninitialized_error(inner: &PairingManagerInner) -> String {
+    match inner.disabled_reason.as_deref() {
+        Some(reason) => format!("{LINKING_DISABLED_ERROR}: {reason}"),
+        None => "pairing state is not initialized".to_string(),
+    }
+}
+
 fn initialized_state(inner: &PairingManagerInner) -> Result<&PairingStateFile, String> {
     inner
         .state
         .as_ref()
-        .ok_or_else(|| "pairing state is not initialized".to_string())
+        .ok_or_else(|| uninitialized_error(inner))
 }
 
 fn initialized_state_mut(inner: &mut PairingManagerInner) -> Result<&mut PairingStateFile, String> {
+    if inner.state.is_none() {
+        return Err(uninitialized_error(inner));
+    }
     inner
         .state
         .as_mut()

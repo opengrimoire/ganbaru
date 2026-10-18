@@ -178,7 +178,23 @@ impl CoordinatorLifecycle {
     }
 }
 
-pub(crate) fn initialize<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
+/// Loads pairing state and reconciles it with durable ownership. A failure disables linking for
+/// this run instead of aborting startup: the link probe stays unset, so a replica keeps its
+/// durable read-only authority and replicated writes stay off, and pairing commands report why.
+pub(crate) fn initialize<R: Runtime>(app: &tauri::AppHandle<R>) {
+    let Err(error) = initialize_linking(app) else {
+        return;
+    };
+    eprintln!("vault linking is disabled: {error}");
+    let _ = app
+        .state::<super::ownership::VaultOwnershipManager>()
+        .set_link_probe(None);
+    if let Err(disable_error) = app.state::<PairingManager>().disable(error) {
+        eprintln!("disable vault linking: {disable_error}");
+    }
+}
+
+fn initialize_linking<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
     let config_dir = app
         .path()
         .app_config_dir()
@@ -447,10 +463,9 @@ fn suggested_device_label() -> String {
 
 fn normalized_device_label(label: &str) -> Option<String> {
     let label = label.trim();
-    (!label.is_empty()
-        && label.len() <= protocol::MAX_DEVICE_LABEL_BYTES
-        && !label.chars().any(char::is_control))
-    .then(|| label.to_string())
+    protocol::validate_device_label("device label", label)
+        .is_ok()
+        .then(|| label.to_string())
 }
 
 #[tauri::command]

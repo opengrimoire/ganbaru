@@ -1,8 +1,11 @@
 use crate::chat::credentials::{
     CredentialStore, CredentialStoreAvailability, CredentialStoreError, CredentialStoreErrorCode,
     CredentialStoreOperation, SecretValue, materialize_provider_environment,
+    provider_credential_reference,
 };
-use ganbaru_chat_contracts::models::{CredentialReferenceId, ProviderInstanceConfig};
+use ganbaru_chat_contracts::models::{
+    ChatErrorCode, CredentialReferenceId, ProviderInstanceConfig, ProviderInstanceId,
+};
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
@@ -137,7 +140,8 @@ fn serialized_provider_configuration_contains_only_opaque_references() {
 #[test]
 fn materialized_environment_reads_secrets_without_persisting_values() {
     let store = MemoryCredentialStore::default();
-    let reference = CredentialReferenceId::new("provider:codex:environment:API_TOKEN").unwrap();
+    let reference =
+        CredentialReferenceId::new("provider:provider-instance-1:environment:API_TOKEN").unwrap();
     store
         .replace(&reference, &SecretValue::new("secret-value").unwrap())
         .unwrap();
@@ -154,4 +158,91 @@ fn materialized_environment_reads_secrets_without_persisting_values() {
     );
     assert!(resolved.credential_references.is_empty());
     assert!(!configuration.environment.contains_key("API_TOKEN"));
+}
+
+#[derive(Clone, Debug, Default)]
+struct RecordingCredentialStore {
+    reads: Arc<Mutex<Vec<String>>>,
+}
+
+impl CredentialStore for RecordingCredentialStore {
+    fn availability(&self) -> CredentialStoreAvailability {
+        CredentialStoreAvailability::Available
+    }
+
+    fn read(
+        &self,
+        reference: &CredentialReferenceId,
+    ) -> Result<Option<SecretValue>, CredentialStoreError> {
+        self.reads
+            .lock()
+            .expect("recording credential mutex")
+            .push(reference.to_string());
+        SecretValue::new(SENTINEL_SECRET).map(Some)
+    }
+
+    fn replace(
+        &self,
+        _reference: &CredentialReferenceId,
+        _value: &SecretValue,
+    ) -> Result<(), CredentialStoreError> {
+        Ok(())
+    }
+
+    fn remove(&self, _reference: &CredentialReferenceId) -> Result<bool, CredentialStoreError> {
+        Ok(false)
+    }
+}
+
+#[test]
+fn foreign_and_source_control_references_are_rejected_without_reading_the_store() {
+    let foreign_instance = provider_credential_reference(
+        &ProviderInstanceId::new("other-provider").unwrap(),
+        "OPENAI_API_KEY",
+    )
+    .unwrap();
+    let renamed_variable = provider_credential_reference(
+        &ProviderInstanceId::new("provider-instance-1").unwrap(),
+        "OTHER_KEY",
+    )
+    .unwrap();
+    let source_control =
+        CredentialReferenceId::new("source-control:bitbucket:0123456789abcdef0123456789abcdef")
+            .unwrap();
+    for reference in [foreign_instance, renamed_variable, source_control] {
+        let store = RecordingCredentialStore::default();
+        let mut configuration = provider_configuration();
+        configuration
+            .credential_references
+            .insert("OPENAI_API_KEY".to_string(), reference);
+
+        let error = materialize_provider_environment(&configuration, &store).unwrap_err();
+
+        assert_eq!(error.code, ChatErrorCode::ConfigurationInvalid);
+        assert!(store.reads.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn provider_credential_references_are_derived_from_instance_and_variable() {
+    let reference = provider_credential_reference(
+        &ProviderInstanceId::new("provider-instance-1").unwrap(),
+        "API_TOKEN",
+    )
+    .unwrap();
+    assert_eq!(
+        reference.as_str(),
+        "provider:provider-instance-1:environment:API_TOKEN"
+    );
+    assert!(
+        provider_credential_reference(
+            &ProviderInstanceId::new("provider-instance-1").unwrap(),
+            "BAD:NAME"
+        )
+        .is_err()
+    );
+    assert!(
+        provider_credential_reference(&ProviderInstanceId::new("provider-instance-1").unwrap(), "")
+            .is_err()
+    );
 }

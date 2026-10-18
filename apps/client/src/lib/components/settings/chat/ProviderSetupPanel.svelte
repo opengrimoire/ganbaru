@@ -187,7 +187,8 @@
   function updateLabel(value: string): void {
     const previousGenerated = providerInstanceIdFromLabel(draft.label);
     draft.label = value;
-    if (!draft.instanceId || draft.instanceId === previousGenerated) {
+    const secretBound = draft.environment.some((row) => row.credentialReference);
+    if (!secretBound && (!draft.instanceId || draft.instanceId === previousGenerated)) {
       draft.instanceId = uniqueInstanceId(value);
     }
   }
@@ -255,10 +256,8 @@
   async function storeSecret(row: ProviderEnvironmentDraft): Promise<void> {
     const secret = pendingSecrets[row.key]?.trim();
     if (!secret || !row.name) return;
-    const reference = `provider:${draft.instanceId}:environment:${row.name}`;
     try {
-      await chatApi.replaceChatCredential(reference, secret);
-      row.credentialReference = reference;
+      row.credentialReference = await chatApi.replaceChatCredential(draft.instanceId, row.name, secret);
       pendingSecrets[row.key] = "";
       operationError = null;
     } catch (error: unknown) {
@@ -268,7 +267,7 @@
 
   async function removeSecret(row: ProviderEnvironmentDraft): Promise<void> {
     try {
-      if (row.credentialReference) await chatApi.removeChatCredential(row.credentialReference);
+      if (row.credentialReference) await chatApi.removeChatCredential(draft.instanceId, row.name);
       row.credentialReference = "";
       operationError = null;
     } catch (error: unknown) {
@@ -728,7 +727,7 @@
                   </div>
                   {#each draft.environment.filter((row) => row.name !== "OPENCODE_SERVER_PASSWORD") as row (row.key)}
                     <div class="environment-row">
-                      <input aria-label={t("settings.chat.setup.variableName")} bind:value={row.name} />
+                      <input aria-label={t("settings.chat.setup.variableName")} bind:value={row.name} readonly={row.credentialReference !== ""} />
                       <div class="environment-kind" aria-label={t("settings.chat.setup.valueType") }>
                         {#each ["text", "secret", "inherit"] as valueType}
                           <button

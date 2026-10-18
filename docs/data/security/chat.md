@@ -16,6 +16,8 @@ Provider-native approval, trust, sandbox, or workspace state is defense in depth
 
 Portable provider configuration stores nonsecret values and opaque credential references. Executable paths, provider homes, discovery caches, and process state are device-local.
 
+Rust derives each provider credential reference from the instance ID and environment variable name; the webview never names one. Before reading the store, materialization rejects any reference that is not the derived one for that instance and variable, so an edited or imported configuration cannot read another instance's secret. Source-control tokens use a separate credential-store service from provider secrets.
+
 Secrets are resolved from the operating-system credential store immediately before the operation that needs them. Temporary provider environments are not persisted in diagnostics or DTOs. Replacing or removing a credential invalidates affected probe and model caches, and cleanup errors do not expose secret values or credential-store details.
 
 The provider-file settings portal is a narrow exception for user configuration and instruction files. Rust resolves a fixed allowlist from provider family and instance. Reads and writes reject symlinks, invalid UTF-8, null bytes, traversal, oversized data, stale revisions, and unsupported files; saves use restrictive permissions and sibling temporary replacement. These files may contain secrets and are never copied into the vault, SQLite, diagnostics, or logs.

@@ -2,7 +2,8 @@
 
 use super::credentials::{
     CredentialStore, CredentialStoreAvailability, PlatformCredentialStore, SecretValue,
-    materialize_provider_environment,
+    is_provider_credential_reference, materialize_provider_environment,
+    provider_credential_reference,
 };
 #[cfg(test)]
 use super::device_state::ChatProviderDeviceState;
@@ -261,7 +262,10 @@ pub fn chat_remove_provider(
     .map_err(device_state_error)?;
     let store = PlatformCredentialStore::default();
     let mut credential_cleanup_failed = false;
-    for reference in provider.credential_references.values() {
+    for (name, reference) in &provider.credential_references {
+        if !is_provider_credential_reference(&provider.instance_id, name, reference) {
+            continue;
+        }
         if store.remove(reference).is_err() {
             credential_cleanup_failed = true;
         }
@@ -475,24 +479,30 @@ pub fn chat_remember_composer_selection(
     })
 }
 
+/// Store a provider secret under the reference Rust derives for this instance and variable.
 #[tauri::command]
 pub fn chat_replace_credential(
     app: tauri::AppHandle,
-    reference_id: CredentialReferenceId,
+    instance_id: ProviderInstanceId,
+    environment_name: String,
     secret: String,
-) -> ChatResult<()> {
+) -> ChatResult<CredentialReferenceId> {
+    let reference_id = provider_credential_reference(&instance_id, &environment_name)?;
     let secret = SecretValue::new(secret).map_err(credential_error)?;
     PlatformCredentialStore::default()
         .replace(&reference_id, &secret)
         .map_err(credential_error)?;
-    invalidate_provider_state_for_credential(&app, &reference_id)
+    invalidate_provider_state_for_credential(&app, &reference_id)?;
+    Ok(reference_id)
 }
 
 #[tauri::command]
 pub fn chat_remove_credential(
     app: tauri::AppHandle,
-    reference_id: CredentialReferenceId,
+    instance_id: ProviderInstanceId,
+    environment_name: String,
 ) -> ChatResult<bool> {
+    let reference_id = provider_credential_reference(&instance_id, &environment_name)?;
     let removed = PlatformCredentialStore::default()
         .remove(&reference_id)
         .map_err(credential_error)?;

@@ -1,6 +1,6 @@
 //! Tauri command adapters for hosted source-control services.
 
-use super::credentials::PlatformCredentialStore;
+use super::credentials::PlatformSourceControlCredentialStore;
 use super::workspace::{AuthorizedWorkingFolder, WorkingFolderAuthorizationOperation};
 use crate::db;
 use ganbaru_chat_contracts::models::{
@@ -25,7 +25,11 @@ pub async fn chat_discover_source_control(
         WorkingFolderAuthorizationOperation::Git,
     )
     .await?;
-    discover_source_control(authorized.git_folder(), &PlatformCredentialStore::default()).await
+    discover_source_control(
+        authorized.git_folder(),
+        &PlatformSourceControlCredentialStore::default(),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -48,7 +52,7 @@ pub async fn chat_list_hosted_change_requests(
     .await?;
     list_hosted_change_requests(
         authorized.git_folder(),
-        &PlatformCredentialStore::default(),
+        &PlatformSourceControlCredentialStore::default(),
         provider_kind,
         repository_slug,
         limit,
@@ -72,7 +76,7 @@ pub async fn chat_create_hosted_change_request(
     .await?;
     create_hosted_change_request(
         authorized.git_folder(),
-        &PlatformCredentialStore::default(),
+        &PlatformSourceControlCredentialStore::default(),
         request,
     )
     .await
@@ -112,12 +116,15 @@ pub async fn chat_checkout_hosted_change_request(
 pub async fn chat_configure_bitbucket_credential(
     request: ConfigureBitbucketCredential,
 ) -> ChatResult<()> {
-    configure_bitbucket_credential(&PlatformCredentialStore::default(), request).await
+    configure_bitbucket_credential(&PlatformSourceControlCredentialStore::default(), request).await
 }
 
 #[tauri::command]
 pub fn chat_remove_bitbucket_credential(repository_slug: String) -> ChatResult<bool> {
-    remove_bitbucket_credential(&PlatformCredentialStore::default(), repository_slug)
+    remove_bitbucket_credential(
+        &PlatformSourceControlCredentialStore::default(),
+        repository_slug,
+    )
 }
 
 async fn source_control_folder(

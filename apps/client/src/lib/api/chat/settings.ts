@@ -158,12 +158,22 @@ export async function rememberChatComposerSelection(selection: RememberedCompose
   return parseChatVaultConfig(await invoke<unknown>("chat_remember_composer_selection", { selection }));
 }
 
-export async function replaceChatCredential(referenceId: CredentialReferenceId, secret: string): Promise<void> {
-  await invoke("chat_replace_credential", { referenceId, secret });
+/** Store a provider secret; Rust derives and returns the reference bound to this instance and variable. */
+export async function replaceChatCredential(
+  instanceId: ProviderInstanceId,
+  environmentName: string,
+  secret: string,
+): Promise<CredentialReferenceId> {
+  const reference = await invoke<unknown>("chat_replace_credential", { instanceId, environmentName, secret });
+  if (typeof reference !== "string" || reference.length === 0) {
+    throw new Error("chat_replace_credential returned an invalid credential reference");
+  }
+  return reference;
 }
 
-export async function removeChatCredential(referenceId: CredentialReferenceId): Promise<boolean> {
-  return invoke<boolean>("chat_remove_credential", { referenceId });
+/** Remove the secret stored for this provider instance and variable. */
+export async function removeChatCredential(instanceId: ProviderInstanceId, environmentName: string): Promise<boolean> {
+  return invoke<boolean>("chat_remove_credential", { instanceId, environmentName });
 }
 
 export async function pickChatProviderExecutable(title: string): Promise<string | null> {

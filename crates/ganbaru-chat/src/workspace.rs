@@ -2,7 +2,7 @@
 
 pub mod files;
 pub mod mutation;
-pub mod protected_paths;
+pub use ganbaru_chat_contracts::protected_paths;
 #[cfg(test)]
 mod trust_tests;
 

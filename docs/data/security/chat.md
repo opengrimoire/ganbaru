@@ -94,6 +94,8 @@ Trust is a device-local record per folder holding two digests. The Git digest co
 - Every run recomputes the Git digest; a mismatch with the trusted digest runs untrusted, including in a worktree whose configuration differs.
 - Settings shows each folder's trust and can revoke or grant it. Rebinding to a different path or repository and unbinding clear the record.
 
+Edits to repository metadata (`.git` at any depth) are never approved automatically outside full access, because they can change what later Git runs execute. Ganbaru keeps Cursor and OpenCode edits there reviewed; Claude prompts for its protected paths, and the Codex workspace sandbox keeps `.git` read-only.
+
 ## Checkpoints and restore
 
 Checkpoint capture and restore verify folder and Git common-storage identity immediately before mutation, and validate dirty state, changed and untracked files, repository boundaries, and the expected checkpoint revision.

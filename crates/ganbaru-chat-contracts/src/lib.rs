@@ -3,6 +3,7 @@
 pub mod config;
 pub mod events;
 pub mod models;
+pub mod protected_paths;
 
 #[cfg(test)]
 mod tests {

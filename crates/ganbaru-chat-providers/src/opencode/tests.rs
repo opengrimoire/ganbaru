@@ -1012,3 +1012,58 @@ pub(super) fn complete_request_length(request: &[u8]) -> Option<usize> {
         .unwrap_or(0);
     Some(header_end + content_length)
 }
+
+/// Mirrors OpenCode's rule evaluation: the last rule whose permission and
+/// pattern match decides, and `*` spans path separators.
+fn evaluated_action(
+    rules: &[OpenCodePermissionRule],
+    permission: &str,
+    target: &str,
+) -> OpenCodePermissionAction {
+    fn wildcard(input: &str, pattern: &str) -> bool {
+        match pattern.split_once('*') {
+            None => input == pattern,
+            Some((prefix, rest)) => {
+                input.starts_with(prefix)
+                    && (prefix.len()..=input.len())
+                        .filter(|index| input.is_char_boundary(*index))
+                        .any(|index| wildcard(&input[index..], rest))
+            }
+        }
+    }
+    rules
+        .iter()
+        .rev()
+        .find(|rule| wildcard(permission, &rule.permission) && wildcard(target, &rule.pattern))
+        .map_or(OpenCodePermissionAction::Ask, |rule| rule.action)
+}
+
+#[test]
+fn ask_rules_keep_repository_metadata_edits_reviewed() {
+    let rules = permission_rules(SafetyMode::AskForApproval);
+    for target in [
+        ".git/config",
+        ".git/hooks/pre-commit",
+        "vendor/lib/.git/config",
+        "/home/user/project/.git/config",
+        "sub/.git",
+    ] {
+        assert_eq!(
+            evaluated_action(&rules, "edit", target),
+            OpenCodePermissionAction::Ask,
+            "{target} must ask"
+        );
+    }
+    for target in [
+        "src/lib.rs",
+        ".github/workflows/ci.yml",
+        ".gitignore",
+        "/home/user/project/.gitattributes",
+    ] {
+        assert_eq!(
+            evaluated_action(&rules, "edit", target),
+            OpenCodePermissionAction::Allow,
+            "{target} must stay automatic"
+        );
+    }
+}

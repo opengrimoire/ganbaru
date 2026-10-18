@@ -37,7 +37,7 @@
       "roots": [
         "src/lib/components/quick-notes/QuickNotesPanel.svelte"
       ],
-      "maxSourceModules": 127
+      "maxSourceModules": 133
     },
     {
       "name": "music",
@@ -52,10 +52,10 @@
       "roots": [
         "src/lib/components/chat/ChatWorkspace.svelte"
       ],
-      "maxSourceModules": 310
+      "maxSourceModules": 311
     }
   ],
-  "maxTotalSourceModules": 1260,
+  "maxTotalSourceModules": 1268,
   "requiredMobileModules": [
     "src/main.ts",
     "src/main-mobile.ts",

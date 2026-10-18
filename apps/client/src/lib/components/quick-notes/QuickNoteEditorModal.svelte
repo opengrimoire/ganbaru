@@ -88,7 +88,6 @@
   import QuickNoteColorPicker from "./QuickNoteColorPicker.svelte";
   import QuickNoteConflictBanner from "./QuickNoteConflictBanner.svelte";
   import QuickNoteImageMosaic from "./QuickNoteImageMosaic.svelte";
-  import QuickNoteImageViewer from "./QuickNoteImageViewer.svelte";
   import QuickNoteRichText from "./QuickNoteRichText.svelte";
   import QuickNoteTagPicker from "./QuickNoteTagPicker.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
@@ -1028,13 +1027,16 @@
   </div>
 </div>
 {#if viewerIndex !== null}
-  <QuickNoteImageViewer
-    {images}
-    startIndex={viewerIndex}
-    {readOnly}
-    onRemove={readOnly ? undefined : removeImage}
-    onClose={() => { viewerIndex = null; }}
-  />
+  {#await import("./QuickNoteImageViewer.svelte") then module}
+    {@const QuickNoteImageViewer = module.default}
+    <QuickNoteImageViewer
+      {images}
+      startIndex={viewerIndex}
+      {readOnly}
+      onRemove={readOnly ? undefined : removeImage}
+      onClose={() => { viewerIndex = null; }}
+    />
+  {/await}
 {/if}
 
 <style>

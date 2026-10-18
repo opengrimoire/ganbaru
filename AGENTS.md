@@ -151,7 +151,7 @@ Ganbaru/
 
 Music files stay wherever the user keeps them; the vault stores library metadata, source identities, playlists, assignments, and playback state, not media bytes. Desktop backups go to a user-selected path outside the vault. Android portable backups are exported to shared Downloads and restored through the system document picker.
 
-Tauri's platform app config directory stores device-local bootstrap and runtime state only (`app-state.json`, benchmark state and SQLite, anti-distraction runtime snapshots). Production and dev builds keep separate app config directories and therefore separate active-folder pointers.
+Tauri's platform app config directory stores device-local bootstrap and runtime state only (`app-state.json`, benchmark state and SQLite, anti-distraction runtime snapshots, Chat preview web data per working folder). Production and dev builds keep separate app config directories and therefore separate active-folder pointers.
 
 ## Key conventions
 

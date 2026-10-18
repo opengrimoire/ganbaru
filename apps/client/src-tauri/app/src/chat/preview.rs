@@ -22,6 +22,7 @@ use tauri::{Manager, WebviewUrl};
 pub mod approvals;
 mod artifacts;
 mod capture;
+pub mod data_store;
 pub mod model_access;
 mod navigation;
 mod persistence;
@@ -102,6 +103,8 @@ struct RuntimeBrowserTab {
     committed_url: Arc<Mutex<reqwest::Url>>,
     /// Coalescing persister for page-driven URL, title, and loading changes.
     persister: Arc<tokio::sync::watch::Sender<BrowserTabRead>>,
+    /// Working folder whose preview data store the tab's webview uses.
+    working_folder_id: ProjectWorkingFolderId,
 }
 
 struct ActiveRecording {
@@ -126,6 +129,7 @@ pub struct ChatBrowserManager {
     tabs: Arc<Mutex<HashMap<String, RuntimeBrowserTab>>>,
     recording: Arc<Mutex<Option<ActiveRecording>>>,
     pending_approvals: Arc<Mutex<HashMap<ChatThreadId, approvals::PendingPreviewApproval>>>,
+    data_sweeps: data_store::PreviewDataSweeps,
 }
 
 impl ChatBrowserManager {
@@ -223,6 +227,31 @@ impl ChatBrowserManager {
         for label in labels {
             if let Some(webview) = app.get_webview(&label) {
                 let _ = webview.close();
+            }
+        }
+    }
+
+    /// Clears the browsing data of open tabs whose working folder matches, keeping the tabs open.
+    fn clear_open_tab_data<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        matches: impl Fn(&ProjectWorkingFolderId) -> bool,
+    ) {
+        let labels = self
+            .tabs
+            .lock()
+            .map(|tabs| {
+                tabs.values()
+                    .filter(|tab| matches(&tab.working_folder_id))
+                    .map(|tab| tab.webview_label.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for label in labels {
+            if let Some(webview) = app.get_webview(&label)
+                && let Err(error) = webview.clear_all_browsing_data()
+            {
+                eprintln!("Could not clear Chat preview browsing data: {error}");
             }
         }
     }
@@ -408,17 +437,7 @@ pub async fn chat_browser_discover_servers(
     thread_id: ChatThreadId,
 ) -> ChatResult<Vec<DiscoveredPreviewServer>> {
     let pool = chat_pool(&app, db_url).await?;
-    let working_folder_id =
-        sqlx::query_scalar::<_, String>("SELECT working_folder_id FROM chat_threads WHERE id = ?")
-            .bind(thread_id.as_str())
-            .fetch_optional(&pool)
-            .await
-            .map_err(|_| persistence_error())?
-            .ok_or_else(|| {
-                ChatError::new(ChatErrorCode::NotFound, "Chat thread was not found", true)
-            })?;
-    let working_folder_id =
-        ProjectWorkingFolderId::new(working_folder_id).map_err(|_| persistence_error())?;
+    let working_folder_id = repository::thread_working_folder(&pool, &thread_id).await?;
     let registry = app.state::<super::terminal::ChatTerminalRegistry>();
     let terminals = registry.list(&thread_id, &working_folder_id)?;
     let mut candidates = HashMap::<String, String>::new();

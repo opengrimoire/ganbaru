@@ -435,6 +435,10 @@ export const chatSettings = {
     siteAccessEmpty: "No sites are allowed.",
     siteAccessThread: (thread: string) => `In ${thread}`,
     siteAccessRevoke: (origin: string) => `Revoke access to ${origin}`,
+    previewDataHeading: "Browser preview data",
+    previewDataDescription: "Each working folder keeps its own preview logins, site storage, and cache on this device. They are deleted when the folder is unbound.",
+    previewDataClear: "Clear preview data",
+    previewDataCleared: "Preview data cleared.",
   },
   behavior: {
     heading: "Behavior",

@@ -1005,7 +1005,7 @@ pub(crate) fn generate_opaque_handle(prefix: &str) -> ChatResult<String> {
     Ok(format!("{prefix}:{}", secure_random_hex(32)?))
 }
 
-fn secure_random_hex(byte_count: usize) -> ChatResult<String> {
+pub(crate) fn secure_random_hex(byte_count: usize) -> ChatResult<String> {
     let mut bytes = vec![0_u8; byte_count];
     rustls::crypto::ring::default_provider()
         .secure_random

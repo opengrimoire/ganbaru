@@ -33,6 +33,7 @@ commands.allow = [
   "chat_browse_scratch_generation",
   "chat_browser_allow_model_origin",
   "chat_browser_back",
+  "chat_browser_clear_data",
   "chat_browser_close",
   "chat_browser_discover_servers",
   "chat_browser_forward",

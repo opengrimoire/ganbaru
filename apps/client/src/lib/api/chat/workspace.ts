@@ -295,6 +295,11 @@ export async function resolveBrowserApproval(threadId: ChatThreadId, allow: bool
   return value === null ? null : parseBrowserTabRead(value);
 }
 
+/** Clears preview cookies, storage, and caches for every working folder in the active vault. */
+export async function clearBrowserPreviewData(): Promise<void> {
+  await invoke("chat_browser_clear_data");
+}
+
 /** Stops the model from using a site in a thread. */
 export async function revokePreviewModelOrigin(threadId: string, origin: string): Promise<void> {
   await invoke("chat_browser_revoke_model_origin", { threadId, origin });

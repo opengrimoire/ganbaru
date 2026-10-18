@@ -14,6 +14,8 @@ pub(super) async fn create_child_browser_webview(
 ) -> ChatResult<BrowserTabRead> {
     use tauri::webview::{NewWindowResponse, PageLoadEvent, WebviewBuilder};
     let label = preview_label(&request.tab_id);
+    let (working_folder_id, data_directory) =
+        super::data_store::preview_data_directory(app, pool, &request.thread_id).await?;
     let allowed_url = Arc::new(Mutex::new(url.clone()));
     let navigation_url = allowed_url.clone();
     let committed_url = Arc::new(Mutex::new(url.clone()));
@@ -27,6 +29,7 @@ pub(super) async fn create_child_browser_webview(
     let navigation_thread = request.thread_id.clone();
     let navigation_tab = request.tab_id.clone();
     let builder = WebviewBuilder::new(label.clone(), WebviewUrl::External(url.clone()))
+        .data_directory(data_directory)
         .on_navigation(move |candidate| {
             let Ok(allowed) = navigation_url.lock().map(|allowed| allowed.clone()) else {
                 return false;
@@ -103,6 +106,7 @@ pub(super) async fn create_child_browser_webview(
                 allowed_url,
                 committed_url,
                 persister: spawn_tab_persister(pool.clone(), read.clone()),
+                working_folder_id,
             },
         );
     persist_tab(pool, &read).await?;

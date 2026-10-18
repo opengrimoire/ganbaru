@@ -438,6 +438,10 @@ export const chatSettings = {
     siteAccessEmpty: "No hay sitios permitidos.",
     siteAccessThread: (thread: string) => `En ${thread}`,
     siteAccessRevoke: (origin: string) => `Revocar el acceso a ${origin}`,
+    previewDataHeading: "Datos de la vista previa del navegador",
+    previewDataDescription: "Cada carpeta de trabajo guarda en este dispositivo sus propios inicios de sesión, almacenamiento de sitios y caché de la vista previa. Se eliminan cuando se desvincula la carpeta.",
+    previewDataClear: "Borrar datos de la vista previa",
+    previewDataCleared: "Datos de la vista previa borrados.",
   },
   behavior: {
     heading: "Comportamiento",

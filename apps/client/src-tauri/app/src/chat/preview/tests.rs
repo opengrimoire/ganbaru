@@ -1,4 +1,5 @@
 use super::approvals::{ModelNavigation, model_navigation};
+use super::data_store::{is_generation_token, orphaned_entries, vault_preview_root};
 use super::navigation::{loopback_approval_needed, loopback_origin_key};
 use super::{
     BrowserTabBounds, loopback_urls, navigation_allowed, validate_bounds, validate_navigation,
@@ -210,5 +211,38 @@ fn preview_server_candidates_accept_only_loopback_urls() {
             "http://127.0.0.1:3000".to_string(),
             "http://localhost:5173".to_string()
         ]
+    );
+}
+
+#[test]
+fn preview_data_roots_are_per_vault_under_the_config_directory_and_filesystem_safe() {
+    let config = std::path::Path::new("/config");
+    let first = vault_preview_root(config, "vault-a");
+    let second = vault_preview_root(config, "../vault-b");
+    assert!(first.starts_with("/config/chat-previews"));
+    assert!(second.starts_with("/config/chat-previews"));
+    assert_ne!(first, second);
+    assert_eq!(first, vault_preview_root(config, "vault-a"));
+    let name = second.file_name().and_then(|name| name.to_str()).unwrap();
+    assert_eq!(name.len(), 32);
+    assert!(name.bytes().all(|byte| byte.is_ascii_hexdigit()));
+}
+
+#[test]
+fn only_random_hex_tokens_name_preview_data_directories() {
+    assert!(is_generation_token("0123456789abcdef0123456789abcdef"));
+    assert!(!is_generation_token(""));
+    assert!(!is_generation_token("0123456789ABCDEF0123456789ABCDEF"));
+    assert!(!is_generation_token("../../../../../../../../../../.."));
+    assert!(!is_generation_token("0123456789abcdef0123456789abcde"));
+}
+
+#[test]
+fn sweeping_removes_only_directories_no_working_folder_references() {
+    let referenced = granted(&["aaaa", "bbbb"]);
+    let entries = ["aaaa", "cccc", "bbbb", "dddd"].map(String::from);
+    assert_eq!(
+        orphaned_entries(entries, &referenced),
+        vec!["cccc".to_string(), "dddd".to_string()]
     );
 }

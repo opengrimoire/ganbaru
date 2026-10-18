@@ -33,7 +33,6 @@ pub use config::*;
 pub use documents::*;
 
 pub(crate) mod backup;
-#[cfg(desktop)]
 pub(crate) mod database_rollback;
 pub(crate) mod handoff;
 pub(crate) mod ownership;
@@ -294,7 +293,7 @@ fn new_vault_id() -> String {
     format!("vault-{:x}-{:x}", std::process::id(), nanos)
 }
 
-fn now_utc() -> DateTime<Utc> {
+pub(crate) fn now_utc() -> DateTime<Utc> {
     std::time::SystemTime::now().into()
 }
 

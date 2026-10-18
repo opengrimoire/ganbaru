@@ -364,11 +364,23 @@ export async function revealActiveVault(): Promise<void> {
   await invoke("vault_reveal_active");
 }
 
-/** A database copy that a data reset kept and that can be restored. */
+/** Why a rollback was kept: a data reset or restore, or a handoff that replaced the vault. */
+export type DatabaseRollbackOrigin = "reset" | "replacement";
+
+/** A device-local copy of earlier vault data that can be restored. */
 export interface DatabaseRollback {
   id: string;
   createdAt: string;
   sizeBytes: number;
+  origin: DatabaseRollbackOrigin;
+  /** The handoff that replaced this copy held drastically less data. */
+  flagged: boolean;
+  /** The user dismissed the flagged notice; the copy stays restorable. */
+  dismissed: boolean;
+}
+
+function readRollbackOrigin(value: unknown): DatabaseRollbackOrigin | null {
+  return value === "reset" || value === "replacement" ? value : null;
 }
 
 /**
@@ -384,14 +396,35 @@ export function parseDatabaseRollbacks(value: unknown): DatabaseRollback[] {
     const id = readString(entry.id);
     const createdAt = readString(entry.createdAt);
     const sizeBytes = readNonNegativeInteger(entry.sizeBytes);
-    if (!id || !createdAt || Number.isNaN(Date.parse(createdAt)) || sizeBytes === null) {
+    const origin = readRollbackOrigin(entry.origin);
+    const flagged = readBoolean(entry.flagged);
+    const dismissed = readBoolean(entry.dismissed);
+    if (
+      !id ||
+      !createdAt ||
+      Number.isNaN(Date.parse(createdAt)) ||
+      sizeBytes === null ||
+      origin === null ||
+      flagged === null ||
+      dismissed === null
+    ) {
       throw new Error("database rollback entry is incomplete");
     }
-    return { id, createdAt, sizeBytes };
+    return { id, createdAt, sizeBytes, origin, flagged, dismissed };
   });
 }
 
-/** Lists database copies kept by data resets in the active desktop vault. */
+/** Reports flagged rollbacks whose notice the user has not dismissed, newest first. */
+export function pendingFlaggedRollbacks(rollbacks: readonly DatabaseRollback[]): DatabaseRollback[] {
+  return rollbacks.filter((rollback) => rollback.flagged && !rollback.dismissed);
+}
+
+/** Hides the flagged notice of a rollback; the copy stays restorable until retention prunes it. */
+export async function dismissDatabaseRollback(id: string): Promise<void> {
+  await invoke("vault_dismiss_database_rollback", { id });
+}
+
+/** Lists device-local copies kept by data resets, restores, and handoff replacements. */
 export async function listDatabaseRollbacks(): Promise<DatabaseRollback[]> {
   return parseDatabaseRollbacks(await invoke<unknown>("vault_database_rollbacks"));
 }

@@ -45,6 +45,9 @@ impl<R: Runtime> CoordinatorState<R> {
         if crate::vault::active_vault_id(&self.app)? != vault_id {
             return Err("requested vault is not active on the coordinator".to_string());
         }
+        if purpose == BundlePurpose::Ownership {
+            self.ownership_grants.check(Instant::now())?;
+        }
         let ownership = self.app.state::<VaultOwnershipManager>();
         let status = ownership.status(&vault_id)?;
         if generation > status.generation {
@@ -217,6 +220,7 @@ impl<R: Runtime> CoordinatorState<R> {
         self.pairing
             .mark_outgoing_committed(&metadata.transfer_id)?;
         prepared.committed = true;
+        self.ownership_grants.record(Instant::now());
         Ok(CoordinatorResponse::OwnershipGrant {
             vault_id: metadata.vault_id,
             transfer_id: metadata.transfer_id,

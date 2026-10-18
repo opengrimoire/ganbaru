@@ -179,6 +179,8 @@ export const vaultHandoff = {
     "Another vault is open on this device, so linking is paused. Open the linked vault again to resume.",
   coordinatorVaultInactive:
     "The coordinating computer has another vault open. Open the linked vault there, then retry.",
+  ownershipChurnLimit:
+    "Editing moved between devices too many times in the last hour. Wait a while, then switch devices again.",
   unreachable:
     "This device could not reach the coordinating computer. Keep both apps open on the same local network, then retry.",
   ownerUnreachable:

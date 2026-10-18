@@ -1049,6 +1049,10 @@
   <MusicPlaybackHost decodes={isMainWindow} />
   {#if isMainWindow}
     <MusicSoundscapeCoordinator />
+    {#await import("$lib/components/vault/FlaggedRollbackToast.svelte") then module}
+      {@const FlaggedRollbackToast = module.default}
+      <FlaggedRollbackToast />
+    {/await}
   {/if}
   <TooltipHost />
   <WindowResizeHandles disabled={isMaximized || !!idleInfo} />

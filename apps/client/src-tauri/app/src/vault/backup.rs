@@ -33,7 +33,7 @@ const BACKUP_MAX_DEPTH: usize = 64;
 const COPY_BUFFER_BYTES: usize = 64 * 1024;
 /// Top-level directories a vault bundle carries with everything below them.
 /// Every vault skeleton directory lives below one of these.
-const BUNDLE_DIRECTORIES: &[&str] = &[
+pub(super) const BUNDLE_DIRECTORIES: &[&str] = &[
     "notes",
     "diary",
     "projects",
@@ -516,7 +516,129 @@ pub(crate) async fn validate_restored_vault(path: &Path) -> Result<VaultInfo, St
     Ok(info)
 }
 
+/// Smallest replaced vault, in bytes of data, whose replacement can be flagged as a drastic
+/// shrink. Below it a near-empty vault would be flagged on ordinary edits.
+const MIN_FLAGGED_SHRINK_BYTES: u64 = 1024 * 1024;
+/// A replacement is a drastic shrink when it holds less than this fraction (1/N) of the data
+/// it replaces.
+const DRASTIC_SHRINK_DIVISOR: u64 = 2;
+
+/// Whether replacing a vault holding `previous` bytes of data with one holding `replacement`
+/// bytes removes most of it.
+fn is_drastic_shrink(previous: u64, replacement: u64) -> bool {
+    previous >= MIN_FLAGGED_SHRINK_BYTES
+        && replacement.saturating_mul(DRASTIC_SHRINK_DIVISOR) < previous
+}
+
+/// Bytes the database at `path` uses, excluding free pages, so a replacement snapshot that was
+/// vacuumed compares fairly with a live database.
+async fn database_used_bytes(path: &Path) -> Result<u64, String> {
+    let registry = ganbaru_db::DatabasePoolRegistry::default();
+    let pool = registry.connect_path_read_only(path).await?;
+    let measured = async {
+        let mut values = [0_i64; 3];
+        for (value, pragma) in values.iter_mut().zip([
+            "PRAGMA page_size",
+            "PRAGMA page_count",
+            "PRAGMA freelist_count",
+        ]) {
+            *value = sqlx::query_scalar(pragma)
+                .fetch_one(&pool)
+                .await
+                .map_err(|error| format!("measure vault database: {error}"))?;
+        }
+        let [page_size, page_count, freelist] = values.map(|value| value.max(0) as u64);
+        Ok::<u64, String>(
+            page_count
+                .saturating_sub(freelist)
+                .saturating_mul(page_size),
+        )
+    }
+    .await;
+    let close_result = registry.close_all().await;
+    let bytes = measured?;
+    close_result?;
+    Ok(bytes)
+}
+
+/// Bytes of the regular files in the vault layout at `root`, excluding the database files and
+/// symbolic links. Counting stops after [`BACKUP_MAX_ENTRIES`] entries, the most a bundle holds.
+fn layout_file_bytes(root: &Path) -> u64 {
+    let mut total = 0_u64;
+    let mut visited = 0_usize;
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let Ok(children) = fs::read_dir(&directory) else {
+            continue;
+        };
+        for child in children.flatten() {
+            visited += 1;
+            if visited > BACKUP_MAX_ENTRIES {
+                return total;
+            }
+            let path = child.path();
+            let Ok(metadata) = fs::symlink_metadata(&path) else {
+                continue;
+            };
+            let Ok(relative) = path.strip_prefix(root) else {
+                continue;
+            };
+            if !is_bundle_layout_entry(relative, metadata.is_dir()) {
+                continue;
+            }
+            if metadata.is_dir() {
+                pending.push(path);
+            } else if metadata.is_file()
+                && relative != Path::new(APP_SQLITE_FILE)
+                && !is_database_sidecar(relative)
+            {
+                total = total.saturating_add(metadata.len());
+            }
+        }
+    }
+    total
+}
+
+/// Bytes of data the vault at `vault` holds: its used database pages and its layout files.
+async fn vault_content_bytes(vault: &Path) -> Result<u64, String> {
+    let database = database_used_bytes(&database_path(vault)).await?;
+    let root = vault.to_path_buf();
+    let files = tauri::async_runtime::spawn_blocking(move || layout_file_bytes(&root))
+        .await
+        .map_err(|error| format!("measure vault files: {error}"))?;
+    Ok(database.saturating_add(files))
+}
+
+/// Whether activating `staging` over `target`, a copy of the same vault, removes most of its
+/// data. A measurement failure is logged and not flagged; the replaced database is kept either
+/// way.
+async fn replacement_shrinks_drastically(target: &Path, staging: &Path) -> bool {
+    match (
+        vault_content_bytes(target).await,
+        vault_content_bytes(staging).await,
+    ) {
+        (Ok(previous), Ok(replacement)) => is_drastic_shrink(previous, replacement),
+        (Err(error), _) | (_, Err(error)) => {
+            eprintln!("Vault replacement size check: {error}");
+            false
+        }
+    }
+}
+
+#[cfg(any(test, target_os = "android"))]
 fn replace_vault(staging: &Path, target: &Path, rollback: &Path) -> Result<(), String> {
+    replace_vault_flagging(staging, target, rollback, false)
+}
+
+/// Replaces `target` with `staging`. When both hold the same vault, the replaced data is kept as
+/// a rollback inside the new folder: the database, or the whole layout when `flagged` marks a
+/// drastic shrink.
+fn replace_vault_flagging(
+    staging: &Path,
+    target: &Path,
+    rollback: &Path,
+    flagged: bool,
+) -> Result<(), String> {
     recover_interrupted_restore(target, rollback)?;
     let had_target = target.exists();
     if had_target {
@@ -529,10 +651,36 @@ fn replace_vault(staging: &Path, target: &Path, rollback: &Path) -> Result<(), S
         }
         return Err(format!("activate restored data: {error}"));
     }
-    if had_target && let Err(error) = finish_replacement(target, rollback) {
+    if had_target && let Err(error) = finish_retained_replacement(target, rollback, flagged) {
         eprintln!("Vault replacement cleanup: {error}");
     }
     Ok(())
+}
+
+/// Keeps the replaced data of the same vault as a rollback, then finishes the replacement.
+/// When the data cannot be kept, the whole replaced folder stays as a visible sibling instead
+/// of being deleted.
+fn finish_retained_replacement(
+    target: &Path,
+    rollback: &Path,
+    flagged: bool,
+) -> Result<(), String> {
+    let now = super::now_utc();
+    let retained = vault_info_from_path(target).and_then(|info| {
+        super::database_rollback::retain_replaced_vault(rollback, &info.vault_id, flagged, now)
+    });
+    if let Err(error) = retained {
+        let kept = kept_previous_path(target)?;
+        fs::rename(rollback, &kept)
+            .map_err(|rename| format!("{error}; keep the replaced folder: {rename}"))?;
+        eprintln!(
+            "Vault replacement kept the replaced folder in '{}': {error}",
+            kept.display()
+        );
+        return Ok(());
+    }
+    finish_replacement(target, rollback)?;
+    super::database_rollback::prune_after_replacement(target, now)
 }
 
 /// Moves entries outside the vault layout from the replaced folder `rollback`
@@ -673,7 +821,7 @@ pub(crate) async fn activate_uploaded_ownership<R: Runtime>(
 }
 
 /// Whether the folder at `path` is the vault `vault_id`.
-fn holds_vault(path: &Path, vault_id: &str) -> bool {
+pub(super) fn holds_vault(path: &Path, vault_id: &str) -> bool {
     vault_info_from_path(path).is_ok_and(|info| info.vault_id == vault_id)
 }
 
@@ -715,6 +863,10 @@ async fn activate_handoff_at_path<R: Runtime>(
             Err(resume) => format!("{error}; {resume}"),
         });
     }
+    let flagged = !preserve_previous
+        && staging.exists()
+        && holds_vault(target, expected_vault_id)
+        && replacement_shrinks_drastically(target, staging).await;
     let activation_app = app.clone();
     let staging = staging.to_path_buf();
     let target = target.to_path_buf();
@@ -728,7 +880,7 @@ async fn activate_handoff_at_path<R: Runtime>(
             if preserve_previous {
                 replace_vault_preserving_previous(&staging, &target, &rollback)?;
             } else {
-                replace_vault(&staging, &target, &rollback)?;
+                replace_vault_flagging(&staging, &target, &rollback, flagged)?;
             }
         }
         let info = vault_info_from_path(&target)?;
@@ -827,7 +979,7 @@ fn recover_interrupted_restore(target: &Path, rollback: &Path) -> Result<(), Str
         return Ok(());
     }
     if target.exists() {
-        finish_replacement(target, rollback)
+        finish_retained_replacement(target, rollback, false)
     } else {
         fs::rename(rollback, target)
             .map_err(|error| format!("recover interrupted data restore: {error}"))
@@ -1856,5 +2008,148 @@ mod tests {
         assert_eq!(value, "returned edit");
         restored.close_all().await.unwrap();
         fs::remove_dir_all(parent).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod retention_tests {
+    use super::*;
+    use crate::vault::database_rollback::{RollbackOrigin, list_rollbacks, restore_rollback};
+
+    const PREVIOUS_MARKER: i64 = 1;
+    const REPLACEMENT_MARKER: i64 = 2;
+
+    fn unique_parent(name: &str) -> PathBuf {
+        let parent = crate::vault::tests::unique_path(name);
+        fs::create_dir_all(&parent).unwrap();
+        parent
+    }
+
+    async fn write_marker(vault: &Path, marker: i64) {
+        let pragma = match marker {
+            PREVIOUS_MARKER => "PRAGMA application_id = 1",
+            _ => "PRAGMA application_id = 2",
+        };
+        let registry = ganbaru_db::DatabasePoolRegistry::default();
+        let pool = registry.connect_path(database_path(vault)).await.unwrap();
+        sqlx::query(pragma).execute(&pool).await.unwrap();
+        registry.close_all().await.unwrap();
+    }
+
+    async fn read_marker(vault: &Path) -> i64 {
+        let registry = ganbaru_db::DatabasePoolRegistry::default();
+        let pool = registry
+            .connect_path_read_only(database_path(vault))
+            .await
+            .unwrap();
+        let marker = sqlx::query_scalar("PRAGMA application_id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        registry.close_all().await.unwrap();
+        marker
+    }
+
+    /// Creates the current vault at `parent/Ganbaru` and a staged copy of the same vault.
+    async fn same_vault_pair(parent: &Path) -> (PathBuf, PathBuf) {
+        let target = parent.join("Ganbaru");
+        fs::create_dir_all(&target).unwrap();
+        crate::vault::initialize_vault(&target).unwrap();
+        write_marker(&target, PREVIOUS_MARKER).await;
+        let staging = parent.join(".ganbaru.handoff-transfer.staging");
+        fs::create_dir_all(&staging).unwrap();
+        fs::copy(
+            target.join(VAULT_MANIFEST_FILE),
+            staging.join(VAULT_MANIFEST_FILE),
+        )
+        .unwrap();
+        write_marker(&staging, REPLACEMENT_MARKER).await;
+        (target, staging)
+    }
+
+    #[test]
+    fn drastic_shrink_needs_a_meaningful_vault_that_loses_most_of_its_data() {
+        assert!(is_drastic_shrink(MIN_FLAGGED_SHRINK_BYTES, 0));
+        assert!(!is_drastic_shrink(MIN_FLAGGED_SHRINK_BYTES - 1, 0));
+        let previous = 10 * MIN_FLAGGED_SHRINK_BYTES;
+        assert!(!is_drastic_shrink(
+            previous,
+            previous / DRASTIC_SHRINK_DIVISOR
+        ));
+        assert!(is_drastic_shrink(
+            previous,
+            previous / DRASTIC_SHRINK_DIVISOR - 1
+        ));
+        assert!(!is_drastic_shrink(previous, previous * 2));
+    }
+
+    #[tokio::test]
+    async fn activating_a_new_bundle_keeps_the_previous_database_restorable() {
+        let parent = unique_parent("retain-replacement");
+        let (target, staging) = same_vault_pair(&parent).await;
+        assert!(!replacement_shrinks_drastically(&target, &staging).await);
+
+        replace_vault_flagging(&staging, &target, &parent.join("rollback"), false).unwrap();
+
+        assert_eq!(read_marker(&target).await, REPLACEMENT_MARKER);
+        let rollbacks = list_rollbacks(&target).unwrap();
+        assert_eq!(rollbacks.len(), 1);
+        assert_eq!(rollbacks[0].origin, RollbackOrigin::Replacement);
+        assert!(!rollbacks[0].flagged);
+        restore_rollback(&target, &rollbacks[0].id, chrono::Utc::now())
+            .await
+            .unwrap();
+        assert_eq!(read_marker(&target).await, PREVIOUS_MARKER);
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    #[tokio::test]
+    async fn an_upload_that_removes_most_data_is_flagged_and_restorable_whole() {
+        let parent = unique_parent("flag-shrink");
+        let (target, staging) = same_vault_pair(&parent).await;
+        let note = Path::new("notes").join("daily").join("kept.bin");
+        let database = database_used_bytes(&database_path(&target)).await.unwrap();
+        let note_size = (database + MIN_FLAGGED_SHRINK_BYTES) * DRASTIC_SHRINK_DIVISOR;
+        let note_bytes = vec![7_u8; usize::try_from(note_size).unwrap()];
+        fs::write(target.join(&note), &note_bytes).unwrap();
+        fs::write(target.join("README.md"), b"device file").unwrap();
+        assert!(replacement_shrinks_drastically(&target, &staging).await);
+
+        replace_vault_flagging(&staging, &target, &parent.join("rollback"), true).unwrap();
+
+        assert!(!target.join(&note).exists());
+        assert_eq!(fs::read(target.join("README.md")).unwrap(), b"device file");
+        let rollbacks = list_rollbacks(&target).unwrap();
+        assert_eq!(rollbacks.len(), 1);
+        assert!(rollbacks[0].flagged && !rollbacks[0].dismissed);
+        restore_rollback(&target, &rollbacks[0].id, chrono::Utc::now())
+            .await
+            .unwrap();
+        assert_eq!(read_marker(&target).await, PREVIOUS_MARKER);
+        assert_eq!(fs::read(target.join(&note)).unwrap(), note_bytes);
+        let after = list_rollbacks(&target).unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].origin, RollbackOrigin::Reset);
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    #[tokio::test]
+    async fn replacing_another_vault_keeps_no_rollback_inside_the_replacement() {
+        let parent = unique_parent("retain-other");
+        let (target, staging) = same_vault_pair(&parent).await;
+        fs::remove_file(staging.join(VAULT_MANIFEST_FILE)).unwrap();
+        let other = parent.join("other");
+        fs::create_dir_all(&other).unwrap();
+        crate::vault::initialize_vault(&other).unwrap();
+        fs::copy(
+            other.join(VAULT_MANIFEST_FILE),
+            staging.join(VAULT_MANIFEST_FILE),
+        )
+        .unwrap();
+
+        replace_vault_flagging(&staging, &target, &parent.join("rollback"), false).unwrap();
+
+        assert!(list_rollbacks(&target).unwrap().is_empty());
+        let _ = fs::remove_dir_all(parent);
     }
 }

@@ -594,6 +594,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             vault::vault_active_info,
             vault::database_rollback::vault_database_rollbacks,
             vault::database_rollback::vault_restore_database_rollback,
+            vault::database_rollback::vault_dismiss_database_rollback,
             vault::ownership::vault_ownership_status,
             vault::handoff::handoff_create_pairing_invitation,
             #[cfg(target_os = "linux")]

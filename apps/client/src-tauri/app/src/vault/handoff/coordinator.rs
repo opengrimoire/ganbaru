@@ -170,6 +170,47 @@ struct CompletedActivation {
     purpose: BundlePurpose,
 }
 
+/// Span of the sliding window that bounds ownership grants to linked devices.
+const OWNERSHIP_GRANT_WINDOW: Duration = Duration::from_secs(60 * 60);
+/// Most ownership grants to linked devices within [`OWNERSHIP_GRANT_WINDOW`]. Switching
+/// devices a few times an hour stays far below it; a device that keeps taking ownership to
+/// replace the vault does not.
+const MAX_OWNERSHIP_GRANTS_PER_WINDOW: usize = 20;
+/// Error returned when ownership changed too often; the frontend maps it to localized
+/// guidance.
+pub(crate) const OWNERSHIP_GRANT_LIMIT: &str =
+    "vault ownership changed too often; wait before switching devices again";
+
+/// Recent ownership grants to linked devices, kept in memory for the sliding-window limit.
+#[derive(Debug, Default)]
+struct OwnershipGrantWindow {
+    grants: std::collections::VecDeque<Instant>,
+}
+
+impl OwnershipGrantWindow {
+    fn forget_expired(&mut self, now: Instant) {
+        while self.grants.front().is_some_and(|granted| {
+            now.saturating_duration_since(*granted) >= OWNERSHIP_GRANT_WINDOW
+        }) {
+            self.grants.pop_front();
+        }
+    }
+
+    /// Refuses another grant while the window already holds the maximum.
+    fn check(&mut self, now: Instant) -> Result<(), String> {
+        self.forget_expired(now);
+        if self.grants.len() >= MAX_OWNERSHIP_GRANTS_PER_WINDOW {
+            return Err(OWNERSHIP_GRANT_LIMIT.to_string());
+        }
+        Ok(())
+    }
+
+    fn record(&mut self, now: Instant) {
+        self.forget_expired(now);
+        self.grants.push_back(now);
+    }
+}
+
 struct CoordinatorState<R: Runtime> {
     app: tauri::AppHandle<R>,
     pairing: PairingManager,
@@ -178,6 +219,7 @@ struct CoordinatorState<R: Runtime> {
     last_owner_poll: Option<(String, Instant)>,
     waiting_refresh_targets: BTreeSet<String>,
     relay_refresh_generation: Option<u64>,
+    ownership_grants: OwnershipGrantWindow,
 }
 
 const PEER_RECONNECT_GAP: Duration = Duration::from_secs(75);
@@ -221,6 +263,7 @@ pub(crate) async fn run<R: Runtime>(
         last_owner_poll: None,
         waiting_refresh_targets: BTreeSet::new(),
         relay_refresh_generation: None,
+        ownership_grants: OwnershipGrantWindow::default(),
     };
     while let Some(request) = receiver.recv().await {
         if matches!(request.operation, CoordinatorOperation::Shutdown) {
@@ -580,6 +623,20 @@ mod tests {
     use super::*;
     use crate::vault::handoff::pairing::{StoredOutgoingTransfer, random_token};
     use crate::vault::handoff::protocol::PROTOCOL_VERSION;
+
+    #[test]
+    fn ownership_grants_are_limited_per_sliding_window() {
+        let start = Instant::now();
+        let mut window = OwnershipGrantWindow::default();
+        for _ in 0..MAX_OWNERSHIP_GRANTS_PER_WINDOW {
+            window.check(start).unwrap();
+            window.record(start);
+        }
+        assert_eq!(window.check(start).unwrap_err(), OWNERSHIP_GRANT_LIMIT);
+        let almost = start + OWNERSHIP_GRANT_WINDOW - Duration::from_millis(1);
+        assert!(window.check(almost).is_err());
+        window.check(start + OWNERSHIP_GRANT_WINDOW).unwrap();
+    }
 
     #[test]
     fn owner_reachability_requires_a_recent_poll_from_the_current_owner() {

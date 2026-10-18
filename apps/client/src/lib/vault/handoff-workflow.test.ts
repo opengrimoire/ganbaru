@@ -25,6 +25,14 @@ describe("formatHandoffError", () => {
     );
   });
 
+  it("explains the ownership churn limit instead of a connectivity failure", () => {
+    const message = "vault ownership changed too often; wait before switching devices again";
+    expect(formatHandoffError(message, t)).toBe("vaultHandoff.ownershipChurnLimit");
+    expect(formatOwnershipHandoffError(new Error(message), t)).toBe(
+      "vaultHandoff.ownershipChurnLimit",
+    );
+  });
+
   it("identifies an unreachable main device during an ownership request", () => {
     expect(formatOwnershipHandoffError(
       new Error("the current vault owner is unreachable"),

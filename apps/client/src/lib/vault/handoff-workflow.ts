@@ -42,6 +42,9 @@ export function formatHandoffError(cause: unknown, t: Translate): string {
   if (lower.includes("linked vault is not active on this device")) {
     return t("vaultHandoff.linkedVaultInactive");
   }
+  if (lower.includes("vault ownership changed too often")) {
+    return t("vaultHandoff.ownershipChurnLimit");
+  }
   if (lower.includes("vault is not active on the coordinator")) {
     return t("vaultHandoff.coordinatorVaultInactive");
   }

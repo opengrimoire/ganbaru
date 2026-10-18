@@ -280,6 +280,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::workspace::commands::projects_bind_selected_working_folder,
             chat::workspace::commands::projects_rename_working_folder,
             chat::workspace::commands::projects_locate_working_folder,
+            chat::workspace::commands::projects_decide_working_folder_trust,
+            chat::workspace::commands::projects_revoke_working_folder_trust,
             chat::workspace::commands::projects_rebind_working_folder,
             chat::workspace::commands::projects_unbind_working_folder,
             chat::workspace::commands::projects_archive_working_folder,

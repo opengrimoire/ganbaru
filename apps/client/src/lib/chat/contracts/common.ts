@@ -204,6 +204,7 @@ export const CHAT_ERROR_CODES = [
   "resume_not_found",
   "protocol",
   "permission",
+  "trust_decision_required",
   "timeout",
   "cancelled",
   "persistence",

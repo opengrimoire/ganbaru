@@ -111,7 +111,13 @@ pub async fn chat_create_worktree_environment(
         validate_ref(remote, "remoteName")?;
     }
     let pool = chat_pool(&app, db_url).await?;
-    let root = authorized_workspace(&app, &pool, &request.working_folder_id).await?;
+    let root = authorized_workspace(
+        &app,
+        &pool,
+        &request.working_folder_id,
+        WorkingFolderAuthorizationOperation::GitUser,
+    )
+    .await?;
     let _mutation = mutations.try_mutation(&root.canonical_path)?;
     if request.fetch_remote {
         git::fetch(root.git_folder(), request.remote_name.as_deref()).await?;
@@ -252,7 +258,13 @@ pub async fn chat_remove_worktree_environment(
         ));
     }
     let pool = chat_pool(&app, db_url).await?;
-    let root = authorized_workspace(&app, &pool, &working_folder_id).await?;
+    let root = authorized_workspace(
+        &app,
+        &pool,
+        &working_folder_id,
+        WorkingFolderAuthorizationOperation::Git,
+    )
+    .await?;
     let _mutation = mutations.try_mutation(&root.canonical_path)?;
     let environment = read_environment(&app, &pool, &environment_id).await?;
     if environment.working_folder_id != working_folder_id
@@ -319,6 +331,11 @@ pub async fn chat_remove_worktree_environment(
     .map_err(device_state_error)
 }
 
+/// Resolves an optional execution environment to the folder Git and providers run in.
+///
+/// A worktree keeps the folder's trust digest. The runner recomputes the digest
+/// in the worktree, so worktree configuration that differs from the trusted
+/// folder runs untrusted instead of inheriting the decision.
 pub async fn resolve_environment_workspace(
     app: &tauri::AppHandle,
     pool: &SqlitePool,
@@ -435,14 +452,10 @@ async fn authorized_workspace(
     app: &tauri::AppHandle,
     pool: &SqlitePool,
     working_folder_id: &ProjectWorkingFolderId,
+    operation: WorkingFolderAuthorizationOperation,
 ) -> ChatResult<AuthorizedWorkingFolder> {
-    super::workspace::commands::authorize_working_folder(
-        app,
-        pool,
-        working_folder_id,
-        WorkingFolderAuthorizationOperation::Git,
-    )
-    .await
+    super::workspace::commands::authorize_working_folder(app, pool, working_folder_id, operation)
+        .await
 }
 
 async fn read_environment(

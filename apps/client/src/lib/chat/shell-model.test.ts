@@ -37,6 +37,7 @@ function workspace(id = "workspace", projectId = "project"): ProjectWorkingFolde
     canonicalPath: "/workspace",
     lastVerifiedAt: timestamp,
     currentBranch: "feat/chat",
+    trust: "trusted",
   };
 }
 

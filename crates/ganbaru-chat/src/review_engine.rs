@@ -259,7 +259,7 @@ pub async fn apply_review_action_service(
         authorizer,
         pool,
         &snapshot,
-        WorkingFolderAuthorizationOperation::Git,
+        WorkingFolderAuthorizationOperation::GitUser,
     )
     .await?;
     let folder = GitFolder::new(&snapshot.root, trust);

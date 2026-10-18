@@ -12,7 +12,7 @@ function folder(id: string, kind: "managed" | "external" = "external"): ProjectW
     workingFolder: { id, projectId: "project", displayName: id, kind, managedRelativePath: kind === "managed" ? "projects/project" : null,
       repositoryKind: "none", repositoryIdentity: null, sortOrder: 1, createdAt: "2026-01-01T00:00:00Z",
       updatedAt: "2026-01-01T00:00:00Z", archivedAt: null, revision: 1 },
-    canonicalPath: `/folders/${id}`, bindingStatus: "available", lastVerifiedAt: null, currentBranch: null,
+    canonicalPath: `/folders/${id}`, bindingStatus: "available", lastVerifiedAt: null, currentBranch: null, trust: "undecided",
   };
 }
 

@@ -21,6 +21,9 @@ pub enum ChatErrorCode {
     ResumeNotFound,
     Protocol,
     Permission,
+    /// A user Git action needs this device's trust decision for the folder's
+    /// current repository configuration before it runs.
+    TrustDecisionRequired,
     Timeout,
     Cancelled,
     Persistence,

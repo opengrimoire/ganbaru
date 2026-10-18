@@ -32,6 +32,7 @@ pub async fn chat_git_status(
         &db_url,
         &working_folder_id,
         execution_environment_id.as_deref(),
+        WorkingFolderAuthorizationOperation::Git,
     )
     .await?;
     let folder = authorized.git_folder();
@@ -53,6 +54,7 @@ pub async fn chat_git_stage(
         &db_url,
         &working_folder_id,
         execution_environment_id.as_deref(),
+        WorkingFolderAuthorizationOperation::GitUser,
     )
     .await?;
     let folder = authorized.git_folder();
@@ -76,6 +78,7 @@ pub async fn chat_git_unstage(
         &db_url,
         &working_folder_id,
         execution_environment_id.as_deref(),
+        WorkingFolderAuthorizationOperation::GitUser,
     )
     .await?;
     let folder = authorized.git_folder();
@@ -105,6 +108,7 @@ pub async fn chat_git_commit(
         &db_url,
         &working_folder_id,
         execution_environment_id.as_deref(),
+        WorkingFolderAuthorizationOperation::GitUser,
     )
     .await?;
     let folder = authorized.git_folder();
@@ -128,6 +132,7 @@ pub async fn chat_git_fetch(
         &db_url,
         &working_folder_id,
         execution_environment_id.as_deref(),
+        WorkingFolderAuthorizationOperation::GitUser,
     )
     .await?;
     let folder = authorized.git_folder();
@@ -153,6 +158,7 @@ pub async fn chat_git_pull(
         &db_url,
         &working_folder_id,
         execution_environment_id.as_deref(),
+        WorkingFolderAuthorizationOperation::GitUser,
     )
     .await?;
     let folder = authorized.git_folder();
@@ -190,6 +196,7 @@ pub async fn chat_git_push(
         &db_url,
         &request.working_folder_id,
         request.execution_environment_id.as_deref(),
+        WorkingFolderAuthorizationOperation::GitUser,
     )
     .await?;
     let folder = authorized.git_folder();
@@ -216,6 +223,7 @@ pub async fn chat_git_initialize(
         &db_url,
         &working_folder_id,
         execution_environment_id.as_deref(),
+        WorkingFolderAuthorizationOperation::GitUser,
     )
     .await?;
     let folder = authorized.git_folder();
@@ -247,6 +255,7 @@ pub async fn chat_git_clone(
         &db_url,
         &working_folder_id,
         execution_environment_id.as_deref(),
+        WorkingFolderAuthorizationOperation::GitUser,
     )
     .await?;
     let folder = authorized.git_folder();
@@ -309,6 +318,7 @@ pub async fn chat_git_discard(
         &db_url,
         &working_folder_id,
         execution_environment_id.as_deref(),
+        WorkingFolderAuthorizationOperation::GitUser,
     )
     .await?;
     let folder = authorized.git_folder();
@@ -346,6 +356,7 @@ async fn authorized_folder(
     db_url: &str,
     working_folder_id: &ProjectWorkingFolderId,
     execution_environment_id: Option<&str>,
+    operation: WorkingFolderAuthorizationOperation,
 ) -> ChatResult<AuthorizedWorkingFolder> {
     let pool = db::connect_sqlite(app.clone(), db_url.to_string())
         .await
@@ -354,7 +365,7 @@ async fn authorized_folder(
         app,
         &pool,
         working_folder_id,
-        WorkingFolderAuthorizationOperation::Git,
+        operation,
     )
     .await?;
     super::execution_environment::resolve_environment_workspace(

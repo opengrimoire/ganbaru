@@ -74,9 +74,11 @@ pub struct FolderConfiguration {
     pub git: FolderConfigDigest,
     /// Project provider configuration that can run commands.
     pub provider: FolderConfigDigest,
-    /// True when the folder defines no repository programs, hooks, or
-    /// provider configuration, so there is nothing to decide.
-    pub is_empty: bool,
+    /// True when the folder defines no repository programs or hooks, so
+    /// Git has nothing to decide.
+    pub git_is_empty: bool,
+    /// True when the folder has no project provider configuration.
+    pub provider_is_empty: bool,
 }
 
 /// Reads and digests the configuration of the folder at `root`.
@@ -88,7 +90,8 @@ pub fn folder_configuration_blocking(root: &Path) -> Result<FolderConfiguration,
     Ok(FolderConfiguration {
         git: git.digest,
         provider: provider.digest,
-        is_empty: git.is_empty && provider.is_empty,
+        git_is_empty: git.is_empty,
+        provider_is_empty: provider.is_empty,
     })
 }
 

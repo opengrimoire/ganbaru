@@ -813,7 +813,10 @@ fn internal_runs_in_trusted_folders_match_the_terminal_without_hooks() {
 fn digest_ignores_ordinary_keys_and_command_scope_entries() {
     let repository = TestRepository::new();
     let initial = repository.configuration();
-    assert!(initial.is_empty, "a fresh repository has nothing to trust");
+    assert!(
+        initial.git_is_empty && initial.provider_is_empty,
+        "a fresh repository with sample hooks has nothing to trust"
+    );
     repository.git(&["config", "user.email", "other@example.invalid"]);
     repository.git(&["config", "branch.main.remote", "origin"]);
     repository.git(&[
@@ -823,6 +826,7 @@ fn digest_ignores_ordinary_keys_and_command_scope_entries() {
         "https://example.invalid/repo.git",
     ]);
     assert_eq!(repository.configuration().git, initial.git);
+    assert!(repository.configuration().git_is_empty);
 
     let entries = vec![entry(GitConfigScope::Local, "core.editor", Some("vi"))];
     let mut with_command = entries.clone();
@@ -854,7 +858,7 @@ fn digest_follows_includes_hook_files_and_provider_settings() {
     repository.git(&["config", "include.path", "../extra.config"]);
     let included = repository.configuration();
     assert_ne!(included.git, initial.git, "an included program must count");
-    assert!(!included.is_empty);
+    assert!(!included.git_is_empty);
     fs::write(
         repository.root.join("extra.config"),
         "[core]\n\teditor = nano\n",
@@ -879,6 +883,7 @@ fn digest_follows_includes_hook_files_and_provider_settings() {
     let after_provider = repository.configuration();
     assert_eq!(after_provider.git, before_provider.git);
     assert_ne!(after_provider.provider, before_provider.provider);
+    assert!(!after_provider.provider_is_empty);
 }
 
 #[cfg(unix)]

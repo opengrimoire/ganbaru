@@ -3,14 +3,18 @@
 pub mod files;
 pub mod mutation;
 pub mod protected_paths;
+#[cfg(test)]
+mod trust_tests;
 
 use super::models::{
     ChatError, ChatErrorCode, ChatResult, ProjectWorkingFolderId, RepositoryKind, UtcTimestamp,
 };
 use crate::git::GitFolder;
-use crate::git::hardened::{FolderConfigDigest, GitFolderTrust};
+use crate::git::hardened::{FolderConfigDigest, FolderConfiguration, GitFolderTrust};
 use chrono::{SecondsFormat, Utc};
-use ganbaru_working_folders::{ProjectWorkingFolderBindingState, WorkingFolderDeviceScope};
+use ganbaru_working_folders::{
+    ProjectWorkingFolderBindingState, WorkingFolderDeviceScope, WorkingFolderTrustRecord,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::ffi::OsStr;
@@ -28,6 +32,28 @@ pub enum WorkingFolderBindingStatus {
     RepositoryMismatch,
 }
 
+/// Device-local trust decision for a folder's repository programs, hooks, and
+/// provider configuration, as recorded without rereading the folder.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkingFolderTrustState {
+    /// No decision is recorded; user Git actions ask first.
+    Undecided,
+    Trusted,
+    Untrusted,
+}
+
+impl WorkingFolderTrustState {
+    /// Reads the recorded decision for `id` in `scope`.
+    pub fn recorded(scope: &WorkingFolderDeviceScope, id: &ProjectWorkingFolderId) -> Self {
+        match scope.trust.get(id) {
+            None => Self::Undecided,
+            Some(record) if record.trusted => Self::Trusted,
+            Some(_) => Self::Untrusted,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkingFolderAuthorizationOperation {
     ProviderStart,
@@ -36,24 +62,28 @@ pub enum WorkingFolderAuthorizationOperation {
     MentionResolution,
     TerminalStart,
     Git,
+    /// A Git action the user started that may run the folder's hooks and
+    /// repository programs, such as commit, push, or staging.
+    GitUser,
     Diff,
     Restore,
 }
 
 impl WorkingFolderAuthorizationOperation {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::ProviderStart,
         Self::FileRead,
         Self::FileWrite,
         Self::MentionResolution,
         Self::TerminalStart,
         Self::Git,
+        Self::GitUser,
         Self::Diff,
         Self::Restore,
     ];
 
     fn requires_repository_continuity(self) -> bool {
-        matches!(self, Self::Git | Self::Diff | Self::Restore)
+        matches!(self, Self::Git | Self::GitUser | Self::Diff | Self::Restore)
     }
 }
 
@@ -97,6 +127,7 @@ pub struct ProjectWorkingFolderRead {
     pub canonical_path: Option<String>,
     pub last_verified_at: Option<UtcTimestamp>,
     pub current_branch: Option<String>,
+    pub trust: WorkingFolderTrustState,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -216,6 +247,75 @@ pub fn folder_git_trust(
         .map_or(GitFolderTrust::Untrusted, GitFolderTrust::Trusted)
 }
 
+/// What a user Git action needs from the folder's trust record before it runs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrustDecisionCheck {
+    /// A recorded decision, trusted or declined, covers the current Git
+    /// configuration. A declined decision runs the action untrusted.
+    Decided,
+    /// The folder defines no repository programs or hooks, so a trusted
+    /// record for this configuration is written without asking.
+    NothingToDecide,
+    /// No decision covers the current Git configuration; the user decides.
+    Required,
+}
+
+/// Compares the folder's recorded decision with its current configuration.
+pub fn check_trust_decision(
+    scope: &WorkingFolderDeviceScope,
+    working_folder_id: &ProjectWorkingFolderId,
+    configuration: &FolderConfiguration,
+) -> TrustDecisionCheck {
+    let current = configuration.git.to_hex();
+    match scope.trust.get(working_folder_id) {
+        Some(record) if record.git_configuration_digest == current => TrustDecisionCheck::Decided,
+        _ if configuration.git_is_empty => TrustDecisionCheck::NothingToDecide,
+        _ => TrustDecisionCheck::Required,
+    }
+}
+
+/// Builds the record of a decision about `configuration`.
+pub fn trust_record(
+    configuration: &FolderConfiguration,
+    trusted: bool,
+    decided_at: UtcTimestamp,
+) -> WorkingFolderTrustRecord {
+    WorkingFolderTrustRecord {
+        git_configuration_digest: configuration.git.to_hex(),
+        provider_configuration_digest: configuration.provider.to_hex(),
+        trusted,
+        decided_at,
+    }
+}
+
+/// Builds the record written without asking when the Git configuration has
+/// nothing to decide. Provider configuration the user never saw stays
+/// undecided, so its digest is recorded only when it is empty too.
+pub fn automatic_trust_record(
+    configuration: &FolderConfiguration,
+    decided_at: UtcTimestamp,
+) -> WorkingFolderTrustRecord {
+    let mut record = trust_record(configuration, true, decided_at);
+    if !configuration.provider_is_empty {
+        record.provider_configuration_digest = String::new();
+    }
+    record
+}
+
+/// Error returned when a user Git action needs a trust decision first. The
+/// details carry the folder so the caller can ask and retry.
+pub fn trust_decision_required_error(working_folder_id: &ProjectWorkingFolderId) -> ChatError {
+    let mut error = ChatError::new(
+        ChatErrorCode::TrustDecisionRequired,
+        "Decide whether to trust this folder's repository configuration",
+        true,
+    );
+    error.details = Some(Box::new(serde_json::json!({
+        "workingFolderId": working_folder_id.as_str(),
+    })));
+    error
+}
+
 pub fn resolve_workspace_relative_path(
     authorized: &AuthorizedWorkingFolder,
     relative_path: &str,
@@ -250,6 +350,7 @@ pub fn workspace_read(
     workspace: ProjectWorkingFolder,
     scope: &WorkingFolderDeviceScope,
 ) -> ChatResult<ProjectWorkingFolderRead> {
+    let trust = WorkingFolderTrustState::recorded(scope, &workspace.id);
     let binding = scope.bindings.get(&workspace.id);
     let (binding_status, current_branch) = match binding {
         None => (WorkingFolderBindingStatus::Unbound, None),
@@ -279,6 +380,7 @@ pub fn workspace_read(
         canonical_path: binding.map(|value| value.canonical_path.clone()),
         last_verified_at: binding.map(|value| value.last_verified_at.clone()),
         current_branch,
+        trust,
     })
 }
 

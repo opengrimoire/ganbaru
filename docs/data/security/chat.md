@@ -86,7 +86,13 @@ Every Git and hosted CLI spawn goes through one hardened runner with a named dea
 
 Hosted CLIs (`gh`, `glab`, `az`) list and view change requests from a private empty directory with explicit repository coordinates, so repository content cannot steer them. Creation and checkout run where they need Git context. Their Git children inherit the same hardening through the environment, and `az` runs with Python path isolation. Push, pull, and fetch accept only remotes already configured in the repository and branch names that follow Git ref rules without refspec syntax, so a request cannot redirect to a URL or force-push through a `+` refspec.
 
-Current behavior treats every authorized folder as trusted. Planned: a device-local, revocable trust record per folder, keyed by a digest of `.git/config`, `.gitattributes`, hooks, and provider settings; managed folders start trusted, picker-bound folders ask once, and received folders with an unknown digest start untrusted.
+Trust is a device-local record per folder holding two digests. The Git digest covers command-bearing keys from local and worktree configuration (with included files) and the hooks directory; ordinary keys such as remotes, branches, and identity are left out so everyday work never asks again. `.gitattributes` is left out because it only selects drivers that configuration defines, and branch checkouts change it. The provider digest covers project provider settings that can run commands.
+
+- Folders bound through the native picker ask once at binding with a native dialog. Cancelling keeps the binding and leaves trust undecided.
+- A folder with no repository programs, hooks, or provider settings is trusted silently, so managed folders never ask.
+- A user Git action (commit, push, pull, fetch, stage, discard, clone, worktree creation, review apply, hosted change request creation and checkout) in an undecided folder, or one whose Git digest changed, asks once and then retries. Received folders with an unknown digest therefore ask before anything repository-defined runs.
+- Every run recomputes the Git digest; a mismatch with the trusted digest runs untrusted, including in a worktree whose configuration differs.
+- Settings shows each folder's trust and can revoke or grant it. Rebinding to a different path or repository and unbinding clear the record.
 
 ## Checkpoints and restore
 

@@ -22,6 +22,7 @@ pub async fn chat_discover_source_control(
         &db_url,
         &working_folder_id,
         execution_environment_id.as_deref(),
+        WorkingFolderAuthorizationOperation::Git,
     )
     .await?;
     discover_source_control(authorized.git_folder(), &PlatformCredentialStore::default()).await
@@ -42,6 +43,7 @@ pub async fn chat_list_hosted_change_requests(
         &db_url,
         &working_folder_id,
         execution_environment_id.as_deref(),
+        WorkingFolderAuthorizationOperation::Git,
     )
     .await?;
     list_hosted_change_requests(
@@ -65,6 +67,7 @@ pub async fn chat_create_hosted_change_request(
         &db_url,
         &request.working_folder_id,
         request.execution_environment_id.as_deref(),
+        WorkingFolderAuthorizationOperation::GitUser,
     )
     .await?;
     create_hosted_change_request(
@@ -90,6 +93,7 @@ pub async fn chat_checkout_hosted_change_request(
         &db_url,
         &working_folder_id,
         execution_environment_id.as_deref(),
+        WorkingFolderAuthorizationOperation::GitUser,
     )
     .await?;
     let _guard = app
@@ -121,6 +125,7 @@ async fn source_control_folder(
     db_url: &str,
     working_folder_id: &ProjectWorkingFolderId,
     execution_environment_id: Option<&str>,
+    operation: WorkingFolderAuthorizationOperation,
 ) -> ChatResult<AuthorizedWorkingFolder> {
     let pool = db::connect_sqlite(app.clone(), db_url.to_string())
         .await
@@ -129,7 +134,7 @@ async fn source_control_folder(
         app,
         &pool,
         working_folder_id,
-        WorkingFolderAuthorizationOperation::Git,
+        operation,
     )
     .await?;
     super::execution_environment::resolve_environment_workspace(

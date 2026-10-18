@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { ensureDbUrl } from "$lib/api/db";
+import { withWorkingFolderTrust } from "$lib/api/working-folder-trust";
 import type {
   ChatAttachmentRead,
   ProjectWorkingFolderDirectoryRead,
@@ -112,10 +113,10 @@ export async function readChatReviewPatches(
 export async function applyChatReviewAction(
   request: ApplyChatReviewActionRequest,
 ): Promise<ApplyChatReviewActionResult> {
-  const value = await invoke<unknown>("chat_apply_review_action", {
+  const value = await withWorkingFolderTrust(request.workingFolderId, async () => invoke<unknown>("chat_apply_review_action", {
     dbUrl: await ensureDbUrl(),
     request,
-  });
+  }));
   if (typeof value !== "object" || value === null || !("snapshot" in value)) {
     throw new Error("Invalid Chat review action result");
   }
@@ -133,9 +134,9 @@ export async function listChatExecutionEnvironments(
 export async function createChatWorktreeEnvironment(
   request: CreateChatWorktreeRequest,
 ): Promise<ChatExecutionEnvironmentRead> {
-  return parseChatExecutionEnvironment(await invoke<unknown>("chat_create_worktree_environment", {
+  return withWorkingFolderTrust(request.workingFolderId, async () => parseChatExecutionEnvironment(await invoke<unknown>("chat_create_worktree_environment", {
     dbUrl: await ensureDbUrl(), request,
-  }));
+  })));
 }
 
 export async function removeChatWorktreeEnvironment(
@@ -188,9 +189,9 @@ export async function listHostedChangeRequests(
 export async function createHostedChangeRequest(
   request: CreateHostedChangeRequest,
 ): Promise<HostedChangeRequestRead> {
-  return parseHostedChangeRequest(await invoke<unknown>("chat_create_hosted_change_request", {
+  return withWorkingFolderTrust(request.workingFolderId, async () => parseHostedChangeRequest(await invoke<unknown>("chat_create_hosted_change_request", {
     dbUrl: await ensureDbUrl(), request,
-  }));
+  })));
 }
 
 export async function checkoutHostedChangeRequest(
@@ -200,14 +201,14 @@ export async function checkoutHostedChangeRequest(
   reference: string,
   remoteName: string | null,
 ): Promise<GitStatusRead> {
-  return parseGitStatus(await invoke<unknown>("chat_checkout_hosted_change_request", {
+  return withWorkingFolderTrust(workingFolderId, async () => parseGitStatus(await invoke<unknown>("chat_checkout_hosted_change_request", {
     dbUrl: await ensureDbUrl(),
     workingFolderId,
     executionEnvironmentId,
     providerKind,
     reference,
     remoteName,
-  }));
+  })));
 }
 
 export async function configureBitbucketCredential(
@@ -363,12 +364,12 @@ export async function stageGitPaths(
   paths: string[],
   executionEnvironmentId: string | null = null,
 ): Promise<GitStatusRead> {
-  return parseGitStatus(await invoke<unknown>("chat_git_stage", {
+  return withWorkingFolderTrust(workingFolderId, async () => parseGitStatus(await invoke<unknown>("chat_git_stage", {
     dbUrl: await ensureDbUrl(),
     workingFolderId,
     paths,
     executionEnvironmentId,
-  }));
+  })));
 }
 
 export async function unstageGitPaths(
@@ -376,12 +377,12 @@ export async function unstageGitPaths(
   paths: string[],
   executionEnvironmentId: string | null = null,
 ): Promise<GitStatusRead> {
-  return parseGitStatus(await invoke<unknown>("chat_git_unstage", {
+  return withWorkingFolderTrust(workingFolderId, async () => parseGitStatus(await invoke<unknown>("chat_git_unstage", {
     dbUrl: await ensureDbUrl(),
     workingFolderId,
     paths,
     executionEnvironmentId,
-  }));
+  })));
 }
 
 export async function commitGitChanges(
@@ -389,12 +390,12 @@ export async function commitGitChanges(
   message: string,
   executionEnvironmentId: string | null = null,
 ): Promise<GitStatusRead> {
-  return parseGitStatus(await invoke<unknown>("chat_git_commit", {
+  return withWorkingFolderTrust(workingFolderId, async () => parseGitStatus(await invoke<unknown>("chat_git_commit", {
     dbUrl: await ensureDbUrl(),
     workingFolderId,
     message,
     executionEnvironmentId,
-  }));
+  })));
 }
 
 export async function fetchGitRemote(
@@ -402,9 +403,9 @@ export async function fetchGitRemote(
   remote: string | null = null,
   executionEnvironmentId: string | null = null,
 ): Promise<GitStatusRead> {
-  return parseGitStatus(await invoke<unknown>("chat_git_fetch", {
+  return withWorkingFolderTrust(workingFolderId, async () => parseGitStatus(await invoke<unknown>("chat_git_fetch", {
     dbUrl: await ensureDbUrl(), workingFolderId, remote, executionEnvironmentId,
-  }));
+  })));
 }
 
 export async function pullGitBranch(
@@ -413,9 +414,9 @@ export async function pullGitBranch(
   branch: string | null = null,
   executionEnvironmentId: string | null = null,
 ): Promise<GitStatusRead> {
-  return parseGitStatus(await invoke<unknown>("chat_git_pull", {
+  return withWorkingFolderTrust(workingFolderId, async () => parseGitStatus(await invoke<unknown>("chat_git_pull", {
     dbUrl: await ensureDbUrl(), workingFolderId, remote, branch, executionEnvironmentId,
-  }));
+  })));
 }
 
 export async function pushGitBranch(
@@ -426,10 +427,10 @@ export async function pushGitBranch(
   destructiveConfirmed = false,
   executionEnvironmentId: string | null = null,
 ): Promise<GitStatusRead> {
-  return parseGitStatus(await invoke<unknown>("chat_git_push", {
+  return withWorkingFolderTrust(workingFolderId, async () => parseGitStatus(await invoke<unknown>("chat_git_push", {
     dbUrl: await ensureDbUrl(),
     request: { workingFolderId, remote, branch, forceWithLease, destructiveConfirmed, executionEnvironmentId },
-  }));
+  })));
 }
 
 export async function initializeGitRepository(
@@ -437,9 +438,9 @@ export async function initializeGitRepository(
   initialBranch: string | null,
   executionEnvironmentId: string | null = null,
 ): Promise<GitStatusRead> {
-  return parseGitStatus(await invoke<unknown>("chat_git_initialize", {
+  return withWorkingFolderTrust(workingFolderId, async () => parseGitStatus(await invoke<unknown>("chat_git_initialize", {
     dbUrl: await ensureDbUrl(), workingFolderId, initialBranch, executionEnvironmentId,
-  }));
+  })));
 }
 
 export async function cloneGitRepository(
@@ -448,9 +449,9 @@ export async function cloneGitRepository(
   remoteName = "origin",
   executionEnvironmentId: string | null = null,
 ): Promise<GitStatusRead> {
-  return parseGitStatus(await invoke<unknown>("chat_git_clone", {
+  return withWorkingFolderTrust(workingFolderId, async () => parseGitStatus(await invoke<unknown>("chat_git_clone", {
     dbUrl: await ensureDbUrl(), workingFolderId, remoteUrl, remoteName, executionEnvironmentId,
-  }));
+  })));
 }
 
 export async function discardGitPaths(
@@ -459,9 +460,9 @@ export async function discardGitPaths(
   destructiveConfirmed: boolean,
   executionEnvironmentId: string | null = null,
 ): Promise<GitStatusRead> {
-  return parseGitStatus(await invoke<unknown>("chat_git_discard", {
+  return withWorkingFolderTrust(workingFolderId, async () => parseGitStatus(await invoke<unknown>("chat_git_discard", {
     dbUrl: await ensureDbUrl(), workingFolderId, paths, destructiveConfirmed, executionEnvironmentId,
-  }));
+  })));
 }
 
 export async function readChatTerminalLayout(threadId: ChatThreadId): Promise<ChatTerminalLayoutRead> {

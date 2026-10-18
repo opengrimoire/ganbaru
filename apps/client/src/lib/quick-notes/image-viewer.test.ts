@@ -7,12 +7,18 @@ import {
   stepViewerIndex,
   toggleViewerZoom,
   viewerFit,
+  viewerFitPadding,
   viewerFitScale,
+  viewerFlight,
+  viewerFrameClip,
   viewerIndexAfterRemoval,
   viewerIsZoomed,
+  viewerLayoutTransform,
   viewerMaxScale,
   viewerPointOnImage,
+  viewerRelativeZoom,
   viewerSwipeAction,
+  viewerTargetVisible,
   viewerWheelFactor,
   zoomViewerAt,
   zoomViewerBy,
@@ -28,6 +34,39 @@ describe("Quick note image viewer fit", () => {
     expect(viewerFitScale(SMALL, VIEWPORT)).toBe(1);
     expect(viewerFitScale({ width: 0, height: 10 }, VIEWPORT)).toBe(1);
     expect(viewerFit(WIDE, VIEWPORT)).toEqual({ scale: 0.5, x: 0, y: 0 });
+  });
+
+  it("fits inside the padding and ignores padding that would leave no room", () => {
+    const padded = { ...VIEWPORT, padding: { width: 200, height: 100 } };
+    expect(viewerFitScale(WIDE, padded)).toBe(0.4);
+    expect(viewerFitScale(WIDE, { ...VIEWPORT, padding: { width: 1200, height: 900 } })).toBe(0.5);
+    expect(viewerRelativeZoom(viewerFit(WIDE, padded), WIDE, padded)).toBe(1);
+    expect(viewerRelativeZoom({ scale: 0.8, x: 0, y: 0 }, WIDE, padded)).toBe(2);
+  });
+
+  it("keeps room for the arrows only on wide stages that browse several images", () => {
+    expect(viewerFitPadding({ width: 1200, height: 800 }, true).width).toBeGreaterThan(
+      viewerFitPadding({ width: 1200, height: 800 }, false).width,
+    );
+    expect(viewerFitPadding({ width: 400, height: 800 }, true).width).toBe(0);
+    expect(viewerFitPadding({ width: 400, height: 800 }, true).height).toBeGreaterThan(0);
+  });
+
+  it("waits for a measured stage before fitting, then fits on the first measurement", () => {
+    const unmeasured = { width: 0, height: 0 };
+    expect(viewerLayoutTransform(null, WIDE, unmeasured)).toBeNull();
+    expect(viewerLayoutTransform(null, WIDE, { width: 0, height: 600 })).toBeNull();
+    const early = { transform: viewerFit(WIDE, unmeasured), viewport: unmeasured };
+    expect(early.transform.scale).toBe(1);
+    expect(viewerLayoutTransform(early, WIDE, VIEWPORT)).toEqual({ scale: 0.5, x: 0, y: 0 });
+    expect(viewerLayoutTransform(null, WIDE, VIEWPORT)).toEqual({ scale: 0.5, x: 0, y: 0 });
+  });
+
+  it("refits a fitted image when the stage shrinks and keeps a zoomed one in bounds", () => {
+    const fitted = { transform: viewerFit(WIDE, VIEWPORT), viewport: VIEWPORT };
+    expect(viewerLayoutTransform(fitted, WIDE, { width: 500, height: 800 })).toEqual({ scale: 0.25, x: 0, y: 0 });
+    const zoomed = { transform: { scale: 1, x: 400, y: 0 }, viewport: VIEWPORT };
+    expect(viewerLayoutTransform(zoomed, WIDE, { width: 1600, height: 800 })).toEqual({ scale: 1, x: 200, y: 0 });
   });
 
   it("allows zooming past full size on every image", () => {
@@ -143,5 +182,51 @@ describe("Quick note image viewer gestures", () => {
     expect(viewerWheelFactor(1, 2, 800, false)).toBeCloseTo(viewerWheelFactor(800, 0, 800, false));
     expect(viewerWheelFactor(-10, 0, 800, true)).toBeGreaterThan(viewerWheelFactor(-10, 0, 800, false));
     expect(viewerWheelFactor(Number.NaN, 0, 800, false)).toBe(1);
+  });
+});
+
+describe("Quick note image viewer flights", () => {
+  const STAGE = { width: 1000, height: 800 };
+
+  it("moves the frame center onto the tile and covers the tile", () => {
+    const frame = { x: 100, y: 200, width: 800, height: 400 };
+    const tile = { x: 20, y: 30, width: 100, height: 100 };
+    const flight = viewerFlight(frame, tile, STAGE);
+    expect(flight?.scale).toBe(0.25);
+    expect((flight?.scale ?? 0) * 500 + (flight?.x ?? 0)).toBeCloseTo(70);
+    expect((flight?.scale ?? 0) * 400 + (flight?.y ?? 0)).toBeCloseTo(80);
+  });
+
+  it("clips the frame to the part a cropping tile shows", () => {
+    const frame = { x: 100, y: 200, width: 800, height: 400 };
+    const flight = viewerFlight(frame, { x: 20, y: 30, width: 100, height: 100 }, STAGE);
+    expect(flight?.clip).toEqual({ top: 200, right: 300, bottom: 200, left: 300 });
+  });
+
+  it("has no flight for empty rectangles", () => {
+    expect(viewerFlight({ x: 0, y: 0, width: 0, height: 10 }, { x: 0, y: 0, width: 10, height: 10 }, STAGE)).toBeNull();
+    expect(viewerFlight({ x: 0, y: 0, width: 10, height: 10 }, { x: 0, y: 0, width: 10, height: 0 }, STAGE)).toBeNull();
+  });
+
+  it("clips a resting frame to the stage", () => {
+    expect(viewerFrameClip({ x: 100, y: 200, width: 800, height: 400 }, STAGE)).toEqual({
+      top: 200,
+      right: 100,
+      bottom: 200,
+      left: 100,
+    });
+    expect(viewerFrameClip({ x: -500, y: -100, width: 2000, height: 1000 }, STAGE)).toEqual({
+      top: 0,
+      right: 0,
+      bottom: 0,
+      left: 0,
+    });
+  });
+
+  it("flies only to tiles that are mostly on screen", () => {
+    expect(viewerTargetVisible({ x: 10, y: 10, width: 100, height: 100 }, STAGE)).toBe(true);
+    expect(viewerTargetVisible({ x: -60, y: 10, width: 100, height: 100 }, STAGE)).toBe(false);
+    expect(viewerTargetVisible({ x: 10, y: 790, width: 100, height: 100 }, STAGE)).toBe(false);
+    expect(viewerTargetVisible({ x: 10, y: 10, width: 0, height: 100 }, STAGE)).toBe(false);
   });
 });

@@ -18,22 +18,30 @@
   import { quickNoteImageCache, type QuickNoteImageState } from "$lib/quick-notes/image-cache";
   import {
     QUICK_NOTE_VIEWER_ZOOM_STEP,
-    clampViewerTransform,
     panViewer,
     pinchViewer,
     stepViewerIndex,
     toggleViewerZoom,
     viewerFit,
+    viewerFitPadding,
+    viewerFlight,
+    viewerFrameClip,
     viewerIndexAfterRemoval,
     viewerIsZoomed,
+    viewerLayoutTransform,
     viewerMaxScale,
     viewerPointOnImage,
+    viewerRelativeZoom,
     viewerSwipeAction,
+    viewerTargetVisible,
     viewerWheelFactor,
     zoomViewerBy,
+    type ViewerInsets,
     type ViewerPoint,
+    type ViewerRect,
     type ViewerSize,
     type ViewerTransform,
+    type ViewerViewport,
   } from "$lib/quick-notes/image-viewer";
   import type { QuickNoteImage } from "$lib/quick-notes/types";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
@@ -44,12 +52,15 @@
     images,
     startIndex,
     readOnly = false,
+    originRect,
     onRemove,
     onClose,
   }: {
     images: readonly QuickNoteImage[];
     startIndex: number;
     readOnly?: boolean;
+    /** Screen rectangle of the tile that shows an image, so opening and closing fly from and back to it. */
+    originRect?: (index: number) => DOMRect | null;
     /** Removes the image at an index from the note; the viewer then shows a neighbor or closes. */
     onRemove?: (index: number) => void;
     onClose: () => void;
@@ -63,6 +74,11 @@
   /** Distance an arrow key moves a zoomed image, in pixels. */
   const KEY_PAN = 80;
   const NOTICE_MS = 2600;
+  const OPEN_MS = 220;
+  const CLOSE_MS = 180;
+  const FLIGHT_EASING = "cubic-bezier(0.2, 0, 0, 1)";
+  /** Scale the image grows from or shrinks to when there is no tile to fly from or back to. */
+  const FADE_SCALE = 0.96;
 
   interface Gesture {
     pointerType: string;
@@ -79,12 +95,18 @@
   const canCopy = imageClipboardSupported();
   const canDownload = BUILD_PLATFORM_PROFILE.shell === "desktop" || BUILD_PLATFORM_PROFILE.platform === "android";
   let root = $state<HTMLDivElement | null>(null);
+  let backdrop = $state<HTMLDivElement | null>(null);
   let stage = $state<HTMLDivElement | null>(null);
+  let layer = $state<HTMLDivElement | null>(null);
+  let frame = $state<HTMLDivElement | null>(null);
+  let chrome = $state<HTMLDivElement | null>(null);
   let index = $state(untrack(() => startIndex));
-  let viewport = $state.raw<ViewerSize>({ width: 0, height: 0 });
+  let stageSize = $state.raw<ViewerSize>({ width: 0, height: 0 });
   let transform = $state.raw<ViewerTransform>({ scale: 1, x: 0, y: 0 });
+  let placed = $state(false);
   let animate = $state(false);
   let dragging = $state(false);
+  let closing = $state(false);
   let swipe = $state.raw<ViewerPoint>({ x: 0, y: 0 });
   let thumbnailState = $state.raw<QuickNoteImageState>({ status: "loading" });
   let fullState = $state.raw<QuickNoteImageState>({ status: "loading" });
@@ -95,6 +117,8 @@
   let tapTimer: ReturnType<typeof setTimeout> | null = null;
   let lastTap: { time: number; point: ViewerPoint } | null = null;
   let gesture: Gesture | null = null;
+  let flights: Animation[] = [];
+  let closed = false;
   const pointers = new Map<number, ViewerPoint>();
 
   const count = $derived(images.length);
@@ -102,15 +126,21 @@
   const image = $derived(images[shownIndex]);
   const sha256 = $derived(image?.sha256 ?? "");
   const imageSize = $derived<ViewerSize>(image ? { width: image.width, height: image.height } : { width: 1, height: 1 });
+  /** The stage, with room kept clear of the toolbar and arrows while the image is fitted. */
+  const viewport = $derived<ViewerViewport>({ ...stageSize, padding: viewerFitPadding(stageSize, count > 1) });
   const zoomed = $derived(viewerIsZoomed(transform, imageSize, viewport));
   const atMaxZoom = $derived(transform.scale >= viewerMaxScale(imageSize, viewport) * 0.999);
   const thumbnailUrl = $derived(thumbnailState.status === "ready" ? thumbnailState.url : null);
   const fullUrl = $derived(fullState.status === "ready" ? fullState.url : null);
   const failure = $derived(fullState.status === "failed" ? fullState.code : null);
   const canRemove = $derived(!readOnly && onRemove !== undefined);
-  const zoomLabel = $derived(formatNumber(localization.locale, transform.scale, { style: "percent", maximumFractionDigits: 0 }));
-  /** The page behind fades as a downward swipe gets closer to closing. */
-  const backdropAlpha = $derived(0.92 * (1 - Math.min(0.6, swipe.y / Math.max(1, viewport.height))));
+  const zoomLabel = $derived(formatNumber(
+    localization.locale,
+    viewerRelativeZoom(transform, imageSize, viewport),
+    { style: "percent", maximumFractionDigits: 0 },
+  ));
+  /** The page behind shows through as a downward swipe gets closer to closing. */
+  const backdropOpacity = $derived(1 - Math.min(0.6, swipe.y / Math.max(1, stageSize.height)));
   const frameStyle = $derived([
     `width: ${imageSize.width * transform.scale}px`,
     `height: ${imageSize.height * transform.scale}px`,
@@ -118,7 +148,7 @@
   ].join("; "));
 
   $effect(() => {
-    if (count === 0) untrack(onClose);
+    if (count === 0) untrack(finishClose);
   });
 
   // Shows the shared thumbnail until the original is decoded, and warms the neighbors' originals.
@@ -152,20 +182,22 @@
     };
   });
 
-  // A new image starts fitted; a resized viewport keeps a zoomed image in bounds.
-  let fittedSha = "";
+  // A new image starts fitted once the stage is measured; a resize refits a fitted image and keeps a zoomed one in bounds.
+  let placedSha = "";
+  let placedViewport: ViewerViewport | null = null;
   $effect(() => {
     const key = sha256;
     const size = viewport;
     const shape = imageSize;
     untrack(() => {
-      if (key !== fittedSha || !viewerIsZoomed(transform, shape, size)) {
-        fittedSha = key;
-        animate = false;
-        transform = viewerFit(shape, size);
-      } else {
-        transform = clampViewerTransform(transform, shape, size);
-      }
+      const current = key === placedSha && placedViewport ? { transform, viewport: placedViewport } : null;
+      const next = viewerLayoutTransform(current, shape, size);
+      if (!next) return;
+      if (key !== placedSha) animate = false;
+      placedSha = key;
+      placedViewport = size;
+      transform = next;
+      placed = true;
     });
   });
 
@@ -175,7 +207,7 @@
   }
 
   function center(): ViewerPoint {
-    return { x: viewport.width / 2, y: viewport.height / 2 };
+    return { x: stageSize.width / 2, y: stageSize.height / 2 };
   }
 
   function zoomBy(factor: number): void {
@@ -239,8 +271,92 @@
     const removed = shownIndex;
     const next = viewerIndexAfterRemoval(removed, count);
     onRemove?.(removed);
-    if (next === null) onClose();
+    if (next === null) finishClose();
     else index = next;
+  }
+
+  /** Where the shown image sits on the stage, including an unfinished swipe. */
+  function frameRect(): ViewerRect {
+    const width = imageSize.width * transform.scale;
+    const height = imageSize.height * transform.scale;
+    return {
+      x: stageSize.width / 2 + transform.x + swipe.x - width / 2,
+      y: stageSize.height / 2 + transform.y + swipe.y - height / 2,
+      width,
+      height,
+    };
+  }
+
+  /** The shown image's tile on the stage, when it is on screen. */
+  function tileRect(): ViewerRect | null {
+    const rect = originRect?.(shownIndex);
+    const box = stage?.getBoundingClientRect();
+    if (!rect || !box) return null;
+    const target = { x: rect.left - box.left, y: rect.top - box.top, width: rect.width, height: rect.height };
+    return viewerTargetVisible(target, stageSize) ? target : null;
+  }
+
+  function clipInset(insets: ViewerInsets, radius: string): string {
+    return `inset(${insets.top}px ${insets.right}px ${insets.bottom}px ${insets.left}px round ${radius})`;
+  }
+
+  /**
+   * Moves the image between its tile and the stage, fading the backdrop and controls with it. Without a visible
+   * tile the image grows from or shrinks toward the stage center instead.
+   */
+  function fly(direction: "open" | "close"): Animation[] {
+    for (const flight of flights) flight.cancel();
+    flights = [];
+    if (!layer || !backdrop || !chrome || !placed) return flights;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return flights;
+    const resting = frameRect();
+    const target = tileRect();
+    const flight = target ? viewerFlight(resting, target, stageSize) : null;
+    const identity = "translate(0px, 0px) scale(1)";
+    let rest: Keyframe;
+    let away: Keyframe;
+    if (flight) {
+      const radius = frame ? getComputedStyle(frame).borderTopLeftRadius : "0px";
+      rest = { transform: identity, clipPath: clipInset(viewerFrameClip(resting, stageSize), radius) };
+      away = {
+        transform: `translate(${flight.x}px, ${flight.y}px) scale(${flight.scale})`,
+        clipPath: clipInset(flight.clip, "0px"),
+      };
+    } else {
+      const shiftX = ((1 - FADE_SCALE) * stageSize.width) / 2;
+      const shiftY = ((1 - FADE_SCALE) * stageSize.height) / 2;
+      rest = { transform: identity, opacity: 1 };
+      away = { transform: `translate(${shiftX}px, ${shiftY}px) scale(${FADE_SCALE})`, opacity: 0 };
+    }
+    const opening = direction === "open";
+    const options: KeyframeAnimationOptions = {
+      duration: opening ? OPEN_MS : CLOSE_MS,
+      easing: FLIGHT_EASING,
+      fill: opening ? "none" : "forwards",
+    };
+    const backdropFrom = opening ? 0 : Number(getComputedStyle(backdrop).opacity);
+    flights = [
+      layer.animate(opening ? [away, rest] : [rest, away], options),
+      backdrop.animate([{ opacity: backdropFrom }, { opacity: opening ? 1 : 0 }], options),
+      chrome.animate([{ opacity: opening ? 0 : 1 }, { opacity: opening ? 1 : 0 }], options),
+    ];
+    return flights;
+  }
+
+  function finishClose(): void {
+    if (closed) return;
+    closed = true;
+    onClose();
+  }
+
+  /** Closes after flying the image back to its tile. */
+  function requestClose(): void {
+    if (closing || closed) return;
+    closing = true;
+    clearTapTimer();
+    const running = fly("close");
+    if (running.length === 0) finishClose();
+    else void Promise.allSettled(running.map((flight) => flight.finished)).then(finishClose);
   }
 
   function localPoint(event: MouseEvent): ViewerPoint {
@@ -254,7 +370,7 @@
   }
 
   function handlePointerDown(event: PointerEvent): void {
-    if (event.pointerType === "mouse" && event.button !== 0) return;
+    if (closing || (event.pointerType === "mouse" && event.button !== 0)) return;
     if (!stage) return;
     stage.setPointerCapture(event.pointerId);
     const point = localPoint(event);
@@ -307,23 +423,27 @@
   function handlePointerEnd(event: PointerEvent): void {
     if (!pointers.delete(event.pointerId) || pointers.size > 0) return;
     const ended = gesture;
-    const offset = swipe;
     gesture = null;
     dragging = false;
+    const completed = ended !== null && !ended.multi && event.type !== "pointercancel";
+    const action = completed && ended.moved ? viewerSwipeAction(swipe, stageSize) : null;
+    if (action === "close") {
+      // The swipe offset stays so the image flies back from where the finger left it.
+      requestClose();
+      return;
+    }
     animate = true;
     swipe = { x: 0, y: 0 };
-    if (!ended || ended.multi || event.type === "pointercancel") return;
+    if (!completed) return;
     if (ended.moved) {
-      const action = viewerSwipeAction(offset, viewport);
-      if (action === "close") onClose();
-      else if (action === "next") step(1);
+      if (action === "next") step(1);
       else if (action === "previous") step(-1);
       return;
     }
     const point = localPoint(event);
     if (ended.pointerType === "mouse") {
       if (ended.onImage) setTransform(toggleViewerZoom(transform, point, imageSize, viewport), true);
-      else if (!zoomed) onClose();
+      else if (!zoomed) requestClose();
       return;
     }
     const now = performance.now();
@@ -340,7 +460,7 @@
       tapTimer = setTimeout(() => {
         tapTimer = null;
         lastTap = null;
-        onClose();
+        requestClose();
       }, DOUBLE_TAP_MS);
     }
   }
@@ -349,7 +469,8 @@
   function wheelZoom(node: HTMLElement) {
     const handle = (event: WheelEvent): void => {
       event.preventDefault();
-      const factor = viewerWheelFactor(event.deltaY, event.deltaMode, viewport.height, event.ctrlKey);
+      if (closing) return;
+      const factor = viewerWheelFactor(event.deltaY, event.deltaMode, stageSize.height, event.ctrlKey);
       setTransform(zoomViewerBy(transform, factor, imageSize, viewport, localPoint(event)), false);
     };
     node.addEventListener("wheel", handle, { passive: false });
@@ -391,7 +512,7 @@
     if (modifier || event.altKey) return false;
     switch (event.key) {
       case "Escape":
-        onClose();
+        requestClose();
         return true;
       case "ArrowLeft":
         if (zoomed) setTransform(panViewer(transform, { x: KEY_PAN, y: 0 }, imageSize, viewport), true);
@@ -438,7 +559,8 @@
       trapTab(event);
       return;
     }
-    if (event.isComposing || !runShortcut(event)) return;
+    // Keys stay with the viewer while it closes, so Escape does not also reach the editor.
+    if (event.isComposing || (!closing && !runShortcut(event))) return;
     event.preventDefault();
     event.stopPropagation();
   }
@@ -446,17 +568,23 @@
   onMount(() => {
     const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const returnContainer = returnFocus?.closest<HTMLElement>("[role='dialog']") ?? null;
-    const deactivateMobileBack = mobileBackStack.activate({ handle: onClose });
+    const deactivateMobileBack = mobileBackStack.activate({ handle: requestClose });
     window.addEventListener("keydown", handleKeydown, true);
     const observer = new ResizeObserver(() => {
-      if (stage) viewport = { width: stage.clientWidth, height: stage.clientHeight };
+      if (stage) stageSize = { width: stage.clientWidth, height: stage.clientHeight };
     });
     if (stage) {
-      viewport = { width: stage.clientWidth, height: stage.clientHeight };
+      stageSize = { width: stage.clientWidth, height: stage.clientHeight };
       observer.observe(stage);
     }
-    void tick().then(() => root?.focus());
+    // The fit runs in this update, so the flight starts from the image's resting place before the first paint.
+    void tick().then(() => {
+      if (!closing) fly("open");
+      root?.focus();
+    });
     return () => {
+      closed = true;
+      for (const flight of flights) flight.cancel();
       observer.disconnect();
       deactivateMobileBack();
       window.removeEventListener("keydown", handleKeydown, true);
@@ -470,58 +598,24 @@
     };
   });
 
-  const controlClass = "flex size-10 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-white/12 focus-visible:outline-2 focus-visible:outline-white disabled:opacity-40 disabled:hover:bg-transparent";
-  const sideClass = "absolute top-1/2 flex size-11 -translate-y-1/2 items-center justify-center rounded-full bg-black/45 transition-colors hover:bg-black/70 focus-visible:outline-2 focus-visible:outline-white";
+  const controlClass = "flex size-8 shrink-0 items-center justify-center rounded-floating-item text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted-foreground pointer-coarse:size-11";
+  const sideClass = "surface-floating pointer-events-auto absolute top-1/2 flex size-10 -translate-y-1/2 items-center justify-center text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-2 focus-visible:outline-ring pointer-coarse:size-11";
 </script>
 
 <div
   use:portal
   bind:this={root}
-  class="quick-note-image-viewer fixed inset-0 z-90 flex flex-col text-white outline-none"
-  style:background-color={`rgb(0 0 0 / ${backdropAlpha})`}
+  class="quick-note-image-viewer @container fixed inset-0 z-90 outline-none"
+  class:pointer-events-none={closing}
   role="dialog"
   aria-modal="true"
   aria-label={t("quickNotes.images.viewer.title")}
   tabindex="-1"
   data-app-shortcuts="ignore"
 >
-  <header class="@container relative z-10 flex min-h-12 shrink-0 items-center gap-0.5 px-1.5">
-    <span class="min-w-0 flex-1 truncate px-2 text-sm tabular-nums opacity-80">
-      {#if count > 1}{t("quickNotes.images.viewer.counter", shownIndex + 1, count)}{/if}
-    </span>
-    <div class="flex items-center gap-0.5 @max-sm:hidden">
-      <button class={controlClass} type="button" disabled={!zoomed} aria-label={t("quickNotes.images.viewer.zoomOut")} title={t("quickNotes.images.viewer.zoomOut")} onclick={() => zoomBy(1 / QUICK_NOTE_VIEWER_ZOOM_STEP)}>
-        <ZoomOut class="size-5" strokeWidth={1.5} aria-hidden="true" />
-      </button>
-      <button class="min-h-10 min-w-14 rounded-full px-2 text-xs tabular-nums transition-colors hover:bg-white/12 focus-visible:outline-2 focus-visible:outline-white" type="button" aria-label={t("quickNotes.images.viewer.fit")} title={t("quickNotes.images.viewer.fit")} onclick={fit}>
-        {zoomLabel}
-      </button>
-      <button class={controlClass} type="button" disabled={atMaxZoom} aria-label={t("quickNotes.images.viewer.zoomIn")} title={t("quickNotes.images.viewer.zoomIn")} onclick={() => zoomBy(QUICK_NOTE_VIEWER_ZOOM_STEP)}>
-        <ZoomIn class="size-5" strokeWidth={1.5} aria-hidden="true" />
-      </button>
-      <span class="mx-1 h-5 w-px bg-white/20"></span>
-    </div>
-    {#if canCopy}
-      <button class={controlClass} type="button" disabled={!image} aria-label={t("quickNotes.images.viewer.copy")} title={t("quickNotes.images.viewer.copy")} onclick={copy}>
-        <Copy class="size-5" strokeWidth={1.5} aria-hidden="true" />
-      </button>
-    {/if}
-    {#if canDownload}
-      <button class={controlClass} type="button" disabled={!image || downloading} aria-label={t("quickNotes.images.viewer.download")} title={t("quickNotes.images.viewer.download")} onclick={() => void download()}>
-        <Download class="size-5" strokeWidth={1.5} aria-hidden="true" />
-      </button>
-    {/if}
-    {#if canRemove}
-      <button class={controlClass} type="button" aria-label={t("quickNotes.images.viewer.remove")} title={t("quickNotes.images.viewer.remove")} onclick={remove}>
-        <Trash2 class="size-5" strokeWidth={1.5} aria-hidden="true" />
-      </button>
-    {/if}
-    <button class={controlClass} type="button" aria-label={t("quickNotes.images.viewer.close")} title={t("quickNotes.images.viewer.close")} onclick={onClose}>
-      <X class="size-5" strokeWidth={1.5} aria-hidden="true" />
-    </button>
-  </header>
+  <div bind:this={backdrop} class="surface-backdrop absolute inset-0" style:opacity={backdropOpacity}></div>
 
-  <div class="relative min-h-0 flex-1">
+  <div class="relative size-full">
     <div
       bind:this={stage}
       use:wheelZoom
@@ -535,58 +629,104 @@
       onpointercancel={handlePointerEnd}
     >
       {#if image}
-        <div
-          class="quick-note-viewer-frame absolute top-1/2 left-1/2"
-          class:cursor-zoom-in={!zoomed}
-          class:quick-note-viewer-animate={animate && !dragging}
-          style={frameStyle}
-        >
-          {#if thumbnailUrl && !fullDecoded}
-            <img src={thumbnailUrl} alt="" draggable="false" class="absolute inset-0 size-full" />
-          {/if}
-          {#if fullUrl}
-            <img
-              src={fullUrl}
-              alt={t("quickNotes.images.image", shownIndex + 1, count)}
-              draggable="false"
-              decoding="async"
-              class="absolute inset-0 size-full"
-              class:opacity-0={!fullDecoded}
-              onload={() => { fullDecoded = true; }}
-            />
-          {/if}
+        <div bind:this={layer} class="absolute inset-0 origin-top-left">
+          <div
+            bind:this={frame}
+            class="absolute top-1/2 left-1/2 overflow-hidden rounded-floating bg-card shadow-floating"
+            class:invisible={!placed}
+            class:cursor-zoom-in={!zoomed}
+            class:quick-note-viewer-animate={animate && !dragging}
+            style={frameStyle}
+          >
+            {#if thumbnailUrl && !fullDecoded}
+              <img src={thumbnailUrl} alt="" draggable="false" class="absolute inset-0 size-full" />
+            {/if}
+            {#if fullUrl}
+              <img
+                src={fullUrl}
+                alt={t("quickNotes.images.image", shownIndex + 1, count)}
+                draggable="false"
+                decoding="async"
+                class="absolute inset-0 size-full"
+                class:opacity-0={!fullDecoded}
+                onload={() => { fullDecoded = true; }}
+              />
+            {/if}
+          </div>
         </div>
         {#if failure}
-          <div class="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 px-6 text-center text-sm">
-            {#if failure === "unavailable"}
-              <CloudDownload class="size-8 opacity-70" strokeWidth={1.25} aria-hidden="true" />
-              <p class="max-w-xs opacity-85">{t("quickNotes.images.unavailable")}</p>
-            {:else}
-              <ImageOff class="size-8 opacity-70" strokeWidth={1.25} aria-hidden="true" />
-              <p class="max-w-xs opacity-85">{t("quickNotes.images.loadFailed")}</p>
-            {/if}
+          <div class="pointer-events-none absolute inset-0 flex items-center justify-center px-6">
+            <div class="surface-floating flex max-w-xs flex-col items-center gap-2 px-4 py-3 text-center">
+              {#if failure === "unavailable"}
+                <CloudDownload class="size-7 text-muted-foreground" strokeWidth={1.25} aria-hidden="true" />
+                <p>{t("quickNotes.images.unavailable")}</p>
+              {:else}
+                <ImageOff class="size-7 text-muted-foreground" strokeWidth={1.25} aria-hidden="true" />
+                <p>{t("quickNotes.images.loadFailed")}</p>
+              {/if}
+            </div>
           </div>
         {:else if !fullDecoded && !thumbnailUrl}
           <div class="pointer-events-none absolute inset-0 flex items-center justify-center" role="status" aria-label={t("quickNotes.images.loading")}>
-            <LoaderCircle class="size-7 animate-spin opacity-75" strokeWidth={1.5} aria-hidden="true" />
+            <span class="surface-floating flex p-2">
+              <LoaderCircle class="size-6 animate-spin text-muted-foreground" strokeWidth={1.5} aria-hidden="true" />
+            </span>
           </div>
         {/if}
       {/if}
     </div>
 
-    {#if count > 1}
-      <button class={`${sideClass} left-2`} type="button" aria-label={t("quickNotes.images.viewer.previous")} title={t("quickNotes.images.viewer.previous")} onclick={() => step(-1)}>
-        <ChevronLeft class="size-6" strokeWidth={1.5} aria-hidden="true" />
-      </button>
-      <button class={`${sideClass} right-2`} type="button" aria-label={t("quickNotes.images.viewer.next")} title={t("quickNotes.images.viewer.next")} onclick={() => step(1)}>
-        <ChevronRight class="size-6" strokeWidth={1.5} aria-hidden="true" />
-      </button>
-    {/if}
+    <div bind:this={chrome} class="pointer-events-none absolute inset-0">
+      <div class="surface-floating surface-floating-body pointer-events-auto absolute top-3 right-3 flex items-center gap-0.5">
+        {#if count > 1}
+          <span class="px-1.5 text-xs text-muted-foreground tabular-nums">{t("quickNotes.images.viewer.counter", shownIndex + 1, count)}</span>
+        {/if}
+        <div class="flex items-center gap-0.5 @max-sm:hidden">
+          <button class={controlClass} type="button" disabled={!zoomed} aria-label={t("quickNotes.images.viewer.zoomOut")} title={t("quickNotes.images.viewer.zoomOut")} onclick={() => zoomBy(1 / QUICK_NOTE_VIEWER_ZOOM_STEP)}>
+            <ZoomOut class="size-4" strokeWidth={1.75} aria-hidden="true" />
+          </button>
+          <button class="h-8 min-w-12 rounded-floating-item px-1.5 text-xs text-muted-foreground tabular-nums transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-2 focus-visible:outline-ring pointer-coarse:h-11" type="button" aria-label={t("quickNotes.images.viewer.fit")} title={t("quickNotes.images.viewer.fit")} onclick={fit}>
+            {zoomLabel}
+          </button>
+          <button class={controlClass} type="button" disabled={atMaxZoom} aria-label={t("quickNotes.images.viewer.zoomIn")} title={t("quickNotes.images.viewer.zoomIn")} onclick={() => zoomBy(QUICK_NOTE_VIEWER_ZOOM_STEP)}>
+            <ZoomIn class="size-4" strokeWidth={1.75} aria-hidden="true" />
+          </button>
+          <span class="mx-1 h-4 w-px bg-border"></span>
+        </div>
+        {#if canCopy}
+          <button class={controlClass} type="button" disabled={!image} aria-label={t("quickNotes.images.viewer.copy")} title={t("quickNotes.images.viewer.copy")} onclick={copy}>
+            <Copy class="size-4" strokeWidth={1.75} aria-hidden="true" />
+          </button>
+        {/if}
+        {#if canDownload}
+          <button class={controlClass} type="button" disabled={!image || downloading} aria-label={t("quickNotes.images.viewer.download")} title={t("quickNotes.images.viewer.download")} onclick={() => void download()}>
+            <Download class="size-4" strokeWidth={1.75} aria-hidden="true" />
+          </button>
+        {/if}
+        {#if canRemove}
+          <button class={controlClass} type="button" aria-label={t("quickNotes.images.viewer.remove")} title={t("quickNotes.images.viewer.remove")} onclick={remove}>
+            <Trash2 class="size-4" strokeWidth={1.75} aria-hidden="true" />
+          </button>
+        {/if}
+        <button class={controlClass} type="button" aria-label={t("quickNotes.images.viewer.close")} title={t("quickNotes.images.viewer.close")} onclick={requestClose}>
+          <X class="size-4" strokeWidth={1.75} aria-hidden="true" />
+        </button>
+      </div>
 
-    <div class="pointer-events-none absolute inset-x-0 bottom-4 flex justify-center px-4" role="status" aria-live="polite">
-      {#if notice}
-        <span class="rounded-full bg-black/75 px-4 py-2 text-sm">{notice}</span>
+      {#if count > 1}
+        <button class={`${sideClass} left-3`} type="button" aria-label={t("quickNotes.images.viewer.previous")} title={t("quickNotes.images.viewer.previous")} onclick={() => step(-1)}>
+          <ChevronLeft class="size-5" strokeWidth={1.75} aria-hidden="true" />
+        </button>
+        <button class={`${sideClass} right-3`} type="button" aria-label={t("quickNotes.images.viewer.next")} title={t("quickNotes.images.viewer.next")} onclick={() => step(1)}>
+          <ChevronRight class="size-5" strokeWidth={1.75} aria-hidden="true" />
+        </button>
       {/if}
+
+      <div class="absolute inset-x-0 bottom-4 flex justify-center px-4" role="status" aria-live="polite">
+        {#if notice}
+          <span class="surface-floating px-3 py-1.5">{notice}</span>
+        {/if}
+      </div>
     </div>
   </div>
 </div>

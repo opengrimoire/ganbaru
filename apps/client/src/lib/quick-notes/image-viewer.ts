@@ -10,9 +10,30 @@ export interface ViewerSize {
   height: number;
 }
 
+/** The viewer stage, with the room a fitted image leaves free for controls, summed over both sides of each axis. */
+export interface ViewerViewport extends ViewerSize {
+  padding?: ViewerSize;
+}
+
 export interface ViewerPoint {
   x: number;
   y: number;
+}
+
+/** A rectangle relative to the stage's top left corner. */
+export interface ViewerRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** Distances from each stage edge, in pixels. */
+export interface ViewerInsets {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
 }
 
 /**
@@ -25,24 +46,82 @@ export interface ViewerTransform {
   y: number;
 }
 
-/** Scale that fits the whole image in the viewport without enlarging images smaller than it. */
-export function viewerFitScale(image: ViewerSize, viewport: ViewerSize): number {
-  if (!(image.width > 0) || !(image.height > 0) || !(viewport.width > 0) || !(viewport.height > 0)) return 1;
-  return Math.min(1, viewport.width / image.width, viewport.height / image.height);
+/** Stages narrower than this give images their full width and keep room only for the toolbar. */
+const VIEWER_COMPACT_WIDTH = 640;
+/** Room kept above and below a fitted image for the toolbar, per side; compact stages are touch screens with taller controls. */
+const VIEWER_TOOLBAR_ROOM = 64;
+const VIEWER_COMPACT_TOOLBAR_ROOM = 72;
+/** Room kept beside a fitted image, per side; browsing several images leaves space for the arrows. */
+const VIEWER_SIDE_ROOM = 32;
+const VIEWER_BROWSING_SIDE_ROOM = 72;
+
+/** Room a fitted image leaves free on a stage, so the image sits clear of the toolbar and arrows. */
+export function viewerFitPadding(stage: ViewerSize, browsing: boolean): ViewerSize {
+  if (stage.width < VIEWER_COMPACT_WIDTH) return { width: 0, height: 2 * VIEWER_COMPACT_TOOLBAR_ROOM };
+  return {
+    width: 2 * (browsing ? VIEWER_BROWSING_SIDE_ROOM : VIEWER_SIDE_ROOM),
+    height: 2 * VIEWER_TOOLBAR_ROOM,
+  };
+}
+
+/** Whether the stage has a size yet; an unmeasured stage cannot fit an image. */
+export function viewerViewportMeasured(viewport: ViewerSize): boolean {
+  return viewport.width > 0 && viewport.height > 0;
+}
+
+/**
+ * Scale that fits the whole image in the viewport, inside its padding, without enlarging images smaller than it.
+ * Padding that would leave no room is ignored.
+ */
+export function viewerFitScale(image: ViewerSize, viewport: ViewerViewport): number {
+  if (!(image.width > 0) || !(image.height > 0) || !viewerViewportMeasured(viewport)) return 1;
+  const paddedWidth = viewport.width - (viewport.padding?.width ?? 0);
+  const paddedHeight = viewport.height - (viewport.padding?.height ?? 0);
+  const width = paddedWidth > 0 ? paddedWidth : viewport.width;
+  const height = paddedHeight > 0 ? paddedHeight : viewport.height;
+  return Math.min(1, width / image.width, height / image.height);
+}
+
+/** Zoom relative to the fitted size, so the whole image reads as 100%. */
+export function viewerRelativeZoom(transform: ViewerTransform, image: ViewerSize, viewport: ViewerViewport): number {
+  return transform.scale / viewerFitScale(image, viewport);
 }
 
 /** Largest scale for an image, which still allows a few steps of zoom on images that fit at full size. */
-export function viewerMaxScale(image: ViewerSize, viewport: ViewerSize): number {
+export function viewerMaxScale(image: ViewerSize, viewport: ViewerViewport): number {
   return Math.max(QUICK_NOTE_VIEWER_MAX_SCALE, viewerFitScale(image, viewport) * QUICK_NOTE_VIEWER_MAX_SCALE);
 }
 
 /** The fitted, centered transform. */
-export function viewerFit(image: ViewerSize, viewport: ViewerSize): ViewerTransform {
+export function viewerFit(image: ViewerSize, viewport: ViewerViewport): ViewerTransform {
   return { scale: viewerFitScale(image, viewport), x: 0, y: 0 };
 }
 
+/** A transform with the stage it was computed for. */
+export interface ViewerPlacement {
+  transform: ViewerTransform;
+  viewport: ViewerViewport;
+}
+
+/**
+ * Transform after the stage or image changes. Without a current placement, or when the image was not zoomed on the
+ * stage it was placed for, the image fits; a zoomed image stays where it is, within bounds. Returns null until the
+ * stage is measured, since a fit computed then would show the image at full size.
+ */
+export function viewerLayoutTransform(
+  current: ViewerPlacement | null,
+  image: ViewerSize,
+  viewport: ViewerViewport,
+): ViewerTransform | null {
+  if (!viewerViewportMeasured(viewport)) return null;
+  if (!current || !viewerViewportMeasured(current.viewport) || !viewerIsZoomed(current.transform, image, current.viewport)) {
+    return viewerFit(image, viewport);
+  }
+  return clampViewerTransform(current.transform, image, viewport);
+}
+
 /** Whether the image is shown larger than its fitted size. */
-export function viewerIsZoomed(transform: ViewerTransform, image: ViewerSize, viewport: ViewerSize): boolean {
+export function viewerIsZoomed(transform: ViewerTransform, image: ViewerSize, viewport: ViewerViewport): boolean {
   return transform.scale > viewerFitScale(image, viewport) * 1.001;
 }
 
@@ -50,7 +129,7 @@ export function viewerIsZoomed(transform: ViewerTransform, image: ViewerSize, vi
 export function clampViewerTransform(
   transform: ViewerTransform,
   image: ViewerSize,
-  viewport: ViewerSize,
+  viewport: ViewerViewport,
 ): ViewerTransform {
   const scale = Math.min(
     viewerMaxScale(image, viewport),
@@ -74,7 +153,7 @@ export function zoomViewerAt(
   scale: number,
   point: ViewerPoint,
   image: ViewerSize,
-  viewport: ViewerSize,
+  viewport: ViewerViewport,
 ): ViewerTransform {
   const bounded = clampViewerTransform({ ...transform, scale }, image, viewport).scale;
   const ratio = bounded / transform.scale;
@@ -96,7 +175,7 @@ export function zoomViewerBy(
   transform: ViewerTransform,
   factor: number,
   image: ViewerSize,
-  viewport: ViewerSize,
+  viewport: ViewerViewport,
   point: ViewerPoint = { x: viewport.width / 2, y: viewport.height / 2 },
 ): ViewerTransform {
   return zoomViewerAt(transform, transform.scale * factor, point, image, viewport);
@@ -107,7 +186,7 @@ export function panViewer(
   transform: ViewerTransform,
   delta: ViewerPoint,
   image: ViewerSize,
-  viewport: ViewerSize,
+  viewport: ViewerViewport,
 ): ViewerTransform {
   return clampViewerTransform(
     { scale: transform.scale, x: transform.x + delta.x, y: transform.y + delta.y },
@@ -121,7 +200,7 @@ export function toggleViewerZoom(
   transform: ViewerTransform,
   point: ViewerPoint,
   image: ViewerSize,
-  viewport: ViewerSize,
+  viewport: ViewerViewport,
 ): ViewerTransform {
   if (viewerIsZoomed(transform, image, viewport)) return viewerFit(image, viewport);
   const fit = viewerFitScale(image, viewport);
@@ -138,7 +217,7 @@ export function pinchViewer(
   previous: readonly [ViewerPoint, ViewerPoint],
   next: readonly [ViewerPoint, ViewerPoint],
   image: ViewerSize,
-  viewport: ViewerSize,
+  viewport: ViewerViewport,
 ): ViewerTransform {
   const previousDistance = Math.hypot(previous[1].x - previous[0].x, previous[1].y - previous[0].y);
   const nextDistance = Math.hypot(next[1].x - next[0].x, next[1].y - next[0].y);
@@ -166,7 +245,7 @@ export function viewerPointOnImage(
   point: ViewerPoint,
   transform: ViewerTransform,
   image: ViewerSize,
-  viewport: ViewerSize,
+  viewport: ViewerViewport,
 ): boolean {
   const centerX = viewport.width / 2 + transform.x;
   const centerY = viewport.height / 2 + transform.y;
@@ -180,7 +259,7 @@ const SWIPE_STEP_DISTANCE = 72;
 const SWIPE_CLOSE_DISTANCE = 110;
 
 /** What a drag on a fitted image does when it ends: a mostly horizontal swipe changes image, a downward one closes. */
-export function viewerSwipeAction(offset: ViewerPoint, viewport: ViewerSize): "previous" | "next" | "close" | null {
+export function viewerSwipeAction(offset: ViewerPoint, viewport: ViewerViewport): "previous" | "next" | "close" | null {
   const stepDistance = Math.min(SWIPE_STEP_DISTANCE, viewport.width * 0.18);
   const closeDistance = Math.min(SWIPE_CLOSE_DISTANCE, viewport.height * 0.2);
   if (Math.abs(offset.x) > Math.abs(offset.y)) {
@@ -205,4 +284,57 @@ export function viewerWheelFactor(deltaY: number, deltaMode: number, pageHeight:
   const unit = deltaMode === 1 ? WHEEL_LINE_PIXELS : deltaMode === 2 ? Math.max(1, pageHeight) : 1;
   const delta = Number.isFinite(deltaY) ? deltaY * unit : 0;
   return Math.exp(-delta * (pinch ? PINCH_ZOOM_RATE : WHEEL_ZOOM_RATE));
+}
+
+/**
+ * How the image layer moves for an open or close flight between the shown frame and a tile. The layer scales by
+ * `scale` around the stage's top left corner and then moves by `x` and `y`, which puts the frame's center on the
+ * tile's center. The scale covers the tile, and `clip` keeps only the part of the frame the tile shows, so a tile
+ * that crops its image is matched exactly.
+ */
+export interface ViewerFlight {
+  scale: number;
+  x: number;
+  y: number;
+  /** Insets of the visible part from the layer's edges, in layer pixels before scaling. */
+  clip: ViewerInsets;
+}
+
+/** The flight that shows `frame` where `target` is, or null when either has no area. */
+export function viewerFlight(frame: ViewerRect, target: ViewerRect, stage: ViewerSize): ViewerFlight | null {
+  if (!(frame.width > 0) || !(frame.height > 0) || !(target.width > 0) || !(target.height > 0)) return null;
+  const scale = Math.max(target.width / frame.width, target.height / frame.height);
+  const frameX = frame.x + frame.width / 2;
+  const frameY = frame.y + frame.height / 2;
+  const halfWidth = target.width / (2 * scale);
+  const halfHeight = target.height / (2 * scale);
+  return {
+    scale,
+    x: target.x + target.width / 2 - scale * frameX,
+    y: target.y + target.height / 2 - scale * frameY,
+    clip: {
+      top: frameY - halfHeight,
+      right: stage.width - (frameX + halfWidth),
+      bottom: stage.height - (frameY + halfHeight),
+      left: frameX - halfWidth,
+    },
+  };
+}
+
+/** Clip that leaves the visible part of a resting frame showing, as insets from the stage edges. */
+export function viewerFrameClip(frame: ViewerRect, stage: ViewerSize): ViewerInsets {
+  return {
+    top: Math.max(0, frame.y),
+    right: Math.max(0, stage.width - frame.x - frame.width),
+    bottom: Math.max(0, stage.height - frame.y - frame.height),
+    left: Math.max(0, frame.x),
+  };
+}
+
+/** Whether a tile is far enough on screen for a flight to read as coming from or going back to it. */
+export function viewerTargetVisible(target: ViewerRect, stage: ViewerSize): boolean {
+  if (!(target.width > 0) || !(target.height > 0)) return false;
+  const visibleWidth = Math.min(stage.width, target.x + target.width) - Math.max(0, target.x);
+  const visibleHeight = Math.min(stage.height, target.y + target.height) - Math.max(0, target.y);
+  return visibleWidth >= target.width / 2 && visibleHeight >= target.height / 2;
 }

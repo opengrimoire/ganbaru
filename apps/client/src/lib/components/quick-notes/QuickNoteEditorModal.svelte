@@ -157,6 +157,7 @@
   let transitionPending = $state(false);
   let dialog = $state<HTMLDivElement | null>(null);
   let editor = $state<HTMLDivElement | null>(null);
+  let scroller = $state<HTMLDivElement | null>(null);
   let titleInput = $state<HTMLInputElement | null>(null);
   let history = $state(createQuickNoteHistory());
   let composing = false;
@@ -683,6 +684,16 @@
     imageNotice = null;
   }
 
+  /** Screen rectangle of an image's tile, or null when the tile is scrolled out of the note. */
+  function imageTileRect(index: number): DOMRect | null {
+    const tile = scroller?.querySelector<HTMLElement>(`[data-quick-note-image-index="${index}"]`);
+    if (!scroller || !tile) return null;
+    const rect = tile.getBoundingClientRect();
+    const bounds = scroller.getBoundingClientRect();
+    const centerY = rect.top + rect.height / 2;
+    return centerY >= bounds.top && centerY <= bounds.bottom ? rect : null;
+  }
+
   /** Pasting a copied image adds it to the note from any field; copied text keeps pasting as text. */
   function handleImagePaste(event: ClipboardEvent): void {
     const clipboard = event.clipboardData;
@@ -877,7 +888,7 @@
   >
     <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
       <!-- Images, title, and body scroll together, so the images sit at the top of the note like on its card. -->
-      <div use:scrollEdgeFadeAction class="flex min-h-0 flex-1 flex-col overflow-y-auto">
+      <div bind:this={scroller} use:scrollEdgeFadeAction class="flex min-h-0 flex-1 flex-col overflow-y-auto">
         {#if images.length > 0}
           <div class="shrink-0">
             <QuickNoteImageMosaic
@@ -1033,6 +1044,7 @@
       {images}
       startIndex={viewerIndex}
       {readOnly}
+      originRect={imageTileRect}
       onRemove={readOnly ? undefined : removeImage}
       onClose={() => { viewerIndex = null; }}
     />

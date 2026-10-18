@@ -296,6 +296,8 @@ pub(crate) const MAX_MUSIC_CONFIRM_PATHS: usize = 64;
 const MAX_MUSIC_CONFIRM_DIALOG_ITEMS: usize = 12;
 
 /// Localized text for the native local source confirmation.
+// Android accepts the prompt to keep one command signature but never shows it.
+#[cfg_attr(mobile, allow(dead_code))]
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MusicLocalSourcePrompt {

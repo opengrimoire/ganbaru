@@ -18,6 +18,7 @@ import { createMusicHostedMediaController, type MusicStaleVisual } from "$lib/st
 import { createDeviceVolume } from "$lib/stores/music-player/device-volume";
 import { createMusicExternalControls } from "$lib/stores/music-player/external-controls";
 import { createMusicYouTubeAdapter } from "$lib/stores/music-player/youtube-adapter";
+import type { NativeYouTubeHost } from "$lib/music/youtube-native-host";
 import { createMusicWebviewLocalAdapter } from "$lib/stores/music-player/webview-local-adapter";
 
 export type { MusicStaleVisual } from "$lib/stores/music-player/hosted-media-controller";
@@ -580,6 +581,8 @@ class MusicPlayerStore {
   applyLibraryMetadata(_itemId: string, _identityKey: string, _title: string, _artworkUrl?: string | null): void { this.refreshQueue(); }
   claimSurface(owner: string, element: HTMLElement, priority = 0): () => void { return this.surfaceClaims.claim(owner, element, priority); }
   registerYouTubeFrame(frame: HTMLIFrameElement | null): void { this.youtubeAdapter.registerFrame(frame); }
+  registerYouTubeNativeHost(host: NativeYouTubeHost | null): void { this.youtubeAdapter.registerNativeHost(host); }
+  handleYouTubeNativeData(data: unknown): void { this.youtubeAdapter.handleNativeData(data); }
   registerLocalMedia(element: HTMLMediaElement | null): void { this.webviewLocalAdapter.register(element); }
   resumeSnapshotScheduler(): void { void this.heartbeat(); if (this.isYouTubeActive) this.youtubeAdapter.post({ action: "snapshot" }); }
   handleVolumeWheel(event: WheelEvent): void {

@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { translate } from "$lib/i18n/translator.svelte";
 
 export interface MediaFolderTrack {
@@ -94,6 +94,47 @@ export async function revealLocalFile(path: string): Promise<void> {
 
 export async function getYouTubeHostUrl(): Promise<string> {
   return invoke("music_youtube_host_url");
+}
+
+/** Android native YouTube host instance: the visible player or the hidden source resolver. */
+export type NativeYouTubeHostInstance = "playback" | "resolver";
+
+/** Native YouTube host placement in CSS pixels of the app WebView. */
+export interface NativeYouTubeHostBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  scale: number;
+  visible: boolean;
+}
+
+/** Opens a separate Android WebView for the YouTube host page; its messages arrive on `channel`. */
+export async function openNativeYouTubeHost(
+  instance: NativeYouTubeHostInstance,
+  url: string,
+  bounds: NativeYouTubeHostBounds,
+  channel: Channel<unknown>,
+): Promise<void> {
+  await invoke("music_youtube_native_open", { instance, url, bounds, channel });
+}
+
+export async function setNativeYouTubeHostBounds(
+  instance: NativeYouTubeHostInstance,
+  bounds: NativeYouTubeHostBounds,
+): Promise<void> {
+  await invoke("music_youtube_native_bounds", { instance, bounds });
+}
+
+export async function postNativeYouTubeHostMessage(
+  instance: NativeYouTubeHostInstance,
+  message: Record<string, unknown>,
+): Promise<void> {
+  await invoke("music_youtube_native_post", { instance, message });
+}
+
+export async function closeNativeYouTubeHost(instance: NativeYouTubeHostInstance): Promise<void> {
+  await invoke("music_youtube_native_close", { instance });
 }
 
 export async function getYouTubeMetadata(

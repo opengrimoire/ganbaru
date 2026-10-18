@@ -16,7 +16,7 @@ Capability files in `apps/client/src-tauri/capabilities/` are authoritative for 
 
 ## Content security policy
 
-Production CSP permits bundled application assets, Tauri IPC, and the origins required by current features. Desktop permits YouTube player scripts and frames plus ephemeral loopback media, image, and frame sources for Music and Chat previews. Android omits YouTube and additionally permits a connection to the GitHub releases API for its in-app update check. These are scoped exceptions, not a generic permission for remote scripts or frames.
+Production CSP permits bundled application assets, Tauri IPC, and the origins required by current features. Desktop permits YouTube player scripts and frames plus ephemeral loopback media, image, and frame sources for Music and Chat previews. Android denies every frame source, hosts YouTube in a separate bridgeless native WebView (see [Android permissions and security](../../platforms/android/permissions-and-security.md#webview-and-bridge)), and additionally permits a connection to the GitHub releases API for its in-app update check. These are scoped exceptions, not a generic permission for remote scripts or frames.
 
 Development CSP additionally supports Vite and hot reload, including `unsafe-eval`. A development exception must not be copied into production configuration.
 
@@ -78,7 +78,7 @@ Mobile enforcement plugins expose only launchable-app discovery, selected settin
 
 ## Music loopback service
 
-Music uses an ephemeral loopback service for selected local media and the YouTube player. It binds to 127.0.0.1 on an ephemeral port and protects routes with a per-process random token that is not logged, persisted, or returned in errors. Being local does not make the origin trusted.
+Desktop Music uses an ephemeral loopback service for selected local media and the YouTube player; Android does not start it. It binds to 127.0.0.1 on an ephemeral port and protects routes with a per-process random token that is not logged, persisted, or returned in errors. Being local does not make the origin trusted.
 
 The server accepts a small allowlisted HTTP subset with bounded headers, deadlines, worker count, registrations, and resident artwork. Responses disable caching and MIME sniffing and apply route-specific CSP: media and text routes deny active content, and YouTube routes permit only the origins the embedded player requires.
 

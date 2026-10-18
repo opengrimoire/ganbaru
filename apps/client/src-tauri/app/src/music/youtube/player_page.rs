@@ -62,8 +62,20 @@ pub(crate) fn youtube_host_html() -> &'static str {
       };
     }
 
+    const nativeHost = typeof window.ganbaruYouTubeHost === "object" ? window.ganbaruYouTubeHost : null;
+
     function send(message) {
-      parent.postMessage({ token, load: loadId, ...message }, "*");
+      const payload = { token, load: loadId, ...message };
+      if (nativeHost) {
+        nativeHost.postMessage(JSON.stringify(payload));
+        return;
+      }
+      parent.postMessage(payload, "*");
+    }
+
+    function acceptCommand(data) {
+      if (!data || data.token !== token || data.type !== "ganbaru-youtube-command") return;
+      handleCommand(data);
     }
 
     function resetPlayerElement() {
@@ -312,12 +324,21 @@ pub(crate) fn youtube_host_html() -> &'static str {
       }
     };
 
-    window.addEventListener("message", (event) => {
-      if (event.source !== parent) return;
-      const data = event.data;
-      if (!data || data.token !== token || data.type !== "ganbaru-youtube-command") return;
-      handleCommand(data);
-    });
+    if (nativeHost) {
+      nativeHost.addEventListener("message", (event) => {
+        if (typeof event.data !== "string") return;
+        try {
+          acceptCommand(JSON.parse(event.data));
+        } catch {
+          return;
+        }
+      });
+    } else {
+      window.addEventListener("message", (event) => {
+        if (event.source !== parent) return;
+        acceptCommand(event.data);
+      });
+    }
 
     window.setInterval(() => {
       if (player && playbackActive) snapshot();

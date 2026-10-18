@@ -189,6 +189,96 @@ impl<R: Runtime> MobileMedia<R> {
         .await
         .map(|response| response.data_url)
     }
+
+    /// Opens a separate, bridgeless WebView that serves `page` and forwards its
+    /// host-origin messages to `channel`. Callers validate every field first.
+    pub async fn youtube_open(
+        &self,
+        instance: &str,
+        page: &MobileYouTubePage<'_>,
+        bounds: MobileYouTubeBounds,
+        channel: tauri::ipc::Channel,
+    ) -> Result<(), String> {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct OpenRequest<'a> {
+            instance: &'a str,
+            #[serde(flatten)]
+            page: &'a MobileYouTubePage<'a>,
+            #[serde(flatten)]
+            bounds: MobileYouTubeBounds,
+            channel: tauri::ipc::Channel,
+        }
+        self.command(
+            "youtubeOpen",
+            OpenRequest {
+                instance,
+                page,
+                bounds,
+                channel,
+            },
+        )
+        .await
+    }
+
+    /// Moves, resizes, shows, or hides a YouTube host WebView.
+    pub async fn youtube_bounds(
+        &self,
+        instance: &str,
+        bounds: MobileYouTubeBounds,
+    ) -> Result<(), String> {
+        #[derive(Serialize)]
+        struct BoundsRequest<'a> {
+            instance: &'a str,
+            #[serde(flatten)]
+            bounds: MobileYouTubeBounds,
+        }
+        self.command("youtubeBounds", BoundsRequest { instance, bounds })
+            .await
+    }
+
+    /// Posts a serialized command to the YouTube host page.
+    pub async fn youtube_post(&self, instance: &str, message: &str) -> Result<(), String> {
+        #[derive(Serialize)]
+        struct PostRequest<'a> {
+            instance: &'a str,
+            message: &'a str,
+        }
+        self.command("youtubePost", PostRequest { instance, message })
+            .await
+    }
+
+    /// Destroys a YouTube host WebView.
+    pub async fn youtube_close(&self, instance: &str) -> Result<(), String> {
+        #[derive(Serialize)]
+        struct CloseRequest<'a> {
+            instance: &'a str,
+        }
+        self.command("youtubeClose", CloseRequest { instance })
+            .await
+    }
+}
+
+/// Page served by a native YouTube host WebView at `url`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MobileYouTubePage<'a> {
+    pub url: &'a str,
+    pub origin: &'a str,
+    pub path: &'a str,
+    pub html: &'a str,
+    pub content_security_policy: &'a str,
+}
+
+/// Host placement in CSS pixels of the app WebView, with its device pixel ratio.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct MobileYouTubeBounds {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    pub scale: f64,
+    pub visible: bool,
 }
 
 /// Access Ganbaru's Android media adapter from managed Tauri state.

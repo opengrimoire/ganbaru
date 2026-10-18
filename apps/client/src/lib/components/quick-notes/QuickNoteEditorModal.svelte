@@ -860,7 +860,7 @@
 >
   <div
     bind:this={dialog}
-    class={mobileLayout ? "quick-note-editor relative flex min-h-0 flex-col overflow-hidden outline-none" : "quick-note-editor surface-dialog relative flex min-h-0 w-[min(720px,calc(100vw-1rem))] flex-col overflow-hidden outline-none"}
+    class={mobileLayout ? "quick-note-editor relative flex min-h-0 flex-col overflow-hidden outline-none" : "quick-note-editor surface-dialog relative flex min-h-0 w-[min(540px,calc(100vw-1rem))] flex-col overflow-hidden outline-none"}
     style={dialogStyle}
     role="dialog"
     aria-modal="true"

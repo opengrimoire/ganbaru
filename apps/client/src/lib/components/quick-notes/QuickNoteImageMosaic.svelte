@@ -43,13 +43,12 @@
       {#each row as tile (preview.shown[tile.index]?.sha256 ?? tile.index)}
         {@const image = preview.shown[tile.index]}
         {#if image}
-          <div class="quick-note-mosaic-tile relative min-w-0" style:flex={`${tile.aspect} ${tile.aspect} 0%`} style:aspect-ratio={tile.aspect}>
+          <div class="quick-note-mosaic-tile relative min-w-0" style:flex={`${tile.share} ${tile.share} 0%`} style:aspect-ratio={tile.aspect}>
             {#if variant === "editor"}
               <button
                 type="button"
                 class="block size-full cursor-zoom-in outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-current"
                 aria-label={t("quickNotes.images.open", tile.index + 1, images.length)}
-                title={t("quickNotes.images.open", tile.index + 1, images.length)}
                 data-quick-note-image-index={tile.index}
                 onclick={() => onOpen?.(tile.index)}
               >
@@ -60,7 +59,7 @@
                   type="button"
                   class="quick-note-image-remove absolute top-1.5 right-1.5 flex size-7 items-center justify-center rounded-full bg-black/55 text-white transition-opacity hover:bg-black/75 focus-visible:outline-2 focus-visible:outline-white"
                   aria-label={t("quickNotes.images.remove", tile.index + 1, images.length)}
-                  title={t("quickNotes.images.remove", tile.index + 1, images.length)}
+                  title={t("quickNotes.images.viewer.remove")}
                   onclick={() => onRemove?.(tile.index)}
                 >
                   <X class="size-4" strokeWidth={2} aria-hidden="true" />

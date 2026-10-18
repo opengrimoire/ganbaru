@@ -87,7 +87,7 @@ apps/
         src/sound_effects.rs, system_command.rs: app sound effects and bounded fixed-command execution
         src/contacts.rs, contacts/: person identity storage, contact card assembly, contact and request persistence, and LAN request delivery
         src/sync.rs, sync/: sync service lifecycle, paired transport, recovery listing, status, and sync commands
-        src/quick_notes.rs: Quick notes command adapters
+        src/quick_notes.rs, quick_notes/: Quick notes command adapters and image file commands
         src/tray.rs, app_windows.rs, themes.rs, updates.rs, profile_images.rs: tray, window raising, theme command adapters, updates, and profile images
         src/benchmark.rs, benchmark/, first_use_contracts.rs: benchmark state, seed data, memory reports, and first-use query contracts
       capabilities/: permission declarations (desktop and mobile)
@@ -100,8 +100,9 @@ crates/
   ganbaru-db/: Tauri-free SQLite pool registry, connection configuration, migrations, and schema tests
     migrations/: embedded SQLx SQLite migrations
   ganbaru-civil-time/: Tauri-free conversion between instants and zoned wall times, with explicit gap and fold rules
+  ganbaru-image-metadata/: Tauri-free bounded image header parsing, type detection, and dimension limits shared by Notes and Quick notes
   ganbaru-pomodoro/: Tauri-free Focus persistence, validation, recovery, activity admission, transactional execution, and adaptive policy
-  ganbaru-quick-notes/: Tauri-free Quick notes persistence, search, lifecycle and trash retention, ordering, tags, and conflict resolution
+  ganbaru-quick-notes/: Tauri-free Quick notes persistence, search, lifecycle and trash retention, ordering, tags, images, and conflict resolution
   ganbaru-music/: Tauri-free Music context assignments per Focus phase and the Music library error shape
   ganbaru-music-library/: Tauri-free Music library persistence, queries, playlists, review, transfer, soundscapes, local media refresh and artwork, and session policy
   ganbaru-music-player/: Tauri-free desktop local media inspection and decoding worker that executes committed Music session effects
@@ -141,7 +142,7 @@ Ganbaru/
   diary/morning/, diary/evening/: dated diary entries (planned feature)
   projects/{project-id}/: managed working folder created for every project
   reports/: generated project status reports (planned feature)
-  assets/: managed user assets (profile/, chat/attachments/, chat/browser-artifacts/, notes/page-icons/, notes/page-covers/, notes/files/, project-icons/)
+  assets/: managed user assets (profile/, chat/attachments/, chat/browser-artifacts/, notes/page-icons/, notes/page-covers/, notes/files/, project-icons/, quick-notes/images/)
   templates/: reserved file-based project and methodology templates
   .yjs/: reserved Yjs document state cache
 ```

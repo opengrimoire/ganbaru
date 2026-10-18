@@ -35,6 +35,7 @@ fn note(id: &str, body: &str) -> QuickNoteWrite {
         id: id.to_string(),
         title: id.to_string(),
         runs: runs(body),
+        images: Vec::new(),
         color: 0,
         tag_id: None,
         pinned: false,
@@ -700,6 +701,7 @@ fn deleting_a_tag_untags_its_notes_with_a_new_revision() {
             expected_revision: 1,
             title: "tagged".into(),
             runs: runs("edited"),
+            images: Vec::new(),
             color: 0,
             tag_id: Some("tag-1".into()),
             pinned: false,
@@ -730,6 +732,7 @@ fn writes_that_name_a_deleted_tag_leave_the_note_untagged() {
             expected_revision: 1,
             title: "note".into(),
             runs: runs("edited"),
+            images: Vec::new(),
             color: 0,
             tag_id: Some("gone".into()),
             pinned: false,
@@ -737,5 +740,240 @@ fn writes_that_name_a_deleted_tag_leave_the_note_untagged() {
         let updated = update_from_pool(&pool, update).await.unwrap();
         assert!(updated.tag_id.is_none());
         assert_eq!(updated.revision, 2);
+    });
+}
+
+/// Header-only PNG bytes, enough for metadata parsing; `seed` varies the digest.
+fn png(width: u32, height: u32, seed: u8) -> Vec<u8> {
+    let mut bytes = vec![0; 34];
+    bytes[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+    bytes[8..12].copy_from_slice(&13u32.to_be_bytes());
+    bytes[12..16].copy_from_slice(b"IHDR");
+    bytes[16..20].copy_from_slice(&width.to_be_bytes());
+    bytes[20..24].copy_from_slice(&height.to_be_bytes());
+    bytes[24..29].copy_from_slice(&[8, 6, 0, 0, 0]);
+    bytes[33] = seed;
+    bytes
+}
+
+/// A fresh, empty vault directory for file tests.
+fn vault_dir(name: &str) -> std::path::PathBuf {
+    let dir =
+        std::env::temp_dir().join(format!("ganbaru-quick-notes-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn image(seed: u8) -> QuickNoteImage {
+    images::describe_image(&png(40 + u32::from(seed), 30, seed)).unwrap()
+}
+
+fn file_of(image: &QuickNoteImage) -> QuickNoteImageFile {
+    let value = serde_json::to_value(image).unwrap();
+    QuickNoteImageFile::new(
+        value["sha256"].as_str().unwrap().to_string(),
+        value["contentType"].as_str().unwrap().to_string(),
+    )
+}
+
+#[test]
+fn images_keep_their_order_through_create_update_and_list() {
+    block_on(async {
+        let pool = pool().await;
+        let mut created = note("note", "body");
+        created.images = vec![image(1), image(2)];
+        let read = create_from_pool(&pool, created).await.unwrap();
+        assert_eq!(read.images, [image(1), image(2)]);
+
+        let update = QuickNoteUpdate {
+            id: "note".into(),
+            expected_revision: 1,
+            title: "note".into(),
+            runs: runs("body"),
+            images: vec![image(3), image(1)],
+            color: 0,
+            tag_id: None,
+            pinned: false,
+        };
+        let updated = update_from_pool(&pool, update).await.unwrap();
+        assert_eq!(updated.images, [image(3), image(1)]);
+        assert_eq!(updated.revision, 2);
+        let listed = list_window_from_pool(&pool, list_request(QuickNotesCollection::Active, None))
+            .await
+            .unwrap();
+        assert_eq!(listed.notes[0].images, [image(3), image(1)]);
+        let json = serde_json::to_value(&listed.notes[0].images[0]).unwrap();
+        assert_eq!(json["contentType"], "image/png");
+        assert_eq!(json["byteSize"], 34);
+        assert_eq!(
+            (json["width"].as_u64(), json["height"].as_u64()),
+            (Some(43), Some(30))
+        );
+    });
+}
+
+#[test]
+fn image_lists_reject_duplicates_and_excess() {
+    block_on(async {
+        let pool = pool().await;
+        let mut duplicate = note("duplicate", "body");
+        duplicate.images = vec![image(1), image(1)];
+        assert!(create_from_pool(&pool, duplicate).await.is_err());
+
+        let mut excess = note("excess", "body");
+        excess.images = (0..=24).map(image).collect();
+        assert!(create_from_pool(&pool, excess).await.is_err());
+
+        let mut tampered = note("tampered", "body");
+        let mut value = serde_json::to_value(image(1)).unwrap();
+        value["sha256"] = "Z".repeat(64).into();
+        tampered.images = vec![serde_json::from_value(value).unwrap()];
+        assert!(create_from_pool(&pool, tampered).await.is_err());
+    });
+}
+
+#[test]
+fn imported_images_are_content_addressed_and_verified_on_read() {
+    let vault = vault_dir("import");
+    let bytes = png(640, 480, 7);
+    let imported = images::import_image(&vault, &bytes).unwrap();
+    assert_eq!(images::import_image(&vault, &bytes).unwrap(), imported);
+    let file = file_of(&imported);
+    let path = images::images_dir(&vault).join(file.file_name().unwrap());
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert_eq!(images::read_image(&vault, &file).unwrap(), bytes);
+    assert_eq!(
+        std::fs::read_dir(images::images_dir(&vault))
+            .unwrap()
+            .count(),
+        1
+    );
+
+    std::fs::write(&path, png(640, 480, 8)).unwrap();
+    assert_eq!(
+        images::read_image(&vault, &file),
+        Err(QuickNoteImageError::Unavailable)
+    );
+    // Importing the same bytes repairs a file whose contents no longer match its name, whether
+    // or not its length still matches.
+    images::import_image(&vault, &bytes).unwrap();
+    assert_eq!(images::read_image(&vault, &file).unwrap(), bytes);
+    std::fs::write(&path, b"short").unwrap();
+    images::import_image(&vault, &bytes).unwrap();
+    assert_eq!(images::read_image(&vault, &file).unwrap(), bytes);
+
+    let missing = file_of(&image(9));
+    assert_eq!(
+        images::read_image(&vault, &missing),
+        Err(QuickNoteImageError::Unavailable)
+    );
+    assert_eq!(
+        images::import_image(&vault, b"not an image"),
+        Err(QuickNoteImageError::Unsupported)
+    );
+    assert_eq!(
+        images::import_image(&vault, &png(20_000, 10, 1)),
+        Err(QuickNoteImageError::TooLarge)
+    );
+    assert_eq!(
+        images::import_image(&vault, &png(10_000, 10_000, 1)),
+        Err(QuickNoteImageError::TooLarge)
+    );
+    assert!(
+        QuickNoteImageFile::new("../escape".into(), "image/png".into())
+            .file_name()
+            .is_err()
+    );
+    std::fs::remove_dir_all(&vault).unwrap();
+}
+
+#[test]
+fn cleanup_keeps_referenced_retained_and_recent_files() {
+    block_on(async {
+        let pool = pool().await;
+        let vault = vault_dir("cleanup");
+        let [live, retained, orphan] = [1, 2, 3].map(|seed| {
+            images::import_image(&vault, &png(40 + u32::from(seed), 30, seed)).unwrap()
+        });
+        let mut created = note("note", "body");
+        created.images = vec![live.clone()];
+        create_from_pool(&pool, created).await.unwrap();
+
+        // A version that an open conflict or recovery offer still holds.
+        let encoded = ganbaru_sync::domains::quick_notes::encode_images(&[
+            ganbaru_sync::domains::quick_notes::NoteImage::from(&retained),
+        ])
+        .unwrap();
+        let value = Value::new(vec![Field::Blob(encoded)]).unwrap();
+        sqlx::query(
+            "INSERT INTO sync_rows (table_id, row_key, state) VALUES (2, 'gone', 'tombstoned')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO sync_register_versions
+                 (table_id, row_key, group_id, writer_id, seq, clock, value_hash, value)
+             VALUES (2, 'gone', ?, zeroblob(16), 1, 0, zeroblob(32), ?)",
+        )
+        .bind(i64::from(note_group::IMAGES.get()))
+        .bind(value.encode())
+        .execute(&pool)
+        .await
+        .unwrap();
+        let dir = images::images_dir(&vault);
+        std::fs::write(dir.join(".stale.png.0000.tmp"), b"partial").unwrap();
+
+        let now = std::time::SystemTime::now();
+        assert_eq!(
+            images::collect_unreferenced_images_before(&pool, &vault, now)
+                .await
+                .unwrap(),
+            0
+        );
+        let later = now + std::time::Duration::from_secs(2 * 24 * 60 * 60);
+        assert_eq!(
+            images::collect_unreferenced_images_before(&pool, &vault, later)
+                .await
+                .unwrap(),
+            2
+        );
+        for kept in [&live, &retained] {
+            assert!(images::read_image(&vault, &file_of(kept)).is_ok());
+        }
+        assert_eq!(
+            images::read_image(&vault, &file_of(&orphan)),
+            Err(QuickNoteImageError::Unavailable)
+        );
+
+        trash_from_pool(&pool, &revision("note", 1)).await.unwrap();
+        delete_permanently_from_pool(&pool, "note").await.unwrap();
+        assert_eq!(
+            images::collect_unreferenced_images_before(&pool, &vault, later)
+                .await
+                .unwrap(),
+            1
+        );
+        std::fs::remove_dir_all(&vault).unwrap();
+    });
+}
+
+#[test]
+fn restoring_a_recovered_note_keeps_its_images() {
+    block_on(async {
+        let pool = pool().await;
+        let encoded = ganbaru_sync::domains::quick_notes::encode_images(&[
+            ganbaru_sync::domains::quick_notes::NoteImage::from(&image(4)),
+            ganbaru_sync::domains::quick_notes::NoteImage::from(&image(5)),
+        ])
+        .unwrap();
+        let values = [(
+            note_group::IMAGES,
+            Value::new(vec![Field::Blob(encoded)]).unwrap(),
+        )];
+        let id = restore_recovered(&pool, &values).await.unwrap();
+        let restored = load_note_from_pool(&pool, &id).await.unwrap();
+        assert_eq!(restored.images, [image(4), image(5)]);
     });
 }

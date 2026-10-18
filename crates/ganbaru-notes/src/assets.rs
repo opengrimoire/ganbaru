@@ -1,5 +1,5 @@
 pub mod files;
-pub mod image_metadata;
+pub use ganbaru_image_metadata as image_metadata;
 pub mod page_covers;
 pub mod page_icons;
 

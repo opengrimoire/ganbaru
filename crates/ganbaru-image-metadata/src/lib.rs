@@ -1,4 +1,8 @@
-//! Bounded managed-image metadata parsing without pixel decoding.
+//! Bounded image header parsing without pixel decoding.
+//!
+//! Managed still images (Notes icons and covers, profile and project images) accept PNG,
+//! JPEG, and WebP. Displayed images (Quick note images) also accept GIF and report the
+//! dimensions a browser renders, after JPEG EXIF orientation.
 
 use std::{error::Error, fmt};
 
@@ -8,22 +12,31 @@ pub const MANAGED_IMAGE_MAX_DIMENSION_PIXELS: u32 = 8192;
 pub const MANAGED_IMAGE_MAX_TOTAL_PIXELS: u64 = 16_000_000;
 
 const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+const EXIF_PREFIX: &[u8; 6] = b"Exif\0\0";
+const EXIF_ORIENTATION_TAG: u16 = 0x0112;
+const EXIF_SHORT_TYPE: u16 = 3;
 
-/// Managed image encoding identified from its binary header.
+/// Image encoding identified from its binary header.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ManagedImageKind {
     Png,
     Jpeg,
     Webp,
+    /// Only [`parse_display_image_metadata`] accepts GIF.
+    Gif,
 }
 
 impl ManagedImageKind {
+    /// Every encoding, in a stable order.
+    pub const ALL: [Self; 4] = [Self::Png, Self::Jpeg, Self::Webp, Self::Gif];
+
     /// Canonical MIME type for the image encoding.
     pub const fn mime_type(self) -> &'static str {
         match self {
             Self::Png => "image/png",
             Self::Jpeg => "image/jpeg",
             Self::Webp => "image/webp",
+            Self::Gif => "image/gif",
         }
     }
 
@@ -33,21 +46,21 @@ impl ManagedImageKind {
             Self::Png => "png",
             Self::Jpeg => "jpg",
             Self::Webp => "webp",
+            Self::Gif => "gif",
         }
     }
 
     /// Resolve a supported MIME type, ignoring MIME parameters such as `charset`.
     pub fn from_mime_type(value: &str) -> Option<Self> {
         let value = value.split(';').next()?.trim();
-        if value.eq_ignore_ascii_case("image/png") {
-            Some(Self::Png)
-        } else if value.eq_ignore_ascii_case("image/jpeg") {
-            Some(Self::Jpeg)
-        } else if value.eq_ignore_ascii_case("image/webp") {
-            Some(Self::Webp)
-        } else {
-            None
-        }
+        Self::ALL
+            .into_iter()
+            .find(|kind| value.eq_ignore_ascii_case(kind.mime_type()))
+    }
+
+    /// Resolve a canonical file extension.
+    pub fn from_extension(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.extension() == value)
     }
 
     /// Return whether a declared MIME type matches the sniffed encoding.
@@ -61,6 +74,7 @@ impl ManagedImageKind {
             Self::Png => value.eq_ignore_ascii_case("png"),
             Self::Jpeg => value.eq_ignore_ascii_case("jpg") || value.eq_ignore_ascii_case("jpeg"),
             Self::Webp => value.eq_ignore_ascii_case("webp"),
+            Self::Gif => value.eq_ignore_ascii_case("gif"),
         }
     }
 }
@@ -83,7 +97,7 @@ pub enum ManagedImageMetadataError {
 impl fmt::Display for ManagedImageMetadataError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnsupportedFormat => formatter.write_str("format must be PNG, JPEG, or WebP"),
+            Self::UnsupportedFormat => formatter.write_str("format is not a supported image type"),
             Self::MalformedHeader(reason) => write!(formatter, "header is malformed: {reason}"),
         }
     }
@@ -202,7 +216,52 @@ fn is_jpeg_sof_marker(marker: u8) -> bool {
     )
 }
 
-fn parse_jpeg(bytes: &[u8]) -> Result<ManagedImageMetadata, ManagedImageMetadataError> {
+/// Orientation (1 to 8) from a JPEG APP1 payload, or `None` when the payload is not EXIF or
+/// carries no well-formed IFD0 orientation entry.
+fn exif_orientation(payload: &[u8]) -> Option<u16> {
+    let tiff = payload.strip_prefix(EXIF_PREFIX)?;
+    let little_endian = match tiff.get(..4)? {
+        b"II*\0" => true,
+        b"MM\0*" => false,
+        _ => return None,
+    };
+    let u16_at = |offset| {
+        if little_endian {
+            read_u16_le(tiff, offset)
+        } else {
+            read_u16_be(tiff, offset)
+        }
+    };
+    let u32_at = |offset| {
+        if little_endian {
+            read_u32_le(tiff, offset)
+        } else {
+            read_u32_be(tiff, offset)
+        }
+    };
+    let directory = usize::try_from(u32_at(4)?).ok()?;
+    let entries = usize::from(u16_at(directory)?);
+    for index in 0..entries {
+        let entry = directory
+            .checked_add(2)?
+            .checked_add(index.checked_mul(12)?)?;
+        if u16_at(entry)? != EXIF_ORIENTATION_TAG {
+            continue;
+        }
+        if u16_at(entry + 2)? != EXIF_SHORT_TYPE || u32_at(entry + 4)? != 1 {
+            return None;
+        }
+        let orientation = u16_at(entry + 8)?;
+        return (1..=8).contains(&orientation).then_some(orientation);
+    }
+    None
+}
+
+/// JPEG frame dimensions and the EXIF orientation (1 when absent) found before the frame.
+fn parse_jpeg_frame(
+    bytes: &[u8],
+) -> Result<(ManagedImageMetadata, u16), ManagedImageMetadataError> {
+    let mut orientation = None;
     let mut offset = 2usize;
     while offset < bytes.len() {
         if bytes[offset] != 0xff {
@@ -247,17 +306,41 @@ fn parse_jpeg(bytes: &[u8]) -> Result<ManagedImageMetadata, ManagedImageMetadata
                     "JPEG SOF segment is too short",
                 ));
             }
-            return metadata(
+            let frame = metadata(
                 ManagedImageKind::Jpeg,
                 u32::from(read_u16_be(bytes, offset + 5).unwrap_or(0)),
                 u32::from(read_u16_be(bytes, offset + 3).unwrap_or(0)),
-            );
+            )?;
+            return Ok((frame, orientation.unwrap_or(1)));
+        }
+        if marker == 0xe1 && orientation.is_none() {
+            orientation = exif_orientation(&bytes[offset + 2..offset + segment_length]);
         }
         offset += segment_length;
     }
     Err(ManagedImageMetadataError::MalformedHeader(
         "JPEG SOF marker was not found",
     ))
+}
+
+fn parse_jpeg(bytes: &[u8]) -> Result<ManagedImageMetadata, ManagedImageMetadataError> {
+    parse_jpeg_frame(bytes).map(|(frame, _)| frame)
+}
+
+fn parse_gif(bytes: &[u8]) -> Result<ManagedImageMetadata, ManagedImageMetadataError> {
+    metadata(
+        ManagedImageKind::Gif,
+        u32::from(
+            read_u16_le(bytes, 6).ok_or(ManagedImageMetadataError::MalformedHeader(
+                "GIF logical screen descriptor is truncated",
+            ))?,
+        ),
+        u32::from(
+            read_u16_le(bytes, 8).ok_or(ManagedImageMetadataError::MalformedHeader(
+                "GIF logical screen descriptor is truncated",
+            ))?,
+        ),
+    )
 }
 
 fn parse_webp(bytes: &[u8]) -> Result<ManagedImageMetadata, ManagedImageMetadataError> {
@@ -343,28 +426,66 @@ pub fn parse_managed_image_metadata(
     }
 }
 
+/// Parse PNG, JPEG, WebP, or GIF dimensions as a browser displays them.
+///
+/// JPEG dimensions swap when the first EXIF orientation rotates by a quarter turn
+/// (orientations 5 to 8). Orientation in WebP and PNG metadata is ignored, so those images
+/// report their stored dimensions. Like [`parse_managed_image_metadata`], this inspects headers
+/// only and does not prove that the whole file decodes.
+pub fn parse_display_image_metadata(
+    bytes: &[u8],
+) -> Result<ManagedImageMetadata, ManagedImageMetadataError> {
+    if bytes.starts_with(&[0xff, 0xd8]) {
+        let (frame, orientation) = parse_jpeg_frame(bytes)?;
+        return Ok(if orientation >= 5 {
+            ManagedImageMetadata {
+                width: frame.height,
+                height: frame.width,
+                ..frame
+            }
+        } else {
+            frame
+        });
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return parse_gif(bytes);
+    }
+    parse_managed_image_metadata(bytes)
+}
+
+/// Enforce width, height, and total decoded-pixel limits.
+pub fn validate_image_dimensions(
+    metadata: ManagedImageMetadata,
+    max_dimension: u32,
+    max_pixels: u64,
+) -> Result<(), ManagedImageDimensionError> {
+    if metadata.width > max_dimension || metadata.height > max_dimension {
+        return Err(ManagedImageDimensionError::DimensionTooLarge {
+            width: metadata.width,
+            height: metadata.height,
+            maximum: max_dimension,
+        });
+    }
+    let pixels = u64::from(metadata.width) * u64::from(metadata.height);
+    if pixels > max_pixels {
+        return Err(ManagedImageDimensionError::TooManyPixels {
+            width: metadata.width,
+            height: metadata.height,
+            maximum: max_pixels,
+        });
+    }
+    Ok(())
+}
+
 /// Enforce managed-image width, height, and total decoded-pixel limits.
 pub fn validate_managed_image_dimensions(
     metadata: ManagedImageMetadata,
 ) -> Result<(), ManagedImageDimensionError> {
-    if metadata.width > MANAGED_IMAGE_MAX_DIMENSION_PIXELS
-        || metadata.height > MANAGED_IMAGE_MAX_DIMENSION_PIXELS
-    {
-        return Err(ManagedImageDimensionError::DimensionTooLarge {
-            width: metadata.width,
-            height: metadata.height,
-            maximum: MANAGED_IMAGE_MAX_DIMENSION_PIXELS,
-        });
-    }
-    let pixels = u64::from(metadata.width) * u64::from(metadata.height);
-    if pixels > MANAGED_IMAGE_MAX_TOTAL_PIXELS {
-        return Err(ManagedImageDimensionError::TooManyPixels {
-            width: metadata.width,
-            height: metadata.height,
-            maximum: MANAGED_IMAGE_MAX_TOTAL_PIXELS,
-        });
-    }
-    Ok(())
+    validate_image_dimensions(
+        metadata,
+        MANAGED_IMAGE_MAX_DIMENSION_PIXELS,
+        MANAGED_IMAGE_MAX_TOTAL_PIXELS,
+    )
 }
 
 #[cfg(test)]
@@ -548,5 +669,124 @@ mod tests {
         assert!(!ManagedImageKind::Jpeg.matches_mime_type("image/png"));
         assert!(ManagedImageKind::Jpeg.matches_extension("JPEG"));
         assert!(!ManagedImageKind::Webp.matches_extension("png"));
+        assert_eq!(
+            ManagedImageKind::from_mime_type("IMAGE/GIF"),
+            Some(ManagedImageKind::Gif)
+        );
+        assert_eq!(
+            ManagedImageKind::from_extension("webp"),
+            Some(ManagedImageKind::Webp)
+        );
+        assert_eq!(ManagedImageKind::from_extension("jpeg"), None);
+    }
+
+    fn exif_jpeg(width: u16, height: u16, orientation: u16, little_endian: bool) -> Vec<u8> {
+        let u16_bytes = |value: u16| {
+            if little_endian {
+                value.to_le_bytes()
+            } else {
+                value.to_be_bytes()
+            }
+        };
+        let u32_bytes = |value: u32| {
+            if little_endian {
+                value.to_le_bytes()
+            } else {
+                value.to_be_bytes()
+            }
+        };
+        let mut payload = EXIF_PREFIX.to_vec();
+        payload.extend_from_slice(if little_endian { b"II*\0" } else { b"MM\0*" });
+        payload.extend_from_slice(&u32_bytes(8));
+        payload.extend_from_slice(&u16_bytes(1));
+        payload.extend_from_slice(&u16_bytes(EXIF_ORIENTATION_TAG));
+        payload.extend_from_slice(&u16_bytes(EXIF_SHORT_TYPE));
+        payload.extend_from_slice(&u32_bytes(1));
+        payload.extend_from_slice(&u16_bytes(orientation));
+        payload.extend_from_slice(&[0, 0]);
+        payload.extend_from_slice(&u32_bytes(0));
+
+        let mut bytes = vec![0xff, 0xd8, 0xff, 0xe1];
+        bytes.extend_from_slice(&(payload.len() as u16 + 2).to_be_bytes());
+        bytes.extend_from_slice(&payload);
+        bytes.extend_from_slice(&jpeg(width, height, 0xc0)[2..]);
+        bytes
+    }
+
+    fn display(bytes: &[u8]) -> (u32, u32) {
+        let metadata = parse_display_image_metadata(bytes).unwrap();
+        (metadata.width, metadata.height)
+    }
+
+    #[test]
+    fn display_dimensions_follow_quarter_turn_exif_orientation_in_both_byte_orders() {
+        assert_eq!(display(&exif_jpeg(4000, 3000, 6, true)), (3000, 4000));
+        assert_eq!(display(&exif_jpeg(4000, 3000, 8, false)), (3000, 4000));
+        assert_eq!(display(&exif_jpeg(4000, 3000, 3, true)), (4000, 3000));
+        assert_eq!(display(&exif_jpeg(4000, 3000, 1, false)), (4000, 3000));
+        assert_eq!(
+            parse_managed_image_metadata(&exif_jpeg(4000, 3000, 6, true))
+                .unwrap()
+                .width,
+            4000
+        );
+    }
+
+    #[test]
+    fn malformed_or_out_of_range_exif_keeps_stored_dimensions() {
+        assert_eq!(display(&exif_jpeg(40, 30, 9, true)), (40, 30));
+        let mut wrong_type = exif_jpeg(40, 30, 6, true);
+        let type_offset = 4 + 2 + EXIF_PREFIX.len() + 8 + 2 + 2;
+        wrong_type[type_offset] = 4;
+        assert_eq!(display(&wrong_type), (40, 30));
+        let mut bad_directory = exif_jpeg(40, 30, 6, false);
+        let directory_offset = 4 + 2 + EXIF_PREFIX.len() + 4;
+        bad_directory[directory_offset..directory_offset + 4]
+            .copy_from_slice(&u32::MAX.to_be_bytes());
+        assert_eq!(display(&bad_directory), (40, 30));
+    }
+
+    #[test]
+    fn gif_is_accepted_only_for_displayed_images() {
+        let mut gif = b"GIF89a".to_vec();
+        gif.extend_from_slice(&640u16.to_le_bytes());
+        gif.extend_from_slice(&480u16.to_le_bytes());
+        assert_eq!(
+            parse_display_image_metadata(&gif).unwrap(),
+            ManagedImageMetadata {
+                kind: ManagedImageKind::Gif,
+                width: 640,
+                height: 480,
+            }
+        );
+        assert_eq!(
+            parse_managed_image_metadata(&gif),
+            Err(ManagedImageMetadataError::UnsupportedFormat)
+        );
+        assert!(matches!(
+            parse_display_image_metadata(&gif[..9]),
+            Err(ManagedImageMetadataError::MalformedHeader(_))
+        ));
+        let mut empty = gif.clone();
+        empty[6..8].copy_from_slice(&0u16.to_le_bytes());
+        assert!(parse_display_image_metadata(&empty).is_err());
+    }
+
+    #[test]
+    fn configurable_dimension_limits_apply_to_both_sides_and_pixel_count() {
+        let wide = ManagedImageMetadata {
+            kind: ManagedImageKind::Png,
+            width: 16_384,
+            height: 3_000,
+        };
+        assert_eq!(validate_image_dimensions(wide, 16_384, 64_000_000), Ok(()));
+        assert!(matches!(
+            validate_image_dimensions(wide, 16_383, 64_000_000),
+            Err(ManagedImageDimensionError::DimensionTooLarge { .. })
+        ));
+        assert!(matches!(
+            validate_image_dimensions(wide, 16_384, 40_000_000),
+            Err(ManagedImageDimensionError::TooManyPixels { .. })
+        ));
     }
 }

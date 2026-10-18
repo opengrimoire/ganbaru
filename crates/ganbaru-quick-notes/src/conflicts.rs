@@ -1,4 +1,4 @@
-//! Conflicts on Quick notes titles and bodies: concurrent edits from linked devices whose
+//! Conflicts on Quick notes titles, bodies, and images: concurrent edits from linked devices whose
 //! values differ. Every replica shows the same winner; resolving seals a write that covers
 //! every version, so the conflict closes on every device.
 
@@ -11,6 +11,7 @@ use ganbaru_sync_contracts::{Field, GroupId, Value, WriterId};
 use serde::{Deserialize, Serialize};
 use sqlx::{Sqlite, SqlitePool, Transaction};
 
+use super::images::{QuickNoteImage, images_from_value, load_note_images, replace_images};
 use super::{
     QuickNoteRead, QuickNoteTextRun, QuickNoteWrite, body_plain_text, insert_note,
     load_note_from_pool, new_note_id, normalized_runs, replace_runs, validate_id,
@@ -37,6 +38,7 @@ impl From<String> for QuickNoteConflictError {
 pub enum QuickNoteConflictField {
     Title,
     Body,
+    Images,
 }
 
 impl QuickNoteConflictField {
@@ -45,6 +47,8 @@ impl QuickNoteConflictField {
             Some(Self::Title)
         } else if group == note_group::BODY {
             Some(Self::Body)
+        } else if group == note_group::IMAGES {
+            Some(Self::Images)
         } else {
             None
         }
@@ -54,6 +58,7 @@ impl QuickNoteConflictField {
         match self {
             Self::Title => note_group::TITLE,
             Self::Body => note_group::BODY,
+            Self::Images => note_group::IMAGES,
         }
     }
 }
@@ -73,6 +78,8 @@ pub struct QuickNoteConflictVersion {
     title: Option<String>,
     /// Body runs, for a body version.
     runs: Option<Vec<QuickNoteTextRun>>,
+    /// Images, for an images version.
+    images: Option<Vec<QuickNoteImage>>,
 }
 
 /// The versions of one field in conflict, newest first.
@@ -148,10 +155,12 @@ fn version_read(
     version: &ConflictVersion,
     devices: &DeviceNames,
 ) -> Result<QuickNoteConflictVersion, String> {
-    let (title, runs) = match field {
-        QuickNoteConflictField::Title => (Some(title_from_value(&version.value)?), None),
-        QuickNoteConflictField::Body => (None, Some(runs_from_value(&version.value)?)),
-    };
+    let (mut title, mut runs, mut images) = (None, None, None);
+    match field {
+        QuickNoteConflictField::Title => title = Some(title_from_value(&version.value)?),
+        QuickNoteConflictField::Body => runs = Some(runs_from_value(&version.value)?),
+        QuickNoteConflictField::Images => images = Some(images_from_value(&version.value)?),
+    }
     Ok(QuickNoteConflictVersion {
         version: version.writer.to_hex(),
         device: devices.describe(&version.device_id),
@@ -159,6 +168,7 @@ fn version_read(
         displayed: version.displayed,
         title,
         runs,
+        images,
     })
 }
 
@@ -252,6 +262,18 @@ async fn write_field(
             .execute(&mut **tx)
             .await
         }
+        QuickNoteConflictField::Images => {
+            replace_images(tx, id, &images_from_value(value)?).await?;
+            sqlx::query(
+                "UPDATE quick_notes
+                 SET revision = revision + 1,
+                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE id = ?",
+            )
+            .bind(id)
+            .execute(&mut **tx)
+            .await
+        }
     };
     let result = result.map_err(|error| format!("write quick note conflict choice: {error}"))?;
     if result.rows_affected() != 1 {
@@ -289,10 +311,12 @@ async fn insert_copy(
         underline,
     })
     .collect();
+    let images = load_note_images(tx, id).await?;
     let mut copy = QuickNoteWrite {
         id: new_note_id()?,
         title,
         runs,
+        images,
         color,
         tag_id,
         pinned: false,
@@ -300,6 +324,7 @@ async fn insert_copy(
     match field {
         QuickNoteConflictField::Title => copy.title = title_from_value(value)?,
         QuickNoteConflictField::Body => copy.runs = runs_from_value(value)?,
+        QuickNoteConflictField::Images => copy.images = images_from_value(value)?,
     }
     insert_note(tx, &copy).await?;
     Ok(copy.id)

@@ -7,6 +7,38 @@ export const QUICK_NOTE_BODY_MAX_CHARS = 65_536;
 export const QUICK_NOTE_TAG_LIMIT = 9;
 export const QUICK_NOTE_TAG_NAME_MAX_CHARS = 40;
 export const QUICK_NOTE_ORDER_KEY_MAX_CHARS = 128;
+export const QUICK_NOTE_IMAGE_LIMIT = 24;
+export const QUICK_NOTE_IMAGE_MAX_BYTES = 25 * 1024 * 1024;
+export const QUICK_NOTE_IMAGE_CONTENT_TYPES = Object.freeze([
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+] as const);
+
+export type QuickNoteImageContentType = (typeof QUICK_NOTE_IMAGE_CONTENT_TYPES)[number];
+
+/** A note's reference to a content-addressed image file in the vault. */
+export interface QuickNoteImage {
+  /** Lowercase hex SHA-256 of the file bytes. */
+  sha256: string;
+  contentType: QuickNoteImageContentType;
+  byteSize: number;
+  /** Displayed width in pixels, after the image orientation is applied. */
+  width: number;
+  /** Displayed height in pixels, after the image orientation is applied. */
+  height: number;
+}
+
+/** Images a picker imported, and the picked files that were left out. */
+export interface QuickNoteImagePick {
+  images: QuickNoteImage[];
+  rejected: { fileName: string; code: QuickNoteImageErrorCode }[];
+  /** Picked files past the limit that were not imported. */
+  skipped: number;
+}
+
+export type QuickNoteImageErrorCode = "unsupported" | "too_large" | "unavailable" | "failed";
 
 export interface QuickNoteTextRun {
   content: string;
@@ -21,6 +53,7 @@ export interface QuickNote {
   bodyPlainText: string;
   runs: QuickNoteTextRun[];
   previewTruncated: boolean;
+  images: QuickNoteImage[];
   color: EventColor;
   tagId: string | null;
   pinned: boolean;
@@ -29,7 +62,7 @@ export interface QuickNote {
   revision: number;
   createdAt: string;
   updatedAt: string;
-  /** Whether a linked device wrote a concurrent title or body that is still unresolved. */
+  /** Whether a linked device wrote a concurrent title, body, or image list that is still unresolved. */
   hasConflict: boolean;
 }
 
@@ -44,6 +77,7 @@ export interface QuickNoteCreate {
   id: string;
   title: string;
   runs: QuickNoteTextRun[];
+  images: QuickNoteImage[];
   color: EventColor;
   tagId: string | null;
   pinned: boolean;
@@ -103,7 +137,7 @@ export const EMPTY_QUICK_NOTE_FORMATTING: QuickNoteFormatting = Object.freeze({
 });
 
 /** A note field that can hold a sync conflict. */
-export type QuickNoteConflictField = "title" | "body";
+export type QuickNoteConflictField = "title" | "body" | "images";
 
 /** One concurrent version of a field in conflict. */
 export interface QuickNoteConflictVersion {
@@ -115,6 +149,7 @@ export interface QuickNoteConflictVersion {
   displayed: boolean;
   title: string | null;
   runs: QuickNoteTextRun[] | null;
+  images: QuickNoteImage[] | null;
 }
 
 /** The versions of one field in conflict, newest first. */

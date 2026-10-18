@@ -15,6 +15,7 @@ workspace = true
 
 [dependencies]
 ammonia = { workspace = true }
+ganbaru-image-metadata = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }
 flate2 = { workspace = true }

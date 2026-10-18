@@ -115,7 +115,7 @@ Whole-vault refresh, ownership transfer, and backup restore never lose operation
 ### Conflicts, recovery, and controls
 
 - Valid operations converge to identical replicated state on every replica regardless of delivery order. Causality decides supersession; clocks only choose the displayed value among concurrent versions. The merge rules and worked examples are owned by [Sync merge rules](../algorithms/sync/README.md).
-- Surfaced groups (Quick note title and body) keep concurrent versions as a conflict with a resolution. Other groups resolve silently and deterministically. A deletion concurrent with edits keeps those edits as a recovery entry that can be restored as a new note or discarded.
+- Surfaced groups (Quick note title, body, and images) keep concurrent versions as a conflict with a resolution. Other groups resolve silently and deterministically. A deletion concurrent with edits keeps those edits as a recovery entry that can be restored as a new note or discarded.
 - Resolutions, restores, and discards are ordinary writes, so they replicate and converge like any edit.
 - The Quick notes trash purge is a deletion like any other, so an edit made elsewhere to a purged note becomes a recovery entry.
 - Data settings show the sync state, role, last exchange, pending and waiting changes, held operations with reasons, conflict counts, and recovery entries, with Sync now and Pause. Pause is device-local, stops exchanges, and keeps sealing.

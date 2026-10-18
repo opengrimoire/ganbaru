@@ -40,6 +40,10 @@ Profile images, project icons, Chat attachments, Notes assets, and browser artif
 
 Managed relative paths are stored only after normalization; an arbitrary external path cannot be persisted as a managed asset. Cleanup rechecks live references before deletion and records retry state if immediate removal is unsafe. Errors do not echo source absolute paths unnecessarily.
 
+Quick note images are content-addressed: a file is named by the SHA-256 of its bytes and the extension of its detected type, and every read verifies the bytes against the name. Because Quick notes are writable on linked replicas, a guarded replica may also write this one directory, and nothing else outside SQLite: writes take the same managed write permit as owner writes, so a handoff fences them, and only validated images under `assets/quick-notes/images/` are accepted. A forged or damaged file therefore cannot pass as an image a note references. Cleanup deletes only regular files that no note, open conflict, or recovery entry references and that are older than a day, so a file imported for an unsaved draft survives until the draft is saved.
+
+Image bytes cross IPC as raw request and response bodies rather than data URLs, and the webview shows them through `blob:` URLs, which the image CSP permits. Android cannot send raw request bodies, so its imports carry bounded base64 text that is size-checked before decoding.
+
 ## Notes content and history
 
 Notes rich content, formulas, imports, transfer manifests, comments, and asset references are untrusted structured input. Rust validates types, sizes, nesting, IDs, graph relationships, and path boundaries before mutation.

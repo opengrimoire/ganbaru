@@ -51,6 +51,8 @@ pub mod note_group {
     pub const ORDER: GroupId = group_id(6);
     /// `updated_at`.
     pub const UPDATED: GroupId = group_id(7);
+    /// Owned `quick_note_images`, references to content-addressed files in the vault.
+    pub const IMAGES: GroupId = group_id(8);
 }
 
 const fn plain(
@@ -130,7 +132,7 @@ const TAG_GROUPS: [GroupSpec; 5] = [
     plain(tag_group::COLOR, "color", MergeKind::Register, COLOR),
 ];
 
-const NOTE_GROUPS: [GroupSpec; 8] = [
+const NOTE_GROUPS: [GroupSpec; 9] = [
     plain(
         note_group::CREATED,
         "created",
@@ -198,6 +200,18 @@ const NOTE_GROUPS: [GroupSpec; 8] = [
     ),
     plain(note_group::ORDER, "order", MergeKind::Position, ORDER_KEY),
     plain(note_group::UPDATED, "updated", MergeKind::Max, UPDATED_AT),
+    content(
+        note_group::IMAGES,
+        "images",
+        MergeKind::Register,
+        GroupStorage::Owned(OwnedTable {
+            table: "quick_note_images",
+            parent_column: "note_id",
+            order_column: "sort_order",
+            columns: &["sha256", "content_type", "byte_size", "width", "height"],
+        }),
+        true,
+    ),
 ];
 
 /// `quick_note_tags`.

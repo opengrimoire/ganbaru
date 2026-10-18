@@ -1861,6 +1861,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ganbaru-image-metadata"
+version = "0.1.0"
+
+[[package]]
 name = "ganbaru-mobile-distractions"
 version = "0.1.0"
 dependencies = [
@@ -1954,6 +1958,7 @@ dependencies = [
  "chrono",
  "flate2",
  "ganbaru-db",
+ "ganbaru-image-metadata",
  "reqwest",
  "rustls",
  "serde",
@@ -1994,6 +1999,7 @@ name = "ganbaru-quick-notes"
 version = "0.1.0"
 dependencies = [
  "ganbaru-db",
+ "ganbaru-image-metadata",
  "ganbaru-sync",
  "ganbaru-sync-contracts",
  "ring",

@@ -806,6 +806,21 @@ pub(crate) fn active_writable_vault_path<R: Runtime>(
     })
 }
 
+/// The active vault root for writing assets of replicated domains, which a linked stable
+/// replica may write as well as the owner.
+pub(crate) fn active_replicated_asset_path<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<WritableVaultPath, String> {
+    let (path, manifest) = active_vault(app)?;
+    let permit = app
+        .state::<ownership::VaultOwnershipManager>()
+        .acquire_replicated_asset_write(&manifest.vault_id)?;
+    Ok(WritableVaultPath {
+        path,
+        _permit: permit,
+    })
+}
+
 pub(crate) fn active_vault_id<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<String, String> {
     active_vault(app).map(|(_, manifest)| manifest.vault_id)
 }

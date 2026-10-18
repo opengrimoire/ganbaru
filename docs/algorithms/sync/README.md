@@ -23,11 +23,11 @@ The hybrid logical clock is 48 bits of Unix milliseconds and a 16-bit counter. A
 | Max | Greatest value, then `(clock, writer)`; never a conflict | `updated_at` |
 | Position | Greatest `(clock, writer)` over an order key; rows sort by `(order_key, id)` | Note and tag order |
 | Reference | Greatest `(clock, writer)` over a row key that resolves through redirects | Note tag |
-| Owned children | The parent group's value is a canonical list that replaces the child rows | Body text runs |
+| Owned children | The parent group's value is a canonical list that replaces the child rows | Body text runs, note images |
 
 - A multi-column CHECK always lives inside one coupled register, so every materialized winner satisfies it.
-- A register is surfaced when its concurrent distinct versions are shown to people as a conflict; otherwise it resolves silently. Quick note title and body are surfaced. Color, tag, lifecycle, order, tag names, and tag colors are silent.
-- A group is recoverable when edits to it that a deletion did not see should be offered for recovery. Quick note title, body, color, tag, and lifecycle are recoverable; order, timestamps, and every tag group are not.
+- A register is surfaced when its concurrent distinct versions are shown to people as a conflict; otherwise it resolves silently. Quick note title, body, and images are surfaced. Color, tag, lifecycle, order, tag names, and tag colors are silent.
+- A group is recoverable when edits to it that a deletion did not see should be offered for recovery. Quick note title, body, images, color, tag, and lifecycle are recoverable; order, timestamps, and every tag group are not.
 
 ## Order keys
 

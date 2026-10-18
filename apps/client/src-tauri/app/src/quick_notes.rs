@@ -1,4 +1,4 @@
-//! Quick notes command adapters. Persistence, ordering, tags, and conflicts live in
+//! Quick notes command adapters. Persistence, images, ordering, tags, and conflicts live in
 //! `ganbaru-quick-notes`; these commands authorize the active vault and the device's write
 //! access before calling it.
 
@@ -12,6 +12,10 @@ use ganbaru_quick_notes::{
 use tauri::{AppHandle, Runtime};
 
 use crate::db::connect_sqlite;
+
+mod images;
+
+pub use images::*;
 
 #[tauri::command]
 pub async fn quick_notes_list<R: Runtime>(

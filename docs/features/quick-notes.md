@@ -2,7 +2,7 @@
 
 Quick notes is an app-wide capture surface for temporary thoughts, reminders, and small pieces of information. It is deliberately separate from [Notes](notes/README.md).
 
-A Quick note has no project membership, page hierarchy, blocks, icons, covers, comments, backlinks, attachments, version history, import/export, or collaboration state.
+A Quick note has no project membership, page hierarchy, blocks, icons, covers, comments, backlinks, file attachments, version history, import/export, or collaboration state.
 
 ## Collection
 
@@ -50,7 +50,7 @@ Trashed notes are read-only and are permanently deleted after seven days. Expire
 
 ## Data ownership
 
-Quick notes, tags, formatted text runs, lifecycle, order, color, revision, and derived search text are SQLite-canonical. Reordering is transactional and does not pretend content changed.
+Quick notes, tags, formatted text runs, image references, lifecycle, order, color, revision, and derived search text are SQLite-canonical. Image bytes are content-addressed files under the vault's `assets/quick-notes/images/`, verified against their names on every read. Reordering is transactional and does not pretend content changed.
 
 Quick notes creates no Markdown files and does not participate in Notes search, history, backlinks, exports, or collaboration.
 

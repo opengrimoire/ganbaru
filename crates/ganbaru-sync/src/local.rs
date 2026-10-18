@@ -1,9 +1,11 @@
-//! Installation-level helpers around the engine: the space context of a vault, the local
-//! writer high-water check, snapshot preparation, and carry-forward of operations across a
-//! database replacement.
+//! Installation-level helpers around the engine: the space context of a vault, retained group
+//! values, the local writer high-water check, snapshot preparation, and carry-forward of
+//! operations across a database replacement.
 
 use ganbaru_contacts::PersonPublicKey;
-use ganbaru_sync_contracts::{Envelope, Seq, SpaceId, VersionVector, WriterId, WriterPublicKey};
+use ganbaru_sync_contracts::{
+    Envelope, GroupId, Seq, SpaceId, TableId, Value, VersionVector, WriterId, WriterPublicKey,
+};
 use sqlx::{Connection, SqliteConnection};
 
 use crate::error::{SyncResult, corrupt};
@@ -60,6 +62,26 @@ pub async fn has_pending_captures(conn: &mut SqliteConnection) -> SyncResult<boo
         .fetch_one(&mut *conn)
         .await?;
     Ok(pending)
+}
+
+/// Every retained version value of one group of a table, for live and tombstoned rows alike:
+/// the values that open conflicts and recovery offers can still bring back.
+pub async fn retained_group_values(
+    conn: &mut SqliteConnection,
+    table: TableId,
+    group: GroupId,
+) -> SyncResult<Vec<Value>> {
+    let values: Vec<Vec<u8>> = sqlx::query_scalar(
+        "SELECT value FROM sync_register_versions WHERE table_id = ? AND group_id = ?",
+    )
+    .bind(i64::from(table.0))
+    .bind(i64::from(group.get()))
+    .fetch_all(&mut *conn)
+    .await?;
+    values
+        .iter()
+        .map(|value| Value::decode(value).map_err(|_| corrupt("stored value does not decode")))
+        .collect()
 }
 
 /// Number of local captures that wait to be sealed.

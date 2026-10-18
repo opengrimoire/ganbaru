@@ -1,10 +1,11 @@
 import { normalizeQuickNoteRuns } from "./rich-text";
-import type { QuickNote, QuickNoteTextRun } from "./types";
+import type { QuickNote, QuickNoteImage, QuickNoteTextRun } from "./types";
 
 /** The fields the Quick notes editor writes. */
 export interface QuickNoteEditableFields {
   title: string;
   runs: QuickNoteTextRun[];
+  images: QuickNoteImage[];
   color: QuickNote["color"];
   tagId: string | null;
   pinned: boolean;
@@ -12,7 +13,7 @@ export interface QuickNoteEditableFields {
 
 export type QuickNoteEditableField = keyof QuickNoteEditableFields;
 
-const EDITABLE_FIELDS: readonly QuickNoteEditableField[] = ["title", "runs", "color", "tagId", "pinned"];
+const EDITABLE_FIELDS: readonly QuickNoteEditableField[] = ["title", "runs", "images", "color", "tagId", "pinned"];
 
 /** The outcome of replaying local edits on a newer canonical note. */
 export type QuickNoteRebase =
@@ -32,8 +33,15 @@ function runsEqual(left: readonly QuickNoteTextRun[], right: readonly QuickNoteT
   });
 }
 
+/** Image lists match when they name the same files in the same order. */
+export function quickNoteImagesEqual(left: readonly QuickNoteImage[], right: readonly QuickNoteImage[]): boolean {
+  return left.length === right.length
+    && left.every((image, index) => image.sha256 === right[index]?.sha256 && image.contentType === right[index]?.contentType);
+}
+
 function fieldEqual(field: QuickNoteEditableField, left: QuickNoteEditableFields, right: QuickNoteEditableFields): boolean {
   if (field === "runs") return runsEqual(left.runs, right.runs);
+  if (field === "images") return quickNoteImagesEqual(left.images, right.images);
   return left[field] === right[field];
 }
 
@@ -42,6 +50,7 @@ export function quickNoteEditableFields(note: QuickNoteEditableFields): QuickNot
   return {
     title: note.title,
     runs: note.runs.map((run) => ({ ...run })),
+    images: note.images.map((image) => ({ ...image })),
     color: note.color,
     tagId: note.tagId,
     pinned: note.pinned,
@@ -75,6 +84,7 @@ export function rebaseQuickNoteEdits(
     switch (field) {
       case "title": fields.title = local.title; break;
       case "runs": fields.runs = local.runs.map((run) => ({ ...run })); break;
+      case "images": fields.images = local.images.map((image) => ({ ...image })); break;
       case "color": fields.color = local.color; break;
       case "tagId": fields.tagId = local.tagId; break;
       case "pinned": fields.pinned = local.pinned; break;

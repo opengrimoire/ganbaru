@@ -56,10 +56,12 @@
     type QuickNoteTag,
     type QuickNoteFormatting,
     type QuickNoteFormattingName,
+    type QuickNoteImage,
     type QuickNoteTextRun,
   } from "$lib/quick-notes/types";
   import {
     quickNoteEditableFields,
+    quickNoteImagesEqual,
     rebaseQuickNoteEdits,
     type QuickNoteEditableFields,
   } from "$lib/quick-notes/rebase";
@@ -120,6 +122,7 @@
   let id = $state(initialId);
   let title = $state(initialNote?.title ?? "");
   let runs = $state<QuickNoteTextRun[]>(initialNote?.runs.map((run) => ({ ...run })) ?? []);
+  let images = $state<QuickNoteImage[]>(initialNote?.images.map((image) => ({ ...image })) ?? []);
   let color = $state<QuickNote["color"]>(initialNote?.color ?? initialColor);
   let tagId = $state(initialNote?.tagId ?? initialTagId);
   let pinned = $state(initialNote?.pinned ?? false);
@@ -158,7 +161,7 @@
     : `${modalStyle} height: min(560px, calc(100dvh - 1rem));`);
 
   function meaningful(): boolean {
-    return title.trim().length > 0 || quickNotePlainText(runs).trim().length > 0;
+    return title.trim().length > 0 || quickNotePlainText(runs).trim().length > 0 || images.length > 0;
   }
 
   function markDirty(): void {
@@ -185,12 +188,13 @@
   }
 
   function currentFields(): QuickNoteEditableFields {
-    return quickNoteEditableFields({ title, runs, color, tagId, pinned });
+    return quickNoteEditableFields({ title, runs, images, color, tagId, pinned });
   }
 
   /** Shows canonical or rebased values, keeping the caret inside the new body. */
   function applyFields(fields: QuickNoteEditableFields): void {
     title = fields.title;
+    if (!quickNoteImagesEqual(images, fields.images)) images = fields.images;
     color = fields.color;
     tagId = fields.tagId;
     pinned = fields.pinned;
@@ -268,12 +272,13 @@
     status = "saving";
     try {
       const saved = persisted === null
-        ? await createQuickNote({ id, title, runs: normalizeQuickNoteRuns(runs), color, tagId, pinned })
+        ? await createQuickNote({ id, title, runs: normalizeQuickNoteRuns(runs), images, color, tagId, pinned })
         : await updateQuickNote({
             id,
             expectedRevision: revision,
             title,
             runs: normalizeQuickNoteRuns(runs),
+            images,
             color,
             tagId,
             pinned,
@@ -593,6 +598,7 @@
     revision = fresh.revision;
     title = fresh.title;
     runs = fresh.runs.map((run) => ({ ...run }));
+    images = fresh.images.map((image) => ({ ...image }));
     color = fresh.color;
     tagId = fresh.tagId;
     pinned = fresh.pinned;

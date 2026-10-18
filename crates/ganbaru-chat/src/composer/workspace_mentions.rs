@@ -5,7 +5,6 @@ use serde::Serialize;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 
 const MAX_PATH_RESULTS: u32 = 100;
 const MAX_PATH_SCAN: usize = 20_000;
@@ -134,13 +133,14 @@ fn git_visible_paths(root: &Path) -> ChatResult<BTreeSet<String>> {
     if !root.join(".git").exists() {
         return Ok(BTreeSet::new());
     }
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["ls-files", "-co", "--exclude-standard", "-z"])
-        .output()
-        .map_err(workspace_io_error)?;
-    if !output.status.success() || output.stdout.len() > MAX_GIT_OUTPUT_BYTES {
+    let output = crate::git::hardened::internal_read_blocking(
+        root,
+        &["ls-files", "-co", "--exclude-standard", "-z"],
+        None,
+        MAX_GIT_OUTPUT_BYTES,
+    )
+    .map_err(workspace_io_error)?;
+    if !output.status.success() {
         return Err(workspace_io_error(()));
     }
     Ok(output

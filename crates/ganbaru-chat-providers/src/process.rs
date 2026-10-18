@@ -278,24 +278,94 @@ fn validate_config(config: &ProviderProcessConfig) -> ChatResult<()> {
     Ok(())
 }
 
-#[cfg(unix)]
-fn configure_process_tree(command: &mut Command) {
-    use std::os::unix::process::CommandExt;
-    command.as_std_mut().process_group(0);
+/// Process tree of one short-lived helper command, such as Git.
+///
+/// The tree is stopped only through [`ProcessTree::terminate`], so descendants
+/// that a successful command leaves behind (credential caches, signing agents)
+/// keep running after the handle is dropped.
+pub struct ProcessTree {
+    #[cfg(unix)]
+    process_group_id: libc::pid_t,
+    #[cfg(windows)]
+    process_job: std::os::windows::io::OwnedHandle,
 }
 
-#[cfg(windows)]
-fn configure_process_tree(command: &mut Command) {
-    use std::os::windows::process::CommandExt;
-    use windows::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED};
+impl ProcessTree {
+    /// Claims the tree of a child spawned from a command prepared with
+    /// [`configure_std_process_tree`]. On failure the child is killed.
+    pub fn claim_std(child: &mut std::process::Child) -> ChatResult<Self> {
+        #[cfg(unix)]
+        {
+            let process_group_id = libc::pid_t::try_from(child.id())
+                .ok()
+                .filter(|id| *id > 1)
+                .ok_or_else(|| {
+                    let _ = child.kill();
+                    process_state_error()
+                })?;
+            Ok(Self { process_group_id })
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            let raw_handle = child.as_raw_handle();
+            match claim_windows_job(raw_handle, child.id(), false) {
+                Ok(process_job) => Ok(Self { process_job }),
+                Err(error) => {
+                    let _ = child.kill();
+                    Err(spawn_error(error))
+                }
+            }
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = child;
+            Ok(Self {})
+        }
+    }
 
-    command
-        .as_std_mut()
-        .creation_flags(CREATE_NEW_PROCESS_GROUP.0 | CREATE_SUSPENDED.0);
+    /// Forcefully stops every process in the tree. Already stopped trees are
+    /// not an error.
+    pub fn terminate(&self) {
+        #[cfg(unix)]
+        let _ = signal_process_group(self.process_group_id, libc::SIGKILL);
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            use windows::Win32::Foundation::HANDLE;
+            use windows::Win32::System::JobObjects::TerminateJobObject;
+
+            // SAFETY: `process_job` owns a live job handle for the duration of
+            // the call. Termination does not transfer or close that handle.
+            unsafe {
+                let _ = TerminateJobObject(HANDLE(self.process_job.as_raw_handle()), 1);
+            }
+        }
+    }
 }
 
-#[cfg(not(any(unix, windows)))]
-fn configure_process_tree(_command: &mut Command) {}
+/// Prepares a standard-library command so its descendants form one process
+/// tree that [`ProcessTree::claim_std`] can claim after spawning.
+pub fn configure_std_process_tree(command: &mut std::process::Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        use windows::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED};
+
+        command.creation_flags(CREATE_NEW_PROCESS_GROUP.0 | CREATE_SUSPENDED.0);
+    }
+    #[cfg(not(any(unix, windows)))]
+    let _ = command;
+}
+
+fn configure_process_tree(command: &mut Command) {
+    configure_std_process_tree(command.as_std_mut());
+}
 
 #[cfg(unix)]
 fn signal_process_group(process_group_id: libc::pid_t, signal: libc::c_int) -> std::io::Result<()> {
@@ -330,6 +400,31 @@ fn signal_process_group(process_group_id: libc::pid_t, signal: libc::c_int) -> s
 
 #[cfg(windows)]
 fn claim_windows_process_tree(child: &mut Child) -> ChatResult<std::os::windows::io::OwnedHandle> {
+    let Some(raw_handle) = child.raw_handle() else {
+        let _ = child.start_kill();
+        return Err(process_state_error());
+    };
+    let Some(process_id) = child.id() else {
+        let _ = child.start_kill();
+        return Err(process_state_error());
+    };
+    claim_windows_job(raw_handle, process_id, true).map_err(|error| {
+        let _ = child.start_kill();
+        spawn_error(error)
+    })
+}
+
+/// Assigns a suspended child to a new job object and resumes its main thread.
+///
+/// `child_handle` must be the live process handle of the suspended child whose
+/// ID is `process_id`. With `kill_on_close`, closing the returned handle stops
+/// every process in the job.
+#[cfg(windows)]
+fn claim_windows_job(
+    child_handle: std::os::windows::io::RawHandle,
+    process_id: u32,
+    kill_on_close: bool,
+) -> Result<std::os::windows::io::OwnedHandle, windows::core::Error> {
     use std::ffi::c_void;
     use std::mem::size_of;
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
@@ -348,7 +443,7 @@ fn claim_windows_process_tree(child: &mut Child) -> ChatResult<std::os::windows:
     };
     use windows::core::HRESULT;
 
-    let setup = || -> Result<OwnedHandle, windows::core::Error> {
+    {
         // SAFETY: Null security attributes and name request a private job object.
         // The returned noninvalid handle is immediately transferred to OwnedHandle.
         let raw_job = unsafe { CreateJobObjectW(None, None) }?;
@@ -356,25 +451,26 @@ fn claim_windows_process_tree(child: &mut Child) -> ChatResult<std::os::windows:
         // other Rust owner exists. OwnedHandle will close it exactly once.
         let job = unsafe { OwnedHandle::from_raw_handle(raw_job.0) };
         let job_handle = HANDLE(job.as_raw_handle());
-        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        // SAFETY: `job_handle` and the child process handle are live for the
-        // calls. `limits` has the exact type and byte size required by Windows;
-        // neither call retains the supplied pointer or transfers handle ownership.
-        unsafe {
-            SetInformationJobObject(
-                job_handle,
-                JobObjectExtendedLimitInformation,
-                &limits as *const _ as *const c_void,
-                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-            )?;
-            let child_handle = child
-                .raw_handle()
-                .ok_or_else(windows::core::Error::from_win32)?;
-            AssignProcessToJobObject(job_handle, HANDLE(child_handle))?;
+        if kill_on_close {
+            let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            // SAFETY: `job_handle` is live for the call. `limits` has the exact
+            // type and byte size required by Windows, and the call neither
+            // retains the supplied pointer nor transfers handle ownership.
+            unsafe {
+                SetInformationJobObject(
+                    job_handle,
+                    JobObjectExtendedLimitInformation,
+                    &limits as *const _ as *const c_void,
+                    size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                )?;
+            }
         }
+        // SAFETY: The caller guarantees `child_handle` is the live process
+        // handle of the suspended child, and `job_handle` is live. The call does
+        // not transfer ownership of either handle.
+        unsafe { AssignProcessToJobObject(job_handle, HANDLE(child_handle)) }?;
 
-        let process_id = child.id().ok_or_else(windows::core::Error::from_win32)?;
         // SAFETY: This requests a read-only system thread snapshot and returns a
         // new handle on success.
         let raw_snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) }?;
@@ -448,12 +544,7 @@ fn claim_windows_process_tree(child: &mut Child) -> ChatResult<std::os::windows:
             // buffer whose dwSize field was reset to the full structure size.
             unsafe { Thread32Next(HANDLE(snapshot.as_raw_handle()), &mut entry) }?;
         }
-    };
-
-    setup().map_err(|error| {
-        let _ = child.start_kill();
-        spawn_error(error)
-    })
+    }
 }
 
 #[cfg(all(test, unix))]

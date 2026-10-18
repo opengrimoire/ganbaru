@@ -1,5 +1,11 @@
 use super::parsing::*;
 use super::*;
+use crate::git::hardened::{
+    self, GitChildEnvironment, GitPolicy, GitRunError, PROVISIONAL_FOLDER_TRUST,
+};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn provider_executable(kind: HostedSourceControlKind) -> ChatResult<&'static str> {
     match kind {
@@ -12,9 +18,66 @@ pub fn provider_executable(kind: HostedSourceControlKind) -> ChatResult<&'static
     }
 }
 
+/// Organization, project, and repository of an Azure Repos remote, passed to
+/// `az` explicitly so it never inspects the working folder.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AzureRepository {
+    pub organization_url: String,
+    pub project: String,
+    pub repository: String,
+}
+
+impl AzureRepository {
+    fn arguments(&self) -> [String; 8] {
+        [
+            "--organization".into(),
+            self.organization_url.clone(),
+            "--project".into(),
+            self.project.clone(),
+            "--repository".into(),
+            self.repository.clone(),
+            "--detect".into(),
+            "false".into(),
+        ]
+    }
+}
+
+/// Which hosted CLI operation runs, deciding its working directory and Git
+/// policy.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostedCliOperation {
+    /// Listing or viewing change requests for an explicit repository.
+    Read,
+    /// Creating a change request the user submitted.
+    Create,
+    /// Checking out a change request the user chose.
+    Checkout,
+}
+
+impl HostedCliOperation {
+    fn git_policy(self) -> GitPolicy {
+        match self {
+            Self::Read => GitPolicy::internal(PROVISIONAL_FOLDER_TRUST),
+            Self::Create | Self::Checkout => GitPolicy::user(PROVISIONAL_FOLDER_TRUST),
+        }
+    }
+
+    /// Reads and Azure creation name the repository explicitly. GitHub and
+    /// GitLab creation stays in the folder so fork remotes resolve as in the
+    /// user's terminal, and checkout changes the folder itself.
+    pub(super) fn runs_in_repository(self, kind: HostedSourceControlKind) -> bool {
+        match self {
+            Self::Read => false,
+            Self::Create => kind != HostedSourceControlKind::AzureDevops,
+            Self::Checkout => true,
+        }
+    }
+}
+
 pub fn list_arguments(
     kind: HostedSourceControlKind,
     repository_slug: &str,
+    azure: Option<&AzureRepository>,
     limit: u32,
 ) -> ChatResult<Vec<String>> {
     Ok(match kind {
@@ -41,20 +104,21 @@ pub fn list_arguments(
             "--output".into(),
             "json".into(),
         ],
-        HostedSourceControlKind::AzureDevops => vec![
-            "repos".into(),
-            "pr".into(),
-            "list".into(),
-            "--detect".into(),
-            "true".into(),
-            "--status".into(),
-            "all".into(),
-            "--top".into(),
-            limit.to_string(),
-            "--only-show-errors".into(),
-            "--output".into(),
-            "json".into(),
-        ],
+        HostedSourceControlKind::AzureDevops => {
+            let mut arguments = vec!["repos".into(), "pr".into(), "list".into()];
+            arguments.extend(required_azure(azure)?.arguments());
+            arguments.extend([
+                "false".into(),
+                "--status".into(),
+                "all".into(),
+                "--top".into(),
+                limit.to_string(),
+                "--only-show-errors".into(),
+                "--output".into(),
+                "json".into(),
+            ]);
+            arguments
+        }
         HostedSourceControlKind::Bitbucket => {
             return Err(ChatError::unsupported(
                 "Bitbucket pull request listing requires configured keyring credentials",
@@ -66,6 +130,7 @@ pub fn list_arguments(
 pub fn view_arguments(
     kind: HostedSourceControlKind,
     repository_slug: &str,
+    azure: Option<&AzureRepository>,
     reference: &str,
 ) -> ChatResult<Vec<String>> {
     Ok(match kind {
@@ -91,8 +156,10 @@ pub fn view_arguments(
             "repos".into(),
             "pr".into(),
             "show".into(),
+            "--organization".into(),
+            required_azure(azure)?.organization_url.clone(),
             "--detect".into(),
-            "true".into(),
+            "false".into(),
             "--id".into(),
             reference.into(),
             "--only-show-errors".into(),
@@ -107,7 +174,10 @@ pub fn view_arguments(
     })
 }
 
-pub fn create_arguments(request: &CreateHostedChangeRequest) -> ChatResult<Vec<String>> {
+pub fn create_arguments(
+    request: &CreateHostedChangeRequest,
+    azure: Option<&AzureRepository>,
+) -> ChatResult<Vec<String>> {
     Ok(match request.provider_kind {
         HostedSourceControlKind::Github => {
             let mut arguments = vec![
@@ -156,12 +226,9 @@ pub fn create_arguments(request: &CreateHostedChangeRequest) -> ChatResult<Vec<S
                     "Azure DevOps CLI does not expose draft creation in this adapter",
                 ));
             }
-            vec![
-                "repos".into(),
-                "pr".into(),
-                "create".into(),
-                "--detect".into(),
-                "true".into(),
+            let mut arguments = vec!["repos".into(), "pr".into(), "create".into()];
+            arguments.extend(required_azure(azure)?.arguments());
+            arguments.extend([
                 "--title".into(),
                 request.title.clone(),
                 "--description".into(),
@@ -173,7 +240,8 @@ pub fn create_arguments(request: &CreateHostedChangeRequest) -> ChatResult<Vec<S
                 "--only-show-errors".into(),
                 "--output".into(),
                 "json".into(),
-            ]
+            ]);
+            arguments
         }
         HostedSourceControlKind::Bitbucket => {
             return Err(ChatError::unsupported(
@@ -267,9 +335,9 @@ pub async fn probe_cli(
     install_hint: &str,
     repository: Option<&(HostedSourceControlKind, String, String)>,
 ) -> HostedSourceControlRead {
-    let version = run_probe(executable, &["--version"]).await;
+    let version = run_probe(kind, executable, &["--version"]).await;
     let auth = if version.is_ok() {
-        run_probe(executable, auth_arguments).await
+        run_probe(kind, executable, auth_arguments).await
     } else {
         Err(ProbeFailure::Missing)
     };
@@ -306,140 +374,81 @@ enum ProbeFailure {
     Failed,
 }
 
-async fn run_probe(executable: &str, arguments: &[&str]) -> Result<String, ProbeFailure> {
-    let mut child = Command::new(executable)
-        .args(arguments)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                ProbeFailure::Missing
-            } else {
-                ProbeFailure::Failed
-            }
+async fn run_probe(
+    kind: HostedSourceControlKind,
+    executable: &str,
+    arguments: &[&str],
+) -> Result<String, ProbeFailure> {
+    let directory = EmptyWorkingDirectory::create().map_err(|_| ProbeFailure::Failed)?;
+    let mut command = std::process::Command::new(executable);
+    command.args(arguments).current_dir(&directory.0);
+    isolate_python(kind, &mut command);
+    let output = hardened::run_program(command, PROBE_TIMEOUT, MAX_PROBE_OUTPUT_BYTES)
+        .await
+        .map_err(|error| match error {
+            GitRunError::Missing => ProbeFailure::Missing,
+            _ => ProbeFailure::Failed,
         })?;
-    let stdout = child.stdout.take().ok_or(ProbeFailure::Failed)?;
-    let stderr = child.stderr.take().ok_or(ProbeFailure::Failed)?;
-    let stdout_task = tokio::spawn(async move {
-        let mut bytes = Vec::new();
-        stdout
-            .take((MAX_PROBE_OUTPUT_BYTES + 1) as u64)
-            .read_to_end(&mut bytes)
-            .await
-            .map(|_| bytes)
-    });
-    let stderr_task = tokio::spawn(async move {
-        let mut bytes = Vec::new();
-        stderr
-            .take((MAX_PROBE_OUTPUT_BYTES + 1) as u64)
-            .read_to_end(&mut bytes)
-            .await
-            .map(|_| bytes)
-    });
-    let status = tokio::time::timeout(PROBE_TIMEOUT, child.wait())
-        .await
-        .map_err(|_| ProbeFailure::Failed)?
-        .map_err(|_| ProbeFailure::Failed)?;
-    let stdout = stdout_task
-        .await
-        .map_err(|_| ProbeFailure::Failed)?
-        .map_err(|_| ProbeFailure::Failed)?;
-    let stderr = stderr_task
-        .await
-        .map_err(|_| ProbeFailure::Failed)?
-        .map_err(|_| ProbeFailure::Failed)?;
-    if !status.success()
-        || stdout.len() > MAX_PROBE_OUTPUT_BYTES
-        || stderr.len() > MAX_PROBE_OUTPUT_BYTES
-    {
+    drop(directory);
+    if !output.status.success() || output.stderr.len() > MAX_PROBE_OUTPUT_BYTES {
         return Err(ProbeFailure::Failed);
     }
-    let output = if stdout.is_empty() { stderr } else { stdout };
+    let output = if output.stdout.is_empty() {
+        output.stderr
+    } else {
+        output.stdout
+    };
     String::from_utf8(output).map_err(|_| ProbeFailure::Failed)
 }
 
+/// Builds a hosted CLI command with the Git policy carried in
+/// `git_environment`. Azure CLI runs Python, so the working directory and
+/// user site stay off its import path.
+pub fn hosted_cli_command(
+    kind: HostedSourceControlKind,
+    arguments: &[String],
+    directory: &Path,
+    git_environment: &GitChildEnvironment,
+) -> ChatResult<std::process::Command> {
+    let mut command = std::process::Command::new(provider_executable(kind)?);
+    command.args(arguments).current_dir(directory);
+    git_environment.apply(&mut command);
+    isolate_python(kind, &mut command);
+    Ok(command)
+}
+
+fn isolate_python(kind: HostedSourceControlKind, command: &mut std::process::Command) {
+    if kind == HostedSourceControlKind::AzureDevops {
+        command
+            .env("PYTHONSAFEPATH", "1")
+            .env("PYTHONNOUSERSITE", "1");
+    }
+}
+
 pub async fn run_cli_operation(
-    executable: &str,
+    kind: HostedSourceControlKind,
     arguments: &[String],
     root: &Path,
+    operation: HostedCliOperation,
 ) -> ChatResult<String> {
-    let mut child = Command::new(executable)
-        .args(arguments)
-        .current_dir(root)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                ChatError::new(
-                    ChatErrorCode::ExecutableMissing,
-                    format!("{executable} is not available on PATH"),
-                    true,
-                )
-            } else {
-                ChatError::new(
-                    ChatErrorCode::DriverUnavailable,
-                    "Source-control command could not be started",
-                    true,
-                )
-            }
-        })?;
-    let stdout = child.stdout.take().ok_or_else(protocol_error)?;
-    let stderr = child.stderr.take().ok_or_else(protocol_error)?;
-    let stdout_task = tokio::spawn(async move {
-        let mut bytes = Vec::new();
-        stdout
-            .take((MAX_OPERATION_OUTPUT_BYTES + 1) as u64)
-            .read_to_end(&mut bytes)
-            .await
-            .map(|_| bytes)
-    });
-    let stderr_task = tokio::spawn(async move {
-        let mut bytes = Vec::new();
-        stderr
-            .take((MAX_OPERATION_OUTPUT_BYTES + 1) as u64)
-            .read_to_end(&mut bytes)
-            .await
-            .map(|_| bytes)
-    });
-    let status = tokio::time::timeout(OPERATION_TIMEOUT, child.wait())
+    let executable = provider_executable(kind)?;
+    let isolated = if operation.runs_in_repository(kind) {
+        None
+    } else {
+        Some(EmptyWorkingDirectory::create()?)
+    };
+    let directory = isolated
+        .as_ref()
+        .map_or_else(|| root.to_path_buf(), |isolated| isolated.0.clone());
+    let git_environment =
+        hardened::child_environment(directory.clone(), operation.git_policy()).await?;
+    let command = hosted_cli_command(kind, arguments, &directory, &git_environment)?;
+    let output = hardened::run_program(command, OPERATION_TIMEOUT, MAX_OPERATION_OUTPUT_BYTES)
         .await
-        .map_err(|_| {
-            ChatError::new(
-                ChatErrorCode::Timeout,
-                "Source-control command timed out",
-                true,
-            )
-        })?
-        .map_err(|_| {
-            ChatError::new(
-                ChatErrorCode::DriverUnavailable,
-                "Source-control command failed",
-                true,
-            )
-        })?;
-    let stdout = stdout_task
-        .await
-        .map_err(|_| protocol_error())?
-        .map_err(|_| protocol_error())?;
-    let stderr = stderr_task
-        .await
-        .map_err(|_| protocol_error())?
-        .map_err(|_| protocol_error())?;
-    if stdout.len() > MAX_OPERATION_OUTPUT_BYTES || stderr.len() > MAX_OPERATION_OUTPUT_BYTES {
-        return Err(ChatError::new(
-            ChatErrorCode::Protocol,
-            "Source-control command output exceeded the supported limit",
-            true,
-        ));
-    }
-    if !status.success() {
-        let detail = String::from_utf8_lossy(&stderr);
+        .map_err(|error| cli_run_error(executable, error))?;
+    drop(isolated);
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr);
         let normalized = detail.to_ascii_lowercase();
         let code = if normalized.contains("auth")
             || normalized.contains("login")
@@ -460,10 +469,86 @@ pub async fn run_cli_operation(
             true,
         ));
     }
-    String::from_utf8(stdout).map_err(|_| protocol_error())
+    String::from_utf8(output.stdout).map_err(|_| protocol_error())
 }
 
-pub fn detect_remote(remote: &str) -> Option<(HostedSourceControlKind, String)> {
+fn cli_run_error(executable: &str, error: GitRunError) -> ChatError {
+    match error {
+        GitRunError::Missing => ChatError::new(
+            ChatErrorCode::ExecutableMissing,
+            format!("{executable} is not available on PATH"),
+            true,
+        ),
+        GitRunError::TimedOut => ChatError::new(
+            ChatErrorCode::Timeout,
+            "Source-control command timed out",
+            true,
+        ),
+        GitRunError::OutputTooLarge => ChatError::new(
+            ChatErrorCode::Protocol,
+            "Source-control command output exceeded the supported limit",
+            true,
+        ),
+        GitRunError::Cancelled => ChatError::from(error),
+        GitRunError::Unavailable | GitRunError::Configuration => ChatError::new(
+            ChatErrorCode::DriverUnavailable,
+            "Source-control command could not be started",
+            true,
+        ),
+    }
+}
+
+/// Private empty directory for hosted CLI runs that name their repository
+/// explicitly, so nothing in the working folder is on their configuration or
+/// import path. Removed on drop.
+pub(super) struct EmptyWorkingDirectory(pub(super) PathBuf);
+
+impl EmptyWorkingDirectory {
+    pub(super) fn create() -> ChatResult<Self> {
+        static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos());
+        let path = std::env::temp_dir().join(format!(
+            "ganbaru-source-control-{}-{}-{nanos}",
+            std::process::id(),
+            SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder.create(&path).map_err(|_| {
+            ChatError::new(
+                ChatErrorCode::DriverUnavailable,
+                "Source-control command could not be started",
+                true,
+            )
+        })?;
+        Ok(Self(path))
+    }
+}
+
+impl Drop for EmptyWorkingDirectory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn required_azure(azure: Option<&AzureRepository>) -> ChatResult<&AzureRepository> {
+    azure.ok_or_else(|| {
+        ChatError::validation(
+            "repositorySlug",
+            "The Azure DevOps remote was not found in this repository",
+        )
+    })
+}
+
+/// Host and path of a remote URL or scp-style address, with any user name
+/// removed and the host lowercased.
+fn remote_host_and_path(remote: &str) -> Option<(String, String)> {
     let normalized = remote.trim_end_matches(".git");
     let (host, path) = if let Ok(url) = reqwest::Url::parse(normalized) {
         (
@@ -473,15 +558,25 @@ pub fn detect_remote(remote: &str) -> Option<(HostedSourceControlKind, String)> 
     } else {
         let (host, path) = normalized.split_once(':')?;
         (
-            host.trim_start_matches("git@").to_ascii_lowercase(),
+            host.rsplit_once('@')
+                .map_or(host, |(_, host)| host)
+                .to_ascii_lowercase(),
             path.trim_matches('/').to_string(),
         )
     };
+    Some((host, path))
+}
+
+pub fn detect_remote(remote: &str) -> Option<(HostedSourceControlKind, String)> {
+    let (host, path) = remote_host_and_path(remote)?;
     let kind = if host == "github.com" {
         HostedSourceControlKind::Github
     } else if host == "gitlab.com" || host.contains("gitlab") {
         HostedSourceControlKind::Gitlab
-    } else if host == "dev.azure.com" || host.ends_with("visualstudio.com") {
+    } else if host == "dev.azure.com"
+        || host == "ssh.dev.azure.com"
+        || host.ends_with("visualstudio.com")
+    {
         HostedSourceControlKind::AzureDevops
     } else if host == "bitbucket.org" || host.contains("bitbucket") {
         HostedSourceControlKind::Bitbucket
@@ -489,4 +584,73 @@ pub fn detect_remote(remote: &str) -> Option<(HostedSourceControlKind, String)> 
         return None;
     };
     (!path.is_empty()).then_some((kind, path))
+}
+
+/// Parses the Azure Repos remote shapes: HTTPS on `dev.azure.com` and
+/// `<organization>.visualstudio.com` (with or without a collection), and SSH
+/// `v3` addresses on either host.
+pub fn azure_repository(remote: &str) -> Option<AzureRepository> {
+    let (host, path) = remote_host_and_path(remote)?;
+    let segments = path
+        .split('/')
+        .map(percent_decode)
+        .collect::<Option<Vec<_>>>()?;
+    let segments = segments.iter().map(String::as_str).collect::<Vec<_>>();
+    let (organization_url, project, repository) = match (host.as_str(), segments.as_slice()) {
+        ("dev.azure.com", [organization, project, "_git", repository])
+        | (
+            "ssh.dev.azure.com" | "vs-ssh.visualstudio.com",
+            ["v3", organization, project, repository],
+        ) => {
+            if !azure_organization_is_valid(organization) {
+                return None;
+            }
+            (
+                format!("https://dev.azure.com/{organization}"),
+                project,
+                repository,
+            )
+        }
+        (host, [project, "_git", repository] | [_, project, "_git", repository])
+            if host.ends_with(".visualstudio.com")
+                && azure_organization_is_valid(host.trim_end_matches(".visualstudio.com")) =>
+        {
+            (format!("https://{host}"), project, repository)
+        }
+        _ => return None,
+    };
+    let valid = |value: &str| {
+        !value.is_empty() && !value.starts_with('-') && !value.chars().any(char::is_control)
+    };
+    (valid(project) && valid(repository)).then(|| AzureRepository {
+        organization_url,
+        project: (*project).to_string(),
+        repository: (*repository).to_string(),
+    })
+}
+
+fn azure_organization_is_valid(organization: &str) -> bool {
+    !organization.is_empty()
+        && !organization.starts_with('-')
+        && organization
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
+/// Decodes `%XX` escapes in one URL path segment.
+fn percent_decode(segment: &str) -> Option<String> {
+    let bytes = segment.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let hex = segment.get(index + 1..index + 3)?;
+            decoded.push(u8::from_str_radix(hex, 16).ok()?);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
 }

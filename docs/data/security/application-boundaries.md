@@ -82,4 +82,4 @@ Each network-capable feature uses its own adapter and allowlist. Do not add a sh
 
 ## Blocking native work
 
-Filesystem, process, media, Git, and operating-system work that may block runs outside the async database executor and never holds a SQL transaction or shared async mutex while waiting. Cancellation, output, time, and concurrency are bounded. See [Native backend](../../architecture/native-backend.md#asynchronous-and-blocking-work).
+Filesystem, process, media, Git, and operating-system work that may block runs outside the async database executor and never holds a SQL transaction or shared async mutex while waiting. Cancellation, output, time, and concurrency are bounded, and Git and hosted CLI runs stop their whole process tree on timeout or cancellation. See [Native backend](../../architecture/native-backend.md#asynchronous-and-blocking-work).

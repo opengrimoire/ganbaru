@@ -10,7 +10,6 @@ use std::io::{Read, Seek, SeekFrom, Write};
 #[cfg(windows)]
 use std::path::PathBuf;
 use std::path::{Component, Path};
-use std::process::{Command, Stdio};
 use std::sync::{
     Mutex,
     atomic::{AtomicU64, Ordering},
@@ -579,31 +578,15 @@ fn git_ignored_paths<'a>(root: &Path, paths: impl Iterator<Item = &'a str>) -> H
     if input.is_empty() {
         return HashSet::new();
     }
-    let mut child = match Command::new("git")
-        .args(["-C"])
-        .arg(root)
-        .args(["check-ignore", "-z", "--stdin"])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(_) => return HashSet::new(),
-    };
-    if child
-        .stdin
-        .take()
-        .is_none_or(|mut stdin| stdin.write_all(&input).is_err())
-    {
-        return HashSet::new();
-    }
-    let Ok(output) = child.wait_with_output() else {
+    let Ok(output) = crate::git::hardened::internal_read_blocking(
+        root,
+        &["check-ignore", "-z", "--stdin"],
+        Some(&input),
+        input.len(),
+    ) else {
         return HashSet::new();
     };
-    if !matches!(output.status.code(), Some(0 | 1)) || output.stdout.len() > input.len() {
+    if !matches!(output.status.code(), Some(0 | 1)) {
         return HashSet::new();
     }
     output

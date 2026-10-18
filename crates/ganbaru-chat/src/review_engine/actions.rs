@@ -90,8 +90,8 @@ pub async fn apply_action(
             apply.push("--reverse");
         }
     }
-    git::review_output(&snapshot.root, &check, Some(patch.as_bytes())).await?;
-    git::review_output(&snapshot.root, &apply, Some(patch.as_bytes())).await?;
+    git::review_action_output(&snapshot.root, &check, Some(patch.as_bytes())).await?;
+    git::review_action_output(&snapshot.root, &apply, Some(patch.as_bytes())).await?;
     Ok(())
 }
 
@@ -125,27 +125,27 @@ async fn apply_exact_file_action(
                 ));
             }
             if file.read.status == "added" {
-                git::review_output(
+                git::review_action_output(
                     &snapshot.root,
                     &["rm", "--cached", "--ignore-unmatch", "--", current],
                     None,
                 )
                 .await?;
             } else if let Some(previous) = file.read.previous_relative_path.as_deref() {
-                git::review_output(
+                git::review_action_output(
                     &snapshot.root,
                     &["restore", "--staged", "--source", before, "--", previous],
                     None,
                 )
                 .await?;
-                git::review_output(
+                git::review_action_output(
                     &snapshot.root,
                     &["rm", "--cached", "--ignore-unmatch", "--", current],
                     None,
                 )
                 .await?;
             } else {
-                git::review_output(
+                git::review_action_output(
                     &snapshot.root,
                     &["restore", "--staged", "--source", before, "--", current],
                     None,
@@ -160,17 +160,19 @@ async fn apply_exact_file_action(
                 ));
             }
             if let Some(previous) = file.read.previous_relative_path.as_deref() {
-                git::review_output(
+                git::review_action_output(
                     &snapshot.root,
                     &["restore", "--worktree", "--source", before, "--", previous],
                     None,
                 )
                 .await?;
-                git::review_output(&snapshot.root, &["clean", "-f", "--", current], None).await?;
+                git::review_action_output(&snapshot.root, &["clean", "-f", "--", current], None)
+                    .await?;
             } else if file.read.flags.untracked {
-                git::review_output(&snapshot.root, &["clean", "-f", "--", current], None).await?;
+                git::review_action_output(&snapshot.root, &["clean", "-f", "--", current], None)
+                    .await?;
             } else {
-                git::review_output(
+                git::review_action_output(
                     &snapshot.root,
                     &["restore", "--worktree", "--source", before, "--", current],
                     None,
@@ -228,7 +230,7 @@ async fn discard_owned_files(snapshot: &ReviewSnapshot, before: &str) -> ChatRes
     for chunk in bounded_path_chunks(&clean_paths) {
         let mut arguments = vec!["clean", "-f", "--"];
         arguments.extend(chunk.iter().map(String::as_str));
-        git::review_output(&snapshot.root, &arguments, None).await?;
+        git::review_action_output(&snapshot.root, &arguments, None).await?;
     }
     Ok(())
 }
@@ -255,13 +257,13 @@ async fn restore_owned_paths(
         "--pathspec-from-file=-",
         "--pathspec-file-nul",
     ]);
-    git::review_output(root, &arguments, Some(&pathspec)).await?;
+    git::review_action_output(root, &arguments, Some(&pathspec)).await?;
     Ok(())
 }
 
 async fn stage_owned_paths(root: &Path, paths: &[String]) -> ChatResult<()> {
     let pathspec = pathspec_bytes(paths)?;
-    git::review_output(
+    git::review_action_output(
         root,
         &["add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
         Some(&pathspec),

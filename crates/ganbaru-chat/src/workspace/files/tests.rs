@@ -1,5 +1,6 @@
 use super::*;
 use std::path::PathBuf;
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 struct TestDirectory(PathBuf);

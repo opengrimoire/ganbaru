@@ -4,16 +4,30 @@ use super::diff::changed_file_summaries;
 use super::{
     CapturedCheckpoint, CurrentGitSnapshot, CurrentGitTrees, StoredCheckpoint, checkpoint_error,
 };
+use crate::git::hardened::{
+    self, GIT_CHECKPOINT_DEADLINE, GitPolicy, GitRun, GitRunError, GitStdout,
+    PROVISIONAL_FOLDER_TRUST,
+};
 use crate::models::{ChatCheckpointId, ChatError, ChatErrorCode, ChatResult, ChatThreadId};
 use crate::workspace::AuthorizedWorkingFolder;
 use sha2::{Digest, Sha256};
+use std::ffi::OsStr;
 use std::fs;
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::Output;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const MAX_GIT_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
+/// Fixed identity for checkpoint commits so their object IDs depend only on
+/// content.
+const CHECKPOINT_IDENTITY_ENVIRONMENT: &[(&str, &str)] = &[
+    ("GIT_AUTHOR_NAME", "Ganbaru"),
+    ("GIT_AUTHOR_EMAIL", "local@ganbaru.invalid"),
+    ("GIT_COMMITTER_NAME", "Ganbaru"),
+    ("GIT_COMMITTER_EMAIL", "local@ganbaru.invalid"),
+    ("GIT_AUTHOR_DATE", "2000-01-01T00:00:00Z"),
+    ("GIT_COMMITTER_DATE", "2000-01-01T00:00:00Z"),
+];
 const REF_PREFIX: &str = "refs/ganbaru/chat/";
 static TEMPORARY_INDEX_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -420,98 +434,66 @@ fn git_output_with_input_codes(
     input: Option<&[u8]>,
     accepted_codes: Option<&[i32]>,
 ) -> ChatResult<Output> {
-    let mut command = Command::new("git");
-    command
-        .args(["-C"])
-        .arg(root)
-        .args(arguments)
-        .env("GIT_LITERAL_PATHSPECS", "1")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GCM_INTERACTIVE", "never")
-        .env("LC_ALL", "C")
-        .env("GIT_AUTHOR_NAME", "Ganbaru")
-        .env("GIT_AUTHOR_EMAIL", "local@ganbaru.invalid")
-        .env("GIT_COMMITTER_NAME", "Ganbaru")
-        .env("GIT_COMMITTER_EMAIL", "local@ganbaru.invalid")
-        .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00Z")
-        .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00Z")
-        .stdin(if input.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    let arguments = arguments.iter().map(OsStr::new).collect::<Vec<_>>();
+    let mut environment = CHECKPOINT_IDENTITY_ENVIRONMENT
+        .iter()
+        .map(|(name, value)| (*name, OsStr::new(value)))
+        .collect::<Vec<_>>();
     if let Some(index) = index {
-        command.env("GIT_INDEX_FILE", index);
+        environment.push(("GIT_INDEX_FILE", index.as_os_str()));
     }
-    let mut child = command.spawn().map_err(checkpoint_error)?;
-    if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
-        stdin.write_all(input).map_err(checkpoint_error)?;
-    }
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| checkpoint_error("Git stdout unavailable"))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| checkpoint_error("Git stderr unavailable"))?;
-    let stdout_reader = bounded_reader(stdout);
-    let stderr_reader = bounded_reader(stderr);
-    let status = child.wait().map_err(checkpoint_error)?;
-    let stdout = stdout_reader
-        .join()
-        .map_err(checkpoint_error)?
-        .map_err(checkpoint_error)?;
-    let stderr = stderr_reader
-        .join()
-        .map_err(checkpoint_error)?
-        .map_err(checkpoint_error)?;
-    if stdout.len() > MAX_GIT_OUTPUT_BYTES || stderr.len() > MAX_GIT_OUTPUT_BYTES {
-        return Err(checkpoint_error("Git output exceeds the safety limit"));
-    }
-    let code = status.code().unwrap_or(-1);
-    if !status.success() && !accepted_codes.is_some_and(|codes| codes.contains(&code)) {
+    let output = hardened::run_blocking(GitRun {
+        root,
+        arguments: &arguments,
+        policy: GitPolicy::internal(PROVISIONAL_FOLDER_TRUST),
+        deadline: GIT_CHECKPOINT_DEADLINE,
+        input,
+        stdout: GitStdout::Memory(MAX_GIT_OUTPUT_BYTES),
+        environment: &environment,
+        cancel: None,
+    })
+    .map_err(|error| match error {
+        GitRunError::TimedOut | GitRunError::Cancelled => ChatError::from(error),
+        GitRunError::Missing
+        | GitRunError::Unavailable
+        | GitRunError::Configuration
+        | GitRunError::OutputTooLarge => checkpoint_error(error),
+    })?;
+    let code = output.status.code().unwrap_or(-1);
+    if !output.status.success() && !accepted_codes.is_some_and(|codes| codes.contains(&code)) {
         return Err(checkpoint_error("Git checkpoint command failed"));
     }
     Ok(Output {
-        status,
-        stdout,
-        stderr,
+        status: output.status,
+        stdout: output.stdout,
+        stderr: output.stderr,
     })
 }
 
-fn bounded_reader<R: std::io::Read + Send + 'static>(
-    reader: R,
-) -> std::thread::JoinHandle<std::io::Result<Vec<u8>>> {
-    std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        reader
-            .take((MAX_GIT_OUTPUT_BYTES + 1) as u64)
-            .read_to_end(&mut bytes)?;
-        Ok(bytes)
-    })
-}
+/// Index file inside a new private directory, so another local user cannot
+/// pre-create or replace it in the shared temporary directory.
 struct TemporaryIndex {
+    directory: PathBuf,
     path: PathBuf,
 }
 
 impl TemporaryIndex {
     fn new() -> ChatResult<Self> {
         let sequence = TEMPORARY_INDEX_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "ganbaru-chat-index-{}-{sequence}",
-            std::process::id()
+        let directory = std::env::temp_dir().join(format!(
+            "ganbaru-chat-index-{}-{sequence}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
         ));
-        let file = fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&path)
-            .map_err(checkpoint_error)?;
-        drop(file);
-        fs::remove_file(&path).map_err(checkpoint_error)?;
-        Ok(Self { path })
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder.create(&directory).map_err(checkpoint_error)?;
+        let path = directory.join("index");
+        Ok(Self { directory, path })
     }
 
     fn path(&self) -> &Path {
@@ -521,11 +503,10 @@ impl TemporaryIndex {
 
 impl Drop for TemporaryIndex {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-        let lock_path = self.path.with_extension("lock");
-        let _ = fs::remove_file(lock_path);
+        let _ = fs::remove_dir_all(&self.directory);
     }
 }
+
 fn checkpoint_ref(thread_id: &ChatThreadId, checkpoint_id: &ChatCheckpointId) -> String {
     format!(
         "{REF_PREFIX}{}/{}",

@@ -24,7 +24,7 @@ The provider-file settings portal is a narrow exception for user configuration a
 
 Portable working-folder identity contains no external absolute path. Managed folders resolve below the active vault. External folders resolve through a device-local binding scoped by vault, device, and logical folder ID.
 
-Rust validates the opened directory's filesystem identity (device and inode on Unix, volume and file identity on Windows, with reparse-point escapes rejected). Git-sensitive operations separately validate the Git common-storage identity. Missing directories, stale paths, replacement, traversal, absolute injection, symlink escape, vault nesting, and unbound devices fail closed. Remote URLs, branch names, and mutable Git configuration do not participate in authority.
+Rust validates the opened directory's filesystem identity (device and inode on Unix, volume and file identity on Windows, with reparse-point escapes rejected). Git-sensitive operations separately validate the Git common-storage identity. Missing directories, stale paths, replacement, traversal, absolute injection, symlink escape, vault nesting, and unbound devices fail closed. Remote URLs, branch names, and mutable Git configuration do not participate in authority; how Ganbaru runs Git against that configuration is described in [Git and hosted CLIs](#git-and-hosted-clis).
 
 The same authorization service serves provider startup, terminals, attachments, Markdown operations, file tools, mentions, previews, watchers, Git, checkpoints, and restores. No adapter reimplements a weaker path check. Known residual races between identity checks and later opens are recorded in [Unsafe Rust](unsafe-rust.md).
 
@@ -73,6 +73,18 @@ Mentions, workspace files, Notes, tasks, channel messages, browser artifacts, an
 Preview URLs must be HTTP or HTTPS with a host and no embedded credentials. Loopback targets (local development servers) open directly; any other destination requires explicit user confirmation. Navigation stays within the confirmed origin, and a loopback preview cannot navigate off loopback.
 
 Webview identity, port, generation, navigation events, screenshots, recordings, and cleanup are tied to the owning thread and target, so a stale preview cannot emit current events. Browser artifacts are bounded managed assets with explicit references and cleanup. Cookies, local storage, and authenticated browsing are not imported into provider context.
+
+## Git and hosted CLIs
+
+Every Git and hosted CLI spawn goes through one hardened runner with a named deadline, bounded output, and process-tree termination on timeout or cancellation. Each run has an origin and the folder's trust:
+
+- Internal runs (status, listings, diffs, checkpoints, restores, observer probes) never execute hooks, fsmonitor, or signing, and never use the `ext` transport.
+- User-initiated commands in trusted folders apply repository configuration and hooks exactly as the user's terminal does.
+- In untrusted folders, programs defined in local or worktree configuration (pagers, editors, diff and merge tools, filters other than standard LFS, credential helpers, SSH commands, proxies) are replaced by the user's global value or a neutral value. System and global configuration always stays, so results match the terminal.
+
+Hosted CLIs (`gh`, `glab`, `az`) list and view change requests from a private empty directory with explicit repository coordinates, so repository content cannot steer them. Creation and checkout run where they need Git context. Their Git children inherit the same hardening through the environment, and `az` runs with Python path isolation.
+
+Current behavior treats every authorized folder as trusted. Planned: a device-local, revocable trust record per folder, keyed by a digest of `.git/config`, `.gitattributes`, hooks, and provider settings; managed folders start trusted, picker-bound folders ask once, and received folders with an unknown digest start untrusted.
 
 ## Checkpoints and restore
 

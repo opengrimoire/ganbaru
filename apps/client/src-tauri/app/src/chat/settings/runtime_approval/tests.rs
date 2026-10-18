@@ -62,6 +62,26 @@ fn restored_runtime_values_stay_quarantined_until_confirmed() {
 }
 
 #[test]
+fn portable_provider_file_locations_stay_quarantined_until_confirmed() {
+    for (name, value) in [
+        ("OPENCODE_CONFIG", "~/.config/other/opencode.json"),
+        ("OPENCODE_CONFIG_DIR", "/tmp/opencode"),
+        ("XDG_CONFIG_HOME", "/tmp/config"),
+        ("OPENCODE_CONFIG", "inherit:OPENCODE_CONFIG"),
+    ] {
+        let mut restored = configuration(&[], &[(name, value)], json!({}));
+        restored.family_id =
+            ganbaru_chat_contracts::models::ProviderFamilyId::new("opencode").unwrap();
+        let error = require_approved_runtime(&restored, None).unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::RuntimeApprovalRequired, "{name}");
+        assert!(require_approved_runtime(&restored, Some(&approved_device(&restored))).is_ok());
+    }
+    let mut grok = configuration(&[], &[("GROK_HOME", "/tmp/grok")], json!({}));
+    grok.family_id = ganbaru_chat_contracts::models::ProviderFamilyId::new("grok").unwrap();
+    assert!(require_approved_runtime(&grok, None).is_err());
+}
+
+#[test]
 fn confirmed_runtime_values_keep_working_after_a_restore_with_the_same_fields() {
     for restored in restored_configurations() {
         let device = approved_device(&restored);

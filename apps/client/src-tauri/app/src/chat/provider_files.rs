@@ -15,6 +15,8 @@ use std::sync::{
 };
 
 const MAX_PROVIDER_FILE_BYTES: u64 = 1024 * 1024;
+/// Extensions OpenCode accepts for a configuration file named by `OPENCODE_CONFIG`.
+const OPENCODE_CONFIG_EXTENSIONS: &[&str] = &["json", "jsonc"];
 static PROVIDER_FILE_WRITE_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Default)]
@@ -66,6 +68,8 @@ struct ProviderFileSpec {
     kind: ProviderFileKind,
     format: ProviderFileFormat,
     path: PathBuf,
+    /// Whether saving may create missing parent folders. Only paths in the provider home may.
+    create_parent: bool,
 }
 
 #[tauri::command]
@@ -106,8 +110,7 @@ pub fn chat_save_provider_file(
             true,
         ));
     }
-    reject_symbolic_path(&spec.path)?;
-    write_text_file_atomically(&spec.path, &request.contents)?;
+    write_text_file_atomically(&spec.path, &request.contents, spec.create_parent)?;
     read_provider_file(spec)
 }
 
@@ -158,6 +161,7 @@ fn standard_pair(
             kind: ProviderFileKind::Instructions,
             format: ProviderFileFormat::Markdown,
             path: home.join(instructions_name),
+            create_parent: true,
         },
     ]
 }
@@ -172,6 +176,7 @@ fn configuration_spec(
         kind: ProviderFileKind::Configuration,
         format,
         path,
+        create_parent: true,
     }
 }
 
@@ -180,14 +185,18 @@ fn opencode_specs(
     home: &Path,
 ) -> ChatResult<Vec<ProviderFileSpec>> {
     if let Some(custom_path) = configured_environment(configuration, "OPENCODE_CONFIG") {
-        let path = resolve_absolute_path(&custom_path, "OPENCODE_CONFIG")?;
+        let path = opencode_config_path(&custom_path)?;
         return Ok(vec![
-            configuration_spec("configuration", path.clone(), json_format(&path)),
+            ProviderFileSpec {
+                create_parent: false,
+                ..configuration_spec("configuration", path.clone(), json_format(&path))
+            },
             ProviderFileSpec {
                 file_id: "instructions".to_string(),
                 kind: ProviderFileKind::Instructions,
                 format: ProviderFileFormat::Markdown,
                 path: home.join("AGENTS.md"),
+                create_parent: true,
             },
         ]);
     }
@@ -218,8 +227,33 @@ fn opencode_specs(
         kind: ProviderFileKind::Instructions,
         format: ProviderFileFormat::Markdown,
         path: home.join("AGENTS.md"),
+        create_parent: true,
     });
     Ok(specs)
+}
+
+/// Resolves an `OPENCODE_CONFIG` value, which must name a JSON or JSONC file.
+///
+/// The value is user configuration that this device confirmed before the portal opens, so it may
+/// point outside the provider home as OpenCode allows; the extension check keeps it from naming
+/// keys, shell profiles, or other non-configuration files.
+fn opencode_config_path(value: &str) -> ChatResult<PathBuf> {
+    let path = resolve_absolute_path(value, "OPENCODE_CONFIG")?;
+    let supported = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            OPENCODE_CONFIG_EXTENSIONS
+                .iter()
+                .any(|known| extension.eq_ignore_ascii_case(known))
+        });
+    if !supported {
+        return Err(ChatError::validation(
+            "OPENCODE_CONFIG",
+            "OPENCODE_CONFIG must name a JSON or JSONC file",
+        ));
+    }
+    Ok(path)
 }
 
 fn provider_home(configuration: &ProviderInstanceConfig) -> ChatResult<PathBuf> {
@@ -328,11 +362,26 @@ fn read_provider_file(spec: ProviderFileSpec) -> ChatResult<ProviderFileRead> {
             .ok_or_else(provider_file_error)?,
         kind: spec.kind,
         format: spec.format,
-        path: spec.path.to_string_lossy().into_owned(),
+        path: display_path(&spec.path),
         exists,
         revision: revision(&contents, exists),
         contents,
     })
+}
+
+/// Home-relative display form of a provider file path, so the webview never sees the home folder.
+fn display_path(path: &Path) -> String {
+    match path.strip_prefix(user_home()) {
+        Ok(relative) if user_home().is_absolute() => {
+            let relative = relative.to_string_lossy();
+            if relative.is_empty() {
+                "~".to_string()
+            } else {
+                format!("~{}{relative}", std::path::MAIN_SEPARATOR)
+            }
+        }
+        _ => path.to_string_lossy().into_owned(),
+    }
 }
 
 fn read_bounded_utf8(path: &Path) -> ChatResult<String> {
@@ -400,10 +449,18 @@ fn reject_symbolic_path(path: &Path) -> ChatResult<()> {
     Ok(())
 }
 
-fn write_text_file_atomically(path: &Path, contents: &str) -> ChatResult<()> {
+fn write_text_file_atomically(path: &Path, contents: &str, create_parent: bool) -> ChatResult<()> {
     let parent = path.parent().ok_or_else(provider_file_error)?;
-    fs::create_dir_all(parent).map_err(|_| provider_file_error())?;
-    reject_symbolic_path(parent)?;
+    reject_symbolic_path(path)?;
+    if !parent.is_dir() {
+        if !create_parent {
+            return Err(ChatError::validation(
+                "providerFile",
+                "The folder for this provider file does not exist",
+            ));
+        }
+        fs::create_dir_all(parent).map_err(|_| provider_file_error())?;
+    }
     reject_symbolic_path(path)?;
     let file_name = path
         .file_name()
@@ -597,7 +654,7 @@ mod tests {
         );
         let missing = read_provider_file(spec.clone()).unwrap();
         assert!(!missing.exists);
-        write_text_file_atomically(&spec.path, "approval_policy = \"on-request\"\n").unwrap();
+        write_text_file_atomically(&spec.path, "approval_policy = \"on-request\"\n", true).unwrap();
         let saved = read_provider_file(spec).unwrap();
         assert!(saved.exists);
         assert_eq!(saved.contents, "approval_policy = \"on-request\"\n");
@@ -616,6 +673,80 @@ mod tests {
         symlink(&real, &linked).unwrap();
         let error = reject_symbolic_path(&linked.join("config.toml")).unwrap_err();
         assert_eq!(error.code, ChatErrorCode::Validation);
+    }
+
+    #[test]
+    fn opencode_config_must_name_a_json_file() {
+        let root = TestDirectory::new("opencode-target");
+        let mut configuration = configuration("opencode", root.path());
+        for target in [
+            "~/.ssh/id_ed25519",
+            "~/.bashrc",
+            "/etc/passwd",
+            "relative.json",
+        ] {
+            configuration
+                .environment
+                .insert("OPENCODE_CONFIG".to_string(), target.to_string());
+            let error = provider_file_specs(&configuration).unwrap_err();
+            assert_eq!(error.code, ChatErrorCode::Validation, "{target}");
+        }
+        configuration.environment.insert(
+            "OPENCODE_CONFIG".to_string(),
+            "~/work/opencode.JSON".to_string(),
+        );
+        assert!(provider_file_specs(&configuration).is_ok());
+    }
+
+    #[test]
+    fn custom_config_saves_never_create_missing_folders() {
+        let root = TestDirectory::new("missing-parent");
+        let mut opencode = configuration("opencode", root.path());
+        let target = root.path().join("absent").join("opencode.json");
+        opencode.environment.insert(
+            "OPENCODE_CONFIG".to_string(),
+            target.to_string_lossy().into_owned(),
+        );
+        let spec = provider_file_specs(&opencode)
+            .unwrap()
+            .into_iter()
+            .find(|spec| spec.kind == ProviderFileKind::Configuration)
+            .unwrap();
+        assert!(!spec.create_parent);
+        let error = write_text_file_atomically(&spec.path, "{}", spec.create_parent).unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::Validation);
+        assert!(!root.path().join("absent").exists());
+
+        let home_spec = provider_file_specs(&configuration("codex", &root.path().join("new-home")))
+            .unwrap()
+            .remove(0);
+        write_text_file_atomically(&home_spec.path, "", home_spec.create_parent).unwrap();
+        assert!(home_spec.path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symbolic_parents_are_rejected_before_any_folder_is_created() {
+        use std::os::unix::fs::symlink;
+
+        let root = TestDirectory::new("symlink-write");
+        let real = root.path().join("real");
+        fs::create_dir_all(&real).unwrap();
+        let linked = root.path().join("linked");
+        symlink(&real, &linked).unwrap();
+        let target = linked.join("nested").join("config.toml");
+        let error = write_text_file_atomically(&target, "x", true).unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::Validation);
+        assert!(!real.join("nested").exists());
+    }
+
+    #[test]
+    fn display_paths_hide_the_home_folder() {
+        let inside = user_home().join(".codex").join("config.toml");
+        let shown = display_path(&inside);
+        assert!(shown.starts_with('~'));
+        assert!(!shown.contains(user_home().to_string_lossy().as_ref()));
+        assert!(shown.ends_with("config.toml"));
     }
 
     #[test]

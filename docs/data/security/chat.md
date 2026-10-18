@@ -24,7 +24,7 @@ Rust derives each provider credential reference from the instance ID and environ
 
 Secrets are resolved from the operating-system credential store immediately before the operation that needs them. Temporary provider environments are not persisted in diagnostics or DTOs. Replacing or removing a credential invalidates affected probe and model caches, and cleanup errors do not expose secret values or credential-store details.
 
-The provider-file settings portal is a narrow exception for user configuration and instruction files. Rust resolves a fixed allowlist from provider family and instance. Reads and writes reject symlinks, invalid UTF-8, null bytes, traversal, oversized data, stale revisions, and unsupported files; saves use restrictive permissions and sibling temporary replacement. These files may contain secrets and are never copied into the vault, SQLite, diagnostics, or logs.
+The provider-file settings portal is a narrow exception for user configuration and instruction files. Rust resolves fixed file names from the family default home, the app process environment, or provider homes and environment values confirmed on this device; the portal refuses to open until the instance's runtime values are confirmed. A custom OpenCode configuration named by `OPENCODE_CONFIG` must be a JSON or JSONC file in an existing folder, and only the provider home may be created on save. The webview receives home-relative display paths. Reads and writes reject symlinks, invalid UTF-8, null bytes, traversal, oversized data, stale revisions, and unsupported files; saves use restrictive permissions and sibling temporary replacement. These files may contain secrets and are never copied into the vault, SQLite, diagnostics, or logs.
 
 ## Working-folder authorization
 

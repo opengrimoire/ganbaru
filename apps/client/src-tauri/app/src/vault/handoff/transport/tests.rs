@@ -44,6 +44,13 @@ impl LocalPair {
     }
 
     async fn start_with_hub(hub: Option<crate::sync::hub::SyncHub>) -> Self {
+        Self::start_with_limits(hub, server::limits::ConnectionLimits::default()).await
+    }
+
+    async fn start_with_limits(
+        hub: Option<crate::sync::hub::SyncHub>,
+        limits: server::limits::ConnectionLimits,
+    ) -> Self {
         let desktop_root = TestDirectory::new("desktop");
         let phone_root = TestDirectory::new("phone");
         let desktop = PairingManager::default();
@@ -71,8 +78,9 @@ impl LocalPair {
             )
             .expect("create invitation");
         let (shutdown, receiver) = tokio::sync::oneshot::channel();
-        tokio::spawn(serve_with_coordinator(
+        tokio::spawn(server::serve_with_limits(
             listener,
+            limits,
             desktop.clone(),
             None,
             hub,
@@ -1110,4 +1118,105 @@ async fn coordinator_without_a_hub_refuses_sync_requests() {
         response,
         ControlMessage::Error { code, retryable: false, .. } if code == "sync_unsupported"
     ));
+}
+
+/// Opens raw TCP connections from `source` that never start TLS, as a flooding LAN host would.
+#[cfg(target_os = "linux")]
+async fn open_idle_connections(
+    endpoint: SocketAddr,
+    source: IpAddr,
+    count: usize,
+) -> Vec<TcpStream> {
+    let mut streams = Vec::with_capacity(count);
+    for _ in 0..count {
+        let socket = tokio::net::TcpSocket::new_v4().expect("attacker socket");
+        socket
+            .bind(SocketAddr::new(source, 0))
+            .expect("bind attacker source");
+        streams.push(socket.connect(endpoint).await.expect("attacker connect"));
+    }
+    streams
+}
+
+/// Whether the coordinator closed the stream before `wait` elapsed.
+#[cfg(target_os = "linux")]
+async fn closed_by_coordinator(stream: &mut TcpStream, wait: Duration) -> bool {
+    let mut byte = [0_u8; 1];
+    matches!(
+        tokio::time::timeout(wait, stream.read(&mut byte)).await,
+        Ok(Ok(0) | Err(_))
+    )
+}
+
+// Binding a second loopback source address works on Linux without configuration.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn connection_flood_is_closed_while_linked_devices_still_connect() {
+    let limits = server::limits::ConnectionLimits::new(6, 3, 64);
+    let pair = LocalPair::start_with_limits(None, limits).await;
+    pair.enroll().await;
+    let endpoint: SocketAddr = pair.invitation.endpoint.parse().expect("endpoint");
+
+    let mut flood = open_idle_connections(endpoint, IpAddr::from([127, 0, 0, 2]), 10).await;
+    let mut closed = 0;
+    for stream in &mut flood {
+        if closed_by_coordinator(stream, Duration::from_millis(500)).await {
+            closed += 1;
+        }
+    }
+    assert_eq!(closed, 7, "only the per-source pending budget stays open");
+
+    let error = probe_coordinator(&pair.phone, super::super::protocol::test_compatibility(), 0)
+        .await
+        .expect_err("test server has no coordinator state");
+    assert!(
+        error.contains("coordinator operations are unavailable"),
+        "a linked device must still reach dispatch during a flood: {error}"
+    );
+    drop(flood);
+}
+
+#[tokio::test]
+async fn accept_errors_back_off_instead_of_stopping_the_listener() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind listener");
+    let endpoint = listener.local_addr().expect("listener endpoint");
+    let failures = std::sync::atomic::AtomicUsize::new(3);
+    let (accepted, mut accepted_receiver) = tokio::sync::mpsc::unbounded_channel();
+    let (shutdown, receiver) = tokio::sync::oneshot::channel();
+    let listener = &listener;
+    let failures = &failures;
+    let serve = server::accept_connections(
+        move || async move {
+            if failures
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                    left.checked_sub(1)
+                })
+                .is_ok()
+            {
+                // EMFILE on Unix and WSAEMFILE on Windows: the process ran out of descriptors.
+                return Err(std::io::Error::from_raw_os_error(if cfg!(windows) {
+                    10024
+                } else {
+                    24
+                }));
+            }
+            listener.accept().await
+        },
+        receiver,
+        move |_socket: TcpStream, source| {
+            let _ = accepted.send(source);
+        },
+    );
+    let client = async {
+        let _stream = TcpStream::connect(endpoint).await.expect("connect");
+        let source = tokio::time::timeout(Duration::from_secs(10), accepted_receiver.recv())
+            .await
+            .expect("the listener accepted after transient errors");
+        assert!(source.is_some());
+        let _ = shutdown.send(());
+    };
+    tokio::join!(serve, client);
+    assert_eq!(failures.load(Ordering::SeqCst), 0);
 }

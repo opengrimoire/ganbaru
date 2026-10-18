@@ -15,6 +15,9 @@ pub use sync::{
 
 pub const PROTOCOL_VERSION: u16 = 6;
 pub const MAX_CONTROL_BYTES: usize = 1024 * 1024;
+/// Frame bound before the peer presents a linked certificate. Enrollment (with its 8 KiB
+/// certificate) and contact requests fit well inside it.
+pub const MAX_UNAUTHENTICATED_CONTROL_BYTES: usize = 16 * 1024;
 pub const MAX_ARCHIVE_BYTES: u64 = 100 * 1024 * 1024 * 1024;
 pub const MAX_IDENTIFIER_BYTES: usize = 160;
 pub const MAX_DEVICE_LABEL_BYTES: usize = 128;
@@ -950,12 +953,24 @@ pub async fn read_control<R>(reader: &mut R) -> Result<ControlMessage, String>
 where
     R: AsyncRead + Unpin,
 {
+    read_control_limited(reader, MAX_CONTROL_BYTES).await
+}
+
+/// Reads one control frame no larger than `max_bytes`, which never exceeds
+/// [`MAX_CONTROL_BYTES`].
+pub async fn read_control_limited<R>(
+    reader: &mut R,
+    max_bytes: usize,
+) -> Result<ControlMessage, String>
+where
+    R: AsyncRead + Unpin,
+{
     let length = reader
         .read_u32()
         .await
         .map_err(|error| format!("read handoff message length: {error}"))?
         as usize;
-    if length == 0 || length > MAX_CONTROL_BYTES {
+    if length == 0 || length > max_bytes.min(MAX_CONTROL_BYTES) {
         return Err("handoff control message has an invalid size".to_string());
     }
     let mut encoded = vec![0_u8; length];

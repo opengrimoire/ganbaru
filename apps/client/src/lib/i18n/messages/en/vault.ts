@@ -183,6 +183,8 @@ export const vaultHandoff = {
     "Editing moved between devices too many times in the last hour. Wait a while, then switch devices again.",
   linkingDisabled:
     "Device linking is off on this device because its saved linking data could not be read. Your vault still works here; restart the app, and if this persists, link the device again.",
+  coordinatorBusy:
+    "The coordinating computer is handling too many connections right now. Wait a moment, then retry.",
   unreachable:
     "This device could not reach the coordinating computer. Keep both apps open on the same local network, then retry.",
   ownerUnreachable:

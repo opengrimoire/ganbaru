@@ -8,62 +8,156 @@ use crate::sync::hub::SyncHub;
 use crate::vault::handoff::pairing::{Enrollment, PairingManager};
 use crate::vault::handoff::protocol::{
     BundleMetadata, BundlePurpose, ControlMessage, PROTOCOL_VERSION, TRANSFER_CHUNK_BYTES,
-    read_control, unix_time_ms, write_control,
+    read_control, read_control_limited, unix_time_ms, write_control,
 };
 use crate::vault::handoff::{coordinator, protocol, suggested_device_label};
+use limits::{ConnectionLimits, PendingPermit};
 use rustls::RootCertStore;
+use rustls::pki_types::CertificateDer;
 use std::fs;
-use std::sync::Arc;
+use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
 
+pub(super) mod limits;
+
 const UPLOAD_REQUEST_WAIT: Duration = Duration::from_secs(10);
 const UPLOAD_REQUEST_POLL_INTERVAL: Duration = Duration::from_millis(200);
+const ACCEPT_BACKOFF_MIN: Duration = Duration::from_millis(10);
+const ACCEPT_BACKOFF_MAX: Duration = Duration::from_secs(1);
+/// Error code for a linked device turned away because the authenticated budget is full.
+pub(super) const COORDINATOR_BUSY_CODE: &str = "coordinator_busy";
+
+/// TLS server configuration built once per set of trusted device certificates, so connections
+/// reuse it until enrollment or revocation changes the set.
+#[derive(Clone, Default)]
+struct ServerConfigCache(Arc<Mutex<Option<CachedServerConfig>>>);
+
+struct CachedServerConfig {
+    client_certificates: Vec<CertificateDer<'static>>,
+    config: Arc<rustls::ServerConfig>,
+}
+
+impl ServerConfigCache {
+    fn current(&self, manager: &PairingManager) -> Result<Arc<rustls::ServerConfig>, String> {
+        let client_certificates = manager.client_auth_certificates()?;
+        let mut cached = self
+            .0
+            .lock()
+            .map_err(|_| "coordinator TLS configuration lock is unavailable".to_string())?;
+        if let Some(cached) = cached.as_ref()
+            && cached.client_certificates == client_certificates
+        {
+            return Ok(cached.config.clone());
+        }
+        let config = Arc::new(server_config(manager, client_certificates.clone())?);
+        *cached = Some(CachedServerConfig {
+            client_certificates,
+            config: config.clone(),
+        });
+        Ok(config)
+    }
+}
 
 pub(crate) async fn serve_with_coordinator(
     listener: TcpListener,
     manager: PairingManager,
     coordinator: Option<coordinator::CoordinatorSender>,
     hub: Option<SyncHub>,
-    mut shutdown: tokio::sync::oneshot::Receiver<()>,
+    shutdown: tokio::sync::oneshot::Receiver<()>,
 ) {
+    serve_with_limits(
+        listener,
+        ConnectionLimits::default(),
+        manager,
+        coordinator,
+        hub,
+        shutdown,
+    )
+    .await;
+}
+
+pub(super) async fn serve_with_limits(
+    listener: TcpListener,
+    limits: ConnectionLimits,
+    manager: PairingManager,
+    coordinator: Option<coordinator::CoordinatorSender>,
+    hub: Option<SyncHub>,
+    shutdown: tokio::sync::oneshot::Receiver<()>,
+) {
+    let configs = ServerConfigCache::default();
+    accept_connections(
+        || listener.accept(),
+        shutdown,
+        |socket, source: SocketAddr| {
+            let Some(permit) = limits.admit(source.ip()) else {
+                // Closing at once keeps a flood from holding descriptors or handshakes.
+                drop(socket);
+                return;
+            };
+            let configs = configs.clone();
+            let manager = manager.clone();
+            let coordinator = coordinator.clone();
+            let hub = hub.clone();
+            tokio::spawn(async move {
+                if let Err(error) =
+                    handle_connection(socket, permit, configs, manager, coordinator, hub).await
+                {
+                    eprintln!("vault handoff connection failed: {error}");
+                }
+            });
+        },
+    )
+    .await;
+}
+
+/// Accepts until shutdown. Accept errors such as descriptor or buffer exhaustion and aborted
+/// handshakes are transient, so the loop logs them and backs off instead of stopping linking.
+pub(super) async fn accept_connections<S, A, F>(
+    mut accept: A,
+    mut shutdown: tokio::sync::oneshot::Receiver<()>,
+    mut on_accepted: impl FnMut(S, SocketAddr),
+) where
+    A: FnMut() -> F,
+    F: Future<Output = std::io::Result<(S, SocketAddr)>>,
+{
+    let mut backoff = ACCEPT_BACKOFF_MIN;
     loop {
         tokio::select! {
             _ = &mut shutdown => break,
-            accepted = listener.accept() => {
-                match accepted {
-                    Ok((socket, _)) => {
-                        let manager = manager.clone();
-                        let coordinator = coordinator.clone();
-                        let hub = hub.clone();
-                        tokio::spawn(async move {
-                            if let Err(error) = handle_connection(socket, manager, coordinator, hub).await {
-                                eprintln!("vault handoff connection failed: {error}");
-                            }
-                        });
-                    }
-                    Err(error) => {
-                        eprintln!("vault handoff coordinator accept failed: {error}");
-                        break;
-                    }
+            accepted = accept() => match accepted {
+                Ok((socket, source)) => {
+                    backoff = ACCEPT_BACKOFF_MIN;
+                    on_accepted(socket, source);
                 }
-            }
+                Err(error) => {
+                    eprintln!("vault handoff coordinator accept failed, retrying: {error}");
+                    tokio::select! {
+                        _ = &mut shutdown => break,
+                        () = tokio::time::sleep(backoff) => {}
+                    }
+                    backoff = (backoff * 2).min(ACCEPT_BACKOFF_MAX);
+                }
+            },
         }
     }
 }
 
 async fn handle_connection(
     socket: TcpStream,
+    permit: PendingPermit,
+    configs: ServerConfigCache,
     manager: PairingManager,
     coordinator: Option<coordinator::CoordinatorSender>,
     hub: Option<SyncHub>,
 ) -> Result<(), String> {
-    let config = server_config(&manager)?;
+    let config = configs.current(&manager)?;
     let mut stream = tokio::time::timeout(
         TLS_HANDSHAKE_TIMEOUT,
-        TlsAcceptor::from(Arc::new(config)).accept(socket),
+        TlsAcceptor::from(config).accept(socket),
     )
     .await
     .map_err(|_| "TLS handshake timed out".to_string())?
@@ -74,14 +168,36 @@ async fn handle_connection(
         .peer_certificates()
         .and_then(|certificates| certificates.first())
         .cloned();
-    let request = match timeout_control(read_control(&mut stream)).await {
+    let revoked = manager.is_revoked_certificate(peer_certificate.as_ref())?;
+    // A linked certificate moves the connection to the authenticated budget; anything else keeps
+    // its pending slot and the small frame bound until it closes.
+    let (_pending, authenticated) = if peer_certificate.is_some() && !revoked {
+        let Some(authenticated) = permit.authenticate() else {
+            return send_error(
+                &mut stream,
+                COORDINATOR_BUSY_CODE,
+                "the coordinator is handling too many connections; retry shortly",
+                true,
+            )
+            .await;
+        };
+        (None, Some(authenticated))
+    } else {
+        (Some(permit), None)
+    };
+    let control_limit = if authenticated.is_some() {
+        protocol::MAX_CONTROL_BYTES
+    } else {
+        protocol::MAX_UNAUTHENTICATED_CONTROL_BYTES
+    };
+    let request = match timeout_control(read_control_limited(&mut stream, control_limit)).await {
         Ok(request) => request,
         Err(error) => {
             return send_error(&mut stream, "malformed_control", &error, false).await;
         }
     };
 
-    if manager.is_revoked_certificate(peer_certificate.as_ref())? {
+    if revoked {
         return send_error(
             &mut stream,
             MEMBERSHIP_REVOKED_CODE,
@@ -695,10 +811,12 @@ async fn serve_upload(
     .await
 }
 
-fn server_config(manager: &PairingManager) -> Result<rustls::ServerConfig, String> {
+fn server_config(
+    manager: &PairingManager,
+    client_certificates: Vec<CertificateDer<'static>>,
+) -> Result<rustls::ServerConfig, String> {
     let (_, identity) = manager.identity()?;
     let builder = rustls::ServerConfig::builder();
-    let client_certificates = manager.client_auth_certificates()?;
     let config = if !client_certificates.is_empty() {
         let mut roots = RootCertStore::empty();
         for certificate in client_certificates {

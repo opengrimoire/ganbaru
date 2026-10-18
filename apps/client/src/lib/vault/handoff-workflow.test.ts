@@ -42,6 +42,14 @@ describe("formatHandoffError", () => {
     );
   });
 
+  it("explains a busy coordinator instead of a connectivity failure", () => {
+    const message = "the coordinator is handling too many connections; retry shortly";
+    expect(formatHandoffError(message, t)).toBe("vaultHandoff.coordinatorBusy");
+    expect(formatOwnershipHandoffError(new Error(message), t)).toBe(
+      "vaultHandoff.coordinatorBusy",
+    );
+  });
+
   it("identifies an unreachable main device during an ownership request", () => {
     expect(formatOwnershipHandoffError(
       new Error("the current vault owner is unreachable"),

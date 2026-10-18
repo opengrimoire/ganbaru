@@ -22,6 +22,11 @@ function isLinkingDisabled(message: string): boolean {
   return message.includes("vault linking is disabled");
 }
 
+/** Whether the coordinator refused the connection because its connection budget is full. */
+function isCoordinatorBusy(message: string): boolean {
+  return message.includes("handling too many connections");
+}
+
 /** Converts native handoff failures into concise localized recovery guidance. */
 export function formatHandoffError(cause: unknown, t: Translate): string {
   const raw = errorText(cause);
@@ -53,6 +58,9 @@ export function formatHandoffError(cause: unknown, t: Translate): string {
   if (lower.includes("vault ownership changed too often")) {
     return t("vaultHandoff.ownershipChurnLimit");
   }
+  if (isCoordinatorBusy(lower)) {
+    return t("vaultHandoff.coordinatorBusy");
+  }
   if (lower.includes("vault is not active on the coordinator")) {
     return t("vaultHandoff.coordinatorVaultInactive");
   }
@@ -77,7 +85,7 @@ export function formatPairingCodeError(cause: unknown, t: Translate): string {
 /** Converts ownership connectivity failures into main-device guidance. */
 export function formatOwnershipHandoffError(cause: unknown, t: Translate): string {
   const lower = errorText(cause).toLowerCase();
-  if (!isLinkingDisabled(lower) && isConnectivityFailure(lower)) {
+  if (!isLinkingDisabled(lower) && !isCoordinatorBusy(lower) && isConnectivityFailure(lower)) {
     return t("vaultHandoff.ownerUnreachable");
   }
   return formatHandoffError(cause, t);

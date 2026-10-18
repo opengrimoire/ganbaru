@@ -552,6 +552,9 @@ mod tests {
         assert!(validate_external_url("http://localhost:3000/path").is_ok());
         assert!(validate_external_url("file:///etc/passwd").is_err());
         assert!(validate_external_url("javascript:alert(1)").is_err());
+        assert!(validate_external_url("mailto:someone@example.com").is_err());
+        assert!(validate_external_url("vscode://file/tmp/x").is_err());
+        assert!(validate_external_url("data:text/html,<p>x</p>").is_err());
         assert!(validate_external_url("https://token@example.com").is_err());
         assert!(validate_external_url("https://example.com/\nheader").is_err());
     }

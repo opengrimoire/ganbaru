@@ -32,6 +32,8 @@ pub use config::*;
 pub use documents::*;
 
 pub(crate) mod backup;
+#[cfg(desktop)]
+pub(crate) mod database_rollback;
 pub(crate) mod handoff;
 pub(crate) mod ownership;
 pub(crate) mod quiescence;

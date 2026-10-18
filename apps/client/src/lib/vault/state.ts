@@ -364,6 +364,43 @@ export async function revealActiveVault(): Promise<void> {
   await invoke("vault_reveal_active");
 }
 
+/** A database copy that a data reset kept and that can be restored. */
+export interface DatabaseRollback {
+  id: string;
+  createdAt: string;
+  sizeBytes: number;
+}
+
+/**
+ * Validates the native rollback listing.
+ *
+ * @param value - Untrusted `vault_database_rollbacks` response.
+ * @returns Rollbacks newest first, as Rust ordered them.
+ */
+export function parseDatabaseRollbacks(value: unknown): DatabaseRollback[] {
+  if (!Array.isArray(value)) throw new Error("database rollback response is not a list");
+  return value.map((entry: unknown) => {
+    if (!isRecord(entry)) throw new Error("database rollback entry is not an object");
+    const id = readString(entry.id);
+    const createdAt = readString(entry.createdAt);
+    const sizeBytes = readNonNegativeInteger(entry.sizeBytes);
+    if (!id || !createdAt || Number.isNaN(Date.parse(createdAt)) || sizeBytes === null) {
+      throw new Error("database rollback entry is incomplete");
+    }
+    return { id, createdAt, sizeBytes };
+  });
+}
+
+/** Lists database copies kept by data resets in the active desktop vault. */
+export async function listDatabaseRollbacks(): Promise<DatabaseRollback[]> {
+  return parseDatabaseRollbacks(await invoke<unknown>("vault_database_rollbacks"));
+}
+
+/** Restores a kept database copy; the current database is kept as a new copy. Restart afterwards. */
+export async function restoreDatabaseRollback(id: string): Promise<void> {
+  await invoke("vault_restore_database_rollback", { id });
+}
+
 /** Save a consistent, portable copy of the active Android vault to Downloads. */
 export async function backupActiveVault(): Promise<VaultBackupOutcome> {
   return parseVaultBackupOutcome(await invoke<unknown>("vault_backup_to_downloads"));

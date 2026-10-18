@@ -19,6 +19,7 @@ pub(super) fn validate_navigation(
         || url.host_str().is_none()
         || !url.username().is_empty()
         || url.password().is_some()
+        || is_app_protocol_host(&url)
     {
         return Err(ChatError::validation(
             "url",
@@ -35,6 +36,19 @@ pub(super) fn validate_navigation(
     Ok(url)
 }
 
+/// Reports hosts that Tauri serves its own custom protocols from on Windows,
+/// such as `http://tauri.localhost` and `http://ipc.localhost`. WebView2
+/// intercepts those only on the scheme's default port, so a `.localhost`
+/// subdomain with an explicit port stays an ordinary dev server.
+pub(super) fn is_app_protocol_host(url: &reqwest::Url) -> bool {
+    url.port().is_none()
+        && url.host_str().is_some_and(|host| {
+            host.trim_end_matches('.')
+                .to_ascii_lowercase()
+                .ends_with(".localhost")
+        })
+}
+
 pub(super) fn is_loopback(url: &reqwest::Url) -> bool {
     url.host_str().is_some_and(|host| {
         host.eq_ignore_ascii_case("localhost")
@@ -45,7 +59,7 @@ pub(super) fn is_loopback(url: &reqwest::Url) -> bool {
 }
 
 pub(super) fn navigation_allowed(allowed: &reqwest::Url, candidate: &reqwest::Url) -> bool {
-    if !matches!(candidate.scheme(), "http" | "https") {
+    if !matches!(candidate.scheme(), "http" | "https") || is_app_protocol_host(candidate) {
         return false;
     }
     if is_loopback(allowed) {

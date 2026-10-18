@@ -453,7 +453,12 @@ pub async fn resolve_approval(
     Ok(())
 }
 
-fn approval_response(
+/// Builds the native approval reply from the tool input Claude sent.
+///
+/// No approval flow edits tool input, so a replacement input that differs from the
+/// pending one is rejected instead of forwarded. Questions answered through
+/// `AskUserQuestion` use [`resolve_user_input`], which builds its input in Rust.
+pub(crate) fn approval_response(
     pending: &PendingClaudeRequest,
     request: &ResolveApprovalRequest,
 ) -> ChatResult<Value> {
@@ -466,12 +471,18 @@ fn approval_response(
             "Claude request expects structured input",
         ));
     };
-    let updated_input = request
+    if request
         .decision
         .updated_tool_input
         .as_ref()
-        .map(|value| value.value.clone())
-        .unwrap_or_else(|| tool_input.clone());
+        .is_some_and(|value| value.value != *tool_input)
+    {
+        return Err(ChatError::validation(
+            "updatedToolInput",
+            "Claude approvals cannot replace the requested tool input",
+        ));
+    }
+    let updated_input = tool_input.clone();
     if !updated_input.is_object() {
         return Err(ChatError::validation(
             "updatedToolInput",

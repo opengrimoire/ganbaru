@@ -108,24 +108,19 @@ fn force_quit(
     app.exit(0);
 }
 
-/// Delete database files (main, WAL, SHM) and quit the app.
-/// Resets structured data without deleting the vault.
+/// Move the database files (main, WAL, SHM) into a restorable rollback copy and
+/// quit the app. Resets structured data without deleting the vault.
 #[tauri::command]
 async fn reset_database(app: tauri::AppHandle) -> Result<(), String> {
+    let _transition = vault::quiescence::reserve_vault_transition()?;
     let writable_vault = vault::active_writable_vault_path(&app)?;
     distractions::runtime::stop_for_vault_handoff(&app).await?;
     distractions::clear_distractions_enforcement_state(&app)?;
     db::close_all_sqlite_pools(&app).await?;
-    let database_path = writable_vault.as_ref().join(vault::APP_SQLITE_FILE);
-
-    for suffix in &["", "-wal", "-shm"] {
-        let mut path = database_path.clone();
-        let name = format!("{}{}", path.file_name().unwrap().to_string_lossy(), suffix);
-        path.set_file_name(name);
-        if path.exists() {
-            std::fs::remove_file(&path).map_err(|e| e.to_string())?;
-        }
-    }
+    vault::database_rollback::move_database_to_rollback(
+        writable_vault.as_ref(),
+        chrono::Utc::now(),
+    )?;
 
     app.exit(0);
     Ok(())
@@ -594,6 +589,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             vault::vault_default_location,
             vault::vault_use_default,
             vault::vault_active_info,
+            vault::database_rollback::vault_database_rollbacks,
+            vault::database_rollback::vault_restore_database_rollback,
             vault::ownership::vault_ownership_status,
             vault::handoff::handoff_create_pairing_invitation,
             #[cfg(target_os = "linux")]

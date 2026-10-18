@@ -22,6 +22,51 @@ fn navigation_requires_external_confirmation_and_stays_within_origin() {
 }
 
 #[test]
+fn preview_rejects_non_web_schemes_even_when_confirmed() {
+    let allowed = validate_navigation("https://example.com/", true).unwrap();
+    for value in [
+        "file:///etc/passwd",
+        "javascript:alert(1)",
+        "data:text/html,<p>x</p>",
+        "mailto:someone@example.com",
+        "vscode://file/tmp/x",
+        "tauri://localhost/",
+    ] {
+        assert!(validate_navigation(value, true).is_err(), "{value}");
+        if let Ok(candidate) = value.parse() {
+            assert!(!navigation_allowed(&allowed, &candidate), "{value}");
+        }
+    }
+}
+
+#[test]
+fn preview_navigation_rejects_tauri_protocol_hosts_even_when_confirmed() {
+    let loopback = validate_navigation("http://localhost:5173/", false).unwrap();
+    let external = validate_navigation("https://example.com/", true).unwrap();
+    for value in [
+        "http://tauri.localhost/",
+        "http://ipc.localhost/",
+        "http://asset.localhost/file",
+        "https://tauri.localhost/",
+        "http://TAURI.localhost/",
+        "http://tauri.localhost./",
+        "http://tauri.localhost:80/",
+        "http://foo.localhost/",
+    ] {
+        assert!(validate_navigation(value, true).is_err(), "{value}");
+        let candidate = value.parse().unwrap();
+        assert!(!navigation_allowed(&loopback, &candidate), "{value}");
+        assert!(!navigation_allowed(&external, &candidate), "{value}");
+    }
+
+    // WebView2 serves app protocols only on the default port, so explicit
+    // ports remain ordinary dev servers behind the external confirmation.
+    assert!(validate_navigation("http://app.localhost:3000/", true).is_ok());
+    assert!(validate_navigation("http://app.localhost:3000/", false).is_err());
+    assert!(validate_navigation("http://localhost/", false).is_ok());
+}
+
+#[test]
 fn preview_bounds_are_finite_and_bounded() {
     assert!(
         validate_bounds(&BrowserTabBounds {

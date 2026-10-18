@@ -14,6 +14,10 @@ One driver generation owns an active thread. Events from a stopped, settled, or 
 
 Provider-native approval, trust, sandbox, or workspace state is defense in depth. It never widens folder, channel, runtime, or internal-tool authority granted by Ganbaru.
 
+An approval answers the tool call the provider asked about. Claude approvals forward the provider's own tool input, and a replacement input from the webview that differs from it is rejected, because no approval flow edits tool input. Question answers are assembled in Rust from the offered option IDs. A future edit flow must validate the edited input against that tool's schema in Rust.
+
+In-app confirmations for permanently deleting a thread (typed title), closing a running terminal, recreating a deleted file, cleaning up scratch folders, and starting a preview recording guard against mistakes in the UI. They are not a control against a compromised app webview, which the command ACL limits to the app-owned windows; each of these effects is reachable through other commands that window may call. Security-relevant consent that must hold against a compromised webview is minted in Rust, such as terminal start grants, provider launch confirmations, and preview origin grants.
+
 ## Provider configuration and secrets
 
 Portable provider configuration stores nonsecret values and opaque credential references. Executable paths, provider homes, discovery caches, and process state are device-local.
@@ -93,7 +97,7 @@ Mentions, workspace files, Notes, tasks, channel messages, browser artifacts, an
 
 ## Browser previews
 
-Preview URLs must be HTTP or HTTPS with a host and no embedded credentials. Loopback targets (local development servers) open directly; any other destination requires explicit user confirmation. Navigation stays within the confirmed origin, and a loopback preview cannot navigate off loopback.
+Preview URLs and Chat links opened externally must be HTTP or HTTPS with a host and no embedded credentials; other schemes are rejected in Rust, never offered for confirmation. Loopback targets (local development servers) open directly, and the in-app confirmation before other preview destinations is a guard against mistakes, not a security control: an external page gains model access only through the Rust-held origin grant below. Navigation stays within the opened origin, a loopback preview cannot navigate off loopback, and preview pages cannot open new windows. Hosts Tauri uses for its own protocols on Windows (`.localhost` subdomains on the default port, such as `tauri.localhost` and `ipc.localhost`) are rejected even after confirmation; a `.localhost` subdomain with an explicit port is an ordinary server. App documents send `frame-ancestors 'none'` so a previewed page cannot frame the app, and app commands are granted only to the app's own webviews, never to preview webviews.
 
 Model preview tools (snapshot, screenshot, click, type, key presses, scrolling, and waits) act only on loopback pages or on external origins the user allowed for that thread from the Browser panel. Opening an external page for the user does not grant the model access to it, because a logged-in page would otherwise give a prompt-injected model the user's session. Every call resolves one tab and checks its live URL, its navigation allowance, and the last document that finished loading, so a navigation in flight never exposes the page it is leaving; waits recheck on every poll. Status reads show only scheme and host, without the page title, for pages the model may not use. Origin grants are exact scheme, host, and port, stored device-locally per thread with named limits, and revocable in Chat permission settings.
 

@@ -138,6 +138,7 @@ Ganbaru/
   vault.json: folder marker, id, display name, and schema version
   config.json: folder-local preferences, UI state, and anti-distraction settings
   ganbaru.sqlite: SQLite source of truth for structured data, Notes, and indexes
+  .database-rollbacks/: desktop copies of the database kept by Reset local data, bounded and restorable from Settings > Data
   notes/daily/, notes/projects/: reserved note document directories
   notes/exports/: derivative Markdown exports (planned, not authoritative)
   diary/morning/, diary/evening/: dated diary entries (planned feature)

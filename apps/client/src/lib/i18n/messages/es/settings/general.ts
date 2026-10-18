@@ -241,6 +241,11 @@ export const general = {
     importFolderDescription: "Usa una carpeta de Ganbaru de otra instalación",
     statusHeading: "Estado",
     reloadFolderStatus: "Recargar estado de carpeta",
+    rollbacksHeading: "Datos locales anteriores",
+    rollbacksDescription: "Al reiniciar los datos locales se guarda una copia aquí. Restaurar una reemplaza los datos actuales y los guarda como otra copia.",
+    rollbackRestore: "Restaurar",
+    rollbackRestoreTitle: "¿Restaurar esta copia?",
+    rollbackRestoreMessage: "Ganbaru reemplazará los datos locales actuales con esta copia y se reiniciará. Los datos actuales se guardan como otra copia.",
   },
   about: {
     licenseHeading: "Licencia",

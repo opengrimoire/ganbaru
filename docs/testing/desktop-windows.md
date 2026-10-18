@@ -9,3 +9,4 @@ Run the desktop app with a development vault and record the operating system, di
 - Change zoom, minimize, maximize, drag, and resize a detached window.
 - Start a Focus run that shows the overlay and one that shows the blocker on every monitor. Both render, react to pause, resume, skip, idle, and dismiss, and close when the phase ends.
 - Open a Chat preview and confirm the previewed page cannot call application commands (the developer console reports an ACL error).
+- On Windows, preview a local page containing `<iframe src="http://tauri.localhost/">` and confirm the frame shows a blocked-content error instead of the app, and that opening `http://tauri.localhost/` directly in the preview is refused.

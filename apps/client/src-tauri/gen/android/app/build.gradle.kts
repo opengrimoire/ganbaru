@@ -29,9 +29,13 @@ val releaseTaskRequested = gradle.startParameter.taskNames.any { taskName ->
     taskName.contains("release", ignoreCase = true)
 }
 
-if (releaseTaskRequested && !releaseSigningPropertiesFile.isFile) {
+// CI builds release artifacts without secrets and signs them in a separate job.
+val unsignedReleaseRequested =
+    providers.environmentVariable("GANBARU_ANDROID_UNSIGNED_RELEASE").orNull == "true"
+
+if (releaseTaskRequested && !releaseSigningPropertiesFile.isFile && !unsignedReleaseRequested) {
     throw GradleException(
-        "Android release builds require gen/android/keystore.properties; see docs/operations/release/signing.md",
+        "Android release builds require gen/android/keystore.properties or GANBARU_ANDROID_UNSIGNED_RELEASE=true; see docs/operations/release/signing.md",
     )
 }
 

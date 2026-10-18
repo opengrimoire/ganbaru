@@ -69,7 +69,7 @@ For GitHub Actions, encode the keystore without line wrapping:
 base64 -w 0 ~/.config/ganbaru/android-release.jks
 ```
 
-The protected job decodes it into temporary runner storage, writes restrictive Gradle properties, builds minified universal artifacts, verifies the APK and AAB signatures, and removes temporary signing files before artifact upload. Android release certificates are normally self-signed. Strict AAB verification therefore uses the same protected keystore as its explicit trust anchor and requires the configured signing alias; it does not rely on the public Java certificate-authority store.
+CI never builds with the keystore present. An unprivileged job builds minified unsigned universal artifacts with `GANBARU_ANDROID_UNSIGNED_RELEASE=true`, which lets Gradle produce a release build without `keystore.properties`. The protected job installs only Java and the Android build tools, decodes the keystore into a temporary runner directory, aligns and signs the APK with `apksigner`, signs the AAB with `jarsigner`, verifies both, and removes the temporary directory. Passwords reach the tools only through environment variables. Android release certificates are normally self-signed. Strict AAB verification therefore uses the same protected keystore as its explicit trust anchor and requires the configured signing alias; it does not rely on the public Java certificate-authority store.
 
 If Google Play is introduced, decide the Play App Signing and upload-key strategy before the first store release. Preserve certificate compatibility when direct and store installations are expected to share an update identity.
 

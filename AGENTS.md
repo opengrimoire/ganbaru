@@ -197,7 +197,7 @@ Read `docs/testing/README.md` when changing tests, validation scripts, task orde
 
 **Commands (always use `-w` for root scripts):**
 
-- `pnpm -w run check`: Rust formatting and clippy, then provider protocol snapshot checks and Svelte and TypeScript checks through Turbo.
+- `pnpm -w run check`: Rust formatting and clippy, then the workflow signing-isolation check, provider protocol snapshot checks, and Svelte and TypeScript checks through Turbo.
 - `pnpm --dir apps/client run check`: client-only Svelte and TypeScript checks.
 - `pnpm -w run editor-check`: editor diagnostics, including Tailwind canonical class checks.
 - `pnpm -w run test`: serialized Rust tests followed by sequential one-worker Vitest shards.

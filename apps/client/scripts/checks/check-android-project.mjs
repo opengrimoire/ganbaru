@@ -238,6 +238,11 @@ for (const [expected, label] of [
   ['applicationIdSuffix = ".dev"', "debug application ID suffix"],
   ['rootProject.file("keystore.properties")', "release signing properties"],
   ['signingConfig = signingConfigs.findByName("release")', "release signing configuration"],
+  [
+    "if (releaseTaskRequested && !releaseSigningPropertiesFile.isFile && !unsignedReleaseRequested) {",
+    "explicit unsigned release opt-in",
+  ],
+  ['providers.environmentVariable("GANBARU_ANDROID_UNSIGNED_RELEASE").orNull == "true"', "unsigned release flag"],
   ['manifestPlaceholders["usesCleartextTraffic"] = "false"', "production cleartext policy"],
   ["sourceCompatibility = JavaVersion.VERSION_17", "Java source compatibility"],
   ["targetCompatibility = JavaVersion.VERSION_17", "Java target compatibility"],

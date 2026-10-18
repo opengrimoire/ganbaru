@@ -86,7 +86,7 @@ apps/
         src/notifications.rs, notifications/: desktop native notifications and Android notification capabilities
         src/sound_effects.rs, system_command.rs: app sound effects and bounded fixed-command execution
         src/contacts.rs, contacts/: person identity storage, contact card assembly, contact and request persistence, and LAN request delivery
-        src/sync.rs, sync/: sync service lifecycle, paired transport, recovery listing, status, and sync commands
+        src/sync.rs, sync/: sync service lifecycle, paired transport, Quick note image transfer, recovery listing, status, and sync commands
         src/quick_notes.rs, quick_notes/: Quick notes command adapters and image file commands
         src/tray.rs, app_windows.rs, themes.rs, updates.rs, profile_images.rs: tray, window raising, theme command adapters, updates, and profile images
         src/benchmark.rs, benchmark/, first_use_contracts.rs: benchmark state, seed data, memory reports, and first-use query contracts
@@ -118,7 +118,7 @@ crates/
   ganbaru-handoff/: Tauri-free LAN handoff control protocol, message bounds, compatibility, QR encoding, staged bundle validation, device pairing identity, membership, and transfer state, and Linux firewall authorization
   ganbaru-sync-contracts/: Tauri-free sync identifiers, clocks, version vectors, writer certificates, order keys, and the signed operation format
   ganbaru-sync/: Tauri-free sync engine with the replication manifest, capture triggers, sealing, apply and merge, conflicts, recovery, and the simulation harness
-  ganbaru-sync-replica/: Tauri-free replica sync with guarded vault access, installation writer keys and record, carry-forward, recovery offers, and the LAN hub and client exchange
+  ganbaru-sync-replica/: Tauri-free replica sync with guarded vault access, installation writer keys and record, carry-forward, recovery offers, and the LAN hub and client exchange of operations and Quick note images
   ganbaru-themes/: Tauri-free user theme persistence, seed resets, upgrade dismissals, and row validation
   ganbaru-native-messaging/: ganbaru-native-messaging browser host binary
   ganbaru-mobile-*/: Android plugins for documents, the distraction blocker, media, and notifications

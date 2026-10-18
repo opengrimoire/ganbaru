@@ -19,12 +19,15 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::watch;
 
 /// How long a wait is held before the hub answers with its unchanged state. It stays below the
 /// control timeout of the transport.
 pub const WAIT_TIMEOUT: Duration = Duration::from_secs(12);
+/// How long a pending upload survives without a new chunk. A peer that disconnected mid-upload
+/// restarts from the beginning, and its received bytes do not stay in memory.
+const UPLOAD_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 /// The vault database the hub serves.
 pub struct HubVault {
@@ -91,6 +94,8 @@ pub struct SyncHub {
 struct PendingUpload {
     sha256: String,
     bytes: Vec<u8>,
+    /// When the last chunk arrived.
+    touched: Instant,
 }
 
 /// Where an upload chunk leaves the peer's pending upload.
@@ -290,12 +295,15 @@ impl SyncHub {
                 .lock()
                 .map_err(|_| HubError::failed("sync upload lock is unavailable"))?;
             let sha256 = image.file().sha256();
+            let now = Instant::now();
+            uploads.retain(|_, pending| now.duration_since(pending.touched) < UPLOAD_IDLE_TIMEOUT);
             if offset == 0 {
                 uploads.insert(
                     device_id.to_string(),
                     PendingUpload {
                         sha256: sha256.to_string(),
                         bytes: Vec::with_capacity(size as usize),
+                        touched: now,
                     },
                 );
             }
@@ -303,6 +311,7 @@ impl SyncHub {
                 Some(pending)
                     if pending.sha256 == sha256 && pending.bytes.len() == offset as usize =>
                 {
+                    pending.touched = now;
                     if pending.bytes.len() + data.len() > size as usize {
                         uploads.remove(device_id);
                         return Err(invalid("sync asset chunk ends past the asset".to_string()));

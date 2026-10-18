@@ -25,9 +25,11 @@ pub const MAX_ASSET_PASS_BYTES: usize = 64 * 1024 * 1024;
 /// How long an image the hub confirmed or refused is not offered again. The hub may lose an
 /// unreferenced upload to collection, so the confirmation expires.
 const SETTLED_UPLOAD_TTL: Duration = Duration::from_secs(60 * 60);
-/// How long an image the hub lacked or sent damaged is not requested again, unless the hub
-/// log grows first.
+/// How long an image the hub lacked is not requested again, unless the hub log grows first.
 const UNAVAILABLE_TTL: Duration = Duration::from_secs(2 * 60);
+/// How long an image the hub sent damaged is not requested again. New operations do not
+/// repair a damaged hub file, so the hub log growing does not end the wait.
+const REFUSED_DOWNLOAD_TTL: Duration = Duration::from_secs(60 * 60);
 /// Times an upload may restart after the hub lost part of it.
 const MAX_UPLOAD_RESTARTS: usize = 2;
 
@@ -134,8 +136,10 @@ impl DigestMemory {
 pub struct AssetMemory {
     /// Images the hub holds or refused.
     settled_uploads: DigestMemory,
-    /// Images the hub lacked or sent damaged.
+    /// Images the hub lacked.
     unavailable: DigestMemory,
+    /// Images the hub sent damaged.
+    refused_downloads: DigestMemory,
 }
 
 impl AssetMemory {
@@ -243,7 +247,11 @@ impl<T: SyncTransport> AssetSession<'_, T> {
         let references = images::referenced_images(self.pool)
             .await?
             .into_iter()
-            .filter(|image| !memory.unavailable.remembers(image.file().sha256(), now))
+            .filter(|image| {
+                let digest = image.file().sha256();
+                !memory.unavailable.remembers(digest, now)
+                    && !memory.refused_downloads.remembers(digest, now)
+            })
             .collect();
         let (_, missing) = partition_held(self.store, references)
             .await
@@ -259,17 +267,23 @@ impl<T: SyncTransport> AssetSession<'_, T> {
                     transfer.downloaded += 1;
                     continue;
                 }
-                Download::Unavailable => {}
+                Download::Unavailable => {
+                    memory
+                        .unavailable
+                        .remember(image.file().sha256(), UNAVAILABLE_TTL, now);
+                }
                 Download::Refused(message) => {
                     transfer.problem = Some(format!(
                         "this device refused image {} from the hub: {message}",
                         image.file().sha256()
                     ));
+                    memory.refused_downloads.remember(
+                        image.file().sha256(),
+                        REFUSED_DOWNLOAD_TTL,
+                        now,
+                    );
                 }
             }
-            memory
-                .unavailable
-                .remember(image.file().sha256(), UNAVAILABLE_TTL, now);
         }
         Ok(())
     }
@@ -432,8 +446,12 @@ mod tests {
             .settled_uploads
             .remember("a", SETTLED_UPLOAD_TTL, now);
         memory.unavailable.remember("b", UNAVAILABLE_TTL, now);
+        memory
+            .refused_downloads
+            .remember("c", REFUSED_DOWNLOAD_TTL, now);
         memory.hub_changed();
         assert!(memory.settled_uploads.remembers("a", now));
         assert!(!memory.unavailable.remembers("b", now));
+        assert!(memory.refused_downloads.remembers("c", now));
     }
 }

@@ -366,18 +366,21 @@ fn vault_info_from_path(path: &Path) -> Result<VaultInfo, String> {
     vault_info_from_manifest(&path, read_vault_manifest(&path)?)
 }
 
+/// Directories every vault holds, relative to its root.
+const VAULT_SKELETON_DIRECTORIES: &[&str] = &[
+    "notes/daily",
+    "notes/projects",
+    "diary/morning",
+    "diary/evening",
+    "projects",
+    "reports",
+    "assets",
+    "templates",
+    ".yjs",
+];
+
 fn ensure_vault_skeleton(path: &Path) -> Result<(), String> {
-    for relative in [
-        "notes/daily",
-        "notes/projects",
-        "diary/morning",
-        "diary/evening",
-        "projects",
-        "reports",
-        "assets",
-        "templates",
-        ".yjs",
-    ] {
+    for relative in VAULT_SKELETON_DIRECTORIES {
         fs::create_dir_all(path.join(relative))
             .map_err(|e| format!("create Ganbaru folder path '{relative}': {e}"))?;
     }

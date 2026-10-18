@@ -3,7 +3,7 @@
 #[cfg(target_os = "android")]
 use super::active_vault_path;
 use super::select_quiesced_vault;
-use super::{APP_SQLITE_FILE, CONFIG_LOCK, VaultInfo};
+use super::{APP_SQLITE_FILE, CONFIG_FILE, CONFIG_LOCK, VAULT_MANIFEST_FILE, VaultInfo};
 use super::{database_path, vault_info_from_path};
 #[cfg(target_os = "android")]
 use super::{default_vault_path, ensure_vault_skeleton, path_to_string};
@@ -31,6 +31,88 @@ const BACKUP_MAX_ENTRIES: usize = 100_000;
 const BACKUP_MAX_BYTES: u64 = 100 * 1024 * 1024 * 1024;
 const BACKUP_MAX_DEPTH: usize = 64;
 const COPY_BUFFER_BYTES: usize = 64 * 1024;
+/// Top-level directories a vault bundle carries with everything below them.
+/// Every vault skeleton directory lives below one of these.
+const BUNDLE_DIRECTORIES: &[&str] = &[
+    "notes",
+    "diary",
+    "projects",
+    "reports",
+    "assets",
+    "templates",
+    ".yjs",
+];
+/// Directory whose direct children are project working folders.
+const BUNDLE_PROJECTS_DIRECTORY: &str = "projects";
+/// Most skipped bundle entries named in one log line.
+const MAX_REPORTED_SKIPPED_ENTRIES: usize = 8;
+
+/// Whether `relative` belongs to the vault layout a bundle carries: the vault
+/// marker, configuration, and database files, the skeleton directories with
+/// their contents, and only folders directly below `projects`. Anything else,
+/// such as a `.git`, `.claude`, `.codex`, or `.vscode` folder at the vault
+/// root, stays out of bundles in both directions.
+fn is_bundle_layout_entry(relative: &Path, directory: bool) -> bool {
+    let mut components = relative.components().map(|component| match component {
+        Component::Normal(name) => name.to_str(),
+        _ => None,
+    });
+    let Some(Some(top)) = components.next() else {
+        return false;
+    };
+    match components.next() {
+        None if directory => BUNDLE_DIRECTORIES.contains(&top),
+        None => [VAULT_MANIFEST_FILE, CONFIG_FILE, APP_SQLITE_FILE].contains(&top),
+        Some(None) => false,
+        Some(Some(_)) if top == BUNDLE_PROJECTS_DIRECTORY => {
+            directory || components.next().is_some()
+        }
+        Some(Some(_)) => BUNDLE_DIRECTORIES.contains(&top),
+    }
+}
+
+/// Whether `name` is a SQLite journal, WAL, or shared-memory file of the vault
+/// database. These belong to one database file and never move with another.
+fn is_database_sidecar(name: &Path) -> bool {
+    name.file_name()
+        .and_then(|value| value.to_str())
+        .and_then(|value| value.strip_prefix(APP_SQLITE_FILE))
+        .is_some_and(|suffix| suffix.starts_with('-'))
+}
+
+/// Entries left out of an extracted bundle or a vault replacement.
+#[derive(Debug, Default)]
+struct SkippedEntries {
+    count: usize,
+    named: Vec<PathBuf>,
+}
+
+impl SkippedEntries {
+    fn push(&mut self, path: PathBuf) {
+        self.count += 1;
+        if self.named.len() < MAX_REPORTED_SKIPPED_ENTRIES {
+            self.named.push(path);
+        }
+    }
+
+    /// Logs the skipped entries, naming the first few, so nothing is left out
+    /// silently.
+    fn report(&self, operation: &str, reason: &str) {
+        if self.count == 0 {
+            return;
+        }
+        let named = self
+            .named
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        eprintln!(
+            "{operation} skipped {} entries {reason}: {named}",
+            self.count
+        );
+    }
+}
 
 #[cfg(any(test, mobile))]
 #[derive(Debug, serde::Serialize)]
@@ -128,6 +210,9 @@ fn collect_archive_entries(
         }
         let metadata = fs::symlink_metadata(&source)
             .map_err(|error| format!("inspect backup entry '{}': {error}", source.display()))?;
+        if !is_bundle_layout_entry(&relative, metadata.is_dir()) {
+            continue;
+        }
         if metadata.file_type().is_symlink() {
             return Err(format!(
                 "backup does not support symbolic link '{}'",
@@ -142,8 +227,7 @@ fn collect_archive_entries(
             });
             collect_archive_entries(root, &source, entries, total_bytes)?;
         } else if metadata.is_file() {
-            let file_name = relative.file_name().and_then(|value| value.to_str());
-            if matches!(file_name, Some("ganbaru.sqlite-wal" | "ganbaru.sqlite-shm")) {
+            if is_database_sidecar(&relative) {
                 continue;
             }
             *total_bytes = total_bytes.saturating_add(metadata.len());
@@ -276,7 +360,12 @@ fn safe_archive_path(path: &Path) -> Result<PathBuf, String> {
     Ok(path.to_path_buf())
 }
 
-fn extract_backup_archive(archive_path: &Path, destination: &Path) -> Result<(), String> {
+/// Extracts a bundle into a new `destination`, skipping entries outside the
+/// vault layout instead of failing the whole restore.
+fn extract_backup_archive(
+    archive_path: &Path,
+    destination: &Path,
+) -> Result<SkippedEntries, String> {
     let file = fs::File::open(archive_path).map_err(|error| format!("open backup: {error}"))?;
     let mut archive =
         ZipArchive::new(file).map_err(|error| format!("open backup archive: {error}"))?;
@@ -287,6 +376,7 @@ fn extract_backup_archive(archive_path: &Path, destination: &Path) -> Result<(),
         .map_err(|error| format!("create restore staging folder: {error}"))?;
     let mut total_bytes = 0_u64;
     let mut buffer = vec![0_u8; COPY_BUFFER_BYTES];
+    let mut skipped = SkippedEntries::default();
 
     for index in 0..archive.len() {
         let mut entry = archive
@@ -305,6 +395,10 @@ fn extract_backup_archive(archive_path: &Path, destination: &Path) -> Result<(),
             .enclosed_name()
             .ok_or_else(|| "backup contains an unsafe entry path".to_string())?;
         let relative = safe_archive_path(&enclosed)?;
+        if !is_bundle_layout_entry(&relative, entry.is_dir()) {
+            skipped.push(relative);
+            continue;
+        }
         let output = destination.join(&relative);
         if output.exists() {
             return Err(format!(
@@ -353,7 +447,7 @@ fn extract_backup_archive(archive_path: &Path, destination: &Path) -> Result<(),
             .sync_all()
             .map_err(|error| format!("sync restored file '{}': {error}", relative.display()))?;
     }
-    Ok(())
+    Ok(skipped)
 }
 
 /// Extracts and validates a received whole-vault archive in separate staging.
@@ -366,9 +460,12 @@ pub(crate) async fn stage_handoff_archive(
         fs::remove_dir_all(destination)
             .map_err(|error| format!("remove stale handoff staging: {error}"))?;
     }
-    if let Err(error) = extract_backup_archive(archive_path, destination) {
-        let _ = fs::remove_dir_all(destination);
-        return Err(error);
+    match extract_backup_archive(archive_path, destination) {
+        Ok(skipped) => skipped.report("Handoff staging", "outside the vault layout"),
+        Err(error) => {
+            let _ = fs::remove_dir_all(destination);
+            return Err(error);
+        }
     }
     let info = match validate_restored_vault(destination).await {
         Ok(info) => info,
@@ -429,10 +526,69 @@ fn replace_vault(staging: &Path, target: &Path, rollback: &Path) -> Result<(), S
         }
         return Err(format!("activate restored data: {error}"));
     }
-    if had_target {
-        let _ = fs::remove_dir_all(rollback);
+    if had_target && let Err(error) = finish_replacement(target, rollback) {
+        eprintln!("Vault replacement cleanup: {error}");
     }
     Ok(())
+}
+
+/// Moves entries outside the vault layout from the replaced folder `rollback`
+/// into its replacement `target`, then removes `rollback`. Bundles never carry
+/// such entries, so they are files this device kept in its vault folder. When
+/// one cannot move, `rollback` is kept as a visible sibling instead.
+fn finish_replacement(target: &Path, rollback: &Path) -> Result<(), String> {
+    let mut stranded = SkippedEntries::default();
+    match fs::read_dir(rollback) {
+        Ok(children) => {
+            for child in children {
+                let Ok(child) = child else {
+                    stranded.push(rollback.to_path_buf());
+                    continue;
+                };
+                let name = PathBuf::from(child.file_name());
+                let directory = child.file_type().is_ok_and(|kind| kind.is_dir());
+                if is_bundle_layout_entry(&name, directory) || is_database_sidecar(&name) {
+                    continue;
+                }
+                let destination = target.join(&name);
+                if fs::symlink_metadata(&destination).is_ok()
+                    || fs::rename(child.path(), &destination).is_err()
+                {
+                    stranded.push(name);
+                }
+            }
+        }
+        Err(_) => stranded.push(rollback.to_path_buf()),
+    }
+    if stranded.count == 0 {
+        return fs::remove_dir_all(rollback)
+            .map_err(|error| format!("remove completed restore rollback: {error}"));
+    }
+    let kept = kept_previous_path(target)?;
+    fs::rename(rollback, &kept)
+        .map_err(|error| format!("keep files from before the replacement: {error}"))?;
+    stranded.report(
+        "Vault replacement",
+        &format!("that stay in '{}'", kept.display()),
+    );
+    Ok(())
+}
+
+/// Visible sibling that keeps a replaced folder whose own files could not move.
+fn kept_previous_path(target: &Path) -> Result<PathBuf, String> {
+    let parent = target
+        .parent()
+        .ok_or_else(|| "Ganbaru folder has no parent directory".to_string())?;
+    let folder_name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or("Ganbaru");
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| format!("name the kept folder: {error}"))?
+        .as_secs();
+    Ok(parent.join(format!("{folder_name} before replacement {seconds}")))
 }
 
 #[cfg(target_os = "android")]
@@ -673,8 +829,7 @@ fn recover_interrupted_restore(target: &Path, rollback: &Path) -> Result<(), Str
         return Ok(());
     }
     if target.exists() {
-        fs::remove_dir_all(rollback)
-            .map_err(|error| format!("remove completed restore rollback: {error}"))
+        finish_replacement(target, rollback)
     } else {
         fs::rename(rollback, target)
             .map_err(|error| format!("recover interrupted data restore: {error}"))
@@ -768,7 +923,8 @@ pub async fn vault_pick_and_restore_backup(
                 if selected.is_none() {
                     return Ok(None);
                 }
-                extract_backup_archive(&archive_path, &staging)?;
+                extract_backup_archive(&archive_path, &staging)?
+                    .report("Backup restore", "outside the vault layout");
                 Ok(Some((staging, rollback)))
             },
         )
@@ -976,6 +1132,244 @@ mod tests {
         assert_eq!(fs::read(target.join("vault.json")).unwrap(), b"restored");
         assert!(!rollback.exists());
         let _ = fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn bundle_layout_admits_the_vault_skeleton_and_project_folders_only() {
+        for directory in crate::vault::VAULT_SKELETON_DIRECTORIES {
+            let path = Path::new(directory);
+            for ancestor in path
+                .ancestors()
+                .filter(|ancestor| !ancestor.as_os_str().is_empty())
+            {
+                assert!(
+                    is_bundle_layout_entry(ancestor, true),
+                    "skeleton directory '{}' is outside the bundle layout",
+                    ancestor.display()
+                );
+            }
+        }
+        for (path, directory) in [
+            ("vault.json", false),
+            ("config.json", false),
+            (APP_SQLITE_FILE, false),
+            ("notes/daily/2026-10-18.md", false),
+            ("assets/chat/attachments/context.txt", false),
+            ("projects/project-a", true),
+            ("projects/project-a/.git/config", false),
+            ("projects/project-a/.claude", true),
+        ] {
+            assert!(is_bundle_layout_entry(Path::new(path), directory), "{path}");
+        }
+        for (path, directory) in [
+            (".git", true),
+            (".git/config", false),
+            (".claude/settings.json", false),
+            (".codex", true),
+            (".vscode/settings.json", false),
+            ("README.md", false),
+            ("notes", false),
+            ("vault.json", true),
+            ("projects/stray-file", false),
+            ("unknown/file.txt", false),
+        ] {
+            assert!(
+                !is_bundle_layout_entry(Path::new(path), directory),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn database_sidecars_are_recognized_by_name() {
+        assert!(is_database_sidecar(Path::new("ganbaru.sqlite-wal")));
+        assert!(is_database_sidecar(Path::new("ganbaru.sqlite-shm")));
+        assert!(is_database_sidecar(Path::new("ganbaru.sqlite-journal")));
+        assert!(!is_database_sidecar(Path::new(APP_SQLITE_FILE)));
+        assert!(!is_database_sidecar(Path::new("ganbaru.sqlite.bak")));
+    }
+
+    #[test]
+    fn replacement_keeps_the_previous_folder_when_a_local_entry_cannot_move() {
+        let parent = unique_test_path("stranded");
+        let target = parent.join("Ganbaru");
+        let rollback = parent.join(".ganbaru.rollback");
+        fs::create_dir_all(&target).unwrap();
+        fs::create_dir_all(&rollback).unwrap();
+        fs::write(target.join("README.md"), b"replacement").unwrap();
+        fs::write(rollback.join("README.md"), b"local").unwrap();
+        fs::write(rollback.join("todo.txt"), b"local todo").unwrap();
+
+        finish_replacement(&target, &rollback).unwrap();
+
+        assert!(!rollback.exists());
+        assert_eq!(fs::read(target.join("README.md")).unwrap(), b"replacement");
+        assert_eq!(fs::read(target.join("todo.txt")).unwrap(), b"local todo");
+        let kept = fs::read_dir(&parent)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path != &target)
+            .expect("the previous folder should stay visible");
+        assert!(
+            kept.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("Ganbaru before replacement ")
+        );
+        assert_eq!(fs::read(kept.join("README.md")).unwrap(), b"local");
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    #[cfg(all(unix, desktop))]
+    #[tokio::test]
+    async fn received_bundle_keeps_to_the_vault_layout_and_project_git_stays_inert() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::Command;
+
+        let parent = unique_test_path("bundle-layout");
+        let source = parent.join("sender");
+        let staging = parent.join("staging");
+        let target = parent.join("receiver");
+        let rollback = parent.join("rollback");
+        let snapshot = parent.join("snapshot.sqlite");
+        let archive_path = parent.join("handoff.zip");
+        let marker = parent.join("git-hook-ran");
+        let hook = parent.join("hook.sh");
+        fs::create_dir_all(&source).unwrap();
+        let source_info = super::super::initialize_vault(&source).unwrap();
+        fs::write(
+            &hook,
+            format!("#!/bin/sh\ntouch '{}'\ncat\n", marker.display()),
+        )
+        .unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let project = source.join("projects/received-project");
+        fs::create_dir_all(&project).unwrap();
+        let git = |root: &Path, arguments: &[&str]| {
+            let status = Command::new("git")
+                .args(arguments)
+                .current_dir(root)
+                .stdin(std::process::Stdio::null())
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .output()
+                .unwrap()
+                .status;
+            assert!(status.success(), "git {arguments:?} failed");
+        };
+        git(&project, &["init", "-q"]);
+        git(
+            &project,
+            &["config", "core.fsmonitor", hook.to_str().unwrap()],
+        );
+        git(
+            &project,
+            &["config", "filter.planted.clean", hook.to_str().unwrap()],
+        );
+        git(
+            &project,
+            &["config", "filter.planted.smudge", hook.to_str().unwrap()],
+        );
+        fs::write(project.join(".gitattributes"), "* filter=planted\n").unwrap();
+        fs::write(project.join("tracked.txt"), "tracked\n").unwrap();
+        fs::remove_file(&marker).ok();
+
+        for (relative, contents) in [
+            (".git/config", "[core]\n\tfsmonitor = planted\n"),
+            (".claude/settings.json", "{}"),
+            ("projects/stray-file", "stray"),
+        ] {
+            let path = source.join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, contents).unwrap();
+        }
+        create_handoff_archive(&source, &snapshot, &archive_path)
+            .await
+            .unwrap();
+        let mut archive = ZipArchive::new(fs::File::open(&archive_path).unwrap()).unwrap();
+        for name in [
+            ".git/config",
+            ".claude/settings.json",
+            "projects/stray-file",
+        ] {
+            assert!(archive.by_name(name).is_err(), "{name} left the sender");
+        }
+        assert!(
+            archive
+                .by_name("projects/received-project/.git/config")
+                .is_ok()
+        );
+        drop(archive);
+
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&archive_path)
+            .unwrap();
+        let mut writer = ZipWriter::new_append(file).unwrap();
+        for name in [
+            ".git/config",
+            ".claude/settings.json",
+            "projects/stray-file",
+        ] {
+            writer
+                .start_file(name, SimpleFileOptions::default())
+                .unwrap();
+            writer
+                .write_all(b"[core]\n\tfsmonitor = planted\n")
+                .unwrap();
+        }
+        writer.finish().unwrap();
+
+        fs::create_dir_all(&target).unwrap();
+        super::super::initialize_vault(&target).unwrap();
+        fs::write(target.join("README.md"), b"local notes about this folder").unwrap();
+        fs::create_dir_all(target.join(".git")).unwrap();
+        fs::write(target.join(".git/HEAD"), b"ref: refs/heads/main\n").unwrap();
+        fs::write(target.join(format!("{APP_SQLITE_FILE}-wal")), b"stale wal").unwrap();
+
+        let info = stage_handoff_archive(&archive_path, &staging, &source_info.vault_id)
+            .await
+            .unwrap();
+        assert_eq!(info.vault_id, source_info.vault_id);
+        for name in [".git", ".claude", "projects/stray-file"] {
+            assert!(!staging.join(name).exists(), "{name} was extracted");
+        }
+        replace_vault(&staging, &target, &rollback).unwrap();
+
+        assert!(!rollback.exists());
+        assert_eq!(
+            fs::read(target.join("README.md")).unwrap(),
+            b"local notes about this folder"
+        );
+        assert_eq!(
+            fs::read(target.join(".git/HEAD")).unwrap(),
+            b"ref: refs/heads/main\n"
+        );
+        assert!(!target.join(".claude").exists());
+        assert!(!target.join(format!("{APP_SQLITE_FILE}-wal")).exists());
+
+        let received = target.join("projects/received-project");
+        let output = ganbaru_chat::git::hardened::internal_read_blocking(
+            &received,
+            &["status", "--porcelain=v2", "--untracked-files=all"],
+            None,
+            1 << 20,
+        )
+        .unwrap();
+        assert!(output.status.success());
+        assert!(
+            !marker.exists(),
+            "received Git configuration ran a command through internal Git"
+        );
+
+        git(&received, &["status", "--porcelain"]);
+        assert!(
+            marker.exists(),
+            "the planted configuration should run under unhardened Git"
+        );
+        fs::remove_dir_all(parent).unwrap();
     }
 
     #[tokio::test]

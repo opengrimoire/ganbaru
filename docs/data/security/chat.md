@@ -35,7 +35,7 @@ Project provider configuration in a working folder can run commands as soon as a
 - Cursor and Grok: project rules, MCP servers, and hooks under `.cursor/` may load in ACP mode, and whether Cursor's workspace trust applies there is unknown. This is a known residual risk until verified with the pinned version. Not verified on this device.
 - OpenCode: `opencode.json` and `.opencode/` plugins load without a trust gate of its own. This is a known residual risk until a restriction is verified with the pinned version; `OPENCODE_DISABLE_PROJECT_CONFIG` is the candidate. Not verified on this device.
 
-Isolated worktrees load project configuration only when the folder is trusted and every configuration file in the worktree matches the trusted folder's; otherwise they start restricted without asking. Edits a provider makes during a turn change the digest, so the next start asks again. Claude permission suggestions accepted with "Allow for session" stay in the session and are never written to the folder's settings files.
+Isolated worktrees load project configuration only when the folder is trusted and every configuration file in the worktree matches the trusted folder's; otherwise they start restricted without asking. Edits a provider makes during a turn change the digest, so the next start asks again. Claude permission suggestions accepted with "Allow for session" stay in the session and are never written to the folder's settings files. Ganbaru never launches editors, so editor folders such as `.vscode` in a received project stay inert until the user opens the folder in their own editor.
 
 ## Working-folder authorization
 

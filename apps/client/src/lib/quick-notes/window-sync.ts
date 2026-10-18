@@ -12,7 +12,7 @@ import { invalidateQuickNotesInitialSnapshot } from "$lib/quick-notes/initial-sn
 
 const QUICK_NOTES_SYNC_EVENT = "quick-notes-window-sync";
 /** Replicated tables whose changes refresh Quick notes. */
-const QUICK_NOTES_TABLES: ReadonlySet<string> = new Set(["quick_notes", "quick_note_tags"]);
+const QUICK_NOTES_TABLES: ReadonlySet<string> = new Set(["quick_notes", "quick_note_tags", "quick_note_images"]);
 
 interface QuickNotesSyncPayload {
   kind: "data-changed";

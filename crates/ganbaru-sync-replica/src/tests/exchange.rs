@@ -13,10 +13,13 @@ use crate::recovery::{RecoveryAction, RecoveryChoice};
 use crate::wire::{asset_to_wire, bytes_to_wire};
 use crate::writer::{ActiveWriter, SuccessorPlan, create_writer};
 use ganbaru_db::DatabasePoolRegistry;
-use ganbaru_handoff::protocol::{ControlMessage, PROTOCOL_VERSION, SYNC_ASSET_CHUNK_BYTES};
+use ganbaru_handoff::protocol::{
+    ControlMessage, PROTOCOL_VERSION, SYNC_ASSET_CHUNK_BYTES, SyncRefusalCode,
+};
 use ganbaru_quick_notes::images::{self, ReferencedImage};
 use ganbaru_sync::manifest::vault::quick_notes::NOTES_TABLE;
 use ganbaru_sync::{Engine, SpaceContext};
+use ganbaru_sync_contracts::bounds::MAX_WRITERS_PER_DEVICE;
 use ganbaru_sync_contracts::op::RevokeReason;
 use ganbaru_sync_contracts::{VersionVector, WriterId};
 use sqlx::SqlitePool;
@@ -549,6 +552,58 @@ fn hub_refuses_a_revocation_from_a_linked_device() {
         assert_eq!(hub_replica.stored().await.get(&phone.writer.id()), seq - 1);
         hub_replica.apply().await;
         assert!(hub_replica.has_note("note-hub").await);
+        hub_replica.close().await;
+        phone.close().await;
+    });
+}
+
+#[test]
+fn hub_refuses_a_device_past_its_writer_limit() {
+    block_on(async {
+        let hub_replica = Replica::new("hub-writer-limit", HUB_DEVICE).await;
+        let mut phone = Replica::new("phone-writer-limit", PHONE_DEVICE).await;
+        let (transport, _changes) = hub(&hub_replica);
+        // A modified build mints a fresh writer for every operation.
+        for index in 0..MAX_WRITERS_PER_DEVICE {
+            if index > 0 {
+                phone.writer = create_writer(
+                    &phone.directory.files(),
+                    &phone.directory.keys(),
+                    SuccessorPlan::default(),
+                    &person(),
+                    PHONE_DEVICE,
+                    NOW_MS,
+                )
+                .expect("create writer");
+            }
+            phone.seal_note(&format!("note-{index}")).await;
+        }
+        let within = done(
+            phone
+                .exchange(&transport, &phone_ids())
+                .await
+                .expect("exchange"),
+        );
+        assert_eq!(within.problem, None, "{within:?}");
+
+        phone.writer = create_writer(
+            &phone.directory.files(),
+            &phone.directory.keys(),
+            SuccessorPlan::default(),
+            &person(),
+            PHONE_DEVICE,
+            NOW_MS,
+        )
+        .expect("create writer");
+        phone.seal_note("note-past-limit").await;
+        let refused = done(
+            phone
+                .exchange(&transport, &phone_ids())
+                .await
+                .expect("exchange"),
+        );
+        assert_eq!(refused.refusal, Some(SyncRefusalCode::WriterLimit));
+        assert_eq!(hub_replica.stored().await.get(&phone.writer.id()), 0);
         hub_replica.close().await;
         phone.close().await;
     });

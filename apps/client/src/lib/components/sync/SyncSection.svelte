@@ -97,7 +97,9 @@
       {#if status.waiting > 0}
         <div class="text-muted-foreground">{t("sync.waiting", status.waiting)}</div>
       {/if}
-      {#if status.state === "error" && status.lastError}
+      {#if status.state === "error" && status.lastErrorCode === "writerLimit"}
+        <Notice message={t("sync.writerLimit")} />
+      {:else if status.state === "error" && status.lastError}
         <Notice message={t("sync.errorDetail", status.lastError)} />
       {/if}
       {#if conflictTotal > 0}

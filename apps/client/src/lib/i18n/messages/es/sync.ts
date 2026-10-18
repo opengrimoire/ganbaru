@@ -37,6 +37,7 @@ export const sync = {
   pause: "Pausar sincronización",
   pauseFailed: "No se pudo cambiar el ajuste de sincronización",
   errorDetail: (message: string) => `Último error: ${message}`,
+  writerLimit: "Este dispositivo creó más identidades de sincronización de las permitidas, así que el coordinador rechaza sus cambios nuevos. Se quedan en este dispositivo.",
   recovery: {
     heading: "Eliminadas recientemente con ediciones sin guardar",
     description: "Estas notas se eliminaron en un dispositivo mientras otro aún las editaba.",

@@ -11,7 +11,9 @@ use super::client::{ClientSession, Exchange, ForkPoint, PeerIds};
 use super::hub::{HubVault, OpenHubVault, SyncHub};
 use super::images::ActiveVaultImages;
 use super::recovery::{RecoveryChoice, RecoveryRequest};
-use super::status::{SyncRole, SyncState, SyncStatusView, emit_applied, emit_status};
+use super::status::{
+    SyncErrorCode, SyncRole, SyncState, SyncStatusView, emit_applied, emit_status,
+};
 use super::transport::PairedTransport;
 use super::writer::{
     ActiveWriter, SuccessorPlan, SyncFiles, WriterCheck, WriterKeyStore, check_writer,
@@ -20,6 +22,7 @@ use super::writer::{
 use crate::db::DatabaseState;
 use crate::vault::handoff::pairing::PairingManager;
 use ganbaru_db::{DatabaseAccessMode, DatabasePoolRegistry};
+use ganbaru_handoff::protocol::SyncRefusalCode;
 use ganbaru_sync::{Engine, SealReport, SpaceContext, SyncError, WriterState, local};
 use ganbaru_sync_contracts::VersionVector;
 use ganbaru_sync_contracts::op::RevokeReason;
@@ -564,6 +567,9 @@ impl ServiceState {
                         Some(problem) => {
                             view.state = SyncState::Error;
                             view.last_error = Some(problem);
+                            view.last_error_code = (done.refusal
+                                == Some(SyncRefusalCode::WriterLimit))
+                            .then_some(SyncErrorCode::WriterLimit);
                         }
                         None if done.more => return Ok(Next::Continue),
                         None => {}

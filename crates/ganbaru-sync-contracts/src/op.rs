@@ -370,7 +370,8 @@ pub struct Header {
 /// Kind-specific contents.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Content {
-    /// Row changes, at most one per row.
+    /// Row changes, at most one per row. An operation without changes only advances its
+    /// dependencies, so a writer can catch up with more writers than one header lists.
     Changes(Vec<Change>),
     /// The writer certificate.
     Genesis(SignedCertificate),
@@ -464,7 +465,7 @@ impl Operation {
         validate_dependencies(&self.header.dependencies, &self.writer)?;
         match &self.content {
             Content::Changes(changes) => {
-                if changes.is_empty() || changes.len() > MAX_CHANGES_PER_OPERATION {
+                if changes.len() > MAX_CHANGES_PER_OPERATION {
                     return Err(CodecError::Bounds("changes").into());
                 }
                 let mut rows = BTreeSet::new();
@@ -855,7 +856,7 @@ fn read_row_key(reader: &mut Reader<'_>) -> Result<RowKey, CodecError> {
 
 fn decode_change_headers(header: &mut Reader<'_>) -> Result<Vec<ChangeHeader>, CodecError> {
     let count = usize::from(header.u16()?);
-    if count == 0 || count > MAX_CHANGES_PER_OPERATION {
+    if count > MAX_CHANGES_PER_OPERATION {
         return Err(CodecError::Bounds("changes"));
     }
     let mut changes = Vec::with_capacity(count);

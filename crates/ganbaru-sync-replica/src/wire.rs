@@ -69,6 +69,7 @@ pub fn asset_to_wire(image: &ReferencedImage) -> SyncAsset {
 }
 
 /// Reads a wire asset as a Quick note image, the only asset kind sync moves.
+#[cfg(desktop)]
 pub fn asset_from_wire(asset: &SyncAsset) -> Result<ReferencedImage, String> {
     ReferencedImage::new(
         asset.sha256.clone(),

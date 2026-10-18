@@ -32,6 +32,7 @@ export const sync = {
   pause: "Pause sync",
   pauseFailed: "The sync setting could not be changed",
   errorDetail: (message: string) => `Last error: ${message}`,
+  writerLimit: "This device created more sync identities than a device may have, so the coordinator refuses its new changes. They stay on this device.",
   recovery: {
     heading: "Recently deleted with unsaved edits",
     description: "These notes were deleted on one device while another device was still editing them.",

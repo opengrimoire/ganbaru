@@ -29,6 +29,7 @@ function validStatus(): Record<string, unknown> {
     paused: false,
     lastExchangeAtMs: 1_000,
     lastError: null,
+    lastErrorCode: null,
     pendingLocalChanges: 2,
     waiting: 0,
     held: { newerFormat: 0, newerManifest: 1, invalid: 0 },
@@ -45,6 +46,7 @@ describe("sync API boundary", () => {
       paused: false,
       lastExchangeAtMs: 1_000,
       lastError: null,
+      lastErrorCode: null,
       pendingLocalChanges: 2,
       waiting: 0,
       held: { newerFormat: 0, newerManifest: 1, invalid: 0 },
@@ -57,10 +59,15 @@ describe("sync API boundary", () => {
     expect(mapSyncStatus({ ...OFF_SYNC_STATUS, held: { ...OFF_SYNC_STATUS.held } })).toEqual(OFF_SYNC_STATUS);
   });
 
+  it("maps a known error code", () => {
+    expect(mapSyncStatus({ ...validStatus(), lastErrorCode: "writerLimit" }).lastErrorCode).toBe("writerLimit");
+  });
+
   it("rejects unknown states, roles, and negative counts", () => {
     expect(() => mapSyncStatus({ ...validStatus(), state: "linked" })).toThrow();
     expect(() => mapSyncStatus({ ...validStatus(), role: "relay" })).toThrow();
     expect(() => mapSyncStatus({ ...validStatus(), waiting: -1 })).toThrow();
+    expect(() => mapSyncStatus({ ...validStatus(), lastErrorCode: "diskFull" })).toThrow();
     expect(() => mapSyncStatus({ ...validStatus(), held: { newerFormat: 0, newerManifest: 0 } })).toThrow();
   });
 

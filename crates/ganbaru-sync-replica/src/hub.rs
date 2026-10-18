@@ -595,6 +595,7 @@ fn refusal_to_wire(refusal: StoreRefusal, writer: WriterId, seq: Seq) -> SyncRef
         | StoreRefusal::BadSignature
         | StoreRefusal::Untrusted
         | StoreRefusal::UnauthorizedRevoke => (SyncRefusalCode::Invalid, seq),
+        StoreRefusal::WriterLimit => (SyncRefusalCode::WriterLimit, seq),
     };
     SyncRefusal {
         code,

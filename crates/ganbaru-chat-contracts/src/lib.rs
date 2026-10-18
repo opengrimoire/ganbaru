@@ -4,6 +4,7 @@ pub mod config;
 pub mod events;
 pub mod models;
 pub mod protected_paths;
+pub mod secret_names;
 
 #[cfg(test)]
 mod tests {

@@ -217,6 +217,24 @@ fn labels_are_bounded_and_free_of_control_characters() {
 }
 
 #[test]
+fn plaintext_secret_values_are_hidden_from_labels_but_bound_in_digests() {
+    let first = portable_runtime_review_items(&configuration(
+        "cursor",
+        &[],
+        &[("CUSTOM_API_KEY", "sk-sentinel-1")],
+    ));
+    let changed = portable_runtime_review_items(&configuration(
+        "cursor",
+        &[],
+        &[("CUSTOM_API_KEY", "sk-sentinel-2")],
+    ));
+    assert_eq!(first.len(), 1);
+    assert!(!first[0].label.contains("sk-sentinel"));
+    assert!(first[0].label.contains("CUSTOM_API_KEY"));
+    assert_ne!(first[0].digest, changed[0].digest);
+}
+
+#[test]
 fn device_paths_have_stable_kind_specific_digests() {
     let executable = device_path_review_item("claude", DevicePathKind::Executable, "/opt/claude");
     let home = device_path_review_item("claude", DevicePathKind::ProviderHome, "/opt/claude");

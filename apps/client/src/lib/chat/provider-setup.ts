@@ -41,6 +41,38 @@ const DEDICATED_HOME_VARIABLES: Readonly<Record<string, string>> = {
   opencode: "OPENCODE_CONFIG_DIR",
 };
 
+/**
+ * Name segments that mark an environment variable as secret-like; mirrors
+ * `ganbaru_chat_contracts::secret_names::SECRET_NAME_SEGMENTS`. Plurals such as `TOKENS` are left out
+ * so limits like `MAX_THINKING_TOKENS` stay ordinary.
+ */
+const SECRET_NAME_SEGMENTS: ReadonlySet<string> = new Set([
+  "APIKEY",
+  "AUTH",
+  "CREDENTIAL",
+  "CREDENTIALS",
+  "KEY",
+  "PASSPHRASE",
+  "PASSWD",
+  "PASSWORD",
+  "PAT",
+  "SECRET",
+  "TOKEN",
+]);
+
+/** Whether an environment variable name looks like it holds a secret, compared per underscore segment. */
+export function isSecretLikeEnvironmentName(name: string): boolean {
+  return name.split("_").some((segment) => SECRET_NAME_SEGMENTS.has(segment.toUpperCase()));
+}
+
+/**
+ * Whether a row stores a secret-like value as plaintext portable config. This only drives a
+ * warning: name matching cannot tell credentials from ordinary settings, so the value stays valid.
+ */
+export function storesPlaintextSecret(row: ProviderEnvironmentDraft): boolean {
+  return row.valueType === "text" && row.value.length > 0 && isSecretLikeEnvironmentName(row.name);
+}
+
 export function createProviderSetupDraft(): ProviderSetupDraft {
   return {
     familyId: "",

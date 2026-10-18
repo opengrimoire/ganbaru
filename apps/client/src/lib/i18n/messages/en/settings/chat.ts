@@ -544,6 +544,8 @@ export const chatSettings = {
     secretValue: "Secret",
     inheritedValue: "Inherit by name",
     storeSecret: "Store secret",
+    plaintextSecretWarning: "This value is saved as plain text and travels with backups and device transfers.",
+    storeAsSecret: "Move to the credential store",
     replaceSecret: "Replace secret",
     removeSecret: "Remove secret",
     stored: "Stored",

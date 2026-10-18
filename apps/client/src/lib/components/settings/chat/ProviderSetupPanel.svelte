@@ -14,6 +14,7 @@
     createProviderSetupDraft,
     providerConfigurationFromDraft,
     providerInstanceIdFromLabel,
+    storesPlaintextSecret,
     validateProviderSetup,
     type ProviderEnvironmentDraft,
     type ProviderEnvironmentValueType,
@@ -263,6 +264,13 @@
     } catch (error: unknown) {
       operationError = errorMessage(error);
     }
+  }
+
+  async function moveToCredentialStore(row: ProviderEnvironmentDraft): Promise<void> {
+    pendingSecrets[row.key] = row.value;
+    row.valueType = "secret";
+    row.value = "";
+    await storeSecret(row);
   }
 
   async function removeSecret(row: ProviderEnvironmentDraft): Promise<void> {
@@ -773,6 +781,12 @@
                           removeEnvironment(row.key);
                         }}
                       ><Trash2 size={13} /></button>
+                      {#if storesPlaintextSecret(row)}
+                        <p class="environment-warning">
+                          {t("settings.chat.setup.plaintextSecretWarning")}
+                          <button type="button" onclick={() => void moveToCredentialStore(row)}>{t("settings.chat.setup.storeAsSecret")}</button>
+                        </p>
+                      {/if}
                       {#if fieldError(`environment.${row.key}.name`) || fieldError(`environment.${row.key}.value`)}
                         <small class="environment-error">
                           {fieldError(`environment.${row.key}.name`) ?? fieldError(`environment.${row.key}.value`)}
@@ -871,6 +885,8 @@
   .environment-kind button.active { background:var(--accent); color:var(--accent-foreground); }
   .inherit-value { display:flex; min-height:1.75rem; align-items:center; padding-inline:0.5rem; color:var(--muted-foreground); font-size:calc(0.72rem * var(--type-scale)); }
   .environment-error { grid-column:1/-1; }
+  .environment-warning { display:flex; flex-wrap:wrap; grid-column:1/-1; align-items:center; gap:0.4rem; color:var(--muted-foreground); font-size:calc(0.68rem * var(--type-scale)); }
+  .environment-warning button { color:var(--foreground); text-decoration:underline; }
   .test-result { display:flex; flex-wrap:wrap; align-items:center; gap:0.4rem 0.65rem; border-block:1px solid var(--border); padding:0.65rem 0.25rem; color:var(--status-tentative); font-size:calc(0.75rem * var(--type-scale)); }
   .test-result[data-state="success"] { color:var(--action-confirm); }
   .test-result > i { display:grid; width:1rem; height:1rem; place-items:center; border:1px solid currentColor; border-radius:999px; }

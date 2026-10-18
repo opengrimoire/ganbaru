@@ -6,6 +6,7 @@
 //! what the user may configure.
 
 use crate::models::ProviderInstanceConfig;
+use ganbaru_chat_contracts::secret_names::is_secret_like_environment_name;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -181,6 +182,8 @@ pub fn portable_runtime_review_items(
         }
         let label = if value.strip_prefix("inherit:") == Some(name.as_str()) {
             format!("Environment: {name} (inherited from this device)")
+        } else if is_secret_like_environment_name(name) {
+            format!("Environment: {name} (plaintext value hidden)")
         } else {
             format!("Environment: {name}={value}")
         };

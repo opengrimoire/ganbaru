@@ -229,7 +229,7 @@ async fn snapshot<R: Runtime>(
         .into_iter()
         .map(store::ContactRow::view)
         .collect::<Result<Vec<_>, _>>()?;
-    let requests = store::list_requests(pool)
+    let requests = store::list_pending_requests(pool)
         .await?
         .iter()
         .map(store::RequestRow::view)

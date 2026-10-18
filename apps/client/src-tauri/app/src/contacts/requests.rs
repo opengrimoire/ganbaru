@@ -27,9 +27,14 @@ use tauri::{AppHandle, Runtime};
 
 /// How long a request stays pending on both sides.
 pub(crate) const REQUEST_TTL_DAYS: i64 = 7;
-/// Upper bound on pending received requests before the oldest are expired.
+/// Upper bound on pending received requests before the oldest are deleted.
 #[cfg(any(desktop, test))]
 pub(crate) const MAX_PENDING_RECEIVED: i64 = 64;
+/// How long accepted, declined, and expired requests are kept. It outlasts the requester's
+/// pending window, so a status poll still learns the outcome.
+pub(crate) const HANDLED_REQUEST_RETENTION_DAYS: i64 = 30;
+/// Upper bound on accepted, declined, and expired requests kept at once.
+pub(crate) const MAX_HANDLED_REQUESTS: i64 = 512;
 const INITIAL_POLL_DELAY: std::time::Duration = std::time::Duration::from_secs(10);
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 const BACKOFF_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
@@ -100,6 +105,15 @@ fn expires_at(now: DateTime<Utc>) -> DateTime<Utc> {
     now + Duration::days(REQUEST_TTL_DAYS)
 }
 
+/// Applies the retention bounds to handled requests.
+async fn prune_handled<'e, E>(executor: E, now: DateTime<Utc>) -> Result<(), String>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
+    let cutoff = now - Duration::days(HANDLED_REQUEST_RETENTION_DAYS);
+    store::prune_handled_requests(executor, cutoff, MAX_HANDLED_REQUESTS).await
+}
+
 #[cfg(any(desktop, test))]
 fn decode_signature(text: &str) -> Option<[u8; SIGNATURE_BYTES]> {
     let bytes = URL_SAFE_NO_PAD.decode(text).ok()?;
@@ -168,8 +182,9 @@ pub(crate) async fn receive_request(
         .map_err(|error| format!("begin contact request transaction: {error}"))?;
     store::delete_pending(&mut *tx, RequestDirection::Received, &public_key).await?;
     if store::pending_received_count(&mut *tx).await? >= MAX_PENDING_RECEIVED {
-        store::expire_oldest_pending_received(&mut *tx, MAX_PENDING_RECEIVED - 1, now).await?;
+        store::delete_oldest_pending_received(&mut *tx, MAX_PENDING_RECEIVED - 1).await?;
     }
+    prune_handled(&mut *tx, now).await?;
     let digest = store::encode_hex(&signed.digest);
     let fingerprint = fingerprint_hex(&signed);
     store::insert_request(
@@ -587,6 +602,7 @@ pub(crate) async fn poll_sent_requests(
         .map_err(|_| "this device holds no person key".to_string())?;
     let now = store::now();
     store::expire_stale_requests(pool, now).await?;
+    prune_handled(pool, now).await?;
     let mut still_pending = false;
     for row in store::pending_requests(pool, RequestDirection::Sent).await? {
         if row.endpoint_hint.is_empty() || row.coordinator_fingerprint.is_empty() {

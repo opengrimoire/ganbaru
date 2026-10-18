@@ -279,19 +279,88 @@ async fn pending_received_requests_are_capped() {
     }
 
     let rows = store::list_requests(&pool).await.unwrap();
-    assert_eq!(rows.len(), total);
-    let pending = rows.iter().filter(|row| row.state == "pending").count();
-    let expired: Vec<&str> = rows
-        .iter()
-        .filter(|row| row.state == "expired")
-        .map(|row| row.id.as_str())
-        .collect();
-    assert_eq!(pending, usize::try_from(MAX_PENDING_RECEIVED).unwrap());
-    assert_eq!(expired.len(), 3);
+    assert_eq!(rows.len(), usize::try_from(MAX_PENDING_RECEIVED).unwrap());
+    assert!(rows.iter().all(|row| row.state == "pending"));
+    let ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
+    let newest = format!("contact-{:03}", total - 1);
+    assert!(ids.contains(&newest.as_str()), "the newest request is kept");
+    for evicted in ["contact-000", "contact-001", "contact-002"] {
+        assert!(!ids.contains(&evicted), "the oldest requests are deleted");
+    }
+}
+
+#[tokio::test]
+async fn handled_requests_are_deleted_after_the_retention_window() {
+    let pool = migrated_memory_pool().await;
+    let recipient = Person::new("Recipient");
+    let old = Person::new("Old");
+    let newer = Person::new("Newer");
+    let start = store::now();
+    deliver(&pool, &recipient, &old, "contact-old").await;
+    let expired_at = start + chrono::Duration::days(requests::REQUEST_TTL_DAYS + 1);
+    store::expire_stale_requests(&pool, expired_at)
+        .await
+        .unwrap();
     assert!(
-        expired.contains(&"contact-000"),
-        "the oldest rows expire first"
+        store::list_pending_requests(&pool)
+            .await
+            .unwrap()
+            .is_empty(),
+        "handled requests are never listed"
     );
+
+    let later = expired_at + chrono::Duration::days(requests::HANDLED_REQUEST_RETENTION_DAYS + 1);
+    let reply = requests::receive_request(
+        &pool,
+        &recipient.identity,
+        later,
+        &encode_nonce(&recipient.identity.card_nonce),
+        &newer.card().text(),
+        "contact-new",
+        &newer.request_signature(&recipient.identity.card_nonce, "contact-new"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(reply, received("contact-new"));
+
+    let rows = store::list_requests(&pool).await.unwrap();
+    let ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
+    assert_eq!(ids, ["contact-new"]);
+}
+
+#[tokio::test]
+async fn handled_requests_are_capped_with_the_oldest_deleted_first() {
+    let pool = migrated_memory_pool().await;
+    let recipient = Person::new("Recipient");
+    let handled = usize::try_from(requests::MAX_HANDLED_REQUESTS).unwrap() + 3;
+    let now = store::now();
+    for index in 0..handled {
+        let id = format!("contact-{index:03}");
+        deliver(&pool, &recipient, &Person::new("Many"), &id).await;
+        assert!(
+            store::set_request_state(&pool, &id, None, RequestState::Declined, None, now)
+                .await
+                .unwrap()
+        );
+    }
+    deliver(&pool, &recipient, &Person::new("Last"), "contact-last").await;
+
+    let rows = store::list_requests(&pool).await.unwrap();
+    let declined = rows.iter().filter(|row| row.state == "declined").count();
+    assert_eq!(
+        declined,
+        usize::try_from(requests::MAX_HANDLED_REQUESTS).unwrap()
+    );
+    let ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
+    assert!(ids.contains(&"contact-last"), "the new request is kept");
+    let newest_handled = format!("contact-{:03}", handled - 1);
+    assert!(ids.contains(&newest_handled.as_str()));
+    for pruned in ["contact-000", "contact-001", "contact-002"] {
+        assert!(
+            !ids.contains(&pruned),
+            "the oldest handled requests are deleted"
+        );
+    }
 }
 
 #[tokio::test]

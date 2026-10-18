@@ -227,14 +227,14 @@ async fn load_navigation_databases(
 async fn load_navigation_pages(
     transaction: &mut sqlx::Transaction<'_, Sqlite>,
 ) -> Result<Vec<NotePageSummaryDto>, String> {
-    sqlx::query_as::<_, NotePageSummaryDto>(&format!(
+    sqlx::query_as::<_, NotePageSummaryDto>(sqlx::AssertSqlSafe(format!(
         "SELECT {} FROM notes_pages
          WHERE in_trash = 0
            AND archived = 0
            AND parent_type <> 'data_source_id'
          ORDER BY last_edited_time DESC, title COLLATE NOCASE ASC, id ASC",
         page_projection()
-    ))
+    )))
     .fetch_all(&mut **transaction)
     .await
     .map_err(|error| format!("list Notes navigation pages: {error}"))
@@ -349,7 +349,7 @@ pub(super) fn page_projection() -> &'static str {
     "id, parent_type, parent_page_id, parent_block_id, parent_data_source_id, folder_id, title, json_extract(properties, '$.__ganbaru_project_id') AS project_id, icon, in_trash, archived, created_time, last_edited_time"
 }
 
-fn push_project_filter(query: &mut QueryBuilder<'_, Sqlite>, project_id: Option<&str>) {
+fn push_project_filter(query: &mut QueryBuilder<Sqlite>, project_id: Option<&str>) {
     if let Some(project_id) = project_id {
         query.push(" AND json_extract(properties, '$.__ganbaru_project_id') = ");
         query.push_bind(project_id.to_string());
@@ -626,7 +626,7 @@ async fn load_folder_window(
         .map_err(|error| format!("list notes workspace folders: {error}"))
 }
 
-fn push_page_cursor(query: &mut QueryBuilder<'_, Sqlite>, cursor: Option<&PageCursor>) {
+fn push_page_cursor(query: &mut QueryBuilder<Sqlite>, cursor: Option<&PageCursor>) {
     let Some(cursor) = cursor else { return };
     query
         .push(" AND (last_edited_time < ")

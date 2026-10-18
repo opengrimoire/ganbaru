@@ -311,14 +311,14 @@ async fn enqueue_cleanup(
 
 async fn update_revision<'q, F>(
     pool: &SqlitePool,
-    sql: &'q str,
+    sql: &'static str,
     bind: F,
     thread_id: &ChatThreadId,
 ) -> ChatResult<u64>
 where
     F: FnOnce(
-        sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
-    ) -> sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
+        sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments>,
+    ) -> sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments>,
 {
     let result = bind(sqlx::query(sql))
         .execute(pool)

@@ -231,7 +231,7 @@ async fn send(rng: &mut Rng, from: &mut Replica, to: &mut Replica, reliable: boo
 }
 
 async fn ids(replica: &mut Replica, sql: &str) -> Vec<String> {
-    sqlx::query_scalar(sql)
+    sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
         .fetch_all(&mut replica.conn)
         .await
         .unwrap_or_else(|error| panic!("{sql}: {error}"))

@@ -984,7 +984,8 @@ async fn delete_captures(
     for chunk in consumed.chunks(CAPTURE_DELETE_CHUNK) {
         let rows = vec!["(?, ?)"; chunk.len()].join(", ");
         let sql = format!("DELETE FROM sync_capture WHERE (table_id, row_key) IN (VALUES {rows})");
-        let mut query = sqlx::query(&sql).persistent(chunk.len() == CAPTURE_DELETE_CHUNK);
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+            .persistent(chunk.len() == CAPTURE_DELETE_CHUNK);
         for (table, key) in chunk {
             query = query.bind(*table).bind(key.as_str());
         }

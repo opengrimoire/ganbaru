@@ -73,7 +73,7 @@ pub async fn install_guards(conn: &mut SqliteConnection, manifest: &Manifest) ->
     let tables = guarded_tables(conn, manifest).await?;
     for table in &tables {
         for statement in render_guards(table) {
-            Executor::execute(&mut *conn, statement.as_str()).await?;
+            Executor::execute(&mut *conn, sqlx::AssertSqlSafe(statement)).await?;
         }
     }
     Ok(tables.len())

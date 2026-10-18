@@ -4,7 +4,7 @@ use super::{ContactRequestView, ContactView};
 use chrono::{DateTime, Utc};
 use ganbaru_contacts::{PersonPublicKey, TrustKind};
 use serde::{Deserialize, Serialize};
-use sqlx::{Executor, FromRow, Sqlite};
+use sqlx::{AssertSqlSafe, Executor, FromRow, Sqlite};
 
 const TIME_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%.3fZ";
 
@@ -244,9 +244,9 @@ pub(crate) async fn list_contacts<'e, E>(executor: E) -> Result<Vec<ContactRow>,
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query_as(&format!(
+    sqlx::query_as(AssertSqlSafe(format!(
         "SELECT {CONTACT_COLUMNS} FROM contacts ORDER BY state, lower(display_name), id"
-    ))
+    )))
     .fetch_all(executor)
     .await
     .map_err(|error| db_error("list contacts", error))
@@ -259,9 +259,9 @@ pub(crate) async fn contact_by_key<'e, E>(
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query_as(&format!(
+    sqlx::query_as(AssertSqlSafe(format!(
         "SELECT {CONTACT_COLUMNS} FROM contacts WHERE public_key = ?"
-    ))
+    )))
     .bind(public_key)
     .fetch_optional(executor)
     .await
@@ -276,9 +276,9 @@ pub(crate) async fn contact_by_id<'e, E>(
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query_as(&format!(
+    sqlx::query_as(AssertSqlSafe(format!(
         "SELECT {CONTACT_COLUMNS} FROM contacts WHERE id = ?"
-    ))
+    )))
     .bind(id)
     .fetch_optional(executor)
     .await
@@ -432,9 +432,9 @@ pub(crate) async fn list_requests<'e, E>(executor: E) -> Result<Vec<RequestRow>,
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query_as(&format!(
+    sqlx::query_as(AssertSqlSafe(format!(
         "SELECT {REQUEST_COLUMNS} FROM contact_requests ORDER BY created_at DESC, id"
-    ))
+    )))
     .fetch_all(executor)
     .await
     .map_err(|error| db_error("list contact requests", error))
@@ -447,9 +447,9 @@ pub(crate) async fn request_by_id<'e, E>(
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query_as(&format!(
+    sqlx::query_as(AssertSqlSafe(format!(
         "SELECT {REQUEST_COLUMNS} FROM contact_requests WHERE id = ?"
-    ))
+    )))
     .bind(id)
     .fetch_optional(executor)
     .await
@@ -464,10 +464,10 @@ pub(crate) async fn pending_request<'e, E>(
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query_as(&format!(
+    sqlx::query_as(AssertSqlSafe(format!(
         "SELECT {REQUEST_COLUMNS} FROM contact_requests
          WHERE direction = ? AND public_key = ? AND state = 'pending'"
-    ))
+    )))
     .bind(direction.as_str())
     .bind(public_key)
     .fetch_optional(executor)
@@ -482,10 +482,10 @@ pub(crate) async fn pending_requests<'e, E>(
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query_as(&format!(
+    sqlx::query_as(AssertSqlSafe(format!(
         "SELECT {REQUEST_COLUMNS} FROM contact_requests
          WHERE direction = ? AND state = 'pending' ORDER BY created_at, id"
-    ))
+    )))
     .bind(direction.as_str())
     .fetch_all(executor)
     .await
@@ -500,10 +500,10 @@ pub(crate) async fn latest_request_from<'e, E>(
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query_as(&format!(
+    sqlx::query_as(AssertSqlSafe(format!(
         "SELECT {REQUEST_COLUMNS} FROM contact_requests
          WHERE public_key = ? ORDER BY created_at DESC, id LIMIT 1"
-    ))
+    )))
     .bind(public_key)
     .fetch_optional(executor)
     .await

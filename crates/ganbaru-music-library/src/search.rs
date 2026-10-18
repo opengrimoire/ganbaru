@@ -5,7 +5,7 @@ pub(crate) const SEARCH_SCHEMA_VERSION: i64 = 1;
 pub(crate) const SEARCH_FINGERPRINT: &str =
     "music-search-v1-title-artist-album-sources-paths-signals-playlists";
 
-fn push_projection(builder: &mut QueryBuilder<'_, Sqlite>) {
+fn push_projection(builder: &mut QueryBuilder<Sqlite>) {
     builder.push(
         "SELECT item.id,
             COALESCE(item.title_override, item.original_title),

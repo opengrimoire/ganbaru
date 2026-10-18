@@ -204,10 +204,11 @@ fn music_transfer_rolls_back_every_write_if_receipt_persistence_fails() {
             "music_snoozes",
             "music_transfer_receipts",
         ] {
-            let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+            let count: i64 =
+                sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}")))
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
             assert_eq!(count, 0, "{table} must roll back");
         }
         sqlx::query("DROP TRIGGER fail_receipt")

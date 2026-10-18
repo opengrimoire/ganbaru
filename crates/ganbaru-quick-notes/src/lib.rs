@@ -412,7 +412,7 @@ pub async fn load_note_from_pool(pool: &SqlitePool, id: &str) -> Result<QuickNot
                 OR q.trashed_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?))",
         has_conflict_column()
     );
-    let row = sqlx::query_as::<_, QuickNoteRow>(&sql)
+    let row = sqlx::query_as::<_, QuickNoteRow>(sqlx::AssertSqlSafe(sql.as_str()))
         .bind(id)
         .bind(trash_expiry_modifier())
         .fetch_optional(pool)
@@ -858,7 +858,7 @@ enum Placement {
 async fn revision_mutation(
     pool: &SqlitePool,
     request: &QuickNoteRevisionRequest,
-    sql: &str,
+    sql: &'static str,
     context: &str,
     placement: Placement,
 ) -> Result<QuickNoteRead, QuickNoteWriteError> {

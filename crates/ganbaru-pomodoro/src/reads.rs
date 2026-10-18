@@ -4,8 +4,8 @@ use std::collections::{HashMap, HashSet};
 
 use budget::AggregateBudget;
 use ganbaru_db::impl_sqlite_from_row;
-use sqlx::Row;
 use sqlx::SqlitePool;
+use sqlx::{AssertSqlSafe, Row};
 
 use super::validation::require_non_empty;
 use super::*;
@@ -119,7 +119,7 @@ pub async fn pomodoro_load_segments_for_events(
          LIMIT {}",
         MAX_CALENDAR_HISTORY_ROWS + 1
     );
-    let mut q = sqlx::query_as::<_, PomodoroSegmentRow>(&query);
+    let mut q = sqlx::query_as::<_, PomodoroSegmentRow>(AssertSqlSafe(query.as_str()));
     for event_id in event_ids.iter().chain(event_ids.iter()) {
         q = q.bind(event_id);
     }
@@ -150,7 +150,7 @@ pub async fn pomodoro_load_segments_for_events(
          LIMIT {}",
         MAX_CALENDAR_HISTORY_ROWS + 1
     );
-    let mut pause_q = sqlx::query(&pause_query);
+    let mut pause_q = sqlx::query(AssertSqlSafe(pause_query.as_str()));
     for id in &segment_ids {
         pause_q = pause_q.bind(id);
     }
@@ -397,7 +397,7 @@ async fn load_adaptive_replay_outcome_rows(
          ORDER BY measured_at ASC, outcome_key ASC
          LIMIT ?"
     );
-    let mut q = sqlx::query(&query);
+    let mut q = sqlx::query(AssertSqlSafe(query.as_str()));
     for id in opportunity_ids {
         q = q.bind(id);
     }
@@ -613,7 +613,7 @@ async fn load_pauses_for_segment_ids(
          ORDER BY started_at ASC
          LIMIT ?"
     );
-    let mut pause_q = sqlx::query(&pause_query);
+    let mut pause_q = sqlx::query(AssertSqlSafe(pause_query.as_str()));
     for id in segment_ids {
         pause_q = pause_q.bind(id);
     }
@@ -663,7 +663,7 @@ async fn load_adaptive_run_events(
          ORDER BY occurred_at ASC
          LIMIT ?"
     );
-    let mut q = sqlx::query(&query);
+    let mut q = sqlx::query(AssertSqlSafe(query.as_str()));
     for id in run_ids {
         q = q.bind(id);
     }

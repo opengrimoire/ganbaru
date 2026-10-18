@@ -140,7 +140,9 @@ impl Engine {
             "SELECT r.table_id, count(*) FROM sync_rows r WHERE {OPEN_CONFLICT_MASK_SQL} <> 0
              GROUP BY r.table_id ORDER BY r.table_id"
         );
-        let conflicts: Vec<(i64, i64)> = sqlx::query_as(&sql).fetch_all(&mut *conn).await?;
+        let conflicts: Vec<(i64, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+            .fetch_all(&mut *conn)
+            .await?;
         for (table_id, rows) in conflicts {
             let table = u16::try_from(table_id)
                 .ok()

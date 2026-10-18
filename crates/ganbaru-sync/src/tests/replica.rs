@@ -8,7 +8,7 @@ use ganbaru_sync_contracts::{
     SignedCertificate, VersionVector, WriterCertificate, WriterId, WriterKeyPair, sign_certificate,
 };
 use sqlx::sqlite::SqliteOwnedBuf;
-use sqlx::{Connection, SqliteConnection};
+use sqlx::{AssertSqlSafe, Connection, SqliteConnection};
 
 use super::migrated_pool;
 use crate::{
@@ -228,7 +228,7 @@ impl Replica {
 
     /// Runs SQL that must succeed.
     pub(super) async fn exec(&mut self, sql: &str) {
-        sqlx::raw_sql(sql)
+        sqlx::raw_sql(AssertSqlSafe(sql))
             .execute(&mut self.conn)
             .await
             .unwrap_or_else(|error| panic!("{sql}: {error}"));
@@ -237,7 +237,7 @@ impl Replica {
     /// Runs SQL in one transaction; returns whether it committed.
     pub(super) async fn try_exec(&mut self, sql: &str) -> bool {
         let mut tx = self.conn.begin().await.unwrap();
-        match sqlx::raw_sql(sql).execute(&mut *tx).await {
+        match sqlx::raw_sql(AssertSqlSafe(sql)).execute(&mut *tx).await {
             Ok(_) => {
                 tx.commit().await.unwrap();
                 true
@@ -250,14 +250,14 @@ impl Replica {
     }
 
     pub(super) async fn scalar_text(&mut self, sql: &str) -> Option<String> {
-        sqlx::query_scalar(sql)
+        sqlx::query_scalar(AssertSqlSafe(sql))
             .fetch_optional(&mut self.conn)
             .await
             .unwrap_or_else(|error| panic!("{sql}: {error}"))
     }
 
     pub(super) async fn count(&mut self, sql: &str) -> i64 {
-        sqlx::query_scalar(sql)
+        sqlx::query_scalar(AssertSqlSafe(sql))
             .fetch_one(&mut self.conn)
             .await
             .unwrap_or_else(|error| panic!("{sql}: {error}"))
@@ -420,9 +420,9 @@ impl Replica {
                 .map(|column| format!("quote(\"{column}\")"))
                 .collect::<Vec<_>>()
                 .join(" || '|' || ");
-            let rows: Vec<String> = sqlx::query_scalar(&format!(
+            let rows: Vec<String> = sqlx::query_scalar(AssertSqlSafe(format!(
                 "SELECT {selected} AS row FROM {table} ORDER BY row"
-            ))
+            )))
             .fetch_all(&mut self.conn)
             .await
             .unwrap();

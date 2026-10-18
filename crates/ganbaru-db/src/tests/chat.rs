@@ -1,5 +1,5 @@
 use super::helpers::migrated_memory_pool;
-use sqlx::Row;
+use sqlx::{AssertSqlSafe, Row};
 
 const NOW: &str = "2026-07-20T12:00:00Z";
 
@@ -257,13 +257,15 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "chat_scratch_promotions",
             "chat_scratch_cleanup_jobs",
         ] {
-            let columns = sqlx::query(&format!("SELECT name FROM pragma_table_info('{table}')"))
-                .fetch_all(&pool)
-                .await
-                .unwrap()
-                .into_iter()
-                .map(|row| row.get::<String, _>("name"))
-                .collect::<Vec<_>>();
+            let columns = sqlx::query(AssertSqlSafe(format!(
+                "SELECT name FROM pragma_table_info('{table}')"
+            )))
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.get::<String, _>("name"))
+            .collect::<Vec<_>>();
             assert!(!columns.iter().any(|column| {
                 column.contains("absolute_path")
                     || column.contains("canonical_path")
@@ -1212,13 +1214,15 @@ fn working_folder_tool_schema_tracks_restore_invalidation_and_exact_cleanup() {
                 vec!["working_folder_id", "expected_object_id"],
             ),
         ] {
-            let columns = sqlx::query(&format!("SELECT name FROM pragma_table_info('{table}')"))
-                .fetch_all(&pool)
-                .await
-                .unwrap()
-                .into_iter()
-                .map(|row| row.get::<String, _>("name"))
-                .collect::<Vec<_>>();
+            let columns = sqlx::query(AssertSqlSafe(format!(
+                "SELECT name FROM pragma_table_info('{table}')"
+            )))
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.get::<String, _>("name"))
+            .collect::<Vec<_>>();
             for column in expected {
                 assert!(
                     columns.iter().any(|value| value == column),

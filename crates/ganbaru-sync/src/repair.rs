@@ -112,7 +112,7 @@ async fn classes(
          WHERE v.table_id = ? AND r.state = 'live' AND v.group_id IN ({placeholders})
          ORDER BY v.row_key"
     );
-    let mut query = sqlx::query(&sql).bind(table_param(table.id));
+    let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str())).bind(table_param(table.id));
     for group in &groups {
         query = query.bind(i64::from(group.get()));
     }

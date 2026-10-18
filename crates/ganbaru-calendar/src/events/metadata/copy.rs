@@ -11,7 +11,7 @@ macro_rules! insert_row {
     ($connection:expr, $table:literal, $row:ident, { $($field:ident),+ }) => {{
         let columns = &[$(stringify!($field)),+];
         let sql = format!("INSERT INTO {} ({}) VALUES ({})", $table, columns.join(", "), vec!["?"; columns.len()].join(", "));
-        sqlx::query(&sql)$(.bind(&$row.$field))+.execute(&mut *$connection).await
+        sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))$(.bind(&$row.$field))+.execute(&mut *$connection).await
             .map_err(|error| format!("copy Calendar {}: {error}", $table))?;
     }};
 }

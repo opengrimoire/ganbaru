@@ -672,12 +672,13 @@ fn following_save_copies_complete_metadata_and_replays_after_source_changes() {
             ("music_context_assignments", "owner_id", 1),
             ("project_task_event_links", "event_id", 1),
         ] {
-            let count: i64 =
-                sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table} WHERE {owner} = ?"))
-                    .bind(&receipt.edited_id)
-                    .fetch_one(&pool)
-                    .await
-                    .unwrap();
+            let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                "SELECT COUNT(*) FROM {table} WHERE {owner} = ?"
+            )))
+            .bind(&receipt.edited_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
             assert_eq!(count, expected, "{table}");
         }
         let override_data: (String, String, String) = sqlx::query_as("SELECT o.title, p.property_value, c.projected_id FROM calendar_event_overrides o JOIN calendar_event_override_extended_properties p ON p.override_id = o.id JOIN icalendar_components c ON c.id = o.icalendar_component_id WHERE o.parent_event_id = ?")

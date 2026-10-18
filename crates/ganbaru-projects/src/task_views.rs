@@ -105,7 +105,7 @@ fn validate_task_view_request(request: &ProjectTaskViewRequest) -> Result<(), St
 }
 
 fn push_base_filters<'a>(
-    query: &mut sqlx::QueryBuilder<'a, sqlx::Sqlite>,
+    query: &mut sqlx::QueryBuilder<sqlx::Sqlite>,
     request: &'a ProjectTaskViewRequest,
     include_user_filters: bool,
     exact_status_id: Option<&'a str>,
@@ -280,7 +280,7 @@ fn push_base_filters<'a>(
 }
 
 fn push_filtered_cte<'a>(
-    query: &mut sqlx::QueryBuilder<'a, sqlx::Sqlite>,
+    query: &mut sqlx::QueryBuilder<sqlx::Sqlite>,
     request: &'a ProjectTaskViewRequest,
     exact_status_id: Option<&'a str>,
 ) {
@@ -294,9 +294,9 @@ fn push_filtered_cte<'a>(
     query.push(")");
 }
 
-fn push_order<'a>(
-    query: &mut sqlx::QueryBuilder<'a, sqlx::Sqlite>,
-    request: &'a ProjectTaskViewRequest,
+fn push_order(
+    query: &mut sqlx::QueryBuilder<sqlx::Sqlite>,
+    request: &ProjectTaskViewRequest,
     kanban: bool,
 ) {
     let direction = if request.sort_direction == "desc" {
@@ -378,10 +378,7 @@ fn push_order<'a>(
 }
 
 /// Preserve numeric ordering and use option names when sorting a custom property.
-fn push_custom_column_sort<'a>(
-    query: &mut sqlx::QueryBuilder<'a, sqlx::Sqlite>,
-    field_id: &'a str,
-) {
+fn push_custom_column_sort(query: &mut sqlx::QueryBuilder<sqlx::Sqlite>, field_id: &str) {
     query.push("COALESCE((SELECT COALESCE(fv.number_value, fv.checkbox_value, NULLIF(fv.date_value, ''), NULLIF(LOWER(fv.text_value), '')) FROM project_custom_field_values fv WHERE fv.task_id = t.id AND fv.field_id = ")
         .push_bind(field_id)
         .push(" LIMIT 1), (SELECT GROUP_CONCAT(name, ', ') FROM (SELECT LOWER(o.name) AS name FROM project_custom_field_option_values ov JOIN project_custom_field_options o ON o.id = ov.option_id WHERE ov.task_id = t.id AND ov.field_id = ")
@@ -856,7 +853,7 @@ pub async fn load_task_detail(
         .map_err(|e| format!("load project task detail: {e}"))?
         .ok_or_else(|| "project task not found".to_string())?;
     let project_id = task.project_id.clone();
-    let related_tasks = sqlx::query_as::<_, ProjectTaskSummaryRow>(&format!(
+    let related_tasks = sqlx::query_as::<_, ProjectTaskSummaryRow>(sqlx::AssertSqlSafe(format!(
         "SELECT {SUMMARY_SELECT} FROM project_tasks t
          WHERE t.project_id = ? AND (
            t.id = ? OR t.parent_task_id = ? OR t.id = ?
@@ -864,7 +861,7 @@ pub async fn load_task_detail(
                      WHERE (d.blocking_task_id = ? AND d.blocked_task_id = t.id)
                         OR (d.blocked_task_id = ? AND d.blocking_task_id = t.id))
          ) ORDER BY t.section_sort_order, t.created_at LIMIT 200"
-    ))
+    )))
     .bind(&project_id)
     .bind(task_id.trim())
     .bind(task_id.trim())

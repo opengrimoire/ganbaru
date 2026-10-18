@@ -119,7 +119,7 @@ pub async fn chat_list_review_comments(
          LIMIT {}",
         MAX_LIST_REVIEW_COMMENTS + 1
     );
-    let rows = sqlx::query(&query)
+    let rows = sqlx::query(sqlx::AssertSqlSafe(query.as_str()))
         .bind(thread_id.as_str())
         .bind(include_resolved)
         .fetch_all(&pool)

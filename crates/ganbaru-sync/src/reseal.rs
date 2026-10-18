@@ -145,9 +145,9 @@ async fn remove_effects(
     .fetch_all(&mut *conn)
     .await?;
     for table in ["sync_register_versions", "sync_tombstones"] {
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             "DELETE FROM {table} WHERE writer_id = ? AND seq > ?"
-        ))
+        )))
         .bind(old.as_bytes().as_slice())
         .bind(keep)
         .execute(&mut *conn)

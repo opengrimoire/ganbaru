@@ -249,7 +249,7 @@ pub(super) async fn restore_archived_event_children(
              FROM {archive_table}
              WHERE archive_event_id = ?"
         );
-        sqlx::query(&query)
+        sqlx::query(sqlx::AssertSqlSafe(query.as_str()))
             .bind(source_event_id)
             .bind(archive_event_id)
             .execute(&mut **tx)

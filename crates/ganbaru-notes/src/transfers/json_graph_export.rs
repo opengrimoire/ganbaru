@@ -4,7 +4,7 @@ use crate::models::{
 };
 use serde::Serialize;
 use serde_json::{Map, Value, json};
-use sqlx::{Row, SqlitePool};
+use sqlx::{AssertSqlSafe, Row, SqlitePool};
 use std::{
     collections::BTreeMap,
     fs,
@@ -237,7 +237,7 @@ async fn discover_notes_tables(pool: &SqlitePool) -> Result<Vec<ExportTable>, St
 
 async fn table_columns(pool: &SqlitePool, table: &str) -> Result<Vec<String>, String> {
     let sql = format!("PRAGMA table_info({})", quote_identifier(table));
-    let rows = sqlx::query(&sql)
+    let rows = sqlx::query(AssertSqlSafe(sql.as_str()))
         .fetch_all(pool)
         .await
         .map_err(|e| format!("inspect Notes graph export table {table}: {e}"))?;
@@ -269,7 +269,7 @@ async fn export_table_rows(pool: &SqlitePool, table: &ExportTable) -> Result<Vec
         quote_identifier(&table.name),
         order_by_columns(&table.name, &table.columns)
     );
-    let rows = sqlx::query_scalar::<_, String>(&sql)
+    let rows = sqlx::query_scalar::<_, String>(AssertSqlSafe(sql.as_str()))
         .fetch_all(pool)
         .await
         .map_err(|e| format!("export Notes graph table {}: {e}", table.name))?;

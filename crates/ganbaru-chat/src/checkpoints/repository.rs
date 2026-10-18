@@ -100,7 +100,7 @@ pub(super) async fn insert_checkpoint_and_associate_turn(
         };
         let statement =
             format!("UPDATE chat_turns SET {column} = ? WHERE id = ? AND thread_id = ?");
-        let updated = sqlx::query(&statement)
+        let updated = sqlx::query(sqlx::AssertSqlSafe(statement.as_str()))
             .bind(captured.id.as_str())
             .bind(turn_id.as_str())
             .bind(thread_id.as_str())

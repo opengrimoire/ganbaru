@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
-use sqlx::{Row, Sqlite, SqlitePool, Transaction};
+use sqlx::{AssertSqlSafe, Row, Sqlite, SqlitePool, Transaction};
 
 use crate::description::{
     sanitize_calendar_description_html, sanitize_optional_calendar_description,
@@ -322,7 +322,7 @@ async fn load_existing_events(
             "SELECT id, source_uid, sequence FROM calendar_events
              WHERE calendar_id = ? AND source_uid IN ({placeholders})"
         );
-        let mut q = sqlx::query(&query).bind(&payload.target_calendar_id);
+        let mut q = sqlx::query(AssertSqlSafe(query.as_str())).bind(&payload.target_calendar_id);
         for uid in chunk {
             q = q.bind(*uid);
         }
@@ -753,7 +753,7 @@ async fn replace_i64_list(
     values: Vec<i64>,
 ) -> Result<(), String> {
     let delete = format!("DELETE FROM {table} WHERE event_id = ?");
-    sqlx::query(&delete)
+    sqlx::query(AssertSqlSafe(delete.as_str()))
         .bind(event_id)
         .execute(&mut **tx)
         .await
@@ -763,7 +763,7 @@ async fn replace_i64_list(
          VALUES (lower(hex(randomblob(16))), ?, ?, ?)"
     );
     for (sort_order, value) in values.into_iter().enumerate() {
-        sqlx::query(&insert)
+        sqlx::query(AssertSqlSafe(insert.as_str()))
             .bind(event_id)
             .bind(value)
             .bind(sort_order as i64)
@@ -782,7 +782,7 @@ async fn replace_string_list(
     values: Vec<String>,
 ) -> Result<(), String> {
     let delete = format!("DELETE FROM {table} WHERE event_id = ?");
-    sqlx::query(&delete)
+    sqlx::query(AssertSqlSafe(delete.as_str()))
         .bind(event_id)
         .execute(&mut **tx)
         .await
@@ -792,7 +792,7 @@ async fn replace_string_list(
          VALUES (lower(hex(randomblob(16))), ?, ?, ?)"
     );
     for (sort_order, value) in values.into_iter().enumerate() {
-        sqlx::query(&insert)
+        sqlx::query(AssertSqlSafe(insert.as_str()))
             .bind(event_id)
             .bind(value)
             .bind(sort_order as i64)
@@ -811,7 +811,7 @@ async fn replace_extended_properties(
     values: Vec<(String, String)>,
 ) -> Result<(), String> {
     let delete = format!("DELETE FROM {table} WHERE {owner_column} = ?");
-    sqlx::query(&delete)
+    sqlx::query(AssertSqlSafe(delete.as_str()))
         .bind(owner_id)
         .execute(&mut **tx)
         .await
@@ -821,7 +821,7 @@ async fn replace_extended_properties(
          VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?)"
     );
     for (sort_order, (key, value)) in values.into_iter().enumerate() {
-        sqlx::query(&insert)
+        sqlx::query(AssertSqlSafe(insert.as_str()))
             .bind(owner_id)
             .bind(key)
             .bind(value)

@@ -14,7 +14,7 @@ Import uses the system directory-tree picker and streams the selected folder int
 
 Backup writes a consistent SQLite snapshot and bounded archive to Downloads without passing file bytes through JavaScript. Live WAL and SHM files are excluded.
 
-Restore uses the system document picker, extracts into private staging with path and size limits, validates the vault and SQLite integrity, closes active database access, and atomically activates the restored folder with rollback on failure.
+Restore uses the system document picker, extracts into private staging with path and size limits, validates the vault, its schema catalog, and SQLite integrity, closes active database access, and atomically activates the restored folder with rollback on failure.
 
 The portable format is the recovery path after reinstall. Android system backup and device transfer exclude the unencrypted live vault until a deliberate encrypted design exists.
 

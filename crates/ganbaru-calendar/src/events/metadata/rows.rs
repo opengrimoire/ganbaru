@@ -61,7 +61,7 @@ macro_rules! stored_row {
             pub(super) async fn insert(&self, connection: &mut SqliteConnection) -> Result<(), String> {
                 let columns = &[$(stringify!($field)),+];
                 let sql = format!("INSERT INTO {} ({}) VALUES ({})", $table, columns.join(", "), vec!["?"; columns.len()].join(", "));
-                sqlx::query(&sql)$(.bind(&self.$field))+.execute(connection).await
+                sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))$(.bind(&self.$field))+.execute(connection).await
                     .map_err(|error| format!("write Calendar {}: {error}", $table))?;
                 Ok(())
             }

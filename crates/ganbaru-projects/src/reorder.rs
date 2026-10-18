@@ -1,7 +1,7 @@
 //! Semantic adjacent moves over canonical siblings, committed with durable retry receipts.
 
 use serde::{Deserialize, Serialize};
-use sqlx::{Sqlite, SqlitePool, Transaction};
+use sqlx::{AssertSqlSafe, Sqlite, SqlitePool, Transaction};
 
 use super::models::{
     ProjectCustomFieldOptionRow, ProjectCustomFieldRow, ProjectTaskRow, ProjectsMutationRows,
@@ -174,7 +174,7 @@ pub async fn reorder_item(
             .await?;
             let (_, order_column) = axis.columns();
             for (id, order) in &changes {
-                sqlx::query(&format!("UPDATE project_tasks SET {order_column} = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?"))
+                sqlx::query(AssertSqlSafe(format!("UPDATE project_tasks SET {order_column} = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?")))
                     .bind(order).bind(id).execute(&mut *tx).await.map_err(|error| format!("reorder project task: {error}"))?;
             }
             let ids = serde_json::to_string(&changes.iter().map(|(id, _)| id).collect::<Vec<_>>())
@@ -184,7 +184,7 @@ pub async fn reorder_item(
                 .map(|column| format!("coalesce(length(CAST({column} AS BLOB)), 0)"))
                 .collect::<Vec<_>>()
                 .join(" + ");
-            let bytes: i64 = sqlx::query_scalar(&format!("SELECT coalesce(sum({text_bytes}), 0) FROM project_tasks WHERE id IN (SELECT value FROM json_each(?))"))
+            let bytes: i64 = sqlx::query_scalar(AssertSqlSafe(format!("SELECT coalesce(sum({text_bytes}), 0) FROM project_tasks WHERE id IN (SELECT value FROM json_each(?))")))
                 .bind(&ids).fetch_one(&mut *tx).await.map_err(|error| format!("measure reordered task result: {error}"))?;
             if bytes > (MAX_RECEIPT_BYTES / 6) as i64 {
                 return Err("project reorder result exceeds the byte limit".to_string());
@@ -296,10 +296,10 @@ async fn task_placement_changes(
     if matches!(axis, TaskOrderAxis::Status) && parent_task_id.is_some() {
         return Err("subtasks use their parent ordering lane".to_string());
     }
-    let current_order: Option<f64> = sqlx::query_scalar(&format!(
+    let current_order: Option<f64> = sqlx::query_scalar(AssertSqlSafe(format!(
         "SELECT {order_column} FROM project_tasks WHERE id = ? AND project_id = ?
          AND {group_column} = ? AND parent_task_id IS ? AND archived_at IS NULL",
-    ))
+    )))
     .bind(id)
     .bind(&request.project_id)
     .bind(group_id)
@@ -312,11 +312,11 @@ async fn task_placement_changes(
     if current_order != expected_order {
         return Err("item order changed since selection".to_string());
     }
-    let (records, maximum_id_bytes): (i64, i64) = sqlx::query_as(&format!(
+    let (records, maximum_id_bytes): (i64, i64) = sqlx::query_as(AssertSqlSafe(format!(
         "SELECT count(*), coalesce(max(length(CAST(id AS BLOB))), 0) FROM (
             SELECT id FROM project_tasks WHERE project_id = ? AND (? OR {group_column} = ?)
             AND parent_task_id IS ? AND archived_at IS NULL LIMIT ?)",
-    ))
+    )))
     .bind(&request.project_id)
     .bind(parent_task_id.is_some())
     .bind(group_id)
@@ -328,10 +328,10 @@ async fn task_placement_changes(
     if records > MAX_SIBLINGS || maximum_id_bytes > MAX_ID_BYTES {
         return Err("project reorder exceeds the sibling identity limit".to_string());
     }
-    let rows: Vec<(String, f64)> = sqlx::query_as(&format!(
+    let rows: Vec<(String, f64)> = sqlx::query_as(AssertSqlSafe(format!(
         "SELECT id, {order_column} FROM project_tasks WHERE project_id = ? AND (? OR {group_column} = ?)
          AND parent_task_id IS ? AND archived_at IS NULL ORDER BY {order_column}, created_at, id LIMIT ?",
-    )).bind(&request.project_id).bind(parent_task_id.is_some()).bind(group_id).bind(parent_task_id).bind(MAX_SIBLINGS + 1)
+    ))).bind(&request.project_id).bind(parent_task_id.is_some()).bind(group_id).bind(parent_task_id).bind(MAX_SIBLINGS + 1)
         .fetch_all(&mut **tx).await.map_err(|error| format!("read canonical task siblings: {error}"))?;
     let Some((index, target)) = adjacent_indices(&rows, id, expected_order, request.direction)?
     else {
@@ -371,7 +371,7 @@ async fn check_schema_result_size(
     } else {
         "length(CAST(field_id AS BLOB))"
     };
-    let bytes: i64 = sqlx::query_scalar(&format!("SELECT coalesce(sum(length(CAST(name AS BLOB)) + length(CAST(id AS BLOB)) + length(CAST(created_at AS BLOB)) + length(CAST(updated_at AS BLOB)) + {owner_bytes}), 0) FROM {table} WHERE id IN (SELECT value FROM json_each(?))"))
+    let bytes: i64 = sqlx::query_scalar(AssertSqlSafe(format!("SELECT coalesce(sum(length(CAST(name AS BLOB)) + length(CAST(id AS BLOB)) + length(CAST(created_at AS BLOB)) + length(CAST(updated_at AS BLOB)) + {owner_bytes}), 0) FROM {table} WHERE id IN (SELECT value FROM json_each(?))")))
         .bind(ids).fetch_one(&mut **tx).await.map_err(|error| format!("measure reordered schema result: {error}"))?;
     if bytes > (MAX_RECEIPT_BYTES / 6) as i64 {
         return Err("project reorder result exceeds the byte limit".to_string());
@@ -386,10 +386,10 @@ async fn check_schema_sibling_ids(
     parent_column: &'static str,
     parent_id: &str,
 ) -> Result<(), String> {
-    let (records, maximum_id_bytes): (i64, i64) = sqlx::query_as(&format!(
+    let (records, maximum_id_bytes): (i64, i64) = sqlx::query_as(AssertSqlSafe(format!(
         "SELECT count(*), coalesce(max(length(CAST(id AS BLOB))), 0) FROM (
             SELECT id FROM {table} WHERE {parent_column} = ? LIMIT ?)",
-    ))
+    )))
     .bind(parent_id)
     .bind(MAX_SIBLINGS + 1)
     .fetch_one(&mut **tx)

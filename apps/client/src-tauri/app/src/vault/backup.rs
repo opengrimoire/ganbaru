@@ -492,6 +492,9 @@ pub(crate) async fn validate_restored_vault(path: &Path) -> Result<VaultInfo, St
     let registry = ganbaru_db::DatabasePoolRegistry::default();
     let pool = registry.connect_path_read_only(&restored_database).await?;
     let validation = async {
+        // The catalog check runs first so that integrity checking never reaches virtual table
+        // modules, such as FTS5, that the restored file defines or reshapes.
+        ganbaru_db::validate_current_schema(&pool).await?;
         let row = sqlx::query("PRAGMA integrity_check")
             .fetch_one(&pool)
             .await
@@ -504,7 +507,7 @@ pub(crate) async fn validate_restored_vault(path: &Path) -> Result<VaultInfo, St
                 "restored database failed its integrity check: {result}"
             ));
         }
-        ganbaru_db::validate_current_schema(&pool).await
+        Ok(())
     }
     .await;
     let close_result = registry.close_all().await;
@@ -1523,7 +1526,7 @@ mod tests {
             ("music_playlist_memberships", "id", "handoff-membership"),
         ] {
             let query = format!("SELECT COUNT(*) FROM {table} WHERE {key} = ?");
-            let count: i64 = sqlx::query_scalar(&query)
+            let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(query.as_str()))
                 .bind(identifier)
                 .fetch_one(&restored_pool)
                 .await
@@ -1545,6 +1548,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn restored_vault_with_an_extra_trigger_is_rejected() {
+        let staging = unique_test_path("restore-extra-trigger");
+        fs::create_dir_all(&staging).unwrap();
+        super::super::initialize_vault(&staging).unwrap();
+        let registry = ganbaru_db::DatabasePoolRegistry::default();
+        let pool = registry
+            .connect_path(database_path(&staging))
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "CREATE TRIGGER restored_payload AFTER INSERT ON notes_link_facts_state
+             BEGIN DELETE FROM notes_search_index_state; END",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        registry.close_all().await.unwrap();
+
+        let error = validate_restored_vault(&staging).await.unwrap_err();
+
+        assert!(error.contains("schema differs"), "{error}");
+        fs::remove_dir_all(&staging).unwrap();
+    }
+
+    #[tokio::test]
     async fn desktop_bundle_activates_an_owner_and_refreshes_a_read_only_replica() {
         use crate::vault::ownership::VaultOwnershipManager;
 
@@ -1562,11 +1590,7 @@ mod tests {
         let source_info = super::super::initialize_vault(&source).unwrap();
         let registry = ganbaru_db::DatabasePoolRegistry::default();
         let pool = registry.connect_path(database_path(&source)).await.unwrap();
-        sqlx::query("CREATE TABLE handoff_h04_probe (value TEXT NOT NULL)")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("INSERT INTO handoff_h04_probe (value) VALUES ('desktop')")
+        sqlx::query("INSERT INTO notes_link_facts_state (key, value) VALUES ('handoff_h04_probe', 'desktop')")
             .execute(&pool)
             .await
             .unwrap();
@@ -1672,10 +1696,12 @@ mod tests {
             .connect_path(database_path(&source))
             .await
             .unwrap();
-        sqlx::query("UPDATE handoff_h04_probe SET value = 'refreshed'")
-            .execute(&source_pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "UPDATE notes_link_facts_state SET value = 'refreshed' WHERE key = 'handoff_h04_probe'",
+        )
+        .execute(&source_pool)
+        .await
+        .unwrap();
         source_registry.close_all().await.unwrap();
         fs::write(&asset, b"refreshed asset").unwrap();
         create_handoff_archive(&source, &refresh_snapshot, &refresh_archive)
@@ -1712,10 +1738,12 @@ mod tests {
             .connect_path_read_only(database_path(&refresh_target))
             .await
             .unwrap();
-        let value: String = sqlx::query_scalar("SELECT value FROM handoff_h04_probe")
-            .fetch_one(&restored_pool)
-            .await
-            .unwrap();
+        let value: String = sqlx::query_scalar(
+            "SELECT value FROM notes_link_facts_state WHERE key = 'handoff_h04_probe'",
+        )
+        .fetch_one(&restored_pool)
+        .await
+        .unwrap();
         assert_eq!(value, "refreshed");
         restored.close_all().await.unwrap();
         fs::remove_dir_all(parent).unwrap();
@@ -1734,11 +1762,7 @@ mod tests {
         let info = super::super::initialize_vault(&source).unwrap();
         let registry = ganbaru_db::DatabasePoolRegistry::default();
         let pool = registry.connect_path(database_path(&source)).await.unwrap();
-        sqlx::query("CREATE TABLE handoff_h05_probe (value TEXT NOT NULL)")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("INSERT INTO handoff_h05_probe (value) VALUES ('android edit')")
+        sqlx::query("INSERT INTO notes_link_facts_state (key, value) VALUES ('handoff_h05_probe', 'android edit')")
             .execute(&pool)
             .await
             .unwrap();
@@ -1776,7 +1800,7 @@ mod tests {
             .connect_path(database_path(&source))
             .await
             .unwrap();
-        sqlx::query("UPDATE handoff_h05_probe SET value = 'returned edit'")
+        sqlx::query("UPDATE notes_link_facts_state SET value = 'returned edit' WHERE key = 'handoff_h05_probe'")
             .execute(&source_pool)
             .await
             .unwrap();
@@ -1828,10 +1852,12 @@ mod tests {
             .connect_path_read_only(database_path(&desktop))
             .await
             .unwrap();
-        let value: String = sqlx::query_scalar("SELECT value FROM handoff_h05_probe")
-            .fetch_one(&restored_pool)
-            .await
-            .unwrap();
+        let value: String = sqlx::query_scalar(
+            "SELECT value FROM notes_link_facts_state WHERE key = 'handoff_h05_probe'",
+        )
+        .fetch_one(&restored_pool)
+        .await
+        .unwrap();
         assert_eq!(value, "returned edit");
         restored.close_all().await.unwrap();
         fs::remove_dir_all(parent).unwrap();

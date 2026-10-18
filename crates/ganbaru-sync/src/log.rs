@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
 use ganbaru_sync_contracts::{Digest32, Seq, SpaceId, VersionVector, WriterId, WriterPublicKey};
-use sqlx::{Row, SqliteConnection};
+use sqlx::{AssertSqlSafe, Row, SqliteConnection};
 
 use crate::error::{SyncResult, corrupt};
 use crate::{Engine, SpaceContext, SyncError};
@@ -164,7 +164,7 @@ pub(crate) async fn writer(
 ) -> SyncResult<Option<WriterRow>> {
     let sql =
         format!("SELECT {WRITER_COLUMNS} FROM sync_writers WHERE space_id = ? AND writer_id = ?");
-    let row = sqlx::query(&sql)
+    let row = sqlx::query(AssertSqlSafe(sql.as_str()))
         .bind(space.as_bytes().as_slice())
         .bind(id.as_bytes().as_slice())
         .fetch_optional(&mut *conn)
@@ -178,7 +178,7 @@ pub(crate) async fn writers(
 ) -> SyncResult<Vec<WriterRow>> {
     let sql =
         format!("SELECT {WRITER_COLUMNS} FROM sync_writers WHERE space_id = ? ORDER BY writer_id");
-    let rows = sqlx::query(&sql)
+    let rows = sqlx::query(AssertSqlSafe(sql.as_str()))
         .bind(space.as_bytes().as_slice())
         .fetch_all(&mut *conn)
         .await?;
@@ -244,7 +244,7 @@ async fn vector(
     column: &str,
 ) -> SyncResult<VersionVector> {
     let sql = format!("SELECT writer_id, {column} FROM sync_writers WHERE space_id = ?");
-    let rows = sqlx::query(&sql)
+    let rows = sqlx::query(AssertSqlSafe(sql.as_str()))
         .bind(space.as_bytes().as_slice())
         .fetch_all(&mut *conn)
         .await?;

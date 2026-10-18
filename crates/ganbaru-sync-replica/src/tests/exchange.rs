@@ -94,7 +94,7 @@ impl Replica {
     }
 
     /// Runs a local edit and seals it.
-    async fn edit(&mut self, sql: &str, id: &str) {
+    async fn edit(&mut self, sql: &'static str, id: &str) {
         sqlx::query(sql)
             .bind(id)
             .execute(&self.pool)

@@ -30,6 +30,8 @@ User cancellation is an ordinary typed outcome, not a path or permission error.
 
 Vault selection validates the marker, schema version, directory relationship, permissions, and database availability before changing the active pointer. The application never treats an unrelated non-empty folder as a new vault and never silently deletes a damaged configured vault.
 
+A vault database is untrusted input. Read-write opens (selection, import, and startup), restore and handoff validation, and the guarded sync open first compare its `sqlite_schema` with the catalog an empty database gets from the same applied migrations, and reject any extra, missing, or changed table, index, trigger, or view, including FTS5 shadow tables and a migration history that is not a table. Restore runs this check before the SQLite integrity check, so integrity checking never reaches virtual tables the file reshaped. Every connection disables `trusted_schema`, enables `cell_size_check`, and runs in SQLite defensive mode. Read-only opens skip the catalog comparison because a replica may read a newer schema; they rely on query-only access and those connection settings.
+
 Portable config writes occur in Rust through validated patching and atomic replacement, so independent windows cannot rewrite the whole config from stale frontend copies. Unknown persistent values are rejected or dropped by explicit rules.
 
 The active vault path is configuration, not a hardcoded Documents location. Managed child paths are derived below the validated active root.

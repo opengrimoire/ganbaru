@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use ganbaru_sync_contracts::{GroupId, GroupMask, Hlc, TableId, Value, WriterId};
-use sqlx::{Connection, SqliteConnection};
+use sqlx::{AssertSqlSafe, Connection, SqliteConnection};
 
 use crate::error::{SyncResult, corrupt};
 use crate::merge::{self, RowState, table_param};
@@ -64,7 +64,7 @@ impl Engine {
             "SELECT row_key, {OPEN_CONFLICT_MASK_SQL} AS open_mask FROM sync_rows r
              WHERE r.table_id = ? AND open_mask <> 0 ORDER BY row_key"
         );
-        let rows: Vec<(String, i64)> = sqlx::query_as(&sql)
+        let rows: Vec<(String, i64)> = sqlx::query_as(AssertSqlSafe(sql.as_str()))
             .bind(table_param(table))
             .fetch_all(&mut *conn)
             .await?;
@@ -93,7 +93,7 @@ impl Engine {
         let sql = format!(
             "SELECT {OPEN_CONFLICT_MASK_SQL} FROM sync_rows r WHERE r.table_id = ? AND r.row_key = ?"
         );
-        let mask: Option<i64> = sqlx::query_scalar(&sql)
+        let mask: Option<i64> = sqlx::query_scalar(AssertSqlSafe(sql.as_str()))
             .bind(table_param(table))
             .bind(key)
             .fetch_optional(&mut *conn)

@@ -690,10 +690,11 @@ mod tests {
             "distractions_block_events",
             "distractions_block_event_rule_snapshots",
         ] {
-            let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+            let count: i64 =
+                sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}")))
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
             assert_eq!(
                 count, 0,
                 "{table} must roll back with the rejected journal batch"
@@ -710,10 +711,12 @@ mod tests {
                 "distractions_block_events",
                 "distractions_block_event_rule_snapshots",
             ] {
-                let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
-                    .fetch_one(&pool)
-                    .await
-                    .unwrap();
+                let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                    "SELECT COUNT(*) FROM {table}"
+                )))
+                .fetch_one(&pool)
+                .await
+                .unwrap();
                 assert_eq!(
                     count, 1,
                     "{table} must preserve identity on a lost-response retry"

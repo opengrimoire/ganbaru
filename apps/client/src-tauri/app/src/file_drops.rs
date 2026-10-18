@@ -1,13 +1,13 @@
-//! Files the operating system dropped on a window. Tauri's native drag-and-drop handler takes
-//! file drops before the webview sees them, so features import dropped files through commands
-//! that read the paths recorded here, never paths sent from the webview.
+//! Files the operating system dropped on a webview. Tauri's native drag-and-drop handler takes
+//! file drops before the page sees them, so features import dropped files through commands that
+//! read the paths recorded here, never paths sent from the page.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-/// Longest time a drop waits for the webview to claim it. Imports already running delay the claim, so
+/// Longest time a drop waits for the page to claim it. Imports already running delay the claim, so
 /// this allows for slow imports while still refusing stale drops.
 const DROP_CLAIM_WINDOW: Duration = Duration::from_secs(60);
 
@@ -16,19 +16,19 @@ struct PendingDrop {
     dropped_at: Instant,
 }
 
-/// The latest file drop on each window, until a feature claims it.
+/// The latest file drop on each webview, until a feature claims it.
 #[derive(Default)]
 pub struct FileDrops {
     pending: Mutex<HashMap<String, PendingDrop>>,
 }
 
 impl FileDrops {
-    /// Records files dropped on a window, replacing any unclaimed earlier drop.
-    pub fn record(&self, window: &str, paths: Vec<PathBuf>, now: Instant) {
+    /// Records files dropped on a webview, replacing any unclaimed earlier drop.
+    pub fn record(&self, webview: &str, paths: Vec<PathBuf>, now: Instant) {
         let mut pending = self.lock();
         pending.retain(|_, drop| !expired(drop, now));
         pending.insert(
-            window.to_string(),
+            webview.to_string(),
             PendingDrop {
                 paths,
                 dropped_at: now,
@@ -36,11 +36,11 @@ impl FileDrops {
         );
     }
 
-    /// Takes the files last dropped on a window. A drop is claimed once, and only shortly after it
-    /// happened.
-    pub fn take(&self, window: &str, now: Instant) -> Vec<PathBuf> {
+    /// Takes the files last dropped on a webview. A drop is claimed once, and only shortly after
+    /// it happened.
+    pub fn take(&self, webview: &str, now: Instant) -> Vec<PathBuf> {
         self.lock()
-            .remove(window)
+            .remove(webview)
             .filter(|drop| !expired(drop, now))
             .map(|drop| drop.paths)
             .unwrap_or_default()
@@ -66,7 +66,7 @@ mod tests {
     }
 
     #[test]
-    fn hands_each_drop_to_its_own_window_once() {
+    fn hands_each_drop_to_its_own_webview_once() {
         let drops = FileDrops::default();
         let now = Instant::now();
         drops.record("main", paths(&["/a.png"]), now);
@@ -79,7 +79,7 @@ mod tests {
     }
 
     #[test]
-    fn keeps_only_the_latest_drop_of_a_window() {
+    fn keeps_only_the_latest_drop_of_a_webview() {
         let drops = FileDrops::default();
         let now = Instant::now();
         drops.record("main", paths(&["/old.png"]), now);

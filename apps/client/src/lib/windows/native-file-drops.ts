@@ -1,8 +1,8 @@
-import { getCurrentWindow, type DragDropEvent } from "@tauri-apps/api/window";
+import { getCurrentWebview, type DragDropEvent } from "@tauri-apps/api/webview";
 
 /**
- * A file drag over this window, as the operating system reports it. Desktop windows receive file drops natively
- * instead of as HTML5 drops; the dropped paths stay in Rust, which imports them through feature commands.
+ * A file drag over this page, as the operating system reports it. Desktop pages receive file drops natively instead
+ * of as HTML5 drops; the dropped paths stay in Rust, which imports them through feature commands.
  */
 export type NativeFileDrag =
   | { readonly kind: "hover" }
@@ -23,10 +23,11 @@ export function nativeFileDrag(event: DragDropEvent): NativeFileDrag {
 }
 
 /**
- * Calls `handler` for every file drag over the current window.
+ * Calls `handler` for every file drag over the current webview. Desktop windows host their pages as child webviews,
+ * so drag events target the webview rather than the window.
  *
  * @returns A function that stops listening.
  */
 export async function listenForNativeFileDrags(handler: (drag: NativeFileDrag) => void): Promise<() => void> {
-  return getCurrentWindow().onDragDropEvent((event) => handler(nativeFileDrag(event.payload)));
+  return getCurrentWebview().onDragDropEvent((event) => handler(nativeFileDrag(event.payload)));
 }

@@ -112,18 +112,18 @@ pub async fn quick_notes_pick_images<R: Runtime>(
     import_paths(&app, paths, limit).await
 }
 
-/// Imports up to `limit` of the files last dropped on the calling window, in drop order. The
+/// Imports up to `limit` of the files last dropped on the calling webview, in drop order. The
 /// paths come from the operating system's drop event, never from the webview, and a drop is
 /// imported once.
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn quick_notes_import_dropped_images<R: Runtime>(
     app: AppHandle<R>,
-    window: tauri::Window<R>,
+    webview: tauri::Webview<R>,
     drops: tauri::State<'_, crate::file_drops::FileDrops>,
     limit: usize,
 ) -> Result<QuickNoteImagePick, QuickNoteImageError> {
-    let paths = drops.take(window.label(), std::time::Instant::now());
+    let paths = drops.take(webview.label(), std::time::Instant::now());
     import_paths(&app, paths, limit).await
 }
 

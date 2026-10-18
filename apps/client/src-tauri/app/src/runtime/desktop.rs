@@ -251,22 +251,25 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         .manage(chat::workspace::observer::ChatWorkspaceObserverRegistry::default())
         .plugin(tauri_plugin_dialog::init())
         .manage(file_drops::FileDrops::default())
-        .on_window_event(|window, event| match event {
-            tauri::WindowEvent::CloseRequested { api, .. } => {
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let overlays = window.state::<pomodoro::overlay::PomodoroOverlayState>();
                 if overlays.is_active() {
                     api.prevent_close();
                     overlays.focus(window);
                 }
             }
-            tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) => {
-                window.state::<file_drops::FileDrops>().record(
-                    window.label(),
+        })
+        // The `unstable` feature builds every page as a child webview, so file drops arrive as
+        // webview events rather than window events.
+        .on_webview_event(|webview, event| {
+            if let tauri::WebviewEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
+                webview.state::<file_drops::FileDrops>().record(
+                    webview.label(),
                     paths.clone(),
                     std::time::Instant::now(),
                 );
             }
-            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             chat::workspace::commands::projects_list_working_folders,

@@ -782,7 +782,7 @@ fn preview_tools() -> Vec<Tool> {
         ),
         preview_tool(
             "preview_resize",
-            "Resize the active preview viewport",
+            "Resize the active preview viewport in physical pixels; the size is clamped to the window and capture limits and the applied size is returned",
             serde_json::json!({
                 "width": { "type": "integer", "minimum": 1, "maximum": 16384 },
                 "height": { "type": "integer", "minimum": 1, "maximum": 16384 }

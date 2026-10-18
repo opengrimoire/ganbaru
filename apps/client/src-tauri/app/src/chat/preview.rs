@@ -5,7 +5,7 @@ use crate::vault;
 use base64::{Engine as _, engine::general_purpose};
 use chrono::{SecondsFormat, Utc};
 use ganbaru_chat::repository::resources::{
-    self, ChatResourceKind, ChatResourceRead, StoreBrowserArtifact,
+    self, BrowserArtifactQuota, ChatResourceKind, ChatResourceRead, StoreBrowserArtifact,
 };
 use ganbaru_chat_contracts::models::{
     ChatError, ChatErrorCode, ChatResult, ChatThreadId, ProjectWorkingFolderId, UtcTimestamp,
@@ -51,6 +51,12 @@ const RECORDING_FRAME_INTERVAL: Duration = Duration::from_millis(500);
 const MAX_RECORDING_DURATION: Duration = Duration::from_secs(15);
 const MAX_CAPTURE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_RECORDING_BYTES: usize = 192 * 1024 * 1024;
+/// Largest webview area a capture may snapshot: an 8K viewport, about 127 MiB of raw RGBA.
+const MAX_CAPTURE_PIXELS: u64 = 7_680 * 4_320;
+/// Rolling window and per-thread limits for screenshots the model takes.
+const MODEL_ARTIFACT_WINDOW: chrono::TimeDelta = chrono::TimeDelta::hours(24);
+const MODEL_ARTIFACT_MAX_COUNT: u64 = 1_000;
+const MODEL_ARTIFACT_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 static NEXT_ARTIFACT_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug, Deserialize)]
@@ -122,6 +128,8 @@ struct BrowserArtifactPayload<'a> {
     duration_milliseconds: Option<u64>,
     frame_count: Option<u64>,
     bytes: &'a [u8],
+    /// Applies the rolling per-thread quota for model-driven captures.
+    model_quota: bool,
 }
 
 #[derive(Clone, Default)]
@@ -130,9 +138,24 @@ pub struct ChatBrowserManager {
     recording: Arc<Mutex<Option<ActiveRecording>>>,
     pending_approvals: Arc<Mutex<HashMap<ChatThreadId, approvals::PendingPreviewApproval>>>,
     data_sweeps: data_store::PreviewDataSweeps,
+    /// One lock per thread so model captures run one at a time and the quota check cannot race the insert.
+    model_captures: Arc<Mutex<HashMap<ChatThreadId, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
 impl ChatBrowserManager {
+    fn model_capture_lock(
+        &self,
+        thread_id: &ChatThreadId,
+    ) -> ChatResult<Arc<tokio::sync::Mutex<()>>> {
+        Ok(self
+            .model_captures
+            .lock()
+            .map_err(|_| browser_state_error())?
+            .entry(thread_id.clone())
+            .or_default()
+            .clone())
+    }
+
     fn cancel_recording(&self, matches: impl FnOnce(&ActiveRecording) -> bool) {
         if let Ok(mut active) = self.recording.lock() {
             if active.as_ref().is_some_and(matches) {
@@ -340,8 +363,16 @@ pub(crate) async fn mcp_resize_browser(
     let tab = app
         .state::<ChatBrowserManager>()
         .active_thread_tab(thread_id)?;
-    app.get_webview(&tab.webview_label)
-        .ok_or_else(browser_unavailable_error)?
+    let webview = app
+        .get_webview(&tab.webview_label)
+        .ok_or_else(browser_unavailable_error)?;
+    let window = webview
+        .window()
+        .inner_size()
+        .map_err(|_| browser_unavailable_error())?;
+    let (width, height) =
+        capture::clamp_model_viewport((width, height), (window.width, window.height));
+    webview
         .set_size(tauri::PhysicalSize::new(width, height))
         .map_err(|_| browser_unavailable_error())?;
     app.state::<ChatBrowserManager>()
@@ -366,6 +397,10 @@ pub(crate) async fn mcp_screenshot_browser(
 ) -> ChatResult<ChatResourceRead> {
     let tab = owned_tab(app, thread_id, tab_id)?;
     model_access::require_model_access(app, &tab)?;
+    let capture_lock = app
+        .state::<ChatBrowserManager>()
+        .model_capture_lock(thread_id)?;
+    let _capture = capture_lock.lock().await;
     let bytes = capture_browser_png(app, &tab).await?;
     persist_browser_artifact_with_pool(
         pool,
@@ -378,6 +413,7 @@ pub(crate) async fn mcp_screenshot_browser(
             duration_milliseconds: None,
             frame_count: Some(1),
             bytes: &bytes,
+            model_quota: true,
         },
     )
     .await
@@ -652,6 +688,7 @@ pub async fn chat_browser_screenshot(
             duration_milliseconds: None,
             frame_count: Some(1),
             bytes: &bytes,
+            model_quota: false,
         },
     )
     .await
@@ -756,6 +793,7 @@ pub async fn chat_browser_recording_stop(
             duration_milliseconds: Some(duration.as_millis() as u64),
             frame_count: Some(frames.len() as u64),
             bytes: &archive,
+            model_quota: false,
         },
     )
     .await

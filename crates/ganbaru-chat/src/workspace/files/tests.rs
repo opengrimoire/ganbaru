@@ -1,4 +1,5 @@
 use super::*;
+use crate::git::hardened::GitFolderTrust;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -27,6 +28,7 @@ impl TestDirectory {
             repository_kind: kind,
             repository_identity: None,
             repository_storage_identity: None,
+            git_trust: GitFolderTrust::Untrusted,
         }
     }
 }

@@ -1,8 +1,6 @@
 use super::parsing::*;
 use super::*;
-use crate::git::hardened::{
-    self, GitChildEnvironment, GitPolicy, GitRunError, PROVISIONAL_FOLDER_TRUST,
-};
+use crate::git::hardened::{self, GitChildEnvironment, GitFolderTrust, GitPolicy, GitRunError};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -55,10 +53,12 @@ pub enum HostedCliOperation {
 }
 
 impl HostedCliOperation {
-    fn git_policy(self) -> GitPolicy {
+    /// Reads run in an empty directory, so there is no repository
+    /// configuration to trust.
+    fn git_policy(self, trust: GitFolderTrust) -> GitPolicy {
         match self {
-            Self::Read => GitPolicy::internal(PROVISIONAL_FOLDER_TRUST),
-            Self::Create | Self::Checkout => GitPolicy::user(PROVISIONAL_FOLDER_TRUST),
+            Self::Read => GitPolicy::internal(GitFolderTrust::Untrusted),
+            Self::Create | Self::Checkout => GitPolicy::user(trust),
         }
     }
 
@@ -428,7 +428,7 @@ fn isolate_python(kind: HostedSourceControlKind, command: &mut std::process::Com
 pub async fn run_cli_operation(
     kind: HostedSourceControlKind,
     arguments: &[String],
-    root: &Path,
+    folder: GitFolder<'_>,
     operation: HostedCliOperation,
 ) -> ChatResult<String> {
     let executable = provider_executable(kind)?;
@@ -439,9 +439,9 @@ pub async fn run_cli_operation(
     };
     let directory = isolated
         .as_ref()
-        .map_or_else(|| root.to_path_buf(), |isolated| isolated.0.clone());
+        .map_or_else(|| folder.root.to_path_buf(), |isolated| isolated.0.clone());
     let git_environment =
-        hardened::child_environment(directory.clone(), operation.git_policy()).await?;
+        hardened::child_environment(directory.clone(), operation.git_policy(folder.trust)).await?;
     let command = hosted_cli_command(kind, arguments, &directory, &git_environment)?;
     let output = hardened::run_program(command, OPERATION_TIMEOUT, MAX_OPERATION_OUTPUT_BYTES)
         .await

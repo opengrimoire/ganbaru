@@ -4,6 +4,8 @@ use super::{
     CapturedCheckpoint, StoredCheckpoint, current_git_snapshot, delete_exact_ref, diff_files,
     restore_git_snapshot, verify_checkpoint,
 };
+use crate::git::GitFolder;
+use crate::git::hardened::GitFolderTrust;
 use crate::models::{
     ChatCheckpointId, ChatErrorCode, ChatThreadId, ProjectWorkingFolderId, RepositoryKind,
 };
@@ -55,7 +57,12 @@ impl TestRepository {
             repository_kind: RepositoryKind::Git,
             repository_identity: Some(identity.to_string()),
             repository_storage_identity: Some(identity.to_string()),
+            git_trust: GitFolderTrust::Untrusted,
         }
+    }
+
+    fn folder(&self) -> GitFolder<'_> {
+        GitFolder::untrusted(&self.0)
     }
 }
 
@@ -91,7 +98,7 @@ fn capture(
     let thread = ChatThreadId::new("thread:test").expect("thread ID should be valid");
     let checkpoint = ChatCheckpointId::new(format!("checkpoint:{suffix}"))
         .expect("checkpoint ID should be valid");
-    capture_git(&repository.0, &thread, &checkpoint, previous)
+    capture_git(repository.folder(), &thread, &checkpoint, previous)
         .expect("checkpoint capture should succeed")
 }
 
@@ -118,10 +125,10 @@ fn checkpoint_capture_preserves_head_index_staging_and_worktree() {
     repository.write("tracked.txt", b"staged\n");
     run_git(&repository.0, &["add", "tracked.txt"]);
     repository.write("unstaged.txt", b"untracked\n");
-    let before = repository_fingerprint(&repository.0).expect("fingerprint should succeed");
+    let before = repository_fingerprint(repository.folder()).expect("fingerprint should succeed");
     let head = run_git(&repository.0, &["rev-parse", "HEAD"]);
     let captured = capture(&repository, "preserve", None);
-    let after = repository_fingerprint(&repository.0).expect("fingerprint should succeed");
+    let after = repository_fingerprint(repository.folder()).expect("fingerprint should succeed");
 
     assert_eq!(before, after);
     assert_eq!(head, run_git(&repository.0, &["rev-parse", "HEAD"]));
@@ -170,15 +177,15 @@ fn diff_covers_staged_unstaged_untracked_deleted_renamed_mode_binary_and_whitesp
     repository.write("binary.bin", &[0, 9, 8, 7]);
     repository.write("whitespace.txt", b"whitespace.txt base   \n");
 
-    let before = repository_fingerprint(&repository.0).expect("fingerprint should succeed");
+    let before = repository_fingerprint(repository.folder()).expect("fingerprint should succeed");
     let post = capture(&repository, "post", Some(&pre.git_object_id));
     assert_eq!(
         before,
-        repository_fingerprint(&repository.0).expect("fingerprint should succeed")
+        repository_fingerprint(repository.folder()).expect("fingerprint should succeed")
     );
 
     let files = diff_files(
-        &repository.0,
+        repository.folder(),
         &stored(&pre, "identity", 0),
         &stored(&post, "identity", 1),
     )
@@ -217,7 +224,7 @@ fn diff_covers_staged_unstaged_untracked_deleted_renamed_mode_binary_and_whitesp
     );
 
     let normal = file_diff(
-        &repository.0,
+        repository.folder(),
         &stored(&pre, "identity", 0),
         &stored(&post, "identity", 1),
         "whitespace.txt",
@@ -225,7 +232,7 @@ fn diff_covers_staged_unstaged_untracked_deleted_renamed_mode_binary_and_whitesp
     )
     .expect("normal diff should succeed");
     let ignored = file_diff(
-        &repository.0,
+        repository.folder(),
         &stored(&pre, "identity", 0),
         &stored(&post, "identity", 1),
         "whitespace.txt",
@@ -258,12 +265,18 @@ fn restore_reinstates_worktree_and_real_index_without_moving_head() {
     repository.write("worktree.txt", b"later worktree\n");
     fs::remove_file(repository.0.join("checkpoint-only.txt")).expect("file should be removed");
     repository.write("later-only.txt", b"later\n");
-    let current = current_git_snapshot(&repository.0).expect("current snapshot should succeed");
+    let current =
+        current_git_snapshot(repository.folder()).expect("current snapshot should succeed");
     let head = current.head_oid.clone();
 
-    restore_git_snapshot(&repository.0, &current, &stored(&target, "identity", 0))
-        .expect("restore should succeed");
-    let restored = current_git_snapshot(&repository.0).expect("restored snapshot should succeed");
+    restore_git_snapshot(
+        repository.folder(),
+        &current,
+        &stored(&target, "identity", 0),
+    )
+    .expect("restore should succeed");
+    let restored =
+        current_git_snapshot(repository.folder()).expect("restored snapshot should succeed");
     assert_eq!(restored.worktree_tree_oid, target.worktree_tree_oid);
     assert_eq!(restored.index_tree_oid, target.index_tree_oid);
     assert_eq!(restored.head_oid, head);
@@ -287,11 +300,11 @@ fn ref_validation_rejects_identity_changes_missing_refs_and_wrong_cleanup_oids()
         .expect_err("identity mismatch should fail");
     assert_eq!(identity_error.code, ChatErrorCode::ConfigurationInvalid);
     let wrong_oid = run_git(&repository.0, &["rev-parse", "HEAD"]);
-    assert!(delete_exact_ref(&repository.0, &captured.hidden_ref_name, &wrong_oid).is_err());
+    assert!(delete_exact_ref(repository.folder(), &captured.hidden_ref_name, &wrong_oid).is_err());
     verify_checkpoint(&repository.authorized("identity-a"), &checkpoint)
         .expect("wrong expected OID must retain ref");
     delete_exact_ref(
-        &repository.0,
+        repository.folder(),
         &captured.hidden_ref_name,
         &captured.git_object_id,
     )
@@ -308,11 +321,15 @@ fn stale_restore_snapshot_aborts_without_changing_files() {
     repository.commit_all();
     let target = capture(&repository, "stale-target", None);
     repository.write("tracked.txt", b"preview state\n");
-    let preview = current_git_snapshot(&repository.0).expect("preview should succeed");
+    let preview = current_git_snapshot(repository.folder()).expect("preview should succeed");
     repository.write("tracked.txt", b"changed after preview\n");
 
-    let error = restore_git_snapshot(&repository.0, &preview, &stored(&target, "identity", 0))
-        .expect_err("stale preview should abort");
+    let error = restore_git_snapshot(
+        repository.folder(),
+        &preview,
+        &stored(&target, "identity", 0),
+    )
+    .expect_err("stale preview should abort");
     assert_eq!(error.code, ChatErrorCode::StaleRevision);
     assert_eq!(
         fs::read(repository.0.join("tracked.txt")).expect("file should read"),

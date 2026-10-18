@@ -7,6 +7,8 @@ pub mod protected_paths;
 use super::models::{
     ChatError, ChatErrorCode, ChatResult, ProjectWorkingFolderId, RepositoryKind, UtcTimestamp,
 };
+use crate::git::GitFolder;
+use crate::git::hardened::{FolderConfigDigest, GitFolderTrust};
 use chrono::{SecondsFormat, Utc};
 use ganbaru_working_folders::{ProjectWorkingFolderBindingState, WorkingFolderDeviceScope};
 use serde::{Deserialize, Serialize};
@@ -114,6 +116,15 @@ pub struct AuthorizedWorkingFolder {
     pub repository_identity: Option<String>,
     /// Filesystem identity of the currently authorized Git common directory.
     pub repository_storage_identity: Option<String>,
+    /// Device-local trust decision for repository programs and hooks.
+    pub git_trust: GitFolderTrust,
+}
+
+impl AuthorizedWorkingFolder {
+    /// Returns the folder as a Git run target with its trust decision.
+    pub fn git_folder(&self) -> GitFolder<'_> {
+        GitFolder::new(&self.canonical_path, self.git_trust)
+    }
 }
 
 pub fn prepare_workspace_binding(
@@ -186,7 +197,23 @@ pub fn authorize_workspace(
             .then(|| workspace.repository_identity.clone())
             .flatten(),
         repository_storage_identity,
+        git_trust: folder_git_trust(scope, &workspace.id),
     })
+}
+
+/// Resolves the recorded trust decision for a folder. A missing, declined, or
+/// unreadable record is untrusted; a trusted record still applies only while
+/// the folder's configuration matches its digest.
+pub fn folder_git_trust(
+    scope: &WorkingFolderDeviceScope,
+    working_folder_id: &ProjectWorkingFolderId,
+) -> GitFolderTrust {
+    scope
+        .trust
+        .get(working_folder_id)
+        .filter(|record| record.trusted)
+        .and_then(|record| FolderConfigDigest::from_hex(&record.git_configuration_digest))
+        .map_or(GitFolderTrust::Untrusted, GitFolderTrust::Trusted)
 }
 
 pub fn resolve_workspace_relative_path(

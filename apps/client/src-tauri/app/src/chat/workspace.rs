@@ -74,7 +74,19 @@ pub fn store_active_device_binding<R: Runtime>(
     binding: ProjectWorkingFolderBindingState,
 ) -> ChatResult<()> {
     update_active_working_folder_scope(app, |scope| {
-        scope.bindings.insert(working_folder_id.clone(), binding);
+        let previous = scope.bindings.insert(working_folder_id.clone(), binding);
+        let rebound = previous.is_some_and(|previous| {
+            scope
+                .bindings
+                .get(working_folder_id)
+                .is_some_and(|current| {
+                    current.canonical_path != previous.canonical_path
+                        || current.filesystem_identity != previous.filesystem_identity
+                })
+        });
+        if rebound {
+            scope.trust.remove(working_folder_id);
+        }
         Ok(())
     })
     .map_err(device_state_error)
@@ -86,6 +98,7 @@ pub fn remove_active_device_binding<R: Runtime>(
 ) -> ChatResult<()> {
     update_active_working_folder_scope(app, |scope| {
         scope.bindings.remove(working_folder_id);
+        scope.trust.remove(working_folder_id);
         Ok(())
     })
     .map_err(device_state_error)

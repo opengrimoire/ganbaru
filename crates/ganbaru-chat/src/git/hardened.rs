@@ -19,6 +19,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+mod digest;
+
+pub use digest::{
+    FolderConfigDigest, FolderConfiguration, MAX_TRUST_DIGEST_FILE_BYTES,
+    MAX_TRUST_DIGEST_HOOK_FILES, folder_configuration, folder_configuration_blocking,
+};
+
 /// Deadline for interactive Git reads such as status, listings, and review.
 pub const GIT_READ_DEADLINE: Duration = Duration::from_secs(60);
 /// Deadline for Git operations that reach a remote.
@@ -92,16 +99,14 @@ pub enum GitOrigin {
 /// device.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GitFolderTrust {
-    /// Repository configuration applies exactly as in the user's terminal.
-    Trusted,
+    /// Repository configuration applies exactly as in the user's terminal
+    /// while the folder's Git configuration digest equals the trusted one.
+    /// A run that finds another digest is untrusted.
+    Trusted(FolderConfigDigest),
     /// Programs named by local or worktree configuration, and repository
     /// hooks, are replaced by the user's own value or a neutral one.
     Untrusted,
 }
-
-/// Folder trust used until callers pass the folder's device trust record.
-/// Trusted keeps repository configuration exactly as before hardening.
-pub const PROVISIONAL_FOLDER_TRUST: GitFolderTrust = GitFolderTrust::Trusted;
 
 /// Which configuration a Git run may honor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -131,6 +136,36 @@ impl GitPolicy {
 
     fn neutralizes_repository(self) -> bool {
         self.trust == GitFolderTrust::Untrusted
+    }
+
+    fn untrusted(self) -> Self {
+        Self {
+            trust: GitFolderTrust::Untrusted,
+            ..self
+        }
+    }
+}
+
+/// Reads the effective configuration and settles a trusted policy against
+/// the folder's current digest. Returns the policy to run with and the
+/// listing its hardening needs.
+fn resolve_policy(
+    root: &Path,
+    policy: GitPolicy,
+    environment: &[(&str, &OsStr)],
+    deadline: Duration,
+    cancel: Option<&Arc<AtomicBool>>,
+) -> Result<(GitPolicy, Vec<GitConfigEntry>), GitRunError> {
+    let entries = read_effective_config(root, policy, environment, deadline, cancel)?;
+    let GitFolderTrust::Trusted(expected) = policy.trust else {
+        return Ok((policy, entries));
+    };
+    match digest::git_configuration(root, &entries, deadline, cancel) {
+        Ok(current) if current.digest == expected => Ok((policy, entries)),
+        Ok(_) | Err(GitRunError::Configuration | GitRunError::OutputTooLarge) => {
+            Ok((policy.untrusted(), entries))
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -696,18 +731,14 @@ impl From<GitRunError> for ChatError {
 pub fn run_blocking(run: GitRun<'_>) -> Result<GitRunOutput, GitRunError> {
     let started = Instant::now();
     let inherited = GitInheritedEnvironment::current(run.policy);
-    let entries = if run.policy.neutralizes_repository() {
-        read_effective_config(
-            run.root,
-            run.policy,
-            run.environment,
-            run.deadline,
-            run.cancel.as_ref(),
-        )?
-    } else {
-        Vec::new()
-    };
-    let hardening = hardening_for(run.policy, &entries, &inherited, empty_hooks_directory());
+    let (policy, entries) = resolve_policy(
+        run.root,
+        run.policy,
+        run.environment,
+        run.deadline,
+        run.cancel.as_ref(),
+    )?;
+    let hardening = hardening_for(policy, &entries, &inherited, empty_hooks_directory());
     let remaining = run.deadline.saturating_sub(started.elapsed());
     let mut command = base_command(run.root);
     hardening.apply(&mut command);
@@ -733,6 +764,9 @@ pub fn run_blocking(run: GitRun<'_>) -> Result<GitRunOutput, GitRunError> {
 
 /// Runs an internal read with the default deadline and no optional locks,
 /// collecting at most `maximum_output_bytes` of standard output.
+///
+/// These reads (listings, ignore checks, directory probes) do not depend on
+/// repository programs, so they run untrusted and need no trust record.
 pub fn internal_read_blocking(
     root: &Path,
     arguments: &[&str],
@@ -743,7 +777,7 @@ pub fn internal_read_blocking(
     run_blocking(GitRun {
         root,
         arguments: &arguments,
-        policy: GitPolicy::internal(PROVISIONAL_FOLDER_TRUST),
+        policy: GitPolicy::internal(GitFolderTrust::Untrusted),
         deadline: GIT_READ_DEADLINE,
         input,
         stdout: GitStdout::Memory(maximum_output_bytes),
@@ -815,11 +849,7 @@ pub fn child_environment_blocking(
     policy: GitPolicy,
 ) -> Result<GitChildEnvironment, GitRunError> {
     let inherited = GitInheritedEnvironment::current(policy);
-    let entries = if policy.neutralizes_repository() {
-        read_effective_config(directory, policy, &[], GIT_CONFIG_READ_DEADLINE, None)?
-    } else {
-        Vec::new()
-    };
+    let (policy, entries) = resolve_policy(directory, policy, &[], GIT_CONFIG_READ_DEADLINE, None)?;
     let hardening = hardening_for(policy, &entries, &inherited, empty_hooks_directory());
     let inherited_count = if hardening
         .cleared_environment

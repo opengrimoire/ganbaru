@@ -374,6 +374,7 @@ fn traversal_and_absolute_paths_are_rejected() {
         repository_kind: RepositoryKind::None,
         repository_identity: None,
         repository_storage_identity: None,
+        git_trust: ganbaru_chat::git::hardened::GitFolderTrust::Untrusted,
     };
 
     assert!(resolve_workspace_relative_path(&authorized, "../outside.txt").is_err());
@@ -400,6 +401,7 @@ fn symlink_escape_is_rejected_at_resolution_time() {
         repository_kind: RepositoryKind::None,
         repository_identity: None,
         repository_storage_identity: None,
+        git_trust: ganbaru_chat::git::hardened::GitFolderTrust::Untrusted,
     };
 
     let error = resolve_workspace_relative_path(&authorized, "escape/secret.txt").unwrap_err();

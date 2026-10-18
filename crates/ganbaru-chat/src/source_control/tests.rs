@@ -230,7 +230,7 @@ fn hosted_cli_commands_carry_git_hardening_and_python_isolation() {
     let directory = cli::EmptyWorkingDirectory::create().unwrap();
     let environment = crate::git::hardened::child_environment_blocking(
         &directory.0,
-        crate::git::hardened::GitPolicy::internal(crate::git::hardened::GitFolderTrust::Trusted),
+        crate::git::hardened::GitPolicy::internal(crate::git::hardened::GitFolderTrust::Untrusted),
     )
     .unwrap();
     for kind in [
@@ -409,23 +409,22 @@ impl Drop for ShimFixture {
 #[cfg(unix)]
 #[tokio::test]
 async fn hosted_cli_git_children_skip_repository_fsmonitor_unless_trusted_by_the_user() {
-    use crate::git::hardened::{GitFolderTrust, GitPolicy};
+    use crate::git::hardened::{GitFolderTrust, GitPolicy, folder_configuration_blocking};
     let fixture = ShimFixture::new();
     let repository = fixture.repository();
+    let trusted = GitFolderTrust::Trusted(
+        folder_configuration_blocking(&repository)
+            .expect("configuration should digest")
+            .git,
+    );
     assert!(
-        fixture
-            .run(&repository, GitPolicy::user(GitFolderTrust::Trusted))
-            .await,
+        fixture.run(&repository, GitPolicy::user(trusted)).await,
         "a trusted user operation behaves like the terminal"
     );
     let isolated = cli::EmptyWorkingDirectory::create().unwrap();
-    assert!(
-        !fixture
-            .run(&isolated.0, GitPolicy::internal(GitFolderTrust::Trusted))
-            .await
-    );
+    assert!(!fixture.run(&isolated.0, GitPolicy::internal(trusted)).await);
     for policy in [
-        GitPolicy::internal(GitFolderTrust::Trusted),
+        GitPolicy::internal(trusted),
         GitPolicy::internal(GitFolderTrust::Untrusted),
         GitPolicy::user(GitFolderTrust::Untrusted),
     ] {

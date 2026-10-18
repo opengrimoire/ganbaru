@@ -10,9 +10,8 @@ use super::{
     corrupt_data_error, empty_tree, git_text, optional_head, path_field, review_error,
     review_output, review_storage_text,
 };
-use crate::git;
+use crate::git::{self, GitFolder};
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -33,10 +32,10 @@ struct RawFileMetadata {
 pub type ReviewNumstat = BTreeMap<String, (Option<u64>, Option<u64>)>;
 
 pub async fn working_tree_material(
-    root: &Path,
+    folder: GitFolder<'_>,
     mode: ReviewWorkingTreeMode,
 ) -> ChatResult<SnapshotMaterial> {
-    let before_status = git::status(root).await?;
+    let before_status = git::status(folder).await?;
     let has_conflicts = before_status.files.iter().any(|file| file.conflicted);
     if has_conflicts && mode != ReviewWorkingTreeMode::All {
         return Err(ChatError::new(
@@ -45,13 +44,13 @@ pub async fn working_tree_material(
             true,
         ));
     }
-    let head = optional_head(root).await?;
+    let head = optional_head(folder).await?;
     if mode == ReviewWorkingTreeMode::Staged {
-        let index_tree = git_text(root, &["write-tree"], None).await?;
+        let index_tree = git_text(folder, &["write-tree"], None).await?;
         return Ok(SnapshotMaterial {
             before_oid: match head {
                 Some(head) => head,
-                None => empty_tree(root).await?,
+                None => empty_tree(folder).await?,
             },
             after_oid: index_tree,
             label: "Staged changes".to_string(),
@@ -59,17 +58,17 @@ pub async fn working_tree_material(
             object_store: None,
         });
     }
-    let store = Arc::new(ReviewObjectStore::new(root).await?);
+    let store = Arc::new(ReviewObjectStore::new(folder).await?);
     let empty_tree_oid = if let Some(head) = head.as_deref() {
-        review_storage_text(root, &["read-tree", head], Some(&store)).await?;
+        review_storage_text(folder, &["read-tree", head], Some(&store)).await?;
         None
     } else {
-        review_storage_text(root, &["read-tree", "--empty"], Some(&store)).await?;
-        Some(review_storage_text(root, &["write-tree"], Some(&store)).await?)
+        review_storage_text(folder, &["read-tree", "--empty"], Some(&store)).await?;
+        Some(review_storage_text(folder, &["write-tree"], Some(&store)).await?)
     };
-    let index_tree = git_text(root, &["write-tree"], None).await?;
-    review_storage_text(root, &["add", "-A", "--", "."], Some(&store)).await?;
-    let worktree_tree = review_storage_text(root, &["write-tree"], Some(&store)).await?;
+    let index_tree = git_text(folder, &["write-tree"], None).await?;
+    review_storage_text(folder, &["add", "-A", "--", "."], Some(&store)).await?;
+    let worktree_tree = review_storage_text(folder, &["write-tree"], Some(&store)).await?;
     let store_for_size = store.clone();
     tokio::task::spawn_blocking(move || store_for_size.verify_size())
         .await
@@ -97,7 +96,7 @@ pub async fn working_tree_material(
 }
 
 pub async fn git_files(
-    root: &Path,
+    folder: GitFolder<'_>,
     before: &str,
     after: &str,
     source: &ReviewDiffSource,
@@ -106,14 +105,14 @@ pub async fn git_files(
 ) -> ChatResult<Vec<ReviewFileInternal>> {
     let mut name_arguments = deterministic_diff_arguments(ignore_whitespace, None);
     name_arguments.extend(["--name-status", "-z", before, after]);
-    let names = review_output(root, &name_arguments, None, object_store).await?;
+    let names = review_output(folder, &name_arguments, None, object_store).await?;
     let mut stat_arguments = deterministic_diff_arguments(ignore_whitespace, None);
     stat_arguments.extend(["--numstat", "-z", before, after]);
-    let stats = review_output(root, &stat_arguments, None, object_store).await?;
+    let stats = review_output(folder, &stat_arguments, None, object_store).await?;
     let stats = parse_numstat(&stats)?;
     let mut raw_arguments = deterministic_diff_arguments(ignore_whitespace, None);
     raw_arguments.extend(["--raw", "--no-abbrev", "-z", before, after]);
-    let raw = review_output(root, &raw_arguments, None, object_store).await?;
+    let raw = review_output(folder, &raw_arguments, None, object_store).await?;
     let raw = parse_raw_metadata(&raw);
     let mut files = parse_name_status(&names, &stats, source)?;
     for file in &mut files {

@@ -1,8 +1,11 @@
 //! Focused review engine behavior and Git fixture tests.
 
 use super::*;
+use crate::git::GitFolder;
+use crate::git::hardened::GitFolderTrust;
 use std::collections::BTreeMap;
 use std::fs;
+use std::path::Path;
 use std::process::Command;
 
 struct TestRepository(PathBuf);
@@ -29,6 +32,10 @@ impl TestRepository {
 
     fn path(&self) -> &Path {
         &self.0
+    }
+
+    fn folder(&self) -> GitFolder<'_> {
+        GitFolder::untrusted(&self.0)
     }
 
     fn write(&self, relative_path: &str, contents: impl AsRef<[u8]>) {
@@ -126,6 +133,7 @@ fn provider_snapshot(patch: &str) -> (Arc<ReviewSnapshot>, String) {
             .expect("working folder ID should be valid"),
         environment_id: "environment:review-test".to_string(),
         root: PathBuf::new(),
+        git_trust: GitFolderTrust::Untrusted,
         source,
         source_label: "Provider turn".to_string(),
         before_oid: None,
@@ -146,11 +154,11 @@ async fn working_snapshot(
     mode: ReviewWorkingTreeMode,
 ) -> Arc<ReviewSnapshot> {
     let source = working_source(mode);
-    let material = working_tree_material(repository.path(), mode)
+    let material = working_tree_material(repository.folder(), mode)
         .await
         .expect("working snapshot should capture");
     let mut files = git_files(
-        repository.path(),
+        repository.folder(),
         &material.before_oid,
         &material.after_oid,
         &source,
@@ -186,6 +194,7 @@ async fn working_snapshot(
             .expect("working folder ID should be valid"),
         environment_id: "environment:review-test".to_string(),
         root: repository.path().to_path_buf(),
+        git_trust: GitFolderTrust::Untrusted,
         source,
         source_label: material.label,
         before_oid: Some(material.before_oid),
@@ -665,11 +674,11 @@ async fn immutable_git_snapshot_observes_rename_binary_and_untracked_files() {
     repository.write("src/untracked.rs", "pub fn new_file() {}\n");
 
     let source = working_source(ReviewWorkingTreeMode::All);
-    let material = working_tree_material(repository.path(), ReviewWorkingTreeMode::All)
+    let material = working_tree_material(repository.folder(), ReviewWorkingTreeMode::All)
         .await
         .expect("immutable worktree tree should be captured");
     let mut files = git_files(
-        repository.path(),
+        repository.folder(),
         &material.before_oid,
         &material.after_oid,
         &source,
@@ -678,7 +687,7 @@ async fn immutable_git_snapshot_observes_rename_binary_and_untracked_files() {
     )
     .await
     .expect("immutable Git diff should read");
-    let status = git::status(repository.path())
+    let status = git::status(repository.folder())
         .await
         .expect("Git status should read");
     enrich_working_tree_files(&mut files, &status, &source);
@@ -723,10 +732,15 @@ async fn whole_scope_actions_do_not_materialize_large_patch_text() {
         confirmed: false,
         client_operation_id: "operation:stage-all".to_string(),
     };
-    apply_action(&unstaged, &request, ReviewWorkingTreeMode::Unstaged)
-        .await
-        .expect("whole scope should stage without creating a patch payload");
-    let staged_status = git::status(repository.path())
+    apply_action(
+        &unstaged,
+        unstaged.git_folder(),
+        &request,
+        ReviewWorkingTreeMode::Unstaged,
+    )
+    .await
+    .expect("whole scope should stage without creating a patch payload");
+    let staged_status = git::status(repository.folder())
         .await
         .expect("staged status should read");
     assert!(
@@ -741,10 +755,15 @@ async fn whole_scope_actions_do_not_materialize_large_patch_text() {
     request.expected_review_revision = staged.review_revision.clone();
     request.operation = ReviewAction::Unstage;
     request.client_operation_id = "operation:unstage-all".to_string();
-    apply_action(&staged, &request, ReviewWorkingTreeMode::Staged)
-        .await
-        .expect("whole scope should unstage without creating a patch payload");
-    let unstaged_status = git::status(repository.path())
+    apply_action(
+        &staged,
+        staged.git_folder(),
+        &request,
+        ReviewWorkingTreeMode::Staged,
+    )
+    .await
+    .expect("whole scope should unstage without creating a patch payload");
+    let unstaged_status = git::status(repository.folder())
         .await
         .expect("unstaged status should read");
     assert!(
@@ -760,11 +779,16 @@ async fn whole_scope_actions_do_not_materialize_large_patch_text() {
     request.operation = ReviewAction::Discard;
     request.confirmed = true;
     request.client_operation_id = "operation:discard-all".to_string();
-    apply_action(&discard, &request, ReviewWorkingTreeMode::Unstaged)
-        .await
-        .expect("whole scope should discard without creating a patch payload");
+    apply_action(
+        &discard,
+        discard.git_folder(),
+        &request,
+        ReviewWorkingTreeMode::Unstaged,
+    )
+    .await
+    .expect("whole scope should discard without creating a patch payload");
     assert!(
-        git::status(repository.path())
+        git::status(repository.folder())
             .await
             .expect("clean status should read")
             .files
@@ -808,9 +832,14 @@ async fn exact_discard_restores_unstaged_rename_with_untracked_destination() {
         client_operation_id: "operation:discard-rename".to_string(),
     };
 
-    apply_action(&snapshot, &request, ReviewWorkingTreeMode::Unstaged)
-        .await
-        .expect("exact rename discard should restore the original path");
+    apply_action(
+        &snapshot,
+        snapshot.git_folder(),
+        &request,
+        ReviewWorkingTreeMode::Unstaged,
+    )
+    .await
+    .expect("exact rename discard should restore the original path");
 
     assert_eq!(
         fs::read_to_string(repository.path().join("src/original.rs"))
@@ -819,7 +848,7 @@ async fn exact_discard_restores_unstaged_rename_with_untracked_destination() {
     );
     assert!(!repository.path().join("src/renamed.rs").exists());
     assert!(
-        git::status(repository.path())
+        git::status(repository.folder())
             .await
             .expect("discarded rename status should read")
             .files
@@ -865,9 +894,14 @@ async fn whole_scope_discard_restores_unstaged_rename_with_untracked_destination
         client_operation_id: "operation:discard-scope-with-rename".to_string(),
     };
 
-    apply_action(&snapshot, &request, ReviewWorkingTreeMode::Unstaged)
-        .await
-        .expect("whole-scope discard should restore the original path");
+    apply_action(
+        &snapshot,
+        snapshot.git_folder(),
+        &request,
+        ReviewWorkingTreeMode::Unstaged,
+    )
+    .await
+    .expect("whole-scope discard should restore the original path");
 
     assert_eq!(
         fs::read_to_string(repository.path().join("src/original.rs"))
@@ -881,7 +915,7 @@ async fn whole_scope_discard_restores_unstaged_rename_with_untracked_destination
         "pub fn value() -> u8 { 1 }\n"
     );
     assert!(
-        git::status(repository.path())
+        git::status(repository.folder())
             .await
             .expect("discarded scope status should read")
             .files
@@ -976,6 +1010,7 @@ async fn discard_requires_confirmation_before_any_workspace_access() {
             .expect("working folder ID should be valid"),
         environment_id: "environment:review-test".to_string(),
         root: PathBuf::from("path-that-must-not-be-read"),
+        git_trust: GitFolderTrust::Untrusted,
         source,
         source_label: "Unstaged changes".to_string(),
         before_oid: Some("before".to_string()),
@@ -1001,8 +1036,13 @@ async fn discard_requires_confirmation_before_any_workspace_access() {
         client_operation_id: "operation:discard".to_string(),
     };
 
-    let error = apply_action(&snapshot, &request, ReviewWorkingTreeMode::Unstaged)
-        .await
-        .expect_err("unconfirmed discard should stop before workspace access");
+    let error = apply_action(
+        &snapshot,
+        snapshot.git_folder(),
+        &request,
+        ReviewWorkingTreeMode::Unstaged,
+    )
+    .await
+    .expect_err("unconfirmed discard should stop before workspace access");
     assert_eq!(error.code, ChatErrorCode::Permission);
 }

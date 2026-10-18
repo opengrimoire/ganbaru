@@ -420,6 +420,7 @@ fn send_time_validation_rejects_file_and_directory_symlink_swaps() {
         repository_kind: RepositoryKind::None,
         repository_identity: None,
         repository_storage_identity: None,
+        git_trust: ganbaru_chat::git::hardened::GitFolderTrust::Untrusted,
     };
     let file_mention = WorkspaceMentionReference {
         relative_path: "selected.txt".to_string(),

@@ -1,7 +1,7 @@
 use super::{
-    GitConfigEntry, GitConfigScope, GitFolderTrust, GitHardening, GitInheritedEnvironment,
-    GitPolicy, GitRun, GitRunError, GitStdout, empty_hooks_directory, hardening_for,
-    parse_config_listing, run_blocking,
+    FolderConfigDigest, GitConfigEntry, GitConfigScope, GitFolderTrust, GitHardening,
+    GitInheritedEnvironment, GitPolicy, GitRun, GitRunError, GitStdout, empty_hooks_directory,
+    folder_configuration_blocking, hardening_for, parse_config_listing, run_blocking,
 };
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -9,9 +9,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-const INTERNAL_TRUSTED: GitPolicy = GitPolicy::internal(GitFolderTrust::Trusted);
+const INTERNAL_TRUSTED: GitPolicy =
+    GitPolicy::internal(GitFolderTrust::Trusted(FolderConfigDigest::zero()));
 const INTERNAL_UNTRUSTED: GitPolicy = GitPolicy::internal(GitFolderTrust::Untrusted);
-const USER_TRUSTED: GitPolicy = GitPolicy::user(GitFolderTrust::Trusted);
+const USER_TRUSTED: GitPolicy =
+    GitPolicy::user(GitFolderTrust::Trusted(FolderConfigDigest::zero()));
 const USER_UNTRUSTED: GitPolicy = GitPolicy::user(GitFolderTrust::Untrusted);
 const TEST_DEADLINE: Duration = Duration::from_secs(60);
 const TEST_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
@@ -473,6 +475,15 @@ impl TestRepository {
         })
     }
 
+    /// Trusts the repository's current configuration.
+    fn trusted(&self) -> GitFolderTrust {
+        GitFolderTrust::Trusted(self.configuration().git)
+    }
+
+    fn configuration(&self) -> super::FolderConfiguration {
+        folder_configuration_blocking(&self.root).expect("configuration should digest")
+    }
+
     fn marker(&self) -> PathBuf {
         self.base().join("marker")
     }
@@ -646,7 +657,7 @@ fn trusted_runs_execute_hooks_and_untrusted_runs_do_not() {
     repository.git(&["add", "file.txt"]);
     let trusted = repository
         .run(
-            USER_TRUSTED,
+            GitPolicy::user(repository.trusted()),
             &["commit", "-q", "-m", "test: trusted"],
             None,
             TEST_DEADLINE,
@@ -669,7 +680,7 @@ fn deadline_stops_the_whole_process_tree() {
     repository.git(&["add", "file.txt"]);
     let started = std::time::Instant::now();
     let result = repository.run(
-        USER_TRUSTED,
+        GitPolicy::user(repository.trusted()),
         &["commit", "-q", "-m", "test: slow hook"],
         None,
         Duration::from_secs(2),
@@ -777,13 +788,18 @@ fn internal_runs_in_trusted_folders_match_the_terminal_without_hooks() {
     fs::write(repository.root.join("b.up"), "lower\n").expect("file should write");
     for arguments in [&["add", "-A"][..], &["commit", "-q", "-m", "test: trusted"]] {
         let output = repository
-            .run(INTERNAL_TRUSTED, arguments, None, TEST_DEADLINE)
+            .run(
+                GitPolicy::internal(repository.trusted()),
+                arguments,
+                None,
+                TEST_DEADLINE,
+            )
             .expect("git should run");
         assert!(output.status.success());
     }
     let upper = repository
         .run(
-            INTERNAL_TRUSTED,
+            GitPolicy::internal(repository.trusted()),
             &["show", "HEAD:b.up"],
             None,
             TEST_DEADLINE,
@@ -791,4 +807,108 @@ fn internal_runs_in_trusted_folders_match_the_terminal_without_hooks() {
         .expect("show should run");
     assert_eq!(upper.stdout, b"LOWER\n");
     assert!(!marker.exists());
+}
+
+#[test]
+fn digest_ignores_ordinary_keys_and_command_scope_entries() {
+    let repository = TestRepository::new();
+    let initial = repository.configuration();
+    assert!(initial.is_empty, "a fresh repository has nothing to trust");
+    repository.git(&["config", "user.email", "other@example.invalid"]);
+    repository.git(&["config", "branch.main.remote", "origin"]);
+    repository.git(&[
+        "remote",
+        "add",
+        "origin",
+        "https://example.invalid/repo.git",
+    ]);
+    assert_eq!(repository.configuration().git, initial.git);
+
+    let entries = vec![entry(GitConfigScope::Local, "core.editor", Some("vi"))];
+    let mut with_command = entries.clone();
+    with_command.push(entry(
+        GitConfigScope::Command,
+        "core.fsmonitor",
+        Some("/tmp/monitor"),
+    ));
+    let digest = |entries: &[GitConfigEntry]| {
+        super::digest::git_configuration(&repository.root, entries, TEST_DEADLINE, None)
+            .expect("digest should compute")
+            .digest
+    };
+    assert_eq!(digest(&entries), digest(&with_command));
+    assert_ne!(digest(&entries), digest(&[]));
+}
+
+#[cfg(unix)]
+#[test]
+fn digest_follows_includes_hook_files_and_provider_settings() {
+    let repository = TestRepository::new();
+    let initial = repository.configuration();
+
+    fs::write(
+        repository.root.join("extra.config"),
+        "[core]\n\teditor = vi\n",
+    )
+    .expect("included config should write");
+    repository.git(&["config", "include.path", "../extra.config"]);
+    let included = repository.configuration();
+    assert_ne!(included.git, initial.git, "an included program must count");
+    assert!(!included.is_empty);
+    fs::write(
+        repository.root.join("extra.config"),
+        "[core]\n\teditor = nano\n",
+    )
+    .expect("included config should change");
+    assert_ne!(repository.configuration().git, included.git);
+
+    repository.git(&["config", "core.hooksPath", "tools/hooks"]);
+    repository.write_script("tools/hooks/pre-commit", "true");
+    let hooked = repository.configuration();
+    repository.write_script("tools/hooks/pre-commit", "false");
+    assert_ne!(
+        repository.configuration().git,
+        hooked.git,
+        "hook edits must count"
+    );
+
+    let before_provider = repository.configuration();
+    fs::create_dir_all(repository.root.join(".claude")).expect("provider folder should exist");
+    fs::write(repository.root.join(".claude/settings.json"), "{}\n")
+        .expect("provider settings should write");
+    let after_provider = repository.configuration();
+    assert_eq!(after_provider.git, before_provider.git);
+    assert_ne!(after_provider.provider, before_provider.provider);
+}
+
+#[cfg(unix)]
+#[test]
+fn trust_for_an_older_configuration_runs_untrusted() {
+    let repository = TestRepository::new();
+    let marker = repository.marker();
+    let record = format!("echo ran >> '{}'", marker.display());
+    repository.write_script(".git/hooks/pre-commit", &record);
+    let trusted = repository.trusted();
+    repository.write_script(".git/hooks/pre-commit", &format!("{record}\n# changed"));
+    let fsmonitor = repository.write_script("tools/fsmonitor", &record);
+    repository.git(&["config", "core.fsmonitor", &fsmonitor.to_string_lossy()]);
+    fs::write(repository.root.join("file.txt"), "content\n").expect("file should write");
+
+    for (policy, arguments) in [
+        (
+            GitPolicy::internal(trusted),
+            &["status", "--porcelain=v2", "-z"][..],
+        ),
+        (GitPolicy::user(trusted), &["add", "file.txt"]),
+        (
+            GitPolicy::user(trusted),
+            &["commit", "-q", "-m", "test: stale"],
+        ),
+    ] {
+        let output = repository
+            .run(policy, arguments, None, TEST_DEADLINE)
+            .expect("git should run");
+        assert!(output.status.success(), "git {arguments:?} should succeed");
+    }
+    assert!(!marker.exists(), "a changed configuration kept its trust");
 }

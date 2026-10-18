@@ -6,7 +6,7 @@ use super::material::deterministic_diff_arguments;
 use super::patch_parser::{parse_hunk_header, parse_patch};
 use super::registry::{ReviewFileInternal, ReviewSnapshot};
 use super::{MAX_PATCH_PAGE_BYTES, corrupt_data_error, git_text, review_error};
-use crate::git;
+use crate::git::{self, GitFolder};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
@@ -130,7 +130,7 @@ async fn load_patch_index(
         }
         let spool = Arc::new(ReviewTemporaryFile::new("patch")?);
         git::review_output_to_file_in_storage(
-            &snapshot.root,
+            snapshot.git_folder(),
             &arguments,
             spool.path(),
             MAX_PATCH_SPOOL_BYTES,
@@ -469,10 +469,10 @@ fn read_spool_range(path: &Path, start: u64, end: u64) -> ChatResult<String> {
 }
 
 impl ReviewObjectStore {
-    pub async fn new(repository_root: &Path) -> ChatResult<Self> {
+    pub async fn new(repository: GitFolder<'_>) -> ChatResult<Self> {
         let alternate_objects = PathBuf::from(
             git_text(
-                repository_root,
+                repository,
                 &[
                     "rev-parse",
                     "--path-format=absolute",

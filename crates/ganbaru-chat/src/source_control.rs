@@ -1,7 +1,7 @@
 //! Hosted source-control discovery with recoverable local CLI states.
 
 use super::credentials::{CredentialStore, SecretValue};
-use super::git;
+use super::git::{self, GitFolder};
 use super::models::{
     ChatError, ChatErrorCode, ChatResult, CredentialReferenceId, ProjectWorkingFolderId,
 };
@@ -105,10 +105,10 @@ pub struct ConfigureBitbucketCredential {
 }
 
 pub async fn discover_source_control(
-    root: &Path,
+    folder: GitFolder<'_>,
     credential_store: &dyn CredentialStore,
 ) -> ChatResult<Vec<HostedSourceControlRead>> {
-    let remotes = git::remotes(root).await?;
+    let remotes = git::remotes(folder).await?;
     let detected = remotes
         .iter()
         .filter_map(|remote| {
@@ -171,7 +171,7 @@ pub async fn discover_source_control(
 }
 
 pub async fn list_hosted_change_requests(
-    root: &Path,
+    folder: GitFolder<'_>,
     credential_store: &dyn CredentialStore,
     provider_kind: HostedSourceControlKind,
     repository_slug: String,
@@ -182,15 +182,15 @@ pub async fn list_hosted_change_requests(
     if provider_kind == HostedSourceControlKind::Bitbucket {
         return bitbucket_list_change_requests(&repository_slug, limit, credential_store).await;
     }
-    let azure = azure_repository_for(root, provider_kind, &repository_slug).await?;
+    let azure = azure_repository_for(folder, provider_kind, &repository_slug).await?;
     let arguments = list_arguments(provider_kind, &repository_slug, azure.as_ref(), limit)?;
     let output =
-        run_cli_operation(provider_kind, &arguments, root, HostedCliOperation::Read).await?;
+        run_cli_operation(provider_kind, &arguments, folder, HostedCliOperation::Read).await?;
     parse_change_request_list(provider_kind, &output)
 }
 
 pub async fn create_hosted_change_request(
-    root: &Path,
+    folder: GitFolder<'_>,
     credential_store: &dyn CredentialStore,
     request: CreateHostedChangeRequest,
 ) -> ChatResult<HostedChangeRequestRead> {
@@ -207,12 +207,13 @@ pub async fn create_hosted_change_request(
     if request.provider_kind == HostedSourceControlKind::Bitbucket {
         return bitbucket_create_change_request(&request, credential_store).await;
     }
-    let azure = azure_repository_for(root, request.provider_kind, &request.repository_slug).await?;
+    let azure =
+        azure_repository_for(folder, request.provider_kind, &request.repository_slug).await?;
     let arguments = create_arguments(&request, azure.as_ref())?;
     let output = run_cli_operation(
         request.provider_kind,
         &arguments,
-        root,
+        folder,
         HostedCliOperation::Create,
     )
     .await?;
@@ -226,7 +227,7 @@ pub async fn create_hosted_change_request(
     let detail = run_cli_operation(
         request.provider_kind,
         &view_arguments,
-        root,
+        folder,
         HostedCliOperation::Read,
     )
     .await?;
@@ -234,7 +235,7 @@ pub async fn create_hosted_change_request(
 }
 
 pub async fn checkout_hosted_change_request(
-    root: &Path,
+    folder: GitFolder<'_>,
     provider_kind: HostedSourceControlKind,
     reference: String,
     remote_name: Option<String>,
@@ -248,7 +249,7 @@ pub async fn checkout_hosted_change_request(
     }
     if let Some(remote_name) = remote_name.as_deref() {
         validate_text(remote_name, "remoteName", 240)?;
-        if !git::remotes(root)
+        if !git::remotes(folder)
             .await?
             .iter()
             .any(|remote| remote.name == remote_name)
@@ -261,32 +262,32 @@ pub async fn checkout_hosted_change_request(
     }
     if provider_kind == HostedSourceControlKind::Bitbucket {
         let remote_name = remote_name.as_deref().unwrap_or("origin");
-        git::checkout_bitbucket_pull_request(root, remote_name, &reference).await?;
-        return git::status(root).await;
+        git::checkout_bitbucket_pull_request(folder, remote_name, &reference).await?;
+        return git::status(folder).await;
     }
     let arguments = checkout_arguments(provider_kind, &reference, remote_name.as_deref())?;
     run_cli_operation(
         provider_kind,
         &arguments,
-        root,
+        folder,
         HostedCliOperation::Checkout,
     )
     .await?;
-    git::status(root).await
+    git::status(folder).await
 }
 
 /// Resolves Azure coordinates from the folder's own remotes, so `az` never
 /// detects them from the working folder and a requested slug must match a
 /// configured remote.
 async fn azure_repository_for(
-    root: &Path,
+    folder: GitFolder<'_>,
     provider_kind: HostedSourceControlKind,
     repository_slug: &str,
 ) -> ChatResult<Option<AzureRepository>> {
     if provider_kind != HostedSourceControlKind::AzureDevops {
         return Ok(None);
     }
-    let remotes = git::remotes(root).await?;
+    let remotes = git::remotes(folder).await?;
     Ok(remotes
         .iter()
         .filter_map(|remote| remote.fetch_url.as_deref())

@@ -7,12 +7,12 @@ use super::patch_parser::parse_patch;
 use super::registry::{ReviewFileInternal, ReviewSnapshot};
 use super::validation::validate_path;
 use super::{review_error, review_output};
-use crate::git;
-use std::path::Path;
+use crate::git::{self, GitFolder};
 use std::sync::Arc;
 
 pub async fn apply_action(
     snapshot: &Arc<ReviewSnapshot>,
+    folder: GitFolder<'_>,
     request: &ApplyChatReviewActionRequest,
     mode: ReviewWorkingTreeMode,
 ) -> ChatResult<()> {
@@ -64,16 +64,16 @@ pub async fn apply_action(
                 true,
             ));
         }
-        stage_owned_paths(&snapshot.root, &owned_paths).await?;
+        stage_owned_paths(folder, &owned_paths).await?;
         return Ok(());
     }
     if request.hunk_ids.is_empty() {
         if let Some(file) = file {
-            return apply_exact_file_action(snapshot, file, request.operation, mode).await;
+            return apply_exact_file_action(snapshot, folder, file, request.operation, mode).await;
         }
-        return apply_exact_scope_action(snapshot, request.operation, mode).await;
+        return apply_exact_scope_action(snapshot, folder, request.operation, mode).await;
     }
-    let patch = action_patch(snapshot, file, &request.hunk_ids).await?;
+    let patch = action_patch(snapshot, folder, file, &request.hunk_ids).await?;
     let mut check = vec!["apply", "--check", "--recount", "--whitespace=nowarn"];
     let mut apply = vec!["apply", "--recount", "--whitespace=nowarn"];
     match request.operation {
@@ -90,13 +90,14 @@ pub async fn apply_action(
             apply.push("--reverse");
         }
     }
-    git::review_action_output(&snapshot.root, &check, Some(patch.as_bytes())).await?;
-    git::review_action_output(&snapshot.root, &apply, Some(patch.as_bytes())).await?;
+    git::review_action_output(folder, &check, Some(patch.as_bytes())).await?;
+    git::review_action_output(folder, &apply, Some(patch.as_bytes())).await?;
     Ok(())
 }
 
 async fn apply_exact_file_action(
     snapshot: &ReviewSnapshot,
+    folder: GitFolder<'_>,
     file: &ReviewFileInternal,
     operation: ReviewAction,
     mode: ReviewWorkingTreeMode,
@@ -116,7 +117,7 @@ async fn apply_exact_file_action(
                     true,
                 ));
             }
-            stage_owned_paths(&snapshot.root, &paths).await?;
+            stage_owned_paths(folder, &paths).await?;
         }
         ReviewAction::Unstage => {
             if mode != ReviewWorkingTreeMode::Staged {
@@ -126,27 +127,27 @@ async fn apply_exact_file_action(
             }
             if file.read.status == "added" {
                 git::review_action_output(
-                    &snapshot.root,
+                    folder,
                     &["rm", "--cached", "--ignore-unmatch", "--", current],
                     None,
                 )
                 .await?;
             } else if let Some(previous) = file.read.previous_relative_path.as_deref() {
                 git::review_action_output(
-                    &snapshot.root,
+                    folder,
                     &["restore", "--staged", "--source", before, "--", previous],
                     None,
                 )
                 .await?;
                 git::review_action_output(
-                    &snapshot.root,
+                    folder,
                     &["rm", "--cached", "--ignore-unmatch", "--", current],
                     None,
                 )
                 .await?;
             } else {
                 git::review_action_output(
-                    &snapshot.root,
+                    folder,
                     &["restore", "--staged", "--source", before, "--", current],
                     None,
                 )
@@ -161,19 +162,17 @@ async fn apply_exact_file_action(
             }
             if let Some(previous) = file.read.previous_relative_path.as_deref() {
                 git::review_action_output(
-                    &snapshot.root,
+                    folder,
                     &["restore", "--worktree", "--source", before, "--", previous],
                     None,
                 )
                 .await?;
-                git::review_action_output(&snapshot.root, &["clean", "-f", "--", current], None)
-                    .await?;
+                git::review_action_output(folder, &["clean", "-f", "--", current], None).await?;
             } else if file.read.flags.untracked {
-                git::review_action_output(&snapshot.root, &["clean", "-f", "--", current], None)
-                    .await?;
+                git::review_action_output(folder, &["clean", "-f", "--", current], None).await?;
             } else {
                 git::review_action_output(
-                    &snapshot.root,
+                    folder,
                     &["restore", "--worktree", "--source", before, "--", current],
                     None,
                 )
@@ -186,6 +185,7 @@ async fn apply_exact_file_action(
 
 async fn apply_exact_scope_action(
     snapshot: &ReviewSnapshot,
+    folder: GitFolder<'_>,
     operation: ReviewAction,
     mode: ReviewWorkingTreeMode,
 ) -> ChatResult<()> {
@@ -196,10 +196,10 @@ async fn apply_exact_scope_action(
     match operation {
         ReviewAction::Stage => unreachable!("whole-scope staging returns before this helper"),
         ReviewAction::Unstage if mode == ReviewWorkingTreeMode::Staged => {
-            restore_owned_paths(&snapshot.root, before, true, &action_paths(snapshot, None)).await
+            restore_owned_paths(folder, before, true, &action_paths(snapshot, None)).await
         }
         ReviewAction::Discard if mode == ReviewWorkingTreeMode::Unstaged => {
-            discard_owned_files(snapshot, before).await
+            discard_owned_files(snapshot, folder, before).await
         }
         _ => Err(ChatError::unsupported(
             "This action is unavailable for the selected review scope",
@@ -207,7 +207,11 @@ async fn apply_exact_scope_action(
     }
 }
 
-async fn discard_owned_files(snapshot: &ReviewSnapshot, before: &str) -> ChatResult<()> {
+async fn discard_owned_files(
+    snapshot: &ReviewSnapshot,
+    folder: GitFolder<'_>,
+    before: &str,
+) -> ChatResult<()> {
     let mut restore_paths = Vec::new();
     let mut clean_paths = Vec::new();
     for file in &snapshot.files {
@@ -226,17 +230,17 @@ async fn discard_owned_files(snapshot: &ReviewSnapshot, before: &str) -> ChatRes
     restore_paths.dedup();
     clean_paths.sort();
     clean_paths.dedup();
-    restore_owned_paths(&snapshot.root, before, false, &restore_paths).await?;
+    restore_owned_paths(folder, before, false, &restore_paths).await?;
     for chunk in bounded_path_chunks(&clean_paths) {
         let mut arguments = vec!["clean", "-f", "--"];
         arguments.extend(chunk.iter().map(String::as_str));
-        git::review_action_output(&snapshot.root, &arguments, None).await?;
+        git::review_action_output(folder, &arguments, None).await?;
     }
     Ok(())
 }
 
 async fn restore_owned_paths(
-    root: &Path,
+    folder: GitFolder<'_>,
     source: &str,
     staged: bool,
     paths: &[String],
@@ -257,14 +261,14 @@ async fn restore_owned_paths(
         "--pathspec-from-file=-",
         "--pathspec-file-nul",
     ]);
-    git::review_action_output(root, &arguments, Some(&pathspec)).await?;
+    git::review_action_output(folder, &arguments, Some(&pathspec)).await?;
     Ok(())
 }
 
-async fn stage_owned_paths(root: &Path, paths: &[String]) -> ChatResult<()> {
+async fn stage_owned_paths(folder: GitFolder<'_>, paths: &[String]) -> ChatResult<()> {
     let pathspec = pathspec_bytes(paths)?;
     git::review_action_output(
-        root,
+        folder,
         &["add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
         Some(&pathspec),
     )
@@ -321,6 +325,7 @@ pub fn action_paths(snapshot: &ReviewSnapshot, file_id: Option<&str>) -> Vec<Str
 
 async fn action_patch(
     snapshot: &Arc<ReviewSnapshot>,
+    folder: GitFolder<'_>,
     file: Option<&ReviewFileInternal>,
     selected_hunks: &[String],
 ) -> ChatResult<String> {
@@ -345,13 +350,7 @@ async fn action_patch(
         }
     }
     let patch = String::from_utf8(
-        review_output(
-            &snapshot.root,
-            &arguments,
-            None,
-            snapshot.object_store.as_deref(),
-        )
-        .await?,
+        review_output(folder, &arguments, None, snapshot.object_store.as_deref()).await?,
     )
     .map_err(|_| review_error("Git diff output is not valid UTF-8"))?;
     if selected_hunks.is_empty() {

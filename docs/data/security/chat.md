@@ -32,6 +32,8 @@ The same authorization service serves provider startup, terminals, attachments, 
 
 Workspace operations accept validated relative paths below the authorized root. Listing is on demand and applies Git ignore rules plus bounded exclusions for common generated or secret-bearing directories.
 
+File tools, mentions, previews, and saves never touch Git metadata (`.git` at any depth, as a directory or gitfile), top-level credential folders (`.ssh`, `.gnupg`, `.aws`), top-level environment files other than `.env.example`, or provider credential files. Names are compared per component the way Windows and macOS resolve them: case folded, trailing dots and spaces ignored, alternate data streams and 8.3 short names mapped to their base name, and HFS+ ignorable code points dropped. A directory walk also refuses any directory whose file identity is the folder's `.git`, and Windows rejects reserved device names. `.github`, `.gitignore`, `.gitattributes`, and `.gitmodules` stay editable.
+
 Text preview rejects binary content, invalid UTF-8, symlinks, traversal, and oversized files. The webview receives bounded text and relative metadata only. Opening a file externally repeats authorization immediately before delegation.
 
 Writes use expected-revision checks where user edits could race provider edits. Temporary replacement stays inside the authorized parent, and a tool cannot create a symlink or use a renamed ancestor to escape the root.

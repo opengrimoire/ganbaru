@@ -402,3 +402,64 @@ fn descriptor_relative_file_open_does_not_follow_a_replaced_parent_path() {
         .expect("descriptor-relative file should read");
     assert_eq!(text, "original\n");
 }
+
+#[test]
+fn file_tools_refuse_git_and_credential_aliases_but_edit_git_configuration_files() {
+    let directory = TestDirectory::new();
+    fs::create_dir_all(directory.0.join(".git")).expect("git directory should exist");
+    fs::create_dir_all(directory.0.join("sub")).expect("nested folder should exist");
+    fs::write(directory.0.join("sub/.git"), "gitdir: ../.git\n").expect("gitfile should write");
+    fs::create_dir_all(directory.0.join(".github/workflows"))
+        .expect("workflow folder should exist");
+    fs::write(directory.0.join(".github/workflows/ci.yml"), "on: push\n")
+        .expect("workflow should write");
+    fs::write(directory.0.join(".gitignore"), "target\n").expect("ignore file should write");
+    let authorized = directory.authorized(RepositoryKind::Git);
+
+    for path in [
+        ".git/config",
+        ".GIT/config",
+        ".Git/hooks/pre-commit",
+        ".git./config",
+        ".git /config",
+        "GIT~1/config",
+        "sub/.git",
+        "sub/.git/config",
+        ".SSH/id_ed25519",
+        ".g\u{200c}it/config",
+    ] {
+        assert!(
+            create_workspace_artifact(&authorized, path, b"text").is_err(),
+            "{path} must not be created"
+        );
+        assert!(
+            preview_workspace_file(&authorized, path).is_err(),
+            "{path} must not be read"
+        );
+    }
+
+    for path in [".github/workflows/ci.yml", ".gitignore"] {
+        let preview = preview_workspace_file(&authorized, path).expect("file should preview");
+        let revision = preview
+            .content_revision
+            .expect("text files have a revision");
+        save_workspace_file(&authorized, path, "edited\n", &revision)
+            .expect("git configuration files stay editable");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn descriptor_walk_refuses_the_git_directory_by_identity() {
+    let directory = TestDirectory::new();
+    fs::create_dir_all(directory.0.join(".git/hooks")).expect("git directory should exist");
+    fs::create_dir_all(directory.0.join("src")).expect("source folder should exist");
+
+    for path in [".git/config", ".git/hooks/pre-commit"] {
+        let error = secure_workspace_parent(&directory.0, path)
+            .err()
+            .expect("the git directory must not open as a parent");
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    }
+    secure_workspace_parent(&directory.0, "src/main.rs").expect("ordinary parents should open");
+}

@@ -1,6 +1,7 @@
 //! Bounded, workspace-authorized file browsing and preview commands.
 
 use super::AuthorizedWorkingFolder;
+use super::protected_paths;
 use crate::models::{ChatError, ChatErrorCode, ChatResult, ProjectWorkingFolderId, RepositoryKind};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -518,6 +519,10 @@ fn validate_required_relative_path(value: &str) -> ChatResult<()> {
             .components()
             .any(|part| !matches!(part, Component::Normal(_)))
         || value.chars().any(char::is_control)
+        || (cfg!(windows)
+            && value
+                .split('/')
+                .any(protected_paths::component_is_windows_reserved))
     {
         return Err(ChatError::validation(
             "relativePath",
@@ -560,8 +565,9 @@ fn common_ignored(relative_path: &str) -> bool {
     relative_path.split('/').any(|segment| {
         matches!(
             segment,
-            ".git" | ".cache" | ".turbo" | "node_modules" | "target" | "dist" | "build"
-        ) || ganbaru_internal_artifact_segment(segment)
+            ".cache" | ".turbo" | "node_modules" | "target" | "dist" | "build"
+        ) || protected_paths::component_is_git_metadata(segment)
+            || ganbaru_internal_artifact_segment(segment)
     })
 }
 

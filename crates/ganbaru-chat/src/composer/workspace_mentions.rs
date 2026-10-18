@@ -62,13 +62,9 @@ pub fn search_workspace_paths(
     })
 }
 
+/// Reports whether a mention names protected repository metadata or credentials.
 pub fn workspace_mention_is_safety_excluded(relative_path: &str) -> bool {
-    let first = relative_path.split('/').next().unwrap_or(relative_path);
-    matches!(first, ".git" | ".ssh" | ".gnupg" | ".aws")
-        || relative_path == ".env"
-        || (relative_path.starts_with(".env.") && relative_path != ".env.example")
-        || relative_path == ".codex/auth.json"
-        || relative_path == ".claude/.credentials.json"
+    crate::workspace::protected_paths::path_is_protected(relative_path)
 }
 
 fn scan_paths(
@@ -90,7 +86,11 @@ fn scan_paths(
             }
             let path = entry.path();
             let file_type = entry.file_type().map_err(workspace_io_error)?;
-            if file_type.is_symlink() || entry.file_name() == ".git" {
+            if file_type.is_symlink()
+                || crate::workspace::protected_paths::component_is_git_metadata(
+                    &entry.file_name().to_string_lossy(),
+                )
+            {
                 continue;
             }
             let relative = path

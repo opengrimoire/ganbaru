@@ -2,6 +2,7 @@
 
 pub mod files;
 pub mod mutation;
+pub mod protected_paths;
 
 use super::models::{
     ChatError, ChatErrorCode, ChatResult, ProjectWorkingFolderId, RepositoryKind, UtcTimestamp,

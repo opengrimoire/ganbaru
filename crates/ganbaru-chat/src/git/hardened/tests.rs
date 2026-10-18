@@ -888,7 +888,7 @@ fn digest_follows_includes_hook_files_and_provider_settings() {
 }
 
 #[test]
-fn provider_digest_covers_project_mcp_skills_agents_and_commands_but_not_instructions() {
+fn provider_digest_covers_project_mcp_skills_agents_commands_and_codex_but_not_instructions() {
     let repository = TestRepository::new();
     let root = repository.root.as_path();
     let entries = || provider_configuration_entries_blocking(root).expect("entries should read");
@@ -905,6 +905,11 @@ fn provider_digest_covers_project_mcp_skills_agents_and_commands_but_not_instruc
         (".claude/skills/marker/SKILL.md", "---\nhooks: {}\n---\n"),
         (".claude/agents/reviewer.md", "---\nname: reviewer\n---\n"),
         (".claude/commands/deploy.md", "!`true`\n"),
+        (
+            ".codex/config.toml",
+            "[mcp_servers.marker]\ncommand = \"true\"\n",
+        ),
+        (".codex/hooks.json", "{}"),
     ] {
         let path = root.join(relative);
         fs::create_dir_all(path.parent().expect("entry should have a parent"))

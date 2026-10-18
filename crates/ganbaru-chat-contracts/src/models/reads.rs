@@ -1,9 +1,9 @@
 use super::{
     ChatActivityId, ChatExecutionEnvironmentId, ChatScratchGenerationId, ChatThreadId,
     ChatThreadState, ChatTurnId, ChatTurnState, ContinuationGroupId, ModelId, ModelOptionSelection,
-    ProjectWorkingFolderId, ProviderCapabilities, ProviderFamilyId, ProviderInstanceId,
-    ProviderSessionId, ProviderSessionState, ProviderThreadId, TurnModeSnapshot, UtcTimestamp,
-    VersionedJson,
+    ProjectConfigurationAccess, ProjectWorkingFolderId, ProviderCapabilities, ProviderFamilyId,
+    ProviderInstanceId, ProviderSessionId, ProviderSessionState, ProviderThreadId,
+    TurnModeSnapshot, UtcTimestamp, VersionedJson,
 };
 use crate::events::{ChangedFileSummary, ThreadUsageUpdatedEvent};
 use serde::{Deserialize, Serialize};
@@ -51,6 +51,10 @@ pub struct CompactContextRequest {
 pub struct McpStatusRequest {
     pub session_id: Option<ProviderSessionId>,
     pub working_directory: Option<PathBuf>,
+    /// Whether a status read without a live session may load the working
+    /// directory's project configuration.
+    #[serde(default)]
+    pub project_configuration: ProjectConfigurationAccess,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

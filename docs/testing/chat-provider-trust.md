@@ -29,7 +29,7 @@ Delete the marker files between passes.
 
 ## Other providers
 
-- Codex: with `.codex/config.toml` defining a marker MCP server, the server starts only after the project is trusted in Codex's own `CODEX_HOME`.
+- Codex: with `.codex/config.toml` defining a marker MCP server in a folder trusted in Codex's own configuration (directly, or as a worktree of a trusted repository), the marker appears only after the folder is trusted in Ganbaru. Verified on Linux with Codex 0.161.0 through `codex exec`, which shares the configuration loader with `codex app-server`: the per-launch `projects` override blocks a direct and an inherited worktree trust, while dotted-key, empty-table, and unrelated-key overrides do not.
 - Cursor, Grok, and OpenCode: record whether project rules, MCP servers, hooks, or plugins run in a folder the user never trusted, so the residual risk in Chat security can be resolved.
 
 ## Results

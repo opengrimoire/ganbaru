@@ -47,11 +47,16 @@ const PROVIDER_CONFIGURATION_FILES: &[&str] = &[
     ".mcp.json",
 ];
 /// Provider directories, relative to the folder root, whose definitions can
-/// carry hooks or shell steps.
-const PROVIDER_CONFIGURATION_DIRECTORIES: &[&str] =
-    &[".claude/skills", ".claude/agents", ".claude/commands"];
+/// carry hooks, shell steps, or MCP servers. Codex keeps its project
+/// configuration, hooks, and rules under `.codex`.
+const PROVIDER_CONFIGURATION_DIRECTORIES: &[&str] = &[
+    ".claude/skills",
+    ".claude/agents",
+    ".claude/commands",
+    ".codex",
+];
 const GIT_DIGEST_DOMAIN: &[u8] = b"ganbaru-folder-trust-git-v1";
-const PROVIDER_DIGEST_DOMAIN: &[u8] = b"ganbaru-folder-trust-provider-v2";
+const PROVIDER_DIGEST_DOMAIN: &[u8] = b"ganbaru-folder-trust-provider-v3";
 
 /// SHA-256 digest of folder configuration covered by a trust decision.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

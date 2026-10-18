@@ -1,6 +1,7 @@
 use super::driver::{
-    CodexNativeCommand, CodexProviderDriver, codex_native_command, confirmed_resume_not_found,
-    goal_request, parse_mcp_status_page, validated_app_server_arguments,
+    CodexNativeCommand, CodexProviderDriver, append_project_configuration_arguments,
+    codex_native_command, confirmed_resume_not_found, goal_request, parse_mcp_status_page,
+    validated_app_server_arguments,
 };
 use super::home::*;
 use super::normalizer::{CodexEventNormalizer, CodexRouteState};

@@ -8,6 +8,8 @@ Organizational authorization is specified in [Chat access control](../access-con
 
 Rust owns provider discovery, startup, transport, cancellation, event ingestion, and shutdown. The frontend selects a configured provider and sends typed commands. It cannot spawn an arbitrary executable, choose an arbitrary provider home, or connect directly to a provider's local server.
 
+Owned local OpenCode servers are always authenticated. Every start generates a fresh 32-byte password from the operating-system CSPRNG, passes it only through the child environment, keeps it in memory for basic authentication, and never persists it. Startup fails closed unless a request without credentials to a protected route returns 401, because loopback ports are reachable by every local user. Only an owned, authenticated server receives the internal MCP endpoint and its bearer token; external OpenCode servers never do.
+
 One driver generation owns an active thread. Events from a stopped, settled, or mismatched generation cannot enter the projection stream. Shutdown rejects new commands, flushes bounded pending events, and enforces deadlines even when a provider hangs.
 
 Provider-native approval, trust, sandbox, or workspace state is defense in depth. It never widens folder, channel, runtime, or internal-tool authority granted by Ganbaru.

@@ -562,6 +562,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             music::youtube::metadata::music_youtube_metadata,
             music::youtube::thumbnail::music_youtube_thumbnail,
             music::player::media_player_probe,
+            music::path_authority::music_confirm_local_sources,
             music::soundscape::music_soundscape_start,
             music::soundscape::music_soundscape_pause,
             music::soundscape::music_soundscape_resume,

@@ -3,7 +3,7 @@ import type { MusicPlaybackMode, MusicRepeatMode, MusicWeight } from "$lib/music
 import type { MusicActivityPhase, MusicAssignmentBehavior, MusicAssignmentSource } from "$lib/music/context-assignment";
 import { emptyMusicSkipBreakdown, type MusicPlaylistSkipReason, type MusicSavedQueueEntry } from "$lib/music/playlists/playback";
 import { probeLocalMedia, type LocalBackendKind } from "$lib/api/media-player";
-import { pickMediaFolder, registerEmbeddedArtwork, registerMediaFile } from "$lib/api/music";
+import { confirmLocalMusicSources, pickMediaFolder, registerEmbeddedArtwork, registerMediaFile } from "$lib/api/music";
 import { clampRate, clampVolume, formatVolumePercent, MAX_VOLUME, type PlaybackSnapshot } from "$lib/music/playback";
 import { formatSourceKind, isYouTubeSource, localFileSourceFromPath, parseMusicSourceInput, sourceDisplayLabel, type MusicSource } from "$lib/music/sources";
 import { NativeMusicSessionClient } from "$lib/music/session/native-session-client";
@@ -498,6 +498,7 @@ class MusicPlayerStore {
     } finally { this.sourceActionBusy = false; }
   }
   async loadSource(source: MusicSource, options: LoadSourceOptions = {}): Promise<void> {
+    if (source.kind === "local-file" && !(await confirmLocalMusicSources([source.path, ...(source.artworkPath ? [source.artworkPath] : [])]))) return;
     await this.start({ kind: "sources", sources: [source], selectedIndex: 0, name: source.title }, options.autoplay ?? false, options.resume ?? true);
   }
   async loadReviewItem(itemId: string, autoplay: boolean): Promise<void> { await this.start({ kind: "review-item", itemId }, autoplay); }

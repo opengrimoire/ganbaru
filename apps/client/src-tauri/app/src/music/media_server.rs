@@ -22,7 +22,7 @@ use std::{
 use tauri::{Manager, State};
 
 #[cfg(desktop)]
-use super::require_absolute_file;
+use super::path_authority::{MusicPathKind, authorize};
 use super::youtube::player_page::{youtube_host_content_security_policy, youtube_host_html};
 #[cfg(desktop)]
 use ganbaru_music_library::artwork::{embedded_artwork_id, extract_embedded_artwork};
@@ -281,31 +281,47 @@ const BASIC_RESPONSE_CSP: &str =
 
 #[tauri::command]
 #[cfg(desktop)]
-pub fn music_register_media_file(
-    state: State<'_, MusicHostState>,
+pub async fn music_register_media_file(
+    app: tauri::AppHandle,
     path: String,
     generation: u64,
 ) -> Result<String, String> {
-    let path = PathBuf::from(path);
-    require_absolute_file(&path)?;
-    let id = media_file_id(&path);
-    state
-        .registry
-        .lock()
-        .map_err(|_| "media host registry is temporarily unavailable".to_string())?
-        .register(id.clone(), HostedMedia::File(path), generation)?;
-    Ok(hosted_media_url(&state, &id))
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = authorize(&app, &path, MusicPathKind::File)?;
+        let state = app.state::<MusicHostState>();
+        let id = media_file_id(&path);
+        state
+            .registry
+            .lock()
+            .map_err(|_| "media host registry is temporarily unavailable".to_string())?
+            .register(id.clone(), HostedMedia::File(path), generation)?;
+        Ok(hosted_media_url(&state, &id))
+    })
+    .await
+    .map_err(|error| format!("media registration task failed: {error}"))?
 }
 
 #[tauri::command]
 #[cfg(desktop)]
-pub fn music_register_embedded_artwork(
-    state: State<'_, MusicHostState>,
+pub async fn music_register_embedded_artwork(
+    app: tauri::AppHandle,
     path: String,
     generation: u64,
 ) -> Result<Option<String>, String> {
-    let path = PathBuf::from(path);
-    require_absolute_file(&path)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = authorize(&app, &path, MusicPathKind::File)?;
+        register_embedded_artwork(&app.state::<MusicHostState>(), &path, generation)
+    })
+    .await
+    .map_err(|error| format!("embedded artwork registration task failed: {error}"))?
+}
+
+#[cfg(desktop)]
+fn register_embedded_artwork(
+    state: &MusicHostState,
+    path: &Path,
+    generation: u64,
+) -> Result<Option<String>, String> {
     if !state
         .registry
         .lock()
@@ -314,10 +330,10 @@ pub fn music_register_embedded_artwork(
     {
         return Err("hosted media registration is stale".to_string());
     }
-    let Some(artwork) = extract_embedded_artwork(&path)? else {
+    let Some(artwork) = extract_embedded_artwork(path)? else {
         return Ok(None);
     };
-    let id = embedded_artwork_id(&path, &artwork);
+    let id = embedded_artwork_id(path, &artwork);
     state
         .registry
         .lock()
@@ -330,7 +346,7 @@ pub fn music_register_embedded_artwork(
             },
             generation,
         )?;
-    Ok(Some(hosted_media_url(&state, &id)))
+    Ok(Some(hosted_media_url(state, &id)))
 }
 
 #[tauri::command]

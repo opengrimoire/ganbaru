@@ -137,13 +137,11 @@ impl Owner {
         let app = self.app.clone();
         let worker = tauri::async_runtime::spawn_blocking(move || {
             let _delivery_permit = delivery_permit;
-            crate::music::soundscape::music_soundscape_stop(
-                app.state::<crate::music::soundscape::SoundscapeEngineState>(),
-            )
-            .map(|_| ())
-            .map_err(|error| {
-                MusicLibraryError::runtime("stop vault background output", format!("{error:?}"))
-            })
+            crate::music::soundscape::stop_blocking(&app)
+                .map(|_| ())
+                .map_err(|error| {
+                    MusicLibraryError::runtime("stop vault background output", format!("{error:?}"))
+                })
         });
         tokio::time::timeout(DELIVERY_TIMEOUT, worker)
             .await
@@ -192,10 +190,9 @@ impl Owner {
             // Keep both permits through actual engine acknowledgement, even after a timeout.
             let _write_permit = permit;
             let _delivery_permit = delivery_permit;
-            let engine = app.state::<crate::music::soundscape::SoundscapeEngineState>();
             let guard_app = app.clone();
             crate::music::soundscape::apply_automatic(
-                engine,
+                &app,
                 request,
                 Box::new(move || {
                     if worker_cancelled.load(Ordering::Acquire)

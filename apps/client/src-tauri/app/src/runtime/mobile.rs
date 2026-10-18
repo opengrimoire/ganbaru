@@ -79,6 +79,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::organization::chat_read_reply_thread_page,
             chat::organization::chat_search_messages,
             music::player::media_player_probe,
+            music::path_authority::music_confirm_local_sources,
             music::session::runtime::music_session_start,
             music::session::runtime::music_session_command,
             music::session::runtime::music_session_snapshot,

@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { translate } from "$lib/i18n/translator.svelte";
 
 export interface MediaFolderTrack {
   path: string;
@@ -107,4 +108,21 @@ export async function getYouTubeMetadata(
 /** Loads a validated YouTube thumbnail from the device-local image cache. */
 export async function getYouTubeThumbnail(videoId: string): Promise<string | null> {
   return invoke("music_youtube_thumbnail", { videoId });
+}
+
+/**
+ * Asks natively before playing local files that no picker or root binding on this device
+ * granted. Resolves `false` when the user cancels; granted files never show the dialog.
+ */
+export async function confirmLocalMusicSources(paths: readonly string[]): Promise<boolean> {
+  return invoke<boolean>("music_confirm_local_sources", {
+    paths,
+    prompt: {
+      title: translate("music.nativeSession.localSourceReviewTitle"),
+      message: translate("music.nativeSession.localSourceReviewMessage"),
+      allowLabel: translate("music.nativeSession.localSourceReviewAllow"),
+      cancelLabel: translate("music.nativeSession.localSourceReviewCancel"),
+      moreLabel: translate("music.nativeSession.localSourceReviewMore"),
+    },
+  });
 }

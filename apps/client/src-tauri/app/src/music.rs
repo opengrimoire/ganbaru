@@ -1,5 +1,7 @@
 #[cfg(desktop)]
 use base64::{Engine as _, engine::general_purpose};
+#[cfg(desktop)]
+use path_authority::{MusicPathKind, authorize, grant_path};
 #[cfg(not(target_os = "ios"))]
 use serde::{Deserialize, Serialize};
 #[cfg(desktop)]
@@ -25,6 +27,7 @@ pub(crate) mod library;
 pub(crate) mod media_controls;
 #[cfg(not(target_os = "ios"))]
 pub(crate) mod media_server;
+pub(crate) mod path_authority;
 pub(crate) mod player;
 #[cfg(not(target_os = "ios"))]
 pub(crate) mod root_bindings;
@@ -53,6 +56,18 @@ const MAX_INTERCHANGE_BYTES: u64 = 8 * 1024 * 1024;
 static MEDIA_FOLDER_SCAN_GENERATION: AtomicU64 = AtomicU64::new(0);
 #[cfg(desktop)]
 const SOUNDSCAPE_AUDIO_EXTENSIONS: &[&str] = &["flac", "m4a", "mp3", "mp4", "oga", "ogg", "wav"];
+
+/// Reports whether a background audio path has an extension the soundscape engine accepts.
+#[cfg(desktop)]
+pub(crate) fn is_soundscape_audio_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            SOUNDSCAPE_AUDIO_EXTENSIONS
+                .iter()
+                .any(|allowed| extension.eq_ignore_ascii_case(allowed))
+        })
+}
 
 #[cfg(desktop)]
 fn replace_music_export_file(path: &Path, contents: &[u8]) -> Result<(), String> {
@@ -124,6 +139,7 @@ pub async fn music_pick_media_folder(
         let Some(folder) = picker.blocking_pick_folder().map(dialog_path).transpose()? else {
             return Ok(None);
         };
+        grant_path(&app, MusicPathKind::Folder, &folder)?;
 
         let generation = MEDIA_FOLDER_SCAN_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
         scan_media_folder_with_cancel(&folder, || {
@@ -172,7 +188,12 @@ pub async fn music_detect_default_folder(
         let Some(folder) = music_folder_start_directory(&app) else {
             return Ok(None);
         };
-        detect_non_empty_media_folder(&folder)
+        let selection = detect_non_empty_media_folder(&folder)?;
+        // The operating system audio folder is offered as a source, so Rust grants it here.
+        if selection.is_some() {
+            grant_path(&app, MusicPathKind::Folder, &folder)?;
+        }
+        Ok(selection)
     })
     .await
     .map_err(|error| format!("default music folder scan failed: {error}"))?
@@ -237,11 +258,11 @@ pub async fn music_pick_root_binding_folder(
         if let Some(directory) = music_folder_start_directory(&app) {
             picker = picker.set_directory(directory);
         }
-        picker
-            .blocking_pick_folder()
-            .map(dialog_path)
-            .transpose()
-            .map(|path| path.map(|value| value.to_string_lossy().into_owned()))
+        let Some(folder) = picker.blocking_pick_folder().map(dialog_path).transpose()? else {
+            return Ok(None);
+        };
+        grant_path(&app, MusicPathKind::Folder, &folder)?;
+        Ok(Some(folder.to_string_lossy().into_owned()))
     })
     .await
     .map_err(|error| format!("music folder mapping picker failed: {error}"))?
@@ -272,7 +293,7 @@ pub async fn music_pick_media_file(app: tauri::AppHandle) -> Result<Option<Strin
         if let Some(directory) = music_folder_start_directory(&app) {
             picker = picker.set_directory(directory);
         }
-        picker.blocking_pick_file().map(dialog_path).transpose()
+        pick_granted_file(&app, picker)
     })
     .await
     .map_err(|error| format!("media file picker failed: {error}"))??;
@@ -291,7 +312,7 @@ pub async fn music_pick_soundscape_file(app: tauri::AppHandle) -> Result<Option<
         if let Some(directory) = music_folder_start_directory(&app) {
             picker = picker.set_directory(directory);
         }
-        picker.blocking_pick_file().map(dialog_path).transpose()
+        pick_granted_file(&app, picker)
     })
     .await
     .map_err(|error| format!("background audio picker failed: {error}"))??;
@@ -302,16 +323,15 @@ pub async fn music_pick_soundscape_file(app: tauri::AppHandle) -> Result<Option<
 #[tauri::command]
 pub async fn music_pick_artwork_file(app: tauri::AppHandle) -> Result<Option<String>, String> {
     let selected = tauri::async_runtime::spawn_blocking(move || {
-        app.dialog()
+        let picker = app
+            .dialog()
             .file()
             .set_title("Select playlist artwork")
             .add_filter(
                 "Images",
                 &["png", "jpg", "jpeg", "webp", "gif", "bmp", "avif"],
-            )
-            .blocking_pick_file()
-            .map(dialog_path)
-            .transpose()
+            );
+        pick_granted_file(&app, picker)
     })
     .await
     .map_err(|error| format!("artwork file picker failed: {error}"))??;
@@ -488,10 +508,9 @@ fn music_interchange_file_name(default_name: &str, extension: &str) -> Result<St
 
 #[cfg(desktop)]
 #[tauri::command]
-pub async fn music_artwork_data_url(path: String) -> Result<String, String> {
+pub async fn music_artwork_data_url(app: tauri::AppHandle, path: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let path = PathBuf::from(path);
-        require_absolute_file(&path)?;
+        let path = authorize(&app, &path, MusicPathKind::File)?;
         let metadata = fs::metadata(&path)
             .map_err(|error| format!("failed to inspect artwork file: {error}"))?;
         if metadata.len() > MAX_ARTWORK_BYTES {
@@ -522,10 +541,12 @@ pub async fn music_artwork_data_url(app: tauri::AppHandle, path: String) -> Resu
 
 #[cfg(desktop)]
 #[tauri::command]
-pub async fn music_embedded_artwork_data_url(path: String) -> Result<Option<String>, String> {
+pub async fn music_embedded_artwork_data_url(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let path = PathBuf::from(path);
-        require_absolute_file(&path)?;
+        let path = authorize(&app, &path, MusicPathKind::File)?;
         let Some(artwork) = extract_embedded_artwork(&path)? else {
             return Ok(None);
         };
@@ -586,10 +607,13 @@ fn existing_music_start_directory(candidate: Option<PathBuf>) -> Option<PathBuf>
 
 #[cfg(desktop)]
 #[tauri::command]
-pub fn music_reveal_local_file(path: String) -> Result<(), String> {
-    let path = PathBuf::from(path);
-    require_absolute_file(&path)?;
-    reveal_local_file(&path)
+pub async fn music_reveal_local_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = authorize(&app, &path, MusicPathKind::File)?;
+        reveal_local_file(&path)
+    })
+    .await
+    .map_err(|error| format!("media file location task failed: {error}"))?
 }
 
 #[cfg(test)]
@@ -665,6 +689,19 @@ fn scan_media_folder_with_cancel(
     })
 }
 
+/// Shows a native file picker and grants the chosen file on this device.
+#[cfg(desktop)]
+fn pick_granted_file(
+    app: &tauri::AppHandle,
+    picker: tauri_plugin_dialog::FileDialogBuilder<tauri::Wry>,
+) -> Result<Option<PathBuf>, String> {
+    let Some(file) = picker.blocking_pick_file().map(dialog_path).transpose()? else {
+        return Ok(None);
+    };
+    grant_path(app, MusicPathKind::File, &file)?;
+    Ok(Some(file))
+}
+
 #[cfg(desktop)]
 fn dialog_path(path: FilePath) -> Result<PathBuf, String> {
     path.into_path()
@@ -682,19 +719,6 @@ fn require_absolute_directory(path: &Path) -> Result<(), String> {
         Ok(())
     } else {
         Err("selected media path must be a folder".to_string())
-    }
-}
-
-#[cfg(desktop)]
-fn require_absolute_file(path: &Path) -> Result<(), String> {
-    if !path.is_absolute() {
-        return Err("media file path must be absolute".to_string());
-    }
-    let metadata = fs::metadata(path).map_err(|e| format!("failed to inspect media file: {e}"))?;
-    if metadata.is_file() {
-        Ok(())
-    } else {
-        Err("selected media path must be a file".to_string())
     }
 }
 

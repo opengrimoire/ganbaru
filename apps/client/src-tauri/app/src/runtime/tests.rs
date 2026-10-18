@@ -74,6 +74,7 @@ fn mobile_runtime_registers_portable_core_commands() {
         "music::session::runtime::music_session_command",
         "music::library::commands::music_library_playlist_summaries",
         "music::root_bindings::music_local_root_bindings",
+        "music::path_authority::music_confirm_local_sources",
         "profile_images::profile_image_asset_data_url",
         "profile_images::profile_image_save_data_url",
         "projects::icons::projects_icon_asset_data_url",

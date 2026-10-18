@@ -1,4 +1,6 @@
 use crate::db::connect_sqlite;
+#[cfg(desktop)]
+use crate::music::path_authority::{MusicPathKind, authorize};
 use ganbaru_music_library::*;
 
 fn connection_error(error: String) -> MusicLibraryError {
@@ -18,6 +20,7 @@ pub async fn music_library_start_local_refresh(
     return super::mobile_refresh::start(&app, &pool, request).await;
     #[cfg(desktop)]
     {
+        let request = bind_refresh_request(&app, request)?;
         let progress = ganbaru_music_library::local_refresh::prepare(&pool, &request).await?;
         let refresh_pool = pool.clone();
         tauri::async_runtime::spawn_blocking(move || {
@@ -115,6 +118,12 @@ pub async fn music_library_create_relink_plan(
     db_url: String,
     request: MusicRelinkPlanRequest,
 ) -> MusicLibraryResult<MusicRelinkPlanSummary> {
+    let folder = request.replacement_folder_path.clone();
+    let check = app.clone();
+    tauri::async_runtime::spawn_blocking(move || authorize(&check, &folder, MusicPathKind::Folder))
+        .await
+        .map_err(|error| MusicLibraryError::runtime("authorize relink folder", error))?
+        .map_err(|error| path_error("replacementFolderPath", error))?;
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
@@ -659,6 +668,7 @@ pub async fn music_library_preview_item_repair(
     item_id: String,
     file_path: String,
 ) -> MusicLibraryResult<MusicItemRepairPreview> {
+    authorize_file(&app, file_path.clone(), "filePath").await?;
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
@@ -672,10 +682,29 @@ pub async fn music_library_apply_item_repair(
     db_url: String,
     request: MusicItemRepairApply,
 ) -> MusicLibraryResult<MusicWriteReceipt> {
-    let pool = connect_sqlite(app, db_url)
+    // Repair binds a new root to the chosen file's own folder, so the request must name
+    // exactly that file's parent and name before the folder is granted.
+    let folder = std::path::PathBuf::from(&request.folder_path);
+    let mut names = std::path::Path::new(&request.relative_path).components();
+    let (Some(std::path::Component::Normal(_)), None) = (names.next(), names.next()) else {
+        return Err(MusicLibraryError::validation(
+            "relativePath",
+            "must be the repaired file name",
+        ));
+    };
+    let file = folder.join(&request.relative_path);
+    authorize_file(&app, file.to_string_lossy().into_owned(), "folderPath").await?;
+    let pool = connect_sqlite(app.clone(), db_url)
         .await
         .map_err(connection_error)?;
-    ganbaru_music_library::item_repair::apply(&pool, request).await
+    let receipt = ganbaru_music_library::item_repair::apply(&pool, request).await?;
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::music::path_authority::grant_path(&app, MusicPathKind::Folder, &folder)
+    })
+    .await
+    .map_err(|error| MusicLibraryError::runtime("grant repaired folder", error))?
+    .map_err(|error| MusicLibraryError::runtime("grant repaired folder", error))?;
+    Ok(receipt)
 }
 
 #[cfg(desktop)]
@@ -786,8 +815,29 @@ pub async fn music_library_remove_soundscape_group(
 pub async fn music_library_upsert_soundscape(
     app: tauri::AppHandle,
     db_url: String,
-    request: MusicSoundscapeWrite,
+    mut request: MusicSoundscapeWrite,
 ) -> MusicLibraryResult<MusicSoundscapeDefinition> {
+    // Locations are device-local, so the row is always keyed by this device.
+    request.device_id = crate::vault::ensure_device_id(&app)
+        .map_err(|error| MusicLibraryError::runtime("resolve device id", error))?;
+    if let Some(local_path) = &request.local_path {
+        if !crate::music::is_soundscape_audio_path(std::path::Path::new(local_path)) {
+            return Err(MusicLibraryError::validation(
+                "localPath",
+                "must be a supported audio file",
+            ));
+        }
+        authorize_file(&app, local_path.clone(), "localPath").await?;
+        // Saving renews the grant so later picks do not evict a loop still in use.
+        let grant_app = app.clone();
+        let path = std::path::PathBuf::from(local_path);
+        tauri::async_runtime::spawn_blocking(move || {
+            crate::music::path_authority::grant_path(&grant_app, MusicPathKind::File, &path)
+        })
+        .await
+        .map_err(|error| MusicLibraryError::runtime("renew background audio grant", error))?
+        .map_err(|error| MusicLibraryError::runtime("renew background audio grant", error))?;
+    }
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
@@ -831,4 +881,113 @@ pub async fn music_library_update_soundscape_state(
         .await
         .map_err(connection_error)?;
     ganbaru_music_library::soundscapes::update_state(&pool, request).await
+}
+
+/// Maps a refused Music path to a path-free validation error on the named field.
+#[cfg(desktop)]
+fn path_error(
+    field: &str,
+    error: crate::music::path_authority::MusicPathError,
+) -> MusicLibraryError {
+    MusicLibraryError::validation(field, error.message())
+}
+
+/// Replaces the webview's refresh folders with this device's root bindings for the active
+/// vault, so a scan only ever reads folders the user chose here.
+#[cfg(desktop)]
+fn bind_refresh_request(
+    app: &tauri::AppHandle,
+    request: MusicLocalRefreshRequest,
+) -> MusicLibraryResult<MusicLocalRefreshRequest> {
+    let vault_id = crate::vault::active_vault_id(app)
+        .map_err(|error| MusicLibraryError::runtime("resolve active vault", error))?;
+    let state = crate::vault::read_app_state(app)
+        .map_err(|error| MusicLibraryError::runtime("read music root bindings", error))?;
+    apply_native_bindings(request, state.music_root_bindings.get(&vault_id))
+}
+
+#[cfg(desktop)]
+fn apply_native_bindings(
+    mut request: MusicLocalRefreshRequest,
+    bindings: Option<&std::collections::BTreeMap<String, String>>,
+) -> MusicLibraryResult<MusicLocalRefreshRequest> {
+    request.folder_path = bindings
+        .and_then(|bindings| bindings.get(&request.root_id))
+        .cloned()
+        .ok_or_else(|| MusicLibraryError::validation("rootId", "has no folder on this device"))?;
+    request.available_roots = bindings
+        .into_iter()
+        .flatten()
+        .map(|(root_id, folder_path)| MusicAvailableRootPath {
+            root_id: root_id.clone(),
+            folder_path: folder_path.clone(),
+        })
+        .collect();
+    Ok(request)
+}
+
+/// Authorizes a webview file path off the async runtime, because `stat` can block on
+/// network shares.
+#[cfg(desktop)]
+async fn authorize_file(
+    app: &tauri::AppHandle,
+    path: String,
+    field: &str,
+) -> MusicLibraryResult<()> {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || authorize(&app, &path, MusicPathKind::File))
+        .await
+        .map_err(|error| MusicLibraryError::runtime("authorize music file", error))?
+        .map(|_| ())
+        .map_err(|error| path_error(field, error))
+}
+
+#[cfg(all(test, desktop))]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn request(root_id: &str, folder_path: &str) -> MusicLocalRefreshRequest {
+        MusicLocalRefreshRequest {
+            job_id: "job".into(),
+            root_id: root_id.into(),
+            collection_id: "collection".into(),
+            folder_path: folder_path.into(),
+            available_roots: vec![MusicAvailableRootPath {
+                root_id: "forged".into(),
+                folder_path: "/".into(),
+            }],
+            requested_at_ms: 0,
+        }
+    }
+
+    #[test]
+    fn refresh_scans_only_the_native_binding_whatever_the_request_names() {
+        let bindings = BTreeMap::from([
+            ("soundtracks".to_string(), "/music/soundtracks".to_string()),
+            ("ambient".to_string(), "/music/ambient".to_string()),
+        ]);
+        let bound = apply_native_bindings(request("soundtracks", "/"), Some(&bindings)).unwrap();
+        assert_eq!(bound.folder_path, "/music/soundtracks");
+        let mut roots: Vec<_> = bound
+            .available_roots
+            .iter()
+            .map(|root| (root.root_id.as_str(), root.folder_path.as_str()))
+            .collect();
+        roots.sort();
+        assert_eq!(
+            roots,
+            [
+                ("ambient", "/music/ambient"),
+                ("soundtracks", "/music/soundtracks")
+            ]
+        );
+    }
+
+    #[test]
+    fn refresh_of_a_root_unbound_on_this_device_is_refused() {
+        let bindings = BTreeMap::from([("ambient".to_string(), "/music/ambient".to_string())]);
+        assert!(apply_native_bindings(request("soundtracks", "/music"), Some(&bindings)).is_err());
+        assert!(apply_native_bindings(request("soundtracks", "/music"), None).is_err());
+    }
 }

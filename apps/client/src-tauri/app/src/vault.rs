@@ -64,6 +64,8 @@ pub struct VaultAppState {
     pub music_root_bindings: BTreeMap<String, BTreeMap<String, String>>,
     pub project_working_folders: ganbaru_working_folders::WorkingFolderDeviceState,
     pub chat: crate::chat::device_state::ChatDeviceState,
+    #[serde(default)]
+    pub music_path_grants: crate::music::path_authority::MusicPathGrantState,
 }
 
 fn required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
@@ -1101,6 +1103,7 @@ mod tests {
             music_root_bindings,
             project_working_folders: Default::default(),
             chat: Default::default(),
+            music_path_grants: Default::default(),
         };
 
         write_app_state_to_path(&path, &state).expect("write app state");

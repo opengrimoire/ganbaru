@@ -24,10 +24,12 @@ import {
 import { applyPlatformProfileToDocument } from "./lib/platform";
 import { installModalKeyboardRouter } from "./lib/modal-focus";
 import { finishDesktopReadiness } from "./lib/windows/desktop-readiness";
+import { installFileDropGuard } from "./lib/windows/file-drop-guard";
 import { mark as perfMark } from "$lib/stores/perf-log.svelte";
 
 applyPlatformProfileToDocument();
 installModalKeyboardRouter();
+installFileDropGuard();
 
 interface BenchmarkBootProbe {
   vaultMode?: "user" | "benchmark";

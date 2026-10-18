@@ -334,6 +334,7 @@ async function openTabWindow(
     minHeight: 180,
     ...(position ? { x: position.x, y: position.y } : { center: true }),
     decorations: false,
+    dragDropEnabled: false,
     visible: true,
     focus,
   });

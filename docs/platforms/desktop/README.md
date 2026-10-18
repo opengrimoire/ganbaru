@@ -16,3 +16,7 @@ The linking protocol, ownership rules, firewall authorization, and data protecti
 - A linked-device control placed after Pomodoro lists devices and opens handoff actions without adding a permanent read-only warning row. Queued work uses a stable status indicator; only an explicitly running foreground action animates.
 - When another device owns the vault, desktop keeps its last complete copy available read-only. Opening that copy, or a handoff that makes it read-only, shows the current main device and offers `Switch to this device` or continuing read-only.
 - On Linux, the linking screen detects active UFW and firewalld configurations and offers a scoped permission action after explaining why it is needed. The development build disables that action during onboarding because its executable cannot use the installed trusted helper. Unsupported firewall managers show a truthful manual-action state.
+
+## File drops
+
+Desktop windows turn off Tauri's native drag-and-drop handler, so files dropped on the app reach the webview as HTML5 drops that feature drop targets handle. A window-level guard cancels file drops that no target handles, so a dropped file never replaces the app page.

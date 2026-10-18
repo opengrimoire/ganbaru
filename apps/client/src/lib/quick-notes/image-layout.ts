@@ -25,15 +25,19 @@ export const QUICK_NOTE_CARD_IMAGE_ROWS: QuickNoteImageRowOptions = Object.freez
 
 /** The editor is wider, so its rows hold more images. */
 export const QUICK_NOTE_EDITOR_IMAGE_ROWS: QuickNoteImageRowOptions = Object.freeze({
-  targetRowAspect: 3.2,
-  maxPerRow: 4,
+  targetRowAspect: 2.8,
+  maxPerRow: 3,
   minRowAspect: 1,
 });
 
-/** One tile of a mosaic row: the image index and the width-to-height ratio its tile is shown at. */
+/**
+ * One tile of a mosaic row: the image index, the width-to-height ratio its tile is shown at, and the fraction of
+ * the row width it takes. The shares of a row sum to one, so the row always spans the full width.
+ */
 export interface QuickNoteImageTileLayout {
   index: number;
   aspect: number;
+  share: number;
 }
 
 /** Width-to-height ratio of an image's tile, bounded so panoramas and tall strips still read as images. */
@@ -97,7 +101,10 @@ export function quickNoteImageMosaic(
   return quickNoteImageRows(aspects, options).map((row) => {
     const sum = row.reduce((total, index) => total + (aspects[index] ?? 1), 0);
     const widen = sum > 0 && sum < minimum ? minimum / sum : 1;
-    return row.map((index) => ({ index, aspect: (aspects[index] ?? 1) * widen }));
+    return row.map((index) => {
+      const aspect = aspects[index] ?? 1;
+      return { index, aspect: aspect * widen, share: sum > 0 ? aspect / sum : 1 / row.length };
+    });
   });
 }
 

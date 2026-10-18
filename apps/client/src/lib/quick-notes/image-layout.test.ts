@@ -61,8 +61,32 @@ describe("Quick note image rows", () => {
 
 describe("Quick note image mosaic", () => {
   it("widens a lone tall image so its tile is not taller than the minimum row shape", () => {
-    expect(quickNoteImageMosaic([size(500, 1000)], QUICK_NOTE_CARD_IMAGE_ROWS)).toEqual([[{ index: 0, aspect: 0.75 }]]);
-    expect(quickNoteImageMosaic([size(500, 1000)], QUICK_NOTE_EDITOR_IMAGE_ROWS)).toEqual([[{ index: 0, aspect: 1 }]]);
+    expect(quickNoteImageMosaic([size(500, 1000)], QUICK_NOTE_CARD_IMAGE_ROWS)).toEqual([[
+      { index: 0, aspect: 0.75, share: 1 },
+    ]]);
+    expect(quickNoteImageMosaic([size(500, 1000)], QUICK_NOTE_EDITOR_IMAGE_ROWS)).toEqual([[
+      { index: 0, aspect: 1, share: 1 },
+    ]]);
+  });
+
+  it("lets a lone image narrower than square still span the whole row", () => {
+    expect(quickNoteImageMosaic([size(940, 1000)], QUICK_NOTE_CARD_IMAGE_ROWS)).toEqual([[
+      { index: 0, aspect: 0.94, share: 1 },
+    ]]);
+  });
+
+  it("splits every row width in proportion to its tile shapes", () => {
+    const rows = quickNoteImageMosaic(
+      [size(500, 1000), size(1000, 4000), size(1600, 1200), size(900, 1000), size(3000, 1000)],
+      QUICK_NOTE_CARD_IMAGE_ROWS,
+    );
+    for (const row of rows) {
+      expect(row.reduce((sum, tile) => sum + tile.share, 0)).toBeCloseTo(1);
+      const first = row[0];
+      for (const tile of row) {
+        if (first) expect(tile.share / tile.aspect).toBeCloseTo(first.share / first.aspect);
+      }
+    }
   });
 
   it("widens every tile of a short row by the same factor", () => {
@@ -75,8 +99,8 @@ describe("Quick note image mosaic", () => {
 
   it("keeps the natural shapes of rows that are wide enough", () => {
     expect(quickNoteImageMosaic([size(1600, 1200), size(1200, 1200)], QUICK_NOTE_CARD_IMAGE_ROWS)).toEqual([[
-      { index: 0, aspect: 4 / 3 },
-      { index: 1, aspect: 1 },
+      { index: 0, aspect: 4 / 3, share: expect.closeTo(4 / 7) },
+      { index: 1, aspect: 1, share: expect.closeTo(3 / 7) },
     ]]);
   });
 });

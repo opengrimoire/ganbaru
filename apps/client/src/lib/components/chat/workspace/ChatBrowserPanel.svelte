@@ -7,6 +7,8 @@
   import Monitor from "@lucide/svelte/icons/monitor";
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
   import Search from "@lucide/svelte/icons/search";
+  import ShieldCheck from "@lucide/svelte/icons/shield-check";
+  import ShieldOff from "@lucide/svelte/icons/shield-off";
   import Smartphone from "@lucide/svelte/icons/smartphone";
   import Tablet from "@lucide/svelte/icons/tablet";
   import Video from "@lucide/svelte/icons/video";
@@ -32,11 +34,14 @@
   let recording = $state(false);
   let artifactStatus: string | null = $state(null);
   let discoveredServers: chatApi.DiscoveredPreviewServer[] = $state([]);
+  let modelOrigins = $state<string[]>([]);
   let error: string | null = $state(null);
   let preset: ViewportPreset = $state("responsive");
   let resizeObserver: ResizeObserver | null = null;
   let resizeFrame: number | null = null;
   const threadId = $derived(chat.selectedThreadId ?? chat.draftThreadId);
+  const currentOrigin = $derived(externalOrigin(browserTab));
+  const modelAllowed = $derived(currentOrigin !== null && modelOrigins.includes(currentOrigin));
 
   onMount(() => {
     resizeObserver = new ResizeObserver(() => queueResize());
@@ -85,12 +90,17 @@
     browserTab = null;
     tabs = [];
     url = "";
+    modelOrigins = [];
     tabId = selectedThreadId ? `preview:${selectedThreadId}:main` : null;
     if (!selectedThreadId) return;
     try {
-      const stored = await chatApi.readBrowserStatus(selectedThreadId);
+      const [stored, grants] = await Promise.all([
+        chatApi.readBrowserStatus(selectedThreadId),
+        chatApi.readPreviewModelOrigins(),
+      ]);
       if (selectedThreadId !== loadedThreadId) return;
       tabs = stored;
+      modelOrigins = grants.filter((grant) => grant.threadId === selectedThreadId).map((grant) => grant.origin);
       const selected = stored.find((tab) => tab.visible) ?? stored[0] ?? null;
       if (selected) {
         tabId = selected.tabId;
@@ -113,6 +123,38 @@
       return host !== "localhost" && host !== "127.0.0.1" && host !== "::1";
     } catch {
       return false;
+    }
+  }
+
+  function externalOrigin(tab: BrowserTabRead | null): string | null {
+    return tab?.visible && isExternal(tab.currentUrl) ? originOf(tab.currentUrl) : null;
+  }
+
+  function originOf(value: string): string | null {
+    try {
+      return new URL(value).origin;
+    } catch {
+      return null;
+    }
+  }
+
+  async function toggleModelAccess(): Promise<void> {
+    if (!threadId || !tabId || !currentOrigin || loading) return;
+    const selectedThread = threadId;
+    loading = true;
+    error = null;
+    try {
+      if (modelAllowed) {
+        await chatApi.revokePreviewModelOrigin(selectedThread, currentOrigin);
+        modelOrigins = modelOrigins.filter((origin) => origin !== currentOrigin);
+      } else {
+        const origin = await chatApi.allowPreviewModelOrigin(selectedThread, tabId);
+        if (selectedThread === threadId && !modelOrigins.includes(origin)) modelOrigins = [...modelOrigins, origin];
+      }
+    } catch (reason) {
+      error = message(reason);
+    } finally {
+      loading = false;
     }
   }
 
@@ -348,6 +390,7 @@
     <button type="button" class:active={preset === "desktop"} aria-label={t("chat.browser.desktop")} title={t("chat.browser.desktop")} onclick={() => setPreset("desktop")}><Monitor size={13} /></button>
     <button type="button" disabled={!browserTab?.visible || loading} aria-label={t("chat.browser.screenshot")} title={t("chat.browser.screenshot")} onclick={() => void captureScreenshot()}><Camera size={13} /></button>
     <button type="button" class:active={recording} disabled={!browserTab?.visible || loading} aria-label={recording ? t("chat.browser.recordingStop") : t("chat.browser.recordingStart")} title={recording ? t("chat.browser.recordingStop") : t("chat.browser.recordingStart")} onclick={() => void toggleRecording()}><Video size={13} /></button>
+    {#if currentOrigin}<button type="button" class:active={modelAllowed} disabled={loading} aria-pressed={modelAllowed} aria-label={modelAllowed ? t("chat.browser.modelAccessRevoke", currentOrigin) : t("chat.browser.modelAccessAllow", currentOrigin)} title={modelAllowed ? t("chat.browser.modelAccessRevoke", currentOrigin) : t("chat.browser.modelAccessAllow", currentOrigin)} onclick={() => void toggleModelAccess()}>{#if modelAllowed}<ShieldCheck size={13} />{:else}<ShieldOff size={13} />{/if}</button>{/if}
     {#if browserTab}<span>{browserTab.viewportWidth} × {browserTab.viewportHeight}</span>{/if}
   </div>
   {#if artifactStatus}<p role="status" class="artifact-status">{artifactStatus}</p>{/if}

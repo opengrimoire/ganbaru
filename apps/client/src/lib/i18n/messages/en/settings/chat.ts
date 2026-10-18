@@ -430,6 +430,11 @@ export const chatSettings = {
     configurationPlaceholder: "Add provider configuration...",
     instructionsPlaceholder: "Add global instructions for this coding agent...",
     fileLimit: "UTF-8 text, up to 1 MiB. Changes apply to new provider sessions.",
+    siteAccessHeading: "Browser site access",
+    siteAccessDescription: "External sites the coding agent may read and act on in a Chat browser preview. Local previews are always available.",
+    siteAccessEmpty: "No external sites are allowed.",
+    siteAccessThread: (thread: string) => `In ${thread}`,
+    siteAccessRevoke: (origin: string) => `Revoke access to ${origin}`,
   },
   behavior: {
     heading: "Behavior",

@@ -231,6 +231,41 @@ export async function readBrowserStatus(threadId: ChatThreadId): Promise<Browser
   }));
 }
 
+/** An external site the user lets the model use in one Chat thread. */
+export interface PreviewModelOriginGrant {
+  threadId: string;
+  origin: string;
+}
+
+function parsePreviewModelOriginGrants(value: unknown): PreviewModelOriginGrant[] {
+  if (!Array.isArray(value)) throw new Error("Invalid browser site access list");
+  return value.map((entry: unknown) => {
+    if (typeof entry !== "object" || entry === null) throw new Error("Invalid browser site access");
+    const { threadId, origin } = entry as Record<string, unknown>;
+    if (typeof threadId !== "string" || typeof origin !== "string") {
+      throw new Error("Invalid browser site access");
+    }
+    return { threadId, origin };
+  });
+}
+
+/** Lists every external site the model may use, across threads on this device. */
+export async function readPreviewModelOrigins(): Promise<PreviewModelOriginGrant[]> {
+  return parsePreviewModelOriginGrants(await invoke<unknown>("chat_browser_model_origins"));
+}
+
+/** Lets the model use the site the tab shows now, and returns that site's origin. */
+export async function allowPreviewModelOrigin(threadId: ChatThreadId, tabId: string): Promise<string> {
+  const origin = await invoke<unknown>("chat_browser_allow_model_origin", { threadId, tabId });
+  if (typeof origin !== "string") throw new Error("Invalid browser site access");
+  return origin;
+}
+
+/** Stops the model from using a site in a thread. */
+export async function revokePreviewModelOrigin(threadId: string, origin: string): Promise<void> {
+  await invoke("chat_browser_revoke_model_origin", { threadId, origin });
+}
+
 export interface DiscoveredPreviewServer {
   url: string;
   sourceLabel: string;

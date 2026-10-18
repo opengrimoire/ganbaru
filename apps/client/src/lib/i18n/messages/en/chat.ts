@@ -742,6 +742,8 @@ export const chat = {
     desktop: "Desktop viewport",
     confirmExternal: (url: string) => `Allow this preview to navigate to the external origin ${url}?`,
     unavailable: "The browser preview is unavailable.",
+    modelAccessAllow: (origin: string) => `Let the coding agent use ${origin} in this thread`,
+    modelAccessRevoke: (origin: string) => `Stop the coding agent from using ${origin} in this thread`,
   },
   commandMenu: {
     title: "Chat commands",

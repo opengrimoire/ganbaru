@@ -21,12 +21,14 @@ use tauri::{Manager, WebviewUrl};
 
 mod artifacts;
 mod capture;
+pub mod model_access;
 mod navigation;
 mod repository;
 mod webview;
 
 use artifacts::{persist_browser_artifact, persist_browser_artifact_with_pool};
 use capture::{capture_browser_png, capture_recording_frames, recording_archive};
+pub(crate) use model_access::{mcp_model_tab, mcp_require_tab_access, mcp_status_reads};
 #[cfg(test)]
 use navigation::navigation_allowed;
 use navigation::{
@@ -93,6 +95,9 @@ struct RuntimeBrowserTab {
     read: BrowserTabRead,
     webview_label: String,
     allowed_url: Arc<Mutex<reqwest::Url>>,
+    /// URL of the last document that finished loading, which is what the page still shows
+    /// while a navigation is in flight.
+    committed_url: Arc<Mutex<reqwest::Url>>,
 }
 
 struct ActiveRecording {
@@ -280,26 +285,15 @@ pub(crate) async fn mcp_resize_browser(
     Ok(read)
 }
 
-pub(crate) fn mcp_active_tab_id(
-    app: &tauri::AppHandle,
-    thread_id: &ChatThreadId,
-) -> ChatResult<String> {
-    Ok(app
-        .state::<ChatBrowserManager>()
-        .active_thread_tab(thread_id)?
-        .read
-        .tab_id)
-}
-
 pub(crate) async fn mcp_screenshot_browser(
     app: &tauri::AppHandle,
     pool: &SqlitePool,
     vault_root: &std::path::Path,
     thread_id: &ChatThreadId,
+    tab_id: &str,
 ) -> ChatResult<ChatResourceRead> {
-    let tab = app
-        .state::<ChatBrowserManager>()
-        .active_thread_tab(thread_id)?;
+    let tab = owned_tab(app, thread_id, tab_id)?;
+    model_access::require_model_access(app, &tab)?;
     let bytes = capture_browser_png(app, &tab).await?;
     persist_browser_artifact_with_pool(
         pool,

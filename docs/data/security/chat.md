@@ -91,6 +91,8 @@ Mentions, workspace files, Notes, tasks, channel messages, browser artifacts, an
 
 Preview URLs must be HTTP or HTTPS with a host and no embedded credentials. Loopback targets (local development servers) open directly; any other destination requires explicit user confirmation. Navigation stays within the confirmed origin, and a loopback preview cannot navigate off loopback.
 
+Model preview tools (snapshot, screenshot, click, type, key presses, scrolling, and waits) act only on loopback pages or on external origins the user allowed for that thread from the Browser panel. Opening an external page for the user does not grant the model access to it, because a logged-in page would otherwise give a prompt-injected model the user's session. Every call resolves one tab and checks its live URL, its navigation allowance, and the last document that finished loading, so a navigation in flight never exposes the page it is leaving; waits recheck on every poll. Status reads show only scheme and host, without the page title, for pages the model may not use. Origin grants are exact scheme, host, and port, stored device-locally per thread with named limits, and revocable in Chat permission settings.
+
 Webview identity, port, generation, navigation events, screenshots, recordings, and cleanup are tied to the owning thread and target, so a stale preview cannot emit current events. Browser artifacts are bounded managed assets with explicit references and cleanup. Cookies, local storage, and authenticated browsing are not imported into provider context.
 
 ## Git and hosted CLIs

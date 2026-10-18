@@ -31,7 +31,6 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use std::time::Duration;
-use tauri::Manager;
 use tokio::sync::{Mutex, Notify, RwLock, Semaphore, oneshot};
 
 const MAX_MCP_REQUEST_BYTES: usize = 1024 * 1024;
@@ -523,13 +522,12 @@ impl ThreadMcpHandler {
         name: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> ChatResult<serde_json::Value> {
-        let tab_id = || super::preview::mcp_active_tab_id(&self.app, &self.thread_id);
+        let tab_id = || super::preview::mcp_model_tab(&self.app, &self.thread_id);
         match name {
-            "preview_status" => serde_json::to_value(
-                self.app
-                    .state::<super::preview::ChatBrowserManager>()
-                    .thread_reads(&self.thread_id)?,
-            )
+            "preview_status" => serde_json::to_value(super::preview::mcp_status_reads(
+                &self.app,
+                &self.thread_id,
+            )?)
             .map_err(|_| preview_tool_error("encode preview status")),
             "preview_open" | "preview_navigate" => {
                 let url = string_argument(arguments, "url")?;
@@ -574,6 +572,7 @@ impl ThreadMcpHandler {
                     &self.pool,
                     &self.vault_root,
                     &self.thread_id,
+                    &tab_id()?,
                 )
                 .await?;
                 Ok(serde_json::to_value(resource)
@@ -629,12 +628,14 @@ impl ThreadMcpHandler {
                     serde_json::to_string(selector)
                         .map_err(|_| preview_tool_error("encode wait selector"))?
                 );
+                let tab_id = tab_id()?;
                 let started = tokio::time::Instant::now();
                 loop {
+                    super::preview::mcp_require_tab_access(&self.app, &self.thread_id, &tab_id)?;
                     let result = super::preview::evaluate_script(
                         &self.app,
                         &self.thread_id,
-                        &tab_id()?,
+                        &tab_id,
                         &script,
                     )
                     .await?;

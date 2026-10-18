@@ -12,6 +12,8 @@ pub(super) async fn create_child_browser_webview(
     let label = preview_label(&request.tab_id);
     let allowed_url = Arc::new(Mutex::new(url.clone()));
     let navigation_url = allowed_url.clone();
+    let committed_url = Arc::new(Mutex::new(url.clone()));
+    let loaded_url = committed_url.clone();
     let manager = app.state::<ChatBrowserManager>().inner().clone();
     let loading_tab = request.tab_id.clone();
     let loading_pool = pool.clone();
@@ -27,6 +29,11 @@ pub(super) async fn create_child_browser_webview(
         .on_new_window(|_, _| NewWindowResponse::Deny)
         .on_download(|_, _| false)
         .on_page_load(move |_, payload| {
+            if payload.event() == PageLoadEvent::Finished
+                && let Ok(mut committed) = loaded_url.lock()
+            {
+                *committed = payload.url().clone();
+            }
             manager.update(&loading_tab, |read| {
                 read.current_url = payload.url().to_string();
                 read.loading = payload.event() == PageLoadEvent::Started;
@@ -68,6 +75,7 @@ pub(super) async fn create_child_browser_webview(
                 read: read.clone(),
                 webview_label: label,
                 allowed_url,
+                committed_url,
             },
         );
     persist_tab(pool, &read).await?;

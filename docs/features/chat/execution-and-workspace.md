@@ -36,6 +36,8 @@ Terminals are bound to one authorized execution target and thread. The frontend 
 
 Previews use isolated app-owned webviews with narrowly scoped capture controls. A preview cannot browse local files, inherit app capabilities, or become general desktop capture. Screenshots and recordings become managed artifacts under `assets/chat/browser-artifacts/` only through an authorized capture action.
 
+The model can always use loopback previews such as a local development server. To let it work on an external site, for example one the user is logged into, the user allows that site once from the Browser panel; the choice is remembered for that site in that thread and can be revoked from the panel or from Chat permission settings.
+
 ## Workspace observation
 
 Filesystem observation keeps Files, Review, and source-control views fresh. Events are debounced, bounded, and reconciled with authoritative reads; observation never replaces revision checks.

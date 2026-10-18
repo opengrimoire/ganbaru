@@ -433,6 +433,11 @@ export const chatSettings = {
     configurationPlaceholder: "Agrega la configuración del proveedor...",
     instructionsPlaceholder: "Agrega instrucciones globales para este agente...",
     fileLimit: "Texto UTF-8 de hasta 1 MiB. Los cambios se aplican a las sesiones nuevas del proveedor.",
+    siteAccessHeading: "Acceso a sitios del navegador",
+    siteAccessDescription: "Sitios externos que el agente de código puede leer y usar en una vista previa del navegador de Chat. Las vistas previas locales siempre están disponibles.",
+    siteAccessEmpty: "No hay sitios externos permitidos.",
+    siteAccessThread: (thread: string) => `En ${thread}`,
+    siteAccessRevoke: (origin: string) => `Revocar el acceso a ${origin}`,
   },
   behavior: {
     heading: "Comportamiento",

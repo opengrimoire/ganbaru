@@ -745,6 +745,8 @@ export const chat = {
     desktop: "Tamaño de escritorio",
     confirmExternal: (url: string) => `¿Permitir que esta vista previa navegue al origen externo ${url}?`,
     unavailable: "La vista previa del navegador no está disponible.",
+    modelAccessAllow: (origin: string) => `Permitir que el agente de código use ${origin} en este hilo`,
+    modelAccessRevoke: (origin: string) => `Impedir que el agente de código use ${origin} en este hilo`,
   },
   commandMenu: {
     title: "Comandos de Chat",

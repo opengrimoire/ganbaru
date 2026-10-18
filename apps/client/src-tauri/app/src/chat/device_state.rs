@@ -61,6 +61,9 @@ pub struct ChatDeviceScope {
     pub preferences: ChatMachinePreferences,
     pub diagnostics: ChatDiagnosticPreferences,
     pub execution_environment_paths: BTreeMap<String, String>,
+    /// External preview origins the user let the model use, keyed by Chat thread ID.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub preview_model_origins: BTreeMap<String, BTreeSet<String>>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

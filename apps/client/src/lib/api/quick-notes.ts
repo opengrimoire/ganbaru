@@ -296,6 +296,14 @@ export async function pickQuickNoteImages(limit: number): Promise<QuickNoteImage
   return mapQuickNoteImagePick(await invokeImage<unknown>("quick_notes_pick_images", { limit: bounded }));
 }
 
+/**
+ * Imports the image on the system clipboard, for pastes the webview hands over without it. Resolves an empty pick
+ * when the clipboard holds no image.
+ */
+export async function pasteQuickNoteClipboardImage(): Promise<QuickNoteImagePick> {
+  return mapQuickNoteImagePick(await invokeImage<unknown>("quick_notes_paste_clipboard_image"));
+}
+
 /** Saves a copy of an image outside the vault. Resolves `false` when the user cancels. */
 export async function downloadQuickNoteImage(image: QuickNoteImage): Promise<boolean> {
   const saved = await invokeImage<unknown>("quick_notes_download_image", { file: imageFile(image) });

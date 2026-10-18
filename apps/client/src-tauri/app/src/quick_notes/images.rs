@@ -16,6 +16,9 @@ use tauri::{AppHandle, Runtime};
 use crate::db::connect_sqlite;
 use crate::vault;
 
+#[cfg(target_os = "linux")]
+mod clipboard;
+
 /// Base64 text of the largest accepted image, with padding.
 const MAX_BASE64_CHARS: usize = (MAX_IMAGE_BYTES as usize).div_ceil(3) * 4;
 
@@ -132,6 +135,57 @@ pub async fn quick_notes_pick_images<R: Runtime>(
         Ok(pick)
     })
     .await
+}
+
+/// Imports the image on the system clipboard, for pastes whose event carries no image. A
+/// clipboard without an image returns an empty pick. Only Linux needs it; elsewhere the webview
+/// delivers pasted images itself, so the pick is always empty.
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn quick_notes_paste_clipboard_image<R: Runtime>(
+    app: AppHandle<R>,
+) -> Result<QuickNoteImagePick, QuickNoteImageError> {
+    let mut pick = QuickNoteImagePick {
+        images: Vec::new(),
+        rejected: Vec::new(),
+        skipped: 0,
+    };
+    let vault_root = vault::active_replicated_asset_path(&app)?;
+    let imported = match read_clipboard_png(&app).await {
+        Ok(None) => return Ok(pick),
+        Ok(Some(png)) => blocking(move || images::import_image(&vault_root, &png)).await,
+        Err(error) => Err(error),
+    };
+    match imported {
+        Ok(image) => pick.images.push(image),
+        Err(QuickNoteImageError::Failed(message)) => {
+            return Err(QuickNoteImageError::Failed(message));
+        }
+        Err(error) => pick.rejected.push(QuickNoteImageRejection {
+            file_name: PASTED_IMAGE_NAME.to_string(),
+            error,
+        }),
+    }
+    Ok(pick)
+}
+
+/// Name a rejected clipboard image is reported under.
+#[cfg(desktop)]
+const PASTED_IMAGE_NAME: &str = "pasted-image.png";
+
+#[cfg(target_os = "linux")]
+async fn read_clipboard_png<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<Option<Vec<u8>>, QuickNoteImageError> {
+    let app = app.clone();
+    blocking(move || clipboard::read_png(&app)).await
+}
+
+#[cfg(all(desktop, not(target_os = "linux")))]
+async fn read_clipboard_png<R: Runtime>(
+    _app: &AppHandle<R>,
+) -> Result<Option<Vec<u8>>, QuickNoteImageError> {
+    Ok(None)
 }
 
 /// Saves a copy of an image wherever the user chooses. Returns `false` when canceled.

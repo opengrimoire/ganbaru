@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clipboardImageFiles, clipboardPrefersImages } from "./clipboard-images";
+import { clipboardImageFiles, clipboardMayHoldNativeImage, clipboardPrefersImages } from "./clipboard-images";
 
 interface FakeItem {
   kind: string;
@@ -76,5 +76,22 @@ describe("clipboardPrefersImages", () => {
   it("ignores script and style content when reading the markup", () => {
     const html = "<style>p { color: red }</style><img src=\"cat.png\"><script>alert(1)</script>";
     expect(clipboardPrefersImages(textData({ "text/plain": "cat", "text/html": html }), 1)).toBe(true);
+  });
+});
+
+describe("clipboardMayHoldNativeImage", () => {
+  it("asks the system clipboard when the paste carries no text", () => {
+    expect(clipboardMayHoldNativeImage(textData({}))).toBe(true);
+  });
+
+  it("asks the system clipboard when the markup holds only an image", () => {
+    expect(clipboardMayHoldNativeImage(textData({ "text/html": "<meta charset=\"utf-8\"><img src=\"cat.png\">" }))).toBe(true);
+  });
+
+  it("keeps any copied text, including a lone address or whitespace", () => {
+    expect(clipboardMayHoldNativeImage(textData({ "text/plain": "https://example.com/cat.png" }))).toBe(false);
+    expect(clipboardMayHoldNativeImage(textData({ "text/plain": " " }))).toBe(false);
+    expect(clipboardMayHoldNativeImage(textData({ "text/html": "<p>Totals</p>" }))).toBe(false);
+    expect(clipboardMayHoldNativeImage(textData({ "text/html": "<p>Totals</p><img src=\"chart.png\">" }))).toBe(false);
   });
 });

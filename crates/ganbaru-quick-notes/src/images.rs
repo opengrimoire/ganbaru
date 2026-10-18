@@ -16,10 +16,11 @@ use ganbaru_image_metadata::{
     validate_image_dimensions,
 };
 use ganbaru_sync::domains::quick_notes::{
-    ImageError, MAX_IMAGE_DIMENSION, MAX_IMAGE_PIXELS, NoteImage, decode_images, images_blob,
-    validate_image, validate_images,
+    ImageError, NoteImage, decode_images, images_blob, validate_image, validate_images,
 };
-pub use ganbaru_sync::domains::quick_notes::{MAX_IMAGE_BYTES, MAX_IMAGES};
+pub use ganbaru_sync::domains::quick_notes::{
+    MAX_IMAGE_BYTES, MAX_IMAGE_DIMENSION, MAX_IMAGE_PIXELS, MAX_IMAGES,
+};
 use ganbaru_sync::local::retained_group_values;
 use ganbaru_sync::manifest::vault::quick_notes::{NOTES_TABLE, note_group};
 use ganbaru_sync_contracts::Value;

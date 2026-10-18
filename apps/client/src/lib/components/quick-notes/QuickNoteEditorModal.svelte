@@ -16,6 +16,7 @@
     createQuickNote,
     getQuickNote,
     importQuickNoteImage,
+    pasteQuickNoteClipboardImage,
     pickQuickNoteImages,
     updateQuickNote,
     QuickNoteWriteError,
@@ -28,7 +29,11 @@
     quickNoteImageSlots,
     restoreQuickNoteImage,
   } from "$lib/quick-notes/image-import";
-  import { clipboardImageFiles, clipboardPrefersImages } from "$lib/utils/clipboard-images";
+  import {
+    clipboardImageFiles,
+    clipboardMayHoldNativeImage,
+    clipboardPrefersImages,
+  } from "$lib/utils/clipboard-images";
   import type { EventColor } from "$lib/calendar/types";
   import {
     notesPlainTextFromEditableRoot,
@@ -177,6 +182,8 @@
   let dropActive = $state(false);
   let imageInput = $state<HTMLInputElement | null>(null);
   const nativeImagePicker = platformHasCapability(BUILD_PLATFORM_PROFILE, "storage.native-file-picker");
+  /** Desktop webviews may leave a copied image out of the paste, so the editor asks the system clipboard. */
+  const nativeClipboardImages = BUILD_PLATFORM_PROFILE.shell === "desktop";
   const readOnly = $derived(persisted?.trashedAt !== null && persisted !== null);
   /** The image viewer or another dialog sits above the editor. */
   const covered = $derived(obscured || viewerIndex !== null);
@@ -699,7 +706,17 @@
     const clipboard = event.clipboardData;
     if (readOnly || covered || !clipboard) return;
     const files = clipboardImageFiles(clipboard);
-    if (files.length === 0 || !clipboardPrefersImages(clipboard, files.length)) return;
+    if (files.length === 0) {
+      if (nativeClipboardImages && clipboardMayHoldNativeImage(clipboard)) {
+        event.preventDefault();
+        event.stopPropagation();
+        queueImageImport((slots) => slots > 0
+          ? pasteQuickNoteClipboardImage()
+          : Promise.resolve({ images: [], rejected: [], skipped: 1 }));
+      }
+      return;
+    }
+    if (!clipboardPrefersImages(clipboard, files.length)) return;
     event.preventDefault();
     event.stopPropagation();
     importImageFiles(files);

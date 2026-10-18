@@ -46,13 +46,26 @@ export function clipboardPrefersImages(clipboard: Pick<DataTransfer, "getData">,
   const plainText = clipboard.getData("text/plain").trim();
   if (!plainText || SINGLE_URL_PATTERN.test(plainText)) return true;
   const html = clipboard.getData("text/html");
-  if (!/<img\b/iu.test(html)) return false;
-  const htmlText = html
+  return /<img\b/iu.test(html) && htmlText(html) === "";
+}
+
+/**
+ * Whether a paste that the webview handed over without files may still hold a copied image on the system clipboard.
+ * WebKitGTK leaves copied images out of paste events, so only a paste with no text at all, or only an image tag,
+ * asks the system clipboard; any copied text keeps pasting as text.
+ */
+export function clipboardMayHoldNativeImage(clipboard: Pick<DataTransfer, "getData">): boolean {
+  if (clipboard.getData("text/plain") !== "") return false;
+  const html = clipboard.getData("text/html");
+  return html === "" || (/<img\b/iu.test(html) && htmlText(html) === "");
+}
+
+function htmlText(html: string): string {
+  return html
     .replace(/<(script|style)\b[\s\S]*?<\/\1\s*>/giu, "")
     .replace(/<[^>]*>/gu, "")
     .replace(/&nbsp;|&#160;/giu, " ")
     .trim();
-  return htmlText === "";
 }
 
 /** Whether this webview can put images on the clipboard. */

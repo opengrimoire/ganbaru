@@ -87,7 +87,7 @@ Source: `crates/ganbaru-sync-contracts/`, `crates/ganbaru-sync/`, `crates/ganbar
 
 ### Exchange
 
-The coordinator desktop is the hub, and clients never exchange directly. Protocol 5 adds sync requests to the existing mutual TLS listener with one request and one response per connection. Every request names the vault and device and is authenticated as an enrolled peer before it reaches the hub. The personal space id derives from the vault id.
+The coordinator desktop is the hub, and clients never exchange directly. Sync requests, including content-addressed asset transfers, share the existing mutual TLS listener under handoff protocol 6, with one request and one response per connection. Every request names the vault and device and is authenticated as an enrolled peer before it reaches the hub. The personal space id derives from the vault id.
 
 | Request | Response | Purpose |
 | --- | --- | --- |
@@ -96,11 +96,15 @@ The coordinator desktop is the hub, and clients never exchange directly. Protoco
 | `SyncPull` | `SyncOps` | Download operations the device lacks, in per-writer order |
 | `SyncWait` | `SyncState` | Long poll that returns when the hub stores more, when a newer wait from the same device arrives, or before the control timeout |
 | `SyncHashes` | `SyncHashList` | Consecutive operation hashes of one writer, to locate a fork point |
+| `SyncAssetQuery` | `SyncAssetPresence` | Which referenced files, by digest, type, and size, the hub holds |
+| `SyncAssetPut` | `SyncAssetReceived` | Upload one chunk of a file the hub lacks; the answer says where the next chunk starts |
+| `SyncAssetGet` | `SyncAssetChunk` | Download one chunk of a file the hub holds |
 
 - Operations travel as base64url pages sized to fit the 1 MiB control frame; a page always holds at least one operation of the maximum size. One exchange moves a bounded amount of operations in each direction and applies what it pulled before the next exchange continues, so a long backlog never waits unapplied in full.
 - Push refusals are `gap`, `fork`, `revoked`, `invalid`, `unknown_writer`, and `newer_format`. The hub accepts a writer's genesis only from the device its certificate names, and other operations only for writers whose genesis it already holds.
 - The hub only stores and serves. Its own sync service applies what it stored, so apply runs in one code path on every device. An operation is acknowledged only after it is committed; a hub receipt means delivery, not that another device applied it.
 - An operation from a newer format or manifest, or one that fails intrinsic validation, is stored, forwarded, and held with its reason visible in status. Everything causally after it waits until an app update releases it.
+- Quick note images travel as asset files beside the operations that reference them. A client uploads the referenced images the hub lacks before pushing, so a peer that pulls a reference finds the file, and downloads the images it lacks after applying. Chunks fit the control frame, each direction moves a bounded number of bytes per pass, and an interrupted upload resumes from the offset the hub reports. Both sides verify the assembled bytes against the digest, type, and size before storing them, and refuse a mismatch. A note can therefore arrive before its images; a file the hub does not hold yet is asked for again after the next pull that brings operations, or after a short delay. Presence is checked by file type and size, so a damaged file of the right size is not fetched again until it is replaced locally.
 - Clients exchange after debounced commits, on start, on Android resume, on Sync now, and on a fallback interval, and keep a long poll open while linked. Failures back off up to five minutes, and changes queue locally while the hub is unreachable. Android exchanges only while the app process runs.
 
 ### Carry-forward across replacement
@@ -108,7 +112,7 @@ The coordinator desktop is the hub, and clients never exchange directly. Protoco
 Whole-vault refresh, ownership transfer, and backup restore never lose operations:
 
 - The source seals pending captures under the write fence before preparing a snapshot. Snapshots carry the full operation log and engine state; the copy drops pending captures, which stay in the source and seal there.
-- Before activation replaces the vault, the receiver seals its own captures under the same fence and exports every operation it stores that the staged database lacks into a bounded device-local bundle. Captures that cannot be sealed refuse the replacement with an error that names unsynced Quick notes changes.
+- Before activation replaces the vault, the receiver seals its own captures under the same fence and exports every operation it stores that the staged database lacks into a bounded device-local bundle. Captures that cannot be sealed refuse the replacement with an error that names unsynced Quick notes changes. It also copies the verified Quick note image files the staged vault lacks, so images not yet uploaded survive with the operations that reference them.
 - The sync service imports the bundle into the new database before its writer check, then deletes it. Import skips operations already stored, so a crash between replacement and import loses nothing.
 - After a backup restore, the writer check creates a successor writer, and captures in the restored database seal under it.
 

@@ -509,6 +509,6 @@ mod tests {
         assert_eq!(ReceiveMode::Ownership.purpose(), BundlePurpose::Ownership);
         assert_eq!(ReceiveMode::Refresh.purpose(), BundlePurpose::Refresh);
         assert_eq!(ReceiveMode::Bootstrap.purpose(), BundlePurpose::Refresh);
-        assert_eq!(super::super::protocol::PROTOCOL_VERSION, 5);
+        assert_eq!(super::super::protocol::PROTOCOL_VERSION, 6);
     }
 }

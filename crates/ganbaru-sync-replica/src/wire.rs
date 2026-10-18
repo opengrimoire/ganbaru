@@ -1,8 +1,9 @@
-//! Conversions between engine values and the sync wire forms of protocol 5.
+//! Conversions between engine values and their sync wire forms.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use ganbaru_handoff::protocol::SyncSeq;
+use ganbaru_handoff::protocol::{SyncAsset, SyncSeq};
+use ganbaru_quick_notes::images::ReferencedImage;
 use ganbaru_sync_contracts::{Digest32, VersionVector, WriterId};
 
 /// Wire entries of a version vector, in writer order.
@@ -57,6 +58,34 @@ pub fn ops_from_wire(ops: &[String]) -> Result<Vec<Vec<u8>>, String> {
                 .map_err(|_| "sync operation text is invalid".to_string())
         })
         .collect()
+}
+
+pub fn asset_to_wire(image: &ReferencedImage) -> SyncAsset {
+    SyncAsset {
+        sha256: image.file().sha256().to_string(),
+        content_type: image.file().content_type().to_string(),
+        byte_size: image.byte_size(),
+    }
+}
+
+/// Reads a wire asset as a Quick note image, the only asset kind sync moves.
+pub fn asset_from_wire(asset: &SyncAsset) -> Result<ReferencedImage, String> {
+    ReferencedImage::new(
+        asset.sha256.clone(),
+        asset.content_type.clone(),
+        asset.byte_size,
+    )
+    .map_err(|error| format!("sync asset is not a supported image: {error:?}"))
+}
+
+pub fn bytes_to_wire(bytes: &[u8]) -> String {
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
+pub fn bytes_from_wire(text: &str) -> Result<Vec<u8>, String> {
+    URL_SAFE_NO_PAD
+        .decode(text)
+        .map_err(|_| "sync asset chunk is invalid".to_string())
 }
 
 #[cfg(test)]

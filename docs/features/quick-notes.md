@@ -57,6 +57,7 @@ Trashed notes are read-only and are permanently deleted after seven days. Expire
 - **Silent merges:** concurrent changes to color, tag, lifecycle, and order resolve deterministically without asking the user. Two devices that create a tag with the same name end with one tag that keeps every assignment.
 - **Conflicts:** concurrent edits of the same note's title, body, or image list to different values become a conflict. The card shows a conflict badge, and the editor shows a banner listing each version with its device and time: keep this keeps the displayed version, use this picks another version, and keep both keeps the displayed version and creates a new note from the other. Resolving on one device clears the conflict everywhere, and unsaved edits to other fields survive the resolution.
 - **Recovery:** a note deleted on one device, including by the Trash purge, while another device edited it is not lost silently. The edit becomes a recovery entry in the Settings sync section, where Restore creates an active note from the retained values and Discard drops them. Either choice applies on every device.
+- **Images:** image files follow the notes that reference them through the coordinator. A note can appear on another device before its images do; its tiles show a placeholder and load once the file arrives. Images added on a device that is offline upload on its next exchange.
 
 ## Data ownership
 

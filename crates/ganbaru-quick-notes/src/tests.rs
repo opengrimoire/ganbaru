@@ -977,3 +977,146 @@ fn restoring_a_recovered_note_keeps_its_images() {
         assert_eq!(restored.images, [image(4), image(5)]);
     });
 }
+
+fn referenced(bytes: &[u8]) -> images::ReferencedImage {
+    let described = file_of(&images::describe_image(bytes).unwrap());
+    images::ReferencedImage::new(
+        described.sha256().to_string(),
+        described.content_type().to_string(),
+        bytes.len() as u32,
+    )
+    .unwrap()
+}
+
+#[test]
+fn references_reject_bad_digests_types_and_sizes() {
+    let digest = "a".repeat(64);
+    assert!(images::ReferencedImage::new(digest.clone(), "image/png".into(), 10).is_ok());
+    assert_eq!(
+        images::ReferencedImage::new("../escape".into(), "image/png".into(), 10),
+        Err(QuickNoteImageError::Unsupported)
+    );
+    assert_eq!(
+        images::ReferencedImage::new(digest.clone(), "text/html".into(), 10),
+        Err(QuickNoteImageError::Unsupported)
+    );
+    assert_eq!(
+        images::ReferencedImage::new(digest.clone(), "image/png".into(), 0),
+        Err(QuickNoteImageError::Unsupported)
+    );
+    assert_eq!(
+        images::ReferencedImage::new(digest, "image/png".into(), images::MAX_IMAGE_BYTES + 1),
+        Err(QuickNoteImageError::TooLarge)
+    );
+}
+
+#[test]
+fn synced_images_are_held_read_in_chunks_and_stored_only_when_they_match() {
+    let source = vault_dir("sync-source");
+    let target = vault_dir("sync-target");
+    let bytes = png(320, 200, 3);
+    let image = referenced(&bytes);
+    assert_eq!(images::holds_image(&source, &image), Ok(false));
+    images::import_image(&source, &bytes).unwrap();
+    assert_eq!(images::holds_image(&source, &image), Ok(true));
+
+    let mut assembled = Vec::new();
+    while assembled.len() < bytes.len() {
+        let chunk = images::read_image_chunk(&source, &image, assembled.len() as u32, 10).unwrap();
+        assert!(!chunk.is_empty() && chunk.len() <= 10);
+        assembled.extend(chunk);
+    }
+    assert_eq!(assembled, bytes);
+    assert_eq!(
+        images::read_image_chunk(&source, &image, bytes.len() as u32, 10),
+        Err(QuickNoteImageError::Unavailable)
+    );
+    assert_eq!(
+        images::read_image_chunk(&target, &image, 0, 10),
+        Err(QuickNoteImageError::Unavailable)
+    );
+
+    let other = png(320, 200, 4);
+    assert_eq!(
+        images::store_image(&target, &image, &other),
+        Err(QuickNoteImageError::Unavailable)
+    );
+    assert_eq!(
+        images::store_image(&target, &image, &bytes[..bytes.len() - 1]),
+        Err(QuickNoteImageError::Unavailable)
+    );
+    let mislabeled = images::ReferencedImage::new(
+        image.file().sha256().to_string(),
+        "image/jpeg".into(),
+        image.byte_size(),
+    )
+    .unwrap();
+    assert_eq!(
+        images::store_image(&target, &mislabeled, &bytes),
+        Err(QuickNoteImageError::Unavailable)
+    );
+    let mut text = b"not an image".to_vec();
+    text.resize(bytes.len(), b' ');
+    assert_eq!(
+        images::store_image(&target, &referenced_text(&text), &text),
+        Err(QuickNoteImageError::Unsupported)
+    );
+    assert_eq!(images::holds_image(&target, &image), Ok(false));
+
+    images::store_image(&target, &image, &bytes).unwrap();
+    assert_eq!(images::holds_image(&target, &image), Ok(true));
+    assert_eq!(images::read_image(&target, image.file()).unwrap(), bytes);
+
+    // A file of the wrong size is not held, so sync fetches it again.
+    let path = images::images_dir(&target).join(image.file().file_name().unwrap());
+    std::fs::write(&path, &bytes[..8]).unwrap();
+    assert_eq!(images::holds_image(&target, &image), Ok(false));
+    for vault in [source, target] {
+        std::fs::remove_dir_all(vault).unwrap();
+    }
+}
+
+/// A reference that names arbitrary bytes by their digest, as a hostile peer could send.
+fn referenced_text(bytes: &[u8]) -> images::ReferencedImage {
+    let digest: String = ring::digest::digest(&ring::digest::SHA256, bytes)
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    images::ReferencedImage::new(digest, "image/png".into(), bytes.len() as u32).unwrap()
+}
+
+#[test]
+fn replacements_keep_the_verified_images_only_this_device_holds() {
+    let current = vault_dir("carry-current");
+    let replacement = vault_dir("carry-replacement");
+    let shared = png(100, 100, 1);
+    let local = png(100, 100, 2);
+    let damaged = png(100, 100, 3);
+    for bytes in [&shared, &local, &damaged] {
+        images::import_image(&current, bytes).unwrap();
+    }
+    images::import_image(&replacement, &shared).unwrap();
+    let damaged_path =
+        images::images_dir(&current).join(referenced(&damaged).file().file_name().unwrap());
+    std::fs::write(&damaged_path, png(100, 100, 4)).unwrap();
+    std::fs::write(images::images_dir(&current).join("notes.txt"), b"x").unwrap();
+
+    assert_eq!(images::carry_images(&current, &replacement), Ok(1));
+    assert_eq!(
+        images::read_image(&replacement, referenced(&local).file()).unwrap(),
+        local
+    );
+    assert_eq!(
+        images::holds_image(&replacement, &referenced(&damaged)),
+        Ok(false)
+    );
+    assert!(!images::images_dir(&replacement).join("notes.txt").exists());
+    assert_eq!(images::carry_images(&current, &replacement), Ok(0));
+
+    let empty = vault_dir("carry-empty");
+    assert_eq!(images::carry_images(&empty, &replacement), Ok(0));
+    for vault in [current, replacement, empty] {
+        std::fs::remove_dir_all(vault).unwrap();
+    }
+}

@@ -607,7 +607,8 @@ async fn prepare_snapshot_copy(snapshot: &Path) -> Result<(), String> {
 }
 
 /// Exports local sync operations the staged replacement lacks, so the next service start
-/// imports them into the replacement. Only a replacement of the same vault carries anything.
+/// imports them into the replacement, and copies the Quick note images only this device holds.
+/// Only a replacement of the same vault carries anything.
 async fn carry_forward_local_changes<R: Runtime>(
     app: &tauri::AppHandle<R>,
     staging: &Path,
@@ -620,8 +621,15 @@ async fn carry_forward_local_changes<R: Runtime>(
     let files = crate::sync::sync_files(app, expected_vault_id)?;
     crate::sync::export_for_replacement(&database_path(target), &database_path(staging), &files)
         .await
-        .map(|_| ())
-        .map_err(|error| format!("keep local Quick notes changes: {error}"))
+        .map_err(|error| format!("keep local Quick notes changes: {error}"))?;
+    let (current, replacement) = (target.to_path_buf(), staging.to_path_buf());
+    tauri::async_runtime::spawn_blocking(move || {
+        ganbaru_quick_notes::images::carry_images(&current, &replacement)
+    })
+    .await
+    .map_err(|error| format!("keep local Quick note images: {error}"))?
+    .map(|_| ())
+    .map_err(|error| format!("keep local Quick note images: {error}"))
 }
 
 fn preserved_handoff_path(parent: &Path, target: &Path, transfer_id: &str) -> PathBuf {

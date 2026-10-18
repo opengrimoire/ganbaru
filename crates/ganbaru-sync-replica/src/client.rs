@@ -415,7 +415,7 @@ pub async fn wait<T: SyncTransport>(
 }
 
 /// Extracts the expected response, or reports the hub's error.
-fn answer<V>(
+pub(crate) fn answer<V>(
     response: ControlMessage,
     expected: &str,
     extract: impl FnOnce(ControlMessage) -> Option<V>,

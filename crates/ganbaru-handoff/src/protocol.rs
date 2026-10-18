@@ -9,10 +9,11 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 mod sync;
 
 pub use sync::{
-    MAX_SYNC_HASHES, SYNC_PAGE_BYTES, SyncProbe, SyncRefusal, SyncRefusalCode, SyncSeq,
+    MAX_SYNC_ASSET_BYTES, MAX_SYNC_ASSETS, MAX_SYNC_HASHES, SYNC_ASSET_CHUNK_BYTES,
+    SYNC_PAGE_BYTES, SyncAsset, SyncProbe, SyncRefusal, SyncRefusalCode, SyncSeq,
 };
 
-pub const PROTOCOL_VERSION: u16 = 5;
+pub const PROTOCOL_VERSION: u16 = 6;
 pub const MAX_CONTROL_BYTES: usize = 1024 * 1024;
 pub const MAX_ARCHIVE_BYTES: u64 = 100 * 1024 * 1024 * 1024;
 pub const MAX_IDENTIFIER_BYTES: usize = 160;
@@ -380,6 +381,42 @@ pub enum ControlMessage {
     SyncHashList {
         hashes: Vec<String>,
     },
+    /// Authenticated: which of these assets the hub holds.
+    SyncAssetQuery {
+        protocol_version: u16,
+        vault_id: String,
+        device_id: String,
+        assets: Vec<SyncAsset>,
+    },
+    /// Digests of the queried assets the hub holds.
+    SyncAssetPresence {
+        held: Vec<String>,
+    },
+    /// Authenticated: a chunk of an asset the hub holds, from `offset`.
+    SyncAssetGet {
+        protocol_version: u16,
+        vault_id: String,
+        device_id: String,
+        asset: SyncAsset,
+        offset: u32,
+    },
+    SyncAssetChunk {
+        data: String,
+    },
+    /// Authenticated: a chunk of an asset the hub lacks, at `offset`.
+    SyncAssetPut {
+        protocol_version: u16,
+        vault_id: String,
+        device_id: String,
+        asset: SyncAsset,
+        offset: u32,
+        data: String,
+    },
+    /// The bytes of the asset the hub received so far, where the next chunk starts; the asset
+    /// size once the hub verified and stored it.
+    SyncAssetReceived {
+        received: u32,
+    },
     Error {
         code: String,
         message: String,
@@ -413,6 +450,21 @@ impl ControlMessage {
                 ..
             }
             | Self::SyncHashes {
+                vault_id,
+                device_id,
+                ..
+            }
+            | Self::SyncAssetQuery {
+                vault_id,
+                device_id,
+                ..
+            }
+            | Self::SyncAssetGet {
+                vault_id,
+                device_id,
+                ..
+            }
+            | Self::SyncAssetPut {
                 vault_id,
                 device_id,
                 ..
@@ -759,6 +811,40 @@ impl ControlMessage {
                 sync::validate_hash_range(*from_seq, *limit)?;
             }
             Self::SyncHashList { hashes } => sync::validate_hashes(hashes)?,
+            Self::SyncAssetQuery {
+                protocol_version,
+                vault_id,
+                device_id,
+                assets,
+            } => {
+                validate_sync_peer(*protocol_version, vault_id, device_id)?;
+                sync::validate_assets(assets)?;
+            }
+            Self::SyncAssetPresence { held } => sync::validate_asset_digests(held)?,
+            Self::SyncAssetGet {
+                protocol_version,
+                vault_id,
+                device_id,
+                asset,
+                offset,
+            } => {
+                validate_sync_peer(*protocol_version, vault_id, device_id)?;
+                sync::validate_asset(asset)?;
+                sync::validate_asset_offset(asset, *offset)?;
+            }
+            Self::SyncAssetChunk { data } => sync::validate_asset_data(data)?,
+            Self::SyncAssetPut {
+                protocol_version,
+                vault_id,
+                device_id,
+                asset,
+                offset,
+                data,
+            } => {
+                validate_sync_peer(*protocol_version, vault_id, device_id)?;
+                sync::validate_asset_chunk(asset, *offset, data)?;
+            }
+            Self::SyncAssetReceived { received } => sync::validate_asset_received(*received)?,
             Self::Error { code, message, .. } => {
                 validate_identifier("error code", code)?;
                 if message.is_empty() || message.len() > 1024 {
@@ -1282,6 +1368,98 @@ mod tests {
         metadata.archive_sha256 = "a".repeat(64);
         metadata.archive_bytes = MAX_ARCHIVE_BYTES + 1;
         assert!(metadata.validate().unwrap_err().contains("bundle size"));
+    }
+
+    fn asset(byte_size: u32) -> SyncAsset {
+        SyncAsset {
+            sha256: "a".repeat(64),
+            content_type: "image/png".to_string(),
+            byte_size,
+        }
+    }
+
+    fn put(asset: SyncAsset, offset: u32, data: String) -> ControlMessage {
+        ControlMessage::SyncAssetPut {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: "vault-1".to_string(),
+            device_id: "device-1".to_string(),
+            asset,
+            offset,
+            data,
+        }
+    }
+
+    #[test]
+    fn asset_references_must_be_well_formed() {
+        let query = |assets: Vec<SyncAsset>| ControlMessage::SyncAssetQuery {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: "vault-1".to_string(),
+            device_id: "device-1".to_string(),
+            assets,
+        };
+        query(vec![asset(10)]).validate().unwrap();
+        let mut upper = asset(10);
+        upper.sha256 = "A".repeat(64);
+        let mut short = asset(10);
+        short.sha256 = "a".repeat(63);
+        for content_type in [
+            "image",
+            "image/",
+            "/png",
+            "image/png/x",
+            "Image/PNG",
+            "image/p ng",
+        ] {
+            let mut typed = asset(10);
+            typed.content_type = content_type.to_string();
+            assert!(query(vec![typed]).validate().is_err(), "{content_type}");
+        }
+        for invalid in [upper, short, asset(0), asset(MAX_SYNC_ASSET_BYTES + 1)] {
+            assert!(query(vec![invalid]).validate().is_err());
+        }
+        assert!(
+            query(vec![asset(10); MAX_SYNC_ASSETS + 1])
+                .validate()
+                .unwrap_err()
+                .contains("too large")
+        );
+        let presence = |held: Vec<String>| ControlMessage::SyncAssetPresence { held };
+        presence(vec!["a".repeat(64)]).validate().unwrap();
+        assert!(presence(vec!["../a".to_string()]).validate().is_err());
+    }
+
+    #[test]
+    fn asset_chunks_must_lie_inside_their_asset() {
+        put(asset(6), 0, "AAAAAAAA".to_string()).validate().unwrap();
+        put(asset(6), 3, "AAAA".to_string()).validate().unwrap();
+        assert!(
+            put(asset(6), 3, "AAAAAAAA".to_string())
+                .validate()
+                .unwrap_err()
+                .contains("past the asset")
+        );
+        assert!(put(asset(6), 6, "AAAA".to_string()).validate().is_err());
+        assert!(put(asset(6), 0, String::new()).validate().is_err());
+        assert!(put(asset(6), 0, "AA+/".to_string()).validate().is_err());
+        let oversized = "A".repeat((SYNC_ASSET_CHUNK_BYTES * 4).div_ceil(3) + 4);
+        assert!(
+            put(asset(MAX_SYNC_ASSET_BYTES), 0, oversized)
+                .validate()
+                .is_err()
+        );
+
+        let get = |offset| ControlMessage::SyncAssetGet {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: "vault-1".to_string(),
+            device_id: "device-1".to_string(),
+            asset: asset(6),
+            offset,
+        };
+        get(5).validate().unwrap();
+        assert!(get(6).validate().is_err());
+        let received = |received| ControlMessage::SyncAssetReceived { received };
+        received(MAX_SYNC_ASSET_BYTES).validate().unwrap();
+        assert!(received(MAX_SYNC_ASSET_BYTES + 1).validate().is_err());
     }
 
     #[test]

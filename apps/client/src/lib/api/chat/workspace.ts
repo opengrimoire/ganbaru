@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { ensureDbUrl } from "$lib/api/db";
 import { withWorkingFolderTrust } from "$lib/api/working-folder-trust";
+import { translate } from "$lib/i18n/translator.svelte";
 import type {
   ChatAttachmentRead,
   ProjectWorkingFolderDirectoryRead,
@@ -601,6 +602,35 @@ export async function listChatTerminals(
   }));
 }
 
+/** Localized text for the native terminal start dialog; Rust appends the folder and shell. */
+function terminalStartPrompt() {
+  return {
+    title: translate("chat.inspector.terminalStartTitle"),
+    message: translate("chat.inspector.terminalStartMessage"),
+    allowLabel: translate("chat.inspector.terminalStartAllow"),
+    cancelLabel: translate("chat.inspector.terminalStartCancel"),
+  };
+}
+
+/**
+ * Binds a thread to its working folder before terminal requests. An unsaved draft thread is
+ * reserved natively; a saved thread is only checked against the folder.
+ */
+export async function reserveChatDraftThread(
+  threadId: ChatThreadId,
+  workingFolderId: ProjectWorkingFolderId,
+): Promise<void> {
+  await invoke<unknown>("chat_reserve_draft_thread", {
+    dbUrl: await ensureDbUrl(),
+    threadId,
+    workingFolderId,
+  });
+}
+
+/**
+ * Starts a terminal. The first terminal for a folder and environment in each app launch asks
+ * for a native confirmation; declining rejects with a `cancelled` Chat error.
+ */
 export async function createChatTerminal(request: {
   terminalId: string;
   threadId: ChatThreadId;
@@ -610,7 +640,7 @@ export async function createChatTerminal(request: {
 }): Promise<ChatTerminalSnapshotRead> {
   return parseChatTerminalSnapshot(await invoke<unknown>("chat_terminal_create", {
     dbUrl: await ensureDbUrl(),
-    request,
+    request: { ...request, startPrompt: terminalStartPrompt() },
   }));
 }
 

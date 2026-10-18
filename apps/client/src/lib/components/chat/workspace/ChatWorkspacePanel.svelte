@@ -419,6 +419,7 @@
     error = null;
     try {
       const loaded = await withTerminalLoadLock(scopeKey, async () => {
+        await chatApi.reserveChatDraftThread(thread, workspace);
         const [available, layout] = await Promise.all([
           chatApi.listChatTerminals(thread, workspace),
           chatApi.readChatTerminalLayout(thread),
@@ -466,6 +467,7 @@
     thread: string,
     workspace: string,
   ): ReturnType<typeof chatApi.createChatTerminal> {
+    await chatApi.reserveChatDraftThread(thread, workspace);
     const snapshot = await chatApi.createChatTerminal({
       terminalId: crypto.randomUUID(),
       threadId: thread,

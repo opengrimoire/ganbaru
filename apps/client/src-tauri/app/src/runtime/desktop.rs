@@ -246,6 +246,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         .manage(ganbaru_chat::runtime::ChatRuntimeRegistry::default())
         .manage(chat::review::engine::ChatReviewRegistry::default())
         .manage(chat::terminal::ChatTerminalRegistry::default())
+        .manage(chat::terminal_access::ChatTerminalAccess::default())
         .manage(chat::workspace::mutation::ChatWorkspaceMutationRegistry::default())
         .manage(chat::workspace::commands::ProjectWorkingFolderSelections::default())
         .manage(chat::workspace::observer::ChatWorkspaceObserverRegistry::default())
@@ -318,6 +319,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::terminal_commands::chat_terminal_input,
             chat::terminal_commands::chat_terminal_resize,
             chat::terminal_commands::chat_terminal_close,
+            chat::terminal_commands::chat_reserve_draft_thread,
             chat::checkpoint_commands::chat_run_checkpoint_cleanup,
             chat::diagnostics_commands::chat_read_diagnostics,
             chat::diagnostics_commands::chat_update_diagnostic_preferences,

@@ -65,6 +65,8 @@ One native watcher serves the current authorized target, and switching targets s
 
 A terminal is bound to one authorized thread, execution target, runtime approval, and process generation. Rust constructs the working directory and environment; the frontend cannot supply a host path or inherit the full application environment.
 
+Starting a terminal needs a start grant held in Rust memory for the vault, working folder, and execution environment. Only an OS-rendered confirmation that names the folder and shell creates it, so a compromised webview cannot open a shell on its own. The grant lasts for the app launch and is never persisted, because a stored grant would leave that folder's shell open to a compromised webview on every later launch. Unbinding, rebinding, archiving, or removing the folder and revoking an authorization that ran in it drop the grant; archiving one thread does not. Terminals require a persisted open thread in the requested folder or an unsaved draft thread that Rust reserved for that folder; unknown thread IDs are rejected.
+
 Input, output, scrollback, event queues, and process lifetime are bounded. Terminal output is untrusted display data; escape sequences and link detection must not trigger an unreviewed native action. Stopping, revoking, changing target, or closing the owning scope terminates or quarantines the terminal, and a stale handle cannot attach to a newer run.
 
 ## Internal MCP host tools

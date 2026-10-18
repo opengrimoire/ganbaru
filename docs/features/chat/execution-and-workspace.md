@@ -32,6 +32,8 @@ When a checkpoint pair is unavailable, review falls back to the provider-reporte
 
 Terminals are bound to one authorized execution target and thread. The frontend receives a narrow stream and input boundary, not a generic process API. Closing a terminal view does not necessarily stop its process, and lifecycle and stop controls stay truthful. Output is bounded, untrusted text; escape sequences cannot become application commands or links without validation.
 
+The first terminal for a working folder and execution environment in each app launch asks for a native confirmation that names the folder and shell. Because opening the Terminal panel starts a terminal, this usually appears the first time the panel opens for a folder after Ganbaru starts. Later terminals in that folder start without asking until the app restarts or the folder is unbound, archived, or removed.
+
 ## Browser preview
 
 Previews use isolated app-owned webviews with narrowly scoped capture controls. A preview cannot browse local files, inherit app capabilities, or become general desktop capture. Screenshots and recordings become managed artifacts under `assets/chat/browser-artifacts/` only through an authorized capture action.

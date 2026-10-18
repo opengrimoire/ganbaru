@@ -546,6 +546,8 @@ pub async fn projects_unbind_working_folder(
     }
     app.state::<crate::chat::terminal::ChatTerminalRegistry>()
         .shutdown_workspace(&working_folder_id)?;
+    app.state::<crate::chat::terminal_access::ChatTerminalAccess>()
+        .clear_folder(&working_folder_id)?;
     remove_active_device_binding(&app, &working_folder_id)?;
     read_workspace(&app, workspace)
 }
@@ -596,6 +598,8 @@ pub async fn projects_remove_working_folder(
     let pool = chat_pool(app.clone(), db_url).await?;
     app.state::<crate::chat::terminal::ChatTerminalRegistry>()
         .shutdown_workspace(&working_folder_id)?;
+    app.state::<crate::chat::terminal_access::ChatTerminalAccess>()
+        .clear_folder(&working_folder_id)?;
     repository::remove_external_working_folder(&pool, &working_folder_id).await?;
     remove_active_device_binding(&app, &working_folder_id)
 }
@@ -681,6 +685,10 @@ async fn set_workspace_archived(
         &now_timestamp()?,
     )
     .await?;
+    if archived {
+        app.state::<crate::chat::terminal_access::ChatTerminalAccess>()
+            .clear_folder(&working_folder_id)?;
+    }
     read_workspace(&app, workspace)
 }
 
@@ -732,6 +740,8 @@ async fn bind_workspace(
     .await?;
     app.state::<crate::chat::terminal::ChatTerminalRegistry>()
         .shutdown_workspace(working_folder_id)?;
+    app.state::<crate::chat::terminal_access::ChatTerminalAccess>()
+        .clear_folder(working_folder_id)?;
     let (probe, binding) = prepare_workspace_binding(&workspace, selection)?;
     let workspace = if workspace.repository_kind
         == ganbaru_chat_contracts::models::RepositoryKind::None

@@ -639,7 +639,7 @@
     event.preventDefault();
     if (event.button !== 0) return;
     clearMediaSurfaceClickTimeout();
-    window.dispatchEvent(new CustomEvent(mediaSurfaceFullscreenEvent));
+    window.dispatchEvent(new CustomEvent(mediaSurfaceFullscreenEvent, { detail: event }));
   }
 
   function clearMediaSurfaceClickTimeout(): void {
@@ -740,7 +740,7 @@
     if (mediaSurfaceFullscreen && event.key.toLowerCase() === "f") {
       event.preventDefault();
       event.stopPropagation();
-      window.dispatchEvent(new CustomEvent(mediaSurfaceFullscreenEvent));
+      window.dispatchEvent(new CustomEvent(mediaSurfaceFullscreenEvent, { detail: event }));
     }
   }
 </script>

@@ -200,7 +200,7 @@
     event.preventDefault();
     if (event.button !== 0) return;
     clearSurfaceClickTimeout();
-    void toggleSurfaceFullscreen();
+    void toggleSurfaceFullscreen(event);
   }
 
   function clearSurfaceClickTimeout(): void {
@@ -229,7 +229,7 @@
     if (event.key.toLowerCase() !== "f") return;
     if (!hasFullscreenSurface || isEditableTarget(event.target)) return;
     event.preventDefault();
-    void toggleSurfaceFullscreen();
+    void toggleSurfaceFullscreen(event);
   }
 
   function isEditableTarget(target: EventTarget | null): boolean {
@@ -248,11 +248,11 @@
     if (event.key.toLowerCase() === "f") {
       event.preventDefault();
       event.stopPropagation();
-      void toggleSurfaceFullscreen();
+      void toggleSurfaceFullscreen(event);
     }
   }
 
-  async function toggleSurfaceFullscreen(): Promise<void> {
+  async function toggleSurfaceFullscreen(trigger: Event): Promise<void> {
     if (typeof document === "undefined" || !document.fullscreenEnabled) return;
     const target = fullscreenTargetElement();
     if (!target) return;
@@ -264,8 +264,22 @@
         target.focus({ preventScroll: true });
       }
     } catch (error) {
-      console.warn("Unable to toggle music fullscreen.", error);
+      console.warn("Unable to toggle music fullscreen.", error, fullscreenRequestContext(trigger));
     }
+  }
+
+  /** Describes the input and activation state behind a fullscreen request, since WebKit refuses requests it does not credit to user input. */
+  function fullscreenRequestContext(trigger: Event): Record<string, string | number | boolean | null> {
+    const activation = "userActivation" in navigator ? navigator.userActivation : null;
+    return {
+      trigger: trigger.type,
+      trusted: trigger.isTrusted,
+      clickCount: trigger instanceof MouseEvent ? trigger.detail : null,
+      pointerType: trigger instanceof PointerEvent ? trigger.pointerType : null,
+      activationActive: activation?.isActive ?? null,
+      activationSeen: activation?.hasBeenActive ?? null,
+      documentFocused: document.hasFocus(),
+    };
   }
 
   function fullscreenTargetElement(): HTMLElement | null {
@@ -328,8 +342,8 @@
 
   $effect(() => {
     if (typeof window === "undefined") return;
-    const handleMediaSurfaceFullscreenRequest = () => {
-      void toggleSurfaceFullscreen();
+    const handleMediaSurfaceFullscreenRequest = (event: Event) => {
+      void toggleSurfaceFullscreen(event instanceof CustomEvent && event.detail instanceof Event ? event.detail : event);
     };
     window.addEventListener(mediaSurfaceFullscreenEvent, handleMediaSurfaceFullscreenRequest);
     return () => {

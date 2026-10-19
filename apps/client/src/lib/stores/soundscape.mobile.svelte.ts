@@ -33,6 +33,10 @@ class MobileSoundscapeStore {
     return null;
   }
 
+  presetIsPlayable(_preset: MusicSoundscapePreset): boolean {
+    return false;
+  }
+
   get activeDefinition(): MusicSoundscapeDefinition | null {
     return null;
   }

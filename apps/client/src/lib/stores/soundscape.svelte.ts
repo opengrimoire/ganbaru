@@ -172,6 +172,11 @@ class SoundscapeStore {
       && preset.soundscapeIds.every((id) => active.includes(id))) ?? null;
   }
 
+  /** Whether at least one sound of a preset can play on this device. */
+  presetIsPlayable(preset: MusicSoundscapePreset): boolean {
+    return preset.soundscapeIds.some((id) => this.definitions.some((definition) => definition.id === id && definition.availability === "available"));
+  }
+
   /** Plays the available sounds of a preset together, keeping multiple selection on when it already was. */
   async playPreset(preset: MusicSoundscapePreset): Promise<void> {
     if (this.playbackPending || this.modePending) return;

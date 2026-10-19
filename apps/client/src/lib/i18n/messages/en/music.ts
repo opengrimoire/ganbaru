@@ -161,6 +161,18 @@ export const music = {
       noMatches: "No sounds match this search.",
       presetCount: (count: number) => `${count} ${count === 1 ? "sound" : "sounds"}`,
     },
+    preset: {
+      saveCurrent: "Save as preset",
+      name: "Preset name",
+      icon: "Preset icon",
+      save: "Save preset",
+      edit: (name: string) => `Edit ${name}`,
+      useCurrent: "Use current sounds",
+      remove: "Remove preset",
+      removeTitle: "Remove preset?",
+      removeMessage: (name: string) => `Remove ${name}? Projects and events that use it will show it as unavailable until you pick another sound.`,
+      empty: "Save the sounds you are playing as a preset to use them in projects and events.",
+    },
   },
   builder: {
     defaultPlaylist: {

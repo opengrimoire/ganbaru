@@ -7,7 +7,7 @@
   import Search from "@lucide/svelte/icons/search";
   import VolumeX from "@lucide/svelte/icons/volume-x";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import type { MusicSoundscapeDefinition, MusicSoundscapePreset } from "$lib/music/soundscape/contracts";
+  import type { MusicSoundscapeDefinition } from "$lib/music/soundscape/contracts";
   import { orderedGeneratedSounds } from "$lib/music/soundscape/presentation";
   import { soundChoicesEqual, type MusicSoundChoice } from "$lib/music/sound-choice";
   import { OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
@@ -58,7 +58,7 @@
   const selectedPreset = $derived(value.kind === "preset" ? soundscape.presets.find((entry) => entry.id === value.presetId) ?? null : null);
   const missing = $derived(!loading && (
     (value.kind === "sound" && selectedSound?.availability !== "available")
-    || (value.kind === "preset" && (!selectedPreset || !presetPlayable(selectedPreset)))
+    || (value.kind === "preset" && (!selectedPreset || !soundscape.presetIsPlayable(selectedPreset)))
   ));
   const query = $derived(search.trim().toLocaleLowerCase());
   const presets = $derived(soundscape.presets.filter((preset) => matches(preset.name)));
@@ -88,11 +88,6 @@
 
   function matches(name: string): boolean {
     return !query || name.toLocaleLowerCase().includes(query);
-  }
-
-  /** A preset can play when at least one of its sounds is available on this device. */
-  function presetPlayable(preset: MusicSoundscapePreset): boolean {
-    return preset.soundscapeIds.some((soundId) => soundscape.definitions.some((entry) => entry.id === soundId && entry.availability === "available"));
   }
 
   async function toggle(): Promise<void> {
@@ -288,7 +283,7 @@
           {#each presets as preset (preset.id)}
             {@const choice = presetChoice(preset.id)}
             {@const selected = soundChoicesEqual(choice, value)}
-            {@const playable = presetPlayable(preset)}
+            {@const playable = soundscape.presetIsPlayable(preset)}
             <button type="button" role="option" aria-selected={selected} disabled={!playable && !selected} onclick={() => choose(choice)} class="menu-item">
               <span class="grid size-4 shrink-0 place-items-center"><MusicSoundscapeGroupIcon icon={preset.icon} size={15} /></span>
               <span class="min-w-0 flex-1 truncate font-medium">{preset.name}</span>

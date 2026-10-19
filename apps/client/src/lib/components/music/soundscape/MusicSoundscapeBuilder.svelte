@@ -11,13 +11,14 @@
   import { pickSoundscapeFile } from "$lib/api/music";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import type { MusicSoundscapeDefinition, MusicSoundscapeGroup } from "$lib/music/soundscape/contracts";
+  import type { MusicSoundscapeDefinition, MusicSoundscapeGroup, MusicSoundscapePreset } from "$lib/music/soundscape/contracts";
   import { orderedGeneratedSounds } from "$lib/music/soundscape/presentation";
   import type { SoundscapeFilter } from "$lib/music/builder/view-state";
   import { getSoundscapeStore } from "$lib/stores/soundscape.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import MusicSoundscapeGroupIcon from "./MusicSoundscapeGroupIcon.svelte";
   import MusicSoundscapeLocalRow from "./MusicSoundscapeLocalRow.svelte";
+  import MusicSoundscapePresetForm from "./MusicSoundscapePresetForm.svelte";
   import MusicSoundscapeSectionControls from "./MusicSoundscapeSectionControls.svelte";
 
   const { t } = getLocalization();
@@ -30,6 +31,8 @@
   let pendingSound = $state<{ path: string; groupId: string | null } | null>(null);
   let soundNameDraft = $state("");
   let soundIconDraft = $state("lucide:audio-lines");
+  let editingPresetId = $state<string | null>(null);
+  let pendingPresetDelete = $state<MusicSoundscapePreset | null>(null);
   let {
     filter = "all",
     compact = false,
@@ -49,6 +52,8 @@
   const local = $derived(soundscape.definitions.filter((entry) => entry.sourceKind === "local-loop"));
   const ungrouped = $derived(local.filter((entry) => !entry.groupId || !soundscape.groups.some((group) => group.id === entry.groupId)));
   const selectedIds = $derived(soundscape.persisted?.activeIds ?? []);
+  const activePresetId = $derived(soundscape.activePreset?.id ?? null);
+  const canSavePreset = $derived(selectedIds.length > 0 && activePresetId === null);
 
   async function addLoop(groupId: string | null = null, replace?: MusicSoundscapeDefinition): Promise<void> {
     try {
@@ -131,6 +136,16 @@
     }
   }
 
+  /** Plays a preset, or pauses it when it is the one already playing. */
+  function choosePreset(preset: MusicSoundscapePreset): void {
+    if (preset.id === activePresetId && soundscape.snapshot.status === "playing") {
+      void soundscape.togglePlayback();
+      return;
+    }
+    onPlaybackStart();
+    void soundscape.playPreset(preset);
+  }
+
   function toggleSound(id: string): void {
     if (!selectedIds.includes(id) || soundscape.snapshot.status !== "playing") onPlaybackStart();
     void soundscape.toggleSelection(id);
@@ -144,6 +159,40 @@
   </div>
   {#if soundscape.error}
     <Notice class="mb-3 px-1 text-xs" message={t("music.soundscape.genericError")} />
+  {/if}
+
+  {#if filter === "all"}
+    <section class="mb-7 max-w-2xl" aria-labelledby="soundscape-presets">
+      <div class="mb-3 flex h-8 items-center gap-2">
+        <h2 id="soundscape-presets" class="min-w-0 flex-1 truncate text-xs font-semibold">{t("music.soundscape.choice.presets")}</h2>
+        {#if canSavePreset && editingPresetId !== "new"}<button type="button" disabled={soundscape.saving} class="inline-flex h-8 items-center gap-1 rounded-lg px-2 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40" onclick={() => editingPresetId = "new"}><Plus size={14} />{t("music.soundscape.preset.saveCurrent")}</button>{/if}
+      </div>
+      {#if editingPresetId === "new"}
+        <div class="mb-3"><MusicSoundscapePresetForm currentIds={selectedIds} onDone={() => editingPresetId = null} /></div>
+      {:else if soundscape.presets.length === 0}
+        <p class="px-1 text-xs text-muted-foreground">{t("music.soundscape.preset.empty")}</p>
+      {/if}
+      <div class="grid grid-cols-[repeat(auto-fill,minmax(10rem,1fr))] gap-2">
+        {#each soundscape.presets as preset (preset.id)}
+          {#if editingPresetId === preset.id}
+            <div class="col-span-full"><MusicSoundscapePresetForm {preset} currentIds={selectedIds} onDone={() => editingPresetId = null} onRemove={(entry) => pendingPresetDelete = entry} /></div>
+          {:else}
+            {@const selected = preset.id === activePresetId}
+            {@const playable = soundscape.presetIsPlayable(preset)}
+            <div class={selected ? "flex min-w-0 items-center rounded-xl bg-primary/10" : "flex min-w-0 items-center rounded-xl bg-secondary/40"}>
+              <button type="button" aria-pressed={selected} aria-label={selected && soundscape.snapshot.status === "playing" ? t("music.soundscape.pause") : t("music.soundscape.play", preset.name)} disabled={!playable || soundscape.saving} class="flex min-w-0 flex-1 items-center gap-2.5 rounded-xl py-2.5 pl-3 text-left disabled:opacity-50" onclick={() => choosePreset(preset)}>
+                <MusicSoundscapeGroupIcon icon={preset.icon} size={18} />
+                <span class="flex min-w-0 flex-col">
+                  <span class="truncate text-xs font-medium">{preset.name}</span>
+                  <span class="truncate text-[0.68rem] text-muted-foreground">{playable ? t("music.soundscape.choice.presetCount", preset.soundscapeIds.length) : t("music.soundscape.needsRepair")}</span>
+                </span>
+              </button>
+              <button type="button" class="mr-1.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground" aria-label={t("music.soundscape.preset.edit", preset.name)} onclick={() => editingPresetId = preset.id}><Pencil size={13} /></button>
+            </div>
+          {/if}
+        {/each}
+      </div>
+    </section>
   {/if}
 
   {#if filter === "all" || filter === "generated"}
@@ -229,6 +278,9 @@
 
 {#if pendingDelete}
   <ConfirmDialog title={t("music.soundscape.removeTitle")} message={t("music.soundscape.removeMessage", pendingDelete.name)} confirmLabel={t("music.soundscape.remove")} cancelLabel={t("common.cancel")} onConfirm={() => { const definition = pendingDelete; pendingDelete = null; if (definition) void soundscape.removeDefinition(definition).catch((error) => console.error("Could not remove background sound", error)); }} onCancel={() => pendingDelete = null} />
+{/if}
+{#if pendingPresetDelete}
+  <ConfirmDialog title={t("music.soundscape.preset.removeTitle")} message={t("music.soundscape.preset.removeMessage", pendingPresetDelete.name)} confirmLabel={t("music.soundscape.preset.remove")} cancelLabel={t("common.cancel")} onConfirm={() => { const preset = pendingPresetDelete; pendingPresetDelete = null; editingPresetId = null; if (preset) void soundscape.removePreset(preset).catch((error) => console.error("Could not remove background sound preset", error)); }} onCancel={() => pendingPresetDelete = null} />
 {/if}
 {#if pendingGroupDelete}
   <ConfirmDialog title={t("music.soundscape.removeGroup")} message={t("music.soundscape.removeGroupMessage", pendingGroupDelete.name)} confirmLabel={t("music.soundscape.removeGroup")} cancelLabel={t("common.cancel")} onConfirm={() => { const group = pendingGroupDelete; pendingGroupDelete = null; editingGroupId = null; if (group) void soundscape.removeGroup(group).then(() => { if (filter === `group:${group.id}`) onGroupRemoved(); }).catch((error) => console.error("Could not remove background sound group", error)); }} onCancel={() => pendingGroupDelete = null} />

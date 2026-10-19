@@ -164,6 +164,18 @@ export const music = {
       noMatches: "Ningún sonido coincide con esta búsqueda.",
       presetCount: (count: number) => `${count} ${count === 1 ? "sonido" : "sonidos"}`,
     },
+    preset: {
+      saveCurrent: "Guardar como preajuste",
+      name: "Nombre del preajuste",
+      icon: "Icono del preajuste",
+      save: "Guardar preajuste",
+      edit: (name: string) => `Editar ${name}`,
+      useCurrent: "Usar sonidos actuales",
+      remove: "Eliminar preajuste",
+      removeTitle: "¿Eliminar preajuste?",
+      removeMessage: (name: string) => `¿Eliminar ${name}? Los proyectos y eventos que lo usan lo mostrarán como no disponible hasta que elijas otro sonido.`,
+      empty: "Guarda los sonidos que estás reproduciendo como preajuste para usarlos en proyectos y eventos.",
+    },
   },
   builder: {
     defaultPlaylist: {

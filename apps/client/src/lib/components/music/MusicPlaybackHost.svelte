@@ -27,6 +27,7 @@
   let surfaceFullscreen = $state(false);
   let volumeFeedbackVisible = $state(false);
   let surfaceClickTimeoutId: number | null = null;
+  let activationAtLastPress: boolean | null = null;
   let volumeFeedbackTimeoutId: number | null = null;
   let lastVolumeFeedbackId = 0;
 
@@ -264,23 +265,40 @@
         target.focus({ preventScroll: true });
       }
     } catch (error) {
-      console.warn("Unable to toggle music fullscreen.", error, fullscreenRequestContext(trigger));
+      console.warn("Unable to toggle music fullscreen.", error, JSON.stringify(fullscreenRequestContext(trigger)));
     }
+  }
+
+  function userActivation(): UserActivation | null {
+    return "userActivation" in navigator ? navigator.userActivation : null;
   }
 
   /** Describes the input and activation state behind a fullscreen request, since WebKit refuses requests it does not credit to user input. */
   function fullscreenRequestContext(trigger: Event): Record<string, string | number | boolean | null> {
-    const activation = "userActivation" in navigator ? navigator.userActivation : null;
+    const activation = userActivation();
     return {
       trigger: trigger.type,
       trusted: trigger.isTrusted,
       clickCount: trigger instanceof MouseEvent ? trigger.detail : null,
       pointerType: trigger instanceof PointerEvent ? trigger.pointerType : null,
+      activationAtLastPress,
       activationActive: activation?.isActive ?? null,
       activationSeen: activation?.hasBeenActive ?? null,
       documentFocused: document.hasFocus(),
+      frames: document.querySelectorAll("iframe").length,
     };
   }
+
+  $effect(() => {
+    if (typeof window === "undefined") return;
+    const recordPressActivation = () => {
+      activationAtLastPress = userActivation()?.isActive ?? null;
+    };
+    window.addEventListener("pointerdown", recordPressActivation, true);
+    return () => {
+      window.removeEventListener("pointerdown", recordPressActivation, true);
+    };
+  });
 
   function fullscreenTargetElement(): HTMLElement | null {
     if (!hasFullscreenSurface) return null;

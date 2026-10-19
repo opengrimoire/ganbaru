@@ -61,6 +61,7 @@
   let noEligiblePlaylist = $state<MusicPlaylistSummary | null>(null);
 
   const playlists = $derived(playlistCache.playlists);
+  const activePlaylist = $derived(playlists.find((playlist) => playlist.id === player.activePlaylistId) ?? null);
   const matching = $derived.by(() => {
     const query = search.trim().toLocaleLowerCase();
     return orderMusicPlaylists(playlists).filter((playlist) => !query
@@ -236,7 +237,7 @@
     aria-label={t("music.launcher.choosePlaylist")}
     data-music-playlist-launcher
   >
-    <ListMusic size={14} strokeWidth={1.5} class="shrink-0" />
+    {#if activePlaylist}<span class="grid size-3.5 shrink-0 place-items-center"><MusicPlaylistIcon icon={activePlaylist.icon} size={14} strokeWidth={1.5} /></span>{:else}<ListMusic size={14} strokeWidth={1.5} class="shrink-0" />{/if}
     <span class="hidden min-w-0 truncate min-[620px]:inline">{player.activePlaylistName ?? t("music.launcher.playlists")}</span>
     <ChevronDown size={12} class="hidden shrink-0 min-[620px]:block" />
   </button>
@@ -269,8 +270,8 @@
             <button type="button" onclick={() => { void play(playlist); }} disabled={Boolean(playingId)} aria-disabled={playlist.totalCount === 0} class="menu-item">
               <span class="grid size-4 shrink-0 place-items-center"><MusicPlaylistIcon icon={playlist.icon} size={15} /></span>
               <span class="min-w-0 flex-1 truncate font-medium">{systemMusicPlaylistName(playlist.id, playlist.name, t)}</span>
-              <span class="shrink-0 text-panel-detail tabular-nums text-muted-foreground">{#if playingId === playlist.id}<LoaderCircle class="animate-spin motion-reduce:animate-none" size={13} />{:else}{playlist.totalCount}{/if}</span>
               {#if player.activePlaylistId === playlist.id}<Check size={14} />{/if}
+              <span class="shrink-0 text-panel-detail tabular-nums text-muted-foreground">{#if playingId === playlist.id}<LoaderCircle class="animate-spin motion-reduce:animate-none" size={13} />{:else}{playlist.totalCount}{/if}</span>
             </button>
           {/each}
         {/if}

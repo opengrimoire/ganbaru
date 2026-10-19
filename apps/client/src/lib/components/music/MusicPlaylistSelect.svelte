@@ -199,7 +199,7 @@
       missing && "text-warning-foreground ring-1 ring-warning/55",
     )}
   >
-    {#if missing}<AlertTriangle size={14} class="shrink-0 text-warning" />{:else if value === null}<VolumeX size={14} strokeWidth={1.5} class="shrink-0 text-muted-foreground" />{:else}<ListMusic size={14} strokeWidth={1.5} class="shrink-0 text-muted-foreground" />{/if}
+    {#if missing}<AlertTriangle size={14} class="shrink-0 text-warning" />{:else if value === null}<VolumeX size={14} strokeWidth={1.5} class="shrink-0 text-muted-foreground" />{:else if selected}<span class="grid size-3.5 shrink-0 place-items-center text-muted-foreground"><MusicPlaylistIcon icon={selected.icon} size={14} strokeWidth={1.5} /></span>{:else}<ListMusic size={14} strokeWidth={1.5} class="shrink-0 text-muted-foreground" />{/if}
     <span class="min-w-0 flex-1 truncate">{#if loading}<Loading layout="inline" label={t("music.assignment.loadingPlaylists")} />{:else}{missing ?t("music.assignment.missingPlaylist") : selected ? systemMusicPlaylistName(selected.id, selected.name, t) : noneLabel}{/if}</span>
     <ChevronDown size={13} strokeWidth={2} class={cn("shrink-0 text-muted-foreground transition-transform", open && "rotate-180")} />
   </button>

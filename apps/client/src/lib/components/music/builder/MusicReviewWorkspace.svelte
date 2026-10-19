@@ -70,7 +70,7 @@
     issue = null,
     repairAvailable = true,
     onRepairIssue = () => undefined,
-    viewState,
+    viewState = $bindable(),
   }: {
     items: MusicItemListEntry[];
     totalCount: number;

@@ -115,8 +115,22 @@ pub async fn load_checkpoint(
         .transpose()
 }
 
+/// How a restored checkpoint chooses its selection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RestoreSelection {
+    /// Reselects the saved item at its saved position, for a context this process reopens.
+    Saved,
+    /// Selects the item after the saved one from its start, so a new launch begins a fresh track.
+    Next,
+}
+
 /// Rebuilds indices from current canonical rows and always restores paused.
-pub fn restore(state: &mut SessionPolicy, saved: &SessionCheckpoint, now_ms: i64) -> Transition {
+pub fn restore(
+    state: &mut SessionPolicy,
+    saved: &SessionCheckpoint,
+    selection: RestoreSelection,
+    now_ms: i64,
+) -> Transition {
     let index_of = |id: &str| {
         state
             .queue
@@ -144,27 +158,39 @@ pub fn restore(state: &mut SessionPolicy, saved: &SessionCheckpoint, now_ms: i64
     state.order = saved.order;
     state.repeat_mode = saved.repeat_mode;
     state.random_state = saved.random_state.max(1);
-    let selected = current.and_then(|index| state.queue[index].item_id.clone());
-    let mut transition = state.initial(selected.as_deref(), None, false, now_ms);
-    state.history = history;
-    state.shuffle = shuffle;
-    state.recent = recent;
-    if let Some(index) = current.filter(|index| state.current == Some(*index)) {
-        let source = &state.queue[index].source;
-        let minimum = source.start_ms.unwrap_or(0);
-        let maximum = source.end_ms.or(saved.duration_ms);
-        state.position_ms = if maximum.is_some_and(|maximum| saved.position_ms >= maximum) {
-            minimum
-        } else {
-            saved.position_ms.max(minimum)
-        };
-        state.duration_ms = saved.duration_ms;
-        for effect in &mut transition.effects {
-            if let SessionEffect::Load { position_ms, .. } = effect {
-                *position_ms = state.position_ms;
-            }
+    let transition = match selection {
+        RestoreSelection::Next => {
+            state.history = history;
+            state.shuffle = shuffle;
+            state.recent = recent;
+            state.current = current;
+            state.advance_restored(now_ms)
         }
-    }
+        RestoreSelection::Saved => {
+            let selected = current.and_then(|index| state.queue[index].item_id.clone());
+            let mut transition = state.initial(selected.as_deref(), None, false, now_ms);
+            state.history = history;
+            state.shuffle = shuffle;
+            state.recent = recent;
+            if let Some(index) = current.filter(|index| state.current == Some(*index)) {
+                let source = &state.queue[index].source;
+                let minimum = source.start_ms.unwrap_or(0);
+                let maximum = source.end_ms.or(saved.duration_ms);
+                state.position_ms = if maximum.is_some_and(|maximum| saved.position_ms >= maximum) {
+                    minimum
+                } else {
+                    saved.position_ms.max(minimum)
+                };
+                state.duration_ms = saved.duration_ms;
+                for effect in &mut transition.effects {
+                    if let SessionEffect::Load { position_ms, .. } = effect {
+                        *position_ms = state.position_ms;
+                    }
+                }
+            }
+            transition
+        }
+    };
     state.status = if state.current.is_some() {
         SessionStatus::Paused
     } else {

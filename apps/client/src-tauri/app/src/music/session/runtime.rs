@@ -654,6 +654,13 @@ impl Owner {
             .map_err(|error| MusicLibraryError::runtime("stop prior music vault", error))?;
         }
         self.subscriptions.invalidate_context();
+        // Only the first context of this process is a new launch; later contexts reopen
+        // a vault this process already played, such as after a handoff or a vault switch.
+        let selection = if self.vault_id.is_none() {
+            persistence::RestoreSelection::Next
+        } else {
+            persistence::RestoreSelection::Saved
+        };
         self.pool = Some(
             crate::db::connect_sqlite(
                 self.app.clone(),
@@ -701,7 +708,7 @@ impl Owner {
             transaction.commit().await.map_err(|error| {
                 MusicLibraryError::database("finish recovered music queue", error)
             })?;
-            let transition = persistence::restore(&mut restored, &saved, now_ms());
+            let transition = persistence::restore(&mut restored, &saved, selection, now_ms());
             self.commit(restored, transition, None, true).await?;
         }
         self.publish(true)?;

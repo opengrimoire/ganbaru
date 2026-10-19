@@ -154,7 +154,12 @@ async fn native_music_recovery_is_device_scoped_and_excludes_resolved_paths() {
     let encoded = serde_json::to_string(&saved).unwrap();
     assert!(!encoded.contains("/private") && !encoded.contains("content://"));
     let mut restarted = state.clone();
-    persistence::restore(&mut restarted, &saved, 20);
+    persistence::restore(
+        &mut restarted,
+        &saved,
+        persistence::RestoreSelection::Saved,
+        20,
+    );
     assert_eq!(restarted.status, SessionStatus::Paused);
     assert_eq!(restarted.position_ms, 12_345);
     assert!(restarted.generation > state.generation);
@@ -163,7 +168,7 @@ async fn native_music_recovery_is_device_scoped_and_excludes_resolved_paths() {
     let mut live = state.clone();
     live.generation = saved.generation + 100;
     let previous_generation = live.generation;
-    persistence::restore(&mut live, &saved, 30);
+    persistence::restore(&mut live, &saved, persistence::RestoreSelection::Saved, 30);
     assert!(live.generation > previous_generation);
     pool.close().await;
 }
@@ -251,4 +256,185 @@ async fn native_music_queue_sources_prefer_edited_artist_and_album_over_tags() {
         (None, None)
     );
     pool.close().await;
+}
+
+fn queued(count: usize, order: PlaybackOrder) -> SessionPolicy {
+    let mut state = SessionPolicy::new("session".into(), 17);
+    state.queue = std::sync::Arc::new(
+        (0..count)
+            .map(|index| SessionQueueEntry {
+                item_id: Some(format!("item-{index}")),
+                membership_id: Some(format!("member-{index}")),
+                source: SessionSource {
+                    kind: SourceKind::LocalFile,
+                    identity: format!("local:{index}"),
+                    original_input: String::new(),
+                    title: format!("Track {index}"),
+                    artist: None,
+                    album: None,
+                    path: Some(format!("/music/{index}.flac")),
+                    artwork_path: None,
+                    video_id: None,
+                    playlist_id: None,
+                    start_ms: None,
+                    end_ms: None,
+                },
+                backend: SessionBackend::NativeAudio,
+                availability: crate::MusicItemAvailability::Available,
+                enabled: true,
+                weight: crate::MusicWeight::Normal,
+                snoozed_until: None,
+                snoozed_indefinitely: false,
+                embedding_blocked: false,
+                bound: true,
+                phase_allowed: true,
+                skip_ranges: Vec::new(),
+                volume: None,
+                rate: None,
+            })
+            .collect(),
+    );
+    state.definition = Some(SessionQueueIntent::LibraryItems {
+        item_ids: (0..count).map(|index| format!("item-{index}")).collect(),
+        selected_item_id: None,
+        name: "Queue".into(),
+    });
+    state.order = order;
+    state
+}
+
+/// Saves `state` and restores it into a fresh copy of the same canonical queue.
+fn relaunch(
+    state: &SessionPolicy,
+    selection: persistence::RestoreSelection,
+) -> (SessionPolicy, Transition) {
+    let saved = persistence::checkpoint(state);
+    let mut restored = SessionPolicy::new("fresh".into(), 3);
+    restored.queue = state.queue.clone();
+    restored.definition = state.definition.clone();
+    let transition = persistence::restore(&mut restored, &saved, selection, 500);
+    (restored, transition)
+}
+
+fn loaded_index(state: &SessionPolicy, transition: &Transition) -> Option<usize> {
+    transition.effects.iter().find_map(|effect| match effect {
+        SessionEffect::Load {
+            source, autoplay, ..
+        } => {
+            assert!(!autoplay, "a restored selection never starts by itself");
+            state
+                .queue
+                .iter()
+                .position(|entry| entry.source.identity == source.identity)
+        }
+        _ => None,
+    })
+}
+
+#[test]
+fn native_music_relaunch_continues_in_order_on_the_next_track_from_its_start() {
+    let mut state = queued(3, PlaybackOrder::InOrder);
+    state.initial(Some("item-1"), None, true, 100);
+    state.position_ms = 42_000;
+    let (restored, transition) = relaunch(&state, persistence::RestoreSelection::Next);
+    assert_eq!(restored.current, Some(2));
+    assert_eq!(loaded_index(&restored, &transition), Some(2));
+    assert_eq!(restored.position_ms, 0);
+    assert_eq!(restored.status, SessionStatus::Paused);
+    assert_eq!(restored.issue, Some(SessionIssue::Restored));
+    // Previous returns to the track that was playing when the app closed.
+    assert_eq!(restored.history.last(), Some(&1));
+}
+
+#[test]
+fn native_music_relaunch_after_the_last_in_order_track_starts_the_queue_over() {
+    let mut state = queued(3, PlaybackOrder::InOrder);
+    state.initial(Some("item-2"), None, true, 100);
+    let (restored, transition) = relaunch(&state, persistence::RestoreSelection::Next);
+    assert_eq!(restored.current, Some(0));
+    assert_eq!(loaded_index(&restored, &transition), Some(0));
+}
+
+#[test]
+fn native_music_relaunch_continues_the_saved_shuffle_pass() {
+    let mut state = queued(5, PlaybackOrder::Shuffle);
+    state.initial(None, None, true, 100);
+    let left = state.current.unwrap();
+    let remaining = state.shuffle.clone();
+    let (restored, transition) = relaunch(&state, persistence::RestoreSelection::Next);
+    assert_eq!(restored.current, Some(remaining[0]));
+    assert_eq!(loaded_index(&restored, &transition), Some(remaining[0]));
+    assert_eq!(restored.shuffle, remaining[1..]);
+    assert_eq!(restored.history.last(), Some(&left));
+}
+
+#[test]
+fn native_music_relaunch_after_a_finished_shuffle_pass_starts_a_new_one_elsewhere() {
+    let mut state = queued(4, PlaybackOrder::Shuffle);
+    state.initial(None, None, true, 100);
+    for _ in 0..3 {
+        state.apply(SessionIntent::Next, 200);
+    }
+    assert!(state.shuffle.is_empty());
+    let left = state.current.unwrap();
+    let (restored, _) = relaunch(&state, persistence::RestoreSelection::Next);
+    assert_ne!(restored.current, Some(left));
+    assert_eq!(restored.shuffle.len(), 2);
+    assert!(!restored.shuffle.contains(&left));
+}
+
+#[test]
+fn native_music_relaunch_with_one_eligible_track_reselects_it_from_its_start() {
+    let mut state = queued(1, PlaybackOrder::Mix);
+    state.initial(Some("item-0"), None, true, 100);
+    state.position_ms = 30_000;
+    let (restored, transition) = relaunch(&state, persistence::RestoreSelection::Next);
+    assert_eq!(restored.current, Some(0));
+    assert_eq!(loaded_index(&restored, &transition), Some(0));
+    assert_eq!(restored.position_ms, 0);
+}
+
+#[test]
+fn native_music_reopened_context_keeps_the_saved_track_and_position() {
+    let mut state = queued(3, PlaybackOrder::InOrder);
+    state.initial(Some("item-1"), None, true, 100);
+    state.position_ms = 42_000;
+    let (restored, transition) = relaunch(&state, persistence::RestoreSelection::Saved);
+    assert_eq!(restored.current, Some(1));
+    assert_eq!(loaded_index(&restored, &transition), Some(1));
+    assert_eq!(restored.position_ms, 42_000);
+}
+
+#[test]
+fn native_music_restored_browser_selection_reloads_once_its_host_is_available() {
+    for selection in [
+        persistence::RestoreSelection::Next,
+        persistence::RestoreSelection::Saved,
+    ] {
+        let mut state = queued(2, PlaybackOrder::InOrder);
+        for entry in std::sync::Arc::make_mut(&mut state.queue) {
+            entry.backend = SessionBackend::Browser;
+        }
+        state.browser_host = true;
+        state.initial(Some("item-0"), None, true, 100);
+        // The restore-time load is published before any WebView hosts browser media.
+        let (mut restored, _) = relaunch(&state, selection);
+        assert!(!restored.browser_host);
+        let host = restored.apply(SessionIntent::BrowserHost { available: true }, 600);
+        assert!(
+            matches!(
+                host.effects.as_slice(),
+                [SessionEffect::Load { autoplay: false, generation, .. }] if *generation == restored.generation
+            ),
+            "{selection:?}"
+        );
+        assert_eq!(restored.issue, None);
+        let play = restored.apply(SessionIntent::Play, 700);
+        assert_eq!(
+            play.effects,
+            vec![SessionEffect::Play {
+                generation: restored.generation
+            }]
+        );
+    }
 }

@@ -7,4 +7,5 @@
 - Enter Review across an automatic activation and return; review playback is preserved and automation reconciles afterward. A manual override stays until the next accepted activation.
 - Assign only a background sound; main queue ownership is unchanged. Remove a referenced sound; the error is visible and unrelated music continues.
 - Restart after automatic background playback; saved intent alone does not start audio.
+- Close the app during local audio and YouTube playlist playback and relaunch; each opens paused on the next track, Play starts it, and Previous returns to the earlier track.
 - Delay source preparation during a phase change, vault switch, and handoff; obsolete preparation never becomes audible and handoff waits or reports its timeout.

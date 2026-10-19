@@ -152,6 +152,15 @@ export const music = {
     notPlaying: "Not playing",
     volume: "Background volume",
     openBuilder: "Manage sounds",
+    choice: {
+      keep: "Don't change",
+      silence: "Silence",
+      presets: "Presets",
+      missing: "Selected sound is unavailable",
+      search: "Search sounds",
+      noMatches: "No sounds match this search.",
+      presetCount: (count: number) => `${count} ${count === 1 ? "sound" : "sounds"}`,
+    },
   },
   builder: {
     defaultPlaylist: {

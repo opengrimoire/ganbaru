@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseMusicSoundscapeGroups, parseMusicSoundscapeSnapshot, parseMusicSoundscapes, parseMusicSoundscapeState } from "./contracts";
+import { parseMusicSoundscapeGroups, parseMusicSoundscapePresets, parseMusicSoundscapeSnapshot, parseMusicSoundscapes, parseMusicSoundscapeState } from "./contracts";
 import { orderedGeneratedSounds } from "./presentation";
 
 describe("soundscape boundary contracts", () => {
@@ -48,5 +48,13 @@ describe("soundscape boundary contracts", () => {
       createdAtMs: 1, updatedAtMs: 1, version: 1,
     }));
     expect(orderedGeneratedSounds(parseMusicSoundscapes(definitions)).map((entry) => entry.generatedKind)).toEqual(["brown", "pink", "white"]);
+  });
+
+  it("parses presets in their stored sound order, keeps emptied presets, and rejects repeated sets", () => {
+    const preset = { id: "evening", name: "Evening", icon: "lucide:moon", soundscapeIds: ["rain", "fire"], createdAtMs: 1, updatedAtMs: 1, version: 1 };
+    expect(parseMusicSoundscapePresets([preset])[0].soundscapeIds).toEqual(["rain", "fire"]);
+    expect(parseMusicSoundscapePresets([{ ...preset, soundscapeIds: [] }])[0].soundscapeIds).toEqual([]);
+    expect(() => parseMusicSoundscapePresets([{ ...preset, soundscapeIds: ["rain", "rain"] }])).toThrow("soundscapeIds");
+    expect(() => parseMusicSoundscapePresets([{ ...preset, soundscapeIds: Array.from({ length: 17 }, (_, index) => `sound-${index}`) }])).toThrow("soundscapeIds");
   });
 });

@@ -19,6 +19,7 @@ function draft(
     behavior: "inherit",
     playlistId: null,
     soundscapeId: null,
+    soundscapePresetId: null,
     soundscapeBehavior: "inherit",
     provenanceKind: "explicit",
     provenanceId: null,
@@ -78,6 +79,7 @@ describe("event playlist choices", () => {
       behavior: "play-automatically",
       playlistId: "lofi",
       soundscapeId: null,
+      soundscapePresetId: null,
       soundscapeBehavior: "inherit",
     });
   });

@@ -155,6 +155,15 @@ export const music = {
     notPlaying: "Sin reproducir",
     volume: "Volumen de fondo",
     openBuilder: "Administrar sonidos",
+    choice: {
+      keep: "No cambiar",
+      silence: "Silencio",
+      presets: "Preajustes",
+      missing: "El sonido seleccionado no está disponible",
+      search: "Buscar sonidos",
+      noMatches: "Ningún sonido coincide con esta búsqueda.",
+      presetCount: (count: number) => `${count} ${count === 1 ? "sonido" : "sonidos"}`,
+    },
   },
   builder: {
     defaultPlaylist: {

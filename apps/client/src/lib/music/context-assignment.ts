@@ -27,6 +27,7 @@ export interface MusicContextAssignment {
   behavior: MusicAssignmentBehavior;
   playlistId: string | null;
   soundscapeId: string | null;
+  soundscapePresetId: string | null;
   soundscapeBehavior: MusicSoundscapeBehavior;
   provenanceKind: MusicAssignmentProvenanceKind;
   provenanceId: string | null;
@@ -39,6 +40,7 @@ export interface MusicContextAssignmentDraft {
   behavior: MusicAssignmentBehavior;
   playlistId: string | null;
   soundscapeId: string | null;
+  soundscapePresetId: string | null;
   soundscapeBehavior: MusicSoundscapeBehavior;
   provenanceKind: MusicAssignmentProvenanceKind;
   provenanceId: string | null;
@@ -98,6 +100,7 @@ function parseMusicContextAssignment(value: unknown, label: string): MusicContex
     behavior: enumValue(row.behavior, assignmentBehaviors, `${label}.behavior`),
     playlistId: nullableString(row.playlistId, `${label}.playlistId`),
     soundscapeId: nullableString(row.soundscapeId, `${label}.soundscapeId`),
+    soundscapePresetId: nullableString(row.soundscapePresetId, `${label}.soundscapePresetId`),
     soundscapeBehavior: enumValue(row.soundscapeBehavior, soundscapeBehaviors, `${label}.soundscapeBehavior`),
     provenanceKind: enumValue(row.provenanceKind, assignmentProvenanceKinds, `${label}.provenanceKind`),
     provenanceId: nullableString(row.provenanceId, `${label}.provenanceId`),

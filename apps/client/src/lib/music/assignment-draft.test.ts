@@ -13,6 +13,7 @@ describe("music assignment drafts", () => {
       behavior: "pause-music",
       playlistId: null,
       soundscapeId: null,
+      soundscapePresetId: null,
       soundscapeBehavior: "inherit",
       provenanceKind: "explicit",
       provenanceId: null,
@@ -32,8 +33,17 @@ describe("music assignment drafts", () => {
 
   it("drops untouched inherit rows but retains soundscape-only intent", () => {
     const drafts = completeMusicAssignmentDrafts([]);
-    const withSoundscape = updateMusicAssignmentDraft(drafts, "long-break", { soundscapeId: "rain" });
+    const withSoundscape = updateMusicAssignmentDraft(drafts, "long-break", { soundscapeBehavior: "play-selected", soundscapeId: "rain" });
     expect(persistedMusicAssignmentDrafts(withSoundscape).map((entry) => entry.phase)).toEqual(["long-break"]);
+  });
+
+  it("clears background sound references when the phase stops selecting a sound", () => {
+    const drafts = completeMusicAssignmentDrafts([]);
+    const withPreset = updateMusicAssignmentDraft(drafts, "focus", { soundscapeBehavior: "play-selected", soundscapePresetId: "preset-1" });
+    const silenced = updateMusicAssignmentDraft(withPreset, "focus", { soundscapeBehavior: "pause-soundscape" })[0];
+    expect(silenced.soundscapePresetId).toBeNull();
+    expect(silenced.soundscapeId).toBeNull();
+    expect(persistedMusicAssignmentDrafts(withPreset).map((entry) => entry.soundscapePresetId)).toEqual(["preset-1"]);
   });
 
   it("compares sparse and complete drafts by semantic value", () => {

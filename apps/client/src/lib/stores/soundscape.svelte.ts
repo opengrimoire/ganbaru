@@ -2,12 +2,14 @@ import {
   getDeviceId,
   getMusicSoundscapes,
   getMusicSoundscapeGroups,
+  getMusicSoundscapePresets,
   getSoundscapeSnapshot,
   getMusicSoundscapeState,
   pauseSoundscape,
   recoverSoundscape,
   removeMusicSoundscape,
   removeMusicSoundscapeGroup,
+  removeMusicSoundscapePreset,
   resumeSoundscape,
   setSoundscapeVolume,
   setSoundscapeLevels,
@@ -16,11 +18,14 @@ import {
   updateMusicSoundscapeState,
   upsertMusicSoundscape,
   upsertMusicSoundscapeGroup,
+  upsertMusicSoundscapePreset,
 } from "$lib/api/soundscape";
 import type {
   MusicSoundscapeDefinition,
   MusicSoundscapeGroup,
   MusicSoundscapeGroupWrite,
+  MusicSoundscapePreset,
+  MusicSoundscapePresetWrite,
   MusicSoundscapeSnapshot,
   MusicSoundscapeState,
   MusicSoundscapeWrite,
@@ -32,6 +37,7 @@ import { soundSelectionAction } from "$lib/music/soundscape/selection";
 class SoundscapeStore {
   definitions = $state<MusicSoundscapeDefinition[]>([]);
   groups = $state<MusicSoundscapeGroup[]>([]);
+  presets = $state<MusicSoundscapePreset[]>([]);
   persisted = $state<MusicSoundscapeState | null>(null);
   sectionLevels = $state<{ generated: number | null; local: number | null }>({ generated: null, local: null });
   snapshot = $state<MusicSoundscapeSnapshot>({ status: "idle", sourceId: null, volume: INITIAL_SOUNDSCAPE_VOLUME, errorCode: null });
@@ -60,16 +66,18 @@ class SoundscapeStore {
     this.error = null;
     try {
       const deviceId = await getDeviceId();
-      const [definitions, persisted, groups, snapshot] = await Promise.all([
+      const [definitions, persisted, groups, presets, snapshot] = await Promise.all([
         getMusicSoundscapes(deviceId),
         getMusicSoundscapeState(),
         getMusicSoundscapeGroups(),
+        getMusicSoundscapePresets(),
         getSoundscapeSnapshot(),
       ]);
       if (generation !== this.generation) return;
       this.deviceId = deviceId;
       this.definitions = definitions;
       this.groups = groups;
+      this.presets = presets;
       this.persisted = persisted;
       this.sectionLevels = { generated: persisted.generatedLevel, local: persisted.localLevel };
       this.snapshot = snapshot;
@@ -125,6 +133,27 @@ class SoundscapeStore {
     else if (action.kind === "stop") await this.stop();
     else if (action.ids.length > MAX_SOUNDSCAPE_LAYERS) this.error = "Too many background sounds are selected.";
     else await this.startSelection(action.ids);
+  }
+
+  /** Preset whose sounds match the current selection, ignoring order. */
+  get activePreset(): MusicSoundscapePreset | null {
+    const active = this.persisted?.activeIds ?? [];
+    if (active.length === 0) return null;
+    return this.presets.find((preset) => preset.soundscapeIds.length === active.length
+      && preset.soundscapeIds.every((id) => active.includes(id))) ?? null;
+  }
+
+  /** Plays the available sounds of a preset together, keeping multiple selection on when it already was. */
+  async playPreset(preset: MusicSoundscapePreset): Promise<void> {
+    if (this.playbackPending || this.modePending) return;
+    const available = preset.soundscapeIds
+      .filter((id) => this.definitions.some((definition) => definition.id === id && definition.availability === "available"))
+      .slice(0, MAX_SOUNDSCAPE_LAYERS);
+    if (available.length === 0) {
+      this.error = "This background sound needs to be repaired before it can play.";
+      return;
+    }
+    await this.startSelection(available, true, available.length > 1 || (this.persisted?.multipleEnabled ?? false));
   }
 
   async setMultipleEnabled(enabled: boolean): Promise<void> {
@@ -274,6 +303,7 @@ class SoundscapeStore {
     this.snapshot = { status: "idle", sourceId: null, volume: INITIAL_SOUNDSCAPE_VOLUME, errorCode: null };
     this.definitions = [];
     this.groups = [];
+    this.presets = [];
     this.persisted = null;
     this.sectionLevels = { generated: null, local: null };
     this.error = null;
@@ -300,6 +330,9 @@ class SoundscapeStore {
       }
       await removeMusicSoundscape(definition.id, definition.version);
       this.definitions = this.definitions.filter((entry) => entry.id !== definition.id);
+      this.presets = this.presets.map((preset) => preset.soundscapeIds.includes(definition.id)
+        ? { ...preset, soundscapeIds: preset.soundscapeIds.filter((id) => id !== definition.id) }
+        : preset);
     } catch (error) {
       this.error = message(error);
       throw error;
@@ -324,6 +357,29 @@ class SoundscapeStore {
       await removeMusicSoundscapeGroup(group.id, group.version);
       this.groups = this.groups.filter((entry) => entry.id !== group.id);
       this.definitions = this.definitions.map((entry) => entry.groupId === group.id ? { ...entry, groupId: null } : entry);
+    } catch (error) { this.error = message(error); throw error; }
+    finally { this.saving = false; }
+  }
+
+  /** Creates or updates a preset and returns the stored row. */
+  async savePreset(write: MusicSoundscapePresetWrite): Promise<MusicSoundscapePreset> {
+    this.saving = true;
+    this.error = null;
+    try {
+      const saved = await upsertMusicSoundscapePreset(write);
+      this.presets = [...this.presets.filter((entry) => entry.id !== saved.id), saved]
+        .sort((left, right) => left.name.toLowerCase().localeCompare(right.name.toLowerCase()));
+      return saved;
+    } catch (error) { this.error = message(error); throw error; }
+    finally { this.saving = false; }
+  }
+
+  async removePreset(preset: MusicSoundscapePreset): Promise<void> {
+    this.saving = true;
+    this.error = null;
+    try {
+      await removeMusicSoundscapePreset(preset.id, preset.version);
+      this.presets = this.presets.filter((entry) => entry.id !== preset.id);
     } catch (error) { this.error = message(error); throw error; }
     finally { this.saving = false; }
   }

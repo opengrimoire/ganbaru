@@ -70,7 +70,7 @@ describe("Project playlist rows", () => {
     await choose(label, "Reading");
     const next = onChange.mock.calls[0][0];
     expect(next.find((assignment) => assignment.phase === phase)).toMatchObject({
-      playlistId: playlist.id, behavior: "play-automatically", soundscapeId: null, soundscapeBehavior: "inherit",
+      playlistId: playlist.id, behavior: "play-automatically", soundscapeId: null, soundscapePresetId: null, soundscapeBehavior: "inherit",
     });
     expect(next.filter((assignment) => assignment.phase !== phase).every((assignment) => assignment.behavior === "pause-music" && assignment.playlistId === null)).toBe(true);
     expect(persistedMusicAssignmentDrafts(next)).toHaveLength(3);

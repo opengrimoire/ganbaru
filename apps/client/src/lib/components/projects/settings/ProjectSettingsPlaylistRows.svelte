@@ -39,6 +39,7 @@
         playlistId: selectedId,
         behavior: selectedId ? "play-automatically" : "pause-music",
         soundscapeId: null,
+        soundscapePresetId: null,
         soundscapeBehavior: "inherit",
       };
     }));

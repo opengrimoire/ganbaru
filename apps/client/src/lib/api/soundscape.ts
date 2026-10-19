@@ -4,12 +4,16 @@ import {
   parseMusicSoundscape,
   parseMusicSoundscapeGroup,
   parseMusicSoundscapeGroups,
+  parseMusicSoundscapePreset,
+  parseMusicSoundscapePresets,
   parseMusicSoundscapes,
   parseMusicSoundscapeSnapshot,
   parseMusicSoundscapeState,
   type MusicSoundscapeDefinition,
   type MusicSoundscapeGroup,
   type MusicSoundscapeGroupWrite,
+  type MusicSoundscapePreset,
+  type MusicSoundscapePresetWrite,
   type MusicSoundscapeSnapshot,
   type MusicSoundscapeStartRequest,
   type MusicSoundscapeState,
@@ -22,6 +26,9 @@ export const getMusicSoundscapes = async (deviceId: string): Promise<MusicSounds
 export const getMusicSoundscapeGroups = async (): Promise<MusicSoundscapeGroup[]> => parseMusicSoundscapeGroups(await invoke<unknown>("music_library_soundscape_groups", { dbUrl: dbUrl() }));
 export const upsertMusicSoundscapeGroup = async (request: MusicSoundscapeGroupWrite): Promise<MusicSoundscapeGroup> => parseMusicSoundscapeGroup(await invoke<unknown>("music_library_upsert_soundscape_group", { dbUrl: dbUrl(), request }));
 export const removeMusicSoundscapeGroup = (groupId: string, expectedVersion: number): Promise<void> => invoke("music_library_remove_soundscape_group", { dbUrl: dbUrl(), groupId, expectedVersion });
+export const getMusicSoundscapePresets = async (): Promise<MusicSoundscapePreset[]> => parseMusicSoundscapePresets(await invoke<unknown>("music_library_soundscape_presets", { dbUrl: dbUrl() }));
+export const upsertMusicSoundscapePreset = async (request: MusicSoundscapePresetWrite): Promise<MusicSoundscapePreset> => parseMusicSoundscapePreset(await invoke<unknown>("music_library_upsert_soundscape_preset", { dbUrl: dbUrl(), request }));
+export const removeMusicSoundscapePreset = (presetId: string, expectedVersion: number): Promise<void> => invoke("music_library_remove_soundscape_preset", { dbUrl: dbUrl(), presetId, expectedVersion });
 export const upsertMusicSoundscape = async (request: MusicSoundscapeWrite): Promise<MusicSoundscapeDefinition> => parseMusicSoundscape(await invoke<unknown>("music_library_upsert_soundscape", { dbUrl: dbUrl(), request }));
 export const removeMusicSoundscape = (soundscapeId: string, expectedVersion: number): Promise<void> => invoke("music_library_remove_soundscape", { dbUrl: dbUrl(), soundscapeId, expectedVersion });
 export const getMusicSoundscapeState = async (): Promise<MusicSoundscapeState> => parseMusicSoundscapeState(await invoke<unknown>("music_library_soundscape_state", { dbUrl: dbUrl() }));

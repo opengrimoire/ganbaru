@@ -2,6 +2,8 @@ import type {
   MusicSoundscapeDefinition,
   MusicSoundscapeGroup,
   MusicSoundscapeGroupWrite,
+  MusicSoundscapePreset,
+  MusicSoundscapePresetWrite,
   MusicSoundscapeSnapshot,
   MusicSoundscapeState,
   MusicSoundscapeWrite,
@@ -11,6 +13,7 @@ import { INITIAL_SOUNDSCAPE_VOLUME } from "$lib/music/soundscape/defaults";
 class MobileSoundscapeStore {
   definitions = $state<MusicSoundscapeDefinition[]>([]);
   groups = $state<MusicSoundscapeGroup[]>([]);
+  presets = $state<MusicSoundscapePreset[]>([]);
   persisted = $state<MusicSoundscapeState | null>(null);
   sectionLevels = $state<{ generated: number | null; local: number | null }>({ generated: null, local: null });
   snapshot = $state<MusicSoundscapeSnapshot>({
@@ -25,6 +28,10 @@ class MobileSoundscapeStore {
   modePending = $state(false);
   error = $state<string | null>(null);
   deviceId = $state<string | null>(null);
+
+  get activePreset(): MusicSoundscapePreset | null {
+    return null;
+  }
 
   get activeDefinition(): MusicSoundscapeDefinition | null {
     return null;
@@ -46,6 +53,11 @@ class MobileSoundscapeStore {
   async removeDefinition(_definition: MusicSoundscapeDefinition): Promise<void> {}
   async saveGroup(_write: MusicSoundscapeGroupWrite): Promise<void> {}
   async removeGroup(_group: MusicSoundscapeGroup): Promise<void> {}
+  async playPreset(_preset: MusicSoundscapePreset): Promise<void> {}
+  async savePreset(_write: MusicSoundscapePresetWrite): Promise<MusicSoundscapePreset> {
+    throw new Error("Background sounds are unavailable on this platform.");
+  }
+  async removePreset(_preset: MusicSoundscapePreset): Promise<void> {}
 }
 
 let instance: MobileSoundscapeStore | null = null;

@@ -65,6 +65,26 @@ export interface MusicSoundscapeGroupWrite {
   updatedAtMs: number;
 }
 
+/** Saved set of background sounds that plays together; volume and section levels stay global. Removing a sound can leave a preset empty until it is edited. */
+export interface MusicSoundscapePreset {
+  id: string;
+  name: string;
+  icon: string;
+  soundscapeIds: string[];
+  createdAtMs: number;
+  updatedAtMs: number;
+  version: number;
+}
+
+export interface MusicSoundscapePresetWrite {
+  id: string;
+  name: string;
+  icon: string;
+  soundscapeIds: string[];
+  expectedVersion: number | null;
+  updatedAtMs: number;
+}
+
 export interface MusicSoundscapeStateWrite {
   activeSoundscapeId: string | null;
   activeIds: string[];
@@ -173,4 +193,22 @@ export function parseMusicSoundscapeState(value: unknown): MusicSoundscapeState 
 export function parseMusicSoundscapeSnapshot(value: unknown): MusicSoundscapeSnapshot {
   const row = record(value, "soundscape snapshot");
   return { status: enumeration(row.status, statuses, "soundscape snapshot.status"), sourceId: optionalText(row.sourceId, "soundscape snapshot.sourceId"), volume: number(row.volume, "soundscape snapshot.volume"), errorCode: optionalText(row.errorCode, "soundscape snapshot.errorCode") };
+}
+export function parseMusicSoundscapePreset(value: unknown, label = "sound preset"): MusicSoundscapePreset {
+  const row = record(value, label);
+  const soundscapeIds = textArray(row.soundscapeIds, `${label}.soundscapeIds`);
+  if (soundscapeIds.length > MAX_SOUNDSCAPE_LAYERS || new Set(soundscapeIds).size !== soundscapeIds.length) throw new Error(`${label}.soundscapeIds is invalid`);
+  return {
+    id: text(row.id, `${label}.id`),
+    name: text(row.name, `${label}.name`),
+    icon: iconText(row.icon, `${label}.icon`),
+    soundscapeIds,
+    createdAtMs: integer(row.createdAtMs, `${label}.createdAtMs`),
+    updatedAtMs: integer(row.updatedAtMs, `${label}.updatedAtMs`),
+    version: integer(row.version, `${label}.version`),
+  };
+}
+export function parseMusicSoundscapePresets(value: unknown): MusicSoundscapePreset[] {
+  if (!Array.isArray(value)) throw new Error("sound presets must be an array");
+  return value.map((entry, index) => parseMusicSoundscapePreset(entry, `sound presets[${index}]`));
 }

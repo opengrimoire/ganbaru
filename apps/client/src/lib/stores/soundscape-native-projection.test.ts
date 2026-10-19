@@ -6,6 +6,7 @@ const api = vi.hoisted(() => ({
   getDeviceId: vi.fn<() => Promise<string>>(),
   getMusicSoundscapes: vi.fn(),
   getMusicSoundscapeGroups: vi.fn(),
+  getMusicSoundscapePresets: vi.fn(),
   getMusicSoundscapeState: vi.fn<() => Promise<MusicSoundscapeState>>(),
   getSoundscapeSnapshot: vi.fn<() => Promise<MusicSoundscapeSnapshot>>(),
   startSoundscape: vi.fn(),
@@ -31,6 +32,7 @@ beforeEach(() => {
     groupId: null, createdAtMs: 1, updatedAtMs: 1, version: 1,
   }]);
   api.getMusicSoundscapeGroups.mockResolvedValue([]);
+  api.getMusicSoundscapePresets.mockResolvedValue([]);
   api.getMusicSoundscapeState.mockResolvedValue(state);
   api.getSoundscapeSnapshot.mockResolvedValue(idle);
 });
@@ -80,6 +82,33 @@ describe("native background playback projection", () => {
     expect(store.persisted).toBeNull();
     expect(store.snapshot.status).toBe("idle");
     expect(api.stopSoundscape).not.toHaveBeenCalled();
+    expect(api.startSoundscape).not.toHaveBeenCalled();
+  });
+
+  it("layers the available sounds of a preset even when multiple selection was off", async () => {
+    const rain = { id: "rain", sourceKind: "local-loop", generatedKind: null, availability: "available", localPath: "/rain.ogg", bundledIdentity: null, name: "Rain", icon: "lucide:audio-lines", groupId: null, createdAtMs: 1, updatedAtMs: 1, version: 1 };
+    const fire = { ...rain, id: "fire", availability: "missing", localPath: null };
+    api.getMusicSoundscapes.mockResolvedValue([{ id: "noise", sourceKind: "generated-noise", generatedKind: "white", availability: "available", localPath: null, bundledIdentity: null, name: "Noise", icon: "lucide:audio-lines", groupId: null, createdAtMs: 1, updatedAtMs: 1, version: 1 }, rain, fire]);
+    api.getMusicSoundscapeState.mockResolvedValue({ ...state, automaticIntent: false, desiredPlaying: false });
+    api.startSoundscape.mockResolvedValue({ ...idle, status: "playing", sourceId: "noise" });
+    api.updateMusicSoundscapeState.mockImplementation(async (write: MusicSoundscapeState) => ({ ...state, ...write, automaticIntent: false, version: 3 }));
+    const { getSoundscapeStore } = await import("$lib/stores/soundscape.svelte");
+    const store = getSoundscapeStore();
+    await store.initialize();
+    await store.playPreset({ id: "evening", name: "Evening", icon: "lucide:moon", soundscapeIds: ["noise", "fire", "rain"], createdAtMs: 1, updatedAtMs: 1, version: 1 });
+    expect(api.startSoundscape.mock.calls[0][0]).toMatchObject({ sourceId: "noise", extraSources: [{ sourceId: "rain" }] });
+    expect(api.updateMusicSoundscapeState).toHaveBeenCalledWith(expect.objectContaining({ activeIds: ["noise", "rain"], multipleEnabled: true, desiredPlaying: true }));
+    expect(store.activePreset).toBeNull();
+    store.presets = [{ id: "focus", name: "Focus", icon: "lucide:moon", soundscapeIds: ["rain", "noise"], createdAtMs: 1, updatedAtMs: 1, version: 1 }];
+    expect(store.activePreset?.id).toBe("focus");
+  });
+
+  it("reports a preset with no playable sound without starting output", async () => {
+    const { getSoundscapeStore } = await import("$lib/stores/soundscape.svelte");
+    const store = getSoundscapeStore();
+    await store.initialize();
+    await store.playPreset({ id: "empty", name: "Empty", icon: "lucide:moon", soundscapeIds: ["gone"], createdAtMs: 1, updatedAtMs: 1, version: 1 });
+    expect(store.error).toBe("This background sound needs to be repaired before it can play.");
     expect(api.startSoundscape).not.toHaveBeenCalled();
   });
 });

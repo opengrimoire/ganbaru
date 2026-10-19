@@ -250,7 +250,7 @@ export const calendar = {
     removeLinkedTask: (task: string) => `Quitar tarea vinculada ${task}`,
     taskLinksRecurring: "Los vínculos de tareas están disponibles para eventos individuales.",
     music: "Música",
-    musicDescription: "Modifica la banda sonora del proyecto para este evento. Las opciones heredadas permanecen visibles y cada cambio de fase inicia una pista nueva cuando la reproducción es automática.",
+    musicPlaylist: "Playlist",
     comingSoon: "Próximamente",
     readOnly: "Solo lectura",
     readOnlyHyphen: "Solo lectura",

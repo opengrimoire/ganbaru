@@ -122,7 +122,6 @@
     "src/lib/components/notes/working-markdown/NotesWorkingMarkdownEditor.mobile.svelte",
     "src/lib/components/notes/NotesProjectSettingsPanel.mobile.svelte",
     "src/lib/components/notes/working-markdown/NotesWorkingMarkdownTree.mobile.svelte",
-    "src/lib/components/music/MusicSoundtrackAssignmentEditor.mobile.svelte",
     "src/lib/components/music/builder/MusicItemRepairDialog.mobile.svelte",
     "src/lib/components/music/builder/MusicRelinkWizard.mobile.svelte",
     "src/lib/components/music/soundscape/MusicSoundscapeBuilder.mobile.svelte",

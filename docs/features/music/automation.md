@@ -15,7 +15,7 @@ Assignments are defined independently for focus, short break, long break, and th
 
 Assignments store playlist and background-sound intent only. Start, end, skip, rate, volume, weighting, and enabled state remain playlist-membership behavior.
 
-The Project settings UI currently exposes Focus, Short break, and Long break playlists under Event defaults. A chosen playlist plays automatically and an empty choice means silence; each phase boundary starts a fresh track, avoiding the previous one when alternatives exist. The broader assignment record and event override controls support the full behavior list above. Configuring background sounds inside playlists is planned.
+The Project settings UI currently exposes Focus, Short break, and Long break playlists under Event defaults. A chosen playlist plays automatically and an empty choice means silence; each phase boundary starts a fresh track, avoiding the previous one when alternatives exist. The Calendar event panel uses the same playlist choice for event overrides: one Playlist row without Pomodoro, or the three phase rows with Pomodoro. Each row shows the effective playlist, and choosing the project's value again clears the override; the section toggle silences the event or restores the project playlists. The event panel does not choose background sounds yet. The broader assignment record supports the full behavior list above. Configuring background sounds inside playlists is planned.
 
 ## Ownership and precedence
 

@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   completeMusicAssignmentDrafts,
   musicAssignmentDraftsEqual,
-  nextMusicAssignmentPhase,
   persistedMusicAssignmentDrafts,
   updateMusicAssignmentDraft,
 } from "./assignment-draft";
@@ -39,12 +38,5 @@ describe("music assignment drafts", () => {
 
   it("compares sparse and complete drafts by semantic value", () => {
     expect(musicAssignmentDraftsEqual([], completeMusicAssignmentDrafts([]))).toBe(true);
-  });
-
-  it("moves phase tabs with wrapping arrow and boundary navigation", () => {
-    expect(nextMusicAssignmentPhase("focus", "ArrowLeft")).toBe("long-break");
-    expect(nextMusicAssignmentPhase("long-break", "ArrowRight")).toBe("focus");
-    expect(nextMusicAssignmentPhase("short-break", "Home")).toBe("focus");
-    expect(nextMusicAssignmentPhase("short-break", "End")).toBe("long-break");
   });
 });

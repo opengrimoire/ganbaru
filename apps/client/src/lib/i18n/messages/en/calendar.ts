@@ -258,7 +258,7 @@ export const calendar = {
     removeLinkedTask: (task: string) => `Remove linked task ${task}`,
     taskLinksRecurring: "Task links are available for single events.",
     music: "Music",
-    musicDescription: "Override the project soundtrack for this event. Inherited choices remain visible and every phase boundary starts a fresh track when playback is automatic.",
+    musicPlaylist: "Playlist",
     comingSoon: "Coming soon",
     readOnly: "Read only",
     readOnlyHyphen: "Read-only",

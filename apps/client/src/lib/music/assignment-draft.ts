@@ -12,19 +12,6 @@ export const MUSIC_ACTIVITY_PHASES: readonly MusicActivityPhase[] = [
   "long-break",
 ];
 
-export type MusicPhaseNavigationKey = "ArrowLeft" | "ArrowRight" | "Home" | "End";
-
-export function nextMusicAssignmentPhase(
-  phase: MusicActivityPhase,
-  key: MusicPhaseNavigationKey,
-): MusicActivityPhase {
-  const current = MUSIC_ACTIVITY_PHASES.indexOf(phase);
-  if (key === "Home") return MUSIC_ACTIVITY_PHASES[0];
-  if (key === "End") return MUSIC_ACTIVITY_PHASES[MUSIC_ACTIVITY_PHASES.length - 1];
-  const offset = key === "ArrowRight" ? 1 : -1;
-  return MUSIC_ACTIVITY_PHASES[(current + offset + MUSIC_ACTIVITY_PHASES.length) % MUSIC_ACTIVITY_PHASES.length];
-}
-
 export function emptyMusicAssignmentDraft(
   phase: MusicActivityPhase,
   provenanceKind: MusicAssignmentProvenanceKind = "explicit",

@@ -5,32 +5,37 @@ import {
   MUSIC_ACTIVITY_PHASES,
 } from "./assignment-draft";
 import type { MusicActivityPhase, MusicContextAssignmentDraft } from "./context-assignment";
+import { soundChoiceFields, soundChoiceFromAssignment, soundChoicesEqual, type MusicSoundChoice } from "./sound-choice";
 
 /**
- * Lists the phases an event can choose playlists for. Without Pomodoro the whole event runs as one
+ * Lists the phases an event can choose music for. Without Pomodoro the whole event runs as one
  * Focus phase, so only that phase is offered.
  *
  * @param pomodoroEnabled - Whether the event runs Pomodoro phases.
- * @returns The phases shown as playlist rows.
+ * @returns The phases shown as music rows.
  */
 export function eventMusicPhases(pomodoroEnabled: boolean): readonly MusicActivityPhase[] {
   return pomodoroEnabled ? MUSIC_ACTIVITY_PHASES : ["focus"];
 }
 
-/** Whether a row takes part in resolution, matching the native session, which skips fully inherited rows. */
-function assignmentApplies(assignment: MusicContextAssignmentDraft | undefined): assignment is MusicContextAssignmentDraft {
-  return assignment !== undefined
-    && (assignment.behavior !== "inherit" || assignment.soundscapeBehavior !== "inherit");
+function phaseRow(assignments: readonly MusicContextAssignmentDraft[], phase: MusicActivityPhase): MusicContextAssignmentDraft | undefined {
+  return assignments.find((assignment) => assignment.phase === phase);
 }
 
-/** Reads the playlist a single assignment row plays, or null when it plays none. */
+/** Reads the playlist a single row plays, or null when it plays none. */
 function assignmentPlaylistId(assignment: MusicContextAssignmentDraft | undefined): string | null {
-  return assignmentApplies(assignment) && behaviorUsesPlaylist(assignment.behavior) ? assignment.playlistId : null;
+  return assignment && behaviorUsesPlaylist(assignment.behavior) ? assignment.playlistId : null;
+}
+
+/** Reads the background sound a single row chooses, where a missing row changes nothing. */
+function assignmentSound(assignment: MusicContextAssignmentDraft | undefined): MusicSoundChoice {
+  return assignment ? soundChoiceFromAssignment(assignment) : { kind: "keep" };
 }
 
 /**
- * Resolves the playlist a phase plays for the event: the override when it applies, otherwise the
- * project snapshot.
+ * Resolves the playlist a phase plays for the event. Music and background sound resolve
+ * independently like the native session: the override decides music only when its music
+ * behavior is set, otherwise the project snapshot does.
  *
  * @param overrides - Event override drafts.
  * @param snapshots - Project intent copied onto the event.
@@ -42,15 +47,34 @@ export function effectiveEventPlaylistId(
   snapshots: readonly MusicContextAssignmentDraft[],
   phase: MusicActivityPhase,
 ): string | null {
-  const override = overrides.find((assignment) => assignment.phase === phase);
-  if (assignmentApplies(override)) return assignmentPlaylistId(override);
-  return assignmentPlaylistId(snapshots.find((assignment) => assignment.phase === phase));
+  const override = phaseRow(overrides, phase);
+  if (override && override.behavior !== "inherit") return assignmentPlaylistId(override);
+  return assignmentPlaylistId(phaseRow(snapshots, phase));
 }
 
 /**
- * Applies a playlist choice for one phase. A choice equal to the project snapshot clears the
- * override so the event keeps following its project; any other choice plays that playlist
- * automatically, or silence for null, without ambient sound.
+ * Resolves the background sound a phase uses for the event: the override when its sound behavior
+ * is set, otherwise the project snapshot.
+ *
+ * @param overrides - Event override drafts.
+ * @param snapshots - Project intent copied onto the event.
+ * @param phase - Phase to resolve.
+ * @returns The effective background sound choice.
+ */
+export function effectiveEventSound(
+  overrides: readonly MusicContextAssignmentDraft[],
+  snapshots: readonly MusicContextAssignmentDraft[],
+  phase: MusicActivityPhase,
+): MusicSoundChoice {
+  const override = phaseRow(overrides, phase);
+  if (override && override.soundscapeBehavior !== "inherit") return assignmentSound(override);
+  return assignmentSound(phaseRow(snapshots, phase));
+}
+
+/**
+ * Applies a playlist choice for one phase without touching its background sound. A choice equal
+ * to the project snapshot clears the music override so the event keeps following its project; any
+ * other choice plays that playlist automatically, or silence for null.
  *
  * @param overrides - Event override drafts.
  * @param snapshots - Project intent copied onto the event.
@@ -64,47 +88,77 @@ export function chooseEventPlaylist(
   phase: MusicActivityPhase,
   playlistId: string | null,
 ): MusicContextAssignmentDraft[] {
-  const inherited = assignmentPlaylistId(snapshots.find((assignment) => assignment.phase === phase));
+  const inherited = assignmentPlaylistId(phaseRow(snapshots, phase));
   return completeMusicAssignmentDrafts(overrides).map((assignment): MusicContextAssignmentDraft => {
     if (assignment.phase !== phase) return assignment;
-    if (playlistId === inherited) return emptyMusicAssignmentDraft(phase);
-    return {
-      ...emptyMusicAssignmentDraft(phase),
-      behavior: playlistId ? "play-automatically" : "pause-music",
-      playlistId,
-    };
+    if (playlistId === inherited) return { ...assignment, behavior: "inherit", playlistId: null };
+    return { ...assignment, behavior: playlistId ? "play-automatically" : "pause-music", playlistId };
   });
 }
 
 /**
- * Silences every listed phase that currently plays a playlist.
+ * Applies a background sound choice for one phase without touching its music. A choice equal to
+ * the project snapshot clears the sound override; "Don't change" over a project sound is stored as
+ * keeping the current sound so the project sound does not apply.
+ *
+ * @param overrides - Event override drafts.
+ * @param snapshots - Project intent copied onto the event.
+ * @param phase - Phase being changed.
+ * @param choice - Chosen background sound.
+ * @returns The complete next override drafts.
+ */
+export function chooseEventSound(
+  overrides: readonly MusicContextAssignmentDraft[],
+  snapshots: readonly MusicContextAssignmentDraft[],
+  phase: MusicActivityPhase,
+  choice: MusicSoundChoice,
+): MusicContextAssignmentDraft[] {
+  const inherited = assignmentSound(phaseRow(snapshots, phase));
+  const fields = soundChoicesEqual(choice, inherited)
+    ? soundChoiceFields({ kind: "keep" })
+    : soundChoiceFields(choice, "keep-current-soundscape");
+  return completeMusicAssignmentDrafts(overrides).map((assignment) => assignment.phase === phase
+    ? { ...assignment, ...fields }
+    : assignment);
+}
+
+/** Whether a background sound choice starts sound when its phase begins. */
+export function eventSoundPlays(choice: MusicSoundChoice): boolean {
+  return choice.kind === "sound" || choice.kind === "preset";
+}
+
+/**
+ * Silences music and background sound in every listed phase that currently plays them.
  *
  * @param overrides - Event override drafts.
  * @param snapshots - Project intent copied onto the event.
  * @param phases - Phases to silence.
  * @returns The complete next override drafts.
  */
-export function silenceEventPlaylists(
+export function silenceEventMusic(
   overrides: readonly MusicContextAssignmentDraft[],
   snapshots: readonly MusicContextAssignmentDraft[],
   phases: readonly MusicActivityPhase[],
 ): MusicContextAssignmentDraft[] {
-  return phases.reduce<MusicContextAssignmentDraft[]>(
-    (next, phase) => effectiveEventPlaylistId(next, snapshots, phase) === null
+  return phases.reduce<MusicContextAssignmentDraft[]>((next, phase) => {
+    const quiet = effectiveEventPlaylistId(next, snapshots, phase) === null
       ? next
-      : chooseEventPlaylist(next, snapshots, phase, null),
-    completeMusicAssignmentDrafts(overrides),
-  );
+      : chooseEventPlaylist(next, snapshots, phase, null);
+    return eventSoundPlays(effectiveEventSound(quiet, snapshots, phase))
+      ? chooseEventSound(quiet, snapshots, phase, { kind: "silence" })
+      : quiet;
+  }, completeMusicAssignmentDrafts(overrides));
 }
 
 /**
- * Clears the overrides of the listed phases so they follow the project snapshot again.
+ * Clears the overrides of the listed phases so their music and background sound follow the
+ * project snapshot again.
  *
  * @param overrides - Event override drafts.
  * @param phases - Phases to restore.
  * @returns The complete next override drafts.
  */
-export function restoreEventPlaylists(
+export function restoreEventMusic(
   overrides: readonly MusicContextAssignmentDraft[],
   phases: readonly MusicActivityPhase[],
 ): MusicContextAssignmentDraft[] {
@@ -114,15 +168,18 @@ export function restoreEventPlaylists(
 }
 
 /**
- * Whether the project snapshot plays a playlist in any listed phase.
+ * Whether the project snapshot plays a playlist or background sound in any listed phase.
  *
  * @param snapshots - Project intent copied onto the event.
  * @param phases - Phases to inspect.
- * @returns True when restoring the project choice would play music.
+ * @returns True when restoring the project choice would play something.
  */
-export function snapshotHasEventPlaylist(
+export function snapshotHasEventMusic(
   snapshots: readonly MusicContextAssignmentDraft[],
   phases: readonly MusicActivityPhase[],
 ): boolean {
-  return phases.some((phase) => assignmentPlaylistId(snapshots.find((assignment) => assignment.phase === phase)) !== null);
+  return phases.some((phase) => {
+    const snapshot = phaseRow(snapshots, phase);
+    return assignmentPlaylistId(snapshot) !== null || eventSoundPlays(assignmentSound(snapshot));
+  });
 }

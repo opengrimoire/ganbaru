@@ -38,6 +38,7 @@ class MobileSoundscapeStore {
   }
 
   async initialize(): Promise<void> {}
+  async ensureCatalog(): Promise<void> {}
   async play(_id: string, _persist = true): Promise<void> {}
   async togglePlayback(): Promise<void> {}
   async toggleSelection(_id: string): Promise<void> {}

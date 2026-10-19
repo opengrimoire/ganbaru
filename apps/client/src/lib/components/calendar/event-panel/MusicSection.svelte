@@ -1,21 +1,29 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { slide } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
   import Music from "@lucide/svelte/icons/music";
   import MusicPlaylistSelect from "$lib/components/music/MusicPlaylistSelect.svelte";
+  import MusicSoundSelect from "$lib/components/music/soundscape/MusicSoundSelect.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
     chooseEventPlaylist,
+    chooseEventSound,
     effectiveEventPlaylistId,
+    effectiveEventSound,
     eventMusicPhases,
-    restoreEventPlaylists,
-    silenceEventPlaylists,
-    snapshotHasEventPlaylist,
+    eventSoundPlays,
+    restoreEventMusic,
+    silenceEventMusic,
+    snapshotHasEventMusic,
   } from "$lib/music/event-playlists";
   import type { MusicPlaylistSummary } from "$lib/music/library/contracts";
   import type { MusicActivityPhase, MusicContextAssignmentDraft } from "$lib/music/context-assignment";
   import { systemMusicPlaylistName } from "$lib/music/playlists/system";
+  import type { MusicSoundChoice } from "$lib/music/sound-choice";
+  import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
+  import { getSoundscapeStore } from "$lib/stores/soundscape.svelte";
 
   let {
     overrides,
@@ -44,39 +52,75 @@
   } = $props();
 
   const { t } = getLocalization();
+  const soundscape = getSoundscapeStore();
+  const showSounds = platformHasCapability(BUILD_PLATFORM_PROFILE, "music.soundscapes");
+  const triggerClass = "rounded border-0 bg-black/5 font-normal text-event-panel-input-text hover:bg-black/10 disabled:hover:bg-black/5 dark:bg-black/15 dark:hover:bg-black/25 dark:disabled:hover:bg-black/15";
   const phases = $derived(eventMusicPhases(pomodoroEnabled));
-  const rows = $derived(phases.map((phase) => ({
-    phase,
-    label: pomodoroEnabled ? t(`music.assignment.phase.${phase}`) : t("calendar.eventPanel.musicPlaylist"),
-    playlistId: effectiveEventPlaylistId(overrides, snapshots, phase),
-  })));
-  const enabled = $derived(rows.some((row) => row.playlistId !== null));
-  /** Names the single playlist without Pomodoro, or which phases play music with it. */
+  /** Pomodoro events with background sounds show one row per phase with a playlist and a sound column. */
+  const phaseColumns = $derived(showSounds && pomodoroEnabled);
+  const rows = $derived(phases.map((phase) => {
+    const sound = effectiveEventSound(overrides, snapshots, phase);
+    const playlistId = effectiveEventPlaylistId(overrides, snapshots, phase);
+    return {
+      phase,
+      label: pomodoroEnabled ? t(`music.assignment.phase.${phase}`) : t("calendar.eventPanel.musicPlaylist"),
+      playlistId,
+      sound,
+      plays: playlistId !== null || (showSounds && eventSoundPlays(sound)),
+    };
+  }));
+  const enabled = $derived(rows.some((row) => row.plays));
+  /** Names the playlist and sound without Pomodoro, or which phases play something with it. */
   const summary = $derived.by(() => {
     if (!enabled) return "";
     if (!pomodoroEnabled) {
-      const playlist = playlists.find((entry) => entry.id === rows[0]?.playlistId);
-      return playlist ? systemMusicPlaylistName(playlist.id, playlist.name, t) : t("music.assignment.missingPlaylist");
+      const row = rows[0];
+      const playlist = playlists.find((entry) => entry.id === row?.playlistId);
+      const parts = [
+        row?.playlistId ? (playlist ? systemMusicPlaylistName(playlist.id, playlist.name, t) : t("music.assignment.missingPlaylist")) : null,
+        showSounds && row && eventSoundPlays(row.sound) ? soundName(row.sound) : null,
+      ];
+      return parts.filter((part) => part !== null).join(" · ");
     }
-    const plays = (phase: MusicActivityPhase) => rows.some((row) => row.phase === phase && row.playlistId !== null);
+    const plays = (phase: MusicActivityPhase) => rows.some((row) => row.phase === phase && row.plays);
     return t("calendar.eventPanel.musicPhases", plays("focus"), plays("short-break"), plays("long-break"));
   });
 
-  /** Silence the event, or bring back the project playlists when the event has none. */
+  onMount(() => {
+    if (showSounds) void soundscape.ensureCatalog();
+  });
+
+  /** Name of the sound or preset a phase plays, for the collapsed summary. */
+  function soundName(choice: MusicSoundChoice): string {
+    if (choice.kind === "preset") {
+      return soundscape.presets.find((preset) => preset.id === choice.presetId)?.name ?? t("music.soundscape.choice.missing");
+    }
+    if (choice.kind !== "sound") return "";
+    const definition = soundscape.definitions.find((entry) => entry.id === choice.soundscapeId);
+    if (!definition) return t("music.soundscape.choice.missing");
+    return definition.generatedKind ? t(`music.soundscape.rainName.${definition.generatedKind}`) : definition.name;
+  }
+
+  /** Silence the event, or bring back the project music and sounds when the event plays nothing. */
   function toggle(): void {
     if (disabled || loading) return;
     if (enabled) {
-      onOverridesChange(silenceEventPlaylists(overrides, snapshots, phases));
-    } else if (snapshotHasEventPlaylist(snapshots, phases)) {
-      onOverridesChange(restoreEventPlaylists(overrides, phases));
+      onOverridesChange(silenceEventMusic(overrides, snapshots, phases));
+    } else if (snapshotHasEventMusic(snapshots, phases)) {
+      onOverridesChange(restoreEventMusic(overrides, phases));
     } else if (!expanded) {
       onExpand();
     }
   }
 
-  function select(phase: MusicActivityPhase, playlistId: string | null): void {
+  function selectPlaylist(phase: MusicActivityPhase, playlistId: string | null): void {
     if (disabled || loading) return;
     onOverridesChange(chooseEventPlaylist(overrides, snapshots, phase, playlistId));
+  }
+
+  function selectSound(phase: MusicActivityPhase, choice: MusicSoundChoice): void {
+    if (disabled || loading) return;
+    onOverridesChange(chooseEventSound(overrides, snapshots, phase, choice));
   }
 </script>
 
@@ -97,23 +141,72 @@
     </button>
   </div>
   {#if expanded}
-    <div transition:slide={{ duration: 180, easing: cubicOut }} data-section="music" class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-5 gap-y-1.5 py-2.5 pl-1" style="background-color: var(--panel-bg);">
-      {#if error}
-        <Notice class="col-span-2 px-1 text-[0.65rem]" message={error} {onRetry} />
-      {/if}
-      {#each rows as row (row.phase)}
-        <span class="truncate text-[0.8rem] text-foreground">{row.label}</span>
-        <MusicPlaylistSelect
-          label={row.label}
-          value={row.playlistId}
-          {playlists}
-          onChange={(playlistId) => select(row.phase, playlistId)}
-          {disabled}
-          {loading}
-          emptyLabel={t("common.none")}
-          triggerClass="rounded border-0 bg-black/5 font-normal text-event-panel-input-text hover:bg-black/10 disabled:hover:bg-black/5 dark:bg-black/15 dark:hover:bg-black/25 dark:disabled:hover:bg-black/15"
-        />
-      {/each}
+    <div transition:slide={{ duration: 180, easing: cubicOut }} data-section="music" class="music-body py-2.5 pl-1" style="background-color: var(--panel-bg);">
+      <div class={phaseColumns ? "music-grid phase-columns" : "music-grid"}>
+        {#if error}
+          <Notice class="col-span-full px-1 text-[0.65rem]" message={error} {onRetry} />
+        {/if}
+        {#if phaseColumns}
+          <span class="music-spacer" aria-hidden="true"></span>
+          <span class="truncate text-[0.733333rem] text-muted-foreground">{t("calendar.eventPanel.musicPlaylist")}</span>
+          <span class="truncate text-[0.733333rem] text-muted-foreground">{t("calendar.eventPanel.musicSound")}</span>
+        {/if}
+        {#each rows as row (row.phase)}
+          <span class="music-label truncate text-[0.8rem] text-foreground">{row.label}</span>
+          <MusicPlaylistSelect
+            label={phaseColumns ? t("calendar.eventPanel.musicPhasePlaylist", row.label) : row.label}
+            value={row.playlistId}
+            {playlists}
+            onChange={(playlistId) => selectPlaylist(row.phase, playlistId)}
+            {disabled}
+            {loading}
+            emptyLabel={t("common.none")}
+            {triggerClass}
+          />
+          {#if phaseColumns}
+            <MusicSoundSelect
+              label={t("calendar.eventPanel.musicPhaseSound", row.label)}
+              value={row.sound}
+              onChange={(choice) => selectSound(row.phase, choice)}
+              disabled={disabled || loading}
+              {triggerClass}
+            />
+          {/if}
+        {/each}
+        {#if showSounds && !pomodoroEnabled && rows[0]}
+          {@const row = rows[0]}
+          <span class="truncate text-[0.8rem] text-foreground">{t("calendar.eventPanel.musicSound")}</span>
+          <MusicSoundSelect
+            label={t("calendar.eventPanel.musicSound")}
+            value={row.sound}
+            onChange={(choice) => selectSound(row.phase, choice)}
+            disabled={disabled || loading}
+            {triggerClass}
+          />
+        {/if}
+      </div>
     </div>
   {/if}
 </div>
+
+<style>
+  .music-body { container-type: inline-size; }
+
+  .music-grid {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 0.375rem 1.25rem;
+  }
+
+  .music-grid.phase-columns {
+    grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr);
+    column-gap: 0.5rem;
+  }
+
+  @container (width < 24rem) {
+    .music-grid.phase-columns { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .phase-columns .music-spacer { display: none; }
+    .phase-columns .music-label { grid-column: 1 / -1; margin-top: 0.25rem; }
+  }
+</style>

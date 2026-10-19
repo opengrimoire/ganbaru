@@ -3,11 +3,14 @@ import { completeMusicAssignmentDrafts, persistedMusicAssignmentDrafts } from ".
 import type { MusicActivityPhase, MusicContextAssignmentDraft } from "./context-assignment";
 import {
   chooseEventPlaylist,
+  chooseEventSound,
   effectiveEventPlaylistId,
+  effectiveEventSound,
   eventMusicPhases,
-  restoreEventPlaylists,
-  silenceEventPlaylists,
-  snapshotHasEventPlaylist,
+  eventSoundPlays,
+  restoreEventMusic,
+  silenceEventMusic,
+  snapshotHasEventMusic,
 } from "./event-playlists";
 
 function draft(
@@ -30,6 +33,11 @@ function draft(
 const projectSnapshot = completeMusicAssignmentDrafts([
   draft("focus", { behavior: "play-automatically", playlistId: "deep-work", provenanceKind: "copied-project", provenanceId: "project-1" }),
   draft("short-break", { behavior: "pause-music", provenanceKind: "copied-project", provenanceId: "project-1" }),
+]);
+
+const rainySnapshot = completeMusicAssignmentDrafts([
+  draft("focus", { soundscapeBehavior: "play-selected", soundscapePresetId: "evening", provenanceKind: "copied-project" }),
+  draft("short-break", { soundscapeBehavior: "pause-soundscape", provenanceKind: "copied-project" }),
 ]);
 
 describe("event playlist choices", () => {
@@ -58,9 +66,10 @@ describe("event playlist choices", () => {
     expect(effectiveEventPlaylistId(overrides, projectSnapshot, "focus")).toBe("deep-work");
   });
 
-  it("lets a soundscape-only override hide the project playlist like the native resolver", () => {
+  it("keeps the project playlist under a sound-only override like the native per-field resolver", () => {
     const overrides = [draft("focus", { soundscapeId: "rain", soundscapeBehavior: "play-selected" })];
-    expect(effectiveEventPlaylistId(overrides, projectSnapshot, "focus")).toBeNull();
+    expect(effectiveEventPlaylistId(overrides, projectSnapshot, "focus")).toBe("deep-work");
+    expect(effectiveEventSound(overrides, projectSnapshot, "focus")).toEqual({ kind: "sound", soundscapeId: "rain" });
   });
 
   it("drops the override when the choice matches the project again", () => {
@@ -72,16 +81,17 @@ describe("event playlist choices", () => {
     expect(persistedMusicAssignmentDrafts(silentAgain)).toEqual([]);
   });
 
-  it("clears ambient sound fields when a playlist is chosen", () => {
+  it("keeps the phase's background sound when a playlist is chosen or reverted", () => {
     const overrides = [draft("focus", { behavior: "keep-current-music", soundscapeId: "rain", soundscapeBehavior: "play-selected" })];
     const chosen = chooseEventPlaylist(overrides, projectSnapshot, "focus", "lofi");
     expect(chosen[0]).toMatchObject({
       behavior: "play-automatically",
       playlistId: "lofi",
-      soundscapeId: null,
-      soundscapePresetId: null,
-      soundscapeBehavior: "inherit",
+      soundscapeId: "rain",
+      soundscapeBehavior: "play-selected",
     });
+    const reverted = chooseEventPlaylist(chosen, projectSnapshot, "focus", "deep-work");
+    expect(reverted[0]).toMatchObject({ behavior: "inherit", playlistId: null, soundscapeId: "rain", soundscapeBehavior: "play-selected" });
   });
 
   it("leaves other phases untouched", () => {
@@ -89,21 +99,68 @@ describe("event playlist choices", () => {
     const chosen = chooseEventPlaylist(overrides, projectSnapshot, "focus", "lofi");
     expect(chosen[2]).toEqual(overrides[0]);
   });
+});
 
+describe("event background sound choices", () => {
+  it("shows the project sound until the event overrides it", () => {
+    expect(effectiveEventSound([], rainySnapshot, "focus")).toEqual({ kind: "preset", presetId: "evening" });
+    expect(effectiveEventSound([], rainySnapshot, "short-break")).toEqual({ kind: "silence" });
+    expect(effectiveEventSound([], rainySnapshot, "long-break")).toEqual({ kind: "keep" });
+
+    const chosen = chooseEventSound([], rainySnapshot, "long-break", { kind: "sound", soundscapeId: "rain" });
+    expect(chosen[2]).toMatchObject({ behavior: "inherit", soundscapeBehavior: "play-selected", soundscapeId: "rain", soundscapePresetId: null });
+    expect(effectiveEventSound(chosen, rainySnapshot, "long-break")).toEqual({ kind: "sound", soundscapeId: "rain" });
+  });
+
+  it("stores Don't change over a project sound as keeping the current sound", () => {
+    const kept = chooseEventSound([], rainySnapshot, "focus", { kind: "keep" });
+    expect(kept[0]).toMatchObject({ soundscapeBehavior: "keep-current-soundscape", soundscapeId: null, soundscapePresetId: null });
+    expect(effectiveEventSound(kept, rainySnapshot, "focus")).toEqual({ kind: "keep" });
+    expect(persistedMusicAssignmentDrafts(kept).map((assignment) => assignment.phase)).toEqual(["focus"]);
+  });
+
+  it("drops the sound override when the choice matches the project again without touching music", () => {
+    const changed = chooseEventPlaylist(chooseEventSound([], rainySnapshot, "focus", { kind: "silence" }), rainySnapshot, "focus", "lofi");
+    const reverted = chooseEventSound(changed, rainySnapshot, "focus", { kind: "preset", presetId: "evening" });
+    expect(reverted[0]).toMatchObject({ behavior: "play-automatically", playlistId: "lofi", soundscapeBehavior: "inherit", soundscapePresetId: null });
+
+    const keepAgain = chooseEventSound([], rainySnapshot, "long-break", { kind: "keep" });
+    expect(persistedMusicAssignmentDrafts(keepAgain)).toEqual([]);
+  });
+
+  it("counts only sounds and presets as playing", () => {
+    expect(eventSoundPlays({ kind: "sound", soundscapeId: "rain" })).toBe(true);
+    expect(eventSoundPlays({ kind: "preset", presetId: "evening" })).toBe(true);
+    expect(eventSoundPlays({ kind: "silence" })).toBe(false);
+    expect(eventSoundPlays({ kind: "keep" })).toBe(false);
+  });
+});
+
+describe("event music toggle", () => {
   it("silences only the listed phases that play music", () => {
     const overrides = [draft("long-break", { behavior: "play-automatically", playlistId: "rest" })];
-    const silenced = silenceEventPlaylists(overrides, projectSnapshot, ["focus"]);
+    const silenced = silenceEventMusic(overrides, projectSnapshot, ["focus"]);
     expect(effectiveEventPlaylistId(silenced, projectSnapshot, "focus")).toBeNull();
     expect(effectiveEventPlaylistId(silenced, projectSnapshot, "long-break")).toBe("rest");
     expect(silenced[1]).toEqual(draft("short-break"));
   });
 
-  it("restores project playlists for the listed phases", () => {
-    const silenced = silenceEventPlaylists([], projectSnapshot, eventMusicPhases(true));
-    expect(snapshotHasEventPlaylist(projectSnapshot, ["focus"])).toBe(true);
-    expect(snapshotHasEventPlaylist(projectSnapshot, ["short-break", "long-break"])).toBe(false);
+  it("silences background sound with music and leaves quiet phases alone", () => {
+    const silenced = silenceEventMusic([], rainySnapshot, eventMusicPhases(true));
+    expect(effectiveEventSound(silenced, rainySnapshot, "focus")).toEqual({ kind: "silence" });
+    expect(silenced[1]).toEqual(draft("short-break"));
+    expect(silenced[2]).toEqual(draft("long-break"));
+    expect(eventMusicPhases(true).some((phase) => eventSoundPlays(effectiveEventSound(silenced, rainySnapshot, phase)))).toBe(false);
+  });
 
-    const restored = restoreEventPlaylists(silenced, ["focus"]);
+  it("restores project playlists and sounds for the listed phases", () => {
+    const silenced = silenceEventMusic([], projectSnapshot, eventMusicPhases(true));
+    expect(snapshotHasEventMusic(projectSnapshot, ["focus"])).toBe(true);
+    expect(snapshotHasEventMusic(projectSnapshot, ["short-break", "long-break"])).toBe(false);
+    expect(snapshotHasEventMusic(rainySnapshot, ["focus"])).toBe(true);
+    expect(snapshotHasEventMusic(rainySnapshot, ["short-break"])).toBe(false);
+
+    const restored = restoreEventMusic(silenced, ["focus"]);
     expect(effectiveEventPlaylistId(restored, projectSnapshot, "focus")).toBe("deep-work");
     expect(persistedMusicAssignmentDrafts(restored)).toEqual([]);
   });

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick } from "svelte";
+  import { onMount, tick } from "svelte";
   import AlertTriangle from "@lucide/svelte/icons/triangle-alert";
   import Check from "@lucide/svelte/icons/check";
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
@@ -50,6 +50,8 @@
   let popover = $state<HTMLDivElement | null>(null);
   let searchInput = $state<HTMLInputElement | null>(null);
   let geometry = $state<SelectPopoverGeometry | null>(null);
+
+  onMount(() => { void soundscape.ensureCatalog(); });
 
   const loading = $derived(soundscape.loading && soundscape.definitions.length === 0);
   const selectedSound = $derived(value.kind === "sound" ? soundscape.definitions.find((entry) => entry.id === value.soundscapeId) ?? null : null);

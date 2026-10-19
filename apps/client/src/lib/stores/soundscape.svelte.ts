@@ -48,6 +48,7 @@ class SoundscapeStore {
   error = $state<string | null>(null);
   deviceId = $state<string | null>(null);
   private generation = 0;
+  private catalogLoaded = false;
   private volumeGeneration = 0;
   private volumePersistTimer: number | null = null;
   private volumeWriteQueue: Promise<void> = Promise.resolve();
@@ -89,6 +90,34 @@ class SoundscapeStore {
           await this.persistState(persisted.activeIds, false, persisted.volume);
         }
       }
+    } catch (error) {
+      if (generation === this.generation) this.error = message(error);
+    } finally {
+      if (generation === this.generation) this.loading = false;
+    }
+  }
+
+  /**
+   * Loads sounds, groups, and presets for pickers in windows that do not own playback.
+   * It never reads or restores playback state, so detached windows cannot start output.
+   */
+  async ensureCatalog(): Promise<void> {
+    if (this.persisted || this.loading || this.catalogLoaded) return;
+    const generation = this.generation;
+    this.loading = true;
+    try {
+      const deviceId = await getDeviceId();
+      const [definitions, groups, presets] = await Promise.all([
+        getMusicSoundscapes(deviceId),
+        getMusicSoundscapeGroups(),
+        getMusicSoundscapePresets(),
+      ]);
+      if (generation !== this.generation) return;
+      this.deviceId = deviceId;
+      this.definitions = definitions;
+      this.groups = groups;
+      this.presets = presets;
+      this.catalogLoaded = true;
     } catch (error) {
       if (generation === this.generation) this.error = message(error);
     } finally {
@@ -304,6 +333,7 @@ class SoundscapeStore {
     this.definitions = [];
     this.groups = [];
     this.presets = [];
+    this.catalogLoaded = false;
     this.persisted = null;
     this.sectionLevels = { generated: null, local: null };
     this.error = null;

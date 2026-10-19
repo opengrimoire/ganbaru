@@ -7,6 +7,22 @@ import type { MusicContextAssignmentDraft } from "$lib/music/context-assignment"
 import type { MusicPlaylistSummary } from "$lib/music/library/contracts";
 import ProjectSettingsPlaylistRows from "./ProjectSettingsPlaylistRows.svelte";
 
+vi.mock("$lib/stores/soundscape.svelte", () => {
+  const rain = {
+    id: "rain", sourceKind: "local-loop", generatedKind: null, bundledIdentity: null, name: "Rain",
+    icon: "lucide:audio-lines", groupId: null, availability: "available", localPath: "/rain.ogg",
+    createdAtMs: 1, updatedAtMs: 1, version: 1,
+  };
+  const store = {
+    definitions: [rain],
+    groups: [],
+    presets: [{ id: "evening", name: "Evening", icon: "lucide:moon", soundscapeIds: ["rain"], createdAtMs: 1, updatedAtMs: 1, version: 1 }],
+    loading: false,
+    ensureCatalog: async () => undefined,
+  };
+  return { getSoundscapeStore: () => store };
+});
+
 const playlist: MusicPlaylistSummary = {
   id: "reading", name: "Reading", icon: "music", shuffleEnabled: false,
   mixEnabled: false, repeatMode: "off", intendedUses: [], sortOrder: 0,
@@ -65,7 +81,7 @@ describe("Project playlist rows", () => {
     ["Long break playlist", "long-break"],
   ] as const)("selects automatic music from the %s row and saves empty phases as silence", async (label, phase) => {
     const onChange = await render();
-    expect([...target.querySelectorAll<HTMLButtonElement>('[aria-haspopup]')].map((button) => button.getAttribute("aria-label")))
+    expect([...target.querySelectorAll<HTMLButtonElement>('[aria-haspopup][aria-label$="playlist"]')].map((button) => button.getAttribute("aria-label")))
       .toEqual(["Focus playlist", "Short break playlist", "Long break playlist"]);
     await choose(label, "Reading");
     const next = onChange.mock.calls[0][0];
@@ -88,7 +104,7 @@ describe("Project playlist rows", () => {
     expect(assignments[1].playlistId).toBe(playlist.id);
   });
 
-  it("replaces legacy playback and background actions with playlist-only choices", async () => {
+  it("replaces legacy playback with automatic playback while keeping each phase's background sound", async () => {
     const assignments = updateMusicAssignmentDraft([], "focus", {
       behavior: "prepare-silently", playlistId: playlist.id,
       soundscapeBehavior: "play-selected", soundscapeId: "rain",
@@ -96,8 +112,25 @@ describe("Project playlist rows", () => {
     const onChange = await render(assignments);
     await choose("Long break playlist", "Reading");
     const next = onChange.mock.calls[0][0];
-    expect(next[0]).toMatchObject({ behavior: "play-automatically", playlistId: playlist.id });
-    expect(next.every((assignment) => assignment.soundscapeId === null && assignment.soundscapeBehavior === "inherit")).toBe(true);
+    expect(next[0]).toMatchObject({ behavior: "play-automatically", playlistId: playlist.id, soundscapeBehavior: "play-selected", soundscapeId: "rain" });
+    expect(next.slice(1).every((assignment) => assignment.soundscapeBehavior === "inherit")).toBe(true);
+  });
+
+  it("chooses a background preset or silence per phase without touching music", async () => {
+    const onChange = await render(updateMusicAssignmentDraft([], "short-break", { behavior: "pause-music" }));
+    expect(target.querySelector('[aria-label="Short break background sound"]')?.textContent).toContain("Don't change");
+    await choose("Short break background sound", "Evening");
+    expect(onChange.mock.calls[0][0][1]).toMatchObject({
+      behavior: "pause-music", soundscapeBehavior: "play-selected", soundscapeId: null, soundscapePresetId: "evening",
+    });
+    await choose("Focus background sound", "Silence");
+    expect(onChange.mock.calls[1][0][0]).toMatchObject({ behavior: "inherit", soundscapeBehavior: "pause-soundscape", soundscapePresetId: null });
+    expect(persistedMusicAssignmentDrafts(onChange.mock.calls[1][0]).map((assignment) => assignment.phase)).toEqual(["focus", "short-break"]);
+  });
+
+  it("flags a deleted background sound so the phase can be repaired", async () => {
+    await render(updateMusicAssignmentDraft([], "long-break", { soundscapeBehavior: "play-selected", soundscapeId: "deleted" }));
+    expect(target.querySelector('[aria-label="Long break background sound"]')?.textContent).toContain("Selected sound is unavailable");
   });
 
   it("keeps an unavailable playlist explicit and lets the picker repair it", async () => {
@@ -133,7 +166,7 @@ describe("Project playlist rows", () => {
 
   it.each([{ disabled: true }, { loadingPlaylists: true }])("locks all three playlist rows during $disabled disabled or $loadingPlaylists loading state", async (options) => {
     const onChange = await render([], options);
-    const triggers = [...target.querySelectorAll<HTMLButtonElement>('[aria-haspopup]')];
+    const triggers = [...target.querySelectorAll<HTMLButtonElement>('[aria-haspopup][aria-label$="playlist"]')];
     expect(triggers).toHaveLength(3);
     expect(triggers.every((button) => button.disabled)).toBe(true);
     triggers[0].click();

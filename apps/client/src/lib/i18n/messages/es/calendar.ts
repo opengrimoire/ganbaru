@@ -251,6 +251,13 @@ export const calendar = {
     taskLinksRecurring: "Los vínculos de tareas están disponibles para eventos individuales.",
     music: "Música",
     musicPlaylist: "Playlist",
+    musicPhases: (focus: boolean, shortBreak: boolean, longBreak: boolean) => {
+      if (focus && shortBreak && longBreak) return "Enfoque, descanso corto y largo";
+      if (focus && (shortBreak || longBreak)) return `Enfoque y descanso ${shortBreak ? "corto" : "largo"}`;
+      if (focus) return "Solo enfoque";
+      if (shortBreak && longBreak) return "Solo descansos";
+      return shortBreak ? "Solo descanso corto" : "Solo descanso largo";
+    },
     comingSoon: "Próximamente",
     readOnly: "Solo lectura",
     readOnlyHyphen: "Solo lectura",

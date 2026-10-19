@@ -4,7 +4,6 @@
   import Music from "@lucide/svelte/icons/music";
   import MusicPlaylistSelect from "$lib/components/music/MusicPlaylistSelect.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
-  import { formatList } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
     chooseEventPlaylist,
@@ -44,8 +43,7 @@
     onRetry: () => void;
   } = $props();
 
-  const localization = getLocalization();
-  const { t } = localization;
+  const { t } = getLocalization();
   const phases = $derived(eventMusicPhases(pomodoroEnabled));
   const rows = $derived(phases.map((phase) => ({
     phase,
@@ -53,12 +51,15 @@
     playlistId: effectiveEventPlaylistId(overrides, snapshots, phase),
   })));
   const enabled = $derived(rows.some((row) => row.playlistId !== null));
+  /** Names the single playlist without Pomodoro, or which phases play music with it. */
   const summary = $derived.by(() => {
-    const names = [...new Set(rows.flatMap((row) => row.playlistId ?? []))].map((id) => {
-      const playlist = playlists.find((entry) => entry.id === id);
+    if (!enabled) return "";
+    if (!pomodoroEnabled) {
+      const playlist = playlists.find((entry) => entry.id === rows[0]?.playlistId);
       return playlist ? systemMusicPlaylistName(playlist.id, playlist.name, t) : t("music.assignment.missingPlaylist");
-    });
-    return formatList(localization.locale, names, { type: "conjunction" });
+    }
+    const plays = (phase: MusicActivityPhase) => rows.some((row) => row.phase === phase && row.playlistId !== null);
+    return t("calendar.eventPanel.musicPhases", plays("focus"), plays("short-break"), plays("long-break"));
   });
 
   /** Silence the event, or bring back the project playlists when the event has none. */
@@ -96,25 +97,22 @@
     </button>
   </div>
   {#if expanded}
-    <div transition:slide={{ duration: 180, easing: cubicOut }} data-section="music" class="flex flex-col gap-0.5 p-2.5" style="background-color: var(--panel-bg);">
+    <div transition:slide={{ duration: 180, easing: cubicOut }} data-section="music" class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 gap-y-1.5 py-2.5 pl-1" style="background-color: var(--panel-bg);">
       {#if error}
-        <Notice class="mb-1 px-1 text-[0.65rem]" message={error} {onRetry} />
+        <Notice class="col-span-2 px-1 text-[0.65rem]" message={error} {onRetry} />
       {/if}
       {#each rows as row (row.phase)}
-        <div class="flex items-center gap-3 px-2.5 py-1">
-          <span class="min-w-0 flex-1 truncate text-[0.8rem] text-foreground">{row.label}</span>
-          <MusicPlaylistSelect
-            label={row.label}
-            value={row.playlistId}
-            {playlists}
-            onChange={(playlistId) => select(row.phase, playlistId)}
-            {disabled}
-            {loading}
-            emptyLabel={t("common.none")}
-            class="w-44 shrink-0"
-            triggerClass="h-6 rounded border-0 bg-black/5 font-normal text-event-panel-input-text hover:bg-black/10 disabled:hover:bg-black/5 dark:bg-black/15 dark:hover:bg-black/25 dark:disabled:hover:bg-black/15"
-          />
-        </div>
+        <span class="truncate text-[0.8rem] text-foreground">{row.label}</span>
+        <MusicPlaylistSelect
+          label={row.label}
+          value={row.playlistId}
+          {playlists}
+          onChange={(playlistId) => select(row.phase, playlistId)}
+          {disabled}
+          {loading}
+          emptyLabel={t("common.none")}
+          triggerClass="rounded border-0 bg-black/5 font-normal text-event-panel-input-text hover:bg-black/10 disabled:hover:bg-black/5 dark:bg-black/15 dark:hover:bg-black/25 dark:disabled:hover:bg-black/15"
+        />
       {/each}
     </div>
   {/if}

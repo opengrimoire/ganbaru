@@ -13,6 +13,7 @@ import type { ProjectSettingsWorkingFoldersPorts, WorkingFolderSelection } from 
 
 const chat = vi.hoisted(() => ({
   workingFolders: [] as ProjectWorkingFolderRead[],
+  loaded: false,
   loading: false,
   settings: {
     providerInstances: [] as ProviderInstanceRead[],
@@ -70,6 +71,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   chat.ensureLoaded.mockResolvedValue(undefined);
   chat.loading = false;
+  chat.loaded = false;
   chat.openWorkingFolder.mockResolvedValue(undefined);
   chat.setWorkingFolderProviderPreference.mockResolvedValue(undefined);
   chat.removeWorkingFolder.mockResolvedValue(undefined);
@@ -164,6 +166,20 @@ function action(menu: HTMLElement, label: string): HTMLButtonElement {
 }
 
 describe("Project working folder settings", () => {
+  it("shows folders Chat already loaded before the primary folder read finishes", async () => {
+    chat.loaded = true;
+    let resolvePrimary: (primary: ChatProjectPrimaryWorkingFolderRead) => void = () => {};
+    api.readChatProjectPrimaryWorkingFolder.mockReturnValue(new Promise((resolve) => { resolvePrimary = resolve; }));
+    component = mount(ProjectSettingsWorkingFoldersSection, { target, props: { projectId: "project", onDirtyChange: () => {} } });
+    await tick();
+    const options = target.querySelector<HTMLButtonElement>('[aria-label="Options for managed"]');
+    expect(options).not.toBeNull();
+    expect(target.querySelector('[aria-label="Options for external"]')).not.toBeNull();
+    expect(options!.disabled).toBe(true);
+    resolvePrimary({ projectId: "project", workingFolderId: "managed", revision: 3 });
+    await vi.waitFor(() => expect(target.querySelector<HTMLButtonElement>('[aria-label="Options for managed"]')!.disabled).toBe(false));
+  });
+
   it("reports pending folder changes to the parent and restores them through Discard", async () => {
     const dirty = vi.fn();
     await render(dirty);

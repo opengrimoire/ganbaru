@@ -15,7 +15,7 @@
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { ProjectWorkingFolderRead } from "$lib/chat/contracts";
-  import { onDestroy } from "svelte";
+  import { onDestroy, untrack } from "svelte";
   import { adoptChatProjectPrimaryWorkingFolder, getChat } from "$lib/stores/chat.svelte";
   import * as chatApi from "$lib/api/chat";
   import * as folderApi from "$lib/api/project-working-folders";
@@ -99,6 +99,12 @@
     initializedProjectId = selectedProjectId;
     operationGeneration += 1;
     draft.clear(selectedProjectId);
+    // Chat is normally prewarmed, so its folders render on the first frame; only the primary star waits for the read below.
+    // Untracked so later Chat updates cannot rerun this effect and cancel that read.
+    untrack(() => {
+      if (!chat.loaded) return;
+      draft.preview(selectedProjectId, chat.workingFolders, chat.settings?.configuration.workingFolderProviderPreferences ?? {});
+    });
     let current = true;
     loading = true;
     error = null;

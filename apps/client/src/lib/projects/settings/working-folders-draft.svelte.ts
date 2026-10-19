@@ -49,10 +49,20 @@ export function createProjectSettingsWorkingFoldersDraft(ports: ProjectSettingsW
   /** Load canonical state when the panel opens or switches projects. */
   function load(id: string, folders: readonly ProjectWorkingFolderRead[], selectedPrimary: ChatProjectPrimaryWorkingFolderRead,
     providerPreferences: Readonly<Record<string, string>>): void {
+    stage(id, folders, { ...selectedPrimary }, providerPreferences);
+  }
+
+  /** Show already known folders while the primary folder is still being read; the draft stays clean and unsaveable until {@link load}. */
+  function preview(id: string, folders: readonly ProjectWorkingFolderRead[], providerPreferences: Readonly<Record<string, string>>): void {
+    stage(id, folders, null, providerPreferences);
+  }
+
+  function stage(id: string, folders: readonly ProjectWorkingFolderRead[], selectedPrimary: ChatProjectPrimaryWorkingFolderRead | null,
+    providerPreferences: Readonly<Record<string, string>>): void {
     generation += 1;
     projectId = id;
     saved = folders.filter((folder) => folder.workingFolder.projectId === id).map(copy);
-    primary = { ...selectedPrimary };
+    primary = selectedPrimary;
     savedPreferences = Object.fromEntries(saved.map((folder) => [folder.workingFolder.id, providerPreferences[folder.workingFolder.id] ?? ""]));
     discard();
   }
@@ -219,7 +229,7 @@ export function createProjectSettingsWorkingFoldersDraft(ports: ProjectSettingsW
   }
 
   return {
-    load, clear, discard, invalidate, choose, rename, setArchived, remove, save, adoptTrust,
+    load, preview, clear, discard, invalidate, choose, rename, setArchived, remove, save, adoptTrust,
     get folders() { return rows; },
     get primaryId() { return primaryId; },
     get primaryReady() { return primary !== null; },

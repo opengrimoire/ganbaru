@@ -173,4 +173,19 @@ describe("Project settings working-folder drafts", () => {
     expect(ports.remove).not.toHaveBeenCalled();
     expect(ports.archive).not.toHaveBeenCalled();
   });
+
+  it("previews known folders as a clean draft until the primary folder is loaded", () => {
+    const { draft, canonical } = setup();
+    const foreign = { ...folder("foreign"), workingFolder: { ...folder("foreign").workingFolder, projectId: "elsewhere" } };
+    draft.preview("project", [...canonical, foreign], { external: "old-provider" });
+    expect(draft.folders).toEqual(canonical);
+    expect(draft.preference("external")).toBe("old-provider");
+    expect(draft.primaryId).toBeNull();
+    expect(draft.primaryReady).toBe(false);
+    expect(draft.dirty).toBe(false);
+    draft.load("project", canonical, { projectId: "project", workingFolderId: "managed", revision: 3 }, { external: "old-provider" });
+    expect(draft.primaryId).toBe("managed");
+    expect(draft.primaryReady).toBe(true);
+    expect(draft.dirty).toBe(false);
+  });
 });

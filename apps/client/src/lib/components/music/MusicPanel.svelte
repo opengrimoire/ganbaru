@@ -627,17 +627,18 @@
   function handleMediaSurfaceClick(event: MouseEvent): void {
     event.preventDefault();
     if (event.button !== 0) return;
-    if (event.detail > 1) return;
     clearMediaSurfaceClickTimeout();
+    if (event.detail > 1) return;
     mediaSurfaceClickTimeoutId = window.setTimeout(() => {
       mediaSurfaceClickTimeoutId = null;
       void player.togglePlay();
     }, 250);
   }
 
-  function handleMediaSurfaceDoubleClick(event: MouseEvent): void {
+  /** Toggles fullscreen on the second press of a double click, while WebKit still credits the press as user activation. */
+  function handleMediaSurfaceMouseDown(event: MouseEvent): void {
+    if (event.button !== 0 || event.detail !== 2) return;
     event.preventDefault();
-    if (event.button !== 0) return;
     clearMediaSurfaceClickTimeout();
     window.dispatchEvent(new CustomEvent(mediaSurfaceFullscreenEvent, { detail: event }));
   }
@@ -965,7 +966,7 @@
         aria-label={player.isPlaying ? t("music.pause") : t("music.play")}
         data-app-tooltip-disabled="true"
         onclick={handleMediaSurfaceClick}
-        ondblclick={handleMediaSurfaceDoubleClick}
+        onmousedown={handleMediaSurfaceMouseDown}
         onkeydown={handleMediaSurfaceKeydown}
         onwheel={(event) => player.handleVolumeWheel(event)}
       >
@@ -981,7 +982,7 @@
             <button
               type="button"
               onclick={(event) => { event.stopPropagation(); showMainWindow(); }}
-              ondblclick={(event) => event.stopPropagation()}
+              onmousedown={(event) => event.stopPropagation()}
               onkeydown={(event) => event.stopPropagation()}
               class="text-[0.733333rem] font-medium text-primary hover:underline"
             >{t("music.nativeSession.showMainWindow")}</button>

@@ -27,7 +27,6 @@
   let surfaceFullscreen = $state(false);
   let volumeFeedbackVisible = $state(false);
   let surfaceClickTimeoutId: number | null = null;
-  let activationAtLastPress: boolean | null = null;
   let volumeFeedbackTimeoutId: number | null = null;
   let lastVolumeFeedbackId = 0;
 
@@ -182,26 +181,26 @@
     player.registerLocalMedia(localMediaElement);
   });
 
-  function handleSurfacePointerDown(event: PointerEvent): void {
+  /**
+   * Toggles fullscreen on the second press of a double click. WebKit can drop the press's user
+   * activation before `dblclick` arrives, so the request is made while the press still carries it.
+   */
+  function handleSurfaceMouseDown(event: MouseEvent): void {
     event.preventDefault();
+    if (event.button !== 0 || event.detail !== 2) return;
+    clearSurfaceClickTimeout();
+    void toggleSurfaceFullscreen(event);
   }
 
   function handleSurfaceClick(event: MouseEvent): void {
     event.preventDefault();
     if (event.button !== 0) return;
-    if (event.detail > 1) return;
     clearSurfaceClickTimeout();
+    if (event.detail > 1) return;
     surfaceClickTimeoutId = window.setTimeout(() => {
       surfaceClickTimeoutId = null;
       void player.togglePlay();
     }, 250);
-  }
-
-  function handleSurfaceDoubleClick(event: MouseEvent): void {
-    event.preventDefault();
-    if (event.button !== 0) return;
-    clearSurfaceClickTimeout();
-    void toggleSurfaceFullscreen(event);
   }
 
   function clearSurfaceClickTimeout(): void {
@@ -280,25 +279,10 @@
       trigger: trigger.type,
       trusted: trigger.isTrusted,
       clickCount: trigger instanceof MouseEvent ? trigger.detail : null,
-      pointerType: trigger instanceof PointerEvent ? trigger.pointerType : null,
-      activationAtLastPress,
       activationActive: activation?.isActive ?? null,
-      activationSeen: activation?.hasBeenActive ?? null,
       documentFocused: document.hasFocus(),
-      frames: document.querySelectorAll("iframe").length,
     };
   }
-
-  $effect(() => {
-    if (typeof window === "undefined") return;
-    const recordPressActivation = () => {
-      activationAtLastPress = userActivation()?.isActive ?? null;
-    };
-    window.addEventListener("pointerdown", recordPressActivation, true);
-    return () => {
-      window.removeEventListener("pointerdown", recordPressActivation, true);
-    };
-  });
 
   function fullscreenTargetElement(): HTMLElement | null {
     if (!hasFullscreenSurface) return null;
@@ -464,9 +448,8 @@
       class="pointer-events-auto absolute inset-0 z-20 cursor-default border-0 bg-transparent p-0 text-transparent outline-none focus:outline-none"
       aria-label={player.isPlaying ? t("music.pause") : t("music.play")}
       data-app-tooltip-disabled="true"
-      onpointerdown={handleSurfacePointerDown}
+      onmousedown={handleSurfaceMouseDown}
       onclick={handleSurfaceClick}
-      ondblclick={handleSurfaceDoubleClick}
       onkeydown={handleFullscreenSurfaceKeydown}
       onwheel={(event) => player.handleVolumeWheel(event)}
     ></button>

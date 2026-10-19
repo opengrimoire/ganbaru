@@ -86,6 +86,8 @@ fn fresh_database_applies_clean_baseline() {
             "music_soundscape_locations",
             "music_soundscape_state",
             "music_soundscape_active_selections",
+            "music_soundscape_presets",
+            "music_soundscape_preset_sounds",
             "music_search_fts",
             "notes_pages",
             "notes_blocks",

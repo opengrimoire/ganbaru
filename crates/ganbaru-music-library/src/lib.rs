@@ -29,6 +29,8 @@ pub mod session;
 #[cfg(desktop)]
 pub mod soundscape_groups;
 #[cfg(desktop)]
+pub mod soundscape_presets;
+#[cfg(desktop)]
 pub mod soundscapes;
 pub mod source_lifecycle;
 pub mod transfer;

@@ -707,6 +707,33 @@ pub struct MusicSoundscapeGroupWrite {
     pub updated_at_ms: i64,
 }
 
+/// A named, ordered mix of background sounds applied as one choice.
+#[cfg(desktop)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicSoundscapePreset {
+    pub id: String,
+    pub name: String,
+    pub icon: String,
+    /// Sounds in playback order; removed sounds leave the preset, so this can be empty.
+    pub soundscape_ids: Vec<String>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+    pub version: i64,
+}
+
+#[cfg(desktop)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicSoundscapePresetWrite {
+    pub id: String,
+    pub name: String,
+    pub icon: String,
+    pub soundscape_ids: Vec<String>,
+    pub expected_version: Option<i64>,
+    pub updated_at_ms: i64,
+}
+
 #[cfg(desktop)]
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]

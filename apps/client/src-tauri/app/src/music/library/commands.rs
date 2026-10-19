@@ -812,6 +812,45 @@ pub async fn music_library_remove_soundscape_group(
 
 #[cfg(desktop)]
 #[tauri::command]
+pub async fn music_library_soundscape_presets(
+    app: tauri::AppHandle,
+    db_url: String,
+) -> MusicLibraryResult<Vec<MusicSoundscapePreset>> {
+    let pool = connect_sqlite(app, db_url)
+        .await
+        .map_err(connection_error)?;
+    ganbaru_music_library::soundscape_presets::presets(&pool).await
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn music_library_upsert_soundscape_preset(
+    app: tauri::AppHandle,
+    db_url: String,
+    request: MusicSoundscapePresetWrite,
+) -> MusicLibraryResult<MusicSoundscapePreset> {
+    let pool = connect_sqlite(app, db_url)
+        .await
+        .map_err(connection_error)?;
+    ganbaru_music_library::soundscape_presets::upsert(&pool, request).await
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn music_library_remove_soundscape_preset(
+    app: tauri::AppHandle,
+    db_url: String,
+    preset_id: String,
+    expected_version: i64,
+) -> MusicLibraryResult<()> {
+    let pool = connect_sqlite(app, db_url)
+        .await
+        .map_err(connection_error)?;
+    ganbaru_music_library::soundscape_presets::remove(&pool, &preset_id, expected_version).await
+}
+
+#[cfg(desktop)]
+#[tauri::command]
 pub async fn music_library_upsert_soundscape(
     app: tauri::AppHandle,
     db_url: String,

@@ -97,7 +97,7 @@
     </button>
   </div>
   {#if expanded}
-    <div transition:slide={{ duration: 180, easing: cubicOut }} data-section="music" class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 gap-y-1.5 py-2.5 pl-1" style="background-color: var(--panel-bg);">
+    <div transition:slide={{ duration: 180, easing: cubicOut }} data-section="music" class="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-5 gap-y-1.5 py-2.5 pl-1" style="background-color: var(--panel-bg);">
       {#if error}
         <Notice class="col-span-2 px-1 text-[0.65rem]" message={error} {onRetry} />
       {/if}

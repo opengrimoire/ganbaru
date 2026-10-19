@@ -237,8 +237,8 @@
         <button type="button" role="option" aria-selected={value === playlist.id} onclick={() => choose(playlist.id)} class="menu-item">
           <span class="grid size-4 shrink-0 place-items-center"><MusicPlaylistIcon icon={playlist.icon} size={15} /></span>
           <span class="min-w-0 flex-1 truncate font-medium">{systemMusicPlaylistName(playlist.id, playlist.name, t)}</span>
-          <span class="shrink-0 text-panel-detail tabular-nums text-muted-foreground">{formatNumber(localization.locale, playlist.totalCount)}</span>
           {#if value === playlist.id}<Check size={14} />{/if}
+          <span class="shrink-0 text-panel-detail tabular-nums text-muted-foreground">{formatNumber(localization.locale, playlist.totalCount)}</span>
         </button>
       {:else}
         <p class="px-3 py-6 text-center text-muted-foreground">{t("music.assignment.noPlaylistMatches")}</p>

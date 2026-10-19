@@ -73,7 +73,7 @@ pub(super) async fn snapshot_with_budget(
     let roots = budget.read::<(String, String)>(transaction,
         "SELECT id, name FROM music_local_roots WHERE id IN (SELECT root_id FROM music_local_locations WHERE item_id IN (SELECT value FROM json_each(?))) ORDER BY id", &["id", "name"], &[&item_ids], MAX_PLAYLISTS).await?;
     let assignments = budget.read::<ganbaru_music::assignments::AssignmentRow>(transaction,
-        "SELECT owner_kind, owner_id, phase, behavior, playlist_id, soundscape_id, soundscape_behavior, provenance_kind, provenance_id, updated_at_ms, version FROM music_context_assignments WHERE playlist_id IN (SELECT value FROM json_each(?)) ORDER BY owner_kind, owner_id, phase", &["owner_kind", "owner_id", "phase", "behavior", "playlist_id", "soundscape_id", "soundscape_behavior", "provenance_kind", "provenance_id"], &[&selected], MAX_MEMBERSHIPS).await?;
+        "SELECT owner_kind, owner_id, phase, behavior, playlist_id, soundscape_id, soundscape_behavior, provenance_kind, provenance_id, updated_at_ms, version, soundscape_preset_id FROM music_context_assignments WHERE playlist_id IN (SELECT value FROM json_each(?)) ORDER BY owner_kind, owner_id, phase", &["owner_kind", "owner_id", "phase", "behavior", "playlist_id", "soundscape_id", "soundscape_behavior", "provenance_kind", "provenance_id", "soundscape_preset_id"], &[&selected], MAX_MEMBERSHIPS).await?;
 
     let mut items_by_id = HashMap::new();
     for item in items {

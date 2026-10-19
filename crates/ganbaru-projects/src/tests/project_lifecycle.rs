@@ -103,6 +103,7 @@ fn valid_project_update() -> ProjectUpdate {
                 behavior: ganbaru_music::assignments::MusicAssignmentBehavior::PlayAutomatically,
                 playlist_id: Some("playlist-a".to_string()),
                 soundscape_id: None,
+                soundscape_preset_id: None,
                 soundscape_behavior: ganbaru_music::assignments::MusicSoundscapeBehavior::Inherit,
                 provenance_kind:
                     ganbaru_music::assignments::MusicAssignmentProvenanceKind::Explicit,

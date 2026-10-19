@@ -176,8 +176,8 @@ pub(super) async fn restore_archived_event_children(
     sqlx::query("INSERT INTO project_task_event_links (task_id, event_id, link_kind, created_at)
         SELECT task_id, ?1, link_kind, created_at FROM calendar_event_archive_task_links WHERE archive_event_id=?2")
         .bind(source_event_id).bind(archive_event_id).execute(&mut **tx).await.map_err(|error| format!("restore archived task links: {error}"))?;
-    sqlx::query("INSERT INTO music_context_assignments (owner_kind, owner_id, phase, behavior, playlist_id, soundscape_id, provenance_kind, provenance_id, updated_at_ms, version, soundscape_behavior)
-        SELECT owner_kind, ?1, phase, behavior, playlist_id, soundscape_id, provenance_kind, provenance_id, updated_at_ms, version, soundscape_behavior FROM calendar_event_archive_music_assignments WHERE archive_event_id=?2")
+    sqlx::query("INSERT INTO music_context_assignments (owner_kind, owner_id, phase, behavior, playlist_id, soundscape_id, provenance_kind, provenance_id, updated_at_ms, version, soundscape_behavior, soundscape_preset_id)
+        SELECT owner_kind, ?1, phase, behavior, playlist_id, soundscape_id, provenance_kind, provenance_id, updated_at_ms, version, soundscape_behavior, soundscape_preset_id FROM calendar_event_archive_music_assignments WHERE archive_event_id=?2")
         .bind(source_event_id).bind(archive_event_id).execute(&mut **tx).await.map_err(|error| format!("restore archived Music assignments: {error}"))?;
     sqlx::query(
         "INSERT INTO calendar_event_pomodoro_configs

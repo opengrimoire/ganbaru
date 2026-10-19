@@ -242,6 +242,7 @@ stored_row!(MusicAssignment, "music_context_assignments", "owner_id = ?1 AND own
     updated_at_ms: i64,
     version: i64,
     soundscape_behavior: String,
+    soundscape_preset_id: Option<String>,
 });
 
 stored_row!(TaskLink, "project_task_event_links", "event_id = ?1", (task_id), {

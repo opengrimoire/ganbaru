@@ -2,7 +2,8 @@
 
 use super::context::ContextActivation;
 use super::*;
-use crate::music::soundscape::{GeneratedNoiseKind, SoundscapeStartRequest};
+use crate::music::soundscape::{GeneratedNoiseKind, SoundscapeLayer, SoundscapeStartRequest};
+use ganbaru_music_library::soundscapes::MAX_SOUNDSCAPE_LAYERS;
 use std::sync::{Arc, LazyLock, atomic::AtomicBool};
 use std::time::Instant;
 
@@ -27,12 +28,14 @@ pub(super) struct PreparedSoundscape {
     pub missing: bool,
 }
 
-/// Read only the selected source, with a SQL size predicate before path allocation.
+/// Read only the selected sounds, with SQL size predicates before path allocation. A preset plays
+/// the sounds still available on this device and reports missing only when none remain.
 pub(super) async fn prepare(
     connection: &mut sqlx::SqliteConnection,
     device_id: &str,
     behavior: &str,
     soundscape_id: Option<&str>,
+    preset_id: Option<&str>,
 ) -> MusicLibraryResult<PreparedSoundscape> {
     use ganbaru_music::assignments::MusicSoundscapeBehavior;
     let behavior = MusicSoundscapeBehavior::try_from(behavior)
@@ -49,46 +52,24 @@ pub(super) async fn prepare(
         return Ok(empty(false));
     }
     let request = if behavior == MusicSoundscapeBehavior::PlaySelected {
-        let Some(id) = soundscape_id else {
-            return Ok(empty(true));
-        };
-        let source: Option<AcceptedSoundscapeSource> = sqlx::query_as(
-            "SELECT s.generated_kind, l.absolute_path, st.volume, st.generated_level, st.local_level
-             FROM music_soundscapes s
-             JOIN music_soundscape_state st ON st.singleton = 1
-             LEFT JOIN music_soundscape_locations l ON l.soundscape_id = s.id AND l.device_id = ?
-             WHERE s.id = ? AND length(CAST(s.id AS BLOB)) <= ?
-               AND (l.absolute_path IS NULL OR length(CAST(l.absolute_path AS BLOB)) <= ?)
-               AND CASE WHEN s.source_kind = 'local-loop' THEN l.availability ELSE s.availability END = 'available'",
-        ).bind(device_id).bind(id).bind(MAX_SOUND_SOURCE_ID_BYTES).bind(MAX_SOUND_PATH_BYTES).fetch_optional(&mut *connection).await
-            .map_err(|error| MusicLibraryError::database("read accepted background sound", error))?;
-        let Some(source) = source else {
-            return Ok(empty(true));
-        };
-        let generated_kind = match source.generated_kind.as_deref() {
-            Some("white") => Some(GeneratedNoiseKind::White),
-            Some("pink") => Some(GeneratedNoiseKind::Pink),
-            Some("brown") => Some(GeneratedNoiseKind::Brown),
-            None => None,
-            Some(_) => {
-                return Err(MusicLibraryError::validation(
-                    "soundscape.generatedKind",
-                    "unknown generated noise",
-                ));
+        let ids = selected_ids(connection, soundscape_id, preset_id).await?;
+        let mut layers = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(layer) = read_layer(connection, device_id, id).await? {
+                layers.push(layer);
             }
+        }
+        let mut layers = layers.into_iter();
+        let Some((first, volume)) = layers.next() else {
+            return Ok(empty(true));
         };
         Some(SoundscapeStartRequest {
-            source_id: id.into(),
-            generated_kind,
-            local_path: source.absolute_path,
-            level: if generated_kind.is_some() {
-                source.generated_level
-            } else {
-                source.local_level
-            }
-            .unwrap_or(1.0),
-            extra_sources: Vec::new(),
-            volume: source.volume,
+            source_id: first.source_id,
+            generated_kind: first.generated_kind,
+            local_path: first.local_path,
+            level: first.level,
+            extra_sources: layers.map(|(layer, _)| layer).collect(),
+            volume,
         })
     } else {
         None
@@ -100,22 +81,34 @@ pub(super) async fn prepare(
             .map_err(|error| {
                 MusicLibraryError::database("replace automatic background selection", error)
             })?;
-        sqlx::query(
-            "INSERT INTO music_soundscape_active_selections(position, soundscape_id) VALUES (0, ?)",
-        )
-        .bind(&request.source_id)
-        .execute(&mut *connection)
-        .await
-        .map_err(|error| MusicLibraryError::database("select accepted background sound", error))?;
+        let ids = std::iter::once(&request.source_id)
+            .chain(request.extra_sources.iter().map(|layer| &layer.source_id));
+        for (position, id) in ids.enumerate() {
+            sqlx::query(
+                "INSERT INTO music_soundscape_active_selections(position, soundscape_id) VALUES (?, ?)",
+            )
+            .bind(position as i64)
+            .bind(id)
+            .execute(&mut *connection)
+            .await
+            .map_err(|error| {
+                MusicLibraryError::database("select accepted background sound", error)
+            })?;
+        }
     }
+    let layered = request
+        .as_ref()
+        .is_some_and(|request| !request.extra_sources.is_empty());
     let version: i64 = sqlx::query_scalar(
         "UPDATE music_soundscape_state
          SET active_soundscape_id = CASE WHEN ? THEN ? ELSE active_soundscape_id END,
+             multiple_enabled = CASE WHEN ? THEN 1 ELSE multiple_enabled END,
              desired_playing = ?, automatic_intent = 1, version = version + 1, updated_at_ms = MAX(updated_at_ms + 1, ?)
          WHERE singleton = 1 RETURNING version",
     )
     .bind(request.is_some())
     .bind(request.as_ref().map(|request| &request.source_id))
+    .bind(layered)
     .bind(request.is_some())
     .bind(now_ms())
     .fetch_one(&mut *connection)
@@ -126,6 +119,76 @@ pub(super) async fn prepare(
         version: Some(version),
         missing: false,
     })
+}
+
+/// The sound ids one assignment selects, in playback order.
+async fn selected_ids(
+    connection: &mut sqlx::SqliteConnection,
+    soundscape_id: Option<&str>,
+    preset_id: Option<&str>,
+) -> MusicLibraryResult<Vec<String>> {
+    if let Some(preset_id) = preset_id {
+        return sqlx::query_scalar(
+            "SELECT soundscape_id FROM music_soundscape_preset_sounds
+             WHERE preset_id = ? AND length(CAST(soundscape_id AS BLOB)) <= ?
+             ORDER BY position LIMIT ?",
+        )
+        .bind(preset_id)
+        .bind(MAX_SOUND_SOURCE_ID_BYTES)
+        .bind(MAX_SOUNDSCAPE_LAYERS as i64)
+        .fetch_all(&mut *connection)
+        .await
+        .map_err(|error| MusicLibraryError::database("read accepted background preset", error));
+    }
+    Ok(soundscape_id.map(str::to_owned).into_iter().collect())
+}
+
+/// One available sound as an engine layer, with the output volume shared by every layer.
+async fn read_layer(
+    connection: &mut sqlx::SqliteConnection,
+    device_id: &str,
+    id: String,
+) -> MusicLibraryResult<Option<(SoundscapeLayer, f64)>> {
+    let source: Option<AcceptedSoundscapeSource> = sqlx::query_as(
+        "SELECT s.generated_kind, l.absolute_path, st.volume, st.generated_level, st.local_level
+         FROM music_soundscapes s
+         JOIN music_soundscape_state st ON st.singleton = 1
+         LEFT JOIN music_soundscape_locations l ON l.soundscape_id = s.id AND l.device_id = ?
+         WHERE s.id = ? AND length(CAST(s.id AS BLOB)) <= ?
+           AND (l.absolute_path IS NULL OR length(CAST(l.absolute_path AS BLOB)) <= ?)
+           AND CASE WHEN s.source_kind = 'local-loop' THEN l.availability ELSE s.availability END = 'available'",
+    ).bind(device_id).bind(&id).bind(MAX_SOUND_SOURCE_ID_BYTES).bind(MAX_SOUND_PATH_BYTES).fetch_optional(&mut *connection).await
+        .map_err(|error| MusicLibraryError::database("read accepted background sound", error))?;
+    let Some(source) = source else {
+        return Ok(None);
+    };
+    let generated_kind = match source.generated_kind.as_deref() {
+        Some("white") => Some(GeneratedNoiseKind::White),
+        Some("pink") => Some(GeneratedNoiseKind::Pink),
+        Some("brown") => Some(GeneratedNoiseKind::Brown),
+        None => None,
+        Some(_) => {
+            return Err(MusicLibraryError::validation(
+                "soundscape.generatedKind",
+                "unknown generated noise",
+            ));
+        }
+    };
+    let level = if generated_kind.is_some() {
+        source.generated_level
+    } else {
+        source.local_level
+    }
+    .unwrap_or(1.0);
+    Ok(Some((
+        SoundscapeLayer {
+            source_id: id,
+            generated_kind,
+            local_path: source.absolute_path,
+            level,
+        },
+        source.volume,
+    )))
 }
 
 impl Owner {

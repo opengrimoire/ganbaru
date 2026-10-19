@@ -133,7 +133,8 @@ pub async fn read(
     let music: Vec<Option<String>> = sqlx::query_scalar(
         "SELECT CASE WHEN length(CAST(payload AS BLOB)) <= ?2 THEN payload END FROM
          (SELECT json_object('phase', phase, 'behavior', behavior, 'playlistId', playlist_id,
-          'soundscapeId', soundscape_id, 'soundscapeBehavior', soundscape_behavior,
+          'soundscapeId', soundscape_id, 'soundscapePresetId', soundscape_preset_id,
+          'soundscapeBehavior', soundscape_behavior,
           'provenanceKind', 'copied-project', 'provenanceId', owner_id) AS payload
           FROM music_context_assignments WHERE owner_kind = 'project-default' AND owner_id = ?1
           ORDER BY phase LIMIT 4)",

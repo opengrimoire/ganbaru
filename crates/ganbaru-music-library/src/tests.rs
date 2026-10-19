@@ -623,6 +623,7 @@ fn deletion_requires_current_impact_and_repairs_assignments_atomically() {
                 behavior: MusicAssignmentBehavior::PlayAutomatically,
                 playlist_id: Some("playlist-1".to_string()),
                 soundscape_id: None,
+                soundscape_preset_id: None,
                 soundscape_behavior: MusicSoundscapeBehavior::Inherit,
                 provenance_kind: MusicAssignmentProvenanceKind::Explicit,
                 provenance_id: None,

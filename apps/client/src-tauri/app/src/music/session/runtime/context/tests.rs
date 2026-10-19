@@ -70,10 +70,23 @@ async fn native_music_context_resolves_precedence_for_every_committed_phase_and_
                 .await
                 .unwrap()
                 .unwrap();
-            assert_eq!(resolved.source, "event-override");
-            assert_eq!(resolved.behavior, "inherit");
+            assert_eq!(resolved.source, "work-environment");
+            assert_eq!(resolved.behavior, "pause-music");
             assert_eq!(resolved.soundscape_id.as_deref(), Some("background"));
         }
+        sqlx::query("UPDATE music_context_assignments SET behavior = 'inherit' WHERE owner_kind IN ('work-environment', 'event-snapshot') AND phase = ?")
+            .bind(phase.as_ref()).execute(&pool).await.unwrap();
+        {
+            let mut connection = pool.acquire().await.unwrap();
+            let resolved = resolve_assignment(&mut connection, "event", phase)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(resolved.source, "event-override");
+            assert_eq!(resolved.behavior, "inherit");
+        }
+        sqlx::query("UPDATE music_context_assignments SET behavior = 'pause-music' WHERE owner_kind IN ('work-environment', 'event-snapshot') AND phase = ?")
+            .bind(phase.as_ref()).execute(&pool).await.unwrap();
         sqlx::query("UPDATE music_context_assignments SET soundscape_behavior = 'inherit' WHERE owner_kind = 'event-override' AND phase = ?")
             .bind(phase.as_ref()).execute(&pool).await.unwrap();
         let mut connection = pool.acquire().await.unwrap();
@@ -99,5 +112,27 @@ async fn native_music_context_never_inherits_another_event_or_phase_assignment()
             .await
             .unwrap()
             .is_none()
+    );
+}
+
+#[tokio::test]
+async fn native_music_context_takes_music_and_sound_from_different_layers() {
+    let pool = test_pool().await;
+    sqlx::query("INSERT INTO music_context_assignments(owner_kind, owner_id, phase, behavior, playlist_id, soundscape_behavior, soundscape_preset_id, provenance_kind, updated_at_ms) VALUES
+        ('event-snapshot', 'event', 'focus', 'play-automatically', 'project-playlist', 'play-selected', 'project-preset', 'copied-project', 1),
+        ('event-override', 'event', 'focus', 'pause-music', NULL, 'inherit', NULL, 'explicit', 1)")
+        .execute(&pool).await.unwrap();
+    let mut connection = pool.acquire().await.unwrap();
+    let resolved = resolve_assignment(&mut connection, "event", MusicActivityPhase::Focus)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(resolved.source, "event-override");
+    assert_eq!(resolved.behavior, "pause-music");
+    assert_eq!(resolved.playlist_id, None);
+    assert_eq!(resolved.soundscape_behavior, "play-selected");
+    assert_eq!(
+        resolved.soundscape_preset_id.as_deref(),
+        Some("project-preset")
     );
 }

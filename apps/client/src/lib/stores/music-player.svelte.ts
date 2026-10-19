@@ -20,6 +20,7 @@ import { createMusicExternalControls } from "$lib/stores/music-player/external-c
 import { createMusicYouTubeAdapter } from "$lib/stores/music-player/youtube-adapter";
 import type { NativeYouTubeHost } from "$lib/music/youtube-native-host";
 import { createMusicWebviewLocalAdapter } from "$lib/stores/music-player/webview-local-adapter";
+import { MusicObservationSender } from "$lib/stores/music-player/observation-sender";
 
 export type { MusicStaleVisual } from "$lib/stores/music-player/hosted-media-controller";
 export type MusicPlaybackContextOwner = "manual" | "review" | "calendar-event" | "pomodoro" | "soundscape";
@@ -139,7 +140,7 @@ class MusicPlayerStore {
   private browserSessionId: string | null = null;
   private browserGeneration = -1;
   private browserSequence = 0;
-  private isObserving = false;
+  private readonly observationSender = new MusicObservationSender(() => this.sendBrowserObservation());
   private nativeArtworkGeneration = -1;
   private readonly loadRuntime = new MusicLoadRuntime();
   private readonly surfaceClaims = new MusicSurfaceClaims((element) => { this.surfaceElement = element; });
@@ -463,15 +464,18 @@ class MusicPlayerStore {
     else if (effect.kind === "seek") this.webviewLocalAdapter.seek(effect.positionMs);
   }
 
-  private async observeBrowser(): Promise<void> {
-    if (!this.browserSessionId || !this.currentSource || this.isObserving) return;
-    this.isObserving = true;
+  private observeBrowser(): Promise<void> {
+    if (!this.browserSessionId || !this.currentSource) return Promise.resolve();
+    return this.observationSender.request();
+  }
+
+  private async sendBrowserObservation(): Promise<void> {
+    if (!this.browserSessionId || !this.currentSource) return;
     try {
       await this.client.observe({ sessionId: this.browserSessionId, generation: this.browserGeneration, sequence: ++this.browserSequence,
         sourceIdentity: this.currentSource.identity, status: this.snapshot.status, positionMs: Math.max(0, Math.round(this.snapshot.positionMs)),
         durationMs: this.snapshot.durationMs === null ? null : Math.max(0, Math.round(this.snapshot.durationMs)), error: this.snapshot.error });
     } catch (error) { this.reportError(error); }
-    finally { this.isObserving = false; }
   }
 
   private async command(intent: NativeMusicIntent, origin: MusicPlaybackActionOrigin = "manual"): Promise<NativeMusicSnapshot> {

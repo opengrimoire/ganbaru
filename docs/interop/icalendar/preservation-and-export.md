@@ -55,7 +55,7 @@ Re-import identity:
 4. Linked events: the preserved component is reconstructed and generated-owned fields are overlaid from current projection data.
 5. Local events without a preserved component are generated cleanly from projection data.
 6. Preserved `VTIMEZONE` definitions are emitted before generated timezone stubs. Preserved top-level `VTODO`, `VJOURNAL`, `VFREEBUSY`, and custom components pass through unchanged.
-7. Output uses CRLF line endings, 75-octet UTF-8-safe folding, TEXT escaping, and RFC 6868 parameter escaping, then goes through the native atomic writer.
+7. Output uses CRLF line endings, 75-octet UTF-8-safe folding, TEXT escaping, and RFC 6868 parameter escaping, then goes through the native atomic writer. Values that are not TEXT (UID, URI, calendar address, time zone identifier, trigger) drop control characters other than tab, preserved property and parameter names must match the RFC 5545 name grammar, and extended properties must be `X-` names, so no stored value can end its content line and add a property or component.
 
 Rules:
 

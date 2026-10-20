@@ -50,7 +50,7 @@ Rust fixes which database each process serves when the frontend first asks: the 
 
 ## Managed assets
 
-Profile images, project icons, Chat attachments, Notes assets, and browser artifacts live in feature-owned managed locations. Import validates source type, size, content signature where applicable, path identity, and symlink status before copying. Image types are detected from signatures, not only extensions, and text attachments must be valid bounded text.
+Profile images, project icons, Chat attachments, Notes assets, and browser artifacts live in feature-owned managed locations. Import validates source type, size, content signature where applicable, path identity, and symlink status before copying. Image, PDF, audio, and video types are detected from container signatures, not only extensions; a Notes file block records a media or PDF kind only when the signature matches the extension, and text attachments must be valid bounded text. Reads open the source once and check its type and size through that handle. Files the user chose in a native picker may be links, but import references and managed vault files are read only when the final path component is not a link.
 
 Managed relative paths are stored only after normalization; an arbitrary external path cannot be persisted as a managed asset. Cleanup rechecks live references before deletion and records retry state if immediate removal is unsafe. Webview-requested deletions are limited to files the user is replacing: a project icon is deleted only when this process wrote it and no text column in the vault database mentions it, and the profile image command refuses the image the saved configuration names. Errors do not echo source absolute paths unnecessarily.
 

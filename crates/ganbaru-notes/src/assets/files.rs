@@ -2,9 +2,11 @@ use base64::{Engine as _, engine::general_purpose};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
-    fs,
+    fs, io,
     path::{Component, Path, PathBuf},
 };
+
+use ganbaru_atomic_files::{FinalSymlink, read_regular_file_capped};
 
 use crate::assets::{
     self, ASSET_SOURCE_IMPORTED, ASSET_SOURCE_LOCAL_UPLOAD, ASSET_STATE_AVAILABLE,
@@ -141,19 +143,20 @@ fn ensure_notes_file_size(bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-fn read_file_capped(path: &Path) -> Result<Vec<u8>, String> {
-    let metadata = fs::metadata(path).map_err(|e| format!("inspect notes file: {e}"))?;
-    if !metadata.is_file() {
-        return Err("notes file path must be a file".to_string());
+/// Reads a Notes source file through one handle. Picker choices follow a final link; import
+/// references refuse one.
+fn read_notes_file(path: &Path, final_symlink: FinalSymlink) -> io::Result<Vec<u8>> {
+    read_regular_file_capped(path, NOTES_FILE_MAX_BYTES as u64, final_symlink)
+}
+
+fn notes_file_read_message(error: &io::Error) -> String {
+    match error.kind() {
+        io::ErrorKind::FileTooLarge => {
+            format!("notes file exceeds the {NOTES_FILE_MAX_DISPLAY_MEGABYTES} MB limit")
+        }
+        io::ErrorKind::InvalidInput => "notes file path must be a regular file".to_string(),
+        _ => format!("read notes file: {error}"),
     }
-    if metadata.len() > NOTES_FILE_MAX_BYTES as u64 {
-        return Err(format!(
-            "notes file exceeds the {NOTES_FILE_MAX_DISPLAY_MEGABYTES} MB limit"
-        ));
-    }
-    let bytes = fs::read(path).map_err(|e| format!("read notes file: {e}"))?;
-    ensure_notes_file_size(&bytes)?;
-    Ok(bytes)
 }
 
 fn read_preview_file_capped(path: &Path, byte_size: i64) -> Result<Vec<u8>, String> {
@@ -162,7 +165,18 @@ fn read_preview_file_capped(path: &Path, byte_size: i64) -> Result<Vec<u8>, Stri
             "notes file exceeds the {NOTES_FILE_PREVIEW_MAX_DISPLAY_MEGABYTES} MB preview limit"
         ));
     }
-    let bytes = fs::read(path).map_err(|e| format!("read notes file preview: {e}"))?;
+    let recorded_size = u64::try_from(byte_size)
+        .map_err(|_| "notes file size no longer matches its recorded metadata".to_string())?;
+    let bytes =
+        read_regular_file_capped(path, recorded_size, FinalSymlink::Refuse).map_err(|error| {
+            match error.kind() {
+                io::ErrorKind::FileTooLarge => {
+                    "notes file size no longer matches its recorded metadata".to_string()
+                }
+                io::ErrorKind::InvalidInput => "notes file path must be a regular file".to_string(),
+                _ => format!("read notes file preview: {error}"),
+            }
+        })?;
     if bytes.len() as i64 != byte_size {
         return Err("notes file size no longer matches its recorded metadata".to_string());
     }
@@ -305,11 +319,21 @@ fn copy_import_file(
         .file_name()
         .and_then(|name| name.to_str())
         .map(ToOwned::to_owned);
-    let bytes = read_file_capped(&path).map_err(|error| {
-        Box::new(import_blocked(
-            "import_reference_copy_failed",
-            format!("Could not read the import file: {error}"),
-        ))
+    let bytes = read_notes_file(&path, FinalSymlink::Refuse).map_err(|error| {
+        Box::new(match error.kind() {
+            io::ErrorKind::FileTooLarge => import_blocked(
+                "import_reference_too_large",
+                format!("Import files cannot exceed {NOTES_FILE_MAX_DISPLAY_MEGABYTES} MB."),
+            ),
+            io::ErrorKind::InvalidInput => import_blocked(
+                "import_reference_not_file",
+                "The import reference must point to a local file.",
+            ),
+            _ => import_blocked(
+                "import_reference_copy_failed",
+                format!("Could not read the import file: {error}"),
+            ),
+        })
     })?;
     let stored =
         store_notes_file_bytes(vault_root, requested_kind, &path, &bytes).map_err(|error| {
@@ -481,11 +505,11 @@ fn classify_selected_file(
                     "local audio blocks support MP3, WAV, OGG, OGA, and M4A files".to_string(),
                 );
             }
-            Ok((
-                NotesFileAssetKind::Audio,
-                audio_content_type(&extension),
-                extension,
-            ))
+            let Some(content_type) = sniff_media_container(bytes).and_then(audio_content_type)
+            else {
+                return Err("local audio blocks require an audio file".to_string());
+            };
+            Ok((NotesFileAssetKind::Audio, content_type, extension))
         }
         NotesFileAssetKind::Video => {
             let Some(extension) = path_extension(path) else {
@@ -494,73 +518,171 @@ fn classify_selected_file(
             if !VIDEO_EXTENSIONS.contains(&extension.as_str()) {
                 return Err("local video blocks require a supported video file".to_string());
             }
-            Ok((
-                NotesFileAssetKind::Video,
-                video_content_type(&extension),
-                extension,
-            ))
+            let Some(content_type) = sniff_media_container(bytes)
+                .and_then(|container| video_content_type(container, &extension))
+            else {
+                return Err("local video blocks require a supported video file".to_string());
+            };
+            Ok((NotesFileAssetKind::Video, content_type, extension))
         }
         NotesFileAssetKind::File => {
             let extension = path_extension(path).unwrap_or_else(|| "bin".to_string());
-            let content_type = generic_content_type(&extension);
-            Ok((kind_for_content_type(content_type), content_type, extension))
+            let (kind, content_type) = classify_generic_file(&extension, bytes);
+            Ok((kind, content_type, extension))
         }
     }
 }
 
-fn audio_content_type(extension: &str) -> &'static str {
-    match extension {
-        "m4a" => "audio/mp4",
-        "ogg" | "oga" => "audio/ogg",
-        "wav" => "audio/wav",
-        _ => "audio/mpeg",
+/// Classifies a file block's bytes. A previewable kind needs both a matching extension and a
+/// matching signature; other media and PDF extensions stay opaque downloads.
+fn classify_generic_file(extension: &str, bytes: &[u8]) -> (NotesFileAssetKind, &'static str) {
+    if IMAGE_EXTENSIONS.contains(&extension)
+        && let Some(image_kind) = sniff_image_kind(bytes)
+    {
+        return (NotesFileAssetKind::Image, image_kind.content_type());
+    }
+    if extension == "pdf" && bytes.starts_with(b"%PDF-") {
+        return (NotesFileAssetKind::Pdf, "application/pdf");
+    }
+    let container = sniff_media_container(bytes);
+    if AUDIO_EXTENSIONS.contains(&extension)
+        && let Some(content_type) = container.and_then(audio_content_type)
+    {
+        return (NotesFileAssetKind::Audio, content_type);
+    }
+    if VIDEO_EXTENSIONS.contains(&extension)
+        && let Some(content_type) =
+            container.and_then(|container| video_content_type(container, extension))
+    {
+        return (NotesFileAssetKind::Video, content_type);
+    }
+    (NotesFileAssetKind::File, generic_content_type(extension))
+}
+
+/// Audio and video container families recognized by their leading bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MediaContainer {
+    MpegAudio,
+    Wave,
+    Ogg,
+    IsoMedia,
+    QuickTime,
+    Avi,
+    Amv,
+    Matroska,
+    Asf,
+    Flv,
+    MpegProgram,
+    MpegTransport,
+}
+
+/// Leading zero bytes skipped before MPEG audio frame sync, which some encoders pad with.
+const MPEG_AUDIO_MAX_LEADING_PADDING: usize = 4096;
+const ASF_HEADER_GUID: [u8; 16] = [
+    0x30, 0x26, 0xb2, 0x75, 0x8e, 0x66, 0xcf, 0x11, 0xa6, 0xd9, 0x00, 0xaa, 0x00, 0x62, 0xce, 0x6c,
+];
+const QUICKTIME_LEADING_ATOMS: &[&[u8; 4]] =
+    &[b"moov", b"mdat", b"wide", b"free", b"skip", b"pnot"];
+const MPEG_TRANSPORT_PACKET_BYTES: usize = 188;
+
+fn sniff_media_container(bytes: &[u8]) -> Option<MediaContainer> {
+    let at = |offset: usize, signature: &[u8]| {
+        bytes
+            .get(offset..offset + signature.len())
+            .is_some_and(|slice| slice == signature)
+    };
+    if at(0, b"ID3") || starts_with_mpeg_audio_frame(bytes) {
+        return Some(MediaContainer::MpegAudio);
+    }
+    if (at(0, b"RIFF") || at(0, b"RF64")) && at(8, b"WAVE") {
+        return Some(MediaContainer::Wave);
+    }
+    if at(0, b"RIFF") && at(8, b"AVI ") {
+        return Some(MediaContainer::Avi);
+    }
+    if at(0, b"RIFF") && at(8, b"AMV ") {
+        return Some(MediaContainer::Amv);
+    }
+    if at(0, b"OggS") {
+        return Some(MediaContainer::Ogg);
+    }
+    if at(4, b"ftyp") {
+        return Some(MediaContainer::IsoMedia);
+    }
+    if QUICKTIME_LEADING_ATOMS.iter().any(|atom| at(4, *atom)) {
+        return Some(MediaContainer::QuickTime);
+    }
+    if at(0, &[0x1a, 0x45, 0xdf, 0xa3]) {
+        return Some(MediaContainer::Matroska);
+    }
+    if at(0, &ASF_HEADER_GUID) {
+        return Some(MediaContainer::Asf);
+    }
+    if at(0, b"FLV\x01") {
+        return Some(MediaContainer::Flv);
+    }
+    if at(0, &[0x00, 0x00, 0x01, 0xba]) || at(0, &[0x00, 0x00, 0x01, 0xb3]) {
+        return Some(MediaContainer::MpegProgram);
+    }
+    let transport_sync =
+        |start: usize| at(start, &[0x47]) && at(start + MPEG_TRANSPORT_PACKET_BYTES, &[0x47]);
+    if transport_sync(0) || transport_sync(4) {
+        return Some(MediaContainer::MpegTransport);
+    }
+    None
+}
+
+/// Matches an MPEG audio or ADTS frame sync, with a valid version, after optional zero padding.
+fn starts_with_mpeg_audio_frame(bytes: &[u8]) -> bool {
+    let start = bytes
+        .iter()
+        .take(MPEG_AUDIO_MAX_LEADING_PADDING)
+        .position(|byte| *byte != 0)
+        .unwrap_or(bytes.len());
+    match bytes.get(start..start + 2) {
+        Some([0xff, second]) => second & 0xe0 == 0xe0 && (second >> 3) & 0x03 != 0x01,
+        _ => false,
     }
 }
 
-fn video_content_type(extension: &str) -> &'static str {
-    match extension {
-        "avi" => "video/x-msvideo",
-        "flv" | "f4v" => "video/x-flv",
-        "mkv" => "video/x-matroska",
-        "mov" | "qt" => "video/quicktime",
-        "mpeg" | "mpg" => "video/mpeg",
-        "wmv" => "video/x-ms-wmv",
-        _ => "video/mp4",
+fn audio_content_type(container: MediaContainer) -> Option<&'static str> {
+    match container {
+        MediaContainer::MpegAudio => Some("audio/mpeg"),
+        MediaContainer::Wave => Some("audio/wav"),
+        MediaContainer::Ogg => Some("audio/ogg"),
+        MediaContainer::IsoMedia | MediaContainer::QuickTime => Some("audio/mp4"),
+        _ => None,
     }
 }
 
+fn video_content_type(container: MediaContainer, extension: &str) -> Option<&'static str> {
+    match container {
+        MediaContainer::IsoMedia if matches!(extension, "mov" | "qt") => Some("video/quicktime"),
+        MediaContainer::IsoMedia => Some("video/mp4"),
+        MediaContainer::QuickTime => Some("video/quicktime"),
+        MediaContainer::Avi => Some("video/x-msvideo"),
+        MediaContainer::Amv => Some("video/x-amv"),
+        MediaContainer::Matroska => Some("video/x-matroska"),
+        MediaContainer::Asf if extension == "wmv" => Some("video/x-ms-wmv"),
+        MediaContainer::Asf => Some("video/x-ms-asf"),
+        MediaContainer::Flv => Some("video/x-flv"),
+        MediaContainer::MpegProgram => Some("video/mpeg"),
+        MediaContainer::MpegTransport => Some("video/mp2t"),
+        MediaContainer::MpegAudio | MediaContainer::Wave | MediaContainer::Ogg => None,
+    }
+}
+
+/// Content type for a file block, which is never previewed. Document extensions keep their type;
+/// SVG stays opaque because managed assets refuse active image types, and media and PDF
+/// extensions without a matching signature stay opaque.
 fn generic_content_type(extension: &str) -> &'static str {
     match extension {
-        "pdf" => "application/pdf",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "webp" => "image/webp",
-        "svg" => "image/svg+xml",
-        "mp3" => "audio/mpeg",
-        "wav" => "audio/wav",
-        "ogg" | "oga" => "audio/ogg",
-        "m4a" => "audio/mp4",
-        extension if VIDEO_EXTENSIONS.contains(&extension) => video_content_type(extension),
         "json" => "application/json",
         "md" | "markdown" => "text/markdown",
         "txt" => "text/plain",
         "csv" => "text/csv",
         "html" | "htm" => "text/html",
         _ => "application/octet-stream",
-    }
-}
-
-fn kind_for_content_type(content_type: &str) -> NotesFileAssetKind {
-    if matches!(content_type, "image/png" | "image/jpeg" | "image/webp") {
-        NotesFileAssetKind::Image
-    } else if content_type.starts_with("video/") {
-        NotesFileAssetKind::Video
-    } else if content_type.starts_with("audio/") {
-        NotesFileAssetKind::Audio
-    } else if content_type == "application/pdf" {
-        NotesFileAssetKind::Pdf
-    } else {
-        NotesFileAssetKind::File
     }
 }
 
@@ -583,6 +705,7 @@ pub fn picker_extensions_for_block_type(
 }
 
 /// A Notes file written to the managed folder and ready to record.
+#[derive(Debug)]
 struct StoredNotesFile {
     kind: NotesFileAssetKind,
     content_type: &'static str,
@@ -671,7 +794,8 @@ pub async fn save_selected_file(
     let vault_root = vault_root.to_path_buf();
     let path = path.to_path_buf();
     let stored = run_blocking(move || {
-        let bytes = read_file_capped(&path)?;
+        let bytes = read_notes_file(&path, FinalSymlink::Follow)
+            .map_err(|error| notes_file_read_message(&error))?;
         store_notes_file_bytes(&vault_root, requested_kind, &path, &bytes)
     })
     .await?;

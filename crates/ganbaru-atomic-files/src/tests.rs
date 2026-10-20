@@ -112,6 +112,33 @@ fn private_temporary_directories_report_a_missing_parent() {
     fs::remove_dir_all(parent.parent().unwrap()).unwrap();
 }
 
+#[test]
+fn bounded_reads_accept_the_limit_and_refuse_one_byte_more() {
+    let directory = test_directory("bounded-read");
+    let path = directory.join("asset.bin");
+    fs::write(&path, [7_u8; 16]).unwrap();
+    for mode in [FinalSymlink::Follow, FinalSymlink::Refuse] {
+        assert_eq!(
+            read_regular_file_capped(&path, 16, mode).unwrap(),
+            [7_u8; 16]
+        );
+        let error = read_regular_file_capped(&path, 15, mode).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::FileTooLarge);
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn bounded_reads_refuse_directories_and_missing_files() {
+    let directory = test_directory("bounded-read-kind");
+    let error = read_regular_file_capped(&directory, 16, FinalSymlink::Refuse).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    let error =
+        read_regular_file_capped(&directory.join("missing"), 16, FinalSymlink::Follow).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::NotFound);
+    fs::remove_dir_all(directory).unwrap();
+}
+
 #[cfg(unix)]
 mod unix {
     use super::*;
@@ -202,5 +229,29 @@ mod unix {
         );
         fs::remove_file(alias).unwrap();
         fs::remove_dir_all(real).unwrap();
+    }
+
+    #[test]
+    fn bounded_reads_follow_or_refuse_a_final_symlink_by_channel() {
+        let directory = test_directory("bounded-read-link");
+        let outside = directory.join("outside.txt");
+        fs::write(&outside, b"secret").unwrap();
+        let link = directory.join("asset.png");
+        symlink(&outside, &link).unwrap();
+        assert_eq!(
+            read_regular_file_capped(&link, 16, FinalSymlink::Follow).unwrap(),
+            b"secret"
+        );
+        let error = read_regular_file_capped(&link, 16, FinalSymlink::Refuse).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn bounded_reads_refuse_devices() {
+        for mode in [FinalSymlink::Follow, FinalSymlink::Refuse] {
+            let error = read_regular_file_capped(Path::new("/dev/null"), 16, mode).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        }
     }
 }

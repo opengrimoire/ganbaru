@@ -35,7 +35,7 @@ pub async fn notes_pick_page_icon_file<R: Runtime>(
         .and_then(|name| name.to_str())
         .map(ToOwned::to_owned);
     let bytes = ganbaru_notes::blocking::run_blocking(move || {
-        ganbaru_notes::assets::page_icons::read_file_capped(&path)
+        ganbaru_notes::assets::page_icons::read_picked_file_capped(&path)
     })
     .await?;
     let pool = connect_sqlite(app.clone(), db_url).await?;

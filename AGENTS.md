@@ -101,7 +101,7 @@ crates/
   ganbaru-db/: Tauri-free SQLite pool registry, connection configuration, migrations, and schema tests
     migrations/: embedded SQLx SQLite migrations
   ganbaru-civil-time/: Tauri-free conversion between instants and zoned wall times, with explicit gap and fold rules
-  ganbaru-atomic-files/: Tauri-free atomic file replacement through exclusive random temporary files and symlink-refusing managed folder creation
+  ganbaru-atomic-files/: Tauri-free atomic file replacement through exclusive random temporary files and symlink-refusing managed folder creation, and bounded regular-file reads
   ganbaru-image-metadata/: Tauri-free bounded image header parsing, type detection, and dimension limits shared by Notes and Quick notes
   ganbaru-pomodoro/: Tauri-free Focus persistence, validation, recovery, activity admission, transactional execution, and adaptive policy
   ganbaru-quick-notes/: Tauri-free Quick notes persistence, search, lifecycle and trash retention, ordering, tags, images, and conflict resolution

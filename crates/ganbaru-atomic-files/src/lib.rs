@@ -1,4 +1,4 @@
-//! Atomic file replacement through no-follow temporary files.
+//! Atomic file replacement through no-follow temporary files, and bounded regular-file reads.
 //!
 //! A write creates a randomly named temporary file next to its target with `create_new`,
 //! which refuses any existing entry, a symlink or dangling symlink included, so a link
@@ -6,11 +6,12 @@
 //! renamed over the target; the rename replaces a symlinked target instead of following it.
 //! Managed folders also refuse symlinked directories between their root and the target,
 //! because `create_new` only protects the final path component.
+//! Bounded reads open the file once and check its type and size through that handle.
 
 use ring::rand::{SecureRandom, SystemRandom};
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 /// Random bytes in each temporary file name.
@@ -177,6 +178,88 @@ pub fn reject_symlink(path: &Path) -> io::Result<()> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
     }
+}
+
+/// How [`read_regular_file_capped`] treats a symlink at the final path component.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FinalSymlink {
+    /// Read the link target. Used for paths the user chose in a native picker.
+    Follow,
+    /// Refuse the link. Used for paths named by imported content or found in a vault.
+    Refuse,
+}
+
+/// Reads a regular file of at most `max_bytes` through one handle.
+///
+/// The type and size checks use the opened handle, and the read stops one byte past the
+/// limit, so a file swapped or grown after the check cannot pass a larger body. On Unix the
+/// open does not block on a FIFO or device, which then fails the regular-file check. With
+/// [`FinalSymlink::Refuse`], Unix opens with `O_NOFOLLOW`; Windows refuses a symlink or
+/// junction found just before a normal open, because creating one there needs elevated
+/// rights or developer mode, and a reparse-point open would bypass cloud file hydration.
+///
+/// # Errors
+///
+/// Returns [`io::ErrorKind::FileTooLarge`] past `max_bytes`, [`io::ErrorKind::InvalidInput`]
+/// for a refused symlink or a path that is not a regular file, and open or read errors.
+pub fn read_regular_file_capped(
+    path: &Path,
+    max_bytes: u64,
+    final_symlink: FinalSymlink,
+) -> io::Result<Vec<u8>> {
+    let file = open_for_bounded_read(path, final_symlink)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} is not a regular file", path.display()),
+        ));
+    }
+    let too_large = || {
+        io::Error::new(
+            io::ErrorKind::FileTooLarge,
+            format!("{} exceeds {max_bytes} bytes", path.display()),
+        )
+    };
+    if metadata.len() > max_bytes {
+        return Err(too_large());
+    }
+    let capacity = usize::try_from(metadata.len()).unwrap_or(0);
+    let mut bytes = Vec::with_capacity(capacity);
+    file.take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(too_large());
+    }
+    Ok(bytes)
+}
+
+#[cfg(unix)]
+fn open_for_bounded_read(path: &Path, final_symlink: FinalSymlink) -> io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut flags = libc::O_NONBLOCK;
+    if final_symlink == FinalSymlink::Refuse {
+        flags |= libc::O_NOFOLLOW;
+    }
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(flags)
+        .open(path)
+        .map_err(|error| {
+            if final_symlink == FinalSymlink::Refuse && error.raw_os_error() == Some(libc::ELOOP) {
+                symlink_error(path)
+            } else {
+                error
+            }
+        })
+}
+
+#[cfg(not(unix))]
+fn open_for_bounded_read(path: &Path, final_symlink: FinalSymlink) -> io::Result<File> {
+    if final_symlink == FinalSymlink::Refuse {
+        reject_symlink(path)?;
+    }
+    File::open(path)
 }
 
 /// Reports whether `path` is a regular file reached without following a final symlink.

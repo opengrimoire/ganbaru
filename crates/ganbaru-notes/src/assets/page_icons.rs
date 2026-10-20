@@ -2,7 +2,7 @@ use base64::{Engine as _, engine::general_purpose};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
-    fs,
+    io,
     path::{Component, Path, PathBuf},
 };
 
@@ -13,6 +13,7 @@ use crate::assets::image_metadata::{
 
 use crate::assets::{self, ASSET_SOURCE_LOCAL_UPLOAD, ASSET_STATE_AVAILABLE, ManagedAssetWrite};
 use crate::blocking::run_blocking;
+use ganbaru_atomic_files::{FinalSymlink, read_regular_file_capped};
 
 const PAGE_ICON_MAX_DISPLAY_MEGABYTES: usize = 3;
 const PAGE_ICON_MAX_BYTES: usize = PAGE_ICON_MAX_DISPLAY_MEGABYTES * 1024 * 1024;
@@ -129,17 +130,23 @@ fn write_binary_file_atomically(
     .map_err(|e| format!("save page icon: {e}"))
 }
 
-pub fn read_file_capped(path: &Path) -> Result<Vec<u8>, String> {
-    let metadata = fs::metadata(path).map_err(|e| format!("inspect page icon image: {e}"))?;
-    if !metadata.is_file() {
-        return Err("page icon image path must be a file".to_string());
-    }
-    if metadata.len() > PAGE_ICON_MAX_BYTES as u64 {
-        return Err(format!(
-            "page icon image exceeds the {PAGE_ICON_MAX_DISPLAY_MEGABYTES} MB limit"
-        ));
-    }
-    let bytes = fs::read(path).map_err(|e| format!("read page icon image: {e}"))?;
+/// Reads a page icon image the user chose in the native picker, following a final link.
+pub fn read_picked_file_capped(path: &Path) -> Result<Vec<u8>, String> {
+    read_file_capped(path, FinalSymlink::Follow)
+}
+
+fn read_file_capped(path: &Path, final_symlink: FinalSymlink) -> Result<Vec<u8>, String> {
+    let bytes = read_regular_file_capped(path, PAGE_ICON_MAX_BYTES as u64, final_symlink).map_err(
+        |error| match error.kind() {
+            io::ErrorKind::FileTooLarge => {
+                format!("page icon image exceeds the {PAGE_ICON_MAX_DISPLAY_MEGABYTES} MB limit")
+            }
+            io::ErrorKind::InvalidInput => {
+                "page icon image path must be a regular file".to_string()
+            }
+            _ => format!("read page icon image: {error}"),
+        },
+    )?;
     ensure_page_icon_size(&bytes)?;
     Ok(bytes)
 }
@@ -262,9 +269,10 @@ pub async fn page_icon_asset_data_url(
     relative_path: String,
 ) -> Result<String, String> {
     let path = asset_path_for_relative(vault_root, &relative_path)?;
-    let read =
-        run_blocking(move || Ok(read_file_capped(&path).map(|bytes| page_icon_data_url(&bytes))))
-            .await?;
+    let read = run_blocking(move || {
+        Ok(read_file_capped(&path, FinalSymlink::Refuse).map(|bytes| page_icon_data_url(&bytes)))
+    })
+    .await?;
     let data_url = match read {
         Ok(data_url) => data_url,
         Err(error) => {

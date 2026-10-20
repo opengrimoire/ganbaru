@@ -2016,6 +2016,7 @@ dependencies = [
  "chrono",
  "ganbaru-db",
  "ganbaru-music",
+ "ganbaru-working-folders",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -2166,6 +2167,7 @@ name = "ganbaru-working-folders"
 version = "0.1.5"
 dependencies = [
  "chrono",
+ "ganbaru-atomic-files",
  "serde",
  "serde_json",
 ]

@@ -51,7 +51,7 @@ Every assignment records the profile revision used for its authorization decisio
 
 Folder authority is an ordered ceiling: none, read, edit, execute (terminal and build commands), and publish (Git publication). Each level includes the levels below it, and the effective level is the lowest of the membership grant and the profile ceiling. Terminal approval never grants secondary folders. These ceilings bound teammates and their runs; a terminal the user opens is the user's own shell and is gated by the native terminal start grant in [Chat security](security/chat.md#terminals-and-processes) instead.
 
-Managed project folders resolve from the active vault and a validated relative path. External folders resolve through device-local bindings scoped by vault ID, device ID, and working-folder ID.
+Managed project folders resolve from the active vault as `projects/<project id>`, where the project ID must be exactly one folder name; the folder is created without following links below the vault root and must canonicalize to a direct child of the vault `projects/` directory, otherwise it stays unbound and is listed with that state. External folders resolve through device-local bindings scoped by vault ID, device ID, and working-folder ID.
 
 Before privileged use, Rust reopens or canonicalizes the target and checks its filesystem identity. Symlinks, traversal, stale bindings, replaced directories, and external bindings pointing at or inside the active vault are rejected. Git operations additionally validate the Git common-directory identity; a mismatch revokes Git authority without necessarily revoking ordinary access to a still-matching folder. Every file path is relative to the authorized root and validated again at the operation boundary.
 

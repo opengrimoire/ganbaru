@@ -45,7 +45,7 @@ Isolated worktrees load project configuration only when the folder is trusted an
 
 ## Working-folder authorization
 
-Portable working-folder identity contains no external absolute path. Managed folders resolve below the active vault. External folders resolve through a device-local binding scoped by vault, device, and logical folder ID.
+Portable working-folder identity contains no external absolute path. Managed folders resolve to a real directory directly inside the vault `projects/` directory, named by a project ID that must be one folder name; links below the vault root are refused (see [Access control](../access-control.md#working-folder-authority)). External folders resolve through a device-local binding scoped by vault, device, and logical folder ID.
 
 Rust validates the opened directory's filesystem identity (device and inode on Unix, volume and file identity on Windows, with reparse-point escapes rejected). Git-sensitive operations separately validate the Git common-storage identity. Missing directories, stale paths, replacement, traversal, absolute injection, symlink escape, vault nesting, and unbound devices fail closed. Remote URLs, branch names, and mutable Git configuration do not participate in authority; how Ganbaru runs Git against that configuration is described in [Git and hosted CLIs](#git-and-hosted-clis).
 

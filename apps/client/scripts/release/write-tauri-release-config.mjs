@@ -93,6 +93,7 @@ const config = {
           [POLKIT_POLICY_INSTALL_PATH]: POLKIT_POLICY_BUNDLE_SOURCE,
         },
         postInstallScript: "packaging/deb/postinst",
+        preRemoveScript: "packaging/deb/prerm",
         postRemoveScript: "packaging/deb/postrm",
       },
       rpm: {
@@ -101,6 +102,7 @@ const config = {
           [POLKIT_POLICY_INSTALL_PATH]: POLKIT_POLICY_BUNDLE_SOURCE,
         },
         postInstallScript: "packaging/rpm/postinstall.sh",
+        preRemoveScript: "packaging/rpm/preremove.sh",
         postRemoveScript: "packaging/rpm/postremove.sh",
       },
     },

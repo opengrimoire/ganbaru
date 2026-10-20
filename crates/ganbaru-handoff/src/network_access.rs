@@ -16,6 +16,7 @@ const RULE_COMMENT: &str = "Ganbaru device linking";
 const MAX_AUTHORIZED_SCOPES: usize = 32;
 const PACKAGED_HELPER_PATH: &str = "/usr/bin/ganbaru";
 const PRIVILEGED_HELPER_ARGUMENT: &str = "--manage-linking-firewall";
+const REVOKE_ALL_OPERATION: &str = "revoke-all";
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -433,23 +434,48 @@ pub fn run_privileged_helper_if_requested() -> Option<Result<(), String>> {
         return None;
     }
     Some(
-        parse_privileged_helper_scope(&mut arguments).and_then(|(scope, grant)| {
+        parse_privileged_helper_request(&mut arguments).and_then(|request| {
             if !effective_user_is_root() {
                 return Err("the Linux network helper requires administrator access".to_string());
             }
-            apply_scope_privileged(&scope, grant)
+            match request {
+                HelperRequest::Apply { scope, grant } => apply_scope_privileged(&scope, grant),
+                HelperRequest::RevokeAll => revoke_all_privileged(),
+            }
         }),
     )
 }
 
-fn parse_privileged_helper_scope(
+/// An operation of the privileged helper.
+#[derive(Debug, PartialEq, Eq)]
+enum HelperRequest {
+    /// Adds or removes the rule of one scope.
+    Apply { scope: AuthorizedScope, grant: bool },
+    /// Removes every production coordinator rule the app added, found by its shape in the
+    /// firewall rather than in per-user state. Package removal runs it as root.
+    RevokeAll,
+}
+
+fn parse_privileged_helper_request(
     arguments: &mut impl Iterator<Item = String>,
-) -> Result<(AuthorizedScope, bool), String> {
+) -> Result<HelperRequest, String> {
     let grant = match arguments.next().as_deref() {
         Some("grant") => true,
         Some("revoke") => false,
+        Some(REVOKE_ALL_OPERATION) => {
+            if arguments.next().is_some() {
+                return Err("the Linux network helper received unexpected arguments".to_string());
+            }
+            return Ok(HelperRequest::RevokeAll);
+        }
         _ => return Err("the Linux network helper operation is invalid".to_string()),
     };
+    parse_privileged_helper_scope(arguments).map(|scope| HelperRequest::Apply { scope, grant })
+}
+
+fn parse_privileged_helper_scope(
+    arguments: &mut impl Iterator<Item = String>,
+) -> Result<AuthorizedScope, String> {
     let firewall = match arguments.next().as_deref() {
         Some("ufw") => FirewallKind::Ufw,
         Some("firewalld") => FirewallKind::Firewalld,
@@ -486,7 +512,7 @@ fn parse_privileged_helper_scope(
         zone,
     };
     validate_authorized_scope(&scope)?;
-    Ok((scope, grant))
+    Ok(scope)
 }
 
 fn effective_user_is_root() -> bool {
@@ -515,16 +541,194 @@ fn apply_scope_privileged(scope: &AuthorizedScope, grant: bool) -> Result<(), St
     }
 }
 
+/// Removes every production coordinator rule carrying the app's shape from UFW and from every
+/// firewalld zone, runtime and permanent. Firewalls that are absent or stopped are skipped, and
+/// a failed removal does not stop the others. Returns the first failure.
+fn revoke_all_privileged() -> Result<(), String> {
+    let mut first_error = None;
+    let mut record = |result: Result<(), String>| {
+        if let Err(error) = result {
+            first_error.get_or_insert(error);
+        }
+    };
+    if let Some(ufw) = command_path(&["/usr/sbin/ufw", "/usr/bin/ufw"]) {
+        let mut command = Command::new(ufw);
+        command.args(["show", "added"]);
+        match command_stdout(command, "list UFW rules") {
+            Ok(output) => {
+                for scope in parse_ufw_added_rules(&output) {
+                    record(apply_scope_privileged(&scope, false));
+                }
+            }
+            Err(error) => record(Err(error)),
+        }
+    }
+    if is_firewalld_running() {
+        match firewalld_app_rules() {
+            Ok(scopes) => {
+                for scope in scopes {
+                    record(apply_firewalld_direct(&scope, false));
+                }
+            }
+            Err(error) => record(Err(error)),
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+/// The app's rules in every runtime and permanent firewalld zone, once each.
+fn firewalld_app_rules() -> Result<Vec<AuthorizedScope>, String> {
+    let firewall_cmd = required_command(
+        &["/usr/bin/firewall-cmd", "/usr/sbin/firewall-cmd"],
+        "firewalld",
+    )?;
+    let firewalld = |permanent: bool, arguments: &[String]| {
+        let mut command = Command::new(&firewall_cmd);
+        if permanent {
+            command.arg("--permanent");
+        }
+        command.args(arguments);
+        command_stdout(command, "list firewalld rules")
+    };
+    let mut zones = Vec::new();
+    for permanent in [false, true] {
+        for zone in firewalld(permanent, &["--get-zones".to_string()])?.split_whitespace() {
+            if is_valid_zone(zone) && !zones.iter().any(|known| known == zone) {
+                zones.push(zone.to_string());
+            }
+        }
+    }
+    let mut scopes: Vec<AuthorizedScope> = Vec::new();
+    for zone in &zones {
+        for permanent in [false, true] {
+            let rules = firewalld(
+                permanent,
+                &[format!("--zone={zone}"), "--list-rich-rules".to_string()],
+            )?;
+            for scope in rules
+                .lines()
+                .filter_map(|rule| parse_firewalld_rich_rule(zone, rule))
+            {
+                if !scopes.contains(&scope) {
+                    scopes.push(scope);
+                }
+            }
+        }
+    }
+    Ok(scopes)
+}
+
+fn command_stdout(mut command: Command, action: &str) -> Result<String, String> {
+    let output = command
+        .output()
+        .map_err(|error| format!("{action}: {error}"))?;
+    if !output.status.success() {
+        return Err(format!("{action}: {}", output_message(&output)));
+    }
+    String::from_utf8(output.stdout).map_err(|_| format!("{action}: the output is not UTF-8"))
+}
+
+/// Scopes of the `ufw show added` lines that carry the app comment, allow TCP to the
+/// production coordinator port from a private source, and pass scope validation.
+fn parse_ufw_added_rules(output: &str) -> Vec<AuthorizedScope> {
+    output.lines().filter_map(parse_ufw_added_rule).collect()
+}
+
+fn parse_ufw_added_rule(line: &str) -> Option<AuthorizedScope> {
+    let (rule, comment) = line.trim().split_once(" comment ")?;
+    if comment != format!("'{RULE_COMMENT}'") {
+        return None;
+    }
+    let mut tokens = rule.split_whitespace();
+    for expected in ["ufw", "allow", "in", "on"] {
+        if tokens.next()? != expected {
+            return None;
+        }
+    }
+    let interface = tokens.next()?.to_string();
+    let (mut source, mut destination, mut port, mut protocol) = (None, None, None, None);
+    let mut port_follows_destination = false;
+    while let Some(key) = tokens.next() {
+        let value = tokens.next()?;
+        match key {
+            "from" if source.is_none() => source = Some(value),
+            "to" if destination.is_none() => destination = Some(value),
+            "port" if port_follows_destination && port.is_none() => port = Some(value),
+            "proto" if protocol.is_none() => protocol = Some(value),
+            _ => return None,
+        }
+        port_follows_destination = key == "to";
+    }
+    if protocol? != "tcp" || port?.parse::<u16>().ok()? != COORDINATOR_PORT {
+        return None;
+    }
+    let scope = AuthorizedScope {
+        firewall: FirewallKind::Ufw,
+        interface,
+        local_address: destination?.parse().ok()?,
+        source_network: source?.to_string(),
+        port: COORDINATOR_PORT,
+        zone: None,
+    };
+    validate_authorized_scope(&scope).ok()?;
+    Some(scope)
+}
+
+/// The scope of a firewalld rich rule in exactly the shape the app adds for the production
+/// coordinator port. Rich rules carry no interface, so the scope has none; only its zone,
+/// addresses, and port reach firewalld.
+fn parse_firewalld_rich_rule(zone: &str, rule: &str) -> Option<AuthorizedScope> {
+    let rest = rule
+        .trim()
+        .strip_prefix("rule family=\"ipv4\" source address=\"")?;
+    let (source, rest) = rest.split_once('"')?;
+    let rest = rest.strip_prefix(" destination address=\"")?;
+    let (destination, rest) = rest.split_once('"')?;
+    let rest = rest.strip_prefix(" port port=\"")?;
+    let (port, rest) = rest.split_once('"')?;
+    if rest != " protocol=\"tcp\" accept" || port.parse::<u16>().ok()? != COORDINATOR_PORT {
+        return None;
+    }
+    let local_address: Ipv4Addr = destination
+        .strip_suffix("/32")
+        .unwrap_or(destination)
+        .parse()
+        .ok()?;
+    validate_rule_addresses(local_address, source, COORDINATOR_PORT).ok()?;
+    is_valid_zone(zone).then(|| AuthorizedScope {
+        firewall: FirewallKind::Firewalld,
+        interface: String::new(),
+        local_address,
+        source_network: source.to_string(),
+        port: COORDINATOR_PORT,
+        zone: Some(zone.to_string()),
+    })
+}
+
 fn validate_authorized_scope(scope: &AuthorizedScope) -> Result<(), String> {
-    let block = ipv4_lan_block(scope.local_address);
-    if !is_valid_interface(&scope.interface)
-        || block.is_none()
-        || !matches!(scope.port, COORDINATOR_PORT | DEVELOPMENT_COORDINATOR_PORT)
-    {
+    if !is_valid_interface(&scope.interface) {
         return Err("saved Linux network access scope is invalid".to_string());
     }
-    let (network, prefix) = scope
-        .source_network
+    validate_rule_addresses(scope.local_address, &scope.source_network, scope.port)?;
+    match scope.firewall {
+        FirewallKind::Ufw if scope.zone.is_none() => Ok(()),
+        FirewallKind::Firewalld if scope.zone.as_deref().is_some_and(is_valid_zone) => Ok(()),
+        _ => Err("saved Linux firewall scope is inconsistent".to_string()),
+    }
+}
+
+/// Checks that a rule opens a coordinator port on a private, link-local, or overlay address to
+/// an aligned source range that holds the address and stays inside its block.
+fn validate_rule_addresses(
+    local_address: Ipv4Addr,
+    source_network: &str,
+    port: u16,
+) -> Result<(), String> {
+    let block = ipv4_lan_block(local_address);
+    if block.is_none() || !matches!(port, COORDINATOR_PORT | DEVELOPMENT_COORDINATOR_PORT) {
+        return Err("saved Linux network access scope is invalid".to_string());
+    }
+    let (network, prefix) = source_network
         .split_once('/')
         .ok_or_else(|| "saved Linux network source is invalid".to_string())?;
     let network = network
@@ -538,15 +742,11 @@ fn validate_authorized_scope(scope: &AuthorizedScope) -> Result<(), String> {
     }
     let mask = ipv4_mask(prefix);
     if u32::from(network) & mask != u32::from(network)
-        || u32::from(scope.local_address) & mask != u32::from(network)
+        || u32::from(local_address) & mask != u32::from(network)
     {
         return Err("saved Linux network source does not contain its local address".to_string());
     }
-    match scope.firewall {
-        FirewallKind::Ufw if scope.zone.is_none() => Ok(()),
-        FirewallKind::Firewalld if scope.zone.as_deref().is_some_and(is_valid_zone) => Ok(()),
-        _ => Err("saved Linux firewall scope is inconsistent".to_string()),
-    }
+    Ok(())
 }
 
 fn apply_ufw(scope: &AuthorizedScope, grant: bool) -> Result<(), String> {
@@ -795,7 +995,7 @@ bad/interface 0001A8C0 00000000 0001 0 0 600 00FFFFFF 0 0 0\n";
         let mut broad = ["grant", "ufw", "wlp2s0", "10.1.2.3", "10.0.0.0/7", "-"]
             .into_iter()
             .map(str::to_string);
-        assert!(parse_privileged_helper_scope(&mut broad).is_err());
+        assert!(parse_privileged_helper_request(&mut broad).is_err());
     }
 
     fn numbered_scope(index: u8) -> AuthorizedScope {
@@ -951,8 +1151,11 @@ tailscale0 00004064 00000000 0001 0 0 0 0000C0FF 0 0 0\n";
         ]
         .into_iter()
         .map(str::to_string);
-        let (scope, grant) =
-            parse_privileged_helper_scope(&mut arguments).expect("valid helper scope");
+        let Ok(HelperRequest::Apply { scope, grant }) =
+            parse_privileged_helper_request(&mut arguments)
+        else {
+            panic!("valid helper scope");
+        };
         assert!(grant);
         assert_eq!(scope.firewall, FirewallKind::Ufw);
         assert_eq!(scope.local_address, Ipv4Addr::new(192, 168, 1, 66));
@@ -960,7 +1163,7 @@ tailscale0 00004064 00000000 0001 0 0 0 0000C0FF 0 0 0\n";
         let mut broad = ["grant", "ufw", "wlp2s0", "192.168.1.66", "0.0.0.0/0", "-"]
             .into_iter()
             .map(str::to_string);
-        assert!(parse_privileged_helper_scope(&mut broad).is_err());
+        assert!(parse_privileged_helper_request(&mut broad).is_err());
 
         let mut extra = [
             "grant",
@@ -973,6 +1176,82 @@ tailscale0 00004064 00000000 0001 0 0 0 0000C0FF 0 0 0\n";
         ]
         .into_iter()
         .map(str::to_string);
-        assert!(parse_privileged_helper_scope(&mut extra).is_err());
+        assert!(parse_privileged_helper_request(&mut extra).is_err());
+
+        let revoke_all = |arguments: &[&str]| {
+            parse_privileged_helper_request(&mut arguments.iter().map(|value| value.to_string()))
+        };
+        assert_eq!(revoke_all(&["revoke-all"]), Ok(HelperRequest::RevokeAll));
+        assert!(revoke_all(&["revoke-all", "ufw"]).is_err());
+    }
+
+    #[test]
+    fn package_removal_finds_only_the_app_ufw_rules() {
+        let output = "\
+Added user rules (see 'ufw status' for running firewall):
+ufw allow 22/tcp
+ufw allow in on wlp2s0 from 192.168.1.0/24 to 192.168.1.66 port 43821 proto tcp comment 'Ganbaru device linking'
+ufw allow in on wlp2s0 from 192.168.1.0/24 to 192.168.1.66 port 43821 proto tcp comment 'My own rule'
+ufw allow in on wlp2s0 from 192.168.1.0/24 to 192.168.1.66 port 8080 proto tcp comment 'Ganbaru device linking'
+ufw allow in on wlp2s0 from 0.0.0.0/0 to 192.168.1.66 port 43821 proto tcp comment 'Ganbaru device linking'
+ufw allow in on wlp2s0 from 192.168.1.0/24 port 43821 to 192.168.1.66 proto tcp comment 'Ganbaru device linking'
+ufw allow in on wlp2s0 from 192.168.1.0/24 to 192.168.1.66 port 43821 proto udp comment 'Ganbaru device linking'
+ufw deny in on wlp2s0 from 192.168.1.0/24 to 192.168.1.66 port 43821 proto tcp comment 'Ganbaru device linking'
+ufw allow in on eth0 from 10.0.0.0/8 to 10.4.0.2 port 43821 proto tcp comment 'Ganbaru device linking'
+";
+        let scopes = parse_ufw_added_rules(output);
+        assert_eq!(
+            scopes,
+            vec![
+                AuthorizedScope {
+                    firewall: FirewallKind::Ufw,
+                    interface: "wlp2s0".to_string(),
+                    local_address: Ipv4Addr::new(192, 168, 1, 66),
+                    source_network: "192.168.1.0/24".to_string(),
+                    port: COORDINATOR_PORT,
+                    zone: None,
+                },
+                AuthorizedScope {
+                    firewall: FirewallKind::Ufw,
+                    interface: "eth0".to_string(),
+                    local_address: Ipv4Addr::new(10, 4, 0, 2),
+                    source_network: "10.0.0.0/8".to_string(),
+                    port: COORDINATOR_PORT,
+                    zone: None,
+                },
+            ]
+        );
+        assert_eq!(
+            ufw_arguments(&scopes[0], false)[..4],
+            ["delete", "allow", "in", "on"].map(str::to_string)
+        );
+    }
+
+    #[test]
+    fn package_removal_finds_only_the_app_firewalld_rules() {
+        let app = "rule family=\"ipv4\" source address=\"192.168.1.0/24\" destination address=\"192.168.1.66/32\" port port=\"43821\" protocol=\"tcp\" accept";
+        let scope = parse_firewalld_rich_rule("home", app).expect("app rule");
+        assert_eq!(scope.zone.as_deref(), Some("home"));
+        assert_eq!(scope.local_address, Ipv4Addr::new(192, 168, 1, 66));
+        assert_eq!(scope.source_network, "192.168.1.0/24");
+        let normalized = app.replace("192.168.1.66/32", "192.168.1.66");
+        assert_eq!(parse_firewalld_rich_rule("home", &normalized), Some(scope));
+
+        for foreign in [
+            app.replace("43821", "8080"),
+            app.replace("accept", "reject"),
+            app.replace("\"tcp\"", "\"udp\""),
+            app.replace("192.168.1.0/24", "0.0.0.0/0"),
+            app.replace("ipv4", "ipv6"),
+            format!("{app} log"),
+            "rule service name=\"ssh\" accept".to_string(),
+        ] {
+            assert_eq!(
+                parse_firewalld_rich_rule("home", &foreign),
+                None,
+                "{foreign}"
+            );
+        }
+        assert_eq!(parse_firewalld_rich_rule("bad zone", app), None);
     }
 }

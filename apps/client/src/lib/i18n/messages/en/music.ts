@@ -175,7 +175,7 @@ export const music = {
       includes: (sounds: string) => `Includes ${sounds}`,
       remove: "Remove preset",
       removeTitle: "Remove preset?",
-      removeMessage: (name: string) => `Remove ${name}? Projects and events that use it will show it as unavailable until you pick another sound.`,
+      removeMessage: (name: string) => `Remove ${name}? Projects and events that use it will show it as unavailable until you pick another preset.`,
     },
   },
   builder: {

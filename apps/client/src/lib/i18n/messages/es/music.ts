@@ -178,7 +178,7 @@ export const music = {
       includes: (sounds: string) => `Incluye ${sounds}`,
       remove: "Eliminar preajuste",
       removeTitle: "¿Eliminar preajuste?",
-      removeMessage: (name: string) => `¿Eliminar ${name}? Los proyectos y eventos que lo usan lo mostrarán como no disponible hasta que elijas otro sonido.`,
+      removeMessage: (name: string) => `¿Eliminar ${name}? Los proyectos y eventos que lo usan lo mostrarán como no disponible hasta que elijas otro preajuste.`,
     },
   },
   builder: {

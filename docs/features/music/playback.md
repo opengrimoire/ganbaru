@@ -14,7 +14,7 @@ Key rules:
 - Commands serialize through one bounded owner. Checkpoints, listening outcomes, and action receipts commit together before decoder effects are published. A retried command with the same action identity never executes twice.
 - Snooze and preference changes ask the owner to reconcile the queue; surfaces do not issue their own Next or Pause from a stale snapshot.
 - Automatic soundtrack selection (Calendar and Focus) is native. See [Music automation](automation.md) for precedence and ownership.
-- Automatic background-sound intent is recorded separately from manual intent. Startup shows the actual native output and never replays an automatic selection from a saved flag; only a freshly accepted phase or an explicit manual action can start it.
+- Automatic soundscape intent is recorded separately from manual intent. Startup shows the actual native output and never replays an automatic selection from a saved flag; only a freshly accepted phase or an explicit manual action can start it.
 - Before audible output, source preparation rechecks phase, state version, vault lifecycle revision, and expiry, so obsolete work cannot become audible.
 
 ## Vault lifecycle
@@ -25,7 +25,7 @@ Vault changes revoke new playback admission immediately and wait a bounded time 
 
 The player supports play, pause, previous, next, seek where the backend supports it, volume, mute, one playback-order control, and playlist repeat. Queue identity stays stable across source transitions so controls never briefly target the previous item. The main player does not expose a speed control; playlist membership rate overrides still apply.
 
-On desktop, the Music volume is an app volume apart from the system volume. On Android, the volume control is the phone's media volume, so it follows the hardware buttons and system controls, and Music plays at full app volume beneath it; mute stays an app control. Devices whose volume apps cannot change keep the app volume.
+On desktop, the Music volume is an app volume apart from the system volume. On Android, the volume control is the phone's media volume, so it follows the hardware buttons and system controls, and Music plays at full app volume beneath it; mute stays an app control. Devices whose volume apps cannot change keep the app volume. Desktop soundscapes play relative to the Music volume; see [Soundscapes](soundscapes.md).
 
 Playback order has three exclusive modes:
 

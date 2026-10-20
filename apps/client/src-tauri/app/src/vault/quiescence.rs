@@ -57,6 +57,10 @@ async fn freeze_runtimes<R: Runtime>(
         resume: Some(Box::new(move || super::resume_native_runtimes(&resume_app))),
         _transition: transition,
     };
+    #[cfg(desktop)]
+    app.state::<crate::chat::terminal::ChatTerminalRegistry>()
+        .suspend_creation()
+        .map_err(|error| format!("pause Chat terminals: {}", error.message))?;
     crate::sync::stop_for_vault_handoff(app).await?;
     crate::pomodoro::stop_for_vault_handoff(app).await?;
     crate::music::session::stop_for_vault_handoff(app).await?;
@@ -209,6 +213,7 @@ pub(crate) async fn begin_source_quiescence<R: Runtime>(
     let vault_id = super::active_vault_id(app)?;
     check_pomodoro_blocker(app).await?;
     check_chat_blocker(app)?;
+    check_terminal_blocker(app)?;
     let sync_plan = crate::sync::quiesced_sync(app);
 
     let frozen = freeze_and_fence(app, transition).await?;
@@ -246,6 +251,7 @@ pub(crate) async fn begin_source_quiescence<R: Runtime>(
 
     let result = async {
         check_chat_blocker(app)?;
+        check_terminal_blocker(app)?;
         db::close_all_sqlite_pools_for_restore(app).await?;
         crate::sync::seal_quiesced(app, sync_plan).await;
         check_drained_pomodoro_blocker(app).await?;
@@ -268,16 +274,34 @@ pub(crate) async fn begin_source_quiescence<R: Runtime>(
 pub(crate) async fn begin_snapshot_quiescence<R: Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<SnapshotQuiescence, String> {
-    begin_reserved_quiescence(app, reserve_vault_transition()?).await
+    begin_reserved_quiescence(app, reserve_vault_transition()?, RunningTerminals::Continue).await
+}
+
+/// Whether shells already running in the active vault may outlive the transition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RunningTerminals {
+    /// The vault stays intact on disk, so existing shells keep running; only new ones pause.
+    Continue,
+    /// The vault contents are replaced, so a running shell blocks the transition.
+    Block,
 }
 
 /// Drains native owners before excluding writes or closing the active database.
 pub(crate) async fn begin_reserved_quiescence<R: Runtime>(
     app: &tauri::AppHandle<R>,
     transition: VaultTransition,
+    running_terminals: RunningTerminals,
 ) -> Result<SnapshotQuiescence, String> {
+    let blocks_terminals = running_terminals == RunningTerminals::Block;
+    if blocks_terminals {
+        check_terminal_blocker(app)?;
+    }
     let sync_plan = crate::sync::quiesced_sync(app);
     let frozen = freeze_and_fence(app, transition).await?;
+    if blocks_terminals {
+        // Creation is paused now, so this count cannot grow before the database closes.
+        check_terminal_blocker(app)?;
+    }
     let database_guard = db::begin_vault_exclusive().await;
     db::close_all_sqlite_pools_for_restore(app).await?;
     crate::sync::seal_quiesced(app, sync_plan).await;
@@ -334,6 +358,24 @@ fn check_chat_blocker<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), Strin
 
 #[cfg(mobile)]
 fn check_chat_blocker<R: Runtime>(_app: &tauri::AppHandle<R>) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(desktop)]
+fn check_terminal_blocker<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
+    let running = app
+        .state::<crate::chat::terminal::ChatTerminalRegistry>()
+        .live_count()
+        .map_err(|error| format!("check running Chat terminals: {}", error.message))?;
+    if running > 0 {
+        Err("Close running Chat terminals before moving or replacing this vault".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(mobile)]
+fn check_terminal_blocker<R: Runtime>(_app: &tauri::AppHandle<R>) -> Result<(), String> {
     Ok(())
 }
 

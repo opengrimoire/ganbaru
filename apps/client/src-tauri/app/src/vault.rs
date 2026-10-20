@@ -471,7 +471,12 @@ async fn select_reserved_vault<R: Runtime>(
     info: &VaultInfo,
     transition: quiescence::VaultTransition,
 ) -> Result<(), String> {
-    let quiescence = quiescence::begin_reserved_quiescence(app, transition).await?;
+    let quiescence = quiescence::begin_reserved_quiescence(
+        app,
+        transition,
+        quiescence::RunningTerminals::Continue,
+    )
+    .await?;
     let selection_app = app.clone();
     let info = info.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -551,6 +556,9 @@ pub(crate) fn resume_native_runtimes<R: Runtime>(app: &tauri::AppHandle<R>) -> R
     #[cfg(target_os = "ios")]
     let distractions = Ok(());
     let sync = crate::sync::resume_after_vault_handoff(app);
+    #[cfg(desktop)]
+    app.state::<crate::chat::terminal::ChatTerminalRegistry>()
+        .resume_creation();
     focus.and(music).and(distractions).and(sync)
 }
 

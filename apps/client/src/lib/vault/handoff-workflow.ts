@@ -34,6 +34,9 @@ export function formatHandoffError(cause: unknown, t: Translate): string {
   if (isLinkingDisabled(lower)) {
     return t("vaultHandoff.linkingDisabled");
   }
+  if (lower.includes("chat terminals")) {
+    return t("vaultHandoff.blockerTerminal");
+  }
   if (lower.includes("chat") && (lower.includes("active") || lower.includes("running"))) {
     return t("vaultHandoff.blockerChat");
   }

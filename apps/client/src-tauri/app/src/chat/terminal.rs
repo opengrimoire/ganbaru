@@ -243,7 +243,10 @@ impl Drop for TerminalSession {
 
 pub struct ChatTerminalRegistry {
     sessions: Mutex<HashMap<String, Arc<TerminalSession>>>,
+    /// Cleared once at application exit.
     accepting: AtomicBool,
+    /// Set while a vault transition is quiesced, so no new shell starts inside a frozen vault.
+    suspended: AtomicBool,
 }
 
 impl Default for ChatTerminalRegistry {
@@ -251,6 +254,7 @@ impl Default for ChatTerminalRegistry {
         Self {
             sessions: Mutex::new(HashMap::new()),
             accepting: AtomicBool::new(true),
+            suspended: AtomicBool::new(false),
         }
     }
 }
@@ -283,14 +287,8 @@ impl ChatTerminalRegistry {
         input: ChatTerminalCreateInput,
     ) -> ChatResult<ChatTerminalSnapshotRead> {
         validate_dimensions(input.columns, input.rows)?;
-        if !self.accepting.load(Ordering::Acquire) {
-            return Err(ChatError::new(
-                ChatErrorCode::InvalidStateTransition,
-                "Chat terminals are shutting down",
-                true,
-            ));
-        }
         let mut sessions = self.sessions.lock().map_err(|_| terminal_state_error())?;
+        self.admit_creation()?;
         if sessions.contains_key(&input.terminal_id) {
             return Err(ChatError::new(
                 ChatErrorCode::Conflict,
@@ -422,6 +420,38 @@ impl ChatTerminalRegistry {
         let sessions = self.sessions.lock().map_err(|_| terminal_state_error())?;
         for session in sessions.values() {
             session.terminate()?;
+        }
+        Ok(())
+    }
+
+    /// Rejects new terminals until [`Self::resume_creation`] runs; running terminals continue.
+    pub fn suspend_creation(&self) -> ChatResult<()> {
+        // Holding the sessions lock orders this against a create that already passed admission.
+        let _sessions = self.sessions.lock().map_err(|_| terminal_state_error())?;
+        self.suspended.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    /// Admits new terminals again after a vault transition finishes.
+    pub fn resume_creation(&self) {
+        self.suspended.store(false, Ordering::Release);
+    }
+
+    /// Callers hold the sessions lock so admission and insertion stay atomic.
+    fn admit_creation(&self) -> ChatResult<()> {
+        if !self.accepting.load(Ordering::Acquire) {
+            return Err(ChatError::new(
+                ChatErrorCode::InvalidStateTransition,
+                "Chat terminals are shutting down",
+                true,
+            ));
+        }
+        if self.suspended.load(Ordering::Acquire) {
+            return Err(ChatError::new(
+                ChatErrorCode::Busy,
+                "Chat terminals are paused while the vault changes",
+                true,
+            ));
         }
         Ok(())
     }
@@ -841,6 +871,33 @@ mod tests {
             .expect("confirmed close should work");
         assert!(confirmed.closed);
         assert!(registry.snapshot("terminal:test").is_err());
+    }
+
+    #[test]
+    fn vault_suspension_blocks_creation_and_counts_only_running_terminals() {
+        let registry = ChatTerminalRegistry::default();
+        {
+            let mut sessions = registry.sessions.lock().expect("registry should lock");
+            sessions.insert("terminal:running".to_string(), session(true));
+            sessions.insert("terminal:exited".to_string(), session(false));
+        }
+        assert_eq!(registry.live_count().expect("count should read"), 1);
+        assert!(registry.admit_creation().is_ok());
+
+        registry
+            .suspend_creation()
+            .expect("suspension should apply");
+        let paused = registry
+            .admit_creation()
+            .expect_err("a suspended registry must reject new terminals");
+        assert_eq!(paused.code, ChatErrorCode::Busy);
+        assert_eq!(registry.live_count().expect("count should read"), 1);
+
+        registry.resume_creation();
+        assert!(registry.admit_creation().is_ok());
+        registry.shutdown_all().expect("shutdown should apply");
+        registry.resume_creation();
+        assert!(registry.admit_creation().is_err());
     }
 
     #[test]

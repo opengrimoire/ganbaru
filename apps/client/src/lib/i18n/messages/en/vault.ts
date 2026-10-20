@@ -169,6 +169,7 @@ export const vaultHandoff = {
   sameNetwork: "Keep both apps open on the same local network.",
   failed: (details: string) => `The linked-device action failed: ${details}`,
   blockerChat: "Finish or stop active Chat work before moving the vault.",
+  blockerTerminal: "Close running Chat terminals before moving the vault.",
   blockerFocus: "Finish or stop the active Pomodoro session before moving the vault.",
   blockerTransfer: "Finish or retry the current vault transfer first.",
   incompatibleVersions:

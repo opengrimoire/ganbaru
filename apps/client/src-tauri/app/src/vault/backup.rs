@@ -1089,8 +1089,12 @@ pub async fn vault_pick_and_restore_backup(
             return Ok(None);
         };
         validate_restored_vault(&staging).await?;
-        let quiescence =
-            super::quiescence::begin_reserved_quiescence(&app, transition.clone()).await?;
+        let quiescence = super::quiescence::begin_reserved_quiescence(
+            &app,
+            transition.clone(),
+            super::quiescence::RunningTerminals::Block,
+        )
+        .await?;
         let activation_app = app.clone();
         tauri::async_runtime::spawn_blocking(move || {
             let ownership_manager =

@@ -502,7 +502,12 @@ pub async fn vault_restore_database_rollback(
     let transition = super::quiescence::reserve_vault_transition()?;
     let writable_vault = active_writable_vault_path(&app)?;
     validate_rollback(writable_vault.as_ref(), &id).await?;
-    let quiescence = super::quiescence::begin_reserved_quiescence(&app, transition).await?;
+    let quiescence = super::quiescence::begin_reserved_quiescence(
+        &app,
+        transition,
+        super::quiescence::RunningTerminals::Block,
+    )
+    .await?;
     let restored = restore_rollback(writable_vault.as_ref(), &id, super::now_utc()).await;
     let resumed = tauri::async_runtime::spawn_blocking(move || quiescence.finish())
         .await

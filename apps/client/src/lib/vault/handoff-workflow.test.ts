@@ -17,6 +17,10 @@ describe("formatHandoffError", () => {
     expect(formatHandoffError("active Pomodoro run blocks handoff", t)).toBe(
       "vaultHandoff.blockerFocus",
     );
+    expect(formatHandoffError(
+      "Close running Chat terminals before moving or replacing this vault",
+      t,
+    )).toBe("vaultHandoff.blockerTerminal");
   });
 
   it("turns coordinator failures into same-network retry guidance", () => {

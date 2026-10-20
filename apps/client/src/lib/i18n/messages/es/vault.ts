@@ -179,6 +179,7 @@ export const vaultHandoff = {
   sameNetwork: "Mantén ambas apps abiertas en la misma red local.",
   failed: (details: string) => `Falló la acción del dispositivo vinculado: ${details}`,
   blockerChat: "Termina o detén el trabajo activo de Chat antes de mover la bóveda.",
+  blockerTerminal: "Cierra las terminales de Chat en ejecución antes de mover la bóveda.",
   blockerFocus: "Termina o detén la sesión activa de Pomodoro antes de mover la bóveda.",
   blockerTransfer: "Termina o reintenta primero la transferencia actual de la bóveda.",
   incompatibleVersions:

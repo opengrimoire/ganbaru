@@ -6,12 +6,26 @@
   import Notice from "$lib/components/ui/Notice.svelte";
   import Switch from "$lib/components/ui/Switch.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { MAX_SOUNDSCAPE_LAYERS, type MusicSoundscapeDefinition, type MusicSoundscapePreset } from "$lib/music/soundscape/contracts";
+  import {
+    DEFAULT_SOUNDSCAPE_PRESET_LEVEL,
+    MAX_SOUNDSCAPE_LAYERS,
+    type MusicSoundscapeDefinition,
+    type MusicSoundscapePreset,
+    type MusicSoundscapePresetSound,
+  } from "$lib/music/soundscape/contracts";
   import { orderedGeneratedSounds } from "$lib/music/soundscape/presentation";
-  import { togglePresetDraftSound } from "$lib/music/soundscape/presets";
+  import {
+    presetDisplayName,
+    presetLevelAdjustment,
+    presetLevelFromAdjustment,
+    setPresetDraftSoundLevel,
+    soundDisplayName,
+    togglePresetDraftSound,
+  } from "$lib/music/soundscape/presets";
   import { getMusicPlayer } from "$lib/stores/music-player.svelte";
   import { getSoundscapeStore } from "$lib/stores/soundscape.svelte";
   import MusicSoundscapeGroupIcon from "./MusicSoundscapeGroupIcon.svelte";
+  import MusicSoundscapeLevelSlider from "./MusicSoundscapeLevelSlider.svelte";
   import MusicSoundscapeSoundIcon from "./MusicSoundscapeSoundIcon.svelte";
 
   const DEFAULT_PRESET_ICON = "lucide:layers";
@@ -38,9 +52,16 @@
   // Drafts start from the preset once; later store refreshes must not overwrite what the person is choosing.
   let name = $state(initialName());
   let icon = $state(initialIcon());
-  let soundIds = $state<string[]>(initialSoundIds());
-  const atLimit = $derived(soundIds.length >= MAX_SOUNDSCAPE_LAYERS);
-  const canSave = $derived(name.trim().length > 0 && soundIds.length > 0 && !soundscape.saving);
+  let sounds = $state<MusicSoundscapePresetSound[]>(initialSounds());
+  let level = $state(initialLevel());
+  const atLimit = $derived(sounds.length >= MAX_SOUNDSCAPE_LAYERS);
+  const canSave = $derived(name.trim().length > 0 && sounds.length > 0 && !soundscape.saving);
+  const adjustment = $derived(presetLevelAdjustment(level));
+  const adjustmentText = $derived(`${adjustment > 0 ? "+" : ""}${adjustment}%`);
+  const mix = $derived(sounds.flatMap((sound) => {
+    const definition = soundscape.definitions.find((entry) => entry.id === sound.soundscapeId);
+    return definition ? [{ definition, level: sound.level }] : [];
+  }));
   let listening = $state(true);
   const sections = $derived(soundSections(soundscape.definitions));
 
@@ -55,19 +76,23 @@
   });
 
   $effect(() => {
-    void soundscape.previewSounds(listening ? soundIds : []);
+    void soundscape.previewMix(listening ? { sounds, level } : null);
   });
 
   function initialName(): string {
-    return preset?.name ?? "";
+    return preset ? presetDisplayName(preset, t) : "";
   }
 
   function initialIcon(): string {
     return preset?.icon ?? DEFAULT_PRESET_ICON;
   }
 
-  function initialSoundIds(): string[] {
-    return preset ? [...preset.soundscapeIds] : [];
+  function initialLevel(): number {
+    return preset?.level ?? DEFAULT_SOUNDSCAPE_PRESET_LEVEL;
+  }
+
+  function initialSounds(): MusicSoundscapePresetSound[] {
+    return preset ? preset.sounds.map((sound) => ({ ...sound })) : [];
   }
 
   function soundSections(definitions: readonly MusicSoundscapeDefinition[]): { key: string; title: string; icon: string | null; sounds: MusicSoundscapeDefinition[] }[] {
@@ -81,26 +106,28 @@
     ].filter((section) => section.sounds.length > 0);
   }
 
-  function soundName(definition: MusicSoundscapeDefinition): string {
-    return definition.generatedKind ? t(`music.soundscape.rainName.${definition.generatedKind}`) : definition.name;
-  }
-
   /** Tile tooltip: the repair state when the file is missing, otherwise the real noise type of a generated sound. */
   function soundHint(definition: MusicSoundscapeDefinition): string | undefined {
     if (definition.availability !== "available") return t("music.soundscape.needsRepair");
     return definition.generatedKind ? t(`music.soundscape.generatedName.${definition.generatedKind}`) : undefined;
   }
 
+  /** Keeps the stored name of an unrenamed seeded preset so it stays localized in every language. */
+  function savedName(): string {
+    const trimmed = name.trim();
+    return preset && trimmed === presetDisplayName(preset, t) ? preset.name : trimmed;
+  }
 
   async function save(): Promise<void> {
     if (!canSave) return;
     try {
       const saved = await soundscape.savePreset({
         id: preset?.id ?? crypto.randomUUID(),
-        name: name.trim(),
+        name: savedName(),
         icon,
-        soundscapeIds: [...soundIds],
-        expectedVersion: preset?.version ?? null,
+        level,
+        sounds: sounds.map((sound) => ({ ...sound })),
+        expectedVersion: preset ? soundscape.presets.find((entry) => entry.id === preset.id)?.version ?? preset.version : null,
         updatedAtMs: Date.now(),
       });
       onDone(saved);
@@ -126,6 +153,28 @@
       <input data-dialog-autofocus class="field h-9 min-w-0 flex-1 px-3 text-xs" bind:value={name} aria-label={t("music.soundscape.preset.name")} placeholder={t("music.soundscape.preset.name")} maxlength={MAX_PRESET_NAME_CHARS} onkeydown={(event) => { if (event.key === "Enter") { event.preventDefault(); void save(); } }} />
     </div>
 
+    <div>
+      <div class="flex h-8 items-center gap-2">
+        <span class="w-28 shrink-0 truncate text-xs font-semibold">{t("music.soundscape.preset.level")}</span>
+        <MusicSoundscapeLevelSlider id="soundscape-preset-level" label={t("music.soundscape.preset.level")} value={adjustment} min={-100} max={100} centered valueText={t("music.soundscape.levelValue", adjustmentText)} describedBy="soundscape-preset-level-hint" onchange={(value) => level = presetLevelFromAdjustment(value)} />
+        <span class="w-11 shrink-0 text-right text-xs tabular-nums text-muted-foreground">{adjustmentText}</span>
+      </div>
+      <p id="soundscape-preset-level-hint" class="text-xs text-muted-foreground">{t("music.soundscape.levelHint")}</p>
+      {#if mix.length > 0}
+        <ul class="mt-3 flex flex-col gap-1" aria-label={t("music.soundscape.preset.sounds")}>
+          {#each mix as entry (entry.definition.id)}
+            {@const soundName = soundDisplayName(entry.definition, t)}
+            {@const percent = Math.round(entry.level * 100)}
+            <li class="flex h-8 items-center gap-2">
+              <span class="flex w-28 shrink-0 items-center gap-1.5 text-xs"><span class="shrink-0 text-muted-foreground"><MusicSoundscapeSoundIcon definition={entry.definition} size={14} /></span><span class="min-w-0 truncate">{soundName}</span></span>
+              <MusicSoundscapeLevelSlider id={`soundscape-preset-sound-${entry.definition.id}`} label={t("music.soundscape.preset.soundLevel", soundName)} value={percent} min={0} max={100} valueText={`${percent}%`} onchange={(value) => sounds = setPresetDraftSoundLevel(sounds, entry.definition.id, value / 100)} />
+              <span class="w-11 shrink-0 text-right text-xs tabular-nums text-muted-foreground">{percent}%</span>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </div>
+
     <section aria-labelledby="soundscape-preset-sounds">
       <div class="flex h-8 items-center gap-2">
         <h3 id="soundscape-preset-sounds" class="min-w-0 flex-1 truncate text-xs font-semibold">{t("music.soundscape.preset.sounds")}</h3>
@@ -138,11 +187,11 @@
         <div class="mt-4 mb-2 flex items-center gap-1.5 text-[0.68rem] font-medium text-muted-foreground">{#if section.icon}<MusicSoundscapeGroupIcon icon={section.icon} size={13} />{/if}<h4 class="min-w-0 truncate">{section.title}</h4></div>
         <div class="grid grid-cols-2 gap-2 @sm:grid-cols-3">
           {#each section.sounds as definition (definition.id)}
-            {@const picked = soundIds.includes(definition.id)}
-            <button type="button" aria-pressed={picked} disabled={!picked && atLimit} title={soundHint(definition)} class={`relative flex min-h-24 min-w-0 flex-col items-center justify-center gap-1.5 rounded-xl px-2 text-center ${picked ? "bg-primary/10 hover:bg-primary/15" : "bg-secondary/40 hover:bg-secondary/70 disabled:opacity-40"} ${definition.availability !== "available" ? "text-muted-foreground" : ""}`} onclick={() => soundIds = togglePresetDraftSound(soundIds, definition.id)}>
+            {@const picked = sounds.some((sound) => sound.soundscapeId === definition.id)}
+            <button type="button" aria-pressed={picked} disabled={!picked && atLimit} title={soundHint(definition)} class={`relative flex min-h-24 min-w-0 flex-col items-center justify-center gap-1.5 rounded-xl px-2 text-center ${picked ? "bg-primary/10 hover:bg-primary/15" : "bg-secondary/40 hover:bg-secondary/70 disabled:opacity-40"} ${definition.availability !== "available" ? "text-muted-foreground" : ""}`} onclick={() => sounds = togglePresetDraftSound(sounds, definition.id)}>
               {#if picked}<span class="absolute top-2 right-2 grid h-4 w-4 place-items-center rounded-full bg-primary text-primary-foreground"><Check size={11} strokeWidth={2.5} /></span>{/if}
               <MusicSoundscapeSoundIcon {definition} size={24} />
-              <span class="max-w-full truncate text-xs font-medium">{soundName(definition)}</span>
+              <span class="max-w-full truncate text-xs font-medium">{soundDisplayName(definition, t)}</span>
             </button>
           {/each}
         </div>

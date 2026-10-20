@@ -6,6 +6,7 @@
   import { revealLocalFile } from "$lib/api/music";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { MusicSoundscapeDefinition } from "$lib/music/soundscape/contracts";
+  import { singleSoundPreset } from "$lib/music/soundscape/presets";
   import { getSoundscapeStore } from "$lib/stores/soundscape.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import MusicSoundscapeGroupIcon from "./MusicSoundscapeGroupIcon.svelte";
@@ -23,9 +24,8 @@
   let editing = $state(false);
   let nameDraft = $state("");
   let iconDraft = $state("lucide:audio-lines");
-  const selected = $derived(soundscape.persisted?.activeIds.includes(definition.id) ?? false);
-  const playing = $derived(selected && soundscape.snapshot.status === "playing");
-  const layered = $derived(soundscape.persisted?.multipleEnabled ?? false);
+  const solo = $derived(singleSoundPreset(soundscape.presets, definition.id));
+  const playing = $derived(solo !== null && solo.id === soundscape.activePreset?.id && soundscape.snapshot.status === "playing");
 
   onMount(() => {
     const close = (event: PointerEvent) => { if (menuOpen && root && !root.contains(event.target as Node)) menuOpen = false; };
@@ -95,7 +95,7 @@
       <div class="flex justify-end gap-1"><button type="button" class="h-7 rounded-md px-2 text-xs hover:bg-accent" onclick={() => editing = false}>{t("common.cancel")}</button><button type="submit" disabled={!nameDraft.trim() || soundscape.saving} class="h-7 rounded-md bg-primary px-2 text-xs text-primary-foreground disabled:opacity-40">{t("music.soundscape.saveName")}</button></div>
     </form>
   {:else}
-    <button type="button" aria-pressed={selected} aria-label={definition.availability !== "available" ? t("music.soundscape.repair") : selected && layered ? t("music.soundscape.stop", definition.name) : playing ? t("music.soundscape.pause") : t("music.soundscape.play", definition.name)} disabled={soundscape.saving} class={selected ? "flex min-h-28 w-full min-w-0 flex-col items-center justify-center gap-2 rounded-xl bg-primary/10 px-2 text-center hover:bg-primary/15 disabled:opacity-50" : "flex min-h-28 w-full min-w-0 flex-col items-center justify-center gap-2 rounded-xl bg-secondary/40 px-2 text-center hover:bg-secondary/70 disabled:opacity-50"} onclick={() => { if (definition.availability !== "available") { onRepair(definition); return; } if (!playing) onPlaybackStart(); void soundscape.toggleSelection(definition.id); }}>
+    <button type="button" aria-pressed={playing} aria-label={definition.availability !== "available" ? t("music.soundscape.repair") : playing ? t("music.soundscape.pause") : t("music.soundscape.play", definition.name)} title={definition.availability === "available" && !solo ? t("music.soundscape.makePreset") : undefined} disabled={soundscape.saving || soundscape.playbackPending} class={playing ? "flex min-h-28 w-full min-w-0 flex-col items-center justify-center gap-2 rounded-xl bg-primary/10 px-2 text-center hover:bg-primary/15 disabled:opacity-50" : "flex min-h-28 w-full min-w-0 flex-col items-center justify-center gap-2 rounded-xl bg-secondary/40 px-2 text-center hover:bg-secondary/70 disabled:opacity-50"} onclick={() => { if (definition.availability !== "available") { onRepair(definition); return; } if (!playing) onPlaybackStart(); void soundscape.playSound(definition, definition.name); }}>
       <MusicSoundscapeGroupIcon icon={definition.icon} size={27} />
       <span class="max-w-full truncate text-xs font-medium">{definition.name}</span>
       {#if definition.availability !== "available"}<span class="text-[0.68rem] text-muted-foreground">{t("music.soundscape.needsRepair")}</span>{/if}
@@ -105,6 +105,7 @@
   {#if menuOpen}
     <div class="surface-floating surface-floating-body absolute right-1 top-8 z-20 flex min-w-36 flex-col">
       <button type="button" class="menu-item" onclick={() => { menuOpen = false; nameDraft = definition.name; iconDraft = definition.icon; editing = true; }}>{t("music.soundscape.editSound")}</button>
+      {#if !solo && definition.availability === "available"}<button type="button" class="menu-item" disabled={soundscape.saving} onclick={() => { menuOpen = false; void soundscape.makePresetFromSound(definition, definition.name).catch((error) => console.error("Could not make soundscape preset", error)); }}>{t("music.soundscape.makePreset")}</button>{/if}
       {#if definition.localPath}<button type="button" class="menu-item" onclick={() => { menuOpen = false; if (definition.localPath) void revealLocalFile(definition.localPath); }}>{t("music.soundscape.showFile")}</button>{/if}
       {#if soundscape.groups.length > 0}
         <p class="menu-label">{t("music.soundscape.moveToGroup")}</p>

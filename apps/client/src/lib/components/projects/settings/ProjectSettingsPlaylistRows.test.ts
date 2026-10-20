@@ -16,7 +16,7 @@ vi.mock("$lib/stores/soundscape.svelte", () => {
   const store = {
     definitions: [rain],
     groups: [],
-    presets: [{ id: "evening", name: "Evening", icon: "lucide:moon", soundscapeIds: ["rain"], createdAtMs: 1, updatedAtMs: 1, version: 1 }],
+    presets: [{ id: "evening", name: "Evening", icon: "lucide:moon", level: 0.5, sounds: [{ soundscapeId: "rain", level: 1 }], createdAtMs: 1, updatedAtMs: 1, version: 1 }],
     loading: false,
     ensureCatalog: async () => undefined,
     presetIsPlayable: () => true,

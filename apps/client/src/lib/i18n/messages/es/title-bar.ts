@@ -70,7 +70,7 @@ export const titleBar = {
     next: "Música siguiente",
     open: "Abrir música",
     volume: "Volumen",
-    volumeLabel: "Volumen de música",
+    volumeLabel: "Volumen",
     volumeTooltip: (volume: string) => `Volumen: ${volume}`,
     contextual: (phase: string, event: string) => `Banda sonora de ${phase.toLocaleLowerCase()} para ${event}`,
     inspectAssignment: "Inspeccionar asignación de banda sonora",

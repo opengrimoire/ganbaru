@@ -3,16 +3,17 @@
 import { mount, tick, unmount } from "svelte";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { MusicSoundscapeDefinition, MusicSoundscapePreset, MusicSoundscapePresetWrite } from "$lib/music/soundscape/contracts";
+import type { SoundscapeMix } from "$lib/stores/soundscape.svelte";
 import MusicSoundscapePresetEditor from "./MusicSoundscapePresetEditor.svelte";
 
 const savePreset = vi.fn(async (write: MusicSoundscapePresetWrite): Promise<MusicSoundscapePreset> => ({
-  id: write.id, name: write.name, icon: write.icon, soundscapeIds: write.soundscapeIds,
+  id: write.id, name: write.name, icon: write.icon, level: write.level, sounds: write.sounds,
   createdAtMs: 1, updatedAtMs: write.updatedAtMs, version: (write.expectedVersion ?? 0) + 1,
 }));
-const toggleSelection = vi.fn();
 const playPreset = vi.fn(async () => undefined);
+const setPresetLevel = vi.fn(async () => undefined);
 const beginPreview = vi.fn(async () => undefined);
-const previewSounds = vi.fn(async (_ids: readonly string[]) => undefined);
+const previewMix = vi.fn(async (_mix: SoundscapeMix | null) => undefined);
 const endPreview = vi.fn(async () => undefined);
 const player = {
   isPlaying: false,
@@ -29,19 +30,21 @@ function sound(id: string, name: string, groupId: string | null = null): MusicSo
 
 const baseDefinitions = [sound("rain", "Porch rain", "outside"), sound("cafe", "Café"), sound("fire", "Fireplace")];
 let definitions = baseDefinitions;
+let presets: MusicSoundscapePreset[] = [];
 
 vi.mock("$lib/stores/soundscape.svelte", () => ({
   getSoundscapeStore: () => ({
     saving: false,
     savePreset,
-    toggleSelection,
     playPreset,
+    setPresetLevel,
     beginPreview,
-    previewSounds,
+    previewMix,
     endPreview,
     definitions,
+    presets,
     groups: [{ id: "outside", name: "Outside", icon: "lucide:trees", createdAtMs: 1, updatedAtMs: 1, version: 1 }],
-    persisted: { activeIds: ["fire"] },
+    persisted: { activePresetId: "other" },
     snapshot: { status: "playing" },
   }),
 }));
@@ -49,7 +52,8 @@ vi.mock("$lib/stores/soundscape.svelte", () => ({
 vi.mock("$lib/stores/music-player.svelte", () => ({ getMusicPlayer: () => player }));
 
 const evening: MusicSoundscapePreset = {
-  id: "evening", name: "Evening", icon: "lucide:moon", soundscapeIds: ["rain", "cafe"],
+  id: "evening", name: "Evening", icon: "lucide:moon", level: 0.8,
+  sounds: [{ soundscapeId: "rain", level: 1 }, { soundscapeId: "cafe", level: 0.6 }],
   createdAtMs: 1, updatedAtMs: 1, version: 3,
 };
 
@@ -65,6 +69,7 @@ afterEach(async () => {
   component = undefined;
   target?.remove();
   definitions = baseDefinitions;
+  presets = [];
   player.isPlaying = false;
   vi.clearAllMocks();
 });
@@ -86,22 +91,33 @@ function soundTile(name: string): HTMLButtonElement {
   return [...document.body.querySelectorAll<HTMLButtonElement>("button[aria-pressed]")].find((button) => button.textContent?.includes(name))!;
 }
 
-function saveButton(): HTMLButtonElement {
-  return document.body.querySelector<HTMLButtonElement>('button[data-preset-save]')!;
+function slider(label: string): HTMLInputElement {
+  return document.body.querySelector<HTMLInputElement>(`input[type="range"][aria-label="${label}"]`)!;
 }
 
-function lastPreview(): readonly string[] | undefined {
-  return previewSounds.mock.calls.at(-1)?.[0];
+function slide(label: string, value: number): void {
+  const input = slider(label);
+  input.value = String(value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function saveButton(): HTMLButtonElement {
+  return document.body.querySelector<HTMLButtonElement>("button[data-preset-save]")!;
+}
+
+function lastPreview(): SoundscapeMix | null | undefined {
+  return previewMix.mock.calls.at(-1)?.[0];
 }
 
 describe("Soundscape preset editor", () => {
-  it("starts a new preset empty instead of copying what is playing", async () => {
+  it("starts a new preset empty at the default level instead of copying what is playing", async () => {
     await render();
     expect([...document.body.querySelectorAll('button[aria-pressed="true"]')]).toHaveLength(0);
-    expect(lastPreview()).toEqual([]);
+    expect(lastPreview()).toEqual({ sounds: [], level: 0.5 });
+    expect(slider("Preset level").value).toBe("-50");
   });
 
-  it("previews picked sounds without changing the saved selection and saves them in pick order", async () => {
+  it("previews picked sounds at full mix level and saves them in pick order", async () => {
     const onDone = await render();
     nameField().value = "Deep focus";
     nameField().dispatchEvent(new Event("input", { bubbles: true }));
@@ -109,25 +125,56 @@ describe("Soundscape preset editor", () => {
     soundTile("Porch rain").click();
     await tick();
     expect(soundTile("Café").getAttribute("aria-pressed")).toBe("true");
-    expect(lastPreview()).toEqual(["cafe", "rain"]);
-    expect(toggleSelection).not.toHaveBeenCalled();
+    expect(lastPreview()).toEqual({ sounds: [{ soundscapeId: "cafe", level: 1 }, { soundscapeId: "rain", level: 1 }], level: 0.5 });
     expect(playPreset).not.toHaveBeenCalled();
     saveButton().click();
     await vi.waitFor(() => expect(onDone).toHaveBeenCalled());
-    expect(savePreset).toHaveBeenCalledWith(expect.objectContaining({ name: "Deep focus", soundscapeIds: ["cafe", "rain"], expectedVersion: null }));
+    expect(savePreset).toHaveBeenCalledWith(expect.objectContaining({
+      name: "Deep focus", level: 0.5, sounds: [{ soundscapeId: "cafe", level: 1 }, { soundscapeId: "rain", level: 1 }], expectedVersion: null,
+    }));
   });
 
-  it("edits a preset from its own sounds, not the current selection", async () => {
+  it("edits a preset from its own sounds, levels, and version", async () => {
     await render(evening);
     expect(nameField().value).toBe("Evening");
     expect(soundTile("Porch rain").getAttribute("aria-pressed")).toBe("true");
     expect(soundTile("Fireplace").getAttribute("aria-pressed")).toBe("false");
-    expect(lastPreview()).toEqual(["rain", "cafe"]);
+    expect(slider("Café level").value).toBe("60");
+    expect(slider("Preset level").value).toBe("-20");
+    expect(lastPreview()).toEqual({ sounds: evening.sounds, level: 0.8 });
     soundTile("Porch rain").click();
     await tick();
     saveButton().click();
     await vi.waitFor(() => expect(savePreset).toHaveBeenCalledTimes(1));
-    expect(savePreset.mock.calls[0][0]).toMatchObject({ id: "evening", soundscapeIds: ["cafe"], expectedVersion: 3 });
+    expect(savePreset.mock.calls[0][0]).toMatchObject({ id: "evening", sounds: [{ soundscapeId: "cafe", level: 0.6 }], level: 0.8, expectedVersion: 3 });
+  });
+
+  it("saves against the latest stored version after the level was moved elsewhere", async () => {
+    presets = [{ ...evening, version: 5 }];
+    await render(evening);
+    saveButton().click();
+    await vi.waitFor(() => expect(savePreset).toHaveBeenCalledTimes(1));
+    expect(savePreset.mock.calls[0][0]).toMatchObject({ expectedVersion: 5 });
+  });
+
+  it("previews and saves the preset level and each sound's share of it", async () => {
+    await render(evening);
+    slide("Preset level", 30);
+    slide("Café level", 25);
+    await tick();
+    expect(lastPreview()).toEqual({ sounds: [{ soundscapeId: "rain", level: 1 }, { soundscapeId: "cafe", level: 0.25 }], level: 1.3 });
+    expect(setPresetLevel).not.toHaveBeenCalled();
+    saveButton().click();
+    await vi.waitFor(() => expect(savePreset).toHaveBeenCalledTimes(1));
+    expect(savePreset.mock.calls[0][0]).toMatchObject({ level: 1.3, sounds: [{ soundscapeId: "rain", level: 1 }, { soundscapeId: "cafe", level: 0.25 }] });
+  });
+
+  it("shows a level row only for picked sounds", async () => {
+    await render(evening);
+    expect(slider("Fireplace level")).toBeNull();
+    soundTile("Fireplace").click();
+    await tick();
+    expect(slider("Fireplace level").value).toBe("100");
   });
 
   it("groups sounds the way the builder does", async () => {
@@ -140,10 +187,10 @@ describe("Soundscape preset editor", () => {
     await render(evening);
     document.body.querySelector<HTMLButtonElement>('button[role="switch"]')!.click();
     await tick();
-    expect(lastPreview()).toEqual([]);
+    expect(lastPreview()).toBeNull();
     soundTile("Fireplace").click();
     await tick();
-    expect(lastPreview()).toEqual([]);
+    expect(lastPreview()).toBeNull();
     expect(soundTile("Fireplace").getAttribute("aria-pressed")).toBe("true");
   });
 
@@ -169,7 +216,7 @@ describe("Soundscape preset editor", () => {
 
   it("explains the sound limit only once it is reached", async () => {
     definitions = Array.from({ length: 17 }, (_, index) => sound(`sound-${index}`, `Sound ${index}`));
-    await render({ ...evening, soundscapeIds: definitions.slice(0, 15).map((entry) => entry.id) });
+    await render({ ...evening, sounds: definitions.slice(0, 15).map((entry) => ({ soundscapeId: entry.id, level: 1 })) });
     expect(document.body.querySelector('[role="status"]')).toBeNull();
     soundTile("Sound 15").click();
     await tick();

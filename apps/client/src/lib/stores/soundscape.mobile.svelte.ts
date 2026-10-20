@@ -8,24 +8,19 @@ import type {
   MusicSoundscapeState,
   MusicSoundscapeWrite,
 } from "$lib/music/soundscape/contracts";
-import { INITIAL_SOUNDSCAPE_VOLUME } from "$lib/music/soundscape/defaults";
+import type { SoundscapeMix } from "./soundscape.svelte";
+
+const UNAVAILABLE = "Soundscapes are unavailable on this platform.";
 
 class MobileSoundscapeStore {
   definitions = $state<MusicSoundscapeDefinition[]>([]);
   groups = $state<MusicSoundscapeGroup[]>([]);
   presets = $state<MusicSoundscapePreset[]>([]);
   persisted = $state<MusicSoundscapeState | null>(null);
-  sectionLevels = $state<{ generated: number | null; local: number | null }>({ generated: null, local: null });
-  snapshot = $state<MusicSoundscapeSnapshot>({
-    status: "idle",
-    sourceId: null,
-    volume: INITIAL_SOUNDSCAPE_VOLUME,
-    errorCode: null,
-  });
+  snapshot = $state<MusicSoundscapeSnapshot>({ status: "idle", sourceId: null, errorCode: null });
   loading = $state(false);
   saving = $state(false);
   playbackPending = $state(false);
-  modePending = $state(false);
   error = $state<string | null>(null);
   deviceId = $state<string | null>(null);
 
@@ -33,41 +28,38 @@ class MobileSoundscapeStore {
     return null;
   }
 
-  presetIsPlayable(_preset: MusicSoundscapePreset): boolean {
+  presetIsPlayable(_preset: Pick<MusicSoundscapePreset, "sounds">): boolean {
     return false;
-  }
-
-  get activeDefinition(): MusicSoundscapeDefinition | null {
-    return null;
   }
 
   async initialize(): Promise<void> {}
   async ensureCatalog(): Promise<void> {}
-  async play(_id: string, _persist = true): Promise<void> {}
+  async refreshAcceptedOutput(): Promise<void> {}
+  async playPreset(_preset: MusicSoundscapePreset): Promise<void> {}
   async togglePlayback(): Promise<void> {}
-  async toggleSelection(_id: string): Promise<void> {}
-  async setMultipleEnabled(_enabled: boolean): Promise<void> {}
+  async setPresetLevel(_preset: MusicSoundscapePreset, _level: number): Promise<void> {}
+  get previewing(): boolean {
+    return false;
+  }
+  async beginPreview(): Promise<void> {}
+  async previewMix(_mix: SoundscapeMix | null): Promise<void> {}
+  async endPreview(): Promise<void> {}
   async pause(): Promise<void> {}
   async resume(): Promise<void> {}
   async stop(): Promise<void> {}
-  async setVolume(_volume: number): Promise<void> {}
-  async setSectionLevel(_section: "generated" | "local", _level: number | null): Promise<void> {}
   async recover(): Promise<void> {}
   async switchVault(_nextVaultId: string | null): Promise<void> {}
   async saveDefinition(_write: Omit<MusicSoundscapeWrite, "deviceId">): Promise<void> {}
   async removeDefinition(_definition: MusicSoundscapeDefinition): Promise<void> {}
   async saveGroup(_write: MusicSoundscapeGroupWrite): Promise<void> {}
   async removeGroup(_group: MusicSoundscapeGroup): Promise<void> {}
-  async playPreset(_preset: Pick<MusicSoundscapePreset, "soundscapeIds">): Promise<void> {}
-  get previewing(): boolean {
-    return false;
-  }
-  async beginPreview(): Promise<void> {}
-  async previewSounds(_ids: readonly string[]): Promise<void> {}
-  async endPreview(): Promise<void> {}
   async savePreset(_write: MusicSoundscapePresetWrite): Promise<MusicSoundscapePreset> {
-    throw new Error("Soundscapes are unavailable on this platform.");
+    throw new Error(UNAVAILABLE);
   }
+  async makePresetFromSound(_definition: MusicSoundscapeDefinition, _name: string): Promise<MusicSoundscapePreset> {
+    throw new Error(UNAVAILABLE);
+  }
+  async playSound(_definition: MusicSoundscapeDefinition, _name: string): Promise<void> {}
   async removePreset(_preset: MusicSoundscapePreset): Promise<void> {}
 }
 

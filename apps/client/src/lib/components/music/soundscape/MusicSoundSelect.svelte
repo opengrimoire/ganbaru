@@ -288,7 +288,7 @@
               <span class="grid size-4 shrink-0 place-items-center"><MusicSoundscapeGroupIcon icon={preset.icon} size={15} /></span>
               <span class="min-w-0 flex-1 truncate font-medium">{preset.name}</span>
               {#if selected}<Check size={14} />{/if}
-              <span class="shrink-0 text-panel-detail text-muted-foreground">{playable ? t("music.soundscape.choice.presetCount", preset.soundscapeIds.length) : t("music.soundscape.needsRepair")}</span>
+              <span class="shrink-0 text-panel-detail text-muted-foreground">{playable ? t("music.soundscape.choice.presetCount", preset.sounds.length) : t("music.soundscape.needsRepair")}</span>
             </button>
           {/each}
         {/if}

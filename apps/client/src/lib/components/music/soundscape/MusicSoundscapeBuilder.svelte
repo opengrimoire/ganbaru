@@ -1,9 +1,6 @@
 <script lang="ts">
-  import Pause from "@lucide/svelte/icons/pause";
   import Pencil from "@lucide/svelte/icons/pencil";
-  import Play from "@lucide/svelte/icons/play";
   import Plus from "@lucide/svelte/icons/plus";
-  import Volume2 from "@lucide/svelte/icons/volume-2";
   import { untrack } from "svelte";
   import IconPicker from "$lib/components/icon-picker/IconPicker.svelte";
   import { pickSoundscapeFile } from "$lib/api/music";
@@ -11,15 +8,16 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { MusicSoundscapeDefinition, MusicSoundscapeGroup, MusicSoundscapePreset } from "$lib/music/soundscape/contracts";
   import { orderedGeneratedSounds } from "$lib/music/soundscape/presentation";
+  import { presetDisplayName, singleSoundPreset, soundDisplayName } from "$lib/music/soundscape/presets";
   import type { SoundscapeFilter } from "$lib/music/builder/view-state";
   import { getSoundscapeStore } from "$lib/stores/soundscape.svelte";
   import { portal } from "$lib/utils/portal";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import MusicSoundscapeActiveLevel from "./MusicSoundscapeActiveLevel.svelte";
   import MusicSoundscapeGroupIcon from "./MusicSoundscapeGroupIcon.svelte";
   import MusicSoundscapeLocalRow from "./MusicSoundscapeLocalRow.svelte";
   import MusicSoundscapePresetEditor from "./MusicSoundscapePresetEditor.svelte";
   import MusicSoundscapePresetTile from "./MusicSoundscapePresetTile.svelte";
-  import MusicSoundscapeSectionControls from "./MusicSoundscapeSectionControls.svelte";
   import MusicSoundscapeSoundIcon from "./MusicSoundscapeSoundIcon.svelte";
 
   const { t } = getLocalization();
@@ -53,7 +51,6 @@
   const generated = $derived(orderedGeneratedSounds(soundscape.definitions));
   const local = $derived(soundscape.definitions.filter((entry) => entry.sourceKind === "local-loop"));
   const ungrouped = $derived(local.filter((entry) => !entry.groupId || !soundscape.groups.some((group) => group.id === entry.groupId)));
-  const selectedIds = $derived(soundscape.persisted?.activeIds ?? []);
   const showPresets = $derived(filter === "all" || filter === "presets");
   const showGenerated = $derived(filter === "all" || filter === "generated");
   const showLocal = $derived(filter !== "generated" && filter !== "presets");
@@ -146,21 +143,23 @@
     }
   }
 
-  function toggleSound(id: string): void {
-    if (!selectedIds.includes(id) || soundscape.snapshot.status !== "playing") onPlaybackStart();
-    void soundscape.toggleSelection(id);
+  /** Whether a sound's one-sound preset is the active one and plays now. */
+  function soundPlaying(definition: MusicSoundscapeDefinition): boolean {
+    const solo = singleSoundPreset(soundscape.presets, definition.id);
+    return solo !== null && solo.id === soundscape.activePreset?.id && soundscape.snapshot.status === "playing";
+  }
+
+  /** Plays a sound as its one-sound preset, creating that preset the first time, or pauses it. */
+  function playSound(definition: MusicSoundscapeDefinition): void {
+    if (!soundPlaying(definition)) onPlaybackStart();
+    void soundscape.playSound(definition, soundDisplayName(definition, t));
   }
 </script>
 
 <div class="h-full min-h-0 overflow-y-auto px-4 py-4" aria-busy={soundscape.loading || soundscape.saving} data-music-scrollable="true">
   <div class="@container flex max-w-2xl flex-col gap-7">
-    <div class="flex flex-col gap-3">
-      <div class="flex h-8 items-center gap-2">
-        <Volume2 size={15} class="shrink-0 text-muted-foreground" />
-        <input type="range" min="0" max="1" step="0.01" value={soundscape.snapshot.volume} disabled={!soundscape.persisted || soundscape.loading} class="min-w-24 flex-1 accent-primary disabled:opacity-40" aria-label={t("music.soundscape.volume")} oninput={(event) => { void soundscape.setVolume(Number(event.currentTarget.value)); }} />
-        <span class="w-9 text-right text-xs tabular-nums text-muted-foreground">{Math.round(soundscape.snapshot.volume * 100)}%</span>
-        <button type="button" disabled={selectedIds.length === 0 || soundscape.saving} aria-label={soundscape.snapshot.status === "playing" ? t("music.soundscape.pause") : t("music.soundscape.playSelected")} class="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-muted-foreground hover:bg-accent/60 hover:text-foreground disabled:opacity-40" onclick={() => { if (soundscape.snapshot.status !== "playing") onPlaybackStart(); void soundscape.togglePlayback(); }}>{#if soundscape.snapshot.status === "playing"}<Pause size={15} />{:else}<Play size={15} />{/if}</button>
-      </div>
+    <div class="flex flex-col gap-1">
+      <MusicSoundscapeActiveLevel idPrefix="builder-soundscape" {onPlaybackStart} />
       {#if soundscape.error}
         <Notice class="text-xs" message={t("music.soundscape.genericError")} />
       {/if}
@@ -185,13 +184,14 @@
 
     {#if showGenerated}
       <section aria-labelledby="generated-soundscapes">
-        <div id="generated-soundscapes" class="mb-2 flex items-center gap-2"><MusicSoundscapeSectionControls title={t("music.soundscape.generated")} section="generated" idPrefix="builder-soundscape" /></div>
+        <div class="mb-2 flex h-8 items-center gap-2"><h2 id="generated-soundscapes" class="min-w-0 flex-1 truncate text-xs font-semibold">{t("music.soundscape.generated")}</h2></div>
         <div class="grid grid-cols-2 gap-2 @sm:grid-cols-3">
           {#each generated as definition (definition.id)}
-            {@const selected = selectedIds.includes(definition.id)}
-            <button type="button" aria-pressed={selected} aria-label={selected && soundscape.persisted?.multipleEnabled ? t("music.soundscape.stop", t(`music.soundscape.rainName.${definition.generatedKind ?? "brown"}`)) : selected && soundscape.snapshot.status === "playing" ? t("music.soundscape.pause") : t("music.soundscape.play", t(`music.soundscape.rainName.${definition.generatedKind ?? "brown"}`))} title={t(`music.soundscape.generatedName.${definition.generatedKind ?? "brown"}`)} disabled={soundscape.saving} class={selected ? "flex min-h-28 min-w-0 flex-col items-center justify-center gap-2 rounded-xl bg-primary/10 px-3 text-center hover:bg-primary/15 disabled:opacity-50" : "flex min-h-28 min-w-0 flex-col items-center justify-center gap-2 rounded-xl bg-secondary/40 px-3 text-center hover:bg-secondary/70 disabled:opacity-50"} onclick={() => toggleSound(definition.id)}>
+            {@const playing = soundPlaying(definition)}
+            {@const name = soundDisplayName(definition, t)}
+            <button type="button" aria-pressed={playing} aria-label={playing ? t("music.soundscape.pause") : t("music.soundscape.play", name)} title={singleSoundPreset(soundscape.presets, definition.id) ? t(`music.soundscape.generatedName.${definition.generatedKind ?? "brown"}`) : t("music.soundscape.makePreset")} disabled={soundscape.saving || soundscape.playbackPending} class={playing ? "flex min-h-28 min-w-0 flex-col items-center justify-center gap-2 rounded-xl bg-primary/10 px-3 text-center hover:bg-primary/15 disabled:opacity-50" : "flex min-h-28 min-w-0 flex-col items-center justify-center gap-2 rounded-xl bg-secondary/40 px-3 text-center hover:bg-secondary/70 disabled:opacity-50"} onclick={() => playSound(definition)}>
               <MusicSoundscapeSoundIcon {definition} size={27} />
-              <span class="max-w-full truncate text-xs font-medium">{t(`music.soundscape.rainName.${definition.generatedKind ?? "brown"}`)}</span>
+              <span class="max-w-full truncate text-xs font-medium">{name}</span>
             </button>
           {/each}
         </div>
@@ -201,7 +201,7 @@
     {#if showLocal}
       <section class="flex flex-col gap-4" aria-labelledby="local-soundscapes">
         <div class="-mb-2 flex items-center gap-2">
-          <div id="local-soundscapes" class="flex min-w-0 flex-1"><MusicSoundscapeSectionControls title={t("music.soundscape.localLoops")} section="local" idPrefix="builder-soundscape" /></div>
+          <h2 id="local-soundscapes" class="flex h-8 min-w-0 flex-1 items-center truncate text-xs font-semibold">{t("music.soundscape.localLoops")}</h2>
           <button type="button" class="inline-flex h-8 shrink-0 items-center gap-1 rounded-lg px-2 text-xs text-muted-foreground hover:bg-accent hover:text-foreground" onclick={() => editGroup()}><Plus size={14} />{t("music.soundscape.newGroup")}</button>
           {#if !compact}<button type="button" class="inline-flex h-8 shrink-0 items-center gap-1 rounded-lg px-2 text-xs text-muted-foreground hover:bg-accent hover:text-foreground" onclick={() => { void addLoop(filter.startsWith("group:") ? filter.slice(6) : null); }}><Plus size={14} />{t("music.soundscape.addLoop")}</button>{/if}
         </div>
@@ -286,7 +286,7 @@
 {#if pendingPresetDelete}
   <!-- Portaled after the preset editor modal so the confirmation stacks above it. -->
   <div use:portal>
-    <ConfirmDialog title={t("music.soundscape.preset.removeTitle")} message={t("music.soundscape.preset.removeMessage", pendingPresetDelete.name)} confirmLabel={t("music.soundscape.preset.remove")} cancelLabel={t("common.cancel")} onConfirm={() => { const preset = pendingPresetDelete; pendingPresetDelete = null; if (presetEditor?.preset?.id === preset?.id) presetEditor = null; if (preset) void soundscape.removePreset(preset).catch((error) => console.error("Could not remove soundscape preset", error)); }} onCancel={() => pendingPresetDelete = null} />
+    <ConfirmDialog title={t("music.soundscape.preset.removeTitle")} message={t("music.soundscape.preset.removeMessage", presetDisplayName(pendingPresetDelete, t))} confirmLabel={t("music.soundscape.preset.remove")} cancelLabel={t("common.cancel")} onConfirm={() => { const preset = pendingPresetDelete; pendingPresetDelete = null; if (presetEditor?.preset?.id === preset?.id) presetEditor = null; if (preset) void soundscape.removePreset(preset).catch((error) => console.error("Could not remove soundscape preset", error)); }} onCancel={() => pendingPresetDelete = null} />
   </div>
 {/if}
 {#if pendingGroupDelete}

@@ -35,15 +35,12 @@ export interface MusicSoundscapeWrite {
   updatedAtMs: number;
 }
 
+/** The preset the soundscape plays; output follows the Music volume setting, so no volume is stored here. */
 export interface MusicSoundscapeState {
-  automaticIntent?: boolean;
-  activeSoundscapeId: string | null;
-  activeIds: string[];
-  multipleEnabled: boolean;
-  generatedLevel: number | null;
-  localLevel: number | null;
+  /** An automatic selection requires fresh native phase admission after restart. */
+  automaticIntent: boolean;
+  activePresetId: string | null;
   desiredPlaying: boolean;
-  volume: number;
   updatedAtMs: number;
   version: number;
 }
@@ -65,12 +62,27 @@ export interface MusicSoundscapeGroupWrite {
   updatedAtMs: number;
 }
 
-/** Saved set of soundscape sounds that plays together; volume and section levels stay global. Removing a sound can leave a preset empty until it is edited. */
+/** Highest preset level: twice the Music volume setting before output clamps at full scale. */
+export const MAX_SOUNDSCAPE_PRESET_LEVEL = 2;
+/** Level of a new preset: half the Music volume setting, so soundscapes sit under Music by default. */
+export const DEFAULT_SOUNDSCAPE_PRESET_LEVEL = 0.5;
+
+/** One sound in a preset mix with its share of the preset level, from 0 (silent) to 1 (full). */
+export interface MusicSoundscapePresetSound {
+  soundscapeId: string;
+  level: number;
+}
+
+/**
+ * Named mix of soundscape sounds, the only thing a soundscape plays. Its level multiplies the Music volume setting.
+ * Removing a sound can leave a preset empty until it is edited.
+ */
 export interface MusicSoundscapePreset {
   id: string;
   name: string;
   icon: string;
-  soundscapeIds: string[];
+  level: number;
+  sounds: MusicSoundscapePresetSound[];
   createdAtMs: number;
   updatedAtMs: number;
   version: number;
@@ -80,19 +92,15 @@ export interface MusicSoundscapePresetWrite {
   id: string;
   name: string;
   icon: string;
-  soundscapeIds: string[];
+  level: number;
+  sounds: MusicSoundscapePresetSound[];
   expectedVersion: number | null;
   updatedAtMs: number;
 }
 
 export interface MusicSoundscapeStateWrite {
-  activeSoundscapeId: string | null;
-  activeIds: string[];
-  multipleEnabled: boolean;
-  generatedLevel: number | null;
-  localLevel: number | null;
+  activePresetId: string | null;
   desiredPlaying: boolean;
-  volume: number;
   expectedVersion: number;
   updatedAtMs: number;
 }
@@ -100,17 +108,21 @@ export interface MusicSoundscapeStateWrite {
 export interface MusicSoundscapeSnapshot {
   status: MusicSoundscapeStatus;
   sourceId: string | null;
-  volume: number;
   errorCode: string | null;
 }
 
-export interface MusicSoundscapeStartRequest {
+export interface MusicSoundscapeStartLayer {
   sourceId: string;
   generatedKind: MusicGeneratedNoiseKind | null;
   localPath: string | null;
+  /** Share of the preset level, from 0 to 1. */
   level: number;
-  extraSources: Array<{ sourceId: string; generatedKind: MusicGeneratedNoiseKind | null; localPath: string | null; level: number }>;
-  volume: number;
+}
+
+export interface MusicSoundscapeStartRequest extends MusicSoundscapeStartLayer {
+  extraSources: MusicSoundscapeStartLayer[];
+  /** Multiplier of the Music volume setting, from 0 to 2. */
+  presetLevel: number;
 }
 
 const sourceKinds = new Set<MusicSoundscapeSourceKind>(["generated-noise", "local-loop", "bundled-loop"]);
@@ -132,10 +144,6 @@ function optionalText(value: unknown, label: string): string | null { return val
 function number(value: unknown, label: string): number { if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`${label} must be finite`); return value; }
 function integer(value: unknown, label: string): number { const result = number(value, label); if (!Number.isSafeInteger(result)) throw new Error(`${label} must be an integer`); return result; }
 function boolean(value: unknown, label: string): boolean { if (typeof value !== "boolean") throw new Error(`${label} must be boolean`); return value; }
-function textArray(value: unknown, label: string): string[] {
-  if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
-  return value.map((entry, index) => text(entry, `${label}[${index}]`));
-}
 function enumeration<T extends string>(value: unknown, values: ReadonlySet<T>, label: string): T { if (typeof value !== "string" || !values.has(value as T)) throw new Error(`${label} is unsupported`); return value as T; }
 
 export function parseMusicSoundscape(value: unknown, label = "soundscape"): MusicSoundscapeDefinition {
@@ -176,33 +184,43 @@ export function parseMusicSoundscapes(value: unknown): MusicSoundscapeDefinition
 }
 export function parseMusicSoundscapeState(value: unknown): MusicSoundscapeState {
   const row = record(value, "soundscape state");
-  const activeSoundscapeId = optionalText(row.activeSoundscapeId, "soundscape state.activeSoundscapeId");
-  const activeIds = textArray(row.activeIds, "soundscape state.activeIds");
-  const multipleEnabled = boolean(row.multipleEnabled, "soundscape state.multipleEnabled");
+  const activePresetId = optionalText(row.activePresetId, "soundscape state.activePresetId");
   const desiredPlaying = boolean(row.desiredPlaying, "soundscape state.desiredPlaying");
-  const automaticIntent = row.automaticIntent === undefined ? false : boolean(row.automaticIntent, "soundscape state.automaticIntent");
-  const volume = number(row.volume, "soundscape state.volume");
-  const generatedLevel = row.generatedLevel === null ? null : number(row.generatedLevel, "soundscape state.generatedLevel");
-  const localLevel = row.localLevel === null ? null : number(row.localLevel, "soundscape state.localLevel");
-  if (activeSoundscapeId !== (activeIds[0] ?? null) || new Set(activeIds).size !== activeIds.length || activeIds.length > MAX_SOUNDSCAPE_LAYERS) throw new Error("soundscape state has an invalid selection");
-  if ((!multipleEnabled && activeIds.length > 1) || (desiredPlaying && activeIds.length === 0)) throw new Error("soundscape state has an invalid playback mode");
-  if (volume < 0 || volume > 1) throw new Error("soundscape state.volume is out of range");
-  if ([generatedLevel, localLevel].some((level) => level !== null && (level < 0 || level > 2))) throw new Error("soundscape state.section level is out of range");
-  return { activeSoundscapeId, activeIds, multipleEnabled, generatedLevel, localLevel, desiredPlaying, automaticIntent, volume, updatedAtMs: integer(row.updatedAtMs, "soundscape state.updatedAtMs"), version: integer(row.version, "soundscape state.version") };
+  if (desiredPlaying && activePresetId === null) throw new Error("soundscape state cannot play without a preset");
+  return {
+    automaticIntent: boolean(row.automaticIntent, "soundscape state.automaticIntent"),
+    activePresetId,
+    desiredPlaying,
+    updatedAtMs: integer(row.updatedAtMs, "soundscape state.updatedAtMs"),
+    version: integer(row.version, "soundscape state.version"),
+  };
 }
 export function parseMusicSoundscapeSnapshot(value: unknown): MusicSoundscapeSnapshot {
   const row = record(value, "soundscape snapshot");
-  return { status: enumeration(row.status, statuses, "soundscape snapshot.status"), sourceId: optionalText(row.sourceId, "soundscape snapshot.sourceId"), volume: number(row.volume, "soundscape snapshot.volume"), errorCode: optionalText(row.errorCode, "soundscape snapshot.errorCode") };
+  return { status: enumeration(row.status, statuses, "soundscape snapshot.status"), sourceId: optionalText(row.sourceId, "soundscape snapshot.sourceId"), errorCode: optionalText(row.errorCode, "soundscape snapshot.errorCode") };
+}
+function level(value: unknown, max: number, label: string): number {
+  const result = number(value, label);
+  if (result < 0 || result > max) throw new Error(`${label} is out of range`);
+  return result;
+}
+function presetSounds(value: unknown, label: string): MusicSoundscapePresetSound[] {
+  if (!Array.isArray(value) || value.length > MAX_SOUNDSCAPE_LAYERS) throw new Error(`${label} is invalid`);
+  const sounds = value.map((entry, index) => {
+    const sound = record(entry, `${label}[${index}]`);
+    return { soundscapeId: text(sound.soundscapeId, `${label}[${index}].soundscapeId`), level: level(sound.level, 1, `${label}[${index}].level`) };
+  });
+  if (new Set(sounds.map((sound) => sound.soundscapeId)).size !== sounds.length) throw new Error(`${label} repeats a sound`);
+  return sounds;
 }
 export function parseMusicSoundscapePreset(value: unknown, label = "sound preset"): MusicSoundscapePreset {
   const row = record(value, label);
-  const soundscapeIds = textArray(row.soundscapeIds, `${label}.soundscapeIds`);
-  if (soundscapeIds.length > MAX_SOUNDSCAPE_LAYERS || new Set(soundscapeIds).size !== soundscapeIds.length) throw new Error(`${label}.soundscapeIds is invalid`);
   return {
     id: text(row.id, `${label}.id`),
     name: text(row.name, `${label}.name`),
     icon: iconText(row.icon, `${label}.icon`),
-    soundscapeIds,
+    level: level(row.level, MAX_SOUNDSCAPE_PRESET_LEVEL, `${label}.level`),
+    sounds: presetSounds(row.sounds, `${label}.sounds`),
     createdAtMs: integer(row.createdAtMs, `${label}.createdAtMs`),
     updatedAtMs: integer(row.updatedAtMs, `${label}.updatedAtMs`),
     version: integer(row.version, `${label}.version`),

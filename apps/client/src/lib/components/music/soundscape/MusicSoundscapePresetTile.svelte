@@ -3,8 +3,8 @@
   import { onMount } from "svelte";
   import { formatList } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import type { MusicSoundscapeDefinition, MusicSoundscapePreset } from "$lib/music/soundscape/contracts";
-  import { presetSoundNames } from "$lib/music/soundscape/presets";
+  import type { MusicSoundscapePreset } from "$lib/music/soundscape/contracts";
+  import { presetDisplayName, presetSoundNames, soundDisplayName } from "$lib/music/soundscape/presets";
   import { getSoundscapeStore } from "$lib/stores/soundscape.svelte";
   import MusicSoundscapeGroupIcon from "./MusicSoundscapeGroupIcon.svelte";
 
@@ -23,7 +23,8 @@
   const selected = $derived(soundscape.activePreset?.id === preset.id);
   const playing = $derived(selected && soundscape.snapshot.status === "playing");
   const playable = $derived(soundscape.presetIsPlayable(preset));
-  const names = $derived(presetSoundNames(preset.soundscapeIds, soundscape.definitions, soundName));
+  const name = $derived(presetDisplayName(preset, t));
+  const names = $derived(presetSoundNames(preset.sounds, soundscape.definitions, (definition) => soundDisplayName(definition, t)));
   const tooltip = $derived(playable && names.length > 0 ? t("music.soundscape.preset.includes", formatList(localization.locale, names)) : t("music.soundscape.needsRepair"));
 
   onMount(() => {
@@ -39,10 +40,6 @@
     return () => { window.removeEventListener("pointerdown", close, true); window.removeEventListener("keydown", escape, true); };
   });
 
-  function soundName(definition: MusicSoundscapeDefinition): string {
-    return definition.generatedKind ? t(`music.soundscape.rainName.${definition.generatedKind}`) : definition.name;
-  }
-
   function choose(): void {
     if (playing) {
       void soundscape.togglePlayback();
@@ -54,11 +51,11 @@
 </script>
 
 <div bind:this={root} class="relative min-w-0">
-  <button type="button" aria-pressed={selected} aria-label={playing ? t("music.soundscape.pause") : t("music.soundscape.play", preset.name)} title={tooltip} disabled={!playable || soundscape.saving} class={selected ? "flex min-h-28 w-full min-w-0 flex-col items-center justify-center gap-2 rounded-xl bg-primary/10 px-3 text-center hover:bg-primary/15 disabled:opacity-50" : "flex min-h-28 w-full min-w-0 flex-col items-center justify-center gap-2 rounded-xl bg-secondary/40 px-3 text-center hover:bg-secondary/70 disabled:opacity-50"} onclick={choose}>
+  <button type="button" aria-pressed={selected} aria-label={playing ? t("music.soundscape.pause") : t("music.soundscape.playPreset", name)} title={tooltip} disabled={!playable || soundscape.saving} class={selected ? "flex min-h-28 w-full min-w-0 flex-col items-center justify-center gap-2 rounded-xl bg-primary/10 px-3 text-center hover:bg-primary/15 disabled:opacity-50" : "flex min-h-28 w-full min-w-0 flex-col items-center justify-center gap-2 rounded-xl bg-secondary/40 px-3 text-center hover:bg-secondary/70 disabled:opacity-50"} onclick={choose}>
     <MusicSoundscapeGroupIcon icon={preset.icon} size={27} />
-    <span class="max-w-full truncate text-xs font-medium">{preset.name}</span>
+    <span class="max-w-full truncate text-xs font-medium">{name}</span>
   </button>
-  <button type="button" aria-label={t("music.soundscape.preset.actions", preset.name)} aria-expanded={menuOpen} class="absolute top-1 right-1 z-10 grid h-7 w-7 place-items-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground" onclick={() => menuOpen = !menuOpen}><Ellipsis size={16} /></button>
+  <button type="button" aria-label={t("music.soundscape.preset.actions", name)} aria-expanded={menuOpen} class="absolute top-1 right-1 z-10 grid h-7 w-7 place-items-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground" onclick={() => menuOpen = !menuOpen}><Ellipsis size={16} /></button>
   {#if menuOpen}
     <div class="surface-floating surface-floating-body absolute top-8 right-1 z-20 flex min-w-36 flex-col">
       <button type="button" class="menu-item" onclick={() => { menuOpen = false; onEdit(preset); }}>{t("music.soundscape.preset.editTitle")}</button>

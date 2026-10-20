@@ -37,7 +37,10 @@ export const startSoundscape = async (request: MusicSoundscapeStartRequest): Pro
 export const pauseSoundscape = async (): Promise<MusicSoundscapeSnapshot> => parseMusicSoundscapeSnapshot(await invoke<unknown>("music_soundscape_pause"));
 export const resumeSoundscape = async (): Promise<MusicSoundscapeSnapshot> => parseMusicSoundscapeSnapshot(await invoke<unknown>("music_soundscape_resume"));
 export const stopSoundscape = async (): Promise<MusicSoundscapeSnapshot> => parseMusicSoundscapeSnapshot(await invoke<unknown>("music_soundscape_stop"));
-export const setSoundscapeVolume = async (volume: number): Promise<MusicSoundscapeSnapshot> => parseMusicSoundscapeSnapshot(await invoke<unknown>("music_soundscape_set_volume", { volume }));
+/** Applies a preset level to the output that is playing, without saving it. */
+export const setSoundscapePresetLevel = async (level: number): Promise<MusicSoundscapeSnapshot> => parseMusicSoundscapeSnapshot(await invoke<unknown>("music_soundscape_set_preset_level", { level }));
+/** Saves a preset level; the latest write wins instead of conflicting, because it follows a slider. */
+export const saveMusicSoundscapePresetLevel = async (presetId: string, level: number, updatedAtMs: number): Promise<MusicSoundscapePreset> => parseMusicSoundscapePreset(await invoke<unknown>("music_library_set_soundscape_preset_level", { dbUrl: dbUrl(), presetId, level, updatedAtMs }));
 export const setSoundscapeLevels = async (levels: number[]): Promise<MusicSoundscapeSnapshot> => parseMusicSoundscapeSnapshot(await invoke<unknown>("music_soundscape_set_levels", { levels }));
 export const recoverSoundscape = async (): Promise<MusicSoundscapeSnapshot> => parseMusicSoundscapeSnapshot(await invoke<unknown>("music_soundscape_recover"));
 export const getSoundscapeSnapshot = async (): Promise<MusicSoundscapeSnapshot> => parseMusicSoundscapeSnapshot(await invoke<unknown>("music_soundscape_snapshot"));

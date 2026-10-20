@@ -67,7 +67,7 @@ export const titleBar = {
     next: "Next music",
     open: "Open music",
     volume: "Volume",
-    volumeLabel: "Music volume",
+    volumeLabel: "Volume",
     volumeTooltip: (volume: string) => `Volume: ${volume}`,
     contextual: (phase: string, event: string) => `${phase} soundtrack for ${event}`,
     inspectAssignment: "Inspect soundtrack assignment",

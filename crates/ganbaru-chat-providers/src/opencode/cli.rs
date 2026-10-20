@@ -4,12 +4,12 @@ use crate::models::{
     ChatError, ChatErrorCode, ChatResult, ModelAvailability, ModelChoiceOption,
     ModelOptionDefinition, ProviderCapability, ProviderInstanceConfig, ProviderModel,
 };
+use crate::process::{BoundedCommand, BoundedCommandFailure, run_bounded_command};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::process::Stdio;
 use std::time::Duration;
 
 pub const MINIMUM_OPENCODE_VERSION: &str = "1.14.19";
@@ -149,35 +149,28 @@ pub async fn run_command(
     working_directory: &Path,
     environment: &BTreeMap<String, String>,
 ) -> ChatResult<OpenCodeCommandOutput> {
-    let output = tokio::process::Command::new(executable)
-        .args(arguments)
-        .current_dir(working_directory)
-        .env_clear()
-        .envs(environment)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .output();
-    let output = tokio::time::timeout(COMMAND_TIMEOUT, output)
-        .await
-        .map_err(|_| {
-            ChatError::new(
-                ChatErrorCode::Timeout,
-                "OpenCode command probe timed out",
-                true,
-            )
-        })?
-        .map_err(|_| executable_missing_error())?;
-    if output.stdout.len() > MAX_COMMAND_OUTPUT_BYTES
-        || output.stderr.len() > MAX_COMMAND_OUTPUT_BYTES
-    {
-        return Err(protocol_error("command output is oversized"));
-    }
+    let output = run_bounded_command(BoundedCommand {
+        executable,
+        arguments,
+        working_directory,
+        environment,
+        output_limit_bytes: MAX_COMMAND_OUTPUT_BYTES,
+        timeout: COMMAND_TIMEOUT,
+    })
+    .await
+    .map_err(|failure| match failure {
+        BoundedCommandFailure::Unavailable => executable_missing_error(),
+        BoundedCommandFailure::TimedOut => ChatError::new(
+            ChatErrorCode::Timeout,
+            "OpenCode command probe timed out",
+            true,
+        ),
+        BoundedCommandFailure::Oversized => protocol_error("command output is oversized"),
+    })?;
     Ok(OpenCodeCommandOutput {
         stdout: output.stdout,
         stderr: output.stderr,
-        successful: output.status.success(),
+        successful: output.successful,
     })
 }
 

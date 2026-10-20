@@ -2,16 +2,18 @@
 
 use super::protocol::{CursorProviderSettings, MINIMUM_CURSOR_VERSION, protocol_error};
 use crate::models::*;
-use crate::process::{ProviderProcessConfig, spawn_provider_process};
+use crate::process::{
+    BoundedCommand, BoundedCommandFailure, ProviderProcessConfig, run_bounded_command,
+    spawn_provider_process,
+};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::process::Stdio;
 use std::time::Duration;
 
 pub const CURSOR_STDERR_LIMIT_BYTES: usize = 256 * 1024;
-const VERSION_OUTPUT_LIMIT_BYTES: u64 = 16 * 1024;
+const VERSION_OUTPUT_LIMIT_BYTES: usize = 16 * 1024;
 const ABOUT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -108,26 +110,23 @@ pub async fn probe_grok_about(
     working_directory: &Path,
     environment: BTreeMap<String, String>,
 ) -> ChatResult<AcpProviderAbout> {
-    let output = tokio::process::Command::new(executable)
-        .arg("--version")
-        .current_dir(working_directory)
-        .env_clear()
-        .envs(environment)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .output();
-    let output = tokio::time::timeout(ABOUT_TIMEOUT, output)
-        .await
-        .map_err(|_| ChatError::new(ChatErrorCode::Timeout, "Grok version probe timed out", true))?
-        .map_err(|_| grok_executable_missing_error())?;
-    if output.stdout.len() as u64 > VERSION_OUTPUT_LIMIT_BYTES
-        || output.stderr.len() as u64 > VERSION_OUTPUT_LIMIT_BYTES
-    {
-        return Err(protocol_error("Grok version output"));
-    }
-    if !output.status.success() {
+    let output = run_bounded_command(BoundedCommand {
+        executable,
+        arguments: &["--version"],
+        working_directory,
+        environment: &environment,
+        output_limit_bytes: VERSION_OUTPUT_LIMIT_BYTES,
+        timeout: ABOUT_TIMEOUT,
+    })
+    .await
+    .map_err(|failure| match failure {
+        BoundedCommandFailure::Unavailable => grok_executable_missing_error(),
+        BoundedCommandFailure::TimedOut => {
+            ChatError::new(ChatErrorCode::Timeout, "Grok version probe timed out", true)
+        }
+        BoundedCommandFailure::Oversized => protocol_error("Grok version output"),
+    })?;
+    if !output.successful {
         return Err(ChatError::new(
             ChatErrorCode::UnsupportedVersion,
             "Grok CLI did not report a supported version",
@@ -199,27 +198,23 @@ pub async fn probe_about(
     working_directory: &Path,
     environment: BTreeMap<String, String>,
 ) -> ChatResult<CursorAbout> {
-    let output = tokio::process::Command::new(executable)
-        .arg("about")
-        .arg("--json")
-        .current_dir(working_directory)
-        .env_clear()
-        .envs(environment)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .output();
-    let output = tokio::time::timeout(ABOUT_TIMEOUT, output)
-        .await
-        .map_err(|_| ChatError::new(ChatErrorCode::Timeout, "Cursor about probe timed out", true))?
-        .map_err(|_| executable_missing_error())?;
-    if output.stdout.len() as u64 > VERSION_OUTPUT_LIMIT_BYTES
-        || output.stderr.len() as u64 > VERSION_OUTPUT_LIMIT_BYTES
-    {
-        return Err(protocol_error("Cursor about output"));
-    }
-    parse_about(&output.stdout, &output.stderr, output.status.success())
+    let output = run_bounded_command(BoundedCommand {
+        executable,
+        arguments: &["about", "--json"],
+        working_directory,
+        environment: &environment,
+        output_limit_bytes: VERSION_OUTPUT_LIMIT_BYTES,
+        timeout: ABOUT_TIMEOUT,
+    })
+    .await
+    .map_err(|failure| match failure {
+        BoundedCommandFailure::Unavailable => executable_missing_error(),
+        BoundedCommandFailure::TimedOut => {
+            ChatError::new(ChatErrorCode::Timeout, "Cursor about probe timed out", true)
+        }
+        BoundedCommandFailure::Oversized => protocol_error("Cursor about output"),
+    })?;
+    parse_about(&output.stdout, &output.stderr, output.successful)
 }
 
 pub fn parse_about(stdout: &[u8], stderr: &[u8], success: bool) -> ChatResult<CursorAbout> {

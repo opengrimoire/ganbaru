@@ -621,12 +621,33 @@ export async function recreateProjectWorkingFolderFile(request: {
   }));
 }
 
+/**
+ * Opens a workspace file with the system default handler. Documents open directly; a type that
+ * could run as a program asks in a native dialog first, and declining rejects with a `cancelled`
+ * Chat error.
+ */
 export async function openProjectWorkingFolderFile(
   workingFolderId: ProjectWorkingFolderId,
   relativePath: string,
   executionEnvironmentId: string | null = null,
 ): Promise<void> {
-  await invoke("projects_open_working_folder_file", { dbUrl: await ensureDbUrl(), workingFolderId, relativePath, executionEnvironmentId });
+  await invoke("projects_open_working_folder_file", {
+    dbUrl: await ensureDbUrl(),
+    workingFolderId,
+    relativePath,
+    executionEnvironmentId,
+    prompt: externalOpenPrompt(),
+  });
+}
+
+/** Localized text for the native open confirmation; Rust appends the file path. */
+function externalOpenPrompt() {
+  return {
+    title: translate("chat.inspector.openExternallyTitle"),
+    message: translate("chat.inspector.openExternallyMessage"),
+    allowLabel: translate("chat.inspector.openExternallyAllow"),
+    cancelLabel: translate("chat.inspector.openExternallyCancel"),
+  };
 }
 
 export async function listChatTerminals(

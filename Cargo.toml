@@ -51,6 +51,7 @@ base64 = "0.22.1"
 block2 = "0.6.2"
 cairo-rs = { version = "0.18.5", features = ["png"] }
 chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
+dunce = "1.0.5"
 flate2 = "1.1.9"
 ganbaru-atomic-files = { path = "crates/ganbaru-atomic-files" }
 ganbaru-calendar = { path = "crates/ganbaru-calendar" }

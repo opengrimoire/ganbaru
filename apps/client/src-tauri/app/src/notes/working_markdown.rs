@@ -3,7 +3,7 @@
 use crate::chat::workspace::commands::authorize_working_folder;
 use crate::chat::workspace::{
     AuthorizedWorkingFolder, WorkingFolderAuthorizationOperation,
-    ensure_managed_working_folder_binding, open_authorized_path,
+    ensure_managed_working_folder_binding, open_authorized_document,
 };
 use crate::db::connect_sqlite;
 use ganbaru_chat::repository::workspaces;
@@ -183,7 +183,7 @@ pub async fn notes_open_working_markdown<R: Runtime>(
     .await?;
     let path = working_markdown::resolve_markdown_file(&authorized.canonical_path, &relative_path)
         .map_err(working_markdown_error)?;
-    open_authorized_path(&authorized, &path)
+    open_authorized_document(&authorized, &path)
 }
 
 async fn require_folder<R: Runtime>(

@@ -965,3 +965,110 @@ fn disabled_linking_reports_why_instead_of_running() {
     }
     assert!(!manager.is_linked_for("vault-1").unwrap_or(false));
 }
+
+#[test]
+fn enrollment_verification_persists_nothing_and_returns_the_code_the_device_shows() {
+    let temporary = TestDirectory::new("verify-enrollment");
+    let manager = PairingManager::default();
+    manager
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+        .expect("initialize");
+    let create = |now_ms| {
+        manager
+            .create_invitation(
+                "127.0.0.1:41000".parse().expect("endpoint"),
+                "vault-1".to_string(),
+                0,
+                crate::protocol::test_compatibility(),
+                now_ms,
+            )
+            .expect("invitation")
+    };
+    let invitation = create(100);
+    let phone = create_identity("device-phone".to_string()).expect("phone identity");
+    let intruder = create_identity("device-intruder".to_string()).expect("intruder identity");
+    let phone_certificate = decode_certificate(&phone.certificate).expect("phone certificate");
+    let intruder_certificate =
+        decode_certificate(&intruder.certificate).expect("intruder certificate");
+
+    let code = manager
+        .verify_enrollment(&enrollment(&invitation, &phone), 101)
+        .expect("verify phone");
+    assert_eq!(
+        code,
+        enrollment_code(&invitation, phone_certificate.as_ref())
+    );
+    assert_ne!(
+        code,
+        enrollment_code(&invitation, intruder_certificate.as_ref())
+    );
+    assert!(manager.linked_peers().expect("peers").is_empty());
+    let restarted = PairingManager::default();
+    restarted
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+        .expect("restart");
+    assert!(
+        restarted
+            .linked_peers()
+            .expect("restarted peers")
+            .is_empty()
+    );
+
+    let mut wrong_secret = enrollment(&invitation, &phone);
+    wrong_secret.secret = "wrong";
+    assert!(
+        manager
+            .verify_enrollment(&wrong_secret, 101)
+            .unwrap_err()
+            .contains("credentials")
+    );
+
+    let replacement = create(200);
+    assert_ne!(
+        enrollment_code(&replacement, phone_certificate.as_ref()),
+        code
+    );
+    assert!(
+        manager
+            .verify_enrollment(&enrollment(&invitation, &phone), 201)
+            .unwrap_err()
+            .contains("unknown")
+    );
+    manager
+        .enroll_peer(enrollment(&replacement, &phone), 202)
+        .expect("approved enrollment links");
+    assert_eq!(manager.linked_peers().expect("peers").len(), 1);
+}
+
+#[test]
+fn a_discarded_invitation_cannot_be_verified_or_enrolled() {
+    let temporary = TestDirectory::new("discard-invitation");
+    let manager = PairingManager::default();
+    manager
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+        .expect("initialize");
+    let invitation = manager
+        .create_invitation(
+            "127.0.0.1:41000".parse().expect("endpoint"),
+            "vault-1".to_string(),
+            0,
+            crate::protocol::test_compatibility(),
+            100,
+        )
+        .expect("invitation");
+    let phone = create_identity("device-phone".to_string()).expect("phone identity");
+    manager
+        .discard_invitation(&invitation.invitation_id)
+        .expect("discard");
+    assert!(
+        manager
+            .verify_enrollment(&enrollment(&invitation, &phone), 101)
+            .is_err()
+    );
+    assert!(
+        manager
+            .enroll_peer(enrollment(&invitation, &phone), 101)
+            .is_err()
+    );
+    assert!(manager.linked_peers().expect("peers").is_empty());
+}

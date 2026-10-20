@@ -3,7 +3,7 @@
 #[cfg(desktop)]
 mod server;
 #[cfg(desktop)]
-pub(crate) use server::serve_with_coordinator;
+pub(crate) use server::{CoordinatorServices, serve_with_coordinator};
 
 use super::pairing::{
     CoordinatorPin, PairingManager, TlsIdentity, certificate_fingerprint, encode_certificate,
@@ -30,6 +30,9 @@ const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(15);
 const CHUNK_TIMEOUT: Duration = Duration::from_secs(20);
 const BUNDLE_COORDINATION_WAIT: Duration = Duration::from_secs(90);
+/// How long the coordinator holds an enrollment for its user before refusing it. The enrolling
+/// device waits longer, so it never gives up on a request the coordinator could still link.
+pub(crate) const ENROLLMENT_APPROVAL_TIMEOUT: Duration = Duration::from_secs(120);
 const BUNDLE_COORDINATION_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const MEMBERSHIP_REVOKED_CODE: &str = "membership_revoked";
 
@@ -169,7 +172,13 @@ pub(crate) async fn enroll(
         },
     ))
     .await?;
-    match timeout_control(read_control(&mut stream)).await? {
+    let response = tokio::time::timeout(
+        ENROLLMENT_APPROVAL_TIMEOUT + CONTROL_TIMEOUT,
+        read_control(&mut stream),
+    )
+    .await
+    .map_err(|_| "the coordinator did not answer the enrollment".to_string())??;
+    match response {
         ControlMessage::Enrolled {
             coordinator_device_id,
             coordinator_device_label,

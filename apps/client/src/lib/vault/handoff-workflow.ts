@@ -27,6 +27,37 @@ function isCoordinatorBusy(message: string): boolean {
   return message.includes("handling too many connections");
 }
 
+/** Guidance for an enrollment the coordinator user declined, missed, or could not answer. */
+function enrollmentApprovalMessage(
+  message: string,
+):
+  | "vaultHandoff.enrollmentDeclined"
+  | "vaultHandoff.enrollmentUnanswered"
+  | "vaultHandoff.enrollmentBusy"
+  | "vaultHandoff.enrollmentReplaced"
+  | "vaultHandoff.enrollmentGone"
+  | null {
+  if (message.includes("the coordinator declined this device")) {
+    return "vaultHandoff.enrollmentDeclined";
+  }
+  if (
+    message.includes("did not approve this device in time")
+    || message.includes("did not answer the enrollment")
+  ) {
+    return "vaultHandoff.enrollmentUnanswered";
+  }
+  if (message.includes("waiting for approval on the coordinator")) {
+    return "vaultHandoff.enrollmentBusy";
+  }
+  if (message.includes("pairing code on the coordinator was replaced")) {
+    return "vaultHandoff.enrollmentReplaced";
+  }
+  if (message.includes("no longer waiting for approval")) {
+    return "vaultHandoff.enrollmentGone";
+  }
+  return null;
+}
+
 /** Converts native handoff failures into concise localized recovery guidance. */
 export function formatHandoffError(cause: unknown, t: Translate): string {
   const raw = errorText(cause);
@@ -34,6 +65,8 @@ export function formatHandoffError(cause: unknown, t: Translate): string {
   if (isLinkingDisabled(lower)) {
     return t("vaultHandoff.linkingDisabled");
   }
+  const enrollmentMessage = enrollmentApprovalMessage(lower);
+  if (enrollmentMessage) return t(enrollmentMessage);
   if (lower.includes("chat terminals")) {
     return t("vaultHandoff.blockerTerminal");
   }

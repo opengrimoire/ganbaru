@@ -139,6 +139,20 @@ export const vaultHandoff = {
   copyCode: "Copiar código de vinculación",
   codeCopied: "Código de vinculación copiado",
   copyCodeFailed: "No se pudo copiar el código de vinculación.",
+  enrollmentApprovalTitle: "¿Aprobar este dispositivo?",
+  enrollmentApprovalInstructions:
+    "Apruébalo solo si el dispositivo muestra este mismo código. Si no, recházalo: alguien más podría tener tu código de vinculación.",
+  enrollmentCode: "Código de confirmación",
+  enrollmentApprove: "Aprobar",
+  enrollmentDecline: "Rechazar",
+  enrollmentWaitingTitle: "Confirma en la otra computadora",
+  enrollmentWaiting: "La otra computadora muestra un código. Aprueba este dispositivo cuando su código coincide con este.",
+  enrollmentDeclined: "La otra computadora rechazó este dispositivo. Obtén ahí un código de vinculación nuevo e inténtalo de nuevo.",
+  enrollmentUnanswered:
+    "La otra computadora no aprobó este dispositivo a tiempo. Mantén abierto su código de vinculación e inténtalo de nuevo.",
+  enrollmentBusy: "Otro dispositivo espera aprobación en la otra computadora. Espera a que se responda e inténtalo de nuevo.",
+  enrollmentReplaced: "La otra computadora creó un código de vinculación nuevo. Usa el código nuevo para intentarlo de nuevo.",
+  enrollmentGone: "Ese dispositivo dejó de esperar aprobación.",
   qrDialogTitle: "Conectar otro dispositivo",
   qrInstructions:
     "Para conectar un teléfono, escanea este código QR en Ajustes > Datos. Para conectar otra computadora, copia el código de vinculación e introdúcelo en Ajustes > Datos.",

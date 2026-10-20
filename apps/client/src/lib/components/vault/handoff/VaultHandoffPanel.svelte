@@ -16,11 +16,13 @@
     getCachedPairingStatus,
     grantDesktopNetworkAccess,
     enrollWithDesktop,
+    readEnrollmentCode,
     readSuggestedDeviceLabel,
     readPairingStatus,
     receiveDesktopBundle,
     recoverLocalVaultCopy,
     requestOwnerBundle,
+    respondToEnrollment,
     revokeDesktopNetworkAccess,
     unlinkVaultDevice,
     type PairingInvitation,
@@ -36,9 +38,15 @@
     formatOwnershipHandoffError,
     hasNewLinkedDevice,
   } from "$lib/vault/handoff-workflow";
+  import EnrollmentApproval from "./EnrollmentApproval.svelte";
+  import EnrollmentCodeWaiting from "./EnrollmentCodeWaiting.svelte";
   import MobilePairingScanner from "./MobilePairingScanner.svelte";
 
-  type BusyAction = "status" | "invite" | "network" | "pair" | "ownership" | "refresh" | "unlink" | "recover";
+  type BusyAction = "status" | "invite" | "network" | "pair" | "approval" | "ownership" | "refresh" | "unlink" | "recover";
+
+  /** How long onboarding waits for an approved device to appear before it shows a new code. */
+  const APPROVED_ENROLLMENT_SETTLE_ATTEMPTS = 20;
+  const APPROVED_ENROLLMENT_SETTLE_INTERVAL_MS = 500;
 
   let {
     platform,
@@ -81,6 +89,8 @@
   let codeError = $state<string | null>(null);
   let ownershipError = $state<string | null>(null);
   let networkError = $state<string | null>(null);
+  let approvalError = $state<string | null>(null);
+  let enrollmentCode = $state<string | null>(null);
   let confirmation = $state<"network" | "networkRevoke" | "unlink" | "recover" | "replace" | null>(null);
   let unlinkDeviceId = $state<string | null>(null);
   let networkAccess = $state<DesktopNetworkAccess | null>(
@@ -143,8 +153,77 @@
     const next = await readPairingStatus();
     status = next;
     if (next.networkAccess) applyNetworkAccess(next.networkAccess);
+    if (presentation === "settings" && platform === "desktop") {
+      if (next.pendingEnrollment) {
+        qrDialogVisible = true;
+      } else if (qrDialogVisible && !invitation && busy !== "invite" && !error) {
+        // A dialog opened only for a request that ended without an answer has nothing left to show.
+        qrDialogVisible = false;
+      }
+    }
     onStatusChange?.(next);
     return next;
+  }
+
+  /** Answers the waiting enrollment; a decline spends the invitation, so a fresh one replaces it. */
+  async function respondToPendingEnrollment(approve: boolean): Promise<void> {
+    const pending = status?.pendingEnrollment;
+    if (!pending || busy !== null) return;
+    busy = "approval";
+    error = null;
+    approvalError = null;
+    notice = null;
+    let answered = false;
+    try {
+      await respondToEnrollment(pending.requestId, approve);
+      answered = true;
+    } catch (cause) {
+      approvalError = formatHandoffError(cause, t);
+    } finally {
+      busy = null;
+    }
+    if (answered && !approve) {
+      invitation = null;
+      await showInvitation();
+    } else if (answered) {
+      invitation = null;
+      if (presentation === "settings") qrDialogVisible = false;
+    }
+    try {
+      await loadStatus();
+    } catch (cause) {
+      fail(cause);
+    }
+    if (answered && approve && presentation === "onboarding") await settleApprovedEnrollment();
+  }
+
+  /** Gives an approved device time to finish linking before onboarding offers a new code. */
+  async function settleApprovedEnrollment(): Promise<void> {
+    for (let attempt = 0; attempt < APPROVED_ENROLLMENT_SETTLE_ATTEMPTS; attempt += 1) {
+      if (status?.linked || (status && hasNewLinkedDevice(deviceIdsAtInvitation, status.devices))) return;
+      await new Promise<void>((resolve) => window.setTimeout(resolve, APPROVED_ENROLLMENT_SETTLE_INTERVAL_MS));
+      try {
+        await loadStatus();
+      } catch (cause) {
+        fail(cause);
+        return;
+      }
+    }
+    if (!status?.linked && !invitation && busy === null) await showInvitation();
+  }
+
+  /** Closing the dialog while a device waits declines it rather than leaving it to time out. */
+  function closeInvitationDialog(): void {
+    if (busy === "approval") return;
+    if (status?.pendingEnrollment) {
+      // A failed decline means the request already ended, which is the outcome closing asks for.
+      void respondToEnrollment(status.pendingEnrollment.requestId, false)
+        .catch(() => undefined)
+        .finally(() => void loadStatus().catch(() => undefined));
+    }
+    qrDialogVisible = false;
+    invitation = null;
+    approvalError = null;
   }
 
   async function refreshStatus(): Promise<void> {
@@ -167,8 +246,11 @@
     busy = "invite";
     error = null;
     notice = null;
+    approvalError = null;
     try {
       const nextInvitation = await createPairingInvitation();
+      // A new invitation cancels any request that used the previous one.
+      if (status?.pendingEnrollment) status = { ...status, pendingEnrollment: null };
       deviceIdsAtInvitation = new Set(status?.devices.map((device) => device.deviceId) ?? []);
       invitation = nextInvitation;
       if (invitation.networkAccess) applyNetworkAccess(invitation.networkAccess);
@@ -229,6 +311,7 @@
     notice = null;
     try {
       const deviceLabel = await readSuggestedDeviceLabel();
+      enrollmentCode = await readEnrollmentCode(encoded);
       await enrollWithDesktop(encoded, deviceLabel);
       scanning = false;
       const next = await loadStatus();
@@ -256,6 +339,7 @@
         }
       }
     } finally {
+      enrollmentCode = null;
       busy = null;
     }
   }
@@ -535,7 +619,7 @@
           </button>
         {/if}
       </div>
-    {:else if !status.linked && platform === "desktop" && presentation === "onboarding" && !invitation}
+    {:else if !status.linked && platform === "desktop" && presentation === "onboarding" && !invitation && !status.pendingEnrollment}
       {#if error}
         <div class="flex min-h-56">
           <Notice
@@ -550,7 +634,9 @@
         {@render onboardingLoader()}
       {/if}
     {:else if !status.linked && platform === "android"}
-      {#if scanning}
+      {#if enrollmentCode}
+        <EnrollmentCodeWaiting code={enrollmentCode} />
+      {:else if scanning}
         {#key scannerVersion}
           <MobilePairingScanner
             disabled={busy !== null}
@@ -572,7 +658,7 @@
       </button>
     {/if}
 
-    {#if desktopQrAvailable && platform === "desktop" && invitation && presentation === "onboarding"}
+    {#if desktopQrAvailable && platform === "desktop" && (invitation || status.pendingEnrollment) && presentation === "onboarding"}
       <div class={networkStepsVisible
         ? "grid items-start gap-7 min-[800px]:grid-cols-2 min-[800px]:gap-10"
         : "flex flex-col items-center gap-4"}>
@@ -612,20 +698,31 @@
         {/if}
 
         <div class="flex min-w-0 flex-col items-center gap-4">
-          <div class="space-y-1 px-1 text-center">
-            {#if networkStepsVisible}
-              <p class="text-base font-semibold text-foreground">
-                {t("vaultHandoff.stepTwo")}
+          {#if status.pendingEnrollment}
+            <EnrollmentApproval
+              pending={status.pendingEnrollment}
+              busy={busy === "approval"}
+              onRespond={(approve) => void respondToPendingEnrollment(approve)}
+            />
+          {:else if invitation}
+            <div class="space-y-1 px-1 text-center">
+              {#if networkStepsVisible}
+                <p class="text-base font-semibold text-foreground">
+                  {t("vaultHandoff.stepTwo")}
+                </p>
+              {/if}
+              <p class="mx-auto max-w-sm text-sm leading-6 text-muted-foreground">
+                {t("vaultHandoff.desktopOnboardingDescription")}
               </p>
-            {/if}
-            <p class="mx-auto max-w-sm text-sm leading-6 text-muted-foreground">
-              {t("vaultHandoff.desktopOnboardingDescription")}
-            </p>
-          </div>
-          {#await import("./PairingQrCode.svelte") then module}
-            {@const PairingQrCode = module.default}
-            <PairingQrCode {invitation} onExpired={() => void showInvitation()} />
-          {/await}
+            </div>
+            {#await import("./PairingQrCode.svelte") then module}
+              {@const PairingQrCode = module.default}
+              <PairingQrCode {invitation} onExpired={() => void showInvitation()} />
+            {/await}
+          {/if}
+          {#if approvalError}
+            <Notice class="w-full max-w-88 justify-center text-[0.8rem] leading-5" message={approvalError} />
+          {/if}
         </div>
       </div>
     {/if}
@@ -804,10 +901,14 @@
       networkBusy={busy === "network"}
       {networkError}
       invitationError={busy === "invite" ? null : error}
+      pendingEnrollment={status?.pendingEnrollment ?? null}
+      approvalBusy={busy === "approval"}
+      {approvalError}
       onGrantNetworkAccess={() => { confirmation = "network"; }}
       onRefresh={() => void showInvitation()}
       onRetry={() => showInvitation()}
-      onClose={() => { qrDialogVisible = false; invitation = null; }}
+      onRespondEnrollment={(approve) => void respondToPendingEnrollment(approve)}
+      onClose={closeInvitationDialog}
     />
   {/await}
 {/if}
@@ -817,6 +918,7 @@
     {@const PairingCodeDialog = module.default}
     <PairingCodeDialog
       busy={busy === "pair"}
+      {enrollmentCode}
       error={codeError}
       onSubmit={(code) => void acceptInvitation(code)}
       onEdit={() => { codeError = null; }}

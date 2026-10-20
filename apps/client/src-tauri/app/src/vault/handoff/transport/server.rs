@@ -7,6 +7,10 @@ use super::{
 use crate::contacts::requests::PeerReply;
 use crate::sync::hub::SyncHub;
 use crate::vault::handoff::contact_requests::{ContactJob, ContactOperation, ContactSender};
+use crate::vault::handoff::enrollment_approval::{
+    ENROLLMENT_DECLINED_MESSAGE, ENROLLMENT_UNANSWERED_MESSAGE, EnrollmentApprovals,
+    EnrollmentDecision,
+};
 use crate::vault::handoff::pairing::{Enrollment, PairingManager};
 use crate::vault::handoff::protocol::{
     BundleMetadata, BundlePurpose, ControlMessage, PROTOCOL_VERSION, TRANSFER_CHUNK_BYTES,
@@ -64,21 +68,26 @@ impl ServerConfigCache {
     }
 }
 
+/// Optional coordinator features a listener dispatches to, and the approvals enrollment asks.
+#[derive(Clone, Default)]
+pub(crate) struct CoordinatorServices {
+    pub coordinator: Option<coordinator::CoordinatorSender>,
+    pub contacts: Option<ContactSender>,
+    pub hub: Option<SyncHub>,
+    pub approvals: EnrollmentApprovals,
+}
+
 pub(crate) async fn serve_with_coordinator(
     listener: TcpListener,
     manager: PairingManager,
-    coordinator: Option<coordinator::CoordinatorSender>,
-    contacts: Option<ContactSender>,
-    hub: Option<SyncHub>,
+    services: CoordinatorServices,
     shutdown: tokio::sync::oneshot::Receiver<()>,
 ) {
     serve_with_limits(
         listener,
         ConnectionLimits::default(),
         manager,
-        coordinator,
-        contacts,
-        hub,
+        services,
         shutdown,
     )
     .await;
@@ -88,9 +97,7 @@ pub(super) async fn serve_with_limits(
     listener: TcpListener,
     limits: ConnectionLimits,
     manager: PairingManager,
-    coordinator: Option<coordinator::CoordinatorSender>,
-    contacts: Option<ContactSender>,
-    hub: Option<SyncHub>,
+    services: CoordinatorServices,
     shutdown: tokio::sync::oneshot::Receiver<()>,
 ) {
     let configs = ServerConfigCache::default();
@@ -104,21 +111,14 @@ pub(super) async fn serve_with_limits(
                 return;
             };
             let configs = configs.clone();
-            let manager = manager.clone();
-            let coordinator = coordinator.clone();
-            let contacts = contacts.clone();
-            let limits = limits.clone();
-            let hub = hub.clone();
+            let connection = Services {
+                manager: manager.clone(),
+                features: services.clone(),
+                limits: limits.clone(),
+            };
             tokio::spawn(async move {
-                let services = Services {
-                    manager,
-                    coordinator,
-                    contacts,
-                    hub,
-                    limits,
-                };
                 if let Err(error) =
-                    handle_connection(socket, source.ip(), permit, configs, services).await
+                    handle_connection(socket, source.ip(), permit, configs, connection).await
                 {
                     eprintln!("vault handoff connection failed: {error}");
                 }
@@ -163,9 +163,7 @@ pub(super) async fn accept_connections<S, A, F>(
 /// What one connection may reach on the coordinator.
 struct Services {
     manager: PairingManager,
-    coordinator: Option<coordinator::CoordinatorSender>,
-    contacts: Option<ContactSender>,
-    hub: Option<SyncHub>,
+    features: CoordinatorServices,
     limits: ConnectionLimits,
 }
 
@@ -178,9 +176,13 @@ async fn handle_connection(
 ) -> Result<(), String> {
     let Services {
         manager,
-        coordinator,
-        contacts,
-        hub,
+        features:
+            CoordinatorServices {
+                coordinator,
+                contacts,
+                hub,
+                approvals,
+            },
         limits,
     } = services;
     let config = configs.current(&manager)?;
@@ -271,18 +273,50 @@ async fn handle_connection(
                 )
                 .await;
             }
-            if let Err(error) = manager.enroll_peer(
-                Enrollment {
-                    invitation_id: &invitation_id,
-                    secret: &secret,
-                    vault_id: &vault_id,
-                    device_id: &device_id,
-                    device_label: &device_label,
-                    device_kind,
-                    certificate_b64: &device_certificate,
-                },
-                unix_time_ms(),
-            ) {
+            let enrollment = Enrollment {
+                invitation_id: &invitation_id,
+                secret: &secret,
+                vault_id: &vault_id,
+                device_id: &device_id,
+                device_label: &device_label,
+                device_kind,
+                certificate_b64: &device_certificate,
+            };
+            // The invitation is checked when the request arrives, so time spent waiting for the
+            // user does not expire it.
+            let requested_at_ms = unix_time_ms();
+            let code = match manager.verify_enrollment(&enrollment, requested_at_ms) {
+                Ok(code) => code,
+                Err(error) => {
+                    return send_error(&mut stream, "enrollment_rejected", &error, false).await;
+                }
+            };
+            let decision = await_enrollment_approval(
+                &mut stream,
+                &approvals,
+                &device_label,
+                device_kind,
+                code,
+            )
+            .await;
+            match decision {
+                Ok(EnrollmentDecision::Approved) => {}
+                Ok(EnrollmentDecision::Declined) => {
+                    // A declined device presented a leaked invitation, so nobody may use it again.
+                    manager.discard_invitation(&invitation_id)?;
+                    return send_error(
+                        &mut stream,
+                        "enrollment_rejected",
+                        ENROLLMENT_DECLINED_MESSAGE,
+                        false,
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    return send_error(&mut stream, "enrollment_rejected", &error, false).await;
+                }
+            }
+            if let Err(error) = manager.enroll_peer(enrollment, requested_at_ms) {
                 return send_error(&mut stream, "enrollment_rejected", &error, false).await;
             }
             let (coordinator_device_id, _) = manager.identity()?;
@@ -502,6 +536,32 @@ async fn handle_connection(
             .await
         }
     }
+}
+
+/// Holds a verified enrollment until the coordinator user answers it, the wait expires, or the
+/// enrolling device closes its connection. Nothing is linked or sent while it waits.
+async fn await_enrollment_approval<S>(
+    stream: &mut S,
+    approvals: &EnrollmentApprovals,
+    device_label: &str,
+    device_kind: protocol::DeviceKind,
+    code: String,
+) -> Result<EnrollmentDecision, String>
+where
+    S: tokio::io::AsyncRead + Unpin,
+{
+    let mut wait = approvals.begin(device_label, device_kind, code)?;
+    let mut probe = [0_u8; 1];
+    let outcome = tokio::select! {
+        decision = &mut wait.decision => decision
+            .map_err(|_| "the pairing code on the coordinator was replaced".to_string()),
+        () = tokio::time::sleep(approvals.timeout()) => {
+            Err(ENROLLMENT_UNANSWERED_MESSAGE.to_string())
+        }
+        _ = stream.read(&mut probe) => Err("the enrolling device closed its connection".to_string()),
+    };
+    approvals.finish(&wait.request_id);
+    outcome
 }
 
 async fn send_coordinator_response(

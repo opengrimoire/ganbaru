@@ -40,6 +40,7 @@ const INVITATION_LIFETIME_MS: i64 = 3 * 60 * 1_000;
 const MAX_CERTIFICATE_BYTES: usize = 16 * 1024;
 const MAX_LINKED_PEERS: usize = 32;
 const MAX_REVOKED_PEERS: usize = 64;
+const ENROLLMENT_CODE_DOMAIN: &[u8] = b"ganbaru-enrollment-code-v1";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -535,76 +536,47 @@ impl PairingManager {
         Ok(invitation)
     }
 
+    /// Checks an enrollment against the current invitation and memberships without persisting
+    /// anything, and returns the code the enrolling device shows, so the coordinator only asks
+    /// for approval of requests that would link.
+    #[cfg(desktop)]
+    pub fn verify_enrollment(
+        &self,
+        enrollment: &Enrollment<'_>,
+        now_ms: i64,
+    ) -> Result<String, String> {
+        let inner = self.lock()?;
+        let (peer, _) = admit_enrollment(&inner, enrollment, now_ms)?;
+        let invitation = &inner
+            .invitations
+            .get(enrollment.invitation_id)
+            .ok_or_else(|| "pairing invitation is unknown or already used".to_string())?
+            .invitation;
+        Ok(enrollment_code_for_fingerprint(
+            invitation,
+            &peer.certificate_fingerprint,
+        ))
+    }
+
+    /// Discards an invitation, for example after the coordinator user rejected a device that
+    /// presented it.
+    #[cfg(desktop)]
+    pub fn discard_invitation(&self, invitation_id: &str) -> Result<(), String> {
+        self.lock()?.invitations.remove(invitation_id);
+        Ok(())
+    }
+
+    /// Links an approved device. Call [`Self::verify_enrollment`] and obtain approval first.
     #[cfg(desktop)]
     pub fn enroll_peer(
         &self,
         enrollment: Enrollment<'_>,
         now_ms: i64,
     ) -> Result<LinkedPeer, String> {
-        validate_identifier("device id", enrollment.device_id)?;
-        validate_device_label("device label", enrollment.device_label)?;
-        let certificate = decode_certificate(enrollment.certificate_b64)?;
         let mut inner = self.lock()?;
-        let pending = inner
-            .invitations
-            .get(enrollment.invitation_id)
-            .ok_or_else(|| "pairing invitation is unknown or already used".to_string())?;
-        pending.invitation.validate(now_ms)?;
-        if pending.invitation.vault_id != enrollment.vault_id
-            || !constant_time_equal(
-                pending.invitation.secret.as_bytes(),
-                enrollment.secret.as_bytes(),
-            )
-        {
-            return Err("pairing invitation credentials are invalid".to_string());
-        }
-        let peer = LinkedPeer {
-            device_id: enrollment.device_id.to_string(),
-            device_label: enrollment.device_label.to_string(),
-            device_kind: enrollment.device_kind,
-            vault_id: enrollment.vault_id.to_string(),
-            certificate: enrollment.certificate_b64.to_string(),
-            certificate_fingerprint: certificate_fingerprint(certificate.as_ref()),
-            linked_at_ms: now_ms,
-        };
+        let (peer, evicted_device_id) = admit_enrollment(&inner, &enrollment, now_ms)?;
         let previous = initialized_state(&inner)?.clone();
         let state = initialized_state_mut(&mut inner)?;
-        if peer.device_id == state.identity.device_id {
-            return Err("a device cannot enroll its coordinator identity".to_string());
-        }
-        // A device follows one coordinator vault at a time, so enrolling it under another vault
-        // replaces its earlier membership.
-        let evicted_device_id = if let Some(existing) = state.linked_peers.get(&peer.device_id) {
-            if existing.certificate_fingerprint != peer.certificate_fingerprint {
-                return Err(
-                    "this device identity conflicts with an existing linked device".to_string(),
-                );
-            }
-            None
-        } else {
-            if state
-                .linked_peers
-                .values()
-                .any(|existing| existing.certificate_fingerprint == peer.certificate_fingerprint)
-            {
-                return Err("this certificate already belongs to another linked device".to_string());
-            }
-            if state.linked_peers.len() >= MAX_LINKED_PEERS {
-                Some(
-                    oldest_membership_outside(state, &peer.vault_id).ok_or_else(|| {
-                        format!("at most {MAX_LINKED_PEERS} devices can be linked to one vault")
-                    })?,
-                )
-            } else {
-                None
-            }
-        };
-        if state.revoked_peers.values().any(|revoked| {
-            revoked.device_id != peer.device_id
-                && revoked.certificate_fingerprint == peer.certificate_fingerprint
-        }) {
-            return Err("this certificate belonged to another revoked device".to_string());
-        }
         if let Some(evicted) = evicted_device_id.and_then(|id| state.linked_peers.remove(&id)) {
             remember_revoked_peer(state, evicted, now_ms);
         }
@@ -797,6 +769,103 @@ pub fn encode_certificate(certificate: &CertificateDer<'_>) -> String {
 pub fn certificate_fingerprint(certificate: &[u8]) -> String {
     let digest = Sha256::digest(certificate);
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Code an enrolling device and its coordinator both show before the coordinator user approves
+/// the link. It covers the invitation and both certificates, so a device that presents a leaked
+/// invitation with its own certificate shows a different code than the device in hand.
+pub fn enrollment_code(invitation: &PairingInvitation, device_certificate: &[u8]) -> String {
+    enrollment_code_for_fingerprint(invitation, &certificate_fingerprint(device_certificate))
+}
+
+fn enrollment_code_for_fingerprint(
+    invitation: &PairingInvitation,
+    device_fingerprint: &str,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(ENROLLMENT_CODE_DOMAIN);
+    for part in [
+        invitation.invitation_id.as_str(),
+        invitation.coordinator_fingerprint.as_str(),
+        device_fingerprint,
+    ] {
+        hasher.update((part.len() as u64).to_be_bytes());
+        hasher.update(part.as_bytes());
+    }
+    ganbaru_contacts::verification_code(&hasher.finalize().into())
+}
+
+/// The peer an enrollment would link and the membership it would evict, after checking the
+/// invitation credentials and every membership conflict.
+#[cfg(desktop)]
+fn admit_enrollment(
+    inner: &PairingManagerInner,
+    enrollment: &Enrollment<'_>,
+    now_ms: i64,
+) -> Result<(LinkedPeer, Option<String>), String> {
+    validate_identifier("device id", enrollment.device_id)?;
+    validate_device_label("device label", enrollment.device_label)?;
+    let certificate = decode_certificate(enrollment.certificate_b64)?;
+    let pending = inner
+        .invitations
+        .get(enrollment.invitation_id)
+        .ok_or_else(|| "pairing invitation is unknown or already used".to_string())?;
+    pending.invitation.validate(now_ms)?;
+    if pending.invitation.vault_id != enrollment.vault_id
+        || !constant_time_equal(
+            pending.invitation.secret.as_bytes(),
+            enrollment.secret.as_bytes(),
+        )
+    {
+        return Err("pairing invitation credentials are invalid".to_string());
+    }
+    let peer = LinkedPeer {
+        device_id: enrollment.device_id.to_string(),
+        device_label: enrollment.device_label.to_string(),
+        device_kind: enrollment.device_kind,
+        vault_id: enrollment.vault_id.to_string(),
+        certificate: enrollment.certificate_b64.to_string(),
+        certificate_fingerprint: certificate_fingerprint(certificate.as_ref()),
+        linked_at_ms: now_ms,
+    };
+    let state = initialized_state(inner)?;
+    if peer.device_id == state.identity.device_id {
+        return Err("a device cannot enroll its coordinator identity".to_string());
+    }
+    // A device follows one coordinator vault at a time, so enrolling it under another vault
+    // replaces its earlier membership.
+    let evicted_device_id = if let Some(existing) = state.linked_peers.get(&peer.device_id) {
+        if existing.certificate_fingerprint != peer.certificate_fingerprint {
+            return Err(
+                "this device identity conflicts with an existing linked device".to_string(),
+            );
+        }
+        None
+    } else {
+        if state
+            .linked_peers
+            .values()
+            .any(|existing| existing.certificate_fingerprint == peer.certificate_fingerprint)
+        {
+            return Err("this certificate already belongs to another linked device".to_string());
+        }
+        if state.linked_peers.len() >= MAX_LINKED_PEERS {
+            Some(
+                oldest_membership_outside(state, &peer.vault_id).ok_or_else(|| {
+                    format!("at most {MAX_LINKED_PEERS} devices can be linked to one vault")
+                })?,
+            )
+        } else {
+            None
+        }
+    };
+    if state.revoked_peers.values().any(|revoked| {
+        revoked.device_id != peer.device_id
+            && revoked.certificate_fingerprint == peer.certificate_fingerprint
+    }) {
+        return Err("this certificate belonged to another revoked device".to_string());
+    }
+    Ok((peer, evicted_device_id))
 }
 
 #[cfg(desktop)]

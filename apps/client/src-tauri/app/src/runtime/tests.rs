@@ -125,6 +125,7 @@ fn mobile_runtime_excludes_desktop_only_commands() {
         "updates::",
         "benchmark::",
         "vault::vault_pick_create",
+        "vault::handoff::handoff_respond_enrollment",
         "notes::notes_pick_",
         "notes::working_markdown::",
         "notes::notes_import_notion_export_folder",

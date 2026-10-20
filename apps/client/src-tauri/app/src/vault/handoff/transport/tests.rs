@@ -1,6 +1,10 @@
 use super::*;
 use crate::contacts::requests::{PeerReply, RECIPIENT_BUSY_CODE};
 use crate::vault::handoff::contact_requests::{ContactJob, ContactOperation};
+use crate::vault::handoff::enrollment_approval::{
+    ENROLLMENT_DECLINED_MESSAGE, ENROLLMENT_UNANSWERED_MESSAGE, EnrollmentApprovals,
+    EnrollmentDecision, PendingEnrollmentView,
+};
 use crate::vault::handoff::pairing::random_token;
 use crate::vault::handoff::protocol::{DeviceKind, MAX_ARCHIVE_BYTES, PROTOCOL_VERSION};
 use crate::vault::handoff::sha256_file;
@@ -37,6 +41,7 @@ struct LocalPair {
     desktop: PairingManager,
     phone: PairingManager,
     invitation: PairingInvitation,
+    approvals: EnrollmentApprovals,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
@@ -52,6 +57,14 @@ impl LocalPair {
     async fn start_with_limits(
         hub: Option<crate::sync::hub::SyncHub>,
         limits: server::limits::ConnectionLimits,
+    ) -> Self {
+        Self::start_with_options(hub, limits, EnrollmentApprovals::default()).await
+    }
+
+    async fn start_with_options(
+        hub: Option<crate::sync::hub::SyncHub>,
+        limits: server::limits::ConnectionLimits,
+        approvals: EnrollmentApprovals,
     ) -> Self {
         let desktop_root = TestDirectory::new("desktop");
         let phone_root = TestDirectory::new("phone");
@@ -84,9 +97,11 @@ impl LocalPair {
             listener,
             limits,
             desktop.clone(),
-            None,
-            None,
-            hub,
+            CoordinatorServices {
+                hub,
+                approvals: approvals.clone(),
+                ..CoordinatorServices::default()
+            },
             receiver,
         ));
         Self {
@@ -95,16 +110,20 @@ impl LocalPair {
             desktop,
             phone,
             invitation,
+            approvals,
             shutdown: Some(shutdown),
         }
     }
 
     async fn enroll(&self) {
-        super::enroll(
-            &self.phone,
-            &self.invitation,
-            "Phone".to_string(),
-            DeviceKind::Phone,
+        approving(
+            &self.approvals,
+            super::enroll(
+                &self.phone,
+                &self.invitation,
+                "Phone".to_string(),
+                DeviceKind::Phone,
+            ),
         )
         .await
         .expect("enroll phone");
@@ -152,12 +171,16 @@ impl LocalPair {
         let (requests, request_receiver) = tokio::sync::mpsc::channel(8);
         let (contacts, contact_receiver) = super::super::contact_requests::channel();
         let (shutdown, receiver) = tokio::sync::oneshot::channel();
+        let approvals = EnrollmentApprovals::default();
         tokio::spawn(serve_with_coordinator(
             listener,
             desktop.clone(),
-            Some(requests),
-            Some(contacts),
-            None,
+            CoordinatorServices {
+                coordinator: Some(requests),
+                contacts: Some(contacts),
+                hub: None,
+                approvals: approvals.clone(),
+            },
             receiver,
         ));
         (
@@ -167,6 +190,7 @@ impl LocalPair {
                 desktop,
                 phone,
                 invitation,
+                approvals,
                 shutdown: Some(shutdown),
             },
             request_receiver,
@@ -200,6 +224,166 @@ impl Drop for LocalPair {
             let _ = shutdown.send(());
         }
     }
+}
+
+const APPROVAL_POLL_INTERVAL: Duration = Duration::from_millis(5);
+const APPROVAL_TEST_WAIT: Duration = Duration::from_secs(10);
+
+/// Waits until a device asks the coordinator user for approval.
+async fn wait_for_pending(approvals: &EnrollmentApprovals) -> PendingEnrollmentView {
+    tokio::time::timeout(APPROVAL_TEST_WAIT, async {
+        loop {
+            if let Some(pending) = approvals.pending().expect("pending enrollment") {
+                return pending;
+            }
+            tokio::time::sleep(APPROVAL_POLL_INTERVAL).await;
+        }
+    })
+    .await
+    .expect("a device waits for approval")
+}
+
+/// Runs an enrollment while the coordinator user approves every request that waits.
+async fn approving<T>(approvals: &EnrollmentApprovals, enrollment: impl Future<Output = T>) -> T {
+    let approver = approvals.clone();
+    let task = tokio::spawn(async move {
+        loop {
+            let pending = wait_for_pending(&approver).await;
+            let _ = approver.decide(&pending.request_id, EnrollmentDecision::Approved);
+        }
+    });
+    let output = enrollment.await;
+    task.abort();
+    output
+}
+
+fn spawn_phone_enrollment(
+    pair: &LocalPair,
+    invitation: PairingInvitation,
+) -> tokio::task::JoinHandle<Result<(), String>> {
+    let phone = pair.phone.clone();
+    tokio::spawn(async move {
+        super::enroll(&phone, &invitation, "Phone".to_string(), DeviceKind::Phone).await
+    })
+}
+
+#[tokio::test]
+async fn enrollment_links_nothing_until_the_coordinator_approves_the_shown_code() {
+    let pair = LocalPair::start().await;
+    let enrollment = spawn_phone_enrollment(&pair, pair.invitation.clone());
+    let pending = wait_for_pending(&pair.approvals).await;
+    let (_, phone_identity) = pair.phone.identity().expect("phone identity");
+    assert_eq!(
+        pending.code,
+        crate::vault::handoff::pairing::enrollment_code(
+            &pair.invitation,
+            phone_identity.certificate.as_ref()
+        )
+    );
+    assert_eq!(pending.device_label, "Phone");
+    assert_eq!(pending.device_kind, DeviceKind::Phone);
+    assert!(pair.desktop.linked_peers().expect("peers").is_empty());
+    assert!(pair.phone.coordinator_pin().expect("pin").is_none());
+
+    pair.approvals
+        .decide(&pending.request_id, EnrollmentDecision::Approved)
+        .expect("approve");
+    enrollment
+        .await
+        .expect("enrollment task")
+        .expect("approved enrollment");
+    assert_eq!(pair.desktop.linked_peers().expect("peers").len(), 1);
+    assert!(pair.phone.coordinator_pin().expect("pin").is_some());
+    assert!(pair.approvals.pending().expect("pending").is_none());
+}
+
+#[tokio::test]
+async fn declined_enrollment_links_nothing_and_spends_the_invitation() {
+    let pair = LocalPair::start().await;
+    let enrollment = spawn_phone_enrollment(&pair, pair.invitation.clone());
+    let pending = wait_for_pending(&pair.approvals).await;
+    pair.approvals
+        .decide(&pending.request_id, EnrollmentDecision::Declined)
+        .expect("decline");
+    let error = enrollment
+        .await
+        .expect("enrollment task")
+        .expect_err("declined enrollment");
+    assert_eq!(error, ENROLLMENT_DECLINED_MESSAGE);
+    assert!(pair.desktop.linked_peers().expect("peers").is_empty());
+    assert!(pair.phone.coordinator_pin().expect("pin").is_none());
+
+    // A retry with the same invitation fails before anyone is asked again.
+    let retry = tokio::time::timeout(
+        APPROVAL_TEST_WAIT,
+        spawn_phone_enrollment(&pair, pair.invitation.clone()),
+    )
+    .await
+    .expect("retry answers without waiting for approval")
+    .expect("retry task")
+    .expect_err("spent invitation");
+    assert!(retry.contains("unknown"), "unexpected retry error: {retry}");
+    assert!(pair.desktop.linked_peers().expect("peers").is_empty());
+}
+
+#[tokio::test]
+async fn unanswered_enrollment_times_out_and_keeps_the_invitation() {
+    let pair = LocalPair::start_with_options(
+        None,
+        server::limits::ConnectionLimits::default(),
+        EnrollmentApprovals::with_timeout(Duration::from_millis(100)),
+    )
+    .await;
+    let error = spawn_phone_enrollment(&pair, pair.invitation.clone())
+        .await
+        .expect("enrollment task")
+        .expect_err("unanswered enrollment");
+    assert_eq!(error, ENROLLMENT_UNANSWERED_MESSAGE);
+    assert!(pair.desktop.linked_peers().expect("peers").is_empty());
+    assert!(pair.approvals.pending().expect("pending").is_none());
+
+    pair.enroll().await;
+    assert_eq!(pair.desktop.linked_peers().expect("peers").len(), 1);
+}
+
+#[tokio::test]
+async fn enrollment_with_a_wrong_secret_is_refused_without_a_prompt() {
+    let pair = LocalPair::start().await;
+    let mut forged = pair.invitation.clone();
+    forged.secret = random_token("secret").expect("forged secret");
+    let error = tokio::time::timeout(APPROVAL_TEST_WAIT, spawn_phone_enrollment(&pair, forged))
+        .await
+        .expect("refused without waiting for approval")
+        .expect("enrollment task")
+        .expect_err("forged enrollment");
+    assert!(error.contains("credentials"), "unexpected error: {error}");
+    assert!(pair.approvals.pending().expect("pending").is_none());
+    assert!(pair.desktop.linked_peers().expect("peers").is_empty());
+}
+
+#[tokio::test]
+async fn waiting_enrollment_ends_when_the_invitation_is_replaced_or_the_device_leaves() {
+    let pair = LocalPair::start().await;
+    let enrollment = spawn_phone_enrollment(&pair, pair.invitation.clone());
+    wait_for_pending(&pair.approvals).await;
+    pair.approvals.cancel();
+    let error = enrollment
+        .await
+        .expect("enrollment task")
+        .expect_err("cancelled enrollment");
+    assert!(error.contains("replaced"), "unexpected error: {error}");
+
+    let enrollment = spawn_phone_enrollment(&pair, pair.invitation.clone());
+    wait_for_pending(&pair.approvals).await;
+    enrollment.abort();
+    tokio::time::timeout(APPROVAL_TEST_WAIT, async {
+        while pair.approvals.pending().expect("pending").is_some() {
+            tokio::time::sleep(APPROVAL_POLL_INTERVAL).await;
+        }
+    })
+    .await
+    .expect("a closed connection frees the approval slot");
+    assert!(pair.desktop.linked_peers().expect("peers").is_empty());
 }
 
 #[tokio::test]
@@ -719,11 +903,14 @@ async fn several_enrolled_devices_authenticate_with_distinct_certificates() {
             unix_time_ms(),
         )
         .expect("create second invitation");
-    super::enroll(
-        &second,
-        &invitation,
-        "Laptop".to_string(),
-        DeviceKind::Computer,
+    approving(
+        &pair.approvals,
+        super::enroll(
+            &second,
+            &invitation,
+            "Laptop".to_string(),
+            DeviceKind::Computer,
+        ),
     )
     .await
     .expect("enroll second client");

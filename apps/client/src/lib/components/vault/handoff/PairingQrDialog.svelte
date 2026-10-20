@@ -6,6 +6,7 @@
   import type {
     DesktopNetworkAccess,
     PairingInvitation,
+    PendingEnrollment,
   } from "$lib/api/vault-handoff";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -14,6 +15,7 @@
     activateModalKeyboardLayer,
     trapModalTabKey,
   } from "$lib/modal-focus";
+  import EnrollmentApproval from "./EnrollmentApproval.svelte";
   import PairingQrCode from "./PairingQrCode.svelte";
 
   let {
@@ -22,9 +24,13 @@
     networkBusy,
     networkError,
     invitationError,
+    pendingEnrollment,
+    approvalBusy,
+    approvalError,
     onGrantNetworkAccess,
     onRefresh,
     onRetry,
+    onRespondEnrollment,
     onClose,
   }: {
     invitation: PairingInvitation | null;
@@ -32,9 +38,13 @@
     networkBusy: boolean;
     networkError: string | null;
     invitationError: string | null;
+    pendingEnrollment: PendingEnrollment | null;
+    approvalBusy: boolean;
+    approvalError: string | null;
     onGrantNetworkAccess: () => void;
     onRefresh: () => void;
     onRetry: () => unknown;
+    onRespondEnrollment: (approve: boolean) => void;
     onClose: () => void;
   } = $props();
 
@@ -121,7 +131,9 @@
     </div>
 
     <div class="mt-5">
-      {#if invitation}
+      {#if pendingEnrollment}
+        <EnrollmentApproval pending={pendingEnrollment} busy={approvalBusy} onRespond={onRespondEnrollment} />
+      {:else if invitation}
         <PairingQrCode {invitation} onExpired={onRefresh} />
       {:else if invitationError}
         <div class="grid justify-items-center gap-3">
@@ -140,8 +152,11 @@
       {/if}
     </div>
 
+    {#if approvalError}
+      <Notice class="mt-3 justify-center text-[0.8rem] leading-5" message={approvalError} />
+    {/if}
     <div class="mx-auto mt-3 min-h-9">
-      {#if invitation}
+      {#if invitation && !pendingEnrollment}
         <button
           type="button"
           class="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md border border-border px-3 text-[0.8rem] font-medium hover:bg-accent"

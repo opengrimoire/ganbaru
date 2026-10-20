@@ -87,6 +87,19 @@ describe("formatHandoffError", () => {
     expect(formatHandoffError("requested vault is not active on the coordinator", t))
       .toBe("vaultHandoff.coordinatorVaultInactive");
   });
+
+  it("explains each way a coordinator can leave an enrollment unapproved", () => {
+    expect(formatHandoffError("the coordinator declined this device", t))
+      .toBe("vaultHandoff.enrollmentDeclined");
+    expect(formatHandoffError("the coordinator did not approve this device in time", t))
+      .toBe("vaultHandoff.enrollmentUnanswered");
+    expect(formatHandoffError("the coordinator did not answer the enrollment", t))
+      .toBe("vaultHandoff.enrollmentUnanswered");
+    expect(formatHandoffError("another device is waiting for approval on the coordinator", t))
+      .toBe("vaultHandoff.enrollmentBusy");
+    expect(formatHandoffError("this device is no longer waiting for approval", t))
+      .toBe("vaultHandoff.enrollmentGone");
+  });
 });
 
 describe("formatPairingCodeError", () => {
@@ -103,6 +116,11 @@ describe("formatPairingCodeError", () => {
     expect(formatPairingCodeError("connect coordinator: refused", t)).toBe(
       "vaultHandoff.unreachable",
     );
+  });
+
+  it("asks for the new code when the coordinator replaced the one in use", () => {
+    expect(formatPairingCodeError("the pairing code on the coordinator was replaced", t))
+      .toBe("vaultHandoff.enrollmentReplaced");
   });
 });
 

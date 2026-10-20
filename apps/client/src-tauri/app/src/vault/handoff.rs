@@ -4,6 +4,8 @@
 pub(crate) mod contact_requests;
 #[cfg(desktop)]
 pub(crate) mod coordinator;
+#[cfg(desktop)]
+pub(crate) mod enrollment_approval;
 pub(crate) mod receiver;
 pub(crate) mod source;
 pub(crate) mod transport;
@@ -90,6 +92,9 @@ pub(crate) struct PairingStatus {
     pending_transfer: bool,
     can_invite: bool,
     untouched_starter_vault: bool,
+    /// A device waiting for this coordinator to approve its enrollment.
+    #[cfg(desktop)]
+    pending_enrollment: Option<enrollment_approval::PendingEnrollmentView>,
     #[cfg(target_os = "linux")]
     network_access: network_access::NetworkAccessStatus,
 }
@@ -123,17 +128,20 @@ impl CoordinatorLifecycle {
             .map_err(|error| format!("read vault handoff endpoint: {error}"))?;
         let (shutdown, receiver) = tokio::sync::oneshot::channel();
         let (requests, request_receiver) = tokio::sync::mpsc::channel(8);
-        let hub = crate::sync::sync_hub(&app);
         let (contacts, contact_receiver) = contact_requests::channel();
+        let services = transport::CoordinatorServices {
+            coordinator: Some(requests.clone()),
+            contacts: Some(contacts),
+            hub: Some(crate::sync::sync_hub(&app)),
+            approvals: app
+                .state::<enrollment_approval::EnrollmentApprovals>()
+                .inner()
+                .clone(),
+        };
         tauri::async_runtime::spawn(contact_requests::run(app.clone(), contact_receiver));
         tauri::async_runtime::spawn(coordinator::run(app, manager.clone(), request_receiver));
         tauri::async_runtime::spawn(transport::serve_with_coordinator(
-            listener,
-            manager,
-            Some(requests.clone()),
-            Some(contacts),
-            Some(hub),
-            receiver,
+            listener, manager, services, receiver,
         ));
         let mut runtime = self
             .runtime
@@ -365,6 +373,9 @@ pub(crate) async fn handoff_create_pairing_invitation<R: Runtime>(
         return Err("a linked client device cannot coordinate additional devices".to_string());
     };
     let ownership = super::ownership::active_status(&app)?;
+    // A device waiting with the replaced invitation can no longer be approved.
+    app.state::<enrollment_approval::EnrollmentApprovals>()
+        .cancel();
     let invitation = manager.create_invitation(
         endpoint,
         ownership.vault_id,
@@ -469,6 +480,38 @@ pub(crate) async fn handoff_enroll(
         receiver::start_reconnect_refresh(app.clone());
     }
     Ok(())
+}
+
+/// Code this device shows while it enrolls with the invitation. The coordinator shows the same
+/// code only for a request signed with this device's certificate.
+#[tauri::command]
+pub(crate) fn handoff_enrollment_code(
+    app: tauri::AppHandle,
+    invitation: String,
+) -> Result<String, String> {
+    let invitation = decode_invitation(&invitation, protocol::unix_time_ms())?;
+    let (_, identity) = app.state::<PairingManager>().identity()?;
+    Ok(pairing::enrollment_code(
+        &invitation,
+        identity.certificate.as_ref(),
+    ))
+}
+
+/// Answers the enrollment waiting on this coordinator.
+#[cfg(desktop)]
+#[tauri::command]
+pub(crate) fn handoff_respond_enrollment(
+    app: tauri::AppHandle,
+    request_id: String,
+    approve: bool,
+) -> Result<(), String> {
+    let decision = if approve {
+        enrollment_approval::EnrollmentDecision::Approved
+    } else {
+        enrollment_approval::EnrollmentDecision::Declined
+    };
+    app.state::<enrollment_approval::EnrollmentApprovals>()
+        .decide(&request_id, decision)
 }
 
 #[tauri::command]
@@ -597,6 +640,10 @@ pub(crate) fn handoff_pairing_status<R: Runtime>(
         pending_transfer: manager.has_pending_transfer()?,
         can_invite: cfg!(desktop) && coordinator.is_none(),
         untouched_starter_vault: super::untouched_starter_vault(&app)?,
+        #[cfg(desktop)]
+        pending_enrollment: app
+            .state::<enrollment_approval::EnrollmentApprovals>()
+            .pending()?,
         #[cfg(target_os = "linux")]
         network_access,
     })

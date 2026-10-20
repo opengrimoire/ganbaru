@@ -129,6 +129,20 @@ export const vaultHandoff = {
   copyCode: "Copy pairing code",
   codeCopied: "Pairing code copied",
   copyCodeFailed: "The pairing code could not be copied.",
+  enrollmentApprovalTitle: "Approve this device?",
+  enrollmentApprovalInstructions:
+    "Approve only if the device shows this same code. If it does not, decline: someone else may have your pairing code.",
+  enrollmentCode: "Confirmation code",
+  enrollmentApprove: "Approve",
+  enrollmentDecline: "Decline",
+  enrollmentWaitingTitle: "Confirm on the other computer",
+  enrollmentWaiting: "The other computer shows a code. It approves this device when its code matches this one.",
+  enrollmentDeclined: "The other computer declined this device. Get a new pairing code there and try again.",
+  enrollmentUnanswered:
+    "The other computer did not approve this device in time. Keep its pairing code open, then try again.",
+  enrollmentBusy: "Another device is waiting for approval on the other computer. Wait until it is answered, then try again.",
+  enrollmentReplaced: "The other computer created a new pairing code. Use the new code to try again.",
+  enrollmentGone: "That device stopped waiting for approval.",
   qrDialogTitle: "Connect another device",
   qrInstructions:
     "To connect a phone, scan this QR code in Settings > Data. To connect another computer, copy the pairing code and enter it in Settings > Data.",

@@ -80,6 +80,7 @@ pub(crate) async fn create_imported_page(
     if matches!(request.parent, NoteParent::DataSourceId { .. }) {
         return Err("document imports cannot create database row pages".to_string());
     }
+    validate_import_block_depth(&request.blocks)?;
     if request.blocks.is_empty() {
         request.blocks.push(ImportBlock::new(
             "paragraph",
@@ -130,6 +131,7 @@ pub(crate) async fn create_imported_row_page(
     pool: &SqlitePool,
     mut request: ImportedRowPageCreate<'_>,
 ) -> Result<NoteLoadedPage, String> {
+    validate_import_block_depth(&request.blocks)?;
     crate::project_history::ensure_data_source_baseline_for_mutation(pool, request.data_source_id)
         .await?;
     if request.blocks.is_empty() {
@@ -191,6 +193,26 @@ pub(crate) async fn create_imported_row_page(
         .await
         .map_err(|e| format!("commit {} row import: {e}", request.source_provider))?;
     reads::load_page(pool, &page_id).await
+}
+
+/// Refuses an imported block tree deeper than [`writes::MAX_BLOCK_DEPTH`]
+/// without recursing, so later recursive passes stay within that bound.
+pub(crate) fn validate_import_block_depth(blocks: &[ImportBlock]) -> Result<(), String> {
+    let mut pending = vec![(blocks, 1_i64)];
+    while let Some((level, depth)) = pending.pop() {
+        if level.is_empty() {
+            continue;
+        }
+        if depth > writes::MAX_BLOCK_DEPTH {
+            return Err(writes::block_nesting_error());
+        }
+        pending.extend(
+            level
+                .iter()
+                .map(|block| (block.children.as_slice(), depth + 1)),
+        );
+    }
+    Ok(())
 }
 
 pub(crate) fn count_import_blocks(blocks: &[ImportBlock]) -> usize {

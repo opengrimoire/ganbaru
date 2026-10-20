@@ -9,7 +9,7 @@ use crate::models::{
 };
 use crate::transfers::import_writer::{
     ImportBlock, ImportedPageCreate, count_import_blocks, create_imported_page,
-    normalized_import_project_id,
+    normalized_import_project_id, validate_import_block_depth,
 };
 use crate::validation::{MAX_TABLE_WIDTH, validate_block_payload, validate_parent};
 use ammonia::{Builder, UrlRelative};
@@ -188,6 +188,7 @@ pub(crate) fn parse_html(
     if parser.over_budget || count_import_blocks(&blocks) > max_blocks {
         return Err(format!("HTML import supports up to {max_blocks} blocks"));
     }
+    validate_import_block_depth(&blocks)?;
     Ok(HtmlPlan {
         title: title.or(parser.first_heading),
         blocks,

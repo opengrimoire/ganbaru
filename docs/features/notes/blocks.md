@@ -1,6 +1,6 @@
 # Notes blocks
 
-Blocks are ordered children of a page or another compatible block. Their canonical type, payload, rich text, parent, order, and Trash state live in SQLite. Internal structural children such as table rows, columns, and tab labels are stored as blocks but rendered through their parent surface.
+Blocks are ordered children of a page or another compatible block. Their canonical type, payload, rich text, parent, order, and Trash state live in SQLite. Internal structural children such as table rows, columns, and tab labels are stored as blocks but rendered through their parent surface. A page holds at most 64 levels of nested blocks, counting its top-level blocks as level 1; inserts, moves, pastes, and imports that would go deeper are refused with an error rather than flattened, and a Markdown or HTML file over the limit is skipped with a note during folder import.
 
 ## Catalog
 

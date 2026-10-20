@@ -10,6 +10,7 @@ use crate::models::{
 };
 use crate::transfers::import_writer::{
     ImportBlock, ImportedPageCreate, count_import_blocks, create_imported_page,
+    validate_import_block_depth,
 };
 use crate::validation::{MAX_TABLE_WIDTH, validate_block_payload, validate_parent};
 use serde_json::{Value, json};
@@ -130,6 +131,7 @@ pub(crate) fn parse_markdown(markdown: &str, max_blocks: usize) -> Result<Markdo
             "markdown import supports up to {max_blocks} blocks"
         ));
     }
+    validate_import_block_depth(&parser.blocks)?;
     diagnostics.extend(parser.diagnostics);
     Ok(MarkdownPlan {
         title: frontmatter_title.or(parser.first_heading),

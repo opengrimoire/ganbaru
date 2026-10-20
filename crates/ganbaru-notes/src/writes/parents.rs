@@ -5,6 +5,10 @@ use crate::validation::{
 use crate::{assets, mention_notifications};
 use serde_json::Value;
 
+/// Deepest block nesting that inserts, moves, copies, and imports may create,
+/// counting a page's top-level blocks as level 1.
+pub const MAX_BLOCK_DEPTH: i64 = 64;
+
 pub struct ParentTarget {
     pub parent_type: &'static str,
     pub parent_page_id: Option<String>,
@@ -120,18 +124,92 @@ pub async fn resolve_block_parent(
             if !block_payload_supports_children(&block_type, &payload) {
                 return Err(format!("{block_type} blocks cannot have children"));
             }
-            Ok(ParentTarget {
+            let target = ParentTarget {
                 parent_type: "block_id",
                 parent_page_id: None,
                 parent_block_id: Some(block_id.to_string()),
                 parent_block_type: Some(block_type),
                 page_id,
-            })
+            };
+            ensure_block_nesting_fits(tx, &target, 1).await?;
+            Ok(target)
         }
         NoteParent::DataSourceId { .. } => {
             Err("blocks cannot be parented by data sources".to_string())
         }
     }
+}
+
+/// Refuses placing a block subtree `height` levels tall under `parent` when the
+/// result would nest deeper than [`MAX_BLOCK_DEPTH`].
+pub(crate) async fn ensure_block_nesting_fits(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    parent: &ParentTarget,
+    height: i64,
+) -> Result<(), String> {
+    let parent_depth = match &parent.parent_block_id {
+        Some(block_id) => block_depth(tx, block_id).await?,
+        None => 0,
+    };
+    if parent_depth.saturating_add(height) > MAX_BLOCK_DEPTH {
+        return Err(block_nesting_error());
+    }
+    Ok(())
+}
+
+/// Error shared by every write that would exceed [`MAX_BLOCK_DEPTH`].
+pub(crate) fn block_nesting_error() -> String {
+    format!("Notes blocks exceed the nesting depth limit of {MAX_BLOCK_DEPTH} levels")
+}
+
+/// Counts the levels from a page down to `block_id`, stopping one level past
+/// the limit so a cyclic or hostile chain cannot run unbounded.
+async fn block_depth(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    block_id: &str,
+) -> Result<i64, String> {
+    sqlx::query_scalar::<_, Option<i64>>(
+        "WITH RECURSIVE ancestors(parent_id, depth) AS (
+            SELECT parent_block_id, 1 FROM notes_blocks WHERE id = ?
+            UNION ALL
+            SELECT block.parent_block_id, ancestors.depth + 1
+            FROM notes_blocks AS block
+            JOIN ancestors ON block.id = ancestors.parent_id
+            WHERE ancestors.depth <= ?
+         )
+         SELECT max(depth) FROM ancestors",
+    )
+    .bind(block_id)
+    .bind(MAX_BLOCK_DEPTH)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| format!("measure notes block depth: {e}"))?
+    .ok_or_else(|| "notes block not found".to_string())
+}
+
+/// Counts the levels of the stored subtree rooted at `block_id`, including
+/// trashed descendants that move with it, stopping one level past the limit.
+pub(super) async fn block_subtree_height(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    block_id: &str,
+) -> Result<i64, String> {
+    sqlx::query_scalar::<_, Option<i64>>(
+        "WITH RECURSIVE subtree(id, depth) AS (
+            SELECT id, 1 FROM notes_blocks WHERE id = ?
+            UNION ALL
+            SELECT child.id, subtree.depth + 1
+            FROM notes_blocks AS child
+            JOIN subtree ON child.parent_block_id = subtree.id
+            WHERE subtree.depth <= ?
+         )
+         SELECT max(depth) FROM subtree",
+    )
+    .bind(block_id)
+    .bind(MAX_BLOCK_DEPTH)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| format!("measure notes block subtree height: {e}"))?
+    .ok_or_else(|| "notes block not found".to_string())
 }
 
 pub(super) fn validate_children_for_parent(

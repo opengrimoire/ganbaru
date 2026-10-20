@@ -418,26 +418,19 @@ pub fn empty_hooks_directory() -> &'static Path {
     })
 }
 
+/// Creates the empty hooks directory with an unpredictable name. When creation fails,
+/// a path inside a missing directory also runs no hooks.
 #[cfg(not(unix))]
 fn create_private_empty_directory() -> PathBuf {
     let base = std::env::temp_dir();
-    for attempt in 0_u32..64 {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or_default();
-        let path = base.join(format!(
-            "ganbaru-git-no-hooks-{}-{nanos}-{attempt}",
-            std::process::id()
-        ));
-        if std::fs::create_dir(&path).is_ok() {
-            return path;
-        }
-    }
-    base.join(format!(
-        "ganbaru-git-no-hooks-{}-missing",
-        std::process::id()
-    ))
+    ganbaru_atomic_files::create_private_temporary_directory(&base, "ganbaru-git-no-hooks-")
+        .unwrap_or_else(|_| {
+            base.join(format!(
+                "ganbaru-git-no-hooks-{}-missing",
+                std::process::id()
+            ))
+            .join("hooks")
+        })
 }
 
 /// Computes the overrides for `policy` from the effective configuration.

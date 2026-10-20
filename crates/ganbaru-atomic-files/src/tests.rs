@@ -79,10 +79,52 @@ fn reject_symlink_accepts_missing_and_regular_paths() {
     fs::remove_dir_all(directory).unwrap();
 }
 
+#[test]
+fn private_temporary_directories_are_new_and_unpredictable() {
+    let parent = test_directory("private");
+    let first = create_private_temporary_directory(&parent, "review-").unwrap();
+    let second = create_private_temporary_directory(&parent, "review-").unwrap();
+    assert_ne!(first, second);
+    for directory in [&first, &second] {
+        assert_eq!(directory.parent(), Some(parent.as_path()));
+        let name = directory
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let suffix = name.strip_prefix("review-").unwrap();
+        assert_eq!(suffix.len(), TEMPORARY_NONCE_BYTES * 2);
+        assert!(
+            suffix
+                .chars()
+                .all(|character| character.is_ascii_hexdigit())
+        );
+        assert!(fs::symlink_metadata(directory).unwrap().is_dir());
+    }
+    fs::remove_dir_all(parent).unwrap();
+}
+
+#[test]
+fn private_temporary_directories_report_a_missing_parent() {
+    let parent = test_directory("private-missing").join("missing");
+    let error = create_private_temporary_directory(&parent, "index-").unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::NotFound);
+    fs::remove_dir_all(parent.parent().unwrap()).unwrap();
+}
+
 #[cfg(unix)]
 mod unix {
     use super::*;
     use std::os::unix::fs::{PermissionsExt, symlink};
+
+    #[test]
+    fn private_temporary_directories_are_owner_only() {
+        let parent = test_directory("private-mode");
+        let directory = create_private_temporary_directory(&parent, "objects-").unwrap();
+        let mode = fs::metadata(&directory).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+        fs::remove_dir_all(parent).unwrap();
+    }
 
     #[test]
     fn owner_only_files_are_private_and_default_files_follow_the_umask() {

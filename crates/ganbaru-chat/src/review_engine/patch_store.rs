@@ -12,12 +12,10 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 const MAX_PATCH_HUNKS_PER_RESPONSE: usize = 2_048;
 const MAX_PATCH_SPOOL_BYTES: usize = 512 * 1024 * 1024;
 const MAX_REVIEW_OBJECT_BYTES: u64 = 512 * 1024 * 1024;
-static REVIEW_TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
 pub struct ParsedHunk {
@@ -57,7 +55,7 @@ pub struct ReviewObjectStore {
     pub alternate_objects: PathBuf,
 }
 
-struct ReviewTemporaryFile {
+pub(super) struct ReviewTemporaryFile {
     root: PathBuf,
     path: PathBuf,
 }
@@ -536,7 +534,7 @@ impl Drop for ReviewObjectStore {
 }
 
 impl ReviewTemporaryFile {
-    fn new(kind: &str) -> ChatResult<Self> {
+    pub(super) fn new(kind: &str) -> ChatResult<Self> {
         let root = create_review_temporary_directory(kind)?;
         Ok(Self {
             path: root.join("content"),
@@ -544,7 +542,7 @@ impl ReviewTemporaryFile {
         })
     }
 
-    fn path(&self) -> &Path {
+    pub(super) fn path(&self) -> &Path {
         &self.path
     }
 }
@@ -555,18 +553,12 @@ impl Drop for ReviewTemporaryFile {
     }
 }
 
+/// Creates a private, randomly named directory for review objects, indexes, and spools,
+/// which hold repository content that other local users must not read.
 fn create_review_temporary_directory(kind: &str) -> ChatResult<PathBuf> {
-    for _ in 0..32 {
-        let sequence = REVIEW_TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "ganbaru-chat-review-{kind}-{}-{sequence}",
-            std::process::id()
-        ));
-        match fs::create_dir(&path) {
-            Ok(()) => return Ok(path),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(_) => return Err(review_error("Create review temporary directory")),
-        }
-    }
-    Err(review_error("Allocate review temporary directory"))
+    ganbaru_atomic_files::create_private_temporary_directory(
+        &std::env::temp_dir(),
+        &format!("ganbaru-chat-review-{kind}-"),
+    )
+    .map_err(|_| review_error("Create review temporary directory"))
 }

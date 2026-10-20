@@ -1,5 +1,5 @@
 use super::diff::file_diff;
-use super::git::{capture_git, repository_fingerprint};
+use super::git::{TemporaryIndex, capture_git, repository_fingerprint};
 use super::{
     CapturedCheckpoint, StoredCheckpoint, current_git_snapshot, delete_exact_ref, diff_files,
     restore_git_snapshot, verify_checkpoint,
@@ -337,4 +337,33 @@ fn stale_restore_snapshot_aborts_without_changing_files() {
         fs::read(repository.0.join("tracked.txt")).expect("file should read"),
         b"changed after preview\n"
     );
+}
+
+#[test]
+fn temporary_indexes_live_in_private_random_directories_removed_on_drop() {
+    let first = TemporaryIndex::new().unwrap();
+    let second = TemporaryIndex::new().unwrap();
+    let directory = first.path().parent().unwrap().to_path_buf();
+    assert_ne!(Some(directory.as_path()), second.path().parent());
+    assert_eq!(directory.parent(), Some(std::env::temp_dir().as_path()));
+    let name = directory
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let suffix = name.strip_prefix("ganbaru-chat-index-").unwrap();
+    assert!(
+        suffix.len() >= 32
+            && suffix
+                .chars()
+                .all(|character| character.is_ascii_hexdigit())
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&directory).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+    }
+    drop(first);
+    assert!(!directory.exists());
 }

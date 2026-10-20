@@ -16,6 +16,10 @@ use std::path::{Component, Path, PathBuf};
 /// Random bytes in each temporary file name.
 const TEMPORARY_NONCE_BYTES: usize = 16;
 
+/// Random names tried before a private directory creation gives up. A collision of
+/// 128-bit names means something else is creating entries, so a few attempts suffice.
+const PRIVATE_DIRECTORY_ATTEMPTS: u32 = 4;
+
 /// Permissions given to a newly written file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FileAccess {
@@ -127,6 +131,38 @@ pub fn create_directories_within(root: &Path, directory: &Path) -> io::Result<()
         }
     }
     Ok(())
+}
+
+/// Creates a new directory in `parent` named `prefix` plus a random suffix.
+///
+/// Creation is exclusive and the name is unpredictable, so another local user cannot
+/// pre-create, link, or guess it in a shared temporary directory. On Unix the directory is
+/// accessible only by the current user (mode 0700). On Windows it inherits the access of
+/// `parent`, which for the per-user temporary directory is already private.
+///
+/// # Errors
+///
+/// Returns an error when the secure random generator is unavailable, the directory cannot
+/// be created, or every attempt collides with an existing entry.
+pub fn create_private_temporary_directory(parent: &Path, prefix: &str) -> io::Result<PathBuf> {
+    for _ in 0..PRIVATE_DIRECTORY_ATTEMPTS {
+        let path = parent.join(format!("{prefix}{}", random_hex()?));
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        match builder.create(&path) {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        format!(
+            "no free private directory name in {} after {PRIVATE_DIRECTORY_ATTEMPTS} attempts",
+            parent.display()
+        ),
+    ))
 }
 
 /// Fails when `path` is a symlink. A missing path passes.

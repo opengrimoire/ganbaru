@@ -1046,3 +1046,32 @@ async fn discard_requires_confirmation_before_any_workspace_access() {
     .expect_err("unconfirmed discard should stop before workspace access");
     assert_eq!(error.code, ChatErrorCode::Permission);
 }
+
+#[test]
+fn review_spools_live_in_private_random_directories_removed_on_drop() {
+    let first = ReviewTemporaryFile::new("patch").unwrap();
+    let second = ReviewTemporaryFile::new("patch").unwrap();
+    let directory = first.path().parent().unwrap().to_path_buf();
+    assert_ne!(Some(directory.as_path()), second.path().parent());
+    assert_eq!(directory.parent(), Some(std::env::temp_dir().as_path()));
+    let name = directory
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let suffix = name.strip_prefix("ganbaru-chat-review-patch-").unwrap();
+    assert!(
+        suffix.len() >= 32
+            && suffix
+                .chars()
+                .all(|character| character.is_ascii_hexdigit())
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&directory).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+    }
+    drop(first);
+    assert!(!directory.exists());
+}

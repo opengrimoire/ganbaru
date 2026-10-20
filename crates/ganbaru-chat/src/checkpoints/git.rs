@@ -15,7 +15,6 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Output;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 const MAX_GIT_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 /// Fixed identity for checkpoint commits so their object IDs depend only on
@@ -29,7 +28,6 @@ const CHECKPOINT_IDENTITY_ENVIRONMENT: &[(&str, &str)] = &[
     ("GIT_COMMITTER_DATE", "2000-01-01T00:00:00Z"),
 ];
 const REF_PREFIX: &str = "refs/ganbaru/chat/";
-static TEMPORARY_INDEX_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 pub fn verify_checkpoint(
     authorized: &AuthorizedWorkingFolder,
@@ -482,33 +480,25 @@ fn git_output_with_input_codes(
     })
 }
 
-/// Index file inside a new private directory, so another local user cannot
-/// pre-create or replace it in the shared temporary directory.
-struct TemporaryIndex {
+/// Index file inside a new private, randomly named directory, so another local
+/// user cannot guess, pre-create, or read it in the shared temporary directory.
+pub(super) struct TemporaryIndex {
     directory: PathBuf,
     path: PathBuf,
 }
 
 impl TemporaryIndex {
-    fn new() -> ChatResult<Self> {
-        let sequence = TEMPORARY_INDEX_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let directory = std::env::temp_dir().join(format!(
-            "ganbaru-chat-index-{}-{sequence}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|duration| duration.as_nanos())
-                .unwrap_or_default()
-        ));
-        let mut builder = fs::DirBuilder::new();
-        #[cfg(unix)]
-        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-        builder.create(&directory).map_err(checkpoint_error)?;
+    pub(super) fn new() -> ChatResult<Self> {
+        let directory = ganbaru_atomic_files::create_private_temporary_directory(
+            &std::env::temp_dir(),
+            "ganbaru-chat-index-",
+        )
+        .map_err(checkpoint_error)?;
         let path = directory.join("index");
         Ok(Self { directory, path })
     }
 
-    fn path(&self) -> &Path {
+    pub(super) fn path(&self) -> &Path {
         &self.path
     }
 }

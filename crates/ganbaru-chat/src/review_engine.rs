@@ -66,6 +66,8 @@ use opening::open_review;
 use opening::{file_contract, provider_turn_patch};
 #[cfg(test)]
 use patch_parser::{hunk_id, parse_patch};
+#[cfg(test)]
+use patch_store::ReviewTemporaryFile;
 use patch_store::{ReviewObjectStore, read_patch_page, unavailable_patch};
 pub use registry::ChatReviewRegistry;
 pub use registry::ResolveReviewSelectionRequest;

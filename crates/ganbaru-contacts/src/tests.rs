@@ -232,3 +232,47 @@ fn trust_kind_names_expiry_and_activity() {
     assert!(!TrustKind::NotAllowed.is_active(None, granted));
     assert!(TrustKind::Once.is_active(None, granted));
 }
+
+#[test]
+fn cards_with_bidi_or_invisible_name_characters_are_refused_even_when_signed() {
+    let (_, key) = PersonKeyPair::generate().unwrap();
+    let spoofed = ContactCard {
+        display_name: "Ana\u{202E}".to_string(),
+        ..sample_card(&key)
+    };
+    assert_eq!(sign_card(&spoofed, &key), Err(CardError::Field));
+
+    let template = ContactCard {
+        display_name: "Anaaaa".to_string(),
+        ..sample_card(&key)
+    };
+    let signed = sign_card(&template, &key).unwrap();
+    let name_start = 4 + 1 + 32 + 1;
+    for replacement in [
+        "Ana\u{202E}",
+        "Ana\u{2066}",
+        "Ana\u{200B}",
+        "Ana\u{FEFF}",
+        "Anaa\u{0085}",
+    ] {
+        let mut bytes = signed.bytes[..signed.bytes.len() - 64].to_vec();
+        assert_eq!(replacement.len(), template.display_name.len());
+        bytes[name_start..name_start + replacement.len()].copy_from_slice(replacement.as_bytes());
+        let signature = key.sign(&bytes);
+        bytes.extend_from_slice(&signature);
+        assert_eq!(
+            decode_card(&bytes),
+            Err(CardError::Field),
+            "{replacement:?}"
+        );
+    }
+
+    for name in ["👩\u{200D}💻", "می\u{200C}خواهم"] {
+        let card = ContactCard {
+            display_name: name.to_string(),
+            ..sample_card(&key)
+        };
+        let signed = sign_card(&card, &key).unwrap();
+        assert_eq!(decode_card(&signed.bytes).unwrap().card.display_name, name);
+    }
+}

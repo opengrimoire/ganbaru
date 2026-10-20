@@ -52,3 +52,11 @@ export function formatRelativeDays(
   if (rounded > 0) return t("format.relativeDaysFuture", rounded);
   return t("format.relativeDaysPast", Math.abs(rounded));
 }
+
+/**
+ * Wraps text from another person or device in first-strong isolate marks, so a right-to-left
+ * name interpolated into a sentence keeps its own direction without reordering the sentence.
+ */
+export function isolateText(text: string): string {
+  return `\u{2068}${text}\u{2069}`;
+}

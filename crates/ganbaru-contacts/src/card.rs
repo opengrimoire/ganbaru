@@ -4,6 +4,7 @@
 //! name | color (1) | nonce (16) | hint length (1) and hint | fingerprint flag (1) and optional
 //! fingerprint (32) | issued at milliseconds (8) | signature (64) over everything before it.
 
+use crate::display_text::{DisplayTextError, validate_display_text};
 use crate::identity::{PUBLIC_KEY_BYTES, PersonKeyPair, PersonPublicKey, SIGNATURE_BYTES, verify};
 use crate::request::CARD_NONCE_BYTES;
 use base64::Engine;
@@ -38,7 +39,8 @@ pub enum CardError {
     Bounds,
     /// The magic or version is unknown.
     Format,
-    /// The display name or hint is not valid UTF-8 or is empty.
+    /// The display name or hint is not valid UTF-8, or the name is blank or holds a control,
+    /// bidirectional, or invisible character.
     Field,
     /// The signature does not verify against the public key in the card.
     Signature,
@@ -110,10 +112,13 @@ fn validate_fields(card: &ContactCard) -> Result<(), CardError> {
     if card.color > MAX_COLOR {
         return Err(CardError::Bounds);
     }
-    if card.display_name.trim().is_empty() {
-        return Err(CardError::Field);
+    match validate_display_text(&card.display_name, MAX_DISPLAY_NAME_BYTES) {
+        Ok(()) => Ok(()),
+        Err(DisplayTextError::TooLong) => Err(CardError::Bounds),
+        Err(DisplayTextError::Empty | DisplayTextError::DisallowedCharacter) => {
+            Err(CardError::Field)
+        }
     }
-    Ok(())
 }
 
 fn encode_unsigned(card: &ContactCard) -> Vec<u8> {

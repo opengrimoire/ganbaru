@@ -278,8 +278,17 @@ describe("profile preferences", () => {
     });
     expect(normalizeProfileDisplayName("Bad\u0000Name")).toEqual({
       ok: false,
-      reason: "control_characters",
+      reason: "disallowed_characters",
     });
+  });
+
+  it("rejects display names with bidi controls or invisible characters but keeps joiners", () => {
+    for (const name of ["a\u{202E}b", "a\u{2066}b\u{2069}", "a\u{200E}b", "a\u{061C}b", "a\u{200B}b", "a\u{2060}b", "a\u{FEFF}b", "a\u{0085}b"]) {
+      expect(normalizeProfileDisplayName(name)).toEqual({ ok: false, reason: "disallowed_characters" });
+    }
+    for (const name of ["\u{1F469}\u{200D}\u{1F4BB}", "\u{0645}\u{06CC}\u{200C}\u{062E}\u{0648}\u{0627}\u{0647}\u{0645}", "\u{0915}\u{094D}\u{200D}\u{0937}"]) {
+      expect(normalizeProfileDisplayName(name)).toEqual({ ok: true, value: name });
+    }
   });
 
   it("rejects profile full names that are too long or contain control characters", () => {
@@ -289,7 +298,7 @@ describe("profile preferences", () => {
     });
     expect(normalizeProfileFullName("Bad\u0000Name")).toEqual({
       ok: false,
-      reason: "control_characters",
+      reason: "disallowed_characters",
     });
   });
 });

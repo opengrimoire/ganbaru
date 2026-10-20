@@ -104,6 +104,9 @@ export const vaultHandoff = {
   networkAccessConfirmTitle: "¿Permitir la conexión del teléfono?",
   networkAccessConfirmMessage:
     "El firewall de Linux protege tu computadora de conexiones no deseadas. Ganbaru necesita su permiso para vincular tu teléfono con esta computadora mediante tu red local. Linux te pedirá tu contraseña, que Ganbaru nunca ve ni guarda.",
+  networkAccessNetworkConfirmMessage:
+    "Permitiste las conexiones del teléfono en otra red que usa las mismas direcciones que esta. ¿Permitirlas también en esta red? Linux no te pedirá tu contraseña.",
+  networkAccessNetworkConfirmation: "Los dispositivos vinculados no pueden conectarse hasta que permitas esta red",
   networkAccessRevokeTitle: "¿Quitar el acceso a la red local?",
   networkAccessRevokeMessage:
     "El firewall de Linux permite actualmente que los dispositivos vinculados se conecten con Ganbaru en esta red local. Linux te pedirá tu contraseña para quitar ese permiso. Ganbaru nunca ve ni guarda tu contraseña.",

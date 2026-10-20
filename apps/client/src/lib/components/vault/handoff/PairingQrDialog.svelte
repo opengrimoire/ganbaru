@@ -171,7 +171,7 @@
       <Notice class="mt-2 justify-center text-[0.8rem]" copy={false} message={t("vaultHandoff.copyCodeFailed")} />
     {/if}
 
-    {#if networkAccess?.state === "authorizationRequired"}
+    {#if networkAccess?.state === "authorizationRequired" || networkAccess?.state === "networkConfirmationRequired"}
       <div class="mt-4 space-y-2 text-center">
         <p class="text-[0.8rem] leading-5 text-muted-foreground">
           {t("vaultHandoff.networkAccessDescription")}

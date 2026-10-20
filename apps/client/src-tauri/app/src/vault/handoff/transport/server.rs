@@ -19,6 +19,7 @@ use crate::vault::handoff::protocol::{
     read_control, read_control_limited, unix_time_ms, write_control,
 };
 use crate::vault::handoff::{coordinator, protocol, suggested_device_label};
+pub(crate) use admission::LanAdmission;
 use limits::{ConnectionLimits, PendingPermit};
 use rustls::RootCertStore;
 use rustls::pki_types::CertificateDer;
@@ -30,6 +31,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
 
+pub(super) mod admission;
 pub(super) mod limits;
 
 const UPLOAD_REQUEST_WAIT: Duration = Duration::from_secs(10);
@@ -80,6 +82,8 @@ pub(crate) struct CoordinatorServices {
     pub contacts: Option<ContactSender>,
     pub hub: Option<SyncHub>,
     pub approvals: EnrollmentApprovals,
+    /// Whether the current network may reach the listener at all.
+    pub admission: LanAdmission,
 }
 
 pub(crate) async fn serve_with_coordinator(
@@ -122,6 +126,9 @@ pub(super) async fn serve_with_limits(
                 limits: limits.clone(),
             };
             tokio::spawn(async move {
+                if !connection.features.admission.admits().await {
+                    return;
+                }
                 if let Err(error) =
                     handle_connection(socket, source.ip(), permit, configs, connection).await
                 {
@@ -187,6 +194,7 @@ async fn handle_connection(
                 contacts,
                 hub,
                 approvals,
+                admission: _,
             },
         limits,
     } = services;

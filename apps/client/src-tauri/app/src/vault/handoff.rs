@@ -139,6 +139,7 @@ impl CoordinatorLifecycle {
                 .state::<enrollment_approval::EnrollmentApprovals>()
                 .inner()
                 .clone(),
+            admission: lan_admission(&app, endpoint)?,
         };
         tauri::async_runtime::spawn(contact_requests::run(app.clone(), contact_receiver));
         tauri::async_runtime::spawn(coordinator::run(app, manager.clone(), request_receiver));
@@ -407,6 +408,37 @@ pub(crate) async fn handoff_create_pairing_invitation<R: Runtime>(
             endpoint.port(),
         ),
     })
+}
+
+/// Admission for a coordinator listening on `endpoint`: on Linux, LAN peers are served only on
+/// networks where the user confirmed the firewall rules for its address.
+#[cfg(target_os = "linux")]
+fn lan_admission<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    endpoint: SocketAddr,
+) -> Result<transport::LanAdmission, String> {
+    let IpAddr::V4(address) = endpoint.ip() else {
+        return Ok(transport::LanAdmission::default());
+    };
+    let config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("find app config directory: {error}"))?;
+    Ok(transport::LanAdmission::linux_firewall(
+        config_dir,
+        address,
+        endpoint.port(),
+    ))
+}
+
+/// Admission for a coordinator listening on `endpoint`. Only Linux keeps per-network firewall
+/// rules, so other desktops serve every LAN peer.
+#[cfg(all(desktop, not(target_os = "linux")))]
+fn lan_admission<R: Runtime>(
+    _app: &tauri::AppHandle<R>,
+    _endpoint: SocketAddr,
+) -> Result<transport::LanAdmission, String> {
+    Ok(transport::LanAdmission::default())
 }
 
 #[cfg(target_os = "linux")]

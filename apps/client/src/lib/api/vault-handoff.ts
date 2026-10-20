@@ -17,7 +17,8 @@ export type DesktopNetworkAccessState =
   | "notRequired"
   | "authorizationRequired"
   | "granted"
-  | "manualActionRequired";
+  | "manualActionRequired"
+  | "networkConfirmationRequired";
 
 export interface DesktopNetworkAccess {
   state: DesktopNetworkAccessState;
@@ -125,6 +126,7 @@ function parseDesktopNetworkAccess(value: unknown): DesktopNetworkAccess {
       "authorizationRequired",
       "granted",
       "manualActionRequired",
+      "networkConfirmationRequired",
     ].includes(value.state as string)
   ) {
     throw new Error("Invalid desktop network access response");

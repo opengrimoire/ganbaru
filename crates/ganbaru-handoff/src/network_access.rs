@@ -14,6 +14,13 @@ const STATE_FILE: &str = "vault-handoff-network-access.json";
 const STATE_SCHEMA_VERSION: u32 = 2;
 const RULE_COMMENT: &str = "Ganbaru device linking";
 const MAX_AUTHORIZED_SCOPES: usize = 32;
+/// Networks remembered per scope. Beyond it the oldest is forgotten and asks again.
+const MAX_ALLOWED_NETWORKS: usize = 16;
+/// `RTF_UP` and `RTF_GATEWAY` route flags in `/proc/net/route`.
+const ROUTE_UP: u16 = 0x1;
+const ROUTE_GATEWAY: u16 = 0x2;
+/// `ATF_COM` flag of a resolved neighbor in `/proc/net/arp`.
+const NEIGHBOR_COMPLETE: u32 = 0x2;
 const PACKAGED_HELPER_PATH: &str = "/usr/bin/ganbaru";
 const PRIVILEGED_HELPER_ARGUMENT: &str = "--manage-linking-firewall";
 const REVOKE_ALL_OPERATION: &str = "revoke-all";
@@ -37,12 +44,27 @@ struct AuthorizedScope {
     zone: Option<String>,
 }
 
+/// A scope whose firewall rule is in place, and the networks the user allowed it on.
+///
+/// A rule matches addresses, not networks, so another network that hands out the same
+/// interface, address, and subnet would reach the coordinator through it. The coordinator
+/// therefore admits LAN peers only on networks recorded here; see [`allowed_on`].
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GrantedScope {
+    #[serde(flatten)]
+    rule: AuthorizedScope,
+    /// Identities from [`current_network`], oldest first.
+    #[serde(default)]
+    networks: Vec<String>,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct StoredNetworkAccess {
     schema_version: u32,
     /// Scopes whose firewall rules are in place.
-    scopes: Vec<AuthorizedScope>,
+    scopes: Vec<GrantedScope>,
     /// Scopes recorded before their rules were applied. A rule that failed partway may exist,
     /// so revoking removes these too, and granting again applies them again.
     #[serde(default)]
@@ -56,6 +78,9 @@ pub enum NetworkAccessState {
     AuthorizationRequired,
     Granted,
     ManualActionRequired,
+    /// The rules for this network's addresses exist, but the user allowed them on another
+    /// network. Confirming needs no administrator authorization.
+    NetworkConfirmationRequired,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -89,26 +114,54 @@ pub fn status(config_dir: &Path, local_address: Ipv4Addr, port: u16) -> NetworkA
             state: NetworkAccessState::NotRequired,
         };
     }
-    if !can_request_authorization(&firewalls) {
-        return NetworkAccessStatus {
-            state: NetworkAccessState::ManualActionRequired,
-        };
-    }
     let Ok(stored) = read_state(config_dir) else {
         return NetworkAccessStatus {
             state: NetworkAccessState::ManualActionRequired,
         };
     };
-    let all_recorded = firewalls
-        .iter()
-        .all(|candidate| stored.scopes.iter().any(|saved| saved == candidate));
+    let network = current_network(&scope.interface);
     NetworkAccessStatus {
-        state: if all_recorded {
-            NetworkAccessState::Granted
-        } else {
-            NetworkAccessState::AuthorizationRequired
-        },
+        state: access_state(&stored, &firewalls, network.as_deref(), || {
+            can_request_authorization(&firewalls)
+        }),
     }
+}
+
+/// Whether the coordinator listening on `local_address` and `port` may accept LAN peers now.
+/// It refuses them only where [`status`] asks the user to confirm the current network, so a
+/// refusal always comes with an action that lifts it.
+pub fn admits_lan_peers(config_dir: &Path, local_address: Ipv4Addr, port: u16) -> bool {
+    status(config_dir, local_address, port).state != NetworkAccessState::NetworkConfirmationRequired
+}
+
+/// The access state for the active firewall `candidates` on the network identified by
+/// `network`. Authorization is only checked when a rule is missing, because confirming a
+/// network with every rule in place needs none.
+fn access_state(
+    stored: &StoredNetworkAccess,
+    candidates: &[AuthorizedScope],
+    network: Option<&str>,
+    can_request_authorization: impl FnOnce() -> bool,
+) -> NetworkAccessState {
+    let granted: Option<Vec<&GrantedScope>> = candidates
+        .iter()
+        .map(|candidate| stored.scopes.iter().find(|saved| &saved.rule == candidate))
+        .collect();
+    match granted {
+        Some(granted) if granted.iter().all(|saved| allowed_on(saved, network)) => {
+            NetworkAccessState::Granted
+        }
+        Some(_) => NetworkAccessState::NetworkConfirmationRequired,
+        None if can_request_authorization() => NetworkAccessState::AuthorizationRequired,
+        None => NetworkAccessState::ManualActionRequired,
+    }
+}
+
+/// Whether the user allowed `scope` on the network identified by `network`. A network without
+/// an identity cannot be told apart from an allowed one, so it counts as allowed; a scope with
+/// no recorded networks is allowed on no network that has one.
+fn allowed_on(scope: &GrantedScope, network: Option<&str>) -> bool {
+    network.is_none_or(|network| scope.networks.iter().any(|known| known == network))
 }
 
 pub fn grant(
@@ -123,14 +176,20 @@ pub fn grant(
             state: NetworkAccessState::NotRequired,
         });
     }
-    if !can_request_authorization(&firewalls) {
+    let mut stored = read_state(config_dir)?;
+    let missing: Vec<AuthorizedScope> = firewalls
+        .iter()
+        .filter(|candidate| !stored.scopes.iter().any(|saved| &saved.rule == *candidate))
+        .cloned()
+        .collect();
+    if !missing.is_empty() && !can_request_authorization(&missing) {
         return Err("automatic Linux firewall authorization is unavailable".to_string());
     }
-
-    let mut stored = read_state(config_dir)?;
+    let network = current_network(&scope.interface);
     grant_scopes(
         &mut stored,
         firewalls,
+        network.as_deref(),
         |state| persist_state(config_dir, state),
         |scope| apply_scope(scope, true),
     )?;
@@ -139,27 +198,40 @@ pub fn grant(
     })
 }
 
-/// Applies the rules of `candidates` that `stored` does not hold yet.
+/// Applies the rules of `candidates` that `stored` does not hold yet and records `network` as
+/// allowed for every candidate.
 ///
 /// Capacity is checked before any rule changes. Each scope is persisted as pending before its
 /// rule is applied and moved to the granted scopes after, so a failure or crash between the two
-/// never leaves a root rule without a record that revoking can find.
+/// never leaves a root rule without a record that revoking can find. A candidate already in
+/// place only gains the network, with no firewall change.
 fn grant_scopes(
     stored: &mut StoredNetworkAccess,
     candidates: Vec<AuthorizedScope>,
+    network: Option<&str>,
     mut persist: impl FnMut(&StoredNetworkAccess) -> Result<(), String>,
     mut apply: impl FnMut(&AuthorizedScope) -> Result<(), String>,
 ) -> Result<(), String> {
-    let missing: Vec<AuthorizedScope> = candidates
+    let (present, missing): (Vec<AuthorizedScope>, Vec<AuthorizedScope>) = candidates
         .into_iter()
-        .filter(|candidate| !stored.scopes.contains(candidate))
-        .collect();
+        .partition(|candidate| stored.scopes.iter().any(|saved| &saved.rule == candidate));
     let new_records = missing
         .iter()
         .filter(|candidate| !stored.pending.contains(candidate))
         .count();
     if stored.scopes.len() + stored.pending.len() + new_records > MAX_AUTHORIZED_SCOPES {
         return Err("too many saved Linux network access scopes".to_string());
+    }
+    let mut confirmed = false;
+    for saved in stored
+        .scopes
+        .iter_mut()
+        .filter(|saved| present.contains(&saved.rule))
+    {
+        confirmed |= allow_network(saved, network);
+    }
+    if confirmed {
+        persist(stored)?;
     }
     for candidate in missing {
         if !stored.pending.contains(&candidate) {
@@ -168,10 +240,31 @@ fn grant_scopes(
         }
         apply(&candidate)?;
         stored.pending.retain(|pending| pending != &candidate);
-        stored.scopes.push(candidate);
+        let mut granted = GrantedScope {
+            rule: candidate,
+            networks: Vec::new(),
+        };
+        allow_network(&mut granted, network);
+        stored.scopes.push(granted);
         persist(stored)?;
     }
     Ok(())
+}
+
+/// Records `network` as allowed for `scope`, dropping the oldest network at the limit.
+/// Returns whether the scope changed.
+fn allow_network(scope: &mut GrantedScope, network: Option<&str>) -> bool {
+    let Some(network) = network else {
+        return false;
+    };
+    if scope.networks.iter().any(|known| known == network) {
+        return false;
+    }
+    if scope.networks.len() >= MAX_ALLOWED_NETWORKS {
+        scope.networks.remove(0);
+    }
+    scope.networks.push(network.to_string());
+    true
 }
 
 pub fn revoke(config_dir: &Path) -> Result<NetworkAccessStatus, String> {
@@ -191,16 +284,76 @@ fn revoke_scopes(
     mut remove: impl FnMut(&AuthorizedScope) -> Result<(), String>,
 ) -> Result<(), String> {
     let mut first_error = None;
-    for scopes in [&mut stored.scopes, &mut stored.pending] {
-        scopes.retain(|scope| match remove(scope) {
-            Ok(()) => false,
-            Err(error) => {
-                first_error.get_or_insert(error);
-                true
-            }
-        });
-    }
+    let mut keep = |scope: &AuthorizedScope| match remove(scope) {
+        Ok(()) => false,
+        Err(error) => {
+            first_error.get_or_insert(error);
+            true
+        }
+    };
+    stored.scopes.retain(|saved| keep(&saved.rule));
+    stored.pending.retain(|scope| keep(scope));
     first_error.map_or(Ok(()), Err)
+}
+
+/// The identity of the network reached through `interface`: the hardware address of its
+/// default IPv4 gateway. `None` when the interface has no default gateway or the gateway has no
+/// resolved neighbor entry.
+fn current_network(interface: &str) -> Option<String> {
+    let route = fs::read_to_string("/proc/net/route").ok()?;
+    let gateway = parse_default_gateway(&route, interface)?;
+    let neighbors = fs::read_to_string("/proc/net/arp").ok()?;
+    parse_neighbor_hardware_address(&neighbors, gateway, interface)
+}
+
+/// The gateway of the default IPv4 route through `interface` in `/proc/net/route` contents.
+fn parse_default_gateway(contents: &str, interface: &str) -> Option<Ipv4Addr> {
+    contents.lines().skip(1).find_map(|line| {
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        if fields.len() < 8 || fields[0] != interface || fields[1] != "00000000" {
+            return None;
+        }
+        let flags = u16::from_str_radix(fields[3], 16).ok()?;
+        if flags & (ROUTE_UP | ROUTE_GATEWAY) != ROUTE_UP | ROUTE_GATEWAY {
+            return None;
+        }
+        let gateway = Ipv4Addr::from(u32::from_str_radix(fields[2], 16).ok()?.swap_bytes());
+        (!gateway.is_unspecified()).then_some(gateway)
+    })
+}
+
+/// The lowercase hardware address of a completed `/proc/net/arp` entry for `address` on
+/// `interface`.
+fn parse_neighbor_hardware_address(
+    contents: &str,
+    address: Ipv4Addr,
+    interface: &str,
+) -> Option<String> {
+    contents.lines().skip(1).find_map(|line| {
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        if fields.len() < 6
+            || fields[0].parse::<Ipv4Addr>().ok()? != address
+            || fields[5] != interface
+        {
+            return None;
+        }
+        let flags = u32::from_str_radix(fields[2].strip_prefix("0x")?, 16).ok()?;
+        let hardware = fields[3].to_ascii_lowercase();
+        (flags & NEIGHBOR_COMPLETE != 0 && is_network_identity(&hardware)).then_some(hardware)
+    })
+}
+
+/// Whether `value` is a nonzero hardware address in lowercase colon notation.
+fn is_network_identity(value: &str) -> bool {
+    let octets = value.split(':').collect::<Vec<_>>();
+    octets.len() == 6
+        && octets.iter().all(|octet| {
+            octet.len() == 2
+                && octet
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+        && octets.iter().any(|octet| *octet != "00")
 }
 
 fn empty_state() -> StoredNetworkAccess {
@@ -892,8 +1045,23 @@ fn read_state(config_dir: &Path) -> Result<StoredNetworkAccess, String> {
     if state.scopes.len() + state.pending.len() > MAX_AUTHORIZED_SCOPES {
         return Err("network access state has too many scopes".to_string());
     }
-    for scope in state.scopes.iter().chain(&state.pending) {
+    for scope in state
+        .scopes
+        .iter()
+        .map(|saved| &saved.rule)
+        .chain(&state.pending)
+    {
         validate_authorized_scope(scope)?;
+    }
+    for saved in &state.scopes {
+        if saved.networks.len() > MAX_ALLOWED_NETWORKS
+            || !saved
+                .networks
+                .iter()
+                .all(|network| is_network_identity(network))
+        {
+            return Err("network access state has an invalid network".to_string());
+        }
     }
     Ok(state)
 }
@@ -1009,15 +1177,34 @@ bad/interface 0001A8C0 00000000 0001 0 0 600 00FFFFFF 0 0 0\n";
         }
     }
 
+    fn granted(index: u8, networks: &[&str]) -> GrantedScope {
+        GrantedScope {
+            rule: numbered_scope(index),
+            networks: networks.iter().map(|network| network.to_string()).collect(),
+        }
+    }
+
+    fn rules(stored: &StoredNetworkAccess) -> Vec<AuthorizedScope> {
+        stored
+            .scopes
+            .iter()
+            .map(|saved| saved.rule.clone())
+            .collect()
+    }
+
+    const HOME: &str = "a4:2b:b0:11:22:33";
+    const CAFE: &str = "f0:9f:c2:44:55:66";
+
     #[test]
     fn a_full_record_refuses_a_grant_before_any_rule_changes() {
         let mut stored = empty_state();
-        stored.scopes = (0..30).map(numbered_scope).collect();
+        stored.scopes = (0..30).map(|index| granted(index, &[])).collect();
         stored.pending = vec![numbered_scope(30)];
         let mut applied = Vec::new();
         let result = grant_scopes(
             &mut stored,
             vec![numbered_scope(31), numbered_scope(32)],
+            None,
             |_| Ok(()),
             |scope| {
                 applied.push(scope.clone());
@@ -1031,6 +1218,7 @@ bad/interface 0001A8C0 00000000 0001 0 0 600 00FFFFFF 0 0 0\n";
         let granted = grant_scopes(
             &mut stored,
             vec![numbered_scope(30), numbered_scope(31)],
+            None,
             |_| Ok(()),
             |scope| {
                 applied.push(scope.clone());
@@ -1050,6 +1238,7 @@ bad/interface 0001A8C0 00000000 0001 0 0 600 00FFFFFF 0 0 0\n";
         let result = grant_scopes(
             &mut stored,
             vec![numbered_scope(1), numbered_scope(2)],
+            Some(HOME),
             |state| {
                 persisted.push((state.scopes.len(), state.pending.len()));
                 Ok(())
@@ -1064,7 +1253,7 @@ bad/interface 0001A8C0 00000000 0001 0 0 600 00FFFFFF 0 0 0\n";
         );
         assert!(result.is_err());
         assert_eq!(persisted, vec![(0, 1), (1, 0), (1, 1)]);
-        assert_eq!(stored.scopes, vec![numbered_scope(1)]);
+        assert_eq!(stored.scopes, vec![granted(1, &[HOME])]);
         assert_eq!(stored.pending, vec![numbered_scope(2)]);
 
         let mut removed = Vec::new();
@@ -1078,8 +1267,122 @@ bad/interface 0001A8C0 00000000 0001 0 0 600 00FFFFFF 0 0 0\n";
         });
         assert!(revoked.is_err());
         assert_eq!(removed, vec![numbered_scope(1), numbered_scope(2)]);
-        assert_eq!(stored.scopes, vec![numbered_scope(1)]);
+        assert_eq!(rules(&stored), vec![numbered_scope(1)]);
         assert!(stored.pending.is_empty());
+    }
+
+    #[test]
+    fn rules_admit_peers_only_on_networks_the_user_confirmed() {
+        let mut stored = empty_state();
+        stored.scopes = vec![granted(1, &[HOME])];
+        let candidates = [numbered_scope(1)];
+        let no_authorization = || false;
+        assert_eq!(
+            access_state(&stored, &candidates, Some(HOME), no_authorization),
+            NetworkAccessState::Granted
+        );
+        assert_eq!(
+            access_state(&stored, &candidates, Some(CAFE), no_authorization),
+            NetworkAccessState::NetworkConfirmationRequired
+        );
+        assert_eq!(
+            access_state(&stored, &candidates, None, no_authorization),
+            NetworkAccessState::Granted
+        );
+        let missing = [numbered_scope(1), numbered_scope(2)];
+        assert_eq!(
+            access_state(&stored, &missing, Some(HOME), || true),
+            NetworkAccessState::AuthorizationRequired
+        );
+        assert_eq!(
+            access_state(&stored, &missing, Some(HOME), no_authorization),
+            NetworkAccessState::ManualActionRequired
+        );
+
+        stored.scopes = vec![granted(1, &[])];
+        assert_eq!(
+            access_state(&stored, &candidates, Some(HOME), no_authorization),
+            NetworkAccessState::NetworkConfirmationRequired
+        );
+    }
+
+    #[test]
+    fn confirming_a_network_records_it_without_changing_the_firewall() {
+        let mut stored = empty_state();
+        stored.scopes = vec![granted(1, &[HOME])];
+        let mut persisted = 0;
+        let confirmed = grant_scopes(
+            &mut stored,
+            vec![numbered_scope(1)],
+            Some(CAFE),
+            |_| {
+                persisted += 1;
+                Ok(())
+            },
+            |_| panic!("an existing rule is not applied again"),
+        );
+        assert!(confirmed.is_ok());
+        assert_eq!(persisted, 1);
+        assert_eq!(stored.scopes, vec![granted(1, &[HOME, CAFE])]);
+        let json = serde_json::to_vec(&stored).expect("serialize");
+        let restored: StoredNetworkAccess = serde_json::from_slice(&json).expect("parse");
+        assert_eq!(restored.scopes, stored.scopes);
+
+        let mut saved = granted(1, &[]);
+        let identities: Vec<String> = (0..=MAX_ALLOWED_NETWORKS)
+            .map(|index| format!("02:00:00:00:00:{index:02x}"))
+            .collect();
+        for identity in &identities {
+            assert!(allow_network(&mut saved, Some(identity)));
+        }
+        assert!(!allow_network(&mut saved, Some(&identities[1])));
+        assert!(!allow_network(&mut saved, None));
+        assert_eq!(saved.networks, identities[1..]);
+    }
+
+    #[test]
+    fn the_network_identity_is_the_resolved_default_gateway_of_the_interface() {
+        let routes = "\
+Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT
+docker0\t00000000\t010011AC\t0003\t0\t0\t50\t00000000\t0\t0\t0
+wlp2s0\t0001A8C0\t00000000\t0001\t0\t0\t600\t00FFFFFF\t0\t0\t0
+wlp2s0\t00000000\t0101A8C0\t0003\t0\t0\t600\t00000000\t0\t0\t0
+";
+        assert_eq!(
+            parse_default_gateway(routes, "wlp2s0"),
+            Some(Ipv4Addr::new(192, 168, 1, 1))
+        );
+        assert_eq!(parse_default_gateway(routes, "eth0"), None);
+        let down = routes.replace("0101A8C0\t0003", "0101A8C0\t0002");
+        assert_eq!(parse_default_gateway(&down, "wlp2s0"), None);
+
+        let neighbors = "\
+IP address       HW type     Flags       HW address            Mask     Device
+192.168.1.1      0x1         0x2         A4:2B:B0:11:22:33     *        wlp2s0
+192.168.1.7      0x1         0x0         00:00:00:00:00:00     *        wlp2s0
+172.17.0.1       0x1         0x2         f0:9f:c2:44:55:66     *        docker0
+";
+        let gateway = Ipv4Addr::new(192, 168, 1, 1);
+        assert_eq!(
+            parse_neighbor_hardware_address(neighbors, gateway, "wlp2s0").as_deref(),
+            Some(HOME)
+        );
+        assert_eq!(
+            parse_neighbor_hardware_address(neighbors, gateway, "eth0"),
+            None
+        );
+        assert_eq!(
+            parse_neighbor_hardware_address(neighbors, Ipv4Addr::new(192, 168, 1, 7), "wlp2s0"),
+            None
+        );
+        let unresolved = neighbors.replace("0x2         A4", "0x0         A4");
+        assert_eq!(
+            parse_neighbor_hardware_address(&unresolved, gateway, "wlp2s0"),
+            None
+        );
+        assert!(!is_network_identity("00:00:00:00:00:00"));
+        assert!(!is_network_identity("A4:2B:B0:11:22:33"));
+        assert!(!is_network_identity("a4:2b:b0:11:22"));
     }
 
     #[test]

@@ -58,13 +58,20 @@ impl LocalPair {
         hub: Option<crate::sync::hub::SyncHub>,
         limits: server::limits::ConnectionLimits,
     ) -> Self {
-        Self::start_with_options(hub, limits, EnrollmentApprovals::default()).await
+        Self::start_with_options(
+            hub,
+            limits,
+            EnrollmentApprovals::default(),
+            LanAdmission::default(),
+        )
+        .await
     }
 
     async fn start_with_options(
         hub: Option<crate::sync::hub::SyncHub>,
         limits: server::limits::ConnectionLimits,
         approvals: EnrollmentApprovals,
+        admission: LanAdmission,
     ) -> Self {
         let desktop_root = TestDirectory::new("desktop");
         let phone_root = TestDirectory::new("phone");
@@ -100,6 +107,7 @@ impl LocalPair {
             CoordinatorServices {
                 hub,
                 approvals: approvals.clone(),
+                admission,
                 ..CoordinatorServices::default()
             },
             receiver,
@@ -180,6 +188,7 @@ impl LocalPair {
                 contacts: Some(contacts),
                 hub: None,
                 approvals: approvals.clone(),
+                admission: LanAdmission::default(),
             },
             receiver,
         ));
@@ -332,6 +341,7 @@ async fn unanswered_enrollment_times_out_and_keeps_the_invitation() {
         None,
         server::limits::ConnectionLimits::default(),
         EnrollmentApprovals::with_timeout(Duration::from_millis(100)),
+        LanAdmission::default(),
     )
     .await;
     let error = spawn_phone_enrollment(&pair, pair.invitation.clone())
@@ -344,6 +354,28 @@ async fn unanswered_enrollment_times_out_and_keeps_the_invitation() {
 
     pair.enroll().await;
     assert_eq!(pair.desktop.linked_peers().expect("peers").len(), 1);
+}
+
+#[tokio::test]
+async fn an_unconfirmed_network_reaches_neither_enrollment_nor_the_handshake() {
+    let pair = LocalPair::start_with_options(
+        None,
+        server::limits::ConnectionLimits::default(),
+        EnrollmentApprovals::default(),
+        LanAdmission::deciding(|| false),
+    )
+    .await;
+    let error = tokio::time::timeout(
+        APPROVAL_TEST_WAIT,
+        spawn_phone_enrollment(&pair, pair.invitation.clone()),
+    )
+    .await
+    .expect("refused without waiting for approval")
+    .expect("enrollment task")
+    .expect_err("enrollment on an unconfirmed network");
+    assert!(!error.is_empty());
+    assert!(pair.approvals.pending().expect("pending").is_none());
+    assert!(pair.desktop.linked_peers().expect("peers").is_empty());
 }
 
 #[tokio::test]

@@ -99,7 +99,9 @@
   let networkStepsVisible = $state(
     untrack(() => {
       const state = initialInvitation?.networkAccess?.state ?? status?.networkAccess?.state;
-      return state === "authorizationRequired" || state === "manualActionRequired";
+      return state === "authorizationRequired"
+        || state === "manualActionRequired"
+        || state === "networkConfirmationRequired";
     }),
   );
 
@@ -128,7 +130,9 @@
       ? t("vaultHandoff.networkAccessNotRequired")
       : networkAccess?.state === "manualActionRequired"
         ? t("vaultHandoff.networkAccessManual")
-        : t("vaultHandoff.networkAccessAllowed"),
+        : networkAccess?.state === "networkConfirmationRequired"
+          ? t("vaultHandoff.networkAccessNetworkConfirmation")
+          : t("vaultHandoff.networkAccessAllowed"),
   );
   const isCoordinatorClient = $derived(status?.coordinatorEndpoint != null);
   /** Failures that replace the content they block render in that place instead of the trailing error line. */
@@ -144,7 +148,11 @@
 
   function applyNetworkAccess(next: DesktopNetworkAccess): void {
     networkAccess = next;
-    if (next.state === "authorizationRequired" || next.state === "manualActionRequired") {
+    if (
+      next.state === "authorizationRequired"
+      || next.state === "manualActionRequired"
+      || next.state === "networkConfirmationRequired"
+    ) {
       networkStepsVisible = true;
     }
   }
@@ -672,7 +680,7 @@
                 {t("vaultHandoff.networkAccessDescription")}
               </p>
             </div>
-            {#if networkAccess?.state === "authorizationRequired" || (developmentLinuxBuild && networkAccess?.state === "manualActionRequired")}
+            {#if networkAccess?.state === "authorizationRequired" || networkAccess?.state === "networkConfirmationRequired" || (developmentLinuxBuild && networkAccess?.state === "manualActionRequired")}
               <button
                 type="button"
                 class={`${buttonClass} bg-background ${developmentLinuxBuild ? "cursor-not-allowed opacity-55" : ""}`}
@@ -930,7 +938,9 @@
 {#if confirmation === "network"}
   <ConfirmDialog
     title={t("vaultHandoff.networkAccessConfirmTitle")}
-    message={t("vaultHandoff.networkAccessConfirmMessage")}
+    message={networkAccess?.state === "networkConfirmationRequired"
+      ? t("vaultHandoff.networkAccessNetworkConfirmMessage")
+      : t("vaultHandoff.networkAccessConfirmMessage")}
     confirmLabel={t("vaultHandoff.allowNetworkAccess")}
     cancelLabel={t("common.cancel")}
     danger={false}

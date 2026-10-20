@@ -131,3 +131,24 @@ describe("pending enrollment status", () => {
     expect(getCachedPairingStatus()).toBeUndefined();
   });
 });
+
+describe("desktop network access", () => {
+  it("reports a network that still needs the user's confirmation", async () => {
+    invokeMock.mockResolvedValue({ state: "networkConfirmationRequired" });
+    const { grantDesktopNetworkAccess } = await import("./vault-handoff");
+
+    await expect(grantDesktopNetworkAccess()).resolves.toEqual({
+      state: "networkConfirmationRequired",
+    });
+    expect(invokeMock).toHaveBeenCalledWith("handoff_grant_network_access");
+  });
+
+  it("refuses an unknown access state", async () => {
+    invokeMock.mockResolvedValue({ state: "allowedEverywhere" });
+    const { grantDesktopNetworkAccess } = await import("./vault-handoff");
+
+    await expect(grantDesktopNetworkAccess()).rejects.toThrow(
+      "Invalid desktop network access response",
+    );
+  });
+});

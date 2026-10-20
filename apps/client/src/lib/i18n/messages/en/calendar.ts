@@ -297,6 +297,8 @@ export const calendar = {
     deleteFailed: (message: string) => `Delete or Undo failed: ${message}`,
     previewFailed: "Could not preview this change",
     historyUnavailable: "The recorded Focus timeline could not be loaded. Try a shorter Calendar range or retry.",
+    eventsUnreadable: (count: number) =>
+      `${count} ${count === 1 ? "event" : "events"} could not be shown in this range because ${count === 1 ? "its" : "their"} saved repetition could not be expanded.`,
     saved: "Saved",
     unknownSaveError: "Unknown save error",
     saveFailed: (message: string) => `Save failed: ${message}`,

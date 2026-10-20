@@ -1363,6 +1363,19 @@
     />
   {/if}
 
+  {#if calendarStore.expansionDiagnostics.length > 0}
+    <Notice
+      class={calendarBannerClass}
+      role="status"
+      tone="warning"
+      icon={CalendarX}
+      message={t("calendar.view.eventsUnreadable", calendarStore.expansionDiagnostics.length)}
+      copy={calendarStore.expansionDiagnostics
+        .map((diagnostic) => `${diagnostic.event_id}: ${diagnostic.message}`)
+        .join("\n")}
+    />
+  {/if}
+
   <div
     bind:this={viewportController.viewWrapper}
     class="min-w-0 flex-1 overflow-hidden"

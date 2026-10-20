@@ -999,10 +999,37 @@ function calendarEventBaseFromComponent(
 	return { event, recurrenceId };
 }
 
+/**
+ * Resolves an instance's end so its range is valid for storage. A timed instance without a
+ * positive range, such as one with no DTEND or DURATION, keeps the series duration so the
+ * occurrence stays visible; an all-day end before the start is clamped to the start date.
+ */
+function overrideEnd(
+	parentEvent: CalendarEvent,
+	child: CalendarEvent,
+	deviceZone: string,
+	warnings: string[],
+): string {
+	if (child.allDay) return child.end < child.start ? child.start : child.end;
+	const childStart = Temporal.Instant.from(wallClockToUtcIso(child.start, deviceZone));
+	const childEnd = Temporal.Instant.from(wallClockToUtcIso(child.end, deviceZone));
+	if (Temporal.Instant.compare(childEnd, childStart) > 0) return child.end;
+	const seriesDuration = Temporal.Instant.from(wallClockToUtcIso(parentEvent.end, deviceZone))
+		.since(Temporal.Instant.from(wallClockToUtcIso(parentEvent.start, deviceZone)));
+	if (seriesDuration.sign <= 0) return child.end;
+	pushUnique(
+		warnings,
+		`An instance of "${parentEvent.title}" has no positive duration; it uses the series duration.`,
+	);
+	return utcIsoToWallClock(childStart.add(seriesDuration).toString(), deviceZone);
+}
+
 function buildOverride(
 	parentEvent: CalendarEvent,
 	child: CalendarEvent,
 	recurrenceId: ParsedRecurrenceIdInfo,
+	deviceZone: string,
+	warnings: string[],
 ): EventOverride {
 	const override: EventOverride = {
 		id: crypto.randomUUID(),
@@ -1012,7 +1039,8 @@ function buildOverride(
 	if (recurrenceId.recurrenceRange) override.recurrenceRange = recurrenceId.recurrenceRange;
 	if (child.title !== parentEvent.title) override.title = child.title;
 	if (child.start !== parentEvent.start) override.start = child.start;
-	if (child.end !== parentEvent.end) override.end = child.end;
+	const end = overrideEnd(parentEvent, child, deviceZone, warnings);
+	if (end !== parentEvent.end) override.end = end;
 	if (child.description !== parentEvent.description) override.description = child.description;
 	if (child.location !== parentEvent.location) override.location = child.location;
 	if (child.url !== parentEvent.url) override.url = child.url;
@@ -1134,7 +1162,7 @@ export function parseIcs(text: string, calendarId = "local"): IcsParseResult {
 			: materializeRecurrenceId(recurrenceId, deviceZone, parent.timezone);
 		parent.overrides = parent.overrides ?? [];
 		if (child) {
-			parent.overrides.push(buildOverride(parent, child, resolvedRecurrenceId));
+			parent.overrides.push(buildOverride(parent, child, resolvedRecurrenceId, deviceZone, warnings));
 		} else {
 			parent.overrides.push(buildCancelledOverride(parent, resolvedRecurrenceId));
 		}

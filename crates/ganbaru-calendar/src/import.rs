@@ -1360,6 +1360,52 @@ mod tests {
         });
     }
 
+    #[test]
+    fn rejects_overrides_that_canonical_expansion_cannot_decode() {
+        let override_row = |start: Option<&str>, end: Option<&str>| CalendarImportOverride {
+            id: "override-1".to_string(),
+            icalendar_component_id: None,
+            recurrence_id: "2026-05-10T15:00:00Z".to_string(),
+            recurrence_range: None,
+            title: None,
+            start_time: start.map(str::to_string),
+            end_time: end.map(str::to_string),
+            description: None,
+            location: None,
+            url: None,
+            color: None,
+            status: None,
+            transparency: None,
+            visibility: None,
+            extended_properties: None,
+        };
+        let mut event = import_event("event-1", "");
+        event.rrule = Some("FREQ=DAILY;COUNT=3".to_string());
+
+        event.overrides = vec![override_row(
+            Some("2026-05-10T16:00:00Z"),
+            Some("2026-05-10T17:00:00Z"),
+        )];
+        assert!(validate_event(&event).is_ok());
+        event.overrides = vec![override_row(Some("2026-05-10T16:00:00Z"), None)];
+        assert!(validate_event(&event).is_ok());
+
+        for (start, end) in [
+            (Some("2026-05-10T16:00:00Z"), Some("2026-05-10T16:00:00Z")),
+            (Some("2026-05-10T17:00:00Z"), Some("2026-05-10T16:00:00Z")),
+            (Some("not a time"), None),
+        ] {
+            event.overrides = vec![override_row(start, end)];
+            let error = validate_event(&event).unwrap_err();
+            assert!(error.starts_with("override override-1:"), "{error}");
+        }
+        event.overrides = vec![CalendarImportOverride {
+            recurrence_id: "garbage".to_string(),
+            ..override_row(None, None)
+        }];
+        assert!(validate_event(&event).is_err());
+    }
+
     async fn in_memory_pool() -> sqlx::SqlitePool {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)

@@ -4,6 +4,9 @@ use super::{
     CalendarImportPreservedObject, MAX_ICALENDAR_COMPONENT_DEPTH, MAX_PRESERVED_JCAL_BYTES,
     PALETTE_SIZE,
 };
+use crate::recurrence::canonical::{override_date, validate_override_times};
+use ganbaru_civil_time as civil_time;
+use jiff::tz::TimeZone;
 
 pub(super) fn validate_payload(payload: &CalendarBulkImportPayload) -> Result<(), String> {
     require_non_empty(&payload.target_calendar_id, "target_calendar_id")?;
@@ -144,8 +147,36 @@ pub(super) fn validate_event(event: &CalendarImportEvent) -> Result<(), String> 
     }
     for override_row in &event.overrides {
         validate_override(override_row)?;
+        validate_override_geometry(event, override_row)?;
     }
     Ok(())
+}
+
+/// Rejects override identities and times that canonical expansion cannot decode, and timed or
+/// all-day ranges that end before they start. An event whose zone does not resolve here is
+/// reported for that event alone when Calendar windows decode it.
+fn validate_override_geometry(
+    event: &CalendarImportEvent,
+    override_row: &CalendarImportOverride,
+) -> Result<(), String> {
+    let home_zone = if event.all_day {
+        TimeZone::UTC
+    } else {
+        match civil_time::zone(&event.timezone) {
+            Ok(zone) => zone,
+            Err(_) => return Ok(()),
+        }
+    };
+    override_date(&override_row.recurrence_id, &home_zone, event.all_day)
+        .and_then(|_| {
+            validate_override_times(
+                override_row.start_time.as_deref(),
+                override_row.end_time.as_deref(),
+                &home_zone,
+                event.all_day,
+            )
+        })
+        .map_err(|error| format!("override {}: {error}", override_row.id))
 }
 
 fn validate_attendee(attendee: &CalendarImportAttendee) -> Result<(), String> {

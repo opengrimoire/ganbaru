@@ -59,7 +59,7 @@ File tools, mentions, previews, and saves never touch Git metadata (`.git` at an
 
 Text preview rejects binary content, invalid UTF-8, symlinks, traversal, and oversized files. The webview receives bounded text and relative metadata only. Opening a file externally repeats authorization immediately before delegation. Folders and document types whose default handler never runs them as programs (an allowlist in the Tauri-free crate) open directly; any other type, an executable file without an extension, or a folder with an extension (macOS bundles) opens only after a native dialog that names the file, because a repository or agent can plant a script whose default handler runs it. The dialog shows bidirectional and control characters as visible placeholders, and trailing dots and spaces cannot hide an extension.
 
-Writes use expected-revision checks where user edits could race provider edits. Temporary replacement stays inside the authorized parent, and a tool cannot create a symlink or use a renamed ancestor to escape the root.
+Writes use expected-revision checks where user edits could race provider edits. Temporary replacement stays inside the authorized parent under hidden names with a random token, so a process sharing the folder cannot predict and pre-create them to block a save, and a tool cannot create a symlink or use a renamed ancestor to escape the root.
 
 Provider-reported changed files are hints. Ingestion keeps only verified, deduplicated relative paths inside the root.
 

@@ -11,10 +11,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 #[cfg(windows)]
 use std::path::PathBuf;
 use std::path::{Component, Path};
-use std::sync::{
-    Mutex,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::Mutex;
 #[cfg(windows)]
 use windows::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
@@ -43,7 +40,10 @@ const MAX_DIRECTORY_ENTRIES: usize = 5_000;
 const MAX_PREVIEW_BYTES: u64 = 1024 * 1024;
 const MAX_PROMOTED_ARTIFACT_BYTES: u64 = 50 * 1024 * 1024;
 const MAX_RELATIVE_PATH_BYTES: usize = 4_096;
-static WORKSPACE_FILE_WRITE_GENERATION: AtomicU64 = AtomicU64::new(0);
+/// Random bytes in the name of each Ganbaru-owned temporary, backup, or recovery entry.
+const ARTIFACT_TOKEN_BYTES: usize = 32;
+/// Kinds of Ganbaru-owned entries created beside a workspace file during a save or delete.
+const ARTIFACT_KINDS: [&str; 3] = ["tmp", "backup", "recovery"];
 static WORKSPACE_FILE_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -577,28 +577,40 @@ fn safety_excluded(relative_path: &str) -> bool {
 }
 
 fn ganbaru_internal_artifact_segment(segment: &str) -> bool {
-    for prefix in [".ganbaru.backup.", ".ganbaru.recovery."] {
-        if let Some(token) = segment.strip_prefix(prefix) {
-            return token.len() == 64 && token.bytes().all(|byte| byte.is_ascii_hexdigit());
-        }
-    }
+    let Some(rest) = segment.strip_prefix(".ganbaru.") else {
+        return false;
+    };
+    let Some((kind, token)) = rest.split_once('.') else {
+        return false;
+    };
+    ARTIFACT_KINDS.contains(&kind)
+        && token.len() == ARTIFACT_TOKEN_BYTES * 2
+        && token
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
 
-    let Some((_, suffix)) = segment.rsplit_once(".ganbaru.") else {
-        return false;
-    };
-    let mut parts = suffix.split('.').collect::<Vec<_>>();
-    let Some(extension) = parts.pop() else {
-        return false;
-    };
-    let shape_matches = match extension {
-        "tmp" | "backup" => matches!(parts.len(), 2 | 3),
-        "recovery" => parts.len() == 3,
-        _ => false,
-    };
-    shape_matches
-        && parts
-            .iter()
-            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+/// Builds the name of a Ganbaru-owned entry beside a workspace file from caller-supplied random
+/// bytes. The token keeps the name unpredictable, so another process sharing the folder cannot
+/// claim it in advance to block or redirect a save.
+fn private_artifact_name_with(
+    kind: &str,
+    fill_random: impl FnOnce(&mut [u8]) -> std::io::Result<()>,
+) -> std::io::Result<String> {
+    debug_assert!(ARTIFACT_KINDS.contains(&kind));
+    let mut random = [0_u8; ARTIFACT_TOKEN_BYTES];
+    fill_random(&mut random)?;
+    let token = random
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(format!(".ganbaru.{kind}.{token}"))
+}
+
+/// Builds the name of a Ganbaru-owned entry beside a workspace file from the system random source.
+#[cfg(not(windows))]
+fn private_artifact_name(kind: &str) -> std::io::Result<String> {
+    private_artifact_name_with(kind, ganbaru_atomic_files::fill_random)
 }
 
 fn common_ignored(relative_path: &str) -> bool {

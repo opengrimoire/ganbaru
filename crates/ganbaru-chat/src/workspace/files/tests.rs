@@ -42,17 +42,10 @@ impl Drop for TestDirectory {
 }
 
 #[test]
-fn internal_artifact_names_cover_platform_recovery_shapes_only() {
-    let private_token = "01".repeat(32);
-    for name in [
-        ".ganbaru.123.4.567.tmp".to_string(),
-        ".ganbaru.123.4.567.backup".to_string(),
-        ".ganbaru.123.4.567.recovery".to_string(),
-        ".document.ganbaru.123.4.tmp".to_string(),
-        "document.ganbaru.123.4.backup".to_string(),
-        format!(".ganbaru.backup.{private_token}"),
-        format!(".ganbaru.recovery.{private_token}"),
-    ] {
+fn internal_artifact_names_cover_random_platform_names_only() {
+    let token = "0a".repeat(ARTIFACT_TOKEN_BYTES);
+    for kind in ARTIFACT_KINDS {
+        let name = format!(".ganbaru.{kind}.{token}");
         assert!(
             ganbaru_internal_artifact_segment(&name),
             "internal artifact was visible: {name}"
@@ -60,17 +53,84 @@ fn internal_artifact_names_cover_platform_recovery_shapes_only() {
     }
 
     for name in [
-        "document.tmp",
-        "document.ganbaru.notes.backup",
-        ".ganbaru.backup.short",
-        ".ganbaru.recovery.not-hex",
-        ".ganbaru.123.4.tmp.extra",
+        "document.tmp".to_string(),
+        "document.ganbaru.notes.backup".to_string(),
+        ".ganbaru.123.4.567.tmp".to_string(),
+        ".document.ganbaru.123.4.tmp".to_string(),
+        ".ganbaru.backup.short".to_string(),
+        ".ganbaru.recovery.not-hex".to_string(),
+        format!(".ganbaru.notes.{token}"),
+        format!(".ganbaru.tmp.{}", token.to_uppercase()),
+        format!(".ganbaru.tmp.{token}.extra"),
+        format!("document.ganbaru.tmp.{token}"),
     ] {
         assert!(
-            !ganbaru_internal_artifact_segment(name),
+            !ganbaru_internal_artifact_segment(&name),
             "ordinary name was hidden: {name}"
         );
     }
+}
+
+#[test]
+fn private_artifact_names_are_unpredictable_and_hidden() {
+    let fixed = private_artifact_name_with("backup", |random| {
+        random.fill(0xab);
+        Ok(())
+    })
+    .expect("fixture random source should name the artifact");
+    assert_eq!(
+        fixed,
+        format!(".ganbaru.backup.{}", "ab".repeat(ARTIFACT_TOKEN_BYTES))
+    );
+
+    let error = private_artifact_name_with("tmp", |_| Err(std::io::Error::other("no entropy")))
+        .expect_err("a random source failure should stop the save");
+    assert_eq!(error.to_string(), "no entropy");
+
+    #[cfg(not(windows))]
+    {
+        let names = (0..64)
+            .map(|_| private_artifact_name("tmp").expect("system random should name the artifact"))
+            .collect::<HashSet<_>>();
+        assert_eq!(names.len(), 64);
+        assert!(
+            names
+                .iter()
+                .all(|name| ganbaru_internal_artifact_segment(name))
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn saves_and_deletes_leave_no_artifacts_beside_the_file() {
+    let directory = TestDirectory::new();
+    fs::write(directory.0.join("sample.rs"), "fn before() {}\n").expect("file should write");
+    let authorized = directory.authorized(RepositoryKind::None);
+    let original = preview_workspace_file(&authorized, "sample.rs").expect("text should preview");
+    let revision = original
+        .content_revision
+        .expect("text should have a revision");
+    let saved = save_workspace_file(&authorized, "sample.rs", "fn after() {}\n", &revision)
+        .expect("matching revision should save");
+    let entries = || {
+        fs::read_dir(&directory.0)
+            .expect("directory should list")
+            .map(|entry| entry.expect("entry should read").file_name())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(entries(), vec![std::ffi::OsString::from("sample.rs")]);
+
+    delete_workspace_file(
+        &authorized,
+        "sample.rs",
+        saved
+            .content_revision
+            .as_deref()
+            .expect("saved text should have a revision"),
+    )
+    .expect("matching revision should delete");
+    assert!(entries().is_empty());
 }
 
 #[test]

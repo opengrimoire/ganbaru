@@ -313,11 +313,17 @@ fn temporary_path(parent: &Path, path: &Path) -> io::Result<PathBuf> {
     Ok(parent.join(name))
 }
 
+/// Fills `bytes` from the operating system's secure random generator, for unpredictable names of
+/// files and directories created beside user or workspace content.
+pub fn fill_random(bytes: &mut [u8]) -> io::Result<()> {
+    SystemRandom::new()
+        .fill(bytes)
+        .map_err(|_| io::Error::other("secure random generator is unavailable"))
+}
+
 fn random_hex() -> io::Result<String> {
     let mut nonce = [0_u8; TEMPORARY_NONCE_BYTES];
-    SystemRandom::new()
-        .fill(&mut nonce)
-        .map_err(|_| io::Error::other("secure random generator is unavailable"))?;
+    fill_random(&mut nonce)?;
     Ok(nonce.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 

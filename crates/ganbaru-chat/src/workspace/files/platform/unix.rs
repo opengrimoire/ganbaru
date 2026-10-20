@@ -622,18 +622,10 @@ pub(in crate::workspace::files) fn delete_workspace_file_atomically(
         .metadata()
         .map_err(|_| workspace_file_write_error())?;
     let identity = (metadata.dev(), metadata.ino());
-    let generation = WORKSPACE_FILE_WRITE_GENERATION.fetch_add(1, Ordering::Relaxed);
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let backup_name = CString::new(format!(
-        ".ganbaru.{}.{}.{}.backup",
-        std::process::id(),
-        generation,
-        nonce,
-    ))
-    .map_err(|_| workspace_file_write_error())?;
+    let backup_name = private_artifact_name("backup")
+        .ok()
+        .and_then(|name| CString::new(name).ok())
+        .ok_or_else(workspace_file_write_error)?;
     rename_noreplace_at(&parent, &parent.file_name, &backup_name)
         .map_err(|_| workspace_file_write_error())?;
     let verification = (|| {
@@ -683,18 +675,10 @@ pub(in crate::workspace::files) fn write_workspace_text_atomically(
         .map_err(|_| workspace_file_write_error())?;
     let current_identity = (current_metadata.dev(), current_metadata.ino());
 
-    let generation = WORKSPACE_FILE_WRITE_GENERATION.fetch_add(1, Ordering::Relaxed);
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let temporary_name = CString::new(format!(
-        ".ganbaru.{}.{}.{}.tmp",
-        std::process::id(),
-        generation,
-        nonce,
-    ))
-    .map_err(|_| workspace_file_write_error())?;
+    let temporary_name = private_artifact_name("tmp")
+        .ok()
+        .and_then(|name| CString::new(name).ok())
+        .ok_or_else(workspace_file_write_error)?;
     let mut replacement =
         create_file_at(&parent, &temporary_name, 0o600).map_err(|error| match error {
             CreateFileAtError::Create(_) => workspace_file_write_error(),

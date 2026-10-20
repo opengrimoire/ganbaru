@@ -353,7 +353,8 @@ pub(in crate::workspace::files) fn write_workspace_text_atomically(
     }
     let replacement_revision = workspace_file_revision(relative_path, contents.as_bytes());
 
-    let temporary = windows_temporary_path(&parent);
+    let temporary =
+        windows_private_artifact_path(&parent, "tmp").map_err(|_| workspace_file_write_error())?;
     let mut options = OpenOptions::new();
     options
         .read(true)
@@ -426,41 +427,8 @@ pub(in crate::workspace::files) fn write_workspace_text_atomically(
 }
 
 #[cfg(windows)]
-fn windows_temporary_path(parent: &Path) -> PathBuf {
-    let generation = WORKSPACE_FILE_WRITE_GENERATION.fetch_add(1, Ordering::Relaxed);
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    parent.join(format!(
-        ".ganbaru.{}.{}.{}.tmp",
-        std::process::id(),
-        generation,
-        nonce
-    ))
-}
-
-#[cfg(windows)]
 fn windows_private_artifact_path(parent: &Path, kind: &str) -> std::io::Result<PathBuf> {
-    use windows_crate::Win32::Security::Cryptography::{
-        BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom,
-    };
-
-    windows_private_artifact_path_with(parent, kind, |random| {
-        // SAFETY: The binding receives an exclusive, initialized output slice
-        // that remains live for the synchronous call. A null algorithm handle
-        // is required with BCRYPT_USE_SYSTEM_PREFERRED_RNG, and no pointer is
-        // retained after BCryptGenRandom returns.
-        let status = unsafe { BCryptGenRandom(None, random, BCRYPT_USE_SYSTEM_PREFERRED_RNG) };
-        if status.0 < 0 {
-            Err(std::io::Error::other(format!(
-                "BCryptGenRandom failed with NTSTATUS {:#x}",
-                status.0
-            )))
-        } else {
-            Ok(())
-        }
-    })
+    windows_private_artifact_path_with(parent, kind, ganbaru_atomic_files::fill_random)
 }
 
 #[cfg(any(windows, test))]
@@ -469,17 +437,10 @@ fn windows_private_artifact_path_with(
     kind: &str,
     mut fill_random: impl FnMut(&mut [u8]) -> std::io::Result<()>,
 ) -> std::io::Result<std::path::PathBuf> {
-    const RANDOM_BYTES: usize = 32;
     const GENERATION_ATTEMPTS: usize = 4;
 
     for _ in 0..GENERATION_ATTEMPTS {
-        let mut random = [0_u8; RANDOM_BYTES];
-        fill_random(&mut random)?;
-        let token = random
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        let candidate = parent.join(format!(".ganbaru.{kind}.{token}"));
+        let candidate = parent.join(private_artifact_name_with(kind, &mut fill_random)?);
         match fs::symlink_metadata(&candidate) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(candidate),
             Ok(_) => continue,

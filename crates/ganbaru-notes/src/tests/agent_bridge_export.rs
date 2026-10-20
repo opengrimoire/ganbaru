@@ -279,3 +279,49 @@ async fn seed_project_context(pool: &SqlitePool) {
     .await
     .unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+fn agent_bridge_save_leaves_a_symlink_at_the_predictable_temporary_name_untouched() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        let export = transfers::agent_bridge_export::export_bridge(
+            &pool,
+            NoteAgentBridgeExportRequest {
+                page_ids: vec![PAGE_A.to_string()],
+                project_ids: Vec::new(),
+                include_descendants: Some(false),
+                include_backlinks: Some(false),
+                include_database_views: Some(false),
+                include_task_context: Some(false),
+                include_page_comments: Some(false),
+                include_resolved_comments: Some(false),
+            },
+        )
+        .await
+        .unwrap();
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "ganbaru-notes-bridge-symlink-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let victim = dir.join("victim.txt");
+        std::fs::write(&victim, "keep").unwrap();
+        let path = dir.join("bridge.md");
+        std::os::unix::fs::symlink(&victim, dir.join("bridge.md.tmp")).unwrap();
+
+        let saved = transfers::agent_bridge_export::write_bridge(&path, export.clone());
+        let written = std::fs::read_to_string(&path);
+        let victim_contents = std::fs::read_to_string(&victim);
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        saved.unwrap();
+        assert_eq!(written.unwrap(), export.markdown);
+        assert_eq!(victim_contents.unwrap(), "keep");
+    });
+}

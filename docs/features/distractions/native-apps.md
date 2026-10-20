@@ -15,7 +15,9 @@ Desktop and Android enforce selected applications through different operating-sy
 
 Application discovery is on demand. The picker excludes system and basic utility targets that are unsafe or unrelated to procrastination. Adding or removing an enforced app requires confirmation.
 
-A desktop identity can include executable, application identifier, desktop entry, and normalized match names. Generic runtimes or shell hosts are not sufficient targets because closing them could affect unrelated work.
+A desktop rule stores its application name and normalized match names. The vault configuration is not trusted to choose process names: enforcement uses only the rule's own name and the process names the installed application catalog lists for that name, including entries the picker hides in the current desktop session. A typed rule therefore matches its own name, and a picked app also matches its desktop entry's executable. Generic runtimes, shell hosts, session services (systemd, PipeWire, agents), multiplexers, terminal emulators, and compositors are protected and never sufficient targets because closing them could affect unrelated work.
+
+Residual risk: an edited vault configuration can still add a visible rule whose own name is an unprotected user application, so the rule list in Settings is the place to review what the blocker can close.
 
 ## Desktop phase enforcement
 
@@ -23,7 +25,7 @@ Process or foreground checks run only while a relevant phase rule is active. End
 
 On platforms with a safe close adapter, enforcement binds the exact observation to the exact persisted rule. Immediately before a graceful close and before any stronger fallback, the backend revalidates process identity, start identity, active vault, fresh phase or limit state, target rule, and protected-app policy.
 
-A PID alone never authorizes termination because it can be reused. A process-name match alone is also insufficient.
+A PID alone never authorizes termination because it can be reused. A process-name match alone is also insufficient. On Linux the protected check covers every observed name, the kernel-reported executable basename (which a process cannot rename), and 15-byte truncated `comm` names that prefix a protected name.
 
 ## Desktop usage limits
 

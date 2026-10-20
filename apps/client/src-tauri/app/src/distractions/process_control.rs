@@ -86,7 +86,8 @@ pub(super) fn validate_observed_close_process(
         .collect::<Vec<_>>();
     if observed_names
         .iter()
-        .any(|name| is_protected_desktop_app_name(name))
+        .chain(observed.executable_name.iter())
+        .any(|name| is_protected_observed_process_name(name))
     {
         return Err("refusing to close protected process".to_string());
     }

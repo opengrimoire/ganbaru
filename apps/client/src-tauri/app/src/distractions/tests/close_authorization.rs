@@ -15,6 +15,7 @@ fn close_request_rejects_pid_reuse_and_tampered_identity() {
         process_name: "steam".to_string(),
         match_names: vec!["steam".to_string()],
         process_identity: "observed-start-2".to_string(),
+        executable_name: Some("steam".to_string()),
     };
 
     assert!(super::validate_observed_close_process(&request, &reused).is_err());
@@ -37,6 +38,7 @@ fn close_request_rejects_protected_process_aliases() {
         process_name: "steam".to_string(),
         match_names: vec!["steam".to_string(), "sh".to_string()],
         process_identity: "observed-start-1".to_string(),
+        executable_name: Some("steam".to_string()),
     };
 
     assert!(super::validate_observed_close_process(&request, &observed).is_err());
@@ -57,6 +59,7 @@ fn valid_observed_process() -> super::ObservedDesktopProcess {
         process_name: "steam".to_string(),
         match_names: vec!["steam".to_string()],
         process_identity: "observed-start-1".to_string(),
+        executable_name: Some("steam".to_string()),
     }
 }
 
@@ -241,15 +244,28 @@ fn persisted_desktop_rule_authorization_tracks_current_phase_and_rule_state() {
     let identity = super::DistractionsDesktopRuleIdentity::DesktopApp {
         rule_id: "Steam".to_string(),
     };
-    let authorization =
-        super::configured_close_authorization(&config, Some(&runtime), None, &identity).unwrap();
+    let authorization = super::configured_close_authorization(
+        &config,
+        Some(&runtime),
+        None,
+        &identity,
+        &super::DesktopCatalogIndex::default(),
+    )
+    .unwrap();
     assert!(super::validate_names_authorized(vec!["steam".to_string()], &authorization).is_ok());
 
     let mut paused = state("focus");
     paused.paused = true;
     paused.pause_reason = Some("manual".to_string());
     assert!(
-        super::configured_close_authorization(&config, Some(&paused), None, &identity).is_err()
+        super::configured_close_authorization(
+            &config,
+            Some(&paused),
+            None,
+            &identity,
+            &super::DesktopCatalogIndex::default()
+        )
+        .is_err()
     );
     let disabled = serde_json::json!({
         "distractions": {
@@ -264,7 +280,14 @@ fn persisted_desktop_rule_authorization_tracks_current_phase_and_rule_state() {
         }
     });
     assert!(
-        super::configured_close_authorization(&disabled, Some(&runtime), None, &identity).is_err()
+        super::configured_close_authorization(
+            &disabled,
+            Some(&runtime),
+            None,
+            &identity,
+            &super::DesktopCatalogIndex::default()
+        )
+        .is_err()
     );
 }
 
@@ -310,39 +333,185 @@ fn persisted_usage_rule_requires_exact_entry_and_exhausted_limit() {
     };
 
     assert!(
-        super::configured_close_authorization(&config, None, Some(&limit_state), &identity).is_ok()
+        super::configured_close_authorization(
+            &config,
+            None,
+            Some(&limit_state),
+            &identity,
+            &super::DesktopCatalogIndex::default()
+        )
+        .is_ok()
     );
     let mut changed_config = config.clone();
     changed_config["distractions"]["limits"]["items"][0]["minutesPerDay"] = serde_json::json!(20);
     assert!(
-        super::configured_close_authorization(&changed_config, None, Some(&limit_state), &identity)
-            .is_err()
+        super::configured_close_authorization(
+            &changed_config,
+            None,
+            Some(&limit_state),
+            &identity,
+            &super::DesktopCatalogIndex::default()
+        )
+        .is_err()
     );
     changed_config = config.clone();
     changed_config["distractions"]["limits"]["items"][0]["entries"][0]["desktopAppMatchNames"] =
         serde_json::json!(["othergame"]);
     assert!(
-        super::configured_close_authorization(&changed_config, None, Some(&limit_state), &identity)
-            .is_err()
+        super::configured_close_authorization(
+            &changed_config,
+            None,
+            Some(&limit_state),
+            &identity,
+            &super::DesktopCatalogIndex::default()
+        )
+        .is_err()
     );
     let mut invalid = limit_state.clone();
     invalid.configuration_digest = None;
     assert!(
-        super::configured_close_authorization(&config, None, Some(&invalid), &identity).is_err()
+        super::configured_close_authorization(
+            &config,
+            None,
+            Some(&invalid),
+            &identity,
+            &super::DesktopCatalogIndex::default()
+        )
+        .is_err()
     );
     invalid = limit_state.clone();
     invalid.limits[0].used_seconds = 1;
     assert!(
-        super::configured_close_authorization(&config, None, Some(&invalid), &identity).is_err()
+        super::configured_close_authorization(
+            &config,
+            None,
+            Some(&invalid),
+            &identity,
+            &super::DesktopCatalogIndex::default()
+        )
+        .is_err()
     );
     invalid = limit_state.clone();
     invalid.limits[0].window_end_local_date = "2026-07-11".into();
     assert!(
-        super::configured_close_authorization(&config, None, Some(&invalid), &identity).is_err()
+        super::configured_close_authorization(
+            &config,
+            None,
+            Some(&invalid),
+            &identity,
+            &super::DesktopCatalogIndex::default()
+        )
+        .is_err()
     );
     limit_state.limits[0].exhausted = false;
     assert!(
-        super::configured_close_authorization(&config, None, Some(&limit_state), &identity)
-            .is_err()
+        super::configured_close_authorization(
+            &config,
+            None,
+            Some(&limit_state),
+            &identity,
+            &super::DesktopCatalogIndex::default()
+        )
+        .is_err()
     );
+}
+
+fn focus_rule_config(name: &str, match_names: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "distractions": {
+            "desktop": {
+                "enabled": true,
+                "blockDuringFocus": true,
+                "blockedApps": [{ "name": name, "enabled": true, "matchNames": match_names }]
+            }
+        }
+    })
+}
+
+#[test]
+fn desktop_rule_closes_only_names_its_own_name_or_the_app_catalog_vouches_for() {
+    let config = focus_rule_config("Firefox", serde_json::json!(["firefox-bin", "obsidian"]));
+    let identity = super::DistractionsDesktopRuleIdentity::DesktopApp {
+        rule_id: "Firefox".to_string(),
+    };
+    let catalog =
+        super::DesktopCatalogIndex::from_candidates(vec![super::DistractionsDesktopAppCandidate {
+            name: "Firefox".to_string(),
+            source: "Installed app".to_string(),
+            detail: None,
+            process_names: vec!["firefox".to_string(), "firefox-bin".to_string()],
+        }]);
+    let authorization = super::configured_close_authorization(
+        &config,
+        Some(&state("focus")),
+        None,
+        &identity,
+        &catalog,
+    )
+    .unwrap();
+    assert!(super::validate_names_authorized(vec!["firefox".to_string()], &authorization).is_ok());
+    assert!(
+        super::validate_names_authorized(vec!["firefox-bin".to_string()], &authorization).is_ok()
+    );
+    assert!(
+        super::validate_names_authorized(vec!["obsidian".to_string()], &authorization).is_err()
+    );
+
+    let without_catalog = super::configured_close_authorization(
+        &config,
+        Some(&state("focus")),
+        None,
+        &identity,
+        &super::DesktopCatalogIndex::default(),
+    )
+    .unwrap();
+    assert_eq!(without_catalog.match_names(), ["Firefox"]);
+}
+
+#[test]
+fn desktop_rule_naming_only_a_session_service_is_not_closeable() {
+    for name in ["pipewire", "ssh-agent", "tmux"] {
+        let config = focus_rule_config(name, serde_json::json!([name]));
+        let identity = super::DistractionsDesktopRuleIdentity::DesktopApp {
+            rule_id: name.to_string(),
+        };
+        assert!(
+            super::configured_close_authorization(
+                &config,
+                Some(&state("focus")),
+                None,
+                &identity,
+                &super::DesktopCatalogIndex::default(),
+            )
+            .is_err(),
+            "{name}"
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn close_request_rejects_protected_executables_and_truncated_comm_names() {
+    let mut renamed = valid_observed_process();
+    renamed.executable_name = Some("tmux".to_string());
+    assert!(super::validate_observed_close_process(&valid_close_request(), &renamed).is_err());
+
+    let mut truncated = valid_observed_process();
+    truncated.match_names.push("gnome-terminal-".to_string());
+    assert!(super::validate_observed_close_process(&valid_close_request(), &truncated).is_err());
+
+    assert!(
+        super::validate_observed_close_process(&valid_close_request(), &valid_observed_process())
+            .is_ok()
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn executable_names_ignore_the_deleted_marker() {
+    assert_eq!(
+        super::processes::linux_executable_name("/usr/bin/tmux (deleted)").as_deref(),
+        Some("tmux")
+    );
+    assert_eq!(super::processes::linux_executable_name(""), None);
 }

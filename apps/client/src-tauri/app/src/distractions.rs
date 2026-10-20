@@ -78,8 +78,9 @@ use rules::desktop_rule_matchers;
 use rules::{
     app_name_key, foreground_expectation_matches, foreground_status_from_parts,
     foreground_status_match_names, is_protected_desktop_app_candidate,
-    is_protected_desktop_app_name, normalize_app_candidate_name, normalize_process_match_name,
-    normalize_process_match_names, unavailable_foreground_desktop_app_status,
+    is_protected_desktop_app_name, is_protected_observed_process_name,
+    normalize_app_candidate_name, normalize_process_match_name, normalize_process_match_names,
+    trusted_process_match_names, unavailable_foreground_desktop_app_status,
     validate_foreground_status_is_closeable,
 };
 #[cfg(desktop)]
@@ -104,6 +105,9 @@ use catalog::process_name_from_exec;
 
 #[cfg(all(desktop, test))]
 use authorization::{configured_close_authorization, read_bounded_authorization_config};
+
+#[cfg(all(desktop, test))]
+use catalog::DesktopCatalogIndex;
 
 #[cfg(all(desktop, test, target_os = "linux"))]
 use process_control::{

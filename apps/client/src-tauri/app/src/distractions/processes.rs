@@ -63,7 +63,20 @@ pub(super) fn observe_linux_process(
         process_name,
         match_names,
         process_identity,
+        executable_name: linux_executable_name(&executable),
     })
+}
+
+/// Linux appends this marker to `/proc/<pid>/exe` when the executable was replaced or removed.
+#[cfg(target_os = "linux")]
+const DELETED_EXECUTABLE_SUFFIX: &str = " (deleted)";
+
+#[cfg(target_os = "linux")]
+pub(super) fn linux_executable_name(executable: &str) -> Option<String> {
+    let executable = executable
+        .strip_suffix(DELETED_EXECUTABLE_SUFFIX)
+        .unwrap_or(executable);
+    normalize_process_match_name(executable)
 }
 
 #[cfg(target_os = "linux")]

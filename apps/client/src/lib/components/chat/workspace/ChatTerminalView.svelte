@@ -11,6 +11,7 @@
   import {
     applyTerminalOutput,
     terminalErrorMessage,
+    sanitizeTerminalPaste,
     terminalPasteNeedsConfirmation,
   } from "$lib/chat/workspace/terminal-model";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -214,16 +215,17 @@
     notifyState(snapshot.terminal);
   }
 
+  /** Runs in the capture phase because xterm stops propagation of paste events on its textarea. */
   function handlePaste(event: ClipboardEvent): void {
-    const text = event.clipboardData?.getData("text/plain") ?? "";
-    if (!text || !terminalPasteNeedsConfirmation(
+    event.preventDefault();
+    event.stopPropagation();
+    const { text } = sanitizeTerminalPaste(event.clipboardData?.getData("text/plain") ?? "");
+    if (!text) return;
+    if (terminalPasteNeedsConfirmation(
       text,
       chat.settings?.configuration.behavior.confirmMultilineTerminalPaste ?? true,
-    )) return;
-    event.preventDefault();
-    if (window.confirm(t("chat.inspector.confirmMultilinePaste") + "\n\n" + text)) {
-      xterm?.paste(text);
-    }
+    ) && !window.confirm(t("chat.inspector.confirmMultilinePaste") + "\n\n" + text)) return;
+    xterm?.paste(text);
   }
 
   function terminalMessage(reason: unknown): string {
@@ -247,7 +249,7 @@
 
 <div class="terminal-view" data-terminal-capture>
   {#if error}<Notice class="border-b border-border p-2 text-xs" message={error} />{/if}
-  <div class="terminal-host" bind:this={host} onpaste={handlePaste}></div>
+  <div class="terminal-host" bind:this={host} onpastecapture={handlePaste}></div>
 </div>
 
 <style>

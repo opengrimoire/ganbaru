@@ -359,6 +359,7 @@ impl ChatTerminalRegistry {
                 "Terminal input exceeds the safety limit",
             ));
         }
+        validate_paste_framing(text)?;
         let session = self.session(terminal_id)?;
         if !session.read()?.running {
             return Err(ChatError::new(
@@ -600,6 +601,31 @@ fn spawn_reader(
     Ok(())
 }
 
+const BRACKETED_PASTE_START: &str = "\x1b[200~";
+const BRACKETED_PASTE_END: &str = "\x1b[201~";
+
+/// Rejects input that closes bracketed paste anywhere but at the end of one framed paste. Keys never produce the
+/// paste markers (F9 is `ESC[20~`, modified keys use the `ESC[2;5~` form), and xterm.js sends each paste as one
+/// input call, so a marker elsewhere means pasted text tried to leave bracketed mode and run as typed input.
+fn validate_paste_framing(text: &str) -> ChatResult<()> {
+    if !text.contains(BRACKETED_PASTE_END) && !text.contains(BRACKETED_PASTE_START) {
+        return Ok(());
+    }
+    let framed = text
+        .strip_prefix(BRACKETED_PASTE_START)
+        .and_then(|rest| rest.strip_suffix(BRACKETED_PASTE_END))
+        .is_some_and(|body| {
+            !body.contains(BRACKETED_PASTE_START) && !body.contains(BRACKETED_PASTE_END)
+        });
+    if framed {
+        return Ok(());
+    }
+    Err(ChatError::validation(
+        "input",
+        "Terminal input closes bracketed paste before the paste ends",
+    ))
+}
+
 fn validate_dimensions(columns: u16, rows: u16) -> ChatResult<()> {
     if !(20..=1_000).contains(&columns) || !(2..=500).contains(&rows) {
         return Err(ChatError::validation(
@@ -829,6 +855,13 @@ mod tests {
             .expect("registry should lock")
             .insert("terminal:test".to_string(), session(true));
         assert!(registry.input("terminal:test", "bad\0input").is_err());
+        assert!(registry.input("terminal:test", "pasted\x1b[201~rm -rf ~\r").is_err());
+        assert!(registry.input("terminal:test", "\x1b[200~a\x1b[201~b\x1b[201~").is_err());
+        assert!(registry.input("terminal:test", "\x1b[200~a\x1b[200~b\x1b[201~").is_err());
+        for keys in ["\x1b[20~", "\x1b[21~", "\x1b[2~", "\x1b[2;5~", "\x1b[20;2~"] {
+            assert!(validate_paste_framing(keys).is_ok(), "{keys:?} is a key sequence");
+        }
+        assert!(validate_paste_framing("\x1b[200~echo one\recho two\x1b[201~").is_ok());
     }
 
     #[test]

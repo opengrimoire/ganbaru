@@ -26,6 +26,23 @@ export function applyTerminalOutput(
   };
 }
 
+/** C0 controls except tab, line feed, and carriage return, plus DEL and the C1 range (8-bit CSI included). */
+const TERMINAL_PASTE_CONTROLS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g;
+
+/**
+ * Removes escape and control characters from clipboard text before it reaches the shell.
+ *
+ * Removing ESC itself, rather than matching a bracketed-paste end sequence, means no removal can
+ * form a new escape sequence from the remaining text.
+ *
+ * @param text - Clipboard text.
+ * @returns The text to paste and whether any character was removed.
+ */
+export function sanitizeTerminalPaste(text: string): { text: string; removedControls: boolean } {
+  const clean = text.replace(TERMINAL_PASTE_CONTROLS, "");
+  return { text: clean, removedControls: clean.length !== text.length };
+}
+
 export function terminalPasteNeedsConfirmation(text: string, confirmationEnabled: boolean): boolean {
   return confirmationEnabled && /[\r\n]/.test(text);
 }

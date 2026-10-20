@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyTerminalOutput,
   boundTerminalContext,
+  sanitizeTerminalPaste,
   TerminalPanelRegistry,
   terminalErrorMessage,
   terminalPasteNeedsConfirmation,
@@ -33,6 +34,19 @@ describe("Chat terminal model", () => {
     expect(terminalPasteNeedsConfirmation("pnpm test", true)).toBe(false);
     expect(terminalPasteNeedsConfirmation("pnpm test\npnpm check", true)).toBe(true);
     expect(terminalPasteNeedsConfirmation("pnpm test\npnpm check", false)).toBe(false);
+  });
+
+  it("removes escape and control characters from pasted text", () => {
+    expect(sanitizeTerminalPaste("echo safe\x1b[201~rm -rf ~\n")).toEqual({
+      text: "echo safe[201~rm -rf ~\n",
+      removedControls: true,
+    });
+    expect(sanitizeTerminalPaste("a\x1b[20\x1b[201~1~b").text).not.toContain("\x1b");
+    expect(sanitizeTerminalPaste("a\u009b201~b\u0007\u007f").text).toBe("a201~b");
+    expect(sanitizeTerminalPaste("col\tone\r\nnext é")).toEqual({
+      text: "col\tone\r\nnext é",
+      removedControls: false,
+    });
   });
 
   it("bounds UTF-8 context without splitting a code point", () => {

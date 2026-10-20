@@ -176,6 +176,13 @@ private data class PendingDocumentCopy(
 )
 
 internal object DocumentTextCodec {
+  /**
+   * Whether a picker result names content served by another app. File paths and this app's own
+   * providers are refused, so a picker cannot make the app read its private storage.
+   */
+  fun isAcceptedPickerResult(scheme: String?, authority: String?, providerPackage: String?, ownPackage: String): Boolean =
+    scheme == "content" && !authority.isNullOrEmpty() && providerPackage != ownPackage
+
   fun hasAllowedExtension(fileName: String, acceptedExtensions: List<String>): Boolean {
     val extension = fileName.substringAfterLast('.', missingDelimiterValue = "").lowercase()
     return extension.isNotEmpty() && acceptedExtensions.any { allowed ->
@@ -471,6 +478,7 @@ class MobileDocumentsPlugin(private val activity: Activity) : Plugin(activity) {
 
     Thread {
       try {
+        requireForeignPickerResult(uri)
         val displayName = resolveOpenableDisplayName(uri)
           ?: throw IllegalArgumentException("The selected document has no file name")
         require(DocumentTextCodec.hasAllowedExtension(displayName, acceptedExtensions)) {
@@ -539,6 +547,7 @@ class MobileDocumentsPlugin(private val activity: Activity) : Plugin(activity) {
 
     Thread {
       try {
+        requireForeignPickerResult(uri)
         val displayName = resolveOpenableDisplayName(uri)
           ?: throw IllegalArgumentException("The selected document has no file name")
         require(DocumentTextCodec.hasAllowedExtension(displayName, pending.acceptedExtensions)) {
@@ -695,6 +704,16 @@ class MobileDocumentsPlugin(private val activity: Activity) : Plugin(activity) {
     return activity.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
       if (!cursor.moveToFirst()) return@use null
       cursor.getString(0)
+    }
+  }
+
+  @Suppress("DEPRECATION")
+  private fun requireForeignPickerResult(uri: Uri) {
+    val providerPackage = uri.authority?.let { authority ->
+      activity.packageManager.resolveContentProvider(authority, 0)?.packageName
+    }
+    require(DocumentTextCodec.isAcceptedPickerResult(uri.scheme, uri.authority, providerPackage, activity.packageName)) {
+      "The selected document is unavailable"
     }
   }
 

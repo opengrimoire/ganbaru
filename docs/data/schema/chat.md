@@ -83,7 +83,7 @@ Each model preview tool call in a direct session has an app-owned audit row keye
 
 ## Coordination and command receipts
 
-Scheduling, follow-ups, interaction responses, handoffs, and other coordination commands have stable request or receipt identity where retry can occur. Replaying the same accepted command cannot duplicate a message, assignment, or provider action.
+Scheduling, follow-ups, interaction responses, handoffs, and other coordination commands have stable request or receipt identity where retry can occur. Replaying the same accepted command cannot duplicate a message, assignment, or provider action. A queued follow-up keeps its thread for life: saving it again replaces only that thread's still queued follow-up, and a sent or cancelled one is never revived.
 
 Canonical organization state commits before process notifications. If process delivery fails, the retry state identifies the intended command without inventing another organizational event.
 

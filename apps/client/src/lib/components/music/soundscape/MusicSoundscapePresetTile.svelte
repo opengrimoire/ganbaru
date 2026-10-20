@@ -24,7 +24,7 @@
   const playing = $derived(selected && soundscape.snapshot.status === "playing");
   const playable = $derived(soundscape.presetIsPlayable(preset));
   const names = $derived(presetSoundNames(preset.soundscapeIds, soundscape.definitions, soundName));
-  const detail = $derived(playable && names.length > 0 ? formatList(localization.locale, names) : t("music.soundscape.needsRepair"));
+  const tooltip = $derived(playable && names.length > 0 ? t("music.soundscape.preset.includes", formatList(localization.locale, names)) : t("music.soundscape.needsRepair"));
 
   onMount(() => {
     const close = (event: PointerEvent) => { if (menuOpen && root && !root.contains(event.target as Node)) menuOpen = false; };
@@ -54,10 +54,9 @@
 </script>
 
 <div bind:this={root} class="relative min-w-0">
-  <button type="button" aria-pressed={selected} aria-label={playing ? t("music.soundscape.pause") : t("music.soundscape.play", preset.name)} title={playable ? t("music.soundscape.preset.includes", detail) : undefined} disabled={!playable || soundscape.saving} class={selected ? "flex min-h-28 w-full min-w-0 flex-col items-center justify-center gap-2 rounded-xl bg-primary/10 px-3 text-center hover:bg-primary/15 disabled:opacity-50" : "flex min-h-28 w-full min-w-0 flex-col items-center justify-center gap-2 rounded-xl bg-secondary/40 px-3 text-center hover:bg-secondary/70 disabled:opacity-50"} onclick={choose}>
+  <button type="button" aria-pressed={selected} aria-label={playing ? t("music.soundscape.pause") : t("music.soundscape.play", preset.name)} title={tooltip} disabled={!playable || soundscape.saving} class={selected ? "flex min-h-28 w-full min-w-0 flex-col items-center justify-center gap-2 rounded-xl bg-primary/10 px-3 text-center hover:bg-primary/15 disabled:opacity-50" : "flex min-h-28 w-full min-w-0 flex-col items-center justify-center gap-2 rounded-xl bg-secondary/40 px-3 text-center hover:bg-secondary/70 disabled:opacity-50"} onclick={choose}>
     <MusicSoundscapeGroupIcon icon={preset.icon} size={27} />
     <span class="max-w-full truncate text-xs font-medium">{preset.name}</span>
-    <span class="max-w-full truncate text-[0.68rem] text-muted-foreground">{detail}</span>
   </button>
   <button type="button" aria-label={t("music.soundscape.preset.actions", preset.name)} aria-expanded={menuOpen} class="absolute top-1 right-1 z-10 grid h-7 w-7 place-items-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground" onclick={() => menuOpen = !menuOpen}><Ellipsis size={16} /></button>
   {#if menuOpen}

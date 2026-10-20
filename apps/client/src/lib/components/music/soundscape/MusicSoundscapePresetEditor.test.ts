@@ -79,15 +79,15 @@ async function render(preset: MusicSoundscapePreset | null = null) {
 }
 
 function nameField(): HTMLInputElement {
-  return target.querySelector<HTMLInputElement>('input[aria-label="Preset name"]')!;
+  return document.body.querySelector<HTMLInputElement>('input[aria-label="Preset name"]')!;
 }
 
 function soundTile(name: string): HTMLButtonElement {
-  return [...target.querySelectorAll<HTMLButtonElement>("button[aria-pressed]")].find((button) => button.textContent?.includes(name))!;
+  return [...document.body.querySelectorAll<HTMLButtonElement>("button[aria-pressed]")].find((button) => button.textContent?.includes(name))!;
 }
 
 function saveButton(): HTMLButtonElement {
-  return target.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+  return document.body.querySelector<HTMLButtonElement>('button[data-preset-save]')!;
 }
 
 function lastPreview(): readonly string[] | undefined {
@@ -97,7 +97,7 @@ function lastPreview(): readonly string[] | undefined {
 describe("Background sound preset editor", () => {
   it("starts a new preset empty instead of copying what is playing", async () => {
     await render();
-    expect([...target.querySelectorAll('button[aria-pressed="true"]')]).toHaveLength(0);
+    expect([...document.body.querySelectorAll('button[aria-pressed="true"]')]).toHaveLength(0);
     expect(lastPreview()).toEqual([]);
   });
 
@@ -132,13 +132,13 @@ describe("Background sound preset editor", () => {
 
   it("groups sounds the way the builder does", async () => {
     await render();
-    const headings = [...target.querySelectorAll("h4")].map((heading) => heading.textContent);
+    const headings = [...document.body.querySelectorAll("h4")].map((heading) => heading.textContent);
     expect(headings).toEqual(["Outside", "Other sounds"]);
   });
 
   it("silences the preview when listening is turned off and keeps the draft", async () => {
     await render(evening);
-    target.querySelector<HTMLButtonElement>('button[role="switch"]')!.click();
+    document.body.querySelector<HTMLButtonElement>('button[role="switch"]')!.click();
     await tick();
     expect(lastPreview()).toEqual([]);
     soundTile("Fireplace").click();
@@ -170,10 +170,10 @@ describe("Background sound preset editor", () => {
   it("explains the sound limit only once it is reached", async () => {
     definitions = Array.from({ length: 17 }, (_, index) => sound(`sound-${index}`, `Sound ${index}`));
     await render({ ...evening, soundscapeIds: definitions.slice(0, 15).map((entry) => entry.id) });
-    expect(target.querySelector('[role="status"]')).toBeNull();
+    expect(document.body.querySelector('[role="status"]')).toBeNull();
     soundTile("Sound 15").click();
     await tick();
-    expect(target.querySelector('[role="status"]')?.textContent).toContain("up to 16 sounds");
+    expect(document.body.querySelector('[role="status"]')?.textContent).toContain("up to 16 sounds");
     expect(soundTile("Sound 16").disabled).toBe(true);
   });
 

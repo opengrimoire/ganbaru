@@ -12,7 +12,7 @@ Release credentials belong in the protected `release` GitHub environment. They m
 | `ANDROID_KEYSTORE_PASSWORD` | Android keystore password |
 | `ANDROID_KEY_ALIAS` | Release key alias |
 | `ANDROID_KEY_PASSWORD` | Release key password |
-| `GANBARU_PACKAGE_REPO_GPG_PRIVATE_KEY` | ASCII-armored key that signs apt and RPM metadata, the package pool manifest, and release `SHA256SUMS` |
+| `GANBARU_PACKAGE_REPO_GPG_PRIVATE_KEY` | ASCII-armored key that signs RPM packages, apt and RPM metadata, the package pool manifest, and release `SHA256SUMS` |
 | `GANBARU_PACKAGE_REPO_GPG_PASSPHRASE` | Package repository key passphrase |
 | `AUR_SSH_PRIVATE_KEY` | Dedicated AUR publishing key |
 

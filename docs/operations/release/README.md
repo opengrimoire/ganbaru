@@ -80,4 +80,6 @@ Use concise pull request titles because they become release entries. Labels cont
 
 Publishing triggers the package repository and AUR jobs. The signed draft artifacts exist before publication, but apt, RPM, and AUR channels must not update from an unpublished draft.
 
+The `package repo refresh` workflow asks for `release` environment approval on the first day of each month. Approve it so the apt `Release` signature stays within its `Valid-Until` window. Without a release or an approved refresh for 90 days, apt reports the repository as expired.
+
 Distribution details and recovery boundaries are in [Distribution](distribution.md).

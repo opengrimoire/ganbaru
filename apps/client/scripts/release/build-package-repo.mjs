@@ -40,6 +40,14 @@ const RPM_METADATA = path.join(RPM_ROOT, "repodata");
 /** Signed list of every package file the repository publishes, relative to `packages/`. */
 const POOL_MANIFEST = path.join(PACKAGES_DIR, "pool-SHA256SUMS");
 const POOL_SIGNATURE = `${POOL_MANIFEST}.asc`;
+/**
+ * Days apt accepts a signed `Release` before treating the repository as frozen. The refresh
+ * workflow re-signs it monthly, so two missed refreshes still leave clients a valid `Release`.
+ */
+export const APT_RELEASE_VALID_DAYS = 90;
+const SECONDS_PER_DAY = 24 * 60 * 60;
+/** Command line flag that re-signs the existing apt metadata without adding a release. */
+const REFRESH_FLAG = "--refresh";
 
 /**
  * Reads a required environment variable without exposing its value.
@@ -211,35 +219,42 @@ function writePoolManifest() {
 }
 
 /**
- * Regenerates and signs apt repository metadata.
+ * Builds the `apt-ftparchive` configuration for the signed `Release` file. `ValidTime` makes it
+ * emit `Valid-Until`, which apt enforces so a replayed old `Release` stops being accepted.
  *
- * @param {string} debAsset Release `.deb` path.
+ * @param {number} validDays Days the signed `Release` stays valid.
+ * @returns {string} Configuration text.
  */
-function buildAptRepo(debAsset) {
-  const poolDir = path.join(APT_POOL, "main", "g", "ganbaru");
+export function aptReleaseConfig(validDays) {
+  if (!Number.isInteger(validDays) || validDays <= 0) {
+    throw new Error("The apt Release validity must be a positive number of days");
+  }
+  return [
+    'APT::FTPArchive::Release::Origin "Ganbaru";',
+    'APT::FTPArchive::Release::Label "Ganbaru";',
+    'APT::FTPArchive::Release::Suite "stable";',
+    'APT::FTPArchive::Release::Codename "stable";',
+    'APT::FTPArchive::Release::Architectures "amd64";',
+    'APT::FTPArchive::Release::Components "main";',
+    `APT::FTPArchive::Release::ValidTime "${validDays * SECONDS_PER_DAY}";`,
+    "",
+  ].join("\n");
+}
+
+/**
+ * Regenerates and signs apt repository metadata from the pool.
+ */
+function buildAptRepo() {
   const binaryDir = path.join(APT_ROOT, "dists", "stable", "main", "binary-amd64");
   // Release hashes every file under dists/stable, so the tree is rebuilt from the pool alone.
   rmSync(path.join(APT_ROOT, "dists"), { recursive: true, force: true });
   mkdirSync(binaryDir, { recursive: true });
-  copyPackage(debAsset, poolDir);
 
   const packages = commandOutput("dpkg-scanpackages", ["--arch", "amd64", "pool"], APT_ROOT);
   writeFileSync(path.join(binaryDir, "Packages"), packages, "utf8");
   run("gzip", ["-kf", "Packages"], binaryDir);
 
-  writeFileSync(
-    APT_RELEASE_CONFIG,
-    [
-      'APT::FTPArchive::Release::Origin "Ganbaru";',
-      'APT::FTPArchive::Release::Label "Ganbaru";',
-      'APT::FTPArchive::Release::Suite "stable";',
-      'APT::FTPArchive::Release::Codename "stable";',
-      'APT::FTPArchive::Release::Architectures "amd64";',
-      'APT::FTPArchive::Release::Components "main";',
-      "",
-    ].join("\n"),
-    "utf8",
-  );
+  writeFileSync(APT_RELEASE_CONFIG, aptReleaseConfig(APT_RELEASE_VALID_DAYS), "utf8");
 
   const releasePath = path.join(APT_ROOT, "dists", "stable", "Release");
   const release = commandOutput(
@@ -271,22 +286,54 @@ function buildRpmRepo(rpmAsset) {
   gpgSign(["--detach-sign", "--armor", "-o", `${metadataPath}.asc`, metadataPath]);
 }
 
-const debAssets = releaseAssets(".deb");
-const rpmAssets = releaseAssets(".rpm");
-if (debAssets.length !== 1) {
-  throw new Error(`Expected one .deb release asset, found ${debAssets.length}`);
+/** Adds the release packages to the pool and regenerates and signs all repository metadata. */
+function publishRelease() {
+  const debAssets = releaseAssets(".deb");
+  const rpmAssets = releaseAssets(".rpm");
+  if (debAssets.length !== 1) {
+    throw new Error(`Expected one .deb release asset, found ${debAssets.length}`);
+  }
+  if (rpmAssets.length !== 1) {
+    throw new Error(`Expected one .rpm release asset, found ${rpmAssets.length}`);
+  }
+
+  mkdirSync(PACKAGES_DIR, { recursive: true });
+  writeFileSync(path.join(PAGES_DIR, ".nojekyll"), "", "utf8");
+  writeFileSync(PUBLIC_KEY_FILE, packageRepoPublicKey(), "utf8");
+
+  pruneUnverifiedPool();
+  copyPackage(debAssets[0], path.join(APT_POOL, "main", "g", "ganbaru"));
+  buildAptRepo();
+  buildRpmRepo(rpmAssets[0]);
+  writePoolManifest();
+
+  console.log(`Package repository updated in ${path.relative(REPO_ROOT, PACKAGES_DIR)}`);
 }
-if (rpmAssets.length !== 1) {
-  throw new Error(`Expected one .rpm release asset, found ${rpmAssets.length}`);
+
+/**
+ * Re-signs the apt metadata of the published pool so its `Valid-Until` moves forward between
+ * releases. Any pool file the signed manifest does not vouch for stops the refresh, because
+ * pruning it would leave the RPM metadata pointing at a missing file.
+ */
+function refreshAptMetadata() {
+  const manifest = verifiedPoolManifest();
+  if (!manifest.size) {
+    throw new Error("No signed pool manifest exists; publish a release before refreshing");
+  }
+  const { drop } = planManifestPrune(manifest, poolFiles());
+  if (drop.length) {
+    throw new Error(`Pool files are not in the signed manifest; inspect the gh-pages branch:\n  ${drop.join("\n  ")}`);
+  }
+  buildAptRepo();
+  console.log(`Package repository apt metadata refreshed in ${path.relative(REPO_ROOT, PACKAGES_DIR)}`);
 }
 
-mkdirSync(PACKAGES_DIR, { recursive: true });
-writeFileSync(path.join(PAGES_DIR, ".nojekyll"), "", "utf8");
-writeFileSync(PUBLIC_KEY_FILE, packageRepoPublicKey(), "utf8");
-
-pruneUnverifiedPool();
-buildAptRepo(debAssets[0]);
-buildRpmRepo(rpmAssets[0]);
-writePoolManifest();
-
-console.log(`Package repository updated in ${path.relative(REPO_ROOT, PACKAGES_DIR)}`);
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const args = process.argv.slice(2);
+  if (args.length > 1 || (args.length === 1 && args[0] !== REFRESH_FLAG)) {
+    console.error(`Usage: node build-package-repo.mjs [${REFRESH_FLAG}]`);
+    process.exit(2);
+  }
+  if (args[0] === REFRESH_FLAG) refreshAptMetadata();
+  else publishRelease();
+}

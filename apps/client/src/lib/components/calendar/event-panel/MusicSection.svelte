@@ -22,6 +22,7 @@
   import type { MusicActivityPhase, MusicContextAssignmentDraft } from "$lib/music/context-assignment";
   import { systemMusicPlaylistName } from "$lib/music/playlists/system";
   import type { MusicSoundChoice } from "$lib/music/sound-choice";
+  import { presetDisplayName } from "$lib/music/soundscape/presets";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import { getSoundscapeStore } from "$lib/stores/soundscape.svelte";
 
@@ -90,15 +91,11 @@
     if (showSounds) void soundscape.ensureCatalog();
   });
 
-  /** Name of the sound or preset a phase plays, for the collapsed summary. */
+  /** Name of the preset a phase plays, for the collapsed summary. */
   function soundName(choice: MusicSoundChoice): string {
-    if (choice.kind === "preset") {
-      return soundscape.presets.find((preset) => preset.id === choice.presetId)?.name ?? t("music.soundscape.choice.missing");
-    }
-    if (choice.kind !== "sound") return "";
-    const definition = soundscape.definitions.find((entry) => entry.id === choice.soundscapeId);
-    if (!definition) return t("music.soundscape.choice.missing");
-    return definition.generatedKind ? t(`music.soundscape.rainName.${definition.generatedKind}`) : definition.name;
+    if (choice.kind !== "preset") return "";
+    const preset = soundscape.presets.find((entry) => entry.id === choice.presetId);
+    return preset ? presetDisplayName(preset, t) : t("music.soundscape.choice.missing");
   }
 
   /** Silence the event, or bring back the project music and sounds when the event plays nothing. */

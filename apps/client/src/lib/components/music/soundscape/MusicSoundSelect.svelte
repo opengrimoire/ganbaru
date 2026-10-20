@@ -7,8 +7,7 @@
   import Search from "@lucide/svelte/icons/search";
   import VolumeX from "@lucide/svelte/icons/volume-x";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import type { MusicSoundscapeDefinition } from "$lib/music/soundscape/contracts";
-  import { orderedGeneratedSounds } from "$lib/music/soundscape/presentation";
+  import { presetDisplayName } from "$lib/music/soundscape/presets";
   import { soundChoicesEqual, type MusicSoundChoice } from "$lib/music/sound-choice";
   import { OPENING_MAY_FOCUS_TEXT } from "$lib/mobile/keyboard";
   import { getSoundscapeStore } from "$lib/stores/soundscape.svelte";
@@ -19,7 +18,6 @@
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import { pickSelectPopoverGeometry, type SelectPopoverGeometry } from "$lib/utils/select-popover-position";
   import MusicSoundscapeGroupIcon from "./MusicSoundscapeGroupIcon.svelte";
-  import MusicSoundscapeSoundIcon from "./MusicSoundscapeSoundIcon.svelte";
 
   let {
     value,
@@ -54,33 +52,10 @@
   onMount(() => { void soundscape.ensureCatalog(); });
 
   const loading = $derived(soundscape.loading && soundscape.definitions.length === 0);
-  const selectedSound = $derived(value.kind === "sound" ? soundscape.definitions.find((entry) => entry.id === value.soundscapeId) ?? null : null);
   const selectedPreset = $derived(value.kind === "preset" ? soundscape.presets.find((entry) => entry.id === value.presetId) ?? null : null);
-  const missing = $derived(!loading && (
-    (value.kind === "sound" && selectedSound?.availability !== "available")
-    || (value.kind === "preset" && (!selectedPreset || !soundscape.presetIsPlayable(selectedPreset)))
-  ));
+  const missing = $derived(!loading && value.kind === "preset" && (!selectedPreset || !soundscape.presetIsPlayable(selectedPreset)));
   const query = $derived(search.trim().toLocaleLowerCase());
-  const presets = $derived(soundscape.presets.filter((preset) => matches(preset.name)));
-  const generated = $derived(orderedGeneratedSounds(soundscape.definitions).filter((entry) => matches(soundName(entry))));
-  const local = $derived(soundscape.definitions.filter((entry) => entry.sourceKind !== "generated-noise" && matches(entry.name)));
-  const localSections = $derived.by(() => {
-    const grouped = soundscape.groups
-      .map((group) => ({ key: group.id, group, sounds: local.filter((entry) => entry.groupId === group.id) }))
-      .filter((section) => section.sounds.length > 0);
-    const ungrouped = local.filter((entry) => !entry.groupId || !soundscape.groups.some((group) => group.id === entry.groupId));
-    return ungrouped.length > 0 ? [...grouped, { key: "ungrouped", group: null, sounds: ungrouped }] : grouped;
-  });
-  const hasMatches = $derived(presets.length > 0 || generated.length > 0 || local.length > 0);
-
-  /** Display name of a sound; generated sounds use their localized rain names. */
-  function soundName(definition: MusicSoundscapeDefinition): string {
-    return definition.generatedKind ? t(`music.soundscape.rainName.${definition.generatedKind}`) : definition.name;
-  }
-
-  function soundChoice(soundscapeId: string): MusicSoundChoice {
-    return { kind: "sound", soundscapeId };
-  }
+  const presets = $derived(soundscape.presets.filter((preset) => matches(presetDisplayName(preset, t))));
 
   function presetChoice(presetId: string): MusicSoundChoice {
     return { kind: "preset", presetId };
@@ -195,17 +170,6 @@
   });
 </script>
 
-{#snippet soundOption(definition: MusicSoundscapeDefinition)}
-  {@const choice = soundChoice(definition.id)}
-  {@const selected = soundChoicesEqual(choice, value)}
-  <button type="button" role="option" aria-selected={selected} disabled={definition.availability !== "available" && !selected} onclick={() => choose(choice)} class="menu-item">
-    <span class="grid size-4 shrink-0 place-items-center"><MusicSoundscapeSoundIcon {definition} size={15} /></span>
-    <span class="min-w-0 flex-1 truncate font-medium">{soundName(definition)}</span>
-    {#if selected}<Check size={14} />{/if}
-    {#if definition.availability !== "available"}<span class="shrink-0 text-panel-detail text-muted-foreground">{t("music.soundscape.needsRepair")}</span>{/if}
-  </button>
-{/snippet}
-
 <div class={cn("min-w-0", className)}>
   <button
     bind:this={trigger}
@@ -230,14 +194,12 @@
   >
     {#if missing}<AlertTriangle size={14} class="shrink-0 text-warning" />
     {:else if selectedPreset}<span class="grid size-3.5 shrink-0 place-items-center text-muted-foreground"><MusicSoundscapeGroupIcon icon={selectedPreset.icon} size={14} /></span>
-    {:else if selectedSound}<span class="grid size-3.5 shrink-0 place-items-center text-muted-foreground"><MusicSoundscapeSoundIcon definition={selectedSound} size={14} /></span>
     {:else if value.kind === "silence"}<VolumeX size={14} strokeWidth={1.5} class="shrink-0 text-muted-foreground" />
     {:else}<Minus size={14} strokeWidth={1.5} class="shrink-0 text-muted-foreground" />{/if}
     <span class="min-w-0 flex-1 truncate">
       {#if loading}<Loading layout="inline" label={t("music.soundscape.title")} />
       {:else if missing}{t("music.soundscape.choice.missing")}
-      {:else if selectedPreset}{selectedPreset.name}
-      {:else if selectedSound}{soundName(selectedSound)}
+      {:else if selectedPreset}{presetDisplayName(selectedPreset, t)}
       {:else if value.kind === "silence"}{t("music.soundscape.choice.silence")}
       {:else}{t("music.soundscape.choice.keep")}{/if}
     </span>
@@ -286,26 +248,15 @@
             {@const playable = soundscape.presetIsPlayable(preset)}
             <button type="button" role="option" aria-selected={selected} disabled={!playable && !selected} onclick={() => choose(choice)} class="menu-item">
               <span class="grid size-4 shrink-0 place-items-center"><MusicSoundscapeGroupIcon icon={preset.icon} size={15} /></span>
-              <span class="min-w-0 flex-1 truncate font-medium">{preset.name}</span>
+              <span class="min-w-0 flex-1 truncate font-medium">{presetDisplayName(preset, t)}</span>
               {#if selected}<Check size={14} />{/if}
               <span class="shrink-0 text-panel-detail text-muted-foreground">{playable ? t("music.soundscape.choice.presetCount", preset.sounds.length) : t("music.soundscape.needsRepair")}</span>
             </button>
           {/each}
-        {/if}
-        {#if generated.length > 0}
-          <p class="px-3 pt-2 pb-1 text-panel-detail text-muted-foreground">{t("music.soundscape.generated")}</p>
-          {#each generated as definition (definition.id)}{@render soundOption(definition)}{/each}
-        {/if}
-        {#each localSections as section (section.key)}
-          <p class="flex items-center gap-1.5 px-3 pt-2 pb-1 text-panel-detail text-muted-foreground">
-            {#if section.group}<MusicSoundscapeGroupIcon icon={section.group.icon} size={12} />{section.group.name}
-            {:else if localSections.length > 1}{t("music.soundscape.ungrouped")}
-            {:else}{t("music.soundscape.localLoops")}{/if}
-          </p>
-          {#each section.sounds as definition (definition.id)}{@render soundOption(definition)}{/each}
-        {/each}
-        {#if query && !hasMatches}
+        {:else if query}
           <p class="px-3 py-6 text-center text-muted-foreground">{t("music.soundscape.choice.noMatches")}</p>
+        {:else}
+          <p class="px-3 py-3 text-panel-detail text-muted-foreground">{t("music.soundscape.choice.noPresets")}</p>
         {/if}
       </div>
     </div>

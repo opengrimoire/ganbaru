@@ -98,8 +98,8 @@ export function chooseEventPlaylist(
 
 /**
  * Applies a soundscape choice for one phase without touching its music. A choice equal to
- * the project snapshot clears the sound override; "Don't change" over a project sound is stored as
- * keeping the current sound so the project sound does not apply.
+ * the project snapshot clears the soundscape override; "Don't change" over a project preset is stored
+ * as keeping the current soundscape so the project preset does not apply.
  *
  * @param overrides - Event override drafts.
  * @param snapshots - Project intent copied onto the event.
@@ -124,7 +124,7 @@ export function chooseEventSound(
 
 /** Whether a soundscape choice starts sound when its phase begins. */
 export function eventSoundPlays(choice: MusicSoundChoice): boolean {
-  return choice.kind === "sound" || choice.kind === "preset";
+  return choice.kind === "preset";
 }
 
 /**

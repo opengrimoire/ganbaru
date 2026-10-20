@@ -6,7 +6,6 @@ describe("soundscape choices", () => {
     const choices: MusicSoundChoice[] = [
       { kind: "keep" },
       { kind: "silence" },
-      { kind: "sound", soundscapeId: "rain" },
       { kind: "preset", presetId: "evening" },
     ];
     for (const choice of choices) {
@@ -14,10 +13,9 @@ describe("soundscape choices", () => {
     }
   });
 
-  it("names exactly one reference only when a sound plays", () => {
-    expect(soundChoiceFields({ kind: "preset", presetId: "evening" })).toEqual({ soundscapeBehavior: "play-selected", soundscapeId: null, soundscapePresetId: "evening" });
-    expect(soundChoiceFields({ kind: "sound", soundscapeId: "rain" })).toEqual({ soundscapeBehavior: "play-selected", soundscapeId: "rain", soundscapePresetId: null });
-    expect(soundChoiceFields({ kind: "silence" })).toEqual({ soundscapeBehavior: "pause-soundscape", soundscapeId: null, soundscapePresetId: null });
+  it("names a preset only when the soundscape plays", () => {
+    expect(soundChoiceFields({ kind: "preset", presetId: "evening" })).toEqual({ soundscapeBehavior: "play-selected", soundscapePresetId: "evening" });
+    expect(soundChoiceFields({ kind: "silence" })).toEqual({ soundscapeBehavior: "pause-soundscape", soundscapePresetId: null });
   });
 
   it("uses the requested keep behavior so an override can mask a lower layer", () => {
@@ -26,12 +24,17 @@ describe("soundscape choices", () => {
   });
 
   it("reads keep current and incomplete play rows as no change", () => {
-    expect(soundChoiceFromAssignment({ soundscapeBehavior: "keep-current-soundscape", soundscapeId: null, soundscapePresetId: null })).toEqual({ kind: "keep" });
-    expect(soundChoiceFromAssignment({ soundscapeBehavior: "play-selected", soundscapeId: null, soundscapePresetId: null })).toEqual({ kind: "keep" });
+    expect(soundChoiceFromAssignment({ soundscapeBehavior: "keep-current-soundscape", soundscapePresetId: null })).toEqual({ kind: "keep" });
+    expect(soundChoiceFromAssignment({ soundscapeBehavior: "play-selected", soundscapePresetId: null })).toEqual({ kind: "keep" });
   });
 
-  it("distinguishes sounds and presets that share an identifier", () => {
-    expect(soundChoicesEqual({ kind: "sound", soundscapeId: "same" }, { kind: "preset", presetId: "same" })).toBe(false);
-    expect(soundChoicesEqual({ kind: "sound", soundscapeId: "rain" }, { kind: "sound", soundscapeId: "wind" })).toBe(false);
+  it("ignores a stale preset on a row that does not play", () => {
+    expect(soundChoiceFromAssignment({ soundscapeBehavior: "pause-soundscape", soundscapePresetId: "evening" })).toEqual({ kind: "silence" });
+    expect(soundChoiceFromAssignment({ soundscapeBehavior: "inherit", soundscapePresetId: "evening" })).toEqual({ kind: "keep" });
+  });
+
+  it("tells presets apart by identifier", () => {
+    expect(soundChoicesEqual({ kind: "preset", presetId: "rain" }, { kind: "preset", presetId: "wind" })).toBe(false);
+    expect(soundChoicesEqual({ kind: "preset", presetId: "rain" }, { kind: "silence" })).toBe(false);
   });
 });

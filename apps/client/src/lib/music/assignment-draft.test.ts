@@ -12,7 +12,6 @@ describe("music assignment drafts", () => {
       phase: "short-break",
       behavior: "pause-music",
       playlistId: null,
-      soundscapeId: null,
       soundscapePresetId: null,
       soundscapeBehavior: "inherit",
       provenanceKind: "explicit",
@@ -33,16 +32,15 @@ describe("music assignment drafts", () => {
 
   it("drops untouched inherit rows but retains soundscape-only intent", () => {
     const drafts = completeMusicAssignmentDrafts([]);
-    const withSoundscape = updateMusicAssignmentDraft(drafts, "long-break", { soundscapeBehavior: "play-selected", soundscapeId: "rain" });
+    const withSoundscape = updateMusicAssignmentDraft(drafts, "long-break", { soundscapeBehavior: "play-selected", soundscapePresetId: "rain" });
     expect(persistedMusicAssignmentDrafts(withSoundscape).map((entry) => entry.phase)).toEqual(["long-break"]);
   });
 
-  it("clears soundscape references when the phase stops selecting a sound", () => {
+  it("clears the preset when the phase stops playing a soundscape", () => {
     const drafts = completeMusicAssignmentDrafts([]);
     const withPreset = updateMusicAssignmentDraft(drafts, "focus", { soundscapeBehavior: "play-selected", soundscapePresetId: "preset-1" });
     const silenced = updateMusicAssignmentDraft(withPreset, "focus", { soundscapeBehavior: "pause-soundscape" })[0];
     expect(silenced.soundscapePresetId).toBeNull();
-    expect(silenced.soundscapeId).toBeNull();
     expect(persistedMusicAssignmentDrafts(withPreset).map((entry) => entry.soundscapePresetId)).toEqual(["preset-1"]);
   });
 

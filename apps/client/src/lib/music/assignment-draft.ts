@@ -21,7 +21,6 @@ export function emptyMusicAssignmentDraft(
     phase,
     behavior: "inherit",
     playlistId: null,
-    soundscapeId: null,
     soundscapePresetId: null,
     soundscapeBehavior: "inherit",
     provenanceKind,
@@ -47,7 +46,6 @@ export function toMusicAssignmentDraft(
     phase: assignment.phase,
     behavior: assignment.behavior,
     playlistId: assignment.playlistId,
-    soundscapeId: assignment.soundscapeId,
     soundscapePresetId: assignment.soundscapePresetId,
     soundscapeBehavior: assignment.soundscapeBehavior,
     provenanceKind: assignment.provenanceKind,
@@ -58,14 +56,13 @@ export function toMusicAssignmentDraft(
 export function updateMusicAssignmentDraft(
   assignments: readonly MusicContextAssignmentDraft[],
   phase: MusicActivityPhase,
-  update: Partial<Pick<MusicContextAssignmentDraft, "behavior" | "playlistId" | "soundscapeId" | "soundscapePresetId" | "soundscapeBehavior">>,
+  update: Partial<Pick<MusicContextAssignmentDraft, "behavior" | "playlistId" | "soundscapePresetId" | "soundscapeBehavior">>,
 ): MusicContextAssignmentDraft[] {
   return completeMusicAssignmentDrafts(assignments).map((assignment) => {
     if (assignment.phase !== phase) return assignment;
     const next = { ...assignment, ...update };
     if (!behaviorUsesPlaylist(next.behavior)) next.playlistId = null;
     if (next.soundscapeBehavior !== "play-selected") {
-      next.soundscapeId = null;
       next.soundscapePresetId = null;
     }
     return next;
@@ -78,7 +75,6 @@ export function persistedMusicAssignmentDrafts(
   return completeMusicAssignmentDrafts(assignments)
     .filter((assignment) => assignment.behavior !== "inherit"
       || assignment.playlistId !== null
-      || assignment.soundscapeId !== null
       || assignment.soundscapePresetId !== null
       || assignment.soundscapeBehavior !== "inherit");
 }
@@ -94,7 +90,6 @@ export function musicAssignmentDraftsEqual(
     return assignment.phase === other.phase
       && assignment.behavior === other.behavior
       && assignment.playlistId === other.playlistId
-      && assignment.soundscapeId === other.soundscapeId
       && assignment.soundscapePresetId === other.soundscapePresetId
       && assignment.soundscapeBehavior === other.soundscapeBehavior
       && assignment.provenanceKind === other.provenanceKind

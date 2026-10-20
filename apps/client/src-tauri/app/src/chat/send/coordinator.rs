@@ -687,7 +687,7 @@ pub(super) async fn load_internal_mcp_scope(
     .bind(thread_id.as_str())
     .fetch_optional(pool)
     .await
-    .map_err(|_| provider_authority_error("Assignment authority could not be loaded"))?
+    .map_err(|_| provider_authority_unavailable("Assignment authority could not be loaded"))?
     .ok_or_else(|| provider_authority_error("Assignment authority is no longer active"))?;
     let channel_rows = sqlx::query(
         "SELECT source_handle, message_reference_id, conversation_id, label_snapshot,
@@ -699,7 +699,7 @@ pub(super) async fn load_internal_mcp_scope(
     .bind(binding.authorization_revision_id.as_str())
     .fetch_all(pool)
     .await
-    .map_err(|_| provider_authority_error("Channel authority could not be loaded"))?;
+    .map_err(|_| provider_authority_unavailable("Channel authority could not be loaded"))?;
     let folder_rows = sqlx::query(
         "SELECT frozen.root_handle, frozen.working_folder_id, frozen.capability,
                 frozen.is_execution_target,
@@ -723,7 +723,7 @@ pub(super) async fn load_internal_mcp_scope(
     .bind(binding.authorization_revision_id.as_str())
     .fetch_all(pool)
     .await
-    .map_err(|_| provider_authority_error("Folder authority could not be loaded"))?;
+    .map_err(|_| provider_authority_unavailable("Folder authority could not be loaded"))?;
     let expected_folder_count: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM chat_assignment_authorized_folder_sources
          WHERE authorization_revision_id = ?",
@@ -731,7 +731,7 @@ pub(super) async fn load_internal_mcp_scope(
     .bind(binding.authorization_revision_id.as_str())
     .fetch_one(pool)
     .await
-    .map_err(|_| provider_authority_error("Folder authority could not be loaded"))?;
+    .map_err(|_| provider_authority_unavailable("Folder authority could not be loaded"))?;
     if usize::try_from(expected_folder_count).ok() != Some(folder_rows.len()) {
         return Err(provider_authority_error(
             "Folder authority is no longer active",
@@ -834,6 +834,11 @@ fn row_u64(row: &sqlx::sqlite::SqliteRow, column: &str) -> ChatResult<u64> {
 
 fn provider_authority_error(message: &str) -> ChatError {
     ChatError::new(ChatErrorCode::Permission, message, false)
+}
+
+/// Reports a database failure while loading authority, which is not a denial.
+fn provider_authority_unavailable(message: &str) -> ChatError {
+    ChatError::new(ChatErrorCode::Persistence, message, true)
 }
 
 fn scope_row_error<T>(_error: T) -> ChatError {

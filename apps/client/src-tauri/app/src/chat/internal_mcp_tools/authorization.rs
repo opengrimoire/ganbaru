@@ -350,6 +350,9 @@ pub(super) async fn verify_folder_source(
              AND live_grant.teammate_id = assignment.teammate_id
              AND live_grant.working_folder_id = source.working_folder_id
              AND live_grant.revoked_at IS NULL
+            JOIN project_working_folders folder
+              ON folder.id = source.working_folder_id
+             AND folder.archived_at IS NULL
             WHERE source.authorization_revision_id = ?
               AND source.root_handle = ?
               AND source.working_folder_id = ?

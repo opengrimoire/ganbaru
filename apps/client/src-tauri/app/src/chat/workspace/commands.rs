@@ -10,6 +10,7 @@ use super::{
     remove_active_device_binding, store_active_device_binding, trust_decision_required_error,
     trust_record, validate_external_folder_outside_vault, workspace_read,
 };
+use crate::chat::revocation::ActiveRunSelector;
 use crate::db;
 use crate::projects::working_folders::{
     WorkingFolderDeviceScope, read_active_working_folder_scope, update_active_working_folder_scope,
@@ -560,6 +561,13 @@ pub async fn projects_unbind_working_folder(
     app.state::<crate::chat::terminal_access::ChatTerminalAccess>()
         .clear_folder(&working_folder_id)?;
     remove_active_device_binding(&app, &working_folder_id)?;
+    crate::chat::revocation::revoke_and_stop_active_runs(
+        &app,
+        &pool,
+        ActiveRunSelector::WorkingFolder(&working_folder_id),
+        "The working folder was unbound",
+    )
+    .await?;
     read_workspace(&app, workspace)
 }
 
@@ -699,6 +707,13 @@ async fn set_workspace_archived(
     if archived {
         app.state::<crate::chat::terminal_access::ChatTerminalAccess>()
             .clear_folder(&working_folder_id)?;
+        crate::chat::revocation::revoke_and_stop_active_runs(
+            &app,
+            &pool,
+            ActiveRunSelector::WorkingFolder(&working_folder_id),
+            "The working folder was archived",
+        )
+        .await?;
     }
     read_workspace(&app, workspace)
 }
@@ -769,7 +784,15 @@ async fn bind_workspace(
     } else {
         workspace
     };
-    store_active_device_binding(app, &workspace.id, binding)?;
+    if store_active_device_binding(app, &workspace.id, binding)? {
+        crate::chat::revocation::revoke_and_stop_active_runs(
+            app,
+            pool,
+            ActiveRunSelector::WorkingFolder(&workspace.id),
+            "The working folder was moved to another directory",
+        )
+        .await?;
+    }
     read_workspace(app, workspace)
 }
 

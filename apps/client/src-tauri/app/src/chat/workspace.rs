@@ -54,7 +54,7 @@ pub fn ensure_managed_working_folder_binding<R: Runtime>(
         )
     })?;
     let (_, binding) = prepare_workspace_binding(working_folder, &folder_path)?;
-    store_active_device_binding(app, &working_folder.id, binding)
+    store_active_device_binding(app, &working_folder.id, binding).map(|_| ())
 }
 
 pub fn validate_external_folder_outside_vault<R: Runtime>(
@@ -72,11 +72,13 @@ pub fn validate_external_folder_outside_vault<R: Runtime>(
     Ok(())
 }
 
+/// Stores this device's binding for a working folder and returns whether it replaced a
+/// binding to another directory, which also drops the folder's trust decision.
 pub fn store_active_device_binding<R: Runtime>(
     app: &tauri::AppHandle<R>,
     working_folder_id: &ProjectWorkingFolderId,
     binding: ProjectWorkingFolderBindingState,
-) -> ChatResult<()> {
+) -> ChatResult<bool> {
     update_active_working_folder_scope(app, |scope| {
         let previous = scope.bindings.insert(working_folder_id.clone(), binding);
         let rebound = previous.is_some_and(|previous| {
@@ -91,7 +93,7 @@ pub fn store_active_device_binding<R: Runtime>(
         if rebound {
             scope.trust.remove(working_folder_id);
         }
-        Ok(())
+        Ok(rebound)
     })
     .map_err(device_state_error)
 }

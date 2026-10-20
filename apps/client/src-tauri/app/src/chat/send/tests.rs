@@ -1,7 +1,9 @@
 use super::persistence::{
     PersistUserTurnContext, TurnPersistenceTarget, persist_user_turn, read_thread_runtime_data,
 };
-use super::session::{normalize_changed_file_paths, reuse_existing_session};
+use super::session::{
+    normalize_changed_file_paths, require_live_authorization, reuse_existing_session,
+};
 use super::validation::{
     validate_approval_decision, validate_model_options, validate_pending_request,
     validate_send_mentions,
@@ -453,5 +455,27 @@ fn send_time_validation_rejects_file_and_directory_symlink_swaps() {
         let error = validate_send_mentions(&authorized, &[mention]).unwrap_err();
         assert_eq!(error.code, ChatErrorCode::Permission);
         assert!(!error.message.contains("secret.txt"));
+    }
+}
+
+#[tokio::test]
+async fn live_authorization_fails_once_a_run_folder_or_project_is_archived() {
+    let thread_id = ChatThreadId::new("thread-1").unwrap();
+    let turn_id = ChatTurnId::new("turn:working").unwrap();
+    for archive in [
+        "UPDATE project_working_folders SET archived_at = '2026-10-20T12:01:00.000Z'
+         WHERE id = 'workspace-2'",
+        "UPDATE projects SET status = 'archived' WHERE id = 'project-chat'",
+    ] {
+        let pool = crate::chat::revocation::tests::pool_with_folder_runs().await;
+        require_live_authorization(&pool, &thread_id, Some(&turn_id))
+            .await
+            .expect("the run starts with live authority");
+        sqlx::query(archive).execute(&pool).await.unwrap();
+
+        let error = require_live_authorization(&pool, &thread_id, Some(&turn_id))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::Permission, "{archive}");
     }
 }

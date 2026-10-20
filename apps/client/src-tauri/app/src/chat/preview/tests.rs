@@ -1,10 +1,12 @@
 use super::approvals::{ModelNavigation, model_navigation};
 use super::data_store::{is_generation_token, orphaned_entries, vault_preview_root};
 use super::navigation::{loopback_approval_needed, loopback_origin_key};
+use super::repository::{persist_tab, require_tab_owner};
 use super::{
-    BrowserTabBounds, loopback_urls, navigation_allowed, validate_bounds, validate_navigation,
+    BrowserTabBounds, BrowserTabRead, loopback_urls, navigation_allowed, validate_bounds,
+    validate_navigation,
 };
-use ganbaru_chat_contracts::models::ChatErrorCode;
+use ganbaru_chat_contracts::models::{ChatErrorCode, ChatThreadId};
 use std::collections::BTreeSet;
 
 fn url(value: &str) -> reqwest::Url {
@@ -244,5 +246,74 @@ fn sweeping_removes_only_directories_no_working_folder_references() {
     assert_eq!(
         orphaned_entries(entries, &referenced),
         vec!["cccc".to_string(), "dddd".to_string()]
+    );
+}
+
+fn stored_tab(thread_id: &str, url: &str) -> BrowserTabRead {
+    BrowserTabRead {
+        thread_id: ChatThreadId::new(thread_id).expect("thread id should be valid"),
+        tab_id: "tab-shared".to_string(),
+        current_url: url.to_string(),
+        title: "Preview".to_string(),
+        visible: false,
+        loading: false,
+        viewport_width: 800,
+        viewport_height: 600,
+        external_origin: false,
+    }
+}
+
+#[tokio::test]
+async fn a_thread_cannot_overwrite_a_stored_tab_that_another_thread_owns() {
+    let pool = crate::chat::tests::repository::pool_with_thread().await;
+    sqlx::query(
+        "INSERT INTO chat_threads
+            (id, project_id, working_folder_id, title, provider_family_id, provider_instance_id,
+             continuation_group_id, safety_mode, interaction_mode, state,
+             last_activity_at, created_at, updated_at)
+         SELECT 'thread-2', project_id, working_folder_id, 'Other', provider_family_id,
+             provider_instance_id, continuation_group_id, safety_mode, interaction_mode, state,
+             last_activity_at, created_at, updated_at
+         FROM chat_threads WHERE id = 'thread-1'",
+    )
+    .execute(&pool)
+    .await
+    .expect("second thread should insert");
+    let owner = stored_tab("thread-1", "http://127.0.0.1:5173/");
+    persist_tab(&pool, &owner)
+        .await
+        .expect("owner should store its tab");
+    persist_tab(&pool, &stored_tab("thread-1", "http://127.0.0.1:5173/next"))
+        .await
+        .expect("owner should update its own tab");
+
+    let intruder = stored_tab("thread-2", "http://127.0.0.1:9999/");
+    let error = persist_tab(&pool, &intruder)
+        .await
+        .expect_err("another thread must not overwrite the tab");
+    assert_eq!(error.code, ChatErrorCode::Permission);
+    let error = require_tab_owner(&pool, &intruder.tab_id, &intruder.thread_id)
+        .await
+        .expect_err("opening the tab id from another thread must be refused");
+    assert_eq!(error.code, ChatErrorCode::Permission);
+    require_tab_owner(&pool, &owner.tab_id, &owner.thread_id)
+        .await
+        .expect("the owner keeps access");
+    require_tab_owner(&pool, "tab-unused", &intruder.thread_id)
+        .await
+        .expect("an unused tab id is free");
+
+    let stored: (String, String) =
+        sqlx::query_as("SELECT thread_id, current_url FROM chat_preview_tabs WHERE id = ?")
+            .bind(&owner.tab_id)
+            .fetch_one(&pool)
+            .await
+            .expect("stored tab should load");
+    assert_eq!(
+        stored,
+        (
+            "thread-1".to_string(),
+            "http://127.0.0.1:5173/next".to_string()
+        )
     );
 }

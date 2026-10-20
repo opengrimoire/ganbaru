@@ -37,7 +37,7 @@ use navigation::navigation_allowed;
 use navigation::{
     is_loopback, js_string, loopback_urls, validate_bounds, validate_navigation, validate_tab_id,
 };
-use repository::{persist_tab, require_thread};
+use repository::{foreign_tab_error, persist_tab, require_tab_owner, require_thread};
 pub(crate) use webview::evaluate_script;
 use webview::{
     create_child_browser_webview, navigate_existing, owned_tab, resize_existing, run_script,
@@ -525,14 +525,11 @@ pub async fn chat_browser_open(
     validate_tab_id(&request.tab_id)?;
     let pool = chat_pool(&app, db_url).await?;
     require_thread(&pool, &request.thread_id).await?;
+    require_tab_owner(&pool, &request.tab_id, &request.thread_id).await?;
     approvals::grant_loopback_origin(&app, &request.thread_id, &url)?;
     if let Ok(existing) = app.state::<ChatBrowserManager>().read(&request.tab_id) {
         if existing.read.thread_id != request.thread_id {
-            return Err(ChatError::new(
-                ChatErrorCode::Permission,
-                "Browser preview tab belongs to another thread",
-                true,
-            ));
+            return Err(foreign_tab_error());
         }
         navigate_existing(&app, &existing, url.clone())?;
         resize_existing(&app, &existing, &bounds)?;

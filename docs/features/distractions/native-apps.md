@@ -21,7 +21,7 @@ Residual risk: an edited vault configuration can still add a visible rule whose 
 
 ## Desktop phase enforcement
 
-Process or foreground checks run only while a relevant phase rule is active. Ending the phase stops checks immediately, and late observations are ignored.
+Process or foreground checks run only while a relevant phase rule is active. Process observation, open-app counting, and close revalidation consider only processes whose real user ID is the signed-in user's; other accounts' processes on a shared machine are never counted or closed. Ending the phase stops checks immediately, and late observations are ignored.
 
 On platforms with a safe close adapter, enforcement binds the exact observation to the exact persisted rule. Immediately before a graceful close and before any stronger fallback, the backend revalidates process identity, start identity, active vault, fresh phase or limit state, target rule, and protected-app policy.
 

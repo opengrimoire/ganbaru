@@ -31,6 +31,36 @@ fn linux_process_start_time(path: &Path) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+/// Real UID from the `Uid:` line of `/proc/<pid>/status`. The status file stays readable and
+/// keeps the true owner even when a non-dumpable process makes its `/proc` directory root-owned.
+#[cfg(target_os = "linux")]
+pub(super) fn linux_status_real_uid(status: &str) -> Option<u32> {
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("Uid:"))?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
+#[cfg(target_os = "linux")]
+fn linux_process_real_uid(path: &Path) -> Option<u32> {
+    linux_status_real_uid(&std::fs::read_to_string(path.join("status")).ok()?)
+}
+
+#[cfg(target_os = "linux")]
+fn current_real_uid() -> Option<u32> {
+    static CURRENT_REAL_UID: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+    *CURRENT_REAL_UID.get_or_init(|| linux_process_real_uid(Path::new("/proc/self")))
+}
+
+/// Usage counting and enforcement only ever concern the signed-in user's own processes.
+#[cfg(target_os = "linux")]
+fn is_current_user_process(path: &Path) -> bool {
+    current_real_uid().is_some_and(|uid| linux_process_real_uid(path) == Some(uid))
+}
+
 #[cfg(target_os = "linux")]
 fn update_process_identity_hash(hasher: &mut Sha256, value: &str) {
     hasher.update((value.len() as u64).to_le_bytes());
@@ -42,6 +72,9 @@ pub(super) fn observe_linux_process(
     path: &Path,
     process_id: u32,
 ) -> Option<ObservedDesktopProcess> {
+    if !is_current_user_process(path) {
+        return None;
+    }
     let start_time = linux_process_start_time(path)?;
     let mut match_names = read_linux_process_names(path);
     match_names.sort_by_key(|name| app_name_key(name));

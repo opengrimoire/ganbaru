@@ -515,3 +515,33 @@ fn executable_names_ignore_the_deleted_marker() {
     );
     assert_eq!(super::processes::linux_executable_name(""), None);
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn status_real_uid_reads_the_first_uid_field() {
+    let status = "Name:\tsteam\nUid:\t1000\t0\t0\t0\nGid:\t1000\t1000\t1000\t1000\n";
+    assert_eq!(super::processes::linux_status_real_uid(status), Some(1000));
+    assert_eq!(
+        super::processes::linux_status_real_uid("Name:\tsteam\n"),
+        None
+    );
+    assert_eq!(
+        super::processes::linux_status_real_uid("Uid:\tnot-a-number\n"),
+        None
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn observation_skips_processes_of_other_users() {
+    let own_id = std::process::id();
+    let own = super::observe_linux_process(std::path::Path::new("/proc/self"), own_id);
+    assert!(own.is_some());
+    let init_status = std::fs::read_to_string("/proc/1/status").unwrap_or_default();
+    let own_status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    let init_uid = super::processes::linux_status_real_uid(&init_status);
+    let own_uid = super::processes::linux_status_real_uid(&own_status);
+    if init_uid.is_some() && init_uid != own_uid {
+        assert!(super::observe_linux_process(std::path::Path::new("/proc/1"), 1).is_none());
+    }
+}

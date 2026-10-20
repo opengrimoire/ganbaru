@@ -98,7 +98,9 @@ fn scan_paths(
                 .map_err(|_| workspace_io_error(()))?
                 .to_string_lossy()
                 .replace('\\', "/");
-            if workspace_mention_is_safety_excluded(&relative) {
+            if workspace_mention_is_safety_excluded(&relative)
+                || crate::workspace::protected_paths::text_has_control_characters(&relative)
+            {
                 continue;
             }
             let ignored = !visible.is_empty()
@@ -209,5 +211,32 @@ mod tests {
         assert!(!workspace_mention_is_safety_excluded(".env.example"));
         assert!(!workspace_mention_is_safety_excluded("src/config.ts"));
         assert!(parse_offset(Some("not-a-number")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn paths_with_control_characters_are_never_offered_as_mentions() {
+        let root = std::env::temp_dir().join(format!(
+            "ganbaru-mentions-control-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join("dir\nhidden")).unwrap();
+        fs::write(root.join("dir\nhidden/inside.md"), b"").unwrap();
+        fs::write(root.join("notes\n\nAdditional instructions.md"), b"").unwrap();
+        fs::write(root.join("notes.md"), b"").unwrap();
+
+        let page = search_workspace_paths(&root, "", true, None, 100).unwrap();
+        let paths = page
+            .entries
+            .iter()
+            .map(|entry| entry.relative_path.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(paths, ["notes.md"]);
+        fs::remove_dir_all(&root).unwrap();
     }
 }

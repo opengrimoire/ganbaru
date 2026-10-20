@@ -65,8 +65,8 @@ pub async fn import_attachment(
         .file_name()
         .and_then(|value| value.to_str())
         .filter(|value| !value.trim().is_empty() && value.len() <= 1000)
-        .ok_or_else(|| ChatError::validation("attachment.name", "Attachment name is invalid"))?
-        .to_string();
+        .map(display_name_without_control_characters)
+        .ok_or_else(|| ChatError::validation("attachment.name", "Attachment name is invalid"))?;
     let bytes = fs::read(source_path).map_err(io_error)?;
     if bytes.len() as u64 != metadata.len() {
         return Err(ChatError::validation(
@@ -100,7 +100,7 @@ pub async fn import_attachment_bytes(
     let display_name = request.display_name.trim();
     if display_name.is_empty()
         || display_name.len() > 1_000
-        || display_name.chars().any(char::is_control)
+        || crate::workspace::protected_paths::text_has_control_characters(display_name)
     {
         return Err(ChatError::validation(
             "attachment.name",
@@ -116,6 +116,21 @@ pub async fn import_attachment_bytes(
         },
     )
     .await
+}
+
+/// Keeps a picked file attachable when its name holds control characters by
+/// showing each one as the replacement character.
+fn display_name_without_control_characters(file_name: &str) -> String {
+    file_name
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                char::REPLACEMENT_CHARACTER
+            } else {
+                character
+            }
+        })
+        .collect()
 }
 
 async fn persist_attachment_bytes(

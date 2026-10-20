@@ -56,6 +56,12 @@ pub fn path_is_protected(relative_path: &str) -> bool {
         })
 }
 
+/// Reports whether a name or path contains control characters, which would
+/// break the line structure of provider prompts that quote it.
+pub fn text_has_control_characters(value: &str) -> bool {
+    value.chars().any(char::is_control)
+}
+
 /// Reports whether one path component names a Git directory or gitfile.
 pub fn component_is_git_metadata(component: &str) -> bool {
     component_matches(&normalize_component(component), ".git")
@@ -156,6 +162,23 @@ fn short_name_aliases(normalized: &str, dotless: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn control_characters_are_detected_in_names_and_paths() {
+        for value in [
+            "a\nb",
+            "tab\there",
+            "nul\0",
+            "bell\u{7}",
+            "del\u{7f}",
+            "next\u{85}line",
+        ] {
+            assert!(text_has_control_characters(value), "{value:?}");
+        }
+        for value in ["src/main.rs", "notes/año 2026.md", "emoji 🎉.txt", ""] {
+            assert!(!text_has_control_characters(value), "{value:?}");
+        }
+    }
 
     #[test]
     fn rejects_git_metadata_under_every_windows_and_macos_alias() {

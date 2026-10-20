@@ -97,7 +97,7 @@ Projection changes commit before the frontend is notified, and notifications car
 
 Attachment import rejects symlink sources, unsupported signatures, invalid text, traversal, and oversized files. Bytes are hashed and written with restrictive permissions below the managed Chat asset root, and metadata stores the managed relative identity rather than the source path. Message and draft references own retention, and deferred cleanup rechecks references before removal.
 
-Mentions, workspace files, Notes, tasks, channel messages, browser artifacts, and other context sources are resolved under current authority. Natural-language instructions or provider requests cannot introduce a hidden source. Audience restrictions still apply after content is summarized or transformed.
+Mentions, workspace files, Notes, tasks, channel messages, browser artifacts, and other context sources are resolved under current authority. Natural-language instructions or provider requests cannot introduce a hidden source. Audience restrictions still apply after content is summarized or transformed. Workspace paths with control characters are never offered or accepted as mentions, because provider prompts quote mentions one per line; picked attachments keep working and show such characters in their display name as the Unicode replacement character.
 
 ## Browser previews
 

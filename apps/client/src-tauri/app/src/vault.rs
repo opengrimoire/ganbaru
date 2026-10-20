@@ -611,6 +611,15 @@ pub(crate) fn resume_native_runtimes<R: Runtime>(app: &tauri::AppHandle<R>) -> R
     #[cfg(desktop)]
     app.state::<crate::chat::terminal::ChatTerminalRegistry>()
         .resume_creation();
+    #[cfg(desktop)]
+    {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(error) = crate::vault::handoff::start_desktop_when_reachable(&app).await {
+                eprintln!("vault handoff coordinator is unavailable: {error}");
+            }
+        });
+    }
     focus.and(music).and(distractions).and(sync)
 }
 

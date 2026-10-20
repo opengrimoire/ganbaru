@@ -297,12 +297,62 @@ pub(crate) fn start_desktop(app: &tauri::AppHandle) -> Result<(), String> {
         receiver::start_reconnect_refresh(app.clone());
         return Ok(());
     }
+    tauri::async_runtime::block_on(start_desktop_when_reachable(app))
+}
+
+/// Whether the desktop coordinator listens before the user asks for it. Linked devices, a
+/// transfer in flight, and contact cards handed out for this person are the only callers that
+/// can expect it; otherwise it starts when linking or Contacts first need it.
+#[cfg(desktop)]
+fn coordinator_needed_at_launch(
+    linked_peers: bool,
+    pending_transfer: bool,
+    person_identity: bool,
+) -> bool {
+    linked_peers || pending_transfer || person_identity
+}
+
+/// Starts the coordinator when linked devices, a transfer, or a contact card may already be
+/// trying to reach it. Runs at launch and after another vault becomes active.
+#[cfg(desktop)]
+pub(crate) async fn start_desktop_when_reachable<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<(), String> {
+    let manager = app.state::<PairingManager>().inner().clone();
+    if manager.coordinator_pin()?.is_some() {
+        return Ok(());
+    }
+    let needed = coordinator_needed_at_launch(
+        !manager.linked_peers()?.is_empty(),
+        manager.has_pending_transfer()?,
+        crate::contacts::person_identity_exists(app).await,
+    );
+    if needed {
+        ensure_desktop_coordinator(app).await?;
+    }
+    Ok(())
+}
+
+/// Starts the coordinator on the private LAN address unless it already runs, and returns its
+/// endpoint. A device linked to another coordinator never coordinates, so it gets `None`.
+#[cfg(desktop)]
+pub(crate) async fn ensure_desktop_coordinator<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<Option<SocketAddr>, String> {
+    let manager = app.state::<PairingManager>().inner().clone();
+    if manager.coordinator_pin()?.is_some() {
+        return Ok(None);
+    }
+    let lifecycle = app.state::<CoordinatorLifecycle>();
+    if let Some(endpoint) = lifecycle.endpoint()? {
+        return Ok(Some(endpoint));
+    }
     let address = discover_private_lan_address()?;
     let port = coordinator_port(&app.config().identifier);
-    let manager = app.state::<PairingManager>().inner().clone();
-    let lifecycle = app.state::<CoordinatorLifecycle>();
-    tauri::async_runtime::block_on(lifecycle.start_on(app.clone(), manager, address, port))?;
-    Ok(())
+    lifecycle
+        .start_on(app.clone(), manager, address, port)
+        .await
+        .map(Some)
 }
 
 #[cfg(desktop)]
@@ -311,19 +361,8 @@ pub(crate) async fn handoff_create_pairing_invitation<R: Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<PairingInvitationView, String> {
     let manager = app.state::<PairingManager>().inner().clone();
-    if manager.coordinator_pin()?.is_some() {
+    let Some(endpoint) = ensure_desktop_coordinator(&app).await? else {
         return Err("a linked client device cannot coordinate additional devices".to_string());
-    }
-    let lifecycle = app.state::<CoordinatorLifecycle>();
-    let endpoint = match lifecycle.endpoint()? {
-        Some(endpoint) => endpoint,
-        None => {
-            let address = discover_private_lan_address()?;
-            let port = coordinator_port(&app.config().identifier);
-            lifecycle
-                .start_on(app.clone(), manager.clone(), address, port)
-                .await?
-        }
     };
     let ownership = super::ownership::active_status(&app)?;
     let invitation = manager.create_invitation(
@@ -742,6 +781,14 @@ mod tests {
             Some("vault-local")
         );
         assert_eq!(status_vault_id(None, || None), None);
+    }
+
+    #[test]
+    fn an_unlinked_desktop_without_a_person_identity_does_not_listen_at_launch() {
+        assert!(!coordinator_needed_at_launch(false, false, false));
+        assert!(coordinator_needed_at_launch(true, false, false));
+        assert!(coordinator_needed_at_launch(false, true, false));
+        assert!(coordinator_needed_at_launch(false, false, true));
     }
 
     #[test]

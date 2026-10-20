@@ -1,6 +1,6 @@
 use super::approvals::{ModelNavigation, model_navigation};
 use super::data_store::{is_generation_token, orphaned_entries, vault_preview_root};
-use super::navigation::{loopback_approval_needed, loopback_origin_key};
+use super::navigation::{loopback_approval_needed, loopback_origin_key, preview_label};
 use super::repository::{persist_tab, require_tab_owner};
 use super::{
     BrowserTabBounds, BrowserTabRead, loopback_urls, navigation_allowed, validate_bounds,
@@ -316,4 +316,86 @@ async fn a_thread_cannot_overwrite_a_stored_tab_that_another_thread_owns() {
             "http://127.0.0.1:5173/next".to_string()
         )
     );
+}
+
+/// Matches a Tauri capability label pattern, where `*` stands for any run of characters.
+fn label_pattern_matches(pattern: &str, label: &str) -> bool {
+    let mut parts = pattern.split('*');
+    let first = parts.next().unwrap_or_default();
+    let Some(mut rest) = label.strip_prefix(first) else {
+        return false;
+    };
+    let mut segments = parts.collect::<Vec<_>>();
+    let Some(last) = segments.pop() else {
+        return rest.is_empty();
+    };
+    for segment in segments {
+        match rest.find(segment) {
+            Some(index) => rest = &rest[index + segment.len()..],
+            None => return false,
+        }
+    }
+    rest.ends_with(last)
+}
+
+#[test]
+fn capability_label_patterns_match_like_tauri_globs() {
+    assert!(label_pattern_matches("main", "main"));
+    assert!(!label_pattern_matches("main", "main-2"));
+    assert!(label_pattern_matches("view-*", "view-0f1e"));
+    assert!(!label_pattern_matches("view-*", "chat-preview-view-0f1e"));
+    assert!(label_pattern_matches("*-overlay-*", "pomodoro-overlay-1"));
+    assert!(label_pattern_matches("*", "chat-preview-1"));
+}
+
+#[test]
+fn preview_webviews_get_no_capability_even_on_the_app_dev_origin() {
+    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../capabilities");
+    let labels = ["tab-1", "main", "view-1", "pomodoro-overlay-1"]
+        .map(preview_label)
+        .to_vec();
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&directory).expect("capabilities should be readable") {
+        let path = entry.expect("capability entry should read").path();
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let capability: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("capability should read"))
+                .expect("capability should parse");
+        let desktop = capability["platforms"].as_array().is_none_or(|platforms| {
+            platforms
+                .iter()
+                .any(|platform| matches!(platform.as_str(), Some("linux" | "macOS" | "windows")))
+        });
+        if !desktop {
+            continue;
+        }
+        checked += 1;
+        assert!(
+            capability.get("windows").is_none(),
+            "{} selects windows, which would cover preview children of the main window",
+            path.display()
+        );
+        assert!(
+            capability.get("remote").is_none(),
+            "{} grants remote origins",
+            path.display()
+        );
+        for pattern in capability["webviews"]
+            .as_array()
+            .expect("desktop capabilities select webviews")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            for label in &labels {
+                assert!(
+                    !label_pattern_matches(pattern, label),
+                    "{} pattern {pattern} grants preview webview {label}",
+                    path.display()
+                );
+            }
+        }
+    }
+    assert!(checked >= 2, "desktop capabilities should be checked");
 }

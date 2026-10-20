@@ -494,7 +494,7 @@ pub(crate) async fn accept_request(
     if !updated {
         return Err(revision_conflict());
     }
-    store::upsert_active_contact(
+    let stored = store::upsert_active_contact(
         &mut *tx,
         NewContact {
             public_key: &row.public_key,
@@ -506,6 +506,9 @@ pub(crate) async fn accept_request(
         now,
     )
     .await?;
+    if !stored {
+        return Err(ContactsError::Failed("this person is blocked".to_string()));
+    }
     store::close_pending_from(
         &mut *tx,
         RequestDirection::Sent,
@@ -630,7 +633,7 @@ pub(crate) async fn poll_sent_requests(
 }
 
 /// Records one status answer for a sent request. Returns true when the row left `pending`.
-async fn apply_status_response(
+pub(super) async fn apply_status_response(
     pool: &SqlitePool,
     row: &RequestRow,
     response: Result<ControlMessage, String>,
@@ -657,9 +660,20 @@ async fn apply_status_response(
                 .begin()
                 .await
                 .map_err(|error| format!("begin accepted transaction: {error}"))?;
-            store::set_request_state(&mut *tx, &row.id, None, RequestState::Accepted, None, now)
-                .await?;
-            store::upsert_active_contact(
+            let accepted = store::set_request_state(
+                &mut *tx,
+                &row.id,
+                None,
+                RequestState::Accepted,
+                None,
+                now,
+            )
+            .await?;
+            if !accepted {
+                // A local cancel or block closed the request while the poll was in flight.
+                return Ok(true);
+            }
+            let stored = store::upsert_active_contact(
                 &mut *tx,
                 NewContact {
                     public_key: &row.public_key,
@@ -671,6 +685,14 @@ async fn apply_status_response(
                 now,
             )
             .await?;
+            if !stored {
+                tx.rollback()
+                    .await
+                    .map_err(|error| format!("roll back accepted request: {error}"))?;
+                store::set_request_state(pool, &row.id, None, RequestState::Expired, None, now)
+                    .await?;
+                return Ok(true);
+            }
             tx.commit()
                 .await
                 .map_err(|error| format!("commit accepted request: {error}"))?;

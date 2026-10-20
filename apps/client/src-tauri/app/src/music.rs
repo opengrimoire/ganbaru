@@ -43,7 +43,9 @@ pub(crate) mod youtube;
 pub(crate) use media_server::setup_youtube_host;
 
 #[cfg(desktop)]
-use ganbaru_music_library::artwork::{extract_embedded_artwork, find_track_artwork};
+use ganbaru_music_library::artwork::{
+    extract_embedded_artwork, find_track_artwork, sniff_image_content_type as artwork_content_type,
+};
 #[cfg(desktop)]
 use ganbaru_music_library::media::{MEDIA_EXTENSIONS, is_supported_media_path};
 
@@ -589,25 +591,6 @@ fn read_bounded_artwork(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
         ));
     }
     Ok(bytes)
-}
-
-#[cfg(desktop)]
-fn artwork_content_type(bytes: &[u8]) -> Option<&'static str> {
-    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-        Some("image/png")
-    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
-        Some("image/jpeg")
-    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        Some("image/gif")
-    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
-        Some("image/webp")
-    } else if bytes.starts_with(b"BM") {
-        Some("image/bmp")
-    } else if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" && &bytes[8..12] == b"avif" {
-        Some("image/avif")
-    } else {
-        None
-    }
 }
 
 #[cfg(desktop)]

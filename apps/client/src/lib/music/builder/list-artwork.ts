@@ -1,4 +1,5 @@
 import type { LocalRootBinding, MusicItemListEntry } from "$lib/music/library/contracts";
+import { sidecarArtworkRelativePath } from "$lib/music/artwork-identity";
 import { resolveLocalMusicPath } from "$lib/music/platform-paths";
 
 export type MusicListArtworkSource =
@@ -15,10 +16,8 @@ export function musicListArtworkSource(
   const root = bindings.find((binding) => binding.rootId === item.localRootId)?.folderPath;
   if (!root) return null;
   if (item.originalArtworkIdentity?.startsWith("sidecar:")) {
-    return {
-      kind: "file",
-      path: resolveLocalMusicPath(root, item.originalArtworkIdentity.slice("sidecar:".length)),
-    };
+    const sidecar = sidecarArtworkRelativePath(item.originalArtworkIdentity);
+    return sidecar ? { kind: "file", path: resolveLocalMusicPath(root, sidecar) } : null;
   }
   if (item.originalArtworkIdentity?.startsWith("embedded:") && item.relativePath) {
     return {

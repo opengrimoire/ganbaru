@@ -6,6 +6,7 @@ import type {
 } from "$lib/music/library/contracts";
 import { musicArtworkDataUrl, musicEmbeddedArtworkDataUrl, musicYouTubeThumbnailDataUrl } from "$lib/music/library/artwork-cache";
 import { orderMusicPlaylists } from "$lib/music/playlists/system";
+import { sidecarArtworkRelativePath } from "$lib/music/artwork-identity";
 import { resolveLocalMusicPath } from "$lib/music/platform-paths";
 import { localFileSourceFromPath, parseMusicSourceInput, type MusicSource } from "./sources";
 
@@ -37,9 +38,7 @@ export function musicReviewSource(
   if (!availableLocation) return null;
   const folder = bindings.find((binding) => binding.rootId === availableLocation.rootId)?.folderPath;
   if (!folder) return null;
-  const originalSidecar = item.originalArtworkIdentity?.startsWith("sidecar:")
-    ? item.originalArtworkIdentity.slice("sidecar:".length)
-    : null;
+  const originalSidecar = sidecarArtworkRelativePath(item.originalArtworkIdentity);
   const artworkPath = item.artworkOverride
     ?? (originalSidecar ? resolveLocalMusicPath(folder, originalSidecar) : null);
   return localFileSourceFromPath(

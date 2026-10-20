@@ -43,7 +43,7 @@ Search is a rebuildable index over titles, artists, albums, source collections, 
 Ganbaru exports and imports playlists as versioned JSON and as M3U8. Transfers carry source identity, playlists, membership configuration, and user-authored metadata, never media bytes.
 
 - JSON preserves logical roots and source identities, never device-local absolute paths or Android content URIs. Imports require the current format, including every current playlist field. Unsupported membership kinds are skipped with diagnostics; malformed supported records fail validation.
-- M3U8 knowingly loses weights, snoozes, assignments, listening signals, and focus guidance. Relative M3U paths can be mapped to a selected Android root, and Android exports omit content URIs because they are not portable paths.
+- M3U8 knowingly loses weights, snoozes, assignments, listening signals, and focus guidance. Relative M3U paths can be mapped to a selected Android root, and Android exports omit content URIs because they are not portable paths. M3U paths match library locations literally, with either path separator and case-insensitively on Windows roots.
 - Parsing, matching, preview, and export assembly run natively. Previews return counts, mapping requirements, and bounded diagnostics instead of loading the whole library into the WebView. Unsafe relative paths cannot escape their logical root.
 - An import commits against the reviewed library revision; relevant changes since review require another review. The import and its action receipt commit together, so retrying an uncertain result never duplicates playlists.
 - Exports read one consistent SQLite snapshot.

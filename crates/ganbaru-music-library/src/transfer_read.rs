@@ -6,6 +6,8 @@ use super::{MusicLibraryError, MusicLibraryResult, transfer_codec::validation};
 
 pub(super) const MAX_READ_RECORDS: usize = 100_000;
 pub(super) const MAX_READ_BYTES: usize = 32 * 1024 * 1024;
+pub(super) const ALLOWANCE_EXCEEDED: &str =
+    "Music transfer source exceeds its shared record or byte allowance";
 
 pub(super) const ITEM_TEXT_COLUMNS: &[&str] = &[
     "id",
@@ -79,13 +81,10 @@ impl TransferReadBudget {
             usize::try_from(records).map_err(|_| validation("Invalid Music read count"))?;
         let bytes =
             usize::try_from(bytes).map_err(|_| validation("Invalid Music read byte count"))?;
-        if records > allowance || bytes > self.bytes {
-            return Err(validation(
-                "Music transfer source exceeds its shared record or byte allowance",
-            ));
+        if records > allowance {
+            return Err(validation(ALLOWANCE_EXCEEDED));
         }
-        self.records -= records;
-        self.bytes -= bytes;
+        self.admit(records, bytes)?;
         let mut query = sqlx::query_as::<_, T>(AssertSqlSafe(sql.as_str()));
         for binding in bindings {
             query = query.bind(*binding);
@@ -97,5 +96,15 @@ impl TransferReadBudget {
             .map_err(|error| {
                 MusicLibraryError::database("read admitted Music transfer rows", error)
             })
+    }
+
+    /// Charge rows a caller selected itself against the same shared allowance.
+    pub(super) fn admit(&mut self, records: usize, bytes: usize) -> MusicLibraryResult<()> {
+        if records > self.records || bytes > self.bytes {
+            return Err(validation(ALLOWANCE_EXCEEDED));
+        }
+        self.records -= records;
+        self.bytes -= bytes;
+        Ok(())
     }
 }

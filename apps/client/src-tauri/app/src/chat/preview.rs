@@ -498,6 +498,16 @@ pub async fn chat_browser_discover_servers(
     let working_folder_id = repository::thread_working_folder(&pool, &thread_id).await?;
     let registry = app.state::<super::terminal::ChatTerminalRegistry>();
     let terminals = registry.list(&thread_id, &working_folder_id)?;
+    if terminals.is_empty() {
+        return Ok(Vec::new());
+    }
+    super::terminal_commands::authorize_thread_workspace(
+        &app,
+        &pool,
+        &thread_id,
+        &working_folder_id,
+    )
+    .await?;
     let mut candidates = HashMap::<String, String>::new();
     for terminal in terminals {
         let snapshot = registry.snapshot(&terminal.id)?;

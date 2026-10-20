@@ -172,6 +172,55 @@ pub struct ChatTerminalCloseResult {
     pub confirmation_required: bool,
 }
 
+/// Runtime terminal identifier chosen by the view that creates the terminal. Only a canonical lowercase
+/// hyphenated UUID is accepted, so the IPC boundary never carries arbitrary text into the registry or events.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ChatTerminalId(String);
+
+impl ChatTerminalId {
+    pub fn new(value: impl Into<String>) -> ChatResult<Self> {
+        let value = value.into();
+        if !is_canonical_uuid(&value) {
+            return Err(ChatError::validation(
+                "terminalId",
+                "Chat terminal ID is invalid",
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ChatTerminalId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+        Self::new(value).map_err(|error| serde::de::Error::custom(error.message))
+    }
+}
+
+/// Accepts the `8-4-4-4-12` lowercase hexadecimal form that `crypto.randomUUID()` produces.
+fn is_canonical_uuid(value: &str) -> bool {
+    const HYPHENS: [usize; 4] = [8, 13, 18, 23];
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| {
+            if HYPHENS.contains(&index) {
+                byte == b'-'
+            } else {
+                matches!(byte, b'0'..=b'9' | b'a'..=b'f')
+            }
+        })
+}
+
 pub(crate) struct ChatTerminalCreateInput {
     pub terminal_id: String,
     pub thread_id: ChatThreadId,

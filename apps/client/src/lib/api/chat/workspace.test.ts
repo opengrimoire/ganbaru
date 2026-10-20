@@ -82,3 +82,31 @@ describe("resolveBrowserApproval", () => {
     });
   });
 });
+
+describe("terminal layout commands", () => {
+  it("name the working folder so Rust authorizes the thread in it", async () => {
+    const { readChatTerminalLayout, saveChatTerminalPanelLayout } = await import("./workspace");
+    const layout = { threadId: "thread-1", schemaVersion: 1, groups: [], updatedAt: null };
+    invokeMock.mockResolvedValue(layout);
+    await readChatTerminalLayout("thread-1", "folder-1");
+    expect(invokeMock).toHaveBeenLastCalledWith("chat_read_terminal_layout", {
+      dbUrl: "sqlite:test",
+      threadId: "thread-1",
+      workingFolderId: "folder-1",
+    });
+    const panel = {
+      placement: "bottom" as const,
+      terminalNames: ["Shell"],
+      selectedIndex: 0,
+      splitDirection: "horizontal" as const,
+      splitSizes: [],
+    };
+    await saveChatTerminalPanelLayout("thread-1", "folder-1", panel);
+    expect(invokeMock).toHaveBeenLastCalledWith("chat_save_terminal_panel_layout", {
+      dbUrl: "sqlite:test",
+      threadId: "thread-1",
+      workingFolderId: "folder-1",
+      panel,
+    });
+  });
+});

@@ -617,18 +617,22 @@ export async function discardGitPaths(
   })));
 }
 
-export async function readChatTerminalLayout(threadId: ChatThreadId): Promise<ChatTerminalLayoutRead> {
+export async function readChatTerminalLayout(
+  threadId: ChatThreadId,
+  workingFolderId: ProjectWorkingFolderId,
+): Promise<ChatTerminalLayoutRead> {
   return parseChatTerminalLayout(await invoke<unknown>("chat_read_terminal_layout", {
-    dbUrl: await ensureDbUrl(), threadId,
+    dbUrl: await ensureDbUrl(), threadId, workingFolderId,
   }));
 }
 
 export async function saveChatTerminalPanelLayout(
   threadId: ChatThreadId,
+  workingFolderId: ProjectWorkingFolderId,
   panel: ChatTerminalPanelLayout,
 ): Promise<ChatTerminalLayoutRead> {
   return parseChatTerminalLayout(await invoke<unknown>("chat_save_terminal_panel_layout", {
-    dbUrl: await ensureDbUrl(), threadId, panel,
+    dbUrl: await ensureDbUrl(), threadId, workingFolderId, panel,
   }));
 }
 

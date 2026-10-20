@@ -209,6 +209,7 @@ fn run_delayed_relaunch_helper_if_needed() -> bool {
 }
 
 pub fn run(context: tauri::Context<tauri::Wry>) {
+    crate::chat::terminal::capture_launch_environment();
     crate::install_default_tls_crypto_provider();
 
     if run_delayed_relaunch_helper_if_needed() {

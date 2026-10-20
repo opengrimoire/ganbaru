@@ -7,10 +7,11 @@ use ganbaru_chat_contracts::models::{
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
+use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{
-    Arc, Condvar, Mutex,
+    Arc, Condvar, Mutex, OnceLock,
     atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, Instant};
@@ -909,10 +910,145 @@ const TERMINAL_ENVIRONMENT: &[(&str, &str)] =
 #[cfg(windows)]
 const TERMINAL_ENVIRONMENT: &[(&str, &str)] = &[("COLORTERM", "truecolor")];
 
-/// Builds the default shell command for a terminal in the workspace, advertising the emulator's capabilities.
+/// Environment the app was launched with, before dependencies adjust the process environment.
+static LAUNCH_ENVIRONMENT: OnceLock<Vec<(OsString, OsString)>> = OnceLock::new();
+
+/// Variables the AppImage runtime sets to describe the mounted image and how it was started.
+#[cfg(target_os = "linux")]
+const APPIMAGE_RUNTIME_VARIABLES: &[&str] = &["APPIMAGE", "APPDIR", "ARGV0", "OWD"];
+
+/// A change applied to the inherited process environment of a terminal shell.
+#[derive(Debug, PartialEq, Eq)]
+enum EnvironmentEdit {
+    Set(OsString, OsString),
+    Remove(OsString),
+}
+
+/// Records the environment the app was launched with. Call once at desktop startup, before plugins and the
+/// webview start, so terminals inherit the user's environment instead of values dependencies set later.
+pub(crate) fn capture_launch_environment() {
+    let _ = LAUNCH_ENVIRONMENT.set(std::env::vars_os().collect());
+}
+
+/// Returns the environment a terminal shell should inherit: the launch environment without the variables the
+/// AppImage runtime and its bundled library hooks inject.
+fn terminal_environment(launch: Vec<(OsString, OsString)>) -> Vec<(OsString, OsString)> {
+    #[cfg(target_os = "linux")]
+    let launch = without_appimage_variables(launch);
+    launch
+}
+
+/// Removes the AppImage runtime variables and every path entry inside the mounted image. Environments that were
+/// not started from an AppImage are returned unchanged.
+#[cfg(target_os = "linux")]
+fn without_appimage_variables(environment: Vec<(OsString, OsString)>) -> Vec<(OsString, OsString)> {
+    let lookup = |name: &str| {
+        environment
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value)
+    };
+    if lookup("APPIMAGE").is_none() {
+        return environment;
+    }
+    let Some(appdir) = lookup("APPDIR")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute() && path.parent().is_some())
+    else {
+        return environment;
+    };
+    environment
+        .into_iter()
+        .filter(|(key, _)| !APPIMAGE_RUNTIME_VARIABLES.iter().any(|name| key == name))
+        .filter_map(|(key, value)| {
+            without_entries_inside(&value, &appdir).map(|value| (key, value))
+        })
+        .collect()
+}
+
+/// Removes the colon-separated entries of `value` that lie inside `directory`. Returns `None` when no non-empty
+/// entry remains, because an empty entry in a search path means the current directory.
+#[cfg(target_os = "linux")]
+fn without_entries_inside(value: &OsStr, directory: &Path) -> Option<OsString> {
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    let is_inside = |entry: &[u8]| Path::new(OsStr::from_bytes(entry)).starts_with(directory);
+    let entries: Vec<&[u8]> = value.as_bytes().split(|byte| *byte == b':').collect();
+    if !entries.iter().any(|entry| is_inside(entry)) {
+        return Some(value.to_os_string());
+    }
+    let kept: Vec<&[u8]> = entries
+        .into_iter()
+        .filter(|entry| !is_inside(entry))
+        .collect();
+    if kept.iter().all(|entry| entry.is_empty()) {
+        return None;
+    }
+    Some(OsString::from_vec(kept.join(&b':')))
+}
+
+/// Returns the edits that turn the `current` process environment into the `desired` one.
+fn environment_edits(
+    desired: &[(OsString, OsString)],
+    current: &[(OsString, OsString)],
+) -> Vec<EnvironmentEdit> {
+    let desired_values: HashMap<&OsStr, &OsStr> = desired
+        .iter()
+        .map(|(key, value)| (key.as_os_str(), value.as_os_str()))
+        .collect();
+    let current_values: HashMap<&OsStr, &OsStr> = current
+        .iter()
+        .map(|(key, value)| (key.as_os_str(), value.as_os_str()))
+        .collect();
+    let mut edits = Vec::new();
+    for (key, value) in current {
+        match desired_values.get(key.as_os_str()) {
+            None => edits.push(EnvironmentEdit::Remove(key.clone())),
+            Some(desired) if *desired != value.as_os_str() => {
+                edits.push(EnvironmentEdit::Set(key.clone(), desired.to_os_string()))
+            }
+            Some(_) => {}
+        }
+    }
+    for (key, value) in desired {
+        if !current_values.contains_key(key.as_os_str()) {
+            edits.push(EnvironmentEdit::Set(key.clone(), value.clone()));
+        }
+    }
+    edits
+}
+
+/// Applies the edits that restore the terminal environment. An edit is skipped when the command no longer holds
+/// the process value, because the platform base environment refreshed it, as Windows does from the registry.
+fn apply_terminal_environment(command: &mut CommandBuilder) {
+    let current: Vec<(OsString, OsString)> = std::env::vars_os().collect();
+    let launch = LAUNCH_ENVIRONMENT
+        .get()
+        .cloned()
+        .unwrap_or_else(|| current.clone());
+    let current_values: HashMap<&OsStr, &OsStr> = current
+        .iter()
+        .map(|(key, value)| (key.as_os_str(), value.as_os_str()))
+        .collect();
+    for edit in environment_edits(&terminal_environment(launch), &current) {
+        let key = match &edit {
+            EnvironmentEdit::Set(key, _) | EnvironmentEdit::Remove(key) => key,
+        };
+        if command.get_env(key) != current_values.get(key.as_os_str()).copied() {
+            continue;
+        }
+        match edit {
+            EnvironmentEdit::Set(key, value) => command.env(key, value),
+            EnvironmentEdit::Remove(key) => command.env_remove(key),
+        }
+    }
+}
+
+/// Builds the default shell command for a terminal in the workspace with the user's launch environment,
+/// advertising the emulator's capabilities.
 fn shell_command(workspace_path: &Path) -> CommandBuilder {
     let mut command = CommandBuilder::new_default_prog();
     command.cwd(workspace_path);
+    apply_terminal_environment(&mut command);
     for (key, value) in TERMINAL_ENVIRONMENT {
         command.env(key, value);
     }
@@ -1367,6 +1503,87 @@ mod tests {
         assert_eq!(command.get_env("COLORTERM"), Some("truecolor".as_ref()));
         #[cfg(not(windows))]
         assert_eq!(command.get_env("TERM"), Some("xterm-256color".as_ref()));
+    }
+
+    fn environment(pairs: &[(&str, &str)]) -> Vec<(OsString, OsString)> {
+        pairs
+            .iter()
+            .map(|(key, value)| (OsString::from(key), OsString::from(value)))
+            .collect()
+    }
+
+    #[test]
+    fn terminals_inherit_the_launch_environment_instead_of_later_process_changes() {
+        let launch = environment(&[
+            ("SSH_AUTH_SOCK", "/run/user/1000/agent"),
+            ("PATH", "/usr/bin"),
+        ]);
+        let current = environment(&[
+            ("SSH_AUTH_SOCK", "/run/user/1000/agent"),
+            ("PATH", "/opt/bundle/bin:/usr/bin"),
+            ("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt"),
+        ]);
+        assert_eq!(
+            environment_edits(&launch, &current),
+            vec![
+                EnvironmentEdit::Set("PATH".into(), "/usr/bin".into()),
+                EnvironmentEdit::Remove("SSL_CERT_FILE".into()),
+            ]
+        );
+        assert!(environment_edits(&launch, &launch).is_empty());
+        assert_eq!(
+            environment_edits(&launch, &environment(&[("PATH", "/usr/bin")])),
+            vec![EnvironmentEdit::Set(
+                "SSH_AUTH_SOCK".into(),
+                "/run/user/1000/agent".into()
+            )]
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn terminals_drop_only_what_the_appimage_runtime_injects() {
+        let user = environment(&[
+            ("PATH", "/tmp/.mount_gan/usr/bin:/usr/bin"),
+            ("GTK_PATH", "/tmp/.mount_gan/usr/lib/gtk-3.0"),
+            ("EDITOR", "nvim"),
+        ]);
+        assert_eq!(terminal_environment(user.clone()), user);
+
+        let packaged = environment(&[
+            ("APPIMAGE", "/home/user/Ganbaru.AppImage"),
+            ("APPDIR", "/tmp/.mount_gan"),
+            ("ARGV0", "./Ganbaru.AppImage"),
+            ("OWD", "/home/user"),
+            ("PATH", "/tmp/.mount_gan/usr/bin:/usr/local/bin:/usr/bin"),
+            ("LD_LIBRARY_PATH", "/tmp/.mount_gan/usr/lib:"),
+            ("XDG_DATA_DIRS", "/tmp/.mount_gan/usr/share:/usr/share:"),
+            ("GTK_PATH", "/tmp/.mount_gan/usr/lib/gtk-3.0"),
+            (
+                "GDK_PIXBUF_MODULE_FILE",
+                "/tmp/.mount_gan/usr/lib/loaders.cache",
+            ),
+            ("PROJECTS", "/tmp/.mount_ganbaru/work"),
+            ("SSH_AUTH_SOCK", "/run/user/1000/agent"),
+            ("EDITOR", "nvim"),
+        ]);
+        assert_eq!(
+            terminal_environment(packaged),
+            environment(&[
+                ("PATH", "/usr/local/bin:/usr/bin"),
+                ("XDG_DATA_DIRS", "/usr/share:"),
+                ("PROJECTS", "/tmp/.mount_ganbaru/work"),
+                ("SSH_AUTH_SOCK", "/run/user/1000/agent"),
+                ("EDITOR", "nvim"),
+            ])
+        );
+
+        let unsafe_appdir = environment(&[
+            ("APPIMAGE", "/home/user/Ganbaru.AppImage"),
+            ("APPDIR", "/"),
+            ("PATH", "/usr/bin"),
+        ]);
+        assert_eq!(terminal_environment(unsafe_appdir.clone()), unsafe_appdir);
     }
 
     #[test]

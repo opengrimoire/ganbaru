@@ -3,8 +3,10 @@ import {
   applyTerminalOutput,
   boundTerminalContext,
   sanitizeTerminalPaste,
+  TerminalOutputAcknowledger,
   TerminalPanelRegistry,
   terminalErrorMessage,
+  terminalOutputByteLength,
   terminalPasteNeedsConfirmation,
 } from "./terminal-model";
 
@@ -95,5 +97,23 @@ describe("Chat terminal model", () => {
 
     registry.release(first.id);
     expect(registry.claimAvailable([first, second], "bottom")).toEqual([first, second]);
+  });
+});
+
+describe("terminal output flow control", () => {
+  it("releases acknowledgements only once a batch reaches the interval", () => {
+    const acknowledger = new TerminalOutputAcknowledger(10);
+    expect(acknowledger.record(4)).toBe(0);
+    expect(acknowledger.record(5)).toBe(0);
+    expect(acknowledger.record(3)).toBe(12);
+    expect(acknowledger.record(0)).toBe(0);
+    expect(acknowledger.record(-5)).toBe(0);
+    expect(acknowledger.record(10)).toBe(10);
+  });
+
+  it("measures decoded chunk size for every padding length", () => {
+    for (const text of ["", "a", "ab", "abc", "abcd", "ÿ\u0000\u001b[0m"]) {
+      expect(terminalOutputByteLength(chunk(1, 1, text))).toBe(text.length);
+    }
   });
 });

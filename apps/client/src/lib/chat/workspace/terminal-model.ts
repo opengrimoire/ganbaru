@@ -26,6 +26,36 @@ export function applyTerminalOutput(
   };
 }
 
+/** Live output bytes a terminal view writes before returning them as delivery credit, well below the native window. */
+export const TERMINAL_OUTPUT_ACK_INTERVAL_BYTES = 64 * 1024;
+
+/** Batches delivery credit for live terminal output so acknowledgements stay infrequent. */
+export class TerminalOutputAcknowledger {
+  #pending = 0;
+
+  constructor(private readonly intervalBytes = TERMINAL_OUTPUT_ACK_INTERVAL_BYTES) {}
+
+  /**
+   * Records written output bytes.
+   *
+   * @returns The bytes to acknowledge now, or zero while the batch is below the interval.
+   */
+  record(bytes: number): number {
+    this.#pending += Math.max(0, bytes);
+    if (this.#pending < this.intervalBytes) return 0;
+    const released = this.#pending;
+    this.#pending = 0;
+    return released;
+  }
+}
+
+/** Returns the decoded size of a terminal output chunk without decoding it. */
+export function terminalOutputByteLength(chunk: ChatTerminalOutputChunk): number {
+  const encoded = chunk.dataBase64;
+  const padding = encoded.endsWith("==") ? 2 : encoded.endsWith("=") ? 1 : 0;
+  return Math.max(0, Math.floor(encoded.length * 3 / 4) - padding);
+}
+
 /** C0 controls except tab, line feed, and carriage return, plus DEL and the C1 range (8-bit CSI included). */
 const TERMINAL_PASTE_CONTROLS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g;
 

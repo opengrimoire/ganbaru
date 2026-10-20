@@ -1,8 +1,8 @@
 //! Authorized commands for runtime terminals.
 
 use super::terminal::{
-    ChatTerminalCloseResult, ChatTerminalCreateInput, ChatTerminalRead, ChatTerminalRegistry,
-    ChatTerminalSnapshotRead, default_shell_label,
+    ChatTerminalCloseResult, ChatTerminalCreateInput, ChatTerminalOutputChunk, ChatTerminalRead,
+    ChatTerminalRegistry, ChatTerminalSnapshotRead, default_shell_label,
 };
 use super::terminal_access::{ChatTerminalAccess, TerminalStartScope, reservation_mismatch_error};
 use super::workspace::commands::authorize_working_folder;
@@ -18,6 +18,7 @@ use sqlx::{Row, SqlitePool};
 use std::future::Future;
 use std::path::Path;
 use tauri::Manager;
+use tauri::ipc::Channel;
 use tauri_plugin_dialog::{
     DialogExt, MessageDialogButtons, MessageDialogKind, MessageDialogResult,
 };
@@ -278,6 +279,47 @@ pub async fn chat_terminal_snapshot(
     let registry = app.state::<ChatTerminalRegistry>();
     registry.require_scope(&terminal_id, &thread_id, &working_folder_id)?;
     registry.snapshot(&terminal_id)
+}
+
+/// Subscribes the calling view to live output through its own channel and returns the replay to render first.
+#[tauri::command]
+pub async fn chat_terminal_attach(
+    app: tauri::AppHandle,
+    db_url: String,
+    terminal_id: String,
+    thread_id: ChatThreadId,
+    working_folder_id: ProjectWorkingFolderId,
+    subscription_id: String,
+    channel: Channel<ChatTerminalOutputChunk>,
+) -> ChatResult<ChatTerminalSnapshotRead> {
+    let pool = chat_pool(app.clone(), db_url).await?;
+    authorize_thread_workspace(&app, &pool, &thread_id, &working_folder_id).await?;
+    let registry = app.state::<ChatTerminalRegistry>();
+    registry.require_scope(&terminal_id, &thread_id, &working_folder_id)?;
+    registry.attach(&terminal_id, subscription_id, Box::new(channel))
+}
+
+/// Flow control for an existing subscription. The random subscription ID, issued to the attached view, is the
+/// capability, so these frequent calls skip the database authorization that attaching already passed.
+#[tauri::command]
+pub fn chat_terminal_acknowledge(
+    app: tauri::AppHandle,
+    terminal_id: String,
+    subscription_id: String,
+    bytes: u64,
+) -> ChatResult<()> {
+    app.state::<ChatTerminalRegistry>()
+        .acknowledge(&terminal_id, &subscription_id, bytes)
+}
+
+#[tauri::command]
+pub fn chat_terminal_detach(
+    app: tauri::AppHandle,
+    terminal_id: String,
+    subscription_id: String,
+) -> ChatResult<()> {
+    app.state::<ChatTerminalRegistry>()
+        .detach(&terminal_id, &subscription_id)
 }
 
 #[tauri::command]

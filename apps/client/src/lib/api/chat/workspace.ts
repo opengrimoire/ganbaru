@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { ensureDbUrl } from "$lib/api/db";
 import { withWorkingFolderTrust } from "$lib/api/working-folder-trust";
 import { translate } from "$lib/i18n/translator.svelte";
@@ -693,6 +693,51 @@ export async function readChatTerminalSnapshot(
     threadId,
     workingFolderId,
   }));
+}
+
+/**
+ * Subscribes one terminal view to live output and returns the scrollback snapshot taken at attach time.
+ *
+ * Live chunks arrive only on `channel` and stop once the view holds a full window of unacknowledged
+ * bytes, so the view must acknowledge what it writes.
+ *
+ * @param subscriptionId - Random identifier for this view, used to acknowledge and detach.
+ * @param channel - Receives live output chunks for this view only.
+ * @returns The terminal state and scrollback at the moment the subscription began.
+ */
+export async function attachChatTerminal(
+  terminalId: string,
+  threadId: ChatThreadId,
+  workingFolderId: ProjectWorkingFolderId,
+  subscriptionId: string,
+  channel: Channel<unknown>,
+): Promise<ChatTerminalSnapshotRead> {
+  return parseChatTerminalSnapshot(await invoke<unknown>("chat_terminal_attach", {
+    dbUrl: await ensureDbUrl(),
+    terminalId,
+    threadId,
+    workingFolderId,
+    subscriptionId,
+    channel,
+  }));
+}
+
+/**
+ * Returns delivery credit for live output bytes the view has finished writing.
+ *
+ * @param bytes - Decoded output bytes received on the subscription since the last acknowledgement.
+ */
+export async function acknowledgeChatTerminalOutput(
+  terminalId: string,
+  subscriptionId: string,
+  bytes: number,
+): Promise<void> {
+  await invoke("chat_terminal_acknowledge", { terminalId, subscriptionId, bytes });
+}
+
+/** Ends one view's live output subscription; detaching from a closed terminal succeeds. */
+export async function detachChatTerminal(terminalId: string, subscriptionId: string): Promise<void> {
+  await invoke("chat_terminal_detach", { terminalId, subscriptionId });
 }
 
 export async function writeChatTerminal(

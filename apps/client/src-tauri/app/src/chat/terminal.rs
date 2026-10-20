@@ -10,19 +10,126 @@ use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{
-    Arc, Mutex,
+    Arc, Condvar, Mutex,
     atomic::{AtomicBool, Ordering},
-    mpsc::sync_channel,
 };
+use std::time::{Duration, Instant};
 use tauri::Emitter;
 
-pub const CHAT_TERMINAL_OUTPUT_EVENT: &str = "chat://terminal-output";
 pub const CHAT_TERMINAL_STATE_EVENT: &str = "chat://terminal-state";
 const MAX_TERMINALS_PER_THREAD: usize = 8;
 const MAX_TERMINALS_PER_APP: usize = 32;
 const MAX_REPLAY_BYTES: usize = 2 * 1024 * 1024;
 const MAX_OUTPUT_CHUNK_BYTES: usize = 16 * 1024;
 const MAX_INPUT_BYTES: usize = 1024 * 1024;
+/// Output bytes a view may leave unacknowledged before live delivery to it pauses.
+const TERMINAL_OUTPUT_HIGH_WATERMARK_BYTES: usize = 1024 * 1024;
+/// Views attached to one terminal. A reloaded view cannot detach, so the oldest is evicted past this.
+const MAX_TERMINAL_OUTPUT_SUBSCRIBERS: usize = 8;
+/// How long the reader holds the shell for full views before treating them as lagging and reading on.
+const TERMINAL_OUTPUT_STALL_TIMEOUT: Duration = Duration::from_secs(2);
+const MAX_TERMINAL_SUBSCRIPTION_ID_BYTES: usize = 128;
+
+/// Receives live output for one attached view.
+pub(crate) trait TerminalOutputSink: Send {
+    /// Returns false once the view can no longer receive output.
+    fn deliver(&self, chunk: &ChatTerminalOutputChunk) -> bool;
+}
+
+impl TerminalOutputSink for tauri::ipc::Channel<ChatTerminalOutputChunk> {
+    fn deliver(&self, chunk: &ChatTerminalOutputChunk) -> bool {
+        self.send(chunk.clone()).is_ok()
+    }
+}
+
+struct OutputSubscriber {
+    id: String,
+    sink: Box<dyn TerminalOutputSink>,
+    unacked_bytes: usize,
+    /// Set after a stall timeout, so a view that stopped acknowledging never holds the shell again.
+    lagging: bool,
+}
+
+/// Per-view flow control. A full view skips live chunks and recovers through replay once it acknowledges.
+#[derive(Default)]
+struct OutputSubscribers {
+    entries: Vec<OutputSubscriber>,
+}
+
+impl OutputSubscribers {
+    fn attach(&mut self, id: String, sink: Box<dyn TerminalOutputSink>) {
+        self.entries.retain(|entry| entry.id != id);
+        if self.entries.len() >= MAX_TERMINAL_OUTPUT_SUBSCRIBERS {
+            self.entries.remove(0);
+        }
+        self.entries.push(OutputSubscriber {
+            id,
+            sink,
+            unacked_bytes: 0,
+            lagging: false,
+        });
+    }
+
+    fn detach(&mut self, id: &str) {
+        self.entries.retain(|entry| entry.id != id);
+    }
+
+    fn acknowledge(&mut self, id: &str, bytes: usize) -> bool {
+        let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == id) else {
+            return false;
+        };
+        entry.unacked_bytes = entry.unacked_bytes.saturating_sub(bytes);
+        if entry.unacked_bytes < TERMINAL_OUTPUT_HIGH_WATERMARK_BYTES {
+            entry.lagging = false;
+        }
+        true
+    }
+
+    fn deliver(&mut self, chunk: &ChatTerminalOutputChunk, bytes: usize) {
+        self.entries.retain_mut(|entry| {
+            if entry.unacked_bytes >= TERMINAL_OUTPUT_HIGH_WATERMARK_BYTES {
+                return true;
+            }
+            if !entry.sink.deliver(chunk) {
+                return false;
+            }
+            entry.unacked_bytes = entry.unacked_bytes.saturating_add(bytes);
+            true
+        });
+    }
+
+    /// The reader waits only while every attentive view is full, so one responsive view keeps output flowing.
+    fn should_wait(&self) -> bool {
+        let mut attentive = self
+            .entries
+            .iter()
+            .filter(|entry| !entry.lagging)
+            .peekable();
+        attentive.peek().is_some()
+            && attentive.all(|entry| entry.unacked_bytes >= TERMINAL_OUTPUT_HIGH_WATERMARK_BYTES)
+    }
+
+    fn mark_full_as_lagging(&mut self) {
+        for entry in &mut self.entries {
+            if entry.unacked_bytes >= TERMINAL_OUTPUT_HIGH_WATERMARK_BYTES {
+                entry.lagging = true;
+            }
+        }
+    }
+}
+
+fn validate_subscription_id(subscription_id: &str) -> ChatResult<()> {
+    if subscription_id.is_empty()
+        || subscription_id.len() > MAX_TERMINAL_SUBSCRIPTION_ID_BYTES
+        || !subscription_id.bytes().all(|byte| byte.is_ascii_graphic())
+    {
+        return Err(ChatError::validation(
+            "subscriptionId",
+            "Terminal subscription ID is invalid",
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -113,6 +220,9 @@ struct TerminalSession {
     master: Mutex<Option<Box<dyn MasterPty + Send>>>,
     writer: Mutex<Option<Box<dyn Write + Send>>>,
     killer: Mutex<Option<Box<dyn ChildKiller + Send + Sync>>>,
+    /// Locked before `state` wherever both are held.
+    subscribers: Mutex<OutputSubscribers>,
+    output_credit: Condvar,
 }
 
 impl TerminalSession {
@@ -197,6 +307,88 @@ impl TerminalSession {
         }))
     }
 
+    /// Takes the snapshot and subscribes under one lock, so no chunk falls between them; a chunk in both is a
+    /// duplicate the view drops by sequence.
+    fn attach_output(
+        &self,
+        subscription_id: String,
+        sink: Box<dyn TerminalOutputSink>,
+    ) -> ChatResult<ChatTerminalSnapshotRead> {
+        let mut subscribers = self
+            .subscribers
+            .lock()
+            .map_err(|_| terminal_state_error())?;
+        let snapshot = self.snapshot()?;
+        subscribers.attach(subscription_id, sink);
+        Ok(snapshot)
+    }
+
+    fn detach_output(&self, subscription_id: &str) -> ChatResult<()> {
+        self.subscribers
+            .lock()
+            .map_err(|_| terminal_state_error())?
+            .detach(subscription_id);
+        self.output_credit.notify_all();
+        Ok(())
+    }
+
+    fn acknowledge_output(&self, subscription_id: &str, bytes: usize) -> ChatResult<()> {
+        let acknowledged = self
+            .subscribers
+            .lock()
+            .map_err(|_| terminal_state_error())?
+            .acknowledge(subscription_id, bytes);
+        self.output_credit.notify_all();
+        if acknowledged {
+            Ok(())
+        } else {
+            Err(ChatError::new(
+                ChatErrorCode::NotFound,
+                "Chat terminal subscription was not found",
+                true,
+            ))
+        }
+    }
+
+    fn publish_output(&self, chunk: &ChatTerminalOutputChunk, bytes: usize) -> ChatResult<()> {
+        self.subscribers
+            .lock()
+            .map_err(|_| terminal_state_error())?
+            .deliver(chunk, bytes);
+        Ok(())
+    }
+
+    /// Holds the reader, and through the PTY the shell, while every attentive view is full, for at most
+    /// [`TERMINAL_OUTPUT_STALL_TIMEOUT`].
+    fn await_output_credit(&self) -> ChatResult<()> {
+        let deadline = Instant::now() + TERMINAL_OUTPUT_STALL_TIMEOUT;
+        let mut subscribers = self
+            .subscribers
+            .lock()
+            .map_err(|_| terminal_state_error())?;
+        while subscribers.should_wait() && self.is_running()? {
+            let now = Instant::now();
+            if now >= deadline {
+                subscribers.mark_full_as_lagging();
+                break;
+            }
+            subscribers = self
+                .output_credit
+                .wait_timeout(subscribers, deadline - now)
+                .map_err(|_| terminal_state_error())?
+                .0;
+        }
+        Ok(())
+    }
+
+    fn is_running(&self) -> ChatResult<bool> {
+        Ok(self
+            .state
+            .lock()
+            .map_err(|_| terminal_state_error())?
+            .running)
+    }
+
     fn mark_exited(&self, generation: u64, exit_code: i32) -> ChatResult<bool> {
         let mut state = self.state.lock().map_err(|_| terminal_state_error())?;
         if state.generation != generation {
@@ -227,6 +419,7 @@ impl TerminalSession {
         if let Ok(mut state) = self.state.lock() {
             state.running = false;
         }
+        self.output_credit.notify_all();
         Ok(())
     }
 }
@@ -331,6 +524,47 @@ impl ChatTerminalRegistry {
 
     pub fn snapshot(&self, terminal_id: &str) -> ChatResult<ChatTerminalSnapshotRead> {
         self.session(terminal_id)?.snapshot()
+    }
+
+    /// Subscribes one view to live output and returns the replay it continues from.
+    pub(crate) fn attach(
+        &self,
+        terminal_id: &str,
+        subscription_id: String,
+        sink: Box<dyn TerminalOutputSink>,
+    ) -> ChatResult<ChatTerminalSnapshotRead> {
+        validate_subscription_id(&subscription_id)?;
+        self.session(terminal_id)?
+            .attach_output(subscription_id, sink)
+    }
+
+    /// Detaching from a terminal that already closed succeeds, since its subscriptions closed with it.
+    pub fn detach(&self, terminal_id: &str, subscription_id: &str) -> ChatResult<()> {
+        let session = {
+            let sessions = self.sessions.lock().map_err(|_| terminal_state_error())?;
+            sessions.get(terminal_id).cloned()
+        };
+        session.map_or(Ok(()), |session| session.detach_output(subscription_id))
+    }
+
+    /// Returns delivery credit to one view after it has written `bytes` of live output.
+    ///
+    /// Acknowledging output of a terminal that already closed succeeds, since nothing waits for
+    /// that credit any more.
+    pub fn acknowledge(
+        &self,
+        terminal_id: &str,
+        subscription_id: &str,
+        bytes: u64,
+    ) -> ChatResult<()> {
+        let bytes = usize::try_from(bytes).unwrap_or(usize::MAX);
+        let session = {
+            let sessions = self.sessions.lock().map_err(|_| terminal_state_error())?;
+            sessions.get(terminal_id).cloned()
+        };
+        session.map_or(Ok(()), |session| {
+            session.acknowledge_output(subscription_id, bytes)
+        })
     }
 
     pub fn require_scope(
@@ -568,8 +802,10 @@ fn spawn_session(
         master: Mutex::new(Some(pair.master)),
         writer: Mutex::new(Some(writer)),
         killer: Mutex::new(Some(killer)),
+        subscribers: Mutex::new(OutputSubscribers::default()),
+        output_credit: Condvar::new(),
     });
-    spawn_reader(app.clone(), Arc::clone(&session), reader, spec.generation)?;
+    spawn_reader(Arc::clone(&session), reader, spec.generation)?;
     let wait_session = Arc::clone(&session);
     if let Err(error) = std::thread::Builder::new()
         .name("chat-terminal-wait".to_string())
@@ -594,34 +830,28 @@ fn spawn_session(
     Ok(session)
 }
 
+/// Live output reaches only the views attached to this terminal, each through its own channel.
 fn spawn_reader(
-    app: tauri::AppHandle,
     session: Arc<TerminalSession>,
     mut reader: Box<dyn Read + Send>,
     generation: u64,
 ) -> ChatResult<()> {
-    let (output_sender, output_receiver) = sync_channel::<ChatTerminalOutputChunk>(64);
-    std::thread::Builder::new()
-        .name("chat-terminal-events".to_string())
-        .spawn(move || {
-            while let Ok(event) = output_receiver.recv() {
-                let _ = app.emit(CHAT_TERMINAL_OUTPUT_EVENT, event);
-            }
-        })
-        .map_err(terminal_io_error)?;
     std::thread::Builder::new()
         .name("chat-terminal-output".to_string())
         .spawn(move || {
             let mut buffer = vec![0_u8; MAX_OUTPUT_CHUNK_BYTES];
             loop {
+                if session.await_output_credit().is_err() {
+                    break;
+                }
                 match reader.read(&mut buffer) {
                     Ok(0) | Err(_) => break,
                     Ok(count) => {
                         let bytes = buffer[..count].to_vec();
-                        if let Ok(Some(event)) = session.record_output(generation, bytes) {
-                            if output_sender.send(event).is_err() {
-                                break;
-                            }
+                        if let Ok(Some(event)) = session.record_output(generation, bytes)
+                            && session.publish_output(&event, count).is_err()
+                        {
+                            break;
                         }
                     }
                 }
@@ -821,6 +1051,8 @@ mod tests {
             master: Mutex::new(None),
             writer: Mutex::new(None),
             killer: Mutex::new(None),
+            subscribers: Mutex::new(OutputSubscribers::default()),
+            output_credit: Condvar::new(),
         })
     }
 
@@ -871,6 +1103,148 @@ mod tests {
             .expect("confirmed close should work");
         assert!(confirmed.closed);
         assert!(registry.snapshot("terminal:test").is_err());
+    }
+
+    struct RecordingSink {
+        delivered: Arc<Mutex<Vec<u64>>>,
+        open: bool,
+    }
+
+    impl TerminalOutputSink for RecordingSink {
+        fn deliver(&self, chunk: &ChatTerminalOutputChunk) -> bool {
+            if self.open {
+                self.delivered
+                    .lock()
+                    .expect("sink should lock")
+                    .push(chunk.sequence);
+            }
+            self.open
+        }
+    }
+
+    fn recording_sink(open: bool) -> (Box<dyn TerminalOutputSink>, Arc<Mutex<Vec<u64>>>) {
+        let delivered = Arc::new(Mutex::new(Vec::new()));
+        let sink = RecordingSink {
+            delivered: Arc::clone(&delivered),
+            open,
+        };
+        (Box::new(sink), delivered)
+    }
+
+    fn output_chunk(sequence: u64) -> ChatTerminalOutputChunk {
+        ChatTerminalOutputChunk {
+            terminal_id: "terminal:test".to_string(),
+            generation: 1,
+            sequence,
+            data_base64: String::new(),
+            replay: false,
+        }
+    }
+
+    #[test]
+    fn output_reaches_only_attached_views_and_pauses_at_the_watermark() {
+        let session = session(true);
+        session
+            .record_output(1, b"before".to_vec())
+            .expect("output should record");
+        let (sink, delivered) = recording_sink(true);
+        let snapshot = session
+            .attach_output("view:a".to_string(), sink)
+            .expect("view should attach");
+        assert_eq!(snapshot.scrollback.len(), 1);
+
+        let half = TERMINAL_OUTPUT_HIGH_WATERMARK_BYTES / 2;
+        for sequence in 2..=4 {
+            session
+                .publish_output(&output_chunk(sequence), half)
+                .expect("output should publish");
+        }
+        assert_eq!(
+            *delivered.lock().expect("sink should lock"),
+            vec![2, 3],
+            "a full view skips live chunks instead of queueing them"
+        );
+        assert!(
+            session
+                .subscribers
+                .lock()
+                .expect("subscribers should lock")
+                .should_wait()
+        );
+
+        session
+            .acknowledge_output("view:a", half)
+            .expect("acknowledgement should apply");
+        session
+            .publish_output(&output_chunk(5), half)
+            .expect("output should publish");
+        assert_eq!(*delivered.lock().expect("sink should lock"), vec![2, 3, 5]);
+        assert_eq!(
+            session
+                .acknowledge_output("view:unknown", half)
+                .expect_err("unknown subscriptions are rejected")
+                .code,
+            ChatErrorCode::NotFound
+        );
+
+        session.detach_output("view:a").expect("view should detach");
+        session
+            .publish_output(&output_chunk(6), 1)
+            .expect("output should publish");
+        assert_eq!(delivered.lock().expect("sink should lock").len(), 3);
+    }
+
+    #[test]
+    fn stalled_views_stop_holding_the_shell_and_closed_views_are_dropped() {
+        let mut subscribers = OutputSubscribers::default();
+        let (stalled, _) = recording_sink(true);
+        subscribers.attach("view:stalled".to_string(), stalled);
+        subscribers.deliver(&output_chunk(1), TERMINAL_OUTPUT_HIGH_WATERMARK_BYTES);
+        assert!(subscribers.should_wait());
+        subscribers.mark_full_as_lagging();
+        assert!(
+            !subscribers.should_wait(),
+            "a lagging view never holds the reader again"
+        );
+
+        let (responsive, responsive_chunks) = recording_sink(true);
+        subscribers.attach("view:responsive".to_string(), responsive);
+        assert!(!subscribers.should_wait());
+        subscribers.deliver(&output_chunk(2), 1);
+        assert_eq!(
+            *responsive_chunks.lock().expect("sink should lock"),
+            vec![2]
+        );
+        assert!(subscribers.acknowledge("view:stalled", TERMINAL_OUTPUT_HIGH_WATERMARK_BYTES));
+        assert!(subscribers.entries.iter().all(|entry| !entry.lagging));
+
+        let (closed, _) = recording_sink(false);
+        subscribers.attach("view:closed".to_string(), closed);
+        subscribers.deliver(&output_chunk(3), 1);
+        assert!(
+            subscribers
+                .entries
+                .iter()
+                .all(|entry| entry.id != "view:closed")
+        );
+
+        for index in 0..MAX_TERMINAL_OUTPUT_SUBSCRIBERS {
+            let (sink, _) = recording_sink(true);
+            subscribers.attach(format!("view:{index}"), sink);
+        }
+        assert_eq!(subscribers.entries.len(), MAX_TERMINAL_OUTPUT_SUBSCRIBERS);
+        assert!(
+            subscribers
+                .entries
+                .iter()
+                .all(|entry| entry.id != "view:stalled")
+        );
+        assert!(validate_subscription_id("view:1").is_ok());
+        assert!(validate_subscription_id("").is_err());
+        assert!(validate_subscription_id("view one").is_err());
+        assert!(
+            validate_subscription_id(&"a".repeat(MAX_TERMINAL_SUBSCRIPTION_ID_BYTES + 1)).is_err()
+        );
     }
 
     #[test]

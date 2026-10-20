@@ -54,6 +54,8 @@ struct MusicHostShared {
     media_token: String,
     #[cfg(desktop)]
     registry: Arc<Mutex<MusicMediaRegistry>>,
+    #[cfg(desktop)]
+    media_streams: Arc<MusicHostConnectionLimit>,
 }
 
 #[cfg(desktop)]
@@ -283,7 +285,11 @@ const MUSIC_HOST_TOKEN_BYTES: usize = 32;
 /// Keyed media IDs keep 128 bits of the digest.
 #[cfg(desktop)]
 const MUSIC_HOST_MEDIA_ID_BYTES: usize = 16;
-const MUSIC_HOST_MAX_CONNECTIONS: usize = 8;
+/// Connections still sending request headers; each holds a slot for at most the read timeout.
+const MUSIC_HOST_MAX_PENDING_CONNECTIONS: usize = 32;
+/// Authorized media responses, which only token holders can occupy.
+#[cfg(desktop)]
+const MUSIC_HOST_MAX_MEDIA_STREAMS: usize = 8;
 const MUSIC_HOST_MAX_REQUEST_HEADER_BYTES: usize = 16 * 1024;
 const MUSIC_HOST_READ_TIMEOUT: Duration = Duration::from_secs(3);
 const MUSIC_HOST_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -552,8 +558,11 @@ fn spawn_music_host() -> Result<MusicHostState, String> {
         page_token: page_token.clone(),
         media_token: media_token.clone(),
         registry: Arc::clone(&registry),
+        media_streams: Arc::new(MusicHostConnectionLimit::new(MUSIC_HOST_MAX_MEDIA_STREAMS)),
     });
-    let connection_limit = Arc::new(MusicHostConnectionLimit::new(MUSIC_HOST_MAX_CONNECTIONS));
+    let connection_limit = Arc::new(MusicHostConnectionLimit::new(
+        MUSIC_HOST_MAX_PENDING_CONNECTIONS,
+    ));
     let thread_shared = Arc::clone(&shared);
     let thread_connection_limit = Arc::clone(&connection_limit);
     thread::Builder::new()
@@ -571,8 +580,7 @@ fn spawn_music_host() -> Result<MusicHostState, String> {
                 let spawn_result = thread::Builder::new()
                     .name("music-player-host-request".to_string())
                     .spawn(move || {
-                        let _permit = permit;
-                        handle_music_host_stream(stream, connection_shared);
+                        handle_music_host_stream(stream, connection_shared, permit);
                     });
                 if spawn_result.is_err() {
                     continue;
@@ -612,17 +620,25 @@ fn hex(bytes: &[u8]) -> String {
     text
 }
 
-fn handle_music_host_stream(mut stream: TcpStream, shared: Arc<MusicHostShared>) {
+/// Reads the request under a pending-connection permit and releases it before responding, so
+/// connections that never authenticate cannot hold the slots that authorized media streams use.
+fn handle_music_host_stream(
+    mut stream: TcpStream,
+    shared: Arc<MusicHostShared>,
+    pending: MusicHostConnectionPermit,
+) {
     if stream
         .set_write_timeout(Some(MUSIC_HOST_WRITE_TIMEOUT))
         .is_err()
     {
         return;
     }
-    let request = match read_http_request(&mut DeadlineTcpReader::new(
+    let request = read_http_request(&mut DeadlineTcpReader::new(
         &mut stream,
         MUSIC_HOST_READ_TIMEOUT,
-    )) {
+    ));
+    drop(pending);
+    let request = match request {
         Ok(request) => request,
         Err(error) => {
             let (status, body) = error.response();
@@ -699,6 +715,17 @@ fn handle_music_host_request<W: Write>(
     if route.starts_with("/media/")
         && token.is_some_and(|token| constant_time_token_eq(&shared.media_token, token))
     {
+        let Some(_media_stream) = shared.media_streams.try_acquire() else {
+            let _ = write_http_response(
+                stream,
+                "503 Service Unavailable",
+                "text/plain; charset=utf-8",
+                "Service unavailable",
+                is_head,
+                BASIC_RESPONSE_CSP,
+            );
+            return;
+        };
         match media_from_request(request, shared) {
             Ok(media) => {
                 if write_hosted_media_response(stream, request, &media).is_err() {
@@ -1097,6 +1124,7 @@ mod host_security_contract_tests {
             page_token: token.to_string(),
             media_token: format!("{token}-media"),
             registry: Arc::new(Mutex::new(MusicMediaRegistry::with_limits(8, 1024))),
+            media_streams: Arc::new(MusicHostConnectionLimit::new(2)),
         }
     }
 
@@ -1389,6 +1417,38 @@ mod host_security_contract_tests {
         drop(first);
         assert!(limit.try_acquire().is_some());
         drop(second);
+    }
+
+    #[test]
+    fn music_host_security_contract_reserves_media_streams_for_authorized_requests() {
+        let shared = test_shared("page-token");
+        shared
+            .registry
+            .lock()
+            .unwrap()
+            .register("media-id".to_string(), bytes_media(&[1, 2, 3]), 1)
+            .unwrap();
+        let media = request("/media/media-id?token=page-token-media", Some(TEST_HOST));
+        let held = [
+            shared.media_streams.try_acquire().unwrap(),
+            shared.media_streams.try_acquire().unwrap(),
+        ];
+
+        assert!(respond(&shared, &media).starts_with("HTTP/1.1 503 Service Unavailable\r\n"));
+        let unauthorized = respond(
+            &shared,
+            &request("/media/media-id?token=guess", Some(TEST_HOST)),
+        );
+        assert!(unauthorized.starts_with("HTTP/1.1 404 Not Found\r\n"));
+        let page = respond(
+            &shared,
+            &request("/youtube-player.html?token=page-token", Some(TEST_HOST)),
+        );
+        assert!(page.starts_with("HTTP/1.1 200 OK\r\n"));
+
+        drop(held);
+        assert!(respond(&shared, &media).starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(shared.media_streams.try_acquire().is_some());
     }
 
     #[test]

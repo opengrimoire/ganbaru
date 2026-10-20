@@ -174,3 +174,79 @@ fn ingestion_rejects_diagnostics_that_are_not_redacted() {
         assert!(ingestor.ingest(request).await.is_err());
     });
 }
+
+#[test]
+fn ingestion_caps_streamed_message_text_with_a_notice_and_warning() {
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        let emitter = Arc::new(RecordingEmitter::default());
+        let mut ingestor = ChatEventIngestor::new(pool.clone(), emitter);
+        let chunk = "a".repeat(3 * 1024 * 1024);
+        for index in 0..3 {
+            ingestor
+                .ingest(content_event(&format!("event-message-{index}"), &chunk))
+                .await
+                .unwrap();
+        }
+        ingestor
+            .ingest(content_event(
+                "event-message-dropped",
+                "must not be retained",
+            ))
+            .await
+            .unwrap();
+        ingestor.flush().await.unwrap();
+        let text: String = sqlx::query_scalar(
+            "SELECT normalized_markdown FROM chat_messages WHERE id = 'assistant-message-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(text.ends_with("[Text truncated at the 8 MiB Chat message limit]\n"));
+        assert!(!text.contains("must not be retained"));
+        assert!(text.len() <= 8 * 1024 * 1024 + 64);
+        assert_eq!(text_limit_warnings(&pool).await, 1);
+    });
+}
+
+#[test]
+fn ingestion_caps_streamed_text_across_the_items_of_one_turn() {
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        let emitter = Arc::new(RecordingEmitter::default());
+        let mut ingestor = ChatEventIngestor::new(pool.clone(), emitter);
+        let chunk = "b".repeat(3 * 1024 * 1024 + 512 * 1024);
+        for item in 0..6 {
+            for part in 0..2 {
+                let mut request = content_event(&format!("event-turn-{item}-{part}"), &chunk);
+                let CanonicalEvent::ContentDelta(delta) = &mut request.runtime.event else {
+                    unreachable!()
+                };
+                delta.item_id = format!("assistant-message-{item}");
+                ingestor.ingest(request).await.unwrap();
+            }
+        }
+        ingestor.flush().await.unwrap();
+        let texts: Vec<String> = sqlx::query_scalar(
+            "SELECT normalized_markdown FROM chat_messages ORDER BY sequence_anchor",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        let retained = texts.iter().map(String::len).sum::<usize>();
+        assert_eq!(texts.len(), 5, "items after the turn cap are not stored");
+        assert!(texts[4].ends_with("[Text truncated at the 32 MiB Chat turn limit]\n"));
+        assert!(retained <= 32 * 1024 * 1024 + 64);
+        assert_eq!(text_limit_warnings(&pool).await, 1);
+    });
+}
+
+async fn text_limit_warnings(pool: &sqlx::SqlitePool) -> i64 {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM chat_events
+         WHERE event_type = 'runtime_warning' AND payload_data LIKE '%streamed_text_limit%'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}

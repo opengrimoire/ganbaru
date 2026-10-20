@@ -33,9 +33,10 @@ pub(super) use ganbaru_db::run_migrations;
 pub(super) use serde_json::json;
 pub(super) use sqlx::{Row, SqlitePool};
 
-/// Upper bound for parsing 1 MB adversarial import inputs. Release builds finish
-/// them in well under a second; unoptimized test builds run about ten times slower.
-pub(super) const ADVERSARIAL_PARSE_LIMIT: std::time::Duration = std::time::Duration::from_secs(5);
+/// Upper bound for parsing 1 MB adversarial import inputs. Release builds finish them
+/// in well under a second, while unoptimized test builds take several seconds because the
+/// HTML sanitizer dependencies are unoptimized too. Quadratic parsing would take minutes.
+pub(super) const ADVERSARIAL_PARSE_LIMIT: std::time::Duration = std::time::Duration::from_secs(20);
 
 pub(super) const PAGE_A: &str = "11111111-1111-4111-8111-111111111111";
 pub(super) const PAGE_B: &str = "22222222-2222-4222-8222-222222222222";

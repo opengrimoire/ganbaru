@@ -10,7 +10,6 @@ import type {
 } from "$lib/music/soundscape/contracts";
 
 const api = vi.hoisted(() => ({
-  getDeviceId: vi.fn<() => Promise<string>>(),
   getMusicSoundscapes: vi.fn(),
   getMusicSoundscapeGroups: vi.fn(),
   getMusicSoundscapePresets: vi.fn(),
@@ -57,7 +56,6 @@ const calm = preset("calm", [["noise", 1], ["fire", 1], ["rain", 0.4]], 0.8);
 beforeEach(() => {
   vi.resetModules();
   vi.clearAllMocks();
-  api.getDeviceId.mockResolvedValue("device");
   api.getMusicSoundscapes.mockResolvedValue([noise, rain, fire]);
   api.getMusicSoundscapeGroups.mockResolvedValue([]);
   api.getMusicSoundscapePresets.mockResolvedValue([calm]);

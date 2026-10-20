@@ -783,15 +783,27 @@ pub async fn music_library_upsert_source_collection(
 pub async fn music_library_soundscapes(
     app: tauri::AppHandle,
     db_url: String,
-    device_id: String,
 ) -> MusicLibraryResult<Vec<MusicSoundscapeDefinition>> {
+    let (_, local_paths) = soundscape_paths(&app)?;
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
     run_file_work(async move {
-        ganbaru_music_library::soundscapes::definitions(&pool, &device_id).await
+        ganbaru_music_library::soundscapes::definitions(&pool, &local_paths).await
     })
     .await
+}
+
+/// The active vault ID with this device's local soundscape paths for it.
+#[cfg(desktop)]
+fn soundscape_paths(
+    app: &tauri::AppHandle,
+) -> MusicLibraryResult<(String, std::collections::BTreeMap<String, String>)> {
+    let vault_id = crate::vault::active_vault_id(app)
+        .map_err(|error| MusicLibraryError::runtime("resolve soundscape vault", error))?;
+    let paths = crate::music::soundscape_paths::paths(app, &vault_id)
+        .map_err(|error| MusicLibraryError::runtime("read soundscape paths", error))?;
+    Ok((vault_id, paths))
 }
 
 #[cfg(desktop)]
@@ -894,11 +906,10 @@ pub async fn music_library_set_soundscape_preset_level(
 pub async fn music_library_upsert_soundscape(
     app: tauri::AppHandle,
     db_url: String,
-    mut request: MusicSoundscapeWrite,
+    request: MusicSoundscapeWrite,
 ) -> MusicLibraryResult<MusicSoundscapeDefinition> {
-    // Locations are device-local, so the row is always keyed by this device.
-    request.device_id = crate::vault::ensure_device_id(&app)
-        .map_err(|error| MusicLibraryError::runtime("resolve device id", error))?;
+    let (vault_id, local_paths) = soundscape_paths(&app)?;
+    let stored_path = local_paths.get(&request.id).cloned();
     if let Some(local_path) = &request.local_path {
         if !crate::music::is_soundscape_audio_path(std::path::Path::new(local_path)) {
             return Err(MusicLibraryError::validation(
@@ -917,11 +928,25 @@ pub async fn music_library_upsert_soundscape(
         .map_err(|error| MusicLibraryError::runtime("renew background audio grant", error))?
         .map_err(|error| MusicLibraryError::runtime("renew background audio grant", error))?;
     }
-    let pool = connect_sqlite(app, db_url)
+    let pool = connect_sqlite(app.clone(), db_url)
         .await
         .map_err(connection_error)?;
-    run_file_work(async move { ganbaru_music_library::soundscapes::upsert(&pool, request).await })
-        .await
+    let previous_path = stored_path.clone();
+    let saved = run_file_work(async move {
+        ganbaru_music_library::soundscapes::upsert(&pool, request, stored_path.as_deref()).await
+    })
+    .await?;
+    // The row commits first; if this write fails, the sound reads as missing until its file is
+    // picked again, and no unchanged row is ever pointed at a different file.
+    if let Some(path) = saved
+        .local_path
+        .as_deref()
+        .filter(|path| previous_path.as_deref() != Some(*path))
+    {
+        crate::music::soundscape_paths::set_path(&app, &vault_id, &saved.id, path)
+            .map_err(|error| MusicLibraryError::runtime("save soundscape path", error))?;
+    }
+    Ok(saved)
 }
 
 #[cfg(desktop)]
@@ -932,10 +957,14 @@ pub async fn music_library_remove_soundscape(
     soundscape_id: String,
     expected_version: i64,
 ) -> MusicLibraryResult<()> {
-    let pool = connect_sqlite(app, db_url)
+    let vault_id = crate::vault::active_vault_id(&app)
+        .map_err(|error| MusicLibraryError::runtime("resolve soundscape vault", error))?;
+    let pool = connect_sqlite(app.clone(), db_url)
         .await
         .map_err(connection_error)?;
-    ganbaru_music_library::soundscapes::remove(&pool, &soundscape_id, expected_version).await
+    ganbaru_music_library::soundscapes::remove(&pool, &soundscape_id, expected_version).await?;
+    crate::music::soundscape_paths::clear_path(&app, &vault_id, &soundscape_id)
+        .map_err(|error| MusicLibraryError::runtime("forget soundscape path", error))
 }
 
 #[cfg(desktop)]

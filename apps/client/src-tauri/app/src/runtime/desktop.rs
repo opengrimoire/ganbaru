@@ -598,7 +598,6 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             reveal_main_window,
             crate::app_windows::app_window_open_tab,
             vault::vault_read_app_state,
-            vault::vault_device_id,
             vault::vault_default_location,
             vault::vault_use_default,
             vault::vault_active_info,

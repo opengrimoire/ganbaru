@@ -1,6 +1,7 @@
 use super::*;
 use rodio::Decoder;
 use sqlx::SqlitePool;
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::path::Path;
 
@@ -16,66 +17,50 @@ type DefinitionRow = (
     String,
     Option<String>,
     String,
-    Option<String>,
     i64,
     i64,
     i64,
 );
 
+/// Lists every sound with the file each local loop uses on this device.
+///
+/// `local_paths` maps sound IDs to absolute paths held in device-local state. The vault never
+/// stores them, so a copied vault carries a sound's identity without another device's paths,
+/// and a local loop without an entry reads as missing until the user picks its file here.
 pub async fn definitions(
     pool: &SqlitePool,
-    device_id: &str,
+    local_paths: &BTreeMap<String, String>,
 ) -> MusicLibraryResult<Vec<MusicSoundscapeDefinition>> {
-    validate_id(device_id, "deviceId")?;
     let rows = sqlx::query_as::<_, DefinitionRow>(
-        "SELECT s.id, s.source_kind, s.generated_kind, s.bundled_identity, s.name, s.icon, s.group_id,
-                CASE WHEN s.source_kind = 'local-loop'
-                     THEN COALESCE(l.availability, 'missing') ELSE s.availability END,
-                l.absolute_path, s.created_at_ms, s.updated_at_ms, s.version
-         FROM music_soundscapes s
-         LEFT JOIN music_soundscape_locations l
-           ON l.soundscape_id = s.id AND l.device_id = ?
-         ORDER BY CASE s.generated_kind
+        "SELECT id, source_kind, generated_kind, bundled_identity, name, icon, group_id,
+                availability, created_at_ms, updated_at_ms, version
+         FROM music_soundscapes
+         ORDER BY CASE generated_kind
                     WHEN 'brown' THEN 0 WHEN 'pink' THEN 1 WHEN 'white' THEN 2 ELSE 3 END,
-                  lower(s.name), s.id",
+                  lower(name), id",
     )
-    .bind(device_id)
     .fetch_all(pool)
     .await
     .map_err(|error| MusicLibraryError::database("load soundscapes", error))?;
-    let mut definitions = rows
-        .into_iter()
-        .map(decode_definition)
-        .collect::<MusicLibraryResult<Vec<_>>>()?;
-    for definition in &mut definitions {
-        if definition.source_kind != MusicSoundscapeSourceKind::LocalLoop {
-            continue;
-        }
-        let availability = local_path_availability(definition.local_path.as_deref());
-        if availability != definition.availability {
-            sqlx::query(
-                "UPDATE music_soundscape_locations
-                 SET availability = ?, updated_at_ms = MAX(updated_at_ms + 1, ?)
-                 WHERE soundscape_id = ? AND device_id = ?",
-            )
-            .bind(availability.as_ref())
-            .bind(definition.updated_at_ms)
-            .bind(&definition.id)
-            .bind(device_id)
-            .execute(pool)
-            .await
-            .map_err(|error| {
-                MusicLibraryError::database("refresh soundscape availability", error)
-            })?;
-            definition.availability = availability;
-        }
-    }
-    Ok(definitions)
+    rows.into_iter()
+        .map(|row| {
+            let mut definition = decode_definition(row)?;
+            if definition.source_kind == MusicSoundscapeSourceKind::LocalLoop {
+                definition.local_path = local_paths.get(&definition.id).cloned();
+                definition.availability = local_path_availability(definition.local_path.as_deref());
+            }
+            Ok(definition)
+        })
+        .collect()
 }
 
+/// Saves a sound's vault identity. `stored_path` is the file this device already uses for a
+/// local loop; a different `local_path` is validated, and the returned definition carries the
+/// path the caller keeps in device-local state.
 pub async fn upsert(
     pool: &SqlitePool,
     request: MusicSoundscapeWrite,
+    stored_path: Option<&str>,
 ) -> MusicLibraryResult<MusicSoundscapeDefinition> {
     validate_write(&request)?;
     let mut transaction = pool
@@ -104,24 +89,13 @@ pub async fn upsert(
     } else if request.expected_version.is_some() {
         return Err(MusicLibraryError::not_found("soundscape", &request.id));
     }
-    let previous_path = if request.source_kind == MusicSoundscapeSourceKind::LocalLoop {
-        sqlx::query_scalar::<_, String>(
-            "SELECT absolute_path FROM music_soundscape_locations
-             WHERE soundscape_id = ? AND device_id = ?",
-        )
-        .bind(&request.id)
-        .bind(&request.device_id)
-        .fetch_optional(&mut *transaction)
-        .await
-        .map_err(|error| MusicLibraryError::database("load soundscape location", error))?
-    } else {
-        None
-    };
-    let new_location = request.source_kind == MusicSoundscapeSourceKind::LocalLoop
+    let local_loop = request.source_kind == MusicSoundscapeSourceKind::LocalLoop;
+    let stored_path = stored_path.filter(|_| local_loop && existing.is_some());
+    let new_location = local_loop
         && request
             .local_path
             .as_deref()
-            .is_some_and(|path| previous_path.as_deref() != Some(path));
+            .is_some_and(|path| stored_path != Some(path));
     if request.source_kind == MusicSoundscapeSourceKind::LocalLoop
         && existing.is_none()
         && !new_location
@@ -178,42 +152,16 @@ pub async fn upsert(
     .execute(&mut *transaction)
     .await
     .map_err(|error| MusicLibraryError::database("save soundscape", error))?;
-    if new_location {
-        let path = request
-            .local_path
-            .as_deref()
-            .expect("validated local soundscape path should exist");
-        let metadata = std::fs::metadata(path)
-            .map_err(|error| MusicLibraryError::runtime("inspect local soundscape", error))?;
-        let modified_at_ms = metadata
-            .modified()
-            .ok()
-            .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
-            .and_then(|value| i64::try_from(value.as_millis()).ok());
-        sqlx::query(
-            "INSERT INTO music_soundscape_locations
-                (soundscape_id, device_id, absolute_path, availability,
-                 file_size_bytes, modified_at_ms, updated_at_ms)
-             VALUES (?, ?, ?, 'available', ?, ?, ?)
-             ON CONFLICT(soundscape_id, device_id) DO UPDATE SET
-                absolute_path = excluded.absolute_path,
-                availability = excluded.availability,
-                file_size_bytes = excluded.file_size_bytes,
-                modified_at_ms = excluded.modified_at_ms,
-                updated_at_ms = excluded.updated_at_ms",
-        )
-        .bind(&request.id)
-        .bind(&request.device_id)
-        .bind(path)
-        .bind(i64::try_from(metadata.len()).unwrap_or(i64::MAX))
-        .bind(modified_at_ms)
-        .bind(request.updated_at_ms)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| MusicLibraryError::database("save soundscape location", error))?;
-    }
     super::writes::commit(transaction, "commit soundscape update").await?;
-    definition(pool, &request.device_id, &request.id).await
+    let effective_path = if new_location {
+        request.local_path.as_deref()
+    } else {
+        stored_path
+    };
+    let local_paths = effective_path
+        .map(|path| BTreeMap::from([(request.id.clone(), path.to_string())]))
+        .unwrap_or_default();
+    definition(pool, &local_paths, &request.id).await
 }
 
 pub async fn remove(
@@ -325,10 +273,10 @@ pub async fn update_state(
 
 async fn definition(
     pool: &SqlitePool,
-    device_id: &str,
+    local_paths: &BTreeMap<String, String>,
     soundscape_id: &str,
 ) -> MusicLibraryResult<MusicSoundscapeDefinition> {
-    definitions(pool, device_id)
+    definitions(pool, local_paths)
         .await?
         .into_iter()
         .find(|definition| definition.id == soundscape_id)
@@ -337,7 +285,6 @@ async fn definition(
 
 fn validate_write(request: &MusicSoundscapeWrite) -> MusicLibraryResult<()> {
     validate_id(&request.id, "id")?;
-    validate_id(&request.device_id, "deviceId")?;
     if request.name.trim().is_empty() || request.name.chars().count() > 200 {
         return Err(MusicLibraryError::validation(
             "name",
@@ -474,10 +421,10 @@ fn decode_definition(row: DefinitionRow) -> MusicLibraryResult<MusicSoundscapeDe
         availability: MusicSoundscapeAvailability::try_from(row.7.as_str()).map_err(|message| {
             MusicLibraryError::runtime("decode soundscape availability", message)
         })?,
-        local_path: row.8,
-        created_at_ms: row.9,
-        updated_at_ms: row.10,
-        version: row.11,
+        local_path: None,
+        created_at_ms: row.8,
+        updated_at_ms: row.9,
+        version: row.10,
     })
 }
 
@@ -526,11 +473,46 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// Names every vault table with a text value containing `needle`.
+    async fn tables_mentioning(pool: &SqlitePool, needle: &str) -> Vec<String> {
+        let tables: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        let mut found = Vec::new();
+        for table in tables {
+            let columns: Vec<String> = sqlx::query_scalar("SELECT name FROM pragma_table_info(?)")
+                .bind(&table)
+                .fetch_all(pool)
+                .await
+                .unwrap();
+            let predicate = columns
+                .iter()
+                .map(|column| format!("instr(CAST(\"{column}\" AS TEXT), ?1) > 0"))
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            // Names come from the schema catalog, not from input.
+            let mentioned: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                "SELECT EXISTS(SELECT 1 FROM \"{table}\" WHERE {predicate})"
+            )))
+            .bind(needle)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            if mentioned {
+                found.push(table);
+            }
+        }
+        found
+    }
+
     #[test]
     fn soundscape_crud_and_singleton_state_are_versioned() {
         crate::test_support::block_on(async {
             let pool = pool().await;
-            let generated = definitions(&pool, "device-a").await.unwrap();
+            let generated = definitions(&pool, &BTreeMap::new()).await.unwrap();
             assert_eq!(generated.len(), 3);
             assert!(
                 generated
@@ -563,16 +545,33 @@ mod tests {
                     name: "Rain".into(),
                     icon: "lucide:cloud-rain".into(),
                     group_id: None,
-                    device_id: "device-a".into(),
                     local_path: Some(path.to_string_lossy().into_owned()),
                     expected_version: None,
                     updated_at_ms: 1_700_000_000_000,
                 },
+                None,
             )
             .await
             .unwrap();
             assert_eq!(saved.local_path.as_deref(), path.to_str());
             assert_eq!(saved.icon, "lucide:cloud-rain");
+            assert_eq!(
+                tables_mentioning(&pool, path.to_str().unwrap()).await,
+                Vec::<String>::new()
+            );
+            let rain_paths =
+                BTreeMap::from([(saved.id.clone(), path.to_string_lossy().into_owned())]);
+            let reloaded = definitions(&pool, &rain_paths)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|entry| entry.id == saved.id)
+                .unwrap();
+            assert_eq!(reloaded.local_path, saved.local_path);
+            assert_eq!(
+                reloaded.availability,
+                MusicSoundscapeAvailability::Available
+            );
             let invalid_icon = MusicSoundscapeWrite {
                 id: saved.id.clone(),
                 source_kind: MusicSoundscapeSourceKind::LocalLoop,
@@ -581,14 +580,13 @@ mod tests {
                 name: saved.name.clone(),
                 icon: "unknown".into(),
                 group_id: None,
-                device_id: "device-a".into(),
                 local_path: saved.local_path.clone(),
                 expected_version: Some(saved.version),
                 updated_at_ms: 1_700_000_000_001,
             };
             assert!(validate_write(&invalid_icon).is_err());
 
-            let copied_device = definitions(&pool, "device-b")
+            let copied_device = definitions(&pool, &BTreeMap::new())
                 .await
                 .unwrap()
                 .into_iter()
@@ -656,7 +654,7 @@ mod tests {
             }
 
             std::fs::remove_file(&path).unwrap();
-            let missing = definitions(&pool, "device-a")
+            let missing = definitions(&pool, &rain_paths)
                 .await
                 .unwrap()
                 .into_iter()
@@ -673,11 +671,11 @@ mod tests {
                     name: "Rain at night".into(),
                     icon: "emoji:🌧️".into(),
                     group_id: None,
-                    device_id: "device-a".into(),
                     local_path: Some(path.to_string_lossy().into_owned()),
                     expected_version: Some(saved.version),
                     updated_at_ms: 1_700_000_000_004,
                 },
+                saved.local_path.as_deref(),
             )
             .await
             .unwrap();
@@ -693,11 +691,11 @@ mod tests {
                     name: "Rain overnight".into(),
                     icon: renamed.icon.clone(),
                     group_id: None,
-                    device_id: "device-b".into(),
                     local_path: None,
                     expected_version: Some(renamed.version),
                     updated_at_ms: 1_700_000_000_005,
                 },
+                None,
             )
             .await
             .unwrap();
@@ -710,7 +708,7 @@ mod tests {
             assert!(!after_removal.desired_playing);
             assert!(after_removal.version > playing.version);
             assert!(
-                definitions(&pool, "device-a")
+                definitions(&pool, &rain_paths)
                     .await
                     .unwrap()
                     .iter()

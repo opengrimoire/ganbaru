@@ -16,7 +16,7 @@ async fn native_music_background_assignment_and_selection_roll_back_with_the_sou
     let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
     let prepared = prepare(
         &mut transaction,
-        "device",
+        &BTreeMap::new(),
         "play-selected",
         Some(BROWN_PRESET),
     )
@@ -54,17 +54,22 @@ async fn native_music_background_pause_preserves_selection_and_keep_does_not_mut
     let mut transaction = pool.begin().await.unwrap();
     let playing = prepare(
         &mut transaction,
-        "device",
+        &BTreeMap::new(),
         "play-selected",
         Some(WHITE_PRESET),
     )
     .await
     .unwrap();
-    let kept = prepare(&mut transaction, "device", "keep-current-soundscape", None)
-        .await
-        .unwrap();
+    let kept = prepare(
+        &mut transaction,
+        &BTreeMap::new(),
+        "keep-current-soundscape",
+        None,
+    )
+    .await
+    .unwrap();
     assert!(kept.action.is_none());
-    let paused = prepare(&mut transaction, "device", "pause-soundscape", None)
+    let paused = prepare(&mut transaction, &BTreeMap::new(), "pause-soundscape", None)
         .await
         .unwrap();
     assert!(matches!(paused.action, Some(None)));
@@ -109,14 +114,14 @@ async fn native_music_missing_background_source_keeps_current_output_intent_and_
         .unwrap();
     let mut transaction = pool.begin().await.unwrap();
     for id in [None, Some("deleted")] {
-        let missing = prepare(&mut transaction, "device", "play-selected", id)
+        let missing = prepare(&mut transaction, &BTreeMap::new(), "play-selected", id)
             .await
             .unwrap();
         assert!(missing.missing);
         assert!(missing.action.is_none());
     }
     assert!(
-        prepare(&mut transaction, "device", "invalid", None)
+        prepare(&mut transaction, &BTreeMap::new(), "invalid", None)
             .await
             .is_err()
     );
@@ -156,14 +161,24 @@ async fn native_music_background_preset_layers_available_sounds_in_order_with_th
     }
     let mut transaction = pool.begin().await.unwrap();
     for preset in ["empty", "deleted"] {
-        let missing = prepare(&mut transaction, "device", "play-selected", Some(preset))
-            .await
-            .unwrap();
-        assert!(missing.missing);
-    }
-    let prepared = prepare(&mut transaction, "device", "play-selected", Some("preset"))
+        let missing = prepare(
+            &mut transaction,
+            &BTreeMap::new(),
+            "play-selected",
+            Some(preset),
+        )
         .await
         .unwrap();
+        assert!(missing.missing);
+    }
+    let prepared = prepare(
+        &mut transaction,
+        &BTreeMap::new(),
+        "play-selected",
+        Some("preset"),
+    )
+    .await
+    .unwrap();
     assert!(!prepared.missing);
     let request = prepared.action.unwrap().unwrap();
     assert_eq!(request.source_id, ids[1]);
@@ -183,4 +198,49 @@ async fn native_music_background_preset_layers_available_sounds_in_order_with_th
         .unwrap();
     assert_eq!(state.active_preset_id.as_deref(), Some("preset"));
     assert!(state.desired_playing);
+}
+
+#[tokio::test]
+async fn native_music_background_local_loop_plays_only_from_this_devices_recorded_file() {
+    let pool = super::super::context::test_pool().await;
+    let file = std::env::temp_dir().join(format!(
+        "ganbaru-context-storm-{}-{}.wav",
+        std::process::id(),
+        now_ms()
+    ));
+    std::fs::write(&file, b"loop").unwrap();
+    sqlx::query("INSERT INTO music_soundscapes (id, source_kind, name, availability, created_at_ms, updated_at_ms, version) VALUES ('local-storm', 'local-loop', 'Storm', 'available', 1, 1, 1)")
+        .execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO music_soundscape_presets (id, name, icon, level, created_at_ms, updated_at_ms) VALUES ('storm', 'Storm', 'lucide:cloud', 1.0, 1, 1)")
+        .execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO music_soundscape_preset_sounds (preset_id, position, soundscape_id, level) VALUES ('storm', 0, 'local-storm', 0.7)")
+        .execute(&pool).await.unwrap();
+    let recorded = BTreeMap::from([(
+        "local-storm".to_string(),
+        file.to_string_lossy().into_owned(),
+    )]);
+    let gone = BTreeMap::from([(
+        "local-storm".to_string(),
+        file.with_extension("missing.wav")
+            .to_string_lossy()
+            .into_owned(),
+    )]);
+
+    let mut transaction = pool.begin().await.unwrap();
+    for paths in [BTreeMap::new(), gone] {
+        let missing = prepare(&mut transaction, &paths, "play-selected", Some("storm"))
+            .await
+            .unwrap();
+        assert!(missing.missing);
+    }
+    let prepared = prepare(&mut transaction, &recorded, "play-selected", Some("storm"))
+        .await
+        .unwrap();
+    transaction.rollback().await.unwrap();
+    std::fs::remove_file(&file).unwrap();
+
+    let request = prepared.action.unwrap().unwrap();
+    assert_eq!(request.source_id, "local-storm");
+    assert_eq!(request.local_path.as_deref(), file.to_str());
+    assert_eq!(request.level, 0.7);
 }

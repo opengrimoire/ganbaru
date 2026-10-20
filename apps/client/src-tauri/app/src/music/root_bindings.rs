@@ -210,6 +210,7 @@ mod tests {
             project_working_folders: Default::default(),
             chat: Default::default(),
             music_path_grants: Default::default(),
+            music_soundscape_paths: Default::default(),
         }
     }
 

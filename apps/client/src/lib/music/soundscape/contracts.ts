@@ -29,7 +29,6 @@ export interface MusicSoundscapeWrite {
   name: string;
   icon: string;
   groupId: string | null;
-  deviceId: string;
   localPath: string | null;
   expectedVersion: number | null;
   updatedAtMs: number;

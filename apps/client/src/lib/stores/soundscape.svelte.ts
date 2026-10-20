@@ -1,5 +1,4 @@
 import {
-  getDeviceId,
   getMusicSoundscapes,
   getMusicSoundscapeGroups,
   getMusicSoundscapePresets,
@@ -74,7 +73,8 @@ class SoundscapeStore {
   saving = $state(false);
   playbackPending = $state(false);
   error = $state<string | null>(null);
-  deviceId = $state<string | null>(null);
+  /** True once the sound catalog has loaded, so edits apply to a known library. */
+  catalogReady = $state(false);
   private generation = 0;
   private catalogLoaded = false;
   private stateWriteQueue: Promise<void> = Promise.resolve();
@@ -96,16 +96,15 @@ class SoundscapeStore {
     this.loading = true;
     this.error = null;
     try {
-      const deviceId = await getDeviceId();
       const [definitions, persisted, groups, presets, snapshot] = await Promise.all([
-        getMusicSoundscapes(deviceId),
+        getMusicSoundscapes(),
         getMusicSoundscapeState(),
         getMusicSoundscapeGroups(),
         getMusicSoundscapePresets(),
         getSoundscapeSnapshot(),
       ]);
       if (generation !== this.generation) return;
-      this.deviceId = deviceId;
+      this.catalogReady = true;
       this.definitions = definitions;
       this.groups = groups;
       this.presets = presets;
@@ -135,14 +134,13 @@ class SoundscapeStore {
     const generation = this.generation;
     this.loading = true;
     try {
-      const deviceId = await getDeviceId();
       const [definitions, groups, presets] = await Promise.all([
-        getMusicSoundscapes(deviceId),
+        getMusicSoundscapes(),
         getMusicSoundscapeGroups(),
         getMusicSoundscapePresets(),
       ]);
       if (generation !== this.generation) return;
-      this.deviceId = deviceId;
+      this.catalogReady = true;
       this.definitions = definitions;
       this.groups = groups;
       this.presets = presets;
@@ -396,17 +394,18 @@ class SoundscapeStore {
     this.groups = [];
     this.presets = [];
     this.catalogLoaded = false;
+    this.catalogReady = false;
     this.persisted = null;
     this.error = null;
     if (nextVaultId) await this.initialize();
   }
 
-  async saveDefinition(write: Omit<MusicSoundscapeWrite, "deviceId">): Promise<void> {
-    if (!this.deviceId) return;
+  async saveDefinition(write: MusicSoundscapeWrite): Promise<void> {
+    if (!this.catalogReady) return;
     this.saving = true;
     this.error = null;
     try {
-      const saved = await upsertMusicSoundscape({ ...write, deviceId: this.deviceId });
+      const saved = await upsertMusicSoundscape(write);
       this.definitions = [...this.definitions.filter((entry) => entry.id !== saved.id), saved]
         .sort((left, right) => left.createdAtMs - right.createdAtMs || left.name.localeCompare(right.name));
     } catch (error) { this.error = message(error); throw error; }

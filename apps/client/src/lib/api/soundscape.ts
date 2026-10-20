@@ -21,8 +21,7 @@ import {
   type MusicSoundscapeWrite,
 } from "$lib/music/soundscape/contracts";
 
-export const getDeviceId = (): Promise<string> => invoke<string>("vault_device_id");
-export const getMusicSoundscapes = async (deviceId: string): Promise<MusicSoundscapeDefinition[]> => parseMusicSoundscapes(await invoke<unknown>("music_library_soundscapes", { dbUrl: dbUrl(), deviceId }));
+export const getMusicSoundscapes = async (): Promise<MusicSoundscapeDefinition[]> => parseMusicSoundscapes(await invoke<unknown>("music_library_soundscapes", { dbUrl: dbUrl() }));
 export const getMusicSoundscapeGroups = async (): Promise<MusicSoundscapeGroup[]> => parseMusicSoundscapeGroups(await invoke<unknown>("music_library_soundscape_groups", { dbUrl: dbUrl() }));
 export const upsertMusicSoundscapeGroup = async (request: MusicSoundscapeGroupWrite): Promise<MusicSoundscapeGroup> => parseMusicSoundscapeGroup(await invoke<unknown>("music_library_upsert_soundscape_group", { dbUrl: dbUrl(), request }));
 export const removeMusicSoundscapeGroup = (groupId: string, expectedVersion: number): Promise<void> => invoke("music_library_remove_soundscape_group", { dbUrl: dbUrl(), groupId, expectedVersion });

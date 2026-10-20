@@ -68,6 +68,9 @@ pub struct VaultAppState {
     pub chat: crate::chat::device_state::ChatDeviceState,
     #[serde(default)]
     pub music_path_grants: crate::music::path_authority::MusicPathGrantState,
+    /// Local soundscape file paths by vault ID and sound ID; the vault keeps only the identities.
+    #[serde(default)]
+    pub music_soundscape_paths: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 fn required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
@@ -76,11 +79,6 @@ where
     T: serde::Deserialize<'de>,
 {
     <Option<T> as serde::Deserialize>::deserialize(deserializer)
-}
-
-#[tauri::command]
-pub(crate) fn vault_device_id<R: Runtime>(app: tauri::AppHandle<R>) -> Result<String, String> {
-    ensure_device_id(&app)
 }
 
 pub(crate) fn ensure_device_id<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<String, String> {
@@ -534,6 +532,9 @@ fn recent_vault_ids(paths: &[String]) -> Option<BTreeSet<String>> {
 fn retain_vault_scopes(state: &mut VaultAppState, known_vault_ids: &BTreeSet<String>) {
     state
         .music_root_bindings
+        .retain(|vault_id, _| known_vault_ids.contains(vault_id));
+    state
+        .music_soundscape_paths
         .retain(|vault_id, _| known_vault_ids.contains(vault_id));
     state
         .project_working_folders
@@ -1163,6 +1164,9 @@ mod tests {
                 .music_root_bindings
                 .insert(vault_id.to_string(), BTreeMap::new());
             state
+                .music_soundscape_paths
+                .insert(vault_id.to_string(), BTreeMap::new());
+            state
                 .project_working_folders
                 .vaults
                 .insert(vault_id.to_string(), BTreeMap::new());
@@ -1177,6 +1181,10 @@ mod tests {
         let live = ["vault-live"];
         assert_eq!(
             state.music_root_bindings.keys().collect::<Vec<_>>(),
+            live.iter().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            state.music_soundscape_paths.keys().collect::<Vec<_>>(),
             live.iter().collect::<Vec<_>>()
         );
         assert_eq!(
@@ -1212,6 +1220,7 @@ mod tests {
             project_working_folders: Default::default(),
             chat: Default::default(),
             music_path_grants: Default::default(),
+            music_soundscape_paths: Default::default(),
         };
 
         write_app_state_to_path(&path, &state).expect("write app state");

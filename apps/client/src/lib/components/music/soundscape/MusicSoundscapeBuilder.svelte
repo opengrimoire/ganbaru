@@ -58,7 +58,7 @@
   async function addLoop(groupId: string | null = null, replace?: MusicSoundscapeDefinition): Promise<void> {
     try {
       const path = await pickSoundscapeFile();
-      if (!path || !soundscape.deviceId) return;
+      if (!path || !soundscape.catalogReady) return;
       if (!replace) {
         pendingSound = { path, groupId };
         soundNameDraft = (path.split(/[\\/]/).pop() ?? t("music.soundscape.localLoop")).replace(/\.[^.]+$/, "");

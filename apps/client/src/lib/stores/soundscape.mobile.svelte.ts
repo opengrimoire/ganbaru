@@ -22,7 +22,7 @@ class MobileSoundscapeStore {
   saving = $state(false);
   playbackPending = $state(false);
   error = $state<string | null>(null);
-  deviceId = $state<string | null>(null);
+  catalogReady = $state(false);
 
   get activePreset(): MusicSoundscapePreset | null {
     return null;
@@ -49,7 +49,7 @@ class MobileSoundscapeStore {
   async stop(): Promise<void> {}
   async recover(): Promise<void> {}
   async switchVault(_nextVaultId: string | null): Promise<void> {}
-  async saveDefinition(_write: Omit<MusicSoundscapeWrite, "deviceId">): Promise<void> {}
+  async saveDefinition(_write: MusicSoundscapeWrite): Promise<void> {}
   async removeDefinition(_definition: MusicSoundscapeDefinition): Promise<void> {}
   async saveGroup(_write: MusicSoundscapeGroupWrite): Promise<void> {}
   async removeGroup(_group: MusicSoundscapeGroup): Promise<void> {}

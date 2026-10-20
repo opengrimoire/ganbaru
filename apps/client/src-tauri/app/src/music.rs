@@ -35,6 +35,8 @@ pub(crate) mod root_bindings;
 pub(crate) mod session;
 #[cfg(desktop)]
 pub(crate) mod soundscape;
+#[cfg(desktop)]
+pub(crate) mod soundscape_paths;
 #[cfg(not(target_os = "ios"))]
 pub(crate) mod youtube;
 

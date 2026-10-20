@@ -678,7 +678,6 @@ pub struct MusicSoundscapeWrite {
     pub name: String,
     pub icon: String,
     pub group_id: Option<String>,
-    pub device_id: String,
     pub local_path: Option<String>,
     pub expected_version: Option<i64>,
     pub updated_at_ms: i64,

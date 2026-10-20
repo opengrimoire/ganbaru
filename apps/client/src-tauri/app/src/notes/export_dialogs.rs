@@ -100,7 +100,7 @@ pub(super) async fn pick_and_write_csv<R: Runtime>(
     data_source_id: &str,
     request: NoteDataSourceCsvExportRequest,
 ) -> Result<NoteDataSourceCsvExportSaveDto, String> {
-    let export = csv_export::export_csv(pool, data_source_id, request).await?;
+    let export = csv_export::export_spreadsheet_csv(pool, data_source_id, request).await?;
     let target = SaveTarget {
         title: "Export Notes database CSV",
         file_name: &export.file_name,

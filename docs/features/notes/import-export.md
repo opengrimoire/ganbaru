@@ -74,7 +74,7 @@ Local Notes links target included exported pages. Assets are copied only when re
 
 Current-view export applies the active table properties, filters, and sorts. Full-data export includes all active rows and current properties without view hiding.
 
-Headers are deterministic. Cells use readable plain text, including available relation titles and computed output. Structured values that cannot round-trip through CSV produce warnings, so CSV is never presented as a complete database backup.
+Headers are deterministic. Cells use readable plain text, including available relation titles and computed output. In the saved file, text cells and headers that start with `=`, `+`, `-`, `@`, tab, or carriage return get a leading `'` so spreadsheets show them as text instead of running a formula; number properties and plain numbers such as `-12.5` stay unchanged, and the agent bridge reads the exact text. Structured values that cannot round-trip through CSV produce warnings, so CSV is never presented as a complete database backup.
 
 ## JSON graph export
 

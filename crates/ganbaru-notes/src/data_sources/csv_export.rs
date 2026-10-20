@@ -15,10 +15,43 @@ use std::{
 const LOSSY_PROPERTY_TYPES: &[&str] =
     &["files", "people", "relation", "rollup", "formula", "button"];
 
+/// Characters that make spreadsheet applications evaluate a cell as a formula.
+const SPREADSHEET_FORMULA_TRIGGERS: &[char] = &['=', '+', '-', '@', '\t', '\r'];
+
+/// How exported cell text is written.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CsvCellMode {
+    /// Cell text exactly as rendered, for readers that parse the CSV back.
+    Exact,
+    /// Text that a spreadsheet would evaluate as a formula starts with `'`, so opening the file never runs it.
+    Spreadsheet,
+}
+
+/// Exports a data source as exact CSV text for readers that parse it back, such as the agent bridge.
 pub async fn export_csv(
     pool: &SqlitePool,
     data_source_id: &str,
     request: NoteDataSourceCsvExportRequest,
+) -> Result<NoteDataSourceCsvExportDto, String> {
+    export_csv_with_mode(pool, data_source_id, request, CsvCellMode::Exact).await
+}
+
+/// Exports a data source as CSV for a file the user opens in a spreadsheet.
+///
+/// Text cells that start with `=`, `+`, `-`, `@`, tab, or carriage return get a leading `'` so the spreadsheet shows them as text. Number properties and cells that are a plain number, such as `-12.5`, stay unchanged.
+pub async fn export_spreadsheet_csv(
+    pool: &SqlitePool,
+    data_source_id: &str,
+    request: NoteDataSourceCsvExportRequest,
+) -> Result<NoteDataSourceCsvExportDto, String> {
+    export_csv_with_mode(pool, data_source_id, request, CsvCellMode::Spreadsheet).await
+}
+
+async fn export_csv_with_mode(
+    pool: &SqlitePool,
+    data_source_id: &str,
+    request: NoteDataSourceCsvExportRequest,
+    mode: CsvCellMode,
 ) -> Result<NoteDataSourceCsvExportDto, String> {
     let scope = CsvExportScope::from_request(request.scope.as_deref())?;
     let database_id = request.database_id.as_deref();
@@ -87,7 +120,7 @@ pub async fn export_csv(
     let columns = export_columns(&schema, &view, scope)?;
     let headers = stable_headers(&columns);
     let diagnostics = export_diagnostics(&columns);
-    let csv = render_csv(&headers, &rows, &columns)?;
+    let csv = render_csv(&headers, &rows, &columns, mode)?;
     let file_name = export_file_name(&data_source.title, &view.name, scope);
     tx.commit()
         .await
@@ -257,18 +290,48 @@ fn render_csv(
     headers: &[String],
     rows: &[NotePageRow],
     columns: &[&data_sources::layouts::table::TableProperty],
+    mode: CsvCellMode,
 ) -> Result<String, String> {
     let mut csv = String::new();
-    push_csv_record(&mut csv, headers);
+    let header_record = headers
+        .iter()
+        .map(|header| spreadsheet_safe_text(header.clone(), mode))
+        .collect::<Vec<_>>();
+    push_csv_record(&mut csv, &header_record);
     for row in rows {
         let properties = parse_json(&row.properties, "row page properties")?;
         let record = columns
             .iter()
-            .map(|property| property_plain_text(row, &properties, property))
+            .map(|property| {
+                let text = property_plain_text(row, &properties, property);
+                if property.property_type == "number" {
+                    text
+                } else {
+                    spreadsheet_safe_text(text, mode)
+                }
+            })
             .collect::<Vec<_>>();
         push_csv_record(&mut csv, &record);
     }
     Ok(csv)
+}
+
+fn spreadsheet_safe_text(text: String, mode: CsvCellMode) -> String {
+    if mode == CsvCellMode::Spreadsheet
+        && text.starts_with(SPREADSHEET_FORMULA_TRIGGERS)
+        && !is_plain_number(&text)
+    {
+        format!("'{text}")
+    } else {
+        text
+    }
+}
+
+/// Whether `text` is a finite decimal number such as `-12.5` or `+3e4`, which spreadsheets read as a value rather than a formula.
+fn is_plain_number(text: &str) -> bool {
+    text.chars().all(|character| {
+        character.is_ascii_digit() || matches!(character, '+' | '-' | '.' | 'e' | 'E')
+    }) && text.parse::<f64>().is_ok_and(f64::is_finite)
 }
 
 fn push_csv_record(csv: &mut String, values: &[String]) {

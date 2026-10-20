@@ -198,7 +198,6 @@ export interface ChatTeammateChannelAccessInput {
 export interface ReplaceChatTeammateAccessRequest {
   teammateId: ChatParticipantId;
   expectedAccessRevision: number;
-  teammateDefaultRuntimeApproval: ChatRuntimeApprovalPolicy;
   channels: ChatTeammateChannelAccessInput[];
   teammateProfile?: UpdateChatTeammateProfileRequest | null;
   policy?: ChatTeammatePolicyInput | null;

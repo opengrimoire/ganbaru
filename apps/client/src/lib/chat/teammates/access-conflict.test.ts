@@ -37,14 +37,13 @@ function draft(overrides: Partial<ChatTeammateStudioDraft> = {}): ChatTeammateSt
       speed: null,
       providerOptions: { schemaVersion: 1, value: {} },
     },
-    teammateDefaultRuntimeApproval: "ask",
     channels: [channel("channel:general")],
     ...overrides,
   };
 }
 
 describe("teammate access conflict recovery", () => {
-  it("summarizes identity, policy, approval, and channel differences", () => {
+  it("summarizes identity, policy, and channel differences", () => {
     const durable = draft({
       channels: [channel("channel:general"), channel("channel:remote")],
     });
@@ -54,14 +53,12 @@ describe("teammate access conflict recovery", () => {
         displayName: "Atlas local",
         modelId: "gpt-5.1",
       },
-      teammateDefaultRuntimeApproval: "autoApprove",
       channels: [channel("channel:general", false), channel("channel:local")],
     });
 
     expect(compareChatTeammateStudioDrafts(local, durable)).toEqual({
       identityChanged: true,
       policyChanged: true,
-      runtimeApprovalChanged: true,
       addedChannelCount: 1,
       removedChannelCount: 1,
       changedChannelCount: 1,
@@ -80,7 +77,6 @@ describe("teammate access conflict recovery", () => {
         role: "Lead engineer",
         providerOptions: { schemaVersion: 1, value: { durable: true } },
       },
-      teammateDefaultRuntimeApproval: "unattended",
       channels: [channel("channel:general"), channel("channel:remote")],
     });
 
@@ -92,7 +88,6 @@ describe("teammate access conflict recovery", () => {
       schemaVersion: 1,
       value: { durable: true },
     });
-    expect(rebased.teammateDefaultRuntimeApproval).toBe("unattended");
     expect(rebased.channels.map((entry) => entry.channelId)).toEqual([
       "channel:remote",
       "channel:local",

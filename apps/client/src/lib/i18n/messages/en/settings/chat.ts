@@ -43,7 +43,6 @@ export const chatSettings = {
     model: "Model",
     effort: "Reasoning",
     approval: "Approval behavior",
-    defaultRuntimeApproval: "Default runtime approval",
     approvalDoesNotGrantAccess: "Approvals can narrow runtime behavior but never grant channel or folder access.",
     runtime: {
       inherit: "Inherit agent default",
@@ -280,8 +279,6 @@ export const chatSettings = {
       identityUnchanged: "Identity fields match the saved state.",
       policyChanged: "Provider or model policy differs from the saved state.",
       policyUnchanged: "Provider and model policy match the saved state.",
-      runtimeChanged: "Default runtime approval differs from the saved state.",
-      runtimeUnchanged: "Default runtime approval matches the saved state.",
       channelSummary: (added: number, removed: number, changed: number) => `Draft channel differences: ${added} added, ${removed} removed, ${changed} changed.`,
       keepAndRebase: "Keep and rebase my draft",
       reloadCurrent: "Reload current state",

@@ -25,7 +25,6 @@ export async function applyChannelMemberChanges(
     await chatApi.replaceChatTeammateAccess({
       teammateId,
       expectedAccessRevision: access.accessRevision,
-      teammateDefaultRuntimeApproval: access.teammateDefaultRuntimeApproval,
       channels: channelAccessWithChannel(access, channelId, profile),
     });
   }
@@ -34,7 +33,6 @@ export async function applyChannelMemberChanges(
     await chatApi.replaceChatTeammateAccess({
       teammateId,
       expectedAccessRevision: access.accessRevision,
-      teammateDefaultRuntimeApproval: access.teammateDefaultRuntimeApproval,
       channels: channelAccessWithoutChannel(access, channelId),
     });
   }

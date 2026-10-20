@@ -268,13 +268,9 @@ pub async fn chat_replace_teammate_access(
     }
     let updated = sqlx::query(
         "UPDATE chat_teammate_access_state
-         SET access_revision = access_revision + 1,
-             runtime_approval_policy = ?, updated_at = ?
+         SET access_revision = access_revision + 1, updated_at = ?
          WHERE teammate_id = ? AND access_revision = ?",
     )
-    .bind(wire_runtime_approval_policy(
-        request.teammate_default_runtime_approval,
-    ))
     .bind(now.as_str())
     .bind(request.teammate_id.as_str())
     .bind(i64_value(request.expected_access_revision)?)

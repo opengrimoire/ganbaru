@@ -442,10 +442,22 @@ fn standalone_teammate_identity_is_inert_until_access_is_replaced() {
         .await
         .unwrap();
 
+        let stored_runtime_default: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pragma_table_info('chat_teammate_access_state')
+             WHERE name = 'runtime_approval_policy'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
         assert_eq!(access_revision, 0);
         assert_eq!(memberships, 0);
         assert_eq!(ai_access, 0);
         assert_eq!(folder_grants, 0);
+        assert_eq!(
+            stored_runtime_default, 0,
+            "the teammate default runtime approval derives from its approval behavior"
+        );
     });
 }
 

@@ -46,7 +46,6 @@ export const chatSettings = {
     model: "Modelo",
     effort: "Razonamiento",
     approval: "Comportamiento de aprobación",
-    defaultRuntimeApproval: "Aprobación de ejecución predeterminada",
     approvalDoesNotGrantAccess: "Las aprobaciones pueden limitar la ejecución, pero nunca otorgan acceso a canales o carpetas.",
     runtime: {
       inherit: "Heredar del agente",
@@ -283,8 +282,6 @@ export const chatSettings = {
       identityUnchanged: "Los campos de identidad coinciden con el estado guardado.",
       policyChanged: "La política de proveedor o modelo difiere del estado guardado.",
       policyUnchanged: "La política de proveedor y modelo coincide con el estado guardado.",
-      runtimeChanged: "La aprobación de ejecución predeterminada difiere del estado guardado.",
-      runtimeUnchanged: "La aprobación de ejecución predeterminada coincide con el estado guardado.",
       channelSummary: (added: number, removed: number, changed: number) => `Diferencias del borrador en canales: ${added} agregados, ${removed} quitados, ${changed} cambiados.`,
       keepAndRebase: "Conservar y reorganizar mi borrador",
       reloadCurrent: "Cargar el estado actual",

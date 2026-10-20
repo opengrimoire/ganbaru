@@ -42,7 +42,7 @@ const MAX_LINKED_PEERS: usize = 32;
 const MAX_REVOKED_PEERS: usize = 64;
 const ENROLLMENT_CODE_DOMAIN: &[u8] = b"ganbaru-enrollment-code-v1";
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct StoredIdentity {
     device_id: String,
@@ -51,6 +51,20 @@ struct StoredIdentity {
     /// [`IdentityKeyStore`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     private_key: Option<String>,
+}
+
+impl std::fmt::Debug for StoredIdentity {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("StoredIdentity")
+            .field("device_id", &self.device_id)
+            .field("certificate", &self.certificate)
+            .field(
+                "private_key",
+                &self.private_key.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
 }
 
 /// Device-local secret storage for the TLS private key, such as the operating-system keyring.
@@ -675,7 +689,7 @@ impl PairingManager {
             protocol_version: PROTOCOL_VERSION,
             compatibility,
             invitation_id: random_token("invite")?,
-            secret: random_secret()?,
+            secret: random_secret()?.into(),
             endpoint: endpoint.to_string(),
             coordinator_fingerprint: certificate_fingerprint(
                 decode_certificate(&state.identity.certificate)?.as_ref(),

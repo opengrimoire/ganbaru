@@ -382,7 +382,7 @@ async fn an_unconfirmed_network_reaches_neither_enrollment_nor_the_handshake() {
 async fn enrollment_with_a_wrong_secret_is_refused_without_a_prompt() {
     let pair = LocalPair::start().await;
     let mut forged = pair.invitation.clone();
-    forged.secret = random_token("secret").expect("forged secret");
+    forged.secret = random_token("secret").expect("forged secret").into();
     let error = tokio::time::timeout(APPROVAL_TEST_WAIT, spawn_phone_enrollment(&pair, forged))
         .await
         .expect("refused without waiting for approval")

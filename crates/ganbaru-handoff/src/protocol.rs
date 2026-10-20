@@ -94,13 +94,38 @@ pub fn ensure_compatible(
     Ok(())
 }
 
+/// A pairing invitation secret. It serializes as the plain string, and `Debug` never prints it.
+#[derive(Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct InvitationSecret(String);
+
+impl From<String> for InvitationSecret {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl std::ops::Deref for InvitationSecret {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for InvitationSecret {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("InvitationSecret([REDACTED])")
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PairingInvitation {
     pub protocol_version: u16,
     pub compatibility: HandoffCompatibility,
     pub invitation_id: String,
-    pub secret: String,
+    pub secret: InvitationSecret,
     pub endpoint: String,
     pub coordinator_fingerprint: String,
     pub coordinator_device_id: String,
@@ -188,7 +213,7 @@ pub enum ControlMessage {
     Enroll {
         protocol_version: u16,
         invitation_id: String,
-        secret: String,
+        secret: InvitationSecret,
         vault_id: String,
         device_id: String,
         device_label: String,
@@ -1124,7 +1149,7 @@ fn decode_pairing_qr_payload(payload: &[u8], now_ms: i64) -> Result<PairingInvit
             database_schema_sha256,
         },
         invitation_id,
-        secret,
+        secret: secret.into(),
         endpoint,
         coordinator_fingerprint,
         coordinator_device_id,
@@ -1298,7 +1323,9 @@ mod tests {
             protocol_version: PROTOCOL_VERSION,
             compatibility: test_compatibility(),
             invitation_id: "invite-abcdefghijklmnopqrstuv".to_string(),
-            secret: "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG".to_string(),
+            secret: "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
+                .to_string()
+                .into(),
             endpoint: "192.168.1.20:43821".to_string(),
             coordinator_fingerprint: "b".repeat(64),
             coordinator_device_id: "device-abcdefghijklmnopqrstuv".to_string(),
@@ -1309,11 +1336,38 @@ mod tests {
     }
 
     #[test]
+    fn invitation_secrets_serialize_plainly_and_stay_out_of_debug_output() {
+        let invitation = qr_invitation();
+        let secret = invitation.secret.to_string();
+        let enroll = ControlMessage::Enroll {
+            protocol_version: PROTOCOL_VERSION,
+            invitation_id: invitation.invitation_id.clone(),
+            secret: invitation.secret.clone(),
+            vault_id: invitation.vault_id.clone(),
+            device_id: "device-phone".to_string(),
+            device_label: "Phone".to_string(),
+            device_kind: DeviceKind::Phone,
+            device_certificate: "certificate".to_string(),
+        };
+        for output in [format!("{invitation:?}"), format!("{enroll:?}")] {
+            assert!(!output.contains(&secret), "{output}");
+            assert!(output.contains("[REDACTED]"), "{output}");
+        }
+        let serialized = serde_json::to_value(&enroll).expect("serialize enrollment");
+        assert_eq!(serialized["secret"], secret.as_str());
+        let decoded: ControlMessage =
+            serde_json::from_value(serialized).expect("decode enrollment");
+        assert_eq!(decoded, enroll);
+    }
+
+    #[test]
     fn enrollment_messages_reject_control_and_bidi_labels() {
         let enroll = |label: &str| ControlMessage::Enroll {
             protocol_version: PROTOCOL_VERSION,
             invitation_id: "invite-abcdefghijklmnopqrstuv".to_string(),
-            secret: "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG".to_string(),
+            secret: "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
+                .to_string()
+                .into(),
             vault_id: "vault-abcdefghijklmnopqrstuv".to_string(),
             device_id: "device-phone".to_string(),
             device_label: label.to_string(),

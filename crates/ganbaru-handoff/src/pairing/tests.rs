@@ -1238,3 +1238,20 @@ fn an_unreadable_key_store_reports_the_failure_without_replacing_the_identity() 
     let (_, reloaded) = unlocked.identity().expect("identity after unlock");
     assert_eq!(reloaded.certificate, original.certificate);
 }
+
+#[test]
+fn stored_identity_keeps_the_private_key_out_of_debug_output() {
+    let identity = StoredIdentity {
+        device_id: "device-desktop".to_string(),
+        certificate: "certificate-b64".to_string(),
+        private_key: Some("pkcs8-private-key-b64".to_string()),
+    };
+    let output = format!("{identity:?}");
+    assert!(!output.contains("pkcs8-private-key-b64"), "{output}");
+    assert!(
+        output.contains("certificate-b64") && output.contains("[REDACTED]"),
+        "{output}"
+    );
+    let serialized = serde_json::to_value(&identity).expect("serialize identity");
+    assert_eq!(serialized["privateKey"], "pkcs8-private-key-b64");
+}

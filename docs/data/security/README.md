@@ -39,7 +39,7 @@ Across domains:
 - Deny unknown, stale, oversized, malformed, or unsupported input.
 - Validate before mutation and again at the privileged boundary.
 - Bound reads, writes, decompression, parsing, process output, queues, and worker counts.
-- Remove secrets and unnecessary absolute paths from persisted errors and diagnostics.
+- Remove secrets and unnecessary absolute paths from persisted errors and diagnostics. Types that hold tokens, passwords, pairing secrets, or private keys implement `Debug` with the value redacted, so a log or panic message never prints it.
 - Use explicit allowlists for native commands, URL schemes, origins, file types, and tool methods.
 - Preserve user-authored data when a safe repair or export path exists.
 - Make cleanup retryable when immediate deletion is unsafe.

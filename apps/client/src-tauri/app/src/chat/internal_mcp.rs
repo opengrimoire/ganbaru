@@ -236,10 +236,20 @@ impl EndpointState {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct InternalMcpEndpoint {
     pub url: String,
     pub bearer_token: String,
+}
+
+impl std::fmt::Debug for InternalMcpEndpoint {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("InternalMcpEndpoint")
+            .field("url", &self.url)
+            .field("bearer_token", &"[REDACTED]")
+            .finish()
+    }
 }
 
 struct RunningEndpoint {
@@ -1440,6 +1450,28 @@ mod tests {
 
         let finished = bounded_work(std::future::pending(), TEST_WAIT, async { Ok(7) }).await;
         assert_eq!(finished.expect("finished work"), 7);
+    }
+
+    #[test]
+    fn endpoint_descriptors_keep_bearer_tokens_out_of_debug_output() {
+        let token = generate_bearer_token().expect("token");
+        let endpoint = InternalMcpEndpoint {
+            url: "http://127.0.0.1:41000/mcp".to_string(),
+            bearer_token: token.clone(),
+        };
+        let config = ganbaru_chat_contracts::models::ProviderInternalMcpConfig {
+            name: "ganbaru".to_string(),
+            url: endpoint.url.clone(),
+            bearer_token: token.clone(),
+            organizational_authority: true,
+        };
+        for output in [format!("{endpoint:?}"), format!("{config:?}")] {
+            assert!(!output.contains(&token), "{output}");
+            assert!(
+                output.contains("127.0.0.1:41000") && output.contains("[REDACTED]"),
+                "{output}"
+            );
+        }
     }
 
     #[test]

@@ -89,19 +89,40 @@ pub struct CreateHostedChangeRequest {
     pub draft: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BitbucketCredential {
     username: String,
     token: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+impl std::fmt::Debug for BitbucketCredential {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BitbucketCredential")
+            .field("username", &self.username)
+            .field("token", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigureBitbucketCredential {
     pub repository_slug: String,
     pub username: String,
     pub token: String,
+}
+
+impl std::fmt::Debug for ConfigureBitbucketCredential {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ConfigureBitbucketCredential")
+            .field("repository_slug", &self.repository_slug)
+            .field("username", &self.username)
+            .field("token", &"[REDACTED]")
+            .finish()
+    }
 }
 
 pub async fn discover_source_control(

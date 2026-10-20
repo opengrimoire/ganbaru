@@ -431,3 +431,25 @@ async fn hosted_cli_git_children_skip_repository_fsmonitor_unless_trusted_by_the
         assert!(!fixture.run(&repository, policy).await, "{policy:?}");
     }
 }
+
+#[test]
+fn bitbucket_credentials_keep_tokens_out_of_debug_output() {
+    let stored = BitbucketCredential {
+        username: "maintainer".to_string(),
+        token: "bitbucket-app-password".to_string(),
+    };
+    let request = ConfigureBitbucketCredential {
+        repository_slug: "team/project".to_string(),
+        username: "maintainer".to_string(),
+        token: "bitbucket-app-password".to_string(),
+    };
+    for output in [format!("{stored:?}"), format!("{request:?}")] {
+        assert!(!output.contains("bitbucket-app-password"), "{output}");
+        assert!(
+            output.contains("maintainer") && output.contains("[REDACTED]"),
+            "{output}"
+        );
+    }
+    let serialized = serde_json::to_value(&stored).expect("serialize credential");
+    assert_eq!(serialized["token"], "bitbucket-app-password");
+}

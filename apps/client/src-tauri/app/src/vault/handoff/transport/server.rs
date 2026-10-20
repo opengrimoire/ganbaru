@@ -6,7 +6,9 @@ use super::{
 };
 use crate::contacts::requests::PeerReply;
 use crate::sync::hub::SyncHub;
-use crate::vault::handoff::contact_requests::{ContactJob, ContactOperation, ContactSender};
+use crate::vault::handoff::contact_requests::{
+    ContactJob, ContactOperation, ContactSender, MIN_CONTACT_REQUEST_RESPONSE,
+};
 use crate::vault::handoff::enrollment_approval::{
     ENROLLMENT_DECLINED_MESSAGE, ENROLLMENT_UNANSWERED_MESSAGE, EnrollmentApprovals,
     EnrollmentDecision,
@@ -589,7 +591,8 @@ async fn send_coordinator_response(
 }
 
 /// Hands an unauthenticated contact message to the contact worker. A source past its contact
-/// budget, or a full worker queue, gets a retryable busy answer instead of waiting.
+/// budget, or a full worker queue, gets a retryable busy answer instead of waiting. A handled
+/// contact request is answered no sooner than [`MIN_CONTACT_REQUEST_RESPONSE`] after it arrived.
 async fn send_contact_response(
     stream: &mut tokio_rustls::server::TlsStream<TcpStream>,
     contacts: Option<&ContactSender>,
@@ -609,6 +612,8 @@ async fn send_contact_response(
     if !limits.take_contact_message(source, std::time::Instant::now()) {
         return send_peer_reply(stream, PeerReply::busy()).await;
     }
+    let answer_floor = matches!(operation, ContactOperation::Request { .. })
+        .then(|| tokio::time::Instant::now() + MIN_CONTACT_REQUEST_RESPONSE);
     let (response, receiver) = tokio::sync::oneshot::channel();
     if contacts
         .try_send(ContactJob {
@@ -619,7 +624,11 @@ async fn send_contact_response(
     {
         return send_peer_reply(stream, PeerReply::busy()).await;
     }
-    match receiver.await {
+    let handled = receiver.await;
+    if let Some(floor) = answer_floor {
+        tokio::time::sleep_until(floor).await;
+    }
+    match handled {
         Ok(Ok(reply)) => send_peer_reply(stream, reply).await,
         Ok(Err(error)) => send_error(stream, "handoff_rejected", &error, true).await,
         Err(_) => {

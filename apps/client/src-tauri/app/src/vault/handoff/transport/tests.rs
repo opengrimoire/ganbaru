@@ -1152,6 +1152,54 @@ async fn unauthenticated_contact_request_is_forwarded_to_the_contact_worker() {
 }
 
 #[tokio::test]
+async fn contact_request_answers_wait_for_the_same_minimum_time_whatever_the_outcome() {
+    let (pair, _requests, mut contacts) = LocalPair::start_with_services().await;
+    let (key, card) = sample_contact_card();
+    let recipient_nonce = [7u8; ganbaru_contacts::CARD_NONCE_BYTES];
+    let replies = [
+        PeerReply::Received {
+            request_id: "contact-one".to_string(),
+        },
+        PeerReply::Rejected {
+            code: "invalid_request",
+            message: "the contact request is invalid",
+            retryable: false,
+        },
+    ];
+    let coordinator = tokio::spawn(async move {
+        for reply in replies {
+            let job = contacts.recv().await.expect("contact request");
+            job.response.send(Ok(reply)).expect("send contact response");
+        }
+    });
+
+    for _ in 0..2 {
+        let signature = key.sign(&ganbaru_contacts::request_signature_payload(
+            &recipient_nonce,
+            "contact-one",
+        ));
+        let started = std::time::Instant::now();
+        let _ = unauthenticated_exchange(
+            &pair.invitation.endpoint,
+            &pair.invitation.coordinator_fingerprint,
+            ControlMessage::ContactRequest {
+                protocol_version: PROTOCOL_VERSION,
+                recipient_card_nonce: ganbaru_contacts::encode_nonce(&recipient_nonce),
+                requester_card: card.clone(),
+                request_id: "contact-one".to_string(),
+                signature: base64url(&signature),
+            },
+        )
+        .await;
+        assert!(
+            started.elapsed()
+                >= crate::vault::handoff::contact_requests::MIN_CONTACT_REQUEST_RESPONSE
+        );
+    }
+    coordinator.await.expect("coordinator task");
+}
+
+#[tokio::test]
 async fn contact_rejection_reaches_the_requester_as_a_protocol_error() {
     let (pair, _requests, mut contacts) = LocalPair::start_with_services().await;
     let (key, _) = sample_contact_card();

@@ -39,7 +39,7 @@ Always use the workspace flag for root scripts.
 
 | Command | Purpose |
 | --- | --- |
-| `pnpm -w run check` | Rust formatting and Clippy, then the workflow signing-isolation check, provider protocol snapshots, Svelte Check, and TypeScript |
+| `pnpm -w run check` | Rust formatting and Clippy, then the workflow signing-isolation and unsafe inventory checks, provider protocol snapshots, Svelte Check, and TypeScript |
 | `pnpm -w run test` | Rust tests, then normal frontend tests in sequential shards |
 | `pnpm -w run test:benchmark-contracts` | Explicit benchmark fixture and harness contracts, excluded from normal validation |
 | `pnpm -w run editor-check` | Tailwind editor-style diagnostics |

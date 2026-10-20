@@ -1,3 +1,8 @@
+#![allow(
+    unsafe_code,
+    reason = "Retained unsafe boundary; see docs/data/security/unsafe-rust.md."
+)]
+
 use serde::Serialize;
 use sqlx::{SqliteConnection, SqlitePool};
 use std::ffi::{CStr, c_char, c_int, c_uint, c_void};

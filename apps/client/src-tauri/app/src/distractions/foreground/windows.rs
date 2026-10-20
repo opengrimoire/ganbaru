@@ -1,3 +1,8 @@
+#![allow(
+    unsafe_code,
+    reason = "Retained unsafe boundary; see docs/data/security/unsafe-rust.md."
+)]
+
 #[cfg(windows)]
 use super::*;
 

@@ -947,6 +947,10 @@ fn normalized_identity(value: &str) -> Option<String> {
 }
 
 #[cfg(unix)]
+#[allow(
+    unsafe_code,
+    reason = "Retained unsafe boundary; see docs/data/security/unsafe-rust.md."
+)]
 fn system_hostname() -> Option<String> {
     let mut buffer = [0_u8; 256];
     // SAFETY: `buffer` remains alive and writable for the full length passed to

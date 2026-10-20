@@ -684,6 +684,10 @@ fn managed_worktree_identity(local_data_root: &Path, candidate: &Path) -> ChatRe
 }
 
 #[cfg(unix)]
+#[allow(
+    unsafe_code,
+    reason = "Retained unsafe boundary; see docs/data/security/unsafe-rust.md."
+)]
 fn open_directory_at(parent: &fs::File, name: impl AsRef<std::ffi::OsStr>) -> ChatResult<fs::File> {
     use std::os::fd::{AsRawFd, FromRawFd};
 
@@ -718,6 +722,10 @@ fn validated_relative_directory_name(name: &std::ffi::OsStr) -> ChatResult<std::
 }
 
 #[cfg(windows)]
+#[allow(
+    unsafe_code,
+    reason = "Retained unsafe boundary; see docs/data/security/unsafe-rust.md."
+)]
 fn managed_worktree_identity(local_data_root: &Path, candidate: &Path) -> ChatResult<(u32, u64)> {
     use std::os::windows::io::AsRawHandle;
     use windows::Win32::Foundation::HANDLE;

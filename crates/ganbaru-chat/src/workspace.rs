@@ -704,6 +704,10 @@ pub fn filesystem_identity(path: &Path, domain: &[u8]) -> ChatResult<String> {
 }
 
 #[cfg(windows)]
+#[allow(
+    unsafe_code,
+    reason = "Retained unsafe boundary; see docs/data/security/unsafe-rust.md."
+)]
 pub fn filesystem_identity(path: &Path, domain: &[u8]) -> ChatResult<String> {
     use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
     use std::os::windows::io::AsRawHandle;

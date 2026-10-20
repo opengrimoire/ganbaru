@@ -23,6 +23,8 @@ Build scripts, examples, tracked generated Rust, `ganbaru-native-messaging`, and
 
 The five libraries that own retained boundaries (`ganbaru-tauri-app`, `ganbaru-chat`, `ganbaru-chat-providers`, `ganbaru-mobile-notifications`, and `ganbaru-mobile-media`) deny `clippy::undocumented_unsafe_blocks` and `unsafe_op_in_unsafe_fn`. These lints enforce local structure but do not prove a safety comment correct.
 
+The workspace denies `unsafe_code`, and every member inherits workspace lints. Each owned module below allows it with `#![allow(unsafe_code, reason = ...)]`, or on the owning function when the boundary is one function in a larger safe module. `pnpm -w run check:unsafe` fails when an allowance appears in a file this inventory does not own, when a member stops inheriting the deny, or when an owned path no longer exists. Adding unsafe code therefore requires an inventory entry in the same reviewed change.
+
 ## Review method
 
 1. Enumerate every tracked `.rs` file, including tests, examples, build scripts, and generated sources.

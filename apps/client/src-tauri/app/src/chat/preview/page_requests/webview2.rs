@@ -1,5 +1,10 @@
 //! WebView2 permission and script dialog events, through the typed COM bindings.
 
+#![allow(
+    unsafe_code,
+    reason = "Retained unsafe boundary; see docs/data/security/unsafe-rust.md."
+)]
+
 use super::*;
 use webview2_com::Microsoft::Web::WebView2::Win32::*;
 use webview2_com::{PermissionRequestedEventHandler, ScriptDialogOpeningEventHandler, take_pwstr};

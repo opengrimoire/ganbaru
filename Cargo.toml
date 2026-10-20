@@ -40,6 +40,10 @@ rust-version = "1.98"
 authors = ["Ganbaru"]
 license = "AGPL-3.0-only"
 
+[workspace.lints.rust]
+# Unsafe code is allowed only in modules listed in docs/data/security/unsafe-rust.md.
+unsafe_code = "deny"
+
 [workspace.lints.clippy]
 # Nested guards and let-chains are both valid; choose by readability and scope.
 collapsible_if = "allow"

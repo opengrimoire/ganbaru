@@ -585,6 +585,10 @@ fn owned_server_arguments_and_readiness_are_exact() {
 
 #[cfg(unix)]
 #[test]
+#[allow(
+    unsafe_code,
+    reason = "Retained unsafe boundary; see docs/data/security/unsafe-rust.md."
+)]
 fn owned_server_fixture_stops_its_process_tree() {
     use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;

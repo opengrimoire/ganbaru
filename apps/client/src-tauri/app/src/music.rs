@@ -9,7 +9,6 @@ use std::{
     collections::{HashMap, VecDeque},
     fs,
     path::{Path, PathBuf},
-    process::Stdio,
 };
 #[cfg(desktop)]
 use std::{
@@ -751,10 +750,12 @@ fn reveal_local_file(path: &Path) -> Result<(), String> {
     spawn_file_manager_command("open", [std::ffi::OsStr::new("-R"), path.as_os_str()])
 }
 
+/// Selects the file through the shell item ID API, which takes the path as data rather than as
+/// part of an `explorer.exe` command line, where commas and quotes act as separators.
 #[cfg(windows)]
 fn reveal_local_file(path: &Path) -> Result<(), String> {
-    let selection = format!("/select,{}", path.display());
-    spawn_file_manager_command("explorer.exe", [std::ffi::OsStr::new(&selection)])
+    tauri_plugin_opener::reveal_item_in_dir(path)
+        .map_err(|error| format!("open media file location: {error}"))
 }
 
 #[cfg(all(desktop, not(any(target_os = "linux", target_os = "macos", windows))))]
@@ -762,7 +763,7 @@ fn reveal_local_file(_path: &Path) -> Result<(), String> {
     Err("opening media file locations is not implemented for this platform".to_string())
 }
 
-#[cfg(desktop)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn spawn_file_manager_command<I, S>(program: &str, args: I) -> Result<(), String>
 where
     I: IntoIterator<Item = S>,
@@ -770,9 +771,9 @@ where
 {
     std::process::Command::new(program)
         .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .spawn()
         .map(|_| ())
         .map_err(|e| format!("open media file location: {e}"))
@@ -1012,6 +1013,13 @@ mod tests {
             Some("image/jpeg")
         );
         assert_eq!(artwork_content_type(b"not an image"), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_reveal_resolves_the_path_as_data_instead_of_a_command_line() {
+        let missing = unique_temporary_dir("ganbaru-reveal").join(r#"a,b",c.mp3"#);
+        assert!(reveal_local_file(&missing).is_err());
     }
 
     #[test]

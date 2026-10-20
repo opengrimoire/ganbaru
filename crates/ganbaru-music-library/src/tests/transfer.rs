@@ -87,7 +87,7 @@ fn music_transfer_admits_database_bytes_before_loading_selected_families() {
         for statement in [
             "UPDATE music_local_roots SET name=?",
             "UPDATE music_playlists SET icon=?",
-            "UPDATE music_library_items SET original_title=?",
+            "UPDATE music_library_items SET title_override=?",
             "UPDATE music_snoozes SET reason=?",
             "UPDATE music_context_assignments SET provenance_id=?",
         ] {
@@ -141,7 +141,7 @@ fn music_transfer_shares_database_allowance_across_items_children_and_conflict_r
         let initial = reviewed(&pool, source(), "initial").await;
         transfer::commit(&pool, initial, &[]).await.unwrap();
         let text = "x".repeat(super::transfer_read::MAX_READ_BYTES / 8);
-        sqlx::query("UPDATE music_library_items SET original_title=?")
+        sqlx::query("UPDATE music_library_items SET title_override=?")
             .bind(&text)
             .execute(&pool)
             .await

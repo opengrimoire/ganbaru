@@ -24,7 +24,7 @@ The active theme ID is portable configuration. Applying it to a webview is runti
 
 Music separates canonical library identity from physical source location and playback state.
 
-- Library items carry playable identity and metadata. Local roots and locations describe user-selected folders or document trees without making an absolute path canonical.
+- Library items carry playable identity and metadata. Local roots and locations describe user-selected folders or document trees without making an absolute path canonical. Original title, artist, and album text is capped at 500 characters in the schema; writers truncate longer source text.
 - Source collections (local collections, YouTube playlists, and other discovery sources) keep refresh generation and failure state. Refresh and relink use staged generations so a failed scan leaves the previous library usable.
 - User playlists and ordered memberships are independent of source collections; removing or refreshing a source never silently destroys a playlist.
 - Related families cover skip ranges, item signals, snoozes, statistics, recent selections, refresh issues, context assignments, soundscapes, and soundscape presets.

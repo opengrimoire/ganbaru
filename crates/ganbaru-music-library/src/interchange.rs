@@ -366,9 +366,9 @@ async fn import_item(
         .bind(&item.identity_key)
         .bind(item.source_kind.as_ref())
         .bind(&item.youtube_video_id)
-        .bind(&item.title)
-        .bind(&item.artist)
-        .bind(&item.album)
+        .bind(bounded_item_description(&item.title))
+        .bind(bounded_item_description(&item.artist))
+        .bind(bounded_item_description(&item.album))
         .bind(item.duration_ms)
         .bind(if item.source_kind == MusicLibrarySourceKind::LocalFile {
             "missing"
@@ -384,9 +384,9 @@ async fn import_item(
         sqlx::query(
             "UPDATE music_library_items SET original_title = ?, original_artist = ?, original_album = ?, duration_ms = ?, updated_at_ms = ?, version = version + 1 WHERE id = ?",
         )
-        .bind(&item.title)
-        .bind(&item.artist)
-        .bind(&item.album)
+        .bind(bounded_item_description(&item.title))
+        .bind(bounded_item_description(&item.artist))
+        .bind(bounded_item_description(&item.album))
         .bind(item.duration_ms)
         .bind(request.imported_at)
         .bind(&item_id)

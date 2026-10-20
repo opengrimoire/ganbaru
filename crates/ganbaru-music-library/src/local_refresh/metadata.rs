@@ -1,3 +1,4 @@
+use crate::validation::bounded_item_description;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
@@ -437,7 +438,9 @@ fn apply_tag(tags: &mut LocalTags, key: &str, value: &str) {
 
 fn set_if_text(target: &mut Option<String>, value: Option<String>) {
     if target.is_none() {
-        *target = value.filter(|text| !text.trim().is_empty());
+        *target = value
+            .filter(|text| !text.trim().is_empty())
+            .map(|text| bounded_item_description(&text).to_string());
     }
 }
 
@@ -527,6 +530,22 @@ mod tests {
         assert_eq!(tags.title.as_deref(), Some("Rain room"));
         assert_eq!(tags.track_number, Some(12));
         assert!(parse_vorbis_comments(&bytes[..7]).is_err());
+    }
+
+    #[test]
+    fn truncates_tag_text_to_the_stored_description_limit() {
+        let comment = format!("TITLE={}", "é".repeat(20_000));
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&4_u32.to_le_bytes());
+        bytes.extend_from_slice(b"test");
+        bytes.extend_from_slice(&1_u32.to_le_bytes());
+        bytes.extend_from_slice(&(comment.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(comment.as_bytes());
+        let tags = parse_vorbis_comments(&bytes).unwrap();
+        assert_eq!(
+            tags.title.map(|title| title.chars().count()),
+            Some(crate::validation::MAX_ITEM_DESCRIPTION_CHARS)
+        );
     }
 
     #[test]

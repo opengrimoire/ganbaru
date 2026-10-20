@@ -26,7 +26,7 @@ Owner-disabled embedding is never bypassed by scraping streams, proxying media, 
 
 ## Artwork and metadata
 
-Local artwork comes from a user override, a matching sidecar image, a common album-cover file, or embedded metadata, with explicit overrides winning. Discovery stays within the selected source hierarchy. Missing or invalid artwork never prevents playback. Managed overrides are vault assets; sidecars stay with the music.
+Local artwork comes from a user override, a matching sidecar image, a common album-cover file, or embedded metadata, with explicit overrides winning. Discovery stays within the selected source hierarchy. Missing or invalid artwork never prevents playback. Managed overrides are vault assets; sidecars stay with the music. Stored title, artist, and album text is capped at 500 characters; longer tag or import text is truncated, so a crafted file or transfer never blocks a scan or bloats the library.
 
 YouTube thumbnails are kept in a size-bounded, device-local cache outside the vault that expires within 30 days. They are not transformed and are excluded from vault backups and transfers.
 

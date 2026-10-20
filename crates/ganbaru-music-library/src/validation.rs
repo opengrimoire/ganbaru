@@ -15,6 +15,17 @@ const MAX_RELATIVE_PATH_BYTES: usize = 4_096;
 pub(crate) const MAX_ITEM_WINDOW: i64 = 200;
 pub(crate) const MAX_SUMMARY_WINDOW: i64 = 500;
 const MAX_SEARCH_CHARS: usize = 300;
+/// Longest stored original title, artist, or album, which the schema also enforces. Longer tag or
+/// import text is truncated rather than rejected, so a crafted file never blocks a scan or import.
+pub const MAX_ITEM_DESCRIPTION_CHARS: usize = 500;
+
+/// Returns `value` cut to [`MAX_ITEM_DESCRIPTION_CHARS`] characters.
+pub fn bounded_item_description(value: &str) -> &str {
+    match value.char_indices().nth(MAX_ITEM_DESCRIPTION_CHARS) {
+        Some((end, _)) => &value[..end],
+        None => value,
+    }
+}
 
 pub(crate) fn validate_id(value: &str, field: &str) -> MusicLibraryResult<()> {
     let trimmed = value.trim();

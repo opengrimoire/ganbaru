@@ -21,7 +21,10 @@ const ROUTE_UP: u16 = 0x1;
 const ROUTE_GATEWAY: u16 = 0x2;
 /// `ATF_COM` flag of a resolved neighbor in `/proc/net/arp`.
 const NEIGHBOR_COMPLETE: u32 = 0x2;
-const PACKAGED_HELPER_PATH: &str = "/usr/bin/ganbaru";
+/// Installed path of the packaged app, the only build that hands rules to the helper.
+const PACKAGED_APP_PATH: &str = "/usr/bin/ganbaru";
+/// Installed path of the root-run helper that the polkit policy names.
+const PACKAGED_HELPER_PATH: &str = "/usr/lib/ganbaru/ganbaru-linking-firewall";
 const PRIVILEGED_HELPER_ARGUMENT: &str = "--manage-linking-firewall";
 const REVOKE_ALL_OPERATION: &str = "revoke-all";
 
@@ -534,14 +537,27 @@ fn apply_scope(scope: &AuthorizedScope, grant: bool) -> Result<(), String> {
     }
 }
 
+/// Returns the packaged helper when this process is the packaged app and the helper is a
+/// regular file that only root can replace. Other builds apply rules through the firewall
+/// command directly.
 fn trusted_packaged_helper() -> Option<PathBuf> {
     let current = std::env::current_exe().ok()?.canonicalize().ok()?;
-    let expected = Path::new(PACKAGED_HELPER_PATH).canonicalize().ok()?;
-    if current != expected {
+    if current != Path::new(PACKAGED_APP_PATH).canonicalize().ok()? {
         return None;
     }
-    let metadata = expected.metadata().ok()?;
-    (metadata.uid() == 0 && metadata.mode() & 0o022 == 0).then_some(expected)
+    let helper = Path::new(PACKAGED_HELPER_PATH);
+    let metadata = helper.symlink_metadata().ok()?;
+    let folder = helper.parent()?.symlink_metadata().ok()?;
+    (metadata.is_file()
+        && root_controlled(&metadata)
+        && folder.is_dir()
+        && root_controlled(&folder))
+    .then(|| helper.to_path_buf())
+}
+
+/// Whether only root can change the entry: owned by root and not group or world writable.
+fn root_controlled(metadata: &fs::Metadata) -> bool {
+    metadata.uid() == 0 && metadata.mode() & 0o022 == 0
 }
 
 fn apply_with_packaged_helper(
@@ -576,11 +592,11 @@ fn apply_with_packaged_helper(
     )
 }
 
-/// Handles the narrowly scoped firewall helper mode used by packaged Linux builds.
+/// Runs the root firewall helper request in the process arguments, if there is one.
 ///
-/// The package policy authorizes only the root-owned Ganbaru executable with
-/// `--manage-linking-firewall` as its first argument. All remaining values are
-/// parsed and validated again before a fixed firewall executable is invoked.
+/// The `ganbaru-linking-firewall` binary calls it. The package policy authorizes only that
+/// root-owned helper with `--manage-linking-firewall` as its first argument. All remaining
+/// values are parsed and validated again before a fixed firewall executable is invoked.
 pub fn run_privileged_helper_if_requested() -> Option<Result<(), String>> {
     let mut arguments = std::env::args().skip(1);
     if arguments.next().as_deref() != Some(PRIVILEGED_HELPER_ARGUMENT) {
@@ -1092,6 +1108,20 @@ wlp2s0 0001A8C0 00000000 0001 0 0 600 00FFFFFF 0 0 0\n";
             format!("{network}/{}", ipv4_prefix(mask).unwrap()),
             "192.168.1.0/24"
         );
+    }
+
+    #[test]
+    fn only_root_owned_entries_that_others_cannot_write_are_trusted() {
+        assert!(root_controlled(&Path::new("/").symlink_metadata().unwrap()));
+        assert_ne!(PACKAGED_HELPER_PATH, PACKAGED_APP_PATH);
+
+        let folder = std::env::temp_dir().join(format!("ganbaru-helper-{}", std::process::id()));
+        fs::create_dir_all(&folder).unwrap();
+        let metadata = folder.symlink_metadata().unwrap();
+        if metadata.uid() != 0 {
+            assert!(!root_controlled(&metadata));
+        }
+        fs::remove_dir(&folder).unwrap();
     }
 
     #[test]

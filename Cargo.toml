@@ -13,6 +13,7 @@ members = [
   "crates/ganbaru-distractions",
   "crates/ganbaru-handoff",
   "crates/ganbaru-image-metadata",
+  "crates/ganbaru-linking-firewall",
   "crates/ganbaru-mobile-documents",
   "crates/ganbaru-mobile-distractions",
   "crates/ganbaru-mobile-media",

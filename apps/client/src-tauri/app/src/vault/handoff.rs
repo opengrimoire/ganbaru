@@ -14,8 +14,6 @@ pub(crate) mod transport;
 
 #[cfg(target_os = "linux")]
 use ganbaru_handoff::network_access;
-#[cfg(target_os = "linux")]
-pub(crate) use ganbaru_handoff::network_access::run_privileged_helper_if_requested;
 pub(crate) use ganbaru_handoff::{pairing, protocol};
 
 use pairing::PairingManager;

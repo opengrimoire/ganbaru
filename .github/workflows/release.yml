@@ -87,6 +87,10 @@ jobs:
       - name: write release updater config
         run: node apps/client/scripts/release/write-tauri-release-config.mjs
 
+      - name: build Linux firewall helper
+        if: matrix.runner == 'ubuntu-22.04'
+        run: cargo build --release --locked -p ganbaru-linking-firewall
+
       - name: build release bundle
         run: pnpm --dir apps/client tauri build --config src-tauri/tauri.release.conf.json -- --locked
 
@@ -579,7 +583,7 @@ jobs:
       - name: push AUR package
         run: |
           export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/ganbaru-aur-publish -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
-          git -C dist/aur/ganbaru-bin add PKGBUILD .SRCINFO .gitignore
+          git -C dist/aur/ganbaru-bin add PKGBUILD .SRCINFO .gitignore ganbaru-bin.install
           if git -C dist/aur/ganbaru-bin diff --cached --quiet; then
             echo "AUR package is unchanged"
             exit 0

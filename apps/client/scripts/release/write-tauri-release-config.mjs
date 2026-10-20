@@ -25,6 +25,10 @@ const POLKIT_POLICY_BUNDLE_SOURCE =
   "packaging/linux/org.opengrimoire.ganbaru.policy";
 const POLKIT_POLICY_INSTALL_PATH =
   "/usr/share/polkit-1/actions/org.opengrimoire.ganbaru.policy";
+const LINKING_FIREWALL_HELPER_BUNDLE_SOURCE =
+  "../../../target/release/ganbaru-linking-firewall";
+const LINKING_FIREWALL_HELPER_INSTALL_PATH =
+  "/usr/lib/ganbaru/ganbaru-linking-firewall";
 const GITHUB_REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
 
 /**
@@ -91,6 +95,7 @@ const config = {
         files: {
           [PACKAGE_REPO_PUBLIC_KEY_INSTALL_PATH]: PACKAGE_REPO_PUBLIC_KEY_BUNDLE_SOURCE,
           [POLKIT_POLICY_INSTALL_PATH]: POLKIT_POLICY_BUNDLE_SOURCE,
+          [LINKING_FIREWALL_HELPER_INSTALL_PATH]: LINKING_FIREWALL_HELPER_BUNDLE_SOURCE,
         },
         postInstallScript: "packaging/deb/postinst",
         preRemoveScript: "packaging/deb/prerm",
@@ -100,6 +105,7 @@ const config = {
         files: {
           [PACKAGE_REPO_PUBLIC_KEY_INSTALL_PATH]: PACKAGE_REPO_PUBLIC_KEY_BUNDLE_SOURCE,
           [POLKIT_POLICY_INSTALL_PATH]: POLKIT_POLICY_BUNDLE_SOURCE,
+          [LINKING_FIREWALL_HELPER_INSTALL_PATH]: LINKING_FIREWALL_HELPER_BUNDLE_SOURCE,
         },
         postInstallScript: "packaging/rpm/postinstall.sh",
         preRemoveScript: "packaging/rpm/preremove.sh",

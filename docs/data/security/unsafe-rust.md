@@ -8,7 +8,7 @@ This page covers tracked, repository-owned Rust: libraries, binaries, platform-g
 
 Dependency-owned unsafe code, RustSec findings, and audit exceptions are separate concerns recorded in [Dependency audits](dependency-audits.md). A clean dependency audit does not prove first-party unsafe code sound, and the reverse is also true.
 
-Build scripts, examples, tracked generated Rust, and `ganbaru-native-messaging` contain no first-party unsafe code. There are no unsafe traits or implementations, inline assembly, or macros that emit unsafe code. The only unsafe attributes are the `export_name` attributes on the Android JNI callbacks below.
+Build scripts, examples, tracked generated Rust, `ganbaru-native-messaging`, and `ganbaru-linking-firewall` contain no first-party unsafe code. There are no unsafe traits or implementations, inline assembly, or macros that emit unsafe code. The only unsafe attributes are the `export_name` attributes on the Android JNI callbacks below.
 
 ## Policy
 

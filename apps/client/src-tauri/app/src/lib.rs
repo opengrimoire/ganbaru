@@ -44,8 +44,3 @@ fn install_default_tls_crypto_provider() {
 mod runtime;
 
 pub use runtime::run;
-
-#[cfg(target_os = "linux")]
-pub fn run_privileged_helper_if_requested() -> Option<Result<(), String>> {
-    vault::handoff::run_privileged_helper_if_requested()
-}

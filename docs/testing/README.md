@@ -95,6 +95,7 @@ The engine's desktop performance budgets (capture overhead per write, seal of 10
 Use the native messaging binary only for binary-local tests:
 
 ```sh
+cargo test -p ganbaru-linking-firewall --bin ganbaru-linking-firewall -j 4 test_name -- --test-threads=4
 cargo test -p ganbaru-native-messaging --bin ganbaru-native-messaging -j 4 test_name -- --test-threads=4
 ```
 

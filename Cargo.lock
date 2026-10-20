@@ -1895,6 +1895,13 @@ name = "ganbaru-image-metadata"
 version = "0.1.0"
 
 [[package]]
+name = "ganbaru-linking-firewall"
+version = "0.1.0"
+dependencies = [
+ "ganbaru-handoff",
+]
+
+[[package]]
 name = "ganbaru-mobile-distractions"
 version = "0.1.0"
 dependencies = [

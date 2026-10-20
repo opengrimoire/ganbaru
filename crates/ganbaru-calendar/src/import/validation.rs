@@ -1,16 +1,24 @@
 use super::{
     CalendarBulkImportPayload, CalendarImportAlarm, CalendarImportAttendee, CalendarImportEvent,
     CalendarImportOverride, CalendarImportPreservation, CalendarImportPreservedComponent,
-    CalendarImportPreservedObject, MAX_ICALENDAR_COMPONENT_DEPTH, MAX_PRESERVED_JCAL_BYTES,
-    PALETTE_SIZE,
+    CalendarImportPreservedObject, MAX_ICALENDAR_COMPONENT_DEPTH, MAX_IMPORT_EVENT_ALARMS,
+    MAX_IMPORT_EVENT_ATTENDEES, MAX_IMPORT_EVENT_DATES, MAX_IMPORT_EVENT_OVERRIDES,
+    MAX_IMPORT_EVENTS, MAX_PRESERVED_JCAL_BYTES, PALETTE_SIZE,
 };
-use crate::recurrence::canonical::{override_date, validate_override_times};
+use crate::recurrence::canonical::{
+    override_date, parse_date, stored_time, validate_override_times,
+};
 use ganbaru_civil_time as civil_time;
 use jiff::tz::TimeZone;
 
 pub(super) fn validate_payload(payload: &CalendarBulkImportPayload) -> Result<(), String> {
     require_non_empty(&payload.target_calendar_id, "target_calendar_id")?;
     require_non_empty(&payload.now, "now")?;
+    if payload.events.len() > MAX_IMPORT_EVENTS {
+        return Err(format!(
+            "import exceeds the limit of {MAX_IMPORT_EVENTS} events; split the calendar into smaller files"
+        ));
+    }
     if let Some(preservation) = &payload.preservation {
         validate_preservation(preservation)?;
     }
@@ -150,6 +158,74 @@ pub(super) fn validate_event(event: &CalendarImportEvent) -> Result<(), String> 
         validate_override_geometry(event, override_row)?;
     }
     Ok(())
+}
+
+/// Explains why one event is left out of an import while the rest still import: it exceeds a
+/// per-event limit, or a time it stores cannot be read back by recurrence expansion. Unsupported
+/// recurrence rules, unresolvable zones, and empty ranges are kept, so preservation can export
+/// them and Calendar windows report them for that event alone.
+pub(super) fn skip_reason(event: &CalendarImportEvent) -> Option<String> {
+    let exceptions = date_list(&event.exceptions);
+    let rdates = date_list(&event.rdate);
+    let counts = [
+        (
+            "attendees",
+            event.attendees.len(),
+            MAX_IMPORT_EVENT_ATTENDEES,
+        ),
+        ("alarms", event.alarms.len(), MAX_IMPORT_EVENT_ALARMS),
+        (
+            "overrides",
+            event.overrides.len(),
+            MAX_IMPORT_EVENT_OVERRIDES,
+        ),
+        ("excluded dates", exceptions.len(), MAX_IMPORT_EVENT_DATES),
+        ("added dates", rdates.len(), MAX_IMPORT_EVENT_DATES),
+    ];
+    if let Some((name, count, limit)) = counts.into_iter().find(|(_, count, limit)| count > limit) {
+        return Some(format!(
+            "{} has {count} {name}, over the limit of {limit}",
+            event_label(event)
+        ));
+    }
+    let zone = if event.all_day {
+        TimeZone::UTC
+    } else {
+        civil_time::zone(&event.timezone).unwrap_or(TimeZone::UTC)
+    };
+    let readable = |value: &str| {
+        if value.len() == 10 {
+            parse_date(value).map(|_| ())
+        } else {
+            stored_time(value, &zone, event.all_day).map(|_| ())
+        }
+    };
+    let times = [event.start_time.as_str(), event.end_time.as_str()];
+    times
+        .into_iter()
+        .chain(exceptions.iter().map(String::as_str))
+        .chain(rdates.iter().map(String::as_str))
+        .find_map(|value| readable(value).err())
+        .map(|error| format!("{} has an unreadable time ({error})", event_label(event)))
+}
+
+/// Decodes a validated JSON date list; a non-list value is left to Calendar windows to report.
+fn date_list(value: &Option<String>) -> Vec<String> {
+    value
+        .as_deref()
+        .and_then(|json| serde_json::from_str::<Vec<String>>(json).ok())
+        .unwrap_or_default()
+}
+
+fn event_label(event: &CalendarImportEvent) -> String {
+    match event
+        .source_uid
+        .as_deref()
+        .filter(|uid| !uid.trim().is_empty())
+    {
+        Some(uid) => format!("UID {}", uid.chars().take(120).collect::<String>()),
+        None => "an event without UID".to_string(),
+    }
 }
 
 /// Rejects override identities and times that canonical expansion cannot decode, and timed or

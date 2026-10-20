@@ -13,7 +13,7 @@ mod preservation;
 mod validation;
 
 use preservation::{link_preserved_component, preservation_link_id, replace_preservation};
-use validation::{require_non_empty, validate_payload};
+use validation::{require_non_empty, skip_reason, validate_payload};
 
 const PALETTE_SIZE: i64 = 32;
 
@@ -24,6 +24,18 @@ pub(crate) const MAX_ICALENDAR_COMPONENT_DEPTH: usize = 32;
 /// Total bytes of preserved component jCal one import may store; each component carries only its own
 /// properties, so this stays proportional to the source file.
 const MAX_PRESERVED_JCAL_BYTES: usize = 64 * 1024 * 1024;
+/// Most events one import may carry, five times the 50,000 components the frontend parser accepts
+/// from one file.
+const MAX_IMPORT_EVENTS: usize = 250_000;
+/// Most attendees one imported event may carry before it is skipped with a warning.
+const MAX_IMPORT_EVENT_ATTENDEES: usize = 10_000;
+/// Most alarms one imported event may carry before it is skipped with a warning.
+const MAX_IMPORT_EVENT_ALARMS: usize = 1_000;
+/// Most overrides one imported recurring event may carry before it is skipped with a warning.
+const MAX_IMPORT_EVENT_OVERRIDES: usize = 50_000;
+/// Most excluded or added dates one imported event may list, each, before it is skipped with a
+/// warning.
+const MAX_IMPORT_EVENT_DATES: usize = 50_000;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -230,6 +242,10 @@ pub async fn bulk_import(
     }
 
     for event in &payload.events {
+        if let Some(reason) = skip_reason(event) {
+            warnings.push(format!("Event skipped: {reason}."));
+            continue;
+        }
         let Some(source_uid) = event
             .source_uid
             .as_deref()
@@ -872,15 +888,16 @@ mod tests {
 
     use super::preservation::replace_preservation;
     use super::validation::{
-        validate_color, validate_enum, validate_event, validate_json_option, validate_preservation,
-        validate_priority,
+        validate_color, validate_enum, validate_event, validate_json_option, validate_payload,
+        validate_preservation, validate_priority,
     };
     use super::{
-        CalendarImportAlarm, CalendarImportAttendee, CalendarImportEvent, CalendarImportOverride,
-        CalendarImportPreservation, CalendarImportPreservedComponent,
-        CalendarImportPreservedObject, ExistingEventRow, MAX_ICALENDAR_COMPONENT_DEPTH,
-        MAX_PRESERVED_JCAL_BYTES, contains_older_revisions, insert_child_rows, insert_event,
-        update_event,
+        CalendarBulkImportPayload, CalendarImportAlarm, CalendarImportAttendee,
+        CalendarImportEvent, CalendarImportOverride, CalendarImportPreservation,
+        CalendarImportPreservedComponent, CalendarImportPreservedObject, ExistingEventRow,
+        MAX_ICALENDAR_COMPONENT_DEPTH, MAX_IMPORT_EVENT_ATTENDEES, MAX_IMPORT_EVENTS,
+        MAX_PRESERVED_JCAL_BYTES, bulk_import, contains_older_revisions, insert_child_rows,
+        insert_event, update_event,
     };
 
     #[test]
@@ -1404,6 +1421,80 @@ mod tests {
             ..override_row(None, None)
         }];
         assert!(validate_event(&event).is_err());
+    }
+
+    fn bulk_payload(events: Vec<CalendarImportEvent>) -> CalendarBulkImportPayload {
+        CalendarBulkImportPayload {
+            target_calendar_id: "local".to_string(),
+            now: "2026-05-09 10:00:00".to_string(),
+            preservation: None,
+            events,
+        }
+    }
+
+    #[test]
+    fn import_skips_one_oversized_or_unreadable_event_and_keeps_the_rest() {
+        crate::test_support::block_on(async {
+            let pool = in_memory_pool().await;
+            let attendee = |index: usize| CalendarImportAttendee {
+                id: format!("attendee-{index}"),
+                icalendar_component_id: None,
+                icalendar_property_index: None,
+                name: None,
+                email: format!("guest{index}@example.com"),
+                role: "req-participant".to_string(),
+                status: "needs-action".to_string(),
+                rsvp: false,
+            };
+            let mut crowded = import_event("crowded", "");
+            crowded.attendees = (0..=MAX_IMPORT_EVENT_ATTENDEES).map(attendee).collect();
+            let mut unreadable_start = import_event("unreadable-start", "");
+            unreadable_start.start_time = "next tuesday".to_string();
+            let mut unreadable_exception = import_event("unreadable-exception", "");
+            unreadable_exception.rrule = Some("FREQ=DAILY;COUNT=3".to_string());
+            unreadable_exception.exceptions = Some(r#"["2026-13-40"]"#.to_string());
+            let mut preservation_only = import_event("hourly", "");
+            preservation_only.rrule = Some("FREQ=HOURLY;COUNT=3".to_string());
+            let mut instant = import_event("instant", "");
+            instant.end_time = instant.start_time.clone();
+
+            let summary = bulk_import(
+                &pool,
+                bulk_payload(vec![
+                    import_event("kept", ""),
+                    crowded,
+                    unreadable_start,
+                    unreadable_exception,
+                    preservation_only,
+                    instant,
+                ]),
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(summary.added, 3);
+            assert_eq!(summary.warnings.len(), 3, "{:?}", summary.warnings);
+            assert!(summary.warnings[0].contains("UID crowded"));
+            assert!(summary.warnings[0].contains("over the limit"));
+            assert!(summary.warnings[1].contains("UID unreadable-start"));
+            assert!(summary.warnings[2].contains("UID unreadable-exception"));
+            let stored: Vec<String> =
+                sqlx::query_scalar("SELECT source_uid FROM calendar_events ORDER BY source_uid")
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(stored, ["hourly", "instant", "kept"]);
+        });
+    }
+
+    #[test]
+    fn import_rejects_more_events_than_the_payload_limit() {
+        let events = (0..=MAX_IMPORT_EVENTS)
+            .map(|index| import_event(&format!("event-{index}"), ""))
+            .collect();
+        let error = validate_payload(&bulk_payload(events)).unwrap_err();
+        assert!(error.contains("limit of"), "{error}");
+        assert!(validate_payload(&bulk_payload(vec![import_event("event-1", "")])).is_ok());
     }
 
     async fn in_memory_pool() -> sqlx::SqlitePool {

@@ -89,7 +89,7 @@ Results exclude credentials, external absolute paths, and unrelated vault conten
 
 Provider event size, nesting, sequence, identifiers, and payload shape are bounded before persistence. Unknown event kinds become typed unsupported data or safe diagnostics, never dynamically executed.
 
-Diagnostics exclude secret-like fields, authorization material, unnecessary home paths, provider environments, and credentials. Persisted errors explain the application boundary without becoming a second transcript of sensitive provider output.
+Diagnostics keep only identifiers, the event type, and protocol method or source names that match a strict label grammar (ASCII letters, digits, and `.`, `_`, `/`, `:`, `-`, at most 128 bytes, never an absolute path or URL); any other label is stored as a fixed marker, so free text such as prompts, tool output, or authorization values cannot reach diagnostics through a label. Provider environments and credentials are never captured. Persisted errors explain the application boundary without becoming a second transcript of sensitive provider output.
 
 Projection changes commit before the frontend is notified, and notifications carry identity and invalidation data, not unbounded payloads.
 

@@ -494,7 +494,7 @@ export const chatSettings = {
     diagnosticThreadId: "ID de conversación",
     diagnosticTurnId: "ID de turno",
     diagnosticEventType: "tipo de evento",
-    diagnosticProtocolLabel: "método u origen acotado del protocolo",
+    diagnosticProtocolLabel: "nombre de método u origen del protocolo (otro texto se guarda como marcador)",
     diagnosticTimestamp: "marca de tiempo",
     diagnosticPromptsResponses: "solicitudes y respuestas",
     diagnosticToolContent: "argumentos y salida de herramientas",

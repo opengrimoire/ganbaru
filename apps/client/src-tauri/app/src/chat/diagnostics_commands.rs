@@ -27,6 +27,8 @@ const STOP_CONFIRMATION: &str = "STOP ALL CHAT PROCESSES";
 const REBUILD_CONFIRMATION: &str = "REBUILD CHAT PROJECTIONS";
 const MAINTENANCE_TIMEOUT: Duration = Duration::from_secs(8);
 const DIAGNOSTIC_SCHEMA_VERSION: u32 = 1;
+const MAX_PROTOCOL_LABEL_BYTES: usize = 128;
+const REDACTED_PROTOCOL_LABEL: &str = "[redacted]";
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -435,18 +437,34 @@ fn redacted_protocol_envelope(reference: Option<&VersionedJson>) -> Value {
     let retained = ["method", "source", "type"]
         .into_iter()
         .filter_map(|key| {
-            fields.get(key).and_then(Value::as_str).and_then(|value| {
-                let normalized = value.to_ascii_lowercase();
-                let safe = value.len() <= 256
-                    && !value.chars().any(char::is_control)
-                    && !normalized.contains("bearer ")
-                    && !normalized.contains("/home/")
-                    && !normalized.contains("\\users\\");
-                safe.then(|| (key.to_string(), Value::String(value.to_string())))
+            fields.get(key).and_then(Value::as_str).map(|value| {
+                let label = if is_protocol_label(value) {
+                    value
+                } else {
+                    REDACTED_PROTOCOL_LABEL
+                };
+                (key.to_string(), Value::String(label.to_string()))
             })
         })
         .collect();
     Value::Object(retained)
+}
+
+/// Accepts only protocol method and event names such as `item/commandExecution/outputDelta`.
+///
+/// Anything outside this grammar (spaces, absolute or drive paths, URLs, backslashes, quotes, or
+/// long values) may carry provider output, paths, or credentials and is stored as a fixed marker.
+fn is_protocol_label(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let drive_path = bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
+    !value.is_empty()
+        && value.len() <= MAX_PROTOCOL_LABEL_BYTES
+        && !value.starts_with('/')
+        && !value.contains("//")
+        && !drive_path
+        && bytes.iter().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'/' | b':' | b'-')
+        })
 }
 
 fn require_confirmation(value: &str, expected: &str) -> ChatResult<()> {
@@ -590,6 +608,41 @@ mod tests {
         assert!(redacted.contains("item/commandExecution/outputDelta"));
         assert!(!redacted.contains(SENTINEL_SECRET));
         assert!(!redacted.contains("/home/"));
+    }
+
+    #[test]
+    fn protocol_labels_outside_the_label_grammar_become_a_fixed_marker() {
+        for label in [
+            "/Users/person/project",
+            "C:/Users/person",
+            "C:\\Users\\person",
+            "~/project",
+            "file:///home/person",
+            "https://example.com/token",
+            "token=abc",
+            "two words",
+            "",
+            &"a".repeat(MAX_PROTOCOL_LABEL_BYTES + 1),
+        ] {
+            let reference = VersionedJson {
+                schema_version: 1,
+                value: json!({ "source": label }),
+            };
+            assert_eq!(
+                redacted_protocol_envelope(Some(&reference)),
+                json!({ "source": REDACTED_PROTOCOL_LABEL }),
+                "{label}"
+            );
+        }
+        for label in [
+            "item/commandExecution/outputDelta",
+            "acp/session_update/agent_message_chunk",
+            "claude/stream/content_block_delta",
+            "session.updated",
+            "mcp:tool-call",
+        ] {
+            assert!(is_protocol_label(label), "{label}");
+        }
     }
 
     #[test]

@@ -330,6 +330,28 @@ impl ProviderEventSink for DurableChatEventSink {
             )
             .then(|| (event.thread_id.clone(), event.turn_id.clone()))
             .and_then(|(thread_id, turn_id)| turn_id.map(|turn_id| (thread_id, turn_id)));
+            if let Some((thread_id, turn_id)) =
+                settled_turn.as_ref().filter(|_| self.checkpoint_enabled)
+            {
+                let checkpoint_files = match now_timestamp() {
+                    Ok(settled_at) => {
+                        ensure_post_turn_checkpoint(
+                            &self.pool,
+                            &self.workspace,
+                            thread_id,
+                            turn_id,
+                            &settled_at,
+                        )
+                        .await
+                    }
+                    Err(_) => None,
+                };
+                if let (CanonicalEvent::TurnCompleted(completed), Some(files)) =
+                    (&mut event.event, checkpoint_files)
+                {
+                    merge_checkpoint_changed_files(&mut completed.changed_files, files);
+                }
+            }
             let stopped_thread = matches!(&event.event, CanonicalEvent::SessionExited(_))
                 .then(|| event.thread_id.clone());
             let ingestion: ChatResult<()> = async {
@@ -349,18 +371,6 @@ impl ProviderEventSink for DurableChatEventSink {
             }
             .await;
             if let Some((thread_id, turn_id)) = settled_turn {
-                if ingestion.is_ok() && self.checkpoint_enabled {
-                    if let Ok(settled_at) = now_timestamp() {
-                        ensure_post_turn_checkpoint(
-                            &self.pool,
-                            &self.workspace,
-                            &thread_id,
-                            &turn_id,
-                            &settled_at,
-                        )
-                        .await;
-                    }
-                }
                 self.app
                     .state::<crate::chat::workspace::mutation::ChatWorkspaceMutationRegistry>()
                     .finish_provider_turn(&thread_id, &turn_id);
@@ -540,6 +550,30 @@ fn live_authorization_unavailable_error() -> ChatError {
         "The organizational run authorization could not be checked",
         true,
     )
+}
+
+/// Adds the files a post-turn checkpoint observed to the provider's report.
+///
+/// The checkpoint diff comes first and wins for a path both name, so a provider can
+/// neither hide a change by omitting it nor crowd it out with reported paths.
+pub(super) fn merge_checkpoint_changed_files(
+    reported: &mut Vec<ChangedFileSummary>,
+    observed: Vec<ChangedFileSummary>,
+) {
+    let mut merged = observed;
+    merged.truncate(MAX_PROVIDER_CHANGED_FILES);
+    for file in std::mem::take(reported) {
+        if merged.len() >= MAX_PROVIDER_CHANGED_FILES {
+            break;
+        }
+        if !merged
+            .iter()
+            .any(|candidate| candidate.relative_path == file.relative_path)
+        {
+            merged.push(file);
+        }
+    }
+    *reported = merged;
 }
 
 pub(super) fn normalize_changed_file_paths(

@@ -2,7 +2,8 @@ use super::persistence::{
     PersistUserTurnContext, TurnPersistenceTarget, persist_user_turn, read_thread_runtime_data,
 };
 use super::session::{
-    normalize_changed_file_paths, require_live_authorization, reuse_existing_session,
+    merge_checkpoint_changed_files, normalize_changed_file_paths, require_live_authorization,
+    reuse_existing_session,
 };
 use super::validation::{
     validate_approval_decision, validate_model_options, validate_pending_request,
@@ -478,4 +479,99 @@ async fn live_authorization_fails_once_a_run_folder_or_project_is_archived() {
             .unwrap_err();
         assert_eq!(error.code, ChatErrorCode::Permission, "{archive}");
     }
+}
+
+fn changed_file(relative_path: &str) -> ChangedFileSummary {
+    ChangedFileSummary {
+        relative_path: relative_path.to_string(),
+        previous_relative_path: None,
+        additions: Some(1),
+        deletions: Some(0),
+        binary: false,
+        status: "modified".to_string(),
+    }
+}
+
+#[test]
+fn checkpoint_changes_count_when_the_provider_omits_or_crowds_them_out() {
+    let mut omitted = Vec::new();
+    merge_checkpoint_changed_files(&mut omitted, vec![changed_file("src/main.rs")]);
+    assert_eq!(omitted, vec![changed_file("src/main.rs")]);
+
+    let mut reported = vec![ChangedFileSummary {
+        additions: Some(40),
+        ..changed_file("src/main.rs")
+    }];
+    reported.extend((0..600).map(|index| changed_file(&format!("noise/{index}.txt"))));
+    merge_checkpoint_changed_files(&mut reported, vec![changed_file("src/main.rs")]);
+    assert_eq!(reported.len(), 512);
+    assert_eq!(reported[0], changed_file("src/main.rs"));
+    assert_eq!(
+        reported
+            .iter()
+            .filter(|file| file.relative_path == "src/main.rs")
+            .count(),
+        1
+    );
+}
+
+async fn complete_working_turn(pool: &sqlx::SqlitePool, recorded_diff: bool) -> (String, String) {
+    use crate::chat::tests::repository::canonical_request;
+    use ganbaru_chat::repository::events::append_canonical_event;
+    use ganbaru_chat_contracts::events::TurnCompletedEvent;
+    if recorded_diff {
+        append_canonical_event(
+            pool,
+            canonical_request(
+                "event:diff",
+                Some("turn:working"),
+                CanonicalEvent::DiffUpdated(DiffUpdatedEvent {
+                    source: "checkpoint".to_string(),
+                    files: vec![changed_file("src/main.rs")],
+                    provider_diff: None,
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+    }
+    append_canonical_event(
+        pool,
+        canonical_request(
+            "event:completed",
+            Some("turn:working"),
+            CanonicalEvent::TurnCompleted(TurnCompletedEvent {
+                state: ChatTurnState::Completed,
+                stop_reason: None,
+                usage: None,
+                changed_files: Vec::new(),
+            }),
+        ),
+    )
+    .await
+    .unwrap();
+    sqlx::query_as(
+        "SELECT assignment.state, run.state
+         FROM chat_work_assignments assignment
+         JOIN chat_agent_runs run ON run.assignment_id = assignment.id
+         WHERE run.id = 'run:working'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn completion_requests_review_from_the_recorded_turn_diff_not_the_completion_report() {
+    let pool = crate::chat::revocation::tests::pool_with_folder_runs().await;
+    assert_eq!(
+        complete_working_turn(&pool, true).await,
+        ("ready_for_review".to_string(), "completed".to_string())
+    );
+
+    let pool = crate::chat::revocation::tests::pool_with_folder_runs().await;
+    assert_eq!(
+        complete_working_turn(&pool, false).await,
+        ("completed".to_string(), "completed".to_string())
+    );
 }

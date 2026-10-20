@@ -1,6 +1,6 @@
 //! Projection of provider runtime events into organizational conversations.
 
-use super::super::events::{CanonicalEvent, CanonicalRuntimeEvent};
+use super::super::events::{CanonicalEvent, CanonicalRuntimeEvent, ChangedFileSummary};
 use super::super::models::{
     ChatError, ChatErrorCode, ChatParticipantId, ChatReplyThreadId, ChatResult, ChatTurnId,
     ChatWorkAssignmentId,
@@ -182,7 +182,8 @@ pub async fn project_provider_event_in_transaction(
             .fetch_optional(&mut **transaction)
             .await
             .map_err(persistence_error)?;
-            let state = if event.changed_files.is_empty() {
+            let changed_files = turn_changed_files(transaction, runtime).await?;
+            let state = if changed_files.is_empty() {
                 "completed"
             } else {
                 "ready_for_review"
@@ -201,7 +202,7 @@ pub async fn project_provider_event_in_transaction(
                 transaction,
                 runtime,
                 &target,
-                if event.changed_files.is_empty() {
+                if changed_files.is_empty() {
                     "result"
                 } else {
                     "review"
@@ -213,7 +214,7 @@ pub async fn project_provider_event_in_transaction(
                 json!({
                     "stopReason": event.stop_reason,
                     "usage": event.usage,
-                    "changedFiles": event.changed_files,
+                    "changedFiles": changed_files,
                     "providerExecutionThreadId": runtime.thread_id,
                     "providerExecutionTurnId": runtime.turn_id,
                 }),
@@ -440,6 +441,28 @@ async fn update_assignment_and_run_state(
 
 fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
+}
+
+/// Reads the files recorded for the completed turn: every diff update, the completion
+/// report, and the post-turn checkpoint diff merged by the ingestion path.
+async fn turn_changed_files(
+    transaction: &mut Transaction<'_, Sqlite>,
+    runtime: &CanonicalRuntimeEvent,
+) -> ChatResult<Vec<ChangedFileSummary>> {
+    let data: Option<String> = sqlx::query_scalar(
+        "SELECT changed_file_summary_data FROM chat_turns WHERE id = ? AND thread_id = ?",
+    )
+    .bind(runtime.turn_id.as_ref().map(ChatTurnId::as_str))
+    .bind(runtime.thread_id.as_str())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(persistence_error)?
+    .flatten();
+    data.as_deref()
+        .map(serde_json::from_str::<Vec<ChangedFileSummary>>)
+        .transpose()
+        .map_err(serialization_error)
+        .map(Option::unwrap_or_default)
 }
 
 fn serialization_error<T>(_error: T) -> ChatError {

@@ -131,6 +131,8 @@ Edits to repository metadata (`.git` at any depth) are never approved automatica
 
 Checkpoint capture and restore verify folder and Git common-storage identity immediately before mutation, and validate dirty state, changed and untracked files, repository boundaries, and the expected checkpoint revision.
 
+Whether a finished assignment is ready for review comes from the files recorded for its turn, and in a Git folder those include the post-turn checkpoint diff, which is captured before the completion is recorded. A provider therefore cannot skip review by omitting changed files. The diff covers the whole folder since the thread's previous checkpoint, so concurrent edits by others can also mark work for review. Folders without Git rely on the files the provider reports.
+
 Restore is a scoped Git or filesystem operation, not a database rollback. It cannot change organizational messages, memberships, approvals, or another project's files. Previewing and applying a restore are separate authority checks. Native work runs outside database transactions, and retryable cleanup records prevent a failed step from appearing successful.
 
 ## Revocation

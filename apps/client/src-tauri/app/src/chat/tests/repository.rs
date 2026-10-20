@@ -148,7 +148,7 @@ fn content_event(event_id: &str, delta: &str) -> AppendCanonicalEventRequest {
     }
 }
 
-fn canonical_request(
+pub(crate) fn canonical_request(
     event_id: &str,
     turn_id: Option<&str>,
     event: CanonicalEvent,

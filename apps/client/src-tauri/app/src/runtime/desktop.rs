@@ -932,6 +932,9 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             themes::themes_reset_to_seed,
         ])
         .setup(|app| {
+            if let Err(error) = vault::secure_app_config_dir(app.handle()) {
+                eprintln!("app config directory permissions are unchanged: {error}");
+            }
             vault::ownership::initialize(app.handle())?;
             vault::handoff::initialize(app.handle());
             crate::sync::setup(app.handle());

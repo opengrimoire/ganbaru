@@ -1136,3 +1136,53 @@ fn rules_fingerprint_changes_when_mode_or_rules_change() {
         base
     );
 }
+
+#[test]
+fn block_events_leave_no_device_local_browsing_log() {
+    let config_path = std::env::temp_dir().join(format!(
+        "ganbaru-native-block-log-{}-{}",
+        std::process::id(),
+        super::now_epoch_ms()
+    ));
+    let _ = std::fs::remove_dir_all(&config_path);
+    std::fs::create_dir_all(&config_path).unwrap();
+    let snapshot = StateSnapshot {
+        config_dir: Some(config_path.clone()),
+        vault_path: None,
+        config: config(),
+        runtime: Some(runtime_for_phase("focus", false)),
+        limit_state: None,
+    };
+
+    super::log_block_event(
+        &snapshot,
+        "youtube.com",
+        &HostDecision::BlockedHost("youtube.com".into()),
+    );
+
+    let entries = std::fs::read_dir(&config_path).unwrap().count();
+    assert_eq!(entries, 0);
+    let _ = std::fs::remove_dir_all(&config_path);
+}
+
+#[cfg(unix)]
+#[test]
+fn host_created_configuration_directories_are_private() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = std::env::temp_dir().join(format!(
+        "ganbaru-native-private-dir-{}-{}",
+        std::process::id(),
+        super::now_epoch_ms()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let status_path = root.join("config").join("status.json");
+
+    super::write_text_file_atomically(&status_path, "{}").unwrap();
+
+    for directory in [root.as_path(), status_path.parent().unwrap()] {
+        let mode = std::fs::metadata(directory).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700, "{}", directory.display());
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}

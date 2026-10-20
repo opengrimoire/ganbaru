@@ -17,7 +17,7 @@ It does not reproduce the settings editor, inspect all traffic, inject UI into a
 
 ## Native messaging
 
-Messages are versioned, bounded, and validated on both sides. Unknown or malformed messages are rejected without applying state, and an unsupported protocol version fails visibly and open. The wire schema lives in source (`crates/ganbaru-native-messaging/`), not in this spec.
+Messages are versioned, bounded, and validated on both sides. Unknown or malformed messages are rejected without applying state, and an unsupported protocol version fails visibly and open. The wire schema lives in source (`crates/ganbaru-native-messaging/`), not in this spec. Block events are recorded only in the vault database when this device may write it; the host keeps no device-local log of blocked hosts.
 
 Native-host registration is automated on Linux and macOS. Windows manifest and registry registration remain a manual packaging gap; Windows browser blocking must not be described as automatically installed until a signed installer owns setup and uninstall.
 

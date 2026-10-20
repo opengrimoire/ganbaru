@@ -258,6 +258,40 @@ fn write_app_state_json(path: &Path, json: &str) -> Result<(), String> {
     write_text_file_atomically(path, json, FileAccess::OwnerOnly)
 }
 
+/// Keeps the app config directory, which holds device identity, usage spools, and runtime
+/// snapshots, accessible only by the current user.
+#[cfg(desktop)]
+pub(crate) fn secure_app_config_dir<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
+    let path = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    make_directory_private(&path)
+}
+
+/// Creates `path` with owner-only access, or removes group and other access from an existing
+/// directory on Unix. A symlinked directory is left as the user arranged it. On Windows the
+/// per-user profile already limits access.
+#[cfg(any(desktop, test))]
+fn make_directory_private(path: &Path) -> Result<(), String> {
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder
+        .create(path)
+        .map_err(|e| format!("create app config dir: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let metadata =
+            fs::symlink_metadata(path).map_err(|e| format!("inspect app config dir: {e}"))?;
+        let mode = metadata.permissions().mode();
+        if metadata.is_dir() && mode & 0o077 != 0 {
+            fs::set_permissions(path, fs::Permissions::from_mode(mode & !0o077))
+                .map_err(|e| format!("restrict app config dir: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn read_app_state<R: Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<Arc<VaultAppState>, String> {
@@ -1036,6 +1070,27 @@ mod tests {
         let mut path = std::env::temp_dir();
         path.push(format!("ganbaru-vault-test-{pid}-{nanos}-{seq}-{suffix}"));
         path
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn app_config_directory_is_created_and_kept_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = unique_path("private-config");
+        let created = root.join("created");
+        make_directory_private(&created).unwrap();
+        let mode = fs::metadata(&created).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+
+        let shared = root.join("shared");
+        fs::create_dir_all(&shared).unwrap();
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o755)).unwrap();
+        make_directory_private(&shared).unwrap();
+        let mode = fs::metadata(&shared).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

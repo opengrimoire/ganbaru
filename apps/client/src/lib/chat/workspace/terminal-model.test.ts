@@ -6,6 +6,7 @@ import {
   TerminalOutputAcknowledger,
   TerminalPanelRegistry,
   terminalErrorMessage,
+  terminalLinkTarget,
   terminalOutputByteLength,
   terminalPasteNeedsConfirmation,
 } from "./terminal-model";
@@ -115,5 +116,33 @@ describe("terminal output flow control", () => {
     for (const text of ["", "a", "ab", "abc", "abcd", "ÿ\u0000\u001b[0m"]) {
       expect(terminalOutputByteLength(chunk(1, 1, text))).toBe(text.length);
     }
+  });
+});
+
+describe("terminal hyperlinks", () => {
+  it("opens only credential-free web targets and shows the normalized target", () => {
+    expect(terminalLinkTarget("https://example.com/docs?q=1")).toBe("https://example.com/docs?q=1");
+    expect(terminalLinkTarget("http://localhost:5173")).toBe("http://localhost:5173/");
+    expect(terminalLinkTarget("HTTPS://Example.COM/a")).toBe("https://example.com/a");
+  });
+
+  it("ignores schemes output could use to reach local files, apps, or scripts", () => {
+    for (const uri of [
+      "file:///etc/passwd",
+      "javascript:alert(1)",
+      "vscode://file/home/user/.bashrc",
+      "smb://attacker.example/share",
+      "data:text/html,<script>alert(1)</script>",
+      "ssh://host",
+    ]) {
+      expect(terminalLinkTarget(uri)).toBeNull();
+    }
+  });
+
+  it("ignores targets with embedded credentials or that do not parse", () => {
+    expect(terminalLinkTarget("https://user:token@example.com/")).toBeNull();
+    expect(terminalLinkTarget("https://token@example.com/")).toBeNull();
+    expect(terminalLinkTarget("not a url")).toBeNull();
+    expect(terminalLinkTarget("")).toBeNull();
   });
 });

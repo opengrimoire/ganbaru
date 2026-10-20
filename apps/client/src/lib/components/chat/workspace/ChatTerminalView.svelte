@@ -14,6 +14,7 @@
     TerminalOutputAcknowledger,
     terminalOutputByteLength,
     terminalErrorMessage,
+    terminalLinkTarget,
     sanitizeTerminalPaste,
     terminalPasteNeedsConfirmation,
   } from "$lib/chat/workspace/terminal-model";
@@ -101,6 +102,19 @@
         letterSpacing: 0,
         lineHeight: 1.1,
         theme: terminalTheme(terminalHost),
+        linkHandler: {
+          allowNonHttpProtocols: false,
+          activate: (_event, uri) => {
+            const target = terminalLinkTarget(uri);
+            if (!target) return;
+            void chatApi.openChatExternalUrl(target).catch((reason: unknown) => { error = terminalMessage(reason); });
+          },
+          hover: (_event, uri) => {
+            const target = terminalLinkTarget(uri);
+            if (target) terminalHost.title = target;
+          },
+          leave: () => terminalHost.removeAttribute("title"),
+        },
       });
       const themeObserver = new MutationObserver(() => {
         terminal.options.theme = terminalTheme(terminalHost);

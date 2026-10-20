@@ -1,4 +1,5 @@
 import type { ChatTerminalOutputChunk } from "$lib/chat/contracts";
+import { safeExternalUrl } from "$lib/chat/timeline/markdown";
 
 export interface TerminalOutputState {
   generation: number;
@@ -71,6 +72,17 @@ const TERMINAL_PASTE_CONTROLS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\
 export function sanitizeTerminalPaste(text: string): { text: string; removedControls: boolean } {
   const clean = text.replace(TERMINAL_PASTE_CONTROLS, "");
   return { text: clean, removedControls: clean.length !== text.length };
+}
+
+/**
+ * Resolves the target of a terminal hyperlink (OSC 8). Terminal output is untrusted, so only
+ * credential-free HTTP and HTTPS targets are opened; anything else is ignored.
+ *
+ * @param uri - The link target the output declared, which can differ from the visible text.
+ * @returns The normalized target to show and open, or null when the link must not open.
+ */
+export function terminalLinkTarget(uri: string): string | null {
+  return safeExternalUrl(uri) ? new URL(uri).href : null;
 }
 
 export function terminalPasteNeedsConfirmation(text: string, confirmationEnabled: boolean): boolean {

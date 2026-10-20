@@ -175,6 +175,8 @@ pub(crate) struct ChatTerminalCreateInput {
     pub terminal_id: String,
     pub thread_id: ChatThreadId,
     pub working_folder_id: ProjectWorkingFolderId,
+    /// Worktree execution environment the shell starts in, if any.
+    pub environment_id: Option<String>,
     pub workspace_path: PathBuf,
     pub columns: u16,
     pub rows: u16,
@@ -184,6 +186,7 @@ struct TerminalSpawnSpec {
     terminal_id: String,
     thread_id: ChatThreadId,
     working_folder_id: ProjectWorkingFolderId,
+    environment_id: Option<String>,
     workspace_path: PathBuf,
     name: String,
     columns: u16,
@@ -216,6 +219,7 @@ struct TerminalSession {
     id: String,
     thread_id: ChatThreadId,
     working_folder_id: ProjectWorkingFolderId,
+    environment_id: Option<String>,
     state: Mutex<TerminalState>,
     master: Mutex<Option<Box<dyn MasterPty + Send>>>,
     writer: Mutex<Option<Box<dyn Write + Send>>>,
@@ -510,6 +514,7 @@ impl ChatTerminalRegistry {
                 terminal_id: input.terminal_id,
                 thread_id: input.thread_id,
                 working_folder_id: input.working_folder_id,
+                environment_id: input.environment_id,
                 workspace_path: input.workspace_path,
                 name: terminal_name,
                 columns: input.columns,
@@ -713,10 +718,19 @@ impl ChatTerminalRegistry {
     }
 
     pub fn shutdown_workspace(&self, working_folder_id: &ProjectWorkingFolderId) -> ChatResult<()> {
+        self.shutdown_matching(|session| &session.working_folder_id == working_folder_id)
+    }
+
+    /// Stops the terminals whose shell started in one worktree execution environment.
+    pub fn shutdown_environment(&self, environment_id: &str) -> ChatResult<()> {
+        self.shutdown_matching(|session| session.environment_id.as_deref() == Some(environment_id))
+    }
+
+    fn shutdown_matching(&self, matches: impl Fn(&TerminalSession) -> bool) -> ChatResult<()> {
         let mut sessions = self.sessions.lock().map_err(|_| terminal_state_error())?;
         let terminal_ids = sessions
             .values()
-            .filter(|session| &session.working_folder_id == working_folder_id)
+            .filter(|session| matches(session))
             .map(|session| session.id.clone())
             .collect::<Vec<_>>();
         for terminal_id in terminal_ids {
@@ -737,18 +751,7 @@ impl ChatTerminalRegistry {
     }
 
     pub fn shutdown_thread(&self, thread_id: &ChatThreadId) -> ChatResult<()> {
-        let mut sessions = self.sessions.lock().map_err(|_| terminal_state_error())?;
-        let terminal_ids = sessions
-            .values()
-            .filter(|session| &session.thread_id == thread_id)
-            .map(|session| session.id.clone())
-            .collect::<Vec<_>>();
-        for terminal_id in terminal_ids {
-            if let Some(session) = sessions.remove(&terminal_id) {
-                session.terminate()?;
-            }
-        }
-        Ok(())
+        self.shutdown_matching(|session| &session.thread_id == thread_id)
     }
 
     fn session(&self, terminal_id: &str) -> ChatResult<Arc<TerminalSession>> {
@@ -787,6 +790,7 @@ fn spawn_session(
         id: spec.terminal_id,
         thread_id: spec.thread_id,
         working_folder_id: spec.working_folder_id,
+        environment_id: spec.environment_id,
         state: Mutex::new(TerminalState {
             name: spec.name,
             shell: default_shell_label(),
@@ -1035,11 +1039,16 @@ mod tests {
     use super::*;
 
     fn session(running: bool) -> Arc<TerminalSession> {
+        session_in("terminal:test", None, running)
+    }
+
+    fn session_in(id: &str, environment_id: Option<&str>, running: bool) -> Arc<TerminalSession> {
         Arc::new(TerminalSession {
-            id: "terminal:test".to_string(),
+            id: id.to_string(),
             thread_id: ChatThreadId::new("thread:test").expect("thread ID should be valid"),
             working_folder_id: ProjectWorkingFolderId::new("workspace:test")
                 .expect("workspace ID should be valid"),
+            environment_id: environment_id.map(str::to_string),
             state: Mutex::new(TerminalState {
                 name: "Terminal 1".to_string(),
                 shell: "test-shell".to_string(),
@@ -1107,6 +1116,42 @@ mod tests {
             .expect("confirmed close should work");
         assert!(confirmed.closed);
         assert!(registry.snapshot("terminal:test").is_err());
+    }
+
+    #[test]
+    fn removing_a_worktree_stops_only_the_terminals_started_in_it() {
+        let registry = ChatTerminalRegistry::default();
+        let started = [
+            ("terminal:removed", Some("environment:removed")),
+            ("terminal:other", Some("environment:other")),
+            ("terminal:folder", None),
+        ];
+        let sessions = started
+            .iter()
+            .map(|(id, environment_id)| session_in(id, *environment_id, true))
+            .collect::<Vec<_>>();
+        {
+            let mut registered = registry.sessions.lock().expect("registry should lock");
+            for session in &sessions {
+                registered.insert(session.id.clone(), Arc::clone(session));
+            }
+        }
+
+        registry
+            .shutdown_environment("environment:removed")
+            .expect("shutdown should work");
+
+        assert!(registry.snapshot("terminal:removed").is_err());
+        assert!(!sessions[0].read().expect("session should read").running);
+        for id in ["terminal:other", "terminal:folder"] {
+            assert!(
+                registry
+                    .snapshot(id)
+                    .expect("terminal should remain")
+                    .terminal
+                    .running
+            );
+        }
     }
 
     struct RecordingSink {

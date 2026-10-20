@@ -244,6 +244,10 @@ pub async fn chat_terminal_create(
     let pool = chat_pool(app.clone(), db_url).await?;
     let scope =
         authorize_thread_scope(&app, &pool, &request.thread_id, &request.working_folder_id).await?;
+    let folder =
+        ganbaru_chat::repository::workspaces::read_workspace(&pool, &request.working_folder_id)
+            .await?;
+    validate_terminal_start(scope.thread_archived, folder.archived_at.is_some())?;
     let shell = default_shell_label();
     let path = scope.authorized.canonical_path.clone();
     ensure_start_grant(
@@ -259,6 +263,7 @@ pub async fn chat_terminal_create(
             terminal_id: request.terminal_id,
             thread_id: request.thread_id,
             working_folder_id: request.working_folder_id,
+            environment_id: scope.environment_id,
             workspace_path: authorized.canonical_path,
             columns: request.columns,
             rows: request.rows,
@@ -405,6 +410,7 @@ pub async fn chat_reserve_draft_thread(
 struct ThreadTerminalScope {
     vault_id: String,
     environment_id: Option<String>,
+    thread_archived: bool,
     authorized: AuthorizedWorkingFolder,
 }
 
@@ -523,6 +529,9 @@ async fn authorize_thread_scope(
         WorkingFolderAuthorizationOperation::TerminalStart,
     )
     .await?;
+    let thread_archived = stored_scope
+        .as_ref()
+        .is_some_and(|(_, state, _)| state == "archived");
     let environment_id = stored_scope.and_then(|(_, _, environment_id)| environment_id);
     let authorized = super::execution_environment::resolve_environment_workspace(
         app,
@@ -534,6 +543,7 @@ async fn authorize_thread_scope(
     Ok(ThreadTerminalScope {
         vault_id,
         environment_id,
+        thread_archived,
         authorized,
     })
 }
@@ -585,6 +595,23 @@ fn validate_terminal_thread_scope(
         return Err(reservation_mismatch_error());
     }
     Ok(())
+}
+
+/// Refuses a new shell in an archived thread or working folder. Terminals that
+/// already run there stay listable, usable, and closable.
+fn validate_terminal_start(thread_archived: bool, folder_archived: bool) -> ChatResult<()> {
+    let message = if folder_archived {
+        "Unarchive the working folder to start a terminal in it"
+    } else if thread_archived {
+        "Unarchive the Chat thread to start a terminal in it"
+    } else {
+        return Ok(());
+    };
+    Err(ChatError::new(
+        ChatErrorCode::InvalidStateTransition,
+        message,
+        true,
+    ))
 }
 
 fn thread_not_found_error() -> ChatError {
@@ -675,6 +702,26 @@ mod tests {
         )
         .expect_err("cross-workspace threads must not authorize terminals");
         assert_eq!(mismatched.code, ChatErrorCode::Permission);
+    }
+
+    #[test]
+    fn archived_threads_and_folders_keep_running_terminals_but_start_no_new_ones() {
+        let folder = workspace("workspace:test");
+        assert!(
+            validate_terminal_thread_scope(
+                Some(&stored("workspace:test", "archived")),
+                None,
+                &folder
+            )
+            .is_ok(),
+            "surviving terminals of an archived thread stay reachable"
+        );
+        assert!(validate_terminal_start(false, false).is_ok());
+        for (thread_archived, folder_archived) in [(true, false), (false, true), (true, true)] {
+            let refused = validate_terminal_start(thread_archived, folder_archived)
+                .expect_err("archived scopes must not start terminals");
+            assert_eq!(refused.code, ChatErrorCode::InvalidStateTransition);
+        }
     }
 
     #[test]

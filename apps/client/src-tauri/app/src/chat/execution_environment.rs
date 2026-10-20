@@ -301,6 +301,8 @@ pub async fn chat_remove_worktree_environment(
             true,
         ));
     }
+    app.state::<super::terminal::ChatTerminalRegistry>()
+        .shutdown_environment(&environment_id)?;
     git::remove_worktree(root.git_folder(), &path_text).await?;
     let now = now_timestamp()?;
     sqlx::query(

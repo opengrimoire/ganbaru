@@ -705,6 +705,8 @@ async fn set_workspace_archived(
     )
     .await?;
     if archived {
+        app.state::<crate::chat::terminal::ChatTerminalRegistry>()
+            .shutdown_workspace(&working_folder_id)?;
         app.state::<crate::chat::terminal_access::ChatTerminalAccess>()
             .clear_folder(&working_folder_id)?;
         crate::chat::revocation::revoke_and_stop_active_runs(

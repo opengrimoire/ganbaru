@@ -353,6 +353,9 @@ fn parse_vault_manifest(contents: &[u8]) -> Result<VaultManifest, String> {
             manifest.schema_version
         ));
     }
+    // The identity names key store accounts and key files, so it keeps to the wire identifier
+    // alphabet before anything uses it.
+    ganbaru_handoff::protocol::validate_identifier("Ganbaru folder id", &manifest.vault_id)?;
     Ok(manifest)
 }
 
@@ -1114,6 +1117,41 @@ mod tests {
         fs::write(path.join(VAULT_MANIFEST_FILE), "invalid json").unwrap();
         assert!(available_vault_path(Some(path.clone())).is_err());
         fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn vault_markers_refuse_ids_that_could_name_other_key_files_or_accounts() {
+        let marker = |vault_id: &str| {
+            serde_json::json!({
+                "app": VAULT_APP_MARKER,
+                "schemaVersion": VAULT_SCHEMA_VERSION,
+                "vaultId": vault_id,
+                "displayName": "Vault",
+                "createdAt": "2026-10-20T00:00:00Z",
+            })
+            .to_string()
+        };
+        let generated = new_vault_id();
+        assert_eq!(
+            parse_vault_manifest(marker(&generated).as_bytes())
+                .unwrap()
+                .vault_id,
+            generated
+        );
+        for vault_id in [
+            "",
+            "../other",
+            "a/b",
+            "a\\b",
+            "vault:other",
+            "vault\nid",
+            &"v".repeat(161),
+        ] {
+            assert!(
+                parse_vault_manifest(marker(vault_id).as_bytes()).is_err(),
+                "{vault_id:?}"
+            );
+        }
     }
 
     #[test]

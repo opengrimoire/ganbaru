@@ -331,12 +331,19 @@ fn database_path(path: &Path) -> PathBuf {
     path.join(APP_SQLITE_FILE)
 }
 
+/// Largest `vault.json` accepted from an archive. The marker holds a few short fields.
+const MAX_VAULT_MANIFEST_BYTES: u64 = 64 * 1024;
+
 fn read_vault_manifest(path: &Path) -> Result<VaultManifest, String> {
     let manifest_path = manifest_path(path);
     let contents = fs::read_to_string(&manifest_path)
         .map_err(|e| format!("read Ganbaru folder marker: {e}"))?;
-    let manifest: VaultManifest =
-        serde_json::from_str(&contents).map_err(|e| format!("parse Ganbaru folder marker: {e}"))?;
+    parse_vault_manifest(contents.as_bytes())
+}
+
+fn parse_vault_manifest(contents: &[u8]) -> Result<VaultManifest, String> {
+    let manifest: VaultManifest = serde_json::from_slice(contents)
+        .map_err(|e| format!("parse Ganbaru folder marker: {e}"))?;
     if manifest.app != VAULT_APP_MARKER {
         return Err("selected folder is not a Ganbaru folder".to_string());
     }

@@ -4,7 +4,7 @@
 use super::active_vault_path;
 use super::select_quiesced_vault;
 use super::{APP_SQLITE_FILE, CONFIG_FILE, CONFIG_LOCK, VAULT_MANIFEST_FILE, VaultInfo};
-use super::{database_path, vault_info_from_path};
+use super::{MAX_VAULT_MANIFEST_BYTES, database_path, parse_vault_manifest, vault_info_from_path};
 #[cfg(target_os = "android")]
 use super::{default_vault_path, ensure_vault_skeleton, path_to_string};
 #[cfg(target_os = "android")]
@@ -46,6 +46,7 @@ pub(super) const BUNDLE_DIRECTORIES: &[&str] = &[
 const BUNDLE_PROJECTS_DIRECTORY: &str = "projects";
 /// Most skipped bundle entries named in one log line.
 const MAX_REPORTED_SKIPPED_ENTRIES: usize = 8;
+const DIFFERENT_VAULT_ERROR: &str = "received bundle belongs to a different vault";
 
 /// Whether `relative` belongs to the vault layout a bundle carries: the vault
 /// marker, configuration, and database files, the skeleton directories with
@@ -360,17 +361,81 @@ fn safe_archive_path(path: &Path) -> Result<PathBuf, String> {
     Ok(path.to_path_buf())
 }
 
+/// Checks the central directory before anything is written: the archive must hold a vault
+/// marker and database, its in-layout entries must declare at most `max_bytes` in total, and
+/// the marker must parse. Returns the archived vault identity.
+fn admit_backup_archive<R: Read + std::io::Seek>(
+    archive: &mut ZipArchive<R>,
+    max_bytes: u64,
+) -> Result<String, String> {
+    if archive.len() > BACKUP_MAX_ENTRIES {
+        return Err("backup contains too many entries".to_string());
+    }
+    let mut declared_bytes = 0_u64;
+    let mut has_database = false;
+    for index in 0..archive.len() {
+        let entry = archive
+            .by_index_raw(index)
+            .map_err(|error| format!("read backup entry {index}: {error}"))?;
+        let Some(relative) = entry.enclosed_name() else {
+            continue;
+        };
+        if entry.is_dir() || !is_bundle_layout_entry(&relative, false) {
+            continue;
+        }
+        has_database |= relative == Path::new(APP_SQLITE_FILE);
+        declared_bytes = declared_bytes.saturating_add(entry.size());
+        if declared_bytes > max_bytes {
+            return Err("backup exceeds the restore size limit".to_string());
+        }
+    }
+    if !has_database {
+        return Err("backup is missing its database".to_string());
+    }
+    let manifest = archive
+        .by_name(VAULT_MANIFEST_FILE)
+        .map_err(|error| format!("backup is missing its Ganbaru folder marker: {error}"))?;
+    if !manifest.is_file() || manifest.size() > MAX_VAULT_MANIFEST_BYTES {
+        return Err("backup has an invalid Ganbaru folder marker".to_string());
+    }
+    let mut contents = Vec::new();
+    manifest
+        .take(MAX_VAULT_MANIFEST_BYTES + 1)
+        .read_to_end(&mut contents)
+        .map_err(|error| format!("read backup Ganbaru folder marker: {error}"))?;
+    if contents.len() as u64 > MAX_VAULT_MANIFEST_BYTES {
+        return Err("backup has an invalid Ganbaru folder marker".to_string());
+    }
+    Ok(parse_vault_manifest(&contents)?.vault_id)
+}
+
 /// Extracts a bundle into a new `destination`, skipping entries outside the
 /// vault layout instead of failing the whole restore.
 fn extract_backup_archive(
     archive_path: &Path,
     destination: &Path,
+    expected_vault_id: Option<&str>,
+) -> Result<SkippedEntries, String> {
+    extract_backup_archive_within(
+        archive_path,
+        destination,
+        expected_vault_id,
+        BACKUP_MAX_BYTES,
+    )
+}
+
+fn extract_backup_archive_within(
+    archive_path: &Path,
+    destination: &Path,
+    expected_vault_id: Option<&str>,
+    max_bytes: u64,
 ) -> Result<SkippedEntries, String> {
     let file = fs::File::open(archive_path).map_err(|error| format!("open backup: {error}"))?;
     let mut archive =
         ZipArchive::new(file).map_err(|error| format!("open backup archive: {error}"))?;
-    if archive.len() > BACKUP_MAX_ENTRIES {
-        return Err("backup contains too many entries".to_string());
+    let vault_id = admit_backup_archive(&mut archive, max_bytes)?;
+    if expected_vault_id.is_some_and(|expected| expected != vault_id) {
+        return Err(DIFFERENT_VAULT_ERROR.to_string());
     }
     fs::create_dir(destination)
         .map_err(|error| format!("create restore staging folder: {error}"))?;
@@ -428,6 +493,8 @@ fn extract_backup_archive(
         }
         let mut target = fs::File::create(&output)
             .map_err(|error| format!("create restored file '{}': {error}", relative.display()))?;
+        let declared_bytes = entry.size();
+        let mut entry_bytes = 0_u64;
         loop {
             let count = entry
                 .read(&mut buffer)
@@ -435,8 +502,15 @@ fn extract_backup_archive(
             if count == 0 {
                 break;
             }
+            entry_bytes = entry_bytes.saturating_add(count as u64);
             total_bytes = total_bytes.saturating_add(count as u64);
-            if total_bytes > BACKUP_MAX_BYTES {
+            if entry_bytes > declared_bytes {
+                return Err(format!(
+                    "backup file '{}' exceeds its declared size",
+                    relative.display()
+                ));
+            }
+            if total_bytes > max_bytes {
                 return Err("backup exceeds the restore size limit".to_string());
             }
             target.write_all(&buffer[..count]).map_err(|error| {
@@ -460,7 +534,7 @@ pub(crate) async fn stage_handoff_archive(
         fs::remove_dir_all(destination)
             .map_err(|error| format!("remove stale handoff staging: {error}"))?;
     }
-    match extract_backup_archive(archive_path, destination) {
+    match extract_backup_archive(archive_path, destination, Some(expected_vault_id)) {
         Ok(skipped) => skipped.report("Handoff staging", "outside the vault layout"),
         Err(error) => {
             let _ = fs::remove_dir_all(destination);
@@ -476,7 +550,7 @@ pub(crate) async fn stage_handoff_archive(
     };
     if info.vault_id != expected_vault_id {
         let _ = fs::remove_dir_all(destination);
-        return Err("received bundle belongs to a different vault".to_string());
+        return Err(DIFFERENT_VAULT_ERROR.to_string());
     }
     Ok(info)
 }
@@ -1078,7 +1152,7 @@ pub async fn vault_pick_and_restore_backup(
                 if selected.is_none() {
                     return Ok(None);
                 }
-                extract_backup_archive(&archive_path, &staging)?
+                extract_backup_archive(&archive_path, &staging, None)?
                     .report("Backup restore", "outside the vault layout");
                 Ok(Some((staging, rollback)))
             },
@@ -1255,10 +1329,74 @@ mod tests {
         writer.write_all(b"unsafe").unwrap();
         writer.finish().unwrap();
 
-        assert!(extract_backup_archive(&archive_path, &destination).is_err());
+        assert!(extract_backup_archive(&archive_path, &destination, None).is_err());
         assert!(!destination.join("../outside").exists());
         let _ = fs::remove_file(archive_path);
         let _ = fs::remove_dir_all(destination);
+    }
+
+    fn write_test_archive(path: &Path, entries: &[(&str, &[u8])]) {
+        let mut writer = ZipWriter::new(fs::File::create(path).unwrap());
+        for (name, contents) in entries {
+            writer
+                .start_file(*name, SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(contents).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+
+    fn test_manifest(vault_id: &str) -> Vec<u8> {
+        format!(r#"{{"app":"ganbaru","schemaVersion":1,"vaultId":"{vault_id}","displayName":"Vault","createdAt":"2026-10-20T00:00:00Z"}}"#).into_bytes()
+    }
+
+    #[test]
+    fn restore_checks_identity_and_declared_size_before_writing_anything() {
+        let payload = vec![0_u8; 4 * 1024 * 1024];
+        let manifest = test_manifest("vault-a");
+        let archive_path = unique_test_path("identity.ganbaru-backup");
+        write_test_archive(
+            &archive_path,
+            &[
+                ("vault.json", manifest.as_slice()),
+                (APP_SQLITE_FILE, b"database"),
+                ("notes/payload.bin", payload.as_slice()),
+            ],
+        );
+        let destination = unique_test_path("identity-destination");
+        assert_eq!(
+            extract_backup_archive(&archive_path, &destination, Some("vault-b")).unwrap_err(),
+            DIFFERENT_VAULT_ERROR
+        );
+        assert!(!destination.exists());
+        assert!(
+            extract_backup_archive_within(&archive_path, &destination, None, 1024 * 1024)
+                .unwrap_err()
+                .contains("size limit")
+        );
+        assert!(!destination.exists());
+        extract_backup_archive(&archive_path, &destination, Some("vault-a")).unwrap();
+        assert_eq!(
+            fs::metadata(destination.join("notes/payload.bin"))
+                .unwrap()
+                .len(),
+            payload.len() as u64
+        );
+        let _ = fs::remove_dir_all(&destination);
+
+        for entries in [
+            vec![(APP_SQLITE_FILE, b"database".as_slice())],
+            vec![("vault.json", manifest.as_slice())],
+            vec![
+                ("vault.json", b"not a marker".as_slice()),
+                (APP_SQLITE_FILE, b"database".as_slice()),
+            ],
+        ] {
+            write_test_archive(&archive_path, &entries);
+            assert!(extract_backup_archive(&archive_path, &destination, None).is_err());
+            assert!(!destination.exists());
+        }
+        let _ = fs::remove_file(archive_path);
     }
 
     #[test]
@@ -1651,7 +1789,7 @@ mod tests {
         assert!(archive.by_name(&format!("{APP_SQLITE_FILE}-shm")).is_err());
         drop(archive);
 
-        extract_backup_archive(&archive_path, &staging).unwrap();
+        extract_backup_archive(&archive_path, &staging, None).unwrap();
         validate_restored_vault(&staging).await.unwrap();
         replace_vault(&staging, &target, &rollback).unwrap();
 

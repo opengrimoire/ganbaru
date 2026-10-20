@@ -79,6 +79,8 @@ Only one mutable provider driver generation owns an active thread at a time. Sto
 
 Preview and terminal metadata retained in SQLite is organizational evidence or resumable presentation state, not ambient process authority. Restart requires fresh target and authorization checks.
 
+Each model preview tool call in a direct session has an app-owned audit row keyed by its turn, with the tool name, an argument hash, the outcome, and the result size; the rows also hold that turn's call and byte budget and are deleted with the turn. Organizational host tool calls keep their own audit rows keyed by the authorization revision.
+
 ## Coordination and command receipts
 
 Scheduling, follow-ups, interaction responses, handoffs, and other coordination commands have stable request or receipt identity where retry can occur. Replaying the same accepted command cannot duplicate a message, assignment, or provider action.

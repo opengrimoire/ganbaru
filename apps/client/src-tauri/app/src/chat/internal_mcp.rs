@@ -54,6 +54,7 @@ const RESOURCE_URI_PREFIX: &str = "ganbaru://chat/resource/";
 /// How long a preview tool waits for the turn being dispatched to report its network policy.
 const PREVIEW_NETWORK_SETTLE_TIMEOUT: Duration = Duration::from_secs(10);
 
+mod preview_audit;
 mod preview_network;
 
 use preview_network::{PreviewNetworkDecision, PreviewNetworkGate};
@@ -197,10 +198,11 @@ impl EndpointState {
         }
     }
 
-    /// Admits a direct-session tool call or resource read only while a turn runs.
-    async fn require_direct_turn(&self) -> ChatResult<()> {
+    /// Admits a direct-session tool call or resource read only while a turn runs, and names
+    /// that turn.
+    async fn require_direct_turn(&self) -> ChatResult<ChatTurnId> {
         match &*self.access.read().await {
-            EndpointAccessState::DirectActive(_) => Ok(()),
+            EndpointAccessState::DirectActive(turn_id) => Ok(turn_id.clone()),
             EndpointAccessState::DirectIdle => Err(ChatError::new(
                 ChatErrorCode::Permission,
                 "Ganbaru host tools are available only while a Chat turn is running",
@@ -613,11 +615,12 @@ impl ServerHandler for ThreadMcpHandler {
             match self.state.require_direct_turn().await {
                 // Organizational host tools above are not cancelled, because each one reserves
                 // its audit row before running and must finish that row.
-                Ok(()) => {
-                    bounded_work(
-                        context.ct.cancelled(),
-                        MCP_PREVIEW_WORK_TIMEOUT,
-                        self.call_preview_tool(name, &arguments),
+                Ok(turn_id) => {
+                    self.audited_preview_call(
+                        &turn_id,
+                        name,
+                        &arguments,
+                        context.ct.clone().cancelled_owned(),
                     )
                     .await
                 }
@@ -632,6 +635,41 @@ impl ServerHandler for ThreadMcpHandler {
 }
 
 impl ThreadMcpHandler {
+    /// Runs one preview tool call under its turn's budget and records it. The work and its
+    /// audit settlement run as their own task, so the row settles even when the MCP request
+    /// is dropped; cancellation and the work deadline still stop the tool itself.
+    async fn audited_preview_call(
+        &self,
+        turn_id: &ChatTurnId,
+        name: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        cancelled: impl Future<Output = ()> + Send + 'static,
+    ) -> ChatResult<serde_json::Value> {
+        let invocation = preview_audit::reserve(&self.pool, turn_id, name, arguments).await?;
+        let handler = self.clone();
+        let name = name.to_string();
+        let arguments = arguments.clone();
+        tauri::async_runtime::spawn(async move {
+            let result = bounded_work(
+                cancelled,
+                MCP_PREVIEW_WORK_TIMEOUT,
+                handler.call_preview_tool(&name, &arguments),
+            )
+            .await;
+            let (outcome, response_bytes, result) = preview_audit::settle(result);
+            preview_audit::complete(&handler.pool, &invocation, outcome, response_bytes).await?;
+            result
+        })
+        .await
+        .map_err(|_| {
+            ChatError::new(
+                ChatErrorCode::Internal,
+                "The preview tool call stopped unexpectedly",
+                false,
+            )
+        })?
+    }
+
     /// Refuses preview tools in a session whose sandbox denies network access until the user
     /// approves them in the Browser panel, and asks for that approval.
     async fn require_preview_network(&self) -> ChatResult<()> {

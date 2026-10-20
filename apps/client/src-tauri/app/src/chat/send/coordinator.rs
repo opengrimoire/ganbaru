@@ -72,7 +72,13 @@ pub(crate) async fn send_turn(
     let inspection_driver = ProviderDriverRegistry.create_driver(configuration.clone())?;
     let authority_support = inspection_driver.authority_support();
     if let Some(binding) = origin.run() {
-        validate_organizational_authority(&pool, binding, authority_support).await?;
+        validate_organizational_authority(
+            &pool,
+            binding,
+            authority_support,
+            request.modes.safety_mode,
+        )
+        .await?;
     }
     if let Some(existing) = &existing {
         if existing.working_folder_id != request.working_folder_id
@@ -512,13 +518,18 @@ async fn validate_organizational_authority(
     pool: &SqlitePool,
     binding: &AgentRunBinding,
     support: ProviderAuthoritySupport,
+    requested_safety_mode: SafetyMode,
 ) -> ChatResult<()> {
     let authorization = sqlx::query(
-        "SELECT resolved_runtime_approval_policy, working_folder_id,
-                execution_environment_id
-         FROM chat_assignment_authorization_revisions
-         WHERE id = ? AND assignment_id = ? AND scope_digest = ?
-           AND decision_state = 'allowed' AND revoked_at IS NULL",
+        "SELECT authorization.resolved_runtime_approval_policy, authorization.working_folder_id,
+                authorization.execution_environment_id,
+                policy.safety_mode AS teammate_safety_mode
+         FROM chat_assignment_authorization_revisions authorization
+         JOIN chat_teammate_policy_revisions policy
+           ON policy.id = authorization.teammate_policy_revision_id
+         WHERE authorization.id = ? AND authorization.assignment_id = ?
+           AND authorization.scope_digest = ?
+           AND authorization.decision_state = 'allowed' AND authorization.revoked_at IS NULL",
     )
     .bind(binding.authorization_revision_id.as_str())
     .bind(binding.assignment_id.as_str())
@@ -557,9 +568,33 @@ async fn validate_organizational_authority(
             "Assignment execution target does not match its authorization",
         ));
     }
-    if has_native_target && runtime_approval_policy == "provider_custom" {
+    let teammate_approval = crate::chat::organization::parse_approval_policy(
+        &authorization
+            .try_get::<String, _>("teammate_safety_mode")
+            .map_err(|_| provider_authority_error("Assignment authority is invalid"))?,
+    )
+    .map_err(|_| provider_authority_error("Assignment authority is invalid"))?;
+    let runtime_approval = parse_runtime_approval(&runtime_approval_policy)
+        .map_err(|_| provider_authority_error("Assignment authority is invalid"))?;
+    if has_native_target
+        && runtime_approval == ChatRuntimeApprovalPolicy::ProviderCustom
+        && teammate_approval != ChatApprovalPolicy::Custom
+    {
         return Err(provider_authority_error(
             "Provider-custom approval cannot prove this assignment's exact authority",
+        ));
+    }
+    let permitted_safety_mode = if has_native_target {
+        crate::chat::organization::native_assignment_safety_mode(
+            teammate_approval,
+            runtime_approval,
+        )
+    } else {
+        SafetyMode::AskForApproval
+    };
+    if requested_safety_mode != permitted_safety_mode {
+        return Err(provider_authority_error(
+            "Assignment approval mode does not match its authorization",
         ));
     }
     let host_tools_required: bool = sqlx::query_scalar(

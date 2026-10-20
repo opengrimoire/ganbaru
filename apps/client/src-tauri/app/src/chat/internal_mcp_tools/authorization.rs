@@ -4,8 +4,12 @@ use super::{generic_denial_error, persistence_error, wire_folder_capability};
 use crate::chat::internal_mcp::{
     InternalMcpChannelSource, InternalMcpFolderSource, InternalMcpRunScope,
 };
+use crate::chat::organization::{
+    effective_runtime_approval, parse_approval_policy, parse_runtime_approval_policy,
+    runtime_approval_rank, teammate_runtime_approval,
+};
 use ganbaru_chat_contracts::models::{ChatResult, ChatRuntimeApprovalPolicy};
-use sqlx::SqlitePool;
+use sqlx::{Row, SqlitePool};
 
 pub(crate) async fn verify_scope(
     pool: &SqlitePool,
@@ -311,9 +315,10 @@ pub(super) async fn verify_folder_source(
     source: &InternalMcpFolderSource,
 ) -> ChatResult<()> {
     let capability = wire_folder_capability(source.capability);
-    let valid: bool = sqlx::query_scalar(
-        "SELECT EXISTS(
-            SELECT 1
+    let live = sqlx::query(
+        "SELECT live_grant.runtime_approval_policy AS grant_runtime_approval_policy,
+                channel_access.runtime_approval_policy AS channel_runtime_approval_policy,
+                policy.safety_mode AS teammate_safety_mode
             FROM chat_assignment_authorized_folder_sources source
             JOIN chat_assignment_authorization_revisions authorization
               ON authorization.id = source.authorization_revision_id
@@ -330,6 +335,11 @@ pub(super) async fn verify_folder_source(
              AND channel_access.teammate_id = membership.participant_id
             JOIN chat_teammate_access_state access_state
               ON access_state.teammate_id = membership.participant_id
+            JOIN chat_teammates teammate
+              ON teammate.participant_id = assignment.teammate_id
+            JOIN chat_teammate_policy_revisions policy
+              ON policy.teammate_id = teammate.participant_id
+             AND policy.revision = teammate.latest_policy_revision
             JOIN chat_access_profiles profile
               ON profile.id = channel_access.access_profile_id
             JOIN chat_access_profile_revisions profile_revision
@@ -345,20 +355,6 @@ pub(super) async fn verify_folder_source(
               AND source.working_folder_id = ?
               AND source.capability = ?
               AND source.is_execution_target = ?
-              AND (
-                coalesce(live_grant.runtime_approval_policy,
-                         channel_access.runtime_approval_policy,
-                         access_state.runtime_approval_policy) = ?
-                OR CASE coalesce(live_grant.runtime_approval_policy,
-                                 channel_access.runtime_approval_policy,
-                                 access_state.runtime_approval_policy)
-                     WHEN 'ask' THEN 0 WHEN 'auto_approve' THEN 1
-                     WHEN 'unattended' THEN 2 ELSE -1
-                   END >= CASE ?
-                     WHEN 'ask' THEN 0 WHEN 'auto_approve' THEN 1
-                     WHEN 'unattended' THEN 2 ELSE 3
-                   END
-              )
               AND CASE source.capability
                     WHEN 'read' THEN 1 WHEN 'edit' THEN 2
                     WHEN 'execute' THEN 3 WHEN 'publish' THEN 4 ELSE 5
@@ -378,31 +374,113 @@ pub(super) async fn verify_folder_source(
                         WHEN 'execute' THEN 3 WHEN 'publish' THEN 4 ELSE 0
                       END
                     )
-                  END
-        )",
+                  END",
     )
     .bind(scope.authorization_revision_id.as_str())
     .bind(&source.root_handle)
     .bind(source.working_folder_id.as_str())
     .bind(capability)
     .bind(source.is_execution_target)
-    .bind(wire_runtime_approval_policy(source.runtime_approval_policy))
-    .bind(wire_runtime_approval_policy(source.runtime_approval_policy))
-    .fetch_one(pool)
+    .fetch_optional(pool)
     .await
-    .map_err(persistence_error)?;
-    if valid {
+    .map_err(persistence_error)?
+    .ok_or_else(generic_denial_error)?;
+    let live_runtime_approval = live_runtime_approval(
+        live.try_get("teammate_safety_mode")
+            .map_err(persistence_error)?,
+        live.try_get::<Option<String>, _>("grant_runtime_approval_policy")
+            .map_err(persistence_error)?
+            .or(live
+                .try_get("channel_runtime_approval_policy")
+                .map_err(persistence_error)?),
+    )
+    .map_err(|_| generic_denial_error())?;
+    if live_approval_covers_frozen(live_runtime_approval, source.runtime_approval_policy) {
         Ok(())
     } else {
         Err(generic_denial_error())
     }
 }
 
-fn wire_runtime_approval_policy(policy: ChatRuntimeApprovalPolicy) -> &'static str {
-    match policy {
-        ChatRuntimeApprovalPolicy::Ask => "ask",
-        ChatRuntimeApprovalPolicy::AutoApprove => "auto_approve",
-        ChatRuntimeApprovalPolicy::Unattended => "unattended",
-        ChatRuntimeApprovalPolicy::ProviderCustom => "provider_custom",
+/// Resolves the current effective runtime approval of a folder source from the teammate's latest
+/// approval behavior and the live folder or channel grant, the same way assignments freeze it.
+fn live_runtime_approval(
+    teammate_safety_mode: String,
+    granted: Option<String>,
+) -> ChatResult<ChatRuntimeApprovalPolicy> {
+    let teammate_default = teammate_runtime_approval(parse_approval_policy(&teammate_safety_mode)?);
+    let granted = granted
+        .as_deref()
+        .map(parse_runtime_approval_policy)
+        .transpose()?
+        .unwrap_or(teammate_default);
+    Ok(effective_runtime_approval(teammate_default, granted))
+}
+
+/// Returns whether the live approval still covers the frozen one: an equal policy, or a ranked
+/// live policy at least as broad as a ranked frozen policy. Any reduction denies the call.
+fn live_approval_covers_frozen(
+    live: ChatRuntimeApprovalPolicy,
+    frozen: ChatRuntimeApprovalPolicy,
+) -> bool {
+    live == frozen
+        || matches!(
+            (runtime_approval_rank(live), runtime_approval_rank(frozen)),
+            (Some(live), Some(frozen)) if live >= frozen
+        )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{live_approval_covers_frozen, live_runtime_approval};
+    use ganbaru_chat_contracts::models::ChatRuntimeApprovalPolicy;
+
+    #[test]
+    fn live_approval_follows_the_teammate_approval_behavior() {
+        assert_eq!(
+            live_runtime_approval("full_access".to_string(), None).unwrap(),
+            ChatRuntimeApprovalPolicy::Unattended,
+        );
+        assert_eq!(
+            live_runtime_approval(
+                "ask_for_approval".to_string(),
+                Some("unattended".to_string())
+            )
+            .unwrap(),
+            ChatRuntimeApprovalPolicy::Ask,
+        );
+        assert_eq!(
+            live_runtime_approval("custom".to_string(), Some("auto_approve".to_string())).unwrap(),
+            ChatRuntimeApprovalPolicy::AutoApprove,
+        );
+        assert!(live_runtime_approval("unknown".to_string(), None).is_err());
+    }
+
+    #[test]
+    fn reductions_after_freezing_deny_host_tools() {
+        assert!(live_approval_covers_frozen(
+            ChatRuntimeApprovalPolicy::Unattended,
+            ChatRuntimeApprovalPolicy::Unattended,
+        ));
+        assert!(live_approval_covers_frozen(
+            ChatRuntimeApprovalPolicy::Unattended,
+            ChatRuntimeApprovalPolicy::AutoApprove,
+        ));
+        assert!(!live_approval_covers_frozen(
+            ChatRuntimeApprovalPolicy::Ask,
+            ChatRuntimeApprovalPolicy::Unattended,
+        ));
+        assert!(live_approval_covers_frozen(
+            ChatRuntimeApprovalPolicy::ProviderCustom,
+            ChatRuntimeApprovalPolicy::ProviderCustom,
+        ));
+        assert!(!live_approval_covers_frozen(
+            ChatRuntimeApprovalPolicy::ProviderCustom,
+            ChatRuntimeApprovalPolicy::Ask,
+        ));
+        assert!(!live_approval_covers_frozen(
+            ChatRuntimeApprovalPolicy::Unattended,
+            ChatRuntimeApprovalPolicy::ProviderCustom,
+        ));
     }
 }

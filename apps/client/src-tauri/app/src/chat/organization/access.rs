@@ -12,7 +12,10 @@ pub use profiles::*;
 use retained_references::{retained_reference_issues, retained_reference_issues_in_transaction};
 pub use targets::*;
 
-use super::common::{wire_folder_capability, wire_history_boundary, wire_runtime_approval_policy};
+use super::common::{
+    effective_runtime_approval, runtime_approval_rank, teammate_runtime_approval,
+    wire_folder_capability, wire_history_boundary, wire_runtime_approval_policy,
+};
 use super::*;
 use ganbaru_chat::coordination::access::history_boundary_is_expansion;
 use sqlx::SqlitePool;
@@ -211,7 +214,7 @@ pub async fn chat_preview_teammate_access(
         &pool,
         &request.teammate_id,
         request.expected_access_revision,
-        request.teammate_default_runtime_approval,
+        request.policy.as_ref(),
         &request.channels,
     )
     .await
@@ -234,7 +237,7 @@ pub async fn chat_replace_teammate_access(
         &pool,
         &request.teammate_id,
         request.expected_access_revision,
-        request.teammate_default_runtime_approval,
+        request.policy.as_ref(),
         &request.channels,
     )
     .await?;
@@ -250,7 +253,7 @@ pub async fn chat_replace_teammate_access(
         .0;
     let has_reduction = teammate_access_has_reduction(
         &current,
-        request.teammate_default_runtime_approval,
+        proposed_teammate_default(&current, request.policy.as_ref()),
         &resolved,
     );
     let now = now_timestamp()?;
@@ -541,7 +544,7 @@ async fn preview_teammate_access(
     pool: &SqlitePool,
     teammate_id: &ChatParticipantId,
     expected_access_revision: u64,
-    teammate_default_runtime_approval: ChatRuntimeApprovalPolicy,
+    policy: Option<&ChatTeammatePolicyInput>,
     channels: &[ChatTeammateChannelAccessInput],
 ) -> ChatResult<ChatTeammateAccessPreview> {
     let current = read_teammate_access(pool, teammate_id).await?;
@@ -552,6 +555,7 @@ async fn preview_teammate_access(
             true,
         ));
     }
+    let teammate_default_runtime_approval = proposed_teammate_default(&current, policy);
     let (resolved, mut issues) = resolve_channel_access(pool, teammate_id, channels).await?;
     issues.extend(retained_reference_issues(pool, &resolved).await?);
     let current_ids = current
@@ -624,6 +628,17 @@ async fn require_expected_profile_revisions_in_transaction(
         }
     }
     Ok(())
+}
+
+/// Returns the runtime approval a saved draft leaves as the teammate default, which follows the
+/// teammate's approval behavior.
+fn proposed_teammate_default(
+    current: &ChatTeammateAccessRead,
+    policy: Option<&ChatTeammatePolicyInput>,
+) -> ChatRuntimeApprovalPolicy {
+    policy
+        .map(|policy| teammate_runtime_approval(policy.safety_mode))
+        .unwrap_or(current.teammate_default_runtime_approval)
 }
 
 fn teammate_access_is_expansion(
@@ -762,9 +777,12 @@ fn teammate_access_has_reduction(
 
 fn resolve_runtime_approval(
     override_policy: Option<ChatRuntimeApprovalPolicy>,
-    fallback: ChatRuntimeApprovalPolicy,
+    teammate_default: ChatRuntimeApprovalPolicy,
 ) -> ChatRuntimeApprovalPolicy {
-    override_policy.unwrap_or(fallback)
+    effective_runtime_approval(
+        teammate_default,
+        override_policy.unwrap_or(teammate_default),
+    )
 }
 
 fn resolve_nested_runtime_approval(
@@ -772,9 +790,7 @@ fn resolve_nested_runtime_approval(
     channel_override: Option<ChatRuntimeApprovalPolicy>,
     teammate_default: ChatRuntimeApprovalPolicy,
 ) -> ChatRuntimeApprovalPolicy {
-    resource_override
-        .or(channel_override)
-        .unwrap_or(teammate_default)
+    resolve_runtime_approval(resource_override.or(channel_override), teammate_default)
 }
 
 fn runtime_approval_is_expansion(
@@ -806,15 +822,6 @@ fn runtime_approval_is_reduction(
     ) {
         (Some(current), Some(proposed)) => proposed < current,
         _ => true,
-    }
-}
-
-fn runtime_approval_rank(policy: ChatRuntimeApprovalPolicy) -> Option<u8> {
-    match policy {
-        ChatRuntimeApprovalPolicy::Ask => Some(0),
-        ChatRuntimeApprovalPolicy::AutoApprove => Some(1),
-        ChatRuntimeApprovalPolicy::Unattended => Some(2),
-        ChatRuntimeApprovalPolicy::ProviderCustom => None,
     }
 }
 
@@ -939,6 +946,62 @@ mod tests {
                 ChatRuntimeApprovalPolicy::Unattended,
             ),
             ChatRuntimeApprovalPolicy::AutoApprove,
+        );
+    }
+
+    #[test]
+    fn grants_never_widen_the_teammate_approval_behavior() {
+        assert_eq!(
+            resolve_nested_runtime_approval(
+                Some(ChatRuntimeApprovalPolicy::Unattended),
+                None,
+                teammate_runtime_approval(ChatApprovalPolicy::AskForApproval),
+            ),
+            ChatRuntimeApprovalPolicy::Ask,
+        );
+        assert_eq!(
+            resolve_nested_runtime_approval(
+                None,
+                Some(ChatRuntimeApprovalPolicy::Unattended),
+                teammate_runtime_approval(ChatApprovalPolicy::ApproveForMe),
+            ),
+            ChatRuntimeApprovalPolicy::AutoApprove,
+        );
+        assert_eq!(
+            resolve_nested_runtime_approval(
+                Some(ChatRuntimeApprovalPolicy::Ask),
+                None,
+                teammate_runtime_approval(ChatApprovalPolicy::FullAccess),
+            ),
+            ChatRuntimeApprovalPolicy::Ask,
+        );
+        assert_eq!(
+            resolve_nested_runtime_approval(
+                None,
+                None,
+                teammate_runtime_approval(ChatApprovalPolicy::FullAccess),
+            ),
+            ChatRuntimeApprovalPolicy::Unattended,
+        );
+    }
+
+    #[test]
+    fn unranked_approvals_keep_the_granted_value() {
+        assert_eq!(
+            resolve_nested_runtime_approval(
+                Some(ChatRuntimeApprovalPolicy::ProviderCustom),
+                None,
+                teammate_runtime_approval(ChatApprovalPolicy::AskForApproval),
+            ),
+            ChatRuntimeApprovalPolicy::ProviderCustom,
+        );
+        assert_eq!(
+            resolve_nested_runtime_approval(
+                Some(ChatRuntimeApprovalPolicy::Unattended),
+                None,
+                teammate_runtime_approval(ChatApprovalPolicy::Custom),
+            ),
+            ChatRuntimeApprovalPolicy::Unattended,
         );
     }
 }

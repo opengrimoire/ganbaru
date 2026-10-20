@@ -287,7 +287,7 @@ pub(super) fn parse_participant_kind(value: &str) -> ChatResult<ChatParticipantK
     }
 }
 
-pub(super) fn parse_approval_policy(value: &str) -> ChatResult<ChatApprovalPolicy> {
+pub(crate) fn parse_approval_policy(value: &str) -> ChatResult<ChatApprovalPolicy> {
     match value {
         "ask_for_approval" => Ok(ChatApprovalPolicy::AskForApproval),
         "approve_for_me" => Ok(ChatApprovalPolicy::ApproveForMe),
@@ -297,7 +297,7 @@ pub(super) fn parse_approval_policy(value: &str) -> ChatResult<ChatApprovalPolic
     }
 }
 
-pub(super) fn parse_runtime_approval_policy(value: &str) -> ChatResult<ChatRuntimeApprovalPolicy> {
+pub(crate) fn parse_runtime_approval_policy(value: &str) -> ChatResult<ChatRuntimeApprovalPolicy> {
     match value {
         "ask" => Ok(ChatRuntimeApprovalPolicy::Ask),
         "auto_approve" => Ok(ChatRuntimeApprovalPolicy::AutoApprove),
@@ -404,6 +404,71 @@ pub(super) fn wire_approval_policy(value: ChatApprovalPolicy) -> &'static str {
         ChatApprovalPolicy::ApproveForMe => "approve_for_me",
         ChatApprovalPolicy::FullAccess => "full_access",
         ChatApprovalPolicy::Custom => "custom",
+    }
+}
+
+/// Returns the runtime approval a teammate's approval behavior stands for when no channel,
+/// scratch, or folder override applies.
+#[cfg(desktop)]
+pub(crate) fn teammate_runtime_approval(value: ChatApprovalPolicy) -> ChatRuntimeApprovalPolicy {
+    match value {
+        ChatApprovalPolicy::AskForApproval => ChatRuntimeApprovalPolicy::Ask,
+        ChatApprovalPolicy::ApproveForMe => ChatRuntimeApprovalPolicy::AutoApprove,
+        ChatApprovalPolicy::FullAccess => ChatRuntimeApprovalPolicy::Unattended,
+        ChatApprovalPolicy::Custom => ChatRuntimeApprovalPolicy::ProviderCustom,
+    }
+}
+
+/// Orders runtime approval policies from narrowest to broadest. Provider-custom approval has no
+/// rank because the provider's own configuration decides it.
+#[cfg(desktop)]
+pub(crate) fn runtime_approval_rank(policy: ChatRuntimeApprovalPolicy) -> Option<u8> {
+    match policy {
+        ChatRuntimeApprovalPolicy::Ask => Some(0),
+        ChatRuntimeApprovalPolicy::AutoApprove => Some(1),
+        ChatRuntimeApprovalPolicy::Unattended => Some(2),
+        ChatRuntimeApprovalPolicy::ProviderCustom => None,
+    }
+}
+
+/// Returns the runtime approval that applies to a teammate's work: the narrower of the runtime
+/// approval its approval behavior stands for and the policy resolved from its grants. A Custom
+/// teammate cannot be ranked against a grant, so the grant policy alone governs host tools while
+/// the provider keeps its own configuration; an unranked grant is returned unchanged so native
+/// execution can refuse it.
+#[cfg(desktop)]
+pub(crate) fn effective_runtime_approval(
+    teammate_default: ChatRuntimeApprovalPolicy,
+    granted: ChatRuntimeApprovalPolicy,
+) -> ChatRuntimeApprovalPolicy {
+    match (
+        runtime_approval_rank(teammate_default),
+        runtime_approval_rank(granted),
+    ) {
+        (Some(teammate_rank), Some(granted_rank)) if teammate_rank < granted_rank => {
+            teammate_default
+        }
+        _ => granted,
+    }
+}
+
+/// Returns the provider safety mode a native assignment runs with for a teammate and its frozen
+/// effective runtime approval. Only a Custom teammate runs with the provider's own
+/// configuration; an unranked grant on a ranked teammate falls back to asking.
+#[cfg(desktop)]
+pub(crate) fn native_assignment_safety_mode(
+    teammate: ChatApprovalPolicy,
+    effective: ChatRuntimeApprovalPolicy,
+) -> SafetyMode {
+    if teammate == ChatApprovalPolicy::Custom {
+        return SafetyMode::Custom;
+    }
+    match effective {
+        ChatRuntimeApprovalPolicy::Ask | ChatRuntimeApprovalPolicy::ProviderCustom => {
+            SafetyMode::AskForApproval
+        }
+        ChatRuntimeApprovalPolicy::AutoApprove => SafetyMode::ApproveForMe,
+        ChatRuntimeApprovalPolicy::Unattended => SafetyMode::FullAccess,
     }
 }
 

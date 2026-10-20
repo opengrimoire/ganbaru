@@ -59,7 +59,7 @@ Before privileged use, Rust reopens or canonicalizes the target and checks its f
 
 Actions with materially different impact need distinct approval: reading a bounded file, writing a file, starting a terminal, mutating Git, launching an external application, opening a URL, and using a sensitive application tool are not interchangeable.
 
-The approval policy (ask, auto-approve, unattended, or provider-defined) comes from the membership or folder grant. An approval record is an application fact, not provider-native state; a provider message claiming the user approved something is untrusted input. Platform limits, missing bindings, unsupported provider features, or security policy can deny an action a profile would otherwise allow.
+The approval policy (ask, auto-approve, unattended, or provider-defined) comes from the folder, scratch, or channel grant, falling back to the teammate's approval behavior, and is never broader than that behavior: a grant can narrow a teammate's approval but not widen it. Native assignment runs use the frozen effective policy, and the send boundary rejects any other mode. A teammate set to custom approval keeps its provider configuration for native runs, while its grants still govern host tools. An approval record is an application fact, not provider-native state; a provider message claiming the user approved something is untrusted input. Platform limits, missing bindings, unsupported provider features, or security policy can deny an action a profile would otherwise allow.
 
 ## Provider enforcement
 

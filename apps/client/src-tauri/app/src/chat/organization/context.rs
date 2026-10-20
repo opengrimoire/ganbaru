@@ -1,7 +1,11 @@
 //! Frozen assignment context and authorization snapshots.
 
 use super::super::internal_mcp::generate_opaque_handle;
-use super::common::{MAX_MESSAGE_BYTES, new_id, sha256_hex, truncate_utf8};
+use super::common::{
+    MAX_MESSAGE_BYTES, effective_runtime_approval as narrower_runtime_approval, new_id,
+    parse_approval_policy, parse_runtime_approval_policy, sha256_hex, teammate_runtime_approval,
+    truncate_utf8, wire_runtime_approval_policy,
+};
 use super::{
     MAX_CHANNEL_CONTEXT_MESSAGES, MAX_THREAD_CONTEXT_REPLIES, i64_value, identifier_error,
     persistence_error, u64_value,
@@ -242,23 +246,35 @@ pub(super) async fn freeze_context_package(
         .cloned()
         .collect::<Vec<_>>();
     authorized_folders.sort_by(|left, right| left.working_folder_id.cmp(&right.working_folder_id));
-    let resolved_runtime_approval_policy = target
+    let granted_runtime_approval_policy = target
         .working_folder_id
         .as_deref()
         .and_then(|working_folder_id| {
             grants
                 .iter()
                 .find(|grant| grant.working_folder_id == working_folder_id)
-                .and_then(|grant| grant.runtime_approval_policy.clone())
+                .and_then(|grant| grant.runtime_approval_policy.as_ref())
         })
         .or_else(|| {
             target
                 .scratch_generation_id
                 .as_ref()
-                .and(access.scratch_runtime_approval_policy.clone())
+                .and(access.scratch_runtime_approval_policy.as_ref())
         })
-        .or_else(|| access.channel_runtime_approval_policy.clone())
-        .unwrap_or_else(|| access.teammate_runtime_approval_policy.clone());
+        .or(access.channel_runtime_approval_policy.as_ref());
+    let resolved_runtime_approval_policy =
+        access.effective_runtime_approval(granted_runtime_approval_policy)?;
+    let folder_runtime_approval_policies = authorized_folders
+        .iter()
+        .map(|grant| {
+            access.effective_runtime_approval(
+                grant
+                    .runtime_approval_policy
+                    .as_ref()
+                    .or(access.channel_runtime_approval_policy.as_ref()),
+            )
+        })
+        .collect::<ChatResult<Vec<_>>>()?;
     let scope_data = serde_json::json!({
         "destinationConversationId": conversation_id.as_str(),
         "requesterParticipantId": access.requester_participant_id.as_str(),
@@ -278,13 +294,11 @@ pub(super) async fn freeze_context_package(
             "revisionCutoffId": &source.source_revision_cutoff_id,
             "audienceRevision": source.destination_audience_revision,
         })).collect::<Vec<_>>(),
-        "folders": authorized_folders.iter().map(|grant| serde_json::json!({
+        "folders": authorized_folders.iter().zip(&folder_runtime_approval_policies).map(|(grant, policy)| serde_json::json!({
             "workingFolderId": &grant.working_folder_id,
             "capability": &grant.capability,
             "executionTarget": target.working_folder_id.as_deref() == Some(&grant.working_folder_id),
-            "runtimeApprovalPolicy": grant.runtime_approval_policy.as_ref()
-                .or(access.channel_runtime_approval_policy.as_ref())
-                .unwrap_or(&access.teammate_runtime_approval_policy),
+            "runtimeApprovalPolicy": policy,
         })).collect::<Vec<_>>(),
     });
     let scope_digest = sha256_hex(
@@ -315,7 +329,7 @@ pub(super) async fn freeze_context_package(
     .bind(access.access_profile_revision_id.as_str())
     .bind(&target.execution_environment_id)
     .bind(&target.working_folder_id)
-    .bind(&resolved_runtime_approval_policy)
+    .bind(resolved_runtime_approval_policy)
     .bind(&scope_digest)
     .bind(now.as_str())
     .execute(&mut **transaction)
@@ -343,7 +357,10 @@ pub(super) async fn freeze_context_package(
         .await
         .map_err(persistence_error)?;
     }
-    for grant in &authorized_folders {
+    for (grant, runtime_approval_policy) in authorized_folders
+        .iter()
+        .zip(&folder_runtime_approval_policies)
+    {
         sqlx::query(
             "INSERT INTO chat_assignment_authorized_folder_sources
                 (authorization_revision_id, root_handle, working_folder_id,
@@ -357,13 +374,7 @@ pub(super) async fn freeze_context_package(
         .bind(&grant.capability)
         .bind(target.working_folder_id.as_deref() == Some(&grant.working_folder_id))
         .bind(now.as_str())
-        .bind(
-            grant
-                .runtime_approval_policy
-                .as_ref()
-                .or(access.channel_runtime_approval_policy.as_ref())
-                .unwrap_or(&access.teammate_runtime_approval_policy),
-        )
+        .bind(*runtime_approval_policy)
         .execute(&mut **transaction)
         .await
         .map_err(persistence_error)?;
@@ -389,7 +400,23 @@ struct AssignmentAccess {
     history_from_ordinal: Option<u64>,
     channel_runtime_approval_policy: Option<String>,
     scratch_runtime_approval_policy: Option<String>,
-    teammate_runtime_approval_policy: String,
+    teammate_runtime_approval_policy: ChatRuntimeApprovalPolicy,
+}
+
+impl AssignmentAccess {
+    /// Returns the wire runtime approval an assignment may use: the granted
+    /// policy, or the teammate default when nothing is granted, never broader
+    /// than the teammate's own approval behavior.
+    fn effective_runtime_approval(&self, granted: Option<&String>) -> ChatResult<&'static str> {
+        let granted = granted
+            .map(|value| parse_runtime_approval_policy(value))
+            .transpose()?
+            .unwrap_or(self.teammate_runtime_approval_policy);
+        Ok(wire_runtime_approval_policy(narrower_runtime_approval(
+            self.teammate_runtime_approval_policy,
+            granted,
+        )))
+    }
 }
 
 #[derive(Clone)]
@@ -464,7 +491,7 @@ async fn read_assignment_access(
                 channel_access.history_from_ordinal,
                 channel_access.runtime_approval_policy AS channel_runtime_approval_policy,
                 channel_access.scratch_runtime_approval_policy,
-                access_state.runtime_approval_policy AS teammate_runtime_approval_policy
+                policy.safety_mode AS teammate_safety_mode
          FROM chat_conversation_memberships membership
          JOIN chat_teammate_channel_memberships channel_access
            ON channel_access.conversation_id = membership.conversation_id
@@ -578,9 +605,10 @@ async fn read_assignment_access(
         scratch_runtime_approval_policy: row
             .try_get("scratch_runtime_approval_policy")
             .map_err(persistence_error)?,
-        teammate_runtime_approval_policy: row
-            .try_get("teammate_runtime_approval_policy")
-            .map_err(persistence_error)?,
+        teammate_runtime_approval_policy: teammate_runtime_approval(parse_approval_policy(
+            &row.try_get::<String, _>("teammate_safety_mode")
+                .map_err(persistence_error)?,
+        )?),
     })
 }
 

@@ -79,7 +79,7 @@ Input, output, scrollback, event queues, and process lifetime are bounded. Paste
 
 Each native Chat run may receive an ephemeral loopback MCP endpoint with a small application-owned method allowlist. It is not a general localhost service and not an organizational participant.
 
-Every request validates a run-scoped credential, method, bounded arguments, current run and thread, channel membership, access-profile revision, execution target, and revocation state. Results exclude credentials, external absolute paths, and unrelated vault content. The endpoint closes with the run, and replayed credentials or calls after interruption or revocation fail. A future external MCP service requires separate authorization and cannot reuse this endpoint.
+Every request validates a run-scoped credential, method, bounded arguments, current run and thread, channel membership, access-profile revision, execution target, and revocation state. Tools that change a folder require the source's frozen runtime approval to be auto-approve or unattended. Results exclude credentials, external absolute paths, and unrelated vault content. The endpoint closes with the run, and replayed credentials or calls after interruption or revocation fail. A future external MCP service requires separate authorization and cannot reuse this endpoint.
 
 ## Event ingestion and diagnostics
 

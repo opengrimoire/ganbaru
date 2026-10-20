@@ -10,7 +10,10 @@ use crate::models::{
     NoteBlockRow, NoteCommentAnchorRow, NoteCommentRow, NoteCommentThreadRow,
     NoteMarkdownExportDiagnosticDto, NoteMarkdownExportDto, NoteMarkdownExportRequest,
 };
-use crate::validation::{require_uuid, rich_text_items_plain_text};
+use crate::validation::{
+    is_exportable_web_reference_url, require_uuid, rich_text_items_plain_text,
+    validate_rich_text_url,
+};
 use serde_json::Value;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
@@ -449,7 +452,7 @@ impl MarkdownRenderer {
                 "markdown_export_media_missing_reference",
                 "Media block has no exportable reference",
             );
-            return format!("[{label}]");
+            return format!("[{}]", escape_link_label(&label));
         };
         if url.starts_with("ganbaru-asset:") {
             self.warn_block(
@@ -486,6 +489,14 @@ impl MarkdownRenderer {
             .map(|items| rich_text_items_plain_text(items))
             .filter(|caption| !caption.trim().is_empty())
             .unwrap_or_else(|| url.to_string());
+        if !is_exportable_web_reference_url(&block.row.block_type, url) {
+            self.warn_block(
+                block,
+                "markdown_export_external_reference_not_linked",
+                "External reference URL was exported as text because it is not a safe link",
+            );
+            return escape_inline(&label);
+        }
         format!("[{}]({})", escape_link_label(&label), escape_url(url))
     }
 
@@ -736,7 +747,16 @@ impl MarkdownRenderer {
             .and_then(Value::as_str)
             .or_else(|| item.get("text")?.get("link")?.get("url")?.as_str());
         if let Some(url) = href.filter(|url| !url.trim().is_empty()) {
-            rendered = format!("[{}]({})", escape_link_label(&rendered), escape_url(url));
+            if validate_rich_text_url(url, "rich text href").is_ok() {
+                rendered = format!("[{rendered}]({})", escape_url(url));
+            } else {
+                self.warn_source(
+                    block_id,
+                    comment_id,
+                    "markdown_export_rich_text_link_not_linked",
+                    "Rich text link was exported as text because it is not a safe link",
+                );
+            }
         }
         rendered
     }

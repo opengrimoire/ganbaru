@@ -151,4 +151,4 @@ When membership, history, profile, target, runtime, scratch, or audience authori
 
 Archiving the project or a run's folder, unbinding that folder, or rebinding it to another directory revokes the active runs that execute in or were granted the folder and stops their providers. Provider events are checked against the same live authority; the first event that fails it, rather than a database error, revokes the run and stops the provider instead of only rejecting the event.
 
-Provider stop, tool shutdown, terminal, preview, and scratch cleanup have bounded deadlines. Incomplete cleanup persists as a retryable record without weakening the revocation or exposing native paths.
+Provider stop, tool shutdown, terminal, preview, and scratch cleanup have bounded deadlines. Incomplete cleanup persists as a retryable record without weakening the revocation or exposing native paths. Scratch removal walks relative to open directory handles and removes links without following them, so a provider process still running in the scratch cannot redirect deletion outside it.

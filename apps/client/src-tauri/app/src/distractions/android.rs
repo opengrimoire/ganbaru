@@ -506,8 +506,15 @@ async fn exchange_as_owner<R: Runtime>(
         )
         .await;
     }
-    let acknowledged =
-        crate::distractions::linked::import_linked_samples(&pool, &peer_samples).await?;
+    let coordinator = pairing
+        .coordinator_pin()?
+        .ok_or_else(|| "this device is not linked to a coordinator".to_string())?;
+    let acknowledged = crate::distractions::linked::import_linked_samples(
+        &pool,
+        &coordinator.device_id,
+        &peer_samples,
+    )
+    .await?;
     let refreshed = owner_snapshot(&pool).await?;
     let (_, _, combined) = crate::vault::handoff::transport::exchange_distractions(
         pairing,

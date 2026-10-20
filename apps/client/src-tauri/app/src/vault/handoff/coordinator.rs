@@ -498,7 +498,8 @@ impl<R: Runtime> CoordinatorState<R> {
             )
             .await?;
             let acknowledged_sample_ids =
-                crate::distractions::linked::import_linked_samples(&pool, &samples).await?;
+                crate::distractions::linked::import_linked_samples(&pool, &device_id, &samples)
+                    .await?;
             let combined_samples =
                 crate::distractions::linked::aggregate_owner_samples(&pool).await?;
             return Ok(CoordinatorResponse::DistractionsAcknowledged {

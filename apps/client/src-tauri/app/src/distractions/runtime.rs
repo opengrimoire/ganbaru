@@ -637,11 +637,7 @@ impl Owner {
                     .state::<vault::ownership::VaultOwnershipManager>()
                     .acquire_managed_write(&context.vault_id)?;
                 context.validate_binding(&self.app)?;
-                let pool = crate::db::connect_sqlite(
-                    self.app.clone(),
-                    format!("sqlite:{}", vault::APP_SQLITE_FILE),
-                )
-                .await?;
+                let pool = crate::db::connect_vault(&self.app).await?;
                 context.validate_binding(&self.app)?;
                 let event =
                     usage::normalize_desktop_block_event(DistractionsDesktopBlockEventInput {

@@ -221,11 +221,7 @@ async fn prepare_local_state_for_snapshot(app: &tauri::AppHandle) -> Result<(), 
 async fn prepare_local_state_for_snapshot(app: &tauri::AppHandle) -> Result<(), String> {
     let vault_id = crate::vault::active_vault_id(app)?;
     let (device_id, _) = app.state::<PairingManager>().identity()?;
-    let pool = crate::db::connect_sqlite(
-        app.clone(),
-        format!("sqlite:{}", crate::vault::APP_SQLITE_FILE),
-    )
-    .await?;
+    let pool = crate::db::connect_vault(app).await?;
     crate::distractions::linked::drain_local_spool(app, &pool, &vault_id, &device_id)
         .await
         .map(|_| ())

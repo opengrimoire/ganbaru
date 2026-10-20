@@ -621,6 +621,7 @@ commands.allow = [
   "restart_app",
   "restart_app_after_delay",
   "reveal_main_window",
+  "select_database_target",
   "show_benchmark_notification",
   "show_event_notification",
   "show_notes_notification",

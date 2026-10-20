@@ -1,14 +1,14 @@
 use crate::vault;
 use std::path::PathBuf;
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, OnceLock};
 use tauri::{AppHandle, Manager, Runtime};
 
 pub use ganbaru_db::DatabasePoolRegistry as DatabaseState;
 
-#[cfg(desktop)]
-pub const BENCHMARK_SQLITE_URL: &str = "sqlite:benchmark.sqlite";
+/// File name of the isolated benchmark database in the app config directory.
+pub(crate) const BENCHMARK_SQLITE_FILE: &str = "benchmark.sqlite";
 
-const ALLOWED_SQLITE_FILES: &[&str] = &["ganbaru.sqlite", "benchmark.sqlite"];
+const ALLOWED_SQLITE_FILES: &[&str] = &[vault::APP_SQLITE_FILE, BENCHMARK_SQLITE_FILE];
 static VAULT_CONNECTION_GATE: LazyLock<Arc<tokio::sync::RwLock<()>>> =
     LazyLock::new(|| Arc::new(tokio::sync::RwLock::new(())));
 
@@ -43,7 +43,120 @@ fn resolve_sqlite_path<R: Runtime>(app: &AppHandle<R>, db_url: &str) -> Result<P
     Ok(path)
 }
 
+/// The database the app's webviews read and write in this process.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DatabaseTarget {
+    /// The active vault's `ganbaru.sqlite`.
+    Vault,
+    /// The isolated benchmark database, used only by a benchmark run's relaunch.
+    Benchmark,
+}
+
+/// Fixed by the first selection in this process and never changed afterwards, so a webview
+/// cannot point commands at a different database than the one the process booted with.
+static SELECTED_DATABASE: OnceLock<DatabaseTarget> = OnceLock::new();
+
+impl DatabaseTarget {
+    fn from_url(db_url: &str) -> Result<Self, String> {
+        match db_url.strip_prefix("sqlite:") {
+            Some(vault::APP_SQLITE_FILE) => Ok(Self::Vault),
+            Some(BENCHMARK_SQLITE_FILE) => Ok(Self::Benchmark),
+            Some(file_name) => Err(format!("unsupported sqlite file '{file_name}'")),
+            None => Err(format!(
+                "invalid db url '{db_url}', expected 'sqlite:<file>'"
+            )),
+        }
+    }
+
+    /// The connection string the webviews pass for this target.
+    pub(crate) fn url(self) -> String {
+        match self {
+            Self::Vault => format!("sqlite:{}", vault::APP_SQLITE_FILE),
+            Self::Benchmark => format!("sqlite:{BENCHMARK_SQLITE_FILE}"),
+        }
+    }
+}
+
+/// Checks a database a command names against the process selection. The vault stays usable
+/// until a benchmark is selected; the benchmark database is usable only once it is.
+fn admit_database_target(
+    selected: Option<DatabaseTarget>,
+    requested: DatabaseTarget,
+) -> Result<(), String> {
+    match (selected, requested) {
+        (Some(DatabaseTarget::Benchmark), DatabaseTarget::Benchmark)
+        | (None | Some(DatabaseTarget::Vault), DatabaseTarget::Vault) => Ok(()),
+        (Some(DatabaseTarget::Benchmark), DatabaseTarget::Vault) => {
+            Err("The vault database is unavailable while a benchmark run is active".to_string())
+        }
+        (None | Some(DatabaseTarget::Vault), DatabaseTarget::Benchmark) => {
+            Err("The benchmark database is available only during a benchmark run".to_string())
+        }
+    }
+}
+
+/// Selects this process's database once. A benchmark is selected only when it is requested
+/// and `benchmark_pending` confirms a benchmark relaunch is waiting; a later call returns the
+/// first selection unchanged.
+#[cfg(desktop)]
+pub(crate) fn select_database_target(
+    benchmark_requested: bool,
+    benchmark_pending: impl FnOnce() -> bool,
+) -> DatabaseTarget {
+    select_database_target_in(&SELECTED_DATABASE, benchmark_requested, benchmark_pending)
+}
+
+#[cfg(any(desktop, test))]
+fn select_database_target_in(
+    selected: &OnceLock<DatabaseTarget>,
+    benchmark_requested: bool,
+    benchmark_pending: impl FnOnce() -> bool,
+) -> DatabaseTarget {
+    *selected.get_or_init(|| {
+        if benchmark_requested && benchmark_pending() {
+            DatabaseTarget::Benchmark
+        } else {
+            DatabaseTarget::Vault
+        }
+    })
+}
+
+/// The database selected for this process, if one has been selected.
+pub(crate) fn selected_database_target() -> Option<DatabaseTarget> {
+    SELECTED_DATABASE.get().copied()
+}
+
+/// Opens the database a command names, after checking it is the one this process selected.
+/// The URL is an assertion from the webview, never a choice: a mismatch fails instead of
+/// reaching another database.
 pub async fn connect_sqlite<R: Runtime>(
+    app: AppHandle<R>,
+    db_url: String,
+) -> Result<sqlx::SqlitePool, String> {
+    admit_database_target(
+        selected_database_target(),
+        DatabaseTarget::from_url(&db_url)?,
+    )?;
+    connect_database(app, db_url).await
+}
+
+/// Opens the benchmark database for harness-only writes. It fails unless this process selected
+/// the benchmark database, so benchmark fixtures never reach the vault.
+#[cfg(desktop)]
+pub(crate) async fn connect_benchmark_database<R: Runtime>(
+    app: AppHandle<R>,
+) -> Result<sqlx::SqlitePool, String> {
+    connect_sqlite(app, DatabaseTarget::Benchmark.url()).await
+}
+
+/// Opens the active vault for Rust-owned work, whichever database the webviews use.
+pub(crate) async fn connect_vault<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<sqlx::SqlitePool, String> {
+    connect_database(app.clone(), DatabaseTarget::Vault.url()).await
+}
+
+async fn connect_database<R: Runtime>(
     app: AppHandle<R>,
     db_url: String,
 ) -> Result<sqlx::SqlitePool, String> {
@@ -86,8 +199,8 @@ pub async fn connect_sqlite<R: Runtime>(
 pub(crate) async fn connect_active_vault_for_sync<R: Runtime>(
     app: &AppHandle<R>,
 ) -> Result<Option<sqlx::SqlitePool>, String> {
-    let pool = connect_sqlite(app.clone(), format!("sqlite:{}", vault::APP_SQLITE_FILE)).await?;
-    let path = resolve_sqlite_path(app, &format!("sqlite:{}", vault::APP_SQLITE_FILE))?;
+    let pool = connect_vault(app).await?;
+    let path = resolve_sqlite_path(app, &DatabaseTarget::Vault.url())?;
     let writable = matches!(
         app.state::<DatabaseState>().access(path).await,
         Some(ganbaru_db::DatabaseAccessMode::ReadWrite | ganbaru_db::DatabaseAccessMode::Guarded)
@@ -137,7 +250,85 @@ pub async fn close_all_sqlite_pools<R: Runtime>(app: &AppHandle<R>) -> Result<()
 
 #[cfg(test)]
 mod tests {
-    use super::ALLOWED_SQLITE_FILES;
+    use super::{
+        ALLOWED_SQLITE_FILES, DatabaseTarget, admit_database_target, select_database_target_in,
+    };
+    use std::sync::OnceLock;
+
+    #[test]
+    fn commands_reach_only_the_selected_database() {
+        use DatabaseTarget::{Benchmark, Vault};
+        assert!(admit_database_target(None, Vault).is_ok());
+        assert!(admit_database_target(Some(Vault), Vault).is_ok());
+        assert!(admit_database_target(Some(Benchmark), Benchmark).is_ok());
+        assert!(admit_database_target(None, Benchmark).is_err());
+        assert!(admit_database_target(Some(Vault), Benchmark).is_err());
+        assert!(admit_database_target(Some(Benchmark), Vault).is_err());
+    }
+
+    #[test]
+    fn database_urls_name_only_known_files() {
+        assert_eq!(
+            DatabaseTarget::from_url("sqlite:ganbaru.sqlite"),
+            Ok(DatabaseTarget::Vault)
+        );
+        assert_eq!(
+            DatabaseTarget::from_url("sqlite:benchmark.sqlite"),
+            Ok(DatabaseTarget::Benchmark)
+        );
+        for url in [
+            "sqlite:../ganbaru.sqlite",
+            "sqlite:other.sqlite",
+            "ganbaru.sqlite",
+            "sqlite:",
+        ] {
+            assert!(DatabaseTarget::from_url(url).is_err(), "{url}");
+        }
+        for target in [DatabaseTarget::Vault, DatabaseTarget::Benchmark] {
+            assert_eq!(DatabaseTarget::from_url(&target.url()), Ok(target));
+        }
+    }
+
+    #[test]
+    fn benchmark_is_selected_only_for_a_pending_relaunch() {
+        let selected = OnceLock::new();
+        assert_eq!(
+            select_database_target_in(&selected, true, || false),
+            DatabaseTarget::Vault
+        );
+        let selected = OnceLock::new();
+        assert_eq!(
+            select_database_target_in(&selected, false, || true),
+            DatabaseTarget::Vault
+        );
+        let selected = OnceLock::new();
+        assert_eq!(
+            select_database_target_in(&selected, true, || true),
+            DatabaseTarget::Benchmark
+        );
+    }
+
+    #[test]
+    fn the_first_database_selection_is_final() {
+        let selected = OnceLock::new();
+        assert_eq!(
+            select_database_target_in(&selected, false, || true),
+            DatabaseTarget::Vault
+        );
+        assert_eq!(
+            select_database_target_in(&selected, true, || true),
+            DatabaseTarget::Vault
+        );
+        let selected = OnceLock::new();
+        assert_eq!(
+            select_database_target_in(&selected, true, || true),
+            DatabaseTarget::Benchmark
+        );
+        assert_eq!(
+            select_database_target_in(&selected, false, || false),
+            DatabaseTarget::Benchmark
+        );
+    }
 
     #[test]
     fn allowed_sqlite_files_are_plain_file_names() {

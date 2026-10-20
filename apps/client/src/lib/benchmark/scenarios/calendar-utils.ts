@@ -145,10 +145,7 @@ async function seedPomodoroHistory(payload: BenchmarkPomodoroHistoryPayload): Pr
   ) {
     return;
   }
-  await invoke("benchmark_seed_pomodoro_history", {
-    dbUrl: dbUrl(),
-    payload,
-  });
+  await invoke("benchmark_seed_pomodoro_history", { payload });
 }
 
 export async function seedCalendarDataset(

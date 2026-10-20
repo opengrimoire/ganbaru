@@ -76,11 +76,7 @@ impl<R: Runtime> CoordinatorState<R> {
             }
         }
         if status.can_write {
-            let pool = crate::db::connect_sqlite(
-                self.app.clone(),
-                format!("sqlite:{}", crate::vault::APP_SQLITE_FILE),
-            )
-            .await?;
+            let pool = crate::db::connect_vault(&self.app).await?;
             crate::distractions::linked::drain_local_spool(
                 &self.app,
                 &pool,

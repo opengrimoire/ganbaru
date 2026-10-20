@@ -582,6 +582,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             benchmark::clear_benchmark_state,
             benchmark::prepare_benchmark_db,
             benchmark::teardown_benchmark_db,
+            benchmark::select_database_target,
             benchmark::seed::benchmark_seed_pomodoro_history,
             benchmark::seed::benchmark_seed_dense_music_library,
             restart_app,

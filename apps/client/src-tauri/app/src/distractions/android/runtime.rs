@@ -5,7 +5,7 @@ use super::{
     projection::{GuardianCapture, NotificationCopy},
     synchronize_locked,
 };
-use crate::{db::connect_sqlite, vault};
+use crate::vault;
 use ganbaru_mobile_distractions::MobileDistractionsExt;
 use serde_json::Value;
 use std::{
@@ -335,7 +335,7 @@ async fn refresh<R: Runtime>(
         if vault::active_vault_path(app)? != path {
             return Err("Guardian vault changed before accounting".into());
         }
-        let pool = connect_sqlite(app.clone(), super::ACTIVE_DB_URL.into()).await?;
+        let pool = crate::db::connect_vault(app).await?;
         let mut tx = pool
             .begin()
             .await

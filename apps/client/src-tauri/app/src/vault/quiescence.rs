@@ -324,8 +324,7 @@ async fn check_drained_pomodoro_blocker<R: Runtime>(
 }
 
 async fn check_pomodoro_blocker<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
-    let pool =
-        db::connect_sqlite(app.clone(), format!("sqlite:{}", super::APP_SQLITE_FILE)).await?;
+    let pool = crate::db::connect_vault(app).await?;
     require_no_active_pomodoro(&pool).await
 }
 

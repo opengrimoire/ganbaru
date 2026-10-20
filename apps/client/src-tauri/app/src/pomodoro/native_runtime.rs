@@ -1002,13 +1002,7 @@ impl Owner {
             self.projection.error = None;
             self.subscriptions.publish(&self.projection, Instant::now());
             self.ownership_generation = Some(generation);
-            self.pool = Some(
-                crate::db::connect_sqlite(
-                    self.app.clone(),
-                    format!("sqlite:{}", crate::vault::APP_SQLITE_FILE),
-                )
-                .await?,
-            );
+            self.pool = Some(crate::db::connect_vault(&self.app).await?);
             self.verify_authority()?;
         }
         if recover && self.recovered_vault.as_ref() != Some(&(vault_id.clone(), generation)) {

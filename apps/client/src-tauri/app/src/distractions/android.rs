@@ -1,5 +1,4 @@
 #[cfg(target_os = "android")]
-use crate::db::connect_sqlite;
 #[cfg(target_os = "android")]
 use crate::vault::{self, handoff::pairing::PairingManager, ownership::VaultOwnershipManager};
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -13,7 +12,6 @@ use sqlx::SqlitePool;
 use tauri::Manager;
 use tauri::Runtime;
 
-const ACTIVE_DB_URL: &str = "sqlite:ganbaru.sqlite";
 const MAX_BATCH: usize = 200;
 const MAX_JOURNAL_EVENTS: usize = 2_000;
 #[cfg(target_os = "android")]
@@ -373,7 +371,7 @@ async fn synchronize_locked<R: Runtime>(
             if vault::active_vault_id(&app)? != active_vault_id {
                 return Err("mobile Distractions vault changed before import".into());
             }
-            let pool = connect_sqlite(app.clone(), ACTIVE_DB_URL.to_string()).await?;
+            let pool = crate::db::connect_vault(&app).await?;
             if vault::active_vault_id(&app)? != active_vault_id {
                 return Err("mobile Distractions vault changed while connecting".into());
             }
@@ -482,7 +480,7 @@ async fn exchange_as_owner<R: Runtime>(
     if vault::active_vault_id(app)? != vault_id {
         return Err("mobile Distractions vault changed before owner exchange".into());
     }
-    let pool = connect_sqlite(app.clone(), ACTIVE_DB_URL.to_string()).await?;
+    let pool = crate::db::connect_vault(app).await?;
     if vault::active_vault_id(app)? != vault_id {
         return Err("mobile Distractions vault changed while connecting for owner exchange".into());
     }

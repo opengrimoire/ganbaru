@@ -160,7 +160,7 @@ async fn create_database_snapshot<R: Runtime>(
     app: &tauri::AppHandle<R>,
     destination: &Path,
 ) -> Result<(), String> {
-    let pool = db::connect_sqlite(app.clone(), format!("sqlite:{APP_SQLITE_FILE}")).await?;
+    let pool = crate::db::connect_vault(&app).await?;
     vacuum_database(&pool, destination).await
 }
 

@@ -667,12 +667,9 @@ impl Owner {
             persistence::RestoreSelection::Saved
         };
         self.pool = Some(
-            crate::db::connect_sqlite(
-                self.app.clone(),
-                format!("sqlite:{}", crate::vault::APP_SQLITE_FILE),
-            )
-            .await
-            .map_err(|error| MusicLibraryError::runtime("connect music session", error))?,
+            crate::db::connect_vault(&self.app)
+                .await
+                .map_err(|error| MusicLibraryError::runtime("connect music session", error))?,
         );
         self.vault_id = Some(vault_id);
         self.vault_generation = vault_generation;

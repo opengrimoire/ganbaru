@@ -11,7 +11,6 @@ pub(crate) mod store;
 #[cfg(test)]
 mod tests;
 
-use crate::db::connect_sqlite;
 use crate::vault::handoff::protocol::QrMatrix;
 use ganbaru_contacts::TrustKind;
 use serde::{Deserialize, Serialize};
@@ -199,11 +198,7 @@ pub struct UpdateTrustRequest {
 }
 
 pub(crate) async fn contacts_pool<R: Runtime>(app: &AppHandle<R>) -> Result<SqlitePool, String> {
-    connect_sqlite(
-        app.clone(),
-        format!("sqlite:{}", crate::vault::APP_SQLITE_FILE),
-    )
-    .await
+    crate::db::connect_vault(app).await
 }
 
 fn require_writable<R: Runtime>(app: &AppHandle<R>) -> Result<(), ContactsError> {

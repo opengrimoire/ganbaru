@@ -474,3 +474,116 @@ fn bitbucket_responses_stop_at_the_first_chunk_past_the_limit() {
         .expect_err("a single oversized chunk should be refused");
     assert!(body.is_empty());
 }
+
+struct UntouchedCredentialStore;
+
+impl CredentialStore for UntouchedCredentialStore {
+    fn availability(&self) -> crate::credentials::CredentialStoreAvailability {
+        crate::credentials::CredentialStoreAvailability::Available
+    }
+
+    fn read(
+        &self,
+        _reference: &CredentialReferenceId,
+    ) -> Result<Option<SecretValue>, crate::credentials::CredentialStoreError> {
+        panic!("a repository outside the folder's remotes must not read a credential")
+    }
+
+    fn replace(
+        &self,
+        _reference: &CredentialReferenceId,
+        _value: &SecretValue,
+    ) -> Result<(), crate::credentials::CredentialStoreError> {
+        panic!("listing and creating change requests never store credentials")
+    }
+
+    fn remove(
+        &self,
+        _reference: &CredentialReferenceId,
+    ) -> Result<bool, crate::credentials::CredentialStoreError> {
+        panic!("listing and creating change requests never remove credentials")
+    }
+}
+
+#[test]
+fn hosted_repositories_must_match_a_remote_of_the_same_provider() {
+    let urls = [
+        "https://bitbucket.org/team/project.git",
+        "git@github.com:owner/project.git",
+    ];
+    let matches = |kind, slug| remote_urls_include_repository(urls.into_iter(), kind, slug);
+    assert!(matches(HostedSourceControlKind::Bitbucket, "team/project"));
+    assert!(matches(HostedSourceControlKind::Github, "owner/project"));
+    assert!(!matches(
+        HostedSourceControlKind::Bitbucket,
+        "other/project"
+    ));
+    assert!(!matches(HostedSourceControlKind::Github, "team/project"));
+    assert!(!matches(HostedSourceControlKind::Gitlab, "owner/project"));
+}
+
+#[tokio::test]
+async fn change_requests_for_another_repository_are_refused_before_credentials_are_read() {
+    let base = std::env::temp_dir().join(format!(
+        "ganbaru-hosted-binding-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&base).unwrap();
+    let repository = std::fs::canonicalize(&base).unwrap();
+    for arguments in [
+        &["init", "-q"] as &[&str],
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://bitbucket.org/team/project.git",
+        ],
+    ] {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repository)
+            .args(arguments)
+            .status()
+            .unwrap();
+        assert!(status.success(), "{arguments:?}");
+    }
+    let folder = GitFolder::untrusted(&repository);
+    let list = list_hosted_change_requests(
+        folder,
+        &UntouchedCredentialStore,
+        HostedSourceControlKind::Bitbucket,
+        "attacker/private".to_string(),
+        10,
+    )
+    .await
+    .expect_err("another repository should be refused");
+    let create = create_hosted_change_request(
+        folder,
+        &UntouchedCredentialStore,
+        CreateHostedChangeRequest {
+            working_folder_id: ProjectWorkingFolderId::new("folder-1").unwrap(),
+            execution_environment_id: None,
+            provider_kind: HostedSourceControlKind::Bitbucket,
+            repository_slug: "attacker/private".to_string(),
+            title: "Title".to_string(),
+            body: String::new(),
+            base_branch: "main".to_string(),
+            head_branch: "topic".to_string(),
+            draft: false,
+        },
+    )
+    .await
+    .expect_err("another repository should be refused");
+    std::fs::remove_dir_all(&base).unwrap();
+    for error in [list, create] {
+        assert_eq!(error.code, ChatErrorCode::Validation);
+        assert_eq!(
+            error.message,
+            "The repository is not a remote of this folder"
+        );
+    }
+}

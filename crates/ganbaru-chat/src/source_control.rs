@@ -200,6 +200,7 @@ pub async fn list_hosted_change_requests(
 ) -> ChatResult<Vec<HostedChangeRequestRead>> {
     validate_text(&repository_slug, "repositorySlug", 2_048)?;
     let limit = limit.clamp(1, MAX_CHANGE_REQUESTS);
+    require_folder_repository(folder, provider_kind, &repository_slug).await?;
     if provider_kind == HostedSourceControlKind::Bitbucket {
         return bitbucket_list_change_requests(&repository_slug, limit, credential_store).await;
     }
@@ -225,6 +226,7 @@ pub async fn create_hosted_change_request(
             "Change request body is invalid",
         ));
     }
+    require_folder_repository(folder, request.provider_kind, &request.repository_slug).await?;
     if request.provider_kind == HostedSourceControlKind::Bitbucket {
         return bitbucket_create_change_request(&request, credential_store).await;
     }
@@ -295,6 +297,41 @@ pub async fn checkout_hosted_change_request(
     )
     .await?;
     git::status(folder).await
+}
+
+/// Requires the requested repository to be one the folder's own remotes
+/// point at, so stored credentials and signed-in CLIs act only on the
+/// repository the authorized folder belongs to.
+async fn require_folder_repository(
+    folder: GitFolder<'_>,
+    provider_kind: HostedSourceControlKind,
+    repository_slug: &str,
+) -> ChatResult<()> {
+    let remotes = git::remotes(folder).await?;
+    if remote_urls_include_repository(
+        remotes
+            .iter()
+            .filter_map(|remote| remote.fetch_url.as_deref()),
+        provider_kind,
+        repository_slug,
+    ) {
+        return Ok(());
+    }
+    Err(ChatError::validation(
+        "repositorySlug",
+        "The repository is not a remote of this folder",
+    ))
+}
+
+fn remote_urls_include_repository<'a>(
+    mut urls: impl Iterator<Item = &'a str>,
+    provider_kind: HostedSourceControlKind,
+    repository_slug: &str,
+) -> bool {
+    urls.any(|url| {
+        detect_remote(url)
+            .is_some_and(|(kind, slug)| kind == provider_kind && slug == repository_slug)
+    })
 }
 
 /// Resolves Azure coordinates from the folder's own remotes, so `az` never

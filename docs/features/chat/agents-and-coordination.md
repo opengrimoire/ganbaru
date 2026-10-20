@@ -41,7 +41,7 @@ Provider-native trust, a previous run, shell availability, an agent profile, or 
 
 ## Context packages
 
-A context package is a bounded selection of information frozen for one assignment, with each source's revision and content hash recorded. It includes the triggering message, its reply thread when the thread root is within the agent's history boundary, permitted channel messages, attachments, and referenced resources. Planned sources include approved Notes, task state, and Calendar context.
+A context package is a bounded selection of information frozen for one assignment, with each source's revision and content hash recorded. It includes the triggering message, its reply thread when the thread root is within the agent's history boundary, permitted channel messages, attachments, and referenced resources. Planned sources include approved Notes, task state, and Calendar context. The package is sent as JSON Lines, one record per source with its kind, ID, and text, so message text cannot pose as another source.
 
 Context assembly follows participant access and the execution target. It never scans the complete vault or attaches unrelated history because it might be useful. The recorded package makes later review possible without treating provider memory as canonical.
 

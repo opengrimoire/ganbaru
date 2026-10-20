@@ -15,13 +15,13 @@ mod bitbucket;
 mod cli;
 mod parsing;
 
+#[cfg(test)]
+use bitbucket::{append_bounded_response, parse_bitbucket_change_request, percent_encode_segment};
 use bitbucket::{
     bitbucket_authenticated_request, bitbucket_create_change_request,
     bitbucket_credential_reference, bitbucket_list_change_requests, credential_error,
     probe_bitbucket,
 };
-#[cfg(test)]
-use bitbucket::{parse_bitbucket_change_request, percent_encode_segment};
 #[cfg(test)]
 use cli::hosted_cli_command;
 use cli::{

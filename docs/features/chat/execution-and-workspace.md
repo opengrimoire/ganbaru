@@ -28,6 +28,8 @@ Review presents file changes, diffs, checkpoints, and source-control status. The
 
 When a checkpoint pair is unavailable, review falls back to the provider-reported turn and then to the working tree. Only a typed not-found reason selects a fallback; permission and storage errors stay errors.
 
+A changed file too large to review is listed with a notice instead of a diff, and it can still be staged, unstaged, or discarded as a whole.
+
 ## Terminal
 
 Terminals are bound to one authorized execution target and thread. The frontend receives a narrow stream and input boundary, not a generic process API. Closing a terminal view does not necessarily stop its process, and lifecycle and stop controls stay truthful. Output is bounded, untrusted text; escape sequences cannot become application commands or links without validation.

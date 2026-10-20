@@ -726,6 +726,7 @@ export const chat = {
     plainTextFallback: "Showing the bounded plain-text diff because enhanced rendering is unavailable.",
     loadMoreRawDiff: "Load more raw diff lines",
     oversizedHunk: "This hunk is too large for a bounded diff page.",
+    tooLargeFile: "This file is too large to show in Review. Its changes are still listed and can be acted on as a whole.",
     patchUnavailable: "A text patch is unavailable for this file.",
     loadingPatch: "Loading diff",
     loadMoreDiff: "Load more diff",

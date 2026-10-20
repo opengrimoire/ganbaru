@@ -729,6 +729,7 @@ export const chat = {
     plainTextFallback: "Se muestra la diferencia de texto limitada porque la vista mejorada no está disponible.",
     loadMoreRawDiff: "Cargar más líneas de diferencia sin formato",
     oversizedHunk: "Este bloque es demasiado grande para una página de diferencia limitada.",
+    tooLargeFile: "Este archivo es demasiado grande para mostrarlo en Revisión. Sus cambios siguen listados y se pueden gestionar como un todo.",
     patchUnavailable: "No hay una diferencia de texto disponible para este archivo.",
     loadingPatch: "Cargando diferencia",
     loadMoreDiff: "Cargar más diferencia",

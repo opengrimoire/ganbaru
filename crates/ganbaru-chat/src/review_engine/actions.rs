@@ -413,6 +413,7 @@ pub fn require_action_allowed(
                 || file.read.flags.pure_rename
                 || file.read.flags.untracked
                 || file.read.flags.symlink
+                || file.read.flags.too_large
         })
     {
         return Err(ChatError::unsupported(

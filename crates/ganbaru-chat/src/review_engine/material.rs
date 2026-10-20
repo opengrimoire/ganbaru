@@ -3,16 +3,25 @@
 use super::super::models::{ChatError, ChatErrorCode, ChatResult};
 use super::contracts::{ReviewDiffSource, ReviewFileRead, ReviewWorkingTreeMode};
 use super::opening::file_contract;
-use super::patch_store::ReviewObjectStore;
+use super::patch_store::{ReviewObjectStore, review_storage_limit_error};
 use super::registry::ReviewFileInternal;
 use super::validation::validate_path;
 use super::{
     corrupt_data_error, empty_tree, git_text, optional_head, path_field, review_error,
     review_output, review_storage_text,
 };
-use crate::git::{self, GitFolder};
-use std::collections::{BTreeMap, HashMap};
+use crate::git::{self, GitChangedPathRead, GitFolder};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fs;
+use std::path::Path;
 use std::sync::Arc;
+
+/// Largest changed file copied into a working tree review. Larger files are
+/// listed as too large to review, so one oversized file never blocks a review.
+const MAX_REVIEW_FILE_BYTES: u64 = 64 * 1024 * 1024;
+/// Largest total size of the changed files copied into a working tree review,
+/// measured before any content reaches temporary storage.
+const MAX_REVIEW_CAPTURE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct SnapshotMaterial {
@@ -21,6 +30,31 @@ pub struct SnapshotMaterial {
     pub label: String,
     pub status: git::GitStatusRead,
     pub object_store: Option<Arc<ReviewObjectStore>>,
+    /// Changed files left out of the captured tree because they are too large.
+    pub too_large_paths: BTreeSet<String>,
+}
+
+/// Size limits applied to changed files before a working tree capture.
+#[derive(Clone, Copy, Debug)]
+pub struct ReviewCaptureLimits {
+    pub file_bytes: u64,
+    pub total_bytes: u64,
+}
+
+impl ReviewCaptureLimits {
+    pub const DEFAULT: Self = Self {
+        file_bytes: MAX_REVIEW_FILE_BYTES,
+        total_bytes: MAX_REVIEW_CAPTURE_BYTES,
+    };
+}
+
+/// Changed paths a working tree capture copies, and those it leaves out.
+#[derive(Debug, Default, Eq, PartialEq)]
+struct CapturePlan {
+    /// NUL-separated literal pathspecs relative to the working folder.
+    pathspecs: Vec<u8>,
+    /// Repository-relative paths of files over the per-file limit.
+    too_large_paths: BTreeSet<String>,
 }
 
 #[derive(Default)]
@@ -34,6 +68,14 @@ pub type ReviewNumstat = BTreeMap<String, (Option<u64>, Option<u64>)>;
 pub async fn working_tree_material(
     folder: GitFolder<'_>,
     mode: ReviewWorkingTreeMode,
+) -> ChatResult<SnapshotMaterial> {
+    working_tree_material_with_limits(folder, mode, ReviewCaptureLimits::DEFAULT).await
+}
+
+pub async fn working_tree_material_with_limits(
+    folder: GitFolder<'_>,
+    mode: ReviewWorkingTreeMode,
+    limits: ReviewCaptureLimits,
 ) -> ChatResult<SnapshotMaterial> {
     let before_status = git::status(folder).await?;
     let has_conflicts = before_status.files.iter().any(|file| file.conflicted);
@@ -56,19 +98,35 @@ pub async fn working_tree_material(
             label: "Staged changes".to_string(),
             status: before_status,
             object_store: None,
+            too_large_paths: BTreeSet::new(),
         });
     }
-    let store = Arc::new(ReviewObjectStore::new(folder).await?);
-    let empty_tree_oid = if let Some(head) = head.as_deref() {
-        review_storage_text(folder, &["read-tree", head], Some(&store)).await?;
-        None
-    } else {
-        review_storage_text(folder, &["read-tree", "--empty"], Some(&store)).await?;
-        Some(review_storage_text(folder, &["write-tree"], Some(&store)).await?)
-    };
+    // The capture starts from the real index, so a file left out as too large
+    // keeps its staged content and shows no unstaged change.
     let index_tree = git_text(folder, &["write-tree"], None).await?;
-    review_storage_text(folder, &["add", "-A", "--", "."], Some(&store)).await?;
-    let worktree_tree = review_storage_text(folder, &["write-tree"], Some(&store)).await?;
+    let prefix = git_text(folder, &["rev-parse", "--show-prefix"], None).await?;
+    let root = folder.root.to_path_buf();
+    let changed = before_status.files.clone();
+    let plan = tokio::task::spawn_blocking(move || plan_capture(&root, &prefix, &changed, limits))
+        .await
+        .map_err(|_| review_error("Review capture size worker stopped"))??;
+    let store = Arc::new(ReviewObjectStore::new(folder).await?);
+    let empty_tree_oid = if head.is_none() {
+        Some(review_storage_text(folder, &["mktree"], Some(&[]), Some(&store)).await?)
+    } else {
+        None
+    };
+    review_storage_text(folder, &["read-tree", &index_tree], None, Some(&store)).await?;
+    if !plan.pathspecs.is_empty() {
+        review_storage_text(
+            folder,
+            &["add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
+            Some(&plan.pathspecs),
+            Some(&store),
+        )
+        .await?;
+    }
+    let worktree_tree = review_storage_text(folder, &["write-tree"], None, Some(&store)).await?;
     let store_for_size = store.clone();
     tokio::task::spawn_blocking(move || store_for_size.verify_size())
         .await
@@ -83,6 +141,7 @@ pub async fn working_tree_material(
             label: "Unstaged changes".to_string(),
             status: before_status,
             object_store: Some(store),
+            too_large_paths: plan.too_large_paths,
         },
         ReviewWorkingTreeMode::All => SnapshotMaterial {
             before_oid: head,
@@ -90,9 +149,52 @@ pub async fn working_tree_material(
             label: "All uncommitted changes".to_string(),
             status: before_status,
             object_store: Some(store),
+            too_large_paths: plan.too_large_paths,
         },
         ReviewWorkingTreeMode::Staged => unreachable!("staged review returned above"),
     })
+}
+
+/// Sizes the changed files Git status reports before any content is copied.
+///
+/// Status paths are repository-relative while pathspecs are relative to the
+/// working folder, so paths outside the folder's `prefix` are skipped, as
+/// `git add -A -- .` would. Files that vanished or are not regular files cost
+/// nothing; Git records deletions and links without reading large content.
+fn plan_capture(
+    root: &Path,
+    prefix: &str,
+    changed: &[GitChangedPathRead],
+    limits: ReviewCaptureLimits,
+) -> ChatResult<CapturePlan> {
+    let mut plan = CapturePlan::default();
+    let mut total = 0_u64;
+    for file in changed
+        .iter()
+        .filter(|file| !file.ignored && (file.untracked || file.worktree_status != "."))
+    {
+        let Some(relative) = file.relative_path.strip_prefix(prefix) else {
+            continue;
+        };
+        if relative.is_empty() {
+            continue;
+        }
+        if let Ok(metadata) = fs::symlink_metadata(root.join(relative))
+            && metadata.is_file()
+        {
+            if metadata.len() > limits.file_bytes {
+                plan.too_large_paths.insert(file.relative_path.clone());
+                continue;
+            }
+            total = total.saturating_add(metadata.len());
+            if total > limits.total_bytes {
+                return Err(review_storage_limit_error());
+            }
+        }
+        plan.pathspecs.extend_from_slice(relative.as_bytes());
+        plan.pathspecs.push(0);
+    }
+    Ok(plan)
 }
 
 pub async fn git_files(
@@ -235,6 +337,62 @@ pub fn enrich_working_tree_files(
             file.read.capability_reasons.discard = Some(reason.to_string());
         }
     }
+}
+
+/// Lists changed files a capture left out as too large. A file with a staged
+/// change already has an entry and is flagged in place; any other one gets an
+/// entry without line counts, so every changed file stays visible and can be
+/// staged or discarded as a whole.
+pub fn add_too_large_files(
+    files: &mut Vec<ReviewFileInternal>,
+    status: &git::GitStatusRead,
+    source: &ReviewDiffSource,
+    too_large_paths: &BTreeSet<String>,
+) {
+    for path in too_large_paths {
+        let Some(git_file) = status.files.iter().find(|file| &file.relative_path == path) else {
+            continue;
+        };
+        if let Some(file) = files
+            .iter_mut()
+            .find(|file| &file.read.relative_path == path)
+        {
+            mark_too_large(file);
+            continue;
+        }
+        let status_name = if git_file.untracked {
+            "added"
+        } else {
+            "modified"
+        };
+        let (flags, capabilities, capability_reasons) =
+            file_contract(source, status_name, None, None, false);
+        let mut file = ReviewFileInternal {
+            read: ReviewFileRead {
+                file_id: String::new(),
+                relative_path: path.clone(),
+                previous_relative_path: None,
+                status: status_name.to_string(),
+                additions: None,
+                deletions: None,
+                flags,
+                capabilities,
+                capability_reasons,
+            },
+        };
+        file.read.flags.untracked = git_file.untracked;
+        mark_too_large(&mut file);
+        files.push(file);
+    }
+}
+
+fn mark_too_large(file: &mut ReviewFileInternal) {
+    file.read.flags.too_large = true;
+    file.read.additions = None;
+    file.read.deletions = None;
+    file.read.capabilities.comment = false;
+    file.read.capability_reasons.comment =
+        Some("Files too large to review do not support line comments".to_string());
 }
 
 pub fn deterministic_diff_arguments(

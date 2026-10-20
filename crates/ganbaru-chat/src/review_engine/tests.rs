@@ -168,6 +168,12 @@ async fn working_snapshot(
     .await
     .expect("working snapshot files should read");
     enrich_working_tree_files(&mut files, &material.status, &source);
+    add_too_large_files(
+        &mut files,
+        &material.status,
+        &source,
+        &material.too_large_paths,
+    );
     let revision = review_revision(
         None,
         "environment:review-test",
@@ -1074,4 +1080,192 @@ fn review_spools_live_in_private_random_directories_removed_on_drop() {
     }
     drop(first);
     assert!(!directory.exists());
+}
+
+const SMALL_CAPTURE_LIMITS: ReviewCaptureLimits = ReviewCaptureLimits {
+    file_bytes: 32,
+    total_bytes: 1_024,
+};
+
+async fn files_with_limits(
+    folder: GitFolder<'_>,
+    mode: ReviewWorkingTreeMode,
+    limits: ReviewCaptureLimits,
+) -> ChatResult<Vec<ReviewFileInternal>> {
+    let source = working_source(mode);
+    let material = working_tree_material_with_limits(folder, mode, limits).await?;
+    let mut files = git_files(
+        folder,
+        &material.before_oid,
+        &material.after_oid,
+        &source,
+        false,
+        material.object_store.as_deref(),
+    )
+    .await?;
+    enrich_working_tree_files(&mut files, &material.status, &source);
+    add_too_large_files(
+        &mut files,
+        &material.status,
+        &source,
+        &material.too_large_paths,
+    );
+    Ok(files)
+}
+
+fn review_file<'a>(files: &'a [ReviewFileInternal], path: &str) -> &'a ReviewFileInternal {
+    files
+        .iter()
+        .find(|file| file.read.relative_path == path)
+        .unwrap_or_else(|| panic!("{path} should be listed"))
+}
+
+#[tokio::test]
+async fn oversized_changed_files_are_listed_but_not_captured() {
+    let repository = TestRepository::new();
+    repository.write("tracked.txt", "before\n");
+    repository.write("large.bin", "small\n");
+    repository.commit_all();
+    repository.write("tracked.txt", "after\n");
+    repository.write("large.bin", [7_u8; 64]);
+    repository.write("new [*] large.dat", [8_u8; 64]);
+    repository.write("new.txt", "new\n");
+
+    let files = files_with_limits(
+        repository.folder(),
+        ReviewWorkingTreeMode::Unstaged,
+        SMALL_CAPTURE_LIMITS,
+    )
+    .await
+    .expect("one oversized file should not block the review");
+
+    for path in ["tracked.txt", "new.txt"] {
+        let file = review_file(&files, path);
+        assert!(!file.read.flags.too_large);
+        assert!(file.read.additions.is_some());
+    }
+    let modified = review_file(&files, "large.bin");
+    assert!(modified.read.flags.too_large);
+    assert_eq!(modified.read.status, "modified");
+    assert!(!modified.read.flags.untracked);
+    let untracked = review_file(&files, "new [*] large.dat");
+    assert!(untracked.read.flags.too_large);
+    assert_eq!(untracked.read.status, "added");
+    assert!(untracked.read.flags.untracked);
+    for file in [modified, untracked] {
+        assert_eq!(
+            (file.read.additions, file.read.deletions),
+            (None, None),
+            "uncaptured content has no line counts"
+        );
+        assert!(!file.read.capabilities.comment);
+        assert!(file.read.capabilities.stage && file.read.capabilities.discard);
+    }
+    assert_eq!(files.len(), 4);
+}
+
+#[tokio::test]
+async fn too_large_file_keeps_its_staged_change_without_a_reverse_diff() {
+    let repository = TestRepository::new();
+    repository.write("large.txt", "committed\n");
+    repository.commit_all();
+    repository.write("large.txt", "staged\n");
+    repository.run_git(&["add", "--", "large.txt"]);
+    repository.write("large.txt", [b'x'; 64]);
+
+    let unstaged = files_with_limits(
+        repository.folder(),
+        ReviewWorkingTreeMode::Unstaged,
+        SMALL_CAPTURE_LIMITS,
+    )
+    .await
+    .expect("unstaged review should open");
+    assert_eq!(unstaged.len(), 1);
+    let file = review_file(&unstaged, "large.txt");
+    assert!(file.read.flags.too_large);
+    assert_eq!(file.read.status, "modified");
+
+    let all = files_with_limits(
+        repository.folder(),
+        ReviewWorkingTreeMode::All,
+        SMALL_CAPTURE_LIMITS,
+    )
+    .await
+    .expect("all changes review should open");
+    assert_eq!(all.len(), 1);
+    let file = review_file(&all, "large.txt");
+    assert!(file.read.flags.too_large);
+    assert_eq!((file.read.additions, file.read.deletions), (None, None));
+    let patch_snapshot = working_snapshot(&repository, ReviewWorkingTreeMode::All).await;
+    assert!(
+        patch_snapshot
+            .files
+            .iter()
+            .all(|file| !file.read.flags.too_large),
+        "default limits capture ordinary files"
+    );
+}
+
+#[tokio::test]
+async fn remaining_material_over_the_total_limit_refuses_before_capture() {
+    let repository = TestRepository::new();
+    repository.write("committed.txt", "committed\n");
+    repository.commit_all();
+    let limits = ReviewCaptureLimits {
+        file_bytes: 64,
+        total_bytes: 100,
+    };
+    repository.write("huge.bin", [1_u8; 4_096]);
+    repository.write("one.txt", [b'a'; 40]);
+    files_with_limits(repository.folder(), ReviewWorkingTreeMode::All, limits)
+        .await
+        .expect("an excluded file does not count toward the total");
+
+    repository.write("two.txt", [b'b'; 40]);
+    repository.write("three.txt", [b'c'; 40]);
+    let error =
+        match files_with_limits(repository.folder(), ReviewWorkingTreeMode::All, limits).await {
+            Ok(_) => panic!("remaining material over the limit should be refused"),
+            Err(error) => error,
+        };
+    assert_eq!(
+        error.message,
+        "Review snapshot exceeds the supported temporary storage limit"
+    );
+}
+
+#[tokio::test]
+async fn subdirectory_folders_capture_their_own_changes_with_root_relative_paths() {
+    let repository = TestRepository::new();
+    repository.write("top.txt", "top\n");
+    repository.write("sub/kept.txt", "kept\n");
+    repository.write("sub/removed.txt", "removed\n");
+    repository.commit_all();
+    repository.write("top.txt", "changed top\n");
+    repository.write("sub/kept.txt", "changed kept\n");
+    fs::remove_file(repository.path().join("sub/removed.txt"))
+        .expect("fixture file should be removed");
+    repository.write("sub/new.txt", "new\n");
+    let subdirectory = repository.path().join("sub");
+
+    let files = files_with_limits(
+        GitFolder::untrusted(&subdirectory),
+        ReviewWorkingTreeMode::Unstaged,
+        ReviewCaptureLimits::DEFAULT,
+    )
+    .await
+    .expect("subdirectory review should open");
+    let mut paths = files
+        .iter()
+        .map(|file| (file.read.relative_path.as_str(), file.read.status.as_str()))
+        .collect::<Vec<_>>();
+    paths.sort_unstable();
+    assert_eq!(
+        paths,
+        [
+            ("sub/kept.txt", "modified"),
+            ("sub/new.txt", "added"),
+            ("sub/removed.txt", "deleted"),
+        ]
+    );
 }

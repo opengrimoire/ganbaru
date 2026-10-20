@@ -60,7 +60,10 @@ use authorization::{authorize_completed_action, authorize_snapshot, require_requ
 pub use contracts::*;
 use material::working_tree_material;
 #[cfg(test)]
-use material::{enrich_working_tree_files, git_files, parse_name_status};
+use material::{
+    ReviewCaptureLimits, add_too_large_files, enrich_working_tree_files, git_files,
+    parse_name_status, working_tree_material_with_limits,
+};
 use opening::open_review;
 #[cfg(test)]
 use opening::{file_contract, provider_turn_patch};
@@ -368,13 +371,14 @@ async fn optional_head(folder: GitFolder<'_>) -> ChatResult<Option<String>> {
 async fn review_storage_text(
     folder: GitFolder<'_>,
     arguments: &[&str],
+    input: Option<&[u8]>,
     store: Option<&ReviewObjectStore>,
 ) -> ChatResult<String> {
     String::from_utf8(
         git::review_output_in_storage(
             folder,
             arguments,
-            None,
+            input,
             store.map(|store| store.index.as_path()),
             store.map(|store| store.objects.as_path()),
             store.map(|store| store.alternate_objects.as_path()),

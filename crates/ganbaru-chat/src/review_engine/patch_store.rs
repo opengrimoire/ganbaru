@@ -82,6 +82,15 @@ pub async fn read_patch_page(
             state: ReviewPatchState::Binary,
         });
     }
+    if file.read.flags.too_large {
+        return Ok(ReviewFilePatchRead {
+            file_id: file_id.to_string(),
+            patch: None,
+            hunks: Vec::new(),
+            continuation_cursor: None,
+            state: ReviewPatchState::Unavailable,
+        });
+    }
     if matches!(&snapshot.source, ReviewDiffSource::ProviderTurn { .. })
         && !snapshot.provider_patches.contains_key(file_id)
     {
@@ -514,11 +523,7 @@ impl ReviewObjectStore {
                 } else if metadata.is_file() {
                     total = total.saturating_add(metadata.len());
                     if total > MAX_REVIEW_OBJECT_BYTES {
-                        return Err(ChatError::new(
-                            ChatErrorCode::Protocol,
-                            "Review snapshot exceeds the supported temporary storage limit",
-                            true,
-                        ));
+                        return Err(review_storage_limit_error());
                     }
                 }
             }
@@ -561,4 +566,13 @@ fn create_review_temporary_directory(kind: &str) -> ChatResult<PathBuf> {
         &format!("ganbaru-chat-review-{kind}-"),
     )
     .map_err(|_| review_error("Create review temporary directory"))
+}
+
+/// Refuses a review whose captured material would exceed temporary storage.
+pub(super) fn review_storage_limit_error() -> ChatError {
+    ChatError::new(
+        ChatErrorCode::Protocol,
+        "Review snapshot exceeds the supported temporary storage limit",
+        true,
+    )
 }

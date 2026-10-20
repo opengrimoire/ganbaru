@@ -453,3 +453,24 @@ fn bitbucket_credentials_keep_tokens_out_of_debug_output() {
     let serialized = serde_json::to_value(&stored).expect("serialize credential");
     assert_eq!(serialized["token"], "bitbucket-app-password");
 }
+
+#[test]
+fn bitbucket_responses_stop_at_the_first_chunk_past_the_limit() {
+    let mut body = Vec::new();
+    append_bounded_response(&mut body, b"1234", 8).expect("first chunk should fit");
+    append_bounded_response(&mut body, b"5678", 8).expect("a body at the limit should fit");
+    assert_eq!(body, b"12345678");
+
+    let error = append_bounded_response(&mut body, b"9", 8)
+        .expect_err("a chunk past the limit should be refused");
+    assert_eq!(
+        error.message,
+        "Bitbucket response exceeded the supported limit"
+    );
+    assert_eq!(body.len(), 8, "the refused chunk is not buffered");
+
+    let mut body = Vec::new();
+    append_bounded_response(&mut body, &[0; 9], 8)
+        .expect_err("a single oversized chunk should be refused");
+    assert!(body.is_empty());
+}

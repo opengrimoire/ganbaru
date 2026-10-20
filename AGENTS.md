@@ -67,7 +67,7 @@ apps/
         utils/, vault/, windows/: shared helpers, vault state, and detached window and cross-window sync helpers
         workspace-tabs/: workspace tab model, location mapping, and presentation helpers
     static/: static assets
-    scripts/: repo-owned scripts grouped by purpose (release/, bundle-contracts/, checks/, provider-protocols/, codegen/, browser-extension/); tauri-cli.mjs wraps the Tauri CLI
+    scripts/: repo-owned scripts grouped by purpose (release/, bundle-contracts/, checks/, provider-protocols/, codegen/, browser-extension/, validation/); tauri-cli.mjs wraps the Tauri CLI
     test-fixtures/: shared test fixtures such as sample .ics files
     src-tauri/: Tauri package (crate ganbaru), configuration, and platform entries
       src/main.rs, src/lib.rs: thin desktop entry and mobile library entry
@@ -181,11 +181,11 @@ Read `docs/testing/README.md` when changing tests, validation scripts, task orde
 
 **UI changes:** agents cannot manually verify the real Tauri app UI. Do not start a dev server, launch Tauri, or run HTTP smoke checks as a substitute. During iterative UI work, use the narrowest relevant checks and rely on the user's manual inspection for visual confirmation. Add focused tests when a UI behavior needs more confidence than existing checks provide.
 
-**Resource limits:** the machine is memory-limited, so validation is deliberately serialized.
+**Resource limits:** validation concurrency comes from a profile. The default `standard` profile, also used by CI, needs about 5 GB of free memory. Machines that cannot spare that while other applications run set `GANBARU_VALIDATE_PROFILE=low-memory` in their environment, which serializes Cargo builds and Vitest workers.
 
-- Use the root `check`, `test`, and `validate` scripts for broad verification instead of direct full-suite `turbo`, `vitest`, or `cargo` commands. They run Rust before frontend work, use one Cargo build job and two Rust test threads, and split Vitest into sequential one-worker shards. `validate:ci` and its `validate:ci:rust` and `validate:ci:frontend` halves (four Cargo jobs and test threads, two-worker Vitest shards) are for hosted Linux CI only. Do not raise concurrency, combine stages, or remove sharding without measuring peak memory and confirming coverage.
+- Use the root `check`, `test`, and `validate` scripts (and the `validate:rust` and `validate:frontend` halves) for broad verification instead of direct full-suite `turbo`, `vitest`, or `cargo` commands. They run Rust before frontend work. The standard profile uses four Cargo build jobs and test threads and two sequential two-worker Vitest shards; the low-memory profile uses one Cargo job, two test threads, and four sequential one-worker shards. Do not raise concurrency, combine stages, or remove sharding without measuring peak memory and confirming coverage.
 - Never run Cargo work concurrently with Vitest, Svelte checks, Turbo, or another Node validation command, and never start another validation command while a root `check`, `test`, `validate`, or `validate:full` is running.
-- For focused checks, use one Vitest worker and one Cargo job and test thread. Add `--lib` when the filtered Rust test is in the library; use `--bin <name>` only when testing that binary. Confirm focused Vitest runs report only the requested files.
+- For focused checks, use one Vitest worker and four Cargo jobs, or one Cargo job and test thread when `GANBARU_VALIDATE_PROFILE=low-memory` is set. Add `--lib` when the filtered Rust test is in the library; use `--bin <name>` only when testing that binary. Confirm focused Vitest runs report only the requested files.
 - The workspace test profile inherits the development profile's line-tables-only debug information so both share dependency artifacts; do not restore full test debug information unless a debugger session needs it.
 - Keep Cargo commands portable across Linux, Windows, and macOS. Do not require an external linker; optional linker optimizations must fall back to the standard toolchain and be benchmarked before adoption.
 
@@ -203,13 +203,13 @@ Read `docs/testing/README.md` when changing tests, validation scripts, task orde
 - `pnpm -w run check`: Rust formatting and clippy, then the workflow signing-isolation check, provider protocol snapshot checks, and Svelte and TypeScript checks through Turbo.
 - `pnpm --dir apps/client run check`: client-only Svelte and TypeScript checks.
 - `pnpm -w run editor-check`: editor diagnostics, including Tailwind canonical class checks.
-- `pnpm -w run test`: serialized Rust tests followed by sequential one-worker Vitest shards.
+- `pnpm -w run test`: Rust tests followed by sequential Vitest shards.
 - `pnpm --dir apps/client exec vitest run path/to/file.test.ts --maxWorkers=1`: focused frontend test file.
-- `cargo test -p ganbaru-chat --lib -j 1 test_name -- --test-threads=1`: focused core crate test (substitute `ganbaru-notes`, `ganbaru-atomic-files`, `ganbaru-db`, `ganbaru-civil-time`, `ganbaru-distractions`, `ganbaru-chat-contracts`, `ganbaru-chat-providers`, `ganbaru-pomodoro`, `ganbaru-quick-notes`, `ganbaru-music`, `ganbaru-music-library`, `ganbaru-music-player`, `ganbaru-projects`, `ganbaru-calendar`, `ganbaru-working-folders`, `ganbaru-contacts`, `ganbaru-handoff`, `ganbaru-sync-contracts`, `ganbaru-sync`, `ganbaru-sync-replica`, or `ganbaru-themes`).
-- `cargo test -p ganbaru-tauri-app --lib -j 1 test_name -- --test-threads=1`: focused Tauri composition or command-adapter test.
-- `cargo test -p ganbaru-native-messaging --bin ganbaru-native-messaging -j 1 test_name -- --test-threads=1`: focused native messaging host test.
-- `cargo check -p ganbaru --bin ganbaru -j 1`: focused desktop composition check.
-- `cargo fmt --check` and `cargo clippy --workspace -j 1 -- -D warnings`: Rust formatting and linting only.
+- `cargo test -p ganbaru-chat --lib -j 4 test_name -- --test-threads=4`: focused core crate test (substitute `ganbaru-notes`, `ganbaru-atomic-files`, `ganbaru-db`, `ganbaru-civil-time`, `ganbaru-distractions`, `ganbaru-chat-contracts`, `ganbaru-chat-providers`, `ganbaru-pomodoro`, `ganbaru-quick-notes`, `ganbaru-music`, `ganbaru-music-library`, `ganbaru-music-player`, `ganbaru-projects`, `ganbaru-calendar`, `ganbaru-working-folders`, `ganbaru-contacts`, `ganbaru-handoff`, `ganbaru-sync-contracts`, `ganbaru-sync`, `ganbaru-sync-replica`, or `ganbaru-themes`).
+- `cargo test -p ganbaru-tauri-app --lib -j 4 test_name -- --test-threads=4`: focused Tauri composition or command-adapter test.
+- `cargo test -p ganbaru-native-messaging --bin ganbaru-native-messaging -j 4 test_name -- --test-threads=4`: focused native messaging host test.
+- `cargo check -p ganbaru --bin ganbaru -j 4`: focused desktop composition check.
+- `cargo fmt --check` and `cargo clippy --workspace -j 4 -- -D warnings`: Rust formatting and linting only.
 - `pnpm -w run audit:deps`, `audit:rust`, `audit`: npm and RustSec audits. Run for dependency or lockfile changes, before PRs and releases, and when investigating security alerts. Reviewed Rust ignores live in `.cargo/audit.toml` and must be documented in `docs/data/security/dependency-audits.md`.
 - `pnpm -w run validate`: full normal gate (check, test, editor-check, bundle contracts). All errors must be fixed before treating it as passed.
 - `pnpm -w run validate:full`: audit plus validate.

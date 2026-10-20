@@ -79,7 +79,7 @@ jobs:
         run: cargo fetch --locked
 
       - name: validate Rust workspace
-        run: .github/scripts/with-memory-peak.sh pnpm -w run validate:ci:rust
+        run: .github/scripts/with-memory-peak.sh pnpm -w run validate:rust
 
       - name: drop workspace build artifacts from the cache
         if: github.event_name == 'push' && steps.rust-cache.outputs.cache-hit != 'true'
@@ -129,7 +129,7 @@ jobs:
         run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: validate frontend workspace
-        run: .github/scripts/with-memory-peak.sh pnpm -w run validate:ci:frontend
+        run: .github/scripts/with-memory-peak.sh pnpm -w run validate:frontend
 
   # Required status check name in the branch rulesets; passes only when both Linux jobs pass.
   linux:

@@ -77,9 +77,13 @@ Input, output, scrollback, event queues, and process lifetime are bounded. Paste
 
 ## Internal MCP host tools
 
-Each native Chat run may receive an ephemeral loopback MCP endpoint with a small application-owned method allowlist. It is not a general localhost service and not an organizational participant.
+Each native Chat provider session may receive an ephemeral loopback MCP endpoint with a small application-owned method allowlist, authenticated by a random bearer token and accepting only loopback hosts and origins. It is not a general localhost service and not an organizational participant. It runs in one of two modes.
 
-Every request validates a run-scoped credential, method, bounded arguments, current run and thread, channel membership, access-profile revision, execution target, and revocation state. Tools that change a folder require the source's frozen runtime approval to be auto-approve or unattended. Results exclude credentials, external absolute paths, and unrelated vault content. The endpoint closes with the run, and replayed credentials or calls after interruption or revocation fail. A future external MCP service requires separate authorization and cannot reuse this endpoint.
+In a direct session (a person chatting with a provider in a thread), the endpoint offers the preview tools and the thread's attached resources. The endpoint and its token live as long as the provider session, but tool calls and resource reads are admitted only while a turn the app dispatched is running. Completion, abort, interruption, a failed dispatch, and provider exit close them, so a process the model left running cannot drive the preview between turns. Listings stay open so providers can discover tools when the session starts.
+
+In an organizational run (a teammate assignment), every request validates the run-scoped credential, method, bounded arguments, current run and thread, channel membership, access-profile revision, execution target, and revocation state. Tools that change a folder require the source's frozen runtime approval to be auto-approve or unattended. The endpoint closes with the run, and replayed credentials or calls after interruption or revocation fail.
+
+Results exclude credentials, external absolute paths, and unrelated vault content. A future external MCP service requires separate authorization and cannot reuse this endpoint.
 
 ## Event ingestion and diagnostics
 

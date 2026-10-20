@@ -242,6 +242,11 @@ pub(crate) async fn send_turn(
         }
         let reservation = reservation.handoff_to_runtime()?;
         if authority_support.internal_host_tools {
+            if origin.run().is_none() {
+                mcp_registry
+                    .begin_direct_turn(&thread_id, &request.turn_id)
+                    .await;
+            }
             mcp_registry.begin_turn_network(&thread_id).await;
         }
         owner
@@ -272,6 +277,11 @@ pub(crate) async fn send_turn(
         mcp_registry
             .settle_turn_network(&thread_id, network_access)
             .await;
+        if operation.is_err() {
+            mcp_registry
+                .end_direct_turn(&thread_id, Some(&request.turn_id))
+                .await;
+        }
     }
     let (dispatch, launch_error) = match operation {
         Ok(dispatch) => (Some(dispatch), None),

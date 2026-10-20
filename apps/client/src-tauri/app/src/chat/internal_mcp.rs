@@ -94,8 +94,11 @@ struct EndpointState {
 
 #[derive(Clone, Debug, Default)]
 enum EndpointAccessState {
+    /// Direct session between turns: tools and resource reads are refused, listings stay open.
     #[default]
-    DirectUnscoped,
+    DirectIdle,
+    /// Direct session while the dispatched turn runs.
+    DirectActive(ChatTurnId),
     OrganizationalPending,
     OrganizationalActive(Box<InternalMcpRunScope>),
     OrganizationalRevoked,
@@ -109,7 +112,7 @@ impl EndpointState {
             access: RwLock::new(if organizational_pending {
                 EndpointAccessState::OrganizationalPending
             } else {
-                EndpointAccessState::DirectUnscoped
+                EndpointAccessState::DirectIdle
             }),
             tools: super::internal_mcp_tools::InternalMcpToolRuntime::default(),
             preview_network: Mutex::new(PreviewNetworkGate::default()),
@@ -161,9 +164,49 @@ impl EndpointState {
         }
     }
 
+    /// Opens direct-session tools for `turn_id`; organizational endpoints are unchanged.
+    async fn begin_direct_turn(&self, turn_id: &ChatTurnId) {
+        let mut access = self.access.write().await;
+        if matches!(
+            *access,
+            EndpointAccessState::DirectIdle | EndpointAccessState::DirectActive(_)
+        ) {
+            *access = EndpointAccessState::DirectActive(turn_id.clone());
+        }
+    }
+
+    /// Closes direct-session tools when `turn_id` settles, or for any turn when it is `None`.
+    async fn end_direct_turn(&self, turn_id: Option<&ChatTurnId>) {
+        let mut access = self.access.write().await;
+        if let EndpointAccessState::DirectActive(active) = &*access
+            && turn_id.is_none_or(|settled| settled == active)
+        {
+            *access = EndpointAccessState::DirectIdle;
+        }
+    }
+
+    /// Admits a direct-session tool call or resource read only while a turn runs.
+    async fn require_direct_turn(&self) -> ChatResult<()> {
+        match &*self.access.read().await {
+            EndpointAccessState::DirectActive(_) => Ok(()),
+            EndpointAccessState::DirectIdle => Err(ChatError::new(
+                ChatErrorCode::Permission,
+                "Ganbaru host tools are available only while a Chat turn is running",
+                false,
+            )),
+            EndpointAccessState::OrganizationalPending
+            | EndpointAccessState::OrganizationalActive(_)
+            | EndpointAccessState::OrganizationalRevoked => Err(ChatError::new(
+                ChatErrorCode::Permission,
+                "The requested organizational context is unavailable",
+                false,
+            )),
+        }
+    }
+
     async fn active_scope(&self) -> ChatResult<Option<InternalMcpRunScope>> {
         match &*self.access.read().await {
-            EndpointAccessState::DirectUnscoped => Ok(None),
+            EndpointAccessState::DirectIdle | EndpointAccessState::DirectActive(_) => Ok(None),
             EndpointAccessState::OrganizationalPending => Err(ChatError::new(
                 ChatErrorCode::Permission,
                 "The requested organizational context is unavailable",
@@ -357,6 +400,21 @@ impl InternalMcpRegistry {
         }
     }
 
+    /// Opens a direct session's host tools for the turn being dispatched.
+    pub async fn begin_direct_turn(&self, thread_id: &ChatThreadId, turn_id: &ChatTurnId) {
+        if let Some(state) = self.endpoint_state(thread_id).await {
+            state.begin_direct_turn(turn_id).await;
+        }
+    }
+
+    /// Closes a direct session's host tools when `turn_id` settles, fails to dispatch, or is
+    /// interrupted, or for any turn when the provider session exits (`None`).
+    pub async fn end_direct_turn(&self, thread_id: &ChatThreadId, turn_id: Option<&ChatTurnId>) {
+        if let Some(state) = self.endpoint_state(thread_id).await {
+            state.end_direct_turn(turn_id).await;
+        }
+    }
+
     /// Records the dispatched turn's sandbox network policy and releases waiting preview tools.
     pub async fn settle_turn_network(
         &self,
@@ -464,19 +522,7 @@ impl ServerHandler for ThreadMcpHandler {
         request: ReadResourceRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, McpError> {
-        if self
-            .state
-            .active_scope()
-            .await
-            .map_err(mcp_error)?
-            .is_some()
-        {
-            return Err(mcp_error(ChatError::new(
-                ChatErrorCode::Permission,
-                "The requested organizational context is unavailable",
-                false,
-            )));
-        }
+        self.state.require_direct_turn().await.map_err(mcp_error)?;
         let resource_id = request
             .uri
             .strip_prefix(RESOURCE_URI_PREFIX)
@@ -564,13 +610,9 @@ impl ServerHandler for ThreadMcpHandler {
                 )),
             }
         } else {
-            match self.state.active_scope().await {
-                Ok(None) => self.call_preview_tool(name, &arguments).await,
-                Ok(Some(_)) | Err(_) => Err(ChatError::new(
-                    ChatErrorCode::Permission,
-                    "The requested organizational context is unavailable",
-                    false,
-                )),
+            match self.state.require_direct_turn().await {
+                Ok(()) => self.call_preview_tool(name, &arguments).await,
+                Err(error) => Err(error),
             }
         };
         Ok(match result {
@@ -1101,6 +1143,50 @@ mod tests {
     async fn pending_organizational_endpoint_denies_tools_until_scope_activation() {
         let state = EndpointState::new(true);
         assert!(state.active_scope().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn direct_endpoint_admits_tools_only_while_its_turn_runs() {
+        let state = EndpointState::new(false);
+        let first = ChatTurnId::new("turn-1").unwrap();
+        let second = ChatTurnId::new("turn-2").unwrap();
+        assert!(state.active_scope().await.unwrap().is_none());
+        assert!(state.require_direct_turn().await.is_err());
+
+        state.begin_direct_turn(&first).await;
+        assert!(state.require_direct_turn().await.is_ok());
+        state.end_direct_turn(Some(&first)).await;
+        let error = state.require_direct_turn().await.unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::Permission);
+        assert!(
+            state.active_scope().await.unwrap().is_none(),
+            "listings stay available between turns"
+        );
+
+        state.begin_direct_turn(&second).await;
+        state.end_direct_turn(Some(&first)).await;
+        assert!(
+            state.require_direct_turn().await.is_ok(),
+            "a late settlement of an earlier turn keeps the running turn open"
+        );
+        state.end_direct_turn(None).await;
+        assert!(
+            state.require_direct_turn().await.is_err(),
+            "a provider exit closes any running turn"
+        );
+    }
+
+    #[tokio::test]
+    async fn organizational_endpoints_ignore_direct_turn_transitions() {
+        let state = EndpointState::new(true);
+        state
+            .begin_direct_turn(&ChatTurnId::new("turn-1").unwrap())
+            .await;
+        assert!(state.require_direct_turn().await.is_err());
+        assert!(matches!(
+            &*state.access.read().await,
+            EndpointAccessState::OrganizationalPending
+        ));
     }
 
     #[tokio::test]

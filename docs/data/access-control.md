@@ -103,9 +103,9 @@ Information may move between channels only when the destination audience is a su
 
 ## Internal host tools
 
-Native Chat sessions receive an ephemeral loopback MCP endpoint exposing only application tools authorized for the current run. The endpoint is infrastructure, not a participant.
+Native Chat sessions receive an ephemeral loopback MCP endpoint exposing only application tools. The endpoint is infrastructure, not a participant.
 
-Every call validates an unguessable run-scoped credential, a method allowlist, bounded arguments, and the current assignment, target, profile revision, membership, and revocation state. Tools return bounded DTOs without secrets, external absolute paths, or unrelated vault data. The endpoint ends with the run or earlier revocation.
+For an organizational run, every call validates an unguessable run-scoped credential, a method allowlist, bounded arguments, and the current assignment, target, profile revision, membership, and revocation state, and the endpoint ends with the run or earlier revocation. A direct session keeps one session token and admits preview tool calls and resource reads only while a dispatched turn runs. Tools return bounded DTOs without secrets, external absolute paths, or unrelated vault data. [Chat security](security/chat.md#internal-mcp-host-tools) owns the details.
 
 Planned external MCP and CLI integrations require separate user authorization and must not reuse an internal endpoint or infer rights from an organizational identity.
 

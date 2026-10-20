@@ -324,6 +324,21 @@ impl ProviderEventSink for DurableChatEventSink {
                 }
             }
             normalize_changed_file_paths(&mut event.event, &self.workspace.canonical_path);
+            if !self.organizational {
+                let closed_turn = match &event.event {
+                    CanonicalEvent::TurnCompleted(_) | CanonicalEvent::TurnAborted(_) => {
+                        Some(event.turn_id.as_ref())
+                    }
+                    CanonicalEvent::SessionExited(_) => Some(None),
+                    _ => None,
+                };
+                if let Some(turn_id) = closed_turn {
+                    self.app
+                        .state::<crate::chat::internal_mcp::InternalMcpRegistry>()
+                        .end_direct_turn(&event.thread_id, turn_id)
+                        .await;
+                }
+            }
             let settled_turn = matches!(
                 &event.event,
                 CanonicalEvent::TurnCompleted(_) | CanonicalEvent::TurnAborted(_)

@@ -252,6 +252,9 @@ pub(crate) async fn stop_session(
             true,
         )
     })?;
+    app.state::<crate::chat::internal_mcp::InternalMcpRegistry>()
+        .end_direct_turn(&thread_id, Some(&turn_id))
+        .await;
     let result = owner
         .interrupt_turn(
             InterruptTurnRequest {

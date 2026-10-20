@@ -95,7 +95,7 @@ describe("native background playback projection", () => {
     const { getSoundscapeStore } = await import("$lib/stores/soundscape.svelte");
     const store = getSoundscapeStore();
     await store.initialize();
-    await store.playPreset({ id: "evening", name: "Evening", icon: "lucide:moon", soundscapeIds: ["noise", "fire", "rain"], createdAtMs: 1, updatedAtMs: 1, version: 1 });
+    await store.playPreset({ soundscapeIds: ["noise", "fire", "rain"] });
     expect(api.startSoundscape.mock.calls[0][0]).toMatchObject({ sourceId: "noise", extraSources: [{ sourceId: "rain" }] });
     expect(api.updateMusicSoundscapeState).toHaveBeenCalledWith(expect.objectContaining({ activeIds: ["noise", "rain"], multipleEnabled: true, desiredPlaying: true }));
     expect(store.activePreset).toBeNull();
@@ -107,7 +107,7 @@ describe("native background playback projection", () => {
     const { getSoundscapeStore } = await import("$lib/stores/soundscape.svelte");
     const store = getSoundscapeStore();
     await store.initialize();
-    await store.playPreset({ id: "empty", name: "Empty", icon: "lucide:moon", soundscapeIds: ["gone"], createdAtMs: 1, updatedAtMs: 1, version: 1 });
+    await store.playPreset({ soundscapeIds: ["gone"] });
     expect(store.error).toBe("This background sound needs to be repaired before it can play.");
     expect(api.startSoundscape).not.toHaveBeenCalled();
   });

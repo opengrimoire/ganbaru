@@ -32,6 +32,7 @@ import type {
 } from "$lib/music/soundscape/contracts";
 import { MAX_SOUNDSCAPE_LAYERS } from "$lib/music/soundscape/contracts";
 import { INITIAL_SOUNDSCAPE_VOLUME } from "$lib/music/soundscape/defaults";
+import { sameSoundSet } from "$lib/music/soundscape/presets";
 import { soundSelectionAction } from "$lib/music/soundscape/selection";
 
 class SoundscapeStore {
@@ -168,8 +169,7 @@ class SoundscapeStore {
   get activePreset(): MusicSoundscapePreset | null {
     const active = this.persisted?.activeIds ?? [];
     if (active.length === 0) return null;
-    return this.presets.find((preset) => preset.soundscapeIds.length === active.length
-      && preset.soundscapeIds.every((id) => active.includes(id))) ?? null;
+    return this.presets.find((preset) => sameSoundSet(preset.soundscapeIds, active)) ?? null;
   }
 
   /** Whether at least one sound of a preset can play on this device. */
@@ -177,8 +177,8 @@ class SoundscapeStore {
     return preset.soundscapeIds.some((id) => this.definitions.some((definition) => definition.id === id && definition.availability === "available"));
   }
 
-  /** Plays the available sounds of a preset together, keeping multiple selection on when it already was. */
-  async playPreset(preset: MusicSoundscapePreset): Promise<void> {
+  /** Plays the available sounds of a preset or preset draft together, keeping multiple selection on when it already was. */
+  async playPreset(preset: Pick<MusicSoundscapePreset, "soundscapeIds">): Promise<void> {
     if (this.playbackPending || this.modePending) return;
     const available = preset.soundscapeIds
       .filter((id) => this.definitions.some((definition) => definition.id === id && definition.availability === "available"))

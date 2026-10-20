@@ -1,5 +1,6 @@
 <script lang="ts">
   import CloudRain from "@lucide/svelte/icons/cloud-rain";
+  import Layers from "@lucide/svelte/icons/layers";
   import ListMusic from "@lucide/svelte/icons/list-music";
   import Pencil from "@lucide/svelte/icons/pencil";
   import Plus from "@lucide/svelte/icons/plus";
@@ -70,6 +71,7 @@
     <div class="shrink-0 p-2"><h2 class="px-1 text-[0.68rem] font-semibold text-muted-foreground">{t("music.builder.soundscapes")}</h2></div>
     <div class="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
       <button type="button" class:active-row={soundscapeFilter === "all"} class="context-row" onclick={() => onSoundscapeFilter("all")}><span class="context-icon"><CloudRain size={14} /></span><span class="min-w-0 flex-1 truncate">{t("music.soundscape.all")}</span><span class="context-count">{soundscape.definitions.length}</span></button>
+      <button type="button" class:active-row={soundscapeFilter === "presets"} class="context-row" onclick={() => onSoundscapeFilter("presets")}><span class="context-icon"><Layers size={14} /></span><span class="min-w-0 flex-1 truncate">{t("music.soundscape.choice.presets")}</span><span class="context-count">{soundscape.presets.length}</span></button>
       <button type="button" class:active-row={soundscapeFilter === "generated"} class="context-row" onclick={() => onSoundscapeFilter("generated")}><span class="context-icon"><CloudRain size={14} /></span><span class="min-w-0 flex-1 truncate">{t("music.soundscape.generated")}</span><span class="context-count">{soundscape.definitions.filter((entry) => entry.sourceKind === "generated-noise").length}</span></button>
       <button type="button" class:active-row={soundscapeFilter === "local"} class="context-row" onclick={() => onSoundscapeFilter("local")}><span class="context-icon"><ListMusic size={14} /></span><span class="min-w-0 flex-1 truncate">{t("music.soundscape.localLoops")}</span><span class="context-count">{soundscape.definitions.filter((entry) => entry.sourceKind === "local-loop").length}</span></button>
       {#each soundscape.groups as group (group.id)}

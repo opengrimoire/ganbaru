@@ -1133,7 +1133,7 @@
                 </div>
               {/if}
             {:else if destination.kind === "soundscapes"}
-              <button type="button" onclick={() => { if (contextViewState.soundscapeFilter === "generated") contextViewState.soundscapeFilter = "local"; soundscapeAddRequest += 1; }} class="toolbar-primary"><Plus size={13} />{t("music.soundscape.addLoop")}</button>
+              <button type="button" onclick={() => { if (contextViewState.soundscapeFilter === "generated" || contextViewState.soundscapeFilter === "presets") contextViewState.soundscapeFilter = "local"; soundscapeAddRequest += 1; }} class="toolbar-primary"><Plus size={13} />{t("music.soundscape.addLoop")}</button>
             {/if}
           {/snippet}
         </MusicBuilderToolbar>

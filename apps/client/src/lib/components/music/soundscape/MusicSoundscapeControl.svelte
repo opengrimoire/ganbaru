@@ -123,7 +123,7 @@
             {/if}
           </div>
           {#if savingPreset}
-            <div class="mb-1.5"><MusicSoundscapePresetForm currentIds={selectedIds} nested compact onDone={() => savingPreset = false} /></div>
+            <div class="mb-1.5"><MusicSoundscapePresetForm soundIds={selectedIds} nested onDone={() => savingPreset = false} /></div>
           {/if}
           {#if soundscape.presets.length > 0}
             <div class="flex flex-wrap gap-1.5">

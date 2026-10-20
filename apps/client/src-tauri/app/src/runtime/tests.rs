@@ -348,3 +348,52 @@ fn desktop_capabilities_target_webviews_without_window_creation() {
     let android = capability(ANDROID_CAPABILITY);
     assert!(capability_string_permissions(&android).contains(&"app-commands"));
 }
+
+const TAURI_CONFIG: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../tauri.conf.json"));
+
+/// Returns the sources of one directive in the production or development CSP.
+fn csp_sources<'a>(config: &'a serde_json::Value, policy: &str, directive: &str) -> Vec<&'a str> {
+    config["app"]["security"][policy][directive]
+        .as_str()
+        .unwrap_or_else(|| panic!("{policy} sets {directive}"))
+        .split_whitespace()
+        .collect()
+}
+
+#[test]
+fn app_csp_runs_only_bundled_scripts_and_frames_only_known_hosts() {
+    let config: serde_json::Value =
+        serde_json::from_str(TAURI_CONFIG).expect("tauri.conf.json is valid JSON");
+    assert_eq!(csp_sources(&config, "csp", "script-src"), ["'self'"]);
+    for policy in ["csp", "devCsp"] {
+        for directive in ["object-src", "base-uri", "form-action", "frame-ancestors"] {
+            assert_eq!(
+                csp_sources(&config, policy, directive),
+                ["'none'"],
+                "{policy} {directive}"
+            );
+        }
+        assert_eq!(
+            csp_sources(&config, policy, "frame-src"),
+            ["http://127.0.0.1:*", "https://www.youtube-nocookie.com"],
+            "{policy} frames only the loopback Music host and YouTube previews"
+        );
+        for directive in [
+            "script-src",
+            "img-src",
+            "media-src",
+            "frame-src",
+            "connect-src",
+        ] {
+            for source in csp_sources(&config, policy, directive) {
+                assert!(
+                    source != "http://localhost:*"
+                        && source != "*"
+                        && !source.starts_with("https://www.youtube.com")
+                        && !source.contains("ytimg"),
+                    "{policy} {directive} must not allow {source}"
+                );
+            }
+        }
+    }
+}

@@ -804,23 +804,18 @@ impl ThreadMcpHandler {
             "preview_wait_for" => {
                 let selector = string_argument(arguments, "selector")?;
                 let timeout = u32_argument(arguments, "timeoutMs")?.min(10_000);
-                let script = format!(
-                    "Boolean(document.querySelector({}))",
-                    serde_json::to_string(selector)
-                        .map_err(|_| preview_tool_error("encode wait selector"))?
-                );
                 let tab_id = tab_id()?;
                 let started = tokio::time::Instant::now();
                 loop {
                     super::preview::mcp_require_tab_access(&self.app, &self.thread_id, &tab_id)?;
-                    let result = super::preview::evaluate_script(
+                    if super::preview::browser_selector_matches(
                         &self.app,
                         &self.thread_id,
                         &tab_id,
-                        &script,
+                        selector,
                     )
-                    .await?;
-                    if result == "true" || result == "\"true\"" {
+                    .await?
+                    {
                         return Ok(serde_json::json!({ "matched": true }));
                     }
                     if started.elapsed() >= Duration::from_millis(u64::from(timeout)) {

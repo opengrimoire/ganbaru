@@ -25,6 +25,7 @@ mod capture;
 pub mod data_store;
 pub mod model_access;
 mod navigation;
+mod page_hook;
 mod persistence;
 mod repository;
 mod webview;
@@ -670,13 +671,25 @@ pub(crate) async fn chat_browser_snapshot(
     thread_id: ChatThreadId,
     tab_id: String,
 ) -> ChatResult<String> {
-    evaluate_script(
-        &app,
-        &thread_id,
-        &tab_id,
-        "JSON.stringify({url:location.href,title:document.title,text:(document.body?.innerText??'').slice(0,1000000),html:(document.documentElement?.outerHTML??'').slice(0,1000000)})",
+    let result = evaluate_script(&app, &thread_id, &tab_id, &page_hook::snapshot_script()?).await?;
+    page_hook::snapshot_result(result)
+}
+
+/// Reports whether `selector` currently matches an element in the tab's page.
+pub(crate) async fn browser_selector_matches(
+    app: &tauri::AppHandle,
+    thread_id: &ChatThreadId,
+    tab_id: &str,
+    selector: &str,
+) -> ChatResult<bool> {
+    let result = evaluate_script(
+        app,
+        thread_id,
+        tab_id,
+        &page_hook::matches_script(selector)?,
     )
-    .await
+    .await?;
+    Ok(page_hook::selector_match(&result)? == page_hook::SelectorMatch::Matched)
 }
 
 #[tauri::command]

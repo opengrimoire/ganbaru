@@ -30,6 +30,7 @@ pub(super) async fn create_child_browser_webview(
     let navigation_tab = request.tab_id.clone();
     let builder = WebviewBuilder::new(label.clone(), WebviewUrl::External(url.clone()))
         .data_directory(data_directory)
+        .initialization_script(super::page_hook::initialization_script()?)
         .on_navigation(move |candidate| {
             let Ok(allowed) = navigation_url.lock().map(|allowed| allowed.clone()) else {
                 return false;

@@ -16,6 +16,8 @@ mod file_drops;
 mod first_use_contracts;
 mod music;
 #[cfg(desktop)]
+mod native_dialogs;
+#[cfg(desktop)]
 mod navigation_guard;
 mod notes;
 mod notifications;

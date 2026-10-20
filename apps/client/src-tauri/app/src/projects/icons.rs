@@ -34,6 +34,8 @@ use tauri::{AppHandle, Runtime};
 #[cfg(desktop)]
 use tauri_plugin_dialog::{DialogExt, FilePath};
 
+#[cfg(desktop)]
+use crate::native_dialogs::on_dialog_thread;
 use crate::{db::connect_vault, vault};
 
 /// Project icon files this process created. A discarded upload may delete only these, so a
@@ -590,7 +592,8 @@ pub async fn projects_icon_pick_image_file<R: Runtime>(
     if let Some(directory) = project_icon_start_directory(&app) {
         picker = picker.set_directory(directory);
     }
-    let Some(path) = picker.blocking_pick_file().map(dialog_path).transpose()? else {
+    let picked = on_dialog_thread(move || picker.blocking_pick_file()).await?;
+    let Some(path) = picked.map(dialog_path).transpose()? else {
         return Ok(None);
     };
     let bytes = read_file_capped(&path)?;

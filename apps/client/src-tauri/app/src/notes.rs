@@ -29,16 +29,8 @@ pub use page_icon_assets::*;
 #[allow(unused_imports)]
 pub use project_history::*;
 
-/// Waits for a native dialog on a blocking thread, so an open dialog holds neither an async
-/// worker nor a Notes file worker.
 #[cfg(desktop)]
-async fn on_dialog_thread<T: Send + 'static>(
-    dialog: impl FnOnce() -> T + Send + 'static,
-) -> Result<T, String> {
-    tauri::async_runtime::spawn_blocking(dialog)
-        .await
-        .map_err(|error| format!("native dialog failed: {error}"))
-}
+use crate::native_dialogs::on_dialog_thread;
 
 /// Commit one bounded editor operation with its durable retry receipt.
 #[tauri::command]

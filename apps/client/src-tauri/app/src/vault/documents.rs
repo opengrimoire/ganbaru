@@ -2,6 +2,8 @@
 
 #[cfg(desktop)]
 use super::{FileAccess, dialog_path, require_absolute_path, write_text_file_atomically};
+#[cfg(desktop)]
+use crate::native_dialogs::on_dialog_thread;
 #[cfg(target_os = "android")]
 use ganbaru_mobile_documents::MobileDocumentsExt;
 #[cfg(desktop)]
@@ -386,13 +388,17 @@ fn read_plain_ics_entry_from_path(path: &Path) -> Result<IcsZipEntry, String> {
 pub async fn vault_pick_and_read_ics_import(
     app: tauri::AppHandle,
 ) -> Result<Option<Vec<IcsZipEntry>>, String> {
-    let Some(path) = pick_open_path(
-        &app,
-        "Import calendar",
-        "iCalendar (.ics or .zip)",
-        &["ics", "zip"],
-        existing_downloads_directory(&app),
-    )?
+    let start_directory = existing_downloads_directory(&app);
+    let Some(path) = on_dialog_thread(move || {
+        pick_open_path(
+            &app,
+            "Import calendar",
+            "iCalendar (.ics or .zip)",
+            &["ics", "zip"],
+            start_directory,
+        )
+    })
+    .await??
     else {
         return Ok(None);
     };
@@ -419,14 +425,17 @@ pub async fn vault_pick_and_write_ics_export(
     contents: String,
 ) -> Result<bool, String> {
     let default_name = default_file_name(&default_name, "calendar", "ics");
-    let Some(path) = pick_save_path(
-        &app,
-        "Export calendar",
-        &default_name,
-        "iCalendar",
-        &["ics"],
-        None,
-    )?
+    let Some(path) = on_dialog_thread(move || {
+        pick_save_path(
+            &app,
+            "Export calendar",
+            &default_name,
+            "iCalendar",
+            &["ics"],
+            None,
+        )
+    })
+    .await??
     else {
         return Ok(false);
     };
@@ -502,7 +511,11 @@ pub async fn vault_pick_and_write_ics_export(
 pub async fn vault_pick_and_read_theme_json(
     app: tauri::AppHandle,
 ) -> Result<Option<String>, String> {
-    let Some(path) = pick_open_path(&app, "Import theme", "Theme JSON", &["json"], None)? else {
+    let Some(path) = on_dialog_thread(move || {
+        pick_open_path(&app, "Import theme", "Theme JSON", &["json"], None)
+    })
+    .await??
+    else {
         return Ok(None);
     };
     require_extension(&path, &["json"], "theme import")?;
@@ -519,14 +532,18 @@ pub async fn vault_pick_and_write_theme_json(
 ) -> Result<ThemeJsonWriteOutcome, String> {
     require_text_within_limit(&contents, THEME_JSON_MAX_BYTES, "theme export")?;
     let default_name = default_file_name(&default_name, "theme", "json");
-    let Some(path) = pick_save_path(
-        &app,
-        "Export theme",
-        &default_name,
-        "Theme JSON",
-        &["json"],
-        existing_downloads_directory(&app),
-    )?
+    let start_directory = existing_downloads_directory(&app);
+    let Some(path) = on_dialog_thread(move || {
+        pick_save_path(
+            &app,
+            "Export theme",
+            &default_name,
+            "Theme JSON",
+            &["json"],
+            start_directory,
+        )
+    })
+    .await??
     else {
         return Ok(ThemeJsonWriteOutcome::cancelled());
     };

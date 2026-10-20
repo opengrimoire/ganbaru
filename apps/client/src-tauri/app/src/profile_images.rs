@@ -15,6 +15,8 @@ use tauri::{AppHandle, Runtime};
 #[cfg(desktop)]
 use tauri_plugin_dialog::{DialogExt, FilePath};
 
+#[cfg(desktop)]
+use crate::native_dialogs::on_dialog_thread;
 use crate::vault;
 
 const PROFILE_IMAGE_MAX_DISPLAY_MEGABYTES: usize = 3;
@@ -223,7 +225,8 @@ pub async fn profile_image_pick_file<R: Runtime>(
     if let Some(directory) = profile_image_start_directory(&app) {
         picker = picker.set_directory(directory);
     }
-    let Some(path) = picker.blocking_pick_file().map(dialog_path).transpose()? else {
+    let picked = on_dialog_thread(move || picker.blocking_pick_file()).await?;
+    let Some(path) = picked.map(dialog_path).transpose()? else {
         return Ok(None);
     };
     let bytes = read_file_capped(&path)?;

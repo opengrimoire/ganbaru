@@ -6,6 +6,7 @@ use super::device_state::{
     update_active_device_scope,
 };
 use super::terminal::ChatTerminalRegistry;
+use crate::native_dialogs::on_dialog_thread;
 use chrono::{SecondsFormat, Utc};
 use ganbaru_chat::repository::rebuild::rebuild_thread_projections;
 use ganbaru_chat::runtime::ChatRuntimeRegistry;
@@ -131,16 +132,16 @@ pub async fn chat_export_redacted_diagnostics(
     let pool = connect_pool(app.clone(), db_url).await?;
     delete_expired_diagnostics(&pool).await?;
     let export = build_redacted_export(&pool).await?;
-    let Some(path) = app
+    let picker = app
         .dialog()
         .file()
         .set_title(picker_title)
         .set_file_name("ganbaru-chat-diagnostics.json")
-        .add_filter("JSON", &["json"])
-        .blocking_save_file()
-        .map(dialog_path)
-        .transpose()?
-    else {
+        .add_filter("JSON", &["json"]);
+    let picked = on_dialog_thread(move || picker.blocking_save_file())
+        .await
+        .map_err(|message| ChatError::new(ChatErrorCode::Internal, message, true))?;
+    let Some(path) = picked.map(dialog_path).transpose()? else {
         return Ok(false);
     };
     write_restrictive(&path, export.as_bytes())?;

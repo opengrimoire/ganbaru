@@ -84,7 +84,7 @@ Mobile enforcement plugins expose only launchable-app discovery, selected settin
 
 ## Music loopback service
 
-Desktop Music uses an ephemeral loopback service for selected local media and the YouTube player; Android does not start it. It binds to 127.0.0.1 on an ephemeral port and protects routes with a per-process random token that is not logged, persisted, or returned in errors. Being local does not make the origin trusted.
+Desktop Music uses an ephemeral loopback service for selected local media and the YouTube player; Android does not start it. It binds to 127.0.0.1 on an ephemeral port, answers only requests whose `Host` is exactly that address and port (which refuses DNS rebinding), and protects routes with per-process random tokens that are not logged, persisted, or returned in errors. The YouTube page token never authorizes media, because YouTube's player script runs inside that page and can read it; media URLs carry their own token and per-launch keyed IDs that a path cannot predict. Media responses send no CORS headers. The page reports to the app with an exact `postMessage` target origin wherever the app origin can be named, and gives YouTube only its origin as the widget referrer. Being local does not make the origin trusted.
 
 The server accepts a small allowlisted HTTP subset with bounded headers, deadlines, worker count, registrations, and resident artwork. Responses disable caching and MIME sniffing and apply route-specific CSP: media and text routes deny active content, and YouTube routes permit only the origins the embedded player requires.
 

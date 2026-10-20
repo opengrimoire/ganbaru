@@ -393,7 +393,6 @@
           class:opacity-0={!player.localVideoReady}
           class:opacity-100={player.localVideoReady}
           src={player.localMediaSrc}
-          crossorigin="anonymous"
           playsinline
           onloadedmetadata={(event) => player.handleLocalLoadedMetadata(event)}
           onloadeddata={(event) => player.handleLocalLoadedData(event)}

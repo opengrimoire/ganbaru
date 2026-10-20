@@ -781,6 +781,17 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn youtube_host_keeps_its_token_from_youtube_and_targets_the_app_origin() {
+        let host = youtube_host_html();
+
+        assert!(host.contains("widget_referrer: location.origin"));
+        assert!(!host.contains("location.href"));
+        assert!(host.contains("parent.postMessage(payload, parentOrigin)"));
+        assert!(!host.contains("parent.postMessage(payload, \"*\")"));
+        assert!(host.contains("location.ancestorOrigins"));
+    }
+
+    #[test]
     fn youtube_host_uses_supported_minimal_chrome_parameters() {
         let host = youtube_host_html();
 

@@ -14,9 +14,8 @@ use std::{
 
 #[cfg(desktop)]
 use std::{
-    collections::{HashMap, HashSet, hash_map::DefaultHasher},
+    collections::{HashMap, HashSet},
     fs::File,
-    hash::{Hash, Hasher},
     io::{Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::Mutex,
@@ -29,18 +28,30 @@ use super::path_authority::{MusicPathKind, authorize};
 use super::youtube::player_page::{youtube_host_content_security_policy, youtube_host_html};
 #[cfg(desktop)]
 use ganbaru_music_library::artwork::{embedded_artwork_id, extract_embedded_artwork};
+#[cfg(desktop)]
+use sha2::{Digest, Sha256};
 
+/// Loopback host secrets. The YouTube page token is visible to YouTube's player script, which
+/// runs in the page, so it never authorizes media; media URLs carry a separate token and keyed IDs.
 pub struct MusicHostState {
     pub youtube_url: String,
     #[cfg(desktop)]
     media_base_url: String,
-    token: String,
+    page_token: String,
+    #[cfg(desktop)]
+    media_token: String,
+    #[cfg(desktop)]
+    media_id_key: String,
     #[cfg(desktop)]
     registry: Arc<Mutex<MusicMediaRegistry>>,
 }
 
 struct MusicHostShared {
-    token: String,
+    /// The exact `Host` header the loopback listener answers, which refuses DNS rebinding.
+    host: String,
+    page_token: String,
+    #[cfg(desktop)]
+    media_token: String,
     #[cfg(desktop)]
     registry: Arc<Mutex<MusicMediaRegistry>>,
 }
@@ -209,6 +220,7 @@ impl MusicMediaRegistry {
 struct HttpRequest {
     method: String,
     path: String,
+    host: Option<String>,
     #[cfg(desktop)]
     range: Option<String>,
 }
@@ -268,6 +280,9 @@ pub(super) struct ByteRange {
 }
 
 const MUSIC_HOST_TOKEN_BYTES: usize = 32;
+/// Keyed media IDs keep 128 bits of the digest.
+#[cfg(desktop)]
+const MUSIC_HOST_MEDIA_ID_BYTES: usize = 16;
 const MUSIC_HOST_MAX_CONNECTIONS: usize = 8;
 const MUSIC_HOST_MAX_REQUEST_HEADER_BYTES: usize = 16 * 1024;
 const MUSIC_HOST_READ_TIMEOUT: Duration = Duration::from_secs(3);
@@ -291,7 +306,7 @@ pub async fn music_register_media_file(
     tauri::async_runtime::spawn_blocking(move || {
         let path = authorize(&app, &path, MusicPathKind::File)?;
         let state = app.state::<MusicHostState>();
-        let id = media_file_id(&path);
+        let id = hosted_media_id(&state, path.as_os_str().as_encoded_bytes());
         state
             .registry
             .lock()
@@ -335,7 +350,7 @@ fn register_embedded_artwork(
     let Some(artwork) = extract_embedded_artwork(path)? else {
         return Ok(None);
     };
-    let id = embedded_artwork_id(path, &artwork);
+    let id = hosted_media_id(state, embedded_artwork_id(path, &artwork).as_bytes());
     state
         .registry
         .lock()
@@ -401,10 +416,10 @@ pub fn music_youtube_host_url(state: State<'_, MusicHostState>) -> String {
 }
 
 impl MusicHostState {
-    /// Per-launch secret that authorizes YouTube host pages and hosted media.
+    /// Per-launch secret that authorizes YouTube host pages and their messages, never media.
     #[cfg_attr(desktop, allow(dead_code))]
     pub(crate) fn token(&self) -> &str {
-        &self.token
+        &self.page_token
     }
 }
 
@@ -420,23 +435,29 @@ pub fn setup_youtube_host(app: &tauri::AppHandle) -> Result<(), String> {
 
 #[cfg(mobile)]
 fn native_music_host() -> Result<MusicHostState, String> {
-    let token = make_music_host_token()?;
+    let page_token = make_music_host_token()?;
     Ok(MusicHostState {
-        youtube_url: super::youtube::native_host::native_youtube_host_url(&token),
-        token,
+        youtube_url: super::youtube::native_host::native_youtube_host_url(&page_token),
+        page_token,
     })
 }
 
+/// A per-launch keyed ID for hosted media, so a path or artwork identity cannot predict its URL.
 #[cfg(desktop)]
-fn media_file_id(path: &Path) -> String {
-    let mut hasher = DefaultHasher::new();
-    path.hash(&mut hasher);
-    format!("{:x}", hasher.finish())
+fn hosted_media_id(state: &MusicHostState, identity: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(state.media_id_key.as_bytes());
+    hasher.update([0]);
+    hasher.update(identity);
+    hex(&hasher.finalize()[..MUSIC_HOST_MEDIA_ID_BYTES])
 }
 
 #[cfg(desktop)]
 fn hosted_media_url(state: &MusicHostState, id: &str) -> String {
-    format!("{}/media/{id}?token={}", state.media_base_url, state.token)
+    format!(
+        "{}/media/{id}?token={}",
+        state.media_base_url, state.media_token
+    )
 }
 
 #[cfg(desktop)]
@@ -462,7 +483,7 @@ fn hosted_media_ids(
             }
             let token =
                 request_token(&url).ok_or_else(|| "invalid hosted media URL".to_string())?;
-            if !constant_time_token_eq(&state.token, token) {
+            if !constant_time_token_eq(&state.media_token, token) {
                 return Err("invalid hosted media URL".to_string());
             }
             Ok(id.to_string())
@@ -523,12 +544,13 @@ fn spawn_music_host() -> Result<MusicHostState, String> {
     let addr = listener
         .local_addr()
         .map_err(|e| format!("failed to inspect music player host address: {e}"))?;
-    let token = make_music_host_token()?;
-    #[cfg(desktop)]
+    let page_token = make_music_host_token()?;
+    let media_token = make_music_host_token()?;
     let registry = Arc::new(Mutex::new(MusicMediaRegistry::new()));
     let shared = Arc::new(MusicHostShared {
-        token: token.clone(),
-        #[cfg(desktop)]
+        host: addr.to_string(),
+        page_token: page_token.clone(),
+        media_token: media_token.clone(),
         registry: Arc::clone(&registry),
     });
     let connection_limit = Arc::new(MusicHostConnectionLimit::new(MUSIC_HOST_MAX_CONNECTIONS));
@@ -561,11 +583,11 @@ fn spawn_music_host() -> Result<MusicHostState, String> {
 
     let base_url = format!("http://{addr}");
     Ok(MusicHostState {
-        youtube_url: format!("{base_url}/youtube-player.html?token={token}"),
-        #[cfg(desktop)]
+        youtube_url: format!("{base_url}/youtube-player.html?token={page_token}"),
         media_base_url: base_url,
-        token,
-        #[cfg(desktop)]
+        page_token,
+        media_token,
+        media_id_key: make_music_host_token()?,
         registry,
     })
 }
@@ -577,13 +599,17 @@ fn make_music_host_token() -> Result<String, String> {
         .secure_random
         .fill(&mut bytes)
         .map_err(|_| "failed to generate music host authorization".to_string())?;
+    Ok(hex(&bytes))
+}
+
+fn hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut token = String::with_capacity(bytes.len() * 2);
+    let mut text = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
-        token.push(HEX[(byte >> 4) as usize] as char);
-        token.push(HEX[(byte & 0x0f) as usize] as char);
+        text.push(HEX[(byte >> 4) as usize] as char);
+        text.push(HEX[(byte & 0x0f) as usize] as char);
     }
-    Ok(token)
+    text
 }
 
 fn handle_music_host_stream(mut stream: TcpStream, shared: Arc<MusicHostShared>) {
@@ -631,9 +657,21 @@ fn handle_music_host_request<W: Write>(
     request: &HttpRequest,
     shared: &MusicHostShared,
 ) {
-    let authorized = request_token(&request.path)
-        .is_some_and(|token| constant_time_token_eq(&shared.token, token));
     let is_head = request.method == "HEAD";
+    if request.host.as_deref() != Some(shared.host.as_str()) {
+        let _ = write_http_response(
+            stream,
+            "421 Misdirected Request",
+            "text/plain; charset=utf-8",
+            "Misdirected request",
+            is_head,
+            BASIC_RESPONSE_CSP,
+        );
+        return;
+    }
+    let token = request_token(&request.path);
+    let page_authorized =
+        token.is_some_and(|token| constant_time_token_eq(&shared.page_token, token));
     if request.method != "GET" && request.method != "HEAD" {
         let _ = write_http_response(
             stream,
@@ -646,7 +684,7 @@ fn handle_music_host_request<W: Write>(
         return;
     }
     let route = request.path.split('?').next().unwrap_or_default();
-    if route == "/youtube-player.html" && authorized {
+    if route == "/youtube-player.html" && page_authorized {
         let _ = write_http_response(
             stream,
             "200 OK",
@@ -658,7 +696,9 @@ fn handle_music_host_request<W: Write>(
         return;
     }
     #[cfg(desktop)]
-    if route.starts_with("/media/") && authorized {
+    if route.starts_with("/media/")
+        && token.is_some_and(|token| constant_time_token_eq(&shared.media_token, token))
+    {
         match media_from_request(request, shared) {
             Ok(media) => {
                 if write_hosted_media_response(stream, request, &media).is_err() {
@@ -741,6 +781,7 @@ fn read_http_request<R: Read>(stream: &mut R) -> Result<HttpRequest, HttpRequest
     if !matches!(version, "HTTP/1.0" | "HTTP/1.1") || request_parts.next().is_some() {
         return Err(HttpRequestError::Malformed);
     }
+    let mut host = None;
     #[cfg(desktop)]
     let mut range = None;
     for line in lines {
@@ -755,6 +796,12 @@ fn read_http_request<R: Read>(stream: &mut R) -> Result<HttpRequest, HttpRequest
         {
             return Err(HttpRequestError::Malformed);
         }
+        if name.eq_ignore_ascii_case("host") {
+            if host.is_some() {
+                return Err(HttpRequestError::Malformed);
+            }
+            host = Some(value.trim().to_string());
+        }
         #[cfg(desktop)]
         if name.eq_ignore_ascii_case("range") {
             if range.is_some() {
@@ -766,6 +813,7 @@ fn read_http_request<R: Read>(stream: &mut R) -> Result<HttpRequest, HttpRequest
     Ok(HttpRequest {
         method,
         path,
+        host,
         #[cfg(desktop)]
         range,
     })
@@ -910,7 +958,7 @@ fn write_media_headers<W: Write>(
     content_range: Option<(ByteRange, u64)>,
 ) -> std::io::Result<()> {
     let mut response = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {content_length}\r\nAccept-Ranges: bytes\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-store\r\nContent-Security-Policy: {BASIC_RESPONSE_CSP}\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n"
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {content_length}\r\nAccept-Ranges: bytes\r\nCache-Control: no-store\r\nContent-Security-Policy: {BASIC_RESPONSE_CSP}\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n"
     );
     if let Some((range, len)) = content_range {
         response.push_str(&format!(
@@ -1040,20 +1088,42 @@ mod host_security_contract_tests {
         }
     }
 
+    const TEST_HOST: &str = "127.0.0.1:1234";
+
+    /// A host whose media token is the page token with a `-media` suffix.
     fn test_shared(token: &str) -> MusicHostShared {
         MusicHostShared {
-            token: token.to_string(),
+            host: TEST_HOST.to_string(),
+            page_token: token.to_string(),
+            media_token: format!("{token}-media"),
             registry: Arc::new(Mutex::new(MusicMediaRegistry::with_limits(8, 1024))),
         }
     }
 
     fn test_state(token: &str) -> MusicHostState {
         MusicHostState {
-            youtube_url: format!("http://127.0.0.1:1234/youtube-player.html?token={token}"),
-            media_base_url: "http://127.0.0.1:1234".to_string(),
-            token: token.to_string(),
+            youtube_url: format!("http://{TEST_HOST}/youtube-player.html?token={token}"),
+            media_base_url: format!("http://{TEST_HOST}"),
+            page_token: token.to_string(),
+            media_token: format!("{token}-media"),
+            media_id_key: format!("{token}-key"),
             registry: Arc::new(Mutex::new(MusicMediaRegistry::with_limits(8, 1024))),
         }
+    }
+
+    fn request(path: &str, host: Option<&str>) -> HttpRequest {
+        HttpRequest {
+            method: "GET".to_string(),
+            path: path.to_string(),
+            host: host.map(str::to_string),
+            range: None,
+        }
+    }
+
+    fn respond(shared: &MusicHostShared, request: &HttpRequest) -> String {
+        let mut response = Vec::new();
+        handle_music_host_request(&mut response, request, shared);
+        String::from_utf8(response).unwrap()
     }
 
     struct SlowHeaderReader {
@@ -1092,6 +1162,7 @@ mod host_security_contract_tests {
         let request = HttpRequest {
             method: "GET".to_string(),
             path: "/youtube-player.html?token=attacker-token".to_string(),
+            host: Some(TEST_HOST.to_string()),
             range: None,
         };
         let mut response = Vec::new();
@@ -1124,6 +1195,99 @@ mod host_security_contract_tests {
         assert_eq!(error, "invalid hosted media URL");
         assert!(!error.contains("correct-token"));
         assert!(!error.contains("attacker-token"));
+        assert!(
+            hosted_media_ids(
+                &state,
+                vec![
+                    state
+                        .youtube_url
+                        .replace("youtube-player.html", "media/media-id")
+                ],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn music_host_security_contract_page_token_never_authorizes_media() {
+        let shared = test_shared("page-token");
+        shared
+            .registry
+            .lock()
+            .unwrap()
+            .register("media-id".to_string(), bytes_media(&[1, 2, 3]), 1)
+            .unwrap();
+
+        let page_token_media = respond(
+            &shared,
+            &request("/media/media-id?token=page-token", Some(TEST_HOST)),
+        );
+        assert!(page_token_media.starts_with("HTTP/1.1 404 Not Found\r\n"));
+        let media_token_page = respond(
+            &shared,
+            &request(
+                "/youtube-player.html?token=page-token-media",
+                Some(TEST_HOST),
+            ),
+        );
+        assert!(media_token_page.starts_with("HTTP/1.1 404 Not Found\r\n"));
+        let media = respond(
+            &shared,
+            &request("/media/media-id?token=page-token-media", Some(TEST_HOST)),
+        );
+        assert!(media.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(!media.contains("Access-Control-Allow-Origin"));
+    }
+
+    #[test]
+    fn music_host_security_contract_rejects_every_other_host_header() {
+        let shared = test_shared("page-token");
+        for host in [
+            None,
+            Some("localhost:1234"),
+            Some("127.0.0.1"),
+            Some("127.0.0.1:1235"),
+            Some("rebind.attacker.test:1234"),
+        ] {
+            let response = respond(
+                &shared,
+                &request("/youtube-player.html?token=page-token", host),
+            );
+            assert!(
+                response.starts_with("HTTP/1.1 421 Misdirected Request\r\n"),
+                "{host:?}"
+            );
+            assert!(!response.contains("<!doctype html>"));
+        }
+        assert_eq!(
+            read_http_request(&mut Cursor::new(
+                b"GET / HTTP/1.1\r\nHost: 127.0.0.1:1234\r\nHost: evil.test\r\n\r\n".as_slice()
+            )),
+            Err(HttpRequestError::Malformed),
+        );
+        assert_eq!(
+            read_http_request(&mut Cursor::new(
+                b"GET / HTTP/1.1\r\nhost:  127.0.0.1:1234 \r\n\r\n".as_slice()
+            ))
+            .unwrap()
+            .host
+            .as_deref(),
+            Some(TEST_HOST),
+        );
+    }
+
+    #[test]
+    fn music_host_security_contract_media_ids_are_keyed_per_launch() {
+        let state = test_state("page-token");
+        let other_launch = test_state("other-token");
+        let identity = b"/home/user/Music/song.mp3";
+        let id = hosted_media_id(&state, identity);
+
+        assert_eq!(id, hosted_media_id(&state, identity));
+        assert_ne!(id, hosted_media_id(&other_launch, identity));
+        assert_ne!(id, hosted_media_id(&state, b"/home/user/Music/other.mp3"));
+        assert_eq!(id.len(), MUSIC_HOST_MEDIA_ID_BYTES * 2);
+        assert!(id.bytes().all(|byte| byte.is_ascii_hexdigit()));
     }
 
     #[test]
@@ -1132,6 +1296,7 @@ mod host_security_contract_tests {
         let request = HttpRequest {
             method: "HEAD".to_string(),
             path: "/youtube-player.html?token=correct-token".to_string(),
+            host: Some(TEST_HOST.to_string()),
             range: None,
         };
         let mut response = Vec::new();
@@ -1185,6 +1350,7 @@ mod host_security_contract_tests {
         let request = HttpRequest {
             method: "GET".to_string(),
             path: "/media/id?token=token".to_string(),
+            host: Some(TEST_HOST.to_string()),
             range: Some("bytes=1-3".to_string()),
         };
         let mut response = Vec::new();
@@ -1194,7 +1360,7 @@ mod host_security_contract_tests {
         assert!(response.starts_with("HTTP/1.1 206 Partial Content\r\n"));
         assert!(response.contains("Content-Range: bytes 1-3/6\r\n"));
         assert!(response.contains("Accept-Ranges: bytes\r\n"));
-        assert!(response.contains("Access-Control-Allow-Origin: *\r\n"));
+        assert!(!response.contains("Access-Control-Allow-Origin"));
         assert!(response.contains("Cache-Control: no-store\r\n"));
         assert!(response.contains("Referrer-Policy: no-referrer\r\n"));
         assert!(response.contains("X-Content-Type-Options: nosniff\r\n"));
@@ -1203,6 +1369,7 @@ mod host_security_contract_tests {
         let head_request = HttpRequest {
             method: "HEAD".to_string(),
             path: "/media/id?token=token".to_string(),
+            host: Some(TEST_HOST.to_string()),
             range: None,
         };
         let mut head_response = Vec::new();

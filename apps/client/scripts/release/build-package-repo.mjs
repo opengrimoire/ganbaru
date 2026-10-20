@@ -3,14 +3,25 @@
 import { spawnSync } from "node:child_process";
 import {
   copyFileSync,
+  existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
+  readFileSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  formatChecksumManifest,
+  packageRepoPublicKey,
+  parseChecksumManifest,
+  planManifestPrune,
+  sha256File,
+  verifyDetachedSignature,
+} from "./release-checksums.mjs";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CLIENT_ROOT = path.resolve(SCRIPT_DIR, "..", "..");
@@ -24,6 +35,11 @@ const APT_ROOT = path.join(PACKAGES_DIR, "apt");
 const RPM_ROOT = path.join(PACKAGES_DIR, "rpm");
 const PUBLIC_KEY_FILE = path.join(PACKAGES_DIR, "ganbaru-package-repo.asc");
 const APT_RELEASE_CONFIG = path.join(REPO_ROOT, "dist", "apt-release.conf");
+const APT_POOL = path.join(APT_ROOT, "pool");
+const RPM_METADATA = path.join(RPM_ROOT, "repodata");
+/** Signed list of every package file the repository publishes, relative to `packages/`. */
+const POOL_MANIFEST = path.join(PACKAGES_DIR, "pool-SHA256SUMS");
+const POOL_SIGNATURE = `${POOL_MANIFEST}.asc`;
 
 /**
  * Reads a required environment variable without exposing its value.
@@ -37,19 +53,6 @@ function readRequiredEnv(name) {
     throw new Error(`${name} must be set`);
   }
   return value;
-}
-
-/**
- * Reads a public key from the environment.
- *
- * @returns {string} ASCII-armored OpenPGP public key.
- */
-function packageRepoPublicKey() {
-  const key = readRequiredEnv("GANBARU_PACKAGE_REPO_PUBLIC_KEY");
-  if (!key.includes("BEGIN PGP PUBLIC KEY BLOCK")) {
-    throw new Error("GANBARU_PACKAGE_REPO_PUBLIC_KEY must be an ASCII-armored public key");
-  }
-  return key.endsWith("\n") ? key : `${key}\n`;
 }
 
 /**
@@ -140,13 +143,83 @@ function copyPackage(assetPath, directory) {
 }
 
 /**
+ * Hashes every file under the trees the metadata generators scan, keyed by path relative to
+ * `packages/`. Entries that are not regular files get an empty digest so the prune drops them.
+ *
+ * @returns {Map<string, string>} Relative path to digest.
+ */
+function poolFiles() {
+  const files = new Map();
+  const walk = (directory) => {
+    if (!existsSync(directory)) return;
+    for (const name of readdirSync(directory).sort()) {
+      const entry = path.join(directory, name);
+      if (entry === RPM_METADATA) continue;
+      const stats = lstatSync(entry);
+      if (stats.isDirectory()) {
+        walk(entry);
+      } else {
+        const relative = path.relative(PACKAGES_DIR, entry).split(path.sep).join("/");
+        files.set(relative, stats.isFile() ? sha256File(entry) : "");
+      }
+    }
+  };
+  walk(APT_POOL);
+  walk(RPM_ROOT);
+  return files;
+}
+
+/**
+ * Reads the pool manifest the previous run signed. A missing manifest and signature is the first
+ * publication, which keeps no earlier package; a manifest without a valid signature means the
+ * Pages branch was changed outside this job, so publishing stops for a maintainer to inspect it.
+ *
+ * @returns {Map<string, string>} Relative path to digest of every package the key vouched for.
+ */
+function verifiedPoolManifest() {
+  const hasManifest = existsSync(POOL_MANIFEST);
+  const hasSignature = existsSync(POOL_SIGNATURE);
+  if (!hasManifest && !hasSignature) {
+    console.log("No signed pool manifest exists yet; earlier packages are not carried forward");
+    return new Map();
+  }
+  if (!hasManifest || !hasSignature) {
+    throw new Error("The package pool manifest or its signature is missing; inspect the gh-pages branch");
+  }
+  verifyDetachedSignature(packageRepoPublicKey(), POOL_MANIFEST, POOL_SIGNATURE);
+  return parseChecksumManifest(readFileSync(POOL_MANIFEST, "utf8"));
+}
+
+/**
+ * Removes every pool file the previous signed manifest does not vouch for, so the repository key
+ * never signs metadata for a package that only appeared on the Pages branch.
+ */
+function pruneUnverifiedPool() {
+  const { keep, drop } = planManifestPrune(verifiedPoolManifest(), poolFiles());
+  for (const relative of drop) {
+    rmSync(path.join(PACKAGES_DIR, relative), { force: true });
+    console.log(`Removed unverified pool file ${relative}`);
+  }
+  console.log(`Kept ${keep.length} verified pool files`);
+}
+
+/** Writes and signs the manifest of every package file the repository now publishes. */
+function writePoolManifest() {
+  writeFileSync(POOL_MANIFEST, formatChecksumManifest(poolFiles()), "utf8");
+  rmSync(POOL_SIGNATURE, { force: true });
+  gpgSign(["--detach-sign", "--armor", "-o", POOL_SIGNATURE, POOL_MANIFEST]);
+}
+
+/**
  * Regenerates and signs apt repository metadata.
  *
  * @param {string} debAsset Release `.deb` path.
  */
 function buildAptRepo(debAsset) {
-  const poolDir = path.join(APT_ROOT, "pool", "main", "g", "ganbaru");
+  const poolDir = path.join(APT_POOL, "main", "g", "ganbaru");
   const binaryDir = path.join(APT_ROOT, "dists", "stable", "main", "binary-amd64");
+  // Release hashes every file under dists/stable, so the tree is rebuilt from the pool alone.
+  rmSync(path.join(APT_ROOT, "dists"), { recursive: true, force: true });
   mkdirSync(binaryDir, { recursive: true });
   copyPackage(debAsset, poolDir);
 
@@ -189,7 +262,9 @@ function buildAptRepo(debAsset) {
  */
 function buildRpmRepo(rpmAsset) {
   copyPackage(rpmAsset, path.join(RPM_ROOT, "x86_64"));
-  run("createrepo_c", ["--update", "."], RPM_ROOT);
+  // Metadata is regenerated from the package headers instead of reusing the previous repodata.
+  rmSync(RPM_METADATA, { recursive: true, force: true });
+  run("createrepo_c", ["."], RPM_ROOT);
 
   const metadataPath = path.join(RPM_ROOT, "repodata", "repomd.xml");
   rmSync(`${metadataPath}.asc`, { force: true });
@@ -209,7 +284,9 @@ mkdirSync(PACKAGES_DIR, { recursive: true });
 writeFileSync(path.join(PAGES_DIR, ".nojekyll"), "", "utf8");
 writeFileSync(PUBLIC_KEY_FILE, packageRepoPublicKey(), "utf8");
 
+pruneUnverifiedPool();
 buildAptRepo(debAssets[0]);
 buildRpmRepo(rpmAssets[0]);
+writePoolManifest();
 
 console.log(`Package repository updated in ${path.relative(REPO_ROOT, PACKAGES_DIR)}`);

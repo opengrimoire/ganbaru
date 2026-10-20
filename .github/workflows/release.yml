@@ -295,6 +295,35 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: node apps/client/scripts/release/sign-tauri-release-assets.mjs
 
+      # Package publication verifies this signature, so assets changed on the draft release after
+      # signing are never indexed or pushed to the AUR.
+      - name: write and sign checksums
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GANBARU_PACKAGE_REPO_GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GANBARU_PACKAGE_REPO_GPG_PASSPHRASE }}
+        run: |
+          if [ -z "$GPG_PRIVATE_KEY" ]; then
+            echo "GANBARU_PACKAGE_REPO_GPG_PRIVATE_KEY must be set"
+            exit 1
+          fi
+          node apps/client/scripts/release/release-checksums.mjs write dist/release-assets
+
+          export GNUPGHOME="$RUNNER_TEMP/checksum-gnupg"
+          mkdir -p "$GNUPGHOME"
+          chmod 700 "$GNUPGHOME"
+          printf '%s' "$GPG_PRIVATE_KEY" | gpg --batch --import
+          key_id="$(gpg --batch --list-secret-keys --with-colons | awk -F: '/^fpr:/ { print $10; exit }')"
+          if [ -z "$key_id" ]; then
+            echo "Package repo signing key import did not produce a secret key"
+            exit 1
+          fi
+          passphrase_file="$RUNNER_TEMP/checksum-gpg-passphrase"
+          printf '%s' "$GPG_PASSPHRASE" > "$passphrase_file"
+          chmod 600 "$passphrase_file"
+          gpg --batch --yes --pinentry-mode loopback --passphrase-file "$passphrase_file" --local-user "$key_id" \
+            --detach-sign --armor -o dist/release-assets/SHA256SUMS.asc dist/release-assets/SHA256SUMS
+          rm -rf "$passphrase_file" "$GNUPGHOME"
+
       - name: upload signed assets
         # actions/upload-artifact v7.0.1
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -367,11 +396,6 @@ jobs:
           GANBARU_RELEASE_NOTES_PATH: dist/generated-release-notes.md
         run: node apps/client/scripts/release/write-tauri-latest-json.mjs
 
-      - name: write checksums
-        run: |
-          cd dist/release-assets
-          find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%P\0' | sort -z | xargs -0 sha256sum > SHA256SUMS
-
       - name: create or update draft release
         env:
           RELEASE_TAG_NAME: ${{ steps.release.outputs.tag_name }}
@@ -421,7 +445,10 @@ jobs:
       - name: download release packages
         run: |
           mkdir -p dist/release-assets
-          gh release download "$RELEASE_TAG_NAME" --pattern "*.deb" --pattern "*.rpm" --dir dist/release-assets
+          gh release download "$RELEASE_TAG_NAME" --pattern "*.deb" --pattern "*.rpm" --pattern "SHA256SUMS" --pattern "SHA256SUMS.asc" --dir dist/release-assets
+
+      - name: verify release packages
+        run: node apps/client/scripts/release/release-checksums.mjs verify dist/release-assets
 
       - name: import package repo signing key
         env:
@@ -499,6 +526,7 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
       GANBARU_RELEASE_REPOSITORY: ${{ github.repository }}
+      GANBARU_PACKAGE_REPO_PUBLIC_KEY: ${{ vars.GANBARU_PACKAGE_REPO_PUBLIC_KEY }}
     steps:
       - name: checkout
         # actions/checkout v6
@@ -515,7 +543,10 @@ jobs:
       - name: download Debian release package
         run: |
           mkdir -p dist/release-assets
-          gh release download "$RELEASE_TAG_NAME" --pattern "*.deb" --dir dist/release-assets
+          gh release download "$RELEASE_TAG_NAME" --pattern "*.deb" --pattern "SHA256SUMS" --pattern "SHA256SUMS.asc" --dir dist/release-assets
+
+      - name: verify Debian release package
+        run: node apps/client/scripts/release/release-checksums.mjs verify dist/release-assets
 
       - name: configure AUR SSH
         env:

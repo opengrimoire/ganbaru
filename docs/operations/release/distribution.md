@@ -23,11 +23,11 @@ Published releases update:
 
 The published `.deb` can install a Deb822 source file and repository key. The published `.rpm` can install dnf or zypper repository configuration and its verification key. Package scripts remove configuration only on a full removal or purge, not during normal upgrades.
 
-The package-repository job runs only after the GitHub Release is published. It downloads the released packages, regenerates metadata, signs apt and RPM metadata, and updates the `gh-pages` branch.
+The package-repository job runs only after the GitHub Release is published. It downloads the released packages with `SHA256SUMS` and `SHA256SUMS.asc`, refuses to continue unless the signature is valid for the package repository key and every downloaded file matches, then regenerates metadata, signs apt and RPM metadata, and updates the `gh-pages` branch. The pool is rebuilt only from files listed with the same digest in the signed `packages/pool-SHA256SUMS` from the previous publication plus the new release, so a file placed on `gh-pages` outside this job is removed instead of signed. When neither the pool manifest nor its signature exists, only the new release is published; when one is missing or the signature is invalid, the job stops for a maintainer to inspect the branch.
 
 ## AUR
 
-`ganbaru-bin` repackages the released `.deb` and removes Debian-specific repository files. A dedicated post-publication job updates the AUR package.
+`ganbaru-bin` repackages the released `.deb` and removes Debian-specific repository files. A dedicated post-publication job verifies the `.deb` against the signed `SHA256SUMS` before it updates the AUR package.
 
 The app can suggest `yay -Syu ganbaru-bin` or `paru -Syu ganbaru-bin` based on the detected helper. It does not run the command.
 

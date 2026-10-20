@@ -12,7 +12,7 @@ Release credentials belong in the protected `release` GitHub environment. They m
 | `ANDROID_KEYSTORE_PASSWORD` | Android keystore password |
 | `ANDROID_KEY_ALIAS` | Release key alias |
 | `ANDROID_KEY_PASSWORD` | Release key password |
-| `GANBARU_PACKAGE_REPO_GPG_PRIVATE_KEY` | ASCII-armored apt and RPM repository signing key |
+| `GANBARU_PACKAGE_REPO_GPG_PRIVATE_KEY` | ASCII-armored key that signs apt and RPM metadata, the package pool manifest, and release `SHA256SUMS` |
 | `GANBARU_PACKAGE_REPO_GPG_PASSPHRASE` | Package repository key passphrase |
 | `AUR_SSH_PRIVATE_KEY` | Dedicated AUR publishing key |
 
@@ -77,7 +77,7 @@ If Google Play is introduced, decide the Play App Signing and upload-key strateg
 
 The apt and RPM repositories require a stable OpenPGP key. Store the armored private key and passphrase in the release environment and the armored public key as a repository variable.
 
-Losing or rotating this key requires package-manager users to trust the replacement before later repository metadata can be verified.
+Losing or rotating this key requires package-manager users to trust the replacement before later repository metadata can be verified. Rotation also requires removing `packages/pool-SHA256SUMS` and its signature from `gh-pages`, because the next publication refuses a pool manifest the new key did not sign; that publication then carries forward only the new release.
 
 ## AUR key
 

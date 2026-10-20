@@ -25,7 +25,7 @@ Test count and coverage percentage are not quality targets. Coverage follows pro
 
 ## Validation layers
 
-- **Frontend tests:** Vitest tests next to source, using Node by default and jsdom only for real DOM behavior.
+- **Frontend tests:** Vitest tests next to source, using Node by default and jsdom only for real DOM behavior. Release and validation scripts under `apps/client/scripts/` keep their `.test.mjs` files beside them in the same suite.
 - **Rust tests:** domain, persistence, provider, platform, migration, transaction, recovery, and command-boundary tests in the owning crate.
 - **Static checks:** Svelte Check, TypeScript, Rust formatting, Clippy, provider protocol snapshots, and Tailwind diagnostics.
 - **Production bundle contracts:** real Vite builds that verify route closures, source-module ceilings, platform composition, and forbidden eager imports.

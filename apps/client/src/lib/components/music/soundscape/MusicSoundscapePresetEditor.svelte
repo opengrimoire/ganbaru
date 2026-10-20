@@ -1,13 +1,14 @@
 <script lang="ts">
   import Check from "@lucide/svelte/icons/check";
-  import Pause from "@lucide/svelte/icons/pause";
-  import Play from "@lucide/svelte/icons/play";
   import { onMount } from "svelte";
   import IconPicker from "$lib/components/icon-picker/IconPicker.svelte";
+  import Notice from "$lib/components/ui/Notice.svelte";
+  import Switch from "$lib/components/ui/Switch.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { MAX_SOUNDSCAPE_LAYERS, type MusicSoundscapeDefinition, type MusicSoundscapePreset } from "$lib/music/soundscape/contracts";
   import { orderedGeneratedSounds } from "$lib/music/soundscape/presentation";
-  import { sameSoundSet, togglePresetDraftSound } from "$lib/music/soundscape/presets";
+  import { togglePresetDraftSound } from "$lib/music/soundscape/presets";
+  import { getMusicPlayer } from "$lib/stores/music-player.svelte";
   import { getSoundscapeStore } from "$lib/stores/soundscape.svelte";
   import MusicSoundscapeGroupIcon from "./MusicSoundscapeGroupIcon.svelte";
   import MusicSoundscapeSoundIcon from "./MusicSoundscapeSoundIcon.svelte";
@@ -17,23 +18,22 @@
   const MAX_PRESET_NAME_CHARS = 80;
 
   /**
-   * Creates or edits a background sound preset by picking its sounds explicitly. Picking a sound only changes the draft;
-   * Listen is the one action that plays it.
+   * Creates or edits a background sound preset by picking its sounds explicitly. While it is open, Music and background
+   * sounds pause and the draft plays in an isolated preview; leaving brings back what was playing, unchanged.
    */
   let {
     preset = null,
     onDone,
     onRemove,
-    onPlaybackStart = () => undefined,
   }: {
     preset?: MusicSoundscapePreset | null;
     onDone: (preset: MusicSoundscapePreset | null) => void;
     onRemove?: (preset: MusicSoundscapePreset) => void;
-    onPlaybackStart?: () => void;
   } = $props();
 
   const { t } = getLocalization();
   const soundscape = getSoundscapeStore();
+  const player = getMusicPlayer();
   let root = $state<HTMLFormElement | null>(null);
   let nameInput = $state<HTMLInputElement | null>(null);
   // Drafts start from the preset once; later store refreshes must not overwrite what the person is choosing.
@@ -42,8 +42,22 @@
   let soundIds = $state<string[]>(initialSoundIds());
   const atLimit = $derived(soundIds.length >= MAX_SOUNDSCAPE_LAYERS);
   const canSave = $derived(name.trim().length > 0 && soundIds.length > 0 && !soundscape.saving);
-  const listening = $derived(soundIds.length > 0 && soundscape.snapshot.status === "playing" && sameSoundSet(soundscape.persisted?.activeIds ?? [], soundIds));
+  let listening = $state(true);
   const sections = $derived(soundSections(soundscape.definitions));
+
+  onMount(() => {
+    const resumesMusic = player.isPlaying;
+    if (resumesMusic) void player.pausePlayback("system");
+    void soundscape.beginPreview();
+    return () => {
+      void soundscape.endPreview();
+      if (resumesMusic && !player.isPlaying) void player.playPlayback("system");
+    };
+  });
+
+  $effect(() => {
+    void soundscape.previewSounds(listening ? soundIds : []);
+  });
 
   onMount(() => {
     root?.scrollIntoView({ block: "start" });
@@ -94,15 +108,6 @@
     return definition.generatedKind ? t(`music.soundscape.generatedName.${definition.generatedKind}`) : "";
   }
 
-  function listen(): void {
-    if (listening) {
-      void soundscape.togglePlayback();
-      return;
-    }
-    onPlaybackStart();
-    void soundscape.playPreset({ soundscapeIds: soundIds });
-  }
-
   async function save(): Promise<void> {
     if (!canSave) return;
     try {
@@ -137,11 +142,12 @@
 
   <section aria-labelledby="soundscape-preset-sounds">
     <div class="flex h-8 items-center gap-2">
-      <h3 id="soundscape-preset-sounds" class="text-xs font-semibold">{t("music.soundscape.preset.sounds")}</h3>
-      <span class="min-w-0 flex-1 text-xs tabular-nums text-muted-foreground">{t("music.soundscape.preset.soundCount", soundIds.length, MAX_SOUNDSCAPE_LAYERS)}</span>
-      <button type="button" disabled={soundIds.length === 0 || soundscape.saving} class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40" onclick={listen}>{#if listening}<Pause size={14} />{t("music.soundscape.preset.stopListening")}{:else}<Play size={14} />{t("music.soundscape.preset.listen")}{/if}</button>
+      <h3 id="soundscape-preset-sounds" class="min-w-0 flex-1 truncate text-xs font-semibold">{t("music.soundscape.preset.sounds")}</h3>
+      <span class="min-w-0 truncate text-xs text-muted-foreground" aria-hidden="true">{t("music.soundscape.preset.listen")}</span>
+      <Switch size="compact" checked={listening} ariaLabel={t("music.soundscape.preset.listen")} onChange={(value) => listening = value} />
     </div>
-    <p class="mb-1 text-xs text-muted-foreground" aria-live="polite">{atLimit ? t("music.soundscape.preset.limitReached", MAX_SOUNDSCAPE_LAYERS) : t("music.soundscape.preset.soundsHint")}</p>
+    <p class="text-xs text-muted-foreground">{t("music.soundscape.preset.soundsHint")}</p>
+    {#if atLimit}<Notice class="mt-2 text-xs" tone="warning" role="status" copy={false} message={t("music.soundscape.preset.limitReached", MAX_SOUNDSCAPE_LAYERS)} />{/if}
 
     {#each sections as section (section.key)}
       <div class="mt-4 mb-2 flex items-center gap-1.5 text-[0.68rem] font-medium text-muted-foreground">{#if section.icon}<MusicSoundscapeGroupIcon icon={section.icon} size={13} />{/if}<h4 class="min-w-0 truncate">{section.title}</h4></div>

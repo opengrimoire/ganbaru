@@ -27,6 +27,7 @@ import type {
   MusicSoundscapePreset,
   MusicSoundscapePresetWrite,
   MusicSoundscapeSnapshot,
+  MusicSoundscapeStartRequest,
   MusicSoundscapeState,
   MusicSoundscapeWrite,
 } from "$lib/music/soundscape/contracts";
@@ -34,6 +35,15 @@ import { MAX_SOUNDSCAPE_LAYERS } from "$lib/music/soundscape/contracts";
 import { INITIAL_SOUNDSCAPE_VOLUME } from "$lib/music/soundscape/defaults";
 import { sameSoundSet } from "$lib/music/soundscape/presets";
 import { soundSelectionAction } from "$lib/music/soundscape/selection";
+
+/** Output state an isolated preview needs to hand playback back unchanged. */
+interface SoundscapePreview {
+  /** Whether the saved selection was playing when the preview began. */
+  resumes: boolean;
+  /** Whether the preview replaced the paused output, so resuming it is no longer possible. */
+  replacedOutput: boolean;
+  playingIds: string[];
+}
 
 class SoundscapeStore {
   definitions = $state<MusicSoundscapeDefinition[]>([]);
@@ -57,6 +67,9 @@ class SoundscapeStore {
   private levelsPersistTimer: number | null = null;
   private levelsGeneration = 0;
   private stateWriteQueue: Promise<void> = Promise.resolve();
+  private preview = $state<SoundscapePreview | null>(null);
+  private previewTarget: string[] = [];
+  private previewQueue: Promise<void> = Promise.resolve();
 
   get activeDefinition(): MusicSoundscapeDefinition | null {
     return this.definitions.find((definition) => definition.id === this.persisted?.activeSoundscapeId) ?? null;
@@ -222,19 +235,12 @@ class SoundscapeStore {
       this.error = "This background sound needs to be repaired before it can play.";
       return;
     }
-    const [first, ...extra] = definitions as MusicSoundscapeDefinition[];
+    const [first] = definitions as MusicSoundscapeDefinition[];
     this.playbackPending = true;
     this.error = null;
     let started = false;
     try {
-      this.snapshot = await startSoundscape({
-        sourceId: first.id,
-        generatedKind: first.generatedKind,
-        localPath: first.localPath,
-        level: this.levelFor(first),
-        extraSources: extra.map((entry) => ({ sourceId: entry.id, generatedKind: entry.generatedKind, localPath: entry.localPath, level: this.levelFor(entry) })),
-        volume: this.snapshot.volume,
-      });
+      this.snapshot = await startSoundscape(this.startRequest(definitions as MusicSoundscapeDefinition[]));
       started = true;
       if (persist) await this.persistState(ids, true, this.snapshot.volume, multipleEnabled);
     } catch (error) {
@@ -244,6 +250,84 @@ class SoundscapeStore {
     } finally {
       this.playbackPending = false;
     }
+  }
+
+  private startRequest([first, ...extra]: readonly MusicSoundscapeDefinition[]): MusicSoundscapeStartRequest {
+    return {
+      sourceId: first.id,
+      generatedKind: first.generatedKind,
+      localPath: first.localPath,
+      level: this.levelFor(first),
+      extraSources: extra.map((entry) => ({ sourceId: entry.id, generatedKind: entry.generatedKind, localPath: entry.localPath, level: this.levelFor(entry) })),
+      volume: this.snapshot.volume,
+    };
+  }
+
+  private availableDefinitions(ids: readonly string[]): MusicSoundscapeDefinition[] {
+    return ids
+      .map((id) => this.definitions.find((definition) => definition.id === id && definition.availability === "available"))
+      .filter((definition): definition is MusicSoundscapeDefinition => definition !== undefined)
+      .slice(0, MAX_SOUNDSCAPE_LAYERS);
+  }
+
+  /**
+   * Starts an isolated preview, pausing current output without writing the saved selection. Preview sounds never
+   * become the listener's choice, and a restart during a preview restores the original selection.
+   */
+  beginPreview(): Promise<void> {
+    return this.enqueuePreview(async () => {
+      if (this.preview) return;
+      this.preview = { resumes: this.snapshot.status === "playing", replacedOutput: false, playingIds: [] };
+      if (this.preview.resumes) this.snapshot = await pauseSoundscape();
+      await this.applyPreviewTarget();
+    });
+  }
+
+  /**
+   * Plays exactly these sounds inside the preview, or silences it for an empty list. The latest request wins, and a
+   * request made before the preview begins plays once it does.
+   */
+  previewSounds(ids: readonly string[]): Promise<void> {
+    this.previewTarget = [...ids];
+    return this.enqueuePreview(() => this.applyPreviewTarget());
+  }
+
+  private async applyPreviewTarget(): Promise<void> {
+    const preview = this.preview;
+    if (!preview) return;
+    const definitions = this.availableDefinitions(this.previewTarget);
+    const nextIds = definitions.map((definition) => definition.id);
+    if (sameSoundOrder(nextIds, preview.playingIds)) return;
+    if (definitions.length === 0) this.snapshot = await stopSoundscape();
+    else this.snapshot = await startSoundscape(this.startRequest(definitions));
+    preview.replacedOutput = true;
+    preview.playingIds = nextIds;
+  }
+
+  /** Ends the preview and brings back the saved selection as it was: playing, paused, or silent. */
+  endPreview(): Promise<void> {
+    return this.enqueuePreview(async () => {
+      const preview = this.preview;
+      if (!preview) return;
+      this.preview = null;
+      this.previewTarget = [];
+      if (!preview.replacedOutput) {
+        if (preview.resumes) this.snapshot = await resumeSoundscape();
+        return;
+      }
+      const saved = this.availableDefinitions(this.persisted?.activeIds ?? []);
+      if (preview.resumes && saved.length > 0) this.snapshot = await startSoundscape(this.startRequest(saved));
+      else this.snapshot = await stopSoundscape();
+    });
+  }
+
+  get previewing(): boolean {
+    return this.preview !== null;
+  }
+
+  private enqueuePreview(step: () => Promise<void>): Promise<void> {
+    this.previewQueue = this.previewQueue.then(step).catch((error: unknown) => { this.error = message(error); });
+    return this.previewQueue;
   }
 
   async pause(): Promise<void> {
@@ -304,7 +388,8 @@ class SoundscapeStore {
     this.levelsWriteQueue = this.levelsWriteQueue.catch(() => undefined).then(async () => {
       if (generation !== this.levelsGeneration) return;
       try {
-        if (this.snapshot.status === "playing" || this.snapshot.status === "paused") {
+        // Preview output does not hold the saved selection's layers, so their levels cannot be applied to it.
+        if (!this.preview && (this.snapshot.status === "playing" || this.snapshot.status === "paused")) {
           const levels = (this.persisted?.activeIds ?? []).map((id) => this.definitions.find((entry) => entry.id === id)).filter((entry): entry is MusicSoundscapeDefinition => entry !== undefined).map((entry) => this.levelFor(entry));
           if (levels.length) await setSoundscapeLevels(levels);
         }
@@ -335,6 +420,8 @@ class SoundscapeStore {
     }
     if (this.levelsPersistTimer !== null) { window.clearTimeout(this.levelsPersistTimer); this.levelsPersistTimer = null; }
     this.snapshot = { status: "idle", sourceId: null, volume: INITIAL_SOUNDSCAPE_VOLUME, errorCode: null };
+    this.preview = null;
+    this.previewTarget = [];
     this.definitions = [];
     this.groups = [];
     this.presets = [];
@@ -440,6 +527,10 @@ class SoundscapeStore {
     });
     await this.stateWriteQueue;
   }
+}
+
+function sameSoundOrder(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((id, index) => id === right[index]);
 }
 
 function message(error: unknown): string {

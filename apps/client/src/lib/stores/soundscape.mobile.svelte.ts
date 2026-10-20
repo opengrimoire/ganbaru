@@ -59,6 +59,12 @@ class MobileSoundscapeStore {
   async saveGroup(_write: MusicSoundscapeGroupWrite): Promise<void> {}
   async removeGroup(_group: MusicSoundscapeGroup): Promise<void> {}
   async playPreset(_preset: Pick<MusicSoundscapePreset, "soundscapeIds">): Promise<void> {}
+  get previewing(): boolean {
+    return false;
+  }
+  async beginPreview(): Promise<void> {}
+  async previewSounds(_ids: readonly string[]): Promise<void> {}
+  async endPreview(): Promise<void> {}
   async savePreset(_write: MusicSoundscapePresetWrite): Promise<MusicSoundscapePreset> {
     throw new Error("Background sounds are unavailable on this platform.");
   }

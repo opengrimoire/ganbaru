@@ -11,6 +11,14 @@ const savePreset = vi.fn(async (write: MusicSoundscapePresetWrite): Promise<Musi
 }));
 const toggleSelection = vi.fn();
 const playPreset = vi.fn(async () => undefined);
+const beginPreview = vi.fn(async () => undefined);
+const previewSounds = vi.fn(async (_ids: readonly string[]) => undefined);
+const endPreview = vi.fn(async () => undefined);
+const player = {
+  isPlaying: false,
+  pausePlayback: vi.fn(async () => { player.isPlaying = false; }),
+  playPlayback: vi.fn(async () => { player.isPlaying = true; }),
+};
 
 function sound(id: string, name: string, groupId: string | null = null): MusicSoundscapeDefinition {
   return {
@@ -19,7 +27,8 @@ function sound(id: string, name: string, groupId: string | null = null): MusicSo
   };
 }
 
-const definitions = [sound("rain", "Porch rain", "outside"), sound("cafe", "Café"), sound("fire", "Fireplace")];
+const baseDefinitions = [sound("rain", "Porch rain", "outside"), sound("cafe", "Café"), sound("fire", "Fireplace")];
+let definitions = baseDefinitions;
 
 vi.mock("$lib/stores/soundscape.svelte", () => ({
   getSoundscapeStore: () => ({
@@ -27,13 +36,17 @@ vi.mock("$lib/stores/soundscape.svelte", () => ({
     savePreset,
     toggleSelection,
     playPreset,
-    togglePlayback: vi.fn(),
+    beginPreview,
+    previewSounds,
+    endPreview,
     definitions,
     groups: [{ id: "outside", name: "Outside", icon: "lucide:trees", createdAtMs: 1, updatedAtMs: 1, version: 1 }],
     persisted: { activeIds: ["fire"] },
     snapshot: { status: "playing" },
   }),
 }));
+
+vi.mock("$lib/stores/music-player.svelte", () => ({ getMusicPlayer: () => player }));
 
 const evening: MusicSoundscapePreset = {
   id: "evening", name: "Evening", icon: "lucide:moon", soundscapeIds: ["rain", "cafe"],
@@ -51,9 +64,9 @@ afterEach(async () => {
   if (component) await unmount(component);
   component = undefined;
   target?.remove();
-  savePreset.mockClear();
-  toggleSelection.mockClear();
-  playPreset.mockClear();
+  definitions = baseDefinitions;
+  player.isPlaying = false;
+  vi.clearAllMocks();
 });
 
 async function render(preset: MusicSoundscapePreset | null = null) {
@@ -77,14 +90,18 @@ function saveButton(): HTMLButtonElement {
   return target.querySelector<HTMLButtonElement>('button[type="submit"]')!;
 }
 
+function lastPreview(): readonly string[] | undefined {
+  return previewSounds.mock.calls.at(-1)?.[0];
+}
+
 describe("Background sound preset editor", () => {
   it("starts a new preset empty instead of copying what is playing", async () => {
     await render();
     expect([...target.querySelectorAll('button[aria-pressed="true"]')]).toHaveLength(0);
-    expect(target.textContent).toContain("0 of 16");
+    expect(lastPreview()).toEqual([]);
   });
 
-  it("picks sounds into the draft without changing playback and saves them in pick order", async () => {
+  it("previews picked sounds without changing the saved selection and saves them in pick order", async () => {
     const onDone = await render();
     nameField().value = "Deep focus";
     nameField().dispatchEvent(new Event("input", { bubbles: true }));
@@ -92,6 +109,7 @@ describe("Background sound preset editor", () => {
     soundTile("Porch rain").click();
     await tick();
     expect(soundTile("Café").getAttribute("aria-pressed")).toBe("true");
+    expect(lastPreview()).toEqual(["cafe", "rain"]);
     expect(toggleSelection).not.toHaveBeenCalled();
     expect(playPreset).not.toHaveBeenCalled();
     saveButton().click();
@@ -104,6 +122,7 @@ describe("Background sound preset editor", () => {
     expect(nameField().value).toBe("Evening");
     expect(soundTile("Porch rain").getAttribute("aria-pressed")).toBe("true");
     expect(soundTile("Fireplace").getAttribute("aria-pressed")).toBe("false");
+    expect(lastPreview()).toEqual(["rain", "cafe"]);
     soundTile("Porch rain").click();
     await tick();
     saveButton().click();
@@ -117,10 +136,45 @@ describe("Background sound preset editor", () => {
     expect(headings).toEqual(["Outside", "Other sounds"]);
   });
 
-  it("plays the draft only when Listen is pressed", async () => {
+  it("silences the preview when listening is turned off and keeps the draft", async () => {
     await render(evening);
-    [...target.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.includes("Listen"))!.click();
-    expect(playPreset).toHaveBeenCalledWith({ soundscapeIds: ["rain", "cafe"] });
+    target.querySelector<HTMLButtonElement>('button[role="switch"]')!.click();
+    await tick();
+    expect(lastPreview()).toEqual([]);
+    soundTile("Fireplace").click();
+    await tick();
+    expect(lastPreview()).toEqual([]);
+    expect(soundTile("Fireplace").getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("pauses Music while open and hands playback back when it closes", async () => {
+    player.isPlaying = true;
+    await render(evening);
+    expect(player.pausePlayback).toHaveBeenCalledWith("system");
+    expect(beginPreview).toHaveBeenCalledOnce();
+    await unmount(component!);
+    component = undefined;
+    expect(endPreview).toHaveBeenCalledOnce();
+    expect(player.playPlayback).toHaveBeenCalledWith("system");
+  });
+
+  it("leaves Music alone when nothing was playing", async () => {
+    await render();
+    await unmount(component!);
+    component = undefined;
+    expect(player.pausePlayback).not.toHaveBeenCalled();
+    expect(player.playPlayback).not.toHaveBeenCalled();
+    expect(endPreview).toHaveBeenCalledOnce();
+  });
+
+  it("explains the sound limit only once it is reached", async () => {
+    definitions = Array.from({ length: 17 }, (_, index) => sound(`sound-${index}`, `Sound ${index}`));
+    await render({ ...evening, soundscapeIds: definitions.slice(0, 15).map((entry) => entry.id) });
+    expect(target.querySelector('[role="status"]')).toBeNull();
+    soundTile("Sound 15").click();
+    await tick();
+    expect(target.querySelector('[role="status"]')?.textContent).toContain("up to 16 sounds");
+    expect(soundTile("Sound 16").disabled).toBe(true);
   });
 
   it("cannot save without a name or without sounds", async () => {

@@ -5,7 +5,6 @@
   import CloudRainWind from "@lucide/svelte/icons/cloud-rain-wind";
   import Pause from "@lucide/svelte/icons/pause";
   import Play from "@lucide/svelte/icons/play";
-  import Plus from "@lucide/svelte/icons/plus";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import Volume2 from "@lucide/svelte/icons/volume-2";
   import { onMount, tick } from "svelte";
@@ -17,7 +16,6 @@
   import { getSoundscapeStore } from "$lib/stores/soundscape.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import MusicSoundscapeGroupIcon from "./MusicSoundscapeGroupIcon.svelte";
-  import MusicSoundscapePresetForm from "./MusicSoundscapePresetForm.svelte";
   import MusicSoundscapeSectionControls from "./MusicSoundscapeSectionControls.svelte";
 
   let { onOpenSoundscapes }: { onOpenSoundscapes: () => void } = $props();
@@ -36,9 +34,7 @@
   const ungrouped = $derived(local.filter((entry) => !entry.groupId || !soundscape.groups.some((group) => group.id === entry.groupId)));
   const volume = $derived(soundscape.snapshot.volume);
   const playing = $derived(soundscape.snapshot.status === "playing");
-  let savingPreset = $state(false);
   const activePresetId = $derived(soundscape.activePreset?.id ?? null);
-  const canSavePreset = $derived(selectedIds.length > 0 && activePresetId === null);
 
   onMount(() => {
     const close = (event: PointerEvent) => {
@@ -48,14 +44,8 @@
     };
     const closeWithKeyboard = (event: KeyboardEvent) => {
       if (!open || event.key !== "Escape" || document.querySelector('[data-soundscape-subpanel="player-soundscape"]')) return;
-      // The preset icon picker portals into this root and closes itself first.
-      if (root?.querySelector('[role="dialog"]:not(.soundscape-popover)')) return;
       event.preventDefault();
       event.stopPropagation();
-      if (savingPreset) {
-        savingPreset = false;
-        return;
-      }
       open = false;
       trigger?.focus();
     };
@@ -74,7 +64,6 @@
   async function toggle(): Promise<void> {
     open = !open;
     if (!open) return;
-    savingPreset = false;
     popoverLeft = null;
     await tick();
     positionPopover();
@@ -115,24 +104,14 @@
           <button type="button" disabled={!active || soundscape.saving} aria-label={playing ? t("music.soundscape.pause") : t("music.soundscape.play", activeName)} class="grid h-8 w-8 shrink-0 place-items-center rounded-floating-item bg-secondary hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40" onclick={toggleActive}>{#if playing}<Pause size={15} />{:else}<Play size={15} />{/if}</button>
         </div>
         {#if soundscape.error}<Notice class="mt-1 px-1 text-panel-detail" message={t("music.soundscape.genericError")} />{/if}
-        {#if soundscape.presets.length > 0 || canSavePreset || savingPreset}
-          <div class="mt-3 flex min-h-7 items-center gap-2 px-1">
-            <span class="min-w-0 flex-1 truncate text-panel-detail text-muted-foreground">{t("music.soundscape.choice.presets")}</span>
-            {#if canSavePreset && !savingPreset}
-              <button type="button" disabled={soundscape.saving} class="inline-flex h-7 shrink-0 items-center gap-1 rounded-floating-item px-2 text-panel-detail text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40" onclick={() => savingPreset = true}><Plus size={13} />{t("music.soundscape.preset.saveCurrent")}</button>
-            {/if}
+        {#if soundscape.presets.length > 0}
+          <div class="mt-3 flex min-h-7 items-center px-1"><span class="min-w-0 flex-1 truncate text-panel-detail text-muted-foreground">{t("music.soundscape.choice.presets")}</span></div>
+          <div class="flex flex-wrap gap-1.5">
+            {#each soundscape.presets as preset (preset.id)}
+              {@const selected = preset.id === activePresetId}
+              <button type="button" aria-pressed={selected} aria-label={selected && playing ? t("music.soundscape.pause") : t("music.soundscape.play", preset.name)} disabled={soundscape.saving || !soundscape.presetIsPlayable(preset)} class={selected ? "inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-floating-item bg-primary/10 px-2.5 text-panel-detail transition-colors hover:bg-accent/70 disabled:opacity-50" : "inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-floating-item bg-secondary/40 px-2.5 text-panel-detail transition-colors hover:bg-accent/70 disabled:opacity-50"} onclick={() => choosePreset(preset)}><MusicSoundscapeGroupIcon icon={preset.icon} size={14} /><span class="truncate">{preset.name}</span></button>
+            {/each}
           </div>
-          {#if savingPreset}
-            <div class="mb-1.5"><MusicSoundscapePresetForm soundIds={selectedIds} nested onDone={() => savingPreset = false} /></div>
-          {/if}
-          {#if soundscape.presets.length > 0}
-            <div class="flex flex-wrap gap-1.5">
-              {#each soundscape.presets as preset (preset.id)}
-                {@const selected = preset.id === activePresetId}
-                <button type="button" aria-pressed={selected} aria-label={selected && playing ? t("music.soundscape.pause") : t("music.soundscape.play", preset.name)} disabled={soundscape.saving || !soundscape.presetIsPlayable(preset)} class={selected ? "inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-floating-item bg-primary/10 px-2.5 text-panel-detail transition-colors hover:bg-accent/70 disabled:opacity-50" : "inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-floating-item bg-secondary/40 px-2.5 text-panel-detail transition-colors hover:bg-accent/70 disabled:opacity-50"} onclick={() => choosePreset(preset)}><MusicSoundscapeGroupIcon icon={preset.icon} size={14} /><span class="truncate">{preset.name}</span></button>
-              {/each}
-            </div>
-          {/if}
         {/if}
         <div class="mt-3 px-1"><MusicSoundscapeSectionControls title={t("music.soundscape.generated")} section="generated" idPrefix="player-soundscape" compact /></div>
         <div class="grid grid-cols-3 gap-1.5">

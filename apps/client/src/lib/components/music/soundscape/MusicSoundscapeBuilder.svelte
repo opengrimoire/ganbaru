@@ -155,7 +155,7 @@
   <div class="@container flex max-w-2xl flex-col gap-7">
     {#if presetEditor}
       {#key presetEditor}
-        <MusicSoundscapePresetEditor preset={presetEditor.preset} {onPlaybackStart} onDone={() => presetEditor = null} onRemove={(entry) => pendingPresetDelete = entry} />
+        <MusicSoundscapePresetEditor preset={presetEditor.preset} onDone={() => presetEditor = null} onRemove={(entry) => pendingPresetDelete = entry} />
       {/key}
     {:else}
       <div class="flex flex-col gap-3">

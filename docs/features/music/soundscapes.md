@@ -14,7 +14,7 @@ Users can add their own local audio loops with a chosen name and icon (using the
 
 ## Presets
 
-A preset is a named set of up to 16 sounds with an icon. Presets store only which sounds play, not volumes; overall and section levels stay global. The builder has a Presets section where presets are created and edited by picking their sounds explicitly; picking changes only the draft, and listening to it is a separate action. The background sound controls also offer a quick save that names the playing sounds before saving them. Presets play directly from both places, and the preset that matches the current selection is highlighted. Playing a preset starts its available sounds together and turns on layered mode when it has more than one sound. Projects and events can choose a preset for any phase.
+A preset is a named set of up to 16 sounds with an icon. Presets store only which sounds play, not volumes; overall and section levels stay global. Presets are created and edited only in the builder's Presets section, by picking their sounds explicitly. While the editor is open, Music and background sounds pause and the draft plays as an isolated preview, which can be turned off; the preview never becomes the saved selection, and saving or leaving brings back exactly what was playing. Presets play from the builder and the background sound controls, and the preset that matches the current selection is highlighted. Playing a preset starts its available sounds together and turns on layered mode when it has more than one sound. Projects and events can choose a preset for any phase.
 
 ## Storage
 

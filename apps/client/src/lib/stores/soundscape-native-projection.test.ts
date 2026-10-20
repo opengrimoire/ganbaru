@@ -12,6 +12,8 @@ const api = vi.hoisted(() => ({
   startSoundscape: vi.fn(),
   updateMusicSoundscapeState: vi.fn(),
   stopSoundscape: vi.fn(),
+  pauseSoundscape: vi.fn(),
+  resumeSoundscape: vi.fn(),
 }));
 vi.mock("$lib/api/soundscape", () => api);
 
@@ -110,5 +112,70 @@ describe("native background playback projection", () => {
     await store.playPreset({ soundscapeIds: ["gone"] });
     expect(store.error).toBe("This background sound needs to be repaired before it can play.");
     expect(api.startSoundscape).not.toHaveBeenCalled();
+  });
+});
+
+describe("isolated preset preview", () => {
+  const rain = { id: "rain", sourceKind: "local-loop", generatedKind: null, availability: "available", localPath: "/rain.ogg", bundledIdentity: null, name: "Rain", icon: "lucide:audio-lines", groupId: null, createdAtMs: 1, updatedAtMs: 1, version: 1 };
+  const playing: MusicSoundscapeSnapshot = { ...idle, status: "playing", sourceId: "noise" };
+
+  async function playingStore(snapshot: MusicSoundscapeSnapshot = playing) {
+    api.getMusicSoundscapes.mockResolvedValue([{ ...rain, id: "noise", sourceKind: "generated-noise", generatedKind: "white", localPath: null, name: "Noise" }, rain]);
+    api.getMusicSoundscapeState.mockResolvedValue({ ...state, automaticIntent: false, desiredPlaying: snapshot.status === "playing" });
+    api.getSoundscapeSnapshot.mockResolvedValue(snapshot);
+    api.pauseSoundscape.mockResolvedValue({ ...snapshot, status: "paused" });
+    api.resumeSoundscape.mockResolvedValue(playing);
+    api.stopSoundscape.mockResolvedValue(idle);
+    api.startSoundscape.mockImplementation(async (request: { sourceId: string }) => ({ ...playing, sourceId: request.sourceId }));
+    const { getSoundscapeStore } = await import("$lib/stores/soundscape.svelte");
+    const store = getSoundscapeStore();
+    await store.initialize();
+    return store;
+  }
+
+  it("plays the draft and then restores the saved selection without writing it", async () => {
+    const store = await playingStore();
+    const saved = store.persisted;
+    await store.beginPreview();
+    expect(api.pauseSoundscape).toHaveBeenCalledOnce();
+    await store.previewSounds(["rain"]);
+    expect(api.startSoundscape).toHaveBeenLastCalledWith(expect.objectContaining({ sourceId: "rain", extraSources: [] }));
+    await store.endPreview();
+    expect(api.startSoundscape).toHaveBeenLastCalledWith(expect.objectContaining({ sourceId: "noise" }));
+    expect(api.updateMusicSoundscapeState).not.toHaveBeenCalled();
+    expect(store.persisted).toBe(saved);
+    expect(store.previewing).toBe(false);
+  });
+
+  it("resumes the paused output when the preview never played anything", async () => {
+    const store = await playingStore();
+    await store.beginPreview();
+    await store.previewSounds([]);
+    await store.endPreview();
+    expect(api.startSoundscape).not.toHaveBeenCalled();
+    expect(api.resumeSoundscape).toHaveBeenCalledOnce();
+  });
+
+  it("stays silent afterwards when nothing was playing before", async () => {
+    const store = await playingStore(idle);
+    await store.beginPreview();
+    expect(api.pauseSoundscape).not.toHaveBeenCalled();
+    await store.previewSounds(["noise", "rain"]);
+    await store.endPreview();
+    expect(api.startSoundscape).toHaveBeenCalledOnce();
+    expect(api.stopSoundscape).toHaveBeenCalledOnce();
+    expect(api.resumeSoundscape).not.toHaveBeenCalled();
+  });
+
+  it("plays a request made before the preview began and coalesces rapid changes to the latest", async () => {
+    const store = await playingStore();
+    void store.previewSounds(["noise"]);
+    const begun = store.beginPreview();
+    void store.previewSounds(["noise", "rain"]);
+    void store.previewSounds(["rain"]);
+    await store.previewSounds(["rain"]);
+    await begun;
+    expect(api.startSoundscape).toHaveBeenCalledOnce();
+    expect(api.startSoundscape).toHaveBeenCalledWith(expect.objectContaining({ sourceId: "rain" }));
   });
 });

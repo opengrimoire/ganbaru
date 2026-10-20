@@ -10,6 +10,7 @@ use crate::assets::{
     self, ASSET_SOURCE_IMPORTED, ASSET_SOURCE_LOCAL_UPLOAD, ASSET_STATE_AVAILABLE,
     ManagedAssetWrite,
 };
+use crate::blocking::run_blocking;
 
 const NOTES_FILE_MAX_DISPLAY_MEGABYTES: usize = 50;
 const NOTES_FILE_MAX_BYTES: usize = NOTES_FILE_MAX_DISPLAY_MEGABYTES * 1024 * 1024;
@@ -237,38 +238,32 @@ pub async fn copy_local_import_file_for_block(
             return import_blocked("import_reference_block_type_unsupported", error);
         }
     };
-    let path = match resolve_import_candidate_path(&import_root.to_string_lossy(), reference) {
-        Ok(path) => path,
-        Err(diagnostic) => {
-            return NotesImportFileReferenceDto {
-                action: "blocked".to_string(),
-                asset: None,
-                external_url: None,
-                diagnostics: vec![diagnostic],
-            };
-        }
-    };
-    let original_name = original_name.or_else(|| {
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .map(ToOwned::to_owned)
-    });
-    let bytes = match read_file_capped(&path) {
-        Ok(bytes) => bytes,
+    let vault_root = vault_root.to_path_buf();
+    let import_root = import_root.to_string_lossy().into_owned();
+    let reference = reference.to_owned();
+    let copied = run_blocking(move || {
+        Ok(copy_import_file(
+            &vault_root,
+            &import_root,
+            &reference,
+            requested_kind,
+        ))
+    })
+    .await;
+    let (stored, file_name) = match copied {
+        Ok(Ok(copied)) => copied,
+        Ok(Err(blocked)) => return *blocked,
         Err(error) => {
             return import_blocked(
                 "import_reference_copy_failed",
-                format!("Could not read the import file: {error}"),
+                format!("Could not copy the import file: {error}"),
             );
         }
     };
-    match save_notes_file_bytes(
+    match record_notes_file(
         pool,
-        vault_root,
-        requested_kind,
-        &path,
-        bytes,
-        original_name,
+        stored,
+        original_name.or(file_name),
         ASSET_SOURCE_IMPORTED,
     )
     .await
@@ -288,6 +283,42 @@ pub async fn copy_local_import_file_for_block(
             format!("Could not copy the import file: {error}"),
         ),
     }
+}
+
+/// Resolve, read, and store one import file reference. Runs on a blocking worker and returns the
+/// stored file with the source file name, or the blocked outcome to report.
+fn copy_import_file(
+    vault_root: &Path,
+    import_root: &str,
+    reference: &str,
+    requested_kind: NotesFileAssetKind,
+) -> Result<(StoredNotesFile, Option<String>), Box<NotesImportFileReferenceDto>> {
+    let path = resolve_import_candidate_path(import_root, reference).map_err(|diagnostic| {
+        Box::new(NotesImportFileReferenceDto {
+            action: "blocked".to_string(),
+            asset: None,
+            external_url: None,
+            diagnostics: vec![diagnostic],
+        })
+    })?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(ToOwned::to_owned);
+    let bytes = read_file_capped(&path).map_err(|error| {
+        Box::new(import_blocked(
+            "import_reference_copy_failed",
+            format!("Could not read the import file: {error}"),
+        ))
+    })?;
+    let stored =
+        store_notes_file_bytes(vault_root, requested_kind, &path, &bytes).map_err(|error| {
+            Box::new(import_blocked(
+                "import_reference_copy_failed",
+                format!("Could not copy the import file: {error}"),
+            ))
+        })?;
+    Ok((stored, file_name))
 }
 
 fn resolve_import_candidate_path(
@@ -551,25 +582,47 @@ pub fn picker_extensions_for_block_type(
     block_type_kind(block_type).map(picker_extensions_for_kind)
 }
 
-async fn save_notes_file_bytes(
-    pool: &sqlx::SqlitePool,
+/// A Notes file written to the managed folder and ready to record.
+struct StoredNotesFile {
+    kind: NotesFileAssetKind,
+    content_type: &'static str,
+    relative_path: String,
+    byte_size: i64,
+    sha256: String,
+}
+
+/// Classify, hash, and write file bytes into the managed Notes folder. Runs on a blocking worker.
+fn store_notes_file_bytes(
     vault_root: &Path,
     requested_kind: NotesFileAssetKind,
     source_path: &Path,
-    bytes: Vec<u8>,
-    original_name: Option<String>,
-    source_type: &'static str,
-) -> Result<NotesFileAssetDto, String> {
-    ensure_notes_file_size(&bytes)?;
+    bytes: &[u8],
+) -> Result<StoredNotesFile, String> {
+    ensure_notes_file_size(bytes)?;
     let (kind, content_type, extension) =
-        classify_selected_file(requested_kind, source_path, &bytes)?;
-    let sha256 = hex_hash(&bytes);
+        classify_selected_file(requested_kind, source_path, bytes)?;
+    let sha256 = hex_hash(bytes);
     let file_name = format!("{sha256}.{extension}");
     let relative_path = format!("{NOTES_FILE_DIR}/{file_name}");
     let path = active_notes_file_dir(vault_root).join(file_name);
     if !ganbaru_atomic_files::is_regular_file(&path) {
-        write_binary_file_atomically(vault_root, &path, &bytes)?;
+        write_binary_file_atomically(vault_root, &path, bytes)?;
     }
+    Ok(StoredNotesFile {
+        kind,
+        content_type,
+        relative_path,
+        byte_size: bytes.len() as i64,
+        sha256,
+    })
+}
+
+async fn record_notes_file(
+    pool: &sqlx::SqlitePool,
+    stored: StoredNotesFile,
+    original_name: Option<String>,
+    source_type: &'static str,
+) -> Result<NotesFileAssetDto, String> {
     let original_name = original_name
         .map(|name| name.trim().to_string())
         .filter(|name| !name.is_empty());
@@ -580,11 +633,11 @@ async fn save_notes_file_bytes(
     assets::upsert_managed_asset_tx(
         &mut tx,
         ManagedAssetWrite {
-            relative_path: &relative_path,
+            relative_path: &stored.relative_path,
             original_name: original_name.as_deref(),
-            content_type,
-            byte_size: bytes.len() as i64,
-            sha256: &sha256,
+            content_type: stored.content_type,
+            byte_size: stored.byte_size,
+            sha256: &stored.sha256,
             source_type,
             storage_state: ASSET_STATE_AVAILABLE,
             missing_at: None,
@@ -595,12 +648,12 @@ async fn save_notes_file_bytes(
         .await
         .map_err(|e| format!("commit notes file asset record: {e}"))?;
     Ok(NotesFileAssetDto {
-        relative_path,
+        relative_path: stored.relative_path,
         original_name,
-        content_type: content_type.to_string(),
-        byte_size: bytes.len() as i64,
-        sha256,
-        kind: kind.as_str().to_string(),
+        content_type: stored.content_type.to_string(),
+        byte_size: stored.byte_size,
+        sha256: stored.sha256,
+        kind: stored.kind.as_str().to_string(),
     })
 }
 
@@ -615,17 +668,14 @@ pub async fn save_selected_file(
         .file_name()
         .and_then(|name| name.to_str())
         .map(ToOwned::to_owned);
-    let bytes = read_file_capped(path)?;
-    save_notes_file_bytes(
-        pool,
-        vault_root,
-        requested_kind,
-        path,
-        bytes,
-        original_name,
-        ASSET_SOURCE_LOCAL_UPLOAD,
-    )
-    .await
+    let vault_root = vault_root.to_path_buf();
+    let path = path.to_path_buf();
+    let stored = run_blocking(move || {
+        let bytes = read_file_capped(&path)?;
+        store_notes_file_bytes(&vault_root, requested_kind, &path, &bytes)
+    })
+    .await?;
+    record_notes_file(pool, stored, original_name, ASSET_SOURCE_LOCAL_UPLOAD).await
 }
 
 pub async fn file_asset_data_url(
@@ -646,8 +696,13 @@ pub async fn file_asset_data_url(
     let Some((content_type, byte_size)) = asset else {
         return Err("notes file asset not found".to_string());
     };
-    let bytes = match read_preview_file_capped(&path, byte_size) {
-        Ok(bytes) => bytes,
+    let encoded = run_blocking(move || {
+        read_preview_file_capped(&path, byte_size)
+            .map(|bytes| general_purpose::STANDARD.encode(bytes))
+    })
+    .await;
+    let encoded = match encoded {
+        Ok(encoded) => encoded,
         Err(error) => {
             let _ =
                 assets::mark_managed_asset_storage_state(pool, &relative_path, true, "notes file")
@@ -656,10 +711,7 @@ pub async fn file_asset_data_url(
         }
     };
     assets::mark_managed_asset_storage_state(pool, &relative_path, false, "notes file").await?;
-    Ok(format!(
-        "data:{content_type};base64,{}",
-        general_purpose::STANDARD.encode(bytes)
-    ))
+    Ok(format!("data:{content_type};base64,{encoded}"))
 }
 
 #[cfg(test)]

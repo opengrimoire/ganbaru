@@ -97,8 +97,8 @@ pub async fn notes_list_working_markdown<R: Runtime>(
                 continue;
             }
         };
-        let scan = working_markdown::scan_markdown(&authorized.canonical_path)
-            .map_err(working_markdown_error)?;
+        let root = authorized.canonical_path.clone();
+        let scan = on_notes_worker(move || working_markdown::scan_markdown(&root)).await?;
         if scan.nodes.is_empty() {
             continue;
         }
@@ -136,8 +136,9 @@ pub async fn notes_read_working_markdown<R: Runtime>(
         WorkingFolderAuthorizationOperation::FileRead,
     )
     .await?;
-    let file = working_markdown::read_markdown(&authorized.canonical_path, &relative_path)
-        .map_err(working_markdown_error)?;
+    let root = authorized.canonical_path.clone();
+    let file =
+        on_notes_worker(move || working_markdown::read_markdown(&root, &relative_path)).await?;
     Ok(markdown_file_dto(working_folder_id, file))
 }
 
@@ -157,13 +158,11 @@ pub async fn notes_save_working_markdown<R: Runtime>(
         WorkingFolderAuthorizationOperation::FileWrite,
     )
     .await?;
-    let file = working_markdown::save_markdown(
-        &authorized.canonical_path,
-        &relative_path,
-        &content,
-        &expected_revision,
-    )
-    .map_err(working_markdown_error)?;
+    let root = authorized.canonical_path.clone();
+    let file = on_notes_worker(move || {
+        working_markdown::save_markdown(&root, &relative_path, &content, &expected_revision)
+    })
+    .await?;
     Ok(markdown_file_dto(working_folder_id, file))
 }
 
@@ -181,9 +180,29 @@ pub async fn notes_open_working_markdown<R: Runtime>(
         WorkingFolderAuthorizationOperation::FileRead,
     )
     .await?;
-    let path = working_markdown::resolve_markdown_file(&authorized.canonical_path, &relative_path)
-        .map_err(working_markdown_error)?;
+    let root = authorized.canonical_path.clone();
+    let path =
+        on_notes_worker(move || working_markdown::resolve_markdown_file(&root, &relative_path))
+            .await?;
     open_authorized_document(&authorized, &path)
+}
+
+/// Runs one working-Markdown filesystem operation on a Notes file worker.
+async fn on_notes_worker<T, F>(work: F) -> ChatResult<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, WorkingMarkdownError> + Send + 'static,
+{
+    ganbaru_notes::blocking::run_blocking(move || Ok(work()))
+        .await
+        .map_err(|_| {
+            ChatError::new(
+                ChatErrorCode::Internal,
+                "The Markdown file worker stopped unexpectedly",
+                true,
+            )
+        })?
+        .map_err(working_markdown_error)
 }
 
 async fn require_folder<R: Runtime>(

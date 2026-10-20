@@ -12,6 +12,7 @@ use crate::assets::image_metadata::{
 };
 
 use crate::assets::{self, ASSET_SOURCE_LOCAL_UPLOAD, ASSET_STATE_AVAILABLE, ManagedAssetWrite};
+use crate::blocking::run_blocking;
 
 const PAGE_ICON_MAX_DISPLAY_MEGABYTES: usize = 3;
 const PAGE_ICON_MAX_BYTES: usize = PAGE_ICON_MAX_DISPLAY_MEGABYTES * 1024 * 1024;
@@ -189,15 +190,21 @@ pub async fn save_page_icon_bytes(
     bytes: Vec<u8>,
     original_name: Option<String>,
 ) -> Result<NotePageIconAssetDto, String> {
-    ensure_page_icon_size(&bytes)?;
-    let kind = validate_page_icon_image(&bytes)?.kind;
-    let sha256 = hex_hash(&bytes);
-    let file_name = format!("{}.{}", sha256, kind.extension());
-    let relative_path = format!("{PAGE_ICON_DIR}/{file_name}");
-    let path = active_page_icon_dir(vault_root).join(file_name);
-    if !ganbaru_atomic_files::is_regular_file(&path) {
-        write_binary_file_atomically(vault_root, &path, &bytes)?;
-    }
+    let byte_size = bytes.len() as i64;
+    let vault_root = vault_root.to_path_buf();
+    let (kind, sha256, relative_path) = run_blocking(move || {
+        ensure_page_icon_size(&bytes)?;
+        let kind = validate_page_icon_image(&bytes)?.kind;
+        let sha256 = hex_hash(&bytes);
+        let file_name = format!("{}.{}", sha256, kind.extension());
+        let relative_path = format!("{PAGE_ICON_DIR}/{file_name}");
+        let path = active_page_icon_dir(&vault_root).join(file_name);
+        if !ganbaru_atomic_files::is_regular_file(&path) {
+            write_binary_file_atomically(&vault_root, &path, &bytes)?;
+        }
+        Ok((kind, sha256, relative_path))
+    })
+    .await?;
     let original_name = original_name
         .map(|name| name.trim().to_string())
         .filter(|name| !name.is_empty());
@@ -218,7 +225,7 @@ pub async fn save_page_icon_bytes(
     .bind(&relative_path)
     .bind(&original_name)
     .bind(kind.mime_type())
-    .bind(bytes.len() as i64)
+    .bind(byte_size)
     .bind(&sha256)
     .execute(&mut *tx)
     .await
@@ -229,7 +236,7 @@ pub async fn save_page_icon_bytes(
             relative_path: &relative_path,
             original_name: original_name.as_deref(),
             content_type: kind.mime_type(),
-            byte_size: bytes.len() as i64,
+            byte_size,
             sha256: &sha256,
             source_type: ASSET_SOURCE_LOCAL_UPLOAD,
             storage_state: ASSET_STATE_AVAILABLE,
@@ -244,7 +251,7 @@ pub async fn save_page_icon_bytes(
         relative_path,
         original_name,
         content_type: kind.mime_type().to_string(),
-        byte_size: bytes.len() as i64,
+        byte_size,
         sha256,
     })
 }
@@ -255,8 +262,11 @@ pub async fn page_icon_asset_data_url(
     relative_path: String,
 ) -> Result<String, String> {
     let path = asset_path_for_relative(vault_root, &relative_path)?;
-    let bytes = match read_file_capped(&path) {
-        Ok(bytes) => bytes,
+    let read =
+        run_blocking(move || Ok(read_file_capped(&path).map(|bytes| page_icon_data_url(&bytes))))
+            .await?;
+    let data_url = match read {
+        Ok(data_url) => data_url,
         Err(error) => {
             let _ =
                 assets::mark_managed_asset_storage_state(pool, &relative_path, true, "page icon")
@@ -265,7 +275,7 @@ pub async fn page_icon_asset_data_url(
         }
     };
     assets::mark_managed_asset_storage_state(pool, &relative_path, false, "page icon").await?;
-    page_icon_data_url(&bytes)
+    data_url
 }
 
 #[cfg(test)]

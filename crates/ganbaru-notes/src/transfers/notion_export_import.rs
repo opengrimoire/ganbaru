@@ -1,4 +1,5 @@
 use crate::assets::files::{NotesFileAssetDto, copy_local_import_file_for_block};
+use crate::blocking::run_blocking;
 use crate::models::{
     NoteNotionExportImportDiagnosticDto, NoteNotionExportImportDto, NoteNotionExportImportRequest,
     NoteNotionExportImportSummary, NoteParent,
@@ -62,7 +63,12 @@ pub async fn import_folder(
     home: Option<&Path>,
     request: NoteNotionExportImportRequest,
 ) -> Result<NoteNotionExportImportDto, String> {
-    let root = validated_export_root(export_root, home, Some(vault_root))?;
+    let selected = export_root.to_path_buf();
+    let home = home.map(Path::to_path_buf);
+    let vault = vault_root.to_path_buf();
+    let root =
+        run_blocking(move || validated_export_root(&selected, home.as_deref(), Some(&vault)))
+            .await?;
     import_folder_inner(pool, Some(vault_root), root, request).await
 }
 
@@ -122,8 +128,7 @@ async fn import_folder_inner(
     request: NoteNotionExportImportRequest,
 ) -> Result<NoteNotionExportImportDto, String> {
     let prepared = PreparedExportImport::new(request, root)?;
-    let mut diagnostics = Vec::new();
-    let entries = scan_export_entries(&prepared.root, &prepared, &mut diagnostics)?;
+    let (entries, mut diagnostics) = scan_export_entries(&prepared).await?;
     if entries.is_empty() {
         return Err(
             "Notion export folder did not contain importable Markdown, HTML, or CSV files"
@@ -146,7 +151,8 @@ async fn import_folder_inner(
         .iter()
         .filter(|entry| entry.kind == ExportEntryKind::Csv)
     {
-        let parsed = match read_text_entry(&prepared.root, entry, MAX_CSV_BYTES)
+        let parsed = match read_export_text(&prepared.root, entry, MAX_CSV_BYTES)
+            .await
             .and_then(|csv| parse_csv(&csv))
         {
             Ok(parsed) => parsed,
@@ -265,9 +271,7 @@ struct PreparedExportImport {
     project_id: Option<String>,
     keep_external_file_references: bool,
     copy_local_file_references: bool,
-    import_markdown: bool,
-    import_html: bool,
-    import_csv: bool,
+    kinds: ExportKinds,
 }
 
 impl PreparedExportImport {
@@ -287,11 +291,21 @@ impl PreparedExportImport {
             project_id: normalized_import_project_id(request.project_id),
             keep_external_file_references: request.keep_external_file_references.unwrap_or(false),
             copy_local_file_references: request.copy_local_file_references.unwrap_or(false),
-            import_markdown: request.import_markdown.unwrap_or(true),
-            import_html: request.import_html.unwrap_or(true),
-            import_csv: request.import_csv.unwrap_or(true),
+            kinds: ExportKinds {
+                markdown: request.import_markdown.unwrap_or(true),
+                html: request.import_html.unwrap_or(true),
+                csv: request.import_csv.unwrap_or(true),
+            },
         })
     }
+}
+
+/// File kinds the request asked to import.
+#[derive(Clone, Copy, Debug)]
+struct ExportKinds {
+    markdown: bool,
+    html: bool,
+    csv: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -390,7 +404,7 @@ async fn parse_document_entry(
     diagnostics: &mut Vec<NoteNotionExportImportDiagnosticDto>,
     stats: &mut ImportStats,
 ) -> Result<ParsedDocument, String> {
-    let text = read_text_entry(&prepared.root, entry, MAX_TEXT_BYTES)?;
+    let text = read_export_text(&prepared.root, entry, MAX_TEXT_BYTES).await?;
     let rewritten = match entry.kind {
         ExportEntryKind::Markdown => {
             rewrite_markdown_references(
@@ -567,16 +581,22 @@ async fn csv_data_source_from_export(
     ))
 }
 
-fn scan_export_entries(
-    root: &Path,
+/// Scan the export folder on a Notes file worker, returning the sorted entries and the
+/// diagnostics for what the scan skipped.
+async fn scan_export_entries(
     prepared: &PreparedExportImport,
-    diagnostics: &mut Vec<NoteNotionExportImportDiagnosticDto>,
-) -> Result<Vec<ExportEntry>, String> {
-    let mut scan = ExportScan::default();
-    collect_export_entries(root, root, prepared, diagnostics, 0, &mut scan)?;
-    let mut entries = scan.entries;
-    entries.sort_by(|left, right| left.relative.cmp(&right.relative));
-    Ok(entries)
+) -> Result<(Vec<ExportEntry>, Vec<NoteNotionExportImportDiagnosticDto>), String> {
+    let root = prepared.root.clone();
+    let kinds = prepared.kinds;
+    run_blocking(move || {
+        let mut diagnostics = Vec::new();
+        let mut scan = ExportScan::default();
+        collect_export_entries(&root, &root, kinds, &mut diagnostics, 0, &mut scan)?;
+        let mut entries = scan.entries;
+        entries.sort_by(|left, right| left.relative.cmp(&right.relative));
+        Ok((entries, diagnostics))
+    })
+    .await
 }
 
 #[derive(Default)]
@@ -588,7 +608,7 @@ struct ExportScan {
 fn collect_export_entries(
     root: &Path,
     dir: &Path,
-    prepared: &PreparedExportImport,
+    kinds: ExportKinds,
     diagnostics: &mut Vec<NoteNotionExportImportDiagnosticDto>,
     depth: usize,
     scan: &mut ExportScan,
@@ -638,7 +658,7 @@ fn collect_export_entries(
             continue;
         }
         if file_type.is_dir() {
-            collect_export_entries(root, &path, prepared, diagnostics, depth + 1, scan)?;
+            collect_export_entries(root, &path, kinds, diagnostics, depth + 1, scan)?;
             continue;
         }
         if !file_type.is_file() {
@@ -649,7 +669,7 @@ fn collect_export_entries(
                 "Notion export folder import supports up to {MAX_EXPORT_FILES} importable files"
             ));
         }
-        let Some(kind) = entry_kind(&path, prepared) else {
+        let Some(kind) = entry_kind(&path, kinds) else {
             continue;
         };
         if path
@@ -682,12 +702,12 @@ fn collect_export_entries(
     Ok(())
 }
 
-fn entry_kind(path: &Path, prepared: &PreparedExportImport) -> Option<ExportEntryKind> {
+fn entry_kind(path: &Path, kinds: ExportKinds) -> Option<ExportEntryKind> {
     let extension = path.extension()?.to_str()?.to_ascii_lowercase();
     match extension.as_str() {
-        "md" | "markdown" if prepared.import_markdown => Some(ExportEntryKind::Markdown),
-        "html" | "htm" if prepared.import_html => Some(ExportEntryKind::Html),
-        "csv" if prepared.import_csv => Some(ExportEntryKind::Csv),
+        "md" | "markdown" if kinds.markdown => Some(ExportEntryKind::Markdown),
+        "html" | "htm" if kinds.html => Some(ExportEntryKind::Html),
+        "csv" if kinds.csv => Some(ExportEntryKind::Csv),
         _ => None,
     }
 }
@@ -704,6 +724,17 @@ fn export_target_map(entries: &[ExportEntry]) -> HashMap<String, ExportTarget> {
             )
         })
         .collect()
+}
+
+/// Read one scanned text entry on a Notes file worker.
+async fn read_export_text(
+    root: &Path,
+    entry: &ExportEntry,
+    max_bytes: u64,
+) -> Result<String, String> {
+    let root = root.to_path_buf();
+    let entry = entry.clone();
+    run_blocking(move || read_text_entry(&root, &entry, max_bytes)).await
 }
 
 /// Read one scanned text entry, refusing links and anything that resolves outside the canonical

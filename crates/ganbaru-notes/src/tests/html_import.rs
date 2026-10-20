@@ -367,8 +367,7 @@ fn html_import_reports_many_unsupported_tags_with_correct_lines() {
         .as_array()
         .unwrap()
         .iter()
-        .filter(|diagnostic| diagnostic["code"] == "html_element_unsupported")
-        .last()
+        .rfind(|diagnostic| diagnostic["code"] == "html_element_unsupported")
         .unwrap()
         .clone();
     assert_eq!(last["line"], 200_000);

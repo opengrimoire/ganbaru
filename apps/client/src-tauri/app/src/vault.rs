@@ -71,6 +71,46 @@ pub struct VaultAppState {
     /// Local soundscape file paths by vault ID and sound ID; the vault keeps only the identities.
     #[serde(default)]
     pub music_soundscape_paths: BTreeMap<String, BTreeMap<String, String>>,
+    /// Android starter vault this installation created and the user has not entered yet. Only
+    /// native code sets it, and selecting any other vault or entering the app clears it.
+    #[serde(default)]
+    pub starter_vault_id: Option<String>,
+}
+
+/// Whether the active vault is the untouched starter vault, which a first link may replace
+/// without a portable backup.
+fn is_untouched_starter(state: &VaultAppState, active_vault_id: &str) -> bool {
+    state.starter_vault_id.as_deref() == Some(active_vault_id)
+}
+
+/// Forgets the starter vault once another vault is selected, so the record never returns.
+fn forget_starter_unless(state: &mut VaultAppState, selected_vault_id: &str) {
+    state
+        .starter_vault_id
+        .take_if(|starter| starter != selected_vault_id);
+}
+
+/// Whether the active vault is the untouched Android starter vault. Desktop never has one.
+pub(crate) fn untouched_starter_vault<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<bool, String> {
+    if !cfg!(mobile) {
+        return Ok(false);
+    }
+    let state = read_app_state(app)?;
+    if state.starter_vault_id.is_none() {
+        return Ok(false);
+    }
+    Ok(is_untouched_starter(&state, &active_vault_id(app)?))
+}
+
+/// Records that the user entered the app with the starter vault, which makes it user data.
+#[tauri::command]
+pub fn vault_release_starter(app: tauri::AppHandle) -> Result<(), String> {
+    update_app_state(&app, |state| {
+        state.starter_vault_id = None;
+        Ok(())
+    })
 }
 
 fn required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
@@ -509,6 +549,7 @@ fn select_quiesced_vault<R: Runtime>(
             .retain(|path| path != &info.path && !path.trim().is_empty());
         state.recent_vault_paths.insert(0, info.path.clone());
         state.recent_vault_paths.truncate(MAX_RECENT_VAULTS);
+        forget_starter_unless(state, &info.vault_id);
         if let Some(mut known) = recent_vault_ids(&state.recent_vault_paths) {
             known.insert(info.vault_id.clone());
             retain_vault_scopes(state, &known);
@@ -671,7 +712,15 @@ pub fn vault_default_location(app: tauri::AppHandle) -> Result<VaultDefaultLocat
 #[tauri::command]
 pub async fn vault_use_default(app: tauri::AppHandle) -> Result<VaultInfo, String> {
     let path = default_vault_path(&app)?;
-    create_and_select_vault(&app, path).await
+    let creates_vault = !manifest_path(&path).exists();
+    let info = create_and_select_vault(&app, path).await?;
+    if cfg!(mobile) && creates_vault {
+        update_app_state(&app, |state| {
+            state.starter_vault_id = Some(info.vault_id.clone());
+            Ok(())
+        })?;
+    }
+    Ok(info)
 }
 
 #[tauri::command]
@@ -1266,6 +1315,7 @@ mod tests {
             chat: Default::default(),
             music_path_grants: Default::default(),
             music_soundscape_paths: Default::default(),
+            starter_vault_id: None,
         };
 
         write_app_state_to_path(&path, &state).expect("write app state");
@@ -1276,6 +1326,24 @@ mod tests {
         assert_eq!(saved.recent_vault_paths, state.recent_vault_paths);
         assert_eq!(saved.music_root_bindings, state.music_root_bindings);
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn starter_record_names_one_vault_and_never_returns_after_another_is_selected() {
+        let mut state = VaultAppState::default();
+        assert!(!is_untouched_starter(&state, "vault-starter"));
+
+        state.starter_vault_id = Some("vault-starter".to_string());
+        assert!(is_untouched_starter(&state, "vault-starter"));
+        assert!(!is_untouched_starter(&state, "vault-imported"));
+
+        forget_starter_unless(&mut state, "vault-starter");
+        assert!(is_untouched_starter(&state, "vault-starter"));
+
+        forget_starter_unless(&mut state, "vault-imported");
+        assert_eq!(state.starter_vault_id, None);
+        forget_starter_unless(&mut state, "vault-starter");
+        assert!(!is_untouched_starter(&state, "vault-starter"));
     }
 
     #[test]

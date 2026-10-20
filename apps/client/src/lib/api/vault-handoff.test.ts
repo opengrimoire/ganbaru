@@ -33,6 +33,7 @@ describe("linked-device status cache", () => {
       replicaReady: true,
       pendingTransfer: false,
       canInvite: true,
+      untouchedStarterVault: false,
     });
     const { getCachedPairingStatus, readPairingStatus } = await import("./vault-handoff");
 
@@ -41,5 +42,27 @@ describe("linked-device status cache", () => {
 
     expect(getCachedPairingStatus()).toBe(status);
     expect(status.devices).toHaveLength(1);
+  });
+
+  it("refuses a status that does not state whether the starter vault is untouched", async () => {
+    invokeMock.mockResolvedValue({
+      deviceId: "phone-1",
+      linked: false,
+      devices: [],
+      peerDeviceId: null,
+      peerLabel: null,
+      coordinatorEndpoint: null,
+      vaultId: "vault-1",
+      canWrite: true,
+      recoveryRequired: false,
+      revokedByCoordinator: false,
+      replicaReady: false,
+      pendingTransfer: false,
+      canInvite: false,
+    });
+    const { getCachedPairingStatus, readPairingStatus } = await import("./vault-handoff");
+
+    await expect(readPairingStatus()).rejects.toThrow("Invalid pairing status response");
+    expect(getCachedPairingStatus()).toBeUndefined();
   });
 });

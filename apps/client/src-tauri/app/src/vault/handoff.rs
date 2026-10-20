@@ -89,6 +89,7 @@ pub(crate) struct PairingStatus {
     replica_ready: bool,
     pending_transfer: bool,
     can_invite: bool,
+    untouched_starter_vault: bool,
     #[cfg(target_os = "linux")]
     network_access: network_access::NetworkAccessStatus,
 }
@@ -556,6 +557,7 @@ pub(crate) fn handoff_pairing_status<R: Runtime>(
         replica_ready: manager.replica_ready()? || !peers.is_empty(),
         pending_transfer: manager.has_pending_transfer()?,
         can_invite: cfg!(desktop) && coordinator.is_none(),
+        untouched_starter_vault: super::untouched_starter_vault(&app)?,
         #[cfg(target_os = "linux")]
         network_access,
     })

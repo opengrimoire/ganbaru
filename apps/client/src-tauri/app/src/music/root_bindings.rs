@@ -211,6 +211,7 @@ mod tests {
             chat: Default::default(),
             music_path_grants: Default::default(),
             music_soundscape_paths: Default::default(),
+            starter_vault_id: None,
         }
     }
 

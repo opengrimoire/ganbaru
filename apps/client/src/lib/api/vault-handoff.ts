@@ -37,6 +37,7 @@ export interface PairingStatus {
   replicaReady: boolean;
   pendingTransfer: boolean;
   canInvite: boolean;
+  untouchedStarterVault: boolean;
   networkAccess?: DesktopNetworkAccess;
 }
 
@@ -133,6 +134,7 @@ function parseStatus(value: unknown): PairingStatus {
     typeof value.replicaReady !== "boolean" ||
     typeof value.pendingTransfer !== "boolean"
     || typeof value.canInvite !== "boolean"
+    || typeof value.untouchedStarterVault !== "boolean"
   ) {
     throw new Error("Invalid pairing status response");
   }
@@ -169,6 +171,7 @@ function parseStatus(value: unknown): PairingStatus {
     replicaReady: value.replicaReady,
     pendingTransfer: value.pendingTransfer,
     canInvite: value.canInvite,
+    untouchedStarterVault: value.untouchedStarterVault,
     networkAccess: value.networkAccess === undefined
       ? undefined
       : parseDesktopNetworkAccess(value.networkAccess),
@@ -263,6 +266,11 @@ export async function receiveDesktopBundle(
   return parseReceiveOutcome(
     await invoke<unknown>("handoff_receive_desktop_bundle", { mode }),
   );
+}
+
+/** Records that the user entered the app with the starter vault, so linking keeps a backup of it. */
+export function releaseStarterVault(): Promise<void> {
+  return invoke("vault_release_starter");
 }
 
 /** Cancels the currently streaming desktop bundle, leaving resumable staging. */

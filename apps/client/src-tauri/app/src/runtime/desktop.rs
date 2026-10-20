@@ -600,6 +600,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             vault::vault_read_app_state,
             vault::vault_default_location,
             vault::vault_use_default,
+            vault::vault_release_starter,
             vault::vault_active_info,
             vault::database_rollback::vault_database_rollbacks,
             vault::database_rollback::vault_restore_database_rollback,

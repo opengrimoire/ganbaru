@@ -236,6 +236,7 @@
         platform === "android"
         && presentation === "onboarding"
         && bootstrapReplicaOnLink
+        && next.untouchedStarterVault
         && !next.replicaReady
       ) {
         const outcome = await receiveDesktopBundle("bootstrap");
@@ -468,7 +469,7 @@
       </div>
     {/if}
     {#if presentation === "onboarding" && status.linked}
-      {#if bootstrapReplicaOnLink && !status.replicaReady}
+      {#if bootstrapReplicaOnLink && status.untouchedStarterVault && !status.replicaReady}
         {@render onboardingLoader()}
       {:else}
         <p class="text-center text-base font-medium leading-6 text-foreground">

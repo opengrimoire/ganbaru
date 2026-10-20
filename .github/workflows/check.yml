@@ -184,6 +184,9 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       RUSTFLAGS: "-Dwarnings"
+      # Published SHA-256 of the command line tools archive (developer.android.com/studio).
+      ANDROID_COMMAND_LINE_TOOLS_URL: https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+      ANDROID_COMMAND_LINE_TOOLS_SHA256: 2d2d50857e4eb553af5a6dc3ad507a17adf43d115264b1afc116f95c92e5e258
     steps:
       - name: checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
@@ -219,7 +222,8 @@ jobs:
           command_line_tools="$ANDROID_HOME/cmdline-tools/latest/bin"
           if [ ! -x "$command_line_tools/sdkmanager" ]; then
             mkdir -p "$ANDROID_HOME/cmdline-tools"
-            curl -fsSL https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -o "$RUNNER_TEMP/android-commandline-tools.zip"
+            curl -fsSL "$ANDROID_COMMAND_LINE_TOOLS_URL" -o "$RUNNER_TEMP/android-commandline-tools.zip"
+            echo "$ANDROID_COMMAND_LINE_TOOLS_SHA256  $RUNNER_TEMP/android-commandline-tools.zip" | sha256sum -c -
             unzip -q "$RUNNER_TEMP/android-commandline-tools.zip" -d "$ANDROID_HOME/cmdline-tools"
             mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest"
             set +o pipefail

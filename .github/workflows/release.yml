@@ -123,6 +123,9 @@ jobs:
       CARGO_TERM_COLOR: always
       ANDROID_BUILD_TOOLS_VERSION: "35.0.0"
       ANDROID_NDK_VERSION: "30.0.15729638"
+      # Published SHA-256 of the command line tools archive (developer.android.com/studio).
+      ANDROID_COMMAND_LINE_TOOLS_URL: https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+      ANDROID_COMMAND_LINE_TOOLS_SHA256: 2d2d50857e4eb553af5a6dc3ad507a17adf43d115264b1afc116f95c92e5e258
       GANBARU_ANDROID_UNSIGNED_RELEASE: "true"
     steps:
       - name: checkout
@@ -161,7 +164,8 @@ jobs:
           command_line_tools="$ANDROID_HOME/cmdline-tools/latest/bin"
           if [ ! -x "$command_line_tools/sdkmanager" ]; then
             mkdir -p "$ANDROID_HOME/cmdline-tools"
-            curl -fsSL https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -o "$RUNNER_TEMP/android-commandline-tools.zip"
+            curl -fsSL "$ANDROID_COMMAND_LINE_TOOLS_URL" -o "$RUNNER_TEMP/android-commandline-tools.zip"
+            echo "$ANDROID_COMMAND_LINE_TOOLS_SHA256  $RUNNER_TEMP/android-commandline-tools.zip" | sha256sum -c -
             unzip -q "$RUNNER_TEMP/android-commandline-tools.zip" -d "$ANDROID_HOME/cmdline-tools"
             mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest"
             set +o pipefail
@@ -223,6 +227,9 @@ jobs:
       contents: read
     env:
       ANDROID_BUILD_TOOLS_VERSION: "35.0.0"
+      # Published SHA-256 of the command line tools archive (developer.android.com/studio).
+      ANDROID_COMMAND_LINE_TOOLS_URL: https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+      ANDROID_COMMAND_LINE_TOOLS_SHA256: 2d2d50857e4eb553af5a6dc3ad507a17adf43d115264b1afc116f95c92e5e258
     steps:
       - name: checkout
         # actions/checkout v6
@@ -248,7 +255,8 @@ jobs:
           export ANDROID_HOME="$RUNNER_TEMP/android-sdk"
           command_line_tools="$ANDROID_HOME/cmdline-tools/latest/bin"
           mkdir -p "$ANDROID_HOME/cmdline-tools"
-          curl -fsSL https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -o "$RUNNER_TEMP/android-commandline-tools.zip"
+          curl -fsSL "$ANDROID_COMMAND_LINE_TOOLS_URL" -o "$RUNNER_TEMP/android-commandline-tools.zip"
+          echo "$ANDROID_COMMAND_LINE_TOOLS_SHA256  $RUNNER_TEMP/android-commandline-tools.zip" | sha256sum -c -
           unzip -q "$RUNNER_TEMP/android-commandline-tools.zip" -d "$ANDROID_HOME/cmdline-tools"
           mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest"
           set +o pipefail

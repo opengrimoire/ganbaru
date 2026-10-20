@@ -85,6 +85,7 @@ const [
   mobileNotificationsPlugin,
   mobileDistractionsPlugin,
   webViewPermissionPolicy,
+  wrapperJar,
 ] =
   await Promise.all([
     readAndroidFile("build.gradle.kts"),
@@ -130,6 +131,7 @@ const [
       "../../crates/ganbaru-mobile-distractions/android/src/main/java/org/opengrimoire/ganbaru/mobile/distractions/MobileDistractionsPlugin.kt",
     ),
     readAndroidFile("app/src/main/java/org/opengrimoire/ganbaru/WebViewPermissionPolicy.kt"),
+    readAndroidBytes("gradle/wrapper/gradle-wrapper.jar"),
   ]);
 
 const failures = [];
@@ -267,6 +269,19 @@ requireText(
   failures,
 );
 requireText(wrapper, "gradle-8.14.3-bin.zip", "Gradle wrapper", failures);
+// The wrapper verifies the downloaded distribution against the published SHA-256
+// (services.gradle.org/distributions/gradle-8.14.3-bin.zip.sha256), and the committed wrapper JAR must stay the
+// official Gradle 6.9.x wrapper (services.gradle.org/versions/all lists its checksum) so neither can change unreviewed.
+requireText(
+  wrapper,
+  "distributionSha256Sum=bd71102213493060956ec229d946beee57158dbd89d0e62b91bca0fa2c5f3531",
+  "Gradle wrapper",
+  failures,
+);
+const wrapperJarSha256 = createHash("sha256").update(wrapperJar).digest("hex");
+if (wrapperJarSha256 !== "e996d452d2645e70c01c11143ca2d3742734a28da2bf61f25c82bdc288c9e637") {
+  failures.push("gradle-wrapper.jar must be an official Gradle wrapper with a reviewed checksum");
+}
 
 for (const expected of [
   "abstract val execOperations: ExecOperations",

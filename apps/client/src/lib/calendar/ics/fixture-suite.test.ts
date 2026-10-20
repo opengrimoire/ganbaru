@@ -30,6 +30,13 @@ function unfold(ics: string): string {
 	return ics.replace(/\r\n[ \t]/g, "");
 }
 
+/** Rebuilds a component's jCal from its own properties and preserved children, as export does. */
+function rebuiltRawJcal(component: IcsPreservedComponent): unknown {
+	const raw = component.rawJcal;
+	if (!Array.isArray(raw)) return raw;
+	return [raw[0], raw[1], component.components.map(rebuiltRawJcal)];
+}
+
 function topLevelComponents(parsed: IcsParseResult): IcsPreservedComponent[] {
 	return parsed.preservation?.objects.flatMap((object) => object.components) ?? [];
 }
@@ -37,13 +44,13 @@ function topLevelComponents(parsed: IcsParseResult): IcsPreservedComponent[] {
 function topLevelRawComponents(parsed: IcsParseResult, type: string): unknown[] {
 	return topLevelComponents(parsed)
 		.filter((component) => component.componentType === type)
-		.map((component) => component.rawJcal);
+		.map(rebuiltRawJcal);
 }
 
 function topLevelPassthroughRawComponents(parsed: IcsParseResult): unknown[] {
 	return topLevelComponents(parsed)
 		.filter((component) => component.componentType !== "vevent" && component.componentType !== "vtimezone")
-		.map((component) => component.rawJcal);
+		.map(rebuiltRawJcal);
 }
 
 function distinctPreservedMethod(parsed: IcsParseResult): string | undefined {
@@ -74,10 +81,10 @@ function withPreservedVeventRaw(parsed: IcsParseResult): CalendarEvent[] {
 		const overrideComponents = uidComponents.filter((component) => !!component.recurrenceId);
 		return {
 			...event,
-			icalendarRawJcal: master?.rawJcal ?? event.icalendarRawJcal,
+			icalendarRawJcal: master ? rebuiltRawJcal(master) : event.icalendarRawJcal,
 			overrides: event.overrides?.map((override, index): EventOverride => ({
 				...override,
-				icalendarRawJcal: overrideComponents[index]?.rawJcal ?? override.icalendarRawJcal,
+				icalendarRawJcal: overrideComponents[index] ? rebuiltRawJcal(overrideComponents[index]) : override.icalendarRawJcal,
 			})),
 		};
 	});

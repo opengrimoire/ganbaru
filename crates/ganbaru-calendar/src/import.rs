@@ -17,6 +17,14 @@ use validation::{require_non_empty, validate_payload};
 
 const PALETTE_SIZE: i64 = 32;
 
+/// Deepest preserved iCalendar component tree, counting the `VCALENDAR` root as the first level.
+///
+/// Import rejects deeper trees, and export reconstruction enforces the same limit.
+pub(crate) const MAX_ICALENDAR_COMPONENT_DEPTH: usize = 32;
+/// Total bytes of preserved component jCal one import may store; each component carries only its own
+/// properties, so this stays proportional to the source file.
+const MAX_PRESERVED_JCAL_BYTES: usize = 64 * 1024 * 1024;
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CalendarBulkImportPayload {
@@ -870,8 +878,9 @@ mod tests {
     use super::{
         CalendarImportAlarm, CalendarImportAttendee, CalendarImportEvent, CalendarImportOverride,
         CalendarImportPreservation, CalendarImportPreservedComponent,
-        CalendarImportPreservedObject, ExistingEventRow, contains_older_revisions,
-        insert_child_rows, insert_event, update_event,
+        CalendarImportPreservedObject, ExistingEventRow, MAX_ICALENDAR_COMPONENT_DEPTH,
+        MAX_PRESERVED_JCAL_BYTES, contains_older_revisions, insert_child_rows, insert_event,
+        update_event,
     };
 
     #[test]
@@ -927,6 +936,69 @@ mod tests {
             ..preservation_payload("source.ics")
         };
         assert!(validate_preservation(&invalid_status).is_err());
+    }
+
+    fn nested_component(levels: usize) -> CalendarImportPreservedComponent {
+        let mut component = preserved_component("component-leaf", "x-nested");
+        for level in 1..levels {
+            component = CalendarImportPreservedComponent {
+                components: vec![component],
+                ..preserved_component(&format!("component-{level}"), "x-nested")
+            };
+        }
+        component
+    }
+
+    #[test]
+    fn preservation_rejects_trees_deeper_than_export_can_rebuild() {
+        let at_limit = CalendarImportPreservation {
+            objects: vec![CalendarImportPreservedObject {
+                components: vec![nested_component(MAX_ICALENDAR_COMPONENT_DEPTH - 1)],
+                ..preserved_object("object-1")
+            }],
+            ..preservation_payload("source.ics")
+        };
+        assert!(validate_preservation(&at_limit).is_ok());
+
+        let too_deep = CalendarImportPreservation {
+            objects: vec![CalendarImportPreservedObject {
+                components: vec![nested_component(MAX_ICALENDAR_COMPONENT_DEPTH)],
+                ..preserved_object("object-1")
+            }],
+            ..preservation_payload("source.ics")
+        };
+        assert!(
+            validate_preservation(&too_deep)
+                .expect_err("a tree past the depth limit is rejected")
+                .contains("nesting limit")
+        );
+    }
+
+    #[test]
+    fn preservation_rejects_jcal_past_the_total_byte_limit() {
+        let large_property = "x".repeat(MAX_PRESERVED_JCAL_BYTES / 2);
+        let raw_jcal = format!(r#"["x-large",[["x-data",{{}},"text","{large_property}"]],[]]"#);
+        let oversized = CalendarImportPreservation {
+            objects: vec![CalendarImportPreservedObject {
+                components: vec![
+                    CalendarImportPreservedComponent {
+                        raw_jcal: raw_jcal.clone(),
+                        ..preserved_component("component-1", "x-large")
+                    },
+                    CalendarImportPreservedComponent {
+                        raw_jcal,
+                        ..preserved_component("component-2", "x-large")
+                    },
+                ],
+                ..preserved_object("object-1")
+            }],
+            ..preservation_payload("source.ics")
+        };
+        assert!(
+            validate_preservation(&oversized)
+                .expect_err("preserved jCal past the byte limit is rejected")
+                .contains("preserved jCal limit")
+        );
     }
 
     #[test]

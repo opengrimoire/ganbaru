@@ -114,7 +114,8 @@ Never required for startup: raw `.ics` text, every preserved component of a cale
 | --- | --- |
 | Plain `.ics` file and each zip entry | 25 MiB |
 | Zip archive | 1,024 entries, 64 MiB total uncompressed, counted from decompressed bytes; an entry larger than its declared size is rejected; unsafe paths, encrypted entries, and wrong extensions are rejected |
-| Parser | 2 MiB per unfolded line, 50,000 components, 500,000 properties, nesting depth 32, 1 MiB per inline binary `ATTACH` |
+| Parser | 2 MiB per unfolded line, 50,000 components, 500,000 properties, nesting depth 32, 1 MiB per inline binary `ATTACH`; lines split on LF exactly as ical.js splits them, and the parsed tree is rechecked for depth and component count |
+| Preserved jCal | Each preserved component stores only its own name and properties; children are stored as their own rows and rebuilt on export. Native import rejects trees deeper than 32 levels and more than 64 MiB of preserved jCal per import |
 | Export snapshot | 500,000 records and 64 MiB of text, preflighted before allocation; preserved trees at most 32 levels; reconstructed and serialized output also capped at 64 MiB |
 | Export output file | 25 MiB, enforced by the native writer |
 | Export concurrency | One export prepares at a time; overlapping requests are rejected, not queued |

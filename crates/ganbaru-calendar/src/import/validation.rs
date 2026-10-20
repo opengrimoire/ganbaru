@@ -1,7 +1,8 @@
 use super::{
     CalendarBulkImportPayload, CalendarImportAlarm, CalendarImportAttendee, CalendarImportEvent,
     CalendarImportOverride, CalendarImportPreservation, CalendarImportPreservedComponent,
-    CalendarImportPreservedObject, PALETTE_SIZE,
+    CalendarImportPreservedObject, MAX_ICALENDAR_COMPONENT_DEPTH, MAX_PRESERVED_JCAL_BYTES,
+    PALETTE_SIZE,
 };
 
 pub(super) fn validate_payload(payload: &CalendarBulkImportPayload) -> Result<(), String> {
@@ -33,22 +34,54 @@ pub(super) fn validate_preservation(
         &preservation.source_fingerprint,
         "preservation.source_fingerprint",
     )?;
+    let mut jcal_bytes = 0usize;
     for object in &preservation.objects {
-        validate_preserved_object(object)?;
+        validate_preserved_object(object, &mut jcal_bytes)?;
     }
     Ok(())
 }
 
-fn validate_preserved_object(object: &CalendarImportPreservedObject) -> Result<(), String> {
+/// Adds one preserved jCal payload to the import total, rejecting the import past the byte limit.
+fn charge_preserved_jcal(total: &mut usize, raw_jcal: &str) -> Result<(), String> {
+    *total = total.saturating_add(raw_jcal.len());
+    if *total > MAX_PRESERVED_JCAL_BYTES {
+        return Err(format!(
+            "preservation exceeds the preserved jCal limit of {MAX_PRESERVED_JCAL_BYTES} bytes"
+        ));
+    }
+    Ok(())
+}
+
+/// Walks the component tree with an explicit stack so a deep tree is rejected by its depth, not by
+/// exhausting the call stack.
+fn validate_preserved_object(
+    object: &CalendarImportPreservedObject,
+    jcal_bytes: &mut usize,
+) -> Result<(), String> {
     require_non_empty(&object.id, "preservation.object.id")?;
+    charge_preserved_jcal(jcal_bytes, &object.raw_jcal)?;
     validate_json_string(&object.raw_jcal, "preservation.object.raw_jcal")?;
     validate_json_string(&object.diagnostics, "preservation.object.diagnostics")?;
-    for component in &object.components {
+    let root_level = 1;
+    let mut pending = object
+        .components
+        .iter()
+        .map(|component| (component, root_level + 1))
+        .collect::<Vec<_>>();
+    while let Some((component, level)) = pending.pop() {
+        if level > MAX_ICALENDAR_COMPONENT_DEPTH {
+            return Err(format!(
+                "preservation exceeds the component nesting limit of {MAX_ICALENDAR_COMPONENT_DEPTH}"
+            ));
+        }
+        charge_preserved_jcal(jcal_bytes, &component.raw_jcal)?;
         validate_preserved_component(component)?;
+        pending.extend(component.components.iter().map(|child| (child, level + 1)));
     }
     Ok(())
 }
 
+/// Checks one component's own fields; its children are validated by the caller's walk.
 fn validate_preserved_component(
     component: &CalendarImportPreservedComponent,
 ) -> Result<(), String> {
@@ -73,11 +106,7 @@ fn validate_preserved_component(
     validate_json_string(
         &component.projection_warnings,
         "preservation.component.projection_warnings",
-    )?;
-    for child in &component.components {
-        validate_preserved_component(child)?;
-    }
-    Ok(())
+    )
 }
 
 pub(super) fn validate_event(event: &CalendarImportEvent) -> Result<(), String> {

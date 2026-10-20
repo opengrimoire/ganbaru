@@ -86,6 +86,19 @@ describe("parseIcs", () => {
 			expect(result.warnings[0]).toContain("component nesting limit");
 		});
 
+		it("rejects nesting hidden behind lone carriage returns inside property values", () => {
+			const depth = 40;
+			const nested = Array.from(
+				{ length: depth },
+				(_, index) => `BEGIN:X-NEST-${index}\nX-PAD:a\rEND:X-NEST-${index}`,
+			);
+			const closing = Array.from({ length: depth }, (_, index) => `END:X-NEST-${depth - 1 - index}`);
+			const result = parseIcs([HEADER, ...nested, ...closing, FOOTER].join("\n"));
+
+			expect(result.events).toHaveLength(0);
+			expect(result.warnings[0]).toContain("component nesting limit");
+		});
+
 		it("rejects oversized inline binary attachments before parsing", () => {
 			const oversizedBinary = "A".repeat(1024 * 1024 + 1);
 			const result = parseIcs(wrap(
@@ -959,6 +972,30 @@ describe("parseIcs", () => {
 			const event = components.find((component) => component.componentType === "vevent");
 			expect(timezone?.components[0].componentType).toBe("daylight");
 			expect(event?.components[0].componentType).toBe("valarm");
+		});
+
+		it("stores each preserved jCal without children so nested trees are not duplicated", () => {
+			const ics = wrap(
+				vevent(
+					"UID:flat@example.com",
+					"DTSTAMP:20260101T000000Z",
+					"DTSTART:20260601T140000Z",
+					"DTEND:20260601T150000Z",
+					"SUMMARY:Flat",
+					"BEGIN:VALARM",
+					"ACTION:DISPLAY",
+					"TRIGGER:-PT10M",
+					"END:VALARM",
+				),
+			);
+			const object = parseIcs(ics).preservation?.objects[0];
+			const event = object?.components.find((component) => component.componentType === "vevent");
+
+			expect((object?.rawJcal as unknown[])[2]).toEqual([]);
+			expect((event?.rawJcal as unknown[])[2]).toEqual([]);
+			expect(JSON.stringify(event?.rawJcal)).toContain("flat@example.com");
+			expect(event?.components[0].componentType).toBe("valarm");
+			expect(JSON.stringify(event?.components[0].rawJcal)).toContain("-PT10M");
 		});
 	});
 

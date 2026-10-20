@@ -9,7 +9,7 @@ use sqlx::SqliteConnection;
 
 use super::export::{ExportBudget, MAX_EXPORT_BYTES};
 
-const MAX_TREE_DEPTH: usize = 32;
+const MAX_TREE_DEPTH: usize = crate::import::MAX_ICALENDAR_COMPONENT_DEPTH;
 
 /// Reserve UTF-8 bytes after the component and its enclosing IPC string are escaped.
 fn string_reservation(value: &str) -> usize {

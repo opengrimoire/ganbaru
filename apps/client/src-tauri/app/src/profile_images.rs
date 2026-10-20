@@ -21,6 +21,9 @@ const PROFILE_IMAGE_MAX_DISPLAY_MEGABYTES: usize = 3;
 const PROFILE_IMAGE_MAX_BYTES: usize = PROFILE_IMAGE_MAX_DISPLAY_MEGABYTES * 1024 * 1024;
 const PROFILE_IMAGE_DIR: &str = "profile";
 const PROFILE_IMAGE_ALLOWED_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp"];
+const PROFILE_CONFIG_KEY: &str = "profile";
+const PROFILE_IMAGE_PATH_CONFIG_KEY: &str = "imagePath";
+const MAX_CONFIG_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -250,12 +253,33 @@ pub fn profile_image_asset_data_url<R: Runtime>(
     ))
 }
 
+/// Whether a vault configuration document names the profile image file `file_name` as the
+/// saved picture. Names compare without case because Windows and macOS volumes usually
+/// resolve them that way.
+fn is_configured_profile_image(config: &str, file_name: &str) -> Result<bool, String> {
+    let value: serde_json::Value = serde_json::from_str(config)
+        .map_err(|error| format!("parse vault configuration: {error}"))?;
+    let configured = value
+        .get(PROFILE_CONFIG_KEY)
+        .and_then(|profile| profile.get(PROFILE_IMAGE_PATH_CONFIG_KEY))
+        .and_then(serde_json::Value::as_str)
+        .and_then(|path| validate_profile_image_relative_path(path).ok());
+    Ok(configured.is_some_and(|configured| configured.eq_ignore_ascii_case(file_name)))
+}
+
+/// Deletes a replaced or discarded profile image. The image the vault configuration still
+/// names is refused, so the webview can delete only pictures the profile no longer uses.
 #[tauri::command]
 pub fn profile_image_delete_file<R: Runtime>(
     app: AppHandle<R>,
     relative_path: String,
 ) -> Result<(), String> {
     let _write_permit = vault::active_writable_vault_path(&app)?;
+    let file_name = validate_profile_image_relative_path(&relative_path)?;
+    let config = vault::read_active_config_bounded(&app, MAX_CONFIG_BYTES)?;
+    if is_configured_profile_image(&config, file_name)? {
+        return Err("the saved profile image cannot be deleted".to_string());
+    }
     let path = profile_image_asset_path(&app, &relative_path)?;
     if path.exists() {
         fs::remove_file(path).map_err(|error| format!("delete profile image: {error}"))?;
@@ -309,6 +333,27 @@ mod tests {
         assert!(validate_profile_image_relative_path("profile/../outside.png").is_err());
         assert!(validate_profile_image_relative_path("profile/nested/image.png").is_err());
         assert!(validate_profile_image_relative_path("profile/image.svg").is_err());
+    }
+
+    #[test]
+    fn saved_profile_image_is_recognized_from_the_vault_configuration() {
+        let config = r#"{"profile":{"imagePath":" profile/Saved.png "}}"#;
+        assert!(is_configured_profile_image(config, "Saved.png").unwrap());
+        assert!(is_configured_profile_image(config, "saved.PNG").unwrap());
+        assert!(!is_configured_profile_image(config, "replaced.png").unwrap());
+
+        for config in [
+            "{}",
+            r#"{"profile":{}}"#,
+            r#"{"profile":{"imagePath":null}}"#,
+            r#"{"profile":{"imagePath":"../Saved.png"}}"#,
+        ] {
+            assert!(
+                !is_configured_profile_image(config, "Saved.png").unwrap(),
+                "{config}"
+            );
+        }
+        assert!(is_configured_profile_image("not json", "Saved.png").is_err());
     }
 
     #[test]

@@ -184,8 +184,9 @@ export function setConfigKey(key: string, value: unknown): void {
 }
 
 /**
- * Resolve once any pending debounced write has flushed. Useful in tests
- * and in shutdown handlers; product code can rely on the debounced write.
+ * Resolve once any pending debounced write has flushed. Use it before work
+ * that native code checks against the saved config, such as deleting a
+ * replaced profile image, and in shutdown handlers and tests.
  */
 export async function flushConfig(): Promise<void> {
   if (writeTimer !== null) {

@@ -7,6 +7,18 @@ fn connection_error(error: String) -> MusicLibraryError {
     MusicLibraryError::runtime("open music library", error)
 }
 
+/// Runs a library operation that opens, decodes, or walks local files on a blocking thread, so a slow or stalled path never holds an async runtime worker.
+#[cfg(desktop)]
+async fn run_file_work<T, F>(operation: F) -> MusicLibraryResult<T>
+where
+    T: Send + 'static,
+    F: std::future::Future<Output = MusicLibraryResult<T>> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(move || tauri::async_runtime::block_on(operation))
+        .await
+        .map_err(|error| MusicLibraryError::runtime("run music file work", error))?
+}
+
 #[tauri::command]
 pub async fn music_library_start_local_refresh(
     app: tauri::AppHandle,
@@ -127,7 +139,8 @@ pub async fn music_library_create_relink_plan(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    ganbaru_music_library::relink::create_plan(&pool, request).await
+    run_file_work(async move { ganbaru_music_library::relink::create_plan(&pool, request).await })
+        .await
 }
 
 #[cfg(desktop)]
@@ -672,7 +685,10 @@ pub async fn music_library_preview_item_repair(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    ganbaru_music_library::item_repair::preview(&pool, &item_id, &file_path).await
+    run_file_work(async move {
+        ganbaru_music_library::item_repair::preview(&pool, &item_id, &file_path).await
+    })
+    .await
 }
 
 #[cfg(desktop)]
@@ -697,7 +713,11 @@ pub async fn music_library_apply_item_repair(
     let pool = connect_sqlite(app.clone(), db_url)
         .await
         .map_err(connection_error)?;
-    let receipt = ganbaru_music_library::item_repair::apply(&pool, request).await?;
+    let receipt =
+        run_file_work(
+            async move { ganbaru_music_library::item_repair::apply(&pool, request).await },
+        )
+        .await?;
     tauri::async_runtime::spawn_blocking(move || {
         crate::music::path_authority::grant_path(&app, MusicPathKind::Folder, &folder)
     })
@@ -768,7 +788,10 @@ pub async fn music_library_soundscapes(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    ganbaru_music_library::soundscapes::definitions(&pool, &device_id).await
+    run_file_work(async move {
+        ganbaru_music_library::soundscapes::definitions(&pool, &device_id).await
+    })
+    .await
 }
 
 #[cfg(desktop)]
@@ -897,7 +920,8 @@ pub async fn music_library_upsert_soundscape(
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    ganbaru_music_library::soundscapes::upsert(&pool, request).await
+    run_file_work(async move { ganbaru_music_library::soundscapes::upsert(&pool, request).await })
+        .await
 }
 
 #[cfg(desktop)]

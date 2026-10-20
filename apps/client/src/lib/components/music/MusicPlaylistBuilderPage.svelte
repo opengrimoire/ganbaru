@@ -510,7 +510,7 @@
 
   function closeSourceSurface(): void {
     sources.cancelResolution();
-    if (sourceSurface === "relink" && sources.relinkPlan?.state === "ready") {
+    if (sourceSurface === "relink" && sources.relinkCancellable) {
       void sources.cancelRelink();
     }
     sourceSurface = null;

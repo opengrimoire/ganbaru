@@ -302,3 +302,68 @@ fn cancelling_a_relink_plan_performs_no_location_writes() {
         assert_eq!(stored_path, "old.mp3");
     });
 }
+
+#[test]
+fn relink_scan_over_the_entry_limit_fails_without_leaving_a_plan() {
+    crate::test_support::block_on(async {
+        let pool = pool().await;
+        seed_root(&pool).await;
+        let replacement = TestDirectory::new("crowded");
+        for index in 0..4 {
+            replacement.write(&format!("folder-{index}/track.mp3"), b"media bytes");
+        }
+
+        let error = relink::create_plan_with_scan_limit(
+            &pool,
+            plan_request(&replacement, "plan-crowded"),
+            5,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.message.contains("more than 5 files and folders"));
+        let plans: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM music_relink_plans")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(plans, 0);
+
+        let within_limit =
+            relink::create_plan_with_scan_limit(&pool, plan_request(&replacement, "plan-roomy"), 8)
+                .await
+                .unwrap();
+        assert_eq!(within_limit.state, MusicRelinkPlanState::Ready);
+        assert_eq!(within_limit.new_count, 4);
+    });
+}
+
+#[test]
+fn relink_scan_stops_once_its_plan_is_cancelled() {
+    crate::test_support::block_on(async {
+        let pool = pool().await;
+        seed_root(&pool).await;
+        let replacement = TestDirectory::new("cancelled");
+        replacement.write("album/track.mp3", b"media bytes");
+        sqlx::query(
+            "INSERT INTO music_relink_plans (id, root_id, state, created_at_ms, updated_at_ms)
+             VALUES ('plan-cancelled', 'root-1', 'cancelled', 1, 2)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let request = plan_request(&replacement, "plan-cancelled");
+        let summary = relink::scan_plan(&pool, &request, replacement.path(), 100)
+            .await
+            .unwrap();
+
+        assert_eq!(summary.state, MusicRelinkPlanState::Cancelled);
+        let entries: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM music_relink_plan_entries WHERE plan_id = 'plan-cancelled'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(entries, 0);
+    });
+}

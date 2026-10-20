@@ -423,6 +423,13 @@ fn validate_local_audio_path(value: &str) -> MusicLibraryResult<()> {
             "video files cannot be used as soundscape loops",
         ));
     }
+    // A FIFO or device would block the open, and `metadata` never does.
+    if !std::fs::metadata(value).is_ok_and(|metadata| metadata.is_file()) {
+        return Err(MusicLibraryError::validation(
+            "localPath",
+            "must be an existing regular file",
+        ));
+    }
     let file = File::open(value).map_err(|error| {
         MusicLibraryError::validation("localPath", format!("cannot open the audio file: {error}"))
     })?;
@@ -484,6 +491,39 @@ mod tests {
         assert!(validate_local_audio_path("relative/rain.mp3").is_err());
         assert!(validate_local_audio_path("/tmp/rain.webm").is_err());
         assert!(validate_local_audio_path("https://youtube.com/watch?v=abc").is_err());
+    }
+
+    #[test]
+    fn local_loop_validation_rejects_directories_without_opening_them() {
+        let directory = std::env::temp_dir().join(format!(
+            "ganbaru-soundscape-directory-{}.mp3",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let result = validate_local_audio_path(&directory.to_string_lossy());
+        std::fs::remove_dir_all(&directory).unwrap();
+
+        let error = result.unwrap_err();
+        assert_eq!(error.message, "must be an existing regular file");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_loop_validation_rejects_a_fifo_without_blocking() {
+        let path = std::env::temp_dir().join(format!(
+            "ganbaru-soundscape-fifo-{}.mp3",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let status = std::process::Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let result = validate_local_audio_path(&path.to_string_lossy());
+        std::fs::remove_file(&path).unwrap();
+
+        assert!(result.is_err());
     }
 
     #[test]

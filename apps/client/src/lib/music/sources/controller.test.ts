@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { MusicSourceCollection } from "$lib/music/library/contracts";
+import type { MusicRelinkPlanSummary, MusicSourceCollection } from "$lib/music/library/contracts";
 import type { MusicSourceRefreshController } from "./refresh";
 import {
   createMusicSourcesController,
@@ -262,6 +262,36 @@ describe("MusicSourcesController", () => {
 
     await expect(controller.applyRelink([])).rejects.toThrow("No relink plan is ready.");
     expect(bindRoot).not.toHaveBeenCalled();
+  });
+
+  it("cancels a relink plan that is still scanning and does not open it for review", async () => {
+    let finishScan: (state: "ready" | "cancelled") => void = () => undefined;
+    const createRelink = vi.fn((request: { planId: string; rootId: string; createdAtMs: number }) => new Promise<MusicRelinkPlanSummary>((resolve) => {
+      finishScan = (state) => resolve({
+        id: request.planId, rootId: request.rootId, state, exactCount: 0,
+        likelyCount: 0, ambiguousCount: 0, missingCount: 0, newCount: 0,
+        createdAtMs: request.createdAtMs, updatedAtMs: request.createdAtMs,
+      });
+    }));
+    const cancelRelink = vi.fn(async (planId: string, cancelledAt: number) => ({
+      id: planId, rootId: "root-1", state: "cancelled" as const, exactCount: 0,
+      likelyCount: 0, ambiguousCount: 0, missingCount: 0, newCount: 0,
+      createdAtMs: cancelledAt, updatedAtMs: cancelledAt,
+    }));
+    const relinkEntries = vi.fn(async (_planId: string, offset: number, limit: number) => ({ entries: [], totalCount: 0, offset, limit }));
+    const controller = createMusicSourcesController(api({ createRelink, cancelRelink, relinkEntries }), () => 20, () => "plan-1", refreshStub());
+
+    const planning = controller.planRelink("root-1", "/music/moved");
+    expect(controller.relinkCancellable).toBe(true);
+    await controller.cancelRelink();
+    finishScan("cancelled");
+    const plan = await planning;
+
+    expect(cancelRelink).toHaveBeenCalledWith("plan-1", 20);
+    expect(plan.state).toBe("cancelled");
+    expect(relinkEntries).not.toHaveBeenCalled();
+    expect(controller.relinkPlan).toBeNull();
+    expect(controller.relinkCancellable).toBe(false);
   });
 
   it("surfaces a failed initial folder refresh instead of opening an empty review", async () => {

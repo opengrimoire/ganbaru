@@ -1,12 +1,13 @@
 //! Engine state for status reporting, and re-evaluation of held operations after an update.
 
+use ganbaru_sync_contracts::hlc::{self, CLOCK_WARNING_AHEAD_MS, Hlc};
 use ganbaru_sync_contracts::{Envelope, Seq, TableId, WriterId};
 use sqlx::{Connection, Row, SqliteConnection};
 
 use crate::error::{SyncResult, corrupt, failpoint};
-use crate::log::{self, WriterState, seq_i64, stored_u64};
+use crate::log::{self, WriterState, clamp_ms, seq_i64, stored_u64};
 use crate::store::{self, Classified, HoldReason};
-use crate::{Engine, OPEN_CONFLICT_MASK_SQL, SpaceContext};
+use crate::{ClockWarning, Engine, OPEN_CONFLICT_MASK_SQL, SpaceContext};
 
 /// One writer of the space.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -156,6 +157,38 @@ impl Engine {
                 .await?,
         )?;
         Ok(status)
+    }
+
+    /// Writers with merged versions whose clocks are far ahead of `now_ms`, each with its
+    /// greatest such clock, in writer order. Those versions win concurrent edits until local time
+    /// catches up, so the interface names their devices.
+    pub async fn far_ahead_writers(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        now_ms: u64,
+    ) -> SyncResult<Vec<ClockWarning>> {
+        log::ensure_space(conn, ctx.space).await?;
+        let threshold = Hlc::new(now_ms.saturating_add(CLOCK_WARNING_AHEAD_MS), 0);
+        let rows = sqlx::query(
+            "SELECT writer_id, max(clock) FROM sync_register_versions WHERE clock >= ?
+             GROUP BY writer_id ORDER BY writer_id",
+        )
+        .bind(clamp_ms(threshold.as_u64()))
+        .fetch_all(&mut *conn)
+        .await?;
+        let mut warnings = Vec::with_capacity(rows.len());
+        for row in rows {
+            let writer: Vec<u8> = row.try_get(0)?;
+            let clock = Hlc::from_u64(stored_u64(row.try_get(1)?, "version clock")?);
+            if hlc::is_far_ahead(clock, now_ms) {
+                warnings.push(ClockWarning {
+                    writer: log::writer_id(&writer)?,
+                    clock,
+                });
+            }
+        }
+        Ok(warnings)
     }
 
     /// Held operations in writer and sequence order, at most `limit`.

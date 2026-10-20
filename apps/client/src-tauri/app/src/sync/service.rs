@@ -517,15 +517,26 @@ impl ServiceState {
                 .revoke_unlinked(&manager, &vault_id, &mut self.writer)
                 .await?;
         }
-        let status = {
+        let (status, clock_warnings) = {
             let mut conn = acquire(&session.pool).await?;
-            session
+            let status = session
                 .engine
                 .status(&mut conn, &session.ctx)
                 .await
-                .map_err(|error| format!("read sync status: {error}"))?
+                .map_err(|error| format!("read sync status: {error}"))?;
+            let clock_warnings = session
+                .engine
+                .far_ahead_writers(&mut conn, &session.ctx, now_ms()?)
+                .await
+                .map_err(|error| format!("read sync clocks: {error}"))?;
+            (status, clock_warnings)
         };
         view.set_counts(&status);
+        if clock_warnings.is_empty() {
+            view.clock_ahead_devices.clear();
+        } else {
+            view.set_clock_ahead(&status, &clock_warnings, &super::devices::read(app)?);
+        }
         Ok(next)
     }
 

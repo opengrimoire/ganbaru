@@ -1,9 +1,9 @@
 //! The sync status the frontend shows, and the subscription channels that carry it. Channels
 //! work in every shell, including Android, which keeps the global event module out of its bundle.
 
-use ganbaru_sync::SyncStatus;
+use ganbaru_sync::{ClockWarning, DeviceNames, DeviceRef, SyncStatus};
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Mutex, MutexGuard};
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, Runtime};
@@ -80,6 +80,9 @@ pub(crate) struct SyncStatusView {
     pub held: HeldView,
     pub conflicts: Vec<ConflictCount>,
     pub recovery_count: usize,
+    /// Devices whose merged edits carry clocks far ahead of this device, so they win
+    /// concurrent edits until the clocks agree.
+    pub clock_ahead_devices: Vec<DeviceRef>,
 }
 
 impl SyncStatusView {
@@ -101,6 +104,30 @@ impl SyncStatusView {
             })
             .collect();
         self.recovery_count = status.recovery;
+    }
+
+    /// Names the devices of writers with far-ahead clocks, once per device, in device id order.
+    /// A writer missing from `status` has no known device and is skipped.
+    pub(crate) fn set_clock_ahead(
+        &mut self,
+        status: &SyncStatus,
+        warnings: &[ClockWarning],
+        devices: &DeviceNames,
+    ) {
+        let device_ids: BTreeSet<&str> = warnings
+            .iter()
+            .filter_map(|warning| {
+                status
+                    .writers
+                    .iter()
+                    .find(|summary| summary.writer == warning.writer)
+                    .map(|summary| summary.device_id.as_str())
+            })
+            .collect();
+        self.clock_ahead_devices = device_ids
+            .into_iter()
+            .map(|device_id| devices.describe(device_id))
+            .collect();
     }
 }
 
@@ -206,4 +233,56 @@ pub(crate) fn emit_applied<R: Runtime>(app: &AppHandle<R>, tables: Vec<String>) 
         return;
     }
     notify(app, &SyncNotice::Applied { tables });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ganbaru_sync::{WriterState, WriterSummary};
+    use ganbaru_sync_contracts::{Hlc, WriterId};
+    use std::collections::HashMap;
+
+    fn summary(writer: WriterId, device_id: &str) -> WriterSummary {
+        WriterSummary {
+            writer,
+            device_id: device_id.to_string(),
+            state: WriterState::Active,
+            stored: 1,
+            applied: 1,
+            cutoff: None,
+        }
+    }
+
+    #[test]
+    fn far_ahead_writers_name_each_device_once() {
+        let laptop_old = WriterId::from_bytes([1; 16]);
+        let laptop_new = WriterId::from_bytes([2; 16]);
+        let phone = WriterId::from_bytes([3; 16]);
+        let unknown = WriterId::from_bytes([4; 16]);
+        let status = SyncStatus {
+            writers: vec![
+                summary(laptop_old, "laptop"),
+                summary(laptop_new, "laptop"),
+                summary(phone, "phone"),
+            ],
+            ..SyncStatus::default()
+        };
+        let clock = Hlc::new(u64::MAX, 0);
+        let warnings =
+            [laptop_new, unknown, laptop_old].map(|writer| ClockWarning { writer, clock });
+        let devices = DeviceNames::new(
+            "phone",
+            HashMap::from([("laptop".to_string(), "Work laptop".to_string())]),
+        );
+        let mut view = SyncStatusView::default();
+        view.set_clock_ahead(&status, &warnings, &devices);
+        assert_eq!(view.clock_ahead_devices, vec![devices.describe("laptop")]);
+        assert_eq!(
+            view.clock_ahead_devices[0].device_label.as_deref(),
+            Some("Work laptop")
+        );
+
+        view.set_clock_ahead(&status, &[], &devices);
+        assert!(view.clock_ahead_devices.is_empty());
+    }
 }

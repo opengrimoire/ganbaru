@@ -11,7 +11,7 @@
 - **Winner.** The version materialized into the domain table, chosen by the group's merge kind. Versions with equal value hashes are never a conflict.
 - **Causal readiness.** An operation applies only after its writer's previous operation and every operation its context depends on. Validation depends only on the operation's bytes and manifest version, never on local state or arrival order.
 
-The hybrid logical clock is 48 bits of Unix milliseconds and a 16-bit counter. A replica adopts remote clocks only up to one minute past its own time. The clock never decides what is superseded or kept, only which concurrent version is displayed.
+The hybrid logical clock is 48 bits of Unix milliseconds and a 16-bit counter. A replica adopts remote clocks only up to one minute past its own time. The clock never decides what is superseded or kept, only which concurrent version is displayed. Clocks are a tiebreak, not authorization, and never cause rejection: a paired writer that advances its clock wins concurrent ties until real time catches up. That is accepted because the writer already holds write authority, its operations are signed and attributable, its device can be revoked, and merges stay deterministic. Refusing far-future clocks at the hub would strand honest writers whose clock was once wrong, since later operations of the writer cannot be admitted past a refused one.
 
 ## Merge kinds
 

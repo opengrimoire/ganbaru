@@ -3,6 +3,7 @@ import { OFF_SYNC_STATUS, type SyncStatusView } from "$lib/api/sync";
 import { translateFromPartialCatalog, type Translate } from "$lib/i18n/translator.svelte";
 import {
   canRequestSync,
+  syncClockAheadLines,
   formatSyncTime,
   syncConflictTotal,
   syncDeviceName,
@@ -57,6 +58,22 @@ describe("sync status presentation", () => {
     expect(canRequestSync(status({ state: "off" }))).toBe(false);
     expect(canRequestSync(status({ state: "paused", paused: true }))).toBe(false);
     expect(canRequestSync(status({ state: "syncing" }))).toBe(false);
+  });
+
+  it("names each device whose clock runs far ahead", () => {
+    expect(syncClockAheadLines(t, status({}))).toEqual([]);
+    const lines = syncClockAheadLines(t, status({
+      clockAheadDevices: [
+        { deviceId: "a", deviceLabel: "Laptop", ownDevice: false },
+        { deviceId: "b", deviceLabel: null, ownDevice: false },
+        { deviceId: "d", deviceLabel: null, ownDevice: false },
+        { deviceId: "c", deviceLabel: "Phone", ownDevice: true },
+      ],
+    }));
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toContain("The clock on Laptop is ahead");
+    expect(lines[1]).toContain("The clock on another device is ahead");
+    expect(lines[2]).toContain("Some edits from this device");
   });
 
   it("names own, labeled, and unknown devices", () => {

@@ -7,6 +7,7 @@
   import { getSync } from "$lib/stores/sync.svelte";
   import {
     canRequestSync,
+    syncClockAheadLines,
     syncConflictTotal,
     syncHeldLines,
     syncLastExchangeLabel,
@@ -34,6 +35,7 @@
 
   const status = $derived(sync.status);
   const held = $derived(syncHeldLines(t, status));
+  const clockAhead = $derived(syncClockAheadLines(t, status));
   const conflictTotal = $derived(syncConflictTotal(status));
   const stateLabel = $derived(syncStateLabel(t, status.state));
 
@@ -102,6 +104,7 @@
       {:else if status.state === "error" && status.lastError}
         <Notice message={t("sync.errorDetail", status.lastError)} />
       {/if}
+      {#each clockAhead as line (line)}<Notice message={line} />{/each}
       {#if conflictTotal > 0}
         <div class="text-foreground">{t("sync.conflicts", conflictTotal)}</div>
       {/if}

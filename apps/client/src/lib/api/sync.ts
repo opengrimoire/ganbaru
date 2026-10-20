@@ -47,6 +47,8 @@ export interface SyncStatusView {
   held: SyncHeldCounts;
   conflicts: SyncConflictCount[];
   recoveryCount: number;
+  /** Devices whose edits carry clocks far ahead of this device, so they win concurrent edits. */
+  clockAheadDevices: SyncDeviceRef[];
 }
 
 export interface SyncDeviceRef {
@@ -84,6 +86,7 @@ export const OFF_SYNC_STATUS: SyncStatusView = {
   held: { newerFormat: 0, newerManifest: 0, invalid: 0 },
   conflicts: [],
   recoveryCount: 0,
+  clockAheadDevices: [],
 };
 
 function readHeld(value: unknown, label: string): SyncHeldCounts {
@@ -120,6 +123,7 @@ export function mapSyncStatus(value: unknown): SyncStatusView {
     held: readHeld(row.held, "sync status.held"),
     conflicts: readArray(row.conflicts, "sync status.conflicts", readConflictCount),
     recoveryCount: readNonNegativeSafeInteger(row.recoveryCount, "sync status.recoveryCount"),
+    clockAheadDevices: readArray(row.clockAheadDevices, "sync status.clockAheadDevices", mapSyncDeviceRef),
   };
 }
 

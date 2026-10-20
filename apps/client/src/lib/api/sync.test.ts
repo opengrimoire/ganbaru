@@ -35,6 +35,7 @@ function validStatus(): Record<string, unknown> {
     held: { newerFormat: 0, newerManifest: 1, invalid: 0 },
     conflicts: [{ table: "quick_notes", count: 3 }],
     recoveryCount: 1,
+    clockAheadDevices: [{ deviceId: "device-b", deviceLabel: "Laptop", ownDevice: false }],
   };
 }
 
@@ -52,6 +53,7 @@ describe("sync API boundary", () => {
       held: { newerFormat: 0, newerManifest: 1, invalid: 0 },
       conflicts: [{ table: "quick_notes", count: 3 }],
       recoveryCount: 1,
+      clockAheadDevices: [{ deviceId: "device-b", deviceLabel: "Laptop", ownDevice: false }],
     });
   });
 
@@ -68,6 +70,7 @@ describe("sync API boundary", () => {
     expect(() => mapSyncStatus({ ...validStatus(), role: "relay" })).toThrow();
     expect(() => mapSyncStatus({ ...validStatus(), waiting: -1 })).toThrow();
     expect(() => mapSyncStatus({ ...validStatus(), lastErrorCode: "diskFull" })).toThrow();
+    expect(() => mapSyncStatus({ ...validStatus(), clockAheadDevices: [{ deviceId: "device-b" }] })).toThrow();
     expect(() => mapSyncStatus({ ...validStatus(), held: { newerFormat: 0, newerManifest: 0 } })).toThrow();
   });
 

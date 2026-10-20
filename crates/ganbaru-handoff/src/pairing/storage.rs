@@ -131,7 +131,6 @@ pub(super) fn validate_state(
     if state.coordinator.is_some() && state.revoked_by_coordinator {
         return Err("a linked coordinator cannot also be recorded as revoked".to_string());
     }
-    let mut peer_vault_id: Option<&str> = None;
     let mut certificate_fingerprints = std::collections::BTreeSet::new();
     for (device_id, peer) in &state.linked_peers {
         if device_id != &peer.device_id {
@@ -143,10 +142,6 @@ pub(super) fn validate_state(
         validate_identifier("peer device id", &peer.device_id)?;
         validate_identifier("peer vault id", &peer.vault_id)?;
         validate_device_label("linked device label", &peer.device_label)?;
-        if peer_vault_id.is_some_and(|vault_id| vault_id != peer.vault_id) {
-            return Err("linked devices belong to different vaults".to_string());
-        }
-        peer_vault_id = Some(&peer.vault_id);
         let certificate = decode_certificate(&peer.certificate)?;
         if certificate_fingerprint(certificate.as_ref()) != peer.certificate_fingerprint {
             return Err("linked peer certificate fingerprint is inconsistent".to_string());

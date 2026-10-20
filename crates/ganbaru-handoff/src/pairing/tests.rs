@@ -402,6 +402,32 @@ fn memberships_belong_to_their_vault_and_a_moved_device_replaces_its_old_one() {
 }
 
 #[test]
+fn memberships_in_two_vaults_survive_restart() {
+    let temporary = TestDirectory::new("two-vault-peers");
+    let manager = PairingManager::default();
+    manager
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+        .expect("initialize");
+    let phone = create_identity("device-phone".to_string()).expect("phone identity");
+    let laptop = create_identity("device-laptop".to_string()).expect("laptop identity");
+    enroll_identity(&manager, "vault-old", &phone, "Phone", 100).expect("enroll phone");
+    enroll_identity(&manager, "vault-new", &laptop, "Laptop", 200).expect("enroll laptop");
+
+    let restarted = PairingManager::default();
+    restarted
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+        .expect("restart with memberships in two vaults");
+    for (vault_id, device_id) in [
+        ("vault-old", "device-phone"),
+        ("vault-new", "device-laptop"),
+    ] {
+        let peers = restarted.linked_peers_for(vault_id).expect("vault peers");
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].device_id, device_id);
+    }
+}
+
+#[test]
 fn stored_limit_revokes_the_oldest_membership_of_another_vault_first() {
     let temporary = TestDirectory::new("membership-limit");
     let manager = PairingManager::default();

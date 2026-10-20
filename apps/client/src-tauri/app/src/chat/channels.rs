@@ -308,12 +308,17 @@ fn channel_read_query(predicate: &str, order: Option<&str>) -> String {
             (SELECT count(*) FROM chat_conversation_items item
              WHERE item.conversation_id = channel.conversation_id
                AND item.reply_thread_id IS NULL
-               AND item.item_kind = 'message') AS message_count,
+               AND item.item_kind = 'message'
+               AND NOT EXISTS (
+                    SELECT 1 FROM chat_communication_messages message
+                    WHERE message.item_id = item.id AND message.deleted_at IS NOT NULL
+               )) AS message_count,
             (SELECT count(*) FROM chat_conversation_items item
              JOIN chat_communication_messages message ON message.item_id = item.id
              WHERE item.conversation_id = channel.conversation_id
                AND item.reply_thread_id IS NULL
                AND item.item_kind = 'message'
+               AND message.deleted_at IS NULL
                AND message.author_participant_id != '{LOCAL_PARTICIPANT_ID}'
                AND item.ordinal > coalesce((
                     SELECT cursor.last_read_root_ordinal
@@ -328,6 +333,7 @@ fn channel_read_query(predicate: &str, order: Option<&str>) -> String {
                ON revision.id = message.current_revision_id
              WHERE item.conversation_id = channel.conversation_id
                AND item.reply_thread_id IS NULL
+               AND message.deleted_at IS NULL
              ORDER BY item.ordinal DESC LIMIT 1) AS latest_preview,
             (SELECT assignment.state
              FROM chat_work_assignments assignment
@@ -647,4 +653,53 @@ fn new_id(prefix: &str) -> String {
         .unwrap_or_default();
     let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
     format!("{prefix}:{nanos:032x}{sequence:016x}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_channel;
+    use ganbaru_chat_contracts::models::ChatChannelId;
+
+    const NOW: &str = "2026-10-20T12:00:00.000Z";
+
+    #[tokio::test]
+    async fn channel_summaries_leave_out_deleted_messages() {
+        let pool = crate::chat::tests::repository::pool_with_thread().await;
+        let (channel_id, conversation_id): (String, String) = sqlx::query_as(
+            "SELECT id, conversation_id FROM chat_channels WHERE project_id = 'project-chat'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "INSERT INTO chat_participants
+                (id, participant_kind, display_name, created_at, updated_at)
+             VALUES ('participant:teammate', 'ai_teammate', 'Teammate', '{NOW}', '{NOW}');
+             INSERT INTO chat_conversation_items
+                (id, conversation_id, item_kind, ordinal, created_at)
+             VALUES ('item:kept', '{conversation_id}', 'message', 1, '{NOW}'),
+                    ('item:deleted', '{conversation_id}', 'message', 2, '{NOW}');
+             INSERT INTO chat_communication_messages
+                (item_id, author_participant_id, deleted_at, created_at)
+             VALUES ('item:kept', 'participant:teammate', NULL, '{NOW}'),
+                    ('item:deleted', 'participant:teammate', '{NOW}', '{NOW}');
+             INSERT INTO chat_communication_message_revisions
+                (id, message_item_id, revision, normalized_markdown, created_at)
+             VALUES ('revision:kept', 'item:kept', 1, 'Kept text', '{NOW}'),
+                    ('revision:deleted', 'item:deleted', 1, 'Deleted text', '{NOW}');
+             UPDATE chat_communication_messages SET current_revision_id = 'revision:' ||
+                substr(item_id, 6);"
+        )))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let channel = read_channel(&pool, &ChatChannelId::new(channel_id).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(channel.latest_preview.as_deref(), Some("Kept text"));
+        assert_eq!(channel.message_count, 1);
+        assert_eq!(channel.unread_count, 1);
+    }
 }

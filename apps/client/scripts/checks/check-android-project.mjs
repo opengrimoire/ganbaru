@@ -81,6 +81,9 @@ const [
   mobileMediaBuild,
   mobileNotificationsBuild,
   youTubeHostViews,
+  mobileDistractionsManifest,
+  mobileNotificationsPlugin,
+  mobileDistractionsPlugin,
 ] =
   await Promise.all([
     readAndroidFile("build.gradle.kts"),
@@ -117,6 +120,13 @@ const [
     readClientFile("../../crates/ganbaru-mobile-notifications/android/build.gradle.kts"),
     readClientFile(
       "../../crates/ganbaru-mobile-media/android/src/main/java/org/opengrimoire/ganbaru/mobile/media/YouTubeHostViews.kt",
+    ),
+    readClientFile("../../crates/ganbaru-mobile-distractions/android/src/main/AndroidManifest.xml"),
+    readClientFile(
+      "../../crates/ganbaru-mobile-notifications/android/src/main/java/org/opengrimoire/ganbaru/mobile/notifications/MobileNotificationsPlugin.kt",
+    ),
+    readClientFile(
+      "../../crates/ganbaru-mobile-distractions/android/src/main/java/org/opengrimoire/ganbaru/mobile/distractions/MobileDistractionsPlugin.kt",
     ),
   ]);
 
@@ -368,6 +378,37 @@ for (const domain of backupDomains) {
   if (countText(extractionRules, exclusion) !== 2) {
     failures.push(`data extraction rules must exclude ${domain} from cloud and device transfer`);
   }
+}
+
+/** Require a notification route activity that other apps cannot start. */
+function requirePrivateRouteActivity(pluginManifest, className, label) {
+  const declaration = pluginManifest.match(
+    new RegExp(`<activity\\s[^>]*android:name="[^"]*\\.${className}"[^>]*>`, "u"),
+  )?.[0];
+  if (declaration === undefined) {
+    failures.push(`${label} manifest must declare ${className}`);
+    return;
+  }
+  requireText(declaration, 'android:exported="false"', `${label} ${className}`, failures);
+}
+
+requirePrivateRouteActivity(
+  mobileNotificationManifest,
+  "CalendarNotificationRouteActivity",
+  "notifications plugin",
+);
+requirePrivateRouteActivity(
+  mobileDistractionsManifest,
+  "DistractionsNotificationRouteActivity",
+  "distractions plugin",
+);
+for (const [source, label] of [
+  [mobileNotificationsPlugin, "notifications plugin"],
+  [mobileDistractionsPlugin, "distractions plugin"],
+  [mainActivity, "MainActivity"],
+]) {
+  rejectText(source, "captureAction(", label, failures);
+  rejectText(source, "DistractionsNotificationActionStore.capture(", label, failures);
 }
 
 if (failures.length > 0) {

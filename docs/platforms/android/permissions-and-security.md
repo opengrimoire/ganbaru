@@ -56,7 +56,7 @@ Release builds restrict Tauri's generated document-start scripts to the `tauri.l
 
 ## Native component exposure
 
-Services, receivers, providers, and activities are non-exported unless an operating-system integration requires exposure. Internal broadcasts use an app-signature permission. Notification taps and document results are validated before routing.
+Services, receivers, providers, and activities are non-exported unless an operating-system integration requires exposure. Internal broadcasts use an app-signature permission. Notification taps reach the app through non-exported route activities that record the tap target before opening the launcher, and the exported launcher ignores routing extras, so other apps cannot steer navigation. Document results are validated before routing.
 
 ## Secrets
 

@@ -6,7 +6,6 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Process
 import android.provider.Settings
-import android.webkit.WebView
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
 import app.tauri.annotation.TauriPlugin
@@ -53,16 +52,6 @@ internal fun JournalEvent.toResponse(): Map<String, Any?> = mapOf(
 
 @TauriPlugin
 class MobileDistractionsPlugin(private val activity: Activity) : Plugin(activity) {
-  override fun load(webView: WebView) {
-    super.load(webView)
-    DistractionsNotificationActionStore.capture(activity, activity.intent)
-  }
-
-  override fun onNewIntent(intent: Intent) {
-    super.onNewIntent(intent)
-    DistractionsNotificationActionStore.capture(activity, intent)
-  }
-
   @Command
   fun accessStatus(invoke: Invoke) {
     invoke.resolve(JSObject().apply {

@@ -2117,6 +2117,8 @@ dependencies = [
  "ganbaru-themes",
  "ganbaru-working-folders",
  "gtk",
+ "hyper",
+ "hyper-util",
  "jiff",
  "keyring",
  "libc",

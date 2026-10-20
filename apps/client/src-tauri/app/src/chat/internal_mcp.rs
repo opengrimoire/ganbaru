@@ -1,6 +1,5 @@
 use axum::Router;
 use axum::body::Body;
-use axum::extract::DefaultBodyLimit;
 use axum::http::{Request, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -37,6 +36,19 @@ use tokio::sync::{Mutex, Notify, RwLock, Semaphore, oneshot};
 const MAX_MCP_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_MCP_CONCURRENCY: usize = 8;
 const MCP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Preview tool work stops at this deadline, before the HTTP request deadline, so the model
+/// gets a tool error instead of a gateway timeout and no work outlives its request.
+const MCP_PREVIEW_WORK_TIMEOUT: Duration = Duration::from_secs(25);
+/// How long a connection may take to send its request headers, including idle keep-alive time.
+const MCP_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
+/// Open connections per endpoint. A provider uses a few; the rest wait in the accept backlog.
+const MAX_MCP_CONNECTIONS: usize = 32;
+/// Open MCP sessions per endpoint, which leaves room for provider reconnects within rmcp's
+/// session keep-alive.
+const MAX_MCP_SESSIONS: usize = 16;
+/// Pause after a failed accept, such as when the process is out of file descriptors.
+const MCP_ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);
+const MCP_SESSION_ID_HEADER: &str = "mcp-session-id";
 const MCP_INITIALIZATION_TIMEOUT: Duration = Duration::from_secs(15);
 const RESOURCE_URI_PREFIX: &str = "ganbaru://chat/resource/";
 /// How long a preview tool waits for the turn being dispatched to report its network policy.
@@ -264,30 +276,14 @@ impl InternalMcpRegistry {
             thread_id: thread_id.clone(),
             state: Arc::clone(&state),
         };
-        let service: StreamableHttpService<ThreadMcpHandler, LocalSessionManager> =
-            StreamableHttpService::new(
-                move || Ok(handler.clone()),
-                Arc::new(LocalSessionManager::default()),
-                StreamableHttpServerConfig::default()
-                    .with_json_response(true)
-                    .with_sse_keep_alive(None),
-            );
-        let semaphore = Arc::new(Semaphore::new(MAX_MCP_CONCURRENCY));
-        let expected_token = token.clone();
-        let router = Router::new()
-            .nest_service("/mcp", service)
-            .layer(DefaultBodyLimit::max(MAX_MCP_REQUEST_BYTES))
-            .layer(middleware::from_fn(move |request, next| {
-                authorize_request(request, next, expected_token.clone(), semaphore.clone())
-            }));
+        let router = endpoint_router(handler, token.clone());
         let (shutdown, shutdown_receiver) = oneshot::channel();
-        tauri::async_runtime::spawn(async move {
-            let _ = axum::serve(listener, router)
-                .with_graceful_shutdown(async move {
-                    let _ = shutdown_receiver.await;
-                })
-                .await;
-        });
+        tauri::async_runtime::spawn(serve_endpoint(
+            listener,
+            router,
+            EndpointConnectionLimits::default(),
+            shutdown_receiver,
+        ));
         let descriptor = InternalMcpEndpoint {
             url: format!("http://{address}/mcp"),
             bearer_token: token,
@@ -520,7 +516,7 @@ impl ServerHandler for ThreadMcpHandler {
     async fn read_resource(
         &self,
         request: ReadResourceRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, McpError> {
         self.state.require_direct_turn().await.map_err(mcp_error)?;
         let resource_id = request
@@ -529,11 +525,15 @@ impl ServerHandler for ThreadMcpHandler {
             .ok_or_else(|| {
                 McpError::invalid_params("Resource URI is outside this Chat thread", None)
             })?;
-        let (resource, bytes) = resources::read_thread_resource_bytes(
-            &self.pool,
-            &self.vault_root,
-            &self.thread_id,
-            resource_id,
+        let (resource, bytes) = bounded_work(
+            context.ct.cancelled(),
+            MCP_PREVIEW_WORK_TIMEOUT,
+            resources::read_thread_resource_bytes(
+                &self.pool,
+                &self.vault_root,
+                &self.thread_id,
+                resource_id,
+            ),
         )
         .await
         .map_err(mcp_error)?;
@@ -583,7 +583,7 @@ impl ServerHandler for ThreadMcpHandler {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
         let arguments = request.arguments.unwrap_or_default();
         let name = request.name.as_ref();
@@ -611,7 +611,16 @@ impl ServerHandler for ThreadMcpHandler {
             }
         } else {
             match self.state.require_direct_turn().await {
-                Ok(()) => self.call_preview_tool(name, &arguments).await,
+                // Organizational host tools above are not cancelled, because each one reserves
+                // its audit row before running and must finish that row.
+                Ok(()) => {
+                    bounded_work(
+                        context.ct.cancelled(),
+                        MCP_PREVIEW_WORK_TIMEOUT,
+                        self.call_preview_tool(name, &arguments),
+                    )
+                    .await
+                }
                 Err(error) => Err(error),
             }
         };
@@ -973,11 +982,121 @@ fn preview_tool_error(operation: &str) -> ChatError {
     )
 }
 
+/// Builds the authenticated `/mcp` route for one endpoint. rmcp reads request bodies itself,
+/// so the body cap is set on its service rather than as an axum layer.
+fn endpoint_router<H>(handler: H, token: String) -> Router
+where
+    H: ServerHandler + Clone + Send + Sync + 'static,
+{
+    let sessions = Arc::new(LocalSessionManager::default());
+    let service: StreamableHttpService<H, LocalSessionManager> = StreamableHttpService::new(
+        move || Ok(handler.clone()),
+        Arc::clone(&sessions),
+        StreamableHttpServerConfig::default()
+            .with_json_response(true)
+            .with_sse_keep_alive(None)
+            .with_max_request_body_bytes(MAX_MCP_REQUEST_BYTES),
+    );
+    let semaphore = Arc::new(Semaphore::new(MAX_MCP_CONCURRENCY));
+    Router::new()
+        .nest_service("/mcp", service)
+        .layer(middleware::from_fn(move |request, next| {
+            authorize_request(
+                request,
+                next,
+                token.clone(),
+                semaphore.clone(),
+                Arc::clone(&sessions),
+            )
+        }))
+}
+
+/// Connection bounds enforced before any request reaches the bearer-token check.
+#[derive(Clone, Copy, Debug)]
+struct EndpointConnectionLimits {
+    header_read_timeout: Duration,
+    max_connections: usize,
+}
+
+impl Default for EndpointConnectionLimits {
+    fn default() -> Self {
+        Self {
+            header_read_timeout: MCP_HEADER_READ_TIMEOUT,
+            max_connections: MAX_MCP_CONNECTIONS,
+        }
+    }
+}
+
+/// Serves one endpoint over HTTP/1 until `shutdown` resolves or its sender is dropped. Unlike
+/// `axum::serve`, every connection must send its request headers within the header timeout,
+/// and at most `max_connections` are open at once, so local processes without the token cannot
+/// hold connections open indefinitely.
+async fn serve_endpoint(
+    listener: tokio::net::TcpListener,
+    router: Router,
+    limits: EndpointConnectionLimits,
+    mut shutdown: oneshot::Receiver<()>,
+) {
+    let connections = Arc::new(Semaphore::new(limits.max_connections));
+    let (closing, closed) = tokio::sync::watch::channel(());
+    loop {
+        let permit = tokio::select! {
+            _ = &mut shutdown => break,
+            permit = Arc::clone(&connections).acquire_owned() => match permit {
+                Ok(permit) => permit,
+                Err(_) => break,
+            },
+        };
+        let stream = tokio::select! {
+            _ = &mut shutdown => break,
+            accepted = listener.accept() => match accepted {
+                Ok((stream, _)) => stream,
+                Err(_) => {
+                    tokio::time::sleep(MCP_ACCEPT_RETRY_DELAY).await;
+                    continue;
+                }
+            },
+        };
+        let service = hyper_util::service::TowerToHyperService::new(router.clone());
+        let mut closed = closed.clone();
+        tokio::spawn(async move {
+            let mut builder = hyper::server::conn::http1::Builder::new();
+            builder
+                .timer(hyper_util::rt::TokioTimer::new())
+                .header_read_timeout(limits.header_read_timeout);
+            let connection =
+                builder.serve_connection(hyper_util::rt::TokioIo::new(stream), service);
+            tokio::pin!(connection);
+            tokio::select! {
+                _ = connection.as_mut() => {}
+                _ = closed.changed() => {
+                    connection.as_mut().graceful_shutdown();
+                    let _ = connection.await;
+                }
+            }
+            drop(permit);
+        });
+    }
+    drop(closing);
+}
+
+/// Whether a request may reach rmcp. A request without a session ID creates a session, so it
+/// is refused while the endpoint already holds `max_sessions` open sessions; idle sessions
+/// expire through rmcp's keep-alive.
+fn admits_session_request(
+    request: &Request<Body>,
+    open_sessions: usize,
+    max_sessions: usize,
+) -> bool {
+    request.headers().contains_key(MCP_SESSION_ID_HEADER) || open_sessions < max_sessions
+}
+
 async fn authorize_request(
     request: Request<Body>,
     next: Next,
     expected_token: String,
     semaphore: Arc<Semaphore>,
+    sessions: Arc<LocalSessionManager>,
 ) -> Response {
     if !request_targets_loopback(&request)
         || !request
@@ -988,6 +1107,10 @@ async fn authorize_request(
             .is_some_and(|value| constant_time_equal(value.as_bytes(), expected_token.as_bytes()))
     {
         return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let open_sessions = sessions.sessions.read().await.len();
+    if !admits_session_request(&request, open_sessions, MAX_MCP_SESSIONS) {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
     let Ok(permit) = semaphore.acquire_owned().await else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
@@ -1073,6 +1196,30 @@ pub(crate) fn secure_random_hex(byte_count: usize) -> ChatResult<String> {
     Ok(encoded)
 }
 
+/// Runs tool work until it finishes, the request is cancelled, or `deadline` passes. Dropping
+/// the work stops it at its next await point, so it cannot outlive its request.
+async fn bounded_work<T>(
+    cancelled: impl Future<Output = ()>,
+    deadline: Duration,
+    work: impl Future<Output = ChatResult<T>>,
+) -> ChatResult<T> {
+    tokio::select! {
+        biased;
+        () = cancelled => Err(ChatError::new(
+            ChatErrorCode::Cancelled,
+            "The tool call was cancelled",
+            false,
+        )),
+        result = tokio::time::timeout(deadline, work) => result.unwrap_or_else(|_| {
+            Err(ChatError::new(
+                ChatErrorCode::Timeout,
+                "The tool call took too long",
+                true,
+            ))
+        }),
+    }
+}
+
 fn mcp_error(error: ChatError) -> McpError {
     match error.code {
         ChatErrorCode::NotFound | ChatErrorCode::Permission | ChatErrorCode::Validation => {
@@ -1093,6 +1240,182 @@ fn endpoint_error<T>(_error: T) -> ChatError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    const TEST_HEADER_READ_TIMEOUT: Duration = Duration::from_millis(200);
+    const TEST_WAIT: Duration = Duration::from_secs(5);
+
+    async fn test_endpoint(
+        router: Router,
+        max_connections: usize,
+    ) -> (
+        std::net::SocketAddr,
+        oneshot::Sender<()>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test endpoint");
+        let address = listener.local_addr().expect("test endpoint address");
+        let (shutdown, shutdown_receiver) = oneshot::channel();
+        let server = tokio::spawn(serve_endpoint(
+            listener,
+            router,
+            EndpointConnectionLimits {
+                header_read_timeout: TEST_HEADER_READ_TIMEOUT,
+                max_connections,
+            },
+            shutdown_receiver,
+        ));
+        (address, shutdown, server)
+    }
+
+    fn root_router() -> Router {
+        Router::new().route("/", axum::routing::get(|| async { "ok" }))
+    }
+
+    #[derive(Clone)]
+    struct EmptyHandler;
+
+    impl ServerHandler for EmptyHandler {}
+
+    #[tokio::test]
+    async fn endpoint_refuses_request_bodies_over_the_declared_limit() {
+        let token = generate_bearer_token().expect("token");
+        let router = endpoint_router(EmptyHandler, token.clone());
+        let (address, _shutdown, _server) = test_endpoint(router, MAX_MCP_CONNECTIONS).await;
+        let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+        let body = vec![b' '; MAX_MCP_REQUEST_BYTES + 1];
+        let head = format!(
+            "POST /mcp HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        client.write_all(head.as_bytes()).await.unwrap();
+        // The server may answer and close before reading the whole body.
+        let _ = client.write_all(&body).await;
+        let response = read_until_closed(&mut client).await;
+        assert!(
+            response.starts_with("HTTP/1.1 413"),
+            "unexpected response: {}",
+            response.lines().next().unwrap_or_default()
+        );
+    }
+
+    async fn read_until_closed(stream: &mut tokio::net::TcpStream) -> String {
+        let mut response = Vec::new();
+        tokio::time::timeout(TEST_WAIT, stream.read_to_end(&mut response))
+            .await
+            .expect("connection closes in time")
+            .ok();
+        String::from_utf8_lossy(&response).into_owned()
+    }
+
+    async fn request_root(stream: &mut tokio::net::TcpStream) -> String {
+        stream
+            .write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("send request");
+        read_until_closed(stream).await
+    }
+
+    #[tokio::test]
+    async fn endpoint_closes_connections_that_send_no_headers_and_still_serves_requests() {
+        let (address, shutdown, server) = test_endpoint(root_router(), MAX_MCP_CONNECTIONS).await;
+        let mut idle = tokio::net::TcpStream::connect(address).await.unwrap();
+        let mut partial = tokio::net::TcpStream::connect(address).await.unwrap();
+        partial.write_all(b"GET / HTTP/1.1\r\nHost:").await.unwrap();
+
+        let started = tokio::time::Instant::now();
+        assert!(!read_until_closed(&mut idle).await.contains("200 OK"));
+        assert!(!read_until_closed(&mut partial).await.contains("200 OK"));
+        assert!(started.elapsed() < TEST_WAIT);
+
+        let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+        assert!(request_root(&mut client).await.contains("200 OK"));
+
+        drop(shutdown);
+        tokio::time::timeout(TEST_WAIT, server)
+            .await
+            .expect("endpoint stops after shutdown")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn endpoint_holds_extra_connections_until_an_open_one_closes() {
+        let (address, _shutdown, _server) = test_endpoint(root_router(), 1).await;
+        let _idle = tokio::net::TcpStream::connect(address).await.unwrap();
+        tokio::time::sleep(TEST_HEADER_READ_TIMEOUT / 4).await;
+
+        let started = tokio::time::Instant::now();
+        let mut queued = tokio::net::TcpStream::connect(address).await.unwrap();
+        assert!(request_root(&mut queued).await.contains("200 OK"));
+        assert!(started.elapsed() >= TEST_HEADER_READ_TIMEOUT / 2);
+    }
+
+    #[test]
+    fn endpoint_refuses_new_sessions_at_the_cap_but_serves_existing_ones() {
+        let new_session = Request::builder().body(Body::empty()).unwrap();
+        let existing_session = Request::builder()
+            .header(MCP_SESSION_ID_HEADER, "session")
+            .body(Body::empty())
+            .unwrap();
+        assert!(admits_session_request(&new_session, 0, MAX_MCP_SESSIONS));
+        assert!(admits_session_request(
+            &new_session,
+            MAX_MCP_SESSIONS - 1,
+            MAX_MCP_SESSIONS
+        ));
+        assert!(!admits_session_request(
+            &new_session,
+            MAX_MCP_SESSIONS,
+            MAX_MCP_SESSIONS
+        ));
+        assert!(admits_session_request(
+            &existing_session,
+            MAX_MCP_SESSIONS,
+            MAX_MCP_SESSIONS
+        ));
+    }
+
+    struct DropFlag(Arc<AtomicBool>);
+
+    impl Drop for DropFlag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn pending_work(dropped: &Arc<AtomicBool>) -> impl Future<Output = ChatResult<()>> {
+        let flag = DropFlag(Arc::clone(dropped));
+        async move {
+            let _flag = flag;
+            std::future::pending::<ChatResult<()>>().await
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_work_stops_when_its_request_is_cancelled_or_times_out() {
+        let dropped = Arc::new(AtomicBool::new(false));
+        let cancelled = bounded_work(std::future::ready(()), TEST_WAIT, pending_work(&dropped))
+            .await
+            .expect_err("cancelled work fails");
+        assert_eq!(cancelled.code, ChatErrorCode::Cancelled);
+        assert!(dropped.load(Ordering::SeqCst));
+
+        let dropped = Arc::new(AtomicBool::new(false));
+        let timed_out = bounded_work(
+            std::future::pending(),
+            TEST_HEADER_READ_TIMEOUT,
+            pending_work(&dropped),
+        )
+        .await
+        .expect_err("slow work fails");
+        assert_eq!(timed_out.code, ChatErrorCode::Timeout);
+        assert!(dropped.load(Ordering::SeqCst));
+
+        let finished = bounded_work(std::future::pending(), TEST_WAIT, async { Ok(7) }).await;
+        assert_eq!(finished.expect("finished work"), 7);
+    }
 
     #[test]
     fn bearer_tokens_are_bounded_unique_and_compared_without_prefix_matches() {

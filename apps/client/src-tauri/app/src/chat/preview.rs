@@ -402,21 +402,35 @@ pub(crate) async fn mcp_screenshot_browser(
         .model_capture_lock(thread_id)?;
     let _capture = capture_lock.lock().await;
     let bytes = capture_browser_png(app, &tab).await?;
-    persist_browser_artifact_with_pool(
-        pool,
-        vault_root,
-        &tab,
-        BrowserArtifactPayload {
-            kind: ChatResourceKind::BrowserScreenshot,
-            display_name: "Browser screenshot",
-            mime_type: "image/png",
-            duration_milliseconds: None,
-            frame_count: Some(1),
-            bytes: &bytes,
-            model_quota: true,
-        },
-    )
+    // The store runs as its own task so a cancelled tool call cannot stop it between the
+    // artifact file and its resource row.
+    let pool = pool.clone();
+    let vault_root = vault_root.to_path_buf();
+    tauri::async_runtime::spawn(async move {
+        persist_browser_artifact_with_pool(
+            &pool,
+            &vault_root,
+            &tab,
+            BrowserArtifactPayload {
+                kind: ChatResourceKind::BrowserScreenshot,
+                display_name: "Browser screenshot",
+                mime_type: "image/png",
+                duration_milliseconds: None,
+                frame_count: Some(1),
+                bytes: &bytes,
+                model_quota: true,
+            },
+        )
+        .await
+    })
     .await
+    .map_err(|_| {
+        ChatError::new(
+            ChatErrorCode::Internal,
+            "Browser screenshot could not be stored",
+            true,
+        )
+    })?
 }
 
 #[tauri::command]

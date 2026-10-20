@@ -77,7 +77,7 @@ Input, output, scrollback, event queues, and process lifetime are bounded. Paste
 
 ## Internal MCP host tools
 
-Each native Chat provider session may receive an ephemeral loopback MCP endpoint with a small application-owned method allowlist, authenticated by a random bearer token and accepting only loopback hosts and origins. It is not a general localhost service and not an organizational participant. It runs in one of two modes.
+Each native Chat provider session may receive an ephemeral loopback MCP endpoint with a small application-owned method allowlist, authenticated by a random bearer token and accepting only loopback hosts and origins. It is not a general localhost service and not an organizational participant. Because any local process can reach a loopback port, the endpoint bounds work before and after the token check: request headers must arrive within a short deadline, open connections and MCP sessions are capped, request bodies are capped, idle sessions expire, and preview tool work and resource reads stop when their request is cancelled or reaches its deadline. Organizational host tools always finish once started, so their audit rows stay complete. It runs in one of two modes.
 
 In a direct session (a person chatting with a provider in a thread), the endpoint offers the preview tools and the thread's attached resources. The endpoint and its token live as long as the provider session, but tool calls and resource reads are admitted only while a turn the app dispatched is running. Completion, abort, interruption, a failed dispatch, and provider exit close them, so a process the model left running cannot drive the preview between turns. Listings stay open so providers can discover tools when the session starts.
 

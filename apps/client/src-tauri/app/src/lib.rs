@@ -15,6 +15,8 @@ mod file_drops;
 #[cfg(all(test, desktop))]
 mod first_use_contracts;
 mod music;
+#[cfg(desktop)]
+mod navigation_guard;
 mod notes;
 mod notifications;
 mod pomodoro;

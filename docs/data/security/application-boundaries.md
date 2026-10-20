@@ -20,6 +20,8 @@ Production CSP runs only bundled scripts and permits Tauri IPC plus the sources 
 
 Development CSP additionally supports Vite and hot reload, including `unsafe-eval`. A development exception must not be copied into production configuration.
 
+On desktop, app webviews stay on the app document. A navigation guard sends any main-frame page load outside the Tauri app origin (and the dev server in development builds) back to the last app URL that webview showed, and on Windows, where navigation requests report only the main frame, it refuses the navigation before it starts. Frames are not checked by this guard; the CSP frame sources above govern them. Chat preview webviews keep their own navigation policy. On Linux and macOS the foreign page can commit briefly before recovery, and it receives no command grant because capabilities match the app origin. Android has no guard yet. Default webview behavior already refuses new windows.
+
 Inline styles are allowed for dynamic Svelte layout, theme, and calendar geometry. Inline scripts and object embedding remain prohibited unless a later feature receives a separate review.
 
 ## Native dialogs and document transfer

@@ -34,6 +34,7 @@ mod webview;
 use artifacts::{persist_browser_artifact, persist_browser_artifact_with_pool};
 use capture::{capture_browser_png, capture_recording_frames, recording_archive};
 pub(crate) use model_access::{mcp_model_tab, mcp_require_tab_access, mcp_status_reads};
+pub(crate) use navigation::PREVIEW_LABEL_PREFIX;
 #[cfg(test)]
 use navigation::navigation_allowed;
 use navigation::{

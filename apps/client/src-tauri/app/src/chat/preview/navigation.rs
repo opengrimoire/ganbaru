@@ -180,6 +180,12 @@ pub(super) fn js_string(value: &str, field: &str) -> ChatResult<String> {
         .map_err(|_| ChatError::validation(field, "Browser interaction value is invalid"))
 }
 
+/// Label prefix shared by every Chat preview child webview.
+pub(crate) const PREVIEW_LABEL_PREFIX: &str = "chat-preview-";
+
 pub(super) fn preview_label(tab_id: &str) -> String {
-    format!("chat-preview-{:x}", Sha256::digest(tab_id.as_bytes()))
+    format!(
+        "{PREVIEW_LABEL_PREFIX}{:x}",
+        Sha256::digest(tab_id.as_bytes())
+    )
 }

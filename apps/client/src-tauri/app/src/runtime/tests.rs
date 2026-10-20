@@ -397,3 +397,11 @@ fn app_csp_runs_only_bundled_scripts_and_frames_only_known_hosts() {
         }
     }
 }
+
+#[test]
+fn desktop_runtime_registers_the_app_navigation_guard() {
+    assert!(
+        DESKTOP_RUNTIME.contains(".plugin(navigation_guard::init())"),
+        "desktop runtime must keep app webviews on the app document"
+    );
+}

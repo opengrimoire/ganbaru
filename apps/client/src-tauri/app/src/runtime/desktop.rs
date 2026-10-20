@@ -222,6 +222,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         }))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
+        .plugin(navigation_guard::init())
         .manage(db::DatabaseState::default())
         .manage(updates::PendingUpdate::default())
         .manage(vault::ownership::VaultOwnershipManager::default())
